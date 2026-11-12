@@ -18,7 +18,7 @@ import type { ViewerSyncStatus } from '../../../../shared/viewer-sync-status.js'
 import { workViewOverview, workViewRequestDetail } from '../../../work-view/overview.js';
 import { FILE_CONTENT_TYPES } from '../../../work-view/work-product.mjs';
 import { isInsideDeliverablesDir } from '../../../../shared/deliverables.js';
-import { contentFingerprint, LocalReviewStore } from '../../../work-view/review-store.js';
+import { contentFingerprint, priorContentFingerprint, LocalReviewStore } from '../../../work-view/review-store.js';
 import { MY_RULES_LIST, renderRulesFile, ruleRowFields, type SavedRule } from '../../../work-view/my-rules.mjs';
 import { focusAreaRowFields, MY_FOCUS_LIST, navWordIn, OTHER_FOCUS_AREA_ID, ownerGoalsAreaRows, placementRowFields, PROPOSAL_KINDS, readFocus, routerFocusRows, seedFocusRows, seedUndoRows, type FocusArea, type RouterFocusBody } from '../../../work-view/my-focus.mjs';
 import { MAX_WORK_STATE_FIELDS_JSON_CHARS } from '../../../work-view/work-state-limits.mjs';
@@ -1139,8 +1139,24 @@ export class WorkViewRoutes extends BaseRouteHandler {
       if (sharedEnabled) {
         request.review = shared ?? { checked: false, checkedAtEpoch: null, actor: null, available: false, mode: 'shared' };
       } else {
-        const override = this.reviews.readOverride(request.id, request.contentFingerprint, shared?.hash ?? null);
-        const legacy = this.reviews.read(request.id, legacyFingerprint);
+        let override = this.reviews.readOverride(request.id, request.contentFingerprint, shared?.hash ?? null);
+        let legacy = this.reviews.read(request.id, legacyFingerprint);
+        if (request.sourceProductHash && (!legacy.checked || !override)) {
+          const prior = priorContentFingerprint(request);
+          const priorReview = this.reviews.read(request.id, prior);
+          const priorOverride = this.reviews.readOverride(request.id, prior, shared?.hash ?? null);
+          const productsAt = request.sourceProductRecordedAtEpoch;
+          // Products can arrive after the old check but before the first
+          // upgraded read. Unknown or equal timestamps cannot prove order.
+          const productsPredateChecks = [priorReview, priorOverride].every(review => !review?.checked ||
+            (typeof productsAt === 'number' && Number.isFinite(productsAt) &&
+              typeof review.checkedAtEpoch === 'number' && productsAt < review.checkedAtEpoch));
+          if ((priorReview.checked || priorOverride) && productsPredateChecks) {
+            this.reviews.adoptFingerprint(request.id, prior, legacyFingerprint);
+            legacy = this.reviews.read(request.id, legacyFingerprint);
+            override = this.reviews.readOverride(request.id, request.contentFingerprint, shared?.hash ?? null);
+          }
+        }
         const accepted = override ?? (shared?.matches || shared?.conflict ? shared : legacy);
         request.review = { ...accepted, mode: 'local', legacy: !override && accepted === legacy && legacy.checked };
       }
