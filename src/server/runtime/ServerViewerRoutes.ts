@@ -29,6 +29,7 @@ import type { RouteHandler } from '../../services/server/Server.js';
 import type { PostgresPool } from '../../storage/postgres/pool.js';
 import { requirePostgresServerAuth } from '../middleware/postgres-auth.js';
 import { getPackageRoot } from '../../shared/paths.js';
+import { LISTING_OFFSET_CAP_MESSAGE, MAX_LISTING_OFFSET, capListingPage } from '../../shared/listing-offset-cap.js';
 import { logger } from '../../utils/logger.js';
 
 const VIEWER_HTML_CANDIDATE_PATHS: readonly string[] = (() => {
@@ -67,8 +68,6 @@ if (resolvedViewerHtmlPath) {
 const FEED_PAGE_SIZE = 50;
 const SESSION_PAGE_SIZE = 100;
 const MAX_PAGE_SIZE = 100;
-// Deep pagination stops here, matching the /v1 jobs listing's offset cap.
-const MAX_FEED_OFFSET = 10_000;
 // Reverse proxies end an upstream response that stays silent past their read
 // timeout; nginx's proxy_read_timeout defaults to 60 s. A comment every 15 s
 // keeps the stream open through that with three missed keepalives to spare.
@@ -312,7 +311,7 @@ export interface Page {
 }
 
 /** Reads `limit`/`offset`, or answers 400 and returns null when `limit` is outside 1..MAX_PAGE_SIZE
- * or `offset` exceeds MAX_FEED_OFFSET. Exported for unit tests. */
+ * or `offset` exceeds MAX_LISTING_OFFSET. Exported for unit tests. */
 export function parsePage(req: Request, res: Response, defaultLimit: number): Page | null {
   const limit = req.query.limit === undefined ? defaultLimit : parseNonNegativeInt(req.query.limit);
   if (limit === null || limit < 1 || limit > MAX_PAGE_SIZE) {
@@ -320,14 +319,10 @@ export function parsePage(req: Request, res: Response, defaultLimit: number): Pa
     return null;
   }
   const offset = parseNonNegativeInt(req.query.offset) ?? 0;
-  // Same bound the /v1 jobs listing enforces (JOB_LIST_MAX_OFFSET): OFFSET is
-  // parameterized, so a runaway value is not injection — it is one request
-  // driving an arbitrarily deep Postgres skip-scan.
-  if (offset > MAX_FEED_OFFSET) {
-    res.status(400).json({
-      error: 'BadRequest',
-      message: `offset must be at most ${MAX_FEED_OFFSET}; narrow the listing with filters to reach older rows`,
-    });
+  // The shared listing bound (MAX_LISTING_OFFSET): one request must not drive
+  // an arbitrarily deep Postgres skip-scan.
+  if (offset > MAX_LISTING_OFFSET) {
+    res.status(400).json({ error: 'BadRequest', message: LISTING_OFFSET_CAP_MESSAGE });
     return null;
   }
   return { limit, offset };
@@ -349,25 +344,9 @@ function toPage<Row, Item>(rows: Row[], limit: number, map: (row: Row) => Item):
   return { items: rows.slice(0, limit).map(map), hasMore: rows.length > limit };
 }
 
-interface FeedPage<Item> {
-  items: Item[];
-  hasMore: boolean;
-  offsetCapReached?: true;
-  maxOffset?: number;
-}
-
-/**
- * toPage, but a full page whose next offset would pass MAX_FEED_OFFSET says
- * so (`offsetCapReached`) instead of `hasMore`: parsePage rejects that next
- * request, so a viewer that kept paging would end on an error it cannot
- * retry. Exported for unit tests.
- */
-export function toFeedPage<Row, Item>(rows: Row[], page: Page, map: (row: Row) => Item): FeedPage<Item> {
-  const result = toPage(rows, page.limit, map);
-  if (result.hasMore && page.offset + page.limit > MAX_FEED_OFFSET) {
-    return { items: result.items, hasMore: false, offsetCapReached: true, maxOffset: MAX_FEED_OFFSET };
-  }
-  return result;
+/** toPage with the shared offset cap applied (capListingPage). Exported for unit tests. */
+export function toFeedPage<Row, Item>(rows: Row[], page: Page, map: (row: Row) => Item) {
+  return capListingPage(toPage(rows, page.limit, map), page.offset, page.limit);
 }
 
 function scopeClause(scope: ViewerScope, params: SqlParams, alias: string): string {

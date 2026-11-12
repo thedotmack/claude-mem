@@ -97,7 +97,7 @@ GET /api/prompts?project=my-project&limit=20&offset=0
 **Query Parameters**:
 - `project` (optional): Filter by project name
 - `limit` (default: 20): Number of results
-- `offset` (default: 0): Pagination offset
+- `offset` (default: 0): Pagination offset, at most 10,000. A larger value answers 400. The last page you can reach answers `hasMore: false` with `offsetCapReached: true` and `maxOffset: 10000`; filter by project to reach older rows.
 
 **Response**:
 ```json
@@ -124,7 +124,7 @@ GET /api/observations?project=my-project&limit=20&offset=0
 **Query Parameters**:
 - `project` (optional): Filter by project name
 - `limit` (default: 20): Number of results
-- `offset` (default: 0): Pagination offset
+- `offset` (default: 0): Pagination offset, at most 10,000. A larger value answers 400. The last page you can reach answers `hasMore: false` with `offsetCapReached: true` and `maxOffset: 10000`; filter by project to reach older rows.
 
 **Response**:
 ```json
@@ -151,7 +151,7 @@ GET /api/summaries?project=my-project&limit=20&offset=0
 **Query Parameters**:
 - `project` (optional): Filter by project name
 - `limit` (default: 20): Number of results
-- `offset` (default: 0): Pagination offset
+- `offset` (default: 0): Pagination offset, at most 10,000. A larger value answers 400. The last page you can reach answers `hasMore: false` with `offsetCapReached: true` and `maxOffset: 10000`; filter by project to reach older rows.
 
 **Response**:
 ```json

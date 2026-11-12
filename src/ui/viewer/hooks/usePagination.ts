@@ -5,7 +5,7 @@ import { API_ENDPOINTS } from '../constants/api';
 import { sessionKey, type SessionRef } from '../utils/sessions';
 
 // offsetCapReachedAt: the server's deepest allowed offset, set when it stopped
-// this list there (server runtime feeds) rather than running out of rows.
+// this list there (src/shared/listing-offset-cap.ts) rather than running out of rows.
 interface PaginationState { isLoading: boolean; hasMore: boolean; offsetCapReachedAt: number | null }
 type DataType = 'observations' | 'summaries' | 'prompts';
 type DataItem = Observation | Summary | UserPrompt;
