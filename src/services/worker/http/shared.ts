@@ -85,12 +85,13 @@ function getBashSkipPattern(pattern: string): RegExp | null {
 // Code sends `Bash` + `command` (Cursor and Windsurf adapters normalize to the
 // same shape); the Codex transcript watcher sends `exec_command` + `cmd`; on
 // Windows the primary shell arrives as `PowerShell` + `command` (issue #4745 —
-// without this branch the setting silently did nothing there).
+// without this branch the setting silently did nothing there); Antigravity's
+// agy sends `run_command`, and its adapter copies `CommandLine` to `command`.
 function shellCommandOf(toolName: string, toolInput: unknown): string {
   if (!toolInput || typeof toolInput !== 'object') return '';
   const input = toolInput as { command?: unknown; cmd?: unknown };
   const command =
-    toolName === 'Bash' || toolName === 'PowerShell' ? input.command
+    toolName === 'Bash' || toolName === 'PowerShell' || toolName === 'run_command' ? input.command
     : toolName === 'exec_command' ? input.cmd
     : undefined;
   return typeof command === 'string' ? command : '';
