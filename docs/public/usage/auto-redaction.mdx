@@ -70,7 +70,7 @@ That is all you need for the 42 built-in patterns to kick in. Add `"CLAUDE_MEM_R
 | `pulumi_token` | `pul-…` Pulumi access tokens (40 hex chars) |
 | `doppler_token` | `dp.pt.…` Doppler personal tokens (43 trailing alphanumerics) |
 | `heroku_key` | `HRKU-AA…` Heroku API keys (58 trailing chars) |
-| `atlassian_token` | `ATATT3…` Atlassian API tokens for Jira, Confluence and Bitbucket (186 trailing chars) |
+| `atlassian_token` | `ATATT3…` Atlassian API tokens for Jira, Confluence and Bitbucket (186 trailing chars). A token sent base64-encoded in an `Authorization: Basic` header hides the prefix, so only the generic `basic_auth` pattern (`CLAUDE_MEM_REDACT_GENERIC_ENABLED`) catches it |
 | `slack_webhook` | the secret of Slack incoming webhook URLs (`hooks.slack.com/services/T…/B…/…`, workflow and trigger URLs); the host and ids are kept |
 | `discord_webhook` | the token of Discord webhook URLs (`discord.com/api/webhooks/<id>/<token>`, `discordapp.com` too); the host and id are kept |
 | `claude_mem_key` | claude-mem's own server API keys (`cmem_…`) and cmem.ai Pro memory keys (`cm_pro_…`) |
