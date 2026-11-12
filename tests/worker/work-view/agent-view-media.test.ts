@@ -64,6 +64,8 @@ describe('observation images ride the work view snapshot', () => {
 
   it('a database without the metadata column keeps its observations and shows no images', () => {
     const database = databaseWithImages();
+    // Recreate the old layout without an index that depends on the absent column.
+    database.exec('DROP INDEX IF EXISTS idx_observations_source_fingerprint');
     database.exec('ALTER TABLE observations DROP COLUMN metadata');
     const state = reduceWorkState([], { currentProject: 'repo', currentProjectScope: ['repo'] });
     const [request] = buildAgentView(state, readAgentRecords(database, { workState: state, now: NOW }), { now: NOW }).humanRequests;
