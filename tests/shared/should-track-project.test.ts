@@ -10,8 +10,9 @@ import * as realHookSettings from '../../src/shared/hook-settings.js';
 const realHookSettingsSnapshot = { ...realHookSettings };
 
 // Mock loadFromFileOnce to avoid real file I/O and settings-dependent results
+let excludedProjects = '';
 mock.module('../../src/shared/hook-settings.js', () => ({
-  loadFromFileOnce: () => ({ CLAUDE_MEM_EXCLUDED_PROJECTS: '' }),
+  loadFromFileOnce: () => ({ CLAUDE_MEM_EXCLUDED_PROJECTS: excludedProjects }),
 }));
 
 afterAll(() => {
@@ -33,6 +34,7 @@ describe('shouldTrackProject — path normalization', () => {
   let savedInternal: string | undefined;
 
   beforeEach(() => {
+    excludedProjects = '';
     savedInternal = process.env.CLAUDE_MEM_INTERNAL;
     delete process.env.CLAUDE_MEM_INTERNAL;
   });
@@ -78,6 +80,14 @@ describe('shouldTrackProject — path normalization', () => {
   it('returns true for an unrelated project path', () => {
     const unrelated = normalize('/tmp/my-project');
     expect(shouldTrackProject(unrelated)).toBe(true);
+  });
+
+  it('does not track excluded descendants whose directory names contain line terminators', () => {
+    excludedProjects = '/workspace/private/**';
+    for (const separator of ['\n', '\r', '\u2028', '\u2029']) {
+      expect(shouldTrackProject(`/workspace/private/team${separator}one/project`)).toBe(false);
+      expect(shouldTrackProject(`/workspace/public/team${separator}one/project`)).toBe(true);
+    }
   });
 
   it('returns false when CLAUDE_MEM_INTERNAL is set', () => {
