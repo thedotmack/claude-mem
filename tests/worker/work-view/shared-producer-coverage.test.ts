@@ -1,7 +1,8 @@
 import { afterEach, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { removeTempDir } from '../../helpers/temp-dir.js';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
@@ -16,12 +17,12 @@ import { sharedRecordKey } from '../../../src/services/work-view/shared-records.
 import { isSharedProjectionValue } from '../../../src/services/work-view/shared-projection.mjs';
 
 const cleanup: Array<() => void> = [];
-afterEach(() => { for (const dispose of cleanup.splice(0).reverse()) dispose(); });
+afterEach(async () => { for (const dispose of cleanup.splice(0).reverse()) await dispose(); });
 const NOW = Date.parse('2026-11-01T12:00:00Z');
 const key = (id: string, platform = 'claude') => JSON.stringify(['conversation', platform, id]);
 function fixture() {
   const dir = mkdtempSync(join(tmpdir(), 'shared-producers-'));
-  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  cleanup.push(() => removeTempDir(dir));
   const path = join(dir, 'memory.db');
   const store = new SessionStore(path); store.setLocalSyncDeviceId('device-a');
   cleanup.push(() => store.close());
