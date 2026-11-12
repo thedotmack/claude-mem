@@ -6,7 +6,7 @@ import { retainTextHeadTail } from '../shared/text-truncation.js';
 
 export type McpTextPurpose = 'save' | 'observation-add' | 'event' | 'search' | 'server-search' | 'server-timeline' | 'context' | 'job'
   | 'observations' | 'tool-uses' | 'corpus-list' | 'corpus-build' | 'corpus-prime' | 'corpus-query';
-export type McpTextResult = { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
+export type McpTextResult = { content: Array<{ type: 'text'; text: string }>; isError?: boolean; _meta?: Record<string, unknown> };
 const MAX_TEXT_BYTES = 32 * 1024;
 // get_observations is step 3 of the mem-search workflow: the caller already
 // filtered the IDs, so every requested record is returned.
@@ -17,9 +17,8 @@ const line = (value: unknown, fallback = '', maximum = 240): string => {
   const text = typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' ? String(value) : fallback;
   return retainTextHeadTail(text.replace(/[\r\n\u0000-\u001f\u007f]/g, ' '), maximum, 0).head;
 };
-function bounded(text: string, maximum = MAX_TEXT_BYTES): string {
+function bounded(text: string, maximum = MAX_TEXT_BYTES, suffix = '\n[Response shortened; request fewer selected records for more detail.]'): string {
   if (Buffer.byteLength(text, 'utf8') <= maximum) return text;
-  const suffix = '\n[Response shortened; request fewer selected records for more detail.]';
   let result = '', bytes = 0;
   for (const char of text) {
     const size = Buffer.byteLength(char, 'utf8');
@@ -30,6 +29,14 @@ function bounded(text: string, maximum = MAX_TEXT_BYTES): string {
 }
 export function mcpTextResult(text: string, isError = false, maximumBytes = MAX_TEXT_BYTES): McpTextResult {
   return { content: [{ type: 'text', text: bounded(text, maximumBytes) }], ...(isError ? { isError: true } : {}) };
+}
+
+export function formatWorkStateMcpResponse(text: string): McpTextResult {
+  return {
+    content: [{ type: 'text', text: bounded(text, MAX_TEXT_BYTES,
+      '\n[Work state shortened. Export the complete ordered history with GET /api/work-state/export using the same cwd and optional list; closed items are included.]') }],
+    _meta: { 'claude-mem/truncated': Buffer.byteLength(text, 'utf8') > MAX_TEXT_BYTES },
+  };
 }
 function parseStored(value: unknown): unknown {
   if (typeof value !== 'string' || !/^[\s]*[\[{]/.test(value)) return value;
