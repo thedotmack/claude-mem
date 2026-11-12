@@ -83,6 +83,17 @@ jobs:
           npm install --global @anthropic-ai/claude-code@2.1.321 --no-audit --no-fund
           claude --version
 
+      # connectToPage allows a browser 10 s to start, and the runner's first
+      # Chrome launch takes about that long (a measured 10.9 s, almost all of
+      # it waiting, not CPU). The lane's first remote-debugging test
+      # (tests/helpers/chrome-devtools.browser.test.ts) used to pay that cold
+      # start inside its own deadline and failed with "Owned browser did not
+      # start". Launch Chrome once here, outside any test's deadline, and
+      # record how long it takes. Later launches start in under a second.
+      - name: Warm Chrome
+        if: ${{ !cancelled() }}
+        run: time google-chrome --headless --no-sandbox --disable-gpu --dump-dom about:blank
+
       - name: Test (integration lane)
         if: ${{ !cancelled() }}
         env:
