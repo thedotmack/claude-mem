@@ -38,10 +38,12 @@ function countLegacyHooks(hooks: Hooks | undefined): number {
       + (Array.isArray(rule?.hooks) ? rule.hooks.filter(isLegacyClaudeMemHook).length : 0), 0), 0);
 }
 
-export function buildGeminiHooks(bun: string, worker: string): Hooks {
+/** Gemini CLI runs hook commands through PowerShell on Windows, which runs a quoted path only after the `&` call operator. */
+export function buildGeminiHooks(bun: string, worker: string, platform: NodeJS.Platform = process.platform): Hooks {
+  const callOperator = platform === 'win32' ? '& ' : '';
   return Object.fromEntries(Object.entries(EVENTS).map(([event, handler]) => [event, [{
     hooks: [{ type: 'command', name: `claude-mem-${event}`, timeout: GEMINI_HOOK_TIMEOUT_MS,
-      command: `"${bun}" "${worker}" hook gemini ${handler}` }],
+      command: `${callOperator}"${bun}" "${worker}" hook gemini ${handler}` }],
   }]]));
 }
 
@@ -49,7 +51,7 @@ function isOwn(command: Command): boolean {
   return command?.type === 'command' && typeof command.name === 'string'
     && Object.keys(EVENTS).some(event => command.name === `claude-mem-${event}`)
     && typeof command.command === 'string'
-    && /^"[^"\n]+" "[^"\n]+[\\/]scripts[\\/]worker-service\.cjs" hook gemini (context|session-init|observation|summarize|session-end)$/.test(command.command);
+    && /^(?:& )?"[^"\n]+" "[^"\n]+[\\/]scripts[\\/]worker-service\.cjs" hook gemini (context|session-init|observation|summarize|session-end)$/.test(command.command);
 }
 
 export function removeGeminiHooks(hooks: Hooks): Hooks {
