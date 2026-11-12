@@ -44,6 +44,8 @@ export class AutoRefreshWorker {
   /** True from the moment a run starts until it finishes. */
   readonly busy: boolean;
   status(): RefreshStatus | null;
+  /** At startup: marks a "running" record no live worker owns as failed. A failed write is logged and retried at the next check. */
+  repairInterrupted(): void;
   start(): void;
   close(): void;
   check(): Promise<'closed' | 'disabled' | 'running' | 'backing-off' | 'idle' | RefreshJobOutcome['state']>;

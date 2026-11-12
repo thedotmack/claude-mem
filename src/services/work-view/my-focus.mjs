@@ -6,7 +6,7 @@
 // A placement is keyed by the request's anchor conversation key (the input groupIdFor
 // hashes), never by the local g_ id. Area ids are never derived from names, so a
 // rename keeps the id. Rows are append-only and replay in write order.
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { MAX_WORK_STATE_FIELDS_JSON_CHARS } from './work-state-limits.mjs';
 import { reduceWorkState } from './work-state-reduce.mjs';
 import { navWordIn } from './nav-words.mjs';
@@ -70,6 +70,14 @@ export function placementRowFields(placement) {
   }, 'placement');
 }
 
+/** A retry key is a nonce plus a commitment to the focus route's normalized payload. Fixed tuple
+ * order makes the commitment independent of JSON object property order. Keep the complete key for a
+ * save: using it with different areas is refused, rather than silently creating another set of ids. */
+export function ownerGoalsSaveKey(areas, nonce = randomBytes(12).toString('hex')) {
+  const tuples = areas.map(area => [area.name.trim(), area.goal.trim(), area.rank, area.matches?.trim() ?? null, area.evidence.trim()]);
+  return nonce + ':' + createHash('sha256').update(JSON.stringify(tuples)).digest('hex');
+}
+
 /** A new area id: random, like an owner-written rule's id (`own_` + 6 random bytes), never derived from
  * the name, so a rename keeps it. */
 export const newFocusAreaId = () => `fa_${randomBytes(6).toString('hex')}`;
@@ -91,7 +99,27 @@ export const newFocusAreaId = () => `fa_${randomBytes(6).toString('hex')}`;
  * is wrong, and guessing which area was meant would file the owner's words under the wrong one.
  * Returns the rows to write and each mined area's id, in the mined order.
  */
-export function ownerGoalsAreaRows(minedAreas, savedAreas, newId = newFocusAreaId) {
+export function ownerGoalsAreaRows(minedAreas, savedAreas, newId = newFocusAreaId, retry) {
+  if (retry) {
+    const nonce = retry.key.split(':')[0];
+    if (!/^[a-f0-9]{24}:[a-f0-9]{64}$/.test(retry.key) || ownerGoalsSaveKey(minedAreas, nonce) !== retry.key) {
+      throw new TypeError('The owner-goals save key does not match these focus areas.');
+    }
+    // The key commits to the whole normalized request. The worker supplies the owner/device scope;
+    // neither a lost reply nor a partially appended request needs a separate receipt to recover.
+    newId = index => 'fa_' + createHash('sha256').update(JSON.stringify(['owner-goals-v1', retry.scope, retry.key, index])).digest('hex');
+    const existing = new Map(savedAreas.map(area => [area.focusAreaId, area]));
+    minedAreas = minedAreas.map((area, index) => {
+      if (area.matches !== null) return area;
+      const id = newId(index), saved = existing.get(id);
+      if (!saved) return area;
+      if (saved.source !== 'owner-goals' || isWithdrawnArea(saved)) {
+        throw new TypeError('The saved owner-goals area cannot be reused: ' + id);
+      }
+      // An explicit match preserves owner renames, decisions and merges through the normal path below.
+      return { ...area, matches: id };
+    });
+  }
   // A withdrawn area (a seed undo) is not an area the owner has: a mined area never matches it.
   const savedById = new Map(savedAreas.filter((area) => !isWithdrawnArea(area)).map((area) => [area.focusAreaId, area]));
   const claimed = new Set();

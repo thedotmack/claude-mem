@@ -20,13 +20,23 @@ function canonical(value: unknown): unknown {
   return value;
 }
 
-export function contentFingerprint(request: Record<string, unknown>): string {
-  // Omit transport health, clock labels and generated summaries. Only recorded
-  // request content invalidates a review. The selected fields include source
-  // links and lifecycle evidence as well as the displayed outcome.
-  const fields = ['id', 'original', 'explicitRequestText', 'scopeUpdates', 'title', 'projects', 'agentIds', 'items', 'lifecycle', 'afterShip', 'shipEstimate', 'stageSourceText', 'sourceContentHashes'];
+// Omit transport health, clock labels and generated summaries. Only recorded
+// request content invalidates a review. Keep the old field list for adoption
+// of device-local decisions saved before recorded products were versioned.
+const priorFingerprintFields = ['id', 'original', 'explicitRequestText', 'scopeUpdates', 'title', 'projects', 'agentIds', 'items', 'lifecycle', 'afterShip', 'shipEstimate', 'stageSourceText', 'sourceContentHashes'];
+const fingerprintFields = [...priorFingerprintFields, 'sourceProductHash'];
+
+function fingerprintOf(request: Record<string, unknown>, fields: readonly string[]): string {
   const content = Object.fromEntries(fields.map(key => [key, request[key]]));
   return createHash('sha256').update(JSON.stringify(canonical(content))).digest('hex');
+}
+
+export function contentFingerprint(request: Record<string, unknown>): string {
+  return fingerprintOf(request, fingerprintFields);
+}
+
+export function priorContentFingerprint(request: Record<string, unknown>): string {
+  return fingerprintOf(request, priorFingerprintFields);
 }
 
 export class LocalReviewStore {
@@ -72,6 +82,28 @@ export class LocalReviewStore {
     } catch {
       return { checked: false, checkedAtEpoch: null, actor: null, available: false };
     }
+  }
+
+  adoptFingerprint(requestId: string, fromFingerprint: string, toFingerprint: string): void {
+    if (!this.db || fromFingerprint === toFingerprint) return;
+    const db = this.db;
+    try {
+      db.transaction(() => {
+        const tables = ['work_view_reviews', 'work_view_review_overrides'];
+        const hasCurrent = tables.some(table => db.prepare(`SELECT 1 FROM ${table} WHERE request_id = ? AND content_fingerprint = ?`)
+          .get(requestId, toFingerprint));
+        for (const table of tables) {
+          if (hasCurrent) {
+            // A newer decision wins. Retire its superseded rows so a later
+            // product revision cannot adopt an old check again.
+            db.prepare(`DELETE FROM ${table} WHERE request_id = ? AND content_fingerprint = ?`).run(requestId, fromFingerprint);
+          } else {
+            db.prepare(`UPDATE ${table} SET content_fingerprint = ? WHERE request_id = ? AND content_fingerprint = ?`)
+              .run(toFingerprint, requestId, fromFingerprint);
+          }
+        }
+      }).immediate();
+    } catch { /* An optional sidecar failure must not stop source reads. */ }
   }
 
   set(requestId: string, fingerprint: string, checked: boolean): void {

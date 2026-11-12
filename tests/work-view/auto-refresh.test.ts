@@ -13,6 +13,7 @@ import { scratchDir } from '../helpers/scratch-dir.js';
 import { everyRequestInOther, focusInputFrom, focusWriter, isOtherPass } from '../helpers/fake-focus-writer.js';
 import { FOCUS_BATCH } from '../../src/services/work-view/request-groups.mjs';
 import { readFocus } from '../../src/services/work-view/data-source.mjs';
+import { registerSharedFileWriter } from '../../src/services/work-view/shared-file-hooks.mjs';
 
 const DAY = 86400000, NOW = 100 * DAY;
 afterEach(() => setFakeSpawn(null));
@@ -142,6 +143,33 @@ describe('automatic refresh scheduler', () => {
       expect(status).toMatchObject({ state: 'failed', reason: 'manual', error: 'The previous refresh stopped before finishing.' });
       expect(status.failures).toBeUndefined();
     } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('a locked database while repairing a cut-off run at startup is logged, never thrown, and the next check repairs it', async () => {
+    const dir = scratchDir('auto-refresh');
+    // The live failure (2026-11-11): the shared-ledger hook's transaction for refresh.json threw SQLITE_BUSY.
+    let locked = true;
+    const unregister = registerSharedFileWriter(dir, () => { if (locked) throw Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' }); return null; });
+    try {
+      writeFileSync(join(dir, 'refresh.json'), JSON.stringify({ state: 'running', pid: 2 ** 22 + 12345, reason: 'scheduled', startedAt: new Date(NOW - DAY).toISOString() }));
+      const warnings: string[] = [];
+      const worker = new AutoRefreshWorker({
+        localDeviceId: () => '', dir, openDatabase: handle(fixtureDatabase()), enabled: () => false, now: () => NOW,
+        log: (level, message) => { if (level === 'warn') warnings.push(message); },
+        runJob: async () => { throw new Error('a disabled worker must not run'); },
+      });
+      expect(() => worker.repairInterrupted()).not.toThrow();
+      expect(warnings).toEqual(['Work view refresh status could not be repaired at startup; the next check tries again']);
+      expect(worker.status()).toMatchObject({ state: 'running' });
+      // Still locked at the first check: warned again, still not thrown.
+      expect(await worker.check()).toBe('disabled');
+      expect(warnings).toHaveLength(2);
+      locked = false;
+      // Scheduled refresh is off, so this repair is the only one: My Work must not stay stuck on "running".
+      expect(await worker.check()).toBe('disabled');
+      expect(worker.status()).toMatchObject({ state: 'failed', error: 'The previous refresh stopped before finishing.' });
+      expect(warnings).toHaveLength(2);
+    } finally { unregister(); rmSync(dir, { recursive: true, force: true }); }
   });
 
   it('startup leaves alone a run another live worker owns', () => {

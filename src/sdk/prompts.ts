@@ -103,6 +103,21 @@ ${getPrompt(mode, 'skip_guidance')}
 ${observationSkeleton(mode)}`;
 }
 
+/**
+ * The user's request as the init and continuation prompts embed it (#5023).
+ * Each new generation opens with this framing prompt, and the generation budget
+ * (CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS, 100000 by default) is checked
+ * before its first observation goes out. A pasted prompt can be up to 256 KiB
+ * (MAX_USER_PROMPT_BYTES), so unbounded it could fill a fresh generation on its
+ * own: every generation would recycle before observing anything and the
+ * session would pause. It is bounded like one tool field, with the same
+ * head/tail slice and elision marker, so the framing prompt always leaves room
+ * for observations.
+ */
+function boundedUserRequest(userPrompt: string): string {
+  return truncatePromptText(userPrompt, OBS_PROMPT_FIELD_MAX_CHARS);
+}
+
 export function buildInitPrompt(
   project: string,
   sessionId: string,
@@ -114,7 +129,7 @@ export function buildInitPrompt(
 ${wrapPriorContext(priorContext)}
 
 <observed_from_primary_session>
-  <user_request>${userPrompt}</user_request>
+  <user_request>${boundedUserRequest(userPrompt)}</user_request>
   <requested_at>${new Date().toISOString().split('T')[0]}</requested_at>
 </observed_from_primary_session>
 
@@ -365,8 +380,11 @@ export function stripImagePayloadsFromField(value: unknown): unknown {
 function truncateObservationField(value: unknown, maxChars: number = OBS_PROMPT_FIELD_MAX_CHARS): string {
   // JSON.stringify returns undefined for undefined / functions / symbols;
   // fall back to empty string so the call sites (template literal output)
-  // and the length check below stay well-defined.
-  const raw = JSON.stringify(value, null, 2) ?? '';
+  // and the length check in truncatePromptText stay well-defined.
+  return truncatePromptText(JSON.stringify(value, null, 2) ?? '', maxChars);
+}
+
+function truncatePromptText(raw: string, maxChars: number = OBS_PROMPT_FIELD_MAX_CHARS): string {
   if (raw.length <= maxChars) return raw;
   const headChars = Math.max(0, Math.floor(maxChars * OBS_PROMPT_FIELD_HEAD_RATIO));
   const tailChars = Math.max(0, Math.floor(maxChars * OBS_PROMPT_FIELD_TAIL_RATIO));
@@ -504,7 +522,7 @@ ${getPrompt(mode, 'continuation_greeting')}
 ${wrapPriorContext(priorContext)}
 
 <observed_from_primary_session>
-  <user_request>${userPrompt}</user_request>
+  <user_request>${boundedUserRequest(userPrompt)}</user_request>
   <requested_at>${new Date().toISOString().split('T')[0]}</requested_at>
 </observed_from_primary_session>
 

@@ -22,13 +22,17 @@ import type { ConversationMessage } from '../services/worker-types.js';
 /**
  * Character budget for one observer generation.
  *
- * ~4 chars/token puts 400k chars near 100k tokens — half of a 200k window, so a
- * generation retires with room to spare rather than discovering the ceiling by
- * being refused at it. A narrower-window model gets the same half of its own
- * window (windowAwareConversationMaxChars); the reactive overflow path, which
- * recycles on the provider's actual refusal, is the net under both.
+ * ~4 chars/token puts 100k chars near 25k tokens. The first default, 400k, let a
+ * generation reach half of a 200k window, and #5023 measured about 100K tokens
+ * per observer turn at 400000 against about 26K at 100000. A narrower-window
+ * model still gets half of its own window instead
+ * (windowAwareConversationMaxChars); the reactive overflow path, which recycles
+ * on the provider's actual refusal, is the net under both.
+ *
+ * Keep this equal to the CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS default in
+ * SettingsDefaultsManager: it is what an unset or malformed setting resolves to.
  */
-export const OBSERVER_CONVERSATION_MAX_CHARS = 400_000;
+export const OBSERVER_CONVERSATION_MAX_CHARS = 100_000;
 
 /** ~4 chars per token, the estimate the budget above assumes. */
 const CHARS_PER_TOKEN = 4;
