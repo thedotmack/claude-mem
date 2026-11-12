@@ -19,6 +19,7 @@ import { ensureWorkerStarted, getLastWorkerBootFailure, type WorkerStartResult }
 import { formatHostForUrl } from '../../shared/worker-utils.js';
 import { readLocalApiToken } from '../../shared/hook-settings.js';
 import { localApiTokenHeaders } from '../../shared/local-api-token.js';
+import { isLoopbackHostname } from '../../shared/worker-url.js';
 import {
   ensureBun,
   ensureUv,
@@ -3884,7 +3885,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     if (cloudSyncConfigured && workerReady) {
       try {
         // /api/sync/status takes the local API token when that mode is on (#5141).
-        const localApiToken = readLocalApiToken();
+        const localApiToken = isLoopbackHostname(workerHost) ? readLocalApiToken() : '';
         const syncResponse = await fetch(`http://${workerUrlHost}:${actualPort}/api/sync/status`, {
           ...(localApiToken ? { headers: localApiTokenHeaders(localApiToken) } : {}),
           signal: AbortSignal.timeout(3000),

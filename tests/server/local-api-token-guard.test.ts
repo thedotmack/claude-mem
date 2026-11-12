@@ -166,6 +166,19 @@ describe('local-api-token guard: token set', () => {
     expect((await fetch(at(guardedPort, '/api/readiness'), { headers: { [LOCAL_API_TOKEN_HEADER]: TOKEN } })).status).toBe(200);
   });
 
+  // A browser page from an allowed origin sends a token-less preflight first; CORS answers it.
+  it('lets a CORS preflight reach CORS, which answers it without running any route', async () => {
+    const before = shutdownCalls;
+    const res = await fetch(at(guardedPort, '/api/admin/shutdown'), {
+      method: 'OPTIONS',
+      headers: { origin: 'http://localhost:5173', 'access-control-request-method': 'POST', 'access-control-request-headers': 'authorization' },
+    });
+    expect(res.status).toBe(204);
+    expect(res.headers.get('access-control-allow-headers')).toContain('Authorization');
+    expect(shutdownCalls).toBe(before);
+    expect((await fetch(at(guardedPort, '/api/settings'), { method: 'OPTIONS', headers: { origin: 'https://evil.example' } })).status).toBe(403);
+  });
+
   it('does not open the other methods or path variants of an open route', async () => {
     expect((await fetch(at(guardedPort, '/api/health'), { method: 'POST' })).status).toBe(401);
     expect((await fetch(at(guardedPort, '/api/health/'))).status).toBe(401);

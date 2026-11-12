@@ -379,7 +379,7 @@ describe('save_goals.py local API token', () => {
     try {
       writeFileSync(join(dataDir, 'settings.json'), JSON.stringify(settings));
       const run = spawnPython(['-c', 'import json, save_goals; print(json.dumps(save_goals.local_api_token_headers()))'], {
-        env: { CLAUDE_MEM_DATA_DIR: dataDir, PYTHONPATH: SCRIPTS, ...env },
+        env: { CLAUDE_MEM_DATA_DIR: dataDir, PYTHONPATH: SCRIPTS, CLAUDE_MEM_WORKER_HOST: '', CLAUDE_MEM_WORKER_PORT: '', ...env },
       });
       expect(run.exitCode).toBe(0);
       return JSON.parse(run.stdout.toString());
@@ -395,5 +395,9 @@ describe('save_goals.py local API token', () => {
 
   it('ignores the environment, as the worker does', () => {
     expect(headersFor({}, { CLAUDE_MEM_LOCAL_API_TOKEN: 'from-the-environment' })).toEqual({});
+  });
+
+  it('never sends it to a worker host on another machine', () => {
+    expect(headersFor({ CLAUDE_MEM_LOCAL_API_TOKEN: 'goals-secret', CLAUDE_MEM_WORKER_HOST: 'worker.example.com' })).toEqual({});
   });
 });

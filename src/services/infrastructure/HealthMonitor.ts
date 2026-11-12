@@ -6,6 +6,7 @@ import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { isConnectionRefusedError, isUnbindablePortError } from '../../shared/connection-errors.js';
 import { readLocalApiToken } from '../../shared/hook-settings.js';
 import { localApiTokenHeaders } from '../../shared/local-api-token.js';
+import { isLoopbackHostname } from '../../shared/worker-url.js';
 
 function getWorkerHost(): string {
   return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_WORKER_HOST;
@@ -31,11 +32,14 @@ function localWorkerOrigin(port: number): string {
 
 /**
  * The local API token (#5141) as headers, for a request to this machine's worker at
- * `localWorkerOrigin`. Read from settings.json alone, like the worker reads it. Never for an
- * explicit CLAUDE_MEM_WORKER_URL: that worker is not ours to hand the token to.
+ * `localWorkerOrigin`. Read from settings.json alone, like the worker reads it. Only when
+ * CLAUDE_MEM_WORKER_HOST is a loopback address, so a host naming another machine never gets
+ * it, and never for an explicit CLAUDE_MEM_WORKER_URL: that worker is not ours to hand it to.
  */
 function localWorkerAuthHeaders(): Record<string, string> {
-  return localApiTokenHeaders(readLocalApiToken());
+  const token = readLocalApiToken();
+  if (!token || !isLoopbackHostname(getWorkerHost())) return {};
+  return localApiTokenHeaders(token);
 }
 
 async function httpRequestToWorker(

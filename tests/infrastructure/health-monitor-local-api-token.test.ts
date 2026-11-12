@@ -81,3 +81,25 @@ describe('HealthMonitor with a local API token set', () => {
     for (const request of seen) expect(request.headers['x-claude-mem-token']).toBeUndefined();
   });
 });
+
+describe('HealthMonitor with a worker host on another machine', () => {
+  it('never sends the token when CLAUDE_MEM_WORKER_HOST is not loopback', async () => {
+    const restore = spies[0];
+    restore.mockImplementation(() => ({
+      ...SettingsDefaultsManager.getAllDefaults(),
+      CLAUDE_MEM_WORKER_HOST: 'worker.invalid',
+      CLAUDE_MEM_LOCAL_API_TOKEN: TOKEN,
+    }));
+    const sent: Array<HeadersInit | undefined> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (_url: string, init?: RequestInit) => { sent.push(init?.headers); return new Response('{}'); }) as typeof fetch;
+    try {
+      await waitForReadiness(port, 300);
+      await httpShutdown(port);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    expect(sent.length).toBeGreaterThan(1);
+    for (const headers of sent) expect(headers).toBeUndefined();
+  });
+});

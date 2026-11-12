@@ -493,6 +493,13 @@ export function createLocalApiTokenGuard(options: LocalApiTokenOptions): Request
   const openStaticPaths = options.openStaticPaths ?? new Set<string>();
   return (req: Request, res: Response, next: NextFunction): void => {
     const expectedToken = options.getToken();
+    // A CORS preflight cannot carry the token, and the CORS middleware mounted after this
+    // answers every OPTIONS itself (204, or 403 for a refused origin), so no route ever runs
+    // for one. Refusing it here would stop an allowed origin from sending the real request.
+    if (req.method === 'OPTIONS' && expectedToken) {
+      next();
+      return;
+    }
     const isRead = req.method === 'GET' || req.method === 'HEAD';
     if (isRead && expectedToken && openStaticPaths.has(req.path)) {
       next();

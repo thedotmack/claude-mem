@@ -50,16 +50,19 @@ export function resolveHarnessWorkerUrl(): string {
 }
 
 /**
- * The local API token (#5141) as request headers, when settings.json has one and the worker is
- * on this machine; `{}` otherwise. Read from settings.json alone, like the worker reads it, so
- * the environment cannot change what is sent. A worker elsewhere is another party's server and
- * never receives it.
+ * The local API token (#5141) as request headers, when settings.json has one and `baseUrl` is
+ * this machine's configured worker (resolveHarnessWorkerUrl) on loopback; `{}` otherwise. Read
+ * from settings.json alone, like the worker reads it, so the environment cannot change what is
+ * sent. Any other address, another loopback port included (it may be an SSH forward), never
+ * receives it.
  */
 export function resolveHarnessAuthHeaders(baseUrl: string = resolveHarnessWorkerUrl()): Record<string, string> {
   const token = normalizeLocalApiToken(readHarnessSettingsFile(dataDirectory()).CLAUDE_MEM_LOCAL_API_TOKEN);
   if (!token) return {};
   try {
-    return isLoopbackHostname(new URL(baseUrl).hostname) ? localApiTokenHeaders(token) : {};
+    const target = new URL(baseUrl);
+    if (target.origin !== new URL(resolveHarnessWorkerUrl()).origin) return {};
+    return isLoopbackHostname(target.hostname) ? localApiTokenHeaders(token) : {};
   } catch {
     return {};
   }

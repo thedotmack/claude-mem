@@ -47,7 +47,7 @@ Usage: python3 save_goals.py --goals owner-goals.json --prompts owner-prompts.md
                              [--ledger-dir <dir>] [--dry-run]
        python3 save_goals.py --print-focus-areas
 """
-import argparse, datetime, json, os, re, sys, traceback, urllib.error, urllib.request
+import argparse, datetime, json, os, re, sys, traceback, urllib.error, urllib.parse, urllib.request
 
 LIST_NAME = "owner-goals"
 MAX_FIELDS_JSON_CHARS = 2000  # MAX_WORK_STATE_FIELDS_JSON_CHARS in WorkStateRoutes.ts
@@ -86,10 +86,13 @@ def read_settings():
 
 
 def local_api_token_headers():
-    """The local API token header (#5141), read from settings.json alone as the worker reads it; none when unset."""
+    """The local API token header (#5141), read from settings.json alone as the worker reads it; none when unset,
+    and none unless the worker is on loopback: a host naming another machine never gets the token."""
     token = read_settings().get("CLAUDE_MEM_LOCAL_API_TOKEN")
     token = token.strip() if isinstance(token, str) else ""
-    return {"X-Claude-Mem-Token": token} if token else {}
+    host = urllib.parse.urlsplit(worker_base_url()).hostname or ""
+    loopback = host in ("localhost", "::1") or host.endswith(".localhost") or re.fullmatch(r"127(?:\.\d{1,3}){3}", host) is not None
+    return {"X-Claude-Mem-Token": token} if token and loopback else {}
 
 
 def worker_base_url():
