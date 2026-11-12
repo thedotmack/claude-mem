@@ -13,7 +13,7 @@ import { CODEX_PLUGIN_CONFIG_TABLE } from '../../shared/plugin-state.js';
 import { registerCodexUserHooks } from '../../services/integrations/codex-user-hooks.js';
 import { styleText } from 'node:util';
 import { IS_WINDOWS, installedPluginsPath, marketplaceDirectory, readPluginVersion } from '../utils/paths.js';
-import { getWorkerBaseUrl, resolvePluginRoot, type PluginRootResolution } from '../../shared/worker-utils.js';
+import { getWorkerBaseUrl, resolvePluginRoot, withWorkerAuth, type PluginRootResolution } from '../../shared/worker-utils.js';
 import {
   AUTO_UPDATE_OFF_DECISIONS,
   AutoUpdateCheckError,
@@ -195,9 +195,9 @@ function describeChromaExit(lastExit: NonNullable<ChromaCrashState['lastExit']>)
  */
 export async function probeChromaDiagnostics(workerUrl: string): Promise<CheckResult[]> {
   try {
-    const response = await fetch(`${workerUrl}/api/admin/doctor`, {
+    const response = await fetch(`${workerUrl}/api/admin/doctor`, withWorkerAuth({
       signal: AbortSignal.timeout(3000),
-    });
+    }, { readOnly: true }));
     if (!response.ok) {
       return [];
     }
@@ -269,9 +269,9 @@ export async function probeWorkerDependencies(
   codexPath?: string | null,
 ): Promise<CheckResult[]> {
   try {
-    const response = await fetch(`${workerUrl}/api/admin/doctor`, {
+    const response = await fetch(`${workerUrl}/api/admin/doctor`, withWorkerAuth({
       signal: AbortSignal.timeout(3000),
-    });
+    }, { readOnly: true }));
     if (!response.ok) {
       return [];
     }

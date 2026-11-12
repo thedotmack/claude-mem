@@ -22,6 +22,11 @@
 // directory it could not already read. The header must be an absolute path
 // to an existing directory, and an unusable one is refused (400) rather than
 // silently replaced by the session or process cwd.
+//
+// Several OS users on one host: a loopback peer is then any of them. With an local API token
+// set (CLAUDE_MEM_LOCAL_API_TOKEN, StartMcpHttpOptions.localApiToken) every /mcp request must
+// carry it, so the working-directory header above is only ever honored on a request that
+// does. Unset, nothing changes.
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { randomUUID } from 'node:crypto';
@@ -32,6 +37,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { isInitializeRequest, RootsListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
 import { isLocalhost } from '../server/middleware/request-auth-helpers.js';
 import { isOwnPageOrigin, type WorkerOriginPolicy } from '../services/worker/http/origin-policy.js';
+import { extractLocalApiToken, safeEqualSecret } from '../shared/local-api-token.js';
 import { logger } from '../utils/logger.js';
 import { MAX_MCP_ROOTS_ATTEMPTS, MCP_ROOTS_TIMEOUT_MS, normalizeCwd, resolveMcpProjectCwd } from './mcp-project-cwd.js';
 export { cwdFromRoots, normalizeCwd } from './mcp-project-cwd.js';
@@ -152,6 +158,15 @@ export interface McpHttpHandle {
   close(): Promise<void>;
 }
 
+/** The request path without its query string, for logs: a query can carry a secret. */
+function requestPathname(req: IncomingMessage): string {
+  try {
+    return new URL(req.url ?? '/', 'http://localhost').pathname;
+  } catch {
+    return '/';
+  }
+}
+
 export interface StartMcpHttpOptions extends McpHttpOptions {
   /** Build one MCP Server for one session; `resolveCwd` returns the project directory of a call. */
   createServer: (resolveCwd: CwdResolver) => Server;
@@ -161,6 +176,12 @@ export interface StartMcpHttpOptions extends McpHttpOptions {
    * governs this server. Local MCP clients send no Origin.
    */
   originPolicy: WorkerOriginPolicy;
+  /**
+   * The local API token (CLAUDE_MEM_LOCAL_API_TOKEN). When non-empty, every /mcp request must
+   * carry it as `X-Claude-Mem-Token` or `Authorization: Bearer`, or it is refused with
+   * 401. `/health` stays open. Empty or absent: no check.
+   */
+  localApiToken?: string;
   /** Defaults to MAX_SESSIONS; tests lower it. */
   maxSessions?: number;
 }
@@ -331,7 +352,7 @@ export async function startMcpHttpServer(options: StartMcpHttpOptions): Promise<
   };
 
   const refuse = (req: IncomingMessage, res: ServerResponse, status: number, message: string, context: Record<string, unknown>): void => {
-    logger.warn('SECURITY', `MCP HTTP: ${message}`, { ...context, method: req.method, path: req.url });
+    logger.warn('SECURITY', `MCP HTTP: ${message}`, { ...context, method: req.method, path: requestPathname(req) });
     sendJsonRpcError(res, status, -32000, message);
   };
 
@@ -364,6 +385,16 @@ export async function startMcpHttpServer(options: StartMcpHttpOptions): Promise<
     if (url.pathname !== MCP_HTTP_PATH) {
       res.writeHead(404).end();
       return;
+    }
+
+    // Before anything reads the request: the working-directory header below, a session id
+    // and the body are all attacker-controlled until the token has been checked.
+    if (options.localApiToken) {
+      const presented = extractLocalApiToken(req.headers);
+      if (!presented || !safeEqualSecret(presented, options.localApiToken)) {
+        refuse(req, res, 401, 'Unauthorized: missing or invalid local API token', {});
+        return;
+      }
     }
 
     const cwdHeader = firstHeader(req.headers[CWD_HEADER]);
@@ -420,7 +451,7 @@ export async function startMcpHttpServer(options: StartMcpHttpOptions): Promise<
   const httpServer = createHttpServer((req, res) => {
     handle(req, res).catch((error: unknown) => {
       if (error instanceof RequestBodyError) {
-        logger.warn('SYSTEM', `MCP HTTP: ${error.message}`, { method: req.method, path: req.url });
+        logger.warn('SYSTEM', `MCP HTTP: ${error.message}`, { method: req.method, path: requestPathname(req) });
         sendJsonRpcError(res, error.httpStatus, error.jsonRpcCode, error.message);
         return;
       }

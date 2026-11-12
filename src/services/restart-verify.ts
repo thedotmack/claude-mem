@@ -25,6 +25,7 @@ import {
   formatHostForUrl,
   getWorkerHost,
   READY_STREAM_IDLE_TIMEOUT_MS,
+  withWorkerAuth,
   type IdleFetchStreamResult,
 } from '../shared/worker-utils.js';
 import { logger } from '../utils/logger.js';
@@ -219,7 +220,7 @@ async function readStartupPhase(
   let stream: IdleFetchStreamResult;
   try {
     // The cap is applied only when positive (worker-utils.ts createIdleWatchdog), so the last read keeps a 1 ms one.
-    stream = await fetchStreamWithIdleTimeout(url, { method: 'GET' }, { idleTimeoutMs, absoluteCapMs: Math.max(1, budgetMs) });
+    stream = await fetchStreamWithIdleTimeout(url, withWorkerAuth({ method: 'GET' }), { idleTimeoutMs, absoluteCapMs: Math.max(1, budgetMs) });
   } catch (error: unknown) {
     logger.debug('SYSTEM', 'No /api/ready answer while waiting for a worker to finish starting', { url }, error instanceof Error ? error : new Error(String(error)));
     return { kind: 'not-yet', observed: `connection error: ${errorMessageOf(error)}` };

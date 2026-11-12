@@ -106,6 +106,52 @@ describe('SettingsRoutes settings document writes', () => {
     }
   });
 
+  it('never sets, replaces or clears the local API token over HTTP, and masks it on GET (#5141)', async () => {
+    const token = 'local-api-token-abcdef123456';
+    writeFileSync(settingsPath, JSON.stringify({ theme: 'dark', CLAUDE_MEM_LOCAL_API_TOKEN: token }));
+    const { server, url } = await startServer();
+
+    try {
+      const masked = `${'*'.repeat(token.length - 4)}${token.slice(-4)}`;
+      for (const posted of ['attacker-chosen-token', '', masked]) {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ CLAUDE_MEM_LOCAL_API_TOKEN: posted, CLAUDE_MEM_MODEL: 'new-model' }),
+        });
+        expect(response.status).toBe(200);
+        const written = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+        expect(written.CLAUDE_MEM_LOCAL_API_TOKEN).toBe(token);
+        expect(written.CLAUDE_MEM_MODEL).toBe('new-model');
+      }
+
+      const read = await fetch(url);
+      expect(read.status).toBe(200);
+      const body = await read.text();
+      expect(body).not.toContain(token);
+      expect(JSON.parse(body).CLAUDE_MEM_LOCAL_API_TOKEN).toBe(masked);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
+  it('does not create an local API token on a settings file that has none', async () => {
+    writeFileSync(settingsPath, JSON.stringify({ theme: 'dark' }));
+    const { server, url } = await startServer();
+
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ CLAUDE_MEM_LOCAL_API_TOKEN: 'attacker-chosen-token' }),
+      });
+      expect(response.status).toBe(200);
+      expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).CLAUDE_MEM_LOCAL_API_TOKEN).toBeUndefined();
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
   it.each([
     '{"CLAUDE_MEM_MODEL":"keep-me"',
     '["sentinel"]',

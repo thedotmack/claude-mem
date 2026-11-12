@@ -73,3 +73,57 @@ describe('GET /health', () => {
     expect(readHealth().status).toBe('ok');
   });
 });
+
+// Local API token mode (#5141): the worker refuses /health, /api/readiness and the restart
+// POST without the token, so the page must send it. Runs the page's own inline script
+// against a stand-in window and clicks the button.
+describe('GET /restart with a local API token', () => {
+  const TOKEN_KEY = 'claude-mem.local-api-token';
+
+  async function clickRestart(pageUrl: string, storedToken?: string) {
+    const { html } = renderRestartPage();
+    const script = html.slice(html.indexOf('<script>') + '<script>'.length, html.indexOf('</script>'));
+    let onClick: (() => Promise<void>) | undefined;
+    const button = { disabled: false, addEventListener: (_type: string, handler: () => Promise<void>) => { onClick = handler; } };
+    const status = { textContent: '' };
+    const storage = new Map<string, string>(storedToken ? [[TOKEN_KEY, storedToken]] : []);
+    let addressBar: string | undefined;
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const fakeWindow = {
+      document: { getElementById: (id: string) => (id === 'go' ? button : status) },
+      location: { href: pageUrl },
+      sessionStorage: { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => { storage.set(key, value); } },
+      history: { state: null, replaceState: (_state: unknown, _unused: string, url: string) => { addressBar = url; } },
+      fetch: async (url: string, init: RequestInit) => {
+        calls.push({ url, init });
+        return { ok: true, status: 200, json: async () => ({ pid: -1 }) };
+      },
+    };
+    new Function(...Object.keys(fakeWindow), script)(...Object.values(fakeWindow));
+    await onClick!();
+    return { calls, addressBar, storage, status: status.textContent };
+  }
+
+  const tokenOf = (init: RequestInit) => (init.headers as Record<string, string> | undefined)?.['X-Claude-Mem-Token'];
+
+  it("sends the page URL's ?token= on the restart POST and both checks, then drops it from the address bar", async () => {
+    const run = await clickRestart('http://localhost:37777/restart?token=restart-secret');
+    expect(run.calls.map(call => call.url)).toEqual(['/api/admin/restart', '/health', '/api/readiness']);
+    for (const call of run.calls) expect(tokenOf(call.init)).toBe('restart-secret');
+    expect(run.addressBar).toBe('/restart');
+    expect(run.storage.get(TOKEN_KEY)).toBe('restart-secret');
+    expect(run.status).toContain('restarted');
+  });
+
+  it('uses the token a viewer tab kept when the URL has none', async () => {
+    const run = await clickRestart('http://localhost:37777/restart', 'kept-secret');
+    for (const call of run.calls) expect(tokenOf(call.init)).toBe('kept-secret');
+    expect(run.addressBar).toBeUndefined();
+  });
+
+  it('sends no header at all when there is no token', async () => {
+    const run = await clickRestart('http://localhost:37777/restart');
+    expect(run.calls).toHaveLength(3);
+    for (const call of run.calls) expect(call.init.headers).toBeUndefined();
+  });
+});

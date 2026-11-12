@@ -9,9 +9,11 @@ import {
   createCorsMiddleware,
   createForeignPageDeleteGuard,
   createMiddleware,
+  createLocalApiTokenGuard,
   createRemoteReadOnlyGuard,
   createWorkerHostGuard,
   requireLocalhost,
+  type LocalApiTokenOptions,
   type RemoteReadOnlyOptions,
   type WorkerOriginPolicy,
 } from '../worker/http/middleware.js';
@@ -151,6 +153,15 @@ export interface ServerOptions {
    */
   remoteReadOnly?: RemoteReadOnlyOptions;
   /**
+   * Local API token mode (#5141). When present, a guard runs before everything else,
+   * the Observation TV guard included, and refuses every request without the
+   * token, loopback too, except the exact routes in shared/local-api-token.ts. A
+   * browser page opened with `?token=` keeps working: see createLocalApiTokenGuard.
+   * Observation TV's remote mode needs the token as well. Absent (the default, and
+   * the server runtime's choice) ⇒ nothing is mounted and behavior is unchanged.
+   */
+  localApiToken?: LocalApiTokenOptions;
+  /**
    * Worker only: trusted browser origins and Host names (plan-23 step 4). When
    * present, a DNS-rebinding Host check runs before CORS, and CORS also admits
    * same-host and explicitly allowlisted origins. The server runtime leaves it
@@ -215,6 +226,7 @@ export class Server {
     // the express.static mount (setupMiddleware), /api/admin/* (setupCoreRoutes)
     // and every route registered later all mount after this point. Anything
     // mounted afterwards leaves earlier routes uncovered.
+    this.setupLocalApiTokenGuard();
     this.setupRemoteReadOnlyGuard();
     this.setupSecurityHeaders();
     this.setupCors();
@@ -337,6 +349,13 @@ export class Server {
     });
     const middlewares = createMiddleware();
     middlewares.forEach(mw => this.app.use(mw));
+  }
+
+  private setupLocalApiTokenGuard(): void {
+    if (!this.options.localApiToken) {
+      return;
+    }
+    this.app.use(createLocalApiTokenGuard(this.options.localApiToken));
   }
 
   private setupRemoteReadOnlyGuard(): void {

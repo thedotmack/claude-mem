@@ -11,6 +11,7 @@ import {
   recordCmemFallbackIfEligible,
   releaseCmemGatewayProbe,
   resetProviderBySourceWarningForTesting,
+  routeAroundUnservableProvider,
   resetQuotaFallbackStateForTesting,
   selectProviderForGenerator,
   shouldUseCmemFallback,
@@ -794,9 +795,28 @@ describe('provider-dispatch', () => {
       clearQuotaCooldown('gemini');
       selectProviderForGenerator(); // the probe succeeded and cleared the breaker
       expect(quotaFallbackLines()).toEqual([
-        'Primary cannot serve right now; memory runs on the Anthropic plan (Claude) until it recovers',
+        'Primary (Gemini) cannot serve right now; memory runs on the Anthropic plan (Claude), which spends your Anthropic account, until it recovers. To stop this, set CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER=off',
         'Primary quota cooldown elapsed; probing primary',
         'Primary recovered from quota cooldown',
+      ]);
+    });
+
+    it('names the primary and the provider actually used when the backup is not Claude', () => {
+      pinGeminiPrimary('openrouter', { CLAUDE_MEM_OPENROUTER_API_KEY: PERSONAL_KEY, CLAUDE_MEM_OPENROUTER_BASE_URL: '' });
+      recordQuotaExhausted('gemini', 'Daily limit reached');
+      selectProviderForGenerator();
+      expect(quotaFallbackLines()).toEqual([
+        'Primary (Gemini) cannot serve right now; memory runs on OpenRouter until it recovers. To stop this, set CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER=off',
+      ]);
+    });
+
+    it('calls the cmem.ai gateway cmem.ai, and says the default Anthropic backup spends that account', () => {
+      pinOpenRouterEnv(); // the cmem gateway and its memory key
+      process.env.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER = ''; // nothing chosen: the default Anthropic plan backup
+      expect(routeAroundUnservableProvider('openrouter', 'Upstream over capacity', 'rate_limit')).toBe('claude');
+      expect(selectProviderForGenerator()).toEqual({ provider: 'claude', gatewayProbeClaimId: null, fallbackFrom: 'openrouter' });
+      expect(quotaFallbackLines()).toEqual([
+        'Primary (cmem.ai) cannot serve right now; memory runs on the Anthropic plan (Claude), which spends your Anthropic account, until it recovers. To stop this, set CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER=off',
       ]);
     });
 

@@ -1,6 +1,6 @@
 // Entry point bundled into the request-progress skill's scripts folder.
 import { join } from 'node:path';
-import { resolveHarnessWorkerUrl } from '../../integrations/harness-worker.js';
+import { resolveHarnessAuthHeaders, resolveHarnessWorkerUrl, withHarnessAuth } from '../../integrations/harness-worker.js';
 import { resolveDataDir } from '../../shared/paths.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { runCli } from './request-groups.mjs';
@@ -15,7 +15,8 @@ async function saveFocus(body) {
   const base = resolveHarnessWorkerUrl();
   let response;
   try {
-    response = await fetch(`${base}/api/work-view/focus/router`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    // Carries the local API token when that mode is on (#5141).
+    response = await fetch(`${base}/api/work-view/focus/router`, withHarnessAuth({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }, resolveHarnessAuthHeaders(base)));
   } catch (error) {
     throw new Error(`claude-mem worker is not reachable at ${base} (${error.message}). Start it with: npx claude-mem start`);
   }

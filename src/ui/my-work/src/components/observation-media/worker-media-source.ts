@@ -12,6 +12,7 @@ import {
   parseStatusResponse,
   type ServerMediaState,
 } from './media'
+import { withLocalApiTokenQuery } from '../../../../local-api-token-client'
 
 /** Ids in chunks the status route accepts. A request's drawer strip can hold more than one call's worth. */
 export function statusChunks(ids: string[]): string[][] {
@@ -32,8 +33,9 @@ export function createWorkerMediaSource(fetchImpl: typeof fetch = (input, init) 
       }))
       return new Map<string, ServerMediaState>(answers.flatMap((answer) => [...answer]))
     },
-    thumbnailUrl: mediaThumbnailUrl,
-    imageUrl: mediaViewerUrl,
+    // An <img> cannot send the local API token header (#5141), so these carry ?token= when the page has one.
+    thumbnailUrl: (id) => withLocalApiTokenQuery(mediaThumbnailUrl(id)),
+    imageUrl: (id) => withLocalApiTokenQuery(mediaViewerUrl(id)),
     async descriptor(id) {
       const response = await fetchImpl(mediaDescriptorUrl(id), MEDIA_FETCH_INIT)
       if (!response.ok) throw new Error(`descriptor ${response.status}`)
