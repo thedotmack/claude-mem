@@ -995,7 +995,13 @@ var init_SettingsDefaultsManager = __esm({
       // always the seeded value. A 'false' typed by hand reads the same and moves
       // too; typing it changed nothing while 'false' was the default. After this
       // one move, a 'false' saved by the "Keep images" switch or by hand stays.
-      { key: "CLAUDE_MEM_MEDIA_CAPTURE_ENABLED", legacy: "false", markerTag: "media-capture-default-on-v1", unit: "", applyOnlyWhenSaved: true }
+      { key: "CLAUDE_MEM_MEDIA_CAPTURE_ENABLED", legacy: "false", markerTag: "media-capture-default-on-v1", unit: "", applyOnlyWhenSaved: true },
+      // Seeded '400000' from #3800 until the default came down to 100000 (#5023):
+      // an observer turn measured about 100K tokens at 400000 and about 26K at
+      // 100000. Any other saved value is a deliberate choice and stays. A budget
+      // too long only costs tokens, so a failed rewrite may use the new default in
+      // memory, like the deadlines.
+      { key: "CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS", legacy: "400000", markerTag: "observer-max-conversation-chars-v1", unit: " chars", applyOnlyWhenSaved: false }
     ];
     raisedDefaultFailuresReported = /* @__PURE__ */ new Set();
     SettingsDefaultsManager = class {
@@ -1182,8 +1188,11 @@ var init_SettingsDefaultsManager = __esm({
         CLAUDE_MEM_CODEX_SUBAGENT_INGESTION: "false",
         CLAUDE_MEM_MAX_CONCURRENT_AGENTS: "2",
         // Max concurrent Claude SDK agent subprocesses
-        CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS: "400000",
-        // Retire an observer conversation past this size and start a fresh generation (#3800)
+        // Retire an observer conversation past this size and start a fresh generation (#3800).
+        // 100000, not the first default of 400000: #5023 measured about 100K tokens per
+        // observer turn at 400000 and about 26K at 100000. Installs seeded with '400000'
+        // move once (CHANGED_SHIPPED_DEFAULTS).
+        CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS: "100000",
         CLAUDE_MEM_OBSERVER_THINKING: "disabled",
         // Observer thinking param: 'disabled' (shipped) | 'adaptive' | 'enabled[:budget]' | 'omit' — an always-thinking gateway upstream rejects 'disabled' with 400/1210 (#4732)
         CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW: "",
@@ -1360,6 +1369,8 @@ var init_SettingsDefaultsManager = __esm({
         // #5164 — same for Gemini; empty keeps flash-lite/flash per step
         CLAUDE_MEM_WORK_VIEW_API_MODEL: "",
         // Model for every My Work refresh step on the selected API provider; empty keeps the provider's configured model
+        CLAUDE_MEM_CORPUS_AGENT: "",
+        // Which agent answers knowledge-corpus prime/query/reprime: '' uses the Claude Agent SDK (the Claude subscription); 'api' answers over chat completions on the selected openrouter/openai-compatible provider and spends that provider's credit
         CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE: "",
         // Language for My Work's generated text (titles, reviews, story), such as 'Turkish'. No extra model call; empty uses the language the grouping step finds in the owner's asks, decided once per run (#5660)
         // Automatic local DB snapshots (BackupManager). Off by default; opt-in.
@@ -1689,1447 +1700,8 @@ var init_SettingsDefaultsManager = __esm({
   }
 });
 
-// src/services/work-view/work-product.mjs
-import { statSync as statSync3 } from "node:fs";
-import { basename as basename4, extname, isAbsolute } from "node:path";
-import { createHash as createHash2 } from "node:crypto";
-function safeWebUrl(value) {
-  if (typeof value !== "string") return null;
-  try {
-    const url = new URL(value.trim());
-    return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password ? url.href : null;
-  } catch {
-    return null;
-  }
-}
-function isLocalPath(value, isAbsolutePath = isAbsolute) {
-  return typeof value === "string" && isAbsolutePath(value) && !value.includes("\0") && !value.split(/[\\/]/).includes("..");
-}
-function fileKind(path4) {
-  return isLocalPath(path4) ? FILE_KINDS[extname(path4).toLowerCase()] ?? null : null;
-}
-function kindForUrl(url, fallback) {
-  const { hostname: hostname2, pathname } = new URL(url);
-  if (hostname2 === "github.com" && /\/pull\/\d+/.test(pathname)) return "pull-request";
-  if (/\.(?:vercel\.app|netlify\.app|pages\.dev)$/.test(hostname2)) return "deployment";
-  const extension = FILE_KINDS[extname(pathname).toLowerCase()];
-  return extension ?? fallback;
-}
-function parse(value) {
-  if (typeof value !== "string") return value ?? null;
-  try {
-    return JSON.parse(value);
-  } catch {
-    return null;
-  }
-}
-function urlsIn(value, found = []) {
-  const pending = [value];
-  const visited = /* @__PURE__ */ new WeakSet();
-  while (pending.length) {
-    const item = pending.pop();
-    if (typeof item === "string") {
-      const url = safeWebUrl(item);
-      if (url) found.push(url);
-    } else if (item && typeof item === "object" && !visited.has(item)) {
-      visited.add(item);
-      const children = Array.isArray(item) ? item : Object.entries(item).filter(([key, child]) => /url$/i.test(key) || typeof child === "object").map(([, child]) => child);
-      for (let index = children.length - 1; index >= 0; index--) pending.push(children[index]);
-    }
-  }
-  return found;
-}
-function commitShaResolver(shas) {
-  const prefixes = /* @__PURE__ */ new Map();
-  for (const sha of shas) for (let length = 7; length <= sha.length; length++) {
-    const prefix = sha.slice(0, length), known = prefixes.get(prefix);
-    if (known === void 0 || known !== null && sha.startsWith(known)) prefixes.set(prefix, sha);
-    else if (known !== null && !known.startsWith(sha)) prefixes.set(prefix, null);
-  }
-  return (sha) => prefixes.has(sha) ? prefixes.get(sha) : sha;
-}
-function githubRepo(remote) {
-  const match = typeof remote === "string" ? remote.trim().match(GITHUB_REMOTE) : null;
-  return match ? `${match[1]}/${match[2]}` : null;
-}
-function gitUrl(product) {
-  if (!product.repo) return void 0;
-  return product.kind === "commit" ? `https://github.com/${product.repo}/commit/${product.sha}` : `https://github.com/${product.repo}/tree/${product.branch.split("/").map(encodeURIComponent).join("/")}`;
-}
-function outputText(call, response) {
-  if (typeof response === "string") return response;
-  if (response && typeof response === "object") return [response.stdout, response.stderr].filter((part) => typeof part === "string").join("\n");
-  return typeof call.tool_response === "string" ? call.tool_response : "";
-}
-function commitSubjects(command2) {
-  const starts = [...command2.matchAll(gitPattern(String.raw`commit\b`, "g"))].map((match) => match.index);
-  return starts.map((start, index) => {
-    const invocation = command2.slice(start, starts[index + 1]);
-    const substituted = invocation.match(/\s-[a-zA-Z]*m\s+"\$\(\s*cat\s+<<-?\s*['"]?\w+['"]?[^\n]*\n([^\n]*)/);
-    if (substituted) return short(substituted[1]);
-    const inline = invocation.match(/\s-[a-zA-Z]*m\s+(?:"((?:[^"\\]|\\.)*)"|'([^']*)')/);
-    const heredoc = invocation.match(/\s-F\s+-\s*<<-?\s*['"]?\w+['"]?\n([^\n]*)/);
-    const text5 = inline ? (inline[1] ?? inline[2]).replace(BASH_DOUBLE_QUOTE_ESCAPE, "$1") : heredoc?.[1];
-    return short(text5?.split("\n")[0]);
-  });
-}
-function commitsFrom(command2, response, out) {
-  const commits = /* @__PURE__ */ new Map();
-  const add = (sha, branch, subject) => {
-    const known = commits.get(sha);
-    commits.set(sha, { sha, branch: branch ?? known?.branch ?? null, subject: subject ?? known?.subject ?? null });
-  };
-  const recorded = response?.gitOperation?.commit;
-  const subjects = commitSubjects(command2);
-  if (!subjects.length && !recorded?.sha) return [];
-  for (const [, ref, sha, subject] of out.matchAll(new RegExp(String.raw`^\[(.+?)(?: \(root-commit\))? (${SHA})\] (.+)$`, "gm"))) {
-    add(sha, ref.startsWith("detached HEAD") ? null : ref, short(subject));
-  }
-  if (typeof recorded?.sha === "string" && new RegExp(`^${SHA}$`).test(recorded.sha)) add(recorded.sha, typeof recorded.branch === "string" ? recorded.branch : null, null);
-  if (!commits.size) {
-    const rtkSha = subjects.length === 1 ? out.match(new RegExp(`^ok (${SHA})$`, "m"))?.[1] : null;
-    if (rtkSha) add(rtkSha, null, subjects[0]);
-    else {
-      const printed = [...out.matchAll(new RegExp(`^(${SHA}) (.+)$`, "gm"))].map(([, sha, subject]) => [sha, short(subject)]);
-      for (const subject of subjects) {
-        const match = subject && printed.find(([, printedSubject]) => printedSubject === subject);
-        if (match) add(match[0], null, subject);
-      }
-    }
-  }
-  const resolveSha = commitShaResolver([...commits.keys()]);
-  const unique = /* @__PURE__ */ new Map();
-  for (const commit of commits.values()) {
-    const sha = resolveSha(commit.sha) ?? commit.sha, known = unique.get(sha);
-    unique.set(sha, { ...commit, sha, branch: commit.branch ?? known?.branch ?? null, subject: commit.subject ?? known?.subject ?? null });
-  }
-  return [...unique.values()];
-}
-function pushTargets(command2) {
-  const pattern = gitPattern(String.raw`push\b((?:[ \t]+(?:"[^"]*"|'[^']*'|[^\s;&|)]+))*)`, "g");
-  return [...command2.matchAll(pattern)].map(([, args]) => {
-    const tokens = args.trim().split(/\s+/).filter(Boolean).map(unquote);
-    const [remote, ...refspecs] = tokens.filter((token) => !token.startsWith("-"));
-    const destinations = refspecs.map((spec) => spec.startsWith(":") ? "" : spec.replace(/^\+/, "").split(":").at(-1));
-    const deleting = tokens.some((token) => ["-d", "--delete"].includes(token));
-    const branches = deleting ? [] : destinations.map((ref) => ref && ref !== "HEAD" && (!ref.startsWith("refs/") || ref.startsWith("refs/heads/")) ? ref.replace(/^refs\/heads\//, "") : null);
-    const deletesOrTags = deleting || tokens.includes("--tags") || destinations.some((ref) => ref.startsWith("refs/tags/"));
-    return {
-      repo: githubRepo(remote),
-      branches,
-      dryRun: tokens.some((token) => token === "--dry-run" || /^-[a-zA-Z]*n[a-zA-Z]*$/.test(token)),
-      deletesOrTags
-    };
-  });
-}
-function pushesFrom(command2, response, out) {
-  const targets = pushTargets(command2);
-  const recorded = response?.gitOperation?.push?.branch;
-  if (!targets.length && typeof recorded !== "string") return [];
-  let target = targets.length === 1 ? targets[0] : null;
-  let index = 0;
-  let repo = target?.repo ?? null;
-  const pushes = /* @__PURE__ */ new Map();
-  const add = (branch2, head) => {
-    const key = JSON.stringify([repo, branch2]);
-    pushes.set(key, { branch: branch2, repo, heads: head ? [head] : [] });
-  };
-  const lines = out.split("\n");
-  const mixedSimulation = targets.some((t) => t.dryRun) && targets.some((t) => !t.dryRun);
-  if (mixedSimulation) {
-    const reportsPush = (text5) => typeof text5 === "string" && /^(?:To |Everything up-to-date$)/m.test(text5);
-    if (lines.filter(reportsPush).length !== targets.length || reportsPush(response?.stdout) && reportsPush(response?.stderr)) return [];
-  }
-  for (const line of lines) {
-    if (line === "Everything up-to-date") {
-      index++;
-      continue;
-    }
-    const remote = line.match(/^To (\S+)$/);
-    if (remote) {
-      target = targets[index++] ?? (targets.length === 1 ? targets[0] : null);
-      repo = githubRepo(remote[1]) ?? target?.repo ?? null;
-      continue;
-    }
-    if (target?.dryRun) continue;
-    const porcelain = line.match(/^[ +*]\t[^:\t]*:refs\/heads\/([^\t]+)\t(.+)$/);
-    if (porcelain) {
-      add(porcelain[1], porcelain[2].match(new RegExp(String.raw`^${SHA}\.\.\.?(${SHA})`))?.[1]);
-      continue;
-    }
-    const ref = line.match(new RegExp(String.raw`^\s*[ +*]?\s*(?:${SHA}\.\.\.?(${SHA})|\[new branch\])\s+(\S+)\s+->\s+(\S+)`));
-    if (ref && !ref[3].startsWith("refs/tags/")) {
-      const branch2 = ref[3].replace(/^refs\/heads\//, "");
-      if (!target?.deletesOrTags || target.branches.includes(branch2) || line.includes("[new branch]")) add(branch2, ref[1]);
-    }
-  }
-  const branch = recorded ?? target?.branches[0];
-  if (!pushes.size && targets.length <= 1 && !target?.dryRun && !target?.deletesOrTags && branch && !/Everything up-to-date|\[up to date\]|\[new tag\]|\[deleted\]|\[rejected\]|failed to push|^fatal:/m.test(out)) add(branch);
-  return [...pushes.values()];
-}
-function createdBranchesFrom(command2, out) {
-  const requested = [...new Set([...command2.matchAll(gitPattern(String.raw`(?:checkout\s+-[bB]|switch\s+-[cC])\s+("[^"]+"|'[^']+'|[^\s;&|)]+)`, "g"))].map((match) => unquote(match[1])))];
-  const confirmed = new Set([...out.matchAll(/^(?:Switched to a new branch|Switched to and reset branch|Reset branch) '(.+)'\r?$/gm)].map((match) => match[1]));
-  if (confirmed.size > 0 || /^(?:fatal:|error:|Already on ')/m.test(out)) {
-    return requested.filter((branch) => confirmed.has(branch)).map((branch) => ({ branch, repo: null, heads: [] }));
-  }
-  return requested.filter((branch) => out.includes(`'${branch}'`)).map((branch) => ({ branch, repo: null, heads: [] }));
-}
-function pullRequestFrom(command2, response, out, { atEpoch, sourceRef: sourceRef2 }) {
-  if (!/(?:^|[;&|(\n])\s*(?:rtk\s+)?gh\s+pr\s+create\b/.test(command2)) return [];
-  const printed = out.match(/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/m)?.[0];
-  const url = safeWebUrl(response?.gitOperation?.pr?.url ?? printed);
-  if (!url) return [];
-  const title = command2.match(/(?:--title(?:=|\s+)|\s-t\s+)(?:"((?:[^"\\]|\\.)+)"|'([^']+)'|([^\s"'-][^\s]*))/);
-  const titleText = title?.[1]?.replace(BASH_DOUBLE_QUOTE_ESCAPE, "$1") ?? title?.[2] ?? title?.[3];
-  return [{ kind: "pull-request", title: short(titleText) ?? `PR #${url.split("/").at(-1)}`, url, atEpoch, sourceRef: sourceRef2 }];
-}
-function pullRequestFromGitHubTool(input, response, { atEpoch, sourceRef: sourceRef2 }) {
-  const repoPart = (value) => typeof value === "string" && /^[\w.-]+$/.test(value);
-  const numericId = (value) => typeof value === "string" && /^[1-9]\d*$/.test(value) || Number.isSafeInteger(value) && value > 0;
-  if (!repoPart(input.owner) || !repoPart(input.repo)) return [];
-  const refused = (value) => value?.isError === true || value?.is_error === true || value?.error != null || value?.status === "awaiting_user_submission";
-  if (refused(response) || refused(response?.structuredContent)) return [];
-  const blocks = Array.isArray(response) ? response : response?.content;
-  const candidates = [
-    response?.structuredContent,
-    response,
-    ...Array.isArray(blocks) ? blocks.filter((block) => block?.type === "text" && typeof block.text === "string").map((block) => parse(block.text)) : []
-  ];
-  for (const result of candidates) {
-    if (!result || typeof result !== "object" || refused(result) || !numericId(result.id)) continue;
-    const url = safeWebUrl(result.html_url ?? result.url);
-    if (!url) continue;
-    const parsed = new URL(url), path4 = /^\/([\w.-]+)\/([\w.-]+)\/pull\/([1-9]\d*)$/.exec(parsed.pathname);
-    if (parsed.protocol !== "https:" || parsed.hostname !== "github.com" || parsed.port || parsed.search || parsed.hash || !path4 || path4[1].toLowerCase() !== input.owner.toLowerCase() || path4[2].toLowerCase() !== input.repo.toLowerCase() || result.number !== void 0 && (!numericId(result.number) || String(result.number) !== path4[3])) continue;
-    return [{ kind: "pull-request", title: short(result.title ?? input.title) ?? `PR #${path4[3]}`, url, atEpoch, sourceRef: sourceRef2 }];
-  }
-  return [];
-}
-function gitProductsFromCommand(command2, response, out, { atEpoch = null, sourceRef: sourceRef2 = null } = {}) {
-  const pushes = pushesFrom(command2, response, out);
-  const branches = [...createdBranchesFrom(command2, out).filter((created) => !pushes.some((pushed) => pushed.branch === created.branch)), ...pushes];
-  const products = [];
-  for (const commit of commitsFrom(command2, response, out)) {
-    const matchingPushes = pushes.filter((push) => push.heads.some((head) => matchingCommitSha(head, commit.sha)));
-    const pushed = commit.branch && pushes.find((push) => push.branch === commit.branch) || (matchingPushes.length === 1 ? matchingPushes[0] : null) || (!commit.branch && pushes.length === 1 ? pushes[0] : null);
-    products.push({ kind: "commit", title: commit.subject ? `${commit.sha.slice(0, 7)} ${commit.subject}` : commit.sha.slice(0, 7), sha: commit.sha, branch: commit.branch ?? pushed?.branch ?? null, repo: pushed?.repo ?? null, atEpoch, sourceRef: sourceRef2 });
-  }
-  for (const branch of branches) products.push({ kind: "branch", title: branch.branch, branch: branch.branch, repo: branch.repo, heads: branch.heads, atEpoch, sourceRef: sourceRef2 });
-  return products.map((product) => ({ ...product, url: gitUrl(product) }));
-}
-function productsFromToolUse(call) {
-  const input = parse(call.tool_input) ?? {}, response = parse(call.tool_response);
-  const sourceRef2 = { kind: "tool-use", id: call.id };
-  const atEpoch = call.created_at_epoch ?? null;
-  if (GITHUB_PULL_REQUEST_TOOL.test(call.tool_name)) return pullRequestFromGitHubTool(input, response, { atEpoch, sourceRef: sourceRef2 });
-  if (call.tool_name === "Bash" && typeof input.command === "string") {
-    const out = outputText(call, response);
-    return [...pullRequestFrom(input.command, response, out, { atEpoch, sourceRef: sourceRef2 }), ...gitProductsFromCommand(input.command, response, out, { atEpoch, sourceRef: sourceRef2 })];
-  }
-  const publisher = PUBLISHING_TOOLS.find((tool) => tool.match.test(call.tool_name));
-  if (!publisher || !response) return [];
-  if (call.tool_name === "Artifact" && (input.action ?? "publish") !== "publish") return [];
-  if (call.tool_name === "Artifact" && input.asset) return [];
-  const urls = [...new Set(urlsIn(response))].filter((url) => !/\/(?:api|oauth)\//.test(new URL(url).pathname));
-  const title = short(response.title ?? input.title ?? input.name) ?? (isLocalPath(input.file_path) ? basename4(input.file_path) : null);
-  return urls.slice(0, 1).map((url) => ({ kind: kindForUrl(url, publisher.kind), title: title ?? new URL(url).hostname, url, atEpoch, sourceRef: sourceRef2 }));
-}
-function productsFromObservation(observation) {
-  const files = parse(observation.files_modified);
-  if (!Array.isArray(files)) return [];
-  return files.flatMap((path4, index) => {
-    const kind = fileKind(path4);
-    if (!kind) return [];
-    const title = /^index\.\w+$/i.test(basename4(path4)) ? basename4(path4.slice(0, -basename4(path4).length - 1)) || basename4(path4) : basename4(path4);
-    return [{ kind, title, path: path4, atEpoch: observation.created_at_epoch ?? null, sourceRef: { kind: "observation", id: observation.id, index } }];
-  });
-}
-function isWorkProductField(field) {
-  return WORK_PRODUCT_FIELDS.has(field) || /_url$/.test(field);
-}
-function productsFromFields(fields, { atEpoch = null, sourceRef: sourceRef2 = null } = {}) {
-  const products = [];
-  let index = 0;
-  for (const [field, value] of Object.entries(fields ?? {})) {
-    if (!isWorkProductField(field)) continue;
-    const decoded = WORK_PRODUCT_FIELDS.has(field) && typeof value === "string" && /^\s*[[{]/.test(value) ? parse(value) ?? value : value;
-    const values2 = WORK_PRODUCT_FIELDS.has(field) ? Array.isArray(decoded) ? decoded : [decoded] : typeof value === "string" ? [value] : [];
-    for (const value2 of values2) {
-      const entry = value2 && typeof value2 === "object" && !Array.isArray(value2) ? value2 : { url: value2 };
-      const url = safeWebUrl(entry.url ?? entry.link);
-      const path4 = isLocalPath(entry.path) ? entry.path : isLocalPath(entry.url) ? entry.url : null;
-      const kind = short(entry.kind), title = short(entry.title ?? entry.name);
-      const ref = sourceRef2 && { ...sourceRef2, index: index++ };
-      if (url) products.push({ kind: kind ?? kindForUrl(url, LEGACY_KINDS[field] ?? "link"), title: title ?? new URL(url).hostname, url, field, atEpoch, sourceRef: ref });
-      else if (path4 && (kind || fileKind(path4))) products.push({ kind: kind ?? fileKind(path4), title: title ?? basename4(path4), path: path4, field, atEpoch, sourceRef: ref });
-    }
-  }
-  return products;
-}
-function localProductId(ref) {
-  if (!ref || !["observation", "work-state", "deliverable"].includes(ref.kind) || typeof ref.device !== "string" || !ref.device || !/^\d+$/.test(String(ref.row ?? "")) || ref.index !== void 0 && (!Number.isSafeInteger(ref.index) || ref.index < 0)) return null;
-  return `local_${createHash2("sha256").update(JSON.stringify([ref.kind, ref.device, String(ref.row), ref.index ?? 0])).digest("hex")}`;
-}
-function mergeProducts(lists, limit = 60) {
-  const recorded = lists.flat();
-  const resolveSha = commitShaResolver(recorded.flatMap((product) => product.kind === "commit" && product.sha ? [product.sha] : product.heads ?? []));
-  const products = recorded.map((product) => product.kind === "commit" && product.sha ? { ...product, sha: resolveSha(product.sha) ?? product.sha } : product);
-  const pushesByBranch = /* @__PURE__ */ new Map(), repoByHead = /* @__PURE__ */ new Map(), repoBySource = /* @__PURE__ */ new Map();
-  for (const product of products) if (product.kind === "branch" && product.repo) {
-    if (!pushesByBranch.has(product.branch)) pushesByBranch.set(product.branch, []);
-    pushesByBranch.get(product.branch).push(product);
-    for (const head of product.heads ?? []) {
-      const sha = resolveSha(head);
-      if (sha === null) continue;
-      if (!repoByHead.has(sha)) repoByHead.set(sha, /* @__PURE__ */ new Set());
-      repoByHead.get(sha).add(product.repo);
-    }
-  }
-  const sourceKey = (product) => product.sourceRef ? `${product.sourceRef.kind}:${product.sourceRef.id}` : null;
-  const pushedAfter = (product) => {
-    const repos = new Set((pushesByBranch.get(product.branch) ?? []).filter((push) => product.kind === "branch" || (push.atEpoch ?? 0) >= (product.atEpoch ?? 0)).map((push) => push.repo));
-    return repos.size === 1 ? [...repos][0] : null;
-  };
-  const repoOf = (product) => {
-    const repos = product.sha ? repoByHead.get(product.sha) : null;
-    return product.repo ?? pushedAfter(product) ?? (repos?.size === 1 ? [...repos][0] : null);
-  };
-  for (const product of products) if (product.kind === "commit" && repoOf(product) && sourceKey(product)) repoBySource.set(sourceKey(product), repoOf(product));
-  const unique = /* @__PURE__ */ new Map();
-  for (const product of products.sort((a, b) => (b.atEpoch ?? 0) - (a.atEpoch ?? 0))) {
-    const isGit = product.kind === "commit" || product.kind === "branch";
-    const repo = isGit && !product.repo ? repoOf(product) ?? (product.kind === "commit" ? repoBySource.get(sourceKey(product)) : null) : null;
-    const resolved = repo || isGit && product.repo ? { ...product, ...repo ? { repo } : {}, url: gitUrl({ ...product, repo: repo ?? product.repo }) } : product;
-    const key = productKey(resolved);
-    if (!unique.has(key)) unique.set(key, resolved);
-  }
-  return [...unique.values()].slice(0, limit);
-}
-function productsFromDeliverable(row) {
-  if (!Number.isSafeInteger(row?.id) || row.id < 1 || typeof row.bucket_path !== "string" || !row.bucket_path) return [];
-  const name = basename4(row.bucket_path);
-  return [{
-    kind: short(row.kind) ?? fileKind(row.bucket_path) ?? "file",
-    title: short(row.title) ?? name,
-    url: `/api/deliverables/${row.id}/${encodeURIComponent(name)}`,
-    bucketPath: row.bucket_path,
-    sourcePath: typeof row.source_path === "string" ? row.source_path : null,
-    deliverable: true,
-    atEpoch: row.created_at_epoch ?? null,
-    sourceRef: { kind: "deliverable", id: row.id }
-  }];
-}
-function bucketFileAvailable(product) {
-  if (typeof product?.bucketPath !== "string" || !product.bucketPath) return false;
-  try {
-    return statSync3(product.bucketPath).isFile();
-  } catch {
-    return false;
-  }
-}
-function copyCoversSource(copy, sourcePath) {
-  if (typeof copy?.atEpoch !== "number" || !bucketFileAvailable(copy)) return false;
-  try {
-    const source = statSync3(sourcePath);
-    return !source.isFile() || source.mtimeMs <= copy.atEpoch;
-  } catch {
-    return true;
-  }
-}
-function servableFile(product) {
-  if (!product?.path || !fileKind(product.path)) return null;
-  try {
-    return statSync3(product.path).isFile() ? product.path : null;
-  } catch {
-    return null;
-  }
-}
-function fileUrl(product) {
-  const ref = product.sourceRef;
-  return product.path && ref ? `/api/work-view/file/${ref.kind}/${ref.id}/${ref.index ?? 0}` : null;
-}
-function productIndexClauses(database) {
-  if (!database) return {};
-  let clauses = productIndexes.get(database);
-  if (clauses) return clauses;
-  clauses = {};
-  for (const [table, index] of [["tool_uses", "idx_tool_uses_created_at_epoch"], ["observations", "idx_observations_created"]]) {
-    const found = database.prepare(`PRAGMA index_list('${table}')`).all().find((row) => row.name === index && row.partial === 0);
-    if (found && database.prepare(`PRAGMA index_info('${index}')`).all()[0]?.name === "created_at_epoch") {
-      clauses[table] = ` INDEXED BY ${index}`;
-    }
-  }
-  productIndexes.set(database, clauses);
-  return clauses;
-}
-function selectiveProductIndexClauses(database, sinceEpoch, limit) {
-  if (!(sinceEpoch > 0) || !Number.isSafeInteger(limit) || limit <= 0) return {};
-  const sampleSize = Math.min(limit, 128);
-  const indexes = productIndexClauses(database);
-  const selected = {};
-  for (const [lane, table, predicate] of [
-    ["publishing", "tool_uses", PUBLISHING_PRODUCT_PREDICATE],
-    ["git", "tool_uses", GIT_PRODUCT_PREDICATE],
-    ["observations", "observations", FILE_EXTENSION_PATTERN]
-  ]) {
-    const clause = indexes[table];
-    if (!clause) continue;
-    const columns = table === "tool_uses" ? "tool_name, tool_input, created_at_epoch" : "files_modified, created_at_epoch";
-    let sample;
-    try {
-      sample = database.prepare(`SELECT COUNT(*) AS sampled,
-        COALESCE(SUM(CASE WHEN created_at_epoch >= ? AND (${predicate}) THEN 1 ELSE 0 END), 0) AS matches
-        FROM (SELECT ${columns} FROM ${table} ORDER BY id DESC LIMIT ?)
-      `).get(sinceEpoch, sampleSize);
-    } catch (error) {
-      if (/no such (table|column)/i.test(String(error.message))) continue;
-      throw error;
-    }
-    if (sample.matches * 4 >= sample.sampled && sample.sampled > 0) continue;
-    const estimatedIdScan = limit * sampleSize / Math.max(1, sample.matches);
-    const budget = Math.min(128e3, Math.floor(estimatedIdScan / 2));
-    const candidates = database.prepare(`SELECT COUNT(*) AS count FROM (
-      SELECT 1 FROM ${table}${clause} WHERE created_at_epoch >= ? LIMIT ?
-    )`).get(sinceEpoch, budget + 1).count;
-    if (candidates <= budget) selected[lane] = clause;
-  }
-  return selected;
-}
-function readProductRecords(read, sinceEpoch, limit = 2e3, { database } = {}) {
-  const indexes = selectiveProductIndexClauses(database, sinceEpoch, limit);
-  const publishingCalls = read(`SELECT id, session_db_id, prompt_number, tool_name, tool_input, tool_response, created_at_epoch FROM tool_uses${indexes.publishing ?? ""}
-    WHERE created_at_epoch >= ? AND ${PUBLISHING_PRODUCT_PREDICATE}
-    ORDER BY id DESC LIMIT ?`, [sinceEpoch, limit]);
-  const gitCalls = read(`SELECT id, session_db_id, prompt_number, tool_name, tool_input, tool_response, created_at_epoch FROM tool_uses${indexes.git ?? ""}
-    WHERE created_at_epoch >= ? AND ${GIT_PRODUCT_PREDICATE}
-    ORDER BY id DESC LIMIT ?`, [sinceEpoch, limit]);
-  const productCalls = [...publishingCalls, ...gitCalls];
-  const productObservations = read(`SELECT id, memory_session_id, prompt_number, files_modified, created_at_epoch FROM observations${indexes.observations ?? ""}
-    WHERE created_at_epoch >= ? AND (${FILE_EXTENSION_PATTERN}) ORDER BY id DESC LIMIT ?`, [sinceEpoch, limit]);
-  const productDeliverables = read(`SELECT id, project, content_session_id, platform_source, title, kind, source_path, bucket_path, created_at_epoch
-    FROM deliverables WHERE created_at_epoch >= ? ORDER BY id DESC LIMIT ?`, [sinceEpoch, limit]);
-  return { productCalls, productObservations, productDeliverables };
-}
-var FILE_KINDS, PUBLISHING_TOOLS, GITHUB_PULL_REQUEST_TOOL, WORK_PRODUCT_FIELDS, LEGACY_KINDS, MAX_TITLE, short, GIT_PREFIX, gitPattern, GITHUB_REMOTE, SHA, unquote, matchingCommitSha, BASH_DOUBLE_QUOTE_ESCAPE, productKey, FILE_EXTENSION_PATTERN, PUBLISHING_PRODUCT_PREDICATE, GIT_PRODUCT_PREDICATE, productIndexes;
-var init_work_product = __esm({
-  "src/services/work-view/work-product.mjs"() {
-    "use strict";
-    FILE_KINDS = {
-      ".png": "image",
-      ".jpg": "image",
-      ".jpeg": "image",
-      ".webp": "image",
-      ".gif": "image",
-      ".svg": "image",
-      ".mp4": "video",
-      ".mov": "video",
-      ".webm": "video",
-      ".pdf": "document",
-      ".docx": "document",
-      ".pptx": "deck",
-      ".key": "deck",
-      ".xlsx": "spreadsheet",
-      ".csv": "spreadsheet",
-      ".html": "page"
-    };
-    PUBLISHING_TOOLS = [
-      { match: /^Artifact$/, kind: "artifact" },
-      { match: /notion-create-pages$/, kind: "page" },
-      { match: /Claude_Docs__(?:batch|create)$/, kind: "document" },
-      { match: /chatgpt_space__create_page$/, kind: "page" },
-      { match: /sites__save_version_and_deploy/, kind: "deployment" }
-    ];
-    GITHUB_PULL_REQUEST_TOOL = /(?:^|__)create_pull_request$/;
-    WORK_PRODUCT_FIELDS = /* @__PURE__ */ new Set(["work_product", "work_products", "deliverable", "deliverables"]);
-    LEGACY_KINDS = { docs_url: "documentation", documentation_url: "documentation", promo_url: "promotion", announcement_url: "promotion", pr_url: "pull-request", deck_url: "deck", artifact_url: "artifact" };
-    MAX_TITLE = 140;
-    short = (value) => {
-      const text5 = typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
-      return text5 ? text5.length > MAX_TITLE ? `${text5.slice(0, MAX_TITLE - 1).trimEnd()}\u2026` : text5 : null;
-    };
-    GIT_PREFIX = String.raw`(?:^|[;&|(\n])\s*(?:rtk\s+)?(?:\/usr\/bin\/)?git(?:\s+-[Cc]\s+(?:"[^"]*"|'[^']*'|\S+))*\s+`;
-    gitPattern = (subcommand, flags = "") => new RegExp(GIT_PREFIX + subcommand, flags);
-    GITHUB_REMOTE = /^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/;
-    SHA = "[0-9a-f]{7,40}";
-    unquote = (token) => token.replace(/^(["'])(.*)\1$/, "$2");
-    matchingCommitSha = (left, right) => left.startsWith(right) || right.startsWith(left);
-    BASH_DOUBLE_QUOTE_ESCAPE = /\\([$`"\\])/g;
-    productKey = (product) => product.kind === "commit" && product.sha ? `commit:${product.sha}` : product.kind === "branch" && product.branch ? `branch:${product.repo ?? ""}:${product.branch}` : product.productId ?? product.url ?? product.path;
-    FILE_EXTENSION_PATTERN = Object.keys(FILE_KINDS).map((extension) => `files_modified LIKE '%${extension}"%'`).join(" OR ");
-    PUBLISHING_PRODUCT_PREDICATE = `(tool_name IN ('Artifact', 'mcp__claude_ai_Notion__notion-create-pages', 'mcp__claude_ai_Claude_Docs__batch', 'mcp__claude_ai_Claude_Docs__create')
-  OR tool_name LIKE '%chatgpt_space__create_page' OR tool_name LIKE '%sites__save_version_and_deploy%'
-  OR tool_name = 'create_pull_request' OR tool_name GLOB '*__create_pull_request'
-  OR (tool_name = 'Bash' AND tool_input LIKE '%gh pr create%'))`;
-    GIT_PRODUCT_PREDICATE = `tool_name = 'Bash' AND tool_input LIKE '%git%' AND tool_input NOT LIKE '%gh pr create%'
-  AND (tool_input LIKE '%commit%' OR tool_input LIKE '%push%' OR tool_input LIKE '%checkout -b%' OR tool_input LIKE '%switch -c%')`;
-    productIndexes = /* @__PURE__ */ new WeakMap();
-  }
-});
-
-// src/utils/worktree.ts
-import { existsSync as existsSync8, statSync as statSync4, readFileSync as readFileSync6 } from "fs";
-import path from "path";
-function detectWorktree(cwd) {
-  const gitPath = path.join(cwd, ".git");
-  let stat;
-  try {
-    stat = statSync4(gitPath);
-  } catch (error) {
-    if (error instanceof Error && error.code !== "ENOENT") {
-      logger.warn("GIT", "Unexpected error checking .git", { error: error instanceof Error ? error.message : String(error) });
-    }
-    return NOT_A_WORKTREE;
-  }
-  if (!stat.isFile()) {
-    return NOT_A_WORKTREE;
-  }
-  let content;
-  try {
-    content = readFileSync6(gitPath, "utf-8").trim();
-  } catch (error) {
-    logger.warn("GIT", "Failed to read .git file", { error: error instanceof Error ? error.message : String(error) });
-    return NOT_A_WORKTREE;
-  }
-  const match = content.match(/^gitdir:\s*(.+)$/s);
-  if (!match) {
-    return NOT_A_WORKTREE;
-  }
-  const gitdirPath = path.resolve(path.dirname(gitPath), match[1]);
-  const worktreesMatch = gitdirPath.match(/^(.+)[/\\]\.git[/\\]worktrees[/\\]([^/\\]+)$/s);
-  if (worktreesMatch) {
-    const parentRepoPath = worktreesMatch[1];
-    return {
-      isWorktree: true,
-      isSubmodule: false,
-      worktreeName: path.basename(cwd),
-      parentRepoPath,
-      parentProjectName: path.basename(parentRepoPath)
-    };
-  }
-  const submoduleMatch = gitdirPath.match(/^(.+)[/\\]\.git[/\\]modules[/\\](.+)$/s);
-  if (submoduleMatch) {
-    const parentRepoPath = submoduleMatch[1];
-    return {
-      isWorktree: false,
-      isSubmodule: true,
-      worktreeName: path.basename(cwd),
-      parentRepoPath,
-      parentProjectName: path.basename(parentRepoPath)
-    };
-  }
-  const bareWorktreeMatch = gitdirPath.match(/^(.+)[/\\]worktrees[/\\]([^/\\]+)$/s);
-  if (bareWorktreeMatch && existsSync8(path.join(gitdirPath, "commondir"))) {
-    const parentRepoPath = bareWorktreeMatch[1];
-    const parentProjectName = bareRepositoryProjectName(parentRepoPath);
-    if (parentProjectName) {
-      return {
-        isWorktree: true,
-        isSubmodule: false,
-        worktreeName: path.basename(cwd),
-        parentRepoPath,
-        parentProjectName
-      };
-    }
-  }
-  return NOT_A_WORKTREE;
-}
-function bareRepositoryProjectName(bareRepoPath) {
-  const name = path.basename(bareRepoPath).replace(/\.git$/, "");
-  if (name && !name.startsWith(".")) return name;
-  return path.basename(path.dirname(bareRepoPath)) || null;
-}
-var NOT_A_WORKTREE;
-var init_worktree = __esm({
-  "src/utils/worktree.ts"() {
-    "use strict";
-    init_logger();
-    NOT_A_WORKTREE = {
-      isWorktree: false,
-      isSubmodule: false,
-      worktreeName: null,
-      parentRepoPath: null,
-      parentProjectName: null
-    };
-  }
-});
-
-// src/utils/project-filter.ts
-import { basename as basename5 } from "path";
-function globToRegex(pattern) {
-  let expanded = expandHome(pattern.replace(/\\/g, "/"));
-  expanded = expanded.replace(/\\/g, "/");
-  let regex = expanded.replace(/[.+^${}()|[\]\\]/g, "\\$&");
-  regex = regex.replace(/(^|\/)\*\*(?=\/)/g, "$1<<<GLOBSTAR_DIR>>>").replace(/\*\*/g, "<<<GLOBSTAR>>>").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]").replace(/<<<GLOBSTAR>>>/g, ".*").replace(/<<<GLOBSTAR_DIR>>>\//g, "(?:.*/)?");
-  return new RegExp(`^${regex}$`);
-}
-function matchesGlobPattern(pattern, normalizedPath, pathBasename) {
-  const regex = globToRegex(pattern);
-  if (regex.test(normalizedPath) || regex.test(pathBasename)) return true;
-  if (pattern.replace(/\\/g, "/").endsWith("/**")) {
-    return globToRegex(pattern.slice(0, -3)).test(normalizedPath.replace(/\/+$/, ""));
-  }
-  return false;
-}
-function matchesAnyGlob(folderPath, patterns) {
-  if (!patterns.length) return false;
-  const normalizedPath = folderPath.replace(/\\/g, "/");
-  const pathBasename = basename5(normalizedPath);
-  for (const rawPattern of patterns) {
-    const pattern = rawPattern.trim();
-    if (!pattern) continue;
-    try {
-      if (matchesGlobPattern(pattern, normalizedPath, pathBasename)) {
-        return true;
-      }
-    } catch (error) {
-      logger.warn("PROJECT_NAME", "Invalid glob pattern", { pattern, error: error instanceof Error ? error.message : String(error) });
-      continue;
-    }
-  }
-  return false;
-}
-var init_project_filter = __esm({
-  "src/utils/project-filter.ts"() {
-    "use strict";
-    init_expand_home();
-    init_logger();
-  }
-});
-
-// src/utils/project-environments.ts
-import { realpathSync as realpathSync2 } from "fs";
-function parseProjectEnvironments(raw) {
-  let value = raw;
-  if (typeof value === "string") {
-    if (!value.trim()) return [];
-    try {
-      value = JSON.parse(value);
-    } catch (error) {
-      logger.warn("PROJECT_NAME", "CLAUDE_MEM_PROJECT_ENVIRONMENTS is not valid JSON; ignoring it", {
-        error: error instanceof Error ? error.message : String(error)
-      });
-      return [];
-    }
-  }
-  if (!Array.isArray(value)) {
-    if (value !== void 0 && value !== null) {
-      logger.warn("PROJECT_NAME", "CLAUDE_MEM_PROJECT_ENVIRONMENTS must be an array; ignoring it", {});
-    }
-    return [];
-  }
-  const environments = [];
-  for (const entry of value) {
-    const name = typeof entry?.name === "string" ? entry.name.trim() : "";
-    const patterns = Array.isArray(entry?.patterns) ? entry.patterns.filter((pattern) => typeof pattern === "string" && pattern.trim() !== "") : [];
-    if (!name || patterns.length === 0) {
-      logger.warn("PROJECT_NAME", "Ignoring a project environment without a name or patterns", { name });
-      continue;
-    }
-    if ("inherit" in entry) {
-      const inherit = entry.inherit;
-      if (!Array.isArray(inherit) || inherit.some((key) => typeof key !== "string" || !key.trim() || key.includes(","))) {
-        throw new Error(`CLAUDE_MEM_PROJECT_ENVIRONMENTS: inherit for "${name}" must be an array of non-empty project names without commas`);
-      }
-      environments.push({ name, patterns, inherit: [...new Set(inherit.map((key) => key.trim()))] });
-    } else {
-      environments.push({ name, patterns });
-    }
-  }
-  return environments;
-}
-function realpathOrSelf(dir) {
-  try {
-    return realpathSync2(dir);
-  } catch {
-    return dir;
-  }
-}
-function matchProjectEnvironment(dir, environments) {
-  if (environments.length === 0) return null;
-  const candidates = [.../* @__PURE__ */ new Set([dir, realpathOrSelf(dir)])].flatMap((candidate) => [candidate, `${candidate.replace(/[\\/]+$/, "")}/`]);
-  for (const environment of environments) {
-    if (candidates.some((candidate) => matchesAnyGlob(candidate, environment.patterns))) {
-      return environment;
-    }
-  }
-  return null;
-}
-var init_project_environments = __esm({
-  "src/utils/project-environments.ts"() {
-    "use strict";
-    init_project_filter();
-    init_logger();
-  }
-});
-
-// src/utils/project-name.ts
-import path2 from "path";
-import { existsSync as existsSync9, realpathSync as realpathSync3, statSync as statSync5 } from "fs";
-import { homedir as homedir7, tmpdir } from "os";
-import { execFileSync } from "child_process";
-function findGitRepoRoot(dir) {
-  try {
-    const root = execFileSync("git", ["rev-parse", "--show-toplevel"], {
-      cwd: dir,
-      encoding: "utf-8",
-      stdio: ["ignore", "pipe", "ignore"],
-      windowsHide: true
-    }).replace(/\n$/, "");
-    return root || null;
-  } catch (error) {
-    const err = error instanceof Error ? error : new Error(String(error));
-    logger.debug("PROJECT_NAME", "git rev-parse failed, falling back to non-git root", { dir }, err);
-    return null;
-  }
-}
-function realpathOrSelf2(dir) {
-  try {
-    return realpathSync3(dir);
-  } catch {
-    return dir;
-  }
-}
-function isWithin(child, parent) {
-  const relative = path2.relative(parent, child);
-  return relative === "" || !relative.startsWith("..") && !path2.isAbsolute(relative);
-}
-function markerWalkStops() {
-  return [homedir7(), tmpdir(), CLAUDE_CONFIG_DIR].flatMap((dir) => {
-    const resolved = path2.resolve(dir);
-    return [resolved, realpathOrSelf2(resolved)];
-  });
-}
-function findMarkerProjectRoot(dir) {
-  const stops = markerWalkStops();
-  let current = path2.resolve(dir);
-  const configDirs = [path2.resolve(CLAUDE_CONFIG_DIR), realpathOrSelf2(path2.resolve(CLAUDE_CONFIG_DIR))];
-  if (configDirs.some((configDir) => isWithin(current, configDir))) {
-    return null;
-  }
-  for (let depth = 0; depth < MAX_MARKER_WALK_DEPTH; depth++) {
-    if (stops.includes(current)) {
-      return null;
-    }
-    const parent = path2.dirname(current);
-    if (parent === current) {
-      return null;
-    }
-    if (PROJECT_ROOT_MARKERS.some((marker) => existsSync9(path2.join(current, marker)))) {
-      return current;
-    }
-    current = parent;
-  }
-  return null;
-}
-function projectNameFromSource(cwd, nameSource) {
-  const basename8 = path2.basename(nameSource);
-  if (basename8 === "") {
-    const isWindows = process.platform === "win32";
-    if (isWindows) {
-      const driveMatch = cwd.match(/^([A-Z]):\\/i);
-      if (driveMatch) {
-        const driveLetter = driveMatch[1].toUpperCase();
-        const projectName = `drive-${driveLetter}`;
-        logger.info("PROJECT_NAME", "Drive root detected", { cwd, projectName });
-        return projectName;
-      }
-    }
-    logger.warn("PROJECT_NAME", "Root directory detected, using fallback", { cwd });
-    return UNKNOWN_PROJECT_NAME;
-  }
-  return basename8;
-}
-function settingsFileMtimeMs() {
-  try {
-    return statSync5(USER_SETTINGS_PATH).mtimeMs;
-  } catch {
-    return -1;
-  }
-}
-function readIdentitySettings() {
-  const mtimeMs = settingsFileMtimeMs();
-  if (mtimeMs === -1) {
-    return SettingsDefaultsManager.getAllDefaults();
-  }
-  if (identitySettingsCache && identitySettingsCache.mtimeMs === mtimeMs) {
-    return identitySettingsCache.settings;
-  }
-  const settings2 = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-  identitySettingsCache = { mtimeMs: settingsFileMtimeMs(), settings: settings2 };
-  return settings2;
-}
-function useGitRemoteProjectNames() {
-  const source = process.env[PROJECT_NAME_SOURCE_SETTING] ?? readIdentitySettings().CLAUDE_MEM_PROJECT_NAME_SOURCE;
-  return String(source ?? "path").trim().toLowerCase() === "git-remote";
-}
-function loadProjectEnvironments() {
-  const raw = process.env[PROJECT_ENVIRONMENTS_SETTING] ?? readIdentitySettings().CLAUDE_MEM_PROJECT_ENVIRONMENTS;
-  if (!environmentsCache || environmentsCache.raw !== raw) {
-    environmentsCache = { raw, environments: parseProjectEnvironments(raw) };
-  }
-  return environmentsCache.environments;
-}
-function parseOriginUrlToSlug(url) {
-  const trimmed = (url ?? "").trim();
-  if (!trimmed) return null;
-  const isLocal = /^file:/i.test(trimmed) || trimmed.startsWith("/") || trimmed.startsWith(".") || trimmed.startsWith("~") || trimmed.startsWith("\\\\") || /^[a-z]:[\\/]/i.test(trimmed);
-  if (isLocal) return null;
-  const cleaned = trimmed.replace(/\/+$/, "").replace(/\.git$/i, "");
-  const urlFormMatch = cleaned.match(/^[a-z][a-z0-9+.-]*:\/\/[^/]+\/(.+)$/i);
-  const scpFormMatch = urlFormMatch ? null : cleaned.match(/^(?:[^/@\s]+@)?[^:/\s]+:(?!\/\/)(.+)$/);
-  const pathPart = urlFormMatch?.[1] ?? scpFormMatch?.[1];
-  if (!pathPart) return null;
-  const segments = pathPart.split("/").filter((segment) => segment && segment !== "_git");
-  if (segments.length >= 2) return segments.slice(-2).join("/");
-  if (segments.length === 1) return segments[0];
-  return null;
-}
-function deriveSlugFromRemote(repoRoot) {
-  try {
-    const url = execFileSync("git", ["remote", "get-url", "origin"], {
-      cwd: repoRoot,
-      encoding: "utf-8",
-      stdio: ["ignore", "pipe", "ignore"],
-      windowsHide: true
-    }).trim();
-    return parseOriginUrlToSlug(url);
-  } catch (error) {
-    const err = error instanceof Error ? error : new Error(String(error));
-    logger.debug("PROJECT_NAME", "No usable origin remote, keeping the path-based name", { repoRoot }, err);
-    return null;
-  }
-}
-function gitRemoteProjectSlug(repoRoot) {
-  if (!useGitRemoteProjectNames()) return null;
-  if (!remoteSlugByRepoRoot.has(repoRoot)) {
-    remoteSlugByRepoRoot.set(repoRoot, deriveSlugFromRemote(repoRoot));
-  }
-  return remoteSlugByRepoRoot.get(repoRoot) ?? null;
-}
-function getProjectName(cwd, platform = process.platform) {
-  if (!cwd || cwd.trim() === "") {
-    logger.warn("PROJECT_NAME", "Empty cwd provided, using fallback", { cwd });
-    return UNKNOWN_PROJECT_NAME;
-  }
-  const expanded = expandHome(cwd, platform);
-  const environment = matchProjectEnvironment(expanded, loadProjectEnvironments());
-  if (environment) {
-    return environment.name;
-  }
-  const repoRoot = findGitRepoRoot(expanded);
-  const slug = repoRoot ? gitRemoteProjectSlug(repoRoot) : null;
-  if (slug) {
-    return slug;
-  }
-  const nameSource = repoRoot ?? findMarkerProjectRoot(expanded) ?? expanded;
-  return projectNameFromSource(cwd, nameSource);
-}
-function buildWorktreeProjectKey(parentProjectName, worktreeName) {
-  return worktreeName === parentProjectName ? parentProjectName : `${parentProjectName}/${worktreeName}`;
-}
-function submoduleLeaf(info, repoRoot) {
-  if (!info.isSubmodule || !info.parentRepoPath) return null;
-  const relative = path2.relative(info.parentRepoPath, repoRoot);
-  if (!relative || relative === ".." || relative.startsWith(`..${path2.sep}`) || path2.isAbsolute(relative)) return null;
-  return relative.split(path2.sep).join("/");
-}
-function getProjectContext(cwd, platform = process.platform) {
-  return getProjectContextWithRoot(cwd, platform).context;
-}
-function getProjectContextWithRoot(cwd, platform = process.platform) {
-  if (!cwd || cwd.trim() === "") {
-    const fallback = getProjectName(cwd, platform);
-    return {
-      context: { primary: fallback, parent: null, isWorktree: false, isSubmodule: false, allProjects: [fallback], keySource: "path" },
-      repoRoot: null
-    };
-  }
-  const expandedCwd = expandHome(cwd, platform);
-  const repoRoot = findGitRepoRoot(expandedCwd);
-  const pathContext = getPathProjectContext(cwd, expandedCwd, repoRoot);
-  const slug = repoRoot ? gitRemoteProjectSlug(repoRoot) : null;
-  const derivedContext = slug ? withPrimaryKey(pathContext, slug, "git-remote") : pathContext;
-  const environment = matchProjectEnvironment(expandedCwd, loadProjectEnvironments());
-  return {
-    context: environment ? withPrimaryKey(derivedContext, environment.name, "environment", environment.inherit) : derivedContext,
-    repoRoot
-  };
-}
-function withPrimaryKey(context, primary, keySource, readKeys = context.allProjects) {
-  return {
-    primary,
-    parent: null,
-    isWorktree: context.isWorktree,
-    isSubmodule: context.isSubmodule,
-    allProjects: [...new Set(readKeys.filter((key) => key !== primary)), primary],
-    keySource
-  };
-}
-function getPathProjectContext(cwd, expandedCwd, repoRoot) {
-  const markerRoot = repoRoot ? null : findMarkerProjectRoot(expandedCwd);
-  const cwdProjectName = projectNameFromSource(cwd, repoRoot ?? markerRoot ?? expandedCwd);
-  const checkoutRoot = repoRoot ?? expandedCwd;
-  const worktreeInfo = detectWorktree(checkoutRoot);
-  if ((worktreeInfo.isWorktree || worktreeInfo.isSubmodule) && worktreeInfo.parentProjectName) {
-    const parent = worktreeInfo.parentProjectName;
-    let primary;
-    let legacyKeys;
-    if (worktreeInfo.isSubmodule) {
-      const leaf = submoduleLeaf(worktreeInfo, checkoutRoot);
-      primary = `${parent}/${leaf ?? cwdProjectName}`;
-      legacyKeys = cwdProjectName !== parent ? [cwdProjectName] : [];
-      if (leaf?.startsWith("..") && leaf !== cwdProjectName) {
-        legacyKeys.push(`${parent}/${cwdProjectName}`);
-      }
-    } else {
-      primary = buildWorktreeProjectKey(parent, cwdProjectName);
-      legacyKeys = primary === parent ? [`${parent}/${cwdProjectName}`] : [];
-    }
-    return {
-      primary,
-      parent,
-      isWorktree: worktreeInfo.isWorktree,
-      isSubmodule: worktreeInfo.isSubmodule,
-      allProjects: [.../* @__PURE__ */ new Set([parent, ...legacyKeys, primary])].filter((key) => key !== primary).concat(primary),
-      keySource: "path"
-    };
-  }
-  if (markerRoot && path2.resolve(markerRoot) !== path2.resolve(expandedCwd)) {
-    const legacyKey = projectNameFromSource(cwd, expandedCwd);
-    if (legacyKey !== cwdProjectName && legacyKey !== UNKNOWN_PROJECT_NAME) {
-      return { primary: cwdProjectName, parent: null, isWorktree: false, isSubmodule: false, allProjects: [legacyKey, cwdProjectName], keySource: "path" };
-    }
-  }
-  return { primary: cwdProjectName, parent: null, isWorktree: false, isSubmodule: false, allProjects: [cwdProjectName], keySource: "path" };
-}
-var UNKNOWN_PROJECT_NAME, PROJECT_ROOT_MARKERS, MAX_MARKER_WALK_DEPTH, PROJECT_NAME_SOURCE_SETTING, identitySettingsCache, PROJECT_ENVIRONMENTS_SETTING, environmentsCache, remoteSlugByRepoRoot;
-var init_project_name = __esm({
-  "src/utils/project-name.ts"() {
-    "use strict";
-    init_expand_home();
-    init_paths();
-    init_SettingsDefaultsManager();
-    init_logger();
-    init_worktree();
-    init_project_environments();
-    UNKNOWN_PROJECT_NAME = "unknown-project";
-    PROJECT_ROOT_MARKERS = [".claude-mem-project", ".claude-mem.json"];
-    MAX_MARKER_WALK_DEPTH = 64;
-    PROJECT_NAME_SOURCE_SETTING = "CLAUDE_MEM_PROJECT_NAME_SOURCE";
-    identitySettingsCache = null;
-    PROJECT_ENVIRONMENTS_SETTING = "CLAUDE_MEM_PROJECT_ENVIRONMENTS";
-    environmentsCache = null;
-    remoteSlugByRepoRoot = /* @__PURE__ */ new Map();
-  }
-});
-
-// src/services/work-view/session-project.mjs
-import { existsSync as existsSync10, realpathSync as realpathSync4 } from "node:fs";
-import { homedir as homedir8, tmpdir as tmpdir2 } from "node:os";
-import { basename as basename6, dirname as dirname5, join as join9, resolve as resolve3, sep as sep2 } from "node:path";
-function projectRoot(project, gitRemoteNames = useGitRemoteProjectNames()) {
-  if (typeof project !== "string") return null;
-  return gitRemoteNames ? project : project.split("/")[0];
-}
-function upgradedGroupRoot(savedRoot, anchorRoot, memberRoots = []) {
-  if (typeof savedRoot !== "string" || !savedRoot || savedRoot.includes("/")) return savedRoot;
-  const widened = (root) => typeof root === "string" && root.startsWith(`${savedRoot}/`);
-  if (widened(anchorRoot)) return anchorRoot;
-  const candidates = new Set(memberRoots.filter(widened));
-  return candidates.size === 1 ? [...candidates][0] : savedRoot;
-}
-function isAgentScratchFolder(folder) {
-  if (typeof folder !== "string" || !folder) return false;
-  if (CODEX_SCRATCH.test(folder)) return true;
-  const absolute = resolve3(folder);
-  return TEMP_FOLDERS.some((temp) => absolute === temp || absolute.startsWith(`${temp}${sep2}`));
-}
-function repoRootOf(path4) {
-  const visited = [];
-  let current = resolve3(path4), found = null;
-  for (; ; ) {
-    if (repoRootCache.has(current)) {
-      found = repoRootCache.get(current);
-      break;
-    }
-    visited.push(current);
-    if (existsSync10(join9(current, ".git"))) {
-      found = current;
-      break;
-    }
-    const parent = dirname5(current);
-    if (parent === current) break;
-    current = parent;
-  }
-  for (const dir of visited) repoRootCache.set(dir, found);
-  return found;
-}
-function pathsIn(toolInput, platform = process.platform) {
-  let parsed = toolInput;
-  if (typeof toolInput === "string") {
-    try {
-      parsed = JSON.parse(toolInput);
-    } catch {
-      parsed = toolInput;
-    }
-  }
-  const strings = [];
-  const walk = (value) => {
-    if (typeof value === "string") strings.push(value);
-    else if (Array.isArray(value)) value.forEach(walk);
-    else if (value && typeof value === "object") Object.values(value).forEach(walk);
-  };
-  walk(parsed);
-  const paths2 = [];
-  for (const text5 of strings) for (const match of text5.matchAll(PATH_START)) {
-    const raw = match[1].trim();
-    const path4 = raw.startsWith("~/") || platform === "win32" && raw.startsWith("~\\") ? join9(HOME, raw.slice(2)) : raw;
-    if (path4.length > 1 && isAbsoluteOn(path4, platform) && !isAgentHome(path4)) paths2.push(path4);
-  }
-  return paths2;
-}
-function folderNeedsProject(folder, storedProject) {
-  if (!folder) return TEMP_PROJECT_NAMES.has(storedProject);
-  if (existsSync10(folder)) return !repoRootOf(folder);
-  return isAgentScratchFolder(folder);
-}
-function projectFromToolPaths(toolInputs) {
-  const byRoot = /* @__PURE__ */ new Map(), nameOf = /* @__PURE__ */ new Map();
-  for (const input of toolInputs) for (const path4 of pathsIn(input)) {
-    const checkout = checkoutForPath(path4);
-    if (!checkout) continue;
-    if (!nameOf.has(checkout)) nameOf.set(checkout, getProjectContext(checkout).primary);
-    const project = nameOf.get(checkout);
-    const root = projectRoot(project);
-    if (!byRoot.has(root)) byRoot.set(root, { count: 0, projects: /* @__PURE__ */ new Map() });
-    const entry = byRoot.get(root);
-    entry.count++;
-    entry.projects.set(project, (entry.projects.get(project) ?? 0) + 1);
-  }
-  let best = null;
-  for (const entry of byRoot.values()) if (!best || entry.count > best.count) best = entry;
-  if (!best) return NO_PROJECT;
-  return [...best.projects].sort((a, b) => b[1] - a[1])[0][0];
-}
-function safeAll(database, sql, params) {
-  try {
-    return database.prepare(sql).all(...params);
-  } catch (error) {
-    if (/no such (table|column)/i.test(String(error.message))) return null;
-    throw error;
-  }
-}
-function deriveSessionProjects(database, sessions) {
-  const result = /* @__PURE__ */ new Map();
-  const ids = [...new Set(sessions.map((session) => session.id).filter((id) => id != null))];
-  if (!ids.length) return result;
-  const folders = /* @__PURE__ */ new Map();
-  for (let index = 0; index < ids.length; index += 500) {
-    const chunk = ids.slice(index, index + 500);
-    const rows = safeAll(database, `SELECT id, cwd FROM sdk_sessions WHERE id IN (${chunk.map(() => "?").join(",")})`, chunk);
-    if (rows === null) return result;
-    for (const row of rows) folders.set(row.id, row.cwd || null);
-  }
-  const unknownFolderProjects = [...new Set(sessions.filter((session) => folders.has(session.id) && !folders.get(session.id) && typeof session.project === "string").map((session) => session.project))];
-  const scratchProjects = /* @__PURE__ */ new Set();
-  for (let index = 0; index < unknownFolderProjects.length; index += 500) {
-    const chunk = unknownFolderProjects.slice(index, index + 500);
-    for (const row of safeAll(database, `SELECT DISTINCT project, cwd FROM sdk_sessions WHERE project IN (${chunk.map(() => "?").join(",")}) AND cwd IS NOT NULL AND cwd <> ''`, chunk) ?? []) {
-      if (isAgentScratchFolder(row.cwd)) scratchProjects.add(row.project);
-    }
-  }
-  const needing = sessions.filter((session) => folders.has(session.id) && (folders.get(session.id) ? folderNeedsProject(folders.get(session.id), session.project) : folderNeedsProject(null, session.project) || scratchProjects.has(session.project)));
-  if (!needing.length) return result;
-  const needIds = [...new Set(needing.map((session) => session.id))];
-  const heads = /* @__PURE__ */ new Map();
-  for (let index = 0; index < needIds.length; index += 500) {
-    const chunk = needIds.slice(index, index + 500);
-    for (const row of safeAll(database, `SELECT session_db_id, MAX(id) AS head FROM tool_uses WHERE session_db_id IN (${chunk.map(() => "?").join(",")}) GROUP BY session_db_id`, chunk) ?? []) heads.set(row.session_db_id, row.head);
-  }
-  for (const id of needIds) {
-    const head = heads.get(id) ?? 0;
-    const cached = derivedCache.get(id);
-    if (cached && cached.head === head) {
-      result.set(id, cached.project);
-      continue;
-    }
-    const calls = head ? safeAll(database, `SELECT substr(tool_input, 1, 4000) AS tool_input, cwd FROM tool_uses WHERE session_db_id = ? ORDER BY id DESC LIMIT ${TOOL_SAMPLE}`, [id]) ?? [] : [];
-    const project = projectFromToolPaths(calls.flatMap((call) => [call.tool_input, ...call.cwd ? [JSON.stringify({ cwd: call.cwd })] : []]));
-    derivedCache.set(id, { head, project });
-    result.set(id, project);
-  }
-  return result;
-}
-function withDerivedProjects(database, sessions) {
-  const derived = deriveSessionProjects(database, sessions);
-  if (!derived.size) return sessions;
-  return sessions.map((session) => derived.has(session.id) ? { ...session, project: derived.get(session.id), storedProject: session.project } : session);
-}
-var NO_PROJECT, realpathOrSelf3, TEMP_FOLDERS, HOME, TEMP_PROJECT_NAMES, CODEX_SCRATCH, repoRootCache, PATH_START, AGENT_HOMES, isAgentHome, isAbsoluteOn, checkoutForPath, derivedCache, TOOL_SAMPLE;
-var init_session_project = __esm({
-  "src/services/work-view/session-project.mjs"() {
-    "use strict";
-    init_project_name();
-    NO_PROJECT = "";
-    realpathOrSelf3 = (path4) => {
-      try {
-        return realpathSync4(path4);
-      } catch {
-        return path4;
-      }
-    };
-    TEMP_FOLDERS = [.../* @__PURE__ */ new Set([resolve3(tmpdir2()), realpathOrSelf3(resolve3(tmpdir2())), "/tmp", "/private/tmp"])];
-    HOME = homedir8();
-    TEMP_PROJECT_NAMES = new Set(TEMP_FOLDERS.map((folder) => basename6(folder)).filter((name) => name && name !== "tmp"));
-    CODEX_SCRATCH = /[/\\]Documents[/\\]Codex[/\\]\d{4}-\d{2}-\d{2}(?:[/\\]|$)/;
-    repoRootCache = /* @__PURE__ */ new Map();
-    PATH_START = /(?:^|[\s"'`=:(])((?:~[/\\]|\/|[A-Za-z]:[/\\])[^\n\r"'`;|&<>()]*)/g;
-    AGENT_HOMES = [".claude", ".codex", ".gemini", ".claude-mem", ".cursor"].map((name) => join9(HOME, name));
-    isAgentHome = (path4) => AGENT_HOMES.some((home) => path4 === home || path4.startsWith(`${home}/`) || path4.startsWith(`${home}\\`));
-    isAbsoluteOn = (path4, platform) => path4.startsWith("/") && !path4.startsWith("//") || platform === "win32" && /^[A-Za-z]:[/\\]/.test(path4);
-    checkoutForPath = (path4) => {
-      let current = path4;
-      while (current !== dirname5(current) && !existsSync10(current)) current = dirname5(current);
-      return repoRootOf(current);
-    };
-    derivedCache = /* @__PURE__ */ new Map();
-    TOOL_SAMPLE = 400;
-  }
-});
-
-// src/services/work-view/request-projection.mjs
-function requestMediaSummary(activity) {
-  const refs = /* @__PURE__ */ new Map();
-  for (const entry of activity) for (const ref of entry.media?.attachments ?? []) if (!refs.has(ref.id)) refs.set(ref.id, ref);
-  if (!refs.size) return null;
-  return { count: refs.size, preview: [...refs.values()].slice(0, REQUEST_MEDIA_PREVIEW_LIMIT) };
-}
-function requestText(value, max = 1200) {
-  if (typeof value !== "string") return null;
-  const requestSection = value.match(/^\s*#{1,2}\s+My request\s*:\s*(?:\r?\n)?([\s\S]*)$/im);
-  const text5 = (requestSection?.[1] ?? value).replace(/<(environment_context|instructions|system-reminder|turn_aborted|permissions|collaboration_mode|skills_instructions)\b[^>]*>[\s\S]*?<\/\1>/gi, " ").replace(/^\s*#\s*AGENTS\.md instructions[^\n]*(?:\n|$)/gim, " ").replace(/<\/?pasted_content\b[^>]*>/gi, "").trim();
-  if (/^\s*#{1,2}\s+Files mentioned by the user\s*:/i.test(text5)) return null;
-  if (!text5 || /^\s*<(?:environment_context|instructions|system-reminder)\b/i.test(text5)) return null;
-  return text5.length > max ? `${text5.slice(0, max - 1).trimEnd()}\u2026` : text5;
-}
-function isHumanActionRequest(value) {
-  const text5 = requestText(value);
-  if (!text5) return false;
-  const plain = text5.replace(/[*_`#]/g, "").replace(/\s+/g, " ").trim();
-  if (/^(?:please\s+)?read\s+(?:the\s+)?[\w./ -]*(?:AGENTS|KICKOFF|CLAUDE)\.md(?:\s+and\s+(?:follow|obey|read|apply)(?:\s+it|\s+the\s+instructions)?\s*)?[.!]?$/i.test(plain)) return false;
-  if (/^(?:hi|hello|hey|thanks|thank you|ok(?:ay)?|yes|no|sure|continue|go ahead|keep going|resume|done)[.!\s]*$/i.test(plain)) return false;
-  if (/^(?:You are (?:Codex|an AI)|Available skills|Environment context)\b/i.test(plain)) return false;
-  if (/^(?:(?:please|just)\s+)?make sure (?:this|that|it|everything) (?:is |will be |keeps? )?(?:working|works|ok|okay|correct)(?:[.!\s]*)$/i.test(plain)) return false;
-  if (/^you can (?:def(?:initely)? )?do (?:real )?tests?[,;.!\s]/i.test(plain) && !/\b(?:fix|build|create|implement|change|update|rename|remove|add)\b/i.test(plain)) return false;
-  if (/(?:^|\s)GOAL\s*:\s*\S/i.test(plain)) return true;
-  if (ENGLISH_ACTION.test(plain)) return true;
-  const opening = IMPERATIVE_OPENING.exec(plain);
-  if (opening && !NOT_A_VERB.test(opening[1])) return true;
-  if (/[^\x00-\x7F]/.test(plain)) return new RegExp("\\p{L}.*\\p{L}", "u").test(plain);
-  return !ENGLISH_WORDS.test(plain) && (plain.match(/\b[a-z]{3,}\b/gi) ?? []).length >= 2;
-}
-function humanRequestTitle(original) {
-  const text5 = requestText(typeof original === "string" ? original : original?.text);
-  if (!text5) return "";
-  const goal = text5.match(/(?:^|\n)\s*GOAL\s*:\s*([^\n]+)/i);
-  const lines = text5.split(/\n+/).map((line2) => line2.trim()).filter(Boolean);
-  const first = goal?.[1] ?? lines[0] ?? "";
-  const nextQuotedLine = /\bcalled\s*$/i.test(first) && /^["“'‘]/.test(lines[1] ?? "") ? ` ${lines[1]}` : "";
-  const line = `${first}${nextQuotedLine}`.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").replace(/\*\*([^*]+)\*\*/g, "$1").replace(/`([^`]+)`/g, "$1").replace(/^#{1,6}\s*/, "").replace(/\s+/g, " ").trim();
-  const clause = line.split(/(?<=[.!?])\s|;\s/)[0];
-  if (clause.length <= 100) return clause;
-  const cut = clause.slice(0, 99), boundary = cut.lastIndexOf(" ");
-  return `${cut.slice(0, boundary > 60 ? boundary : 99).trimEnd()}\u2026`;
-}
-function conversationKey(session) {
-  if (!session?.content_session_id || !session?.platform_source) return null;
-  return JSON.stringify(["conversation", session.platform_source, session.content_session_id]);
-}
-function compareSourceOrder(a = null, b = null) {
-  if (!a || !b) return 0;
-  const time = a[0] - b[0];
-  const device = a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0;
-  const left = BigInt(a[2]), right = BigInt(b[2]);
-  return time || device || (left < right ? -1 : left > right ? 1 : 0);
-}
-function originalFor(session, prompts) {
-  const ordered = prompts.filter((prompt) => prompt.session_db_id === session.id).sort((a, b) => (a.prompt_number ?? Infinity) - (b.prompt_number ?? Infinity) || (a.created_at_epoch ?? 0) - (b.created_at_epoch ?? 0) || a.id - b.id);
-  const first = ordered.find((prompt) => isHumanActionRequest(prompt.prompt_text));
-  const initial = () => ({ text: requestText(session.user_prompt), source: "session-initial-request", sourceId: session.sharedOnly ? null : session.id, url: session.sharedOnly ? null : `/api/work-view/evidence/session/${session.id}`, ...session.sharedOnly ? { sourceIdentity: { kind: "session", conversation: conversationKey(session) } } : {}, promptNumber: 1, atEpoch: session.started_at_epoch ?? null });
-  if (isHumanActionRequest(session.user_prompt) && (!first || first.prompt_number > 1)) return initial();
-  if (first) return { text: requestText(first.prompt_text), source: "user-prompt", sourceId: first.id, url: `/api/work-view/evidence/prompt/${first.id}`, promptNumber: first.prompt_number, atEpoch: first.created_at_epoch ?? null };
-  if (isHumanActionRequest(session.user_prompt)) return initial();
-  return null;
-}
-function buildHumanRequests(view, records2 = {}, { titleCache = {}, ledger = null } = {}) {
-  const sessions = new Map((records2.sessions ?? []).map((session) => [session.id, session]));
-  const prompts = records2.prompts ?? [];
-  const flattened = (view.agents ?? []).flatMap((agent) => (agent.work ?? []).map((item) => ({ ...item, agentId: agent.id, agentLabel: agent.label, agentSessionId: agent.sessionId })));
-  const subagentIds = new Set((view.agents ?? []).filter((agent) => agent.isSubagent).map((agent) => agent.id));
-  const activityPool = /* @__PURE__ */ new Map();
-  for (const agent of view.agents ?? []) for (const activity of agent.activity ?? []) activityPool.set(`${agent.id}:${activity.id}`, { ...activity, agentId: agent.id, agentLabel: agent.label });
-  for (const activity of view.recentActivity ?? []) {
-    const agent = (view.agents ?? []).find((candidate) => candidate.id === activity.agentGroupId);
-    if (agent) activityPool.set(`${agent.id}:${activity.id}`, { ...activity, agentId: agent.id, agentLabel: agent.label });
-  }
-  function activityFor(items, requestId, limit) {
-    const matches = /* @__PURE__ */ new Map();
-    for (const item of items) {
-      const refs = new Set((item.sourceRefs ?? []).map((ref) => `${ref.kind}:${ref.id}`));
-      for (const activity of activityPool.values()) {
-        if (activity.agentId !== item.agentId) continue;
-        const direct = refs.has(activity.id) || activity.sourceRef && refs.has(`${activity.sourceRef.kind}:${activity.sourceRef.id}`);
-        const observationForPrompt = activity.kind === "observation" && item.request?.key && activity.requestKey === item.request.key;
-        if (direct || observationForPrompt) matches.set(`${activity.agentId}:${activity.id}`, { ...activity, promptRequestKey: activity.requestKey ?? null, requestKey: requestId });
-      }
-    }
-    return [...matches.values()].sort((a, b) => (b.atEpoch ?? 0) - (a.atEpoch ?? 0)).slice(0, limit);
-  }
-  const explicitIds = /* @__PURE__ */ new Map();
-  for (const item of flattened) {
-    const key = conversationKey(sessions.get(item.agentSessionId));
-    if (key && item.requestId) {
-      if (!explicitIds.has(key)) explicitIds.set(key, /* @__PURE__ */ new Set());
-      explicitIds.get(key).add(String(item.requestId));
-    }
-  }
-  const sessionsByKey = /* @__PURE__ */ new Map();
-  for (const session of sessions.values()) {
-    const key = conversationKey(session);
-    if (key && !sessionsByKey.has(key)) sessionsByKey.set(key, session);
-  }
-  const rootFromMembers = (groupId, group) => {
-    const anchorRoot = projectRoot(sessionsByKey.get(group.anchor)?.project);
-    if (anchorRoot) return anchorRoot;
-    const memberRoots = new Set(Object.entries(ledger.groups.conversations).filter(([, id]) => id === groupId).map(([key]) => projectRoot(sessionsByKey.get(key)?.project)).filter(Boolean));
-    return memberRoots.size === 1 ? [...memberRoots][0] : NO_PROJECT;
-  };
-  const derivedRoots = /* @__PURE__ */ new Map();
-  const groupRoot = (groupId) => {
-    const group = ledger?.groups?.groups?.[groupId];
-    if (group?.projectRoot === NO_PROJECT) {
-      if (!derivedRoots.has(groupId)) derivedRoots.set(groupId, rootFromMembers(groupId, group));
-      return derivedRoots.get(groupId);
-    }
-    return projectRoot(sessionsByKey.get(group?.anchor)?.project);
-  };
-  const groupFor = (key, session) => {
-    const groupId = key ? ledger?.groups?.conversations?.[key] ?? null : null;
-    if (!groupId) return null;
-    const storedRoot = ledger.groups.groups[groupId]?.projectRoot;
-    if (typeof storedRoot === "string" && storedRoot !== NO_PROJECT) return groupId;
-    const own = projectRoot(session?.project), expected = groupRoot(groupId);
-    return own == null || expected == null || own === expected || storedRoot === NO_PROJECT && own === NO_PROJECT ? groupId : null;
-  };
-  const requests = /* @__PURE__ */ new Map(), unlinkedWork = [];
-  const requestFor = (id, { key, original, groupId = null, explicit = null, explicitText = null }) => {
-    let request = requests.get(id);
-    const anchorAsk = groupId ? ledger?.groups?.groups?.[groupId]?.anchorAsk ?? null : null;
-    if (anchorAsk && (anchorAsk.atEpoch ?? Infinity) < (original.atEpoch ?? Infinity)) original = anchorAsk;
-    if (!request) {
-      request = { id, conversationKey: key, conversationKeys: [], original, explicitRequestText: explicitText, scopeUpdates: [], projects: [], agentIds: [], items: [], workstreams: [], updatedAtEpoch: 0, explicitRequestId: explicit, groupId };
-      requests.set(id, request);
-    } else {
-      if (!request.explicitRequestText && explicitText) request.explicitRequestText = explicitText;
-      if (groupId && (original.atEpoch ?? Infinity) < (request.original.atEpoch ?? Infinity)) request.original = original;
-    }
-    if (key && !request.conversationKeys.includes(key)) request.conversationKeys.push(key);
-    return request;
-  };
-  const addProject = (request, project) => {
-    if (typeof project === "string" && project && !request.projects.includes(project)) request.projects.push(project);
-  };
-  for (const [key, session] of [...sessionsByKey].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) {
-    if (explicitIds.has(key) || ledger?.groups?.ignored?.[key]) continue;
-    const original = originalFor(session, prompts);
-    if (!original) continue;
-    const groupId = groupFor(key, session);
-    addProject(requestFor(groupId ? JSON.stringify(["overall-request", groupId]) : key, { key, original, groupId }), session.project);
-  }
-  for (const [groupId, group] of Object.entries(ledger?.groups?.groups ?? {})) {
-    const id = JSON.stringify(["overall-request", groupId]);
-    if (requests.has(id) || !group?.anchorAsk || ledger?.groups?.ignored?.[group.anchor]) continue;
-    const anchorSession = sessionsByKey.get(group.anchor);
-    if (anchorSession) continue;
-    requestFor(id, { key: isConversationKey(group.anchor) ? group.anchor : null, original: group.anchorAsk, groupId });
-  }
-  for (const item of flattened) {
-    const session = sessions.get(item.agentSessionId);
-    const key = conversationKey(session);
-    const knownIds = explicitIds.get(key);
-    const explicit = item.requestId ? String(item.requestId) : knownIds?.size === 1 ? [...knownIds][0] : null;
-    if (!item.requestId && knownIds?.size > 1) {
-      unlinkedWork.push({ ...item, reason: "multiple-explicit-requests-without-item-link" });
-      continue;
-    }
-    let original = session ? originalFor(session, prompts) : null;
-    const explicitText = isHumanActionRequest(item.requestText) ? requestText(item.requestText) : null;
-    if (!original && explicit && explicitText) original = { text: explicitText, source: "explicit-work-state-request", sourceId: item.id, url: item.url, promptNumber: null, atEpoch: item.lastUpdateEpoch ?? null };
-    if (!original || !key && !explicit) {
-      unlinkedWork.push({ ...item, reason: key ? "no-substantive-human-request" : "no-confirmed-conversation-or-explicit-request" });
-      continue;
-    }
-    if (!explicit && key && ledger?.groups?.ignored?.[key]) {
-      unlinkedWork.push({ ...item, reason: "ignored-by-request-grouping" });
-      continue;
-    }
-    const groupId = !explicit ? groupFor(key, session) : null;
-    const root = projectRoot(session?.project) ?? projectRoot(item.project);
-    const id = explicit ? JSON.stringify(root == null ? ["explicit-request", explicit] : ["explicit-request", root, explicit]) : groupId ? JSON.stringify(["overall-request", groupId]) : key;
-    const request = requestFor(id, { key, original, groupId, explicit, explicitText });
-    addProject(request, session?.project);
-    addProject(request, item.project);
-    if (!request.agentIds.includes(item.agentId)) request.agentIds.push(item.agentId);
-    request.items.push(item);
-    request.updatedAtEpoch = Math.max(request.updatedAtEpoch, item.lastUpdateEpoch ?? 0);
-  }
-  const requestsByConversation = /* @__PURE__ */ new Map();
-  for (const request of requests.values()) for (const key of request.conversationKeys) {
-    if (!requestsByConversation.has(key)) requestsByConversation.set(key, []);
-    requestsByConversation.get(key).push(request);
-  }
-  const sessionsByMemory = new Map([...sessions.values()].filter((session) => session.memory_session_id).map((session) => [session.memory_session_id, session]));
-  const recordedProducts = /* @__PURE__ */ new Map();
-  const attach = (session, products) => {
-    const owners = requestsByConversation.get(conversationKey(session));
-    if (owners?.length !== 1 || !products.length) return;
-    if (!recordedProducts.has(owners[0])) recordedProducts.set(owners[0], []);
-    recordedProducts.get(owners[0]).push(...products);
-  };
-  for (const call of records2.productCalls ?? []) attach(sessions.get(call.session_db_id), productsFromToolUse(call));
-  for (const observation of records2.productObservations ?? []) attach(sessionsByMemory.get(observation.memory_session_id), productsFromObservation(observation));
-  for (const row of records2.productDeliverables ?? []) attach(row, productsFromDeliverable(row));
-  for (const record of records2.sharedProducts ?? []) {
-    const session = sessionsByKey.get(record.conversationKey);
-    if (session) attach(session, record.products ?? []);
-  }
-  const sessionIdsByKey = /* @__PURE__ */ new Map(), promptsBySession = /* @__PURE__ */ new Map();
-  for (const session of sessions.values()) {
-    const key = conversationKey(session);
-    if (key) sessionIdsByKey.set(key, [...sessionIdsByKey.get(key) ?? [], session.id]);
-  }
-  for (const prompt of prompts) {
-    if (!promptsBySession.has(prompt.session_db_id)) promptsBySession.set(prompt.session_db_id, []);
-    promptsBySession.get(prompt.session_db_id).push(prompt);
-  }
-  for (const request of requests.values()) {
-    const merged = mergeProducts([...recordedProducts.get(request) ?? [], ...request.items.flatMap((item) => item.workProduct ?? [])]);
-    const copies = merged.filter((product) => product.deliverable && product.sourcePath);
-    const covered = (product) => Boolean(product.path) && copies.some((copy) => copy.sourcePath === product.path && copyCoversSource(copy, product.path));
-    request.workProduct = merged.filter((product) => !covered(product)).map((product) => ({ ...product, fileUrl: fileUrl(product), available: product.path ? Boolean(servableFile(product)) : product.deliverable ? bucketFileAvailable(product) : true }));
-    const relatedIds = new Set(request.conversationKeys.flatMap((key) => sessionIdsByKey.get(key) ?? []));
-    const related = [...relatedIds].flatMap((id) => promptsBySession.get(id) ?? []);
-    request.updatedAtEpoch = Math.max(request.updatedAtEpoch, request.original.atEpoch ?? 0, ...related.map((prompt) => prompt.created_at_epoch ?? 0));
-    if (!request.agentIds.length) {
-      for (const agent of view.agents ?? []) if (relatedIds.has(agent.sessionId) && !request.agentIds.includes(agent.id)) request.agentIds.push(agent.id);
-    }
-    request.scopeUpdates = related.filter((prompt) => !(request.original.source === "user-prompt" && prompt.id === request.original.sourceId) && requestText(prompt.prompt_text) && (request.original.promptNumber == null || prompt.prompt_number >= request.original.promptNumber)).sort((a, b) => {
-      const first = conversationKey(sessions.get(a.session_db_id)) ?? "";
-      const second = conversationKey(sessions.get(b.session_db_id)) ?? "";
-      return (b.created_at_epoch ?? 0) - (a.created_at_epoch ?? 0) || b.prompt_number - a.prompt_number || (first < second ? 1 : first > second ? -1 : 0) || b.id - a.id;
-    }).slice(0, 6).reverse().map((prompt) => ({ text: requestText(prompt.prompt_text, 500), sourceId: prompt.id, url: `/api/work-view/evidence/prompt/${prompt.id}`, promptNumber: prompt.prompt_number, atEpoch: prompt.created_at_epoch ?? null }));
-    const streams = /* @__PURE__ */ new Map();
-    for (const item of request.items) {
-      const id = item.listId ?? JSON.stringify(["agent-session", item.agentId]);
-      if (!streams.has(id)) streams.set(id, { id, title: item.listName ?? item.title, agentIds: [], items: [] });
-      const stream = streams.get(id);
-      if (!stream.agentIds.includes(item.agentId)) stream.agentIds.push(item.agentId);
-      stream.items.push(item);
-    }
-    request.workstreams = [...streams.values()];
-    request.agentIds.sort((a, b) => Number(subagentIds.has(a)) - Number(subagentIds.has(b)));
-    for (const stream of request.workstreams) stream.activity = activityFor(stream.items, request.id, 20);
-    request.activity = activityFor(request.items, request.id, 40);
-    const media = requestMediaSummary(request.activity);
-    if (media) request.media = media;
-    const metadata = (key) => request.items.map((item) => ({ item, record: item[key] })).filter(({ record }) => record).sort((a, b) => (b.record.atEpoch ?? 0) - (a.record.atEpoch ?? 0));
-    const lifecycleRecords = request.items.flatMap((item) => [
-      ...typeof item.requestStatus === "string" && item.requestStatus.trim() ? [{ status: item.requestStatus.trim(), explicit: true, field: "request_status", sourceId: item.id, url: item.url, atEpoch: item.requestStatusSource?.atEpoch ?? item.lastUpdateEpoch ?? null, sourceOrder: item.requestStatusSource?.sourceOrder ?? null, sourceRef: item.requestStatusSource?.sourceRef ?? null }] : [],
-      ...typeof item.requestComplete === "boolean" ? [{ status: item.requestComplete ? "done" : "open", complete: item.requestComplete, explicit: true, field: "request_complete", sourceId: item.id, url: item.url, atEpoch: item.requestCompleteSource?.atEpoch ?? item.lastUpdateEpoch ?? null, sourceOrder: item.requestCompleteSource?.sourceOrder ?? null, sourceRef: item.requestCompleteSource?.sourceRef ?? null }] : []
-    ]).sort((a, b) => (b.atEpoch ?? 0) - (a.atEpoch ?? 0) || compareSourceOrder(b.sourceOrder, a.sourceOrder) || Number(b.field === "request_complete") - Number(a.field === "request_complete"));
-    request.lifecycle = lifecycleRecords[0] ?? null;
-    request.startedAtEpoch = request.original.atEpoch ?? null;
-    request.progress = request.groupId ? ledger?.progress?.[request.groupId] ?? null : null;
-    request.completedAtEpoch = request.lifecycle && (request.lifecycle.complete === true || ["done", "completed", "complete", "shipped", "delivered"].includes(request.lifecycle.status.toLowerCase())) ? request.lifecycle.atEpoch : null;
-    request.requestedBy = metadata("requestedBySource")[0]?.item.requestedBy ?? null;
-    request.requestedBySource = metadata("requestedBySource")[0]?.record ?? null;
-    request.shipEstimate = metadata("shipEstimateSource")[0]?.item.shipEstimate ?? null;
-    request.shipEstimateSource = metadata("shipEstimateSource")[0]?.record ?? null;
-    request.stageSourceText = metadata("stageSource")[0]?.item.stageSourceText ?? null;
-    request.stageSource = metadata("stageSource")[0]?.record ?? null;
-    const collect = (section, valueKey) => {
-      const unique = /* @__PURE__ */ new Map();
-      for (const item of request.items) for (const value of item.afterShip?.[section] ?? []) {
-        const key = JSON.stringify([value.kind ?? section, value[valueKey]]);
-        if (!unique.has(key)) unique.set(key, { ...value, sourceRefs: [] });
-        const target = unique.get(key);
-        for (const ref of value.sourceRefs ?? []) if (!target.sourceRefs.some((other) => other.kind === ref.kind && other.id === ref.id)) target.sourceRefs.push(ref);
-      }
-      return [...unique.values()];
-    };
-    const resources = collect("resources", "url"), classifications = collect("classifications", "text"), notes = collect("notes", "text");
-    request.afterShip = resources.length || classifications.length || notes.length ? { resources, classifications, notes } : null;
-    const cached = titleCache instanceof Map ? titleCache.get(request.id) : titleCache[request.id];
-    const cachedTitle = typeof cached === "string" ? cached.trim() : cached && cached.source === request.original.source && cached.sourceId != null && String(cached.sourceId) === String(request.original.sourceId) && typeof cached.title === "string" ? cached.title.trim() : "";
-    const groupTitle = request.groupId ? ledger?.groups?.groups?.[request.groupId]?.title?.trim() ?? "" : "";
-    request.title = cachedTitle || groupTitle || humanRequestTitle(request.explicitRequestText ?? request.original);
-    request.titleSource = cachedTitle ? "title-cache" : groupTitle ? "request-group" : request.explicitRequestText ? "explicit-work-state-request" : "original-human-request";
-    request.items.sort((a, b) => (b.lastUpdateEpoch ?? 0) - (a.lastUpdateEpoch ?? 0));
-  }
-  return { humanRequests: [...requests.values()].sort((a, b) => b.updatedAtEpoch - a.updatedAtEpoch), unlinkedWork };
-}
-var REQUEST_MEDIA_PREVIEW_LIMIT, ENGLISH_ACTION, IMPERATIVE_OPENING, NOT_A_VERB, ENGLISH_WORDS, isConversationKey;
-var init_request_projection = __esm({
-  "src/services/work-view/request-projection.mjs"() {
-    "use strict";
-    init_work_product();
-    init_session_project();
-    REQUEST_MEDIA_PREVIEW_LIMIT = 4;
-    ENGLISH_ACTION = /\b(?:make|build|create|implement|design|fix|investigate|audit|review|write|rewrite|show|see|find|search|explain|compare|help|convert|add|remove|update|rename|run|test|verify|deploy|analyze|analyse|read|tell|open|generate|ship|merge|commit|push|release|publish|set up|i want|i need|can you|could you|would you|how (?:can|do|does|is)|what (?:is|are|does|did)|why (?:is|are|does|did)|do we|do you|(?:is|are|seems?|looks?) (?:broken|failing|wrong)|doesn'?t work|not working)\b/i;
-    IMPERATIVE_OPENING = /^(?:please\s+)?([a-z]{3,})\s+(?:the|this|that|these|those|all|every|each|my|our|your|its|it|them|any|some|a|an)\b/i;
-    NOT_A_VERB = /^(?:the|and|for|with|from|now|then|just|not|about|after|before|into|onto|over|under|like|also|here|there|when|where|what|which|who|why|how|but|yet|all|any|some|its|our|your|this|that|these|those|they|she|his|her|one|two|three)$/i;
-    ENGLISH_WORDS = /\b(?:the|a|an|this|that|it|is|are|to|of|and|for|with|in|on|my|me|you|we|please|just|all|so|now|then|from|be|not)\b/i;
-    isConversationKey = (value) => {
-      try {
-        const parsed = JSON.parse(value);
-        return Array.isArray(parsed) && parsed[0] === "conversation" && parsed.length === 3;
-      } catch {
-        return false;
-      }
-    };
-  }
-});
-
-// src/services/work-view/owner-goals.mjs
-function isOwnerGoalsList(name) {
-  return name === OWNER_GOALS_LIST || String(name ?? "").startsWith(`${OWNER_GOALS_LIST}/`);
-}
-function goalKindOf(fields) {
-  const value = fields?.goal_kind;
-  if (GOAL_KINDS.includes(value)) return { kind: value, legacy: false };
-  if (Object.hasOwn(LEGACY_GOAL_KINDS, value)) return { kind: LEGACY_GOAL_KINDS[value], legacy: true };
-  throw new Error(`Owner-goals item ${JSON.stringify(fields?.task ?? null)} has an unknown goal_kind: ${JSON.stringify(value ?? null)}`);
-}
-var OWNER_GOALS_LIST, GOAL_KINDS, LEGACY_GOAL_KINDS;
-var init_owner_goals = __esm({
-  "src/services/work-view/owner-goals.mjs"() {
-    "use strict";
-    OWNER_GOALS_LIST = "owner-goals";
-    GOAL_KINDS = ["focus-area", "ask"];
-    LEGACY_GOAL_KINDS = { priority: "focus-area", "open-ask": "ask" };
-  }
-});
-
-// src/services/work-view/work-state-limits.mjs
-var init_work_state_limits = __esm({
-  "src/services/work-view/work-state-limits.mjs"() {
-    "use strict";
-  }
-});
-
 // src/utils/redaction.ts
-import { existsSync as existsSync11, readFileSync as readFileSync7 } from "fs";
+import { existsSync as existsSync8, readFileSync as readFileSync6 } from "fs";
 function genericBuiltinRegex(lookbehind) {
   return new RegExp(`${lookbehind}${GENERIC_VALUE}`, "gi");
 }
@@ -3216,9 +1788,9 @@ function loadRedactionConfig(settings2) {
   };
 }
 function readSettingsText(settingsPath) {
-  if (!existsSync11(settingsPath)) return null;
+  if (!existsSync8(settingsPath)) return null;
   try {
-    return readFileSync7(settingsPath, "utf-8");
+    return readFileSync6(settingsPath, "utf-8");
   } catch {
     return "";
   }
@@ -3480,6 +2052,18 @@ var init_redaction = __esm({
       // POSTMAN_API_KEY lines and `newman` / `postman` CLI commands print.
       { name: "grafana_token", regex: /\b(?:glsa_[A-Za-z0-9]{32}_[A-Fa-f0-9]{8}(?!\w)|glc_[A-Za-z0-9+\/]{32,400}={0,2}(?![\w+\/=]))/g },
       { name: "postman_key", regex: /\bPMAK-[a-f0-9]{24}-[a-f0-9]{34}(?!\w)/g },
+      // Pulumi access tokens (`pul-` + 40 hex), which PULUMI_ACCESS_TOKEN lines,
+      // `pulumi login` output and CI configs print. Doppler personal tokens
+      // (`dp.pt.` + 43 alphanumerics), which DOPPLER_TOKEN lines and
+      // `doppler configure` dumps print.
+      { name: "pulumi_token", regex: /\bpul-[a-f0-9]{40}(?!\w)/g },
+      { name: "doppler_token", regex: /\bdp\.pt\.[A-Za-z0-9]{43}(?!\w)/g },
+      // Heroku API keys in the current format (`HRKU-AA` + 58 characters), which
+      // HEROKU_API_KEY lines, `heroku auth:token` output and ~/.netrc dumps print.
+      // Atlassian API tokens (`ATATT3` + 186 characters), which JIRA_API_TOKEN /
+      // CONFLUENCE_API_TOKEN lines and `acli` / `curl -u user:token` commands print.
+      { name: "heroku_key", regex: /\bHRKU-AA[0-9A-Za-z_-]{58}(?![\w-])/g },
+      { name: "atlassian_token", regex: /\bATATT3[A-Za-z0-9_=-]{186}(?![\w=-])/g },
       // Incoming webhook URLs carry their secret in the path, so anyone holding
       // one can post to the channel: Slack (`hooks.slack.com/services/T…/B…/…`,
       // plus workflow and trigger URLs) and Discord (`discord.com/api/webhooks/
@@ -3697,7 +2281,7 @@ var init_media_contract = __esm({
 });
 
 // src/services/sync/CanonicalContent.ts
-import { createHash as createHash3, randomUUID } from "crypto";
+import { createHash as createHash2, randomUUID } from "crypto";
 function jsonError(message) {
   const reason = redactSyncDiagnostic(message);
   logger.debug("CLOUD_SYNC", "Rejected invalid canonical content", { reason });
@@ -3738,7 +2322,7 @@ function normalizeJson(value, seen) {
   }
 }
 function sha256Base64Url(value) {
-  return createHash3("sha256").update(value, "utf8").digest("base64url");
+  return createHash2("sha256").update(value, "utf8").digest("base64url");
 }
 function assertCanonicalDecimal(value, options = {}) {
   if (typeof value !== "string" || !CANONICAL_DECIMAL.test(value)) {
@@ -3769,6 +2353,1509 @@ var init_CanonicalContent = __esm({
     init_media_contract();
     CANONICAL_DECIMAL = /^(?:0|[1-9][0-9]*)$/;
     UINT64_MAX = 18446744073709551615n;
+  }
+});
+
+// src/services/work-view/work-product.mjs
+import { statSync as statSync3 } from "node:fs";
+import { basename as basename4, extname, isAbsolute } from "node:path";
+import { createHash as createHash3 } from "node:crypto";
+function safeWebUrl(value) {
+  if (typeof value !== "string") return null;
+  try {
+    const url = new URL(value.trim());
+    return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+function isLocalPath(value, isAbsolutePath = isAbsolute) {
+  return typeof value === "string" && isAbsolutePath(value) && !value.includes("\0") && !value.split(/[\\/]/).includes("..");
+}
+function fileKind(path4) {
+  return isLocalPath(path4) ? FILE_KINDS[extname(path4).toLowerCase()] ?? null : null;
+}
+function kindForUrl(url, fallback) {
+  const { hostname: hostname2, pathname } = new URL(url);
+  if (hostname2 === "github.com" && /\/pull\/\d+/.test(pathname)) return "pull-request";
+  if (/\.(?:vercel\.app|netlify\.app|pages\.dev)$/.test(hostname2)) return "deployment";
+  const extension = FILE_KINDS[extname(pathname).toLowerCase()];
+  return extension ?? fallback;
+}
+function parse(value) {
+  if (typeof value !== "string") return value ?? null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+function urlsIn(value, found = []) {
+  const pending = [value];
+  const visited = /* @__PURE__ */ new WeakSet();
+  while (pending.length) {
+    const item = pending.pop();
+    if (typeof item === "string") {
+      const url = safeWebUrl(item);
+      if (url) found.push(url);
+    } else if (item && typeof item === "object" && !visited.has(item)) {
+      visited.add(item);
+      const children = Array.isArray(item) ? item : Object.entries(item).filter(([key, child]) => /url$/i.test(key) || typeof child === "object").map(([, child]) => child);
+      for (let index = children.length - 1; index >= 0; index--) pending.push(children[index]);
+    }
+  }
+  return found;
+}
+function commitShaResolver(shas) {
+  const prefixes = /* @__PURE__ */ new Map();
+  for (const sha of shas) for (let length = 7; length <= sha.length; length++) {
+    const prefix = sha.slice(0, length), known = prefixes.get(prefix);
+    if (known === void 0 || known !== null && sha.startsWith(known)) prefixes.set(prefix, sha);
+    else if (known !== null && !known.startsWith(sha)) prefixes.set(prefix, null);
+  }
+  return (sha) => prefixes.has(sha) ? prefixes.get(sha) : sha;
+}
+function githubRepo(remote) {
+  const match = typeof remote === "string" ? remote.trim().match(GITHUB_REMOTE) : null;
+  return match ? `${match[1]}/${match[2]}` : null;
+}
+function gitUrl(product) {
+  if (!product.repo) return void 0;
+  return product.kind === "commit" ? `https://github.com/${product.repo}/commit/${product.sha}` : `https://github.com/${product.repo}/tree/${product.branch.split("/").map(encodeURIComponent).join("/")}`;
+}
+function outputText(call, response) {
+  if (typeof response === "string") return response;
+  if (response && typeof response === "object") return [response.stdout, response.stderr].filter((part) => typeof part === "string").join("\n");
+  return typeof call.tool_response === "string" ? call.tool_response : "";
+}
+function commitSubjects(command2) {
+  const starts = [...command2.matchAll(gitPattern(String.raw`commit\b`, "g"))].map((match) => match.index);
+  return starts.map((start, index) => {
+    const invocation = command2.slice(start, starts[index + 1]);
+    const substituted = invocation.match(/\s-[a-zA-Z]*m\s+"\$\(\s*cat\s+<<-?\s*['"]?\w+['"]?[^\n]*\n([^\n]*)/);
+    if (substituted) return short(substituted[1]);
+    const inline = invocation.match(/\s-[a-zA-Z]*m\s+(?:"((?:[^"\\]|\\.)*)"|'([^']*)')/);
+    const heredoc = invocation.match(/\s-F\s+-\s*<<-?\s*['"]?\w+['"]?\n([^\n]*)/);
+    const text5 = inline ? inline[1]?.replace(BASH_DOUBLE_QUOTE_ESCAPE, "$1") ?? inline[2] : heredoc?.[1];
+    return short(text5?.split("\n")[0]);
+  });
+}
+function commitsFrom(command2, response, out) {
+  const commits = /* @__PURE__ */ new Map();
+  const add = (sha, branch, subject) => {
+    const known = commits.get(sha);
+    commits.set(sha, { sha, branch: branch ?? known?.branch ?? null, subject: subject ?? known?.subject ?? null });
+  };
+  const recorded = response?.gitOperation?.commit;
+  const subjects = commitSubjects(command2);
+  if (!subjects.length && !recorded?.sha) return [];
+  for (const [, ref, sha, subject] of out.matchAll(new RegExp(String.raw`^\[(.+?)(?: \(root-commit\))? (${SHA})\] (.+)$`, "gm"))) {
+    add(sha, ref.startsWith("detached HEAD") ? null : ref, short(subject));
+  }
+  if (typeof recorded?.sha === "string" && new RegExp(`^${SHA}$`).test(recorded.sha)) add(recorded.sha, typeof recorded.branch === "string" ? recorded.branch : null, null);
+  if (!commits.size) {
+    const rtkSha = subjects.length === 1 ? out.match(new RegExp(`^ok (${SHA})$`, "m"))?.[1] : null;
+    if (rtkSha) add(rtkSha, null, subjects[0]);
+    else {
+      const printed = [...out.matchAll(new RegExp(`^(${SHA}) (.+)$`, "gm"))].map(([, sha, subject]) => [sha, short(subject)]);
+      for (const subject of subjects) {
+        const match = subject && printed.find(([, printedSubject]) => printedSubject === subject);
+        if (match) add(match[0], null, subject);
+      }
+    }
+  }
+  const resolveSha = commitShaResolver([...commits.keys()]);
+  const unique = /* @__PURE__ */ new Map();
+  for (const commit of commits.values()) {
+    const sha = resolveSha(commit.sha) ?? commit.sha, known = unique.get(sha);
+    unique.set(sha, { ...commit, sha, branch: commit.branch ?? known?.branch ?? null, subject: commit.subject ?? known?.subject ?? null });
+  }
+  return [...unique.values()];
+}
+function pushTargets(command2) {
+  const word = String.raw`(?:[^\s"'<>;&|()]+|"[^"]*"|'[^']*')+`;
+  const redirection = String.raw`(?:\d*(?:>>?|<{1,3})&?|&>>?)`;
+  const pattern = gitPattern(String.raw`push\b((?:[ \t]+(?:#[^\n]*)?|${redirection}|${word})*)`, "g");
+  const redirect = new RegExp(`^${redirection}$`);
+  return [...command2.matchAll(pattern)].map(([, args]) => {
+    const shellTokens = args.match(new RegExp(`${redirection}|${word}`, "g")) ?? [];
+    const tokens = [];
+    for (let index = 0; index < shellTokens.length; index++) {
+      if (shellTokens[index].startsWith("#")) break;
+      if (redirect.test(shellTokens[index])) {
+        index++;
+        continue;
+      }
+      tokens.push(unquote(shellTokens[index]));
+    }
+    const positional = [];
+    let dryRun = false, deleting = false, tags = false, repoOption;
+    for (let index = 0; index < tokens.length; index++) {
+      const token = tokens[index];
+      if (token === "--") {
+        positional.push(...tokens.slice(index + 1));
+        break;
+      }
+      if (token === "--repo") {
+        repoOption = tokens[++index];
+        continue;
+      }
+      if (token.startsWith("--repo=")) {
+        repoOption = token.slice("--repo=".length);
+        continue;
+      }
+      if (/^--(?:push-option|receive-pack|exec|recurse-submodules)$/.test(token)) {
+        index++;
+        continue;
+      }
+      if (token.startsWith("--")) {
+        if (token === "--dry-run" || token === "--no-dry-run") dryRun = token === "--dry-run";
+        if (token === "--delete" || token === "--no-delete") deleting = token === "--delete";
+        if (token === "--tags" || token === "--no-tags") tags = token === "--tags";
+        continue;
+      }
+      if (token.startsWith("-")) {
+        let flags = token.slice(1);
+        const valueAt = flags.indexOf("o");
+        if (valueAt !== -1) {
+          if (valueAt === flags.length - 1) index++;
+          flags = flags.slice(0, valueAt);
+        }
+        if (flags.includes("n")) dryRun = true;
+        if (flags.includes("d")) deleting = true;
+        continue;
+      }
+      positional.push(token);
+    }
+    const [remote, ...refspecs] = positional;
+    const destinations = [];
+    for (let index = 0; index < refspecs.length; index++) {
+      const spec = refspecs[index];
+      if (spec === "tag") {
+        tags = true;
+        index++;
+        continue;
+      }
+      destinations.push(spec.startsWith(":") ? "" : spec.replace(/^\+/, "").split(":").at(-1));
+    }
+    const branches = deleting ? [] : destinations.map((ref) => ref && ref !== "HEAD" && (!ref.startsWith("refs/") || ref.startsWith("refs/heads/")) ? ref.replace(/^refs\/heads\//, "") : null);
+    const deletesOrTags = deleting || tags || destinations.some((ref) => ref.startsWith("refs/tags/"));
+    return { repo: githubRepo(remote ?? repoOption), branches, dryRun, deletesOrTags };
+  });
+}
+function pushesFrom(command2, response, out) {
+  const targets = pushTargets(command2);
+  const recorded = response?.gitOperation?.push?.branch;
+  if (!targets.length && typeof recorded !== "string") return [];
+  let target = targets.length === 1 ? targets[0] : null;
+  let index = 0;
+  let repo = target?.repo ?? null;
+  const pushes = /* @__PURE__ */ new Map();
+  const add = (branch2, head) => {
+    const key = JSON.stringify([repo, branch2]);
+    pushes.set(key, { branch: branch2, repo, heads: head ? [head] : [] });
+  };
+  const lines = out.split("\n");
+  const mixedSimulation = targets.some((t) => t.dryRun) && targets.some((t) => !t.dryRun);
+  if (mixedSimulation) {
+    const reportsPush = (text5) => typeof text5 === "string" && /^(?:To |Everything up-to-date$)/m.test(text5);
+    if (lines.filter(reportsPush).length !== targets.length || reportsPush(response?.stdout) && reportsPush(response?.stderr)) return [];
+  }
+  for (const line of lines) {
+    if (line === "Everything up-to-date") {
+      index++;
+      continue;
+    }
+    const remote = line.match(/^To (\S+)$/);
+    if (remote) {
+      target = targets[index++] ?? (targets.length === 1 ? targets[0] : null);
+      repo = githubRepo(remote[1]) ?? target?.repo ?? null;
+      continue;
+    }
+    if (target?.dryRun) continue;
+    const porcelain = line.match(/^[ +*]\t[^:\t]*:refs\/heads\/([^\t]+)\t(.+)$/);
+    if (porcelain) {
+      add(porcelain[1], porcelain[2].match(new RegExp(String.raw`^${SHA}\.\.\.?(${SHA})`))?.[1]);
+      continue;
+    }
+    const ref = line.match(new RegExp(String.raw`^\s*[ +*]?\s*(?:${SHA}\.\.\.?(${SHA})|\[new branch\])\s+(\S+)\s+->\s+(\S+)`));
+    if (ref && !ref[3].startsWith("refs/tags/")) {
+      const branch2 = ref[3].replace(/^refs\/heads\//, "");
+      if (!target?.deletesOrTags || target.branches.includes(branch2) || line.includes("[new branch]")) add(branch2, ref[1]);
+    }
+  }
+  const branch = recorded ?? target?.branches.find(Boolean);
+  if (!pushes.size && targets.length <= 1 && !target?.dryRun && branch && (!target?.deletesOrTags || target.branches.includes(branch)) && !/Everything up-to-date|\[up to date\]|\[new tag\]|\[deleted\]|\[rejected\]|failed to push|^fatal:/m.test(out)) add(branch);
+  return [...pushes.values()];
+}
+function createdBranchesFrom(command2, out) {
+  const requested = [...new Set([...command2.matchAll(gitPattern(String.raw`(?:checkout\s+-[bB]|switch\s+-[cC])\s+("[^"]+"|'[^']+'|[^\s;&|)]+)`, "g"))].map((match) => unquote(match[1])))];
+  const confirmed = new Set([...out.matchAll(/^(?:Switched to a new branch|Switched to and reset branch|Reset branch) '(.+)'\r?$/gm)].map((match) => match[1]));
+  if (confirmed.size > 0 || /^(?:fatal:|error:|Already on ')/m.test(out)) {
+    return requested.filter((branch) => confirmed.has(branch)).map((branch) => ({ branch, repo: null, heads: [] }));
+  }
+  return requested.filter((branch) => out.includes(`'${branch}'`)).map((branch) => ({ branch, repo: null, heads: [] }));
+}
+function pullRequestFrom(command2, response, out, { atEpoch, sourceRef: sourceRef2 }) {
+  if (!/(?:^|[;&|(\n])\s*(?:rtk\s+)?gh\s+pr\s+create\b/.test(command2)) return [];
+  const printed = out.match(/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/m)?.[0];
+  const url = safeWebUrl(response?.gitOperation?.pr?.url ?? printed);
+  if (!url) return [];
+  const title = command2.match(/(?:--title(?:=|\s+)|\s-t\s+)(?:"((?:[^"\\]|\\.)+)"|'([^']+)'|([^\s"'-][^\s]*))/);
+  const titleText = title?.[1]?.replace(BASH_DOUBLE_QUOTE_ESCAPE, "$1") ?? title?.[2] ?? title?.[3];
+  return [{ kind: "pull-request", title: short(titleText) ?? `PR #${url.split("/").at(-1)}`, url, atEpoch, sourceRef: sourceRef2 }];
+}
+function pullRequestFromGitHubTool(input, response, { atEpoch, sourceRef: sourceRef2 }) {
+  const repoPart = (value) => typeof value === "string" && /^[\w.-]+$/.test(value);
+  const numericId = (value) => typeof value === "string" && /^[1-9]\d*$/.test(value) || Number.isSafeInteger(value) && value > 0;
+  if (!repoPart(input.owner) || !repoPart(input.repo)) return [];
+  const refused = (value) => value?.isError === true || value?.is_error === true || value?.error != null || value?.status === "awaiting_user_submission";
+  if (refused(response) || refused(response?.structuredContent)) return [];
+  const blocks = Array.isArray(response) ? response : response?.content;
+  const candidates = [
+    response?.structuredContent,
+    response,
+    ...Array.isArray(blocks) ? blocks.filter((block) => block?.type === "text" && typeof block.text === "string").map((block) => parse(block.text)) : []
+  ];
+  for (const result of candidates) {
+    if (!result || typeof result !== "object" || refused(result) || !numericId(result.id)) continue;
+    const url = safeWebUrl(result.html_url ?? result.url);
+    if (!url) continue;
+    const parsed = new URL(url), path4 = /^\/([\w.-]+)\/([\w.-]+)\/pull\/([1-9]\d*)$/.exec(parsed.pathname);
+    if (parsed.protocol !== "https:" || parsed.hostname !== "github.com" || parsed.port || parsed.search || parsed.hash || !path4 || path4[1].toLowerCase() !== input.owner.toLowerCase() || path4[2].toLowerCase() !== input.repo.toLowerCase() || result.number !== void 0 && (!numericId(result.number) || String(result.number) !== path4[3])) continue;
+    return [{ kind: "pull-request", title: short(result.title ?? input.title) ?? `PR #${path4[3]}`, url, atEpoch, sourceRef: sourceRef2 }];
+  }
+  return [];
+}
+function gitProductsFromCommand(command2, response, out, { atEpoch = null, sourceRef: sourceRef2 = null } = {}) {
+  const pushes = pushesFrom(command2, response, out);
+  const branches = [...createdBranchesFrom(command2, out).filter((created) => !pushes.some((pushed) => pushed.branch === created.branch)), ...pushes];
+  const products = [];
+  for (const commit of commitsFrom(command2, response, out)) {
+    const matchingPushes = pushes.filter((push) => push.heads.some((head) => matchingCommitSha(head, commit.sha)));
+    const pushed = commit.branch && pushes.find((push) => push.branch === commit.branch) || (matchingPushes.length === 1 ? matchingPushes[0] : null) || (!commit.branch && pushes.length === 1 ? pushes[0] : null);
+    products.push({ kind: "commit", title: commit.subject ? `${commit.sha.slice(0, 7)} ${commit.subject}` : commit.sha.slice(0, 7), sha: commit.sha, branch: commit.branch ?? pushed?.branch ?? null, repo: pushed?.repo ?? null, atEpoch, sourceRef: sourceRef2 });
+  }
+  for (const branch of branches) products.push({ kind: "branch", title: branch.branch, branch: branch.branch, repo: branch.repo, heads: branch.heads, atEpoch, sourceRef: sourceRef2 });
+  return products.map((product) => ({ ...product, url: gitUrl(product) }));
+}
+function productsFromToolUse(call) {
+  const input = parse(call.tool_input) ?? {}, response = parse(call.tool_response);
+  const sourceRef2 = { kind: "tool-use", id: call.id };
+  const atEpoch = call.created_at_epoch ?? null;
+  if (GITHUB_PULL_REQUEST_TOOL.test(call.tool_name)) return pullRequestFromGitHubTool(input, response, { atEpoch, sourceRef: sourceRef2 });
+  if (call.tool_name === "Bash" && typeof input.command === "string") {
+    const out = outputText(call, response);
+    return [...pullRequestFrom(input.command, response, out, { atEpoch, sourceRef: sourceRef2 }), ...gitProductsFromCommand(input.command, response, out, { atEpoch, sourceRef: sourceRef2 })];
+  }
+  const publisher = PUBLISHING_TOOLS.find((tool) => tool.match.test(call.tool_name));
+  if (!publisher || !response) return [];
+  if (call.tool_name === "Artifact" && (input.action ?? "publish") !== "publish") return [];
+  if (call.tool_name === "Artifact" && input.asset) return [];
+  const urls = [...new Set(urlsIn(response))].filter((url) => !/\/(?:api|oauth)\//.test(new URL(url).pathname));
+  const title = short(response.title ?? input.title ?? input.name) ?? (isLocalPath(input.file_path) ? basename4(input.file_path) : null);
+  return urls.slice(0, 1).map((url) => ({ kind: kindForUrl(url, publisher.kind), title: title ?? new URL(url).hostname, url, atEpoch, sourceRef: sourceRef2 }));
+}
+function productsFromObservation(observation) {
+  const files = parse(observation.files_modified);
+  if (!Array.isArray(files)) return [];
+  return files.flatMap((path4, index) => {
+    const kind = fileKind(path4);
+    if (!kind) return [];
+    const title = /^index\.\w+$/i.test(basename4(path4)) ? basename4(path4.slice(0, -basename4(path4).length - 1)) || basename4(path4) : basename4(path4);
+    return [{ kind, title, path: path4, atEpoch: observation.created_at_epoch ?? null, sourceRef: { kind: "observation", id: observation.id, index } }];
+  });
+}
+function isWorkProductField(field) {
+  return WORK_PRODUCT_FIELDS.has(field) || /_url$/.test(field);
+}
+function productsFromFields(fields, { atEpoch = null, sourceRef: sourceRef2 = null } = {}) {
+  const products = [];
+  let index = 0;
+  for (const [field, value] of Object.entries(fields ?? {})) {
+    if (!isWorkProductField(field)) continue;
+    const decoded = WORK_PRODUCT_FIELDS.has(field) && typeof value === "string" && /^\s*[[{]/.test(value) ? parse(value) ?? value : value;
+    const values2 = WORK_PRODUCT_FIELDS.has(field) ? Array.isArray(decoded) ? decoded : [decoded] : typeof value === "string" ? [value] : [];
+    for (const value2 of values2) {
+      const entry = value2 && typeof value2 === "object" && !Array.isArray(value2) ? value2 : { url: value2 };
+      const url = safeWebUrl(entry.url ?? entry.link);
+      const path4 = isLocalPath(entry.path) ? entry.path : isLocalPath(entry.url) ? entry.url : null;
+      const kind = short(entry.kind), title = short(entry.title ?? entry.name);
+      const ref = sourceRef2 && { ...sourceRef2, index: index++ };
+      if (url) products.push({ kind: kind ?? kindForUrl(url, LEGACY_KINDS[field] ?? "link"), title: title ?? new URL(url).hostname, url, field, atEpoch, sourceRef: ref });
+      else if (path4 && (kind || fileKind(path4))) products.push({ kind: kind ?? fileKind(path4), title: title ?? basename4(path4), path: path4, field, atEpoch, sourceRef: ref });
+    }
+  }
+  return products;
+}
+function localProductId(ref) {
+  if (!ref || !["observation", "work-state", "deliverable"].includes(ref.kind) || typeof ref.device !== "string" || !ref.device || !/^\d+$/.test(String(ref.row ?? "")) || ref.index !== void 0 && (!Number.isSafeInteger(ref.index) || ref.index < 0)) return null;
+  return `local_${createHash3("sha256").update(JSON.stringify([ref.kind, ref.device, String(ref.row), ref.index ?? 0])).digest("hex")}`;
+}
+function mergeProducts(lists, limit = 60) {
+  const recorded = lists.flat();
+  const resolveSha = commitShaResolver(recorded.flatMap((product) => product.kind === "commit" && product.sha ? [product.sha] : product.heads ?? []));
+  const products = recorded.map((product) => product.kind === "commit" && product.sha ? { ...product, sha: resolveSha(product.sha) ?? product.sha } : product);
+  const pushesByBranch = /* @__PURE__ */ new Map(), repoByHead = /* @__PURE__ */ new Map(), repoBySource = /* @__PURE__ */ new Map();
+  for (const product of products) if (product.kind === "branch" && product.repo) {
+    if (!pushesByBranch.has(product.branch)) pushesByBranch.set(product.branch, []);
+    pushesByBranch.get(product.branch).push(product);
+    for (const head of product.heads ?? []) {
+      const sha = resolveSha(head);
+      if (sha === null) continue;
+      if (!repoByHead.has(sha)) repoByHead.set(sha, /* @__PURE__ */ new Set());
+      repoByHead.get(sha).add(product.repo);
+    }
+  }
+  const sourceKey = (product) => product.sourceRef ? `${product.sourceRef.kind}:${product.sourceRef.id}` : null;
+  const pushedAfter = (product) => {
+    const repos = new Set((pushesByBranch.get(product.branch) ?? []).filter((push) => product.kind === "branch" || (push.atEpoch ?? 0) >= (product.atEpoch ?? 0)).map((push) => push.repo));
+    return repos.size === 1 ? [...repos][0] : null;
+  };
+  const repoOf = (product) => {
+    const repos = product.sha ? repoByHead.get(product.sha) : null;
+    return product.repo ?? pushedAfter(product) ?? (repos?.size === 1 ? [...repos][0] : null);
+  };
+  for (const product of products) if (product.kind === "commit" && repoOf(product) && sourceKey(product)) repoBySource.set(sourceKey(product), repoOf(product));
+  const unique = /* @__PURE__ */ new Map();
+  for (const product of products.sort((a, b) => (b.atEpoch ?? 0) - (a.atEpoch ?? 0))) {
+    const isGit = product.kind === "commit" || product.kind === "branch";
+    const repo = isGit && !product.repo ? repoOf(product) ?? (product.kind === "commit" ? repoBySource.get(sourceKey(product)) : null) : null;
+    const resolved = repo || isGit && product.repo ? { ...product, ...repo ? { repo } : {}, url: gitUrl({ ...product, repo: repo ?? product.repo }) } : product;
+    const key = productKey(resolved);
+    if (!unique.has(key)) unique.set(key, resolved);
+  }
+  return [...unique.values()].slice(0, limit);
+}
+function productsFromDeliverable(row) {
+  if (!Number.isSafeInteger(row?.id) || row.id < 1 || typeof row.bucket_path !== "string" || !row.bucket_path) return [];
+  const name = basename4(row.bucket_path);
+  return [{
+    kind: short(row.kind) ?? fileKind(row.bucket_path) ?? "file",
+    title: short(row.title) ?? name,
+    url: `/api/deliverables/${row.id}/${encodeURIComponent(name)}`,
+    bucketPath: row.bucket_path,
+    sourcePath: typeof row.source_path === "string" ? row.source_path : null,
+    deliverable: true,
+    atEpoch: row.created_at_epoch ?? null,
+    sourceRef: { kind: "deliverable", id: row.id }
+  }];
+}
+function bucketFileAvailable(product) {
+  if (typeof product?.bucketPath !== "string" || !product.bucketPath) return false;
+  try {
+    return statSync3(product.bucketPath).isFile();
+  } catch {
+    return false;
+  }
+}
+function copyCoversSource(copy, sourcePath) {
+  if (typeof copy?.atEpoch !== "number" || !bucketFileAvailable(copy)) return false;
+  try {
+    const source = statSync3(sourcePath);
+    return !source.isFile() || source.mtimeMs <= copy.atEpoch;
+  } catch {
+    return true;
+  }
+}
+function servableFile(product) {
+  if (!product?.path || !fileKind(product.path)) return null;
+  try {
+    return statSync3(product.path).isFile() ? product.path : null;
+  } catch {
+    return null;
+  }
+}
+function fileUrl(product) {
+  const ref = product.sourceRef;
+  return product.path && ref ? `/api/work-view/file/${ref.kind}/${ref.id}/${ref.index ?? 0}` : null;
+}
+function productIndexClauses(database) {
+  if (!database) return {};
+  let clauses = productIndexes.get(database);
+  if (clauses) return clauses;
+  clauses = {};
+  for (const [table, index] of [["tool_uses", "idx_tool_uses_created_at_epoch"], ["observations", "idx_observations_created"]]) {
+    const found = database.prepare(`PRAGMA index_list('${table}')`).all().find((row) => row.name === index && row.partial === 0);
+    if (found && database.prepare(`PRAGMA index_info('${index}')`).all()[0]?.name === "created_at_epoch") {
+      clauses[table] = ` INDEXED BY ${index}`;
+    }
+  }
+  productIndexes.set(database, clauses);
+  return clauses;
+}
+function selectiveProductIndexClauses(database, sinceEpoch, limit) {
+  if (!(sinceEpoch > 0) || !Number.isSafeInteger(limit) || limit <= 0) return {};
+  const sampleSize = Math.min(limit, 128);
+  const indexes = productIndexClauses(database);
+  const selected = {};
+  for (const [lane, table, predicate] of [
+    ["publishing", "tool_uses", PUBLISHING_PRODUCT_PREDICATE],
+    ["git", "tool_uses", GIT_PRODUCT_PREDICATE],
+    ["observations", "observations", FILE_EXTENSION_PATTERN]
+  ]) {
+    const clause = indexes[table];
+    if (!clause) continue;
+    const columns = table === "tool_uses" ? "tool_name, tool_input, created_at_epoch" : "files_modified, created_at_epoch";
+    let sample;
+    try {
+      sample = database.prepare(`SELECT COUNT(*) AS sampled,
+        COALESCE(SUM(CASE WHEN created_at_epoch >= ? AND (${predicate}) THEN 1 ELSE 0 END), 0) AS matches
+        FROM (SELECT ${columns} FROM ${table} ORDER BY id DESC LIMIT ?)
+      `).get(sinceEpoch, sampleSize);
+    } catch (error) {
+      if (/no such (table|column)/i.test(String(error.message))) continue;
+      throw error;
+    }
+    if (sample.matches * 4 >= sample.sampled && sample.sampled > 0) continue;
+    const estimatedIdScan = limit * sampleSize / Math.max(1, sample.matches);
+    const budget = Math.min(128e3, Math.floor(estimatedIdScan / 2));
+    const candidates = database.prepare(`SELECT COUNT(*) AS count FROM (
+      SELECT 1 FROM ${table}${clause} WHERE created_at_epoch >= ? LIMIT ?
+    )`).get(sinceEpoch, budget + 1).count;
+    if (candidates <= budget) selected[lane] = clause;
+  }
+  return selected;
+}
+function readProductRecords(read, sinceEpoch, limit = 2e3, { database } = {}) {
+  const indexes = selectiveProductIndexClauses(database, sinceEpoch, limit);
+  const publishingCalls = read(`SELECT id, session_db_id, prompt_number, tool_name, tool_input, tool_response, created_at_epoch FROM tool_uses${indexes.publishing ?? ""}
+    WHERE created_at_epoch >= ? AND ${PUBLISHING_PRODUCT_PREDICATE}
+    ORDER BY id DESC LIMIT ?`, [sinceEpoch, limit]);
+  const gitCalls = read(`SELECT id, session_db_id, prompt_number, tool_name, tool_input, tool_response, created_at_epoch FROM tool_uses${indexes.git ?? ""}
+    WHERE created_at_epoch >= ? AND ${GIT_PRODUCT_PREDICATE}
+    ORDER BY id DESC LIMIT ?`, [sinceEpoch, limit]);
+  const productCalls = [...publishingCalls, ...gitCalls];
+  const productObservations = read(`SELECT id, memory_session_id, prompt_number, files_modified, created_at_epoch FROM observations${indexes.observations ?? ""}
+    WHERE created_at_epoch >= ? AND (${FILE_EXTENSION_PATTERN}) ORDER BY id DESC LIMIT ?`, [sinceEpoch, limit]);
+  const productDeliverables = read(`SELECT id, project, content_session_id, platform_source, title, kind, source_path, bucket_path, created_at_epoch
+    FROM deliverables WHERE created_at_epoch >= ? ORDER BY id DESC LIMIT ?`, [sinceEpoch, limit]);
+  return { productCalls, productObservations, productDeliverables };
+}
+var FILE_KINDS, PUBLISHING_TOOLS, GITHUB_PULL_REQUEST_TOOL, WORK_PRODUCT_FIELDS, LEGACY_KINDS, MAX_TITLE, short, GIT_PREFIX, gitPattern, GITHUB_REMOTE, SHA, unquote, matchingCommitSha, BASH_DOUBLE_QUOTE_ESCAPE, productKey, FILE_EXTENSION_PATTERN, PUBLISHING_PRODUCT_PREDICATE, GIT_PRODUCT_PREDICATE, productIndexes;
+var init_work_product = __esm({
+  "src/services/work-view/work-product.mjs"() {
+    "use strict";
+    FILE_KINDS = {
+      ".png": "image",
+      ".jpg": "image",
+      ".jpeg": "image",
+      ".webp": "image",
+      ".gif": "image",
+      ".svg": "image",
+      ".mp4": "video",
+      ".mov": "video",
+      ".webm": "video",
+      ".pdf": "document",
+      ".docx": "document",
+      ".pptx": "deck",
+      ".key": "deck",
+      ".xlsx": "spreadsheet",
+      ".csv": "spreadsheet",
+      ".html": "page"
+    };
+    PUBLISHING_TOOLS = [
+      { match: /^Artifact$/, kind: "artifact" },
+      { match: /notion-create-pages$/, kind: "page" },
+      { match: /Claude_Docs__(?:batch|create)$/, kind: "document" },
+      { match: /chatgpt_space__create_page$/, kind: "page" },
+      { match: /sites__save_version_and_deploy/, kind: "deployment" }
+    ];
+    GITHUB_PULL_REQUEST_TOOL = /(?:^|__)create_pull_request$/;
+    WORK_PRODUCT_FIELDS = /* @__PURE__ */ new Set(["work_product", "work_products", "deliverable", "deliverables"]);
+    LEGACY_KINDS = { docs_url: "documentation", documentation_url: "documentation", promo_url: "promotion", announcement_url: "promotion", pr_url: "pull-request", deck_url: "deck", artifact_url: "artifact" };
+    MAX_TITLE = 140;
+    short = (value) => {
+      const text5 = typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
+      return text5 ? text5.length > MAX_TITLE ? `${text5.slice(0, MAX_TITLE - 1).trimEnd()}\u2026` : text5 : null;
+    };
+    GIT_PREFIX = String.raw`(?:^|[;&|(\n])\s*(?:rtk\s+)?(?:\/usr\/bin\/)?git(?:\s+-[Cc]\s+(?:"[^"]*"|'[^']*'|\S+))*\s+`;
+    gitPattern = (subcommand, flags = "") => new RegExp(GIT_PREFIX + subcommand, flags);
+    GITHUB_REMOTE = /^(?:https:\/\/github\.com\/|(?:git@)?github\.com:|ssh:\/\/(?:git@)?(?:github\.com(?::22)?|ssh\.github\.com:443)\/)([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/;
+    SHA = "[0-9a-f]{7,40}";
+    unquote = (token) => token.replace(/^(["'])(.*)\1$/, "$2");
+    matchingCommitSha = (left, right) => left.startsWith(right) || right.startsWith(left);
+    BASH_DOUBLE_QUOTE_ESCAPE = /\\([$`"\\])/g;
+    productKey = (product) => product.kind === "commit" && product.sha ? `commit:${product.sha}` : product.kind === "branch" && product.branch ? `branch:${product.repo ?? ""}:${product.branch}` : product.productId ?? product.url ?? product.path;
+    FILE_EXTENSION_PATTERN = Object.keys(FILE_KINDS).map((extension) => `files_modified LIKE '%${extension}"%'`).join(" OR ");
+    PUBLISHING_PRODUCT_PREDICATE = `(tool_name IN ('Artifact', 'mcp__claude_ai_Notion__notion-create-pages', 'mcp__claude_ai_Claude_Docs__batch', 'mcp__claude_ai_Claude_Docs__create')
+  OR tool_name LIKE '%chatgpt_space__create_page' OR tool_name LIKE '%sites__save_version_and_deploy%'
+  OR tool_name = 'create_pull_request' OR tool_name GLOB '*__create_pull_request'
+  OR (tool_name = 'Bash' AND tool_input LIKE '%gh pr create%'))`;
+    GIT_PRODUCT_PREDICATE = `tool_name = 'Bash' AND tool_input LIKE '%git%' AND tool_input NOT LIKE '%gh pr create%'
+  AND (tool_input LIKE '%commit%' OR tool_input LIKE '%push%' OR tool_input LIKE '%checkout -b%' OR tool_input LIKE '%switch -c%')`;
+    productIndexes = /* @__PURE__ */ new WeakMap();
+  }
+});
+
+// src/utils/worktree.ts
+import { existsSync as existsSync9, statSync as statSync4, readFileSync as readFileSync7 } from "fs";
+import path from "path";
+function detectWorktree(cwd) {
+  const gitPath = path.join(cwd, ".git");
+  let stat;
+  try {
+    stat = statSync4(gitPath);
+  } catch (error) {
+    if (error instanceof Error && error.code !== "ENOENT") {
+      logger.warn("GIT", "Unexpected error checking .git", { error: error instanceof Error ? error.message : String(error) });
+    }
+    return NOT_A_WORKTREE;
+  }
+  if (!stat.isFile()) {
+    return NOT_A_WORKTREE;
+  }
+  let content;
+  try {
+    content = readFileSync7(gitPath, "utf-8").trim();
+  } catch (error) {
+    logger.warn("GIT", "Failed to read .git file", { error: error instanceof Error ? error.message : String(error) });
+    return NOT_A_WORKTREE;
+  }
+  const match = content.match(/^gitdir:\s*(.+)$/s);
+  if (!match) {
+    return NOT_A_WORKTREE;
+  }
+  const gitdirPath = path.resolve(path.dirname(gitPath), match[1]);
+  const worktreesMatch = gitdirPath.match(/^(.+)[/\\]\.git[/\\]worktrees[/\\]([^/\\]+)$/s);
+  if (worktreesMatch) {
+    const parentRepoPath = worktreesMatch[1];
+    return {
+      isWorktree: true,
+      isSubmodule: false,
+      worktreeName: path.basename(cwd),
+      parentRepoPath,
+      parentProjectName: path.basename(parentRepoPath)
+    };
+  }
+  const submoduleMatch = gitdirPath.match(/^(.+)[/\\]\.git[/\\]modules[/\\](.+)$/s);
+  if (submoduleMatch) {
+    const parentRepoPath = submoduleMatch[1];
+    return {
+      isWorktree: false,
+      isSubmodule: true,
+      worktreeName: path.basename(cwd),
+      parentRepoPath,
+      parentProjectName: path.basename(parentRepoPath)
+    };
+  }
+  const bareWorktreeMatch = gitdirPath.match(/^(.+)[/\\]worktrees[/\\]([^/\\]+)$/s);
+  if (bareWorktreeMatch && existsSync9(path.join(gitdirPath, "commondir"))) {
+    const parentRepoPath = bareWorktreeMatch[1];
+    const parentProjectName = bareRepositoryProjectName(parentRepoPath);
+    if (parentProjectName) {
+      return {
+        isWorktree: true,
+        isSubmodule: false,
+        worktreeName: path.basename(cwd),
+        parentRepoPath,
+        parentProjectName
+      };
+    }
+  }
+  return NOT_A_WORKTREE;
+}
+function bareRepositoryProjectName(bareRepoPath) {
+  const name = path.basename(bareRepoPath).replace(/\.git$/, "");
+  if (name && !name.startsWith(".")) return name;
+  return path.basename(path.dirname(bareRepoPath)) || null;
+}
+var NOT_A_WORKTREE;
+var init_worktree = __esm({
+  "src/utils/worktree.ts"() {
+    "use strict";
+    init_logger();
+    NOT_A_WORKTREE = {
+      isWorktree: false,
+      isSubmodule: false,
+      worktreeName: null,
+      parentRepoPath: null,
+      parentProjectName: null
+    };
+  }
+});
+
+// src/utils/project-filter.ts
+import { basename as basename5 } from "path";
+function globToRegex(pattern) {
+  let expanded = expandHome(pattern.replace(/\\/g, "/"));
+  expanded = expanded.replace(/\\/g, "/");
+  let regex = expanded.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  regex = regex.replace(/(^|\/)\*\*(?=\/)/g, "$1<<<GLOBSTAR_DIR>>>").replace(/\*\*/g, "<<<GLOBSTAR>>>").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]").replace(/<<<GLOBSTAR>>>/g, ".*").replace(/<<<GLOBSTAR_DIR>>>\//g, "(?:.*/)?");
+  return new RegExp(`^${regex}$`);
+}
+function matchesGlobPattern(pattern, normalizedPath, pathBasename) {
+  const regex = globToRegex(pattern);
+  if (regex.test(normalizedPath) || regex.test(pathBasename)) return true;
+  if (pattern.replace(/\\/g, "/").endsWith("/**")) {
+    return globToRegex(pattern.slice(0, -3)).test(normalizedPath.replace(/\/+$/, ""));
+  }
+  return false;
+}
+function matchesAnyGlob(folderPath, patterns) {
+  if (!patterns.length) return false;
+  const normalizedPath = folderPath.replace(/\\/g, "/");
+  const pathBasename = basename5(normalizedPath);
+  for (const rawPattern of patterns) {
+    const pattern = rawPattern.trim();
+    if (!pattern) continue;
+    try {
+      if (matchesGlobPattern(pattern, normalizedPath, pathBasename)) {
+        return true;
+      }
+    } catch (error) {
+      logger.warn("PROJECT_NAME", "Invalid glob pattern", { pattern, error: error instanceof Error ? error.message : String(error) });
+      continue;
+    }
+  }
+  return false;
+}
+var init_project_filter = __esm({
+  "src/utils/project-filter.ts"() {
+    "use strict";
+    init_expand_home();
+    init_logger();
+  }
+});
+
+// src/utils/project-environments.ts
+import { realpathSync as realpathSync2 } from "fs";
+function parseProjectEnvironments(raw) {
+  let value = raw;
+  if (typeof value === "string") {
+    if (!value.trim()) return [];
+    try {
+      value = JSON.parse(value);
+    } catch (error) {
+      logger.warn("PROJECT_NAME", "CLAUDE_MEM_PROJECT_ENVIRONMENTS is not valid JSON; ignoring it", {
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return [];
+    }
+  }
+  if (!Array.isArray(value)) {
+    if (value !== void 0 && value !== null) {
+      logger.warn("PROJECT_NAME", "CLAUDE_MEM_PROJECT_ENVIRONMENTS must be an array; ignoring it", {});
+    }
+    return [];
+  }
+  const environments = [];
+  for (const entry of value) {
+    const name = typeof entry?.name === "string" ? entry.name.trim() : "";
+    const patterns = Array.isArray(entry?.patterns) ? entry.patterns.filter((pattern) => typeof pattern === "string" && pattern.trim() !== "") : [];
+    if (!name || patterns.length === 0) {
+      logger.warn("PROJECT_NAME", "Ignoring a project environment without a name or patterns", { name });
+      continue;
+    }
+    if ("inherit" in entry) {
+      const inherit = entry.inherit;
+      if (!Array.isArray(inherit) || inherit.some((key) => typeof key !== "string" || !key.trim() || key.includes(","))) {
+        throw new Error(`CLAUDE_MEM_PROJECT_ENVIRONMENTS: inherit for "${name}" must be an array of non-empty project names without commas`);
+      }
+      environments.push({ name, patterns, inherit: [...new Set(inherit.map((key) => key.trim()))] });
+    } else {
+      environments.push({ name, patterns });
+    }
+  }
+  return environments;
+}
+function realpathOrSelf(dir) {
+  try {
+    return realpathSync2(dir);
+  } catch {
+    return dir;
+  }
+}
+function matchProjectEnvironment(dir, environments) {
+  if (environments.length === 0) return null;
+  const candidates = [.../* @__PURE__ */ new Set([dir, realpathOrSelf(dir)])].flatMap((candidate) => [candidate, `${candidate.replace(/[\\/]+$/, "")}/`]);
+  for (const environment of environments) {
+    if (candidates.some((candidate) => matchesAnyGlob(candidate, environment.patterns))) {
+      return environment;
+    }
+  }
+  return null;
+}
+var init_project_environments = __esm({
+  "src/utils/project-environments.ts"() {
+    "use strict";
+    init_project_filter();
+    init_logger();
+  }
+});
+
+// src/utils/project-name.ts
+import path2 from "path";
+import { existsSync as existsSync10, realpathSync as realpathSync3, statSync as statSync5 } from "fs";
+import { homedir as homedir7, tmpdir } from "os";
+import { execFileSync } from "child_process";
+function findGitRepoRoot(dir) {
+  try {
+    const root = execFileSync("git", ["rev-parse", "--show-toplevel"], {
+      cwd: dir,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true
+    }).replace(/\n$/, "");
+    return root || null;
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.debug("PROJECT_NAME", "git rev-parse failed, falling back to non-git root", { dir }, err);
+    return null;
+  }
+}
+function realpathOrSelf2(dir) {
+  try {
+    return realpathSync3(dir);
+  } catch {
+    return dir;
+  }
+}
+function isWithin(child, parent) {
+  const relative = path2.relative(parent, child);
+  return relative === "" || !relative.startsWith("..") && !path2.isAbsolute(relative);
+}
+function markerWalkStops() {
+  return [homedir7(), tmpdir(), CLAUDE_CONFIG_DIR].flatMap((dir) => {
+    const resolved = path2.resolve(dir);
+    return [resolved, realpathOrSelf2(resolved)];
+  });
+}
+function findMarkerProjectRoot(dir) {
+  const stops = markerWalkStops();
+  let current = path2.resolve(dir);
+  const configDirs = [path2.resolve(CLAUDE_CONFIG_DIR), realpathOrSelf2(path2.resolve(CLAUDE_CONFIG_DIR))];
+  if (configDirs.some((configDir) => isWithin(current, configDir))) {
+    return null;
+  }
+  for (let depth = 0; depth < MAX_MARKER_WALK_DEPTH; depth++) {
+    if (stops.includes(current)) {
+      return null;
+    }
+    const parent = path2.dirname(current);
+    if (parent === current) {
+      return null;
+    }
+    if (PROJECT_ROOT_MARKERS.some((marker) => existsSync10(path2.join(current, marker)))) {
+      return current;
+    }
+    current = parent;
+  }
+  return null;
+}
+function projectNameFromSource(cwd, nameSource) {
+  const basename8 = path2.basename(nameSource);
+  if (basename8 === "") {
+    const isWindows = process.platform === "win32";
+    if (isWindows) {
+      const driveMatch = cwd.match(/^([A-Z]):\\/i);
+      if (driveMatch) {
+        const driveLetter = driveMatch[1].toUpperCase();
+        const projectName = `drive-${driveLetter}`;
+        logger.info("PROJECT_NAME", "Drive root detected", { cwd, projectName });
+        return projectName;
+      }
+    }
+    logger.warn("PROJECT_NAME", "Root directory detected, using fallback", { cwd });
+    return UNKNOWN_PROJECT_NAME;
+  }
+  return basename8;
+}
+function settingsFileMtimeMs() {
+  try {
+    return statSync5(USER_SETTINGS_PATH).mtimeMs;
+  } catch {
+    return -1;
+  }
+}
+function readIdentitySettings() {
+  const mtimeMs = settingsFileMtimeMs();
+  if (mtimeMs === -1) {
+    return SettingsDefaultsManager.getAllDefaults();
+  }
+  if (identitySettingsCache && identitySettingsCache.mtimeMs === mtimeMs) {
+    return identitySettingsCache.settings;
+  }
+  const settings2 = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+  identitySettingsCache = { mtimeMs: settingsFileMtimeMs(), settings: settings2 };
+  return settings2;
+}
+function useGitRemoteProjectNames() {
+  const source = process.env[PROJECT_NAME_SOURCE_SETTING] ?? readIdentitySettings().CLAUDE_MEM_PROJECT_NAME_SOURCE;
+  return String(source ?? "path").trim().toLowerCase() === "git-remote";
+}
+function loadProjectEnvironments() {
+  const raw = process.env[PROJECT_ENVIRONMENTS_SETTING] ?? readIdentitySettings().CLAUDE_MEM_PROJECT_ENVIRONMENTS;
+  if (!environmentsCache || environmentsCache.raw !== raw) {
+    environmentsCache = { raw, environments: parseProjectEnvironments(raw) };
+  }
+  return environmentsCache.environments;
+}
+function parseOriginUrlToSlug(url) {
+  const trimmed = (url ?? "").trim();
+  if (!trimmed) return null;
+  const isLocal = /^file:/i.test(trimmed) || trimmed.startsWith("/") || trimmed.startsWith(".") || trimmed.startsWith("~") || trimmed.startsWith("\\\\") || /^[a-z]:[\\/]/i.test(trimmed);
+  if (isLocal) return null;
+  const cleaned = trimmed.replace(/\/+$/, "").replace(/\.git$/i, "");
+  const urlFormMatch = cleaned.match(/^[a-z][a-z0-9+.-]*:\/\/[^/]+\/(.+)$/i);
+  const scpFormMatch = urlFormMatch ? null : cleaned.match(/^(?:[^/@\s]+@)?[^:/\s]+:(?!\/\/)(.+)$/);
+  const pathPart = urlFormMatch?.[1] ?? scpFormMatch?.[1];
+  if (!pathPart) return null;
+  const segments = pathPart.split("/").filter((segment) => segment && segment !== "_git");
+  if (segments.length >= 2) return segments.slice(-2).join("/");
+  if (segments.length === 1) return segments[0];
+  return null;
+}
+function deriveSlugFromRemote(repoRoot) {
+  try {
+    const url = execFileSync("git", ["remote", "get-url", "origin"], {
+      cwd: repoRoot,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true
+    }).trim();
+    return parseOriginUrlToSlug(url);
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.debug("PROJECT_NAME", "No usable origin remote, keeping the path-based name", { repoRoot }, err);
+    return null;
+  }
+}
+function gitRemoteProjectSlug(repoRoot) {
+  if (!useGitRemoteProjectNames()) return null;
+  if (!remoteSlugByRepoRoot.has(repoRoot)) {
+    remoteSlugByRepoRoot.set(repoRoot, deriveSlugFromRemote(repoRoot));
+  }
+  return remoteSlugByRepoRoot.get(repoRoot) ?? null;
+}
+function getProjectName(cwd, platform = process.platform) {
+  if (!cwd || cwd.trim() === "") {
+    logger.warn("PROJECT_NAME", "Empty cwd provided, using fallback", { cwd });
+    return UNKNOWN_PROJECT_NAME;
+  }
+  const expanded = expandHome(cwd, platform);
+  const environment = matchProjectEnvironment(expanded, loadProjectEnvironments());
+  if (environment) {
+    return environment.name;
+  }
+  const repoRoot = findGitRepoRoot(expanded);
+  const slug = repoRoot ? gitRemoteProjectSlug(repoRoot) : null;
+  if (slug) {
+    return slug;
+  }
+  const nameSource = repoRoot ?? findMarkerProjectRoot(expanded) ?? expanded;
+  return projectNameFromSource(cwd, nameSource);
+}
+function buildWorktreeProjectKey(parentProjectName, worktreeName) {
+  return worktreeName === parentProjectName ? parentProjectName : `${parentProjectName}/${worktreeName}`;
+}
+function submoduleLeaf(info, repoRoot) {
+  if (!info.isSubmodule || !info.parentRepoPath) return null;
+  const relative = path2.relative(info.parentRepoPath, repoRoot);
+  if (!relative || relative === ".." || relative.startsWith(`..${path2.sep}`) || path2.isAbsolute(relative)) return null;
+  return relative.split(path2.sep).join("/");
+}
+function getProjectContext(cwd, platform = process.platform) {
+  return getProjectContextWithRoot(cwd, platform).context;
+}
+function getProjectContextWithRoot(cwd, platform = process.platform) {
+  if (!cwd || cwd.trim() === "") {
+    const fallback = getProjectName(cwd, platform);
+    return {
+      context: { primary: fallback, parent: null, isWorktree: false, isSubmodule: false, allProjects: [fallback], keySource: "path" },
+      repoRoot: null
+    };
+  }
+  const expandedCwd = expandHome(cwd, platform);
+  const repoRoot = findGitRepoRoot(expandedCwd);
+  const pathContext = getPathProjectContext(cwd, expandedCwd, repoRoot);
+  const slug = repoRoot ? gitRemoteProjectSlug(repoRoot) : null;
+  const derivedContext = slug ? withPrimaryKey(pathContext, slug, "git-remote") : pathContext;
+  const environment = matchProjectEnvironment(expandedCwd, loadProjectEnvironments());
+  return {
+    context: environment ? withPrimaryKey(derivedContext, environment.name, "environment", environment.inherit) : derivedContext,
+    repoRoot
+  };
+}
+function withPrimaryKey(context, primary, keySource, readKeys = context.allProjects) {
+  return {
+    primary,
+    parent: null,
+    isWorktree: context.isWorktree,
+    isSubmodule: context.isSubmodule,
+    allProjects: [...new Set(readKeys.filter((key) => key !== primary)), primary],
+    keySource
+  };
+}
+function getPathProjectContext(cwd, expandedCwd, repoRoot) {
+  const markerRoot = repoRoot ? null : findMarkerProjectRoot(expandedCwd);
+  const cwdProjectName = projectNameFromSource(cwd, repoRoot ?? markerRoot ?? expandedCwd);
+  const checkoutRoot = repoRoot ?? expandedCwd;
+  const worktreeInfo = detectWorktree(checkoutRoot);
+  if ((worktreeInfo.isWorktree || worktreeInfo.isSubmodule) && worktreeInfo.parentProjectName) {
+    const parent = worktreeInfo.parentProjectName;
+    let primary;
+    let legacyKeys;
+    if (worktreeInfo.isSubmodule) {
+      const leaf = submoduleLeaf(worktreeInfo, checkoutRoot);
+      primary = `${parent}/${leaf ?? cwdProjectName}`;
+      legacyKeys = cwdProjectName !== parent ? [cwdProjectName] : [];
+      if (leaf?.startsWith("..") && leaf !== cwdProjectName) {
+        legacyKeys.push(`${parent}/${cwdProjectName}`);
+      }
+    } else {
+      primary = buildWorktreeProjectKey(parent, cwdProjectName);
+      legacyKeys = primary === parent ? [`${parent}/${cwdProjectName}`] : [];
+    }
+    return {
+      primary,
+      parent,
+      isWorktree: worktreeInfo.isWorktree,
+      isSubmodule: worktreeInfo.isSubmodule,
+      allProjects: [.../* @__PURE__ */ new Set([parent, ...legacyKeys, primary])].filter((key) => key !== primary).concat(primary),
+      keySource: "path"
+    };
+  }
+  if (markerRoot && path2.resolve(markerRoot) !== path2.resolve(expandedCwd)) {
+    const legacyKey = projectNameFromSource(cwd, expandedCwd);
+    if (legacyKey !== cwdProjectName && legacyKey !== UNKNOWN_PROJECT_NAME) {
+      return { primary: cwdProjectName, parent: null, isWorktree: false, isSubmodule: false, allProjects: [legacyKey, cwdProjectName], keySource: "path" };
+    }
+  }
+  return { primary: cwdProjectName, parent: null, isWorktree: false, isSubmodule: false, allProjects: [cwdProjectName], keySource: "path" };
+}
+var UNKNOWN_PROJECT_NAME, PROJECT_ROOT_MARKERS, MAX_MARKER_WALK_DEPTH, PROJECT_NAME_SOURCE_SETTING, identitySettingsCache, PROJECT_ENVIRONMENTS_SETTING, environmentsCache, remoteSlugByRepoRoot;
+var init_project_name = __esm({
+  "src/utils/project-name.ts"() {
+    "use strict";
+    init_expand_home();
+    init_paths();
+    init_SettingsDefaultsManager();
+    init_logger();
+    init_worktree();
+    init_project_environments();
+    UNKNOWN_PROJECT_NAME = "unknown-project";
+    PROJECT_ROOT_MARKERS = [".claude-mem-project", ".claude-mem.json"];
+    MAX_MARKER_WALK_DEPTH = 64;
+    PROJECT_NAME_SOURCE_SETTING = "CLAUDE_MEM_PROJECT_NAME_SOURCE";
+    identitySettingsCache = null;
+    PROJECT_ENVIRONMENTS_SETTING = "CLAUDE_MEM_PROJECT_ENVIRONMENTS";
+    environmentsCache = null;
+    remoteSlugByRepoRoot = /* @__PURE__ */ new Map();
+  }
+});
+
+// src/services/work-view/session-project.mjs
+import { existsSync as existsSync11, realpathSync as realpathSync4 } from "node:fs";
+import { homedir as homedir8, tmpdir as tmpdir2 } from "node:os";
+import { basename as basename6, dirname as dirname5, join as join9, resolve as resolve3, sep as sep2 } from "node:path";
+function projectRoot(project, gitRemoteNames = useGitRemoteProjectNames()) {
+  if (typeof project !== "string") return null;
+  return gitRemoteNames ? project : project.split("/")[0];
+}
+function upgradedGroupRoot(savedRoot, anchorRoot, memberRoots = []) {
+  if (typeof savedRoot !== "string" || !savedRoot || savedRoot.includes("/")) return savedRoot;
+  const widened = (root) => typeof root === "string" && root.startsWith(`${savedRoot}/`);
+  if (widened(anchorRoot)) return anchorRoot;
+  const candidates = new Set(memberRoots.filter(widened));
+  return candidates.size === 1 ? [...candidates][0] : savedRoot;
+}
+function isAgentScratchFolder(folder) {
+  if (typeof folder !== "string" || !folder) return false;
+  if (CODEX_SCRATCH.test(folder)) return true;
+  const absolute = resolve3(folder);
+  return TEMP_FOLDERS.some((temp) => absolute === temp || absolute.startsWith(`${temp}${sep2}`));
+}
+function repoRootOf(path4) {
+  const visited = [];
+  let current = resolve3(path4), found = null;
+  for (; ; ) {
+    if (repoRootCache.has(current)) {
+      found = repoRootCache.get(current);
+      break;
+    }
+    visited.push(current);
+    if (existsSync11(join9(current, ".git"))) {
+      found = current;
+      break;
+    }
+    const parent = dirname5(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  for (const dir of visited) repoRootCache.set(dir, found);
+  return found;
+}
+function pathsIn(toolInput, platform = process.platform) {
+  let parsed = toolInput;
+  if (typeof toolInput === "string") {
+    try {
+      parsed = JSON.parse(toolInput);
+    } catch {
+      parsed = toolInput;
+    }
+  }
+  const strings = [];
+  const walk = (value) => {
+    if (typeof value === "string") strings.push(value);
+    else if (Array.isArray(value)) value.forEach(walk);
+    else if (value && typeof value === "object") Object.values(value).forEach(walk);
+  };
+  walk(parsed);
+  const paths2 = [];
+  for (const text5 of strings) for (const match of text5.matchAll(PATH_START)) {
+    const raw = match[1].trim();
+    const path4 = raw.startsWith("~/") || platform === "win32" && raw.startsWith("~\\") ? join9(HOME, raw.slice(2)) : raw;
+    if (path4.length > 1 && isAbsoluteOn(path4, platform) && !isAgentHome(path4)) paths2.push(path4);
+  }
+  return paths2;
+}
+function folderNeedsProject(folder, storedProject) {
+  if (!folder) return TEMP_PROJECT_NAMES.has(storedProject);
+  if (existsSync11(folder)) return !repoRootOf(folder);
+  return isAgentScratchFolder(folder);
+}
+function projectFromToolPaths(toolInputs) {
+  const byRoot = /* @__PURE__ */ new Map(), nameOf = /* @__PURE__ */ new Map();
+  for (const input of toolInputs) for (const path4 of pathsIn(input)) {
+    const checkout = checkoutForPath(path4);
+    if (!checkout) continue;
+    if (!nameOf.has(checkout)) nameOf.set(checkout, getProjectContext(checkout).primary);
+    const project = nameOf.get(checkout);
+    const root = projectRoot(project);
+    if (!byRoot.has(root)) byRoot.set(root, { count: 0, projects: /* @__PURE__ */ new Map() });
+    const entry = byRoot.get(root);
+    entry.count++;
+    entry.projects.set(project, (entry.projects.get(project) ?? 0) + 1);
+  }
+  let best = null;
+  for (const entry of byRoot.values()) if (!best || entry.count > best.count) best = entry;
+  if (!best) return NO_PROJECT;
+  return [...best.projects].sort((a, b) => b[1] - a[1])[0][0];
+}
+function safeAll(database, sql, params) {
+  try {
+    return database.prepare(sql).all(...params);
+  } catch (error) {
+    if (/no such (table|column)/i.test(String(error.message))) return null;
+    throw error;
+  }
+}
+function deriveSessionProjects(database, sessions) {
+  const result = /* @__PURE__ */ new Map();
+  const ids = [...new Set(sessions.map((session) => session.id).filter((id) => id != null))];
+  if (!ids.length) return result;
+  const folders = /* @__PURE__ */ new Map();
+  for (let index = 0; index < ids.length; index += 500) {
+    const chunk = ids.slice(index, index + 500);
+    const rows = safeAll(database, `SELECT id, cwd FROM sdk_sessions WHERE id IN (${chunk.map(() => "?").join(",")})`, chunk);
+    if (rows === null) return result;
+    for (const row of rows) folders.set(row.id, row.cwd || null);
+  }
+  const unknownFolderProjects = [...new Set(sessions.filter((session) => folders.has(session.id) && !folders.get(session.id) && typeof session.project === "string").map((session) => session.project))];
+  const scratchProjects = /* @__PURE__ */ new Set();
+  for (let index = 0; index < unknownFolderProjects.length; index += 500) {
+    const chunk = unknownFolderProjects.slice(index, index + 500);
+    for (const row of safeAll(database, `SELECT DISTINCT project, cwd FROM sdk_sessions WHERE project IN (${chunk.map(() => "?").join(",")}) AND cwd IS NOT NULL AND cwd <> ''`, chunk) ?? []) {
+      if (isAgentScratchFolder(row.cwd)) scratchProjects.add(row.project);
+    }
+  }
+  const needing = sessions.filter((session) => folders.has(session.id) && (folders.get(session.id) ? folderNeedsProject(folders.get(session.id), session.project) : folderNeedsProject(null, session.project) || scratchProjects.has(session.project)));
+  if (!needing.length) return result;
+  const needIds = [...new Set(needing.map((session) => session.id))];
+  const heads = /* @__PURE__ */ new Map();
+  for (let index = 0; index < needIds.length; index += 500) {
+    const chunk = needIds.slice(index, index + 500);
+    for (const row of safeAll(database, `SELECT session_db_id, MAX(id) AS head FROM tool_uses WHERE session_db_id IN (${chunk.map(() => "?").join(",")}) GROUP BY session_db_id`, chunk) ?? []) heads.set(row.session_db_id, row.head);
+  }
+  for (const id of needIds) {
+    const head = heads.get(id) ?? 0;
+    const cached = derivedCache.get(id);
+    if (cached && cached.head === head) {
+      result.set(id, cached.project);
+      continue;
+    }
+    const calls = head ? safeAll(database, `SELECT substr(tool_input, 1, 4000) AS tool_input, cwd FROM tool_uses WHERE session_db_id = ? ORDER BY id DESC LIMIT ${TOOL_SAMPLE}`, [id]) ?? [] : [];
+    const project = projectFromToolPaths(calls.flatMap((call) => [call.tool_input, ...call.cwd ? [JSON.stringify({ cwd: call.cwd })] : []]));
+    derivedCache.set(id, { head, project });
+    result.set(id, project);
+  }
+  return result;
+}
+function withDerivedProjects(database, sessions) {
+  const derived = deriveSessionProjects(database, sessions);
+  if (!derived.size) return sessions;
+  return sessions.map((session) => derived.has(session.id) ? { ...session, project: derived.get(session.id), storedProject: session.project } : session);
+}
+var NO_PROJECT, realpathOrSelf3, TEMP_FOLDERS, HOME, TEMP_PROJECT_NAMES, CODEX_SCRATCH, repoRootCache, PATH_START, AGENT_HOMES, isAgentHome, isAbsoluteOn, checkoutForPath, derivedCache, TOOL_SAMPLE;
+var init_session_project = __esm({
+  "src/services/work-view/session-project.mjs"() {
+    "use strict";
+    init_project_name();
+    NO_PROJECT = "";
+    realpathOrSelf3 = (path4) => {
+      try {
+        return realpathSync4(path4);
+      } catch {
+        return path4;
+      }
+    };
+    TEMP_FOLDERS = [.../* @__PURE__ */ new Set([resolve3(tmpdir2()), realpathOrSelf3(resolve3(tmpdir2())), "/tmp", "/private/tmp"])];
+    HOME = homedir8();
+    TEMP_PROJECT_NAMES = new Set(TEMP_FOLDERS.map((folder) => basename6(folder)).filter((name) => name && name !== "tmp"));
+    CODEX_SCRATCH = /[/\\]Documents[/\\]Codex[/\\]\d{4}-\d{2}-\d{2}(?:[/\\]|$)/;
+    repoRootCache = /* @__PURE__ */ new Map();
+    PATH_START = /(?:^|[\s"'`=:(])((?:~[/\\]|\/|[A-Za-z]:[/\\])[^\n\r"'`;|&<>()]*)/g;
+    AGENT_HOMES = [".claude", ".codex", ".gemini", ".claude-mem", ".cursor"].map((name) => join9(HOME, name));
+    isAgentHome = (path4) => AGENT_HOMES.some((home) => path4 === home || path4.startsWith(`${home}/`) || path4.startsWith(`${home}\\`));
+    isAbsoluteOn = (path4, platform) => path4.startsWith("/") && !path4.startsWith("//") || platform === "win32" && /^[A-Za-z]:[/\\]/.test(path4);
+    checkoutForPath = (path4) => {
+      let current = path4;
+      while (current !== dirname5(current) && !existsSync11(current)) current = dirname5(current);
+      return repoRootOf(current);
+    };
+    derivedCache = /* @__PURE__ */ new Map();
+    TOOL_SAMPLE = 400;
+  }
+});
+
+// src/services/work-view/request-projection.mjs
+import { createHash as createHash4 } from "node:crypto";
+function requestMediaSummary(activity) {
+  const refs = /* @__PURE__ */ new Map();
+  for (const entry of activity) for (const ref of entry.media?.attachments ?? []) if (!refs.has(ref.id)) refs.set(ref.id, ref);
+  if (!refs.size) return null;
+  return { count: refs.size, preview: [...refs.values()].slice(0, REQUEST_MEDIA_PREVIEW_LIMIT) };
+}
+function requestText(value, max = 1200) {
+  if (typeof value !== "string") return null;
+  const requestSection = value.match(/^\s*#{1,2}\s+My request\s*:\s*(?:\r?\n)?([\s\S]*)$/im);
+  const text5 = (requestSection?.[1] ?? value).replace(/<(environment_context|instructions|system-reminder|turn_aborted|permissions|collaboration_mode|skills_instructions)\b[^>]*>[\s\S]*?<\/\1>/gi, " ").replace(/^\s*#\s*AGENTS\.md instructions[^\n]*(?:\n|$)/gim, " ").replace(/<\/?pasted_content\b[^>]*>/gi, "").trim();
+  if (/^\s*#{1,2}\s+Files mentioned by the user\s*:/i.test(text5)) return null;
+  if (!text5 || /^\s*<(?:environment_context|instructions|system-reminder)\b/i.test(text5)) return null;
+  return text5.length > max ? `${text5.slice(0, max - 1).trimEnd()}\u2026` : text5;
+}
+function isHumanActionRequest(value) {
+  const text5 = requestText(value);
+  if (!text5) return false;
+  const plain = text5.replace(/[*_`#]/g, "").replace(/\s+/g, " ").trim();
+  if (/^(?:please\s+)?read\s+(?:the\s+)?[\w./ -]*(?:AGENTS|KICKOFF|CLAUDE)\.md(?:\s+and\s+(?:follow|obey|read|apply)(?:\s+it|\s+the\s+instructions)?\s*)?[.!]?$/i.test(plain)) return false;
+  if (/^(?:hi|hello|hey|thanks|thank you|ok(?:ay)?|yes|no|sure|continue|go ahead|keep going|resume|done)[.!\s]*$/i.test(plain)) return false;
+  if (/^(?:You are (?:Codex|an AI)|Available skills|Environment context)\b/i.test(plain)) return false;
+  if (/^(?:(?:please|just)\s+)?make sure (?:this|that|it|everything) (?:is |will be |keeps? )?(?:working|works|ok|okay|correct)(?:[.!\s]*)$/i.test(plain)) return false;
+  if (/^you can (?:def(?:initely)? )?do (?:real )?tests?[,;.!\s]/i.test(plain) && !/\b(?:fix|build|create|implement|change|update|rename|remove|add)\b/i.test(plain)) return false;
+  if (/(?:^|\s)GOAL\s*:\s*\S/i.test(plain)) return true;
+  if (ENGLISH_ACTION.test(plain)) return true;
+  const opening = IMPERATIVE_OPENING.exec(plain);
+  if (opening && !NOT_A_VERB.test(opening[1])) return true;
+  if (/[^\x00-\x7F]/.test(plain)) return new RegExp("\\p{L}.*\\p{L}", "u").test(plain);
+  return !ENGLISH_WORDS.test(plain) && (plain.match(/\b[a-z]{3,}\b/gi) ?? []).length >= 2;
+}
+function humanRequestTitle(original) {
+  const text5 = requestText(typeof original === "string" ? original : original?.text);
+  if (!text5) return "";
+  const goal = text5.match(/(?:^|\n)\s*GOAL\s*:\s*([^\n]+)/i);
+  const lines = text5.split(/\n+/).map((line2) => line2.trim()).filter(Boolean);
+  const first = goal?.[1] ?? lines[0] ?? "";
+  const nextQuotedLine = /\bcalled\s*$/i.test(first) && /^["“'‘]/.test(lines[1] ?? "") ? ` ${lines[1]}` : "";
+  const line = `${first}${nextQuotedLine}`.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").replace(/\*\*([^*]+)\*\*/g, "$1").replace(/`([^`]+)`/g, "$1").replace(/^#{1,6}\s*/, "").replace(/\s+/g, " ").trim();
+  const clause = line.split(/(?<=[.!?])\s|;\s/)[0];
+  if (clause.length <= 100) return clause;
+  const cut = clause.slice(0, 99), boundary = cut.lastIndexOf(" ");
+  return `${cut.slice(0, boundary > 60 ? boundary : 99).trimEnd()}\u2026`;
+}
+function conversationKey(session) {
+  if (!session?.content_session_id || !session?.platform_source) return null;
+  return JSON.stringify(["conversation", session.platform_source, session.content_session_id]);
+}
+function compareSourceOrder(a = null, b = null) {
+  if (!a || !b) return 0;
+  const time = a[0] - b[0];
+  const device = a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0;
+  const left = BigInt(a[2]), right = BigInt(b[2]);
+  return time || device || (left < right ? -1 : left > right ? 1 : 0);
+}
+function originalFor(session, prompts) {
+  const ordered = prompts.filter((prompt) => prompt.session_db_id === session.id).sort((a, b) => (a.prompt_number ?? Infinity) - (b.prompt_number ?? Infinity) || (a.created_at_epoch ?? 0) - (b.created_at_epoch ?? 0) || a.id - b.id);
+  const first = ordered.find((prompt) => isHumanActionRequest(prompt.prompt_text));
+  const initial = () => ({ text: requestText(session.user_prompt), source: "session-initial-request", sourceId: session.sharedOnly ? null : session.id, url: session.sharedOnly ? null : `/api/work-view/evidence/session/${session.id}`, ...session.sharedOnly ? { sourceIdentity: { kind: "session", conversation: conversationKey(session) } } : {}, promptNumber: 1, atEpoch: session.started_at_epoch ?? null });
+  if (isHumanActionRequest(session.user_prompt) && (!first || first.prompt_number > 1)) return initial();
+  if (first) return { text: requestText(first.prompt_text), source: "user-prompt", sourceId: first.id, url: `/api/work-view/evidence/prompt/${first.id}`, promptNumber: first.prompt_number, atEpoch: first.created_at_epoch ?? null };
+  if (isHumanActionRequest(session.user_prompt)) return initial();
+  return null;
+}
+function buildHumanRequests(view, records2 = {}, { titleCache = {}, ledger = null, onProductFile = null } = {}) {
+  const sessions = new Map((records2.sessions ?? []).map((session) => [session.id, session]));
+  const prompts = records2.prompts ?? [];
+  const promptsBySession = /* @__PURE__ */ new Map();
+  for (const prompt of prompts) {
+    if (!promptsBySession.has(prompt.session_db_id)) promptsBySession.set(prompt.session_db_id, []);
+    promptsBySession.get(prompt.session_db_id).push(prompt);
+  }
+  const flattened = (view.agents ?? []).flatMap((agent) => (agent.work ?? []).map((item) => ({ ...item, agentId: agent.id, agentLabel: agent.label, agentSessionId: agent.sessionId })));
+  const subagentIds = new Set((view.agents ?? []).filter((agent) => agent.isSubagent).map((agent) => agent.id));
+  const activityPool = /* @__PURE__ */ new Map();
+  for (const agent of view.agents ?? []) for (const activity of agent.activity ?? []) activityPool.set(`${agent.id}:${activity.id}`, { ...activity, agentId: agent.id, agentLabel: agent.label });
+  for (const activity of view.recentActivity ?? []) {
+    const agent = (view.agents ?? []).find((candidate) => candidate.id === activity.agentGroupId);
+    if (agent) activityPool.set(`${agent.id}:${activity.id}`, { ...activity, agentId: agent.id, agentLabel: agent.label });
+  }
+  function activityFor(items, requestId, limit) {
+    const matches = /* @__PURE__ */ new Map();
+    for (const item of items) {
+      const refs = new Set((item.sourceRefs ?? []).map((ref) => `${ref.kind}:${ref.id}`));
+      for (const activity of activityPool.values()) {
+        if (activity.agentId !== item.agentId) continue;
+        const direct = refs.has(activity.id) || activity.sourceRef && refs.has(`${activity.sourceRef.kind}:${activity.sourceRef.id}`);
+        const observationForPrompt = activity.kind === "observation" && item.request?.key && activity.requestKey === item.request.key;
+        if (direct || observationForPrompt) matches.set(`${activity.agentId}:${activity.id}`, { ...activity, promptRequestKey: activity.requestKey ?? null, requestKey: requestId });
+      }
+    }
+    return [...matches.values()].sort((a, b) => (b.atEpoch ?? 0) - (a.atEpoch ?? 0)).slice(0, limit);
+  }
+  const explicitIds = /* @__PURE__ */ new Map();
+  for (const item of flattened) {
+    const key = conversationKey(sessions.get(item.agentSessionId));
+    if (key && item.requestId) {
+      if (!explicitIds.has(key)) explicitIds.set(key, /* @__PURE__ */ new Set());
+      explicitIds.get(key).add(String(item.requestId));
+    }
+  }
+  const sessionsByKey = /* @__PURE__ */ new Map();
+  for (const session of sessions.values()) {
+    const key = conversationKey(session);
+    if (key && !sessionsByKey.has(key)) sessionsByKey.set(key, session);
+  }
+  const rootFromMembers = (groupId, group) => {
+    const anchorRoot = projectRoot(sessionsByKey.get(group.anchor)?.project);
+    if (anchorRoot) return anchorRoot;
+    const memberRoots = new Set(Object.entries(ledger.groups.conversations).filter(([, id]) => id === groupId).map(([key]) => projectRoot(sessionsByKey.get(key)?.project)).filter(Boolean));
+    return memberRoots.size === 1 ? [...memberRoots][0] : NO_PROJECT;
+  };
+  const derivedRoots = /* @__PURE__ */ new Map();
+  const groupRoot = (groupId) => {
+    const group = ledger?.groups?.groups?.[groupId];
+    if (group?.projectRoot === NO_PROJECT) {
+      if (!derivedRoots.has(groupId)) derivedRoots.set(groupId, rootFromMembers(groupId, group));
+      return derivedRoots.get(groupId);
+    }
+    return projectRoot(sessionsByKey.get(group?.anchor)?.project);
+  };
+  const groupFor = (key, session) => {
+    const groupId = key ? ledger?.groups?.conversations?.[key] ?? null : null;
+    if (!groupId) return null;
+    const storedRoot = ledger.groups.groups[groupId]?.projectRoot;
+    if (typeof storedRoot === "string" && storedRoot !== NO_PROJECT) return groupId;
+    const own = projectRoot(session?.project), expected = groupRoot(groupId);
+    return own == null || expected == null || own === expected || storedRoot === NO_PROJECT && own === NO_PROJECT ? groupId : null;
+  };
+  const requests = /* @__PURE__ */ new Map(), unlinkedWork = [];
+  const requestFor = (id, { key, original, groupId = null, explicit = null, explicitText = null }) => {
+    let request = requests.get(id);
+    const anchorAsk = groupId ? ledger?.groups?.groups?.[groupId]?.anchorAsk ?? null : null;
+    if (anchorAsk && (anchorAsk.atEpoch ?? Infinity) < (original.atEpoch ?? Infinity)) original = anchorAsk;
+    if (!request) {
+      request = { id, conversationKey: key, conversationKeys: [], original, explicitRequestText: explicitText, scopeUpdates: [], projects: [], agentIds: [], items: [], workstreams: [], updatedAtEpoch: 0, explicitRequestId: explicit, groupId };
+      requests.set(id, request);
+    } else {
+      if (!request.explicitRequestText && explicitText) request.explicitRequestText = explicitText;
+      if (groupId && (original.atEpoch ?? Infinity) < (request.original.atEpoch ?? Infinity)) request.original = original;
+    }
+    if (key && !request.conversationKeys.includes(key)) request.conversationKeys.push(key);
+    return request;
+  };
+  const addProject = (request, project) => {
+    if (typeof project === "string" && project && !request.projects.includes(project)) request.projects.push(project);
+  };
+  for (const [key, session] of [...sessionsByKey].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) {
+    if (explicitIds.has(key) || ledger?.groups?.ignored?.[key]) continue;
+    const original = originalFor(session, promptsBySession.get(session.id) ?? []);
+    if (!original) continue;
+    const groupId = groupFor(key, session);
+    addProject(requestFor(groupId ? JSON.stringify(["overall-request", groupId]) : key, { key, original, groupId }), session.project);
+  }
+  for (const [groupId, group] of Object.entries(ledger?.groups?.groups ?? {})) {
+    const id = JSON.stringify(["overall-request", groupId]);
+    if (requests.has(id) || !group?.anchorAsk || ledger?.groups?.ignored?.[group.anchor]) continue;
+    const anchorSession = sessionsByKey.get(group.anchor);
+    if (anchorSession) continue;
+    requestFor(id, { key: isConversationKey(group.anchor) ? group.anchor : null, original: group.anchorAsk, groupId });
+  }
+  for (const item of flattened) {
+    const session = sessions.get(item.agentSessionId);
+    const key = conversationKey(session);
+    const knownIds = explicitIds.get(key);
+    const explicit = item.requestId ? String(item.requestId) : knownIds?.size === 1 ? [...knownIds][0] : null;
+    if (!item.requestId && knownIds?.size > 1) {
+      unlinkedWork.push({ ...item, reason: "multiple-explicit-requests-without-item-link" });
+      continue;
+    }
+    let original = session ? originalFor(session, promptsBySession.get(session.id) ?? []) : null;
+    const explicitText = isHumanActionRequest(item.requestText) ? requestText(item.requestText) : null;
+    if (!original && explicit && explicitText) original = { text: explicitText, source: "explicit-work-state-request", sourceId: item.id, url: item.url, promptNumber: null, atEpoch: item.lastUpdateEpoch ?? null };
+    if (!original || !key && !explicit) {
+      unlinkedWork.push({ ...item, reason: key ? "no-substantive-human-request" : "no-confirmed-conversation-or-explicit-request" });
+      continue;
+    }
+    if (!explicit && key && ledger?.groups?.ignored?.[key]) {
+      unlinkedWork.push({ ...item, reason: "ignored-by-request-grouping" });
+      continue;
+    }
+    const groupId = !explicit ? groupFor(key, session) : null;
+    const root = projectRoot(session?.project) ?? projectRoot(item.project);
+    const id = explicit ? JSON.stringify(root == null ? ["explicit-request", explicit] : ["explicit-request", root, explicit]) : groupId ? JSON.stringify(["overall-request", groupId]) : key;
+    const request = requestFor(id, { key, original, groupId, explicit, explicitText });
+    addProject(request, session?.project);
+    addProject(request, item.project);
+    if (!request.agentIds.includes(item.agentId)) request.agentIds.push(item.agentId);
+    request.items.push(item);
+    request.updatedAtEpoch = Math.max(request.updatedAtEpoch, item.lastUpdateEpoch ?? 0);
+  }
+  const requestsByConversation = /* @__PURE__ */ new Map();
+  for (const request of requests.values()) for (const key of request.conversationKeys) {
+    if (!requestsByConversation.has(key)) requestsByConversation.set(key, []);
+    requestsByConversation.get(key).push(request);
+  }
+  const sessionsByMemory = new Map([...sessions.values()].filter((session) => session.memory_session_id).map((session) => [session.memory_session_id, session]));
+  const recordedProducts = /* @__PURE__ */ new Map();
+  const attach = (session, products) => {
+    const owners = requestsByConversation.get(conversationKey(session));
+    if (owners?.length !== 1 || !products.length) return;
+    if (!recordedProducts.has(owners[0])) recordedProducts.set(owners[0], []);
+    recordedProducts.get(owners[0]).push(...products);
+  };
+  for (const call of records2.productCalls ?? []) attach(sessions.get(call.session_db_id), productsFromToolUse(call));
+  for (const observation of records2.productObservations ?? []) attach(sessionsByMemory.get(observation.memory_session_id), productsFromObservation(observation));
+  for (const row of records2.productDeliverables ?? []) attach(row, productsFromDeliverable(row));
+  for (const record of records2.sharedProducts ?? []) {
+    const session = sessionsByKey.get(record.conversationKey);
+    if (session) attach(session, record.products ?? []);
+  }
+  const sessionIdsByKey = /* @__PURE__ */ new Map();
+  for (const session of sessions.values()) {
+    const key = conversationKey(session);
+    if (key) sessionIdsByKey.set(key, [...sessionIdsByKey.get(key) ?? [], session.id]);
+  }
+  for (const request of requests.values()) {
+    const merged = mergeProducts([...recordedProducts.get(request) ?? [], ...request.items.flatMap((item) => item.workProduct ?? [])]);
+    request.sourceProductHash = createHash4("sha256").update(canonicalJson(JSON.parse(JSON.stringify(merged)))).digest("hex");
+    request.sourceProductRecordedAtEpoch = merged.every((product) => Number.isFinite(product.atEpoch) && product.atEpoch > 0) ? merged.reduce((latest, product) => Math.max(latest, product.atEpoch), 0) : null;
+    const copies = merged.filter((product) => product.deliverable && product.sourcePath);
+    const coverage = new Map(copies.map((copy) => [copy, copyCoversSource(copy, copy.sourcePath)]));
+    const covered = (product) => Boolean(product.path) && copies.some((copy) => copy.sourcePath === product.path && coverage.get(copy));
+    request.workProduct = merged.filter((product) => !covered(product)).map((product) => {
+      const available = product.path ? Boolean(servableFile(product)) : product.deliverable ? bucketFileAvailable(product) : true;
+      if (product.path || product.bucketPath) onProductFile?.(product, available, coverage.get(product) ?? null);
+      return { ...product, fileUrl: fileUrl(product), available };
+    });
+    const relatedIds = new Set(request.conversationKeys.flatMap((key) => sessionIdsByKey.get(key) ?? []));
+    const related = [...relatedIds].flatMap((id) => promptsBySession.get(id) ?? []);
+    request.updatedAtEpoch = Math.max(request.updatedAtEpoch, request.original.atEpoch ?? 0, ...related.map((prompt) => prompt.created_at_epoch ?? 0));
+    if (!request.agentIds.length) {
+      for (const agent of view.agents ?? []) if (relatedIds.has(agent.sessionId) && !request.agentIds.includes(agent.id)) request.agentIds.push(agent.id);
+    }
+    request.scopeUpdates = related.filter((prompt) => !(request.original.source === "user-prompt" && prompt.id === request.original.sourceId) && requestText(prompt.prompt_text) && (request.original.promptNumber == null || prompt.prompt_number >= request.original.promptNumber)).sort((a, b) => {
+      const first = conversationKey(sessions.get(a.session_db_id)) ?? "";
+      const second = conversationKey(sessions.get(b.session_db_id)) ?? "";
+      return (b.created_at_epoch ?? 0) - (a.created_at_epoch ?? 0) || b.prompt_number - a.prompt_number || (first < second ? 1 : first > second ? -1 : 0) || b.id - a.id;
+    }).slice(0, 6).reverse().map((prompt) => ({ text: requestText(prompt.prompt_text, 500), sourceId: prompt.id, url: `/api/work-view/evidence/prompt/${prompt.id}`, promptNumber: prompt.prompt_number, atEpoch: prompt.created_at_epoch ?? null }));
+    const streams = /* @__PURE__ */ new Map();
+    for (const item of request.items) {
+      const id = item.listId ?? JSON.stringify(["agent-session", item.agentId]);
+      if (!streams.has(id)) streams.set(id, { id, title: item.listName ?? item.title, agentIds: [], items: [] });
+      const stream = streams.get(id);
+      if (!stream.agentIds.includes(item.agentId)) stream.agentIds.push(item.agentId);
+      stream.items.push(item);
+    }
+    request.workstreams = [...streams.values()];
+    request.agentIds.sort((a, b) => Number(subagentIds.has(a)) - Number(subagentIds.has(b)));
+    for (const stream of request.workstreams) stream.activity = activityFor(stream.items, request.id, 20);
+    request.activity = activityFor(request.items, request.id, 40);
+    const media = requestMediaSummary(request.activity);
+    if (media) request.media = media;
+    const metadata = (key) => request.items.map((item) => ({ item, record: item[key] })).filter(({ record }) => record).sort((a, b) => (b.record.atEpoch ?? 0) - (a.record.atEpoch ?? 0));
+    const lifecycleRecords = request.items.flatMap((item) => [
+      ...typeof item.requestStatus === "string" && item.requestStatus.trim() ? [{ status: item.requestStatus.trim(), explicit: true, field: "request_status", sourceId: item.id, url: item.url, atEpoch: item.requestStatusSource?.atEpoch ?? item.lastUpdateEpoch ?? null, sourceOrder: item.requestStatusSource?.sourceOrder ?? null, sourceRef: item.requestStatusSource?.sourceRef ?? null }] : [],
+      ...typeof item.requestComplete === "boolean" ? [{ status: item.requestComplete ? "done" : "open", complete: item.requestComplete, explicit: true, field: "request_complete", sourceId: item.id, url: item.url, atEpoch: item.requestCompleteSource?.atEpoch ?? item.lastUpdateEpoch ?? null, sourceOrder: item.requestCompleteSource?.sourceOrder ?? null, sourceRef: item.requestCompleteSource?.sourceRef ?? null }] : []
+    ]).sort((a, b) => (b.atEpoch ?? 0) - (a.atEpoch ?? 0) || compareSourceOrder(b.sourceOrder, a.sourceOrder) || Number(b.field === "request_complete") - Number(a.field === "request_complete"));
+    request.lifecycle = lifecycleRecords[0] ?? null;
+    request.startedAtEpoch = request.original.atEpoch ?? null;
+    request.progress = request.groupId ? ledger?.progress?.[request.groupId] ?? null : null;
+    request.completedAtEpoch = request.lifecycle && (request.lifecycle.complete === true || ["done", "completed", "complete", "shipped", "delivered"].includes(request.lifecycle.status.toLowerCase())) ? request.lifecycle.atEpoch : null;
+    request.requestedBy = metadata("requestedBySource")[0]?.item.requestedBy ?? null;
+    request.requestedBySource = metadata("requestedBySource")[0]?.record ?? null;
+    request.shipEstimate = metadata("shipEstimateSource")[0]?.item.shipEstimate ?? null;
+    request.shipEstimateSource = metadata("shipEstimateSource")[0]?.record ?? null;
+    request.stageSourceText = metadata("stageSource")[0]?.item.stageSourceText ?? null;
+    request.stageSource = metadata("stageSource")[0]?.record ?? null;
+    const collect = (section, valueKey) => {
+      const unique = /* @__PURE__ */ new Map();
+      for (const item of request.items) for (const value of item.afterShip?.[section] ?? []) {
+        const key = JSON.stringify([value.kind ?? section, value[valueKey]]);
+        if (!unique.has(key)) unique.set(key, { ...value, sourceRefs: [] });
+        const target = unique.get(key);
+        for (const ref of value.sourceRefs ?? []) if (!target.sourceRefs.some((other) => other.kind === ref.kind && other.id === ref.id)) target.sourceRefs.push(ref);
+      }
+      return [...unique.values()];
+    };
+    const resources = collect("resources", "url"), classifications = collect("classifications", "text"), notes = collect("notes", "text");
+    request.afterShip = resources.length || classifications.length || notes.length ? { resources, classifications, notes } : null;
+    const cached = titleCache instanceof Map ? titleCache.get(request.id) : titleCache[request.id];
+    const cachedTitle = typeof cached === "string" ? cached.trim() : cached && cached.source === request.original.source && cached.sourceId != null && String(cached.sourceId) === String(request.original.sourceId) && typeof cached.title === "string" ? cached.title.trim() : "";
+    const groupTitle = request.groupId ? ledger?.groups?.groups?.[request.groupId]?.title?.trim() ?? "" : "";
+    request.title = cachedTitle || groupTitle || humanRequestTitle(request.explicitRequestText ?? request.original);
+    request.titleSource = cachedTitle ? "title-cache" : groupTitle ? "request-group" : request.explicitRequestText ? "explicit-work-state-request" : "original-human-request";
+    request.items.sort((a, b) => (b.lastUpdateEpoch ?? 0) - (a.lastUpdateEpoch ?? 0));
+  }
+  return { humanRequests: [...requests.values()].sort((a, b) => b.updatedAtEpoch - a.updatedAtEpoch), unlinkedWork };
+}
+var REQUEST_MEDIA_PREVIEW_LIMIT, ENGLISH_ACTION, IMPERATIVE_OPENING, NOT_A_VERB, ENGLISH_WORDS, isConversationKey;
+var init_request_projection = __esm({
+  "src/services/work-view/request-projection.mjs"() {
+    "use strict";
+    init_CanonicalContent();
+    init_work_product();
+    init_session_project();
+    REQUEST_MEDIA_PREVIEW_LIMIT = 4;
+    ENGLISH_ACTION = /\b(?:make|build|create|implement|design|fix|investigate|audit|review|write|rewrite|show|see|find|search|explain|compare|help|convert|add|remove|update|rename|run|test|verify|deploy|analyze|analyse|read|tell|open|generate|ship|merge|commit|push|release|publish|set up|i want|i need|can you|could you|would you|how (?:can|do|does|is)|what (?:is|are|does|did)|why (?:is|are|does|did)|do we|do you|(?:is|are|seems?|looks?) (?:broken|failing|wrong)|doesn'?t work|not working)\b/i;
+    IMPERATIVE_OPENING = /^(?:please\s+)?([a-z]{3,})\s+(?:the|this|that|these|those|all|every|each|my|our|your|its|it|them|any|some|a|an)\b/i;
+    NOT_A_VERB = /^(?:the|and|for|with|from|now|then|just|not|about|after|before|into|onto|over|under|like|also|here|there|when|where|what|which|who|why|how|but|yet|all|any|some|its|our|your|this|that|these|those|they|she|his|her|one|two|three)$/i;
+    ENGLISH_WORDS = /\b(?:the|a|an|this|that|it|is|are|to|of|and|for|with|in|on|my|me|you|we|please|just|all|so|now|then|from|be|not)\b/i;
+    isConversationKey = (value) => {
+      try {
+        const parsed = JSON.parse(value);
+        return Array.isArray(parsed) && parsed[0] === "conversation" && parsed.length === 3;
+      } catch {
+        return false;
+      }
+    };
+  }
+});
+
+// src/services/work-view/owner-goals.mjs
+function isOwnerGoalsList(name) {
+  return name === OWNER_GOALS_LIST || String(name ?? "").startsWith(`${OWNER_GOALS_LIST}/`);
+}
+function goalKindOf(fields) {
+  const value = fields?.goal_kind;
+  if (GOAL_KINDS.includes(value)) return { kind: value, legacy: false };
+  if (Object.hasOwn(LEGACY_GOAL_KINDS, value)) return { kind: LEGACY_GOAL_KINDS[value], legacy: true };
+  throw new Error(`Owner-goals item ${JSON.stringify(fields?.task ?? null)} has an unknown goal_kind: ${JSON.stringify(value ?? null)}`);
+}
+var OWNER_GOALS_LIST, GOAL_KINDS, LEGACY_GOAL_KINDS;
+var init_owner_goals = __esm({
+  "src/services/work-view/owner-goals.mjs"() {
+    "use strict";
+    OWNER_GOALS_LIST = "owner-goals";
+    GOAL_KINDS = ["focus-area", "ask"];
+    LEGACY_GOAL_KINDS = { priority: "focus-area", "open-ask": "ask" };
+  }
+});
+
+// src/services/work-view/work-state-limits.mjs
+var init_work_state_limits = __esm({
+  "src/services/work-view/work-state-limits.mjs"() {
+    "use strict";
   }
 });
 
@@ -4821,7 +4908,7 @@ var init_request_judge = __esm({
 
 // src/services/work-view/request-groups.mjs
 import { Database } from "bun:sqlite";
-import { createHash as createHash4 } from "node:crypto";
+import { createHash as createHash5 } from "node:crypto";
 import { readFileSync as readFileSync9, readdirSync, statSync as statSync6 } from "node:fs";
 import { homedir as homedir9 } from "node:os";
 import { join as join11 } from "node:path";
@@ -5341,7 +5428,7 @@ function requestRecord(ledger, groupId, asks) {
 }
 function focusBasis(ledger, groupId) {
   const group = ledger.groups.groups[groupId];
-  return createHash4("sha256").update(JSON.stringify({ title: group.title, firstAsk: group.anchorAsk?.text ?? null, conversations: groupConversations(ledger, groupId) })).digest("hex").slice(0, 16);
+  return createHash5("sha256").update(JSON.stringify({ title: group.title, firstAsk: group.anchorAsk?.text ?? null, conversations: groupConversations(ledger, groupId) })).digest("hex").slice(0, 16);
 }
 function focusDue(ledger, focus, localDeviceId2) {
   return Object.keys(ledger.groups.groups).filter((groupId) => {
@@ -5662,7 +5749,7 @@ var init_request_groups = __esm({
     LINK_KINDS = ["shared-work-list", "shared-request-id", "agent-judgment", "judge"];
     MAX_READINGS = 20;
     iso3 = (epoch2) => Number.isFinite(epoch2) && epoch2 > 0 ? new Date(epoch2).toISOString() : null;
-    groupIdFor = (anchorConversationKey) => `g_${createHash4("sha256").update(anchorConversationKey).digest("hex").slice(0, 12)}`;
+    groupIdFor = (anchorConversationKey) => `g_${createHash5("sha256").update(anchorConversationKey).digest("hex").slice(0, 12)}`;
     emptyGroups = () => ({ version: 1, updatedAt: null, conversations: {}, groups: {}, ignored: {} });
     isIsoOrNull = (value) => value === null || typeof value === "string" && Number.isFinite(Date.parse(value));
     textTarget = (max) => Math.floor(max * 0.75 / 10) * 10;
@@ -5680,7 +5767,7 @@ var init_request_groups = __esm({
       const asks = openingAsks(database, ledger, groupIds.flatMap((groupId) => groupConversations(ledger, groupId)));
       return groupIds.map((groupId) => requestRecord(ledger, groupId, asks));
     };
-    otherPassHash = (ledger, groupIds) => groupIds.length ? createHash4("sha256").update(JSON.stringify(groupIds.map((groupId) => [ledger.groups.groups[groupId].anchor, focusBasis(ledger, groupId)]).sort())).digest("hex").slice(0, 16) : null;
+    otherPassHash = (ledger, groupIds) => groupIds.length ? createHash5("sha256").update(JSON.stringify(groupIds.map((groupId) => [ledger.groups.groups[groupId].anchor, focusBasis(ledger, groupId)]).sort())).digest("hex").slice(0, 16) : null;
     focusAreaRecord = (area) => ({ focusAreaId: area.focusAreaId, name: area.name, goal: area.goal, about: area.about, status: area.status });
     AREA_NAME_MAX = 80;
     AREA_SENTENCE_MAX = 300;
@@ -5741,14 +5828,14 @@ import { existsSync as existsSync13 } from "node:fs";
 init_request_groups();
 import { readFileSync as readFileSync10, readdirSync as readdirSync2, mkdirSync as mkdirSync4, renameSync as renameSync3, writeFileSync as writeFileSync3, unlinkSync as unlinkSync2, statSync as statSync7 } from "node:fs";
 import { join as join12 } from "node:path";
-import { createHash as createHash7 } from "node:crypto";
+import { createHash as createHash8 } from "node:crypto";
 
 // src/services/work-view/agent-view.mjs
 init_request_projection();
 init_owner_goals();
 
 // src/services/work-view/my-rules.mjs
-import { createHash as createHash5 } from "node:crypto";
+import { createHash as createHash6 } from "node:crypto";
 var MY_RULES_LIST = "my-rules";
 var RULE_TASK_PREFIX = "Rule: ";
 var RULE_SCOPE_TIERS = ["everywhere", "project", "situation"];
@@ -5757,7 +5844,7 @@ var SAVED_RULE_STATUSES = ["on", "off", "replaced", "dismissed", "suggested"];
 var MAX_QUOTES = 3;
 var MAX_QUOTE_CHARS = 200;
 var isMyRulesList = (name) => name === MY_RULES_LIST;
-var ruleIdForPreference = (preference2) => `pref_${createHash5("sha256").update(String(preference2)).digest("hex").slice(0, 12)}`;
+var ruleIdForPreference = (preference2) => `pref_${createHash6("sha256").update(String(preference2)).digest("hex").slice(0, 12)}`;
 var text3 = (value) => typeof value === "string" ? value.trim() : "";
 var count = (value) => typeof value === "number" && Number.isFinite(value) ? value : null;
 var quoteCount = (value) => Number.isSafeInteger(value) && value >= 0 ? value : null;
@@ -5919,10 +6006,60 @@ function observationMediaFromMetadata(metadataJson) {
   }
 }
 
-// src/services/work-view/agent-view.mjs
+// src/services/work-view/work-state-labels.mjs
+init_my_focus();
+init_owner_goals();
+init_request_judge();
+init_atomic_json();
+init_redaction();
+init_work_state_reduce();
 init_work_state_status();
+var JUDGED_WORK_STATES = {
+  working: { criterion: "Still being worked on: the notes describe work under way, and nothing says it finished, stalled or waits on someone", recordedStatus: "doing" },
+  not_started: { criterion: "Not started yet: planned, or a step of a plan waiting its turn after another step", recordedStatus: "todo" },
+  waiting_on_person: { criterion: "Waiting on the person: a decision, review, approval, login, answer or merge only they can give", recordedStatus: "needs-you" },
+  waiting_on_other: { criterion: "Waiting on something else: CI, a running job, a release, another agent, a date or an outside service", recordedStatus: "doing" },
+  finished: { criterion: "Finished: the notes say the work already finished, shipped, merged or was verified, though it was never marked done", recordedStatus: "needs-review" },
+  abandoned: { criterion: "Abandoned: superseded, replaced, moved elsewhere or no longer wanted", recordedStatus: "dropped" }
+};
+var LABEL_THRESHOLD = 0.8;
+var REPLACEABLE_STATUSES = /* @__PURE__ */ new Set(["doing", "unknown", "open"]);
+var TODO_REPLACEMENTS = /* @__PURE__ */ new Set(["finished", "abandoned"]);
+var NOT_NOTES = /* @__PURE__ */ new Set(["task", "status"]);
+var notesOf = (fields) => Object.fromEntries(Object.entries(fields).filter(([key, value]) => !NOT_NOTES.has(key) && value !== null));
+function workStateItems(state) {
+  return state.lists.filter((list2) => !isOwnerGoalsList(list2.name) && !isMyRulesList(list2.name) && !isMyFocusList(list2.name) && !isAgentLifecycleList(list2.name)).flatMap((list2) => {
+    const stateEntryId = state.events.find((event) => event.listId === list2.id && event.task === null)?.id ?? 0;
+    const listNotesSent = Object.keys(notesOf(list2.fields)).length > 0;
+    return [
+      ...list2.tasks.map((task) => ({ ...task, list: list2, recordKind: "task", labelKey: listNotesSent ? `${task.latestEntryId}:${stateEntryId}` : String(task.latestEntryId) })),
+      ...Object.keys(list2.fields).some((key) => key !== "task") ? [{ id: list2.id, name: list2.name, fields: list2.fields, status: list2.status, isOpen: !isClosedWorkStateStatus(list2.status), updatedAtEpoch: list2.stateUpdatedAtEpoch, latestEntryId: stateEntryId, labelKey: String(stateEntryId), list: list2, recordKind: "list" }] : []
+    ];
+  });
+}
+function appliedLabel(item, labels, threshold = LABEL_THRESHOLD) {
+  const label = labels?.[item.labelKey];
+  if (!label) return { judgedStatus: null, nextField: null, resultField: null, label: null };
+  const recorded = item.recordKind === "list" ? item.fields?.status == null || item.fields.status === "" ? "open" : item.fields.status : item.status;
+  return {
+    judgedStatus: label.stateP >= threshold ? judgedStatusFor(recorded, label.state) : null,
+    nextField: label.nextField && label.nextP >= threshold ? label.nextField : null,
+    resultField: label.resultField && label.resultP >= threshold ? label.resultField : null,
+    label
+  };
+}
+function judgedStatusFor(recordedStatus, judgedState) {
+  const recorded = String(recordedStatus ?? "unknown").toLowerCase();
+  if (recorded === "todo" ? !TODO_REPLACEMENTS.has(judgedState) : !REPLACEABLE_STATUSES.has(recorded)) return null;
+  const status = JUDGED_WORK_STATES[judgedState]?.recordedStatus;
+  if (!status) throw new TypeError(`"${judgedState}" is not a judged work state.`);
+  return status === recorded ? null : status;
+}
+
+// src/services/work-view/agent-view.mjs
 var PROJECT_KEY = (value) => String(value ?? "").replace(/[A-Z]/g, (c) => c.toLowerCase());
-var PLATFORMS = { codex: "Codex", claude: "Claude Code", "gemini-cli": "Gemini CLI", "antigravity-cli": "Antigravity CLI", kimi: "Kimi", "hermes-cli": "Hermes", "pi-agent": "Pi" };
+var PLATFORMS = { codex: "Codex", claude: "Claude Code", gemini: "Gemini CLI", "gemini-cli": "Gemini CLI", "antigravity-cli": "Antigravity CLI", kimi: "Kimi", "hermes-cli": "Hermes", "pi-agent": "Pi" };
+var platformLabel = (platform) => PLATFORMS[platform] ?? compactText(platform, 48) ?? "Unassigned";
 var stamp = (value) => Number.isFinite(Number(value)) && Number(value) > 0 ? new Date(Number(value)).toISOString() : null;
 var fingerprint = (value) => JSON.stringify(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)));
 var callKey = (project, list2, fields) => JSON.stringify([PROJECT_KEY(project), list2, fingerprint(fields)]);
@@ -6065,7 +6202,7 @@ function launchRequest(launch) {
   const text5 = launch.description ?? launch.prompt;
   return text5 ? { text: text5, source: "agent-launch", sourceId: launch.shared ? null : launch.toolUseId, url: launch.shared ? null : `/api/work-view/evidence/tool-use/${launch.toolUseId}` } : null;
 }
-function buildAgentView(state, records2, { now = Date.now(), workLimit = 240, activityLimit = 160, recentMs = 15 * 60 * 1e3, titleCache = {}, ledger = null } = {}) {
+function buildAgentView(state, records2, { now = Date.now(), workLimit = 240, activityLimit = 160, recentMs = 15 * 60 * 1e3, titleCache = {}, ledger = null, onProductFile = null, workStateLabels = null } = {}) {
   const { calls = [], observations = [], summaries = [], sessions = [], prompts = [], agentLaunches = [], agentToolActivity = [] } = records2;
   const launches = readAgentLaunches(agentLaunches);
   const lastToolEpochs = new Map(agentToolActivity.map((row) => [lifecycleKey(row.platform_source, row.content_session_id, row.agent_id), Number(row.last_epoch) || 0]));
@@ -6155,11 +6292,11 @@ function buildAgentView(state, records2, { now = Date.now(), workLimit = 240, ac
     const platform = session?.platform_source ?? null;
     const id = session ? agentKey(platform, session.id, agentId) : JSON.stringify([owner ? "owner" : "unassigned", PROJECT_KEY(project), owner, agentId]);
     if (!groups.has(id)) {
-      const platformLabel = PLATFORMS[platform] ?? compactText(platform, 48) ?? "Unassigned";
+      const label = platformLabel(platform);
       groups.set(id, {
         id,
         kind: session ? "session" : owner ? "recorded-owner" : "unassigned",
-        label: session ? platformLabel : owner ? compactText(owner, 70) : "Unassigned work",
+        label: session ? label : owner ? compactText(owner, 70) : "Unassigned work",
         platformSource: platform,
         agentId,
         agentType,
@@ -6204,10 +6341,7 @@ function buildAgentView(state, records2, { now = Date.now(), workLimit = 240, ac
     group.activity.push(entry);
     activity.push({ ...entry, agentGroupId: group.id });
   }
-  const candidates = state.lists.filter((list2) => !isOwnerGoalsList(list2.name) && !isMyRulesList(list2.name) && !isMyFocusList(list2.name) && !isAgentLifecycleList(list2.name)).flatMap((list2) => [
-    ...list2.tasks.map((task) => ({ ...task, list: list2, recordKind: "task" })),
-    ...Object.keys(list2.fields).some((key) => key !== "task") ? [{ id: list2.id, name: list2.name, fields: list2.fields, status: list2.status, isOpen: !isClosedWorkStateStatus(list2.status), updatedAtEpoch: list2.stateUpdatedAtEpoch, latestEntryId: state.events.find((event) => event.listId === list2.id && event.task === null)?.id ?? 0, list: list2, recordKind: "list" }] : []
-  ]).sort((a, b) => b.updatedAtEpoch - a.updatedAtEpoch).slice(0, workLimit);
+  const candidates = workStateItems(state).sort((a, b) => b.updatedAtEpoch - a.updatedAtEpoch).slice(0, workLimit);
   function uniqueCall(event) {
     const matches = (callsByKey.get(callKey(event.originProject ?? event.project, event.listName, event.fields)) ?? []).filter((call) => Math.abs(call.created_at_epoch - event.atEpoch) <= 5e3);
     return matches.length === 1 ? matches[0] : records2.sharedAttributions?.get(event.id) ?? null;
@@ -6238,8 +6372,13 @@ function buildAgentView(state, records2, { now = Date.now(), workLimit = 240, ac
     const explicitRequest = fieldText(item.fields, ["request", "human_request", "user_request"], 500);
     const requestKey = confirmedRequestKey(session, call?.prompt_number);
     const request = { ...explicitRequest ?? requestFor(session, call?.prompt_number) ?? { text: compactText(item.name, 500), source: item.recordKind === "task" ? "task-label" : "list-label", sourceId: item.id, url: null }, key: requestKey };
-    const next = fieldText(item.fields, ["next_step", "nextStep", "next", "next_action", "remaining", "pending", "then_run"]);
-    const outcome2 = fieldText(item.fields, ["outcome", "result", "completed", "verified", "verification"]);
+    const labeled = appliedLabel(item, workStateLabels?.labels);
+    const jevField = (name) => {
+      const found = name ? fieldText(item.fields, [name]) : null;
+      return found ? { ...found, pickedBy: "jev" } : null;
+    };
+    const next = fieldText(item.fields, ["next_step", "nextStep", "next", "next_action", "remaining", "pending", "then_run"]) ?? jevField(labeled.nextField);
+    const outcome2 = fieldText(item.fields, ["outcome", "result", "completed", "verified", "verification"]) ?? jevField(labeled.resultField);
     const progress = fieldText(item.fields, ["human_summary", "summary", "progress", "phase", "stage", "status_note"]);
     const entry = {
       id: item.id,
@@ -6258,6 +6397,8 @@ function buildAgentView(state, records2, { now = Date.now(), workLimit = 240, ac
       outcome: outcome2,
       progress,
       owner,
+      judgedStatus: labeled.judgedStatus,
+      judgment: labeled.label ? { state: labeled.label.state, probability: labeled.label.stateP, model: labeled.label.model, at: labeled.label.at } : null,
       requestId: ["string", "number"].includes(typeof (item.fields.request_id ?? item.list.fields.request_id)) ? String(item.fields.request_id ?? item.list.fields.request_id).trim() || null : null,
       requestText: fieldText(item.fields, ["human_request", "request", "user_request"], 1200)?.text ?? fieldText(item.list.fields, ["human_request", "request", "user_request"], 1200)?.text ?? null,
       requestStatus: typeof (item.fields.request_status ?? item.list.fields.request_status) === "string" ? item.fields.request_status ?? item.list.fields.request_status : null,
@@ -6356,7 +6497,7 @@ function buildAgentView(state, records2, { now = Date.now(), workLimit = 240, ac
     };
   }).sort((a, b) => String(b.presence.lastActivityAt ?? "").localeCompare(String(a.presence.lastActivityAt ?? "")));
   const recentActivity = activity.sort((a, b) => b.atEpoch - a.atEpoch).slice(0, activityLimit);
-  const requestProjection = buildHumanRequests({ agents, recentActivity }, records2, { titleCache, ledger });
+  const requestProjection = buildHumanRequests({ agents, recentActivity }, records2, { titleCache, ledger, onProductFile });
   const { focusAreas, focusAreaIdByAnchor } = buildFocusAreas(state);
   return {
     version: 1,
@@ -6451,7 +6592,7 @@ init_request_projection();
 init_work_product();
 
 // src/services/work-view/human-copy.mjs
-import { createHash as createHash6 } from "node:crypto";
+import { createHash as createHash7 } from "node:crypto";
 var HUMAN_COPY_MAX_CHARS = 18e3;
 function text4(value, max) {
   if (typeof value !== "string") return "";
@@ -6538,7 +6679,7 @@ function humanCopyFingerprint(input) {
       observations: stream.observations.map(({ title, summary }) => ({ title, summary })).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))
     }))
   };
-  return createHash6("sha256").update(JSON.stringify(meaningful)).digest("hex");
+  return createHash7("sha256").update(JSON.stringify(meaningful)).digest("hex");
 }
 function exactKeys(object3, keys, label) {
   if (!object3 || typeof object3 !== "object" || Array.isArray(object3) || Object.keys(object3).length !== keys.length || keys.some((key) => !Object.hasOwn(object3, key))) throw new TypeError(`${label} has an invalid shape.`);
@@ -7470,7 +7611,7 @@ function publishSharedRecords(db, { deviceId, project, updates, now = Date.now()
 init_shared_records();
 init_CanonicalContent();
 init_redaction();
-var digest = (value) => createHash7("sha256").update(canonicalJson(value ?? null)).digest("hex");
+var digest = (value) => createHash8("sha256").update(canonicalJson(value ?? null)).digest("hex");
 var MAX_FILE_BYTES = 8 * 1024 * 1024;
 var fixedFiles = ["request-groups.json", "story.json", "refresh.json", "agent-written-prompts.json"];
 var fileKinds = (name) => name === "request-groups.json" ? ["group", "ignored"] : name === "story.json" ? ["story"] : name === "refresh.json" ? ["refresh"] : name === "agent-written-prompts.json" ? ["exclusion"] : /^progress\/g_[a-f0-9]{12}\.json$/.test(name) ? ["progress"] : [];
@@ -7826,6 +7967,7 @@ var SharedLedgerAdapter = class {
     }
     const shared = this.shared();
     let projectionSuperseded = false;
+    let activityPublishFailed = false;
     let ledger = this.localLedger();
     const applied = applySharedProjection(this.db, shared, { ledger, deviceId: this.deviceId });
     ledger = applied.ledger;
@@ -7885,9 +8027,12 @@ var SharedLedgerAdapter = class {
         this.publish(buildSharedProjectionUpdates(this.db, { ledger: null, records: records2, view, deviceId: this.deviceId, copyEntries: copies }));
       } catch (error) {
         this.errors.push({ file: "activity", message: String(error.message) });
+        activityPublishFailed = String(error?.code ?? "").startsWith("SQLITE_BUSY");
       }
-      this.activity = activity;
-      this.copyHash = copyHash;
+      if (!activityPublishFailed) {
+        this.activity = activity;
+        this.copyHash = copyHash;
+      }
     }
     const final = this.shared();
     if (final.revision !== this.sharedRevision) {
@@ -7897,7 +8042,7 @@ var SharedLedgerAdapter = class {
       this.storyHash = storyHash;
       this.sharedRevision = final.revision;
     }
-    this.lastSignature = projectionSuperseded ? null : this.signature(captureActivity, dataVersion);
+    this.lastSignature = projectionSuperseded || activityPublishFailed ? null : this.signature(captureActivity, dataVersion);
     const diagnostics = applySharedProjection(this.db, final, { ledger, deviceId: this.deviceId }).diagnostics;
     this.lastDiagnostic = { ...diagnostics, files: this.errors };
     return this.lastDiagnostic;

@@ -132,10 +132,10 @@ const STOP_WORDS = new Set("a an and are as at be been by can did do for from ha
 // spaces. Their shared first five characters are not an English word stem.
 const UNSEGMENTED_SCRIPT = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Script=Thai}\p{Script=Lao}\p{Script=Myanmar}\p{Script=Khmer}\p{Script=Bopomofo}]/u;
 function terms(query: string): string[] {
-  return [...new Set(query.toLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}\p{M}]*/gu) ?? [])].filter(word => !STOP_WORDS.has(word));
+  return [...new Set(query.normalize('NFC').toLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}\p{M}]*/gu) ?? [])].filter(word => !STOP_WORDS.has(word));
 }
 function relevance(row: MemoryIndexRow, words: string[]): number {
-  const title = row.title.toLowerCase();
+  const title = row.title.normalize('NFC').toLowerCase();
   const tokens = title.match(/[\p{L}\p{N}][\p{L}\p{N}\p{M}]*/gu) ?? [];
   return words.reduce((score, word) => {
     const matches = UNSEGMENTED_SCRIPT.test(word)

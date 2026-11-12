@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, afterAll } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, afterAll, spyOn } from 'bun:test';
 import { installScriptedClaudeSdk, createScriptedSession, type FakeSdk, settle, withTimeout } from '../fixtures/worker/scripted-claude-sdk.js';
 import type { ActiveSession } from '../../src/services/worker-types.js';
 import { sessionDbWithoutMedia } from '../fixtures/worker/session-db-without-media.js';
@@ -28,6 +28,7 @@ const {
   ObserverResponsePacer,
 } = await import('../../src/services/worker/session/response-pacer.js');
 const { MAX_CONSECUTIVE_RECYCLES } = await import('../../src/services/worker/session/recycle-conversation.js');
+const { SettingsDefaultsManager } = await import('../../src/shared/SettingsDefaultsManager.js');
 
 const SESSION_ID = 4066;
 // The sanctioned no-op answer: every mode names this sentinel, and prose in
@@ -136,6 +137,42 @@ describe('Claude observer feed pacing without a separate init turn (the default)
   });
 });
 
+// #5023: at the shipped 100000-char budget, a pasted prompt larger than the
+// budget used to fill the fresh generation's framing prompt on its own, so the
+// generation recycled before its first observation, again and again, until the
+// session paused. The request is now bounded like one tool field.
+describe('a long pasted prompt at the shipped generation budget (#5023)', () => {
+  it('sends the first observation instead of recycling on the framing prompt', async () => {
+    process.env.CLAUDE_MEM_OBSERVE_BARE_PROMPTS = 'false';
+    const settings = spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(() => SettingsDefaultsManager.getAllDefaults());
+    try {
+      expect(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS).toBe('100000');
+      const h = createHarness(3);
+      h.session.userPrompt = 'HEAD_SENTINEL' + 'p'.repeat(120_000) + 'TAIL_SENTINEL';
+      liveSessions.push(h.session);
+      let ended = false;
+      const run = h.provider.startSession(h.session).finally(() => { ended = true; });
+      await sdkStarted();
+
+      await sdk().until(() => sdk().prompts.length >= 1 || ended, 'first prompt or generation end');
+      await settle();
+      expect(sdk().prompts.length).toBe(1);
+      expect(sdk().prompts[0]).toContain('step 0');
+      expect(sdk().prompts[0]).toContain('HEAD_SENTINEL');
+      expect(sdk().prompts[0]).toContain('TAIL_SENTINEL');
+      expect(sdk().prompts[0].length).toBeLessThan(100_000);
+      expect(h.session.consecutiveContextOverflows).toBe(0);
+      expect(h.session.abortReason ?? null).toBeNull();
+      expect(h.session.overflowPausedUntilMs).toBeUndefined();
+
+      h.session.abortController.abort();
+      await withTimeout(run, 'startSession after abort');
+    } finally {
+      settings.mockRestore();
+    }
+  });
+});
+
 describe('Claude observer feed pacing (#4066)', () => {
   it('holds every claim until the previous prompt has been answered', async () => {
     const h = createHarness(FULL_BUFFER);
@@ -166,8 +203,9 @@ describe('Claude observer feed pacing (#4066)', () => {
   });
 
   it('a backlog far over the budget makes progress instead of recycling on an unanswered burst', async () => {
-    // A full buffer (128) x ~8k chars is ~1M chars of prompts — over twice the 400k default budget.
-    const h = createHarness(FULL_BUFFER, 8_000);
+    // A full buffer (128) x ~2k chars is ~256k chars of prompts — over twice the 100k default budget,
+    // yet each generation still holds about 40 answered turns.
+    const h = createHarness(FULL_BUFFER, 2_000);
     liveSessions.push(h.session);
     const recycleLog: Array<{ answeredTurns: number; claimed: number; history: number }> = [];
 
@@ -551,7 +589,7 @@ describe('every Claude generator start opens a new generation (#3479)', () => {
 // same generation budget. The HTTP providers get the same checks in
 // observer-measured-context.test.ts.
 describe('the measured Claude context feeds the generation budget (#2957)', () => {
-  // Past half of a 200k window: 150k tokens is 600k chars against a 400k budget.
+  // 150k tokens is 600k chars, far past the 100k-char default budget.
   const OVER_BUDGET_USAGE = { usage: { input_tokens: 12, cache_read_input_tokens: 150_000, output_tokens: 2 } };
 
   it('retires the generation before the next observation once a turn read past the budget', async () => {

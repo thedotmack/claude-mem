@@ -162,8 +162,9 @@ describe('generation usage counts the measured context', () => {
 
   it('recycles on a measured context past the budget even when the proxy is small', () => {
     expect(shouldRecycleConversation(small, OBSERVER_CONVERSATION_MAX_CHARS)).toBe(false);
-    expect(shouldRecycleConversation(small, OBSERVER_CONVERSATION_MAX_CHARS, 100_000)).toBe(true);
-    expect(shouldRecycleConversation(small, OBSERVER_CONVERSATION_MAX_CHARS, 99_999)).toBe(false);
+    // 25,000 tokens * 4 chars/token is exactly the 100,000-char budget.
+    expect(shouldRecycleConversation(small, OBSERVER_CONVERSATION_MAX_CHARS, 25_000)).toBe(true);
+    expect(shouldRecycleConversation(small, OBSERVER_CONVERSATION_MAX_CHARS, 24_999)).toBe(false);
   });
 
   it('sums fresh input, cache writes and cache reads as the context read', () => {

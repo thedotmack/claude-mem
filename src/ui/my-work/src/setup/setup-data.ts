@@ -6,7 +6,8 @@ import { toSetupUsage, type SetupScanUsage, type SetupUsage } from './setup-usag
 import { revealFromSnapshot, type SnapshotWithSetup, type WorkerExtraction } from './setup-reveal'
 import { noteFor, searchUrl, toMemoryResults, type MemoryResult, type WorkerSearchResult } from './setup-search'
 import { applySseFrame } from '../live/parse-sse-frame'
-import type { HistoryImportRunState, SetupCheckoutState, SetupEvent, SetupScanPhase, SetupStatus } from '../../../../shared/setup-funnel.ts'
+import type { HistoryImportRunState, SetupBranch, SetupCheckoutState, SetupEvent, SetupMemoryBilling, SetupScanPhase, SetupStatus } from '../../../../shared/setup-funnel.ts'
+import { hasPendingInstallSetup, type SetupInstallSelection, type SetupInstallState } from '../../../../shared/setup-install.ts'
 
 /** Mirrors the worker's SetupScanState (src/services/prompt-import/setup-scan.ts), trimmed to what the screen shows. */
 export interface SetupScanAgent {
@@ -30,7 +31,7 @@ export interface SetupRecentPrompt { agent: string; at: string; text: string }
 /** The worker's subsidized hosted setup extraction. */
 /** On The Go checkout, mirrored from the installer that runs it (`null` until the page asks). */
 export interface SetupCheckoutView { state: SetupCheckoutState; error: string | null }
-/** What the installer in the terminal did with the choice. A `failed` installer has exited: setup restarts from the terminal. */
+/** What the installer did with the choice. A failed handoff can be retried from the setup page. */
 export interface SetupInstallerView { stage: InstallerStage; error: string | null }
 export type SetupExtraction = Pick<WorkerExtraction, 'state' | 'step'>
 
@@ -47,6 +48,10 @@ export interface HistoryImportProgress { percent: number; done: boolean; importe
 export type { MemoryResult } from './setup-search'
 
 export interface SetupData {
+  connectionError: string | null
+  choice: SetupChoice | null
+  /** Undefined until the first state response; null for older/already configured installers. */
+  install: SetupInstallState | null | undefined
   scan: SetupScanView
   reveal: RevealSets
   /** `null` until the worker reports a run. Older workers may still report waiting-for-agent. */
@@ -67,11 +72,14 @@ export interface SetupData {
 }
 
 /** What the page posts when it leaves Token Savings: where memory lives, and who generates it. */
-export interface SetupChoice { branch: 'home' | 'go'; memoryBilling: 'hosted' | 'existing' }
+export interface SetupChoice { branch: SetupBranch; memoryBilling: SetupMemoryBilling }
 
 export interface SetupSource {
   readonly kind: 'local' | 'sample'
   subscribe(onData: (data: SetupData) => void): () => void
+  /** Explicitly retries a stopped installation; first-use resume never carries this intent. */
+  resume(): Promise<void>
+  configureInstall(selection: SetupInstallSelection): Promise<void>
   /** Starts another scan only after the user chooses to retry a failure. */
   retryScan(): Promise<void>
   /** Changes the hosted setup results preference without pausing the scan or upload. */
@@ -94,6 +102,9 @@ export interface SetupSource {
 }
 
 export const EMPTY_SETUP_DATA: SetupData = {
+  connectionError: null,
+  choice: null,
+  install: undefined,
   scan: { agents: [], percent: 0, phase: 'idle', done: false, error: null, improveProduct: true, uploadedAgents: null },
   reveal: { goals: null, work: null, rules: null, focusAreas: null, requests: [], requestReadErrorCount: 0 },
   extraction: null,
@@ -123,6 +134,8 @@ interface WorkerScanState extends Omit<SetupScanView, 'agents' | 'improveProduct
 }
 interface WorkerHistoryImport { state: HistoryImportRunState; percent: number; imported: number; error: string | null }
 interface WorkerSetupState {
+  choice?: SetupChoice | null
+  install?: SetupInstallState | null
   status: SetupStatus; alreadyPro: boolean; checkout?: SetupCheckoutView | null
   installer?: SetupInstallerView | null
   history?: SetupHistory | null; historyImport?: WorkerHistoryImport | null
@@ -146,7 +159,8 @@ const postJson = <T>(url: string, body: unknown) => workerJson<T>(url, { method:
 export async function setupPending(): Promise<boolean> {
   const response = await fetch('/api/setup/state', { cache: 'no-store' })
   if (!response.ok) return false
-  return ((await response.json()) as WorkerSetupState).status === 'pending'
+  const state = await response.json() as WorkerSetupState
+  return hasPendingInstallSetup(state)
 }
 
 const toScanView = (scan: WorkerScanState): SetupScanView => ({
@@ -164,6 +178,7 @@ let desiredImproveProduct: boolean | undefined
 let appliedImproveProduct: boolean | undefined
 let preferenceReady: Promise<void> = Promise.resolve()
 let retryLocalScan: (() => Promise<void>) | null = null
+let acknowledgeInstallConnection: (() => void) | null = null
 
 /**
  * The local worker: the prompt scan (started here when it has not run, then followed on the work view's event
@@ -176,6 +191,7 @@ export const localSetupSource: SetupSource = {
     let data = EMPTY_SETUP_DATA
     let closed = false
     let scanRevision = 0
+    let stateRevision = 0
     let ready!: () => void
     preferenceReady = new Promise<void>((resolve) => { ready = resolve })
     const publish = (changes: Partial<SetupData>) => { if (closed) return; data = { ...data, ...changes }; onData(data) }
@@ -190,14 +206,21 @@ export const localSetupSource: SetupSource = {
         detectedTools: scan.agents.filter((agent) => agent.detected).map((agent) => agent.id).filter((id) => SETUP_TOOLS.some((tool) => tool.id === id)),
       })
     }
-    const applyState = (state: WorkerSetupState) => publish({
+    const applyState = (state: WorkerSetupState) => {
+      stateRevision++
+      publish({
+      connectionError: null,
+      choice: state.choice ?? null,
+      install: state.install ?? null,
       alreadyPro: state.alreadyPro,
       checkout: state.checkout ? { state: state.checkout.state, error: state.checkout.error } : null,
       installer: state.installer ? { stage: state.installer.stage, error: state.installer.error } : null,
       // Nothing to bring along on a new install: the import offer stays hidden.
       history: state.history && state.history.observations > 0 ? state.history : null,
       historyImport: toHistoryImport(state.historyImport),
-    })
+      })
+      void ensureScanStarted()
+    }
     // Goals, work and rules land in the work view snapshot as the extraction saves each one.
     const applySnapshot = (snapshot: SnapshotWithSetup) => {
       const extraction = snapshot.setup?.extraction ?? null
@@ -228,34 +251,57 @@ export const localSetupSource: SetupSource = {
       const started = await postJson<WorkerScanState>('/api/setup/scan', desiredImproveProduct === undefined ? {} : { improveProduct: desiredImproveProduct })
       if (!closed && scanRevision === revision) applyScan(started)
     }
+    let initialScanLoaded = false
+    let startingScan = false
+    const ensureScanStarted = async () => {
+      if (!initialScanLoaded || startingScan || closed || data.scan.phase !== 'idle'
+        || data.install === undefined || (data.install && data.install.status !== 'ready')) return
+      startingScan = true
+      try { await startScan() }
+      catch (error) { if (!closed) publish({ scan: { ...data.scan, phase: 'failed', error: error instanceof Error ? error.message : String(error) } }) }
+      finally { startingScan = false }
+    }
+    const acknowledgeConnection = () => {
+      publish({ connectionError: null })
+      void ensureScanStarted()
+    }
+    acknowledgeInstallConnection = acknowledgeConnection
     // Retrying may repeat hosted extraction, so only the page's explicit action invokes this.
     retryLocalScan = startScan
     let requestedAtRevision = scanRevision
+    const requestedStateRevision = stateRevision
     void (async () => {
       const [scan, state] = await Promise.all([workerJson<WorkerScanState>('/api/setup/scan'), workerJson<WorkerSetupState>('/api/setup/state')])
       if (closed) return
-      applyState(state)
+      if (stateRevision === requestedStateRevision) applyState(state)
       // The event stream can advance while GET or POST is in flight. Never restore an older phase or preference.
       if (scanRevision === requestedAtRevision) applyScan(scan)
-      if (data.scan.phase === 'idle') {
-        requestedAtRevision = scanRevision
-        // A click can precede the initial GET. Start with the latest choice, without
-        // delaying the scan for the buffered preference request.
-        await startScan()
+      initialScanLoaded = true
+      requestedAtRevision = scanRevision
+      // A failed installer connection is not a failed scan. Keep the actual scan
+      // state so an explicit retry can continue as soon as installation is ready.
+      if (hasPendingInstallSetup(state)) {
+        try { await postJson('/api/setup/resume', {}) }
+        catch (error) { if (!closed) publish({ connectionError: error instanceof Error ? error.message : String(error) }) }
       }
+      await ensureScanStarted()
     })().catch((error: unknown) => {
       // A late startup error must not replace progress or results already received from the stream.
       if (!closed && (scanRevision === requestedAtRevision || data.scan.phase === 'idle')) {
-        publish({ scan: { ...data.scan, phase: 'failed', error: error instanceof Error ? error.message : String(error) } })
+        const message = error instanceof Error ? error.message : String(error)
+        publish({ install: data.install ?? null, connectionError: message, scan: { ...data.scan, phase: 'failed', error: message } })
       }
     }).finally(ready)
     return () => {
       closed = true
       if (retryLocalScan === startScan) retryLocalScan = null
+      if (acknowledgeInstallConnection === acknowledgeConnection) acknowledgeInstallConnection = null
       stream.close()
       ready()
     }
   },
+  async resume() { await postJson('/api/setup/resume', { retry: true }); acknowledgeInstallConnection?.() },
+  async configureInstall(selection) { await postJson('/api/setup/install', selection); acknowledgeInstallConnection?.() },
   async retryScan() {
     if (!retryLocalScan) throw new Error('The setup page is not connected to the worker. Reload it to try again.')
     await retryLocalScan()
@@ -302,9 +348,11 @@ export interface SetupTool {
   /** Local tools capture work on this machine; cloud readers only exist with On The Go. */
   kind: 'local' | 'cloud'
   mark: 'terminal' | 'codex' | 'chatgpt' | 'claude' | 'gemini'
+  /** Already configured by the install step; shown as connected in Finish Setup. */
+  installed?: boolean
   steps?: string[]
   commands?: string[]
-  guide: { href: string; label: string }
+  guide?: { href: string; label: string }
 }
 export const SETUP_TOOLS: SetupTool[] = [
   { id: 'claude-code', name: 'Claude Code', kind: 'local', mark: 'terminal', commands: ['claude mcp add --transport http --scope user cmem https://cmem.ai/api/mcp', 'claude mcp login cmem', 'claude mcp list'], guide: { href: 'https://code.claude.com/docs/en/mcp', label: 'Claude Code connection guide' } },
@@ -313,6 +361,16 @@ export const SETUP_TOOLS: SetupTool[] = [
   { id: 'gemini-cli', name: 'Gemini CLI', kind: 'cloud', mark: 'gemini', steps: ['Add CMEM as a remote HTTP MCP server.', 'Authenticate CMEM inside Gemini CLI, then check the available tools.'], commands: ['gemini mcp add --transport http --scope user cmem https://cmem.ai/api/mcp', '/mcp auth cmem', '/mcp list'], guide: { href: 'https://geminicli.com/docs/tools/mcp-server/', label: 'Gemini CLI connection guide' } },
   { id: 'chatgpt', name: 'ChatGPT', kind: 'cloud', mark: 'chatgpt', steps: ['Open ChatGPT Plugins and choose +, then Add custom MCP server.', 'Paste the CMEM URL, choose OAuth, and create the plugin.', 'Review the available tools, install the plugin, then @mention it in a chat.'], guide: { href: 'https://developers.openai.com/plugins/deploy/connect-chatgpt', label: 'ChatGPT connection guide' } },
 ]
+
+/** The install selection is authoritative; cloud readers remain an optional next step. */
+export function setupToolsForInstall(install: SetupInstallState | null | undefined): SetupTool[] {
+  if (!install?.selection) return SETUP_TOOLS
+  const local = install.catalog.agents.filter(agent => install.selection!.agents.includes(agent.id)).map((agent): SetupTool => ({
+    id: agent.id, name: agent.label, kind: 'local', installed: true,
+    mark: agent.id === 'codex-cli' ? 'codex' : 'terminal',
+  }))
+  return [...local, ...SETUP_TOOLS.filter(tool => tool.kind === 'cloud')]
+}
 
 /** The scan's agent ids drawn with the brand marks brand.tsx has; any other agent gets the neutral mark. */
 export const agentToolFor = (agentId: string): AgentTool =>

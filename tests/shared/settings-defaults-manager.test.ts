@@ -885,6 +885,83 @@ describe('SettingsDefaultsManager', () => {
       expect(warnings.filter((line) => line.includes('Migrated CLAUDE_MEM_'))).toHaveLength(2);
     });
 
+    // The observer generation budget came down from 400000 to 100000 chars
+    // (#5023). Every settings.json seeded while 400000 was the default holds it
+    // on disk, and a persisted value wins over DEFAULTS, so the lower default
+    // would never reach those installs without this one move.
+    describe('lowered observer generation budget migration', () => {
+      const KEY = 'CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS';
+      const LEGACY = '400000';
+      const CURRENT = SettingsDefaultsManager.getAllDefaults()[KEY];
+
+      function migrationWarnings(warnings: string[]): string[] {
+        return warnings.filter((line) => line.includes(KEY));
+      }
+
+      it('ships the lowered 100000 default', () => {
+        expect(CURRENT).toBe('100000');
+      });
+
+      it('moves the seeded 400000 to the current default once, with one log line', () => {
+        writeFileSync(settingsPath, JSON.stringify({
+          CLAUDE_MEM_PROVIDER: 'openrouter',
+          [KEY]: LEGACY,
+        }));
+
+        const first = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath, false));
+
+        expect(first.value[KEY]).toBe(CURRENT);
+        const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+        expect(parsed[KEY]).toBe(CURRENT);
+        // The rest of the file survives the rewrite.
+        expect(parsed.CLAUDE_MEM_PROVIDER).toBe('openrouter');
+        const [logLine, ...extra] = migrationWarnings(first.warnings);
+        expect(extra).toEqual([]);
+        expect(logLine).toContain(`400000 chars default to ${CURRENT} chars`);
+        expect(logLine).toContain(settingsPath);
+
+        const second = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath, false));
+        expect(second.value[KEY]).toBe(CURRENT);
+        expect(migrationWarnings(second.warnings)).toEqual([]);
+      });
+
+      it.each([
+        ['a larger budget', '800000'],
+        ['a smaller budget', '50000'],
+        // Every writer persists the string; a bare number is a hand edit.
+        ['the legacy value hand-written as a JSON number', 400000],
+      ])('leaves %s chosen by the user untouched', (_label, value) => {
+        const raw = JSON.stringify({ [KEY]: value });
+        writeFileSync(settingsPath, raw);
+
+        const { value: result, warnings } = captureWarnings(
+          () => SettingsDefaultsManager.loadFromFile(settingsPath, false),
+        );
+
+        expect(result[KEY]).toEqual(value as string);
+        expect(readFileSync(settingsPath, 'utf-8')).toBe(raw);
+        expect(migrationWarnings(warnings)).toEqual([]);
+      });
+
+      // The move runs once per settings file, so a 400000 the user sets later
+      // is a choice, not the seeded value.
+      it.each([
+        ['after the seeded value was moved', JSON.stringify({ [KEY]: LEGACY })],
+        ['on an install that never held the old default', JSON.stringify({ [KEY]: '250000' })],
+        ['on a settings file created fresh', null],
+      ])('keeps a 400000 the user sets %s', (_label, initial) => {
+        if (initial !== null) writeFileSync(settingsPath, initial);
+        SettingsDefaultsManager.loadFromFile(settingsPath, false);
+
+        writeFileSync(settingsPath, JSON.stringify({ [KEY]: LEGACY }));
+        const { value, warnings } = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath, false));
+
+        expect(value[KEY]).toBe(LEGACY);
+        expect(JSON.parse(readFileSync(settingsPath, 'utf-8'))[KEY]).toBe(LEGACY);
+        expect(migrationWarnings(warnings)).toEqual([]);
+      });
+    });
+
     // Image capture became on by default. Every settings.json seeded while it
     // was off holds 'false', and a persisted value wins over DEFAULTS, so the
     // new default would never reach those installs without this one move. A

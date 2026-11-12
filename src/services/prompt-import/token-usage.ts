@@ -253,8 +253,11 @@ const openCodeUsage: UsageReader = {
           if (layout.legacy) queries.push(`SELECT m.time_created AS createdAt, json_extract(m.data, '$.tokens') AS tokens
             FROM message m WHERE json_extract(m.data, '$.role') = 'assistant'
             ${layout.current ? 'AND NOT EXISTS (SELECT 1 FROM session_message current WHERE current.id = m.id)' : ''}`);
-          if (layout.current) queries.push(`SELECT time_created AS createdAt, json_extract(data, '$.tokens') AS tokens
-            FROM session_message WHERE type = 'assistant'`);
+          if (layout.current) queries.push(`SELECT m.time_created AS createdAt, json_extract(m.data, '$.tokens') AS tokens
+            FROM session_message m
+            ${layout.forkBoundary ? 'LEFT JOIN session_v2 s ON s.id = m.session_id' : ''}
+            WHERE m.type = 'assistant'
+            ${layout.forkBoundary ? 'AND (s.fork_session_id IS NULL OR m.time_created >= s.time_created)' : ''}`);
           // The database contains the whole agent history. Consume one row at
           // a time so counting usage does not retain every token payload.
           const rows = streamRows(database.prepare(queries.join('\nUNION ALL\n'))) as Iterable<{ createdAt: number; tokens: string | null }>;

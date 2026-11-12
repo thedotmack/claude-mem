@@ -304,3 +304,46 @@ npx tsx scripts/export-memories.ts "bugfix error handling" bugfix-patterns.json
 ```bash
 npx tsx scripts/export-memories.ts "performance optimization caching" perf-tips.json
 ```
+
+## Export a complete work-state list
+
+The memory export scripts above export observations, summaries and prompts.
+For the to-do lists written with `work_state_write`, use the local worker's
+`GET /api/work-state/export` endpoint instead. This returns the complete
+ordered history as JSON, including closed items, without the MCP text limit.
+
+With the worker running, run this from the checkout whose work state you
+want. The worker port is `CLAUDE_MEM_WORKER_PORT` in `~/.claude-mem/settings.json`;
+when it isn't set, the default is `37700 + (your user id % 100)` on macOS and
+Linux (on Windows, read it from `settings.json`):
+
+```bash
+WORKER_PORT=$(jq -r '.CLAUDE_MEM_WORKER_PORT // empty' ~/.claude-mem/settings.json)
+WORKER_PORT=${WORKER_PORT:-$((37700 + $(id -u) % 100))}
+curl --fail-with-body --get "http://127.0.0.1:$WORKER_PORT/api/work-state/export" \
+  --data-urlencode "cwd=$PWD" \
+  --data-urlencode 'list=release' \
+  --output work-state.json
+```
+
+Omit `list` to export all public work-state lists visible to that checkout,
+including its configured aliases, worktree parent and adopted projects.
+Shared My Work internal records stay excluded. The response contains
+`version: 1`, the primary `project`, the checkout's `projects`, the selected
+`list` (or `null`) and an `entries` array. An empty history returns `entries: []`.
+
+Each entry preserves its local `id`, origin `project`, `scope_project` when
+present, `list_name`, `fields` and `created_at_epoch`. The array is already in
+the worker's replay order; do not sort it by local IDs. Group by
+`scope_project ?? project` and `list_name`, then apply patches in array order.
+Fields without a `task` update the list state; a named `task` updates that
+item. The latest value wins and `null` clears a field. This preserves the
+current state and the recorded done/dropped transitions without creating new
+task identities. IDs identify records in this installation, not across devices.
+
+`work_state_read` keeps its existing text response. Its MCP result metadata
+contains `claude-mem/truncated`; when true, the text also points to this export.
+Exports always include recorded closures, regardless of `includeClosed`.
+They are read-only and contain plaintext working state: choose the destination
+deliberately and review the file before sharing. This is an export, not a
+work-state import or synchronization format.

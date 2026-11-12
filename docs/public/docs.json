@@ -109,6 +109,7 @@
           "development",
           "troubleshooting",
           "platform-integration",
+          "contextforge",
           "openclaw-integration",
           "hermes-integration",
           "kimi-integration",
@@ -116,7 +117,8 @@
           "qoder-integration",
           "screenpipe-integration",
           "eve-integration",
-          "notion-export"
+          "notion-export",
+          "obsidian"
         ]
       },
       {
@@ -128,12 +130,14 @@
           "autogen-integration",
           "claude-agent-sdk",
           "crewai-integration",
+          "elizaos",
           "google-adk-integration",
           "haystack",
           "langgraph-integration",
           "llamaindex-integration",
           "microsoft-agent-framework",
           "openai-agents-integration",
+          "pipecat",
           "pydantic-ai-integration",
           "smolagents-integration",
           "strands-agents-integration",

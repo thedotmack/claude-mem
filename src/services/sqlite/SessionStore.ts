@@ -17,7 +17,7 @@ import {
   LatestPromptResult
 } from '../../types/database.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from './types.js';
-import { computeObservationContentHash, hasStorableTitle } from './observations/store.js';
+import { computeObservationContentHash, computeObservationDetailsHash, hasStorableTitle, type ObservationDetails } from './observations/store.js';
 import { parseFileList, replaceObservationFileIndex } from './observations/files.js';
 import { seedReinforcement, reinforceObservation } from '../reinforcement/persist.js';
 import {
@@ -386,6 +386,9 @@ export class SessionStore {
       }
       this.db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_user_prompts_native_identity
         ON user_prompts(session_db_id, native_prompt_id) WHERE native_prompt_id IS NOT NULL`);
+      // The feed checks only the next legacy retry window, not the whole session.
+      this.db.run(`CREATE INDEX IF NOT EXISTS idx_user_prompts_legacy_window
+        ON user_prompts(session_db_id, created_at_epoch) WHERE native_prompt_id IS NULL`);
     }).immediate();
   }
 
@@ -2629,6 +2632,7 @@ export class SessionStore {
     this.db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_advisor_calls_tool_use ON advisor_calls(tool_use_id)');
     this.db.run('CREATE INDEX IF NOT EXISTS idx_advisor_calls_session ON advisor_calls(session_db_id)');
     this.db.run('CREATE INDEX IF NOT EXISTS idx_advisor_calls_project ON advisor_calls(project)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_advisor_calls_project_nocase ON advisor_calls(project COLLATE NOCASE)');
     this.db.run('CREATE INDEX IF NOT EXISTS idx_advisor_calls_occurred ON advisor_calls(occurred_at_epoch DESC)');
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(58, new Date().toISOString());
@@ -2690,7 +2694,7 @@ export class SessionStore {
     const conditions: string[] = [];
 
     if (project) {
-      conditions.push('project = ?');
+      conditions.push('project COLLATE NOCASE = ?');
       params.push(project);
     } else {
       conditions.push('project != ?');
@@ -2874,6 +2878,17 @@ export class SessionStore {
       this.db.run('ALTER TABLE observations ADD COLUMN metadata TEXT');
       logger.debug('DB', 'Added metadata column to observations table (#2116)');
     }
+
+    // Match saveMemory's guarded JSON expression so replay checks can seek to
+    // a fingerprint while holding the write lock. Ordinary observations do not
+    // need an entry, and malformed legacy metadata must remain safe to read.
+    this.db.run(`
+      CREATE INDEX IF NOT EXISTS idx_observations_source_fingerprint ON observations(
+        project,
+        CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.sourceFingerprint') END,
+        id DESC
+      ) WHERE CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.sourceFingerprint') END IS NOT NULL
+    `);
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(30, new Date().toISOString());
   }
@@ -4406,8 +4421,9 @@ export class SessionStore {
         RETURNING id
       `);
       const lookupExistingStmt = this.db.prepare(
-        'SELECT id FROM observations WHERE memory_session_id = ? AND content_hash = ?'
+        'SELECT id, type, subtitle, facts, concepts FROM observations WHERE memory_session_id = ? AND content_hash = ?'
       );
+      type ExistingObservation = ObservationDetails & { id: number };
 
       for (const observation of observations) {
         // Skip observations with an empty title (see hasStorableTitle). The worker
@@ -4417,7 +4433,18 @@ export class SessionStore {
           continue;
         }
 
-        const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
+        const legacyHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
+        const detailsHash = computeObservationDetailsHash(legacyHash, observation);
+        let contentHash = legacyHash;
+        // A variant keeps its identity even if the row occupying the legacy
+        // hash was subsequently deleted. Check it before choosing a free hash.
+        const detailedRetry = lookupExistingStmt.get(memorySessionId, detailsHash) as ExistingObservation | null;
+        if (detailedRetry) {
+          reinforceObservation(this.db, detailedRetry.id, reconfirmedOn);
+          observationIds.push(detailedRetry.id);
+          mergedIntoExisting.push(false);
+          continue;
+        }
         const titleNormKey = computeTitleNormKey(
           project,
           sessionPlatform,
@@ -4430,7 +4457,11 @@ export class SessionStore {
         if (dedup.enabled) {
           // Retry idempotency: identical (session, content_hash) redelivery returns
           // the existing row without bumping occurrence_count (same as ON CONFLICT).
-          const retry = lookupExistingStmt.get(memorySessionId, contentHash) as { id: number } | null;
+          let retry = lookupExistingStmt.get(memorySessionId, contentHash) as ExistingObservation | null;
+          if (retry && computeObservationDetailsHash(legacyHash, retry) !== detailsHash) {
+            contentHash = detailsHash;
+            retry = null;
+          }
           if (retry) {
             reinforceObservation(this.db, retry.id, reconfirmedOn);
             observationIds.push(retry.id);
@@ -4450,7 +4481,7 @@ export class SessionStore {
           }
         }
 
-        const inserted = (obsStmt.all(
+        const insertObservation = () => (obsStmt.all(
           memorySessionId,
           project,
           observation.type,
@@ -4475,6 +4506,17 @@ export class SessionStore {
           reinforcementSeed.lastReinforced
         ) as { id: number }[])[0] ?? null;
 
+        let inserted = insertObservation();
+        let existing = inserted ? null : lookupExistingStmt.get(memorySessionId, contentHash) as ExistingObservation | null;
+        // Equal title/narrative can still carry different structured content.
+        // Keep the legacy row's id/hash and store the other details separately.
+        if (existing && contentHash === legacyHash
+          && computeObservationDetailsHash(legacyHash, existing) !== detailsHash) {
+          contentHash = detailsHash;
+          inserted = insertObservation();
+          existing = inserted ? null : lookupExistingStmt.get(memorySessionId, contentHash) as ExistingObservation | null;
+        }
+
         if (inserted) {
           if (dedup.enabled) this.maintainDedupOnInsert(project, inserted.id, observation.title, dedup);
           this.indexObservationFiles(inserted.id, observation.files_read, observation.files_modified);
@@ -4484,7 +4526,6 @@ export class SessionStore {
           continue;
         }
 
-        const existing = lookupExistingStmt.get(memorySessionId, contentHash) as { id: number } | null;
         if (!existing) {
           throw new Error(
             `storeObservations: ON CONFLICT without existing row for content_hash=${contentHash}`
@@ -4609,7 +4650,9 @@ export class SessionStore {
       return { observationIds, mergedIntoExisting, insertedObservationIds, summaryId, createdAtEpoch: timestampEpoch, summaryUpdated };
     });
 
-    const stored = storeTx();
+    // Identity reads and their writes share the writer lock, avoiding a stale
+    // read snapshot if another connection commits before our first insert.
+    const stored = storeTx.immediate();
     // A later stop replaces the same prompt's summary, including clearing
     // completed next steps. Do not serve that previous text while rendering.
     emitContextInvalidation({ projects: [project] }, 'storeObservations', stored.summaryUpdated ? 'removal' : 'additive');
@@ -4625,19 +4668,27 @@ export class SessionStore {
    */
   updateDiscoveryTokens(observationIds: number[], summaryId: number | null, discoveryTokens: number): void {
     if (observationIds.length === 0 && summaryId === null) return;
+    const projects = new Set<string>();
     this.db.transaction(() => {
       // The assistant row may already have synced before the result corrects
       // its usage. Mark changed payloads for the existing CloudSync snapshotter,
       // which mints their next canonical revision against the acknowledged head.
       const observationStmt = this.db.prepare(`UPDATE observations SET discovery_tokens = ?,
-        synced_at = CASE WHEN discovery_tokens IS NOT ? THEN NULL ELSE synced_at END WHERE id = ?`);
-      for (const id of observationIds) observationStmt.run(discoveryTokens, discoveryTokens, id);
+        synced_at = CASE WHEN discovery_tokens IS NOT ? THEN NULL ELSE synced_at END
+        WHERE id = ? AND discovery_tokens IS NOT ? RETURNING project, merged_into_project`);
+      for (const id of observationIds) {
+        const changed = observationStmt.all(discoveryTokens, discoveryTokens, id, discoveryTokens) as Array<{ project: string; merged_into_project: string | null }>;
+        for (const row of changed) for (const project of importedRowProjects(row)) projects.add(project);
+      }
       if (summaryId !== null) {
         this.db.prepare(`UPDATE session_summaries SET discovery_tokens = MAX(COALESCE(discovery_tokens, 0), ?),
           synced_at = CASE WHEN COALESCE(discovery_tokens, 0) < ? THEN NULL ELSE synced_at END WHERE id = ?`)
           .run(discoveryTokens, discoveryTokens, summaryId);
       }
     })();
+    // A completed result can correct usage after the first context render.
+    // Refresh only blocks reading changed observations, after the write commits.
+    if (projects.size > 0) emitContextInvalidation({ projects: [...projects] }, 'updateDiscoveryTokens');
   }
 
   getSessionSummariesByIds(
@@ -5034,9 +5085,12 @@ export class SessionStore {
       // The base memory ID is unique, so reuse that row rather than INSERT a
       // duplicate, which failed every save in the project with a UNIQUE error.
       const existingByMemoryId = this.db.prepare(
-        'SELECT memory_session_id FROM sdk_sessions WHERE memory_session_id = ?'
-      ).get(baseMemorySessionId) as { memory_session_id: string } | undefined;
-      if (existingByMemoryId) return existingByMemoryId.memory_session_id;
+        'SELECT memory_session_id, project, platform_source FROM sdk_sessions WHERE memory_session_id = ?'
+      ).get(baseMemorySessionId) as { memory_session_id: string; project: string; platform_source: string } | undefined;
+      if (existingByMemoryId?.project === project
+        && normalizePlatformSource(existingByMemoryId.platform_source) === normalizedPlatformSource) {
+        return existingByMemoryId.memory_session_id;
+      }
 
       // A deleted memory ID stays forbidden to delayed sync/backup rows. A new
       // manual save gets a fresh identity, then reuses it through the stable
@@ -5044,7 +5098,9 @@ export class SessionStore {
       const wasDeleted = this.db.prepare(
         'SELECT 1 FROM deleted_memory_sessions WHERE memory_session_id = ?'
       ).get(baseMemorySessionId);
-      const memorySessionId = wasDeleted ? `${baseMemorySessionId}-${randomUUID()}` : baseMemorySessionId;
+      // Hyphens in a project or custom source can give distinct pairs the
+      // same base ID. Never reuse another pair's session or its attribution.
+      const memorySessionId = wasDeleted || existingByMemoryId ? `${baseMemorySessionId}-${randomUUID()}` : baseMemorySessionId;
       const deletedAt = this.getSessionDeletedAtEpochMs(normalizedPlatformSource, contentSessionId);
       // This explicit save follows the deletion observed under the writer lock,
       // even when both operations share one wall-clock millisecond.

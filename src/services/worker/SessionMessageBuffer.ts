@@ -188,9 +188,9 @@ export class SessionMessageBuffer {
   }
 
   /**
-   * Drop work that has not been handed to a provider yet, preserving messages
-   * claimed by the request currently in flight so its response can still join
-   * file evidence and other source metadata.
+   * Drop messages outside the request currently in flight, preserving its
+   * claimed evidence and every seen tool ID. Re-enabling capture does not
+   * authorize another send of a completed, parked, or discarded event.
    */
   clearUnclaimed(sessionDbId: number): number {
     const list = this.buffers.get(sessionDbId);
@@ -205,13 +205,6 @@ export class SessionMessageBuffer {
     } else {
       this.buffers.set(sessionDbId, kept);
     }
-    // Let discarded work re-enter through transcript replay without forgetting
-    // IDs already confirmed earlier in this process.
-    const seen = this.seenToolUseIds.get(sessionDbId);
-    for (const message of removed) {
-      if (message.message.toolUseId) seen?.delete(message.message.toolUseId);
-    }
-    if (seen?.size === 0) this.seenToolUseIds.delete(sessionDbId);
     this.onMutate?.();
     return cleared;
   }

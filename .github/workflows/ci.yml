@@ -74,6 +74,16 @@ jobs:
       - name: Test lanes cover every test file
         run: bun scripts/test-lanes.ts check
 
+      # Pure static guards over src/ that until now only ran by hand: hook
+      # handlers and adapters must stay free of stream writes and process
+      # control, and every spawn that passes an environment must sanitize
+      # process.env. Both exit non-zero with file:line, and they are cheap
+      # enough to run before the lanes.
+      - name: Hook I/O and spawn env discipline
+        run: |
+          npm run lint:hook-io
+          npm run lint:spawn-env
+
       - name: Test (fast lane)
         run: bun scripts/test-lanes.ts fast
 
@@ -82,6 +92,17 @@ jobs:
         run: |
           npm install --global @anthropic-ai/claude-code@2.1.321 --no-audit --no-fund
           claude --version
+
+      # connectToPage allows a browser 10 s to start, and the runner's first
+      # Chrome launch takes about that long (a measured 10.9 s, almost all of
+      # it waiting, not CPU). The lane's first remote-debugging test
+      # (tests/helpers/chrome-devtools.browser.test.ts) used to pay that cold
+      # start inside its own deadline and failed with "Owned browser did not
+      # start". Launch Chrome once here, outside any test's deadline, and
+      # record how long it takes. Later launches start in under a second.
+      - name: Warm Chrome
+        if: ${{ !cancelled() }}
+        run: time google-chrome --headless --no-sandbox --disable-gpu --dump-dom about:blank
 
       - name: Test (integration lane)
         if: ${{ !cancelled() }}
@@ -449,4 +470,15 @@ jobs:
         run: npm run check:types
 
       - name: Provider tests
+        run: npm test
+
+      # The peer range covers eve 0.84.0 and the 1.0 release candidates, so the
+      # newest verified candidate is checked too, without changing the lockfile.
+      - name: Install eve 1.0.0-rc.9
+        run: npm install --no-save --no-audit --no-fund eve@1.0.0-rc.9
+
+      - name: Typecheck against eve 1.0.0-rc.9
+        run: npm run typecheck
+
+      - name: Provider tests against eve 1.0.0-rc.9
         run: npm test

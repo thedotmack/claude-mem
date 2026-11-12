@@ -2,12 +2,13 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import { getObservationsByFilePath } from '../../src/services/sqlite/observations/get.js';
 import { SyncApply, type SyncOp } from '../../src/services/sync/SyncApply.js';
+import { removeTempDir } from '../helpers/temp-dir.js';
 
 // file-context's by-file lookup used to json_each every observation's
 // files_read/files_modified on the one shared connection. These tests pin the
@@ -67,7 +68,7 @@ describe('observation file path index', () => {
     expect(found.map(row => row.id)).toEqual([hit.id]);
   });
 
-  it('backfills the index for rows written before it existed', () => {
+  it('backfills the index for rows written before it existed', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'obs-file-index-'));
     const dbPath = join(dir, 'claude-mem-test.db');
     try {
@@ -100,7 +101,7 @@ describe('observation file path index', () => {
         reopenedDb.close();
       }
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      await removeTempDir(dir);
     }
   });
 

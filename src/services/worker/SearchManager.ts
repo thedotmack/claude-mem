@@ -1059,41 +1059,24 @@ export class SearchManager {
   async searchObservations(args: any): Promise<any> {
     const normalized = this.normalizeParams(args);
     const { query, ...options } = normalized;
+    const limit = options.limit || 20;
     let results: ObservationSearchResult[] = [];
-    const semanticWork = { budgetReached: false };
 
-    if (this.chromaSync) {
-      logger.debug('SEARCH', 'Using hybrid semantic search (Chroma + SQLite)', {});
+    if (query && this.chromaSync) {
+      // Use the same filtered candidate window and final page boundary as the
+      // unified search. This endpoint's `type` denotes an observation type.
+      const retrieved = await this.searchMemory({
+        ...options,
+        query,
+        type: 'observations',
+        obs_type: options.type,
+        format: 'json',
+        limit,
+      }, undefined, { status: 'not_requested' });
+      results = retrieved.observations;
+    } else {
       try {
-        const limit = options.limit || 20;
-        // `projects` comes parsed from the route (#4304); the keyword fallback
-        // below already reads it, so Chroma and the hydration must too (#4248).
-        results = await this.hybridSemanticHydrate(query, 'observation', options.project, options.platformSource, (ids, readKeys) =>
-          this.sessionStore.getObservationsByIds(ids, { ...options, orderBy: 'relevance', limit, projects: readKeys }),
-          options.projects,
-          options.dateRange,
-          options.type || options.concepts || options.files || options.dateRange ? limit : undefined,
-          semanticWork
-        );
-      } catch (chromaError) {
-        const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
-        logger.error('WORKER', 'Chroma search failed for observations, falling back to FTS', {}, errorObject);
-      }
-    }
-
-    if (results.length === 0 || semanticWork.budgetReached) {
-      try {
-        const ftsResults = this.sessionSearch.searchObservations(query, options);
-        if (ftsResults.length > 0) {
-          // At the work cap, keyword results fill the remaining slots without
-          // discarding valid semantic matches or repeating shared row IDs.
-          const seen = new Set(results.map(row => row.id));
-          results = [...results, ...ftsResults.filter(row => {
-            if (seen.has(row.id)) return false;
-            seen.add(row.id);
-            return true;
-          })].slice(0, options.limit || 20);
-        }
+        results = this.sessionSearch.searchObservations(query, { ...options, limit });
       } catch (ftsError) {
         logger.warn('SEARCH', 'FTS fallback failed for observations', {}, ftsError instanceof Error ? ftsError : undefined);
       }

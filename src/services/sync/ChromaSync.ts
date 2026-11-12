@@ -1459,7 +1459,10 @@ export class ChromaSync {
     sourceIds: number[],
     existingIds: Set<number>
   ): { watermark: number; pending: number[] } {
-    const watermark = existingIds.size ? Math.max(...existingIds) : 0;
+    let watermark = 0;
+    for (const id of existingIds) {
+      if (id > watermark) watermark = id;
+    }
     return {
       watermark,
       // Every unindexed row is pending, including rows above the watermark:
@@ -2659,16 +2662,12 @@ export class ChromaSync {
             totalAlreadyPatched++;
             return;
           }
-          const merged: Record<string, any> = {
-            ...current,
-            merged_into_project: mergedIntoProject
-          };
           staleIds.push(docId);
-          staleMetadatas.push(Object.fromEntries(
-            Object.entries(merged).filter(
-              ([, v]) => v !== null && v !== undefined && v !== ''
-            )
-          ));
+          // Chroma merges metadata keys. A live row sync can finish between
+          // this lookup and the update, so sending the old metadata snapshot
+          // would roll its title, filters and timestamps back. This operation
+          // owns only the merge target.
+          staleMetadatas.push({ merged_into_project: mergedIntoProject });
         });
         if (staleIds.length === 0) continue;
 

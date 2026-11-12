@@ -70,7 +70,7 @@ import { parseProjectList, projectsQueryValues } from '../shared/project-list.js
 import { postCorpusRequestOverSse } from './corpus-worker-stream.js';
 import { withWorkerRestartOnRefusedConnection } from './worker-restart.js';
 import { ProgressiveSearchError, progressiveSearchToolError } from '../shared/progressive-search.js';
-import { formatMcpPayload, formatWorkerMcpResponse, mcpTextResult, workerFailureText, serverFailureText, type McpTextPurpose } from './mcp-text-format.js';
+import { formatMcpPayload, formatWorkerMcpResponse, formatWorkStateMcpResponse, mcpTextResult, workerFailureText, serverFailureText, type McpTextPurpose } from './mcp-text-format.js';
 import { getRequestCwd, runWithCwd } from './request-context.js';
 import { parseHttpArgs, startMcpHttpServer, type CwdResolver, type McpHttpOptions } from './mcp-http.js';
 import { createStdioCwdResolver } from './mcp-project-cwd.js';
@@ -192,7 +192,8 @@ async function requestWorker(endpoint: string, opts: WorkerCallOptions): Promise
   logger.debug('SYSTEM', '← Worker API success', undefined, { endpoint });
 
   if (opts.text) {
-    return mcpTextResult(await response.text());
+    const text = await response.text();
+    return endpoint === '/api/work-state' ? formatWorkStateMcpResponse(text) : mcpTextResult(text);
   }
   return formatWorkerMcpResponse(workerResultPurpose(endpoint, Boolean(opts.body)), await response.json());
 }

@@ -13,6 +13,7 @@ import {
   writeJsonFileAtomic,
 } from '../utils/paths.js';
 import { readJsonSafe } from '../../utils/json-utils.js';
+import { clearClaudeAutoMemoryOverride } from '../utils/claude-auto-memory.js';
 import { writeTextFileAtomic } from '../../shared/atomic-json.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, resolveDataDir } from '../../shared/paths.js';
@@ -149,18 +150,7 @@ export function removeFromClaudeSettings(): void {
   // (ANTHROPIC_AUTH_TOKEN, AWS_REGION, etc.) are preserved. If the env
   // block becomes empty as a result, the block itself is dropped to keep
   // settings.json tidy.
-  if (settings.env && typeof settings.env === 'object' && !Array.isArray(settings.env)) {
-    if (
-      Object.prototype.hasOwnProperty.call(settings.env, 'CLAUDE_CODE_DISABLE_AUTO_MEMORY') &&
-      settings.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY === '1'
-    ) {
-      delete settings.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY;
-      dirty = true;
-      if (Object.keys(settings.env).length === 0) {
-        delete settings.env;
-      }
-    }
-  }
+  if (clearClaudeAutoMemoryOverride(settings)) dirty = true;
 
   if (dirty) {
     writeJsonFileAtomic(claudeSettingsPath(), settings);
