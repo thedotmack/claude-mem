@@ -11,11 +11,12 @@ from acr import snapshot
 
 class DbPath(unittest.TestCase):
     def test_env_override(self):
-        self.assertEqual(snapshot.db_path({"CLAUDE_MEM_DATA_DIR": "/data/mem"}), "/data/mem/claude-mem.db")
+        self.assertEqual(snapshot.db_path({"CLAUDE_MEM_DATA_DIR": "/data/mem"}), os.path.join("/data/mem", "claude-mem.db"))
 
     def test_default_is_home_claude_mem(self):
-        self.assertEqual(snapshot.db_path({}), os.path.expanduser("~/.claude-mem/claude-mem.db"))
-        self.assertEqual(snapshot.db_path({"CLAUDE_MEM_DATA_DIR": ""}), os.path.expanduser("~/.claude-mem/claude-mem.db"))
+        expected = os.path.join(os.path.expanduser("~"), ".claude-mem", "claude-mem.db")
+        self.assertEqual(snapshot.db_path({}), expected)
+        self.assertEqual(snapshot.db_path({"CLAUDE_MEM_DATA_DIR": ""}), expected)
 
 
 class Backup(unittest.TestCase):
