@@ -35,11 +35,12 @@ export function relayedLine(text: string | null | undefined): string {
 
 /**
  * Markdown that could pass for claude-mem's own structure: a heading like the
- * `# [project] recent context` one, a code fence, or a rule. A relayed line
- * that starts with one gets a backslash, which keeps its words and drops its
- * structure.
+ * `# [project] recent context` one (or a setext `===` underline, which turns
+ * the line above it into one), a code fence (backtick or tilde), or a rule
+ * (`---`, `***` or `___`). A relayed line that starts with one gets a
+ * backslash, which keeps its words and drops its structure.
  */
-const STRUCTURAL_MARKDOWN_LINE = /^\s*(#|```|---)/;
+const STRUCTURAL_MARKDOWN_LINE = /^\s*(#|```|~~~|---|\*\*\*|___|=+\s*$)/;
 
 /**
  * Several plain lines, for a relayed block such as the TeamBrain brief, which
