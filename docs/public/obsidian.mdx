@@ -1,0 +1,119 @@
+---
+title: Obsidian
+description: Copy selected project memories into a chosen vault without replacing your notes.
+---
+
+Export selected Claude-Mem observations as Markdown notes in an existing
+Obsidian vault. This is an explicit, one-way export: it does not scan or
+import the vault, capture conversations, install a plugin, or run in the
+background. It uses the local worker's existing selected-observation API.
+
+Obsidian stores notes as [local Markdown files](https://help.obsidian.md/data-storage),
+so no community plugin, Obsidian API token or CMEM Pro subscription is needed.
+You choose both the source project and the observation IDs. A note in a
+different project cannot be selected by passing its ID.
+
+## Requirements
+
+Use a Claude-Mem source checkout with its dependencies installed, Bun 1.4.4
+and a running local worker. This repository script is not a command shipped
+inside the installed `claude-mem` package. The worker and filesystem checks
+were verified on macOS arm64 with Claude-Mem 15.18.0 and Node.js 25.1.0.
+Other operating systems have not been verified here.
+
+Choose an existing vault with the default `.obsidian` configuration directory.
+The export folder must be a regular directory, not a symlink, and the vault's
+filesystem must support hard links for atomic, non-overwriting publication.
+
+## Export selected notes
+
+Use [mem-search](/usage/search-tools) to find relevant observation IDs in the
+chosen project. From the source checkout, run this with your selected IDs,
+replacing the example values:
+
+```bash
+bun scripts/export-obsidian.ts \
+  --vault '/absolute/path/to/My Vault' \
+  --source laptop \
+  --project checkout-service \
+  --ids 12,34
+```
+
+`--vault` must be an absolute path. `--project` is one literal project key,
+including any commas or spaces; the exporter does not widen it to worktree
+parents or adopted projects. Select between one and 100 IDs per invocation.
+
+`--source` is a stable label you choose for this worker installation, using
+lowercase letters, digits, underscores or hyphens. Use a different label for
+another database: observation IDs are local, so two computers can both have a
+memory numbered `12`. Keep the same label when rerunning an export from the
+same installation. It does not select a worker or account.
+
+The script uses your existing `CLAUDE_MEM_DATA_DIR`, worker URL, host and port
+configuration. Pass the same settings used to start that worker. It does not
+start or reconfigure the worker automatically. Requests have a ten-second
+deadline and are never retried automatically.
+
+The output reports created and skipped IDs:
+
+```json
+{"created":[12,34],"skipped":[]}
+```
+
+The files are `Claude-Mem/laptop/12.md` and `Claude-Mem/laptop/34.md` beneath
+the selected vault. Open them from Obsidian's file explorer. Each contains a
+quoted title, source, project and original observation ID in frontmatter,
+followed by the selected observation's readable prose. Raw tool bodies,
+internal record metadata and entire sessions are not exported.
+
+The prose is inside a literal text block so Markdown image links, HTML and
+Obsidian embeds from retrieved memory do not activate on opening the note.
+Memory remains reference material, not instructions to run tools. If the
+standard prose projection would shorten a record, the exporter refuses it
+instead of silently losing text; use [JSON memory export](/usage/export-import)
+for that record.
+
+## Preserve edits and handle retries
+
+An existing destination is always skipped, including its frontmatter and any
+edits you made in Obsidian. The script never updates or removes a prior note,
+even if the source memory later changes. Each new file is completed before
+being published without overwriting its destination. Repeating the command
+therefore creates no duplicate notes and preserves unrelated vault files.
+
+Missing IDs, a wrong project or malformed worker results are rejected before
+any note is written. A filesystem failure can leave earlier completed notes;
+inspect the vault and rerun the same selection after resolving it. Existing
+destinations will be skipped. A deleted note is recreated only if you
+explicitly select that ID in a later export; nothing watches for deletions or
+silently imports notes back into Claude-Mem.
+
+## Privacy and disconnect
+
+Exported notes are plaintext. Only the chosen records are copied, but a vault's
+Obsidian Sync or another synchronization service may then copy them elsewhere.
+Choose the destination deliberately and review notes before sharing the vault.
+No vault content, user edits or frontmatter is sent to Claude-Mem.
+
+There is no persistent connection to uninstall. Stop running the script to
+disconnect. Keep or remove exported notes yourself in Obsidian; removing the
+script leaves your vault and saved Claude-Mem memories intact.
+
+## Verify and troubleshoot
+
+```bash
+bun test tests/scripts/export-obsidian.test.ts
+```
+
+The tests cover project/ID scope, repeated exports, frontmatter preservation,
+inert embeds, traversal and symlink rejection, and refusal to shorten content.
+For a real-worker check, save a harmless note in a disposable project, export
+its acknowledged ID, open it in a test vault, add a personal property, and
+repeat the same export. The second result should list that ID under `skipped`
+and leave the file unchanged.
+
+If an ID is not returned, check its project and that it still exists. If the
+worker cannot be reached, check its status and matching connection settings.
+For a symlink or filesystem error, choose a regular writable export directory
+on a filesystem with hard-link support; the script does not fall back to
+overwriting notes.
