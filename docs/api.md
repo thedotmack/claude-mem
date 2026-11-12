@@ -54,10 +54,10 @@ default) means no rate limit, no quota, and no metering, so behavior is unchange
 
 ## Connecting an MCP client (key issuance + connect)
 
-- `POST /v1/keys` (**write** scope) mints a **read-only** API key for the caller's
+- `POST /v1/keys` (**read and write** scopes) mints a **read-only** API key for the caller's
   team and returns the paste-ready connect command. The raw key is shown **once**.
-  Body: `{ "expiresInDays"?: number }`. Minting requires write scope so a read key
-  can't escalate into more keys.
+  Body: `{ "expiresInDays"?: number }`. Issuers must already have read access to
+  delegate it, and write scope prevents read-only keys from minting more keys.
 
   ```json
   {
@@ -75,6 +75,21 @@ default) means no rate limit, no quota, and no metering, so behavior is unchange
 > (web dashboard). better-auth's `apiKey()` plugin exists but writes to a separate
 > store than the Postgres `api_keys` these routes authenticate against — wiring the
 > better-auth org → Server Beta team mapping is the remaining piece.
+
+## Capture mutation receipts
+
+`POST /v1/sessions/start` and `POST /v1/sessions/:id/end` accept
+`memories:write` keys. A write-only key receives the session identifiers,
+platform, generation status and end timestamp needed to continue capture.
+The response does not include saved session metadata or opening prompts,
+including when starting an existing session or repeating its end request.
+Keys that also have `memories:read` (or `*`) receive the complete session.
+`GET /v1/sessions/:id` continues to require `memories:read`.
+
+The same distinction applies to `POST /v1/events` and `/v1/events/batch`,
+including `wait=true` responses: write-only keys receive event identifiers
+and generation status without the stored event payload or metadata. Read
+permission is required to return that captured content, even on a replay.
 
 ## Event generation semantics
 

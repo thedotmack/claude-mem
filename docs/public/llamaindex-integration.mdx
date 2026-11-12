@@ -55,7 +55,8 @@ Pick an observation already saved under the exact project key shown in the
 worker's viewer. To create a harmless known note for the demonstration:
 
 ```bash
-curl --fail-with-body "http://127.0.0.1:37777/api/memory/save" \
+WORKER_PORT="${CLAUDE_MEM_WORKER_PORT:-$(jq -r .CLAUDE_MEM_WORKER_PORT "${CLAUDE_MEM_DATA_DIR:-$HOME/.claude-mem}/settings.json")}"
+curl --fail-with-body "http://127.0.0.1:$WORKER_PORT/api/memory/save" \
   -H 'Content-Type: application/json' \
   -d '{"project":"shop-api","title":"Scheduler timezone","text":"The quokkaharbor scheduler writes dates in UTC."}'
 ```

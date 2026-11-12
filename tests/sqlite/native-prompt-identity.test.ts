@@ -12,6 +12,7 @@ describe('native prompt receipts', () => {
     try {
       const sid = store.createSDKSession('old-session', 'project', 'legacy', undefined, 'hermes');
       store.saveUserPrompt('old-session', 1, 'legacy', sid);
+      store.db.run('DROP INDEX idx_user_prompts_legacy_window');
       store.db.run('DROP INDEX idx_user_prompts_native_identity');
       store.db.run('ALTER TABLE user_prompts DROP COLUMN native_prompt_id');
       store.db.run('ALTER TABLE user_prompts DROP COLUMN native_prompt_hash');

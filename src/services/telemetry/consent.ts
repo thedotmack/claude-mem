@@ -1,9 +1,10 @@
 import { join } from 'path';
-import { mkdirSync, writeFileSync } from 'fs';
+import { mkdirSync, rmdirSync } from 'fs';
 import { randomUUID } from 'crypto';
 import { resolveDataDir } from '../../shared/paths.js';
 import { readJsonSafe } from '../../utils/json-utils.js';
 import { logger } from '../../utils/logger.js';
+import { writeJsonFileAtomic } from '../../shared/atomic-json.js';
 
 export type TelemetryConfig = {
   /** Explicit user decision. Absent = no decision recorded; the opt-out default applies. */
@@ -16,6 +17,8 @@ export type TelemetryConfig = {
    */
   anonymousId?: string;
   decidedAt: string;
+  /** First-session disclosure only; displaying it is not a consent decision. */
+  noticeShownAt?: string;
 };
 
 const TELEMETRY_CONFIG_FILENAME = 'telemetry.json';
@@ -124,13 +127,71 @@ export function loadTelemetryConfig(): TelemetryConfig | null {
     installId: raw.installId,
     ...(typeof raw.anonymousId === 'string' && raw.anonymousId ? { anonymousId: raw.anonymousId } : {}),
     decidedAt: typeof raw.decidedAt === 'string' ? raw.decidedAt : '',
+    ...(typeof raw.noticeShownAt === 'string' && raw.noticeShownAt ? { noticeShownAt: raw.noticeShownAt } : {}),
   };
 }
 
+/** Serialize the entire read/modify/write, including explicit consent changes. */
+function withTelemetryConfigLock<T>(update: () => T): T {
+  mkdirSync(resolveDataDir(), { recursive: true });
+  const lock = `${getTelemetryConfigPath()}.lock`;
+  try {
+    mkdirSync(lock);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+      // As with skill-selection's synchronous lock, never break another
+      // process's claim or pretend that an explicit choice was saved.
+      throw new Error(`Telemetry configuration is locked at ${lock}. Retry after the other command finishes; if an interrupted command left this empty directory, remove it and retry.`);
+    }
+    throw error;
+  }
+  try { return update(); } finally { rmdirSync(lock); }
+}
+
+function writeTelemetryConfig(config: TelemetryConfig): void {
+  writeJsonFileAtomic(getTelemetryConfigPath(), config);
+}
+
 export function saveTelemetryConfig(config: TelemetryConfig): void {
-  const dataDir = resolveDataDir();
-  mkdirSync(dataDir, { recursive: true });
-  writeFileSync(join(dataDir, TELEMETRY_CONFIG_FILENAME), JSON.stringify(config, null, 2) + '\n');
+  withTelemetryConfigLock(() => writeTelemetryConfig(config));
+}
+
+/**
+ * Marketplace installs never run the installer's consent prompt. Disclose the
+ * default once in their first user-visible session, using the existing config
+ * to remember delivery. An explicit choice already answers the question.
+ * Call immediately before returning the hook output, after asynchronous reads.
+ */
+export function consumeTelemetryNotice(): string | null {
+  const eligible = (config: TelemetryConfig | null): boolean => {
+    const consent = explainTelemetryConsent(process.env, config);
+    return consent.enabled && consent.source === 'default' && !config?.noticeShownAt;
+  };
+  if (!eligible(loadTelemetryConfig())) return null;
+
+  try {
+    const recorded = withTelemetryConfigLock(() => {
+      const current = loadTelemetryConfig();
+      if (!eligible(current)) return false;
+      writeTelemetryConfig({
+        ...current,
+        installId: current?.installId ?? '',
+        decidedAt: current?.decidedAt ?? '',
+        noticeShownAt: new Date().toISOString(),
+      });
+      return true;
+    });
+    if (!recorded) return null;
+  } catch (error) {
+    // This records a display, not a choice. A failed write must not discard
+    // the session's context or hide the notice; a later session can record it.
+    logger.warn('HOOK', 'Could not record the first-session telemetry disclosure', undefined,
+      error instanceof Error ? error : new Error(String(error)));
+    if (!eligible(loadTelemetryConfig())) return null;
+  }
+  return '[claude-mem] Telemetry is on by default: anonymous feature-usage, performance and token-count statistics, plus redacted error messages and stack traces. '
+    + 'Turn it off: npx claude-mem telemetry disable, DO_NOT_TRACK=1, or CLAUDE_MEM_TELEMETRY=0. '
+    + 'Details: https://docs.claude-mem.ai/telemetry';
 }
 
 /**
@@ -138,12 +199,14 @@ export function saveTelemetryConfig(config: TelemetryConfig): void {
  * Enabling creates an install ID when none exists; disabling never does.
  */
 export function recordTelemetryDecision(enabled: boolean): void {
-  const existing = loadTelemetryConfig();
-  saveTelemetryConfig({
-    ...existing,
-    enabled,
-    installId: existing?.installId || (enabled ? randomUUID() : ''),
-    decidedAt: new Date().toISOString(),
+  withTelemetryConfigLock(() => {
+    const existing = loadTelemetryConfig();
+    writeTelemetryConfig({
+      ...existing,
+      enabled,
+      installId: existing?.installId || (enabled ? randomUUID() : ''),
+      decidedAt: new Date().toISOString(),
+    });
   });
 }
 
@@ -155,14 +218,13 @@ export function recordTelemetryDecision(enabled: boolean): void {
 export function getOrCreateInstallId(): string {
   const existing = loadTelemetryConfig();
   if (existing?.installId) return existing.installId;
-
-  const installId = randomUUID();
-  saveTelemetryConfig({
-    ...existing,
-    installId,
-    decidedAt: existing?.decidedAt ?? '',
+  return withTelemetryConfigLock(() => {
+    const current = loadTelemetryConfig();
+    if (current?.installId) return current.installId;
+    const installId = randomUUID();
+    writeTelemetryConfig({ ...current, installId, decidedAt: current?.decidedAt ?? '' });
+    return installId;
   });
-  return installId;
 }
 
 /**
@@ -173,12 +235,11 @@ export function getOrCreateInstallId(): string {
 export function getOrCreateAnonymousDistinctId(): string {
   const existing = loadTelemetryConfig();
   if (existing?.anonymousId && existing.anonymousId !== existing.installId) return existing.anonymousId;
-
-  const anonymousId = randomUUID();
-  if (existing?.installId) {
-    saveTelemetryConfig({ ...existing, anonymousId });
-  } else {
-    saveTelemetryConfig({ ...existing, installId: randomUUID(), anonymousId, decidedAt: existing?.decidedAt ?? '' });
-  }
-  return anonymousId;
+  return withTelemetryConfigLock(() => {
+    const current = loadTelemetryConfig();
+    if (current?.anonymousId && current.anonymousId !== current.installId) return current.anonymousId;
+    const anonymousId = randomUUID();
+    writeTelemetryConfig({ ...current, installId: current?.installId || randomUUID(), anonymousId, decidedAt: current?.decidedAt ?? '' });
+    return anonymousId;
+  });
 }

@@ -7,6 +7,8 @@ description: Maintainer release workflow for the thedotmack/claude-mem repositor
 
 **IMPORTANT:** Plan and write detailed release notes before starting.
 
+Include the pending Unreleased section at the top of `docs/CHANGELOG.md` in the next GitHub release notes; remove that section after those notes are published, before regenerating the changelog.
+
 **CRITICAL:** Commit EVERYTHING (including build artifacts). At the end of this workflow, NOTHING should be left uncommitted or unpushed. Run `git status` at the end to verify.
 
 ## Scope — check this first
@@ -49,7 +51,7 @@ If either check fails, stop and tell the user this skill does not apply here.
 
 ## Workflow
 
-1.  **Update**: Increment the version string in every path above. Do NOT touch `docs/CHANGELOG.md` — it's regenerated.
+1.  **Update**: Increment the version string in every path above. Published entries in `docs/CHANGELOG.md` are regenerated; only move pending Unreleased notes as described above.
 2.  **Verify**: `git grep -n "\"version\": \"<NEW>\""` — confirm all fourteen JSON files match, and the README badge reads `version-<NEW>-green`. `git grep -n "\"version\": \"<OLD>\""` — should return zero hits.
 3.  **Build and sync**: `npm run build-and-sync` to regenerate artifacts, sync the local marketplace copy, restart the worker, and clear the queue. Do not use plain `npm run build` for release validation because it can leave the local marketplace/worker out of sync.
 4.  **Commit**: `git add -A && git commit -m "chore: bump version to X.Y.Z"`.

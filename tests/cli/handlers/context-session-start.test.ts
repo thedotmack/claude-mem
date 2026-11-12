@@ -13,6 +13,8 @@ import * as realHookSettings from '../../../src/shared/hook-settings.js';
 import * as realOauthToken from '../../../src/shared/oauth-token.js';
 import * as realProjectName from '../../../src/utils/project-name.js';
 import * as realWorkerUtils from '../../../src/shared/worker-utils.js';
+import * as realSetupState from '../../../src/shared/setup-state.js';
+import type { SetupStateFile } from '../../../src/shared/setup-state.js';
 import * as runtimeSelector from '../../../src/services/hooks/runtime-selector.js';
 import * as contextBuilder from '../../../src/services/context/ContextBuilder.js';
 import { ServerClient } from '../../../src/services/hooks/server-client.js';
@@ -27,6 +29,7 @@ const realHookSettingsSnapshot = { ...realHookSettings };
 const realOauthTokenSnapshot = { ...realOauthToken };
 const realProjectNameSnapshot = { ...realProjectName };
 const realWorkerUtilsSnapshot = { ...realWorkerUtils };
+const realSetupStateSnapshot = { ...realSetupState };
 
 const calls: unknown[][] = [];
 let includeAllSources = false;
@@ -43,6 +46,12 @@ let openRouterBaseUrl = '';
 let staleReason: string | null = null;
 let workerContext = 'context from worker';
 const outageNoticeRequests: Array<string | undefined> = [];
+let setupState: SetupStateFile = { ...realSetupState.INITIAL_SETUP_STATE };
+
+mock.module('../../../src/shared/setup-state.js', () => ({
+  ...realSetupStateSnapshot,
+  readSetupState: () => setupState,
+}));
 
 mock.module('../../../src/shared/hook-settings.js', () => ({
   loadFromFileOnce: () => ({
@@ -91,6 +100,7 @@ afterAll(() => {
   mock.module('../../../src/shared/oauth-token.js', () => realOauthTokenSnapshot);
   mock.module('../../../src/utils/project-name.js', () => realProjectNameSnapshot);
   mock.module('../../../src/shared/worker-utils.js', () => realWorkerUtilsSnapshot);
+  mock.module('../../../src/shared/setup-state.js', () => realSetupStateSnapshot);
 });
 
 beforeEach(() => {
@@ -101,9 +111,52 @@ beforeEach(() => {
   openRouterBaseUrl = '';
   staleReason = null;
   workerContext = 'context from worker';
+  setupState = { ...realSetupStateSnapshot.INITIAL_SETUP_STATE };
 });
 
 describe('contextHandler SessionStart path', () => {
+  const pendingInstall = (): SetupStateFile => ({
+    ...realSetupStateSnapshot.INITIAL_SETUP_STATE,
+    install: {
+      status: 'waiting', selection: null, error: null,
+      catalog: {
+        agents: [], skills: [], reinstall: false,
+        defaults: { agents: [], skills: [], installClaudeCode: false, disableAutoMemory: false, telemetryEnabled: false },
+      },
+    },
+  });
+
+  it('brings an explicitly deferred install to the human on first use without selecting defaults', async () => {
+    const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+    setupState = pendingInstall();
+    const result = await contextHandler.execute({ sessionId: 'pending-onboarding', cwd: '/tmp/repo', platform: 'claude-code' });
+    expect(result.hookSpecificOutput?.additionalContext).toContain('Setup is waiting for your choices:');
+    expect(result.hookSpecificOutput?.additionalContext).toContain('?setup=1');
+    expect(result.hookSpecificOutput?.additionalContext).toContain('Otherwise leave setup pending');
+    expect(result.systemMessage).toContain('Do not choose agents, integrations, skills, or account options on their behalf.');
+  });
+
+  it('does not push existing installs or completed onboarding back through setup', async () => {
+    const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+    const oldInstall = await contextHandler.execute({ sessionId: 'old-install', cwd: '/tmp/repo', platform: 'claude-code' });
+    expect(oldInstall.hookSpecificOutput?.additionalContext).not.toContain('Setup is waiting');
+    setupState = { ...pendingInstall(), status: 'complete' };
+    const completed = await contextHandler.execute({ sessionId: 'completed-onboarding', cwd: '/tmp/repo', platform: 'claude-code' });
+    expect(completed.hookSpecificOutput?.additionalContext).not.toContain('Setup is waiting');
+  });
+
+  it('keeps the deferred onboarding link visible even when the worker cannot return context', async () => {
+    const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+    setupState = pendingInstall();
+    workerUnreachable = true;
+    try {
+      const result = await contextHandler.execute({ sessionId: 'pending-worker-down', cwd: '/tmp/repo', platform: 'claude-code' });
+      expect(result.hookSpecificOutput?.additionalContext).toContain('?setup=1');
+      expect(result.systemMessage).toContain('Setup is waiting for your choices:');
+      expect(result.systemMessage).toContain('worker unreachable');
+    } finally { workerUnreachable = false; }
+  });
+
   it('reads only this checkout by default and every project, this checkout last, when CLAUDE_MEM_CONTEXT_PROJECTS is all', async () => {
     const { contextHandler } = await import('../../../src/cli/handlers/context.js');
     const injectUrl = () => String(calls.filter(call => String(call[0]).startsWith('/api/context/inject')).at(-1)?.[0]);

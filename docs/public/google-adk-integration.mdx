@@ -54,12 +54,13 @@ Choose an observation already present in the project. For a reproducible local
 demonstration, explicitly save this harmless note first:
 
 ```bash
-curl --fail-with-body "http://127.0.0.1:37777/api/memory/save" \
+WORKER_PORT="${CLAUDE_MEM_WORKER_PORT:-$(jq -r .CLAUDE_MEM_WORKER_PORT "${CLAUDE_MEM_DATA_DIR:-$HOME/.claude-mem}/settings.json")}"
+curl --fail-with-body "http://127.0.0.1:$WORKER_PORT/api/memory/save" \
   -H 'Content-Type: application/json' \
   -d '{"project":"shop-api","title":"Scheduler timezone","text":"The quokkaharbor scheduler writes dates in UTC."}'
 ```
 
-Replace the port if needed and use the returned observation ID in the workflow:
+Use the returned observation ID in the workflow:
 
 ```bash
 python examples/google-adk/memory_workflow.py \

@@ -102,6 +102,7 @@ export interface ViewSlice {
   reconcileOpenRequest: () => void
   /** Back/Forward: show what the URL now says. */
   showUrl: () => void
+  startSetup: () => void
   finishSetup: () => void
   reportOpen: () => void
   setWorkspace: (change: Partial<Workspace>) => void
@@ -150,7 +151,7 @@ export interface RulesSlice {
 
 // ---------- Focus: the last My Focus changes, for the saved note and Undo ----------
 
-export interface FocusChangeRecord { text: string; undo: FocusChange[] | null }
+export interface FocusChangeRecord { text: string; undo: FocusChange[] | null; expectedVersions?: string[] | null }
 
 export interface FocusState {
   history: FocusChangeRecord[]

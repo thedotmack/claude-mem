@@ -85,7 +85,7 @@ export interface WorkDataSource {
   answerRequestSuggestion?(suggestion: NonNullable<Request['suggestion']>, action: 'join' | 'not-this'): Promise<SuggestionSaveResult>
   /** Saves one change to My Rules and answers with the model after it. Rejects with the reason it was not saved. */
   saveRuleChange(change: RuleChange): Promise<RuleSaveResult>
-  /** Saves one change to My Focus and answers with the model after it. Rejects with the reason it was not saved. */
+  /** Saves one focus change and returns its own saved snapshot, even when a newer live model is displayed. */
   saveFocusChange(change: FocusChange): Promise<WorkModel>
   /** Records the owner's stop for a subagent no recorded stop covers, and answers with the model after it. */
   markAgentFinished(agentId: string): Promise<WorkModel>

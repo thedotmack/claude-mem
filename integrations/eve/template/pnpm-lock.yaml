@@ -61,8 +61,8 @@ importers:
         specifier: 0.7.1
         version: 0.7.1
       claude-mem:
-        specifier: ^15.17.0
-        version: 15.17.0(@better-auth/core@1.7.19(@better-auth/utils@0.5.0)(@better-fetch/fetch@1.3.2)(better-call@1.4.5(zod@4.6.7))(jose@6.2.9)(kysely@0.29.5)(nanostores@1.5.1))(@better-auth/utils@0.5.0)(@types/node@25.9.5)(better-call@1.4.5(zod@4.6.7))(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@neondatabase/serverless@1.1.0)(@types/pg@8.20.0)(@upstash/redis@1.38.2)(kysely@0.29.5))(eve@0.84.0)(mongodb@7.3.0)(next@16.4.1(@types/node@25.9.5)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.6.7)
+        specifier: ^15.18.0
+        version: 15.18.0(@better-auth/core@1.7.19(@better-auth/utils@0.5.0)(@better-fetch/fetch@1.3.2)(better-call@1.4.5(zod@4.6.7))(jose@6.2.9)(kysely@0.29.5)(nanostores@1.5.1))(@better-auth/utils@0.5.0)(@types/node@25.9.5)(better-call@1.4.5(zod@4.6.7))(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@neondatabase/serverless@1.1.0)(@types/pg@8.20.0)(@upstash/redis@1.38.2)(kysely@0.29.5))(eve@0.84.0)(mongodb@7.3.0)(next@16.4.1(@types/node@25.9.5)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.6.7)
       clsx:
         specifier: 2.1.1
         version: 2.1.1
@@ -2669,12 +2669,12 @@ packages:
   class-variance-authority@0.7.1:
     resolution: {integrity: sha512-Ka+9Trutv7G8M6WT6SeiRWz792K5qEqIGEGzXKhAE6xOWAY6pPH8U+9IY3oCMv6kqTmLsv7Xh/2w2RigkePMsg==}
 
-  claude-mem@15.17.0:
-    resolution: {integrity: sha512-fudqrmuttL65Shg9PlN+GitsYW20iO0Y3lnbte+vIwI8omEU9DtjUx1+x+DlQc5OuZ8GgkY8i6R5ngzWNyT1qw==}
+  claude-mem@15.18.0:
+    resolution: {integrity: sha512-SC7gJsuC6to0lRD+Eq5N7NZgguHC934CfFeO5A4FpPJUl+0yhn6CQGVFz7Ikohf6T7LKrOu2HJXEuakNQfi0xg==}
     engines: {bun: '>=1.1.31', node: ^20.19.0 || >=22.12.0}
     hasBin: true
     peerDependencies:
-      eve: '>=0.84.0'
+      eve: '>=0.84.0 || >=1.0.0-rc.9'
       zod: 4.6.7
     peerDependenciesMeta:
       eve:
@@ -6195,7 +6195,7 @@ snapshots:
     dependencies:
       clsx: 2.1.1
 
-  claude-mem@15.17.0(@better-auth/core@1.7.19(@better-auth/utils@0.5.0)(@better-fetch/fetch@1.3.2)(better-call@1.4.5(zod@4.6.7))(jose@6.2.9)(kysely@0.29.5)(nanostores@1.5.1))(@better-auth/utils@0.5.0)(@types/node@25.9.5)(better-call@1.4.5(zod@4.6.7))(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@neondatabase/serverless@1.1.0)(@types/pg@8.20.0)(@upstash/redis@1.38.2)(kysely@0.29.5))(eve@0.84.0)(mongodb@7.3.0)(next@16.4.1(@types/node@25.9.5)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.6.7):
+  claude-mem@15.18.0(@better-auth/core@1.7.19(@better-auth/utils@0.5.0)(@better-fetch/fetch@1.3.2)(better-call@1.4.5(zod@4.6.7))(jose@6.2.9)(kysely@0.29.5)(nanostores@1.5.1))(@better-auth/utils@0.5.0)(@types/node@25.9.5)(better-call@1.4.5(zod@4.6.7))(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@neondatabase/serverless@1.1.0)(@types/pg@8.20.0)(@upstash/redis@1.38.2)(kysely@0.29.5))(eve@0.84.0)(mongodb@7.3.0)(next@16.4.1(@types/node@25.9.5)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.6.7):
     dependencies:
       '@better-auth/api-key': 1.7.19(@better-auth/core@1.7.19(@better-auth/utils@0.5.0)(@better-fetch/fetch@1.3.2)(better-call@1.4.5(zod@4.6.7))(jose@6.2.9)(kysely@0.29.5)(nanostores@1.5.1))(@better-auth/utils@0.5.0)(better-auth@1.7.10(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@neondatabase/serverless@1.1.0)(@types/pg@8.20.0)(@upstash/redis@1.38.2)(kysely@0.29.5))(mongodb@7.3.0)(next@16.4.1(@types/node@25.9.5)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(better-call@1.4.5(zod@4.6.7))
       better-auth: 1.7.10(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@neondatabase/serverless@1.1.0)(@types/pg@8.20.0)(@upstash/redis@1.38.2)(kysely@0.29.5))(mongodb@7.3.0)(next@16.4.1(@types/node@25.9.5)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react-dom@19.2.8(react@19.2.8))(react@19.2.8)

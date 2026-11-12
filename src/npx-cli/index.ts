@@ -10,6 +10,7 @@ import { parseArgs, styleText } from 'node:util';
 import { readPluginVersion } from './utils/paths.js';
 import type { InstallOptions } from './commands/install.js';
 import { resolveInstallerProviderChoice } from './installer-provider-choice.js';
+import { SETUP_MODES, type SetupMode } from '../shared/setup-install.js';
 
 const args = process.argv.slice(2);
 const firstArg = args[0]?.toLowerCase() ?? '';
@@ -31,11 +32,12 @@ ${styleText('bold', 'claude-mem')} v${version} — your coding agent remembers b
 ${styleText('bold', 'Install Commands')} (no Bun required):
   ${styleText('cyan', 'npx claude-mem')}                     Interactive install
   ${styleText('cyan', 'npx claude-mem install')}              Interactive install (also puts the claude-mem hook launcher on PATH)
-  Installing for a user? Run npx claude-mem install --runtime worker in a PTY on their computer.
-  Open the printed setup URL in their browser if needed. Keep the installer running while they finish setup.
+  Installing for a user who is available? Run npx claude-mem install --setup browser and keep it running.
+  User unavailable? Use --setup defer to leave their choices for the first visit to the web GUI.
+  ${styleText('cyan', 'npx claude-mem install --setup browser|defer')}   Open web setup now, or save it for later (works from agent shells)
   ${styleText('cyan', 'npx claude-mem install --ide <id>')}   Install for specific IDE
   ${styleText('cyan', 'npx claude-mem install --ide dsh --dsh-profile <name>')}   Install DeepSeek Harness (default profile: web)
-  ${styleText('cyan', 'npx claude-mem install --provider claude|codex|gemini|openrouter|host')}   Set LLM provider (optional non-interactively; a fresh install defaults to claude). codex, gemini and openrouter need a cmem.ai sign-in in a browser, on either runtime; claude and host need no claude-mem account
+  ${styleText('cyan', 'npx claude-mem install --provider claude|codex|gemini|openrouter|host')}   Set LLM provider explicitly. Without install flags, agent shells save setup for the web GUI. codex, gemini and openrouter need a cmem.ai sign-in in a browser; claude and host need no claude-mem account
   ${styleText('cyan', 'npx claude-mem install --model <id>')}   Set Claude or Codex model (when provider=claude|codex)
   ${styleText('cyan', 'npx claude-mem install --no-auto-start')}   Skip worker auto-start at the end
   ${styleText('cyan', 'npx claude-mem install --disable-auto-memory')}   Explicitly disable Claude Code native auto-memory
@@ -72,6 +74,7 @@ ${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed p
   ${styleText('cyan', 'npx claude-mem memory ingest [--source <dir> | --all] [--dry-run] [--require-cwd]')}   Import Claude Code auto-memory notes as observations
   ${styleText('cyan', 'npx claude-mem antigravity-cli install|status|uninstall')}   Manage Antigravity CLI hooks + MCP config
   ${styleText('cyan', 'npx claude-mem kimi install|status|uninstall')}   Manage Kimi Code CLI hooks + MCP config
+  ${styleText('cyan', 'npx claude-mem gemini install|status|uninstall')}   Manage Gemini CLI capture hooks
   ${styleText('cyan', 'npx claude-mem devin install|status|uninstall')}   Manage Devin CLI / Devin Desktop hooks + MCP
   ${styleText('cyan', 'npx claude-mem t3code status|uninstall [--settings <path>]')}   Inspect or disable T3 Code provider plugins
   ${styleText('cyan', 'npx claude-mem pi install|status|uninstall')}   Manage the native Pi extension
@@ -103,6 +106,7 @@ function parseInstallOptions(argv: string[]): InstallOptions {
       provider: { type: 'string' },
       model: { type: 'string' },
       runtime: { type: 'string' },
+      setup: { type: 'string' },
       'server-url': { type: 'string' },
       'dsh-profile': { type: 'string' },
       'no-auto-start': { type: 'boolean' },
@@ -123,13 +127,22 @@ function parseInstallOptions(argv: string[]): InstallOptions {
     console.error(`Unknown --runtime: ${runtime}. Allowed: worker, server`);
     process.exit(1);
   }
+  const setup = flag('setup');
+  if (setup !== undefined && !SETUP_MODES.includes(setup as SetupMode)) {
+    console.error(`Unknown --setup: ${setup}. Allowed: browser, defer`);
+    process.exit(1);
+  }
+  if (setup && (provider || (runtime && runtime !== 'worker') || values['no-auto-start'] === true && setup === 'browser')) {
+    console.error('--setup requires the worker runtime without --provider; --setup browser also requires auto-start.');
+    process.exit(1);
+  }
   const ide = flag('ide');
   let resolvedProvider = provider as InstallOptions['provider'];
   // Non-TTY grok-bot: CMEM Pro is the user default. The 'cmem' sentinel is
   // prompt-only (install.ts maps it to openrouter + cmem-observer + OAuth).
   // Interactive installs still get the CMEM/Claude prompt. `--provider host`
   // stays an explicit loopback-shim opt-in.
-  if (!resolvedProvider && process.stdin.isTTY !== true) {
+  if (!setup && !resolvedProvider && process.stdin.isTTY !== true) {
     const implicit = resolveInstallerProviderChoice({ ide });
     if (implicit) {
       resolvedProvider = implicit as InstallOptions['provider'];
@@ -145,6 +158,7 @@ function parseInstallOptions(argv: string[]): InstallOptions {
     noAutoStart: values['no-auto-start'] === true,
     disableAutoMemory: values['disable-auto-memory'] === true,
     runtime: runtime as InstallOptions['runtime'],
+    setup: setup as InstallOptions['setup'],
     serverUrl: flag('server-url'),
     dshProfile: flag('dsh-profile'),
   };
@@ -156,7 +170,7 @@ const HELP_AWARE_COMMANDS = new Set([
   '', 'install', 'update', 'upgrade', 'uninstall', 'remove', 'repair', 'prune', 'start', 'stop', 'restart',
   'adopt', 'cleanup',
   'memory', 'telemetry', 'project', 'backup', 'restore', 'server', 'worker', 'transcript',
-  'kimi', 'devin', 'antigravity-cli', 'pi',
+  'gemini', 'kimi', 'devin', 'antigravity-cli', 'pi',
 ]);
 
 async function main(): Promise<void> {
@@ -183,7 +197,7 @@ async function main(): Promise<void> {
     case 'update':
     case 'upgrade': {
       const { runInstallCommand } = await import('./commands/install.js');
-      await runInstallCommand();
+      await runInstallCommand({ update: true });
       break;
     }
 
@@ -291,6 +305,10 @@ async function main(): Promise<void> {
       if (!['install', 'uninstall', 'status'].includes(action ?? '')) console.error('Usage: npx claude-mem pi install|status|uninstall');
       process.exitCode = code;
       break;
+    }
+    case 'gemini': {
+      const { handleGeminiCommand } = await import('../services/integrations/GeminiHooksInstaller.js');
+      process.exit(await handleGeminiCommand(args[1]?.toLowerCase()));
     }
     case 'kimi': {
       const { handleKimiCommand } = await import('../services/integrations/KimiHooksInstaller.js');

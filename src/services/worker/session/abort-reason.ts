@@ -20,6 +20,7 @@ export type NormalizedAbortReason =
   | 'provider_switch'
   | 'output_retry'
   | 'drift'
+  | typeof CAPTURE_DISABLED_ABORT_REASON
   | typeof DEADLINE_EXCEEDED_CODE
   | 'none';
 
@@ -30,6 +31,9 @@ export type NormalizedAbortReason =
  * the runner resumes it on the selected provider at once.
  */
 export const PROVIDER_SWITCH_BOUNDARY_ABORT_REASON = 'provider_switch:boundary';
+
+/** Capture was disabled at a safe send boundary; keep receipts, not inputs. */
+export const CAPTURE_DISABLED_ABORT_REASON = 'capture_disabled';
 
 /**
  * A rate limit (429) the Claude CLI wrote as the observer's reply instead of
@@ -79,6 +83,7 @@ export function normalizeAbortReason(reason: string | null | undefined): Normali
     case 'provider_switch': return 'provider_switch';
     case 'output_retry': return 'output_retry';
     case 'drift': return 'drift';
+    case CAPTURE_DISABLED_ABORT_REASON: return CAPTURE_DISABLED_ABORT_REASON;
     default: return 'none';
   }
 }

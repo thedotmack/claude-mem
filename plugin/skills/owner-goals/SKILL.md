@@ -104,6 +104,8 @@ Saved goals with `priorities` and `open_asks` instead were sorted before the thr
 
 Keep the saved `owner-map.md`; step 3 can name it with `--map`. Quotes that aged out of the window are dropped when saving.
 
+Save the update with step 3 and add `--carried-before "<YYYY-MM-DD HH:MM>"`, the same local minute passed to `--since`, so newly written quotes stay strict.
+
 ## 3. Save to Goals
 
 ```bash
@@ -112,7 +114,7 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/save_goals.py" --goals "<folder>/owner-goal
 
 For a date range, add the same `--start YYYY-MM-DD --end YYYY-MM-DD` used in step 1.
 
-The script checks every quote against the prompt typed at that minute. If any fail, it lists them; correct the wording or time from `owner-prompts.md` and run it again. A quote dated before the first prompt in `owner-prompts.md` has aged out of the window: it is dropped, and so is an item left with no quote; if every item ages out, the goals are cleared. It refuses the old `priorities` / `open_asks` shape, a focus area without `goal` or `matches`, a `matches` id that is not a saved area, and an ask whose `focus_area` is not one of the file's focus areas. `--dry-run` shows the writes without saving.
+The script checks every quote against the prompt typed at that minute. On a fresh save (step 3 as written above, with no `--carried-before`), a quote that fails is dropped, and so is an item left with no quote; the result names the dropped quotes, and the save is refused only when no verified item remains. On an update saved with `--carried-before`, a newly written quote that fails stops the save and is listed; correct its wording or time from `owner-prompts.md` and run it again, while a carried quote that no longer matches is dropped as below. A quote dated before the first prompt in `owner-prompts.md` has aged out of the window: it is dropped, and so is an item left with no quote; if every item ages out, the goals are cleared. It refuses the old `priorities` / `open_asks` shape, a focus area without `goal` or `matches`, a `matches` id that is not a saved area, and an ask whose `focus_area` is not one of the file's focus areas. `--dry-run` shows the writes without saving.
 
 It saves through the local claude-mem worker:
 
