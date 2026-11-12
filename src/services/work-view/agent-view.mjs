@@ -2,13 +2,13 @@
 // tool call establishes its author, never the assignee or live presence.
 import { buildHumanRequests } from './request-projection.mjs';
 import { goalKindOf, OWNER_GOALS_LIST, isOwnerGoalsList } from './owner-goals.mjs';
-import { buildRules, isMyRulesList } from './my-rules.mjs';
-import { buildFocusAreas, isMyFocusList, placeRequests } from './my-focus.mjs';
+import { buildRules } from './my-rules.mjs';
+import { buildFocusAreas, placeRequests } from './my-focus.mjs';
 import { isWorkProductField, productsFromFields, readProductRecords } from './work-product.mjs';
-import { agentStopFor, isAgentLifecycleList, readAgentStops } from './agent-lifecycle.mjs';
+import { agentStopFor, readAgentStops } from './agent-lifecycle.mjs';
 import { withDerivedProjects } from './session-project.mjs';
 import { observationMediaFromMetadata } from '../media/feed.js';
-import { isClosedWorkStateStatus } from './work-state-status.mjs';
+import { appliedLabel, workStateItems } from './work-state-labels.mjs';
 const PROJECT_KEY = (value) => String(value ?? '').replace(/[A-Z]/g, (c) => c.toLowerCase());
 // Live Gemini CLI hooks record `gemini`; the Gemini CLI importer records `gemini-cli`. Both are one host.
 const PLATFORMS = { codex: 'Codex', claude: 'Claude Code', gemini: 'Gemini CLI', 'gemini-cli': 'Gemini CLI', 'antigravity-cli': 'Antigravity CLI', kimi: 'Kimi', 'hermes-cli': 'Hermes', 'pi-agent': 'Pi' };
@@ -179,7 +179,7 @@ function launchRequest(launch) {
   return text ? { text, source: 'agent-launch', sourceId: launch.shared ? null : launch.toolUseId, url: launch.shared ? null : `/api/work-view/evidence/tool-use/${launch.toolUseId}` } : null;
 }
 
-export function buildAgentView(state, records, { now = Date.now(), workLimit = 240, activityLimit = 160, recentMs = 15 * 60 * 1000, titleCache = {}, ledger = null, onProductFile = null } = {}) {
+export function buildAgentView(state, records, { now = Date.now(), workLimit = 240, activityLimit = 160, recentMs = 15 * 60 * 1000, titleCache = {}, ledger = null, onProductFile = null, workStateLabels = null } = {}) {
   const { calls = [], observations = [], summaries = [], sessions = [], prompts = [], agentLaunches = [], agentToolActivity = [] } = records;
   const launches = readAgentLaunches(agentLaunches);
   const lastToolEpochs = new Map(agentToolActivity.map((row) => [lifecycleKey(row.platform_source, row.content_session_id, row.agent_id), Number(row.last_epoch) || 0]));
@@ -306,10 +306,7 @@ export function buildAgentView(state, records, { now = Date.now(), workLimit = 2
     activity.push({ ...entry, agentGroupId: group.id });
   }
 
-  const candidates = state.lists.filter((list) => !isOwnerGoalsList(list.name) && !isMyRulesList(list.name) && !isMyFocusList(list.name) && !isAgentLifecycleList(list.name)).flatMap((list) => [
-    ...list.tasks.map((task) => ({ ...task, list, recordKind: 'task' })),
-    ...(Object.keys(list.fields).some((key) => key !== 'task') ? [{ id: list.id, name: list.name, fields: list.fields, status: list.status, isOpen: !isClosedWorkStateStatus(list.status), updatedAtEpoch: list.stateUpdatedAtEpoch, latestEntryId: state.events.find((event) => event.listId === list.id && event.task === null)?.id ?? 0, list, recordKind: 'list' }] : []),
-  ]).sort((a, b) => b.updatedAtEpoch - a.updatedAtEpoch).slice(0, workLimit);
+  const candidates = workStateItems(state).sort((a, b) => b.updatedAtEpoch - a.updatedAtEpoch).slice(0, workLimit);
 
   function uniqueCall(event) {
     const matches = (callsByKey.get(callKey(event.originProject ?? event.project, event.listName, event.fields)) ?? [])
@@ -341,13 +338,18 @@ export function buildAgentView(state, records, { now = Date.now(), workLimit = 2
     const explicitRequest = fieldText(item.fields, ['request', 'human_request', 'user_request'], 500);
     const requestKey = confirmedRequestKey(session, call?.prompt_number);
     const request = { ...(explicitRequest ?? requestFor(session, call?.prompt_number) ?? { text: compactText(item.name, 500), source: item.recordKind === 'task' ? 'task-label' : 'list-label', sourceId: item.id, url: null }), key: requestKey };
-    const next = fieldText(item.fields, ['next_step', 'nextStep', 'next', 'next_action', 'remaining', 'pending', 'then_run']);
-    const outcome = fieldText(item.fields, ['outcome', 'result', 'completed', 'verified', 'verification']);
+    // Jev's label (work-state-labels.mjs) names the field an agent used when none of the usual names holds it,
+    // and the state its notes describe when the recorded status is a claim a quiet agent left behind.
+    const labeled = appliedLabel(item, workStateLabels?.labels);
+    const jevField = (name) => { const found = name ? fieldText(item.fields, [name]) : null; return found ? { ...found, pickedBy: 'jev' } : null; };
+    const next = fieldText(item.fields, ['next_step', 'nextStep', 'next', 'next_action', 'remaining', 'pending', 'then_run']) ?? jevField(labeled.nextField);
+    const outcome = fieldText(item.fields, ['outcome', 'result', 'completed', 'verified', 'verification']) ?? jevField(labeled.resultField);
     const progress = fieldText(item.fields, ['human_summary', 'summary', 'progress', 'phase', 'stage', 'status_note']);
     const entry = {
       id: item.id, kind: 'work-state', recordKind: item.recordKind, title: compactText(item.name, 160),
       project: item.list.project, listId: item.list.id, listName: item.list.name, taskId: item.recordKind === 'task' ? item.id : null,
       status: item.status, statusExplicit: Object.hasOwn(item.fields, 'status'), isOpen: item.isOpen, request, nextStep: next, outcome, progress, owner,
+      judgedStatus: labeled.judgedStatus, judgment: labeled.label ? { state: labeled.label.state, probability: labeled.label.stateP, model: labeled.label.model, at: labeled.label.at } : null,
       requestId: ['string', 'number'].includes(typeof (item.fields.request_id ?? item.list.fields.request_id)) ? String(item.fields.request_id ?? item.list.fields.request_id).trim() || null : null,
       requestText: fieldText(item.fields, ['human_request', 'request', 'user_request'], 1200)?.text ?? fieldText(item.list.fields, ['human_request', 'request', 'user_request'], 1200)?.text ?? null,
       requestStatus: typeof (item.fields.request_status ?? item.list.fields.request_status) === 'string' ? (item.fields.request_status ?? item.list.fields.request_status) : null,

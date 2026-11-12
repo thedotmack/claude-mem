@@ -26,10 +26,12 @@ export function normalizeRecordedStatus(value: unknown): string {
   return status
 }
 
-interface StatusItem { kind: string; status: string; lastUpdateEpoch?: number }
+/** `judgedStatus`: the recorded status Jev's label stands for (work-state-labels.mjs), shown instead of `status`. */
+interface StatusItem { kind: string; status: string; judgedStatus?: string | null; lastUpdateEpoch?: number }
 
 /** Item statuses only. Done needs an explicit lifecycle, so all-done items alone are `done` here and `unknown` after the override. */
-export function statusFor(items: StatusItem[], now: number): NormalizedStatus {
+export function statusFor(rawItems: StatusItem[], now: number): NormalizedStatus {
+  const items = rawItems.map((item) => item.judgedStatus ? { ...item, status: item.judgedStatus } : item)
   const states = items.map((item) => normalizeRecordedStatus(item.status))
   if (states.includes('needs-you')) return 'needs-you'
   if (states.includes('needs-review')) return 'needs-review'

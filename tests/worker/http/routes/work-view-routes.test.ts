@@ -27,8 +27,8 @@ function append(fields: Record<string, unknown>) {
     .run(nextId++, 'example-project', 'example-work', JSON.stringify(fields), Date.now());
 }
 
-async function start(humanCopy: HumanCopyWorker | null = null) {
-  routes = new WorkViewRoutes({ databasePath, reviewPath, pollIntervalMs: 20, humanCopy, ledgerDir: null, setupStatePath: join(directory, 'setup-state.json') });
+async function start(humanCopy: HumanCopyWorker | null = null, ledgerDir: string | null = null) {
+  routes = new WorkViewRoutes({ databasePath, reviewPath, pollIntervalMs: 20, humanCopy, ledgerDir, autoRefresh: null, setupStatePath: join(directory, 'setup-state.json') });
   const app = express();
   app.use(express.json());
   routes.setupRoutes(app);
@@ -664,6 +664,24 @@ describe('local work view', () => {
     // Reopened after the review: the older 100% no longer counts.
     expect(isReportedReadyForCheck({ lifecycle: { ...doing, atEpoch: at + 60000 }, progress: { percent: 100, checkedAt: '2026-10-22T12:00:00Z' } })).toBe(false);
     expect(isReportedReadyForCheck({ lifecycle: null, progress: { percent: 90, checkedAt: '2026-10-22T12:00:00Z' } })).toBe(false);
+  });
+
+  it('lets a request Jev confidently judged finished be checked, as the viewer offers', async () => {
+    source.prepare('UPDATE work_state_entries SET fields=? WHERE id=1').run(JSON.stringify({
+      task: 'Build the local viewer', status: 'doing', request_id: 'viewer-request', human_request: 'Build a local work viewer', progress: 'Merged and verified.',
+    }));
+    const ledgerDir = join(directory, 'work-view');
+    mkdirSync(ledgerDir, { recursive: true });
+    await stop(); await start(null, ledgerDir);
+    const unlabeled = (await snapshot()).humanRequests[0];
+    expect(unlabeled.items[0].judgedStatus).toBeNull();
+    expect((await review(unlabeled)).status).toBe(409);
+    writeFileSync(join(ledgerDir, 'work-state-labels.json'), JSON.stringify({ schemaVersion: 1, failures: {}, labels: {
+      1: { at: new Date().toISOString(), model: 'typesafe/jev-1.14-test', state: 'finished', stateP: 0.9, nextField: null, nextP: null, resultField: null, resultP: null },
+    } }));
+    const labeled = (await snapshot()).humanRequests[0];
+    expect(labeled.items[0].judgedStatus).toBe('needs-review');
+    expect((await review(labeled)).status).toBe(200);
   });
 
   it('lets a request waiting for review be checked and unchecked', async () => {
