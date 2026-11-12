@@ -1,7 +1,7 @@
 
 import { logger } from '../../../utils/logger.js';
 import { hasStorableTitle } from '../../sqlite/observations/store.js';
-import { maskXmlLiteralMarkup, parseAgentXml, SKIP_SUMMARY_TAG, type ParsedObservation, type ParsedSummary } from '../../../sdk/parser.js';
+import { maskXmlLiteralMarkup, parseAgentXml, OBSERVATION_OPEN_TAG, OBSERVATION_BLOCK, SUMMARY_BLOCK, SKIP_SUMMARY_TAG, type ParsedObservation, type ParsedSummary } from '../../../sdk/parser.js';
 import {
   classifyObserverOutput,
   isAnthropicVerificationHoldObserverOutput,
@@ -638,10 +638,10 @@ export function isOutputCapFinishReason(finishReason: string | null | undefined)
  */
 export function hasUnfinishedObservationBlock(text: string): boolean {
   const outsideWholeBlocks = maskXmlLiteralMarkup(text)
-    .replace(/<observation>[\s\S]*?<\/observation>/gi, '')
-    .replace(/<summary>[\s\S]*?<\/summary>/gi, '')
+    .replace(new RegExp(OBSERVATION_BLOCK.source, 'gi'), '')
+    .replace(new RegExp(SUMMARY_BLOCK.source, 'gi'), '')
     .replace(new RegExp(SKIP_SUMMARY_TAG.source, 'gi'), '');
-  return /<observation>/i.test(outsideWholeBlocks);
+  return OBSERVATION_OPEN_TAG.test(outsideWholeBlocks);
 }
 
 export async function processAgentResponse(
