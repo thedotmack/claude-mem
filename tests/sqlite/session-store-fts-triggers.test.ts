@@ -15,11 +15,12 @@
 // skips the rebuild would leave old memories unmodifiable.
 import { describe, it, expect, afterEach } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdtempSync, rmSync, existsSync } from 'fs';
+import { mkdtempSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import { SessionSearch } from '../../src/services/sqlite/SessionSearch.js';
+import { removeTempDir } from '../helpers/temp-dir.js';
 import {
   OBSERVATIONS_FTS_TRIGGERS_SQL,
   SESSION_SUMMARIES_FTS_TRIGGERS_SQL,
@@ -183,9 +184,9 @@ function ftsMatches(db: Database, ftsTable: 'observations_fts' | 'session_summar
 describe('FTS sync triggers survive table rebuilds and converge when missing (#3609)', () => {
   let tempDir: string;
 
-  afterEach(() => {
+  afterEach(async () => {
     if (tempDir && existsSync(tempDir)) {
-      rmSync(tempDir, { recursive: true, force: true });
+      await removeTempDir(tempDir);
     }
   });
 

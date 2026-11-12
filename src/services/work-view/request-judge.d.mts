@@ -29,7 +29,7 @@ export function answerOf(result: JevAnswer, id: string, type: string): any;
 export const rulesJudge: RequestJudge;
 export function jevJudge(client: JevClient): RequestJudge;
 export function jevClient(options: { url: string; apiKey: string; model?: string | null; fetchImpl?: typeof fetch }): JevClient;
-export function jevClientFromSettings(settings: Record<string, unknown> | null | undefined, options?: { credential?: (name: string) => string | undefined; fetchImpl?: typeof fetch }): JevClient | null;
+export function jevClientFromSettings(settings: object | null | undefined, options?: { credential?: (name: string) => string | undefined; fetchImpl?: typeof fetch }): JevClient | null;
 /** The Jev judge this install can use, or null (then only code links route and the grouping agent decides the rest). */
 export function configuredJudge(settingsPath?: string): RequestJudge | null;
 export function bandFor(confidence: number): JudgeBand;

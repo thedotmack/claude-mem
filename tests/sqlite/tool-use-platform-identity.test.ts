@@ -1,11 +1,12 @@
 import { expect, it } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import { SessionSearch } from '../../src/services/sqlite/SessionSearch.js';
 import { configureToolUseIndex } from '../../src/services/sqlite/tool-use-search.js';
 import { ingestObservation, setIngestContext } from '../../src/services/worker/http/shared.js';
+import { removeTempDir } from '../helpers/temp-dir.js';
 
 const contentSessionId = 'shared-raw-session';
 const toolUseId = 'shared-raw-call';
@@ -60,7 +61,7 @@ it('links an observation only to the tool receipt from its platform', () => {
   } finally { store.close(); }
 });
 
-it('upgrades the legacy backup table without losing row IDs, receipt metadata, FTS, triggers or sequence history', () => {
+it('upgrades the legacy backup table without losing row IDs, receipt metadata, FTS, triggers or sequence history', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'cmem-tool-platform-'));
   const file = join(directory, 'legacy.sqlite');
   let store = new SessionStore(file);
@@ -103,5 +104,5 @@ it('upgrades the legacy backup table without losing row IDs, receipt metadata, F
     expect(store.getToolUsesByIds([7])[0]).toEqual(before);
     expect(store.upsertToolUse({ contentSessionId, toolUseId, platformSource: 'codex', project: 'raw-project', toolName: 'Read' })).toBe(id);
     expect(store.queryToolUses({ contentSessionId })).toHaveLength(2);
-  } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
+  } finally { store.close(); await removeTempDir(directory); }
 });

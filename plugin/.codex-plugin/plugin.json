@@ -1,6 +1,6 @@
 {
   "name": "claude-mem",
-  "version": "15.18.0",
+  "version": "15.18.2",
   "description": "Persistent memory for AI coding agents: the next session starts where the last one left off. Works with Claude Code, Codex, Cursor, OpenCode and more.",
   "author": {
     "name": "Alex Newman",
@@ -24,7 +24,7 @@
   ],
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
-  "hooks": "./hooks/codex-hooks.json",
+  "hooks": "./hooks/codex-no-bundled-hooks.json",
   "interface": {
     "displayName": "claude-mem",
     "shortDescription": "Persistent memory: the next session starts where the last one left off.",

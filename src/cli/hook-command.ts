@@ -34,6 +34,7 @@ import { canonicalIntegrationId } from '../shared/integration-id.js';
 import { logger } from '../utils/logger.js';
 import { loadFromFileOnce } from '../shared/hook-settings.js';
 import { isObserverCaptureEnabled } from '../shared/observer-capture.js';
+import { isPluginDisabledInCodexConfig } from '../shared/plugin-state.js';
 
 export interface HookCommandOptions {
   skipExit?: boolean;
@@ -111,6 +112,9 @@ export async function hookCommand(rawPlatform: string, event: string, options: H
   let hookDisabled: boolean;
   try {
     hookDisabled = isToolHookDisabledByEnv(event)
+      // Codex runs these hooks from the user's hooks.json even with the plugin
+      // switched off, so the plugin toggle is honoured here.
+      || (platform === 'codex' && isPluginDisabledInCodexConfig())
       // Codex still needs the pipeline with capture off: its PostToolUse is how a
       // compacted thread gets its memory timeline back. The handler skips the write.
       || (event === 'observation' && platform !== 'codex' && !isObserverCaptureEnabled(loadFromFileOnce()));

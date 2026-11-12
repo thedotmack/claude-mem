@@ -57,7 +57,8 @@ function runInstaller(missingKey: boolean) {
         provisionTreeSitterCli: async () => {},
         writeInstallMarker: path => { console.log('INSTALL_MARKER:' + path); },
       }));
-      mock.module(at('launcher/install-launcher.js'), () => ({
+      const launcher = await import(at('launcher/install-launcher.js'));
+      mock.module(at('launcher/install-launcher.js'), () => ({ ...launcher,
         ensureLauncherOnPath: () => ({ status: 'already-current', binaryPath: '/fixture/claude-mem' }),
         ensureLocalBinOnShellPath: () => ({ alreadyOnPath: true }),
       }));
@@ -141,7 +142,7 @@ describe('Codex installation ordering', () => {
       if (scenario === 'cleanup-failure') mkdirSync(agents, { recursive: true });
       else writeFixture(codexHome, 'AGENTS.md', original);
       const marketplace = join(root, 'marketplace');
-      for (const file of ['.agents/plugins/marketplace.json', 'plugin/.codex-plugin/plugin.json', 'plugin/.mcp.json', 'plugin/hooks/codex-hooks.json', 'plugin/skills/mem-search/SKILL.md']) writeFixture(marketplace, file, '{}');
+      for (const file of ['.agents/plugins/marketplace.json', 'plugin/.codex-plugin/plugin.json', 'plugin/.mcp.json', 'plugin/hooks/codex-hooks.json', 'plugin/skills/mem-search/SKILL.md']) writeFixture(marketplace, file, file.endsWith('codex-hooks.json') ? '{"hooks":{}}' : '{}');
       const stub = join(root, 'bin', 'codex.js');
       writeFixture(root, 'bin/codex.js', `
         import { appendFileSync, readFileSync, statSync } from 'fs';
