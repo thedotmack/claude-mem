@@ -381,6 +381,32 @@ describe('redactSensitive built-in patterns', () => {
     expect(redactSensitive(input, cfg).redacted).toBe(input);
   });
 
+  // Heroku API keys and Atlassian API tokens; split for push protection too.
+  const HEROKU_BODY = 'aBcDeFgHiJkLmNoPqRsTuVwXyZ01234' + '56789_-aBcDeFgHiJkLmNoPqRsS';
+  const ATLASSIAN_BODY = ('xYz0123456789_-aBcDeFgHiJkLmNoPqRsTuVw' + 'XyZ0123456789').repeat(3) + 'aBcDeFgHiJkLmNoPqRsTuVwXyZ=0A1B2C';
+  it.each([
+    ['heroku_key', 'export HEROKU_API_KEY=' + 'HR' + 'KU-AA' + HEROKU_BODY + ' tail', HEROKU_BODY],
+    ['heroku_key', 'machine api.heroku.com login me@example.com password ' + 'HR' + 'KU-AA' + HEROKU_BODY + ' tail', HEROKU_BODY],
+    ['atlassian_token', 'JIRA_API_TOKEN=' + 'ATA' + 'TT3' + ATLASSIAN_BODY + ' tail', ATLASSIAN_BODY],
+    ['atlassian_token', 'curl -u me@example.com:' + 'ATA' + 'TT3' + ATLASSIAN_BODY + ' tail', ATLASSIAN_BODY],
+  ])('redacts a %s in %s', (name, input, body) => {
+    const result = redactSensitive(input, cfg);
+    expect(result.redacted).toContain(`<redacted type='${name}'/>`);
+    expect(result.redacted).toMatch(/ tail$/);
+    expect(result.redacted).not.toContain(body);
+    expect(Object.keys(result.counts)).toEqual([name]);
+  });
+
+  it.each([
+    'HRKU-short',
+    'HR' + 'KU-AA' + 'aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789',
+    'HR' + 'KU-BB' + 'aBcDeFgHiJkLmNoPqRsTuVwXyZ01234' + '56789_-aBcDeFgHiJkLmNoPqRs',
+    'ATATT3short',
+    'ATA' + 'TT3' + 'aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789',
+  ])('leaves %s alone', (input) => {
+    expect(redactSensitive(input, cfg).redacted).toBe(input);
+  });
+
   it.each([
     'glpat-short',
     'gldt-short',

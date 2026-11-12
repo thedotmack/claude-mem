@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
+import { createHash } from 'node:crypto';
 import express from 'express';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -637,5 +638,91 @@ describe('My Focus seed route', () => {
     expect(request(view).focusAreaId).toBe(created);
     // Nothing the seed route wrote is an owner row.
     expect(ownerRows().filter(row => row.fields.decided_by === 'owner' || row.fields.placed_by === 'owner')).toEqual([]);
+  });
+});
+
+
+describe('checked owner-goals save keys', () => {
+  const mined = (name: string, rank: number) => ({ name, goal: 'Keep this work reliable.', rank, matches: null, evidence: 'From checked owner prompts.' });
+  // An independent client encodes the documented tuple, including UTF-8 strings, before POSTing.
+  const keyFor = (areas: any[], nonce = '0'.repeat(24)) => nonce + ':' + createHash('sha256')
+    .update(JSON.stringify(areas.map(area => [area.name.trim(), area.goal.trim(), area.rank, area.matches?.trim() ?? null, area.evidence.trim()]))).digest('hex');
+  const post = (areas: any[], save_key: string) => fetch(origin + '/api/work-view/focus/owner-goals', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ areas, save_key }),
+  });
+  const count = () => (source.prepare("SELECT COUNT(*) AS count FROM work_state_entries WHERE list_name = 'my-focus'").get() as { count: number }).count;
+
+  for (const failAfter of [1, 2]) {
+    it('recovers after appending ' + failAfter + ' of two focus areas and losing the response', async () => {
+      const areas = [mined('Releases', 1), mined('Reliability', 2)], key = keyFor(areas);
+      const append = (routes as any).appendWorkStateEntry;
+      let writes = 0;
+      (routes as any).appendWorkStateEntry = (entry: unknown) => {
+        append(entry);
+        if (++writes === failAfter) throw new Error('simulated interrupted append');
+      };
+      expect((await post(areas, key)).status).toBe(500);
+      (routes as any).appendWorkStateEntry = append;
+      const partial = (await snapshot()).focusAreas.filter((area: any) => area.source === 'owner-goals');
+      expect(partial).toHaveLength(failAfter);
+      const response = await post(areas, key);
+      expect(response.status).toBe(200);
+      const ids = (await response.json()).focusAreaIds;
+      expect(new Set(ids).size).toBe(2);
+      for (const area of partial) expect(ids).toContain(area.focusAreaId);
+      expect((await snapshot()).focusAreas.filter((area: any) => area.source === 'owner-goals')).toHaveLength(2);
+      const after = count();
+      expect((await (await post(areas, key)).json()).focusAreaIds).toEqual(ids);
+      expect(count()).toBe(after);
+    });
+  }
+
+  it('rejects the same complete key with different content before writing, including reordered payloads', async () => {
+    const areas = [mined('İstanbul "quoted" \\ 🚀', 1), { ...mined('Releases', 2), goal: 'Keep releases\nsafe.' }];
+    const key = keyFor(areas);
+    expect((await post(areas, key)).status).toBe(200);
+    const after = count();
+    expect((await post([{ ...areas[0], goal: 'Different content.' }, areas[1]], key)).status).toBe(400);
+    expect((await post([...areas].reverse(), key)).status).toBe(400);
+    expect((await post(areas, 'invalid')).status).toBe(400);
+    expect(count()).toBe(after);
+    // Object property order is not part of the commitment, but tuple values are.
+    const reordered = areas.map(area => ({ evidence: area.evidence, matches: area.matches, rank: area.rank, goal: area.goal, name: area.name }));
+    expect((await post(reordered, key)).status).toBe(200);
+    expect(count()).toBe(after);
+  });
+
+  it('keeps owner renames, dismissal and merges when the original save is retried', async () => {
+    const areas = [mined('Releases', 1), mined('Reliability', 2)], key = keyFor(areas);
+    const ids = (await (await post(areas, key)).json()).focusAreaIds;
+    await saveFocus({ action: 'rename', focusAreaId: ids[0], name: 'Owner release area' });
+    await saveFocus({ action: 'dismiss', focusAreaId: ids[0] });
+    await saveFocus({ action: 'merge', focusAreaId: ids[1], intoFocusAreaId: 'fa_viewer' });
+    const after = count();
+    expect((await (await post(areas, key)).json()).focusAreaIds).toEqual(ids);
+    const view = await snapshot();
+    expect(areaById(view, ids[0])).toMatchObject({ name: 'Owner release area', status: 'dismissed', decidedBy: 'owner' });
+    expect(areaById(view, ids[1])).toMatchObject({ mergedInto: 'fa_viewer', decidedBy: 'owner' });
+    expect(count()).toBe(after);
+  });
+
+  it('refuses an already withdrawn generated id instead of resurrecting it', async () => {
+    const areas = [mined('Releases', 1)], key = keyFor(areas);
+    const [id] = (await (await post(areas, key)).json()).focusAreaIds;
+    const area = areaById(await snapshot(), id);
+    insertRow(focusAreaRowFields({ ...area, status: 'dismissed', decidedBy: 'system' }), { at: Date.now() + 60_000 });
+    const after = count();
+    expect((await post(areas, key)).status).toBe(400);
+    expect(count()).toBe(after);
+    expect(areaById(await snapshot(), id)).toMatchObject({ status: 'dismissed', decidedBy: 'system' });
+  });
+
+  it('does not share derived ids between different worker device scopes', async () => {
+    const areas = [mined('Releases', 1)], key = keyFor(areas);
+    (routes as any).getLocalDeviceId = () => 'device-a';
+    const first = (await (await post(areas, key)).json()).focusAreaIds;
+    (routes as any).getLocalDeviceId = () => 'device-b';
+    const second = (await (await post(areas, key)).json()).focusAreaIds;
+    expect(second).not.toEqual(first);
   });
 });

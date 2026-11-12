@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { spawnSync } from 'child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import path from 'path';
-import { buildGeminiHooks, geminiSettingsPath, manageGeminiHooks, removeGeminiHooks } from '../../src/services/integrations/GeminiHooksInstaller.js';
+import { buildGeminiHooks, geminiSettingsPath, manageGeminiHooks, removeGeminiHooks, resolveGeminiWorkerScript } from '../../src/services/integrations/GeminiHooksInstaller.js';
 let scratch: string | undefined;
 afterEach(() => { if (scratch) rmSync(scratch, { recursive: true, force: true }); });
 const file = () => { scratch = mkdtempSync(path.join(tmpdir(), 'gemini setup ')); return path.join(scratch, 'settings.json'); };
@@ -39,12 +40,34 @@ describe('Gemini capture setup', () => {
     expect(readFileSync(p, 'utf8')).toBe(content);
   });
   it('keeps edited commands and quotes paths with spaces', () => {
-    const ours = buildGeminiHooks('/runtime space/bun', '/plugin space/scripts/worker-service.cjs');
+    const ours = buildGeminiHooks('/runtime space/bun', '/plugin space/scripts/worker-service.cjs', 'linux');
     expect(ours.AfterTool[0].hooks![0].command).toBe('"/runtime space/bun" "/plugin space/scripts/worker-service.cjs" hook gemini observation');
     const foreign = { ...ours.AfterTool[0].hooks![0], command: 'echo do not remove me' };
     expect(removeGeminiHooks({ AfterTool: [{ hooks: [foreign, ...ours.AfterTool[0].hooks!] }] }))
       .toEqual({ AfterTool: [{ hooks: [foreign] }] });
   });
+  // On Windows, Gemini CLI runs each hook command as a PowerShell `-Command`, and PowerShell
+  // reads a leading quoted path as a string, not as a program to run.
+  it('starts Windows commands with the PowerShell call operator, and removes both forms', () => {
+    const bun = 'C:\\Users\\Ada Lovelace\\.bun\\bin\\bun.exe';
+    const worker = 'C:\\Users\\Ada Lovelace\\.claude\\plugins\\marketplaces\\thedotmack\\plugin\\scripts\\worker-service.cjs';
+    const windows = buildGeminiHooks(bun, worker, 'win32');
+    expect(windows.SessionStart[0].hooks![0].command).toBe(`& "${bun}" "${worker}" hook gemini context`);
+    expect(buildGeminiHooks(bun, worker, 'darwin').SessionStart[0].hooks![0].command).toBe(`"${bun}" "${worker}" hook gemini context`);
+    expect(removeGeminiHooks(windows)).toEqual({});
+    // The form earlier releases wrote on Windows: reinstall replaces it and uninstall removes it.
+    expect(removeGeminiHooks(buildGeminiHooks(bun, worker, 'linux'))).toEqual({});
+  });
+  it.skipIf(process.platform !== 'win32')('runs in PowerShell the way Gemini CLI starts hooks on Windows', () => {
+    file();
+    const worker = path.join(scratch!, 'plugin', 'scripts', 'worker-service.cjs');
+    mkdirSync(path.dirname(worker), { recursive: true });
+    writeFileSync(worker, "process.stdout.write(process.argv.slice(2).join(' '));");
+    const command = buildGeminiHooks(process.execPath, worker).SessionStart[0].hooks![0].command;
+    const run = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `${command}; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }`], { encoding: 'utf-8', timeout: 30_000 });
+    expect(run.status, run.stderr).toBe(0);
+    expect(run.stdout.trim()).toBe('hook gemini context');
+  }, 60_000);
   it('removes hooks older claude-mem releases wrote, so nothing is captured twice', () => {
     const p = file();
     const legacyGemini = { name: 'claude-mem', type: 'command', timeout: 10000,
@@ -76,4 +99,44 @@ describe('Gemini capture setup', () => {
     expect(geminiSettingsPath({})).toBe(path.join(homedir(), '.gemini', 'settings.json'));
     expect(geminiSettingsPath({ GEMINI_CLI_HOME: '  ' })).toBe(path.join(homedir(), '.gemini', 'settings.json'));
   });
+  const cachedWorker = (cacheRoot: string, version: string) => {
+    const root = path.join(cacheRoot, version);
+    mkdirSync(path.join(root, 'scripts'), { recursive: true });
+    writeFileSync(path.join(root, 'scripts', 'worker-service.cjs'), '// fixture');
+    writeFileSync(path.join(root, 'package.json'), JSON.stringify({ version, dependencies: {} }));
+    return path.join(root, 'scripts', 'worker-service.cjs');
+  };
+  const bakedWorker = (p: string) => read(p).hooks.AfterTool[0].hooks[0].command as string;
+
+  it('falls back to the plugin cache when no stable plugin path exists', () => {
+    const p = file();
+    const cacheRoot = path.join(scratch!, 'cache');
+    const cached = cachedWorker(cacheRoot, '15.17.0');
+    const roots = { cacheRoot, marketplaceRoot: path.join(scratch!, 'absent'), cwd: path.join(scratch!, 'ordinary-project') };
+    expect(manageGeminiHooks('install', p, () => resolveGeminiWorkerScript(() => null, roots))).toBe(0);
+    expect(bakedWorker(p)).toContain(cached);
+  });
+
+  it('bakes the stable marketplace path, not the pruned-later cache copy, when both exist', () => {
+    const p = file();
+    const cacheRoot = path.join(scratch!, 'cache');
+    const cached = cachedWorker(cacheRoot, '15.17.0');
+    const marketplaceRoot = path.join(scratch!, 'marketplace');
+    const marketplaceWorker = path.join(marketplaceRoot, 'plugin', 'scripts', 'worker-service.cjs');
+    mkdirSync(path.dirname(marketplaceWorker), { recursive: true });
+    writeFileSync(marketplaceWorker, '// fixture');
+    writeFileSync(path.join(marketplaceRoot, 'package.json'), JSON.stringify({ version: '15.17.0', dependencies: {} }));
+    const roots = { cacheRoot, marketplaceRoot, cwd: path.join(scratch!, 'ordinary-project') };
+    expect(manageGeminiHooks('install', p, () => resolveGeminiWorkerScript(() => marketplaceWorker, roots))).toBe(0);
+    expect(bakedWorker(p)).toContain(marketplaceWorker);
+    expect(bakedWorker(p)).not.toContain(cached);
+  });
+
+  it('fails the install when neither a stable path nor a cache copy exists', () => {
+    const p = file();
+    const roots = { cacheRoot: path.join(scratch!, 'no-cache'), marketplaceRoot: path.join(scratch!, 'absent'), cwd: path.join(scratch!, 'ordinary-project') };
+    expect(manageGeminiHooks('install', p, () => resolveGeminiWorkerScript(() => null, roots))).toBe(1);
+    expect(existsSync(p)).toBe(false);
+  });
+
 });

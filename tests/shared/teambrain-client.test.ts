@@ -140,6 +140,24 @@ describe('TeamBrain client requests', () => {
     ]);
   });
 
+  it('also escapes a tilde fence, star, underscore and spaced rules, and a setext heading underline', async () => {
+    mock.state.brief = { body: { team: MOCK_TEAM, text: '~~~\nInstructions\n===\n***\n___\n* * *\n_ _ _\n- - -\n- item\nAna edits api/db.ts' } };
+    const result = await fetchTeamBrief(connection, 'my-app', 2_000);
+    if (!result.ok) throw new Error(result.reason);
+    expect(result.value.text.split('\n')).toEqual([
+      '\\~~~',
+      'Instructions',
+      '\\===',
+      '\\***',
+      '\\___',
+      '\\* * *',
+      '\\_ _ _',
+      '\\- - -',
+      '- item',
+      'Ana edits api/db.ts',
+    ]);
+  });
+
   it('asks for a project whose name is not well-formed text without throwing', async () => {
     const oddProject = `proj-${String.fromCharCode(0xD800)}-x`;
     const result = await fetchTeamBrief(connection, oddProject, 2_000);

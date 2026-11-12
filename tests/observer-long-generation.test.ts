@@ -82,6 +82,9 @@ class RecordingProvider extends OpenAICompatibleProvider<{ apiKey: string; model
 describe('observer requests across a long generation', () => {
   const TURNS = 200;
   const PAYLOAD_CHARS = 5_000;
+  // Pinned, not the shipped default: these tests are about long generations, so
+  // they set the budget they need and stay valid when the default moves.
+  const BUDGET_CHARS = 400_000;
   let spies: ReturnType<typeof spyOn>[] = [];
 
   beforeEach(() => {
@@ -94,6 +97,7 @@ describe('observer requests across a long generation', () => {
         ...SettingsDefaultsManager.getAllDefaults(),
         CLAUDE_MEM_TIER_ROUTING_ENABLED: 'false',
         CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW: '200000',
+        CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS: String(BUDGET_CHARS),
       })),
     ];
   });
@@ -170,7 +174,7 @@ describe('observer requests across a long generation', () => {
     expect(queue.pending).toHaveLength(0);
     expect(provider.requests).toHaveLength(TURNS);
     expect(generations).toBeGreaterThan(1);
-    expect(Math.max(...provider.requestChars)).toBeLessThan(410_000);
+    expect(Math.max(...provider.requestChars)).toBeLessThan(BUDGET_CHARS + 10_000);
     expect(new Set(provider.requests.map(request => request.generationId)).size).toBe(generations);
     for (let i = 1; i < provider.requests.length; i++) {
       const previous = provider.requests[i - 1];
@@ -179,5 +183,65 @@ describe('observer requests across a long generation', () => {
         expect(current.messages.slice(0, previous.messages.length)).toEqual(previous.messages);
       }
     }
+  }, 30_000);
+});
+
+// #5023: the HTTP providers check the same budget before the first observation,
+// so a pasted prompt larger than the shipped 100000-char budget used to recycle
+// every fresh generation before anything was sent.
+describe('a long pasted prompt at the shipped generation budget (#5023)', () => {
+  let spies: ReturnType<typeof spyOn>[] = [];
+
+  beforeEach(() => {
+    spies = [
+      spyOn(ModeManager, 'getInstance').mockImplementation(() => ({
+        getActiveMode: () => CODE_MODE,
+        loadMode: () => {},
+      }) as never),
+      spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(() => ({
+        ...SettingsDefaultsManager.getAllDefaults(),
+        CLAUDE_MEM_TIER_ROUTING_ENABLED: 'false',
+        CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW: '200000',
+      })),
+    ];
+  });
+
+  afterEach(() => {
+    for (const spy of spies) spy.mockRestore();
+    mock.restore();
+  });
+
+  it('sends the first observation instead of recycling on the framing prompt', async () => {
+    expect(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS).toBe('100000');
+    const session = makeSession();
+    session.userPrompt = 'HEAD_SENTINEL' + 'p'.repeat(120_000) + 'TAIL_SENTINEL';
+    const pending: unknown[] = [{
+      type: 'observation',
+      tool_name: 'Read',
+      tool_input: { file_path: '/repo/pasted.ts' },
+      tool_response: 'first observation',
+      prompt_number: 1,
+    }];
+    const queue = {
+      getMessageIterator: async function* () {
+        while (pending.length > 0 && !session.abortController.signal.aborted) yield pending[0];
+      },
+      confirmClaimedMessages: async () => { pending.shift(); },
+      resetProcessingToPending: async () => {},
+      getClaimedMessages: () => [],
+    };
+    const provider = new RecordingProvider({} as never, queue as never);
+
+    await provider.startSession(session);
+
+    expect(provider.requests).toHaveLength(1);
+    const wire = provider.requests[0].messages.map(message => message.content).join('\n');
+    expect(wire).toContain('first observation');
+    expect(wire).toContain('HEAD_SENTINEL');
+    expect(wire).toContain('TAIL_SENTINEL');
+    expect(provider.requestChars[0]).toBeLessThan(100_000);
+    expect(session.abortReason ?? null).toBeNull();
+    expect(session.overflowPausedUntilMs).toBeUndefined();
+    expect(pending).toHaveLength(0);
   }, 30_000);
 });

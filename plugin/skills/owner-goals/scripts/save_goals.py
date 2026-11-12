@@ -344,7 +344,8 @@ def main():
     parser.add_argument("--end", type=datetime.date.fromisoformat, help="day after the last day the prompts cover, YYYY-MM-DD")
     parser.add_argument("--carried-before", help="local minute the saved goals were exported, YYYY-MM-DD HH:MM: an older quote that no longer matches is dropped instead of refused")
     parser.add_argument("--ledger-dir", help="My Work's folder holding story.json (default: <claude-mem data dir>/work-view)")
-    parser.add_argument("--dry-run", action="store_true", help="validate and print the writes without saving")
+    parser.add_argument("--dry-run", action="store_true", help="validate and print the writes and checked goals without saving")
+    parser.add_argument("--save-key", help="complete payload-bound focus save key retained by a batched refresh")
     parser.add_argument("--print-focus-areas", action="store_true", help="print the saved focus areas to match against, then exit")
     args = parser.parse_args()
     base_url = worker_base_url()
@@ -360,6 +361,7 @@ def main():
     ledger_dir = args.ledger_dir or os.path.join(data_dir(), "work-view")
 
     goals = json.load(open(args.goals))
+    checked_input = json.dumps(goals, sort_keys=True) if args.save_key else None
     problems = shape_problems(goals)
     if problems:
         sys.exit("the goals JSON is not in the saved shape:\n- " + "\n- ".join(problems))
@@ -386,6 +388,8 @@ def main():
     problems = unverified_quotes(goals, prompts)
     if problems:
         sys.exit("these quotes are not the owner's words at that time; fix them in the goals JSON:\n- " + "\n- ".join(problems))
+    if checked_input is not None and json.dumps(goals, sort_keys=True) != checked_input:
+        sys.exit("owner prompt evidence changed since this checked save; no writes were made, and this checked payload cannot be saved")
     titles = [f'{KIND_LABELS["focus-area"]}: {str(area["title"]).strip()}' for area in areas] + [f'{KIND_LABELS["ask"]}: {str(ask["title"]).strip()}' for ask in asks]
     if len(set(titles)) != len(titles):
         sys.exit("two items share a title; give each focus area and ask its own title")
@@ -401,6 +405,10 @@ def main():
     # A past month suggests no areas and no rules: those describe the owner now.
     focus_request = {"areas": [mined_area(area) for area in areas]} if not history else None
     preferences = [rule_preference(rule) for rule in rules] if not history else []
+    if args.save_key:
+        if history or not re.fullmatch(r"[a-f0-9]{24}:[a-f0-9]{64}", args.save_key):
+            sys.exit("--save-key is a current-goals nonce and payload hash")
+        focus_request["save_key"] = args.save_key
 
     if focus_request is not None:
         long_evidence = [area["name"] for area in focus_request["areas"] if len(area["evidence"]) > MAX_AREA_EVIDENCE_CHARS]
@@ -418,7 +426,7 @@ def main():
     if args.dry_run:
         # The ids a save would give new areas are not known until the worker writes them.
         area_ids = [area["matches"] for area in focus_request["areas"]] if focus_request else [None] * len(areas)
-        print(json.dumps({"list": list_name, "focus_areas": focus_request, "writes": writes_for(area_ids),
+        print(json.dumps({"list": list_name, "goals": goals, "focus_areas": focus_request, "writes": writes_for(area_ids),
                           "rules": preferences, "dropped_unverified_quotes": dropped_unverified,
                           "unlinked_asks": unlinked_asks}, indent=2))
         return
@@ -449,7 +457,7 @@ def main():
 
 
 def write_everything(base_url, list_name, previous, focus_request, writes_for, ledger_dir, preferences, history, area_count, shared=False):
-    """The writes, in order: My Focus areas, owner-goals rows, then rules. Everything was validated before this runs."""
+    """Write areas, items and rules before the list watermark. Everything was validated before this runs."""
     area_ids = [None] * area_count
     if focus_request is not None and focus_request["areas"]:
         area_ids = json.loads(worker_request(base_url, "/api/work-view/focus/owner-goals", focus_request, nothing_written_on=(400,)))["focusAreaIds"]
@@ -460,11 +468,18 @@ def write_everything(base_url, list_name, previous, focus_request, writes_for, l
     stale_tasks = [item["task"] for item in previous.get("areas", []) + previous.get("asks", []) if item["task"] not in new_tasks]
 
     home = os.path.expanduser("~")
-    for fields in writes + [{"task": task, "status": "dropped"} for task in stale_tasks]:
+
+    def save_entry(fields):
         reply = worker_request(base_url, "/api/work-state/entries", {"cwd": home, "list": list_name, "fields": fields})
         if not reply.startswith("Saved to"):
             sys.exit(f"work state did not save: {reply[:300]}")
-    return (save_rules(ledger_dir, preferences, base_url if shared else None) if not history else None), stale_tasks
+
+    for fields in writes[1:] + [{"task": task, "status": "dropped"} for task in stale_tasks]:
+        save_entry(fields)
+    story_path = save_rules(ledger_dir, preferences, base_url if shared else None) if not history else None
+    # generated_at is the source watermark used by the next export. A partial save must not advance it.
+    save_entry(writes[0])
+    return story_path, stale_tasks
 
 
 if __name__ == "__main__":
