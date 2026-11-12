@@ -54,7 +54,7 @@ provider = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Provider)
 threading.Thread(target=provider.serve_forever, daemon=True).start()
 
 def cli(args, label):
-    result = subprocess.run(base + args, env=env, capture_output=True, text=True, timeout=65)
+    result = subprocess.run(base + args, env=env, cwd=root / 'project', capture_output=True, text=True, timeout=65)
     (root / f'{label}.log').write_text(result.stdout + result.stderr)
     assert result.returncode == 0, (label, result.stdout, result.stderr)
     return result
