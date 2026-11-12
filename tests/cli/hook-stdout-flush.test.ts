@@ -118,7 +118,14 @@ function captureWithPausedReader(
 
 describe('hook stdout completes before graceful exit', () => {
   for (const runtime of runtimes) {
-    it(`${runtime.name} preserves the entire large JSON envelope through a paused pipe`, async () => {
+    // Node writes to a pipe synchronously on Windows, so a 1 MiB payload into a
+    // paused reader blocks the fixture in the write call: it never reaches the
+    // deferred 'drain' marker, and the reader stays paused. The paused-pipe
+    // cases therefore cannot run under Node on this platform. Bun covers the
+    // paused case here, and Node covers it on POSIX.
+    const pausedPipeUnavailable = runtime.name === 'Node' && process.platform === 'win32';
+
+    it.skipIf(pausedPipeUnavailable)(`${runtime.name} preserves the entire large JSON envelope through a paused pipe`, async () => {
       const output = await captureWithPausedReader(runtime.executable, 'json');
       const expected = JSON.stringify({
         hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: CONTEXT },
@@ -133,7 +140,7 @@ describe('hook stdout completes before graceful exit', () => {
       expect(JSON.parse(output.stdout).hookSpecificOutput.additionalContext === CONTEXT).toBe(true);
     }, 10000);
 
-    it(`${runtime.name} preserves the entire large raw adapter string and trailing newline`, async () => {
+    it.skipIf(pausedPipeUnavailable)(`${runtime.name} preserves the entire large raw adapter string and trailing newline`, async () => {
       const output = await captureWithPausedReader(runtime.executable, 'raw');
       const expected = CONTEXT + '\n';
 
