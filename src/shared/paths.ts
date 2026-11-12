@@ -1,6 +1,6 @@
 import { join, dirname, basename, sep } from 'path';
 import { homedir } from 'os';
-import { mkdirSync } from 'fs';
+import { mkdirSync, chmodSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
 import { resolveDataDir } from './data-dir.js';
@@ -50,6 +50,28 @@ export const OBSERVER_SESSIONS_PROJECT = basename(OBSERVER_SESSIONS_DIR);
 
 export function ensureDir(dirPath: string): void {
   mkdirSync(dirPath, { recursive: true });
+}
+
+/** The owner-only mode for a directory that holds credentials or captured content. */
+export const OWNER_ONLY_DIR_MODE = 0o700;
+
+/**
+ * Create a directory only its owner can read, and narrow an existing one to the same mode.
+ *
+ * `mkdirSync` alone is subject to the umask, so an install created under a permissive umask would
+ * leave `~/.claude-mem` — the database, `.env` and the hook spool live there — readable by every
+ * other account on the machine. The chmod tightens directories that already exist, the way
+ * `claude-mem-launcher.ts` and `auto-update-launch.ts` treat the folders they own. Windows applies
+ * no mode: the profile's own ACL already limits the data directory to the user.
+ */
+export function ensurePrivateDir(dirPath: string): void {
+  mkdirSync(dirPath, { recursive: true, mode: OWNER_ONLY_DIR_MODE });
+  if (process.platform === 'win32') return;
+  try {
+    chmodSync(dirPath, OWNER_ONLY_DIR_MODE);
+  } catch {
+    // A filesystem that refuses chmod (some network mounts) must not stop startup; the mkdir mode still applies.
+  }
 }
 
 /** mkdir failures that retrying can never fix: the data dir is a file, sits under one, or is not writable. */

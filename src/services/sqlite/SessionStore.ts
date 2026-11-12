@@ -1,7 +1,7 @@
 import { emitContextInvalidation } from '../../shared/context-invalidation.js';
 import { Database, type SQLQueryBindings, type Statement } from 'bun:sqlite';
 import { createHash, randomUUID } from 'crypto';
-import { DATA_DIR, DB_PATH, ensureDir, OBSERVER_SESSIONS_PROJECT, USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { DATA_DIR, DB_PATH, ensurePrivateDir, OBSERVER_SESSIONS_PROJECT, USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import type { ProjectKeySource } from '../../utils/project-name.js';
 import { projectReadKeys, projectScopeSql, scopedProjects } from './project-read-keys.js';
@@ -256,7 +256,7 @@ export class SessionStore {
       this.db = dbPathOrDb;
     } else {
       if (dbPathOrDb !== ':memory:') {
-        ensureDir(DATA_DIR);
+        ensurePrivateDir(DATA_DIR);
       }
       this.db = new Database(dbPathOrDb);
     }
