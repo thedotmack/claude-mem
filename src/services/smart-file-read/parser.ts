@@ -354,8 +354,8 @@ const QUERIES: Record<string, string> = {
 `,
 
   markdown: `
-(atx_heading heading_content: (inline) @name) @heading
-(setext_heading heading_content: (paragraph) @name) @heading
+(atx_heading [(atx_h1_marker) (atx_h2_marker) (atx_h3_marker) (atx_h4_marker) (atx_h5_marker) (atx_h6_marker)] @atx_marker heading_content: (inline) @name) @heading
+(setext_heading heading_content: (paragraph (inline) @name) [(setext_h1_underline) @setext_h1 (setext_h2_underline) @setext_h2]) @heading
 (fenced_code_block (info_string (language) @name)) @code_block
 (fenced_code_block) @code_block
 (minus_metadata) @frontmatter
@@ -961,10 +961,12 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       if (nameCapture && !nameCapture.text) {
         name = captureLines(lines, nameCapture).join(" ").trim().replace(/\s+/g, " ");
       }
-      const headingLine = lines[startRow] || "";
-      const hashMatch = headingLine.match(/^(#{1,6})\s/);
-      const underline = lines[endRow] || "";
-      const level = hashMatch ? hashMatch[1].length : /^\s*-+\s*$/.test(underline) ? 2 : 1;
+      // Markdown permits indentation and container prefixes before a heading.
+      // Its native marker is authoritative even inside a list or block quote;
+      // a regex over the whole source line would mistake those headings for H1.
+      const marker = match.captures.find(c => c.tag === "atx_marker");
+      const level = marker ? captureText(lines, marker).length
+        : match.captures.some(c => c.tag === "setext_h2") ? 2 : 1;
       signature = `${"#".repeat(level)} ${name}`;
     } else if (language === "markdown" && kind === "code") {
       const langTag = name !== "anonymous" ? name : "";
