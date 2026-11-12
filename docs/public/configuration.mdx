@@ -249,7 +249,7 @@ The goals step updates a saved snapshot from new owner prompts, including a snap
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER` | `claude` | Where observer work goes while the selected provider can't serve (a spent allowance, rate limits or over-capacity refusals past their retries, an outage, repeated unusable replies), until it recovers: `claude` (your Anthropic plan, used only when a Claude login or key exists), `gemini`, `openrouter`, `openai-compatible`, or `off` to wait instead. Empty (from older settings files) = `claude`. See [Quota Fallback](/usage/quota-fallback) |
+| `CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER` | — | Where observer work goes while the selected provider can't serve (a spent allowance, rate limits or over-capacity refusals past their retries, an outage, repeated unusable replies), until it recovers: `claude` (your Anthropic plan, used only when a Claude login or key exists), `gemini`, `openrouter`, `openai-compatible`, or `off` to wait instead. Empty = `off`: no backup. See [Quota Fallback](/usage/quota-fallback) |
 | `CLAUDE_MEM_QUOTA_FALLBACK_MODEL` | — | Claude model for a Claude fallback run. Empty = `CLAUDE_MEM_MODEL` and tier routing. Ignored for other fallbacks |
 | `CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD` | — | The Claude credential to run on while the primary one is held for quota: `subscription` (the Claude Code login, for a spent `ANTHROPIC_API_KEY`) or `api-key` (`ANTHROPIC_FALLBACK_API_KEY`, for a spent or guard-paused login). Tried before `CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER`. Empty = off. See [Quota Fallback](usage/quota-fallback#claude-credential-fallback) |
 

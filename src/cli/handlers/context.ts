@@ -390,11 +390,13 @@ export const contextHandler: EventHandler = {
     const gatewayRole = cmemGatewayRole(
       mappedProviders.includes('openrouter') ? { ...settings, CLAUDE_MEM_PROVIDER: 'openrouter' } : settings,
     );
-    // Empty is the default fallback, the Anthropic plan (provider-dispatch's readQuotaFallbackProvider).
+    // Empty is no fallback, the same as 'off' (provider-dispatch's readQuotaFallbackProvider):
+    // an install that routed its work elsewhere and did not choose the plan as a backup
+    // is not affected by a stale Claude login.
     const fallbackSetting = String(settings.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER ?? '').trim();
     const usesClaudeCredentials = (settings.CLAUDE_MEM_PROVIDER || 'claude') === 'claude'
       || mappedProviders.includes('claude')
-      || fallbackSetting === 'claude' || fallbackSetting === ''
+      || fallbackSetting === 'claude'
       || (gatewayRole === 'primary' && Boolean(settings.CLAUDE_MEM_PRO_FALLBACK_AT));
     const staleReason = usesClaudeCredentials ? readStaleMarker() : null;
     if (staleReason) {

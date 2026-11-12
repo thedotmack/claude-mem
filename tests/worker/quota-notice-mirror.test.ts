@@ -60,6 +60,8 @@ describe('quota notice from the persisted dispatch mirror', () => {
       CLAUDE_MEM_PROVIDER: 'openrouter',
       CLAUDE_MEM_OPENROUTER_API_KEY: 'cm_pro_0123456789abcdef01234567',
       CLAUDE_MEM_OPENROUTER_BASE_URL: 'https://cmem.ai/api/inference/v1',
+      // The Anthropic plan is chosen as the backup; an absent or empty setting means no backup.
+      CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: 'claude',
       CLAUDE_MEM_GEMINI_API_KEY: 'gemini-test-key',
       CLAUDE_MEM_TIER_ROUTING_ENABLED: 'false',
       CLAUDE_MEM_ENV_FILE: join(credentialDir, '.env'),
@@ -93,7 +95,7 @@ describe('quota notice from the persisted dispatch mirror', () => {
     rmSync(credentialDir, { recursive: true, force: true });
   });
 
-  it('reports the default Claude backup during the 8:15 PM cmem.ai outage, rounded up to 8:17 PM', () => {
+  it('reports the chosen Claude backup during the 8:15 PM cmem.ai outage, rounded up to 8:17 PM', () => {
     recordQuotaExhausted('openrouter', 'upstream 503', 'unavailable');
 
     const health = readObserverHealth()!;
@@ -101,17 +103,17 @@ describe('quota notice from the persisted dispatch mirror', () => {
     expect(health.quotaCooldown?.notice?.holds[0]).toMatchObject({
       role: 'main', displayName: 'cmem.ai', reason: { kind: 'unavailable' },
     });
-    expect(renderObserverQuotaCooldownNotice(health)).toBe("ℹ️ claude-mem is using your Claude plan to save memories because cmem.ai isn't available. It switches back on its own and tries cmem.ai again at 8:17 PM. Nothing to do. (To stop using your Claude plan as a backup, set CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER=off.)");
+    expect(renderObserverQuotaCooldownNotice(health)).toBe("ℹ️ claude-mem is using your Claude plan to save memories because cmem.ai isn't available. It switches back on its own and tries cmem.ai again at 8:17 PM. Nothing to do.");
   });
 
-  it('offers the opt-out when the backup setting is absent, but not when Claude was explicitly chosen', () => {
-    delete process.env.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER;
-    recordQuotaExhausted('openrouter', 'upstream 503', 'unavailable');
-    expect(renderObserverQuotaCooldownNotice(readObserverHealth()!)).toContain('CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER=off');
-
-    writeFileSync(paths.settings(), JSON.stringify({ CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: 'claude' }));
-    recordQuotaExhausted('openrouter', 'upstream 503', 'unavailable');
-    expect(renderObserverQuotaCooldownNotice(readObserverHealth()!)).not.toContain('CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER=off');
+  it('sends nothing to the Claude plan when the backup setting is absent or empty', () => {
+    for (const value of [undefined, '']) {
+      if (value === undefined) delete process.env.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER;
+      else process.env.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER = value;
+      recordQuotaExhausted('openrouter', 'upstream 503', 'unavailable');
+      expect(getSelectedProvider()).toBe('openrouter');
+      expect(renderObserverQuotaCooldownNotice(readObserverHealth()!)).not.toContain('Claude plan to save memories');
+    }
   });
 
   it('stays silent when Claude is held at 99% of the weekly limit and cmem.ai is saving memories', () => {

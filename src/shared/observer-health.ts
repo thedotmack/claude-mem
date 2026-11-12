@@ -133,7 +133,6 @@ export interface ObserverQuotaNoticeContext {
   mainRetryName: string;
   backupProvider?: string;
   backupDisplayName?: string;
-  defaultClaudeBackup: boolean;
   servingProvider?: string;
   servingDisplayName?: string;
   servingAuth?: string;
@@ -714,10 +713,7 @@ export function renderObserverQuotaCooldownNotice(
       }
     }
     const servingName = relayedProviderText(context.servingDisplayName ?? legacyQuotaProviderName(context.servingProvider));
-    const optOut = context.defaultClaudeBackup && context.servingProvider === 'claude'
-      ? ` (To stop using ${servingName} as a backup, set CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER=off.)`
-      : '';
-    return `ℹ️ claude-mem is using ${servingName} to save memories because ${reason}. It switches back on its own and tries ${retryName} again at ${time}. Nothing to do.${optOut}`;
+    return `ℹ️ claude-mem is using ${servingName} to save memories because ${reason}. It switches back on its own and tries ${retryName} again at ${time}. Nothing to do.`;
   }
 
   const reason = quotaHoldReason(main, nowMs, true);

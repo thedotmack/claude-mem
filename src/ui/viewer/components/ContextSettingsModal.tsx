@@ -786,10 +786,10 @@ export function ContextSettingsModal({
 
               <FormField
                 label="Quota Fallback"
-                tooltip="While the selected provider cannot serve (allowance spent, rate limited or over capacity past its retries, unavailable, or repeatedly returning unusable replies), send observation work here until it recovers. Claude (your Anthropic plan) is the default and is used only when a Claude login or key exists. Off: work waits for the provider."
+                tooltip="While the selected provider cannot serve (allowance spent, rate limited or over capacity past its retries, unavailable, or repeatedly returning unusable replies), send observation work here until it recovers. Off (the default): work waits for the provider. Choose Claude to use your Anthropic plan as the backup; it is used only when a Claude login or key exists."
               >
                 <select
-                  value={formState.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER || 'claude'}
+                  value={formState.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER || 'off'}
                   onChange={(e) => updateSetting('CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER', e.target.value)}
                 >
                   <option value="claude">{t(claudeProviderOptionLabel(formState.CLAUDE_MEM_CLAUDE_AUTH_METHOD))}</option>
@@ -800,7 +800,7 @@ export function ContextSettingsModal({
                 </select>
               </FormField>
 
-              {(formState.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER || 'claude') === 'claude' && (
+              {formState.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER === 'claude' && (
                 <>
                   <FormField
                     label="Claude Auth Method"

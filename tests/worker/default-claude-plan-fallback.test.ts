@@ -30,13 +30,14 @@ import type { WorkerRef } from '../../src/services/worker/agents/types.js';
 const { SessionRoutes } = await import('../../src/services/worker/http/routes/SessionRoutes.js');
 
 /**
- * The owner's directive: when the selected provider cannot serve, observer
- * work falls back to the Anthropic plan by default, on every install, and
- * goes back to the selected provider once it recovers.
+ * When the selected provider cannot serve and the Anthropic plan is chosen as
+ * the quota backup (CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER=claude), observer work
+ * falls back to it and goes back to the selected provider once it recovers.
+ * Without that choice (empty, the default, or 'off') there is no backup.
  *
  * Settings are pinned with env vars (SettingsDefaultsManager applies them
- * last); "unset" reads the temp data dir's settings file, whose default is the
- * Anthropic plan as well.
+ * last); "unset" reads the temp data dir's settings file, whose default is
+ * empty, the same as 'off'.
  */
 const CMEM_GATEWAY_BASE = 'https://cmem.ai/api/inference/v1';
 const CMEM_MEMORY_KEY = 'cm_pro_0123456789abcdef01234567';
@@ -53,13 +54,14 @@ const ENV_KEYS = [
   'CLAUDE_MEM_TIER_ROUTING_ENABLED',
 ] as const;
 
-/** Memory on the cmem.ai gateway, the fallback setting left as an install has it. */
+/** Memory on the cmem.ai gateway with the Anthropic plan chosen as the quota backup. */
 function pinGatewayPrimary(overrides: Record<string, string> = {}): void {
   Object.assign(process.env, {
     CLAUDE_MEM_PROVIDER: 'openrouter',
     CLAUDE_MEM_OPENROUTER_BASE_URL: CMEM_GATEWAY_BASE,
     CLAUDE_MEM_OPENROUTER_API_KEY: CMEM_MEMORY_KEY,
     CLAUDE_MEM_PRO_FALLBACK_AT: '',
+    CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: 'claude',
     CLAUDE_MEM_TIER_ROUTING_ENABLED: 'false',
   }, overrides);
 }
@@ -98,22 +100,24 @@ function tearDown(): void {
   resetQuotaFallbackStateForTesting();
 }
 
-describe('default Anthropic-plan fallback: dispatch', () => {
+describe('Anthropic-plan fallback: dispatch', () => {
   beforeEach(setUp);
   afterEach(tearDown);
   afterAll(() => resetQuotaCooldownsForTesting());
 
-  it('defaults to the Anthropic plan, whether the setting is absent or persisted as "" by an older install', () => {
-    pinGatewayPrimary();
-    expect(readQuotaFallbackProvider()).toBe('claude');
-    process.env.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER = '';
+  it('gives the cmem.ai gateway no Anthropic backup unless it is chosen, whether the setting is absent or ""', () => {
+    pinGatewayPrimary({ CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: '' });
+    expect(readQuotaFallbackProvider()).toBeNull();
+    delete process.env.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER;
+    expect(readQuotaFallbackProvider()).toBeNull();
+    process.env.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER = 'claude';
     expect(readQuotaFallbackProvider()).toBe('claude');
     process.env.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER = 'off';
     expect(readQuotaFallbackProvider()).toBeNull();
   });
 
   it('moves gateway work to Claude while a rate-limit / over-capacity breaker holds', () => {
-    pinGatewayPrimary({ CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: '' });
+    pinGatewayPrimary();
     recordQuotaExhausted('openrouter', 'The observer is briefly over capacity.', 'rate_limit');
     expect(selectProviderForGenerator()).toEqual({ provider: 'claude', gatewayProbeClaimId: null, fallbackFrom: 'openrouter' });
     expect(getSelectedProvider()).toBe('claude');
@@ -157,12 +161,13 @@ describe('default Anthropic-plan fallback: dispatch', () => {
   });
 
   it('tells the session start which backup is saving memories and why', () => {
-    pinGatewayPrimary({ CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: '' });
+    pinGatewayPrimary();
     recordQuotaExhausted('openrouter', 'over capacity', 'rate_limit');
     const state = JSON.parse(readFileSync(join(paths.dataDir(), 'observer-health.json'), 'utf8')) as ObserverHealthState;
     const notice = renderObserverQuotaCooldownNotice(state);
     expect(notice).toContain("claude-mem is using your Claude plan to save memories because cmem.ai is busy (rate limited or over capacity).");
-    expect(notice).toContain('CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER=off');
+    // The plan was chosen explicitly, so the notice does not offer to opt out of a default.
+    expect(notice).not.toContain('CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER=off');
   });
 });
 
@@ -250,7 +255,7 @@ function buildRoutes(
   return Object.assign(routes, { capture });
 }
 
-describe('default Anthropic-plan fallback: generator lifecycle', () => {
+describe('Anthropic-plan fallback: generator lifecycle', () => {
   beforeEach(setUp);
   afterEach(tearDown);
   afterAll(() => resetQuotaCooldownsForTesting());
@@ -279,7 +284,7 @@ describe('default Anthropic-plan fallback: generator lifecycle', () => {
   });
 
   it('a gateway over-capacity refusal past its retries moves the work to Claude at once', async () => {
-    pinGatewayPrimary({ CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: '' });
+    pinGatewayPrimary();
     const run = await runGatewayFailure(overCapacity(), 'rate_limit:rate_limit');
     expect(run.gatewayStarts).toBe(1);
     expect(run.claudeStarts()).toBe(1);
@@ -395,7 +400,7 @@ async function claimOne(sm: SessionManager, sessionDbId: number, queue: boolean)
   await iterator.return?.();
 }
 
-describe('default Anthropic-plan fallback: unusable replies', () => {
+describe('Anthropic-plan fallback: unusable replies', () => {
   beforeEach(setUp);
   afterEach(tearDown);
   afterAll(() => resetQuotaCooldownsForTesting());

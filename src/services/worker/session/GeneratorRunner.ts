@@ -683,10 +683,11 @@ function bookClassifiedFailure(
       // On the cmem gateway the resume also draws on the unattended budget it
       // shares with transport and fallback resumes; once that is spent, the
       // breaker takes over here too.
-      // When the fallback (by default the Anthropic plan) can take the work,
-      // the limit already outlasted the provider's in-place retries: hold the
-      // provider for the throttle cooldown and move the work there now, rather
-      // than resuming into the same refusal.
+      // When a fallback is configured and can take the work, the limit
+      // already outlasted the provider's in-place retries: hold the provider
+      // for the throttle cooldown and move the work there now, rather than
+      // resuming into the same refusal. With no fallback (the default) the
+      // resume logic below stays as it was.
       if (routeAroundUnservableProvider(provider, error.message, 'rate_limit', session.observerProfile) !== null) {
         resume = { afterMs: 0, source: 'provider-fallback' };
         break;

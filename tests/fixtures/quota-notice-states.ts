@@ -36,7 +36,6 @@ function state(holds: ObserverQuotaNoticeHold[], context: Partial<ObserverQuotaN
         mainRetryName: main?.retryName ?? 'cmem.ai',
         backupProvider: backup?.provider,
         backupDisplayName: backup?.displayName,
-        defaultClaudeBackup: false,
         ...context, holds,
       },
     },
@@ -45,12 +44,12 @@ function state(holds: ObserverQuotaNoticeHold[], context: Partial<ObserverQuotaN
 
 export const QUOTA_NOTICE_CASES: Array<{ name: string; state: ObserverHealthState; expected: string }> = [
   {
-    name: '1. cmem.ai unavailable; default Claude backup',
+    name: '1. cmem.ai unavailable; Claude backup',
     state: state([gatewayOutage], {
-      backupProvider: 'claude', backupDisplayName: 'your Claude plan', defaultClaudeBackup: true,
+      backupProvider: 'claude', backupDisplayName: 'your Claude plan',
       servingProvider: 'claude', servingDisplayName: 'your Claude plan', servingAuth: 'subscription',
     }),
-    expected: "ℹ️ claude-mem is using your Claude plan to save memories because cmem.ai isn't available. It switches back on its own and tries cmem.ai again at 8:17 PM. Nothing to do. (To stop using your Claude plan as a backup, set CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER=off.)",
+    expected: "ℹ️ claude-mem is using your Claude plan to save memories because cmem.ai isn't available. It switches back on its own and tries cmem.ai again at 8:17 PM. Nothing to do.",
   },
   {
     name: '1. Gemini quota; explicitly selected Claude backup',
@@ -79,7 +78,7 @@ export const QUOTA_NOTICE_CASES: Array<{ name: string; state: ObserverHealthStat
   },
   {
     name: '4. Claude reserve; no different backup configured',
-    state: state([claudeGuard], { backupProvider: 'claude', backupDisplayName: 'your Claude plan', defaultClaudeBackup: true }),
+    state: state([claudeGuard], { backupProvider: 'claude', backupDisplayName: 'your Claude plan' }),
     expected: "⚠️ claude-mem has paused saving memories because you've used 95% of your 5-hour Claude limit (it stops at 95% to leave the rest for you). Activity during the pause isn't saved; saving starts again with new activity after 8:47 PM, when it tries Claude again. You don't need to do anything, and restarting won't change it. (To keep saving through limits, pick a backup in CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER.)\n" + QUOTA_NOTICE_MODEL_LINE,
   },
   {

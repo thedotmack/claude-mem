@@ -11,6 +11,7 @@ import {
   recordCmemFallbackIfEligible,
   releaseCmemGatewayProbe,
   resetProviderBySourceWarningForTesting,
+  routeAroundUnservableProvider,
   resetQuotaFallbackStateForTesting,
   selectProviderForGenerator,
   shouldUseCmemFallback,
@@ -794,9 +795,18 @@ describe('provider-dispatch', () => {
       clearQuotaCooldown('gemini');
       selectProviderForGenerator(); // the probe succeeded and cleared the breaker
       expect(quotaFallbackLines()).toEqual([
-        'Primary cannot serve right now; memory runs on the Anthropic plan (Claude) until it recovers',
+        'Primary gemini cannot serve right now; memory runs on the Anthropic plan (Claude), which spends your Anthropic account, until it recovers. To stop this, set CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER=off',
         'Primary quota cooldown elapsed; probing primary',
         'Primary recovered from quota cooldown',
+      ]);
+    });
+
+    it('names the primary and the provider actually used when the backup is not Claude', () => {
+      pinGeminiPrimary('openrouter', { CLAUDE_MEM_OPENROUTER_API_KEY: PERSONAL_KEY, CLAUDE_MEM_OPENROUTER_BASE_URL: '' });
+      recordQuotaExhausted('gemini', 'Daily limit reached');
+      selectProviderForGenerator();
+      expect(quotaFallbackLines()).toEqual([
+        'Primary gemini cannot serve right now; memory runs on openrouter until it recovers. To stop this, set CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER=off',
       ]);
     });
 
@@ -850,6 +860,105 @@ describe('provider-dispatch', () => {
       pinGeminiPrimary('claude');
       expect(quotaFallbackTarget('gemini')).toBe('claude');
       expect(quotaFallbackTarget('claude')).toBeNull();
+    });
+  });
+
+  describe('the default quota fallback', () => {
+    let lines: string[];
+    let spies: Array<ReturnType<typeof spyOn>>;
+    let previousClaudeReadiness: (() => boolean) | null;
+
+    beforeEach(() => {
+      resetQuotaCooldownsForTesting();
+      resetQuotaFallbackStateForTesting();
+      previousClaudeReadiness = setClaudeFallbackReadinessForTesting(() => true);
+      lines = [];
+      spies = [
+        spyOn(logger, 'warn').mockImplementation((_component: string, message: string) => { lines.push(message); }),
+        spyOn(logger, 'info').mockImplementation((_component: string, message: string) => { lines.push(message); }),
+      ];
+    });
+
+    afterEach(() => {
+      setClaudeFallbackReadinessForTesting(previousClaudeReadiness);
+      spies.forEach(spy => spy.mockRestore());
+      resetQuotaCooldownsForTesting();
+      resetQuotaFallbackStateForTesting();
+    });
+
+    afterAll(() => {
+      resetQuotaCooldownsForTesting();
+    });
+
+    /** A personal OpenRouter key: the user's own provider, not the cmem gateway. */
+    function pinPersonalOpenRouter(fallback = ''): void {
+      process.env.CLAUDE_MEM_PROVIDER = 'openrouter';
+      process.env.CLAUDE_MEM_OPENROUTER_API_KEY = PERSONAL_KEY;
+      process.env.CLAUDE_MEM_OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
+      process.env.CLAUDE_MEM_GEMINI_API_KEY = '';
+      process.env.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER = fallback;
+    }
+
+    it('gives a personal OpenRouter key no default Anthropic backup', () => {
+      pinPersonalOpenRouter();
+      recordQuotaExhausted('openrouter', 'Daily limit reached');
+      // The Anthropic plan is the default backup only where the product
+      // promises it. Spending the subscription because the user's own provider
+      // ran dry is not a choice they made.
+      expect(quotaFallbackTarget('openrouter')).toBeNull();
+      expect(selectProviderForGenerator()).toEqual({ provider: 'openrouter', gatewayProbeClaimId: null });
+      // The default is the same as 'off', so the fallback log stays quiet too.
+      expect(lines.filter(line => line.startsWith('Primary '))).toEqual([]);
+    });
+
+    it('never turns an outage of a personal provider into later Anthropic spend', () => {
+      pinPersonalOpenRouter();
+      recordQuotaExhausted('openrouter', 'Daily limit reached');
+      const during = selectProviderForGenerator();
+      // Past the cooldown the primary is re-probed on its own, still not on Claude.
+      setSystemTime(new Date(Date.now() + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS + 1_000));
+      const after = selectProviderForGenerator();
+      setSystemTime();
+      expect([during.provider, after.provider]).toEqual(['openrouter', 'openrouter']);
+      expect(routeAroundUnservableProvider('openrouter', 'Empty response', 'unavailable')).toBeNull();
+    });
+
+    it('gives Gemini no default Anthropic backup', () => {
+      process.env.CLAUDE_MEM_PROVIDER = 'gemini';
+      process.env.CLAUDE_MEM_GEMINI_API_KEY = 'gemini-test-key';
+      process.env.CLAUDE_MEM_OPENROUTER_API_KEY = '';
+      process.env.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER = '';
+      recordQuotaExhausted('gemini', 'Daily limit reached');
+      expect(quotaFallbackTarget('gemini')).toBeNull();
+      expect(selectProviderForGenerator().provider).toBe('gemini');
+    });
+
+    it('gives the cmem gateway no default Anthropic backup either', () => {
+      pinOpenRouterEnv(); // the cmem gateway and its account key
+      process.env.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER = '';
+      recordQuotaExhausted('openrouter', 'Daily limit reached');
+      expect(quotaFallbackTarget('openrouter')).toBeNull();
+      expect(selectProviderForGenerator()).toEqual({ provider: 'openrouter', gatewayProbeClaimId: null });
+    });
+
+    it('uses the Anthropic plan as the backup when it is chosen explicitly', () => {
+      pinPersonalOpenRouter('claude');
+      recordQuotaExhausted('openrouter', 'Daily limit reached');
+      expect(quotaFallbackTarget('openrouter')).toBe('claude');
+      expect(selectProviderForGenerator()).toEqual({ provider: 'claude', gatewayProbeClaimId: null, fallbackFrom: 'openrouter' });
+    });
+
+    it('leaves a claude primary waiting on itself, with the default or with claude', () => {
+      process.env.CLAUDE_MEM_PROVIDER = 'claude';
+      process.env.CLAUDE_MEM_OPENROUTER_API_KEY = '';
+      process.env.CLAUDE_MEM_GEMINI_API_KEY = '';
+      for (const fallback of ['', 'claude']) {
+        process.env.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER = fallback;
+        recordQuotaExhausted('claude', 'Weekly limit reached');
+        // A claude primary's own fallback is itself: nothing else serves.
+        expect(quotaFallbackTarget('claude')).toBeNull();
+        expect(selectProviderForGenerator().provider).toBe('claude');
+      }
     });
   });
 });
