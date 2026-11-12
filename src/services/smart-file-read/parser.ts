@@ -105,17 +105,18 @@ function resolveGrammarPath(language: string): string | null {
 
 const QUERIES: Record<string, string> = {
   jsts: `
-(function_declaration name: (identifier) @name) @func
+(function_declaration name: (identifier) @name body: (_) @signature_body) @func @native_signature
 (ambient_declaration (function_signature name: (identifier) @name)) @ts_signature
-(generator_function_declaration name: (identifier) @name) @func
-(lexical_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression) (generator_function)])) @const_func
-(variable_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression) (generator_function)])) @const_func
+(generator_function_declaration name: (identifier) @name body: (_) @signature_body) @func @native_signature
+(lexical_declaration kind: ["const" "let"] @signature_prefix (variable_declarator name: (identifier) @name value: [(arrow_function body: (_) @signature_body) (function_expression body: (_) @signature_body) (generator_function body: (_) @signature_body)]) @signature_start) @const_func @native_signature
+(variable_declaration "var" @signature_prefix (variable_declarator name: (identifier) @name value: [(arrow_function body: (_) @signature_body) (function_expression body: (_) @signature_body) (generator_function body: (_) @signature_body)]) @signature_start) @const_func @native_signature
 (class_declaration name: (type_identifier) @name) @cls
 (abstract_class_declaration name: (type_identifier) @name) @cls
-(method_definition name: [(property_identifier) (private_property_identifier) (string) (number) (computed_property_name)] @name) @method
-(abstract_method_signature name: [(property_identifier) (private_property_identifier) (string) (number) (computed_property_name)] @name) @method
-(public_field_definition name: (_) @name value: [(arrow_function) (function_expression) (generator_function)]) @method
-(public_field_definition name: (_) @name value: (parenthesized_expression [(arrow_function) (function_expression) (generator_function)])) @method
+(method_definition name: [(property_identifier) (private_property_identifier) (string) (number) (computed_property_name)] @name body: (_) @signature_body) @method @native_signature
+(abstract_method_signature name: [(property_identifier) (private_property_identifier) (string) (number) (computed_property_name)] @name) @method @native_signature
+(class_body (abstract_method_signature) @terminated_signature . (comment)* . [";" ","] @signature_terminator)
+(public_field_definition name: (_) @name value: [(arrow_function body: (_) @signature_body) (function_expression body: (_) @signature_body) (generator_function body: (_) @signature_body)]) @method @native_signature
+(public_field_definition name: (_) @name value: (parenthesized_expression [(arrow_function body: (_) @signature_body) (function_expression body: (_) @signature_body) (generator_function body: (_) @signature_body)])) @method @native_signature
 (interface_declaration name: (type_identifier) @name) @iface
 (type_alias_declaration name: (type_identifier) @name) @tdef
 (enum_declaration name: (identifier) @name) @enm
@@ -130,14 +131,14 @@ const QUERIES: Record<string, string> = {
   // cannot share the jsts query — tree-sitter aborts query compilation on the first
   // unknown node type. Class names are (identifier) here, not (type_identifier).
   js: `
-(function_declaration name: (identifier) @name) @func
-(generator_function_declaration name: (identifier) @name) @func
-(lexical_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression) (generator_function)])) @const_func
-(variable_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression) (generator_function)])) @const_func
+(function_declaration name: (identifier) @name body: (_) @signature_body) @func @native_signature
+(generator_function_declaration name: (identifier) @name body: (_) @signature_body) @func @native_signature
+(lexical_declaration kind: ["const" "let"] @signature_prefix (variable_declarator name: (identifier) @name value: [(arrow_function body: (_) @signature_body) (function_expression body: (_) @signature_body) (generator_function body: (_) @signature_body)]) @signature_start) @const_func @native_signature
+(variable_declaration "var" @signature_prefix (variable_declarator name: (identifier) @name value: [(arrow_function body: (_) @signature_body) (function_expression body: (_) @signature_body) (generator_function body: (_) @signature_body)]) @signature_start) @const_func @native_signature
 (class_declaration name: (identifier) @name) @cls
-(method_definition name: [(property_identifier) (private_property_identifier) (string) (number) (computed_property_name)] @name) @method
-(field_definition property: (_) @name value: [(arrow_function) (function_expression) (generator_function)]) @method
-(field_definition property: (_) @name value: (parenthesized_expression [(arrow_function) (function_expression) (generator_function)])) @method
+(method_definition name: [(property_identifier) (private_property_identifier) (string) (number) (computed_property_name)] @name body: (_) @signature_body) @method @native_signature
+(field_definition property: (_) @name value: [(arrow_function body: (_) @signature_body) (function_expression body: (_) @signature_body) (generator_function body: (_) @signature_body)]) @method @native_signature
+(field_definition property: (_) @name value: (parenthesized_expression [(arrow_function body: (_) @signature_body) (function_expression body: (_) @signature_body) (generator_function body: (_) @signature_body)])) @method @native_signature
 (import_statement) @imp
 (export_statement) @exp
 `,
@@ -151,8 +152,8 @@ const QUERIES: Record<string, string> = {
 `,
 
   go: `
-(function_declaration name: (identifier) @name) @func
-(method_declaration receiver: (parameter_list (parameter_declaration type: (_) @receiver)) name: (field_identifier) @name) @method
+(function_declaration name: (identifier) @name body: (_)? @signature_body) @func @native_signature
+(method_declaration receiver: (parameter_list (parameter_declaration type: (_) @receiver)) name: (field_identifier) @name body: (_)? @signature_body) @method @native_signature
 (type_declaration (type_spec name: (type_identifier) @name)) @tdef
 (type_declaration (type_alias name: (type_identifier) @name)) @tdef
 (type_declaration "(" (type_spec name: (type_identifier) @name) @tdef)
@@ -162,7 +163,7 @@ const QUERIES: Record<string, string> = {
 `,
 
   rust: `
-(function_item name: (identifier) @name) @func
+(function_item name: (identifier) @name body: (_) @signature_body) @func @native_signature
 (struct_item name: (type_identifier) @name) @struct_def
 (enum_item name: (type_identifier) @name) @enm
 (trait_item name: (type_identifier) @name) @trait_def
@@ -190,12 +191,12 @@ const QUERIES: Record<string, string> = {
 `,
 
   java: `
-(method_declaration name: (identifier) @name) @method
-(constructor_declaration name: (identifier) @name parameters: (formal_parameters) @parameters) @ctor
+(method_declaration name: (identifier) @name body: (_)? @signature_body) @method @native_signature
+(constructor_declaration name: (identifier) @name parameters: (formal_parameters) @parameters body: (_) @signature_body) @ctor @native_signature
 (record_declaration
   parameters: (formal_parameters) @parameters
   body: (class_body
-    (compact_constructor_declaration name: (identifier) @name) @ctor))
+    (compact_constructor_declaration name: (identifier) @name body: (_) @signature_body) @ctor @native_signature))
 (class_declaration name: (identifier) @name) @cls
 (record_declaration name: (identifier) @name) @cls
 (interface_declaration name: (identifier) @name) @iface
@@ -204,7 +205,7 @@ const QUERIES: Record<string, string> = {
 `,
 
   c: `
-(function_definition) @func
+(function_definition body: (_)? @signature_body) @func @native_signature
 (function_declarator declarator: (identifier) @function_name) @c_named_function
 (declaration declarator: (_) @c_declarator) @c_declaration
 (parameter_list) @c_nonfunction_scope
@@ -217,7 +218,7 @@ const QUERIES: Record<string, string> = {
 `,
 
   cpp: `
-(function_definition) @func
+(function_definition body: (_)? @signature_body) @func @native_signature
 (function_declarator declarator: [(identifier) (field_identifier) (qualified_identifier) (destructor_name) (operator_name)] @function_name) @c_named_function
 (declaration declarator: (_) @c_declarator) @c_declaration
 (field_declaration declarator: (_) @c_declarator) @c_declaration
@@ -234,20 +235,20 @@ const QUERIES: Record<string, string> = {
 `,
 
   kotlin: `
-(secondary_constructor (function_value_parameters) @parameters) @kotlin_ctor
-(function_declaration (simple_identifier) @name) @func
+(secondary_constructor (function_value_parameters) @parameters "{"? @signature_body) @kotlin_ctor @native_signature
+(function_declaration (simple_identifier) @name (function_body)? @signature_body) @func @native_signature
 (class_declaration (type_identifier) @name) @cls
 (object_declaration (type_identifier) @name) @cls
 (import_header) @imp
 `,
 
   swift: `
-(init_declaration name: "init" @name) @swift_init
+(init_declaration name: "init" @name body: (_)? @signature_body) @swift_init @native_signature
 (init_declaration (parameter) @swift_parameter) @swift_parameters
 (init_declaration (type_parameters) @swift_generics) @swift_header
 (init_declaration (type_constraints) @swift_constraints) @swift_header
-(deinit_declaration "deinit" @name) @method
-(function_declaration name: (simple_identifier) @name) @func
+(deinit_declaration "deinit" @name body: (_) @signature_body) @method @native_signature
+(function_declaration name: (simple_identifier) @name body: (_) @signature_body) @func @native_signature
 (class_declaration name: (type_identifier) @name) @cls
 (class_declaration declaration_kind: "extension" name: (_) @name) @impl_def
 (protocol_declaration name: (type_identifier) @name) @iface
@@ -255,12 +256,12 @@ const QUERIES: Record<string, string> = {
 `,
 
   php: `
-(function_definition name: (name) @name) @func
+(function_definition name: (name) @name body: (_) @signature_body) @func @native_signature
 (class_declaration name: (name) @name) @cls
 (interface_declaration name: (name) @name) @iface
 (trait_declaration name: (name) @name) @trait_def
 (enum_declaration name: (name) @name) @enm
-(method_declaration name: (name) @name) @method
+(method_declaration name: (name) @name body: (_)? @signature_body) @method @native_signature
 (namespace_use_declaration) @imp
 `,
 
@@ -274,7 +275,7 @@ const QUERIES: Record<string, string> = {
 `,
 
   scala: `
-(function_definition name: (identifier) @name) @func
+(function_definition name: (identifier) @name body: (_) @signature_body) @func @native_signature
 (class_definition name: (identifier) @name) @cls
 (object_definition name: (identifier) @name) @cls
 (trait_definition name: (identifier) @name) @trait_def
@@ -282,7 +283,7 @@ const QUERIES: Record<string, string> = {
 `,
 
   bash: `
-(function_definition name: (word) @name) @func
+(function_definition name: (word) @name body: (_) @signature_body) @func @native_signature
 `,
 
   haskell: `
@@ -298,11 +299,11 @@ const QUERIES: Record<string, string> = {
 `,
 
   zig: `
-(function_declaration name: (identifier) @name) @func
+(function_declaration name: (identifier) @name body: (_)? @signature_body) @func @native_signature
 (variable_declaration (identifier) @name [(struct_declaration) (enum_declaration) (union_declaration) (opaque_declaration)]) @cls
-(test_declaration (string) @name) @func
-(test_declaration (identifier) @name) @doctest
-(test_declaration . (block)) @func
+(test_declaration (string) @name (block) @signature_body) @func @native_signature
+(test_declaration (identifier) @name (block) @signature_body) @doctest @native_signature
+(test_declaration . (block) @signature_body) @func @native_signature
 `,
 
   css: `
@@ -796,6 +797,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   // the whole-group match a member also produces is dropped.
   const goTypeGroups = new Set<string>();
   const decoratedRanges = new Map<string, RawCapture>();
+  const signatureTerminators = new Map<string, RawCapture>();
   const swiftParameters = new Map<string, string[]>();
   const swiftHeaders = new Map<string, { generics?: string; constraints?: string }>();
   const haskellSignatures = new Set<CodeSymbol>();
@@ -809,6 +811,10 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   for (const match of matches) {
     for (const cap of match.captures) {
       if (cap.tag === "haskell_default") haskellDefaults.push(cap);
+      if (cap.tag === "terminated_signature") {
+        const terminator = match.captures.find(c => c.tag === "signature_terminator");
+        if (terminator) signatureTerminators.set(`${cap.startRow}:${cap.startCol}`, terminator);
+      }
       if (cap.tag === "exp") {
         exportRanges.push(cap);
       }
@@ -1005,6 +1011,23 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
         // types belong to the signature, which can span multiple lines.
         const declaration = exportPrefix + captureText(lines, kindCapture);
         signature = declaration.length > 200 ? declaration.slice(0, 197) + "..." : declaration;
+      } else if (match.captures.some(c => c.tag === "native_signature")) {
+        // Parameter patterns, defaults, annotations and return types can all
+        // contain braces. Only the parsed body marks the end of the header.
+        // A bodyless declaration ends at its own native range.
+        const start = match.captures.find(c => c.tag === "signature_start") ?? kindCapture;
+        const body = match.captures.find(c => c.tag === "signature_body");
+        const prefix = match.captures.find(c => c.tag === "signature_prefix");
+        // TypeScript keeps an abstract method's explicit terminator beside
+        // the signature node. Preserve that token without taking a neighbour.
+        const end = signatureTerminators.get(`${start.startRow}:${start.startCol}`) ?? start;
+        const header = captureText(lines, body
+          ? { ...start, endRow: body.startRow, endCol: body.startCol }
+          : { ...start, endRow: end.endRow, endCol: end.endCol });
+        // Each comma-separated function variable starts at its own declarator,
+        // while retaining the shared const/let/var keyword and export prefix.
+        signature = exportPrefix + (prefix ? captureText(lines, prefix) + " " : "") + header;
+        if (signature.length > 200) signature = signature.slice(0, 197) + "...";
       } else {
         signature = exportPrefix + extractSignatureFromLines(lines, startRow, endRow,
           200 - exportPrefix.length, kindCapture.startCol);
