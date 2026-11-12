@@ -26,7 +26,9 @@ Resolve the worker port and query the always-registered status route:
 
 ```bash
 PORT="${CLAUDE_MEM_WORKER_PORT:-$(node -e "const fs=require('fs'),p=require('path'),os=require('os');const uid=(typeof process.getuid==='function'?process.getuid():77);const fallback=String(37700+(uid%100));try{const s=JSON.parse(fs.readFileSync(p.join(os.homedir(),'.claude-mem','settings.json'),'utf-8'));process.stdout.write(String(s.CLAUDE_MEM_WORKER_PORT||fallback));}catch{process.stdout.write(fallback);}" 2>/dev/null)}"
-curl -s "http://127.0.0.1:${PORT}/api/sync/status"
+# With CLAUDE_MEM_LOCAL_API_TOKEN set, the worker wants the token: node prints the header from
+# settings.json (nothing when unset) and curl reads it from stdin, so it stays out of argv and chat.
+node -e "try{const t=String(JSON.parse(require('fs').readFileSync(require('path').join(require('os').homedir(),'.claude-mem','settings.json'),'utf-8')).CLAUDE_MEM_LOCAL_API_TOKEN||'').trim();if(t)process.stdout.write('X-Claude-Mem-Token: '+t+'\\n')}catch{}" | curl -s -H @- "http://127.0.0.1:${PORT}/api/sync/status"
 ```
 
 - `configured: true` and `hub.reachable: true` → the worker completed an
@@ -67,7 +69,7 @@ Once the installer finishes, poll the status route every five seconds for up to
 30 seconds. If the worker was not restarted, restart it first:
 
 ```bash
-curl -s -X POST "http://127.0.0.1:${PORT}/api/admin/restart"
+node -e "try{const t=String(JSON.parse(require('fs').readFileSync(require('path').join(require('os').homedir(),'.claude-mem','settings.json'),'utf-8')).CLAUDE_MEM_LOCAL_API_TOKEN||'').trim();if(t)process.stdout.write('X-Claude-Mem-Token: '+t+'\\n')}catch{}" | curl -s -H @- -X POST "http://127.0.0.1:${PORT}/api/admin/restart"
 ```
 
 Success means `configured: true`, `hub.reachable: true`, and `lastError: null`.

@@ -4,6 +4,8 @@ import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { isConnectionRefusedError, isUnbindablePortError } from '../../shared/connection-errors.js';
+import { localApiTokenHeaders, normalizeLocalApiToken } from '../../shared/local-api-token.js';
+import { isLoopbackHostname } from '../../shared/worker-url.js';
 
 function getWorkerHost(): string {
   return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_WORKER_HOST;
@@ -27,14 +29,30 @@ function localWorkerOrigin(port: number): string {
   return `http://${formatHostForUrl(getWorkerHost())}:${port}`;
 }
 
+/**
+ * The local API token (#5141) as headers, for a request to this machine's worker at
+ * `localWorkerOrigin`. Read from settings.json alone, like the worker reads it. Only when
+ * CLAUDE_MEM_WORKER_HOST is a loopback address, so a host naming another machine never gets
+ * it, and never for an explicit CLAUDE_MEM_WORKER_URL: that worker is not ours to hand it to.
+ */
+function localWorkerAuthHeaders(): Record<string, string> {
+  const token = normalizeLocalApiToken(
+    SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH, false, { readOnly: true }).CLAUDE_MEM_LOCAL_API_TOKEN,
+  );
+  if (!token || !isLoopbackHostname(getWorkerHost())) return {};
+  return localApiTokenHeaders(token);
+}
+
 async function httpRequestToWorker(
   workerOrigin: string,
   endpointPath: string,
   method: string = 'GET',
   timeoutMs: number = HEALTH_PROBE_TIMEOUT_MS,
+  headers: Record<string, string> = {},
 ): Promise<{ ok: boolean; statusCode: number; body: string }> {
   const response = await fetch(`${workerOrigin}${endpointPath}`, {
     method,
+    ...(Object.keys(headers).length > 0 ? { headers } : {}),
     signal: AbortSignal.timeout(Math.max(1, timeoutMs)),
   });
   let body = '';
@@ -207,7 +225,8 @@ async function pollEndpointUntilOk(
   workerOrigin: string,
   endpointPath: string,
   timeoutMs: number,
-  retryLogMessage: string
+  retryLogMessage: string,
+  headers: Record<string, string> = {},
 ): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -218,6 +237,7 @@ async function pollEndpointUntilOk(
         endpointPath,
         'GET',
         Math.min(HEALTH_PROBE_TIMEOUT_MS, remainingMs),
+        headers,
       );
       if (result.ok) return true;
     } catch (error) {
@@ -241,11 +261,16 @@ async function pollEndpointUntilOk(
  * which is what the daemon's duplicate gate and the port reclaim must ask about.
  */
 export function waitForHealth(port: number, timeoutMs: number = 30000, explicitWorkerOrigin?: string): Promise<boolean> {
+  // /api/health is open in local API token mode (#5141): no token needed.
   return pollEndpointUntilOk(explicitWorkerOrigin ?? localWorkerOrigin(port), '/api/health', timeoutMs, 'Service not ready yet, will retry');
 }
 
 export function waitForReadiness(port: number, timeoutMs: number = 30000, explicitWorkerOrigin?: string): Promise<boolean> {
-  return pollEndpointUntilOk(explicitWorkerOrigin ?? localWorkerOrigin(port), '/api/readiness', timeoutMs, 'Worker not ready yet, will retry');
+  // /api/readiness takes the local API token (#5141), which goes to this machine's worker only.
+  if (explicitWorkerOrigin) {
+    return pollEndpointUntilOk(explicitWorkerOrigin, '/api/readiness', timeoutMs, 'Worker not ready yet, will retry');
+  }
+  return pollEndpointUntilOk(localWorkerOrigin(port), '/api/readiness', timeoutMs, 'Worker not ready yet, will retry', localWorkerAuthHeaders());
 }
 
 export async function waitForPortFree(port: number, timeoutMs: number = 10000): Promise<boolean> {
@@ -267,7 +292,7 @@ export async function httpShutdown(port: number, reason: 'stop' | 'restart' = 's
     // reason tag lets the worker report shutdown_reason: 'restart' on its
     // worker_stopped telemetry instead of a generic 'stop'.
     const endpointPath = reason === 'restart' ? '/api/admin/shutdown?reason=restart' : '/api/admin/shutdown';
-    const result = await httpRequestToWorker(localWorkerOrigin(port), endpointPath, 'POST');
+    const result = await httpRequestToWorker(localWorkerOrigin(port), endpointPath, 'POST', HEALTH_PROBE_TIMEOUT_MS, localWorkerAuthHeaders());
     if (!result.ok) {
       logger.warn('SYSTEM', 'Shutdown request returned error', { status: result.statusCode });
       return false;

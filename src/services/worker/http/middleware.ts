@@ -2,8 +2,14 @@
 import express, { Request, Response, NextFunction, RequestHandler } from 'express';
 import path from 'path';
 import { isIP } from 'net';
-import { createHash, randomBytes, timingSafeEqual } from 'crypto';
+import { randomBytes } from 'crypto';
 import { getPackageRoot } from '../../../shared/paths.js';
+import { readdirSync, type Dirent } from 'fs';
+import {
+  decideLocalApiAccess,
+  extractLocalApiToken,
+  safeEqualSecret,
+} from '../../../shared/local-api-token.js';
 import {
   hasForwardedClientHeaders,
   isLocalhost,
@@ -265,24 +271,6 @@ export function generateTvToken(): string {
   return randomBytes(32).toString('base64url');
 }
 
-function safeEqualSecret(presented: string, expected: string): boolean {
-  // SHA-256 both sides to a fixed 32 bytes so lengths never leak and
-  // timingSafeEqual never throws on a length mismatch, then compare in
-  // constant time. Never use `===` here.
-  const a = createHash('sha256').update(presented, 'utf8').digest();
-  const b = createHash('sha256').update(expected, 'utf8').digest();
-  if (a.length !== b.length) {
-    return false;
-  }
-  try {
-    return timingSafeEqual(a, b);
-  } catch (error) {
-    const err = error instanceof Error ? error : new Error(String(error));
-    logger.warn('SECURITY', 'timing-safe secret comparison failed', {}, err);
-    return false;
-  }
-}
-
 export type RemoteAccessDecision =
   | { allow: true }
   | { allow: false; status: 403 | 404 | 401; reason: 'method' | 'path' | 'token' };
@@ -445,6 +433,99 @@ export function createRemoteReadOnlyGuard(options: RemoteReadOnlyOptions): Reque
     // 6. Pass.
     res.setHeader('Cache-Control', 'no-store');
     next();
+  };
+}
+
+export interface LocalApiTokenOptions {
+  /** Called per request. Empty string ⇒ this guard should never have been mounted. */
+  getToken: () => string;
+  /**
+   * Exact request paths of the data-free UI files a browser loads before its scripts can
+   * send the token (uiStaticPaths). GET and HEAD only. Absent ⇒ none.
+   */
+  openStaticPaths?: ReadonlySet<string>;
+}
+
+// The HTML shells ViewerRoutes serves from static bytes: My Work, the viewer, Observation
+// TV and the inert restart page. No data, the same on every install.
+const UI_SHELL_PATHS: readonly string[] = ['/', '/viewer', '/tv', '/restart'];
+
+/**
+ * The request paths of every file under the UI directories that express.static serves
+ * (`<packageRoot>/ui` in ViewerRoutes, `<packageRoot>/plugin/ui` in createMiddleware), plus
+ * the HTML shells. Listed once, as exact paths, so the guard never matches a prefix. These are
+ * the built bundles, styles, fonts and icons: identical on every install and holding no data.
+ */
+export function uiStaticPaths(packageRoot: string = getPackageRoot()): Set<string> {
+  const paths = new Set<string>(UI_SHELL_PATHS);
+  const walk = (directory: string, prefix: string): void => {
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(directory, { withFileTypes: true });
+    } catch {
+      return; // That layout is not this install's.
+    }
+    for (const entry of entries) {
+      const requestPath = `${prefix}/${encodeURIComponent(entry.name)}`;
+      if (entry.isDirectory()) walk(path.join(directory, entry.name), requestPath);
+      else if (entry.isFile()) paths.add(requestPath);
+    }
+  };
+  walk(path.join(packageRoot, 'ui'), '');
+  walk(path.join(packageRoot, 'plugin', 'ui'), '');
+  return paths;
+}
+
+/**
+ * Local API token mode (#5141): refuse any request that does not carry the local API
+ * token, except the exact routes in OPEN_ROUTES (shared/local-api-token.ts) and, for GET
+ * and HEAD, the data-free UI files in `openStaticPaths`. Unlike the Observation TV guard
+ * above, loopback gets no pass: refusing another local process is the whole point. The
+ * policy is `decideLocalApiAccess`; this adds where a browser page can put the token.
+ *
+ * A header is the credential for every request. A page's images and event streams cannot
+ * send one, so a read may also carry the token as `?token=` (the way the remote read-only
+ * guard takes it). A write must send the header. There is no cookie: cookies are shared
+ * across every port on localhost, so one would hand the token to any other local server
+ * the browser visits. A repeated or structured `token` is refused rather than picked from.
+ */
+export function createLocalApiTokenGuard(options: LocalApiTokenOptions): RequestHandler {
+  const openStaticPaths = options.openStaticPaths ?? new Set<string>();
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const expectedToken = options.getToken();
+    // A CORS preflight cannot carry the token, and the CORS middleware mounted after this
+    // answers every OPTIONS itself (204, or 403 for a refused origin), so no route ever runs
+    // for one. Refusing it here would stop an allowed origin from sending the real request.
+    if (req.method === 'OPTIONS' && expectedToken) {
+      next();
+      return;
+    }
+    const isRead = req.method === 'GET' || req.method === 'HEAD';
+    if (isRead && expectedToken && openStaticPaths.has(req.path)) {
+      next();
+      return;
+    }
+    const rawQuery = req.query?.token;
+    const malformedQuery = rawQuery !== undefined && typeof rawQuery !== 'string';
+    const fromHeader = extractLocalApiToken(req.headers);
+    const fromQuery = isRead ? readQueryToken(req) : null;
+    const decision = decideLocalApiAccess({
+      method: req.method,
+      path: req.path,
+      presentedToken: malformedQuery ? null : (fromHeader ?? fromQuery),
+      expectedToken,
+    });
+    if (decision.allow) {
+      next();
+      return;
+    }
+    // Never log the token or the query string. `req.path` excludes the query string.
+    logger.warn('SECURITY', 'Worker request refused: local API token missing or invalid', {
+      method: req.method,
+      path: req.path,
+    });
+    // Always write the response: the worker has no terminal error handler.
+    res.status(401).json({ error: 'Unauthorized', message: 'Missing or invalid local API token' });
   };
 }
 

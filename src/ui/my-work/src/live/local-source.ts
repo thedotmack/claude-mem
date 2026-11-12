@@ -32,7 +32,9 @@ export interface LocalSourceOptions {
 
 /** Separate instances make the actual transport/race behavior testable without shared browser globals. */
 export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSource {
-  const fetchImpl = options.fetchImpl ?? fetch
+  // Looked up per call, not captured here: this module builds `localSource` as it loads, and
+  // the local API token wrapper (install-local-api-token) replaces `window.fetch` around then.
+  const fetchImpl = options.fetchImpl ?? (((input, init) => fetch(input, init)) as typeof fetch)
   const createEventSource = options.eventSourceFactory ?? ((url: string) => new EventSource(url))
   const bootstrapTimeoutMs = options.bootstrapTimeoutMs ?? 10_000
   const requestTimeoutMs = options.requestTimeoutMs ?? 20_000

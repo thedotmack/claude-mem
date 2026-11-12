@@ -19,6 +19,7 @@ import type {
   MemTimelineRequest,
 } from './types.js'
 import { dedupeObservations, dedupeRenderedTable } from './dedupe.js'
+import { resolveHarnessAuthHeaders, withHarnessAuth } from '../harness-worker.js'
 
 /** Resolved client limits. */
 export interface WorkerLimits {
@@ -192,7 +193,7 @@ export class WorkerClient {
       init.body = JSON.stringify(options.body)
     }
     try {
-      const response = await fetch(url, init)
+      const response = await fetch(url, withHarnessAuth(init, resolveHarnessAuthHeaders(this.limits.baseUrl)))
       if (!response.ok) {
         throw await responseError(response)
       }
@@ -216,7 +217,7 @@ export class WorkerClient {
     using d = deadline(signal, this.limits.timeoutMs, MEM_TIMEOUT)
     const url = this.urlFor(path, query)
     try {
-      const response = await fetch(url, { method: 'GET', signal: d.signal })
+      const response = await fetch(url, withHarnessAuth({ method: 'GET', signal: d.signal }, resolveHarnessAuthHeaders(this.limits.baseUrl)))
       if (!response.ok) {
         throw await responseError(response)
       }

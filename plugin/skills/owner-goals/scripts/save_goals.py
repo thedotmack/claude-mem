@@ -47,7 +47,7 @@ Usage: python3 save_goals.py --goals owner-goals.json --prompts owner-prompts.md
                              [--ledger-dir <dir>] [--dry-run]
        python3 save_goals.py --print-focus-areas
 """
-import argparse, datetime, json, os, re, sys, traceback, urllib.error, urllib.request
+import argparse, datetime, json, os, re, sys, traceback, urllib.error, urllib.parse, urllib.request
 
 LIST_NAME = "owner-goals"
 MAX_FIELDS_JSON_CHARS = 2000  # MAX_WORK_STATE_FIELDS_JSON_CHARS in WorkStateRoutes.ts
@@ -76,13 +76,27 @@ def data_dir():
     return os.environ.get("CLAUDE_MEM_DATA_DIR") or os.path.expanduser("~/.claude-mem")
 
 
-def worker_base_url():
-    settings = {}
+def read_settings():
     try:
         with open(os.path.join(data_dir(), "settings.json")) as settings_file:
             settings = json.load(settings_file)
+            return settings if isinstance(settings, dict) else {}
     except (OSError, ValueError):
-        pass
+        return {}
+
+
+def local_api_token_headers():
+    """The local API token header (#5141), read from settings.json alone as the worker reads it; none when unset,
+    and none unless the worker is on loopback: a host naming another machine never gets the token."""
+    token = read_settings().get("CLAUDE_MEM_LOCAL_API_TOKEN")
+    token = token.strip() if isinstance(token, str) else ""
+    host = urllib.parse.urlsplit(worker_base_url()).hostname or ""
+    loopback = host in ("localhost", "::1") or host.endswith(".localhost") or re.fullmatch(r"127(?:\.\d{1,3}){3}", host) is not None
+    return {"X-Claude-Mem-Token": token} if token and loopback else {}
+
+
+def worker_base_url():
+    settings = read_settings()
     port = os.environ.get("CLAUDE_MEM_WORKER_PORT") or settings.get("CLAUDE_MEM_WORKER_PORT") or str(37700 + (os.getuid() if hasattr(os, "getuid") else 77) % 100)
     host = os.environ.get("CLAUDE_MEM_WORKER_HOST") or settings.get("CLAUDE_MEM_WORKER_HOST") or "127.0.0.1"
     host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
@@ -94,9 +108,11 @@ class NothingWritten(Exception):
 
 
 def worker_request(base_url, path, body=None, nothing_written_on=()):
+    headers = {"Content-Type": "application/json"} if body is not None else {}
+    headers.update(local_api_token_headers())   # every base_url here is worker_base_url(): this machine's worker
     request = urllib.request.Request(base_url + path, method="POST" if body is not None else "GET",
                                      data=json.dumps(body).encode() if body is not None else None,
-                                     headers={"Content-Type": "application/json"} if body is not None else {})
+                                     headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
             return response.read().decode()

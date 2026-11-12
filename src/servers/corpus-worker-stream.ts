@@ -10,7 +10,7 @@
  * unchanged. Runs under Node (MCP server): WHATWG streams only.
  */
 
-import { buildWorkerUrl, fetchStreamWithIdleTimeout } from '../shared/worker-utils.js';
+import { buildWorkerUrl, fetchStreamWithIdleTimeout, withWorkerAuth } from '../shared/worker-utils.js';
 import { readSseEvents } from '../shared/sse-reader.js';
 
 export const CORPUS_STREAM_IDLE_TIMEOUT_MS = 30_000;
@@ -42,11 +42,11 @@ export async function postCorpusRequestOverSse(
 ): Promise<unknown> {
   const streamed = await fetchStreamWithIdleTimeout(
     buildWorkerUrl(endpoint),
-    {
+    withWorkerAuth({
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
       body: JSON.stringify(body),
-    },
+    }),
     { idleTimeoutMs: timing.idleTimeoutMs, absoluteCapMs: timing.absoluteCapMs }
   );
 

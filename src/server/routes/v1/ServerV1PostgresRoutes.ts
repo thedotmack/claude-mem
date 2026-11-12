@@ -46,6 +46,7 @@ import { PostgresServerSessionsRepository, type PostgresServerSession } from '..
 import { IngestEventsService, type EnqueueOutcome } from '../../services/IngestEventsService.js';
 import { EndSessionService } from '../../services/EndSessionService.js';
 import { normalizePlatformSource, normalizePlatformSourceOrNull } from '../../../shared/platform-source.js';
+import { LISTING_OFFSET_CAP_MESSAGE, MAX_LISTING_OFFSET } from '../../../shared/listing-offset-cap.js';
 import {
   SERVER_CONTEXT_MAX_LIMIT,
   SERVER_CONTEXT_QUERY_DEFAULT_LIMIT,
@@ -2086,14 +2087,15 @@ export const JOB_LIST_DEFAULT_LIMIT = 50;
 export const JOB_LIST_MAX_LIMIT = 200;
 /**
  * Upper bound on the listing `offset`, as abuse protection: it caps how many
- * rows one request can make Postgres read and discard. 10,000 rows is 50 pages
+ * rows one request can make Postgres read and discard. It is the shared
+ * listing cap (src/shared/listing-offset-cap.ts); 10,000 rows is 50 pages
  * at JOB_LIST_MAX_LIMIT. The cost of OFFSET stops at the end of the caller's
  * matching rows, so this is a per-request cap and not a fix for an unbounded
  * scan. A request above it answers 400 rather than a page it did not ask for.
  * Rows past this point are unreachable on these routes unless a filter narrows
  * the listing; reaching them would take a keyset cursor, which does not exist.
  */
-export const JOB_LIST_MAX_OFFSET = 10_000;
+export const JOB_LIST_MAX_OFFSET = MAX_LISTING_OFFSET;
 
 export function parseGenericJobListingQuery(req: Request): {
   status: string | null;
@@ -2142,7 +2144,7 @@ function parseJobListOffset(value: unknown): number {
   const offset = clampInt(value, 0, 0, Number.MAX_SAFE_INTEGER);
   if (offset > JOB_LIST_MAX_OFFSET) {
     throw new AppError(
-      `offset must be at most ${JOB_LIST_MAX_OFFSET}; narrow the listing with filters to reach older rows`,
+      LISTING_OFFSET_CAP_MESSAGE,
       400,
       'INVALID_PAGINATION',
     );
