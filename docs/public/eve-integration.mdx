@@ -57,7 +57,7 @@ It works with no model key. `agent/agent.ts` picks the model when the agent buil
 
 | Setting | Model |
 | --- | --- |
-| Neither variable set (default) | `anthropic/claude-sonnet-5` through Vercel AI Gateway. AI Gateway free credits refuse Claude, so on free credits the gateway answers with `openai/gpt-5-mini` instead. The refused Claude attempt costs nothing. Add [AI Gateway credits](https://vercel.com/docs/ai-gateway/pricing) to get Claude. |
+| Neither variable set (default) | `anthropic/claude-sonnet-5` through Vercel AI Gateway. AI Gateway free credits refuse Claude, so on free credits the gateway answers with `openai/gpt-5-mini`, then `google/gemini-2.5-flash`, then `openai/gpt-5`. The refused Claude attempt costs nothing. Free credits allow each model about 10 calls a minute, and one turn can make 12 or more, so the gateway moves to the next model when one hits its limit. Add [AI Gateway credits](https://vercel.com/docs/ai-gateway/pricing) to get Claude and lift the limit. |
 | `ANTHROPIC_API_KEY` | Claude directly, with your Anthropic key. Wins over `EVE_MODEL`. |
 | `EVE_MODEL` | That [AI Gateway model ID](https://vercel.com/ai-gateway/models), exactly, such as `openai/gpt-5`. No fallback: a model your gateway refuses fails with the gateway's error. |
 

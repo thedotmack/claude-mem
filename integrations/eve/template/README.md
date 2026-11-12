@@ -17,7 +17,7 @@ No database or Marketplace product is needed. Chats are stored in your browser. 
 
 It works out of the box, with no model key:
 
-- **Default:** `anthropic/claude-sonnet-5` through Vercel AI Gateway. AI Gateway free credits refuse Claude, so on free credits the gateway answers with `openai/gpt-5-mini` instead. The refused Claude attempt costs nothing. Add [AI Gateway credits](https://vercel.com/docs/ai-gateway/pricing) to get Claude.
+- **Default:** `anthropic/claude-sonnet-5` through Vercel AI Gateway. AI Gateway free credits refuse Claude, so on free credits the gateway answers with `openai/gpt-5-mini`, then `google/gemini-2.5-flash`, then `openai/gpt-5`. The refused Claude attempt costs nothing. Free credits allow each model about 10 calls a minute, and one turn can make 12 or more, so the gateway moves to the next model when one hits its limit. Add [AI Gateway credits](https://vercel.com/docs/ai-gateway/pricing) to get Claude and lift the limit.
 - **`ANTHROPIC_API_KEY`** (optional): calls Claude directly with your Anthropic key. It wins over `EVE_MODEL`.
 - **`EVE_MODEL`** (optional): any [AI Gateway model ID](https://vercel.com/ai-gateway/models), such as `openai/gpt-5`. It is used exactly, with no fallback, so a model your gateway refuses fails with the gateway's error.
 
