@@ -626,6 +626,17 @@ export function codexHooksCheck(options: {
         required: false,
       };
     }
+    // The registered hooks match, so they name exactly this launcher. Codex has
+    // no SessionStart self-heal (ensure-launcher.cjs is Claude Code's), so a
+    // missing launcher fails every Codex hook until it is reinstalled.
+    if (!existsSync(options.launcherPath)) {
+      return {
+        name,
+        status: 'warn',
+        detail: `the hooks in ${hooks.hooksPath} run ${options.launcherPath}, which is missing, so Codex chats are not being captured — run \`npx claude-mem install\``,
+        required: false,
+      };
+    }
     return {
       name,
       status: 'ok',

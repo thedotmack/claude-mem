@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import type { SpawnSyncReturns } from 'child_process';
@@ -15,6 +15,7 @@ import { codexHooksCheck } from '../../src/npx-cli/commands/doctor.js';
 const REPO_ROOT = resolve(import.meta.dir, '..', '..');
 const HOOK_DEFINITIONS_PATH = join(REPO_ROOT, 'plugin', 'hooks', 'codex-hooks.json');
 const LAUNCHER_PATH = '/home/someone/.local/bin/claude-mem';
+const WINDOWS_LAUNCHER_PATH = 'C:\\Users\\some one\\AppData\\Local\\claude-mem\\bin\\claude-mem.exe';
 const CLAUDE_MEM_EVENTS = ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop', 'PostCompact', 'SubagentStart'];
 
 /** What two other tools already wrote: shared events, a matcher, an event claude-mem does not use. */
@@ -204,12 +205,34 @@ describe('claude-mem hooks in the Codex user hooks.json', () => {
     }
   });
 
-  it('quotes the launcher path for cmd.exe on Windows', () => {
+  it('gives Windows a PowerShell command with the call operator, and keeps the quoted command', () => {
     const definitions = JSON.parse(readFileSync(HOOK_DEFINITIONS_PATH, 'utf-8'));
-    const groups = buildCodexUserHookGroups(definitions, 'C:\\Users\\some one\\AppData\\Local\\claude-mem\\bin\\claude-mem.exe', 'win32');
+    const groups = buildCodexUserHookGroups(definitions, WINDOWS_LAUNCHER_PATH, 'win32');
 
+    // Codex runs commandWindows from PowerShell, where a statement that starts
+    // with a quoted path is a parse error without `& `.
     expect((groups.Stop.hooks as any[])[0].command)
       .toBe('"C:\\Users\\some one\\AppData\\Local\\claude-mem\\bin\\claude-mem.exe" hook codex summarize');
+    expect((groups.Stop.hooks as any[])[0].commandWindows)
+      .toBe('& "C:\\Users\\some one\\AppData\\Local\\claude-mem\\bin\\claude-mem.exe" hook codex summarize');
+    for (const eventName of CLAUDE_MEM_EVENTS) {
+      expect((groups[eventName].hooks as any[])[0].commandWindows).toMatch(/^& "[^"]+claude-mem\.exe" hook codex [a-z-]+$/);
+    }
+  });
+
+  it('leaves a Windows hooks.json byte-identical when installed again with the same launcher', () => {
+    const registerOnWindows = () => registerCodexUserHooks({
+      codexHome, hookDefinitionsPath: HOOK_DEFINITIONS_PATH, launcherPath: WINDOWS_LAUNCHER_PATH, platform: 'win32',
+    });
+    writeFileSync(hooksPath, JSON.stringify(otherToolsHooks(), null, 2));
+    registerOnWindows();
+    const afterFirst = readFileSync(hooksPath, 'utf-8');
+    expect(JSON.parse(afterFirst).hooks.Stop[0].hooks[0].commandWindows).toStartWith('& "');
+
+    const second = registerOnWindows();
+
+    expect(second.changed).toBe(false);
+    expect(readFileSync(hooksPath, 'utf-8')).toBe(afterFirst);
   });
 });
 
@@ -260,7 +283,7 @@ describe('Codex install for one home', () => {
 });
 
 describe('doctor: Codex hooks row', () => {
-  const check = () => codexHooksCheck({ codexHome, hookDefinitionsPath: HOOK_DEFINITIONS_PATH, launcherPath: LAUNCHER_PATH, platform: 'linux' });
+  const check = (launcherPath = LAUNCHER_PATH) => codexHooksCheck({ codexHome, hookDefinitionsPath: HOOK_DEFINITIONS_PATH, launcherPath, platform: 'linux' });
   const enablePlugin = () => writeFileSync(join(codexHome, 'config.toml'), '[plugins."claude-mem@claude-mem-local"]\nenabled = true\n');
 
   it('says nothing for a home that does not use the Codex plugin', () => {
@@ -284,12 +307,28 @@ describe('doctor: Codex hooks row', () => {
 
   it('is ok once the hooks are registered, and names the approval step', () => {
     enablePlugin();
-    register();
+    const launcherPath = join(codexHome, 'bin', 'claude-mem');
+    mkdirSync(join(codexHome, 'bin'));
+    writeFileSync(launcherPath, '');
+    registerCodexUserHooks({ codexHome, hookDefinitionsPath: HOOK_DEFINITIONS_PATH, launcherPath, platform: 'linux' });
 
-    const result = check();
+    const result = check(launcherPath);
 
     expect(result?.status).toBe('ok');
     expect(result?.detail).toContain('/hooks');
+  });
+
+  it('warns when the launcher the registered hooks run is missing', () => {
+    enablePlugin();
+    register();
+    expect(existsSync(LAUNCHER_PATH)).toBe(false);
+
+    const result = check();
+
+    expect(result?.status).toBe('warn');
+    expect(result?.detail).toContain(`run ${LAUNCHER_PATH}, which is missing`);
+    expect(result?.detail).toContain('Codex chats are not being captured');
+    expect(result?.detail).toContain('npx claude-mem install');
   });
 
   it('reports a hooks.json it cannot read instead of passing', () => {

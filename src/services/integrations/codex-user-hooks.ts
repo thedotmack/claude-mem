@@ -55,6 +55,17 @@ export function codexLauncherHookCommand(
 }
 
 /**
+ * The Windows-only `commandWindows` override. Codex runs Windows hook commands
+ * from PowerShell (src/build/hook-shell-template.ts buildCodexWindowsCommand),
+ * where a statement that starts with a quoted path is a string expression and
+ * a parse error, so the path needs PowerShell's call operator `& ` (the same
+ * form the Gemini and Cursor installers write).
+ */
+export function codexLauncherHookCommandWindows(launcherPath: string, hookEvent: string): string {
+  return `& ${codexLauncherHookCommand(launcherPath, hookEvent, 'win32')}`;
+}
+
+/**
  * Turn the generated hook definitions (plugin/hooks/codex-hooks.json: events,
  * matchers, timeouts) into the groups written at user level. Only the command
  * is replaced, so matchers and timeouts keep their single source.
@@ -84,7 +95,12 @@ export function buildCodexUserHookGroups(
     const { type, command: _command, commandWindows: _commandWindows, ...handlerOptions } = handler;
     groups[eventName] = {
       ...group,
-      hooks: [{ type, command: codexLauncherHookCommand(launcherPath, hookEvent, platform), ...handlerOptions }],
+      hooks: [{
+        type,
+        command: codexLauncherHookCommand(launcherPath, hookEvent, platform),
+        ...(platform === 'win32' ? { commandWindows: codexLauncherHookCommandWindows(launcherPath, hookEvent) } : {}),
+        ...handlerOptions,
+      }],
     };
   }
   return groups;
