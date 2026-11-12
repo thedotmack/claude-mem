@@ -5,6 +5,7 @@ Order: an explicit name (the ``--owner-name`` flag), then ``ACR_OWNER_NAME``, th
 the name-free patterns and does not consult git. Nothing here defaults to a person.
 """
 import os
+import re
 import subprocess
 
 _MISSING = object()
@@ -57,6 +58,22 @@ def name():
     if _pin is not _MISSING:
         return clean(_pin)
     return resolve()
+
+
+def names(value=_MISSING):
+    """The owner name plus, for a multi-word name, its first word: git's "Sam Lee" is "Sam" in
+    "Blocked on Sam" and "Sam asked". Empty when no owner name is set."""
+    full = name() if value is _MISSING else clean(value)
+    if not full: return []
+    first = full.split()[0]
+    return [full] if first == full else [full, first]
+
+
+def alt(value=_MISSING):
+    """A regex alternation of :func:`names` (longest first, each escaped as a literal), or None when unset."""
+    found = names(value)
+    if not found: return None
+    return "(?:" + "|".join(re.escape(n) for n in sorted(found, key=len, reverse=True)) + ")"
 
 
 class scoped:

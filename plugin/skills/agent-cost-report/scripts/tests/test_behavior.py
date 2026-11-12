@@ -342,6 +342,53 @@ class OwnerName(Base):
             self.assertIsNone(owner.git_user_name())
         with patch("acr.owner.subprocess.run", side_effect=OSError("no git")):
             self.assertIsNone(owner.git_user_name())
+        self.assertEqual(owner.names("Sam Lee"), ["Sam Lee", "Sam"])
+        self.assertEqual(owner.names("李明"), ["李明"])
+        self.assertIsNone(owner.alt(""))
+
+    def test_full_git_name_also_matches_its_first_name(self):
+        os.environ["ACR_OWNER_NAME"] = "Sam Lee"          # what git config user.name usually holds
+        self.assertEqual(behavior.tag_prompt_row("Sam asked for a revert"), "bot")
+        self.assertEqual(behavior.tag_prompt_row("Sam Lee approved the plan"), "bot")
+        self.assertEqual(behavior.tag_prompt_row("Lee asked for a revert"), "human")
+        self.assertEqual(behavior.tag_prompt_row("Samantha asked for a revert"), "human")
+        self.assertGreaterEqual(len(self.p1("Blocked on Sam: paste the key", "p1-first")), 1)
+        self.assertEqual(self.p1("Blocked on Samantha", "p1-longer"), [])
+        denied = self.tools("go", [("t1", "Bash", {"note": "send as Sam"})], "p8-first")
+        self.assertEqual(len(patterns.detect_p8(denied, "p8-first")), 1)
+
+    def test_punctuation_and_non_latin_owner_names_match_tool_input(self):
+        os.environ["ACR_OWNER_NAME"] = "Sam+"
+        denied = self.tools("go", [("t1", "Bash", {"note": "send as Sam+ now"})], "p8-plus")
+        self.assertEqual(len(patterns.detect_p8(denied, "p8-plus")), 1)
+        hit = self.tools("yes, send", [("t1", "mcp__claude_ai_Gmail__send_message", {"to": ["a@x.com"], "from": "Sam+"})], "p9-plus")
+        self.assertEqual(len(patterns.detect_p9(hit, "p9-plus")), 1)
+        os.environ["ACR_OWNER_NAME"] = "李明"
+        hit = self.tools("yes, send", [("t1", "mcp__claude_ai_Gmail__send_message", {"to": ["a@x.com"], "from": "李明"})], "p9-cjk")
+        flags = patterns.detect_p9(hit, "p9-cjk")
+        self.assertEqual(len(flags), 1); self.assertIn("sent as 李明", flags[0]["basis"])
+
+    def test_unlabeled_steer_from_the_owner_is_a_relay_and_a_correction(self):
+        os.environ["ACR_OWNER_NAME"] = "Sam"
+        self.assertEqual(behavior.tag_prompt_row("STEER from Sam do the other file"), "bot")
+        self.assertTrue(behavior.is_correction("STEER from Sam do the other file"))
+        self.assertTrue(behavior.is_correction("ok, STEER - from Sam, stop"))
+        self.assertEqual(behavior.tag_prompt_row("STEER from Alex do the other file"), "human")
+        os.environ["ACR_OWNER_NAME"] = ""
+        self.assertEqual(behavior.tag_prompt_row("STEER from Alex do the other file"), "human")
+        self.assertFalse(behavior.is_correction("STEER from Alex do the other file"))
+        self.assertEqual(behavior.tag_prompt_row("STEER from Alex: do the other file"), "bot")   # the named label works for any name
+        self.assertTrue(behavior.is_correction("RESET: start over"))
+
+    def test_house_rule_headers_parse_for_any_name(self):
+        d = tempfile.mkdtemp()
+        try:
+            with open(os.path.join(d, "rules.md"), "w", encoding="utf-8") as fh:
+                fh.write("# Rules\n## Never ping on weekends (HARD — Sam 2026-09-10)\n## Plain words (HARD 2026-09-11)\n## Old style (HARD — Alex 2026-09-12)\n")
+            got = [(r["name"], r["landed_pt"]) for r in rules.scan_rule_files(d)]
+        finally:
+            shutil.rmtree(d)
+        self.assertEqual(got, [("Never ping on weekends", "2026-09-10"), ("Plain words", "2026-09-11"), ("Old style", "2026-09-12")])
 
 
 class Classifier(unittest.TestCase):

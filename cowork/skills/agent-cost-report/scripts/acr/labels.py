@@ -34,7 +34,8 @@ LOOP_PREFIX, LOOP_MIN = 80, 3                                                   
 
 def fail_rules(name=None):
     if name is None: name = owner.name()
-    reset = rf"|reset from {re.escape(name.lower())}" if name else ""
+    who = owner.alt(name.lower()) if name else None                       # prompt text is lowercased before matching
+    reset = rf"|reset from {who}(?!\w)" if who else ""
     rework = rf"\bsteer\b{reset}|re-?plan|fix these gaps|verifier found|discard both|too granular|rewrite .* at product altitude|redo"
     return [("Rework", rework)] + _FAIL_REST
 
@@ -92,13 +93,13 @@ class ReviewError(ValueError):
 def apply_review(line_items, reviewed, reviewed_at_pt):
     """Merge confirmed labels into line items. An entry counts as reviewed when it names a category
     (and optionally failure_type / failure_signals) and a reviewed_by; label_source becomes
-    'human' when reviewed_by matches the configured owner name (case-insensitive) or the entry sets
+    'human' when reviewed_by matches the configured owner name or its first word (case-insensitive) or the entry sets
     label_source, else 'llm'. With no owner name, only an explicit label_source of human counts as a
     human review. Unreviewed entries are left as keyword drafts. failure_signals / failure_type left
     null keep the draft's signals; pass failure_signals: [] to clear them. Returns the number applied."""
     entries = reviewed.get("items", reviewed) if isinstance(reviewed, dict) else reviewed
     default_by = reviewed.get("reviewed_by") if isinstance(reviewed, dict) else None   # file-level default
-    owner_name = owner.name()
+    owner_names = {n.casefold() for n in owner.names()}
     by_id = {li["work_item_id"]: li for li in line_items}; n = 0
     for en in entries:
         en = dict(en)
@@ -114,7 +115,7 @@ def apply_review(line_items, reviewed, reviewed_at_pt):
             if f not in FAILURE_TYPES: raise ReviewError(f"{en['work_item_id']}: unknown failure type {f!r} (SKILL.md:80 is the set)")
         src = en.get("label_source")
         if src in (None, "keyword"):
-            src = "human" if owner_name and str(en["reviewed_by"]).strip().casefold() == owner_name.casefold() else "llm"
+            src = "human" if str(en["reviewed_by"]).strip().casefold() in owner_names else "llm"
         if src not in ("llm", "human"): raise ReviewError(f"{en['work_item_id']}: label_source must be llm or human, got {src!r}")
         if en.get("status") is not None:
             if en["status"] not in STATUSES: raise ReviewError(f"{en['work_item_id']}: unknown status {en['status']!r}")

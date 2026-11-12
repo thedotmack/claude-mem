@@ -215,7 +215,7 @@ def run(db, scope, window_block, pricer, session_projects, items, classify=None,
             p["incidents"] = len(fl); p["recipients"] = sum(f.get("recipients") or 0 for f in fl); p["cost_note"] = "incidents × recipients, never dollars"
         if key == "S1_tool_errors": p["error_chains"] = stats["error_chains"]; p["loops"] = stats["loops"]; p["recovered_usd"] = costs.usd(sum(turn_by_key[k]["x1e6"] or 0 for k in redo_keys["S1_tool_errors"] if k in turn_by_key))
         if key == "S2_hedging": p["availability_unknown_n"] = stats["hedge_availability_unknown"]; p["cost_note"] = "text only, not priced" if not keys else "follow-up round trip priced as recovery"
-        if key == "P11_jargon": p["cost_note"] = "Alex-minutes = words ÷ 200; dollars only for a clarification round trip"
+        if key == "P11_jargon": p["cost_note"] = "your minutes = words ÷ 200; dollars only for a clarification round trip"
         pats.append(p)
     precision_gate(pats, precision)
     tiles = [p for p in pats if p["placement"] == "tile"]

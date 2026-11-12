@@ -47,15 +47,20 @@ _P1_ASK_TAIL = (r"would you like me to|do you want me to|want me to|should I\b|s
                 r"please (paste|provide|click|approve|confirm|run)|I need you to|waiting (for|on) (you|your)|")
 
 
+def _who(name):
+    """Owner alternation (full name and first name), or None; ``name=None`` means the configured owner."""
+    return owner.alt() if name is None else owner.alt(name)
+
+
 def p1_agent_re(name=None):
-    if name is None: name = owner.name()
-    blocked = rf"Blocked on {re.escape(name)}|" if name else ""
+    who = _who(name)
+    blocked = rf"Blocked on {who}(?!\w)|" if who else ""
     return re.compile(blocked + _P1_AGENT_TAIL, re.I)
 
 
 def p1_ask_re(name=None):
-    if name is None: name = owner.name()
-    named = rf"blocked on (you|{re.escape(name)})|needs? {re.escape(name)}" if name else r"blocked on you"
+    who = _who(name)
+    named = rf"blocked on (you|{who}(?!\w))|needs? {who}(?!\w)" if who else r"blocked on you"
     return re.compile(_P1_ASK_TAIL + named + r"|human gate", re.I)
 P1_ANNOYED = re.compile(r"(?i)already|I told you|just do it|stop asking|why do I have to|no .{0,20}human gate|fuck|wtf")
 P1_HUMAN = re.compile(r"who (made|makes) up|no one said|you're allowed|just do it|(arbitrary|fake|invented|made.up) gate|human gates?\b", re.I)
@@ -92,8 +97,8 @@ P8_DENY_TOOL = re.compile(r"zapier|computer[_-]?use|mcp__.*computer", re.I)
 
 
 def p8_deny_input_re(name=None):
-    if name is None: name = owner.name()
-    named = rf"|\bas {re.escape(name)}\b|from:\s*\"?{re.escape(name)}@" if name else ""
+    who = _who(name)
+    named = rf"|\bas {who}(?!\w)|from:\s*\"?{who}@" if who else ""
     return re.compile(rf"zapier\.com{named}|aj@(?!aicollective\.com)[\w.-]+", re.I)
 
 
@@ -106,10 +111,9 @@ P9_RECIPIENT_CAP = 10
 
 def owner_identity_re(name=None):
     """Match a send as the configured owner, or None when no owner name is set (no maintainer address is assumed)."""
-    if name is None: name = owner.name()
-    if not name: return None
-    esc = re.escape(name)
-    return re.compile(rf"(?<![\w.+-]){esc}@|\"from\":\s*\"[^\"]*\b{esc}\b", re.I)
+    who = _who(name)
+    if not who: return None
+    return re.compile(rf"(?<![\w.+-]){who}@|\"from\":\s*\"[^\"]*(?<!\w){who}(?!\w)", re.I)
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 # ---- P10 (MI:25) ----
 P10_HUMAN = re.compile(r"I told you|100 times|8,?000 times|what's the rule|like i said", re.I)

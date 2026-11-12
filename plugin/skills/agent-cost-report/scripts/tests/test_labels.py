@@ -107,6 +107,15 @@ class Review(unittest.TestCase):
                                  dict(work_item_id="WI-2", category="Feature", reviewed_by="Alex")], "t")
         self.assertEqual((li[0]["label_source"], li[1]["label_source"]), ("human", "llm"))
 
+    def test_full_owner_name_also_accepts_its_first_name(self):
+        os.environ["ACR_OWNER_NAME"] = "Sam Lee"
+        li = self.items()
+        labels.apply_review(li, [dict(work_item_id="WI-1", category="Feature", reviewed_by="sam"),
+                                 dict(work_item_id="WI-2", category="Feature", reviewed_by="Lee")], "t")
+        self.assertEqual((li[0]["label_source"], li[1]["label_source"]), ("human", "llm"))
+        signals = labels.classify(dict(prompts=["reset from sam: try again"], text=[]), dict(project="p", user_prompt=None))["failure_signals"]
+        self.assertIn("Rework", signals)
+
     def test_reset_from_owner_is_rework_only_for_the_configured_name(self):
         bare = dict(project="p", user_prompt=None)
 

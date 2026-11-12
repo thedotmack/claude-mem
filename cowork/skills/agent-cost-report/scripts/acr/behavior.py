@@ -39,23 +39,31 @@ HEADLESS = ("sdk-cli", "sdk-ts")
 NAMED_CORRECTION = r"(?-i:(?:STEER|RESET|CORRECTION) from)[ \t]+[^\s:][^\r\n:]*:"
 BOT_MARKERS = re.compile(
     rf"^\s*{NAMED_CORRECTION}|"
-    r"^\s*(STEER from Alex|HOUSE LOCK|\[SAND_HIDDEN_PROMPT\]|<system-reminder>|<timestamp>|<cross-session-message|<command-|<local-command|"
+    r"^\s*(HOUSE LOCK|\[SAND_HIDDEN_PROMPT\]|<system-reminder>|<timestamp>|<cross-session-message|<command-|<local-command|"
     r"\[Request interrupted|MAKE-PLAN\b|make-plan ONLY|# make-plan|Branch: [\w/.-]+ \(this worktree|"
     r"\[Cross-session idle notice\]|\[Group chat:|\[Artifact comment|Agent sweep|AJ email check|Quiet overnight|"
     r"You name new code workspaces|You are\b|/do\b|/make-plan\b|/loop\b|/claude-mem:|/ccs-|/[a-z][\w-]*:[a-z][\w-]*\b|"
-    r"(STEER|RESET|CORRECTION) from Alex|Resuming after|\[SYSTEM NOTIFICATION|<task-notification>|<pasted_content)"
+    r"Resuming after|\[SYSTEM NOTIFICATION|<task-notification>|<pasted_content)"
     r"|^(?=.{400,})[^\n]{0,300}\bYou are (a|an|the|in|one|running|working)\b", re.I | re.S)   # long briefs that address the agent
 _THIRD_PERSON = r"(asked|said|wants|greened|approved)"
+CORRECTION = re.compile(rf"^\s*{NAMED_CORRECTION}|^\s*(RESET|CORRECTION):", re.I)
 
 
 def bot_text(text):
-    """True for an automated relay. A third-person "<owner> asked|said|wants|greened|approved"
-    counts only when an owner name is configured; otherwise that clause is name-free and does not fire."""
+    """True for an automated relay. "<owner> asked|said|wants|greened|approved" and a label without a colon
+    ("STEER from <owner> ...") count only when an owner name is configured; otherwise they are name-free and do not fire."""
     if BOT_MARKERS.search(text or ""): return True
-    who = owner.name()
+    who = owner.alt()
     if not who or not text: return False
-    return re.search(rf"^.{{0,200}}\b{re.escape(who)} {_THIRD_PERSON}\b", text, re.I | re.S) is not None
-CORRECTION = re.compile(rf"^\s*{NAMED_CORRECTION}|" r"^\s*(STEER|RESET|CORRECTION) from Alex|\bSTEER\b.{0,10}\bfrom Alex\b|^\s*(RESET|CORRECTION):", re.I)
+    return re.search(rf"^\s*(STEER|RESET|CORRECTION) from {who}(?!\w)|^.{{0,200}}(?<!\w){who} {_THIRD_PERSON}\b", text, re.I | re.S) is not None
+
+
+def is_correction(text):
+    """A steer / reset / correction message: the named label, a bare RESET:/CORRECTION:, or, with an owner
+    configured, "STEER from <owner>" without a colon."""
+    if CORRECTION.search(text or ""): return True
+    who = owner.alt()
+    return bool(who and text and re.search(rf"^\s*(STEER|RESET|CORRECTION) from {who}(?!\w)|\bSTEER\b.{{0,10}}\bfrom {who}(?!\w)", text, re.I))
 PROFANITY = re.compile(r"\b(fuck\w*|shit\w*|wtf|goddamn)\b", re.I)
 FRUSTRATION_PHRASE = re.compile(r"\b(i told you|i said|why did you|who (said|made|told)|stop|never|again)\b", re.I)
 SECRET_RE = re.compile(r"(sk-or-[\w-]+|sk-[\w-]{8,}|Bearer\s+\S+|ghp_\w+|gho_\w+|xox[abp]-[\w-]+|AKIA\w{12,}|[A-Za-z0-9+/=_-]{32,})")
@@ -164,7 +172,7 @@ def scan(s_ms, e_ms, session=None, pattern=transcripts.CLAUDE_GLOB):
                     for b in _blocks(m.get("content")):
                         if b.get("type") == "text" and len(T["text"]) < TEXT_KEEP: T["text"] += (b.get("text") or "")[:TEXT_KEEP]
                         elif b.get("type") == "tool_use":
-                            inp = b.get("input"); inp_s = inp if isinstance(inp, str) else json.dumps(inp, sort_keys=True)
+                            inp = b.get("input"); inp_s = inp if isinstance(inp, str) else json.dumps(inp, sort_keys=True, ensure_ascii=False)
                             T["tool_uses"].append(dict(id=b.get("id"), name=b.get("name") or "", input=inp if isinstance(inp, dict) else {}, input_s=inp_s[:INPUT_KEEP]))
                 else:
                     blocks = _blocks(m.get("content")); results = []; texts = []
@@ -312,7 +320,7 @@ def failure_spans(S, msgs):
     turns = ordered_turns(S); out = collections.defaultdict(set)
     users = [u for u in S["users"] if u["text"] and not u["results"]]
     for i, u in enumerate(users):
-        if CORRECTION.search(u["text"]):
+        if is_correction(u["text"]):
             prev = users[i - 1]["ts_ms"] if i else (u["ts_ms"] - WASTED_CAP_MS)
             for T in turns:
                 if prev <= T["ts_ms"] < u["ts_ms"]: out["Rework"].add(T["key"])

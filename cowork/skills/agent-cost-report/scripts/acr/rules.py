@@ -1,8 +1,8 @@
 """Rule effectiveness (plan 2B.10, MI:34-35): for each HARD rule, same-pattern episodes per 100 human
 prompts in the N=7 days before and after `rule_landed_at`, minimum 50 human prompts per side (G15).
 Rules come from `acr/rules.json` (seeded from /workspace/frustration-arc/trend.md, "HARD rules landing
-dates vs. the pattern afterwards") plus any house rule file that carries a "HARD (Alex YYYY-MM-DD" or
-"HARD — Alex YYYY-MM-DD" header when a --rules-dir is given. Human prompts are counted only from
+dates vs. the pattern afterwards") plus any house rule file that carries a "(HARD YYYY-MM-DD" or
+"(HARD — <name> YYYY-MM-DD" header (any name, or none) when a --rules-dir is given. Human prompts are counted only from
 human-tagged turns (R2); bot and unknown turns are never in the denominator.
 """
 import datetime as dt
@@ -15,7 +15,7 @@ from .period import PT
 
 N_DAYS = 7
 MIN_PROMPTS = 50
-HARD_HEADER = re.compile(r"^#+\s*(?P<name>.+?)\s*\(HARD\s*[—–-]*\s*Alex\s+(?P<date>\d{4}-\d{2}-\d{2})", re.M)
+HARD_HEADER = re.compile(r"^#+\s*(?P<name>.+?)\s*\(HARD\s*[—–-]*\s*(?:[^()\d\n]*?\s+)?(?P<date>\d{4}-\d{2}-\d{2})", re.M)
 # Frustration Arc pattern names -> this plan's keys
 PATTERN_MAP = {"invented_gates_asking": "P1_invented_gates", "broke_things": "P2_broke_things", "wrong_model_or_spend": "P3_wrong_model",
                "over_engineering": "P4_over_engineering", "ignored_instructions": "P5_not_asked", "fake_output": "P6_fake_output",
