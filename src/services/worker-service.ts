@@ -34,6 +34,7 @@ import { HookSpoolRoutes } from './worker/http/routes/HookSpoolRoutes.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { getUptimeSeconds } from '../shared/uptime.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
+import { readLocalApiToken } from '../shared/hook-settings.js';
 import { describeObserverAuthMethod } from './worker/observer-auth-method.js';
 import { logger } from '../utils/logger.js';
 import { isHookStdoutClosed } from '../shared/hook-io.js';
@@ -443,6 +444,9 @@ export class WorkerService implements WorkerRef {
     const workerSettings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     const tvToken = (workerSettings.CLAUDE_MEM_TV_TOKEN ?? '').trim();
     this.tvToken = tvToken;
+    // Local API token (#5141): file-only, so the environment cannot switch the mode.
+    // Read once at boot; restart to change.
+    const localApiToken = readLocalApiToken();
 
     this.server = new Server({
       getInitializationComplete: () => this.initializationCompleteFlag,
@@ -473,6 +477,7 @@ export class WorkerService implements WorkerRef {
         new BetterAuthRoutes(() => this.dbManager.getConnection()),
       ],
       ...(tvToken ? { remoteReadOnly: { getToken: () => tvToken } } : {}),
+      ...(localApiToken ? { localApiToken: { getToken: () => localApiToken } } : {}),
       // Browser access: same-host and CLAUDE_MEM_ALLOWED_ORIGINS for CORS, plus
       // the DNS-rebinding Host check. Read once at boot; restart to change it.
       originPolicy: buildWorkerOriginPolicy(workerSettings),

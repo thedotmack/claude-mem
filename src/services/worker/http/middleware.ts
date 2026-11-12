@@ -2,8 +2,15 @@
 import express, { Request, Response, NextFunction, RequestHandler } from 'express';
 import path from 'path';
 import { isIP } from 'net';
-import { createHash, randomBytes, timingSafeEqual } from 'crypto';
+import { randomBytes } from 'crypto';
 import { getPackageRoot } from '../../../shared/paths.js';
+import {
+  LOCAL_API_TOKEN_COOKIE,
+  decideLocalApiAccess,
+  extractLocalApiToken,
+  readCookieToken,
+  safeEqualSecret,
+} from '../../../shared/local-api-token.js';
 import {
   hasForwardedClientHeaders,
   isLocalhost,
@@ -265,24 +272,6 @@ export function generateTvToken(): string {
   return randomBytes(32).toString('base64url');
 }
 
-function safeEqualSecret(presented: string, expected: string): boolean {
-  // SHA-256 both sides to a fixed 32 bytes so lengths never leak and
-  // timingSafeEqual never throws on a length mismatch, then compare in
-  // constant time. Never use `===` here.
-  const a = createHash('sha256').update(presented, 'utf8').digest();
-  const b = createHash('sha256').update(expected, 'utf8').digest();
-  if (a.length !== b.length) {
-    return false;
-  }
-  try {
-    return timingSafeEqual(a, b);
-  } catch (error) {
-    const err = error instanceof Error ? error : new Error(String(error));
-    logger.warn('SECURITY', 'timing-safe secret comparison failed', {}, err);
-    return false;
-  }
-}
-
 export type RemoteAccessDecision =
   | { allow: true }
   | { allow: false; status: 403 | 404 | 401; reason: 'method' | 'path' | 'token' };
@@ -445,6 +434,57 @@ export function createRemoteReadOnlyGuard(options: RemoteReadOnlyOptions): Reque
     // 6. Pass.
     res.setHeader('Cache-Control', 'no-store');
     next();
+  };
+}
+
+export interface LocalApiTokenOptions {
+  /** Called per request. Empty string ⇒ this guard should never have been mounted. */
+  getToken: () => string;
+}
+
+/**
+ * Local API token mode (#5141): refuse any request that does not carry the local API
+ * token, except the exact routes in OPEN_ROUTES (shared/local-api-token.ts). Unlike
+ * the Observation TV guard above, loopback gets no pass: refusing another local
+ * process is the whole point. The policy is `decideLocalApiAccess`; this adds where a
+ * browser page can put the token.
+ *
+ * A header is the credential for every request. The viewer is a page whose scripts,
+ * images and event streams cannot send one, so a read may also carry the token as
+ * `?token=` (the way the remote read-only guard takes it) and, once a valid one has
+ * opened the page, in the session cookie that sets. Both are for GET and HEAD only: a
+ * write must send the header, so a page on another local port cannot ride the cookie
+ * into a write. A repeated or structured `token` is refused rather than picked from.
+ */
+export function createLocalApiTokenGuard(options: LocalApiTokenOptions): RequestHandler {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const expectedToken = options.getToken();
+    const rawQuery = req.query?.token;
+    const malformedQuery = rawQuery !== undefined && typeof rawQuery !== 'string';
+    const isRead = req.method === 'GET' || req.method === 'HEAD';
+    const fromHeader = extractLocalApiToken(req.headers);
+    const fromQuery = isRead ? readQueryToken(req) : null;
+    const fromCookie = isRead ? readCookieToken(req.headers.cookie) : null;
+    const decision = decideLocalApiAccess({
+      method: req.method,
+      path: req.path,
+      presentedToken: malformedQuery ? null : (fromHeader ?? fromQuery ?? fromCookie),
+      expectedToken,
+    });
+    if (decision.allow) {
+      if (fromHeader === null && fromQuery !== null && !malformedQuery && safeEqualSecret(fromQuery, expectedToken)) {
+        res.cookie(LOCAL_API_TOKEN_COOKIE, fromQuery, { httpOnly: true, sameSite: 'strict', path: '/' });
+      }
+      next();
+      return;
+    }
+    // Never log the token or the query string. `req.path` excludes the query string.
+    logger.warn('SECURITY', 'Worker request refused: local API token missing or invalid', {
+      method: req.method,
+      path: req.path,
+    });
+    // Always write the response: the worker has no terminal error handler.
+    res.status(401).json({ error: 'Unauthorized', message: 'Missing or invalid local API token' });
   };
 }
 

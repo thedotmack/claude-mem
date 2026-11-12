@@ -10,7 +10,8 @@ import { MARKETPLACE_ROOT, DATA_DIR, resolveDataDir } from "./paths.js";
 import { loadFromFileOnce } from "./hook-settings.js";
 import { isWorkerAutostartDisabled } from "./worker-autostart.js";
 import { viewerBaseUrl } from "./viewer-url.js";
-import { formatHostForUrl, InvalidWorkerUrlError, normalizeWorkerBaseUrl } from "./worker-url.js";
+import { formatHostForUrl, InvalidWorkerUrlError, isLoopbackHostname, normalizeWorkerBaseUrl } from "./worker-url.js";
+import { normalizeLocalApiToken, localApiTokenHeaders } from "./local-api-token.js";
 import { WorkerRequestTimeoutError } from "./worker-request-timeout-error.js";
 import { readOwnedWorkerPidInfo } from "../supervisor/index.js";
 import { emitDiagnostic } from "./hook-io.js";
@@ -488,6 +489,29 @@ export function buildWorkerUrl(apiPath: string): string {
   return `${getWorkerBaseUrl()}${apiPath.startsWith('/') ? apiPath : `/${apiPath}`}`;
 }
 
+/**
+ * The local API token (#5141) as request headers, when settings.json has one and the
+ * worker is on this machine; `{}` otherwise. A remote worker (CLAUDE_MEM_WORKER_URL)
+ * is another party's server and must never receive the token.
+ */
+export function workerAuthHeaders(options: { readOnly?: boolean } = {}): Record<string, string> {
+  const token = normalizeLocalApiToken(getWorkerSettings(options).CLAUDE_MEM_LOCAL_API_TOKEN);
+  if (!token) return {};
+  if (!isLoopbackHostname(new URL(getWorkerBaseUrl(options)).hostname)) return {};
+  return localApiTokenHeaders(token);
+}
+
+/** `init` with the worker auth headers added. A header the caller already set wins. */
+export function withWorkerAuth(init: RequestInit = {}, options: { readOnly?: boolean } = {}): RequestInit {
+  const auth = workerAuthHeaders(options);
+  if (Object.keys(auth).length === 0) return init;
+  const headers = new Headers(init.headers);
+  for (const [name, value] of Object.entries(auth)) {
+    if (!headers.has(name)) headers.set(name, value);
+  }
+  return { ...init, headers };
+}
+
 export function workerHttpRequest(
   apiPath: string,
   options: {
@@ -506,13 +530,14 @@ export function workerHttpRequest(
   const method = options.method ?? 'GET';
 
   const url = buildWorkerUrl(apiPath);
-  const init: RequestInit = { method };
+  const baseInit: RequestInit = { method };
   if (options.headers) {
-    init.headers = options.headers;
+    baseInit.headers = options.headers;
   }
   if (options.body) {
-    init.body = options.body;
+    baseInit.body = options.body;
   }
+  const init = withWorkerAuth(baseInit);
 
   if (options.idleTimeoutMs !== undefined && options.idleTimeoutMs > 0) {
     return fetchWithIdleTimeout(url, init, {
@@ -847,7 +872,7 @@ function isAbsoluteCapTimeoutError(error: unknown): boolean {
 async function readWorkerReadyStream(budgetMs: number): Promise<ReadyStreamRead> {
   let stream: Awaited<ReturnType<typeof fetchStreamWithIdleTimeout>>;
   try {
-    stream = await fetchStreamWithIdleTimeout(buildWorkerUrl('/api/ready'), { method: 'GET' }, {
+    stream = await fetchStreamWithIdleTimeout(buildWorkerUrl('/api/ready'), withWorkerAuth({ method: 'GET' }), {
       idleTimeoutMs: READY_STREAM_IDLE_TIMEOUT_MS,
       absoluteCapMs: Math.max(1, budgetMs),
     });

@@ -61,7 +61,7 @@ import {
   withoutUnjoinedTeamBrainTools,
   WORK_STATE_TOOL_NAMES,
 } from './mcp-tool-visibility.js';
-import { loadFromFileOnce } from '../shared/hook-settings.js';
+import { loadFromFileOnce, readLocalApiToken } from '../shared/hook-settings.js';
 import { teamBrainConnection } from '../shared/teambrain.js';
 import { isWorkStateEnabled } from '../shared/work-state-setting.js';
 import { getProjectContext, type ProjectContext } from '../utils/project-name.js';
@@ -1413,6 +1413,7 @@ async function mainHttp(options: McpHttpOptions) {
     ...options,
     pluginRoot: options.pluginRoot ?? MCP_PLUGIN_ROOT,
     originPolicy: buildWorkerOriginPolicy(loadFromFileOnce()),
+    localApiToken: readLocalApiToken(),
     createServer: createMcpServer,
   });
   logger.info('SYSTEM', 'Claude-mem MCP HTTP server started', { host: options.host, port: handle.port });

@@ -16,7 +16,8 @@ import { formatWorkerMcpResponse } from '../../servers/mcp-text-format.js';
 import { parseSearchResponse } from "./contract.js";
 import { normalizePlatformSource } from "../../shared/platform-source.js";
 import { isConnectionRefusedError } from "../../shared/connection-errors.js";
-import { formatHostForUrl } from "../../shared/worker-url.js";
+import { formatHostForUrl, isLoopbackHostname } from "../../shared/worker-url.js";
+import { normalizeLocalApiToken, localApiTokenHeaders } from "../../shared/local-api-token.js";
 import { stripMemoryTags } from "../../utils/tag-stripping.js";
 import { deliverLiveObserverHandoff } from "../../shared/live-observer-handoff.js";
 
@@ -94,7 +95,16 @@ const CAPTURE_TOOL_NAMES = new Map([
   ["bash", "Bash"],
 ]);
 
-const JSON_HEADERS: Record<string, string> = { "Content-Type": "application/json" };
+// Local API token mode (#5141): the worker refuses a request without the token. Read once, like the
+// worker URL, and only for a loopback worker: another host is not ours to hand the token to.
+function localApiHeaders(): Record<string, string> {
+  const settingsPath = join(SettingsDefaultsManager.get("CLAUDE_MEM_DATA_DIR"), "settings.json");
+  const settings = SettingsDefaultsManager.loadFromFile(settingsPath, true, { readOnly: true });
+  if (!isLoopbackHostname(settings.CLAUDE_MEM_WORKER_HOST)) return {};
+  return localApiTokenHeaders(normalizeLocalApiToken(settings.CLAUDE_MEM_LOCAL_API_TOKEN));
+}
+
+const JSON_HEADERS: Record<string, string> = { "Content-Type": "application/json", ...localApiHeaders() };
 
 // Every worker request is bounded, so a hung worker can neither hold a hook
 // open nor pile up pending requests inside OpenCode's process (plan-23 step 2).

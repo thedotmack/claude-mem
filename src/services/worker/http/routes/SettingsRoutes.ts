@@ -50,6 +50,7 @@ const SECRET_SETTING_KEYS = new Set([
   'CLAUDE_MEM_SERVER_API_KEY',
   'CLAUDE_MEM_SERVER_BETA_API_KEY',
   'CLAUDE_MEM_TV_TOKEN',
+  'CLAUDE_MEM_LOCAL_API_TOKEN',
   'CLAUDE_MEM_WORKER_INGEST_TOKEN',
   'CLAUDE_MEM_PRO_MEMORY_KEY',
   'CLAUDE_MEM_REDIS_URL',
@@ -140,6 +141,9 @@ function withoutEnvironmentEchoes(posted: Record<string, unknown>, settingsPath:
 // runs at all. Provider endpoints also choose where stored credentials and
 // prompt content go; the compatible preset supplies that destination when
 // its explicit base URL is empty, so it has the same boundary.
+// CLAUDE_MEM_LOCAL_API_TOKEN is the credential the local-api-token mode checks; a
+// caller that could rewrite or clear it over HTTP would hold the key to the
+// door it is meant to guard.
 export const FILE_ONLY_SETTING_KEYS = new Set([
   'CLAUDE_CODE_PATH',
   'CLAUDE_MEM_CODEX_PATH',
@@ -151,6 +155,7 @@ export const FILE_ONLY_SETTING_KEYS = new Set([
   'CLAUDE_MEM_OPENROUTER_BASE_URL',
   'CLAUDE_MEM_OPENAI_COMPAT_BASE_URL',
   'CLAUDE_MEM_OPENAI_COMPAT_PRESET',
+  'CLAUDE_MEM_LOCAL_API_TOKEN',
 ]);
 
 const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);

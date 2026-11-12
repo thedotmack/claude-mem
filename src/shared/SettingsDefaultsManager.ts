@@ -399,6 +399,14 @@ export interface SettingsDefaults {
   // GET /api/observations to holders of this secret. Mint with:
   //   node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
   CLAUDE_MEM_TV_TOKEN: string;
+  // Local API token (#5141), for hosts with more than one OS user. EMPTY = OFF:
+  // nothing changes. Set, the worker API and the MCP HTTP transport refuse a
+  // request that does not carry it (X-Claude-Mem-Token or Authorization:
+  // Bearer), except GET /api/health and the MCP /health. The viewer opens as
+  // /?token=... File-only: HTTP cannot write it and the environment does not
+  // switch it. Read once at boot; restart to change. Mint with the same
+  // command as CLAUDE_MEM_TV_TOKEN.
+  CLAUDE_MEM_LOCAL_API_TOKEN: string;
   // claude-mem sign-in funnel state, written by the installer's browser-login
   // step (install.ts promptBrowserLogin/completeTrialPairing). Declared here so
   // loadFromFile round-trips them instead of dropping unknown keys.
@@ -735,6 +743,7 @@ export class SettingsDefaultsManager {
     // GET /api/observations to holders of this secret. Mint with:
     //   node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
     CLAUDE_MEM_TV_TOKEN: '',
+    CLAUDE_MEM_LOCAL_API_TOKEN: '', // Local API token. Empty = off. See the declaration above.
     // claude-mem sign-in funnel state: all empty until the installer's
     // browser-login step writes them.
     CLAUDE_MEM_PRO_TRIAL_EMAIL: '',     // Email the sign-in link was sent to (don't-re-nag marker)

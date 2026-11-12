@@ -1,5 +1,7 @@
 import { createConnection } from 'node:net';
 import { isConnectionRefusedError } from '../../shared/connection-errors.js';
+import { readLocalApiToken } from '../../shared/hook-settings.js';
+import { localApiTokenHeaders } from '../../shared/local-api-token.js';
 import { readOwnedWorkerPidInfo, verifyWorkerPidFileOwnership, type PidInfo } from '../../supervisor/process-registry.js';
 
 /**
@@ -119,8 +121,11 @@ export async function shutdownWorkerAndWait(
 
   let shutdownAccepted = false;
   try {
+    // /api/admin/shutdown is not an open route in local-api-token mode (#5141).
+    const localApiToken = readLocalApiToken();
     const response = await fetch(`http://127.0.0.1:${portNumber}/api/admin/shutdown`, {
       method: 'POST',
+      ...(localApiToken ? { headers: localApiTokenHeaders(localApiToken) } : {}),
       signal: AbortSignal.timeout(SHUTDOWN_REQUEST_TIMEOUT_MS),
     });
     if (!response.ok) {
