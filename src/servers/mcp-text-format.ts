@@ -34,7 +34,7 @@ export function mcpTextResult(text: string, isError = false, maximumBytes = MAX_
 export function formatWorkStateMcpResponse(text: string): McpTextResult {
   return {
     content: [{ type: 'text', text: bounded(text, MAX_TEXT_BYTES,
-      '\n[Work state shortened. Export the complete ordered history with GET /api/work-state/export using the same cwd and optional list; closed items are included.]') }],
+      '\n[Work state shortened. Export the complete ordered history with GET /api/work-state/export on the worker port (CLAUDE_MEM_WORKER_PORT in ~/.claude-mem/settings.json), using the same cwd and optional list; closed items are included.]') }],
     _meta: { 'claude-mem/truncated': Buffer.byteLength(text, 'utf8') > MAX_TEXT_BYTES },
   };
 }
