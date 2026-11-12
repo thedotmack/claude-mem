@@ -3,6 +3,7 @@ import http.server
 import json
 import os
 import pathlib
+import re
 import shutil
 import socket
 import subprocess
@@ -105,6 +106,8 @@ try:
     results = run([('search', {'query': 'restore', 'project': 'cline-fixture'}),
                    ('get_observations', {'ids': [note['id'], foreign], 'project': 'cline-fixture'})], 'recall')
     assert all(not result.get('isError') for result in results), results
+    search_text = '\n'.join(part.get('text', '') for part in results[0].get('content', []) if part.get('type') == 'text')
+    assert any(re.search(rf'\|\s*#{note["id"]}\s*\|', line) and text in line for line in search_text.splitlines()), search_text
     assert text in json.dumps(results[1]) and 'FOREIGN' not in json.dumps(results), results
     worker('stop')
     failed = run([('get_observations', {'ids': [note['id']], 'project': 'cline-fixture'})], 'stopped-worker')
