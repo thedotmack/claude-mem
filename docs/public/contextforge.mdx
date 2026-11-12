@@ -17,6 +17,8 @@ npm run build
 bun plugin/scripts/mcp-server.cjs --http --host 127.0.0.1 --port 37790
 ```
 
+If you installed Claude-Mem as a plugin instead of working from a checkout, skip the build and run the installed copy: `bun ~/.claude/plugins/marketplaces/thedotmack/plugin/scripts/mcp-server.cjs --http --host 127.0.0.1 --port 37790`.
+
 2. Use an authenticated ContextForge instance bound to loopback. Its documented local-server setting must permit the loopback MCP address. Keep gateway authentication enabled. Obtain your existing gateway token through its supported authentication flow and supply it as an `Authorization` header, never in a URL or model prompt.
 
 3. Check `GET /v1/gateways` before registering. Reuse an existing private registration with the same name and URL. Otherwise, send this body to `POST /v1/gateways`:
@@ -49,6 +51,8 @@ On repeated setup, list `GET /v1/servers` and reuse the matching private server 
 Connect an authenticated MCP client to `/servers/SERVER_ID/mcp` on the gateway. This MCP path is separate from the versioned `/v1` administration API. Discover the tools instead of assuming their names: ContextForge prefixes and normalizes upstream names.
 
 Call the discovered search tool with `query` and your exact `project`. Inspect the index, call timeline with the selected `anchor` and the same project, then call observation retrieval with the selected `ids` and project. Check the returned observation text, not just whether the tool returned without an error.
+
+Pass `projects: ["<project>"]` alongside `project` on all three calls. When the MCP server runs from a git worktree, a bare `project` equal to that checkout's own key is widened to every key the checkout reads. The one-item list keeps the read to that exact project.
 
 The project argument narrows results; it is not a multi-user authorization boundary for the local worker. Keep this owner-local virtual server private. Sharing it grants access through your worker's existing local trust model. ContextForge stores gateway configuration and tool metadata. Requested memory content passes through the gateway to its caller. Credentials stay in authentication headers and the gateway's own credential storage.
 
