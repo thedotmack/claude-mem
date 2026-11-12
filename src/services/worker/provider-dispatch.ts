@@ -267,20 +267,22 @@ function noteQuotaFallbackTransition(primary: SelectableProvider, routed: Routed
   quotaFallbackStates.set(primary, next);
 
   switch (next) {
-    case 'fallback':
-      if (routed.provider === 'claude') {
-        logger.warn('SESSION', 'Primary cannot serve right now; memory runs on the Anthropic plan (Claude) until it recovers', {
-          primary,
-          fallback: routed.provider,
-          window: quotaBreakerOf(primary)?.window ?? 'quota',
-        });
-      } else {
-        logger.warn('SESSION', 'Primary in quota cooldown; dispatching to fallback', {
-          primary,
-          fallback: routed.provider,
-        });
-      }
+    case 'fallback': {
+      // Name both providers by the names people know them by (cmem.ai, not
+      // openrouter): the primary that stopped and the one now doing the work.
+      // A Claude backup spends the owner's Anthropic account, so say that and
+      // how to stop it.
+      const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
+      const used = routed.provider === 'claude'
+        ? 'the Anthropic plan (Claude), which spends your Anthropic account,'
+        : quotaProviderDisplayName(routed.provider, settings);
+      logger.warn(
+        'SESSION',
+        `Primary (${quotaProviderDisplayName(primary, settings)}) cannot serve right now; memory runs on ${used} until it recovers. To stop this, set CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER=off`,
+        { primary, fallback: routed.provider, window: quotaBreakerOf(primary)?.window ?? 'quota' },
+      );
       return;
+    }
     case 'probing':
       logger.info('SESSION', 'Primary quota cooldown elapsed; probing primary', { primary });
       return;
