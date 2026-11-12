@@ -425,7 +425,7 @@ def details(d, open_):
     if b:
         rows = [(esc(p["key"]), esc(p["name"]), p["count"], ("incidents × recipients: %s × %s" % (p.get("incidents", 0), p.get("recipients", 0))) if p["key"] == "P9_bad_outbound" else usd2(p["low_usd"] or 0),
                  "—" if p["high_usd"] is None else usd2(p["high_usd"]), f'{p.get("alex_minutes") or 0:g}', p["unmeasured_n"], esc(p.get("detection", "H")), esc(p["failure_type"] or "—"), esc(p["placement"]), esc(p["count_basis"])) for p in b["patterns"]]
-        out.append("<h4>Behavior patterns</h4>" + _table(["key", "pattern", "count", "low (est.)", f"high ({esc(b['patterns'][0].get('high_label', ''))})", "Alex-min", "unmeasured", "basis", "failure type", "place", "count basis"], rows))
+        out.append("<h4>Behavior patterns</h4>" + _table(["key", "pattern", "count", "low (est.)", f"high ({esc(b['patterns'][0].get('high_label', ''))})", "your min", "unmeasured", "basis", "failure type", "place", "count basis"], rows))
         for p in b["patterns"]:
             if p.get("examples"): out.append(f'<div><b>{esc(p["name"])}</b> examples<ul>' + "".join(f'<li><span class="id">{esc(e["content_session_id"] or "")}</span> {esc(e.get("ts_pt") or "")} · {esc(e["basis"])} · <span class="ex">{esc(e["excerpt"])}</span> · {esc(e["label_source"])}</li>' for e in p["examples"][:10]) + "</ul></div>")
         out.append("<h4>Rule effectiveness</h4>")

@@ -47,6 +47,8 @@ class Fixture(unittest.TestCase):
     S2: remote replica (no transcript), completed. S3: trivial. S4: abandoned local with a recovery prompt."""
 
     def setUp(self):
+        self._prev_owner = os.environ.get("ACR_OWNER_NAME")
+        os.environ["ACR_OWNER_NAME"] = "Alex"       # in-process reviews below use the configured owner
         self.tmp = tempfile.mkdtemp(prefix="acr-rollup-"); self.dbp = os.path.join(self.tmp, "claude-mem.db")
         db = _db.make_db(self.dbp)
         _db.add_session(db, "cs1", "m1", "claude-mem", ms(0, 9), completed_ms=ms(0, 10), user_prompt="implement the rollup")
@@ -68,6 +70,8 @@ class Fixture(unittest.TestCase):
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
+        if self._prev_owner is None: os.environ.pop("ACR_OWNER_NAME", None)
+        else: os.environ["ACR_OWNER_NAME"] = self._prev_owner
 
     def build(self, rows=None, scope=None, prices=None, behavior=False, device_exports=()):   # Phase 2 tests exercise the draft waste split; Phase 2B has its own tests
         import sqlite3
@@ -247,12 +251,13 @@ class Cli(Fixture):
         rv = json.load(open(os.path.join(out, "labels.review.json")))
         rv["items"][0].update(category="Feature", reviewed_by="Alex")
         rf = os.path.join(self.tmp, "reviewed.json"); json.dump(rv, open(rf, "w"))
-        r = subprocess.run([sys.executable, _paths.ACR_PY, "review", "--apply", rf, "--out", out], capture_output=True, text=True)
+        r = subprocess.run([sys.executable, _paths.ACR_PY, "review", "--apply", rf, "--out", out, "--owner-name", "Alex"],
+                           capture_output=True, text=True, env=dict(os.environ, ACR_OWNER_NAME=""))
         self.assertEqual(r.returncode, 0, r.stderr)
         rep = json.load(open(os.path.join(out, "report.json")))
         self.assertEqual(rep["labels"], dict(reviewed=1, total=5)); self.assertEqual(rep["line_items"][0]["label_source"], "human")
         rv["items"][1].update(category="Feature", failure_type="Made-up type", reviewed_by="Alex"); json.dump(rv, open(rf, "w"))
-        r = subprocess.run([sys.executable, _paths.ACR_PY, "review", "--apply", rf, "--out", out], capture_output=True, text=True)
+        r = subprocess.run([sys.executable, _paths.ACR_PY, "review", "--apply", rf, "--out", out, "--owner-name", "Alex"], capture_output=True, text=True)
         self.assertNotEqual(r.returncode, 0); self.assertIn("unknown failure type", r.stderr)
 
     def test_rollup_rejects_session_with_period(self):

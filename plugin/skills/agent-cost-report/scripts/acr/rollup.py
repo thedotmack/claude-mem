@@ -11,7 +11,7 @@ import datetime as dt
 import json
 import os
 
-from . import costs, devices, evidence, labels, measure, mistakes, period, snapshot, wins
+from . import costs, devices, evidence, labels, measure, mistakes, owner, period, snapshot, wins
 from . import prices as prices_mod
 from .evidence import LOCAL
 
@@ -318,6 +318,11 @@ def input_path(outdir, name):
 
 
 def run_rollup(args):
+    with owner.scoped(getattr(args, "owner_name", None)):
+        _run_rollup(args)
+
+
+def _run_rollup(args):
     usage_path = input_path(args.out, "usage.json")
     if not os.path.exists(usage_path): raise SystemExit(f"acr.py rollup: {usage_path} not found; run `acr.py collect` first")
     with open(usage_path, encoding="utf-8") as fh: usage = json.load(fh)
@@ -356,9 +361,10 @@ def run_rollup(args):
 
 
 def run_review(args):
-    rp = os.path.join(args.out, "report.json")
-    with open(rp, encoding="utf-8") as fh: report = json.load(fh)
-    with open(args.apply, encoding="utf-8-sig") as fh: reviewed = json.load(fh)      # reviewer-edited; tolerate an editor BOM
-    n = labels.apply_review(report["line_items"], reviewed, period.now_pt().strftime("%Y-%m-%d %H:%M PT"))
-    aggregate(report); write_outputs(args.out, report)
-    print(f"review: applied {n} labels; {report['labels']['reviewed']} of {report['labels']['total']} reviewed -> {rp}")
+    with owner.scoped(getattr(args, "owner_name", None)):
+        rp = os.path.join(args.out, "report.json")
+        with open(rp, encoding="utf-8") as fh: report = json.load(fh)
+        with open(args.apply, encoding="utf-8-sig") as fh: reviewed = json.load(fh)      # reviewer-edited; tolerate an editor BOM
+        n = labels.apply_review(report["line_items"], reviewed, period.now_pt().strftime("%Y-%m-%d %H:%M PT"))
+        aggregate(report); write_outputs(args.out, report)
+        print(f"review: applied {n} labels; {report['labels']['reviewed']} of {report['labels']['total']} reviewed -> {rp}")

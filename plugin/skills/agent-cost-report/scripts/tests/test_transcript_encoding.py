@@ -38,6 +38,6 @@ class ExplicitEncoding(unittest.TestCase):
         reviewed = dict(reviewed_by="Alex", items=[dict(work_item_id="WI-1", category="Feature", title="Résumé — naïve ✓")])
         with open(os.path.join(tmp, "reviewed.json"), "wb") as fh:          # what a Windows editor saves: UTF-8 with a BOM
             fh.write(b"\xef\xbb\xbf" + json.dumps(reviewed, ensure_ascii=False).encode("utf-8"))
-        rollup.run_review(argparse.Namespace(out=tmp, apply=os.path.join(tmp, "reviewed.json")))
+        rollup.run_review(argparse.Namespace(out=tmp, apply=os.path.join(tmp, "reviewed.json"), owner_name="Alex"))
         with open(os.path.join(tmp, "report.json"), encoding="utf-8") as fh: item = next(li for li in json.load(fh)["line_items"] if li["work_item_id"] == "WI-1")
         self.assertEqual((item["reviewed_by"], item["label_source"], item["title"]), ("Alex", "human", "Résumé — naïve ✓"))

@@ -1,12 +1,14 @@
 """Keyword-drafted labels and the review step (plan Phase 2.3 rules, 2.4 review).
 
-CAT_RULES / FAIL_RULES / classify() / active_minutes() copied from
+CAT_RULES / fail_rules() / classify() / active_minutes() copied from
 /workspace/weekly-cost-workflow/weekly_report.py:109-133. The failure set is the closed list in
 SKILL.md:80; Rework is a failure type only, never a category. Every drafted label starts as
 label_source "keyword"; only review --apply may change it to llm | human.
 """
 import collections
 import re
+
+from . import owner
 
 CATEGORIES = ("Feature", "Bug fix", "Incident", "Maintenance", "Investigation", "Experiment")   # SKILL.md:76
 FAILURE_TYPES = ("Looping", "Hedging", "Wrong turn", "Rework", "Regression", "Premature completion", "Unauthorized action",
@@ -23,12 +25,22 @@ CAT_RULES = [("Incident", r"emergency|bleed|outage|incident|brake|hotfix|crash-?
              ("Bug fix", r"\bfix|bug|broken|regression|timeout"),
              ("Feature", r"\bbuild|implement|feature|new skill|wowerpoint|deck|create|execute plans?/")]
 DEFAULT_CATEGORY = "Investigation"
-# copied from weekly_report.py:115-118 (failure signals come from the human/orchestrator prompts only)
-FAIL_RULES = [("Rework", r"\bsteer\b|reset from alex|re-?plan|fix these gaps|verifier found|discard both|too granular|rewrite .* at product altitude|redo"),
-              ("Recovery after miss", r"usage[- ]limit|resume the|relaunch|quota|dead token|401\b"),
+# copied from weekly_report.py:115-118 (failure signals come from the human/orchestrator prompts only).
+# "reset from <owner>" is included only when an owner name is configured; the other phrases are name-free.
+_FAIL_REST = [("Recovery after miss", r"usage[- ]limit|resume the|relaunch|quota|dead token|401\b"),
               ("Wrong turn", r"not a real|misread|flawed|wrong (approach|path)|abandon|too scoped")]
 LOOP_PREFIX, LOOP_MIN = 80, 3                                                                    # weekly_report.py:126
-assert all(c in CATEGORIES for c, _ in CAT_RULES) and all(f in FAILURE_TYPES for f, _ in FAIL_RULES)
+
+
+def fail_rules(name=None):
+    if name is None: name = owner.name()
+    who = owner.alt(name.lower()) if name else None                       # prompt text is lowercased before matching
+    reset = rf"|reset from {who}(?!\w)" if who else ""
+    rework = rf"\bsteer\b{reset}|re-?plan|fix these gaps|verifier found|discard both|too granular|rewrite .* at product altitude|redo"
+    return [("Rework", rework)] + _FAIL_REST
+
+
+assert all(c in CATEGORIES for c, _ in CAT_RULES) and all(f in FAILURE_TYPES for f, _ in fail_rules(""))
 
 
 def _first(rules, text):
@@ -47,7 +59,7 @@ def classify(e, s):
     if cat is None: cat, kw, where = DEFAULT_CATEGORY, None, "default"
     ptxt = " ".join([s.get("user_prompt") or ""] + e["prompts"]).lower()
     fails = []; fkw = {}
-    for f, rx in FAIL_RULES:
+    for f, rx in fail_rules():
         m = re.search(rx, ptxt)
         if m: fails.append(f); fkw[f] = m.group(0)
     firsts = [x[:LOOP_PREFIX] for x in e["prompts"] if x]
@@ -81,11 +93,13 @@ class ReviewError(ValueError):
 def apply_review(line_items, reviewed, reviewed_at_pt):
     """Merge confirmed labels into line items. An entry counts as reviewed when it names a category
     (and optionally failure_type / failure_signals) and a reviewed_by; label_source becomes
-    'human' for reviewed_by 'Alex' (case-insensitive) or an explicit entry label_source, else 'llm'.
-    Unreviewed entries are left as keyword drafts. failure_signals / failure_type left null keep the draft's
-    signals; pass failure_signals: [] to clear them. Returns the number applied."""
+    'human' when reviewed_by matches the configured owner name or its first word (case-insensitive) or the entry sets
+    label_source, else 'llm'. With no owner name, only an explicit label_source of human counts as a
+    human review. Unreviewed entries are left as keyword drafts. failure_signals / failure_type left
+    null keep the draft's signals; pass failure_signals: [] to clear them. Returns the number applied."""
     entries = reviewed.get("items", reviewed) if isinstance(reviewed, dict) else reviewed
     default_by = reviewed.get("reviewed_by") if isinstance(reviewed, dict) else None   # file-level default
+    owner_names = {n.casefold() for n in owner.names()}
     by_id = {li["work_item_id"]: li for li in line_items}; n = 0
     for en in entries:
         en = dict(en)
@@ -100,7 +114,8 @@ def apply_review(line_items, reviewed, reviewed_at_pt):
         for f in fails:
             if f not in FAILURE_TYPES: raise ReviewError(f"{en['work_item_id']}: unknown failure type {f!r} (SKILL.md:80 is the set)")
         src = en.get("label_source")
-        if src in (None, "keyword"): src = "human" if str(en["reviewed_by"]).strip().lower() == "alex" else "llm"
+        if src in (None, "keyword"):
+            src = "human" if str(en["reviewed_by"]).strip().casefold() in owner_names else "llm"
         if src not in ("llm", "human"): raise ReviewError(f"{en['work_item_id']}: label_source must be llm or human, got {src!r}")
         if en.get("status") is not None:
             if en["status"] not in STATUSES: raise ReviewError(f"{en['work_item_id']}: unknown status {en['status']!r}")
