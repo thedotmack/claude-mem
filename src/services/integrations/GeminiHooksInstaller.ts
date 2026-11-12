@@ -3,6 +3,7 @@ import { homedir } from 'os';
 import path from 'path';
 import { parseJsonWithBom, writeJsonFileAtomic } from '../../shared/atomic-json.js';
 import { getBunAbsolutePath, getWorkerServiceAbsolutePath } from './install-paths.js';
+import { resolveWorkerScript, type WorkerScriptSearchRoots } from '../../shared/worker-utils.js';
 import { GEMINI_HOOK_TIMEOUT_MS } from '../../shared/host-hook-limits.js';
 
 type Command = { type?: string; name?: string; command?: string; timeout?: number; [key: string]: unknown };
@@ -64,6 +65,21 @@ export function removeGeminiHooks(hooks: Hooks): Hooks {
   return next;
 }
 
+/**
+ * The worker script the Gemini hooks run. The stable plugin path wins: Gemini
+ * settings are written once and nothing rewrites them on update, while the
+ * plugin cache keeps only DEFAULT_CACHE_RETENTION versions
+ * (src/npx-cli/utils/prune-cache.ts). A baked cache path would run old code and
+ * then point at a pruned folder two releases later. The cache resolver is the
+ * fallback for installs that only have the cache.
+ */
+export function resolveGeminiWorkerScript(
+  stableLookup: () => string | null = getWorkerServiceAbsolutePath,
+  roots?: WorkerScriptSearchRoots,
+): string | null {
+  return stableLookup() ?? resolveWorkerScript(roots)?.scriptPath ?? null;
+}
+
 function readSettings(file: string): Settings {
   if (!existsSync(file)) return {};
   const value = parseJsonWithBom(readFileSync(file, 'utf8'));
@@ -75,7 +91,11 @@ function readSettings(file: string): Settings {
   return settings;
 }
 
-export function manageGeminiHooks(action: 'install' | 'uninstall' | 'status', file = geminiSettingsPath()): number {
+export function manageGeminiHooks(
+  action: 'install' | 'uninstall' | 'status',
+  file = geminiSettingsPath(),
+  resolveWorker: () => string | null = () => resolveGeminiWorkerScript(),
+): number {
   try {
     const settings = readSettings(file);
     const cleaned = removeGeminiHooks(settings.hooks ?? {});
@@ -90,7 +110,7 @@ export function manageGeminiHooks(action: 'install' | 'uninstall' | 'status', fi
     }
     if (action === 'uninstall' && !existsSync(file)) return 0;
     if (action === 'install') {
-      const worker = getWorkerServiceAbsolutePath();
+      const worker = resolveWorker();
       if (!worker) throw new Error('Cannot find worker-service.cjs. Build or install Claude-Mem first.');
       const own = buildGeminiHooks(getBunAbsolutePath(), worker);
       for (const [event, rules] of Object.entries(own)) cleaned[event] = [...(cleaned[event] ?? []), ...rules];
