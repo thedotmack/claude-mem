@@ -95,12 +95,14 @@ describe('deriveTitle', () => {
 });
 
 describe('memoryDirForCwd', () => {
+  // The returned path is joined with the platform separator, so the expected
+  // tail is built the same way instead of hard-coding a forward slash.
   it('encodes the cwd path with dashes', () => {
-    expect(memoryDirForCwd('/home/u/code/mm/obs')).toContain('-home-u-code-mm-obs/memory');
+    expect(memoryDirForCwd('/home/u/code/mm/obs')).toContain(join('-home-u-code-mm-obs', 'memory'));
   });
 
   it('dashes dots too, as Claude Code names its project dirs', () => {
-    expect(memoryDirForCwd('/Users/john.doe/proj')).toContain('-Users-john-doe-proj/memory');
+    expect(memoryDirForCwd('/Users/john.doe/proj')).toContain(join('-Users-john-doe-proj', 'memory'));
   });
 });
 

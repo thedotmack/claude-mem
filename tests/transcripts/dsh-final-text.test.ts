@@ -1,5 +1,5 @@
 import { expect, it } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { zstdCompressSync } from 'node:zlib';
@@ -11,6 +11,7 @@ import { loadWatchState } from '../../src/services/transcripts/state.js';
 import { buildSummaryPrompt } from '../../src/sdk/prompts.js';
 import { ModeManager } from '../../src/services/domain/ModeManager.js';
 import type { TranscriptSchema, WatchTarget } from '../../src/services/transcripts/types.js';
+import { removeTempDir } from '../helpers/temp-dir.js';
 
 const schema = JSON.parse(readFileSync(new URL('../../dsh/transcript-schema.json', import.meta.url), 'utf8')) as TranscriptSchema;
 const reasoning = 'Internal hypothesis: the migration may have failed.';
@@ -62,7 +63,7 @@ async function summaryFromTranscript(messages: unknown[], expected: string): Pro
     watcher.stop();
     sessionManager.discardBufferedWork(sessionDbId);
     store.close();
-    rmSync(root, { recursive: true, force: true });
+    await removeTempDir(root);
   }
 }
 

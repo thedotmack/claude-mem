@@ -79,8 +79,8 @@ See [Architecture Overview](architecture/overview) for details.
 
 ## System Requirements
 
-- **Node.js**: 20.0.0 or higher
-- **Bun** ≥ 1.0 (auto-installed by `npx claude-mem install` if missing)
+- **Node.js**: 20.19 or later in the 20.x line, or 22.12 or later
+- **Bun** ≥ 1.2.16 (the hook launcher is compiled with Bun and that step needs it; `npx claude-mem install` installs Bun if it is missing). On macOS 27 the signed launcher needs 1.4.1 or newer.
 - **uv** (auto-installed if missing — provides Python for Chroma)
 - **Claude Code** (or another supported IDE: Cursor, Windsurf, OpenCode, Codex CLI, Antigravity CLI, OpenClaw)
 - **SQLite 3** — bundled via `bun:sqlite`

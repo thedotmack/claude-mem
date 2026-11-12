@@ -35,6 +35,27 @@ describe('Project Filter', () => {
         expect(isProjectExcluded('/Users/test/kunden/client1/project', '/Users/*/kunden/**')).toBe(true);
         expect(isProjectExcluded('/Users/test/kunden/deep/nested/project', '/Users/*/kunden/**')).toBe(true);
       });
+
+      for (const [name, separator] of [
+        ['LF', '\n'],
+        ['CR', '\r'],
+        ['line separator', '\u2028'],
+        ['paragraph separator', '\u2029'],
+      ]) {
+        it(`matches ${name} inside path components for exclusions and deny-lists`, () => {
+          const folder = `/workspace/team${separator}one/private`;
+          for (const pattern of ['/workspace/**', '/workspace/**/private', '**/private']) {
+            expect(isProjectExcluded(folder, pattern)).toBe(true);
+            expect(matchesAnyGlob(folder, [pattern])).toBe(true);
+          }
+          expect(isProjectExcluded(`${folder}/cache`, '/workspace/**/private/**')).toBe(true);
+          expect(matchesAnyGlob(`${folder}/cache`, ['/workspace/**/private/**'])).toBe(true);
+          expect(isProjectExcluded(`${folder}-copy`, '/workspace/**/private')).toBe(false);
+          expect(matchesAnyGlob(`${folder}-copy`, ['/workspace/**/private'])).toBe(false);
+          expect(isProjectExcluded(folder, '/workspace/*')).toBe(false);
+          expect(matchesAnyGlob(folder, ['/workspace/*'])).toBe(false);
+        });
+      }
     });
 
     describe('with **/ matching zero or more directories', () => {
