@@ -50,6 +50,11 @@ python3 tests/fixtures/n8n-smoke.py
 
 The fixture runs the actual importer and execution engine with separate databases. It checks the exact saved ID and text, excludes another project's search result, rejects an HTTP-success response that did not confirm a save, and verifies that a stopped worker fails the workflow. It inspects run data instead of relying on process exit codes. All records are synthetic. Windows/Linux, n8n Cloud and container networking were not tested.
 
+## Troubleshooting
+
+- **Save fails with a connection error, or times out after five seconds.** The worker isn't running, or `baseUrl` has the wrong port. Check it with `curl -s http://127.0.0.1:PORT/api/health`. If n8n runs in a container, `127.0.0.1` is the container itself, not your workstation.
+- **The run stops with "The worker did not confirm a saved memory."** The worker answered without `success: true`, so nothing was searched or retrieved. Open the Save node's output in the execution to read the worker's response.
+
 ## Disconnect
 
 Leave the workflow inactive, then remove only the imported workflow if you no longer need it. Remove its execution history separately under your n8n retention policy. Disconnecting does not delete Claude-Mem memories or change unrelated workflows, hooks or MCP configuration.
