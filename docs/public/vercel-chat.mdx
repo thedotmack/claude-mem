@@ -36,7 +36,8 @@ export CHAT_MEMORY_PROJECT='chat-practice'
 export CLAUDE_MEM_WORKER_URL='http://127.0.0.1:37777'
 export CHAT_DEMO_PORT='3210'
 export CHAT_DEMO_TOKEN="$(openssl rand -hex 32)"
-bun /absolute/path/to/claude-mem/examples/vercel-chat/memory.mjs
+bun /absolute/path/to/claude-mem/examples/vercel-chat/memory.mjs &
+CHAT_DEMO_PID=$!
 ```
 
 Use the worker's actual port. The worker URL must be a plain `http://127.0.0.1:PORT` origin without credentials, path or query parameters. The demo listens only on `127.0.0.1`. The token must have at least 24 characters and is not printed by the example. Keep it in the environment of your HTTP client too.
@@ -45,7 +46,7 @@ The Web adapter's official `getUser` callback checks the bearer token and identi
 
 ## Try the commands
 
-In another terminal with the same `CHAT_DEMO_TOKEN` and `CHAT_DEMO_PORT`, send a message using the Web adapter's AI SDK HTTP protocol:
+In the same terminal, send a message using the Web adapter's AI SDK HTTP protocol:
 
 ```bash
 curl --fail-with-body -N "http://127.0.0.1:${CHAT_DEMO_PORT}/chat" \
@@ -81,4 +82,4 @@ This checks the local SDK transport, not a browser UI or any external chat platf
 - **Empty retrieval:** use the saved numeric ID and the same server-configured project. An ID from another project is intentionally withheld.
 - **Excluded project:** run from the intended directory and check the worker's exclusion settings. The demo does not override them.
 
-Press Ctrl+C in the demo terminal to stop it. Its chat state is held only in RAM, and message history persistence is disabled. Saved worker memories remain. No Claude, Codex or platform configuration is installed or changed; removing the example dependencies disconnects nothing else.
+Run `kill "$CHAT_DEMO_PID"` in the same terminal to stop the demo process you started. Its chat state is held only in RAM, and message history persistence is disabled. Saved worker memories remain. No Claude, Codex or platform configuration is installed or changed; removing the example dependencies disconnects nothing else.
