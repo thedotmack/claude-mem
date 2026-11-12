@@ -193,6 +193,8 @@ See [CMEM Pro (manual / headless)](/cmem-pro-headless).
 
 claude-mem updates itself: once a day it checks the release its owner promotes and installs it while you are away (see [Auto-update](/auto-update)). To update by hand, run `npx claude-mem update`. The on-PATH launcher is version-stable: it carries no claude-mem logic, so an update does not need a new one. When an update does need a newer launcher, the startup SessionStart self-heal compiles it, and that first session may miss memory context while it does. `npx claude-mem update` refreshes the plugin, its dependencies and the launcher in one step. If an update leaves dependencies missing, run `npx claude-mem@latest install`.
 
+`update` (also available as `upgrade`) keeps your configured provider, model, runtime, account, and preferences. It refreshes the saved agent selection without reopening the setup wizard or repeating optional email, telemetry, and auto-memory questions. Older installations without a saved agent selection refresh the shared plugin and keep existing agent configuration. If a provider choice or API key is missing, an interactive update asks only for that setup; an unattended update with missing provider credentials reports what needs fixing. Run `npx claude-mem install` when you want to change your setup.
+
 See [CHANGELOG](https://github.com/thedotmack/claude-mem/blob/main/docs/CHANGELOG.md) for complete version history.
 
 ## Next Steps
