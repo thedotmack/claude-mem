@@ -29,13 +29,15 @@ function exportDirectory(vault: string, source: string): string {
   let directory = vault;
   for (const part of ['Claude-Mem', source]) {
     directory = join(directory, part);
+    // Create first, then check what is there. Another export can create the
+    // folder between a check and a create; mkdir never follows a symlink it finds.
     try {
-      const info = lstatSync(directory);
-      if (info.isSymbolicLink() || !info.isDirectory()) throw new Error('The export directory must be a directory, not a symlink or file.');
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       mkdirSync(directory, { mode: 0o700 });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
     }
+    const info = lstatSync(directory);
+    if (info.isSymbolicLink() || !info.isDirectory()) throw new Error('The export directory must be a directory, not a symlink or file.');
   }
   return directory;
 }

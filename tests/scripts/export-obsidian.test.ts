@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
+import * as fs from 'node:fs';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -81,6 +82,30 @@ describe('selected memory export to Obsidian', () => {
     expect(note).toContain('````text\n```\n![]');
     expect(note).toEndWith('```\n````\n');
     expect(note).toContain('# Memory 42');
+  });
+
+  it('accepts an export folder another export creates at the same moment', async () => {
+    // Simulate a second export process winning the race: the folder appears
+    // right before this export's own mkdir, which then fails with EEXIST.
+    const realMkdir = fs.mkdirSync;
+    let raced = 0;
+    const racing = spyOn(fs, 'mkdirSync').mockImplementation(((path: fs.PathLike, options?: fs.MakeDirectoryOptions) => {
+      raced++;
+      realMkdir(path, options);
+      return realMkdir(path, options);
+    }) as typeof fs.mkdirSync);
+    try {
+      expect((await exportObsidianNotes(options())).created).toEqual([42]);
+    } finally {
+      racing.mockRestore();
+    }
+    expect(raced).toBe(2);
+    expect(readFileSync(join(vault, 'Claude-Mem', 'test-laptop', '42.md'), 'utf8')).toContain('Use the amber region.');
+  });
+
+  it('refuses an export path that is a file', async () => {
+    writeFileSync(join(vault, 'Claude-Mem'), 'not a folder');
+    await expect(exportObsidianNotes(options())).rejects.toThrow('must be a directory');
   });
 
   it('refuses symlinked export directories and does not modify their targets', async () => {
