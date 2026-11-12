@@ -6,6 +6,8 @@ on:
       - 'src/**'
       - 'tests/**'
       - 'plugin/scripts/**'
+      - 'plugin/skills/**'
+      - 'hermes/**'
       - 'scripts/**'
       - 'tests/scripts/**'
       - 'package.json'
@@ -45,6 +47,25 @@ jobs:
       - run: npm install --no-audit --no-fund
 
       - run: npm run build
+
+      # The Linux lane runs both Python suites (ci.yml); Windows never did, which is how three POSIX
+      # path assumptions in the agent-cost-report skill and two in tests/hermes went unnoticed. The
+      # interpreter is pinned rather than taken from the image, and discovery matches Linux.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Python suites (agent-cost-report skill, Hermes provider)
+        shell: pwsh
+        run: |
+          # The cost-report package opens America/Los_Angeles through zoneinfo at import time, and
+          # Windows ships no IANA database, so the tzdata package has to provide it.
+          python -m pip install --disable-pip-version-check --quiet tzdata
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -B -m unittest discover -s plugin/skills/agent-cost-report/scripts/tests -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -B -m unittest discover -s tests/hermes -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Hook compatibility with Git Bash and Windows overrides
         shell: pwsh
