@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { HumanCopyWorker, MAX_VALIDATION_ATTEMPTS, chatCompletionsHumanCopyProvider, fitGeneratedCopy } from '../../../src/services/work-view/human-copy-worker.mjs';
+import { HumanCopyWorker, MAX_OUTPUT_REJECTION_ATTEMPTS, chatCompletionsHumanCopyProvider, fitGeneratedCopy } from '../../../src/services/work-view/human-copy-worker.mjs';
 import { createHumanCopyInput, validateHumanCopy } from '../../../src/services/work-view/human-copy.mjs';
 
 const disposals = [];
@@ -449,12 +449,12 @@ test('validator rejections back off exponentially and wait for change after max 
   assert.equal(instance.failures.get(source.id).attempt, 3);
   assert.equal(instance.failures.get(source.id).waitForChange, true);
 
-  // Reached MAX_VALIDATION_ATTEMPTS (3). waitForChange is now true.
-  assert.equal(MAX_VALIDATION_ATTEMPTS, 3);
+  // Reached MAX_OUTPUT_REJECTION_ATTEMPTS (3). waitForChange is now true.
+  assert.equal(MAX_OUTPUT_REJECTION_ATTEMPTS, 3);
   now = 3600 * 1000;
   instance.pump();
   await settle();
-  assert.equal(calls, 3, 'validator rejections stop retrying on a timer after MAX_VALIDATION_ATTEMPTS');
+  assert.equal(calls, 3, 'validator rejections stop retrying on a timer after MAX_OUTPUT_REJECTION_ATTEMPTS');
 
   // New input / fingerprint resets attempt and retries
   const updatedSource = request('request-one', 'Different progress.');
@@ -492,14 +492,14 @@ test('temporary connection failures do not count as validation errors or block r
   await settle();
   assert.equal(calls, 1);
   assert.equal(instance.status().failures[0].reason, 'Summary request failed');
-  assert.equal(instance.failures.get(source.id).validationAttempts, 0);
+  assert.equal(instance.failures.get(source.id).outputRejectionAttempts, 0);
   assert.equal(instance.failures.get(source.id).waitForChange, false);
 
   // Connection fails 3 times
   now = 100; instance.pump(); await settle(); assert.equal(calls, 2);
   now = 200; instance.pump(); await settle(); assert.equal(calls, 3);
   assert.equal(instance.failures.get(source.id).attempt, 3);
-  assert.equal(instance.failures.get(source.id).validationAttempts, 0);
+  assert.equal(instance.failures.get(source.id).outputRejectionAttempts, 0);
   assert.equal(instance.failures.get(source.id).waitForChange, false, 'network TypeError does not set waitForChange');
 
   // Next retry at now = 300 should run and recover
@@ -521,27 +521,66 @@ test('unrelated HTTP failures do not consume validation attempts', async () => {
 
   // Call 1: 429
   instance.observe(view(source)); await settle(); assert.equal(calls, 1);
-  assert.equal(instance.failures.get(source.id).validationAttempts, 0);
+  assert.equal(instance.failures.get(source.id).outputRejectionAttempts, 0);
 
   // Call 2: 429
   now = 100; instance.pump(); await settle(); assert.equal(calls, 2);
-  assert.equal(instance.failures.get(source.id).validationAttempts, 0);
+  assert.equal(instance.failures.get(source.id).outputRejectionAttempts, 0);
 
-  // Call 3: Malformed copy (validation error). attempt is 3, but validationAttempts should be 1!
+  // Call 3: Malformed copy (validation error). attempt is 3, but outputRejectionAttempts should be 1!
   now = 300; instance.pump(); await settle(); assert.equal(calls, 3);
   assert.equal(instance.failures.get(source.id).attempt, 3);
-  assert.equal(instance.failures.get(source.id).validationAttempts, 1);
+  assert.equal(instance.failures.get(source.id).outputRejectionAttempts, 1);
   assert.equal(instance.failures.get(source.id).waitForChange, false, 'one validation failure after 429s does not block retries');
 
   // Call 4: Validation attempt 2
   now = 400; instance.pump(); await settle(); assert.equal(calls, 4);
-  assert.equal(instance.failures.get(source.id).validationAttempts, 2);
+  assert.equal(instance.failures.get(source.id).outputRejectionAttempts, 2);
   assert.equal(instance.failures.get(source.id).waitForChange, false);
 
-  // Call 5: Validation attempt 3 -> now reaches MAX_VALIDATION_ATTEMPTS
+  // Call 5: Validation attempt 3 -> now reaches MAX_OUTPUT_REJECTION_ATTEMPTS
   now = 600; instance.pump(); await settle(); assert.equal(calls, 5);
-  assert.equal(instance.failures.get(source.id).validationAttempts, 3);
+  assert.equal(instance.failures.get(source.id).outputRejectionAttempts, 3);
   assert.equal(instance.failures.get(source.id).waitForChange, true);
 });
 
 
+
+test('an empty model answer stops after the rejection cap instead of retrying forever (#6037)', async () => {
+  let now = 0, calls = 0;
+  const source = request();
+  const instance = worker(async () => {
+    calls++;
+    return { output: null, error: 'No answer text (finish: length).' };
+  }, { now: () => now, retryMs: 100, maxRetryMs: 1000 });
+  disposals.push(() => instance.close());
+
+  instance.observe(view(source)); await settle();
+  for (let pump = 0; pump < 20; pump++) { now += 1000; instance.pump(); await settle(); }
+
+  assert.equal(calls, MAX_OUTPUT_REJECTION_ATTEMPTS, 'one unchanged request version gets at most the capped number of calls');
+  assert.equal(instance.failures.get(source.id).reason, 'No answer text');
+  assert.equal(instance.failures.get(source.id).waitForChange, true);
+
+  instance.observe(view(request('request-one', 'Different progress.')));
+  now += 1000; instance.pump(); await settle();
+  assert.equal(calls, MAX_OUTPUT_REJECTION_ATTEMPTS + 1, 'changed input is tried again');
+});
+
+test('a reply body that is not JSON keeps the flat retry, since that is a transport problem', async () => {
+  let now = 0, calls = 0;
+  const source = request();
+  const instance = worker(async () => {
+    calls++;
+    throw new SyntaxError('Unexpected token < in JSON');
+  }, { now: () => now, retryMs: 100, maxRetryMs: 1000 });
+  disposals.push(() => instance.close());
+
+  instance.observe(view(source)); await settle();
+  for (let pump = 0; pump < 5; pump++) { now += 100; instance.pump(); await settle(); }
+
+  assert.equal(calls, 6);
+  assert.equal(instance.failures.get(source.id).reason, 'Invalid JSON response');
+  assert.equal(instance.failures.get(source.id).outputRejectionAttempts, 0);
+  assert.equal(instance.failures.get(source.id).waitForChange, false);
+});

@@ -43,7 +43,7 @@ function safeFailureReason(error) {
   if (message === 'Invalid summary JSON.') return 'Invalid summary JSON';
   if (error?.name === 'AbortError' || error?.name === 'TimeoutError') return 'Request timed out';
   if (error?.name === 'SyntaxError') return 'Invalid JSON response';
-  if (error?.isValidationError && error instanceof TypeError && message) return message.endsWith('.') ? message.slice(0, -1) : message;
+  if (error?.isOutputRejection && error instanceof TypeError && message) return message.endsWith('.') ? message.slice(0, -1) : message;
   return 'Summary request failed';
 }
 
@@ -113,7 +113,11 @@ export function chatCompletionsHumanCopyProvider({ url, apiKey, model, fallbackM
 // inside My Work's 6-hour staleness threshold (STALE_AFTER_MS, status-normalization.ts), so wording recovers after a
 // top-up or a rate window passes, before the card would read as stale.
 const MAX_RETRY_MS = 60 * 60 * 1000;
-export const MAX_VALIDATION_ATTEMPTS = 3;
+// How many times one unchanged request version is sent after the model's answer is rejected (empty, not JSON, or
+// failing validateHumanCopy) before it waits for new input or settings. #6037 measured 47,264 failures in 104,869
+// calls (about 45%) on a small local model. Three tries leave about 9% (0.45^3) of valid inputs unworded until the
+// input changes, and cap a rejected input version at 3 calls instead of one every retryMs, forever.
+export const MAX_OUTPUT_REJECTION_ATTEMPTS = 3;
 
 export class HumanCopyWorker {
   constructor({ provider, cachePath = null, persistSharedCopy = null,
@@ -268,7 +272,7 @@ export class HumanCopyWorker {
       try {
         copy = validateHumanCopy(fitGeneratedCopy(redactJsonStrings(result.output ?? result)), job.input);
       } catch (validationError) {
-        validationError.isValidationError = true;
+        validationError.isOutputRejection = true;
         throw validationError;
       }
       // A response for an old snapshot never overwrites the newer request.
@@ -290,14 +294,17 @@ export class HumanCopyWorker {
       const previous = this.failures.get(job.id);
       const sameFingerprint = previous?.fingerprint === job.fingerprint;
       const attempt = sameFingerprint ? previous.attempt + 1 : 1;
-      const isValidationError = Boolean(error?.isValidationError) || reason === 'Invalid summary JSON';
-      const validationAttempts = (sameFingerprint ? (previous.validationAttempts ?? 0) : 0) + (isValidationError ? 1 : 0);
+      // The model answered, but the answer can't be used: it failed validation, wasn't JSON, or was empty (a small
+      // local model that ran out of tokens). The same input gets the same answer, so these are capped. A body that
+      // isn't JSON at all ('Invalid JSON response') is a transport or proxy problem and keeps the flat retry.
+      const isOutputRejection = Boolean(error?.isOutputRejection) || reason === 'Invalid summary JSON' || reason === 'No answer text';
+      const outputRejectionAttempts = (sameFingerprint ? (previous.outputRejectionAttempts ?? 0) : 0) + (isOutputRejection ? 1 : 0);
       const waitForChange = (status !== null && isPermanentClientError(status))
-        || (isValidationError && validationAttempts >= MAX_VALIDATION_ATTEMPTS);
-      const retryAfterMs = RETRYABLE_CLIENT_STATUSES.includes(status) || isValidationError
-        ? Math.min(this.retryMs * 2 ** Math.min((isValidationError ? validationAttempts : attempt) - 1, 20), this.maxRetryMs)
+        || (isOutputRejection && outputRejectionAttempts >= MAX_OUTPUT_REJECTION_ATTEMPTS);
+      const retryAfterMs = RETRYABLE_CLIENT_STATUSES.includes(status) || isOutputRejection
+        ? Math.min(this.retryMs * 2 ** Math.min((isOutputRejection ? outputRejectionAttempts : attempt) - 1, 20), this.maxRetryMs)
         : this.retryMs;
-      const failure = { fingerprint: job.fingerprint, at, reason, attempt, validationAttempts, waitForChange, retryAfterMs };
+      const failure = { fingerprint: job.fingerprint, at, reason, attempt, outputRejectionAttempts, waitForChange, retryAfterMs };
       this.failures.set(job.id, failure); this.revision++;
       this.warnFailure(reason, waitForChange, retryAfterMs);
       await this.recordFailure(job, failure);
