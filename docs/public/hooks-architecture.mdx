@@ -201,7 +201,7 @@ See [claude-mem: command not found in hooks](/troubleshooting#claude-mem-command
 
 **Codex subagents:** Codex starts a subagent it spawns with `SubagentStart`, not `SessionStart`, so the `SubagentStart` hook gives the subagent the timeline. A forked subagent starts from a copy of its parent's conversation, timeline included, so the hook skips it: it reads `forked_from_id` from the first line of the subagent's rollout (`transcript_path`). A subagent whose rollout can't be read gets the timeline.
 
-**Trusting new Codex hooks:** Codex runs a plugin hook only after you trust it, and it treats a new or changed hook as untrusted. After an update that adds or changes a claude-mem hook, Codex says at startup that hooks need review. Trust them, or those hooks won't run. `codex exec` can't ask, so trust them once in interactive Codex first.
+**Trusting Codex hooks:** Codex runs a hook only after you trust it. The installer registers claude-mem's hooks in your own `~/.codex/hooks.json`, not inside the plugin, because Codex re-checks a plugin's whole folder and would switch a bundled hook off after every claude-mem update. A hook in `hooks.json` is trusted by its own definition (event, matcher, command, timeout) and its position in the file, and its command is the `claude-mem` launcher, which finds the newest install by itself. So one approval lasts across updates. Codex asks again only when a hook's definition changes, when claude-mem adds a hook, or when another tool's hook listed before it is removed. Trust the hooks with `/hooks` in interactive Codex: `codex exec` can't ask. `npx claude-mem doctor` shows a `Codex hooks` row when the hooks are missing from `hooks.json`.
 
 **Output format:**
 ```markdown

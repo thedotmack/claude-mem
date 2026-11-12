@@ -24,7 +24,7 @@
   ],
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
-  "hooks": "./hooks/codex-hooks.json",
+  "hooks": "./hooks/codex-no-bundled-hooks.json",
   "interface": {
     "displayName": "claude-mem",
     "shortDescription": "Persistent memory: the next session starts where the last one left off.",

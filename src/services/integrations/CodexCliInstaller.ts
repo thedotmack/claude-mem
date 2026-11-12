@@ -19,6 +19,8 @@ import { readJsonFileWithBom, writeJsonFileAtomic, writeTextFileAtomic } from '.
 import { paths } from '../../shared/paths.js';
 import { RUNTIME_SKILLS } from '../../shared/runtime-skills.js';
 import { buildSpawnSyncInvocation, lookupWindowsCommandCandidates, type SpawnSyncInvocation } from '../../shared/spawn.js';
+import { currentLauncherHostEnvironment, resolveLauncherBinaryPath } from '../../launcher/install-launcher.js';
+import { registerCodexUserHooks, removeCodexUserHooks, type CodexUserHooksResult } from './codex-user-hooks.js';
 
 const CODEX_DIR = path.resolve(process.env.CODEX_HOME || path.join(homedir(), '.codex'));
 const CODEX_AGENTS_MD_PATH = path.join(CODEX_DIR, 'AGENTS.md');
@@ -645,6 +647,25 @@ export function stripLegacyTranscriptWatchContexts(configPath = CODEX_TRANSCRIPT
 
 const cleanupLegacyCodexTranscriptAgentsContext = disableCodexTranscriptAgentsContext;
 
+/**
+ * Register claude-mem's hooks in the home's own hooks.json, not in the plugin
+ * bundle: Codex re-approves a bundled hook after every plugin update, and a
+ * user-level hook only when its declaration changes (see codex-user-hooks.ts).
+ * `dryRun` checks that the existing file can be merged without writing it.
+ */
+function registerCodexHooksForHome(
+  marketplaceRoot: string,
+  codexHome: string,
+  options: { dryRun?: boolean; launcherPath?: string } = {},
+): CodexUserHooksResult {
+  return registerCodexUserHooks({
+    codexHome,
+    hookDefinitionsPath: path.join(marketplaceRoot, 'plugin', 'hooks', 'codex-hooks.json'),
+    launcherPath: options.launcherPath ?? resolveLauncherBinaryPath(currentLauncherHostEnvironment()),
+    dryRun: options.dryRun,
+  });
+}
+
 export async function installCodexCli(marketplaceRootOverride?: string): Promise<number> {
   console.log('\nInstalling Claude-Mem for Codex CLI (native hooks)...\n');
 
@@ -668,29 +689,48 @@ export function installCodexPluginForHome(options: {
   marketplaceRoot: string;
   homePath: string;
   spawn: CodexSpawn;
+  /** Defaults to the on-PATH claude-mem launcher. */
+  launcherPath?: string;
 }): void {
   const root = assertCodexMarketplaceRoot(options.marketplaceRoot);
   assertCodexMarketplaceSupported(options.spawn);
+  // Refuse an unreadable hooks.json before changing anything in this home.
+  registerCodexHooksForHome(root, options.homePath, { dryRun: true, launcherPath: options.launcherPath });
   const run = (args: string[]) => runCodex(args, options.spawn);
   registerCodexMarketplace(root, run);
+  // The refreshed plugin copy bundles no hooks, so adding it first means the
+  // user-level hooks written next are the only registration.
   run(['plugin', 'add', CODEX_PLUGIN_ID]);
   writeCodexPluginConfig(true, path.join(options.homePath, 'config.toml'));
+  registerCodexHooksForHome(root, options.homePath, { launcherPath: options.launcherPath });
 }
 
 export function disableCodexPluginForHome(homePath: string): void {
   writeCodexPluginConfig(false, path.join(homePath, 'config.toml'));
+  removeCodexUserHooks(homePath);
 }
 
 function performCodexInstall(marketplaceRootOverride?: string): number {
   assertCodexMarketplaceSupported();
   const marketplaceRoot = resolvePluginMarketplaceRoot(marketplaceRootOverride);
 
+  // Refuse an unreadable hooks.json before changing anything in Codex's home.
+  registerCodexHooksForHome(marketplaceRoot, CODEX_DIR, { dryRun: true });
+
   console.log(`  Registering Codex plugin marketplace: ${marketplaceRoot}`);
   repairStaleMarketplaceRegistration();
   registerCodexMarketplace(marketplaceRoot);
   enableCodexPluginConfig();
+  // The refreshed plugin copy bundles no hooks, so adding it first means the
+  // user-level hooks written next are the only registration.
   runCodex(['plugin', 'add', CODEX_PLUGIN_ID]);
   console.log('  Installed Codex plugin cache.');
+  const hooks = registerCodexHooksForHome(marketplaceRoot, CODEX_DIR);
+  console.log(`  Registered ${hooks.hookCount} claude-mem hooks in ${hooks.hooksPath}${hooks.changed ? '' : ' (already registered)'}`);
+  const launcherPath = resolveLauncherBinaryPath(currentLauncherHostEnvironment());
+  if (!existsSync(launcherPath)) {
+    console.warn(`  The claude-mem launcher is not at ${launcherPath} yet. Codex hooks run through it; run: npx claude-mem@latest install`);
+  }
   if (!cleanupLegacyCodexAgentsMdContext()) {
     console.warn(`  Native Codex hooks registered, but failed to remove legacy AGENTS.md context from ${CODEX_AGENTS_MD_PATH}.`);
   }
@@ -717,8 +757,12 @@ Plugin source:     ${marketplaceRoot}
 
 Next steps:
   1. Open Codex CLI in your project
-  2. Review and trust the seven claude-mem hooks when Codex prompts you
+  2. Review and trust the ${hooks.hookCount} claude-mem hooks when Codex prompts you, or with /hooks
   3. Restart sessions opened before trusting the hooks
+
+The hooks live in ${hooks.hooksPath}, so this approval stays valid
+across claude-mem updates. Codex asks again only when a hook's own
+definition changes or another tool's hook is removed ahead of it.
 
 For a fresh setup, the supported entry point is:
   npx claude-mem@latest install
@@ -764,6 +808,15 @@ export function uninstallCodexCli(): number {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`\nCodex plugin config update failed: ${message}`);
+    failed = true;
+  }
+
+  try {
+    const removed = removeCodexUserHooks(CODEX_DIR);
+    console.log(`  Removed claude-mem hooks from ${removed.hooksPath}${removed.changed ? '' : ' (none registered)'}`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`\nCodex hooks removal failed: ${message}`);
     failed = true;
   }
 
