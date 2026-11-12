@@ -21,13 +21,13 @@ node examples/elizaos/memory.mjs \
 
 Replace `YOUR_WORKER_PORT` with your worker's actual port. Run from the checkout for this command, or give an absolute MCP bundle path when running from another project. Each run intentionally requests one explicit save. Reuse the saved observation ID in your own application when you only want recall.
 
-The worker URL must be a credential-free loopback origin. The selected port is also passed to the MCP child, so saving and recall use the same worker. All three recall calls carry the exact selected project. Project filtering is not a multi-user authorization boundary; this example uses the owner's local worker.
+The worker URL must be a credential-free loopback origin. The same origin is passed to the MCP child as `CLAUDE_MEM_WORKER_URL`, so saving and recall use the same worker even when your settings name a different one. All three recall calls carry the exact selected project, as `project` and as a one-item `projects` list, so an MCP server started inside a git worktree does not widen the read to the checkout's other project keys. Project filtering is not a multi-user authorization boundary; this example uses the owner's local worker.
 
 The note passes through the existing save endpoint and its privacy rules. Saved content follows your existing worker synchronization settings. The example sends no content to a model provider. It stores no conversation transcript or IDE configuration. The existing plugin discovers tools and registers actions internally, but this example calls the service directly and does not run generated actions or an autonomous conversation.
 
 ## Verified versions
 
-Verified on macOS with elizaOS core 1.7.2 and `@elizaos/plugin-mcp` 1.7.0. These stable versions are pinned in the example. Plugin 1.8.2 was also checked but failed to import with stable core 1.7.2 because `getRequestContext` was missing. Do not substitute that combination without rechecking compatibility.
+Verified on macOS with elizaOS core 1.7.2 and `@elizaos/plugin-mcp` 1.7.0. The verified pair is pinned in the example; elizaOS 2.x was not tested. Plugin 1.8.2 was also checked but failed to import with core 1.7.2 because `getRequestContext` was missing. Do not substitute that combination without rechecking compatibility.
 
 The [official plugin source](https://github.com/elizaos-plugins/plugin-mcp) documents the MCP service. The integration reuses it instead of adding another client or storage layer.
 
@@ -37,7 +37,7 @@ After building and installing the example dependencies, run the real-runtime che
 python3 tests/fixtures/elizaos-smoke.py
 ```
 
-The check creates an isolated worker and synthetic records, verifies the exact recalled text and exclusion of another project's record, then confirms a stopped worker fails the explicit save. No account, paid model or private transcript is used. Windows/Linux and autonomous model-driven elizaOS conversations were not tested.
+The check creates an isolated worker and synthetic records, verifies the exact recalled text, checks that another project's matching record appears in none of the search, timeline or detail results and is withheld when asked for by ID, then confirms a stopped worker fails the explicit save. No account, paid model or private transcript is used. Windows/Linux and autonomous model-driven elizaOS conversations were not tested.
 
 ## Failures and disconnect
 

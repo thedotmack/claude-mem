@@ -7,14 +7,18 @@ env={'PATH':str(bun.parent)+':'+os.environ['PATH'],'HOME':str(home),'CLAUDE_CONF
 worker=repo/'plugin/scripts/worker-service.cjs'
 try:
  subprocess.run([bun,'--no-install',worker,'start'],env=env,cwd=repo,check=True,timeout=40)
- req=urllib.request.Request(f'http://127.0.0.1:{port}/api/memory/save',data=json.dumps({'project':'other','text':'Unrelated record must not appear in the example output.','title':'Unrelated fixture'}).encode(),headers={'Content-Type':'application/json'})
- urllib.request.urlopen(req,timeout=5).close()
- result=subprocess.run([os.environ.get('NODE_BIN') or shutil.which('node') or 'node',repo/'examples/elizaos/memory.mjs','--project','eliza-fixture','--server',repo/'plugin/scripts/mcp-server.cjs','--worker',f'http://127.0.0.1:{port}'],env=env,cwd=project,capture_output=True,text=True,timeout=85)
+ # The other project's record matches the example's query, so a leak through search or timeline would show.
+ foreign='Other project restore snapshots fixture must not appear in the example output.'
+ req=urllib.request.Request(f'http://127.0.0.1:{port}/api/memory/save',data=json.dumps({'project':'other','text':foreign,'title':'Other project restore snapshots fixture'}).encode(),headers={'Content-Type':'application/json'})
+ with urllib.request.urlopen(req,timeout=5) as r:foreign_id=json.load(r)['id']
+ result=subprocess.run([os.environ.get('NODE_BIN') or shutil.which('node') or 'node',repo/'examples/elizaos/memory.mjs','--project','eliza-fixture','--server',repo/'plugin/scripts/mcp-server.cjs','--worker',f'http://127.0.0.1:{port}','--withheld-id',str(foreign_id)],env=env,cwd=project,capture_output=True,text=True,timeout=85)
  (root/'stdout.log').write_text(result.stdout);(root/'stderr.log').write_text(result.stderr)
  print('Evidence',root,'exit',result.returncode);print(result.stdout[-1200:]);print(result.stderr[-1200:])
  assert result.returncode==0
  assert 'A restore must reject snapshots missing required worker tables.' in result.stdout
- assert 'Unrelated record must not appear' not in result.stdout
+ for tool in ['--- search','--- timeline','--- get_observations']:assert tool in result.stdout,tool
+ assert 'Other project restore snapshots fixture' not in result.stdout,'another project leaked into search, timeline or details'
+ assert result.stdout.rstrip().endswith('No selected observations found.'),'the other project ID was not withheld'
  print('Real elizaOS runtime and MCP service saved and recalled the exact project memory')
  subprocess.run([bun,'--no-install',worker,'stop'],env=env,cwd=repo,check=True,timeout=20)
  failed=subprocess.run([os.environ.get('NODE_BIN') or shutil.which('node') or 'node',repo/'examples/elizaos/memory.mjs','--project','eliza-fixture','--server',repo/'plugin/scripts/mcp-server.cjs','--worker',f'http://127.0.0.1:{port}'],env=env,cwd=project,capture_output=True,text=True,timeout=10)
