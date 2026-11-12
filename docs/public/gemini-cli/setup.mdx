@@ -49,4 +49,4 @@ If no memory appears, run `npx claude-mem gemini status`, check that the worker 
 npx claude-mem gemini uninstall
 ```
 
-Uninstall removes only the managed capture hooks. It preserves memories, MCP configuration and unrelated Gemini settings. To stop automatic observation and summary calls without removing hooks, set `CLAUDE_MEM_OBSERVER_ENABLED=false` in your Claude-Mem settings.
+Uninstall removes only the managed capture hooks. It preserves memories, MCP configuration and unrelated Gemini settings. `npx claude-mem uninstall` runs the same cleanup. To stop automatic observation and summary calls without removing hooks, set `CLAUDE_MEM_OBSERVER_ENABLED=false` in your Claude-Mem settings.

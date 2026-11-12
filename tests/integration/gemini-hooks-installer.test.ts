@@ -3,7 +3,7 @@ import { spawnSync } from 'child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import path from 'path';
-import { buildGeminiHooks, geminiSettingsPath, manageGeminiHooks, removeGeminiHooks, resolveGeminiWorkerScript } from '../../src/services/integrations/GeminiHooksInstaller.js';
+import { buildGeminiHooks, geminiSettingsPath, manageGeminiHooks, removeGeminiHooks, resolveGeminiWorkerScript, uninstallGeminiHooks } from '../../src/services/integrations/GeminiHooksInstaller.js';
 let scratch: string | undefined;
 afterEach(() => { if (scratch) rmSync(scratch, { recursive: true, force: true }); });
 const file = () => { scratch = mkdtempSync(path.join(tmpdir(), 'gemini setup ')); return path.join(scratch, 'settings.json'); };
@@ -93,6 +93,39 @@ describe('Gemini capture setup', () => {
     expect(hooks.AfterTool[1].hooks[0].command).toEndWith('hook gemini observation');
     expect(manageGeminiHooks('uninstall', p)).toBe(0);
     expect(read(p).hooks).toEqual({ AfterTool: [{ matcher: '*', hooks: [user] }] });
+  });
+  // `npx claude-mem uninstall` deletes the plugin. A hook it leaves behind runs the
+  // missing worker-service.cjs on every Gemini event, and Gemini CLI reports each failure.
+  it('uninstallGeminiHooks removes the hooks install wrote and keeps the rest of the settings', () => {
+    const p = file();
+    const user = { matcher: 'write_file', hooks: [{ type: 'command', name: 'format-on-write', command: 'npx prettier --write .' }] };
+    const original = { general: { vimMode: true }, hooks: { AfterTool: [user] } };
+    writeFileSync(p, JSON.stringify(original));
+    expect(manageGeminiHooks('install', p)).toBe(0);
+    expect(uninstallGeminiHooks(p)).toBe(0);
+    expect(read(p)).toEqual(original);
+    const removed = readFileSync(p, 'utf8');
+    expect(uninstallGeminiHooks(p)).toBe(1);
+    expect(readFileSync(p, 'utf8')).toBe(removed);
+  });
+  it('uninstallGeminiHooks removes the Windows commands earlier releases wrote and older releases\' hooks', () => {
+    const p = file();
+    const bun = 'C:\\Users\\me\\.bun\\bin\\bun.exe';
+    const worker = 'C:\\Users\\me\\.claude\\plugins\\marketplaces\\thedotmack\\plugin\\scripts\\worker-service.cjs';
+    const legacy = { name: 'claude-mem', type: 'command', command: '"/opt/bun" "/opt/plugin/scripts/worker-service.cjs" hook gemini-cli observation' };
+    writeFileSync(p, JSON.stringify({ hooks: { ...buildGeminiHooks(bun, worker, 'linux'), BeforeTool: [{ matcher: '*', hooks: [legacy] }] } }));
+    expect(uninstallGeminiHooks(p)).toBe(0);
+    expect(read(p).hooks).toEqual({});
+  });
+  it('uninstallGeminiHooks leaves settings without claude-mem hooks as they are, and creates none', () => {
+    const p = file();
+    expect(uninstallGeminiHooks(p)).toBe(1);
+    expect(existsSync(p)).toBe(false);
+    const settings = '{\n    "general": { "vimMode": true },\n    "hooks": { "AfterTool": [ { "hooks": [ { "type": "command", "command": "echo audit" } ] } ] }\n}\n';
+    writeFileSync(p, settings);
+    expect(uninstallGeminiHooks(p)).toBe(1);
+    expect(readFileSync(p, 'utf8')).toBe(settings);
+    expect(existsSync(`${p}.claude-mem.bak`)).toBe(false);
   });
   it('follows GEMINI_CLI_HOME, which names the parent of .gemini', () => {
     expect(geminiSettingsPath({ GEMINI_CLI_HOME: '/profiles/work' })).toBe(path.join(path.resolve('/profiles/work'), '.gemini', 'settings.json'));
