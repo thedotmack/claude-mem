@@ -115,7 +115,8 @@
           "qoder-integration",
           "screenpipe-integration",
           "eve-integration",
-          "notion-export"
+          "notion-export",
+          "obsidian"
         ]
       },
       {
