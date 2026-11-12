@@ -5,7 +5,7 @@ minimumReleaseAgeExclude:
   - eve
   - "@vercel/connect"
   - ai
-  - claude-mem@15.17.0
+  - claude-mem@15.18.0
 
 allowBuilds:
   esbuild: true

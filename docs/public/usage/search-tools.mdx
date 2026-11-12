@@ -83,6 +83,8 @@ dumb_search(query="authentication token expiry", project="my-project")
 ```
 
 Dumb search is a one-call lookup that chooses records by matching words in titles.
+Different Unicode spellings of the same accented word match each other. Titles
+are displayed as saved, and different accents remain distinct.
 It can miss relevant records and does not reconcile conflicting evidence.
 Use Smart search for the full three-step review.
 

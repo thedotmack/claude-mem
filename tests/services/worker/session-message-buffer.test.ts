@@ -96,7 +96,7 @@ describe('SessionMessageBuffer (in-RAM observation buffer)', () => {
     expect(buffer.enqueue(1, obs('Read', 'a'))).toBeGreaterThan(0); // not suppressed
   });
 
-  test('clearUnclaimed preserves in-flight evidence and drops only unsent work', async () => {
+  test('clearUnclaimed preserves in-flight evidence and delivery identities', async () => {
     const buffer = new SessionMessageBuffer();
     const confirmedId = buffer.enqueue(1, obs('Read', 'confirmed'));
     expect(buffer.confirm(confirmedId)).toBe(1);
@@ -110,7 +110,8 @@ describe('SessionMessageBuffer (in-RAM observation buffer)', () => {
     expect(buffer.getMessagesByIds(1, [claimedId])).toHaveLength(1);
     expect(buffer.enqueue(1, obs('Read', 'confirmed'))).toBe(0);
     expect(buffer.enqueue(1, obs('Read', 'claimed'))).toBe(0);
-    expect(buffer.enqueue(1, obs('Write', 'unsent'))).toBeGreaterThan(0);
+    expect(buffer.enqueue(1, obs('Write', 'unsent'))).toBe(0);
+    expect(buffer.enqueue(1, obs('Write', 'fresh'))).toBeGreaterThan(0);
 
     controller.abort();
     await iterator.return?.(undefined);

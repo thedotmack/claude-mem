@@ -236,7 +236,7 @@ export class PaginationHelper {
               AND duplicate.id > up.id
             )
           )
-          AND duplicate.created_at_epoch - up.created_at_epoch <= ?
+          AND duplicate.created_at_epoch BETWEEN up.created_at_epoch AND up.created_at_epoch + ?
       )
     `);
     params.push(USER_PROMPT_DEDUPE_WINDOW_MS);

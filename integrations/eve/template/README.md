@@ -1,6 +1,6 @@
 # eve agent with claude-mem
 
-A personal [eve](https://eve.dev) agent that already knows your work. It recalls your [claude-mem](https://github.com/thedotmack/claude-mem) memory before every reply: what you built, decided, and fixed in Claude Code, Codex, and your other agents. You can chat with it in the browser and add iMessage with one command.
+A personal [eve](https://eve.dev) agent that already knows your work. It recalls your [claude-mem](https://github.com/thedotmack/claude-mem) memory before every reply: what you built, decided, and fixed in Claude Code, Codex, and your other agents. It runs shell commands in its own sandbox, reads the web, and records its own work back into claude-mem. Give it a task in the browser chat, over HTTP, or on a schedule, and add iMessage with one command.
 
 [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fthedotmack%2Fclaude-mem%2Ftree%2Fmain%2Fintegrations%2Feve%2Ftemplate&env=EVE_CHAT_PASSWORD%2CCLAUDE_MEM_API_KEY&envDescription=EVE_CHAT_PASSWORD%3A%20a%20strong%20password%20%2816%2B%20characters%29%20that%20protects%20your%20agent.%20CLAUDE_MEM_API_KEY%3A%20your%20key%20from%20https%3A%2F%2Fcmem.ai%2Fpro%2Fkey.&envLink=https%3A%2F%2Fgithub.com%2Fthedotmack%2Fclaude-mem%2Fblob%2Fmain%2Fintegrations%2Feve%2Ftemplate%2Fdocs%2Fsetup-and-deploy.md&project-name=claude-mem-agent&repository-name=claude-mem-agent&demo-title=eve%20agent%20with%20claude-mem&demo-description=A%20personal%20eve%20agent%20that%20remembers%20what%20you%20did%20in%20Claude%20Code%2C%20Codex%2C%20and%20your%20other%20agents.)
 
@@ -13,16 +13,52 @@ A personal [eve](https://eve.dev) agent that already knows your work. It recalls
 
 No database or Marketplace product is needed. Chats are stored in your browser. Memory lives in claude-mem.
 
-The agent uses eve's default model, `anthropic/claude-sonnet-5`, through Vercel AI Gateway. The AI Gateway free tier does not include Claude models. Add [AI Gateway credits](https://vercel.com/docs/ai-gateway/pricing), or change `model` in `agent/agent.ts`.
+## Which model it uses
+
+It works out of the box, with no model key:
+
+- **Default:** `anthropic/claude-sonnet-5` through Vercel AI Gateway. AI Gateway free credits refuse Claude, so on free credits the gateway answers with `openai/gpt-5-mini`, then `google/gemini-2.5-flash`, then `openai/gpt-5`. The refused Claude attempt costs nothing. Free credits allow each model about 10 calls a minute, and one turn can make 12 or more, so the gateway moves to the next model when one hits its limit. Add [AI Gateway credits](https://vercel.com/docs/ai-gateway/pricing) to get Claude and lift the limit.
+- **`ANTHROPIC_API_KEY`** (optional): calls Claude directly with your Anthropic key. It wins over `EVE_MODEL`.
+- **`EVE_MODEL`** (optional): any [AI Gateway model ID](https://vercel.com/ai-gateway/models), such as `openai/gpt-5`. It is used exactly, with no fallback, so a model your gateway refuses fails with the gateway's error.
+
+Set them in the Vercel project and redeploy: eve reads `agent/agent.ts` when it builds.
+
+## What it can do
+
+- **Shell and files:** `bash`, `read_file`, and `write_file` run in its own [sandbox](https://eve.dev/docs/sandbox) (Vercel Sandbox when deployed).
+- **Web:** `web_fetch` reads a page and `web_search` searches the web.
+- **On demand:** chat in the browser, or start a session over HTTP with `POST /eve/v1/session` (see [eve's HTTP channel](https://eve.dev/docs/channels/eve)).
+- **On a schedule:** see [Run it on a schedule](#run-it-on-a-schedule).
 
 ## What the agent does with your memory
 
+- **Session context:** before every turn, it reads your newest claude-mem memory (50 rows from `timeline`) and gives it to the model. Each turn's copy replaces the last one, so it does not pile up.
 - **Recall:** before every turn, it searches your claude-mem memory for your message. Matches reach the model as data, not instructions.
-- **Search:** the `claude-mem__search` tool lets the model look further back.
-- **Remember:** the `claude-mem__remember` tool saves a note to the `eve-agent` project in claude-mem. It runs only when the model decides to save, and the model tells you when it does. Turns are never saved automatically.
-- **Owner only:** recall reads your whole memory, so `agent/memory/claude-mem.ts` turns memory on only for you. Anyone else who reaches the agent gets no memory and no memory tools.
+- **Search:** the `claude-mem__search`, `claude-mem__timeline`, and `claude-mem__get_observations` tools let the model look further back.
+- **Remember:** the `claude-mem__remember` tool saves a note to the `eve-agent` project in claude-mem. It runs when the model decides to save, and the model tells you when it does.
+- **Record its work:** after each of your turns, it sends that turn's tool calls and a turn summary to cmem.ai, the way Claude Code and Codex do. It never records its own memory tools.
+- **Owner only:** recall reads your whole memory, so `agent/memory/claude-mem.ts` turns memory on only for you and for your own schedules. Anyone else who reaches the agent gets no memory, no memory tools, and nothing recorded.
+
+**What it remembers and what that costs:** recall, search, and saving notes are free. Recording its work is not: cmem.ai turns each recorded tool call and each turn summary into a memory with one model call, and those calls come out of your cmem.ai observer allowance, the same allowance Claude Code and Codex use. To stop recording, pass `capture: false` to `claudeMem()` in `agent/memory/claude-mem.ts`. Recall, search, and `remember` keep working.
 
 Saving needs a key with write access, which is a Pro key from [cmem.ai/pro/key](https://cmem.ai/pro/key). A read-only key still recalls and searches, and `remember` then reports that saving is not allowed.
+
+## Run it on a schedule
+
+No schedule runs by default, so nothing spends money on its own. [`examples/schedules/morning-digest.md`](examples/schedules/morning-digest.md) is a ready example: every day at 14:00 UTC it writes a short digest of your most recent work from the session context and `claude-mem__timeline`, and saves it back with `claude-mem__remember`. Search cannot filter by date, so the digest does not use it.
+
+To turn it on, copy it into `agent/schedules/` and redeploy:
+
+```bash
+mkdir -p agent/schedules
+cp examples/schedules/morning-digest.md agent/schedules/
+```
+
+Vercel turns each file in `agent/schedules/` into a [Cron Job](https://vercel.com/docs/cron-jobs). The `cron` line is in UTC, so change it to your morning. Each run is one agent turn on your model, plus the cmem.ai recording described above. Scheduled runs get your memory. Nobody can answer questions during one, so write the prompt as a complete task. See [eve schedules](https://eve.dev/docs/schedules) for the handler form that posts the result to Slack or another channel.
+
+To try a schedule locally, run `pnpm dev:eve` and trigger it once with `curl -X POST http://localhost:2000/eve/v1/dev/schedules/morning-digest`. `eve dev` never fires schedules on their own.
+
+To turn it off again, delete the file from `agent/schedules/` and redeploy.
 
 ## Text it over iMessage
 
@@ -176,7 +212,8 @@ Use `pnpm dev:all` to run the full Vercel service graph locally without linking 
 - Optional Better Auth sign-in with Vercel
 - Optional Neon-backed cross-device chat history
 - Optional Upstash Redis rate limiting in production mode
-- claude-mem long-term memory (recall, search, and deliberate saves), limited to the owner
+- claude-mem long-term memory (recall, search, saves, and recording the agent's own work), limited to the owner
+- A disabled example schedule in `examples/schedules/`
 - Drizzle schema and migrations for production mode under `apps/web/lib/db`
 - Saved eve session cursors and event snapshots in either storage mode
 - Sidebar history with delete and new-chat actions
@@ -191,10 +228,10 @@ This template intentionally does not include file uploads, guest mode, NextAuth/
 
 ## Agent Code
 
-Edit the agent in `agent/agent.ts`. Its behavior is defined in `agent/instructions.md`, tools live in `agent/tools/`, and `agent/memory/claude-mem.ts` connects your claude-mem memory.
+Edit the agent in `agent/agent.ts`, which also picks the model. Its behavior is defined in `agent/instructions.md`, tools live in `agent/tools/`, schedules go in `agent/schedules/`, and `agent/memory/claude-mem.ts` connects your claude-mem memory.
 
 The browser talks to eve with `useEveAgent()` from `eve/react`; the app stores eve stream events and session state so `/chat/[id]` can resume the same durable conversation after refresh.
 
 ## Credits
 
-Built on the [eve Chat Template](https://github.com/vercel/eve/tree/main/apps/templates/eve-chat-template) from [vercel/eve](https://github.com/vercel/eve) (Apache-2.0). Changes: claude-mem memory replaces Blob file memory, the owner-only memory scope, and iMessage setup docs.
+Built on the [eve Chat Template](https://github.com/vercel/eve/tree/main/apps/templates/eve-chat-template) from [vercel/eve](https://github.com/vercel/eve) (Apache-2.0). Changes: claude-mem memory replaces Blob file memory, the owner-only memory scope, model selection that works on AI Gateway free credits, an example schedule, and iMessage setup docs.

@@ -41,7 +41,7 @@ function Connection({ tool, open }: { tool: SetupTool; open: boolean }) {
         {tool.steps && <ol>{tool.steps.map((step) => <li key={step}>{t(step)}</li>)}</ol>}
         {tool.commands && <ol className="connection-commands">{tool.commands.map((command) => <li key={command}><code>{command}</code></li>)}</ol>}
         <CopyUrl toolName={tool.name} />
-        <a href={tool.guide.href} target="_blank" rel="noopener noreferrer">{t(tool.guide.label)}</a>
+        {tool.guide && <a href={tool.guide.href} target="_blank" rel="noopener noreferrer">{t(tool.guide.label)}</a>}
       </div>
     </details>
   )
@@ -119,18 +119,18 @@ export function FinishSetupScreen({ branch, tools, selected, onSelect, history, 
               <div className="tool-options">
                 {tools.map((tool) => (
                   <label key={tool.id} className="tool-option">
-                    <input type="checkbox" name="finish-tools" value={tool.id} checked={selected.includes(tool.id)} onChange={(event) => toggle(tool.id, event.target.checked)} />
+                    <input type="checkbox" name="finish-tools" value={tool.id} checked={selected.includes(tool.id)} disabled={tool.installed} onChange={(event) => toggle(tool.id, event.target.checked)} />
                     <ToolMark mark={tool.mark} />
-                    <span>{tool.name}</span>
+                    <span>{tool.name}{tool.installed && <small className="tool-installed">{t('Connected')}</small>}</span>
                     <span className="tick" aria-hidden="true"><CheckIcon strokeWidth={3} /></span>
                   </label>
                 ))}
               </div>
             </fieldset>
             {showError && <p className="tool-error" role="alert">{t('Select at least one tool to continue.')}</p>}
-            {branch === 'go' && picked.length > 0 && (
+            {branch === 'go' && picked.some(tool => !tool.installed) && (
               <div className="connections" aria-label={t('Selected tool connections')}>
-                {picked.map((tool, index) => <Connection key={tool.id} tool={tool} open={index === picked.length - 1} />)}
+                {picked.filter(tool => !tool.installed).map((tool, index, list) => <Connection key={tool.id} tool={tool} open={index === list.length - 1} />)}
               </div>
             )}
           </div>

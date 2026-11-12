@@ -450,3 +450,14 @@ jobs:
 
       - name: Provider tests
         run: npm test
+
+      # The peer range covers eve 0.84.0 and the 1.0 release candidates, so the
+      # newest verified candidate is checked too, without changing the lockfile.
+      - name: Install eve 1.0.0-rc.9
+        run: npm install --no-save --no-audit --no-fund eve@1.0.0-rc.9
+
+      - name: Typecheck against eve 1.0.0-rc.9
+        run: npm run typecheck
+
+      - name: Provider tests against eve 1.0.0-rc.9
+        run: npm test
