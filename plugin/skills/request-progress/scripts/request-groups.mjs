@@ -158,13 +158,13 @@ var init_hook_io = __esm({
 // src/shared/atomic-json.ts
 import {
   closeSync,
-  existsSync as existsSync3,
+  existsSync as existsSync2,
   fchmodSync,
   fsyncSync,
   lstatSync,
   mkdirSync,
   openSync,
-  readFileSync as readFileSync3,
+  readFileSync as readFileSync2,
   readlinkSync,
   realpathSync,
   renameSync,
@@ -173,7 +173,7 @@ import {
   writeSync
 } from "fs";
 import { randomBytes } from "crypto";
-import { basename, dirname, join as join4, resolve as resolve2 } from "path";
+import { basename, dirname, join as join3, resolve as resolve2 } from "path";
 function stripUtf8Bom(raw) {
   return raw.replace(/^\uFEFF/, "");
 }
@@ -181,10 +181,10 @@ function parseJsonWithBom(raw) {
   return JSON.parse(stripUtf8Bom(raw));
 }
 function readJsonFileWithBom(filepath) {
-  return parseJsonWithBom(readFileSync3(filepath, "utf-8"));
+  return parseJsonWithBom(readFileSync2(filepath, "utf-8"));
 }
 function ensureDirectoryExists(directoryPath) {
-  if (!existsSync3(directoryPath)) {
+  if (!existsSync2(directoryPath)) {
     mkdirSync(directoryPath, { recursive: true });
   }
 }
@@ -195,7 +195,7 @@ function physicalPathOf(filePath) {
     if (err.code !== "ENOENT") throw err;
     const parent = dirname(filePath);
     if (parent === filePath) return filePath;
-    return join4(physicalPathOf(parent), basename(filePath));
+    return join3(physicalPathOf(parent), basename(filePath));
   }
 }
 function resolveSymlinkWriteTarget(filePath) {
@@ -250,7 +250,7 @@ function writeBufferAtomic(filepath, payload, options = {}) {
   ensureDirectoryExists(dirname(resolved));
   const dir = dirname(resolved);
   const base = basename(resolved);
-  const tmpPath = join4(dir, `.${base}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`);
+  const tmpPath = join3(dir, `.${base}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`);
   let mode = options.mode;
   if (mode === void 0) {
     try {
@@ -337,7 +337,7 @@ var init_settings_document_shape = __esm({
 });
 
 // src/shared/settings-document.ts
-import { existsSync as existsSync4, renameSync as renameSync2 } from "fs";
+import { existsSync as existsSync3, renameSync as renameSync2 } from "fs";
 function withoutStaleRootCopies(document) {
   if (classifySettingsDocument(document) !== "nested") return document;
   return Object.fromEntries(Object.entries(document).filter(([key]) => !key.startsWith("CLAUDE_MEM_")));
@@ -346,7 +346,7 @@ function cloneDocument(document) {
   return JSON.parse(JSON.stringify(document));
 }
 function loadDocument(path4) {
-  if (!existsSync4(path4)) return { exists: false };
+  if (!existsSync3(path4)) return { exists: false };
   try {
     const parsed = readJsonFileWithBom(path4);
     if (!isSettingsRecord(parsed)) return { exists: true, error: new Error("settings.json must contain a JSON object") };
@@ -358,7 +358,7 @@ function loadDocument(path4) {
 function unusedQuarantinePath(path4) {
   const base = `${path4}.corrupt-${Date.now()}`;
   let candidate = base;
-  for (let suffix = 1; existsSync4(candidate); suffix++) candidate = `${base}-${suffix}`;
+  for (let suffix = 1; existsSync3(candidate); suffix++) candidate = `${base}-${suffix}`;
   return candidate;
 }
 function updateSettingsDocument(path4, updates, seed = {}, mutate, options = {}) {
@@ -392,7 +392,7 @@ function updateSettingsDocument(path4, updates, seed = {}, mutate, options = {})
   }
 }
 function restoreQuarantined(quarantinedTo, path4) {
-  if (existsSync4(path4)) return false;
+  if (existsSync3(path4)) return false;
   try {
     renameSync2(quarantinedTo, path4);
     return true;
@@ -411,17 +411,17 @@ var init_settings_document = __esm({
 });
 
 // src/shared/data-dir.ts
-import { existsSync as existsSync5 } from "fs";
-import { homedir as homedir4 } from "os";
-import { join as join5 } from "path";
+import { existsSync as existsSync4 } from "fs";
+import { homedir as homedir3 } from "os";
+import { join as join4 } from "path";
 function resolveDataDir() {
   if (process.env.CLAUDE_MEM_DATA_DIR) {
     return expandHome(process.env.CLAUDE_MEM_DATA_DIR);
   }
-  const defaultDataDir2 = join5(homedir4(), ".claude-mem");
-  const settingsPath = join5(defaultDataDir2, "settings.json");
+  const defaultDataDir2 = join4(homedir3(), ".claude-mem");
+  const settingsPath = join4(defaultDataDir2, "settings.json");
   try {
-    if (existsSync5(settingsPath)) {
+    if (existsSync4(settingsPath)) {
       const raw = readJsonFileWithBom(settingsPath);
       if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return defaultDataDir2;
       const settings2 = settingsTarget(raw);
@@ -443,8 +443,8 @@ var init_data_dir = __esm({
 });
 
 // src/shared/paths.ts
-import { join as join6, dirname as dirname2, basename as basename2 } from "path";
-import { homedir as homedir5 } from "os";
+import { join as join5, dirname as dirname2, basename as basename2 } from "path";
+import { homedir as homedir4 } from "os";
 import { fileURLToPath } from "url";
 function getDirname() {
   if (typeof __dirname !== "undefined") {
@@ -462,50 +462,50 @@ var init_paths = __esm({
     init_data_dir();
     _dirname = getDirname();
     DATA_DIR = resolveDataDir();
-    DEFAULT_CLAUDE_CONFIG_DIR = join6(homedir5(), ".claude");
+    DEFAULT_CLAUDE_CONFIG_DIR = join5(homedir4(), ".claude");
     CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || DEFAULT_CLAUDE_CONFIG_DIR;
-    MARKETPLACE_ROOT = join6(CLAUDE_CONFIG_DIR, "plugins", "marketplaces", "thedotmack");
-    LOGS_DIR = join6(DATA_DIR, "logs");
-    USER_SETTINGS_PATH = join6(DATA_DIR, "settings.json");
+    MARKETPLACE_ROOT = join5(CLAUDE_CONFIG_DIR, "plugins", "marketplaces", "thedotmack");
+    LOGS_DIR = join5(DATA_DIR, "logs");
+    USER_SETTINGS_PATH = join5(DATA_DIR, "settings.json");
     DB_FILENAME = "claude-mem.db";
-    DB_PATH = join6(DATA_DIR, DB_FILENAME);
-    OBSERVER_SESSIONS_DIR = join6(DATA_DIR, "observer-sessions");
+    DB_PATH = join5(DATA_DIR, DB_FILENAME);
+    OBSERVER_SESSIONS_DIR = join5(DATA_DIR, "observer-sessions");
     OBSERVER_SESSIONS_PROJECT = basename2(OBSERVER_SESSIONS_DIR);
     paths = {
       dataDir: () => DATA_DIR,
-      workerPid: () => join6(DATA_DIR, "worker.pid"),
-      workerHeartbeat: () => join6(DATA_DIR, "worker-heartbeat.json"),
+      workerPid: () => join5(DATA_DIR, "worker.pid"),
+      workerHeartbeat: () => join5(DATA_DIR, "worker-heartbeat.json"),
       // Phase 1b: identifier renamed to `server*`; the on-disk file basenames
       // remain `.server-beta.*` so existing installations keep finding their
       // pid/port/runtime state. Plan §1d will migrate the basenames.
-      serverPid: () => join6(DATA_DIR, ".server-beta.pid"),
-      serverPort: () => join6(DATA_DIR, ".server-beta.port"),
-      serverRuntime: () => join6(DATA_DIR, ".server-beta.runtime.json"),
-      settings: () => join6(DATA_DIR, "settings.json"),
-      database: () => join6(DATA_DIR, DB_FILENAME),
+      serverPid: () => join5(DATA_DIR, ".server-beta.pid"),
+      serverPort: () => join5(DATA_DIR, ".server-beta.port"),
+      serverRuntime: () => join5(DATA_DIR, ".server-beta.runtime.json"),
+      settings: () => join5(DATA_DIR, "settings.json"),
+      database: () => join5(DATA_DIR, DB_FILENAME),
       // Automatic snapshot target (BackupManager). Nested under backups/auto so
       // the manager's retention sweep never touches the legacy one-off backups
       // that live directly in backups/.
-      backups: () => join6(DATA_DIR, "backups", "auto"),
+      backups: () => join5(DATA_DIR, "backups", "auto"),
       // A restore staged by `npx claude-mem restore`, applied by the next worker
       // boot before it opens the database, and the outcome of the last one.
-      pendingRestore: () => join6(DATA_DIR, "backups", "restore-pending.json"),
-      lastRestore: () => join6(DATA_DIR, "backups", "last-restore.json"),
-      chroma: () => join6(DATA_DIR, "chroma"),
-      combinedCerts: () => join6(DATA_DIR, "combined_certs.pem"),
-      transcriptsConfig: () => join6(DATA_DIR, "transcript-watch.json"),
-      transcriptsState: () => join6(DATA_DIR, "transcript-watch-state.json"),
-      corpora: () => join6(DATA_DIR, "corpora"),
-      supervisorRegistry: () => join6(DATA_DIR, "supervisor.json"),
-      envFile: () => join6(DATA_DIR, ".env"),
+      pendingRestore: () => join5(DATA_DIR, "backups", "restore-pending.json"),
+      lastRestore: () => join5(DATA_DIR, "backups", "last-restore.json"),
+      chroma: () => join5(DATA_DIR, "chroma"),
+      combinedCerts: () => join5(DATA_DIR, "combined_certs.pem"),
+      transcriptsConfig: () => join5(DATA_DIR, "transcript-watch.json"),
+      transcriptsState: () => join5(DATA_DIR, "transcript-watch-state.json"),
+      corpora: () => join5(DATA_DIR, "corpora"),
+      supervisorRegistry: () => join5(DATA_DIR, "supervisor.json"),
+      envFile: () => join5(DATA_DIR, ".env"),
       logsDir: () => LOGS_DIR
     };
   }
 });
 
 // src/utils/logger.ts
-import { closeSync as closeSync2, existsSync as existsSync6, fstatSync, mkdirSync as mkdirSync2, openSync as openSync2, statSync as statSync2, writeSync as writeSync2 } from "fs";
-import { dirname as dirname3, join as join7 } from "path";
+import { closeSync as closeSync2, existsSync as existsSync5, fstatSync, mkdirSync as mkdirSync2, openSync as openSync2, statSync as statSync2, writeSync as writeSync2 } from "fs";
+import { dirname as dirname3, join as join6 } from "path";
 function escapeLineBreaks(value) {
   return value.replace(/\r/g, "\\r").replace(/\n/g, "\\n");
 }
@@ -548,10 +548,10 @@ var init_logger = __esm({
         this.logFileDate = date2;
         try {
           const logsDir = paths.logsDir();
-          if (!existsSync6(logsDir)) {
+          if (!existsSync5(logsDir)) {
             mkdirSync2(logsDir, { recursive: true });
           }
-          this.logFilePath = join7(logsDir, `claude-mem-${date2}.log`);
+          this.logFilePath = join6(logsDir, `claude-mem-${date2}.log`);
           this.logFileInitialized = true;
         } catch (error) {
           if (firstAttemptToday) {
@@ -610,7 +610,7 @@ var init_logger = __esm({
         if (this.level === null) {
           try {
             const settingsPath = paths.settings();
-            if (existsSync6(settingsPath)) {
+            if (existsSync5(settingsPath)) {
               const settings2 = settingsTarget(readJsonFileWithBom(settingsPath));
               const envLevel = (settings2.CLAUDE_MEM_LOG_LEVEL || "INFO").toString().toUpperCase();
               this.level = LogLevel[envLevel] ?? 1 /* INFO */;
@@ -1317,6 +1317,8 @@ var init_SettingsDefaultsManager = __esm({
         // GET /api/observations to holders of this secret. Mint with:
         //   node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
         CLAUDE_MEM_TV_TOKEN: "",
+        CLAUDE_MEM_LOCAL_API_TOKEN: "",
+        // Local API token. Empty = off. See the declaration above.
         // claude-mem sign-in funnel state: all empty until the installer's
         // browser-login step writes them.
         CLAUDE_MEM_PRO_TRIAL_EMAIL: "",
@@ -2982,7 +2984,7 @@ function globToRegex(pattern) {
   expanded = expanded.replace(/\\/g, "/");
   let regex = expanded.replace(/[.+^${}()|[\]\\]/g, "\\$&");
   regex = regex.replace(/(^|\/)\*\*(?=\/)/g, "$1<<<GLOBSTAR_DIR>>>").replace(/\*\*/g, "<<<GLOBSTAR>>>").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]").replace(/<<<GLOBSTAR>>>/g, ".*").replace(/<<<GLOBSTAR_DIR>>>\//g, "(?:.*/)?");
-  return new RegExp(`^${regex}$`);
+  return new RegExp(`^${regex}$`, "s");
 }
 function matchesGlobPattern(pattern, normalizedPath, pathBasename) {
   const regex = globToRegex(pattern);
@@ -5785,23 +5787,44 @@ var init_request_groups = __esm({
 import { join as join13 } from "node:path";
 
 // src/integrations/harness-worker.ts
-import { existsSync as existsSync2, readFileSync as readFileSync2 } from "node:fs";
-import { homedir as homedir3 } from "node:os";
-import { join as join3 } from "node:path";
+import { existsSync as existsSync6, readFileSync as readFileSync4 } from "node:fs";
+import { homedir as homedir5 } from "node:os";
+import { join as join7 } from "node:path";
 init_expand_home();
 init_hook_constants();
 init_install_port();
+
+// src/shared/local-api-token.ts
+init_logger();
+var LOCAL_API_TOKEN_HEADER = "x-claude-mem-token";
+function normalizeLocalApiToken(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+function localApiTokenHeaders(token) {
+  return token ? { [LOCAL_API_TOKEN_HEADER]: token } : {};
+}
+
+// src/shared/worker-url.ts
+function isLoopbackHostname(hostname2) {
+  const host = hostname2.toLowerCase().replace(/^\[|\]$/g, "");
+  return host === "localhost" || host.endsWith(".localhost") || host === "::1" || /^127(?:\.\d{1,3}){1,3}$/.test(host);
+}
+
+// src/integrations/harness-worker.ts
 function dataDirectory() {
-  return expandHome(process.env.CLAUDE_MEM_DATA_DIR || join3(homedir3(), ".claude-mem"));
+  return expandHome(process.env.CLAUDE_MEM_DATA_DIR || join7(homedir5(), ".claude-mem"));
+}
+function readHarnessSettingsFile(dataDir) {
+  try {
+    const document = JSON.parse(readFileSync4(join7(dataDir, "settings.json"), "utf8").replace(/^\uFEFF/, ""));
+    const nested = document?.env;
+    return nested && typeof nested === "object" && !Array.isArray(nested) && Object.keys(nested).some((key) => key.startsWith("CLAUDE_MEM_")) ? nested : document ?? {};
+  } catch {
+    return {};
+  }
 }
 function harnessSetting(dataDir = dataDirectory()) {
-  let settings2 = {};
-  try {
-    const document = JSON.parse(readFileSync2(join3(dataDir, "settings.json"), "utf8").replace(/^\uFEFF/, ""));
-    const nested = document?.env;
-    settings2 = nested && typeof nested === "object" && !Array.isArray(nested) && Object.keys(nested).some((key) => key.startsWith("CLAUDE_MEM_")) ? nested : document ?? {};
-  } catch {
-  }
+  const settings2 = readHarnessSettingsFile(dataDir);
   return (key, fallback) => {
     const value = settings2[key];
     const saved = typeof value === "string" || typeof value === "number" && Number.isFinite(value) ? String(value) : "";
@@ -5815,6 +5838,25 @@ function resolveHarnessWorkerUrl() {
   const host = configuredHost === "localhost" ? "127.0.0.1" : configuredHost;
   const port = setting("CLAUDE_MEM_WORKER_PORT", String(getDefaultWorkerPort(dataDir)));
   return "http://" + (host.includes(":") && !host.startsWith("[") ? "[" + host + "]" : host) + ":" + port;
+}
+function resolveHarnessAuthHeaders(baseUrl = resolveHarnessWorkerUrl()) {
+  const token = normalizeLocalApiToken(readHarnessSettingsFile(dataDirectory()).CLAUDE_MEM_LOCAL_API_TOKEN);
+  if (!token) return {};
+  try {
+    const target = new URL(baseUrl);
+    if (target.origin !== new URL(resolveHarnessWorkerUrl()).origin) return {};
+    return isLoopbackHostname(target.hostname) ? localApiTokenHeaders(token) : {};
+  } catch {
+    return {};
+  }
+}
+function withHarnessAuth(init, auth) {
+  if (Object.keys(auth).length === 0) return init;
+  const headers = new Headers(init.headers);
+  for (const [name, value] of Object.entries(auth)) {
+    if (!headers.has(name)) headers.set(name, value);
+  }
+  return { ...init, headers };
 }
 
 // src/services/work-view/request-groups-cli.mjs
@@ -8095,7 +8137,7 @@ async function saveFocus(body) {
   const base = resolveHarnessWorkerUrl();
   let response;
   try {
-    response = await fetch(`${base}/api/work-view/focus/router`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    response = await fetch(`${base}/api/work-view/focus/router`, withHarnessAuth({ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }, resolveHarnessAuthHeaders(base)));
   } catch (error) {
     throw new Error(`claude-mem worker is not reachable at ${base} (${error.message}). Start it with: npx claude-mem start`);
   }
