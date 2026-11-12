@@ -128,6 +128,7 @@
           "agno-integration",
           "autogen-integration",
           "claude-agent-sdk",
+          "cline",
           "crewai-integration",
           "elizaos",
           "google-adk-integration",
