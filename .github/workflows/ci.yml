@@ -74,6 +74,16 @@ jobs:
       - name: Test lanes cover every test file
         run: bun scripts/test-lanes.ts check
 
+      # Pure static guards over src/ that until now only ran by hand: hook
+      # handlers and adapters must stay free of stream writes and process
+      # control, and every spawn that passes an environment must sanitize
+      # process.env. Both exit non-zero with file:line, and they are cheap
+      # enough to run before the lanes.
+      - name: Hook I/O and spawn env discipline
+        run: |
+          npm run lint:hook-io
+          npm run lint:spawn-env
+
       - name: Test (fast lane)
         run: bun scripts/test-lanes.ts fast
 
