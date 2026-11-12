@@ -7,6 +7,10 @@
 
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'fs';
 import { isAbsolute, join, posix as posixPath, win32 as windowsPath } from 'path';
+import { homedir } from 'os';
+import { readTomlBooleanInTable } from '../../shared/codex-toml.js';
+import { CODEX_PLUGIN_CONFIG_TABLE } from '../../shared/plugin-state.js';
+import { registerCodexUserHooks } from '../../services/integrations/codex-user-hooks.js';
 import { styleText } from 'node:util';
 import { IS_WINDOWS, installedPluginsPath, marketplaceDirectory, readPluginVersion } from '../utils/paths.js';
 import { getWorkerBaseUrl, resolvePluginRoot, type PluginRootResolution } from '../../shared/worker-utils.js';
@@ -592,6 +596,58 @@ export function hookLauncherCheck(
 }
 
 /** Where the "Auto-update" row reads from: autoUpdateDoctorSources in production, fixtures in tests. */
+/**
+ * Codex runs claude-mem's hooks from the user's own hooks.json. A Codex home
+ * that has the plugin switched on but lacks those hooks captures nothing, and
+ * nothing else reports it. Null when this home does not use the Codex plugin.
+ */
+export function codexHooksCheck(options: {
+  codexHome: string;
+  hookDefinitionsPath: string;
+  launcherPath: string;
+  platform?: NodeJS.Platform;
+}): CheckResult | null {
+  const name = 'Codex hooks';
+  const configPath = join(options.codexHome, 'config.toml');
+  let pluginEnabled: boolean | undefined;
+  try {
+    pluginEnabled = readTomlBooleanInTable(readFileSync(configPath, 'utf-8'), CODEX_PLUGIN_CONFIG_TABLE, 'enabled');
+  } catch {
+    return null;
+  }
+  if (pluginEnabled !== true) return null;
+  try {
+    const hooks = registerCodexUserHooks({ ...options, dryRun: true });
+    if (hooks.changed) {
+      return {
+        name,
+        status: 'warn',
+        detail: `claude-mem's hooks are missing or out of date in ${hooks.hooksPath}, so Codex chats are not being captured — run \`npx claude-mem install\``,
+        required: false,
+      };
+    }
+    // The registered hooks match, so they name exactly this launcher. Codex has
+    // no SessionStart self-heal (ensure-launcher.cjs is Claude Code's), so a
+    // missing launcher fails every Codex hook until it is reinstalled.
+    if (!existsSync(options.launcherPath)) {
+      return {
+        name,
+        status: 'warn',
+        detail: `the hooks in ${hooks.hooksPath} run ${options.launcherPath}, which is missing, so Codex chats are not being captured — run \`npx claude-mem install\``,
+        required: false,
+      };
+    }
+    return {
+      name,
+      status: 'ok',
+      detail: `${hooks.hookCount} registered in ${hooks.hooksPath}; Codex runs them once you approve them (check with /hooks in Codex)`,
+      required: false,
+    };
+  } catch (error: unknown) {
+    return { name, status: 'warn', detail: error instanceof Error ? error.message : String(error), required: false };
+  }
+}
+
 export interface AutoUpdateDoctorSources {
   now: number;
   /**
@@ -1063,6 +1119,16 @@ export async function runDoctorCommand(): Promise<void> {
 
   // 3c. The on-PATH `claude-mem` hook launcher (plan-17 #3605).
   checks.push(hookLauncherCheck(currentLauncherHostEnvironment(), process.argv[1], verifyLauncherSignature, bunVersion));
+
+  // 3c-2. Codex runs the same launcher from the user's own hooks.json.
+  if (pluginRoot) {
+    const codexHooks = codexHooksCheck({
+      codexHome: process.env.CODEX_HOME || join(homedir(), '.codex'),
+      hookDefinitionsPath: join(pluginRoot.root, 'hooks', 'codex-hooks.json'),
+      launcherPath: resolveLauncherBinaryPath(currentLauncherHostEnvironment()),
+    });
+    if (codexHooks) checks.push(codexHooks);
+  }
 
   // 3d. claude-mem's own updater: on or off, what it last did, and the fix
   // when an automatic update may have left the install not working.
