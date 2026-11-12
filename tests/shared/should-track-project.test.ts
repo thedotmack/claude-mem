@@ -75,6 +75,24 @@ describe('shouldTrackProject — path normalization', () => {
     expect(shouldTrackProject(join(marketplacePluginDir, PLUGIN_SCRIPTS_DIR_NAME))).toBe(false);
   });
 
+  for (const [label, root] of [
+    ['observer sessions', OBSERVER_SESSIONS_DIR],
+    ['plugin cache', join(CLAUDE_CONFIG_DIR, PLUGINS_DIR_NAME, PLUGIN_CACHE_DIR_NAME, CLAUDE_MEM_PLUGIN_OWNER, CLAUDE_MEM_PLUGIN_NAME)],
+    ['marketplace runtime', join(MARKETPLACE_ROOT, PLUGIN_RUNTIME_DIR_NAME)],
+  ]) {
+    for (const name of ['..cache', '...']) {
+      it(`does not track ${label} descendants whose first component is ${name}`, () => {
+        expect(shouldTrackProject(join(root, name))).toBe(false);
+        expect(shouldTrackProject(join(root, name, 'nested'))).toBe(false);
+      });
+    }
+
+    it(`keeps a sibling of ${label} eligible for tracking`, () => {
+      expect(shouldTrackProject(join(root, '..', 'ordinary-project'))).toBe(true);
+      expect(shouldTrackProject(`${root}-sibling`)).toBe(true);
+    });
+  }
+
   it('returns true for an unrelated project path', () => {
     const unrelated = normalize('/tmp/my-project');
     expect(shouldTrackProject(unrelated)).toBe(true);
