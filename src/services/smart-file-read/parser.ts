@@ -1202,7 +1202,8 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   // Pascal declares a class method inside the class and implements it later as
   // `procedure TClass.Method`, outside the class range. Move the body range
   // onto the declared member so the method unfolds once, then merge interface
-  // declarations with their implementations. Signatures are compared up to
+  // declarations with their implementations. Pascal identifiers and keywords
+  // are case-insensitive; keep original spelling for display and compare up to
   // the semicolon that ends the routine header, so `overload`/`virtual`
   // directives on either side do not split a declaration from its body.
   // Semicolons inside the parameter list separate parameter groups, so they
@@ -1215,9 +1216,9 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
         const character = signature[index];
         if (character === "(") parenDepth++;
         else if (character === ")") parenDepth = Math.max(0, parenDepth - 1);
-        else if (character === ";" && parenDepth === 0) return signature.slice(0, index + 1);
+        else if (character === ";" && parenDepth === 0) return signature.slice(0, index + 1).toLowerCase();
       }
-      return signature;
+      return signature.toLowerCase();
     };
     for (const sym of symbols) {
       if (nested.has(sym) || (sym.kind !== "function" && sym.kind !== "method")) continue;
@@ -1227,13 +1228,13 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       const leafName = sym.name.slice(dot + 1);
       // Advanced records (`record_definition`, kind "struct") carry methods too.
       const owner = containers.find(container =>
-        (container.sym.kind === "class" || container.sym.kind === "struct") && container.sym.name === ownerName);
+        (container.sym.kind === "class" || container.sym.kind === "struct") && container.sym.name.toLowerCase() === ownerName.toLowerCase());
       if (!owner?.sym.children) continue;
       const signature = sym.signature.replace(
-        new RegExp(`^((?:class\\s+)?(?:procedure|function|constructor|destructor|operator)\\s+)${ownerName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.`),
+        new RegExp(`^((?:class\\s+)?(?:procedure|function|constructor|destructor|operator)\\s+)${ownerName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.`, "i"),
         "$1",
       );
-      const member = owner.sym.children.find(child => child.name === leafName
+      const member = owner.sym.children.find(child => child.name.toLowerCase() === leafName.toLowerCase()
         && signatureKey(child.signature) === signatureKey(signature));
       if (!member) continue;
       // A definition's header matches the same member as the definition body;
@@ -1252,7 +1253,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     for (const sym of symbols) {
       if (nested.has(sym) || (sym.kind !== "function" && sym.kind !== "method")) continue;
       if (sym.name.includes(".")) continue;
-      const key = `${sym.name}|${signatureKey(sym.signature)}`;
+      const key = `${sym.name.toLowerCase()}|${signatureKey(sym.signature)}`;
       const previous = declarations.get(key);
       if (!previous) {
         declarations.set(key, sym);
