@@ -8,7 +8,8 @@
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'fs';
 import { isAbsolute, join, posix as posixPath, win32 as windowsPath } from 'path';
 import { homedir } from 'os';
-import { readTomlBooleanInTable } from '../../services/integrations/CodexCliInstaller.js';
+import { readTomlBooleanInTable } from '../../shared/codex-toml.js';
+import { CODEX_PLUGIN_CONFIG_TABLE } from '../../shared/plugin-state.js';
 import { registerCodexUserHooks } from '../../services/integrations/codex-user-hooks.js';
 import { styleText } from 'node:util';
 import { IS_WINDOWS, installedPluginsPath, marketplaceDirectory, readPluginVersion } from '../utils/paths.js';
@@ -610,7 +611,7 @@ export function codexHooksCheck(options: {
   const configPath = join(options.codexHome, 'config.toml');
   let pluginEnabled: boolean | undefined;
   try {
-    pluginEnabled = readTomlBooleanInTable(readFileSync(configPath, 'utf-8'), '[plugins."claude-mem@claude-mem-local"]', 'enabled');
+    pluginEnabled = readTomlBooleanInTable(readFileSync(configPath, 'utf-8'), CODEX_PLUGIN_CONFIG_TABLE, 'enabled');
   } catch {
     return null;
   }
