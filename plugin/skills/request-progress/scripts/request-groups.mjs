@@ -6006,8 +6006,57 @@ function observationMediaFromMetadata(metadataJson) {
   }
 }
 
-// src/services/work-view/agent-view.mjs
+// src/services/work-view/work-state-labels.mjs
+init_my_focus();
+init_owner_goals();
+init_request_judge();
+init_atomic_json();
+init_redaction();
+init_work_state_reduce();
 init_work_state_status();
+var JUDGED_WORK_STATES = {
+  working: { criterion: "Still being worked on: the notes describe work under way, and nothing says it finished, stalled or waits on someone", recordedStatus: "doing" },
+  not_started: { criterion: "Not started yet: planned, or a step of a plan waiting its turn after another step", recordedStatus: "todo" },
+  waiting_on_person: { criterion: "Waiting on the person: a decision, review, approval, login, answer or merge only they can give", recordedStatus: "needs-you" },
+  waiting_on_other: { criterion: "Waiting on something else: CI, a running job, a release, another agent, a date or an outside service", recordedStatus: "doing" },
+  finished: { criterion: "Finished: the notes say the work already finished, shipped, merged or was verified, though it was never marked done", recordedStatus: "needs-review" },
+  abandoned: { criterion: "Abandoned: superseded, replaced, moved elsewhere or no longer wanted", recordedStatus: "dropped" }
+};
+var LABEL_THRESHOLD = 0.8;
+var REPLACEABLE_STATUSES = /* @__PURE__ */ new Set(["doing", "unknown", "open"]);
+var TODO_REPLACEMENTS = /* @__PURE__ */ new Set(["finished", "abandoned"]);
+var NOT_NOTES = /* @__PURE__ */ new Set(["task", "status"]);
+var notesOf = (fields) => Object.fromEntries(Object.entries(fields).filter(([key, value]) => !NOT_NOTES.has(key) && value !== null));
+function workStateItems(state) {
+  return state.lists.filter((list2) => !isOwnerGoalsList(list2.name) && !isMyRulesList(list2.name) && !isMyFocusList(list2.name) && !isAgentLifecycleList(list2.name)).flatMap((list2) => {
+    const stateEntryId = state.events.find((event) => event.listId === list2.id && event.task === null)?.id ?? 0;
+    const listNotesSent = Object.keys(notesOf(list2.fields)).length > 0;
+    return [
+      ...list2.tasks.map((task) => ({ ...task, list: list2, recordKind: "task", labelKey: listNotesSent ? `${task.latestEntryId}:${stateEntryId}` : String(task.latestEntryId) })),
+      ...Object.keys(list2.fields).some((key) => key !== "task") ? [{ id: list2.id, name: list2.name, fields: list2.fields, status: list2.status, isOpen: !isClosedWorkStateStatus(list2.status), updatedAtEpoch: list2.stateUpdatedAtEpoch, latestEntryId: stateEntryId, labelKey: String(stateEntryId), list: list2, recordKind: "list" }] : []
+    ];
+  });
+}
+function appliedLabel(item, labels, threshold = LABEL_THRESHOLD) {
+  const label = labels?.[item.labelKey];
+  if (!label) return { judgedStatus: null, nextField: null, resultField: null, label: null };
+  const recorded = item.recordKind === "list" ? item.fields?.status == null || item.fields.status === "" ? "open" : item.fields.status : item.status;
+  return {
+    judgedStatus: label.stateP >= threshold ? judgedStatusFor(recorded, label.state) : null,
+    nextField: label.nextField && label.nextP >= threshold ? label.nextField : null,
+    resultField: label.resultField && label.resultP >= threshold ? label.resultField : null,
+    label
+  };
+}
+function judgedStatusFor(recordedStatus, judgedState) {
+  const recorded = String(recordedStatus ?? "unknown").toLowerCase();
+  if (recorded === "todo" ? !TODO_REPLACEMENTS.has(judgedState) : !REPLACEABLE_STATUSES.has(recorded)) return null;
+  const status = JUDGED_WORK_STATES[judgedState]?.recordedStatus;
+  if (!status) throw new TypeError(`"${judgedState}" is not a judged work state.`);
+  return status === recorded ? null : status;
+}
+
+// src/services/work-view/agent-view.mjs
 var PROJECT_KEY = (value) => String(value ?? "").replace(/[A-Z]/g, (c) => c.toLowerCase());
 var PLATFORMS = { codex: "Codex", claude: "Claude Code", gemini: "Gemini CLI", "gemini-cli": "Gemini CLI", "antigravity-cli": "Antigravity CLI", kimi: "Kimi", "hermes-cli": "Hermes", "pi-agent": "Pi" };
 var platformLabel = (platform) => PLATFORMS[platform] ?? compactText(platform, 48) ?? "Unassigned";
@@ -6153,7 +6202,7 @@ function launchRequest(launch) {
   const text5 = launch.description ?? launch.prompt;
   return text5 ? { text: text5, source: "agent-launch", sourceId: launch.shared ? null : launch.toolUseId, url: launch.shared ? null : `/api/work-view/evidence/tool-use/${launch.toolUseId}` } : null;
 }
-function buildAgentView(state, records2, { now = Date.now(), workLimit = 240, activityLimit = 160, recentMs = 15 * 60 * 1e3, titleCache = {}, ledger = null, onProductFile = null } = {}) {
+function buildAgentView(state, records2, { now = Date.now(), workLimit = 240, activityLimit = 160, recentMs = 15 * 60 * 1e3, titleCache = {}, ledger = null, onProductFile = null, workStateLabels = null } = {}) {
   const { calls = [], observations = [], summaries = [], sessions = [], prompts = [], agentLaunches = [], agentToolActivity = [] } = records2;
   const launches = readAgentLaunches(agentLaunches);
   const lastToolEpochs = new Map(agentToolActivity.map((row) => [lifecycleKey(row.platform_source, row.content_session_id, row.agent_id), Number(row.last_epoch) || 0]));
@@ -6292,10 +6341,7 @@ function buildAgentView(state, records2, { now = Date.now(), workLimit = 240, ac
     group.activity.push(entry);
     activity.push({ ...entry, agentGroupId: group.id });
   }
-  const candidates = state.lists.filter((list2) => !isOwnerGoalsList(list2.name) && !isMyRulesList(list2.name) && !isMyFocusList(list2.name) && !isAgentLifecycleList(list2.name)).flatMap((list2) => [
-    ...list2.tasks.map((task) => ({ ...task, list: list2, recordKind: "task" })),
-    ...Object.keys(list2.fields).some((key) => key !== "task") ? [{ id: list2.id, name: list2.name, fields: list2.fields, status: list2.status, isOpen: !isClosedWorkStateStatus(list2.status), updatedAtEpoch: list2.stateUpdatedAtEpoch, latestEntryId: state.events.find((event) => event.listId === list2.id && event.task === null)?.id ?? 0, list: list2, recordKind: "list" }] : []
-  ]).sort((a, b) => b.updatedAtEpoch - a.updatedAtEpoch).slice(0, workLimit);
+  const candidates = workStateItems(state).sort((a, b) => b.updatedAtEpoch - a.updatedAtEpoch).slice(0, workLimit);
   function uniqueCall(event) {
     const matches = (callsByKey.get(callKey(event.originProject ?? event.project, event.listName, event.fields)) ?? []).filter((call) => Math.abs(call.created_at_epoch - event.atEpoch) <= 5e3);
     return matches.length === 1 ? matches[0] : records2.sharedAttributions?.get(event.id) ?? null;
@@ -6326,8 +6372,13 @@ function buildAgentView(state, records2, { now = Date.now(), workLimit = 240, ac
     const explicitRequest = fieldText(item.fields, ["request", "human_request", "user_request"], 500);
     const requestKey = confirmedRequestKey(session, call?.prompt_number);
     const request = { ...explicitRequest ?? requestFor(session, call?.prompt_number) ?? { text: compactText(item.name, 500), source: item.recordKind === "task" ? "task-label" : "list-label", sourceId: item.id, url: null }, key: requestKey };
-    const next = fieldText(item.fields, ["next_step", "nextStep", "next", "next_action", "remaining", "pending", "then_run"]);
-    const outcome2 = fieldText(item.fields, ["outcome", "result", "completed", "verified", "verification"]);
+    const labeled = appliedLabel(item, workStateLabels?.labels);
+    const jevField = (name) => {
+      const found = name ? fieldText(item.fields, [name]) : null;
+      return found ? { ...found, pickedBy: "jev" } : null;
+    };
+    const next = fieldText(item.fields, ["next_step", "nextStep", "next", "next_action", "remaining", "pending", "then_run"]) ?? jevField(labeled.nextField);
+    const outcome2 = fieldText(item.fields, ["outcome", "result", "completed", "verified", "verification"]) ?? jevField(labeled.resultField);
     const progress = fieldText(item.fields, ["human_summary", "summary", "progress", "phase", "stage", "status_note"]);
     const entry = {
       id: item.id,
@@ -6346,6 +6397,8 @@ function buildAgentView(state, records2, { now = Date.now(), workLimit = 240, ac
       outcome: outcome2,
       progress,
       owner,
+      judgedStatus: labeled.judgedStatus,
+      judgment: labeled.label ? { state: labeled.label.state, probability: labeled.label.stateP, model: labeled.label.model, at: labeled.label.at } : null,
       requestId: ["string", "number"].includes(typeof (item.fields.request_id ?? item.list.fields.request_id)) ? String(item.fields.request_id ?? item.list.fields.request_id).trim() || null : null,
       requestText: fieldText(item.fields, ["human_request", "request", "user_request"], 1200)?.text ?? fieldText(item.list.fields, ["human_request", "request", "user_request"], 1200)?.text ?? null,
       requestStatus: typeof (item.fields.request_status ?? item.list.fields.request_status) === "string" ? item.fields.request_status ?? item.list.fields.request_status : null,
