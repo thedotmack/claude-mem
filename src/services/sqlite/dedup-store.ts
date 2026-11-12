@@ -228,25 +228,31 @@ export function sweepProjectCandidates(db: Database, project: string, cfg: Dedup
       list.push(i);
     }
   });
-  const shared = new Map<string, number>(); // "i:j" (i<j) -> shared discriminating-token count
-  for (const ids of postings.values()) {
-    for (let x = 0; x < ids.length; x++) for (let y = x + 1; y < ids.length; y++) {
-      const key = `${ids[x]}:${ids[y]}`;
-      shared.set(key, (shared.get(key) ?? 0) + 1);
-    }
-  }
   const ins = candidateInsert(db);
   const nowIso = new Date().toISOString();
   const nowEpoch = Date.now();
   let count = 0;
-  for (const [key, sh] of shared) {
-    if (sh < cfg.minSharedTokens) continue;
-    const [i, j] = key.split(':').map(Number);
-    const c = classifyPair(rows[i].title, rows[j].title, idfFn, thresholds);
-    if (c.tier === 'candidate') {
-      // Count only rows actually persisted — INSERT OR IGNORE returns changes=0 on a
-      // UNIQUE conflict (already-flagged pair), so re-runs report 0, not a phantom count.
-      count += ins.run(rows[j].id, rows[i].id, project, c.method, c.score, 'pending', nowIso, nowEpoch).changes;
+  // Bound the working pair counts to one title, rather than retaining every
+  // pair in the corpus until classification begins. Posting lists remain
+  // sorted by row index, so only later rows can produce a new pair.
+  const shared = new Map<number, number>();
+  for (let i = 0; i < rows.length; i++) {
+    shared.clear();
+    for (const token of tokensPerRow[i]) {
+      const ids = postings.get(token);
+      if (!ids) continue;
+      for (const j of ids) {
+        if (j > i) shared.set(j, (shared.get(j) ?? 0) + 1);
+      }
+    }
+    for (const [j, sh] of shared) {
+      if (sh < cfg.minSharedTokens) continue;
+      const c = classifyPair(rows[i].title, rows[j].title, idfFn, thresholds);
+      if (c.tier === 'candidate') {
+        // Count only rows actually persisted — INSERT OR IGNORE returns changes=0 on a
+        // UNIQUE conflict (already-flagged pair), so re-runs report 0, not a phantom count.
+        count += ins.run(rows[j].id, rows[i].id, project, c.method, c.score, 'pending', nowIso, nowEpoch).changes;
+      }
     }
   }
   return count;
