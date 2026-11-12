@@ -33,8 +33,10 @@ HEADLESS = ("sdk-cli", "sdk-ts")
 
 # Frustration Arc markers (MI:7) plus the agent markers in plan 2B.1 and the relay/automation
 # prefixes seen in claude-mem user_prompts on this box (2026-09-26 probe).
-# Explicit relay labels identify automated steering independently of the owner's name.
-NAMED_CORRECTION = r"(?:STEER|RESET|CORRECTION) from[ \t]+[^\s:][^\r\n:]*:"
+# Explicit relay labels identify automated steering independently of the owner's name. The label is
+# matched case-sensitively (the patterns below compile with re.I), so a person typing
+# "Correction from earlier: ..." or "Reset from scratch: ..." stays human.
+NAMED_CORRECTION = r"(?-i:(?:STEER|RESET|CORRECTION) from)[ \t]+[^\s:][^\r\n:]*:"
 BOT_MARKERS = re.compile(
     rf"^\s*{NAMED_CORRECTION}|"
     r"^\s*(STEER from Alex|HOUSE LOCK|\[SAND_HIDDEN_PROMPT\]|<system-reminder>|<timestamp>|<cross-session-message|<command-|<local-command|"

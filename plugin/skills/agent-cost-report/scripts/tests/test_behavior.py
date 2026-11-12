@@ -86,7 +86,9 @@ class Tagger(Base):
                 with self.subTest(name=name, marker=marker):
                     self.assertEqual(behavior.tag_prompt_row(f"{marker} from {name}: stop"), "bot")
         for text in ("Kirat said the build is broken", "I received STEER from Kirat: stop",
-                     "STEER from Kirat", "STEER from : stop", "STEER from Kirat\n: stop"):
+                     "STEER from Kirat", "STEER from : stop", "STEER from Kirat\n: stop",
+                     "Correction from earlier: use the other file", "Reset from scratch: wipe it",
+                     "steer from Kirat: stop"):
             self.assertEqual(behavior.tag_prompt_row(text), "human", text)
 
     def test_named_steering_relay_marks_rework_without_tagging_the_user_as_bot(self):
