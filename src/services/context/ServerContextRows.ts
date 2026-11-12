@@ -96,12 +96,62 @@ export async function fetchServerContextRows(
   const observationRows = rows.filter(row => row.kind !== 'summary');
   return {
     observations: observationRows
+      .filter(row => matchesModeFilters(row, config))
       .slice(0, config.totalObservationCount)
       .map(row => toLocalObservationShape(row, project, platformSource)),
     summaries: summaryRows
       .slice(0, config.sessionCount + SUMMARY_LOOKAHEAD)
       .map(row => toLocalSummaryShape(row, project, platformSource)),
   };
+}
+
+// The mode filters are enforced AGAIN here, on the rows the server returned.
+// The route filters in SQL before its LIMIT (#5623), so against a current
+// server this removes nothing -- but this function's contract is that the
+// rows it hands the renderer honor the config it was given, the way the local
+// SQLite read does. A server that ignores the filters it was sent (an older
+// deployment behind a newer plugin) must not leak excluded types or concepts
+// into the session-start block. Summaries are never mode-filtered: the SQL
+// filter passes kind='summary' unconditionally and the local read fetches
+// them through a separate query. An empty filter set is no constraint,
+// matching the route's NULL case. Filtering runs BEFORE the slice so an
+// excluded row cannot spend one of the observation slots.
+//
+// The concept axis is strict, like the SQL reads: missing concepts are no
+// concepts, so a row with no concepts value at all matches nothing when a
+// concept filter is configured and is excluded -- the same rows the
+// route's SQL rejects, which require at least one matching concept.
+function matchesModeFilters(row: ServerRow, config: ContextConfig): boolean {
+  if (config.observationTypes.size > 0) {
+    const type = asText(pick(row, 'kind', 'type')) ?? 'discovery';
+    if (!config.observationTypes.has(type)) return false;
+  }
+  if (config.observationConcepts.size > 0) {
+    if (!rowConcepts(row).some(concept => config.observationConcepts.has(concept))) return false;
+  }
+  return true;
+}
+
+// Concepts arrive as an array (generation metadata) or as a JSON string (the
+// local schema's storage form). A value that parses as neither carries no
+// concepts, mirroring the SQLite read's json_valid guard.
+function rowConcepts(row: ServerRow): string[] {
+  const raw = pick(row, 'concepts');
+  const values = Array.isArray(raw)
+    ? raw
+    : typeof raw === 'string'
+      ? parseJsonStringArray(raw)
+      : [];
+  return values.filter((value): value is string => typeof value === 'string');
+}
+
+function parseJsonStringArray(text: string): unknown[] {
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
 }
 
 // A field from the top-level row, else from its metadata, else null. The route
@@ -155,7 +205,7 @@ export function toLocalObservationShape(
     id: asText(row.id) ?? '',
     memory_session_id: asText(pick(row, 'serverSessionId', 'memory_session_id')) ?? '',
     content_session_id: asText(pick(row, 'contentSessionId', 'content_session_id')) ?? undefined,
-    platform_source: platformSource ?? '',
+    platform_source: asText(pick(row, 'platformSource', 'platform_source')) ?? platformSource ?? '',
     type: asText(pick(row, 'kind', 'type')) ?? 'discovery',
     title: asText(pick(row, 'title')) ?? firstLine,
     subtitle: asText(pick(row, 'subtitle')),
@@ -182,7 +232,7 @@ export function toLocalSummaryShape(
   return {
     id: asText(row.id) ?? '',
     memory_session_id: asText(pick(row, 'serverSessionId', 'memory_session_id')) ?? '',
-    platform_source: platformSource ?? '',
+    platform_source: asText(pick(row, 'platformSource', 'platform_source')) ?? platformSource ?? '',
     request: asText(pick(row, 'request')),
     investigated: asText(pick(row, 'investigated')),
     learned: asText(pick(row, 'learned')),

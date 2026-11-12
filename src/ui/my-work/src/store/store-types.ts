@@ -102,6 +102,7 @@ export interface ViewSlice {
   reconcileOpenRequest: () => void
   /** Back/Forward: show what the URL now says. */
   showUrl: () => void
+  startSetup: () => void
   finishSetup: () => void
   reportOpen: () => void
   setWorkspace: (change: Partial<Workspace>) => void

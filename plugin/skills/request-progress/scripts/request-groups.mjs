@@ -1360,6 +1360,8 @@ var init_SettingsDefaultsManager = __esm({
         // #5164 — same for Gemini; empty keeps flash-lite/flash per step
         CLAUDE_MEM_WORK_VIEW_API_MODEL: "",
         // Model for every My Work refresh step on the selected API provider; empty keeps the provider's configured model
+        CLAUDE_MEM_CORPUS_AGENT: "",
+        // Which agent answers knowledge-corpus prime/query/reprime: '' uses the Claude Agent SDK (the Claude subscription); 'api' answers over chat completions on the selected openrouter/openai-compatible provider and spends that provider's credit
         CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE: "",
         // Language for My Work's generated text (titles, reviews, story), such as 'Turkish'. No extra model call; empty uses the language the grouping step finds in the owner's asks, decided once per run (#5660)
         // Automatic local DB snapshots (BackupManager). Off by default; opt-in.
@@ -1769,7 +1771,7 @@ function commitSubjects(command2) {
     if (substituted) return short(substituted[1]);
     const inline = invocation.match(/\s-[a-zA-Z]*m\s+(?:"((?:[^"\\]|\\.)*)"|'([^']*)')/);
     const heredoc = invocation.match(/\s-F\s+-\s*<<-?\s*['"]?\w+['"]?\n([^\n]*)/);
-    const text5 = inline ? (inline[1] ?? inline[2]).replace(BASH_DOUBLE_QUOTE_ESCAPE, "$1") : heredoc?.[1];
+    const text5 = inline ? inline[1]?.replace(BASH_DOUBLE_QUOTE_ESCAPE, "$1") ?? inline[2] : heredoc?.[1];
     return short(text5?.split("\n")[0]);
   });
 }
@@ -1806,20 +1808,74 @@ function commitsFrom(command2, response, out) {
   return [...unique.values()];
 }
 function pushTargets(command2) {
-  const pattern = gitPattern(String.raw`push\b((?:[ \t]+(?:"[^"]*"|'[^']*'|[^\s;&|)]+))*)`, "g");
+  const word = String.raw`(?:[^\s"'<>;&|()]+|"[^"]*"|'[^']*')+`;
+  const redirection = String.raw`(?:\d*(?:>>?|<{1,3})&?|&>>?)`;
+  const pattern = gitPattern(String.raw`push\b((?:[ \t]+(?:#[^\n]*)?|${redirection}|${word})*)`, "g");
+  const redirect = new RegExp(`^${redirection}$`);
   return [...command2.matchAll(pattern)].map(([, args]) => {
-    const tokens = args.trim().split(/\s+/).filter(Boolean).map(unquote);
-    const [remote, ...refspecs] = tokens.filter((token) => !token.startsWith("-"));
-    const destinations = refspecs.map((spec) => spec.startsWith(":") ? "" : spec.replace(/^\+/, "").split(":").at(-1));
-    const deleting = tokens.some((token) => ["-d", "--delete"].includes(token));
+    const shellTokens = args.match(new RegExp(`${redirection}|${word}`, "g")) ?? [];
+    const tokens = [];
+    for (let index = 0; index < shellTokens.length; index++) {
+      if (shellTokens[index].startsWith("#")) break;
+      if (redirect.test(shellTokens[index])) {
+        index++;
+        continue;
+      }
+      tokens.push(unquote(shellTokens[index]));
+    }
+    const positional = [];
+    let dryRun = false, deleting = false, tags = false, repoOption;
+    for (let index = 0; index < tokens.length; index++) {
+      const token = tokens[index];
+      if (token === "--") {
+        positional.push(...tokens.slice(index + 1));
+        break;
+      }
+      if (token === "--repo") {
+        repoOption = tokens[++index];
+        continue;
+      }
+      if (token.startsWith("--repo=")) {
+        repoOption = token.slice("--repo=".length);
+        continue;
+      }
+      if (/^--(?:push-option|receive-pack|exec|recurse-submodules)$/.test(token)) {
+        index++;
+        continue;
+      }
+      if (token.startsWith("--")) {
+        if (token === "--dry-run" || token === "--no-dry-run") dryRun = token === "--dry-run";
+        if (token === "--delete" || token === "--no-delete") deleting = token === "--delete";
+        if (token === "--tags" || token === "--no-tags") tags = token === "--tags";
+        continue;
+      }
+      if (token.startsWith("-")) {
+        let flags = token.slice(1);
+        const valueAt = flags.indexOf("o");
+        if (valueAt !== -1) {
+          if (valueAt === flags.length - 1) index++;
+          flags = flags.slice(0, valueAt);
+        }
+        if (flags.includes("n")) dryRun = true;
+        if (flags.includes("d")) deleting = true;
+        continue;
+      }
+      positional.push(token);
+    }
+    const [remote, ...refspecs] = positional;
+    const destinations = [];
+    for (let index = 0; index < refspecs.length; index++) {
+      const spec = refspecs[index];
+      if (spec === "tag") {
+        tags = true;
+        index++;
+        continue;
+      }
+      destinations.push(spec.startsWith(":") ? "" : spec.replace(/^\+/, "").split(":").at(-1));
+    }
     const branches = deleting ? [] : destinations.map((ref) => ref && ref !== "HEAD" && (!ref.startsWith("refs/") || ref.startsWith("refs/heads/")) ? ref.replace(/^refs\/heads\//, "") : null);
-    const deletesOrTags = deleting || tokens.includes("--tags") || destinations.some((ref) => ref.startsWith("refs/tags/"));
-    return {
-      repo: githubRepo(remote),
-      branches,
-      dryRun: tokens.some((token) => token === "--dry-run" || /^-[a-zA-Z]*n[a-zA-Z]*$/.test(token)),
-      deletesOrTags
-    };
+    const deletesOrTags = deleting || tags || destinations.some((ref) => ref.startsWith("refs/tags/"));
+    return { repo: githubRepo(remote ?? repoOption), branches, dryRun, deletesOrTags };
   });
 }
 function pushesFrom(command2, response, out) {
@@ -1863,8 +1919,8 @@ function pushesFrom(command2, response, out) {
       if (!target?.deletesOrTags || target.branches.includes(branch2) || line.includes("[new branch]")) add(branch2, ref[1]);
     }
   }
-  const branch = recorded ?? target?.branches[0];
-  if (!pushes.size && targets.length <= 1 && !target?.dryRun && !target?.deletesOrTags && branch && !/Everything up-to-date|\[up to date\]|\[new tag\]|\[deleted\]|\[rejected\]|failed to push|^fatal:/m.test(out)) add(branch);
+  const branch = recorded ?? target?.branches.find(Boolean);
+  if (!pushes.size && targets.length <= 1 && !target?.dryRun && branch && (!target?.deletesOrTags || target.branches.includes(branch)) && !/Everything up-to-date|\[up to date\]|\[new tag\]|\[deleted\]|\[rejected\]|failed to push|^fatal:/m.test(out)) add(branch);
   return [...pushes.values()];
 }
 function createdBranchesFrom(command2, out) {
@@ -2150,7 +2206,7 @@ var init_work_product = __esm({
     };
     GIT_PREFIX = String.raw`(?:^|[;&|(\n])\s*(?:rtk\s+)?(?:\/usr\/bin\/)?git(?:\s+-[Cc]\s+(?:"[^"]*"|'[^']*'|\S+))*\s+`;
     gitPattern = (subcommand, flags = "") => new RegExp(GIT_PREFIX + subcommand, flags);
-    GITHUB_REMOTE = /^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/;
+    GITHUB_REMOTE = /^(?:https:\/\/github\.com\/|(?:git@)?github\.com:|ssh:\/\/(?:git@)?(?:github\.com(?::22)?|ssh\.github\.com:443)\/)([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/;
     SHA = "[0-9a-f]{7,40}";
     unquote = (token) => token.replace(/^(["'])(.*)\1$/, "$2");
     matchingCommitSha = (left, right) => left.startsWith(right) || right.startsWith(left);
@@ -2862,7 +2918,7 @@ function originalFor(session, prompts) {
   if (isHumanActionRequest(session.user_prompt)) return initial();
   return null;
 }
-function buildHumanRequests(view, records2 = {}, { titleCache = {}, ledger = null } = {}) {
+function buildHumanRequests(view, records2 = {}, { titleCache = {}, ledger = null, onProductFile = null } = {}) {
   const sessions = new Map((records2.sessions ?? []).map((session) => [session.id, session]));
   const prompts = records2.prompts ?? [];
   const flattened = (view.agents ?? []).flatMap((agent) => (agent.work ?? []).map((item) => ({ ...item, agentId: agent.id, agentLabel: agent.label, agentSessionId: agent.sessionId })));
@@ -3016,8 +3072,13 @@ function buildHumanRequests(view, records2 = {}, { titleCache = {}, ledger = nul
   for (const request of requests.values()) {
     const merged = mergeProducts([...recordedProducts.get(request) ?? [], ...request.items.flatMap((item) => item.workProduct ?? [])]);
     const copies = merged.filter((product) => product.deliverable && product.sourcePath);
-    const covered = (product) => Boolean(product.path) && copies.some((copy) => copy.sourcePath === product.path && copyCoversSource(copy, product.path));
-    request.workProduct = merged.filter((product) => !covered(product)).map((product) => ({ ...product, fileUrl: fileUrl(product), available: product.path ? Boolean(servableFile(product)) : product.deliverable ? bucketFileAvailable(product) : true }));
+    const coverage = new Map(copies.map((copy) => [copy, copyCoversSource(copy, copy.sourcePath)]));
+    const covered = (product) => Boolean(product.path) && copies.some((copy) => copy.sourcePath === product.path && coverage.get(copy));
+    request.workProduct = merged.filter((product) => !covered(product)).map((product) => {
+      const available = product.path ? Boolean(servableFile(product)) : product.deliverable ? bucketFileAvailable(product) : true;
+      if (product.path || product.bucketPath) onProductFile?.(product, available, coverage.get(product) ?? null);
+      return { ...product, fileUrl: fileUrl(product), available };
+    });
     const relatedIds = new Set(request.conversationKeys.flatMap((key) => sessionIdsByKey.get(key) ?? []));
     const related = [...relatedIds].flatMap((id) => promptsBySession.get(id) ?? []);
     request.updatedAtEpoch = Math.max(request.updatedAtEpoch, request.original.atEpoch ?? 0, ...related.map((prompt) => prompt.created_at_epoch ?? 0));
@@ -3480,6 +3541,12 @@ var init_redaction = __esm({
       // POSTMAN_API_KEY lines and `newman` / `postman` CLI commands print.
       { name: "grafana_token", regex: /\b(?:glsa_[A-Za-z0-9]{32}_[A-Fa-f0-9]{8}(?!\w)|glc_[A-Za-z0-9+\/]{32,400}={0,2}(?![\w+\/=]))/g },
       { name: "postman_key", regex: /\bPMAK-[a-f0-9]{24}-[a-f0-9]{34}(?!\w)/g },
+      // Pulumi access tokens (`pul-` + 40 hex), which PULUMI_ACCESS_TOKEN lines,
+      // `pulumi login` output and CI configs print. Doppler personal tokens
+      // (`dp.pt.` + 43 alphanumerics), which DOPPLER_TOKEN lines and
+      // `doppler configure` dumps print.
+      { name: "pulumi_token", regex: /\bpul-[a-f0-9]{40}(?!\w)/g },
+      { name: "doppler_token", regex: /\bdp\.pt\.[A-Za-z0-9]{43}(?!\w)/g },
       // Incoming webhook URLs carry their secret in the path, so anyone holding
       // one can post to the channel: Slack (`hooks.slack.com/services/T…/B…/…`,
       // plus workflow and trigger URLs) and Discord (`discord.com/api/webhooks/
@@ -5922,7 +5989,8 @@ function observationMediaFromMetadata(metadataJson) {
 // src/services/work-view/agent-view.mjs
 init_work_state_status();
 var PROJECT_KEY = (value) => String(value ?? "").replace(/[A-Z]/g, (c) => c.toLowerCase());
-var PLATFORMS = { codex: "Codex", claude: "Claude Code", "gemini-cli": "Gemini CLI", "antigravity-cli": "Antigravity CLI", kimi: "Kimi", "hermes-cli": "Hermes", "pi-agent": "Pi" };
+var PLATFORMS = { codex: "Codex", claude: "Claude Code", gemini: "Gemini CLI", "gemini-cli": "Gemini CLI", "antigravity-cli": "Antigravity CLI", kimi: "Kimi", "hermes-cli": "Hermes", "pi-agent": "Pi" };
+var platformLabel = (platform) => PLATFORMS[platform] ?? compactText(platform, 48) ?? "Unassigned";
 var stamp = (value) => Number.isFinite(Number(value)) && Number(value) > 0 ? new Date(Number(value)).toISOString() : null;
 var fingerprint = (value) => JSON.stringify(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)));
 var callKey = (project, list2, fields) => JSON.stringify([PROJECT_KEY(project), list2, fingerprint(fields)]);
@@ -6065,7 +6133,7 @@ function launchRequest(launch) {
   const text5 = launch.description ?? launch.prompt;
   return text5 ? { text: text5, source: "agent-launch", sourceId: launch.shared ? null : launch.toolUseId, url: launch.shared ? null : `/api/work-view/evidence/tool-use/${launch.toolUseId}` } : null;
 }
-function buildAgentView(state, records2, { now = Date.now(), workLimit = 240, activityLimit = 160, recentMs = 15 * 60 * 1e3, titleCache = {}, ledger = null } = {}) {
+function buildAgentView(state, records2, { now = Date.now(), workLimit = 240, activityLimit = 160, recentMs = 15 * 60 * 1e3, titleCache = {}, ledger = null, onProductFile = null } = {}) {
   const { calls = [], observations = [], summaries = [], sessions = [], prompts = [], agentLaunches = [], agentToolActivity = [] } = records2;
   const launches = readAgentLaunches(agentLaunches);
   const lastToolEpochs = new Map(agentToolActivity.map((row) => [lifecycleKey(row.platform_source, row.content_session_id, row.agent_id), Number(row.last_epoch) || 0]));
@@ -6155,11 +6223,11 @@ function buildAgentView(state, records2, { now = Date.now(), workLimit = 240, ac
     const platform = session?.platform_source ?? null;
     const id = session ? agentKey(platform, session.id, agentId) : JSON.stringify([owner ? "owner" : "unassigned", PROJECT_KEY(project), owner, agentId]);
     if (!groups.has(id)) {
-      const platformLabel = PLATFORMS[platform] ?? compactText(platform, 48) ?? "Unassigned";
+      const label = platformLabel(platform);
       groups.set(id, {
         id,
         kind: session ? "session" : owner ? "recorded-owner" : "unassigned",
-        label: session ? platformLabel : owner ? compactText(owner, 70) : "Unassigned work",
+        label: session ? label : owner ? compactText(owner, 70) : "Unassigned work",
         platformSource: platform,
         agentId,
         agentType,
@@ -6356,7 +6424,7 @@ function buildAgentView(state, records2, { now = Date.now(), workLimit = 240, ac
     };
   }).sort((a, b) => String(b.presence.lastActivityAt ?? "").localeCompare(String(a.presence.lastActivityAt ?? "")));
   const recentActivity = activity.sort((a, b) => b.atEpoch - a.atEpoch).slice(0, activityLimit);
-  const requestProjection = buildHumanRequests({ agents, recentActivity }, records2, { titleCache, ledger });
+  const requestProjection = buildHumanRequests({ agents, recentActivity }, records2, { titleCache, ledger, onProductFile });
   const { focusAreas, focusAreaIdByAnchor } = buildFocusAreas(state);
   return {
     version: 1,
@@ -7826,6 +7894,7 @@ var SharedLedgerAdapter = class {
     }
     const shared = this.shared();
     let projectionSuperseded = false;
+    let activityPublishFailed = false;
     let ledger = this.localLedger();
     const applied = applySharedProjection(this.db, shared, { ledger, deviceId: this.deviceId });
     ledger = applied.ledger;
@@ -7885,9 +7954,12 @@ var SharedLedgerAdapter = class {
         this.publish(buildSharedProjectionUpdates(this.db, { ledger: null, records: records2, view, deviceId: this.deviceId, copyEntries: copies }));
       } catch (error) {
         this.errors.push({ file: "activity", message: String(error.message) });
+        activityPublishFailed = String(error?.code ?? "").startsWith("SQLITE_BUSY");
       }
-      this.activity = activity;
-      this.copyHash = copyHash;
+      if (!activityPublishFailed) {
+        this.activity = activity;
+        this.copyHash = copyHash;
+      }
     }
     const final = this.shared();
     if (final.revision !== this.sharedRevision) {
@@ -7897,7 +7969,7 @@ var SharedLedgerAdapter = class {
       this.storyHash = storyHash;
       this.sharedRevision = final.revision;
     }
-    this.lastSignature = projectionSuperseded ? null : this.signature(captureActivity, dataVersion);
+    this.lastSignature = projectionSuperseded || activityPublishFailed ? null : this.signature(captureActivity, dataVersion);
     const diagnostics = applySharedProjection(this.db, final, { ledger, deviceId: this.deviceId }).diagnostics;
     this.lastDiagnostic = { ...diagnostics, files: this.errors };
     return this.lastDiagnostic;

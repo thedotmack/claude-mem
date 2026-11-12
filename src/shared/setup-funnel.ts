@@ -1,5 +1,5 @@
 /** Closed, content-free contract for the local installer's actual screens. */
-export const SETUP_STEPS = ['scan', 'reveal', 'choice', 'savings', 'checkout', 'finish-setup', 'import', 'launch', 'workspace'] as const;
+export const SETUP_STEPS = ['install', 'scan', 'reveal', 'choice', 'savings', 'checkout', 'finish-setup', 'import', 'launch', 'workspace'] as const;
 export type SetupStep = (typeof SETUP_STEPS)[number];
 
 // The funnel's states as they cross between the installer, the worker and the setup page. Each has its one

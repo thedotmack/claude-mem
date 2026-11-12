@@ -205,7 +205,10 @@ const QUERIES: Record<string, string> = {
 
   c: `
 (function_definition) @func
-(function_declarator declarator: (identifier) @function_name)
+(function_declarator declarator: (identifier) @function_name) @c_named_function
+(declaration declarator: (_) @c_declarator) @c_declaration
+(parameter_list) @c_nonfunction_scope
+(init_declarator) @c_nonfunction_scope
 (type_definition type: (_) @aliased_type declarator: (type_identifier) @name) @tdef
 (struct_specifier name: (type_identifier) @name body: (field_declaration_list)) @struct_def
 (union_specifier name: (type_identifier) @name body: (field_declaration_list)) @struct_def
@@ -215,7 +218,12 @@ const QUERIES: Record<string, string> = {
 
   cpp: `
 (function_definition) @func
-(function_declarator declarator: [(identifier) (field_identifier) (qualified_identifier) (destructor_name) (operator_name)] @function_name)
+(function_declarator declarator: [(identifier) (field_identifier) (qualified_identifier) (destructor_name) (operator_name)] @function_name) @c_named_function
+(declaration declarator: (_) @c_declarator) @c_declaration
+(field_declaration declarator: (_) @c_declarator) @c_declaration
+(template_declaration (declaration) @decorated_inner) @decorated_outer
+(parameter_list) @c_nonfunction_scope
+(init_declarator) @c_nonfunction_scope
 (type_definition type: (_) @aliased_type declarator: (type_identifier) @name) @tdef
 (class_specifier name: (type_identifier) @name body: (field_declaration_list)) @cls
 (struct_specifier name: (type_identifier) @name body: (field_declaration_list)) @struct_def
@@ -602,6 +610,7 @@ function parseMultiFileQueryOutput(output: string): Map<string, RawMatch[]> {
 const KIND_MAP: Record<string, CodeSymbol["kind"]> = {
   func: "function",
   ts_signature: "function",
+  c_declaration: "function",
   rust_signature: "function",
   const_func: "function",
   cls: "class",
@@ -790,6 +799,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   const swiftParameters = new Map<string, string[]>();
   const swiftHeaders = new Map<string, { generics?: string; constraints?: string }>();
   const haskellSignatures = new Set<CodeSymbol>();
+  const cDeclarations = new Map<CodeSymbol, RawCapture>();
   const haskellDefaults: RawCapture[] = [];
   const ranges = new Map<CodeSymbol, RawCapture>();
   const implementedTraits = new Map<CodeSymbol, string>();
@@ -862,9 +872,39 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     return capture && (capture.endRow < definition.endRow
       || (capture.endRow === definition.endRow && capture.endCol <= definition.endCol)) ? capture : undefined;
   };
+  // A declarator can contain callback signatures or an initializer's local
+  // functions. Exclude those native scopes before associating header APIs.
+  // Sweep sorted ranges once instead of rescanning every parameter list for
+  // each declaration in a large header.
+  const excludedScopes = matches.flatMap(match => match.captures.filter(c => c.tag === "c_nonfunction_scope"))
+    .sort((a, b) => a.startRow - b.startRow || a.startCol - b.startCol);
+  const declarationNames = new Set<RawCapture>();
+  let scopeIndex = 0;
+  let farthestScope: RawCapture | undefined;
+  for (const name of functionNames) {
+    while (scopeIndex < excludedScopes.length) {
+      const scope = excludedScopes[scopeIndex];
+      if (scope.startRow > name.startRow || (scope.startRow === name.startRow && scope.startCol > name.startCol)) break;
+      if (!farthestScope || scope.endRow > farthestScope.endRow
+        || (scope.endRow === farthestScope.endRow && scope.endCol > farthestScope.endCol)) farthestScope = scope;
+      scopeIndex++;
+    }
+    if (!farthestScope || !rangeContains(farthestScope, name)) declarationNames.add(name);
+  }
+  const namedDeclarators = new Map<RawCapture, RawCapture>();
+  for (const match of matches) {
+    const declarator = match.captures.find(c => c.tag === "c_named_function");
+    const name = match.captures.find(c => c.tag === "function_name");
+    if (declarator && name && declarationNames.has(name)) namedDeclarators.set(name, declarator);
+  }
   for (const match of matches) {
     const kindCapture = match.captures.find(c => KIND_MAP[c.tag]);
+    const declaration = match.captures.find(c => c.tag === "c_declarator");
+    const declaredName = declaration && findFunctionName(declaration);
+    const namedDeclarator = declaredName && namedDeclarators.get(declaredName);
+    if (kindCapture?.tag === "c_declaration" && !namedDeclarator) continue;
     const nameCapture = match.captures.find(c => c.tag === "name")
+      ?? (kindCapture?.tag === "c_declaration" ? declaredName : undefined)
       ?? (kindCapture?.tag === "func" && (language === "c" || language === "cpp")
         ? findFunctionName(kindCapture)
         : undefined);
@@ -903,10 +943,11 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     if (receiverText) name = `${receiverText}.${name}`;
 
     let signature: string;
-    if (language === "rust" && ["rust_signature", "tdef", "const_def"].includes(kindCapture.tag)) {
+    if ((language === "rust" && ["rust_signature", "tdef", "const_def"].includes(kindCapture.tag))
+      || kindCapture.tag === "c_declaration") {
       // These declarations end at their semicolon; there is no function body
       // from which the generic signature extractor could infer a boundary.
-      const declaration = captureText(lines, kindCapture);
+      const declaration = captureText(lines, decoratedRanges.get(`${startRow}:${kindCapture.startCol}`) ?? kindCapture);
       signature = declaration.length > 200 ? declaration.slice(0, 197) + "..." : declaration;
     } else if (language === "markdown" && kind === "section") {
       // Setext heading paragraphs include a trailing newline (and can span
@@ -970,7 +1011,10 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       }
     }
 
-    const comment = language === "markdown" ? undefined : findCommentAbove(lines, startRow, language);
+    const commentStartRow = kindCapture.tag === "c_declaration"
+      ? decoratedRanges.get(`${startRow}:${kindCapture.startCol}`)?.startRow ?? startRow
+      : startRow;
+    const comment = language === "markdown" ? undefined : findCommentAbove(lines, commentStartRow, language);
     const body = match.captures.find(c => c.tag === "body");
     const docstring = language === "python" && body
       ? findPythonDocstringFromLines(lines, body.startRow, endRow)
@@ -995,6 +1039,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     }
 
     if (kindCapture.tag === "haskell_signature") haskellSignatures.add(sym);
+    if (kindCapture.tag === "c_declaration" && namedDeclarator) cDeclarations.set(sym, namedDeclarator);
     const trait = match.captures.find(c => c.tag === "implemented_trait");
     if (trait) implementedTraits.set(sym, captureText(lines, trait));
     ranges.set(sym, decoratedRanges.get(`${startRow}:${kindCapture.startCol}`) ?? kindCapture);
@@ -1204,6 +1249,22 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   }
 
   const roots = symbols.filter(s => !nested.has(s));
+  if (cDeclarations.size) {
+    // Keep the existing bare name when it is unambiguous. Only declarations
+    // sharing a sibling name gain their native parameter/qualifier spelling:
+    // overloads remain addressable, and a prototype cannot shadow the old
+    // bare-name lookup of a function body in the same source file.
+    const disambiguate = (siblings: CodeSymbol[]) => {
+      const counts = new Map<string, number>();
+      for (const symbol of siblings) counts.set(symbol.name, (counts.get(symbol.name) ?? 0) + 1);
+      for (const symbol of siblings) {
+        const declaration = cDeclarations.get(symbol);
+        if (declaration && counts.get(symbol.name)! > 1) symbol.name = captureText(lines, declaration);
+        if (symbol.children) disambiguate(symbol.children);
+      }
+    };
+    disambiguate(roots);
+  }
   if (implementedTraits.size) {
     // Keep existing unambiguous paths. Distinguish trait impls when a sibling
     // inherent or trait impl for the same receiver would otherwise shadow one.

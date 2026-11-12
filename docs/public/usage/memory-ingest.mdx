@@ -19,6 +19,8 @@ letter or digit replaced by `-` (e.g. `/home/you/code/my_app` →
 
 `claude-mem memory ingest` imports those topic files **directly** into your
 memory database as observations.
+UTF-8 files with a byte-order mark are supported, including frontmatter and
+Markdown headings. A file containing only frontmatter is skipped as empty.
 
 ## Why it doesn't cost anything
 
@@ -106,6 +108,12 @@ metadata:
 `metadata.type` (e.g. `project`, `feedback`, `reference`, `user`) and
 `metadata.originSessionId` are carried through; files without frontmatter are
 stored using their body as-is.
+
+These fields accept single-line quoted values. Single quotes use doubled
+apostrophes (`name: 'Don''t forget the cache'`); double quotes decode YAML escapes,
+including escaped quotes, backslashes and Unicode characters. Backslash sequences
+in plain or single-quoted values and in the Markdown body remain literal. This small
+frontmatter parser does not interpret multiline YAML scalars.
 
 ## Idempotency
 
