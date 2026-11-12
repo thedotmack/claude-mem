@@ -6,7 +6,7 @@ import { styleText } from 'node:util';
 import { ensureServerEmbedder, getBunPath, hasServerEmbedder } from '../install/setup-runtime.js';
 import { npmPackageRootDirectory } from '../utils/paths.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
-import { resolvePluginRoot, buildWorkerUrl } from '../../shared/worker-utils.js';
+import { resolvePluginRoot, buildWorkerUrl, withWorkerAuth } from '../../shared/worker-utils.js';
 import { isConnectionRefusedError } from '../../shared/connection-errors.js';
 import { BUN_NO_AUTO_INSTALL_FLAG } from '../../shared/bun-auto-install.js';
 
@@ -267,7 +267,7 @@ export async function runSearchCommand(queryParts: string[]): Promise<void> {
 
   let response: Response;
   try {
-    response = await fetch(searchUrl);
+    response = await fetch(searchUrl, withWorkerAuth());
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     if (isConnectionRefusedError(error)) {

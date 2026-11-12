@@ -132,6 +132,23 @@ const RESTART_PAGE_HTML = `<!doctype html>
 
   const outgoingPid = ${process.pid};
 
+  // Local API token mode (#5141): the worker refuses these requests without the token. Take
+  // it from this page's single ?token= (then drop it from the address bar), else from the
+  // one a viewer tab kept, and send it as the header. No token: no header, as before.
+  const LOCAL_API_TOKEN_KEY = 'claude-mem.local-api-token';
+  const localApiToken = (() => {
+    const pageUrl = new URL(location.href);
+    const given = pageUrl.searchParams.getAll('token');
+    if (given.length === 1 && given[0] !== '') {
+      try { sessionStorage.setItem(LOCAL_API_TOKEN_KEY, given[0]); } catch { /* blocked storage: this load only */ }
+      pageUrl.searchParams.delete('token');
+      history.replaceState(history.state, '', pageUrl.pathname + pageUrl.search + pageUrl.hash);
+      return given[0];
+    }
+    try { return sessionStorage.getItem(LOCAL_API_TOKEN_KEY) || ''; } catch { return ''; }
+  })();
+  const authInit = localApiToken ? { headers: { 'X-Claude-Mem-Token': localApiToken } } : {};
+
   // A stalled connection or JSON body must not hold the recovery page forever.
   // Each operation is bounded, within the same overall restart deadline.
   async function withRequestDeadline(deadlineMs, operation) {
@@ -146,7 +163,7 @@ const RESTART_PAGE_HTML = `<!doctype html>
 
   async function successorIsReady(deadlineMs) {
     return withRequestDeadline(deadlineMs, async (signal) => {
-      const health = await fetch('/health', { cache: 'no-store', signal });
+      const health = await fetch('/health', { cache: 'no-store', signal, ...authInit });
       if (!health.ok) return false;
       const body = await health.json();
       // No pid means a worker too old to report one — fall back to "healthy"
@@ -157,7 +174,7 @@ const RESTART_PAGE_HTML = `<!doctype html>
       // database, bootstraps chroma and connects MCP after it starts listening,
       // and readiness stays 503 through all of it. This is the same signal the
       // CLI restart path verifies. 404 means a worker too old to expose it.
-      const readiness = await fetch('/api/readiness', { cache: 'no-store', signal });
+      const readiness = await fetch('/api/readiness', { cache: 'no-store', signal, ...authInit });
       return readiness.ok || readiness.status === 404;
     });
   }
@@ -179,7 +196,7 @@ const RESTART_PAGE_HTML = `<!doctype html>
     status.textContent = 'Restarting…';
     const deadlineMs = Date.now() + 60000;
     try {
-      await withRequestDeadline(deadlineMs, signal => fetch('/api/admin/restart', { method: 'POST', signal }));
+      await withRequestDeadline(deadlineMs, signal => fetch('/api/admin/restart', { method: 'POST', signal, ...authInit }));
     } catch {
       // The worker often dies before the response lands — that is the restart
       // working, so fall through to the health poll either way.

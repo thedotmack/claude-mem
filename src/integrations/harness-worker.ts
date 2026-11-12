@@ -6,6 +6,8 @@ import { isConnectionRefusedError } from '../shared/connection-errors.js';
 import { expandHome } from '../shared/expand-home.js';
 import { HOOK_TIMEOUTS, getTimeout } from '../shared/hook-constants.js';
 import { getDefaultWorkerPort } from '../shared/install-port.js';
+import { localApiTokenHeaders, normalizeLocalApiToken } from '../shared/local-api-token.js';
+import { isLoopbackHostname } from '../shared/worker-url.js';
 
 const TIMEOUT_MS = 5_000;
 const CONTEXT_TIMEOUT_BOUNDS = { min: 500, max: 300_000 } as const;
@@ -14,16 +16,20 @@ function dataDirectory(): string {
   return expandHome(process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem'));
 }
 
-function harnessSetting(dataDir = dataDirectory()): (key: string, fallback: string) => string {
-  let settings: Record<string, unknown> = {};
+function readHarnessSettingsFile(dataDir: string): Record<string, unknown> {
   try {
     const document = JSON.parse(readFileSync(join(dataDir, 'settings.json'), 'utf8').replace(/^\uFEFF/, ''));
     const nested = document?.env;
-    settings = nested && typeof nested === 'object' && !Array.isArray(nested)
+    return nested && typeof nested === 'object' && !Array.isArray(nested)
       && Object.keys(nested).some(key => key.startsWith('CLAUDE_MEM_')) ? nested : document ?? {};
   } catch {
     // Settings are optional; environment overrides and per-user defaults remain usable.
+    return {};
   }
+}
+
+function harnessSetting(dataDir = dataDirectory()): (key: string, fallback: string) => string {
+  const settings = readHarnessSettingsFile(dataDir);
   return (key: string, fallback: string): string => {
     const value = settings[key];
     // The worker accepts numeric JSON ports and timeouts as well as strings.
@@ -41,6 +47,35 @@ export function resolveHarnessWorkerUrl(): string {
   const host = configuredHost === 'localhost' ? '127.0.0.1' : configuredHost;
   const port = setting('CLAUDE_MEM_WORKER_PORT', String(getDefaultWorkerPort(dataDir)));
   return 'http://' + (host.includes(':') && !host.startsWith('[') ? '[' + host + ']' : host) + ':' + port;
+}
+
+/**
+ * The local API token (#5141) as request headers, when settings.json has one and `baseUrl` is
+ * this machine's configured worker (resolveHarnessWorkerUrl) on loopback; `{}` otherwise. Read
+ * from settings.json alone, like the worker reads it, so the environment cannot change what is
+ * sent. Any other address, another loopback port included (it may be an SSH forward), never
+ * receives it.
+ */
+export function resolveHarnessAuthHeaders(baseUrl: string = resolveHarnessWorkerUrl()): Record<string, string> {
+  const token = normalizeLocalApiToken(readHarnessSettingsFile(dataDirectory()).CLAUDE_MEM_LOCAL_API_TOKEN);
+  if (!token) return {};
+  try {
+    const target = new URL(baseUrl);
+    if (target.origin !== new URL(resolveHarnessWorkerUrl()).origin) return {};
+    return isLoopbackHostname(target.hostname) ? localApiTokenHeaders(token) : {};
+  } catch {
+    return {};
+  }
+}
+
+/** `init` with `auth` added. A header the caller already set wins; with nothing to add, `init` itself. */
+export function withHarnessAuth(init: RequestInit, auth: Record<string, string>): RequestInit {
+  if (Object.keys(auth).length === 0) return init;
+  const headers = new Headers(init.headers);
+  for (const [name, value] of Object.entries(auth)) {
+    if (!headers.has(name)) headers.set(name, value);
+  }
+  return { ...init, headers };
 }
 
 /** A context render can take seconds on a big database, so it gets the hooks' API budget (CLAUDE_MEM_API_TIMEOUT_MS). */
@@ -77,8 +112,13 @@ export function startHarnessWorker(): Promise<void> {
 export function createHarnessWorkerClient() {
   let baseUrl = resolveHarnessWorkerUrl();
   let contextTimeoutMs = resolveHarnessContextTimeoutMs();
+  let auth = resolveHarnessAuthHeaders(baseUrl);
   return {
-    reset(): void { baseUrl = resolveHarnessWorkerUrl(); contextTimeoutMs = resolveHarnessContextTimeoutMs(); },
+    reset(): void {
+      baseUrl = resolveHarnessWorkerUrl();
+      contextTimeoutMs = resolveHarnessContextTimeoutMs();
+      auth = resolveHarnessAuthHeaders(baseUrl);
+    },
     async ready(): Promise<void> {
       try {
         const response = await fetch(baseUrl + '/api/health', { signal: AbortSignal.timeout(TIMEOUT_MS) });
@@ -91,11 +131,11 @@ export function createHarnessWorkerClient() {
       }
     },
     async request(route: string, init: RequestInit = {}, timeoutMs = TIMEOUT_MS): Promise<Response> {
-      const response = await fetch(baseUrl + route, {
+      const response = await fetch(baseUrl + route, withHarnessAuth({
         ...init, signal: init.signal
           ? AbortSignal.any([init.signal, AbortSignal.timeout(timeoutMs)])
           : AbortSignal.timeout(timeoutMs),
-      });
+      }, auth));
       if (!response.ok) throw new Error('claude-mem ' + route + ' returned ' + response.status);
       return response;
     },

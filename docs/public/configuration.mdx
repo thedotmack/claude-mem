@@ -102,6 +102,7 @@ lock directory, and restart to finish applying the saved selection.
 | `CLAUDE_MEM_ALLOWED_ORIGINS`  | _(empty)_                       | Comma-separated browser origins (e.g. `https://app.example.com`) allowed to call the worker API cross-origin, besides `http://localhost:*` and `http://127.0.0.1:*`. A page loaded from the worker's own address (the viewer at `http://<lan-ip>:<port>`) is always allowed. Other `http://localhost:*` pages can read the API but not delete: deletes sync to every device, so a `DELETE` is accepted only from the viewer's own page, an origin listed here, or a client that sends no `Origin` header (hooks, the CLI, curl). To block DNS rebinding, the worker also refuses a request whose `Host` is a DNS name it does not trust. IP addresses, `localhost`, `host.docker.internal`, `CLAUDE_MEM_WORKER_HOST`, the host of `CLAUDE_MEM_PUBLIC_URL`, and the hosts listed here are trusted. To open the viewer by a machine name, such as `http://mybox.local:37777`, list that origin here. Restart the worker after changing it. |
 | `CLAUDE_MEM_PUBLIC_URL`       | _(empty)_                       | Browser-reachable base URL printed for the viewer (live view, welcome hint, restart link) when the worker runs in a remote sandbox behind a port-forward, e.g. `https://37700.host.example`. Empty = `http://localhost:<port>`. The env var wins over the setting. (The [hosted server runtime](hosted-server) reads the same variable as its own public base URL.) |
 | `CLAUDE_MEM_TV_TOKEN`         | —                               | Shared secret for Observation TV remote access. Empty = off. With a non-loopback `CLAUDE_MEM_WORKER_HOST`, only `/tv`, `/tv.html`, `/stream` and `GET /api/observations` are reachable, and only with this token. |
+| `CLAUDE_MEM_LOCAL_API_TOKEN`      | _(empty)_                       | Local API token for hosts with more than one OS user. Empty = off, nothing changes. Set, the worker API and the MCP HTTP transport refuse any request without it, loopback included. Read from `settings.json` only (the environment cannot switch it, and HTTP cannot write it). Restart the worker and the MCP HTTP server to change it. See [Local API Token](#local-api-token). |
 | `CLAUDE_MEM_DATA_DIR`         | `~/.claude-mem`                 | Data root — every other path (database, chroma, logs, settings.json, worker.pid) derives from this |
 | `CLAUDE_MEM_SKIP_TOOLS`       | `ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion` | Comma-separated tools to exclude from observations |
 | `CLAUDE_MEM_SKIP_BASH_PATTERNS` | —                             | Regular expression matched against each shell command (Claude Code `Bash` and `PowerShell`, OpenCode `bash`, Codex `exec_command`); on a match the observation is skipped. Empty captures every command. Use alternation for several patterns, e.g. `^(ls\|cat\|pwd\|git status)\b`. An invalid regex is ignored, so capture is never dropped |
@@ -686,6 +687,36 @@ Search operations are provided via:
 ## Worker Service Management
 
 Worker service is managed by Bun as a background process. The worker auto-starts on first session and runs continuously in the background.
+
+### Local API Token
+
+The worker API and the MCP HTTP transport trust any process that can reach loopback. On a host with several OS users, that is every user. `CLAUDE_MEM_LOCAL_API_TOKEN` is an opt-in switch: set it, and a request must carry the token or it is refused with `401`. Unset, nothing changes.
+
+Mint a token the same way as the Observation TV one, put it in `~/.claude-mem/settings.json` (created owner-only, mode `0600`), and restart the worker and any MCP HTTP server:
+
+```json
+{
+  "CLAUDE_MEM_LOCAL_API_TOKEN": "your-minted-token"
+}
+```
+
+A request carries it as `X-Claude-Mem-Token: <token>` or `Authorization: Bearer <token>`. The key is file-only: `POST /api/settings` cannot set, replace or clear it, `GET /api/settings` masks it, and an environment variable cannot turn the check on or off for the servers.
+
+Only two API routes work without it: `GET /api/health` and the MCP HTTP server's `/health`. Point external health checks at those; `/api/readiness`, `/health` on the worker, `/stream` and the rest need the token.
+
+The worker also serves its UI files without the token, for `GET` and `HEAD` only: the HTML shells at `/`, `/viewer`, `/tv` and `/restart`, and the built scripts, styles, fonts and icons in its `ui` folder, matched by exact path. These files are the same on every install and hold no data; everything they load from the worker needs the token.
+
+**The viewer.** Open it as `http://localhost:37777/?token=<token>`. Plain `http://localhost:37777` loads the page, but every request it makes is refused with `401`. The page reads the token from its URL, keeps it for the tab, removes it from the address bar, and sends it as the header on its own requests and as `?token=` on its event stream and media images, which cannot send a header. No cookie is set: browsers share cookies across every port on `localhost`, so one would reach any other local server you visit. A write must send the header. A repeated `token` parameter is refused, and neither the token nor the query string is logged. The viewer links the installer and the session-start text print do not carry the token; add `?token=<token>` to them by hand. The same goes for the worker restart link: open it as `/restart?token=<token>`, or from a tab that already has the token.
+
+**What sends the token for you.** The hooks, the CLI (`start`, `stop`, `restart`, `doctor`, `backup`, `search`, the installer's shutdown, readiness wait and cloud sync status line), the SessionStart `start` hook, the stdio MCP server, auto-update, the OpenCode plugin, the Pi and DSH integrations, and the `owner-goals`, `request-progress` and `screenpipe` skill scripts read it from `settings.json` and send it to this machine's worker at `CLAUDE_MEM_WORKER_HOST:CLAUDE_MEM_WORKER_PORT`, and only when that host is a loopback address (`127.0.0.1`, `localhost`, `::1`). The environment cannot change what they send. They never send it to a `CLAUDE_MEM_WORKER_URL` that names any other address, loopback included (an SSH forward to another machine looks like loopback), or to a worker on another host, so remote hook capture to a worker that has a token set is not supported. The `cloud-sync` skill's commands add the header from `settings.json` too.
+
+**Other browser pages.** A page on an origin the worker allows (`http://localhost:*` or `CLAUDE_MEM_ALLOWED_ORIGINS`) can call the API with `Authorization: Bearer <token>`; its CORS preflight needs no token.
+
+**MCP HTTP clients.** Add the header beside `X-Claude-Mem-Cwd`. The working-directory header is only read from requests that carry the token.
+
+**What does not send it yet.** The Observation TV remote mode; the separately released `omp`, `hermes` and `openclaw` integrations; and the example `curl` commands in the `timeline-report`, `weekly-digests`, `ccs-align` and `mode-creator` skills. Leave the token unset, or add `-H "X-Claude-Mem-Token: <token>"` to them.
+
+The token keeps other OS users out. A process that runs as you can still read `settings.json`.
 
 ### Observation TV Remote Access
 
