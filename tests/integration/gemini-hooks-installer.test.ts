@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import path from 'path';
-import { buildGeminiHooks, geminiSettingsPath, manageGeminiHooks, removeGeminiHooks } from '../../src/services/integrations/GeminiHooksInstaller.js';
+import { buildGeminiHooks, geminiSettingsPath, manageGeminiHooks, removeGeminiHooks, resolveGeminiWorkerScript } from '../../src/services/integrations/GeminiHooksInstaller.js';
 let scratch: string | undefined;
 afterEach(() => { if (scratch) rmSync(scratch, { recursive: true, force: true }); });
 const file = () => { scratch = mkdtempSync(path.join(tmpdir(), 'gemini setup ')); return path.join(scratch, 'settings.json'); };
@@ -76,16 +76,44 @@ describe('Gemini capture setup', () => {
     expect(geminiSettingsPath({})).toBe(path.join(homedir(), '.gemini', 'settings.json'));
     expect(geminiSettingsPath({ GEMINI_CLI_HOME: '  ' })).toBe(path.join(homedir(), '.gemini', 'settings.json'));
   });
-  it('resolves a dependency-complete cache-only installation outside the checkout', () => {
+  const cachedWorker = (cacheRoot: string, version: string) => {
+    const root = path.join(cacheRoot, version);
+    mkdirSync(path.join(root, 'scripts'), { recursive: true });
+    writeFileSync(path.join(root, 'scripts', 'worker-service.cjs'), '// fixture');
+    writeFileSync(path.join(root, 'package.json'), JSON.stringify({ version, dependencies: {} }));
+    return path.join(root, 'scripts', 'worker-service.cjs');
+  };
+  const bakedWorker = (p: string) => read(p).hooks.AfterTool[0].hooks[0].command as string;
+
+  it('falls back to the plugin cache when no stable plugin path exists', () => {
     const p = file();
     const cacheRoot = path.join(scratch!, 'cache');
-    const version = path.join(cacheRoot, '15.17.0');
-    mkdirSync(path.join(version, 'scripts'), { recursive: true });
-    writeFileSync(path.join(version, 'scripts', 'worker-service.cjs'), '// fixture');
-    writeFileSync(path.join(version, 'package.json'), JSON.stringify({ version: '15.17.0', dependencies: {} }));
+    const cached = cachedWorker(cacheRoot, '15.17.0');
     const roots = { cacheRoot, marketplaceRoot: path.join(scratch!, 'absent'), cwd: path.join(scratch!, 'ordinary-project') };
-    expect(manageGeminiHooks('install', p, roots)).toBe(0);
-    expect(read(p).hooks.AfterTool[0].hooks[0].command).toContain(path.join(version, 'scripts', 'worker-service.cjs'));
+    expect(manageGeminiHooks('install', p, () => resolveGeminiWorkerScript(() => null, roots))).toBe(0);
+    expect(bakedWorker(p)).toContain(cached);
+  });
+
+  it('bakes the stable marketplace path, not the pruned-later cache copy, when both exist', () => {
+    const p = file();
+    const cacheRoot = path.join(scratch!, 'cache');
+    const cached = cachedWorker(cacheRoot, '15.17.0');
+    const marketplaceRoot = path.join(scratch!, 'marketplace');
+    const marketplaceWorker = path.join(marketplaceRoot, 'plugin', 'scripts', 'worker-service.cjs');
+    mkdirSync(path.dirname(marketplaceWorker), { recursive: true });
+    writeFileSync(marketplaceWorker, '// fixture');
+    writeFileSync(path.join(marketplaceRoot, 'package.json'), JSON.stringify({ version: '15.17.0', dependencies: {} }));
+    const roots = { cacheRoot, marketplaceRoot, cwd: path.join(scratch!, 'ordinary-project') };
+    expect(manageGeminiHooks('install', p, () => resolveGeminiWorkerScript(() => marketplaceWorker, roots))).toBe(0);
+    expect(bakedWorker(p)).toContain(marketplaceWorker);
+    expect(bakedWorker(p)).not.toContain(cached);
+  });
+
+  it('fails the install when neither a stable path nor a cache copy exists', () => {
+    const p = file();
+    const roots = { cacheRoot: path.join(scratch!, 'no-cache'), marketplaceRoot: path.join(scratch!, 'absent'), cwd: path.join(scratch!, 'ordinary-project') };
+    expect(manageGeminiHooks('install', p, () => resolveGeminiWorkerScript(() => null, roots))).toBe(1);
+    expect(existsSync(p)).toBe(false);
   });
 
 });
