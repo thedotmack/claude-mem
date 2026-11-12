@@ -37,18 +37,39 @@ export function projectScopeSql(
  * projects merged wholesale into one of them. Only a whole merge promotes its
  * source to a read key: every row stored under the source (observations and
  * session_summaries alike) carries `merged_into_project` = one of the
- * requested keys (gate P2-4: worktrees merged into a repo, the repo merged
- * into a parent — the second hop follows because the repo becomes a key and
- * the per-row merged scope, `projectScopeSql` with `includeMerged`, matches
- * its adopted rows). A partial adoption — a hand-picked subset of a large
+ * known keys. Repeat until the whole merge chain is covered: a worktree may
+ * have joined a repository before that repository joined an environment
+ * which was later merged again. A partial adoption — a hand-picked subset of a large
  * project stamped into a smaller one — must not promote the source: any
  * stamped row would otherwise expose every row the user did not pick
- * (#4782). One statement, every count answered from the v63/v64 covering
- * indexes; nothing loads rows.
+ * (#4782). Each pass uses the v63/v64 covering indexes; nothing loads row
+ * bodies. One read transaction keeps every promotion on the same snapshot.
  */
 export function projectReadKeys(db: Database, projects: string[]): string[] {
   const requested = scopedProjects({ projects });
   if (requested.length === 0) return [];
+  return db.transaction(() => {
+    const keys = new Set(requested);
+    // SQLite NOCASE folds ASCII only. Keep every literal spelling for Chroma,
+    // but another spelling of an already queried key needs no extra pass.
+    const fold = (key: string) => key.replace(/[A-Z]/g, letter => letter.toLowerCase());
+    const queried = new Set(requested.map(fold));
+    for (;;) {
+      let expanded = false;
+      for (const key of readProjectKeyPass(db, [...keys])) {
+        keys.add(key);
+        const folded = fold(key);
+        if (!queried.has(folded)) {
+          queried.add(folded);
+          expanded = true;
+        }
+      }
+      if (!expanded) return [...keys];
+    }
+  })();
+}
+
+function readProjectKeyPass(db: Database, requested: string[]): string[] {
   // Every lookup uses the same list; reuse its bind slots across the compound query.
   const placeholders = requested.map((_, i) => `?${i + 1}`).join(',');
   const lookups = [
@@ -76,7 +97,7 @@ export function projectReadKeys(db: Database, projects: string[]): string[] {
   const statement = db.prepare(lookups.join(' UNION '));
   try {
     const rows = statement.all(...requested) as Array<{ key: string }>;
-    return [...new Set([...requested, ...rows.map(row => row.key)])];
+    return rows.map(row => row.key);
   } finally {
     statement.finalize();
   }

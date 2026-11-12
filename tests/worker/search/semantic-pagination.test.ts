@@ -10,11 +10,13 @@ import { SearchRoutes } from '../../../src/services/worker/http/routes/SearchRou
 import { SearchOrchestrator } from '../../../src/services/worker/search/SearchOrchestrator.js';
 import { ChromaSearchStrategy } from '../../../src/services/worker/search/strategies/ChromaSearchStrategy.js';
 import { SEARCH_CATEGORIES } from '../../../src/services/worker/search/types.js';
+import { ModeManager } from '../../../src/services/domain/ModeManager.js';
 
 let store: SessionStore;
 afterEach(() => store?.close());
 
-function fixture({ count = 8, ranking = Array.from({ length: count }, (_, index) => index + 1), ties = false } = {}) {
+function fixture({ count = 8, ranking = Array.from({ length: count }, (_, index) => index + 1), ties = false, observationsOnly = false } = {}) {
+  ModeManager.getInstance().loadMode('code');
   store = new SessionStore(':memory:');
   const sessionId = store.createSDKSession('content', 'auth-service', 'Authentication');
   store.ensureMemorySessionIdRegistered(sessionId, 'memory');
@@ -36,10 +38,11 @@ function fixture({ count = 8, ranking = Array.from({ length: count }, (_, index)
   }
   // Only vector ranking is controlled; filtering, hydration, union and paging use real SQLite.
   const chroma = Object.create(ChromaSync.prototype) as ChromaSync;
+  const categories = observationsOnly ? ['observation'] : ['observation', 'session_summary', 'user_prompt'];
   chroma.queryChroma = async () => ({
-    ids: ranking.flatMap(id => [id, id, id]),
-    distances: ranking.flatMap((_, index) => [index / 10, index / 10, index / 10]),
-    metadatas: ranking.flatMap(id => ['observation', 'session_summary', 'user_prompt'].map(doc_type => ({
+    ids: ranking.flatMap(id => categories.map(() => id)),
+    distances: ranking.flatMap((_, index) => categories.map(() => index / 10)),
+    metadatas: ranking.flatMap(id => categories.map(doc_type => ({
       sqlite_id: id, doc_type, project: 'auth-service', platform_source: 'claude',
       created_at_epoch: ties ? epoch : epoch - id * 1000,
     }))),
@@ -65,6 +68,72 @@ async function withSearchRoute(manager: SearchManager, check: (url: string) => P
 }
 
 describe('semantic memory pagination', () => {
+  for (const orderBy of ['relevance', 'date_asc', 'date_desc'] as const) {
+    for (const ties of [false, true]) {
+      it(`pages the observation-only HTTP endpoint in ${orderBy}, timestamp ties=${ties}`, async () => {
+        const ranking = [5, 1, 7, 3];
+        const { manager } = fixture({ ranking, ties, observationsOnly: true });
+        const ascending = ties ? [1, 2, 3, 4, 5, 6, 7, 8] : [8, 7, 6, 5, 4, 3, 2, 1];
+        const ordered = orderBy === 'relevance' ? ranking : orderBy === 'date_asc' ? ascending : [...ascending].reverse();
+        await withSearchRoute(manager(), async url => {
+          for (const offset of [0, 2, 6, 8]) {
+            const query = new URLSearchParams({ query: 'Authentication', project: 'auth-service', orderBy,
+              limit: '2', offset: String(offset), type: 'bugfix,discovery' });
+            const response = await fetch(`${url}/observations?${query}`);
+            expect(response.status).toBe(200);
+            const body = await response.json() as { content: Array<{ text: string }> };
+            const ids = [...body.content[0].text.matchAll(/^\| #(\d+) \|/gm)].map(match => Number(match[1]));
+            expect(ids).toEqual(ordered.slice(offset, offset + 2));
+          }
+        });
+      });
+    }
+  }
+
+  it('retains observation-only HTTP pages when semantic search is absent or fails', async () => {
+    const { chroma, manager } = fixture();
+    chroma.queryChroma = async () => { throw new Error('Controlled vector outage'); };
+    for (const vector of [null, chroma]) {
+      await withSearchRoute(manager(vector), async url => {
+        const query = new URLSearchParams({ query: 'Authentication', project: 'auth-service',
+          orderBy: 'date_desc', type: 'bugfix', limit: '2', offset: '1' });
+        const response = await fetch(`${url}/observations?${query}`);
+        expect(response.status).toBe(200);
+        const body = await response.json() as { content: Array<{ text: string }> };
+        expect([...body.content[0].text.matchAll(/^\| #(\d+) \|/gm)].map(match => Number(match[1]))).toEqual([3, 5]);
+      });
+    }
+  });
+
+  it('applies observation-only row filters before slicing the semantic page', async () => {
+    const { manager } = fixture({ ranking: [2, 5, 4, 1, 8, 7, 6, 3], observationsOnly: true });
+    await withSearchRoute(manager(), async url => {
+      for (const filter of [{ type: 'bugfix' }, { concepts: 'problem-solution' }, { files: 'src/auth.ts' }]) {
+        const query = new URLSearchParams({ query: 'Authentication', project: 'auth-service',
+          limit: '2', offset: '1', ...filter });
+        const response = await fetch(`${url}/observations?${query}`);
+        expect(response.status).toBe(200);
+        const body = await response.json() as { content: Array<{ text: string }> };
+        expect([...body.content[0].text.matchAll(/^\| #(\d+) \|/gm)].map(match => Number(match[1]))).toEqual([1, 7]);
+      }
+    });
+  });
+
+  it('retains the observation-only default limit and filter-only requests', async () => {
+    const { chroma, manager } = fixture({ count: 30, observationsOnly: true });
+    for (const textQuery of ['Authentication', '']) {
+      await withSearchRoute(manager(textQuery ? chroma : null), async url => {
+        const offset = textQuery ? 0 : 5;
+        const query = new URLSearchParams({ query: textQuery, project: 'auth-service', orderBy: 'date_desc', offset: String(offset) });
+        const response = await fetch(`${url}/observations?${query}`);
+        expect(response.status).toBe(200);
+        const body = await response.json() as { content: Array<{ text: string }> };
+        expect([...body.content[0].text.matchAll(/^\| #(\d+) \|/gm)].map(match => Number(match[1])))
+          .toEqual(Array.from({ length: 20 }, (_, index) => index + offset + 1));
+      });
+    }
+  });
+
   for (const category of SEARCH_CATEGORIES) {
     it(`pages ${category} through SearchManager without repeating the first page`, async () => {
       const { manager } = fixture();

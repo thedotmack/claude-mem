@@ -162,7 +162,9 @@ for (const [name, command, operation] of redirectedCases) {
       git('config', 'user.email', 'push-product@example.invalid');
       git('config', 'commit.gpgsign', 'false');
       git('commit', '-q', '--allow-empty', '-m', 'Recorded work');
-      git('init', '-q', '--bare', remote);
+      // Name the bare remote's HEAD something other than main: when a machine's git config sets
+      // init.defaultBranch=main (Xcode's git does), receive.denyDeleteCurrent refuses the delete case.
+      git('init', '-q', '--bare', '--initial-branch=trunk', remote);
       git('--git-dir=' + remote, 'config', 'receive.advertisePushOptions', 'true');
       git('config', `url.${remote}.insteadOf`, remoteUrl);
       writeFileSync(join(cwd, 'input.txt'), '');

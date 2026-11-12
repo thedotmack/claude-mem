@@ -39,7 +39,7 @@
     "ai": "7.0.137",
     "better-auth": "1.7.10",
     "class-variance-authority": "0.7.1",
-    "claude-mem": "^15.17.0",
+    "claude-mem": "^15.18.0",
     "clsx": "2.1.1",
     "cmdk": "1.1.1",
     "drizzle-orm": "0.45.2",

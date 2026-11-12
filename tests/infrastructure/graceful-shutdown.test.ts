@@ -143,8 +143,8 @@ describe('GracefulShutdown', () => {
       await performGracefulShutdown(config);
 
       expect(callOrder).toEqual([
-        'closeAllConnections',
         'serverClose',
+        'closeAllConnections',
         'sessionManager.shutdownAll',
         'mcpClient.close',
         'chromaMcpManager.stop',
