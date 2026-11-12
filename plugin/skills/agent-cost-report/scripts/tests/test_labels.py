@@ -1,3 +1,4 @@
+import os
 import unittest
 
 import _paths  # noqa: F401
@@ -27,6 +28,14 @@ class Classify(unittest.TestCase):
 
 
 class Review(unittest.TestCase):
+    def setUp(self):
+        self._prev_owner = os.environ.get("ACR_OWNER_NAME")
+        os.environ["ACR_OWNER_NAME"] = "Alex"       # these cases are a configured owner, not a hardcoded one
+
+    def tearDown(self):
+        if self._prev_owner is None: os.environ.pop("ACR_OWNER_NAME", None)
+        else: os.environ["ACR_OWNER_NAME"] = self._prev_owner
+
     def items(self):
         return [dict(work_item_id="WI-1", category="Investigation", work_category="Investigation", failure_type="", failure_signals=[], label_source="keyword", status="completed"),
                 dict(work_item_id="WI-2", category="Investigation", work_category="Investigation", failure_type="", failure_signals=[], label_source="keyword", status="completed")]
@@ -82,6 +91,38 @@ class Review(unittest.TestCase):
         li = self.items(); li[0]["title"] = li[1]["title"] = "first prompt text"
         labels.apply_review(li, [dict(work_item_id="WI-1", category="Feature", reviewed_by="Alex", title="Rollup shipped"), dict(work_item_id="WI-2", category="Feature", reviewed_by="Alex", title="")], "t")
         self.assertEqual((li[0]["title"], li[1]["title"]), ("Rollup shipped", "first prompt text"))
+
+    def test_unset_owner_does_not_treat_alex_as_a_human_review(self):
+        os.environ["ACR_OWNER_NAME"] = ""
+        li = self.items()
+        labels.apply_review(li, [dict(work_item_id="WI-1", category="Feature", reviewed_by="Alex")], "t")
+        self.assertEqual(li[0]["label_source"], "llm")
+        labels.apply_review(li, [dict(work_item_id="WI-2", category="Feature", reviewed_by="Alex", label_source="human")], "t")
+        self.assertEqual(li[1]["label_source"], "human")
+
+    def test_configured_owner_review_is_human_and_other_names_are_not(self):
+        os.environ["ACR_OWNER_NAME"] = "Sam"
+        li = self.items()
+        labels.apply_review(li, [dict(work_item_id="WI-1", category="Feature", reviewed_by="sam"),
+                                 dict(work_item_id="WI-2", category="Feature", reviewed_by="Alex")], "t")
+        self.assertEqual((li[0]["label_source"], li[1]["label_source"]), ("human", "llm"))
+
+    def test_reset_from_owner_is_rework_only_for_the_configured_name(self):
+        bare = dict(project="p", user_prompt=None)
+
+        def signals(text):
+            return labels.classify(dict(prompts=[text], text=[]), bare)["failure_signals"]
+
+        os.environ["ACR_OWNER_NAME"] = ""
+        self.assertNotIn("Rework", signals("reset from alex: try again"))
+        self.assertNotIn("Rework", signals("reset from scratch: wipe it"))
+        self.assertIn("Rework", signals("redo this"))
+        os.environ["ACR_OWNER_NAME"] = "Sam"
+        self.assertIn("Rework", signals("reset from Sam: try again"))
+        self.assertNotIn("Rework", signals("reset from alex: try again"))
+        self.assertNotIn("Rework", signals("reset from scratch: wipe it"))
+        os.environ["ACR_OWNER_NAME"] = "Alex"
+        self.assertIn("Rework", signals("reset from alex: try again"))
 
     def test_rejects_unknown_values(self):
         for bad in (dict(category="Rework"), dict(category="Feature", failure_type="Made up"), dict(category="Feature", label_source="magic"), dict(category="Feature", status="done")):

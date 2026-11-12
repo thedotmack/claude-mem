@@ -47,6 +47,8 @@ class Tx:
 
 class Base(unittest.TestCase):
     def setUp(self):
+        self._prev_owner = os.environ.get("ACR_OWNER_NAME")
+        os.environ["ACR_OWNER_NAME"] = ""          # name-free unless a test configures an owner; ignore git user.name
         self.tmp = tempfile.mkdtemp(); self.pat = os.path.join(self.tmp, "projects", "**", "*.jsonl")
         os.makedirs(os.path.join(self.tmp, "projects", "-w-p"))
         self.dbp = os.path.join(self.tmp, "snap.db"); self.db = _db.make_db(self.dbp)
@@ -54,6 +56,8 @@ class Base(unittest.TestCase):
 
     def tearDown(self):
         self.db.close(); shutil.rmtree(self.tmp)
+        if self._prev_owner is None: os.environ.pop("ACR_OWNER_NAME", None)
+        else: os.environ["ACR_OWNER_NAME"] = self._prev_owner
 
     def write(self, *txs):
         for t in txs:
@@ -246,10 +250,98 @@ class Detectors(Base):
         self.assertEqual(round(sum(d["usd"] for d in by_day), 2), spend["mistakes_estimated_usd"]); self.assertEqual(len(by_day), 8)
 
     def test_secret_leaves_no_trace(self):
-        a = Tx("a"); a.user(BASE, "here is sk-or-abcdefghijklmnop1234 use it"); a.assistant(BASE + 1000, "Blocked on Alex: paste the key sk-or-abcdefghijklmnop1234"); a.user(BASE + 2000, "I already gave you the fucking key")
+        a = Tx("a"); a.user(BASE, "here is sk-or-abcdefghijklmnop1234 use it"); a.assistant(BASE + 1000, "needs your sign-off: paste the key sk-or-abcdefghijklmnop1234"); a.user(BASE + 2000, "I already gave you the fucking key")
         self.write(a); block, spend, _ = self.run_all(items=[self.item("a")])
         self.assertNotIn("sk-or-abc", json.dumps(block, default=str))
         p1 = next(p for p in block["patterns"] if p["key"] == "P1_invented_gates"); self.assertGreaterEqual(p1["count"], 1)
+
+
+class OwnerName(Base):
+    """Name-keyed detectors follow the configured owner and stay name-free when it is unset."""
+
+    def p1(self, text, sid):
+        a = Tx(sid); a.user(BASE, "go"); a.assistant(BASE + 1000, text); a.user(BASE + 2000, "ok")
+        self.write(a); s = self.scan()
+        return patterns.detect_p1(s[sid], sid, [])
+
+    def tools(self, user, tools, sid):
+        a = Tx(sid); a.user(BASE, user); a.assistant(BASE + 1000, "ok", tools=tools)
+        self.write(a); s = self.scan()
+        return s[sid]
+
+    def test_unset_owner_drops_maintainer_name_and_keeps_name_free_patterns(self):
+        os.environ["ACR_OWNER_NAME"] = ""
+        self.assertEqual(behavior.tag_prompt_row("Alex asked for a revert"), "human")
+        self.assertEqual(behavior.tag_prompt_row("Alex greened the plan"), "human")
+        self.assertEqual(behavior.tag_prompt_row("STEER from Sam: stop"), "bot")          # structured relays stay name-agnostic
+        self.assertEqual(behavior.tag_prompt_row("Correction from earlier: use the other file"), "human")
+        self.assertEqual(self.p1("Blocked on Alex", "p1-alex"), [])
+        self.assertEqual(self.p1("needs Alex to approve", "p1-needs"), [])
+        self.assertGreaterEqual(len(self.p1("needs your sign-off", "p1-free")), 1)
+        self.assertGreaterEqual(len(self.p1("blocked on you", "p1-you")), 1)
+        denied = self.tools("go", [("t1", "Bash", {"note": "as Alex"}), ("t2", "Bash", {"note": "hello@thedotmack"})], "p8-free")
+        self.assertEqual(patterns.detect_p8(denied, "p8-free"), [])
+        still = self.tools("go", [("t1", "Bash", {"note": "aj@example.com"})], "p8-aj")
+        self.assertEqual(len(patterns.detect_p8(still, "p8-aj")), 1)
+        send = self.tools("yes, send", [("t1", "mcp__claude_ai_Gmail__send_message", {"to": ["a@x.com"], "body": "from alex@example.com thedotmack@gmail"})], "p9-free")
+        self.assertEqual(patterns.detect_p9(send, "p9-free"), [])
+
+    def test_configured_owner_name_matches_gates_identity_and_third_person(self):
+        os.environ["ACR_OWNER_NAME"] = "Sam"
+        self.assertEqual(behavior.tag_prompt_row("Sam greened the plan"), "bot")
+        self.assertEqual(behavior.tag_prompt_row("sam ASKED for a revert"), "bot")
+        self.assertEqual(behavior.tag_prompt_row("Alex greened the plan"), "human")
+        self.assertEqual(behavior.tag_prompt_row("I asked Sam to stop"), "human")
+        self.assertEqual(behavior.tag_prompt_row(("x" * 201) + " Sam asked"), "human")
+        self.assertGreaterEqual(len(self.p1("Blocked on Sam", "p1-sam")), 1)
+        self.assertGreaterEqual(len(self.p1("needs Sam to approve", "p1-need-sam")), 1)
+        self.assertEqual(self.p1("Blocked on Alex", "p1-not-alex"), [])
+        denied = self.tools("go", [("t1", "Bash", {"note": "as Sam"}), ("t2", "Bash", {"note": "from: sam@example.com"})], "p8-sam")
+        self.assertEqual(len(patterns.detect_p8(denied, "p8-sam")), 2)
+        other = self.tools("go", [("t1", "Bash", {"note": "as Alex hello@thedotmack"})], "p8-other")
+        self.assertEqual(patterns.detect_p8(other, "p8-other"), [])
+        hit = self.tools("yes, send", [("t1", "mcp__claude_ai_Gmail__send_message", {"to": ["a@x.com"], "from": "Sam", "body": "hi sam@example.com"})], "p9-sam")
+        flags = patterns.detect_p9(hit, "p9-sam")
+        self.assertEqual(len(flags), 1); self.assertIn("sent as Sam", flags[0]["basis"])
+        miss = self.tools("yes, send", [("t1", "mcp__claude_ai_Gmail__send_message", {"to": ["a@x.com"], "body": "alex@example.com thedotmack@gmail"})], "p9-alex")
+        self.assertEqual(patterns.detect_p9(miss, "p9-alex"), [])
+
+    def test_owner_name_is_a_literal_and_a_configured_alex_still_matches(self):
+        os.environ["ACR_OWNER_NAME"] = "Sam+"
+        self.assertEqual(behavior.tag_prompt_row("Sam+ asked for a revert"), "bot")
+        self.assertEqual(behavior.tag_prompt_row("Samm asked for a revert"), "human")
+        os.environ["ACR_OWNER_NAME"] = "李明"
+        self.assertEqual(behavior.tag_prompt_row("李明 said stop"), "bot")
+        self.assertEqual(behavior.tag_prompt_row("Alex said stop"), "human")
+        os.environ["ACR_OWNER_NAME"] = "Alex"
+        self.assertEqual(behavior.tag_prompt_row("Alex approved the plan"), "bot")
+        self.assertGreaterEqual(len(self.p1("Blocked on Alex", "p1-configured-alex")), 1)
+
+    def test_owner_resolution_order(self):
+        from acr import owner
+        import subprocess
+        from unittest.mock import patch
+        self.assertIsNone(owner.resolve(environ={}, git_lookup=lambda: None))
+        self.assertEqual(owner.resolve(environ={}, git_lookup=lambda: "  Sam Lee  "), "Sam Lee")
+        self.assertIsNone(owner.resolve(environ={"ACR_OWNER_NAME": "  "}, git_lookup=lambda: "Sam"))
+        self.assertEqual(owner.resolve(environ={"ACR_OWNER_NAME": "Pat"}, git_lookup=lambda: "Sam"), "Pat")
+        self.assertEqual(owner.resolve(explicit="Jo", environ={"ACR_OWNER_NAME": "Pat"}, git_lookup=lambda: "Sam"), "Jo")
+        self.assertIsNone(owner.resolve(explicit="  ", environ={"ACR_OWNER_NAME": "Pat"}, git_lookup=lambda: "Sam"))
+        os.environ["ACR_OWNER_NAME"] = "Pat"
+        self.assertEqual(owner.name(), "Pat")
+        with owner.scoped("Sam"):
+            self.assertEqual(owner.name(), "Sam")
+        self.assertEqual(owner.name(), "Pat")
+        with owner.scoped(""):
+            self.assertIsNone(owner.name())
+        self.assertEqual(owner.name(), "Pat")
+        with patch("acr.owner.subprocess.run", return_value=subprocess.CompletedProcess(["git"], 0, "Sam Lee\n", "")) as run:
+            self.assertEqual(owner.git_user_name(), "Sam Lee")
+            self.assertEqual(run.call_args.args[0][:3], ["git", "config", "--get"])
+        with patch("acr.owner.subprocess.run", return_value=subprocess.CompletedProcess(["git"], 1, "", "")):
+            self.assertIsNone(owner.git_user_name())
+        with patch("acr.owner.subprocess.run", side_effect=OSError("no git")):
+            self.assertIsNone(owner.git_user_name())
 
 
 class Classifier(unittest.TestCase):

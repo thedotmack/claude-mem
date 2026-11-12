@@ -32,6 +32,10 @@ USAGE_FILE = "usage.json"
 NOT_YET = ()
 
 
+def add_owner_arg(p):
+    p.add_argument("--owner-name", metavar="NAME", help="report owner for name-keyed detectors and human reviews (default: ACR_OWNER_NAME, then git user.name; name-free patterns when unset)")
+
+
 def add_period_args(p):
     g = p.add_argument_group("period (PT calendar days, end exclusive)")
     g.add_argument("--start", metavar="YYYY-MM-DD", help="first PT day (default: --end minus 7 days)")
@@ -172,11 +176,13 @@ def build_parser():
     r.add_argument("--measured", metavar="FILE", help="measured.json from `measure-openrouter` (default: DIR/measured.json when present)")
     r.add_argument("--precision", metavar="FILE", help="JSON {pattern_key: precision} from the Phase 8.5 spot-check; tiles under 70%% move to Details")
     r.add_argument("--device-usage", metavar="FILE", action="append", default=[], help="device-usage-<label>.json export(s) from other machines to merge (repeatable)")
+    add_owner_arg(r)
     r.set_defaults(fn=cmd_rollup)
 
     v = sub.add_parser("review", help="merge confirmed labels from a reviewed labels.review.json into report.json")
     v.add_argument("--apply", required=True, metavar="FILE", help="reviewed copy of labels.review.json")
     v.add_argument("--out", required=True, metavar="DIR", help="directory holding report.json")
+    add_owner_arg(v)
     v.set_defaults(fn=cmd_review)
 
     rd = sub.add_parser("render", help="report.json -> self-contained report.html (Timing-style); --print also writes report.print.html with Details open")

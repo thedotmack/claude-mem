@@ -17,7 +17,7 @@ import json
 import os
 import re
 
-from . import costs, prices, transcripts
+from . import costs, owner, prices, transcripts
 from .period import PT
 
 # ---- constants (plan 2B.1) ----
@@ -44,8 +44,17 @@ BOT_MARKERS = re.compile(
     r"\[Cross-session idle notice\]|\[Group chat:|\[Artifact comment|Agent sweep|AJ email check|Quiet overnight|"
     r"You name new code workspaces|You are\b|/do\b|/make-plan\b|/loop\b|/claude-mem:|/ccs-|/[a-z][\w-]*:[a-z][\w-]*\b|"
     r"(STEER|RESET|CORRECTION) from Alex|Resuming after|\[SYSTEM NOTIFICATION|<task-notification>|<pasted_content)"
-    r"|^.{0,200}\bAlex (asked|said|wants|greened|approved)\b"            # third-person relays of Alex are agent-written
     r"|^(?=.{400,})[^\n]{0,300}\bYou are (a|an|the|in|one|running|working)\b", re.I | re.S)   # long briefs that address the agent
+_THIRD_PERSON = r"(asked|said|wants|greened|approved)"
+
+
+def bot_text(text):
+    """True for an automated relay. A third-person "<owner> asked|said|wants|greened|approved"
+    counts only when an owner name is configured; otherwise that clause is name-free and does not fire."""
+    if BOT_MARKERS.search(text or ""): return True
+    who = owner.name()
+    if not who or not text: return False
+    return re.search(rf"^.{{0,200}}\b{re.escape(who)} {_THIRD_PERSON}\b", text, re.I | re.S) is not None
 CORRECTION = re.compile(rf"^\s*{NAMED_CORRECTION}|" r"^\s*(STEER|RESET|CORRECTION) from Alex|\bSTEER\b.{0,10}\bfrom Alex\b|^\s*(RESET|CORRECTION):", re.I)
 PROFANITY = re.compile(r"\b(fuck\w*|shit\w*|wtf|goddamn)\b", re.I)
 FRUSTRATION_PHRASE = re.compile(r"\b(i told you|i said|why did you|who (said|made|told)|stop|never|again)\b", re.I)
@@ -176,7 +185,7 @@ def session_tag(S):
     """alex_direct (interactive cli, no agent-prompt markers) | agent_relayed | unknown (plan 2B.1)."""
     prompts = [u for u in S["users"] if u["text"] and not u["sidechain"] and not u["results"]]
     if S["entrypoint"] in HEADLESS: return "agent_relayed"
-    marked = [bool(BOT_MARKERS.search(u["text"])) for u in prompts]
+    marked = [bot_text(u["text"]) for u in prompts]
     if marked and (marked[0] or all(marked)): return "agent_relayed"        # launched by an agent, or nothing but relays
     if S["entrypoint"] == "cli" and prompts: return "alex_direct"           # a marker later on tags that prompt alone (tag_user_turns)
     return "unknown"
@@ -186,7 +195,7 @@ def tag_user_turns(S):
     tag = session_tag(S); S["tag"] = tag
     for u in S["users"]:
         if u["results"] and not u["text"]: u["author"] = "tool"; continue
-        if u["sidechain"] or tag == "agent_relayed" or BOT_MARKERS.search(u["text"]) or u.get("turn_origin") in ("task_notification", "sdk", "scheduled", "peer"):
+        if u["sidechain"] or tag == "agent_relayed" or bot_text(u["text"]) or u.get("turn_origin") in ("task_notification", "sdk", "scheduled", "peer"):
             u["author"] = "bot"
         elif tag == "alex_direct": u["author"] = "human"
         else: u["author"] = "unknown"
@@ -195,7 +204,7 @@ def tag_user_turns(S):
 
 def tag_prompt_row(text):
     """A claude-mem user_prompts row is human only when it passes the marker filter."""
-    return "bot" if BOT_MARKERS.search(text or "") else "human"
+    return "bot" if bot_text(text) else "human"
 
 
 # ---- pricing turns ----

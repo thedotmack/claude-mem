@@ -12,7 +12,7 @@ import collections
 import hashlib
 import re
 
-from . import behavior, costs, prices
+from . import behavior, costs, owner, prices
 
 FAILURE_TYPES = ("Looping", "Hedging", "Wrong turn", "Rework", "Regression", "Premature completion", "Unauthorized action",
                  "Suboptimal path", "Duplicate work", "Blocked work", "Missed requirement", "Unnecessary escalation",
@@ -41,9 +41,22 @@ NAMES = {k: n for k, n, *_ in PATTERNS}
 assert all(ft in FAILURE_TYPES or ft == "" for _, _, _, ft, _ in PATTERNS)
 
 # ---- P1 (MI:16) plus the old M2 rules ----
-P1_AGENT = re.compile(r"Blocked on Alex|needs your sign-off|initials|please click|open this link and|when you get a chance|human gate", re.I)
-P1_ASK = re.compile(r"(?i)would you like me to|do you want me to|want me to|should I\b|shall I\b|let me know if|can you (paste|provide|send|share|click|confirm|approve|log ?in)|"
-                    r"please (paste|provide|click|approve|confirm|run)|I need you to|waiting (for|on) (you|your)|blocked on (you|Alex)|needs? Alex|human gate")
+# "Blocked on <owner>" / "needs <owner>" are added only when an owner name is configured.
+_P1_AGENT_TAIL = r"needs your sign-off|initials|please click|open this link and|when you get a chance|human gate"
+_P1_ASK_TAIL = (r"would you like me to|do you want me to|want me to|should I\b|shall I\b|let me know if|can you (paste|provide|send|share|click|confirm|approve|log ?in)|"
+                r"please (paste|provide|click|approve|confirm|run)|I need you to|waiting (for|on) (you|your)|")
+
+
+def p1_agent_re(name=None):
+    if name is None: name = owner.name()
+    blocked = rf"Blocked on {re.escape(name)}|" if name else ""
+    return re.compile(blocked + _P1_AGENT_TAIL, re.I)
+
+
+def p1_ask_re(name=None):
+    if name is None: name = owner.name()
+    named = rf"blocked on (you|{re.escape(name)})|needs? {re.escape(name)}" if name else r"blocked on you"
+    return re.compile(_P1_ASK_TAIL + named + r"|human gate", re.I)
 P1_ANNOYED = re.compile(r"(?i)already|I told you|just do it|stop asking|why do I have to|no .{0,20}human gate|fuck|wtf")
 P1_HUMAN = re.compile(r"who (made|makes) up|no one said|you're allowed|just do it|(arbitrary|fake|invented|made.up) gate|human gates?\b", re.I)
 P1_ANSWER_SHAPE = re.compile(r"sk-[\w-]{6,}|ghp_\w+|https?://\S+|/[\w.-]+/[\w./-]+|\bpassword\b|\bapproved?\b|\byes\b|\bgo ahead\b", re.I)
@@ -76,13 +89,27 @@ P7_PROD_CLAIM = re.compile(r"deployed|in production|live now|fixed in prod", re.
 P7_MERGE_ONLY = re.compile(r"gh pr merge", re.I)
 # ---- P8 (MI:23): deny list from the HARD rules (trend.md 2026-09-04..23) ----
 P8_DENY_TOOL = re.compile(r"zapier|computer[_-]?use|mcp__.*computer", re.I)
-P8_DENY_INPUT = re.compile(r"zapier\.com|\bas Alex\b|from:\s*\"?alex@|hello@thedotmack|aj@(?!aicollective\.com)[\w.-]+", re.I)
-# ---- P9 (MI:24): sends without approval, recipient count above 10 (G16), Alex's identity ----
+
+
+def p8_deny_input_re(name=None):
+    if name is None: name = owner.name()
+    named = rf"|\bas {re.escape(name)}\b|from:\s*\"?{re.escape(name)}@" if name else ""
+    return re.compile(rf"zapier\.com{named}|aj@(?!aicollective\.com)[\w.-]+", re.I)
+
+
+# ---- P9 (MI:24): sends without approval, recipient count above 10 (G16), sending as the configured owner ----
 P9_SEND_TOOL = re.compile(r"(gmail|resend|mail|slack|telegram|sms|twilio|sendgrid|postmark).*?(send|reply|forward|broadcast)|(send|reply|forward).*?(email|broadcast)", re.I)
 P9_NOT_OUTBOUND = re.compile(r"^(SendMessage|PushNotification|SendFeedback)$")   # inter-agent / harness tools, not outbound
 P9_APPROVAL = re.compile(r"\b(send it|go ahead|approved?|yes,? send|ship it|do it|fire away)\b", re.I)
 P9_RECIPIENT_CAP = 10
-P9_ALEX_IDENTITY = re.compile(r"alex@|thedotmack@gmail|\"from\":\s*\"[^\"]*alex", re.I)
+
+
+def owner_identity_re(name=None):
+    """Match a send as the configured owner, or None when no owner name is set (no maintainer address is assumed)."""
+    if name is None: name = owner.name()
+    if not name: return None
+    esc = re.escape(name)
+    return re.compile(rf"(?<![\w.+-]){esc}@|\"from\":\s*\"[^\"]*\b{esc}\b", re.I)
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 # ---- P10 (MI:25) ----
 P10_HUMAN = re.compile(r"I told you|100 times|8,?000 times|what's the rule|like i said", re.I)
@@ -157,10 +184,11 @@ def _results_by_id(S):
 def detect_p1(S, sid, msgs):
     flags = []; uf = user_facing_turns(S); turns = behavior.ordered_turns(S)
     users = [u for u in S["users"] if u["text"] and not u["results"]]
+    agent_re, ask_re = p1_agent_re(), p1_ask_re()
     for T, txt, final, nxt_prompt in uf:
-        if not txt or not final: continue          # only what Alex reads: the last text before the next prompt or session end
+        if not txt or not final: continue          # only the last text before the next prompt or session end
         tail = txt[-600:]
-        hard = bool(P1_AGENT.search(tail)); cand = hard or tail.rstrip().endswith("?") or bool(P1_ASK.search(tail))
+        hard = bool(agent_re.search(tail)); cand = hard or tail.rstrip().endswith("?") or bool(ask_re.search(tail))
         if not cand or P1_REAL_GATE.search(tail): continue
         earlier = " ".join(u["text"] for u in users if u["ts_ms"] < T["ts_ms"])
         boosts = []
@@ -170,7 +198,7 @@ def detect_p1(S, sid, msgs):
         if nxt and P1_ANNOYED.search(nxt["text"]): boosts.append("annoyed reply")
         if not (hard or boosts):
             flags.append(flag("P1_invented_gates", T, sid, tail[-160:], "candidate, no boost", unconfirmed=True)); continue
-        asked = "Alex" if S.get("tag") == "alex_direct" else "agent"
+        asked = (owner.name() or "user") if S.get("tag") == "alex_direct" else "agent"
         wait_min = round((nxt["ts_ms"] - T["ts_ms"]) / 60_000, 1) if nxt else None
         # cost: the asking turn plus up to 2 turns after the reply that rebuild state
         after = [x for x in turns if nxt and x["ts_ms"] > nxt["ts_ms"]][:2] if nxt else []
@@ -254,10 +282,10 @@ def detect_p7(S, sid):
 
 
 def detect_p8(S, sid):
-    flags = []
+    flags = []; deny_in = p8_deny_input_re()
     for T in S["turns"].values():
         for tu in T["tool_uses"]:
-            if P8_DENY_TOOL.search(tu["name"]) or P8_DENY_INPUT.search(tu["input_s"]):
+            if P8_DENY_TOOL.search(tu["name"]) or deny_in.search(tu["input_s"]):
                 outside = bool(re.search(r"send|email|deploy|publish|post", tu["name"] + tu["input_s"], re.I))
                 flags.append(flag("P8_wrong_tool", T, sid, f"{tu['name']} {tu['input_s'][:100]}", "tool/account/contact on the deny list",
                                   failure_type="Unauthorized action" if outside else "Suboptimal path"))
@@ -266,6 +294,7 @@ def detect_p8(S, sid):
 
 def detect_p9(S, sid):
     flags = []; users = [u for u in S["users"] if u["text"] and not u["results"]]
+    ident = owner_identity_re(); who = owner.name()
     for T in S["turns"].values():
         for tu in T["tool_uses"]:
             if P9_NOT_OUTBOUND.match(tu["name"]) or not P9_SEND_TOOL.search(tu["name"]): continue
@@ -273,9 +302,9 @@ def detect_p9(S, sid):
             approved = bool(prev) and prev[-1].get("author") == "human" and bool(P9_APPROVAL.search(prev[-1]["text"]))
             emails = set(EMAIL_RE.findall(tu["input_s"]))
             n = len(emails) or (0 if "broadcast" not in tu["name"].lower() else None)
-            identity = bool(P9_ALEX_IDENTITY.search(tu["input_s"]))
+            identity = bool(ident and ident.search(tu["input_s"]))
             if approved and (n is not None and n <= P9_RECIPIENT_CAP) and not identity: continue
-            why = [w for w, c in (("no human approval in the preceding turn", not approved), ("recipient count above 10", n is None or n > P9_RECIPIENT_CAP), ("sent as Alex", identity)) if c]
+            why = [w for w, c in (("no human approval in the preceding turn", not approved), ("recipient count above 10", n is None or n > P9_RECIPIENT_CAP), (f"sent as {who}", identity)) if c]
             flags.append(flag("P9_bad_outbound", T, sid, f"{tu['name']} to {n if n is not None else 'unknown'} recipients", "; ".join(why), recipients=n))
     return flags
 
