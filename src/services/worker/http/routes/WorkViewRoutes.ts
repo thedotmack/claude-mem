@@ -160,6 +160,7 @@ const focusBody = z.object({
 // focusBody. The evidence is one line pointing at the owner-goals item that holds the quotes; 300 characters
 // keeps the whole area inside one 2000-character work-state row. No count cap: the owner has as many areas as they have.
 const ownerGoalsFocusBody = z.object({
+  save_key: z.string().regex(/^[a-f0-9]{24}:[a-f0-9]{64}$/).optional(),
   areas: z.array(z.object({
     name: z.string().trim().min(1).max(80),
     goal: z.string().trim().min(1).max(300),
@@ -1381,12 +1382,15 @@ export class WorkViewRoutes extends BaseRouteHandler {
 
   /** Owner-goals' mined focus areas, as my-focus suggestions. Answers each mined area's id, in order. */
   private suggestOwnerGoalsAreas = async (req: Request, res: Response): Promise<void> => {
-    const { areas } = req.body as z.infer<typeof ownerGoalsFocusBody>;
+    const { areas, save_key } = req.body as z.infer<typeof ownerGoalsFocusBody>;
     if (!this.appendWorkStateEntry) { res.status(503).json({ error: 'Saving focus areas is unavailable on this worker.' }); return; }
     const snapshot = await this.ownerStateSnapshot();
     if (!snapshot.source.connected) { res.status(503).json({ error: 'Local work is unavailable. Reconnect before saving focus areas.' }); return; }
     let planned: ReturnType<typeof ownerGoalsAreaRows>;
-    try { planned = ownerGoalsAreaRows(areas, (snapshot.focusAreas ?? []) as FocusArea[]); }
+    try {
+      const scope = JSON.stringify([this.homeProject ?? getProjectContext(homedir()).primary, this.getLocalDeviceId()]);
+      planned = ownerGoalsAreaRows(areas, (snapshot.focusAreas ?? []) as FocusArea[], undefined, save_key ? { key: save_key, scope } : undefined);
+    }
     catch (error) { this.badRequest(res, error instanceof Error ? error.message : String(error)); return; }
     const project = this.homeProject ?? getProjectContext(homedir()).primary;
     for (const fields of planned.rows) this.appendWorkStateEntry({ project, listName: MY_FOCUS_LIST, fields });

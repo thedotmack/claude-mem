@@ -18,7 +18,8 @@ export function placementRowFields(placement: {
 }): Record<string, string | number | null>;
 export function newFocusAreaId(): string;
 export interface MinedFocusArea { name: string; goal: string; rank: number; matches: string | null; evidence: string }
-export function ownerGoalsAreaRows(minedAreas: MinedFocusArea[], savedAreas: FocusArea[], newId?: (index: number) => string): {
+export function ownerGoalsSaveKey(areas: MinedFocusArea[], nonce?: string): string;
+export function ownerGoalsAreaRows(minedAreas: MinedFocusArea[], savedAreas: FocusArea[], newId?: (index: number) => string, retry?: { key: string; scope: string }): {
   rows: Array<Record<string, string | number | null>>; focusAreaIds: string[];
 };
 export interface PlacementSide { focusAreaId: string; basis: string | null; evidence: string | null; device: string | null }

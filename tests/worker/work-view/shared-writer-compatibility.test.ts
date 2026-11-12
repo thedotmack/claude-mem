@@ -65,9 +65,12 @@ test('Python keeps an accepted shared write after ambiguous timeout and never fa
   expect(result.stderr).toContain('timed out');
   expect(storyRecord(f)?.value).toMatchObject({ narrative: 'Original story', preferences: [{ source: 'owner-goals', preference: 'Keep tests fast.' }] });
   expect(JSON.parse(readFileSync(join(f.ledger, 'story.json'), 'utf8')).preferences).toEqual([]);
-  expect(f.store.getWorkStateEntries(['home'])).toHaveLength(1);
+  // This rules-only fixture has no task rows; its sole work-state entry would be the source watermark.
+  // An accepted write without an acknowledgement must not mark the whole map as saved.
+  expect(f.store.getWorkStateEntries(['home'])).toHaveLength(0);
   f.adapter.reconcile({ captureActivity: false });
   expect(JSON.parse(readFileSync(join(f.ledger, 'story.json'), 'utf8')).preferences).toHaveLength(1);
+  expect(f.store.getWorkStateEntries(['home'])).toHaveLength(0);
 }, 10_000);
 
 test('Python uses the legacy file path only when an old worker does not advertise shared persistence', async () => {
