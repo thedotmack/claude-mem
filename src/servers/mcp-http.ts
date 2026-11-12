@@ -158,6 +158,15 @@ export interface McpHttpHandle {
   close(): Promise<void>;
 }
 
+/** The request path without its query string, for logs: a query can carry a secret. */
+function requestPathname(req: IncomingMessage): string {
+  try {
+    return new URL(req.url ?? '/', 'http://localhost').pathname;
+  } catch {
+    return '/';
+  }
+}
+
 export interface StartMcpHttpOptions extends McpHttpOptions {
   /** Build one MCP Server for one session; `resolveCwd` returns the project directory of a call. */
   createServer: (resolveCwd: CwdResolver) => Server;
@@ -343,7 +352,7 @@ export async function startMcpHttpServer(options: StartMcpHttpOptions): Promise<
   };
 
   const refuse = (req: IncomingMessage, res: ServerResponse, status: number, message: string, context: Record<string, unknown>): void => {
-    logger.warn('SECURITY', `MCP HTTP: ${message}`, { ...context, method: req.method, path: req.url });
+    logger.warn('SECURITY', `MCP HTTP: ${message}`, { ...context, method: req.method, path: requestPathname(req) });
     sendJsonRpcError(res, status, -32000, message);
   };
 
@@ -442,7 +451,7 @@ export async function startMcpHttpServer(options: StartMcpHttpOptions): Promise<
   const httpServer = createHttpServer((req, res) => {
     handle(req, res).catch((error: unknown) => {
       if (error instanceof RequestBodyError) {
-        logger.warn('SYSTEM', `MCP HTTP: ${error.message}`, { method: req.method, path: req.url });
+        logger.warn('SYSTEM', `MCP HTTP: ${error.message}`, { method: req.method, path: requestPathname(req) });
         sendJsonRpcError(res, error.httpStatus, error.jsonRpcCode, error.message);
         return;
       }

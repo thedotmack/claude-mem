@@ -146,4 +146,22 @@ describe('packaged Screenpipe integration', () => {
     expect(stderr).not.toContain('secret-token');
     expect(stderr).not.toContain('sensitive response body');
   });
+
+  // Local API token mode (#5141): the worker refuses the save without the token.
+  it('sends the settings.json local API token to the worker it found, and never to a --worker-url', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'screenpipe-token-'));
+    dirs.push(dir);
+    const tokens: Array<string | null> = [];
+    const url = serve(req => {
+      tokens.push(req.headers.get('x-claude-mem-token'));
+      return Response.json({ success: true, id: 9 });
+    });
+    await writeFile(join(dir, 'settings.json'), JSON.stringify({ CLAUDE_MEM_WORKER_PORT: new URL(url).port, CLAUDE_MEM_LOCAL_API_TOKEN: ' screenpipe-secret ' }));
+    const note = join(dir, 'note.txt');
+    await writeFile(note, 'Ship Friday.');
+    const env = { CLAUDE_MEM_DATA_DIR: dir, CLAUDE_MEM_LOCAL_API_TOKEN: 'from-the-environment' };
+    await run(['save', '--file', note, '--project', 'demo'], env);
+    await run(['save', '--file', note, '--project', 'demo', '--worker-url', url], env);
+    expect(tokens).toEqual(['screenpipe-secret', null]);
+  });
 });

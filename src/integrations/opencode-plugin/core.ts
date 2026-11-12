@@ -96,11 +96,13 @@ const CAPTURE_TOOL_NAMES = new Map([
 ]);
 
 // Local API token mode (#5141): the worker refuses a request without the token. Read once, like the
-// worker URL, and only for a loopback worker: another host is not ours to hand the token to.
+// worker URL, and only for the loopback worker this plugin talks to: another host is not ours to
+// hand the token to. The token comes from settings.json alone, as the worker reads it, so the
+// environment cannot change what is sent.
 function localApiHeaders(): Record<string, string> {
+  if (!isLoopbackHostname(new URL(WORKER_BASE_URL).hostname)) return {};
   const settingsPath = join(SettingsDefaultsManager.get("CLAUDE_MEM_DATA_DIR"), "settings.json");
-  const settings = SettingsDefaultsManager.loadFromFile(settingsPath, true, { readOnly: true });
-  if (!isLoopbackHostname(settings.CLAUDE_MEM_WORKER_HOST)) return {};
+  const settings = SettingsDefaultsManager.loadFromFile(settingsPath, false, { readOnly: true });
   return localApiTokenHeaders(normalizeLocalApiToken(settings.CLAUDE_MEM_LOCAL_API_TOKEN));
 }
 

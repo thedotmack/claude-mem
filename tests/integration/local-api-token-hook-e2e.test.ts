@@ -110,15 +110,31 @@ describe('a worker started with CLAUDE_MEM_LOCAL_API_TOKEN set', () => {
     expect(write.status).toBe(401);
   });
 
-  it('takes the token as a header, and opens the viewer page from ?token=', async () => {
+  it('takes the token as a header or ?token=, serves the page shell without one, and sets no cookie', async () => {
     // Past the guard is all this asserts: a worker still starting answers readiness 503.
     expect((await fetch(url('/api/readiness'), { headers: withToken })).status).not.toBe(401);
     expect((await fetch(url('/api/prompts'), { headers: withToken })).status).toBe(200);
-    // A source checkout has no built viewer, so the page itself may answer 503: it passed the guard.
-    const page = await fetch(url(`/?token=${TOKEN}`));
+    const read = await fetch(url(`/api/prompts?token=${TOKEN}`));
+    expect(read.status).toBe(200);
+    expect(read.headers.get('set-cookie')).toBeNull();
+    // The page shell holds no data. A source checkout has no built UI, so it may answer 503:
+    // either way it passed the guard. Its scripts send the token on the requests that do.
+    const page = await fetch(url('/'));
     expect(page.status).not.toBe(401);
-    expect(page.headers.get('set-cookie')).toContain('claude_mem_token=');
-    expect((await fetch(url('/?token=wrong'))).status).toBe(401);
+    expect(page.headers.get('set-cookie')).toBeNull();
+    expect((await fetch(url('/stream'))).status).toBe(401);
+  });
+
+  it('lets `claude-mem start` see it ready, which waits on the token-only readiness route', async () => {
+    const startedAt = Date.now();
+    const child = Bun.spawn([process.execPath, entry, 'start'], {
+      cwd: projectDir, env: cleanEnv(), stdout: 'pipe', stderr: 'pipe',
+    });
+    const [stdout, status] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+    expect(status).toBe(0);
+    expect(stdout).toContain('"status":"ready"');
+    expect(stdout).not.toContain('warming');
+    expect(Date.now() - startedAt).toBeLessThan(5000);
   });
 
   it('is written to by a real hook, which sends the token on its own', async () => {

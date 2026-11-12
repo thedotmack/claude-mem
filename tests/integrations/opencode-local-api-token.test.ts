@@ -17,7 +17,7 @@ beforeEach(() => { dataDir = mkdtempSync(join(tmpdir(), 'cm-opencode-owner-')); 
 afterEach(() => { rmSync(dataDir, { recursive: true, force: true }); });
 
 /** The headers of the worker request the plugin makes for a user prompt, given these settings. */
-function headersSentWith(settings: Record<string, string>): Record<string, string> {
+function headersSentWith(settings: Record<string, string>, env: Record<string, string> = {}): Record<string, string> {
   writeFileSync(join(dataDir, 'settings.json'), JSON.stringify(settings));
   const script = `
     import { createCore } from '${core}';
@@ -29,7 +29,7 @@ function headersSentWith(settings: Record<string, string>): Record<string, strin
   // An inherited value would override the file, so the child must not have one.
   const { CLAUDE_MEM_LOCAL_API_TOKEN: _inherited, CLAUDE_MEM_WORKER_HOST: _host, ...inherited } = process.env;
   const child = Bun.spawnSync([process.execPath, '-e', script], {
-    env: { ...(inherited as Record<string, string>), CLAUDE_MEM_DATA_DIR: dataDir },
+    env: { ...(inherited as Record<string, string>), CLAUDE_MEM_DATA_DIR: dataDir, ...env },
     stderr: 'pipe',
   });
   expect(child.stderr.toString()).not.toContain('error');
@@ -51,5 +51,10 @@ describe('OpenCode plugin local API token', () => {
   it('never sends the token to a worker host that is not loopback', () => {
     const headers = headersSentWith({ CLAUDE_MEM_LOCAL_API_TOKEN: TOKEN, CLAUDE_MEM_WORKER_HOST: 'worker.example.com' });
     expect(headers).toEqual({ 'Content-Type': 'application/json' });
+  });
+
+  it('sends the token settings.json names, whatever the environment says', () => {
+    expect(headersSentWith({ CLAUDE_MEM_LOCAL_API_TOKEN: TOKEN }, { CLAUDE_MEM_LOCAL_API_TOKEN: 'from-the-environment' })[LOCAL_API_TOKEN_HEADER]).toBe(TOKEN);
+    expect(headersSentWith({}, { CLAUDE_MEM_LOCAL_API_TOKEN: 'from-the-environment' })).toEqual({ 'Content-Type': 'application/json' });
   });
 });

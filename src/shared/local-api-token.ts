@@ -28,13 +28,6 @@ export const LOCAL_API_TOKEN_HEADER = 'x-claude-mem-token';
 // the readiness routes and the hook spool included, takes the token.
 const OPEN_ROUTES: ReadonlySet<string> = new Set(['GET /api/health']);
 
-/**
- * The cookie a browser page holds after it was opened with a valid `?token=`. A script, an
- * image or an event stream cannot send a header, so a page's own subresources carry the
- * token this way. It is accepted on GET and HEAD only: a write must send the header.
- */
-export const LOCAL_API_TOKEN_COOKIE = 'claude_mem_token';
-
 /** Whitespace-only is OFF, not a secret equal to a space. */
 export function normalizeLocalApiToken(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
@@ -64,27 +57,6 @@ export function extractLocalApiToken(headers: IncomingHttpHeaders): string | nul
   if (typeof dedicated === 'string' && dedicated.trim()) return dedicated.trim();
   const authorization = headers.authorization;
   return typeof authorization === 'string' ? parseBearerToken(authorization) : null;
-}
-
-/**
- * The token in a `Cookie` header, or null for none, a blank value, or a repeated name:
- * which of two copies the browser meant is not for the server to guess.
- */
-export function readCookieToken(cookieHeader: string | undefined): string | null {
-  if (typeof cookieHeader !== 'string') return null;
-  let found: string | null = null;
-  for (const part of cookieHeader.split(';')) {
-    const at = part.indexOf('=');
-    if (at < 0 || part.slice(0, at).trim() !== LOCAL_API_TOKEN_COOKIE) continue;
-    if (found !== null) return null;
-    found = part.slice(at + 1).trim();
-  }
-  if (!found) return null;
-  try {
-    return decodeURIComponent(found) || null;
-  } catch {
-    return null;
-  }
 }
 
 export type LocalApiAccessDecision = { allow: true } | { allow: false; reason: 'token' };

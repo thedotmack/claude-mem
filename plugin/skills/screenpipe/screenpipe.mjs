@@ -22,12 +22,22 @@ when --worker-url is omitted). No automatic import or background sync.`;
 
 // The local worker's URL, resolved the way claude-mem does: environment first,
 // then ~/.claude-mem/settings.json, then the per-user default port.
-export function defaultWorkerUrl(env = process.env) {
-  let settings = {};
+function readSettings(env) {
   try {
     const dataDir = env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem');
-    settings = JSON.parse(readFileSync(join(dataDir, 'settings.json'), 'utf8')) || {};
-  } catch { /* no settings file: use defaults */ }
+    return JSON.parse(readFileSync(join(dataDir, 'settings.json'), 'utf8')) || {};
+  } catch { return {}; /* no settings file: use defaults */ }
+}
+
+// The local API token header (#5141), from settings.json alone as the worker reads it. Sent
+// only to the worker defaultWorkerUrl found, never to a --worker-url given by hand.
+export function localApiTokenHeaders(env = process.env) {
+  const token = readSettings(env).CLAUDE_MEM_LOCAL_API_TOKEN;
+  return typeof token === 'string' && token.trim() ? { 'X-Claude-Mem-Token': token.trim() } : {};
+}
+
+export function defaultWorkerUrl(env = process.env) {
+  const settings = readSettings(env);
   const host = env.CLAUDE_MEM_WORKER_HOST || settings.CLAUDE_MEM_WORKER_HOST || '127.0.0.1';
   const port = env.CLAUDE_MEM_WORKER_PORT || settings.CLAUDE_MEM_WORKER_PORT
     || String(37700 + ((process.getuid?.() ?? 77) % 100));
@@ -92,7 +102,7 @@ export async function run(args, env = process.env) {
     const text = (await readNote(values.file)).trim();
     if (!text || Buffer.byteLength(text) > 64 * 1024) throw new Error('The reviewed note must contain 1..65536 bytes.');
     const saved = await request(url, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...(values['worker-url'] ? {} : localApiTokenHeaders(env)) },
       body: JSON.stringify({ text, title: values.title, project: values.project.trim(), metadata: { source: 'screenpipe' } }),
     }, 'claude-mem');
     if (saved.success !== true || !Number.isSafeInteger(saved.id)) {

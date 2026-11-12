@@ -10,7 +10,11 @@ import { afterAll, beforeAll, describe, expect, it, spyOn } from 'bun:test';
 import type { Application, Request, Response } from 'express';
 import { logger } from '../../src/utils/logger.js';
 import { Server, type ServerOptions } from '../../src/services/server/Server.js';
-import { LOCAL_API_TOKEN_COOKIE, LOCAL_API_TOKEN_HEADER } from '../../src/shared/local-api-token.js';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { LOCAL_API_TOKEN_HEADER } from '../../src/shared/local-api-token.js';
+import { uiStaticPaths } from '../../src/services/worker/http/middleware.js';
 import { listenOnEphemeralPort } from '../helpers/ephemeral-port.js';
 
 const TOKEN = 'local-api-guard-test-secret';
@@ -30,6 +34,9 @@ function baseOptions(overrides: Partial<ServerOptions> = {}): ServerOptions {
   };
 }
 
+// The data-free UI files the guard serves without a token; production lists them with uiStaticPaths.
+const STATIC_PATHS = new Set(['/', '/viewer', '/viewer-bundle.js']);
+
 // Stubs for routes the real worker mounts after construction, so a request that
 // passes the guard lands on a handler instead of Express's default 404.
 const stubRoutes = {
@@ -41,7 +48,9 @@ const stubRoutes = {
     app.delete('/api/observation/:id', ok);
     app.post('/api/spool/ingest', ok);
     app.get('/', ok);
+    app.get('/viewer', ok);
     app.get('/viewer-bundle.js', ok);
+    app.get('/stream', ok);
   },
 };
 
@@ -71,9 +80,9 @@ beforeAll(async () => {
     spyOn(process, 'exit').mockImplementation(() => undefined as never),
   ];
 
-  ({ server: guarded, port: guardedPort } = await start(baseOptions({ localApiToken: { getToken: () => TOKEN } })));
+  ({ server: guarded, port: guardedPort } = await start(baseOptions({ localApiToken: { getToken: () => TOKEN, openStaticPaths: STATIC_PATHS } })));
   ({ server: unguarded, port: unguardedPort } = await start(baseOptions()));
-  ({ server: emptyToken, port: emptyTokenPort } = await start(baseOptions({ localApiToken: { getToken: () => '' } })));
+  ({ server: emptyToken, port: emptyTokenPort } = await start(baseOptions({ localApiToken: { getToken: () => '', openStaticPaths: STATIC_PATHS } })));
   ({ server: withTv, port: withTvPort } = await start(baseOptions({
     localApiToken: { getToken: () => TOKEN },
     remoteReadOnly: { getToken: () => 'tv-secret' },
@@ -184,60 +193,53 @@ describe('local-api-token guard: token set', () => {
 });
 
 describe('local-api-token guard: a browser page', () => {
-  const cookieOf = (res: globalThis.Response): string => res.headers.get('set-cookie') ?? '';
-
-  it('opens with ?token=, and the page gets a session cookie that scripts cannot read', async () => {
-    const res = await fetch(at(guardedPort, `/?token=${TOKEN}`));
+  // A cookie is shared by every port on localhost, so one would hand the token to any other
+  // local server the browser visits (#6056 review). The guard never sets or reads one.
+  it('sets no cookie for a valid ?token= page load', async () => {
+    const res = await fetch(at(guardedPort, `/api/settings?token=${TOKEN}`));
     expect(res.status).toBe(200);
-    const cookie = cookieOf(res);
-    expect(cookie).toContain(`${LOCAL_API_TOKEN_COOKIE}=${TOKEN}`);
-    expect(cookie).toContain('HttpOnly');
-    expect(cookie).toContain('SameSite=Strict');
-    expect(cookie).toContain('Path=/');
+    expect(res.headers.get('set-cookie')).toBeNull();
   });
 
-  it("lets the page's own subresources and reads use that cookie", async () => {
-    const headers = { cookie: `${LOCAL_API_TOKEN_COOKIE}=${TOKEN}` };
-    expect((await fetch(at(guardedPort, '/viewer-bundle.js'), { headers })).status).toBe(200);
-    expect((await fetch(at(guardedPort, '/api/settings'), { headers })).status).toBe(200);
-    expect((await fetch(at(guardedPort, '/api/settings'), { method: 'HEAD', headers })).status).toBe(200);
+  it('does not take the token from a cookie', async () => {
+    const res = await fetch(at(guardedPort, '/api/observations'), { headers: { cookie: `claude_mem_token=${TOKEN}` } });
+    expect(res.status).toBe(401);
   });
 
-  it('takes ?token= on any read, such as the event stream', async () => {
+  it('serves the data-free UI files without a token, for GET and HEAD only', async () => {
+    expect((await fetch(at(guardedPort, '/viewer-bundle.js'))).status).toBe(200);
+    expect((await fetch(at(guardedPort, '/viewer'))).status).toBe(200);
+    expect((await fetch(at(guardedPort, '/'))).status).toBe(200);
+    expect((await fetch(at(guardedPort, '/viewer-bundle.js'), { method: 'HEAD' })).status).toBe(200);
+    expect((await fetch(at(guardedPort, '/viewer-bundle.js'), { method: 'POST' })).status).toBe(401);
+  });
+
+  it('matches UI files exactly, never by prefix or case', async () => {
+    expect((await fetch(at(guardedPort, '/viewer-bundle.js/x'))).status).toBe(401);
+    expect((await fetch(at(guardedPort, '/viewer/'))).status).toBe(401);
+    expect((await fetch(at(guardedPort, '/VIEWER'))).status).toBe(401);
+  });
+
+  it('keeps the event stream and the API behind the token', async () => {
+    expect((await fetch(at(guardedPort, '/stream'))).status).toBe(401);
+    expect((await fetch(at(guardedPort, `/stream?token=${TOKEN}`))).status).toBe(200);
+    expect((await fetch(at(guardedPort, '/api/observations'))).status).toBe(401);
+  });
+
+  it('takes ?token= on any read, such as an image or the event stream', async () => {
     expect((await fetch(at(guardedPort, `/api/observations?token=${TOKEN}`))).status).toBe(200);
+    expect((await fetch(at(guardedPort, `/api/observations?token=${WRONG}`))).status).toBe(401);
   });
 
-  it('refuses a wrong ?token= and a wrong cookie, and sets no cookie for either', async () => {
-    const query = await fetch(at(guardedPort, `/?token=${WRONG}`));
-    expect(query.status).toBe(401);
-    expect(cookieOf(query)).toBe('');
-    const cookie = await fetch(at(guardedPort, '/api/settings'), { headers: { cookie: `${LOCAL_API_TOKEN_COOKIE}=${WRONG}` } });
-    expect(cookie.status).toBe(401);
-  });
-
-  it('never lets a write ride the query token or the cookie: a write sends the header', async () => {
-    const cookie = { cookie: `${LOCAL_API_TOKEN_COOKIE}=${TOKEN}` };
-    expect((await fetch(at(guardedPort, '/api/settings'), { method: 'POST', headers: cookie })).status).toBe(401);
-    expect((await fetch(at(guardedPort, '/api/observation/1'), { method: 'DELETE', headers: cookie })).status).toBe(401);
+  it('never lets a write ride the query token: a write sends the header', async () => {
     expect((await fetch(at(guardedPort, `/api/settings?token=${TOKEN}`), { method: 'POST' })).status).toBe(401);
-    expect((await fetch(at(guardedPort, '/api/settings'), { method: 'POST', headers: { ...cookie, [LOCAL_API_TOKEN_HEADER]: TOKEN } })).status).toBe(200);
+    expect((await fetch(at(guardedPort, `/api/observation/1?token=${TOKEN}`), { method: 'DELETE' })).status).toBe(401);
+    expect((await fetch(at(guardedPort, '/api/settings'), { method: 'POST', headers: { [LOCAL_API_TOKEN_HEADER]: TOKEN } })).status).toBe(200);
   });
 
-  it('refuses a repeated token, even beside a valid header or cookie', async () => {
-    const valid = { [LOCAL_API_TOKEN_HEADER]: TOKEN, cookie: `${LOCAL_API_TOKEN_COOKIE}=${TOKEN}` };
+  it('refuses a repeated token, even beside a valid header', async () => {
     expect((await fetch(at(guardedPort, `/api/settings?token=${TOKEN}&token=${TOKEN}`))).status).toBe(401);
-    expect((await fetch(at(guardedPort, `/api/settings?token=${TOKEN}&token=${TOKEN}`), { headers: valid })).status).toBe(401);
-  });
-
-  it('refuses a repeated cookie name', async () => {
-    const cookie = `${LOCAL_API_TOKEN_COOKIE}=${TOKEN}; ${LOCAL_API_TOKEN_COOKIE}=${TOKEN}`;
-    expect((await fetch(at(guardedPort, '/api/settings'), { headers: { cookie } })).status).toBe(401);
-  });
-
-  it('sets no cookie when the header was the credential', async () => {
-    const res = await fetch(at(guardedPort, `/api/settings?token=${TOKEN}`), { headers: { [LOCAL_API_TOKEN_HEADER]: TOKEN } });
-    expect(res.status).toBe(200);
-    expect(cookieOf(res)).toBe('');
+    expect((await fetch(at(guardedPort, `/api/settings?token=${TOKEN}&token=${TOKEN}`), { headers: { [LOCAL_API_TOKEN_HEADER]: TOKEN } })).status).toBe(401);
   });
 
   it('never writes a query-string token to the log', async () => {
@@ -251,10 +253,34 @@ describe('local-api-token guard: a browser page', () => {
   });
 });
 
+describe('uiStaticPaths', () => {
+  it('lists every file under both UI layouts as an exact request path, plus the HTML shells', () => {
+    const root = mkdtempSync(join(tmpdir(), 'cm-ui-static-'));
+    try {
+      mkdirSync(join(root, 'ui', 'work-view', 'assets'), { recursive: true });
+      writeFileSync(join(root, 'ui', 'viewer-bundle.js'), '');
+      writeFileSync(join(root, 'ui', 'work-view', 'assets', 'index-abc.js'), '');
+      writeFileSync(join(root, 'ui', 'space name.css'), '');
+      mkdirSync(join(root, 'plugin', 'ui'), { recursive: true });
+      writeFileSync(join(root, 'plugin', 'ui', 'tv.html'), '');
+      expect([...uiStaticPaths(root)].sort()).toEqual([
+        '/', '/restart', '/space%20name.css', '/tv', '/tv.html', '/viewer', '/viewer-bundle.js', '/work-view/assets/index-abc.js',
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('is only the shells when no UI directory exists', () => {
+    expect([...uiStaticPaths(join(tmpdir(), 'cm-ui-static-missing-dir'))].sort()).toEqual(['/', '/restart', '/tv', '/viewer']);
+  });
+});
+
 describe('local-api-token guard: fails closed', () => {
-  it('refuses everything, health included, if mounted with an empty token', async () => {
+  it('refuses everything, health and UI files included, if mounted with an empty token', async () => {
     expect((await fetch(at(emptyTokenPort, '/api/settings'), { headers: { [LOCAL_API_TOKEN_HEADER]: '' } })).status).toBe(401);
     expect((await fetch(at(emptyTokenPort, '/api/health'))).status).toBe(401);
+    expect((await fetch(at(emptyTokenPort, '/viewer-bundle.js'))).status).toBe(401);
   });
 });
 

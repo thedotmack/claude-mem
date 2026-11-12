@@ -5,13 +5,18 @@
 // token from that URL once, keeps it for the tab in sessionStorage, drops it from the
 // address bar, and from then on sends it on every request the page makes to its own
 // origin: as a header on `fetch` (a write must send the header), and as `?token=` on an
-// `EventSource`, which cannot set one. Scripts and images the page loads cannot send
-// either; the worker lets them through on the cookie the first `?token=` page load sets.
+// `EventSource`, which cannot set one. An `<img>` or a link cannot send a header either, so
+// the URL builders for worker media wrap their URLs in `withLocalApiTokenQuery`. The page's
+// own scripts, styles and fonts need no token: the worker serves those data-free files
+// without one.
 //
 // Self-contained on purpose: the viewer and My Work are separate bundles and both load it.
 
 export const LOCAL_API_TOKEN_HEADER = 'X-Claude-Mem-Token';
 const STORAGE_KEY = 'claude-mem.local-api-token';
+
+// The token installLocalApiToken found for this tab; '' when the page has none.
+let installedToken = '';
 
 type EventSourceConstructor = new (url: string | URL, init?: { withCredentials?: boolean }) => object;
 
@@ -49,6 +54,7 @@ function readToken(win: TokenWindow): string {
 /** Wrap `fetch` and `EventSource` so a request to this page's own origin carries the token. Returns the token, or '' when there is none. */
 export function installLocalApiToken(win: TokenWindow = globalThis as unknown as TokenWindow): string {
   const token = readToken(win);
+  installedToken = token;
   if (token === '') return '';
 
   const sameOrigin = (target: string | URL): URL | null => {
@@ -78,4 +84,13 @@ export function installLocalApiToken(win: TokenWindow = globalThis as unknown as
     } as EventSourceConstructor;
   }
   return token;
+}
+
+/**
+ * `url` with `?token=` added, for a same-origin worker URL that an element loads itself (an
+ * `<img src>` or a link), which cannot send the header. Unchanged when the page has no token.
+ */
+export function withLocalApiTokenQuery(url: string): string {
+  if (installedToken === '') return url;
+  return `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(installedToken)}`;
 }

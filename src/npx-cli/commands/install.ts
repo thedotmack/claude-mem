@@ -17,6 +17,8 @@ import { updateSettingsDocument } from '../../shared/settings-document.js';
 import { loadClaudeMemEnv, saveClaudeMemEnv } from '../../shared/EnvManager.js';
 import { ensureWorkerStarted, getLastWorkerBootFailure, type WorkerStartResult } from '../../services/worker-spawner.js';
 import { formatHostForUrl } from '../../shared/worker-utils.js';
+import { readLocalApiToken } from '../../shared/hook-settings.js';
+import { localApiTokenHeaders } from '../../shared/local-api-token.js';
 import {
   ensureBun,
   ensureUv,
@@ -3881,7 +3883,10 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     // can't answer yet, and the state is always visible via the cloud-sync skill.
     if (cloudSyncConfigured && workerReady) {
       try {
+        // /api/sync/status takes the local API token when that mode is on (#5141).
+        const localApiToken = readLocalApiToken();
         const syncResponse = await fetch(`http://${workerUrlHost}:${actualPort}/api/sync/status`, {
+          ...(localApiToken ? { headers: localApiTokenHeaders(localApiToken) } : {}),
           signal: AbortSignal.timeout(3000),
         });
         if (syncResponse.ok) {

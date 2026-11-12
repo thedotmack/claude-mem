@@ -1,6 +1,7 @@
 import React, { useEffect } from 'react';
 import { useI18n } from '../../i18n';
 import { useDialogFocus } from '../hooks/useDialogFocus';
+import { withLocalApiTokenQuery } from '../../local-api-token-client';
 
 interface WelcomeCardProps {
   onDismiss: () => void;
@@ -211,7 +212,7 @@ export function WelcomeCard({ onDismiss }: WelcomeCardProps) {
         </div>
 
         <footer className="welcome-modal-footer">
-          <a href={EXPLAINER_URL} target="_blank" rel="noopener noreferrer">
+          <a href={withLocalApiTokenQuery(EXPLAINER_URL)} target="_blank" rel="noopener noreferrer">
             {t('How it works')}
           </a>
           <span className="welcome-modal-footer-sep">{'·'}</span>

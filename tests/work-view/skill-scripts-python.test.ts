@@ -370,3 +370,30 @@ describe('export_owner_prompts.py', () => {
     }
   });
 });
+
+// Local API token mode (#5141): the worker refuses save_goals.py's requests without the token.
+describe('save_goals.py local API token', () => {
+  const SCRIPTS = join(SKILLS, 'owner-goals', 'scripts');
+  const headersFor = (settings: Record<string, string>, env: Record<string, string> = {}) => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'save-goals-token-'));
+    try {
+      writeFileSync(join(dataDir, 'settings.json'), JSON.stringify(settings));
+      const run = spawnPython(['-c', 'import json, save_goals; print(json.dumps(save_goals.local_api_token_headers()))'], {
+        env: { CLAUDE_MEM_DATA_DIR: dataDir, PYTHONPATH: SCRIPTS, ...env },
+      });
+      expect(run.exitCode).toBe(0);
+      return JSON.parse(run.stdout.toString());
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  };
+
+  it('sends the settings.json token, trimmed, and nothing when there is none', () => {
+    expect(headersFor({ CLAUDE_MEM_LOCAL_API_TOKEN: ' goals-secret ' })).toEqual({ 'X-Claude-Mem-Token': 'goals-secret' });
+    expect(headersFor({})).toEqual({});
+  });
+
+  it('ignores the environment, as the worker does', () => {
+    expect(headersFor({}, { CLAUDE_MEM_LOCAL_API_TOKEN: 'from-the-environment' })).toEqual({});
+  });
+});

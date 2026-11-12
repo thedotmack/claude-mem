@@ -46,9 +46,29 @@ describe('workerAuthHeaders', () => {
     expect(workerAuthHeaders()).toEqual({ [LOCAL_API_TOKEN_HEADER]: TOKEN });
   });
 
-  it('adds the token for a worker URL that stays on loopback', () => {
-    writeSettings({ CLAUDE_MEM_LOCAL_API_TOKEN: TOKEN, CLAUDE_MEM_WORKER_URL: 'http://127.0.0.1:41999' });
+  it('adds the token for a worker URL that names this machine\'s own worker address', () => {
+    writeSettings({ CLAUDE_MEM_LOCAL_API_TOKEN: TOKEN, CLAUDE_MEM_WORKER_HOST: '127.0.0.1', CLAUDE_MEM_WORKER_PORT: '41999', CLAUDE_MEM_WORKER_URL: 'http://127.0.0.1:41999' });
     expect(workerAuthHeaders()).toEqual({ [LOCAL_API_TOKEN_HEADER]: TOKEN });
+  });
+
+  // An SSH forward to another machine's worker looks like loopback; the docs promise it never gets the token.
+  it('never sends the token to an explicit worker URL on another address, loopback included', () => {
+    writeSettings({ CLAUDE_MEM_LOCAL_API_TOKEN: TOKEN, CLAUDE_MEM_WORKER_HOST: '127.0.0.1', CLAUDE_MEM_WORKER_PORT: '41999', CLAUDE_MEM_WORKER_URL: 'http://127.0.0.1:9' });
+    expect(workerAuthHeaders()).toEqual({});
+  });
+
+  it('sends what settings.json says, whatever the environment says', () => {
+    writeSettings({ CLAUDE_MEM_LOCAL_API_TOKEN: TOKEN });
+    process.env.CLAUDE_MEM_LOCAL_API_TOKEN = 'from-the-environment';
+    clearPortCache();
+    expect(workerAuthHeaders()).toEqual({ [LOCAL_API_TOKEN_HEADER]: TOKEN });
+    process.env.CLAUDE_MEM_LOCAL_API_TOKEN = '';
+    clearPortCache();
+    expect(workerAuthHeaders()).toEqual({ [LOCAL_API_TOKEN_HEADER]: TOKEN });
+    writeSettings({});
+    process.env.CLAUDE_MEM_LOCAL_API_TOKEN = 'from-the-environment';
+    clearPortCache();
+    expect(workerAuthHeaders()).toEqual({});
   });
 
   it('never sends the token to a remote worker', () => {
@@ -86,7 +106,7 @@ describe('workerHttpRequest', () => {
     const seen: Headers[] = [];
     const worker = Bun.serve({ port: 0, hostname: '127.0.0.1', fetch(req) { seen.push(req.headers); return Response.json({ ok: true }); } });
     try {
-      writeSettings({ CLAUDE_MEM_LOCAL_API_TOKEN: TOKEN, CLAUDE_MEM_WORKER_URL: `http://127.0.0.1:${worker.port}` });
+      writeSettings({ CLAUDE_MEM_LOCAL_API_TOKEN: TOKEN, CLAUDE_MEM_WORKER_HOST: '127.0.0.1', CLAUDE_MEM_WORKER_PORT: String(worker.port) });
       const response = await workerHttpRequest('/api/anything', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -105,7 +125,7 @@ describe('workerHttpRequest', () => {
     const seen: Headers[] = [];
     const worker = Bun.serve({ port: 0, hostname: '127.0.0.1', fetch(req) { seen.push(req.headers); return Response.json({ ok: true }); } });
     try {
-      writeSettings({ CLAUDE_MEM_WORKER_URL: `http://127.0.0.1:${worker.port}` });
+      writeSettings({ CLAUDE_MEM_WORKER_HOST: '127.0.0.1', CLAUDE_MEM_WORKER_PORT: String(worker.port) });
       await workerHttpRequest('/api/anything');
       expect(seen).toHaveLength(1);
       expect(seen[0].has(LOCAL_API_TOKEN_HEADER)).toBe(false);

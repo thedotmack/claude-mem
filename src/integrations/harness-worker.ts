@@ -16,16 +16,20 @@ function dataDirectory(): string {
   return expandHome(process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem'));
 }
 
-function harnessSetting(dataDir = dataDirectory()): (key: string, fallback: string) => string {
-  let settings: Record<string, unknown> = {};
+function readHarnessSettingsFile(dataDir: string): Record<string, unknown> {
   try {
     const document = JSON.parse(readFileSync(join(dataDir, 'settings.json'), 'utf8').replace(/^\uFEFF/, ''));
     const nested = document?.env;
-    settings = nested && typeof nested === 'object' && !Array.isArray(nested)
+    return nested && typeof nested === 'object' && !Array.isArray(nested)
       && Object.keys(nested).some(key => key.startsWith('CLAUDE_MEM_')) ? nested : document ?? {};
   } catch {
     // Settings are optional; environment overrides and per-user defaults remain usable.
+    return {};
   }
+}
+
+function harnessSetting(dataDir = dataDirectory()): (key: string, fallback: string) => string {
+  const settings = readHarnessSettingsFile(dataDir);
   return (key: string, fallback: string): string => {
     const value = settings[key];
     // The worker accepts numeric JSON ports and timeouts as well as strings.
@@ -46,12 +50,13 @@ export function resolveHarnessWorkerUrl(): string {
 }
 
 /**
- * The local API token (#5141) as request headers, when settings.json (or the environment) has
- * one and the worker is on this machine; `{}` otherwise. A worker elsewhere is another
- * party's server and never receives it.
+ * The local API token (#5141) as request headers, when settings.json has one and the worker is
+ * on this machine; `{}` otherwise. Read from settings.json alone, like the worker reads it, so
+ * the environment cannot change what is sent. A worker elsewhere is another party's server and
+ * never receives it.
  */
 export function resolveHarnessAuthHeaders(baseUrl: string = resolveHarnessWorkerUrl()): Record<string, string> {
-  const token = normalizeLocalApiToken(harnessSetting()('CLAUDE_MEM_LOCAL_API_TOKEN', ''));
+  const token = normalizeLocalApiToken(readHarnessSettingsFile(dataDirectory()).CLAUDE_MEM_LOCAL_API_TOKEN);
   if (!token) return {};
   try {
     return isLoopbackHostname(new URL(baseUrl).hostname) ? localApiTokenHeaders(token) : {};

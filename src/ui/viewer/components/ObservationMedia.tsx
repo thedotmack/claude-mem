@@ -4,6 +4,7 @@ import { useI18n, interpolate } from '../../i18n';
 import type { MediaOwnerDetailsResponse, ObservationMedia, ObservationMediaRef } from '../types';
 import { useMediaStates } from '../hooks/useMediaStates';
 import { formatDate } from '../utils/formatters';
+import { withLocalApiTokenQuery } from '../../local-api-token-client';
 import {
   MAX_CARD_THUMBNAILS,
   canRetryMediaState,
@@ -75,7 +76,7 @@ export function ObservationMediaStripView({ observationId, media, states, onOpen
             >
               {state.kind === 'ready' && !mediaVariantFailed(state, 'llm') ? (
                 <img
-                  src={mediaVariantUrl(ref.id, 'llm')}
+                  src={withLocalApiTokenQuery(mediaVariantUrl(ref.id, 'llm'))}
                   alt={alt}
                   loading="lazy"
                   decoding="async"
@@ -143,7 +144,7 @@ export function MediaLightboxDialog({ observationId, refs, index, state, ownerDe
         <div className="media-lightbox-frame" aria-live="polite">
           {metadata && !mediaVariantFailed(state, 'viewer') ? (
             <img
-              src={mediaVariantUrl(ref.id, 'viewer')}
+              src={withLocalApiTokenQuery(mediaVariantUrl(ref.id, 'viewer'))}
               alt={alt}
               width={metadata.viewer?.width}
               height={metadata.viewer?.height}

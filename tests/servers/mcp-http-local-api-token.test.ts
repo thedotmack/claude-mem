@@ -3,7 +3,7 @@
 // With an local API token set, every /mcp request must carry it, so the working-directory
 // header, a session id and the body are never read from a request that does not.
 // `/health` stays open. With no token nothing changes.
-import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, it, spyOn } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -15,6 +15,7 @@ import { CWD_HEADER, startMcpHttpServer, type CwdResolver, type McpHttpHandle } 
 import { getRequestCwd, runWithCwd } from '../../src/servers/request-context.js';
 import { LOCAL_API_TOKEN_HEADER } from '../../src/shared/local-api-token.js';
 import type { WorkerOriginPolicy } from '../../src/services/worker/http/origin-policy.js';
+import { logger } from '../../src/utils/logger.js';
 
 const TOKEN = 'mcp-owner-test-secret';
 const WRONG = 'mcp-owner-wrong-secret';
@@ -148,5 +149,26 @@ describe('MCP HTTP local API token: token set', () => {
     const res = await fetch(`http://127.0.0.1:${guarded.port}/health`);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ status: 'ok' });
+  });
+});
+
+describe('MCP HTTP local API token: logs', () => {
+  it('logs the refused path without its query string', async () => {
+    const lines: string[] = [];
+    const spy = spyOn(logger, 'warn').mockImplementation((...args: unknown[]) => { lines.push(JSON.stringify(args)); });
+    try {
+      const res = await fetch(`http://127.0.0.1:${guarded.port}/mcp?token=${WRONG}`, {
+        method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(INITIALIZE),
+      });
+      expect(res.status).toBe(401);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(lines.length).toBeGreaterThan(0);
+    for (const line of lines) {
+      expect(line).not.toContain(WRONG);
+      expect(line).not.toContain('token=');
+    }
+    expect(lines.join('\n')).toContain('"path":"/mcp"');
   });
 });

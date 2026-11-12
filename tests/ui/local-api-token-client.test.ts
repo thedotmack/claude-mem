@@ -1,6 +1,6 @@
 // Local API token mode (#5141), browser side: what the viewer does with `?token=`.
 import { describe, expect, it } from 'bun:test';
-import { LOCAL_API_TOKEN_HEADER, installLocalApiToken, type TokenWindow } from '../../src/ui/local-api-token-client.js';
+import { LOCAL_API_TOKEN_HEADER, installLocalApiToken, withLocalApiTokenQuery, type TokenWindow } from '../../src/ui/local-api-token-client.js';
 
 const TOKEN = 'ui-test-token';
 const ORIGIN = 'http://localhost:37777';
@@ -119,5 +119,19 @@ describe('EventSource', () => {
     const { win, raw, NativeEventSource } = fakeWindow(`${ORIGIN}/?token=${TOKEN}`);
     installLocalApiToken(win);
     expect(new raw.EventSource('/stream') instanceof NativeEventSource).toBe(true);
+  });
+});
+
+// An <img src> or a link cannot send the header, so the media URL builders add ?token=.
+describe('withLocalApiTokenQuery', () => {
+  it('adds the tab token to a worker URL, encoded, after any query it has', () => {
+    installLocalApiToken(fakeWindow(`${ORIGIN}/?token=${encodeURIComponent('a b&c')}`).win);
+    expect(withLocalApiTokenQuery('/api/media/att_1/llm')).toBe('/api/media/att_1/llm?token=a%20b%26c');
+    expect(withLocalApiTokenQuery('/api/media/status?ids=a')).toBe('/api/media/status?ids=a&token=a%20b%26c');
+  });
+
+  it('leaves the URL alone when the page has no token', () => {
+    installLocalApiToken(fakeWindow(`${ORIGIN}/`).win);
+    expect(withLocalApiTokenQuery('/api/media/att_1/llm')).toBe('/api/media/att_1/llm');
   });
 });

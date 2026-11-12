@@ -1,12 +1,10 @@
 // Local API token mode (#5141): the policy both servers share.
 import { describe, expect, it } from 'bun:test';
 import {
-  LOCAL_API_TOKEN_COOKIE,
   LOCAL_API_TOKEN_HEADER,
   decideLocalApiAccess,
   extractLocalApiToken,
   normalizeLocalApiToken,
-  readCookieToken,
   localApiTokenHeaders,
   safeEqualSecret,
 } from '../../src/shared/local-api-token.js';
@@ -79,28 +77,6 @@ describe('extractLocalApiToken', () => {
     expect(extractLocalApiToken({ [LOCAL_API_TOKEN_HEADER]: '   ' })).toBeNull();
     expect(extractLocalApiToken({ authorization: `Basic ${TOKEN}` })).toBeNull();
     expect(extractLocalApiToken({ authorization: ['Bearer a', 'Bearer b'] })).toBeNull();
-  });
-});
-
-describe('readCookieToken', () => {
-  const name = LOCAL_API_TOKEN_COOKIE;
-
-  it('reads the token among other cookies', () => {
-    expect(readCookieToken(`a=1; ${name}=${TOKEN}; b=2`)).toBe(TOKEN);
-    expect(readCookieToken(`${name}=${TOKEN}`)).toBe(TOKEN);
-  });
-
-  it('decodes a percent-encoded value, and reads one that cannot be decoded as no token', () => {
-    expect(readCookieToken(`${name}=${encodeURIComponent('a b+c=')}`)).toBe('a b+c=');
-    expect(readCookieToken(`${name}=%E0%A4%A`)).toBeNull();
-  });
-
-  it('returns null for no header, no such cookie, a blank value, a similar name, or a repeated name', () => {
-    expect(readCookieToken(undefined)).toBeNull();
-    expect(readCookieToken('a=1')).toBeNull();
-    expect(readCookieToken(`${name}=`)).toBeNull();
-    expect(readCookieToken(`x${name}=${TOKEN}`)).toBeNull();
-    expect(readCookieToken(`${name}=${TOKEN}; ${name}=${TOKEN}`)).toBeNull();
   });
 });
 
