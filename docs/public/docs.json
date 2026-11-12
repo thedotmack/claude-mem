@@ -141,7 +141,8 @@
           "pydantic-ai-integration",
           "smolagents-integration",
           "strands-agents-integration",
-          "vercel-ai-sdk"
+          "vercel-ai-sdk",
+          "vercel-chat"
         ]
       },
       {
