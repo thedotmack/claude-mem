@@ -1,0 +1,261 @@
+{
+  "name": "Claude-Mem explicit memory",
+  "nodes": [
+    {
+      "id": "start",
+      "name": "Start",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "configure",
+      "name": "Configure",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "baseUrl",
+              "name": "baseUrl",
+              "value": "http://127.0.0.1:37700",
+              "type": "string"
+            },
+            {
+              "id": "project",
+              "name": "project",
+              "value": "claude-mem-practice",
+              "type": "string"
+            },
+            {
+              "id": "text",
+              "name": "text",
+              "value": "A restore must reject snapshots missing required worker tables.",
+              "type": "string"
+            },
+            {
+              "id": "title",
+              "name": "title",
+              "value": "n8n restore fixture",
+              "type": "string"
+            },
+            {
+              "id": "query",
+              "name": "query",
+              "value": "restore snapshots",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "save",
+      "name": "Save",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.baseUrl + '/api/memory/save' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {text:$json.text,title:$json.title,project:$json.project} }}",
+        "options": {
+          "timeout": 5000
+        }
+      }
+    },
+    {
+      "id": "search",
+      "name": "Search",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        880,
+        0
+      ],
+      "parameters": {
+        "url": "={{ $('Configure').first().json.baseUrl + '/api/search' }}",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "query",
+              "value": "={{ $('Configure').first().json.query }}"
+            },
+            {
+              "name": "project",
+              "value": "={{ $('Configure').first().json.project }}"
+            },
+            {
+              "name": "type",
+              "value": "observations"
+            },
+            {
+              "name": "format",
+              "value": "json"
+            },
+            {
+              "name": "limit",
+              "value": "10"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 5000
+        }
+      }
+    },
+    {
+      "id": "retrieve",
+      "name": "Retrieve",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1100,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Configure').first().json.baseUrl + '/api/observations/batch' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {ids:[$('Save').first().json.id],project:$('Configure').first().json.project} }}",
+        "options": {
+          "timeout": 5000
+        }
+      }
+    },
+    {
+      "id": "confirm-save",
+      "name": "Confirm save",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        660,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "confirmed",
+              "leftValue": "={{ $json.success }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "reject-save",
+      "name": "Reject unconfirmed save",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        880,
+        220
+      ],
+      "parameters": {
+        "errorType": "errorMessage",
+        "errorMessage": "The worker did not confirm a saved memory."
+      }
+    }
+  ],
+  "connections": {
+    "Start": {
+      "main": [
+        [
+          {
+            "node": "Configure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Configure": {
+      "main": [
+        [
+          {
+            "node": "Save",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save": {
+      "main": [
+        [
+          {
+            "node": "Confirm save",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search": {
+      "main": [
+        [
+          {
+            "node": "Retrieve",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Confirm save": {
+      "main": [
+        [
+          {
+            "node": "Search",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reject unconfirmed save",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "executionTimeout": 30
+  },
+  "active": false
+}

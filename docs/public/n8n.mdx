@@ -1,0 +1,57 @@
+---
+title: n8n
+description: Explicitly save, search and retrieve project memory in a manual n8n workflow.
+icon: diagram-project
+---
+
+The [importable workflow](https://github.com/thedotmack/claude-mem/blob/main/examples/n8n/memory.workflow.json) uses n8n's built-in HTTP Request nodes and Claude-Mem's existing local API. It explicitly saves a note, confirms the save, searches the selected project and retrieves the saved record by its receipt ID. It contains no model node, schedule, automatic capture or new storage service.
+
+## Connect
+
+Use self-hosted n8n on the same workstation as your Claude-Mem worker. This example targets loopback access, not n8n Cloud or a separate container's `localhost`.
+
+Import `examples/n8n/memory.workflow.json`. The file has no workflow ID, so it cannot overwrite an unrelated workflow by a fixed ID. Reuse the imported workflow for later runs instead of importing duplicate copies. It is inactive and has only a manual trigger.
+
+Edit the Configure node before running:
+
+- `baseUrl` is your actual worker origin, including its port. The included `37700` is a placeholder, not port discovery.
+- `project` is the exact Claude-Mem project name you want to save and read.
+- `text`, `title` and `query` describe the explicitly requested note and lookup.
+
+Do not put credentials in the URL or note. The workflow uses the owner's local worker trust model. It adds no multi-user authorization boundary.
+
+With the n8n CLI, import and find the resulting workflow ID before execution:
+
+```bash
+n8n import:workflow --input examples/n8n/memory.workflow.json
+n8n list:workflow
+n8n execute --id YOUR_IMPORTED_ID --rawOutput
+```
+
+Confirm that the execution's `status` is `success` and that Retrieve contains the expected ID, project and text. The n8n CLI can exit zero after a workflow error, so its exit code alone does not establish success.
+
+## Behavior and data flow
+
+Save sends `text`, `title` and `project` to `/api/memory/save`. Confirm save requires the worker's `success: true` response. An unconfirmed save goes to Stop And Error before any recall request. Search narrows results to the configured project. Retrieve fetches the ID from the confirmed save receipt with the same project filter.
+
+Each HTTP request has a five-second timeout. The workflow has a 30-second execution limit, no retry setting and no automatic trigger. Running it again is another explicit save request. To recall an existing note without saving again, adapt the workflow to use that existing ID.
+
+The configured note is saved through the worker's existing privacy and storage rules. Saved content follows your existing synchronization settings. n8n also retains execution data according to your instance settings, so recalled memory can appear in its execution history. The workflow makes no model-provider calls.
+
+## Verified walkthrough
+
+Verified with n8n 2.47.4 and Node 24.15.0 on macOS. Use a real Node 24 binary for this tested setup; check `node --version`. No n8n account or paid model is required for the isolated CLI walkthrough.
+
+After building Claude-Mem, set `NODE_BIN` to Node 24, `N8N_CLI` to the installed `n8n/bin/n8n` script and put Bun on PATH, then run:
+
+```bash
+python3 tests/fixtures/n8n-smoke.py
+```
+
+The fixture runs the actual importer and execution engine with separate databases. It checks the exact saved ID and text, excludes another project's search result, rejects an HTTP-success response that did not confirm a save, and verifies that a stopped worker fails the workflow. It inspects run data instead of relying on process exit codes. All records are synthetic. Windows/Linux, n8n Cloud and container networking were not tested.
+
+## Disconnect
+
+Leave the workflow inactive, then remove only the imported workflow if you no longer need it. Remove its execution history separately under your n8n retention policy. Disconnecting does not delete Claude-Mem memories or change unrelated workflows, hooks or MCP configuration.
+
+The example follows n8n's [official HTTP Request node documentation](https://docs.n8n.io/integrations/builtin/core-nodes/n8n-nodes-base.httprequest/) and uses no custom node package.
