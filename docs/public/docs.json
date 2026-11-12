@@ -132,6 +132,7 @@
           "langgraph-integration",
           "llamaindex-integration",
           "microsoft-agent-framework",
+          "pipecat",
           "openai-agents-integration",
           "pydantic-ai-integration",
           "smolagents-integration",
