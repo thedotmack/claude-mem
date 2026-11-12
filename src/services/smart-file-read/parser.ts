@@ -112,8 +112,8 @@ const QUERIES: Record<string, string> = {
 (variable_declaration "var" @signature_prefix (variable_declarator name: (identifier) @name value: [(arrow_function body: (_) @signature_body) (function_expression body: (_) @signature_body) (generator_function body: (_) @signature_body)]) @signature_start) @const_func @native_signature
 (class_declaration name: (type_identifier) @name) @cls
 (abstract_class_declaration name: (type_identifier) @name) @cls
-(method_definition name: [(property_identifier) (private_property_identifier) (string) (number) (computed_property_name)] @name body: (_) @signature_body) @method @native_signature
-(abstract_method_signature name: [(property_identifier) (private_property_identifier) (string) (number) (computed_property_name)] @name) @method @native_signature
+(method_definition (["get" "set"] @accessor)? name: [(property_identifier) (private_property_identifier) (string) (number) (computed_property_name)] @name body: (_) @signature_body) @method @native_signature
+(abstract_method_signature (["get" "set"] @accessor)? name: [(property_identifier) (private_property_identifier) (string) (number) (computed_property_name)] @name) @method @native_signature
 (class_body (abstract_method_signature) @terminated_signature . (comment)* . [";" ","] @signature_terminator)
 (public_field_definition name: (_) @name value: [(arrow_function body: (_) @signature_body) (function_expression body: (_) @signature_body) (generator_function body: (_) @signature_body)]) @method @native_signature
 (public_field_definition name: (_) @name value: (parenthesized_expression [(arrow_function body: (_) @signature_body) (function_expression body: (_) @signature_body) (generator_function body: (_) @signature_body)])) @method @native_signature
@@ -136,7 +136,7 @@ const QUERIES: Record<string, string> = {
 (lexical_declaration kind: ["const" "let"] @signature_prefix (variable_declarator name: (identifier) @name value: [(arrow_function body: (_) @signature_body) (function_expression body: (_) @signature_body) (generator_function body: (_) @signature_body)]) @signature_start) @const_func @native_signature
 (variable_declaration "var" @signature_prefix (variable_declarator name: (identifier) @name value: [(arrow_function body: (_) @signature_body) (function_expression body: (_) @signature_body) (generator_function body: (_) @signature_body)]) @signature_start) @const_func @native_signature
 (class_declaration name: (identifier) @name) @cls
-(method_definition name: [(property_identifier) (private_property_identifier) (string) (number) (computed_property_name)] @name body: (_) @signature_body) @method @native_signature
+(method_definition (["get" "set"] @accessor)? name: [(property_identifier) (private_property_identifier) (string) (number) (computed_property_name)] @name body: (_) @signature_body) @method @native_signature
 (field_definition property: (_) @name value: [(arrow_function body: (_) @signature_body) (function_expression body: (_) @signature_body) (generator_function body: (_) @signature_body)]) @method @native_signature
 (field_definition property: (_) @name value: (parenthesized_expression [(arrow_function body: (_) @signature_body) (function_expression body: (_) @signature_body) (generator_function body: (_) @signature_body)])) @method @native_signature
 (import_statement) @imp
@@ -925,11 +925,14 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     const endRow = kindCapture.endCol === 0 && kindCapture.endRow > startRow
       ? kindCapture.endRow - 1
       : kindCapture.endRow;
-    const kind = KIND_MAP[kindCapture.tag];
+    const accessor = match.captures.find(c => c.tag === "accessor");
+    const accessorKeyword = accessor && captureText(lines, accessor);
+    const kind = accessorKeyword === "get" ? "getter" : accessorKeyword === "set" ? "setter" : KIND_MAP[kindCapture.tag];
     // The CLI prints `text` only for one-row captures and cuts it at the first
     // backtick, so names come from the source range. A zero-width MISSING node
     // from error recovery leaves nothing to read and stays `anonymous`.
     let name = (nameCapture && captureText(lines, nameCapture)) || "anonymous";
+    if (accessorKeyword) name = `${accessorKeyword} ${name}`;
     if (kindCapture.tag === "ctor") {
       const parameters = match.captures.find(c => c.tag === "parameters");
       if (parameters) name += captureLines(lines, parameters).join(" ").replace(/\s+/g, " ").trim();
@@ -1623,12 +1626,13 @@ export function matchScore(text: string, queryParts: string[]): number {
 export function unfoldSymbol(content: string, filePath: string, symbolName: string): string | null {
   const file = parseFile(content, filePath);
 
-  const findSymbol = (symbols: CodeSymbol[], qualified: boolean, parent?: string): CodeSymbol | null => {
+  const findSymbol = (symbols: CodeSymbol[], qualified: boolean, parent?: string, accessorAlias = false): CodeSymbol | null => {
     for (const sym of symbols) {
-      const qualifiedName = qualifySymbolName(sym.name, parent, file.language, sym.kind);
-      if ((qualified ? qualifiedName : sym.name) === symbolName) return sym;
+      const name = accessorAlias && (sym.kind === "getter" || sym.kind === "setter") ? sym.name.slice(4) : sym.name;
+      const qualifiedName = qualifySymbolName(name, parent, file.language, sym.kind);
+      if ((qualified ? qualifiedName : name) === symbolName) return sym;
       if (sym.children) {
-        const found = findSymbol(sym.children, qualified, qualifiedName);
+        const found = findSymbol(sym.children, qualified, qualifiedName, accessorAlias);
         if (found) return found;
       }
     }
@@ -1638,6 +1642,9 @@ export function unfoldSymbol(content: string, filePath: string, symbolName: stri
   // Go methods are named with their receiver (`Local.Reset`), so a bare method
   // name still unfolds the first method with that leaf, as in other languages.
   const symbol = findSymbol(file.symbols, true) ?? findSymbol(file.symbols, false)
+    // Preserve existing property-only lookups after trying the distinct
+    // accessor identities returned by outlines and search.
+    ?? findSymbol(file.symbols, true, undefined, true) ?? findSymbol(file.symbols, false, undefined, true)
     ?? (file.language === "go"
       ? file.symbols.find(sym => sym.kind === "method" && sym.name.slice(sym.name.lastIndexOf(".") + 1) === symbolName) ?? null
       : null);
