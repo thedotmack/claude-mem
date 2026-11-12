@@ -137,7 +137,7 @@
     "sharp": "0.35.5"
   },
   "peerDependencies": {
-    "eve": ">=0.84.0",
+    "eve": ">=0.84.0 || >=1.0.0-rc.9",
     "zod": "^4.0.0"
   },
   "peerDependenciesMeta": {

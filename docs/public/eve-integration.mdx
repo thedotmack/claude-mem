@@ -1,29 +1,85 @@
 ---
 title: eve Integration
-description: Give an eve agent your claude-mem memory — recall before every turn, search and save tools, and a one-click personal agent template with iMessage
+description: Give an eve agent your claude-mem memory — your newest memory and recall on every turn, the three-step search tools, automatic recording of its work, and a one-click personal agent template
 icon: robot
 ---
 
 ## Overview
 
-[eve](https://eve.dev) is Vercel's framework for durable backend agents. The `claude-mem/eve` memory provider connects an eve memory slot to your claude-mem memory on [cmem.ai](https://cmem.ai). An agent deployed on Vercel can then recall what you did in Claude Code, Codex, and your other claude-mem clients.
+[eve](https://eve.dev) is Vercel's framework for durable backend agents. The `claude-mem/eve` memory provider connects an eve memory slot to your claude-mem memory on [cmem.ai](https://cmem.ai). An agent deployed on Vercel can then recall what you did in Claude Code, Codex, and your other claude-mem clients, and record its own work the same way they do.
 
-The provider does three things:
+The provider does four things:
 
-1. **Recall.** Before every turn, it runs one search (`dumb_search`) for the user's message. The matches go into the model's context as data, not instructions. This makes no inference calls.
-2. **Tools.** The model gets `<slot>__search`, which looks further back, and `<slot>__remember`, which saves one note.
-3. **No automatic capture.** Turns are never saved on their own. See [Why there is no automatic capture](#why-there-is-no-automatic-capture).
+1. **Session context.** Before every turn, it reads your newest memory with `timeline` (50 rows, about 4k tokens) and gives it to the model. Each turn's copy replaces the previous one under the same message ID, so it never piles up, a failed read is read again on the next turn, and new memory shows up mid-session.
+2. **Recall.** Before every turn, it runs one `dumb_search` for your message and gives the model the matching records.
+3. **Tools.** The model gets `search`, `timeline`, and `get_observations` to look further back, and `remember` to save a note.
+4. **Recording.** After every completed turn, it sends the prompt, each tool call, and a turn summary to cmem.ai. This is on by default and costs inference. See [What it records and what it costs](#what-it-records-and-what-it-costs).
+
+Reading is free: session context, recall, and the three search tools make no inference calls.
 
 ## One-click template
 
-The [eve agent with claude-mem template](https://github.com/thedotmack/claude-mem/tree/main/integrations/eve/template) is a personal agent with password-protected web chat and claude-mem memory. To deploy it, click **Deploy with Vercel** in the template README and enter two values:
+The [eve agent with claude-mem template](https://github.com/thedotmack/claude-mem/tree/main/integrations/eve/template) is a personal agent with password-protected web chat, a sandbox, web tools, and your claude-mem memory.
+
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fthedotmack%2Fclaude-mem%2Ftree%2Fmain%2Fintegrations%2Feve%2Ftemplate&env=EVE_CHAT_PASSWORD%2CCLAUDE_MEM_API_KEY&envDescription=EVE_CHAT_PASSWORD%3A%20a%20strong%20password%20%2816%2B%20characters%29%20that%20protects%20your%20agent.%20CLAUDE_MEM_API_KEY%3A%20your%20key%20from%20https%3A%2F%2Fcmem.ai%2Fpro%2Fkey.&envLink=https%3A%2F%2Fgithub.com%2Fthedotmack%2Fclaude-mem%2Fblob%2Fmain%2Fintegrations%2Feve%2Ftemplate%2Fdocs%2Fsetup-and-deploy.md&project-name=claude-mem-agent&repository-name=claude-mem-agent&demo-title=eve%20agent%20with%20claude-mem&demo-description=A%20personal%20eve%20agent%20that%20remembers%20what%20you%20did%20in%20Claude%20Code%2C%20Codex%2C%20and%20your%20other%20agents.)
+
+Click **Deploy with Vercel** and enter two values:
 
 | Variable             | Value                                                    |
 | -------------------- | -------------------------------------------------------- |
 | `EVE_CHAT_PASSWORD`  | A strong password, 16 or more characters                 |
 | `CLAUDE_MEM_API_KEY` | Your key from [cmem.ai/pro/key](https://cmem.ai/pro/key) |
 
-The template uses eve's default model, `anthropic/claude-sonnet-5`, through Vercel AI Gateway. The AI Gateway free tier does not include Claude models. Add AI Gateway credits, or change `model` in `agent/agent.ts`.
+Open the deployed app, enter the password, and ask "what was I working on yesterday?" No database or Marketplace product is needed. Chats are stored in your browser. Memory lives in claude-mem.
+
+### What the template remembers
+
+- **Your whole memory.** The template sets `searchAllProjects: true`, so session context, recall, and the search tools read every project your key can see on cmem.ai. That is everything your claude-mem clients have synced (see [Cloud Sync](/cloud-sync)).
+- **Its own saves in one project.** `remember` and recording write to the `eve-agent` project. Set `CLAUDE_MEM_PROJECT` to use another name.
+
+### Owner only
+
+Because recall reads your whole memory, `agent/memory/claude-mem.ts` turns memory on only for you:
+
+| Caller | Gets memory when |
+| --- | --- |
+| `eve dev` / `next dev` on your machine | Always |
+| Your own schedules in `agent/schedules/` | Always. Only code in your project can start them. |
+| Web chat, starter mode | The caller knows `EVE_CHAT_PASSWORD` |
+| Web chat, production mode (Sign in with Vercel) | The signed-in email matches `CLAUDE_MEM_OWNER_EMAIL` |
+| iMessage (Linq or Photon) | The sender matches `CLAUDE_MEM_OWNER_PHONE` |
+
+Everyone else gets no memory, no memory tools, and nothing recorded.
+
+### Which model it uses
+
+It works with no model key. `agent/agent.ts` picks the model when the agent builds, so redeploy after changing these:
+
+| Setting | Model |
+| --- | --- |
+| Neither variable set (default) | `anthropic/claude-sonnet-5` through Vercel AI Gateway. AI Gateway free credits refuse Claude, so on free credits the gateway answers with `openai/gpt-5-mini`, then `google/gemini-2.5-flash`, then `openai/gpt-5`. The refused Claude attempt costs nothing. Free credits allow each model about 10 calls a minute, and one turn can make 12 or more, so the gateway moves to the next model when one hits its limit. Add [AI Gateway credits](https://vercel.com/docs/ai-gateway/pricing) to get Claude and lift the limit. |
+| `ANTHROPIC_API_KEY` | Claude directly, with your Anthropic key. Wins over `EVE_MODEL`. |
+| `EVE_MODEL` | That [AI Gateway model ID](https://vercel.com/ai-gateway/models), exactly, such as `openai/gpt-5`. No fallback: a model your gateway refuses fails with the gateway's error. |
+
+### Schedules
+
+No schedule runs by default, so nothing spends money on its own.
+
+The template ships one example, `examples/schedules/morning-digest.md`. Every day at 14:00 UTC it writes a short digest of your most recent work from the session context and `claude-mem__timeline`, and saves it back with `claude-mem__remember`. It does not use search, because search cannot filter by date. To turn it on, copy it into `agent/schedules/` and redeploy:
+
+```bash
+mkdir -p agent/schedules
+cp examples/schedules/morning-digest.md agent/schedules/
+```
+
+- Vercel turns each file in `agent/schedules/` into a [Cron Job](https://vercel.com/docs/cron-jobs).
+- The `cron` line is in UTC. Change it to your morning.
+- Each run is one agent turn on your model, plus recording.
+- Scheduled runs get your memory. Nobody can answer questions during one, so write the prompt as a complete task.
+- To try it locally, run `pnpm dev:eve`, then `curl -X POST http://localhost:2000/eve/v1/dev/schedules/morning-digest`. `eve dev` never fires schedules on its own.
+- To turn it off, delete the file from `agent/schedules/` and redeploy.
+
+See [eve schedules](https://eve.dev/docs/schedules) for the handler form that posts the result to Slack or another channel.
 
 ### iMessage
 
@@ -33,7 +89,34 @@ iMessage is an eve channel add-on. Add one from the project, then redeploy:
 npx eve add channel/linq     # or: npx eve add channel/photon
 ```
 
-Set `CLAUDE_MEM_OWNER_PHONE` to your own phone number or Apple ID. Texts from that handle get your memory. Texts from anyone else get none. The template README shows how to ignore strangers' texts entirely.
+Set `CLAUDE_MEM_OWNER_PHONE` to your own phone number or Apple ID. Texts from that handle get your memory. Texts from anyone else get none. The template README shows how to ignore strangers' texts entirely, so they do not spend your model budget.
+
+## What it records and what it costs
+
+After each completed turn, the provider makes one live handoff to cmem.ai's `/api/hooks/ingest`, the way Claude Code and Codex record their work:
+
+- the turn's prompt,
+- one observation per tool call, with its input and result,
+- a request to summarize the turn.
+
+**Cost:** cmem.ai turns each recorded tool call and each turn summary into memory with one model call. Those calls come out of your cmem.ai observer allowance, the same allowance your other clients use. Session context, recall, search, and `remember` are free.
+
+**To stop recording,** pass `capture: false`. Session context, recall, the search tools, and `remember` keep working:
+
+```ts
+claudeMem({ apiKey: process.env.CLAUDE_MEM_API_KEY, capture: false })
+```
+
+What is not recorded, and how failures behave:
+
+- **Its own memory tools** (`<slot>__search`, `<slot>__remember`, and the rest) are never recorded.
+- **Media** in tool results is not sent. Its place is marked.
+- **Oversized text** is cut to the hosted maximum (5,000 characters for a prompt) and ends with a `[truncated by claude-mem/eve: …]` marker. The cut is logged.
+- **Replays are safe.** eve may run the capture step again for the same turn. Each tool call carries eve's turn ID plus its tool call ID, and the prompt and summary carry an idempotency key from eve's `operationId`, so cmem.ai drops the repeat. A model that reuses tool call IDs in a later turn still gets that turn recorded.
+- **No retry, no queue.** The provider sends each request once, with at most 10 recorded tool calls or summaries per request, and cmem.ai runs every recorded event right away. If cmem.ai's model call for an event fails, it is not retried. If a request fails, the provider logs `[claude-mem/eve] capture failed after one attempt, not retried;` followed by how many of the turn's events cmem.ai accepted and how many are not recorded, and the rest of that turn is missing from memory. If cmem.ai answers but stores fewer events than were sent (they were already recorded by an earlier send of the same turn, or cmem.ai dropped them), the provider logs `[claude-mem/eve] capture stored N of M envelopes sent, not retried;` and sends nothing more. Nothing is saved for later, so an outage never creates spend after you have moved on.
+
+- **Private text is not recorded.** `<private>…</private>` regions (and claude-mem's own context and system tags) are removed on your deployment from the recorded prompt, tool inputs, and tool results, before anything is cut or sent. cmem.ai drops `<private>` regions too.
+- **Secrets are redacted before sending.** Secret-shaped text in prompts, tool inputs, and tool results (API keys, tokens, `Authorization` and cookie headers, `password=` style assignments, and passwords in connection strings) is replaced with `[cmem-redacted]` on your deployment, before anything leaves it. The patterns, and the private-region rules above, are the same ones the Cowork plugin uses.
 
 ## Add claude-mem to an existing eve agent
 
@@ -53,26 +136,38 @@ export default defineMemory({
 });
 ```
 
-The filename makes the slot `claude-mem`, so the tools are `claude-mem__search` and `claude-mem__remember`. The provider requires eve 0.84.0 or later and Node.js 24 or later.
+The filename makes the slot `claude-mem`, so the tools are `claude-mem__search`, `claude-mem__timeline`, `claude-mem__get_observations`, and `claude-mem__remember`. The provider requires eve 0.84.0 or later, zod 4, and Node.js 24 or later.
+
+With this default, every caller gets their own project, and recording is on. Each caller's recorded turns spend the key owner's observer allowance. Pass `capture: false` if that is not what you want.
+
+## Tools
+
+The model gets four tools, named `<slot>__<tool>`. The first three are the same three-step search the other claude-mem clients use.
+
+| Tool | What it does | Cost |
+| --- | --- | --- |
+| `search` | Step 1. Searches memory (`memory_search`) and returns an index of matching IDs with titles. `limit` 1–50. | Free |
+| `timeline` | Step 2. Shows memory around an ID from `search`, `depthBefore` and `depthAfter` rows each side (0–20, default 3). Without an ID, shows the newest memory. | Free |
+| `get_observations` | Step 3. Full details of up to 100 observations by ID, from anywhere in the key's memory: the hosted tool has no project filter. | Free |
+| `remember` | Saves one note (up to 8,000 characters, optional title up to 120) to the scope's project. | Free |
+
+Saving needs write access, which is a Pro key from [cmem.ai/pro/key](https://cmem.ai/pro/key). A read-only key still reads, and `remember` reports that saving is not allowed.
 
 ## Options
 
-| Option              | Default           | Meaning                                                                                                                                                       |
-| ------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `apiKey`            | required          | cmem.ai key. The agent fails to build when it is missing.                                                                                                     |
-| `project`           | one per scope     | The claude-mem project that saves go into and that reads come from. The default is `eve-<sha256 of the eve scope key>`, so separate callers never share memory. |
-| `searchAllProjects` | `false`           | Recall and search read every project the key can see, instead of only `project`.                                                                             |
-| `baseUrl`           | `https://cmem.ai` | Override for testing.                                                                                                                                         |
+| Option              | Default           | Meaning |
+| ------------------- | ----------------- | ------- |
+| `apiKey`            | required          | cmem.ai key. The agent fails to build when it is missing. |
+| `project`           | one per scope     | The claude-mem project that `remember` and recording write to, and that reads come from. The default is `eve-<sha256 of the eve scope key>`, so separate callers never share memory. With recording on, a fixed name must match `^[A-Za-z0-9_.-]{1,128}$` or the agent fails to build. |
+| `searchAllProjects` | `false`           | Session context, recall, `search`, and `timeline` read every project the key can see, instead of only `project`. |
+| `capture`           | `true`            | Record each completed turn. Set `false` to only read and `remember`. |
+| `baseUrl`           | `https://cmem.ai` | Override for testing or a staging origin. |
 
 ## Security
 
-- **The key owns the memory.** A cmem.ai key reads and writes one person's memory. The default configuration keeps each eve scope in its own project, and every search filters on that project on the server.
+- **The key owns the memory.** A cmem.ai key reads and writes one person's memory. The default configuration keeps each eve scope in its own project, and `search`, `timeline`, recall, and session context filter on that project on the server. `get_observations` does not (see below).
 - **Only use `searchAllProjects` for a single-owner agent.** With it on, anyone the slot's scope admits can read the key owner's whole memory. Make `scope` return `null` for everyone else, the way the template does.
-- **Tools are bound to the scope.** The model cannot point `search` or `remember` at another project.
-- **Recalled text is data.** It arrives inside `<claude_mem_recall>` with markup escaped, and is placed as a user message, never as system instructions.
-- **Saving needs write access.** A Pro key from cmem.ai/pro/key can read and write. A read-only key still recalls and searches, and `remember` reports that saving is not allowed. On the server, cmem.ai drops `<private>` regions and redacts secrets from saved notes.
-- **Failures are visible.** If cmem.ai can't be reached, the turn still runs. The provider logs `[claude-mem/eve] recall failed` and tells the model memory was unavailable. A cancelled turn is not reported as a memory failure.
-
-## Why there is no automatic capture
-
-eve may run a capture handler again with the same operation ID, for example when an interrupted step retries. A provider must therefore make capture idempotent. cmem.ai's `save_memory` gives every call a new ID, so a retried capture would save the same turn twice. Until the hosted API accepts an idempotency key, capture stays off. Saves happen only when the model calls `remember`.
+- **Tools are bound to the scope, except `get_observations`.** The model cannot point `search`, `timeline`, or `remember` at another project. `get_observations` fetches by ID across the key's whole memory, because the hosted tool has no project filter. IDs normally come from `search` or `timeline`, but a caller who has an observation ID from another project can read it. If separate callers must never see each other's memory, give them separate keys.
+- **Recalled text is data.** Session context arrives inside `<claude_mem_context>` and recall inside `<claude_mem_recall>`, with markup escaped and a note that it is data, not instructions.
+- **Saved notes are cleaned on the server.** cmem.ai drops `<private>` regions and redacts secrets from saved notes.
+- **Read failures are visible.** If cmem.ai can't be reached, the turn still runs. The provider logs `[claude-mem/eve] claude_mem_recall failed` (or `claude_mem_context failed`) and tells the model memory was unavailable this turn. A cancelled turn is not reported as a memory failure.
