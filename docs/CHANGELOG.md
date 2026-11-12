@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+### Privacy clarification
+
+- **Prompt-history uploads (#5176):** browser setup asks before sending selected prompt history to cmem.ai (fixed in v15.8.3, #5220). **Skip this step** sends no prompt history. The owner-goals skill can use your existing coding agent to analyze local history and save through the local worker without a separate cmem.ai intent upload. Inference still uses that agent's model provider. Updating does not remove data previously sent.
+
 ## [15.17.1] - 2026-11-11
 
 ## Open sessions keep capturing after an update
