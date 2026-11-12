@@ -90,6 +90,54 @@ function read(query: Record<string, string>): Promise<Response> {
   return fetch(`http://127.0.0.1:${port}/api/work-state?${new URLSearchParams(query)}`);
 }
 
+describe('complete work-state export', () => {
+  it('exports every ordered patch and closure beyond the MCP text limit without widening the project or list', async () => {
+    for (let index = 0; index < 80; index++) {
+      store.appendWorkStateEntry({ project, listName: 'pagination-demo', fields: { task: `task-${index}`, status: 'todo', note: '內容'.repeat(200) } });
+    }
+    store.appendWorkStateEntry({ project, listName: 'pagination-demo', fields: { task: 'task-0', status: 'done' } });
+    store.appendWorkStateEntry({ project, listName: 'pagination-demo', fields: { task: 'task-1', status: 'dropped' } });
+    store.appendWorkStateEntry({ project, listName: 'other-list', fields: { task: 'not selected' } });
+    store.appendWorkStateEntry({ project: 'unrelated-project', listName: 'pagination-demo', fields: { task: 'private' } });
+
+    const response = await fetch(`http://127.0.0.1:${port}/api/work-state/export?${new URLSearchParams({ cwd: checkout, list: 'pagination-demo' })}`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain('application/json');
+    const text = await response.text();
+    expect(Buffer.byteLength(text)).toBeGreaterThan(32 * 1024);
+    const exported = JSON.parse(text);
+    expect(exported.version).toBe(1);
+    expect(exported.entries).toEqual(store.getWorkStateEntries(getProjectContext(checkout).allProjects, 'pagination-demo'));
+    expect(exported.entries).toHaveLength(82);
+    expect(exported.entries.slice(-2).map((entry: any) => entry.fields.status)).toEqual(['done', 'dropped']);
+    expect(text).not.toContain('unrelated-project');
+    expect(text).not.toContain('not selected');
+  });
+
+  it('exports an empty history without inventing records', async () => {
+    const response = await fetch(`http://127.0.0.1:${port}/api/work-state/export?${new URLSearchParams({ cwd: checkout })}`);
+    expect(response.status).toBe(200);
+    expect((await response.json()).entries).toEqual([]);
+  });
+
+  it('keeps complete JSON for the equivalent paths accepted by Express', async () => {
+    store.appendWorkStateEntry({ project, listName: 'release', fields: { task: 'publish', status: 'done' } });
+    for (const path of ['/api/work-state/export/', '/API/work-state/export']) {
+      const response = await fetch(`http://127.0.0.1:${port}${path}?${new URLSearchParams({ cwd: checkout })}`);
+      expect(response.status).toBe(200);
+      expect(response.headers.get('content-type')).toContain('application/json');
+      expect((await response.json()).entries[0].fields.status).toBe('done');
+    }
+  });
+
+  it('keeps the read route validation and browser-origin protection', async () => {
+    const endpoint = `http://127.0.0.1:${port}/api/work-state/export`;
+    expect((await fetch(endpoint)).status).toBe(400);
+    expect((await fetch(`${endpoint}?${new URLSearchParams({ cwd: checkout })}`, { headers: { Origin: 'https://example.com' } })).status).toBe(403);
+    expect((await fetch(`${endpoint}?${new URLSearchParams({ cwd: checkout })}`, { headers: { 'Sec-Fetch-Site': 'cross-site', 'Sec-Fetch-Mode': 'no-cors' } })).status).toBe(403);
+  });
+});
+
 describe('WorkStateRoutes', () => {
   // Windows does not support these distinct trailing-whitespace directories.
   const posixIt = process.platform === 'win32' ? it.skip : it;

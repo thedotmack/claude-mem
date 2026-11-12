@@ -1,5 +1,22 @@
 import { describe, expect, it } from 'bun:test';
-import { formatMcpPayload, formatWorkerMcpResponse, mcpTextResult, workerFailureText } from '../../src/servers/mcp-text-format.js';
+import { formatMcpPayload, formatWorkerMcpResponse, formatWorkStateMcpResponse, mcpTextResult, workerFailureText } from '../../src/servers/mcp-text-format.js';
+
+describe('complete work-state read guidance', () => {
+  it('marks a shortened read and points to the complete export within the UTF-8 limit', () => {
+    const result = formatWorkStateMcpResponse('任務'.repeat(10_000));
+    expect(Buffer.byteLength(result.content[0].text)).toBeLessThanOrEqual(32 * 1024);
+    expect(result._meta).toEqual({ 'claude-mem/truncated': true });
+    expect(result.content[0].text).toContain('/api/work-state/export');
+    expect(result.content[0].text).not.toContain('request fewer selected records');
+    expect(result.content[0].text).not.toContain('\uFFFD');
+  });
+
+  it('keeps a complete small read unchanged', () => {
+    const result = formatWorkStateMcpResponse('- release\n  - [done] publish');
+    expect(result.content[0].text).toBe('- release\n  - [done] publish');
+    expect(result._meta).toEqual({ 'claude-mem/truncated': false });
+  });
+});
 
 describe('purpose-specific model responses', () => {
   it('confirms note writes without echoing the stored note or internal metadata', () => {
