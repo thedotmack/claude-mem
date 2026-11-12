@@ -80,6 +80,27 @@ class Tagger(Base):
             self.assertEqual(behavior.tag_prompt_row(marker), "bot", marker)
         self.assertEqual(behavior.tag_prompt_row("why is this broken again"), "human")
 
+    def test_named_steering_relays_are_not_human_messages(self):
+        for name in ("Kirat", "A. Li", "O'Connor", "李明"):
+            for marker in ("STEER", "RESET", "CORRECTION"):
+                with self.subTest(name=name, marker=marker):
+                    self.assertEqual(behavior.tag_prompt_row(f"{marker} from {name}: stop"), "bot")
+        for text in ("Kirat said the build is broken", "I received STEER from Kirat: stop",
+                     "STEER from Kirat", "STEER from : stop", "STEER from Kirat\n: stop"):
+            self.assertEqual(behavior.tag_prompt_row(text), "human", text)
+
+    def test_named_steering_relay_marks_rework_without_tagging_the_user_as_bot(self):
+        a = Tx("named-relay")
+        a.user(BASE, "fix the build")
+        a.assistant(BASE + 1000, "trying the wrong change")
+        a.user(BASE + 2000, "CORRECTION from Kirat: use the existing resolver")
+        self.write(a)
+        sessions = self.scan()
+        session = sessions["named-relay"]
+        self.assertEqual([u["author"] for u in session["users"]], ["human", "bot"])
+        spans = behavior.failure_spans(session, session["users"])
+        self.assertEqual(spans["Rework"], set(session["turns"]))
+
     def test_headless_and_relayed_sessions_are_bot(self):
         a = Tx("a", "sdk-cli"); a.user(BASE, "fix the bug"); a.assistant(BASE + 1000, "ok")
         b = Tx("b", "cli"); b.user(BASE, "You are one lane of a plan"); b.user(BASE + 5000, "fuck this"); b.assistant(BASE + 6000, "ok")

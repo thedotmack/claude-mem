@@ -33,7 +33,10 @@ HEADLESS = ("sdk-cli", "sdk-ts")
 
 # Frustration Arc markers (MI:7) plus the agent markers in plan 2B.1 and the relay/automation
 # prefixes seen in claude-mem user_prompts on this box (2026-09-26 probe).
+# Explicit relay labels identify automated steering independently of the owner's name.
+NAMED_CORRECTION = r"(?:STEER|RESET|CORRECTION) from[ \t]+[^\s:][^\r\n:]*:"
 BOT_MARKERS = re.compile(
+    rf"^\s*{NAMED_CORRECTION}|"
     r"^\s*(STEER from Alex|HOUSE LOCK|\[SAND_HIDDEN_PROMPT\]|<system-reminder>|<timestamp>|<cross-session-message|<command-|<local-command|"
     r"\[Request interrupted|MAKE-PLAN\b|make-plan ONLY|# make-plan|Branch: [\w/.-]+ \(this worktree|"
     r"\[Cross-session idle notice\]|\[Group chat:|\[Artifact comment|Agent sweep|AJ email check|Quiet overnight|"
@@ -41,7 +44,7 @@ BOT_MARKERS = re.compile(
     r"(STEER|RESET|CORRECTION) from Alex|Resuming after|\[SYSTEM NOTIFICATION|<task-notification>|<pasted_content)"
     r"|^.{0,200}\bAlex (asked|said|wants|greened|approved)\b"            # third-person relays of Alex are agent-written
     r"|^(?=.{400,})[^\n]{0,300}\bYou are (a|an|the|in|one|running|working)\b", re.I | re.S)   # long briefs that address the agent
-CORRECTION = re.compile(r"^\s*(STEER|RESET|CORRECTION) from Alex|\bSTEER\b.{0,10}\bfrom Alex\b|^\s*(RESET|CORRECTION):", re.I)
+CORRECTION = re.compile(rf"^\s*{NAMED_CORRECTION}|" r"^\s*(STEER|RESET|CORRECTION) from Alex|\bSTEER\b.{0,10}\bfrom Alex\b|^\s*(RESET|CORRECTION):", re.I)
 PROFANITY = re.compile(r"\b(fuck\w*|shit\w*|wtf|goddamn)\b", re.I)
 FRUSTRATION_PHRASE = re.compile(r"\b(i told you|i said|why did you|who (said|made|told)|stop|never|again)\b", re.I)
 SECRET_RE = re.compile(r"(sk-or-[\w-]+|sk-[\w-]{8,}|Bearer\s+\S+|ghp_\w+|gho_\w+|xox[abp]-[\w-]+|AKIA\w{12,}|[A-Za-z0-9+/=_-]{32,})")
