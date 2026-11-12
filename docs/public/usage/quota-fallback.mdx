@@ -7,7 +7,7 @@ description: "Keep capturing memories on your Anthropic plan (or another provide
 
 When the observer's provider can't serve (its allowance is spent, it stays rate limited or over capacity after its retries, it is down, or it keeps answering without usable output), claude-mem holds it for a short cooldown and stops sending it work, so it does not keep buying the same refusal.
 
-**By default there is no backup: saving pauses until the provider can serve again. To move that work to your Anthropic plan (Claude), set `CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER=claude`.** Once a backup is chosen, the work moves for as long as the provider is held, provided Claude can run on this machine (a Claude Code login, or an `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` in `~/.claude-mem/.env`). When the cooldown ends, one generator probes the original provider; if it answers, everything moves back on its own. If there is no backup, Claude can't run, or you turn the fallback off, saving pauses: activity during the pause isn't saved, and saving starts again with new activity once the provider can serve.
+**By default, that work moves to your Anthropic plan (Claude)** for as long as the provider is held, provided Claude can run on this machine (a Claude Code login, or an `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` in `~/.claude-mem/.env`). When the cooldown ends, one generator probes the original provider; if it answers, everything moves back on its own. If Claude can't run, or you turn the fallback off, saving pauses: activity during the pause isn't saved, and saving starts again with new activity once the provider can serve.
 
 This applies when your selected provider is the claude-mem observer (cmem.ai), OpenRouter, Gemini, Codex, or an OpenAI-compatible endpoint. When Claude is your selected provider, it can also switch between its two credentials, an API key and your Claude Code login: see [Claude credential fallback](#claude-credential-fallback).
 
@@ -17,7 +17,7 @@ Add these to `~/.claude-mem/settings.json`, or set them in the viewer under **Se
 
 | Setting | Values | Meaning |
 |---|---|---|
-| `CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER` | `""` or `off` (the default: no backup), `claude`, `gemini`, `openrouter`, `openai-compatible` | Where observation work goes while the selected provider can't serve. `off` turns the fallback off: saving pauses until the provider can serve again. |
+| `CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER` | `claude` (the default; `""` means the same), `gemini`, `openrouter`, `openai-compatible`, `off` | Where observation work goes while the selected provider can't serve. `off` turns the fallback off: saving pauses until the provider can serve again. |
 | `CLAUDE_MEM_QUOTA_FALLBACK_MODEL` | `""` or a Claude model id or alias | The model for a **Claude** fallback run. Empty keeps `CLAUDE_MEM_MODEL` and tier routing. Ignored for every other fallback. |
 | `CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD` | `""` (the default, off), `subscription`, `api-key` | For a **Claude** observer: the other credential to run on while the primary one is held for quota. Tried before `CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER`. See below. |
 
@@ -39,7 +39,7 @@ To turn the fallback off:
 }
 ```
 
-Empty means `off`: there is no backup, and a cmem.ai, OpenRouter, OpenAI-compatible, Gemini or Codex install does not spend your Anthropic plan until you set `claude`. Settings files written by earlier versions keep what they hold: a `claude` that was written as the old default stays `claude` (set `off` to stop using your plan as a backup), and an empty value that used to mean `claude` now means `off`.
+Settings files from earlier versions hold `""` for this setting; that now means the default, so those installs get the Anthropic-plan fallback too. Only `off` opts out.
 
 The fallback needs its own credentials: a Gemini, OpenRouter or OpenAI-compatible API key, or a Claude Code login (or Anthropic key) for Claude. A fallback without them, or any fallback that is itself on hold or has a refused key, is skipped, and saving pauses as it does without a fallback. For Claude, claude-mem checks that a login or key exists; a login that has expired fails its first fallback run and is then skipped until you log in again. When the cmem.ai gateway turns your account away (a lapsed plan, a spent allowance), it is skipped as a fallback for 15 minutes and then re-tried by a single request; the next session start tells you once, in the gateway's own words. Unattended retries on the gateway are capped the same way whether it is your provider or your fallback.
 
@@ -95,12 +95,12 @@ ANTHROPIC_FALLBACK_API_KEY=sk-ant-...
 - **Telegram wrap-ups** are not governed by `CLAUDE_MEM_QUOTA_FALLBACK_MODEL`: they use the model the session last ran on, or the summary tier model.
 - **Session-start notice.** A plain ℹ️ notice says which backup or Claude credential is saving memories, why, and when claude-mem will try the main provider again. A red ⚠️ notice appears only when saving is paused. Retry times use the worker machine's local clock and round up to the next minute. When the main provider is saving and only the backup is on hold, no notice appears; if the backup was the one saving (for example Claude while cmem.ai's fallback stands), the paused notice does. The notice is refreshed whenever a hold starts or ends, so right after a settings change it can be one step behind.
 
-For example, when cmem.ai is unavailable and the Claude backup is saving:
+For example, when cmem.ai is unavailable and the default Claude backup is saving:
 
-> ℹ️ claude-mem is using your Claude plan to save memories because cmem.ai isn't available. It switches back on its own and tries cmem.ai again at 8:17 PM. Nothing to do.
+> ℹ️ claude-mem is using your Claude plan to save memories because cmem.ai isn't available. It switches back on its own and tries cmem.ai again at 8:17 PM. Nothing to do. (To stop using your Claude plan as a backup, set CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER=off.)
 
 When the Claude usage guard pauses saving and no backup can serve:
 
 > ⚠️ claude-mem has paused saving memories because you've used 95% of your 5-hour Claude limit (it stops at 95% to leave the rest for you). Activity during the pause isn't saved; saving starts again with new activity after 8:47 PM, when it tries Claude again. You don't need to do anything, and restarting won't change it. (To keep saving through limits, pick a backup in CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER.)
 
-In the worker log, the switch is a warning that names both providers: `Primary gemini cannot serve right now; memory runs on the Anthropic plan (Claude), which spends your Anthropic account, until it recovers. To stop this, set CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER=off` (for another backup, `memory runs on openrouter until it recovers`). It is followed later by `Primary quota cooldown elapsed; probing primary` and `Primary recovered from quota cooldown`. If nothing can take the work, the log says so once: `Primary and fallback both in quota cooldown; …`, or `Primary in quota cooldown and the quota fallback cannot serve; …`. With no backup chosen (the default), these transition lines are not written.
+In the worker log, the switch names both providers: `Primary (cmem.ai) cannot serve right now; memory runs on the Anthropic plan (Claude), which spends your Anthropic account, until it recovers. To stop this, set CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER=off`. With another fallback it names that provider instead, for example `memory runs on Gemini until it recovers`. It is followed later by `Primary quota cooldown elapsed; probing primary` and `Primary recovered from quota cooldown`. If nothing can take the work, the log says so once: `Primary and fallback both in quota cooldown; …` or `Primary in quota cooldown and the quota fallback cannot serve; …`.

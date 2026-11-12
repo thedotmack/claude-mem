@@ -386,7 +386,7 @@ describe('contextHandler SessionStart path', () => {
       name: `${provider} with fallback off`, provider, quotaFallback: 'off', expectHint: false,
     })),
     ...['claude', ''].map(provider => ({ name: provider || 'default', provider, expectHint: true })),
-    { name: 'default fallback', provider: 'gemini', quotaFallback: '', expectHint: false },
+    { name: 'default fallback', provider: 'gemini', quotaFallback: '', expectHint: true },
     { name: 'Claude fallback', provider: 'codex', quotaFallback: ' claude ', expectHint: true },
     { name: 'gateway fallback', provider: 'openrouter', baseUrl: 'https://cmem.ai/api/gateway', fallbackAt: true, expectHint: true },
     { name: 'source mapped to Claude', provider: 'codex', quotaFallback: 'gemini', bySource: '{"claude":"claude"}', expectHint: true },
@@ -414,96 +414,6 @@ describe('contextHandler SessionStart path', () => {
       }
     });
   }
-
-  for (const memoryProvider of ['claude', '']) {
-    it(`keeps the Claude login hint for ${memoryProvider || 'default'} memory`, async () => {
-      provider = memoryProvider;
-      staleReason = 'expired keychain entry';
-      const { contextHandler } = await import('../../../src/cli/handlers/context.js');
-      const result = await contextHandler.execute({
-        sessionId: 'session-stale-claude',
-        cwd: '/tmp/repo',
-        platform: 'codex',
-      });
-      expect(result.hookSpecificOutput?.additionalContext).toContain('Claude Code OAuth token is stale');
-      expect(result.hookSpecificOutput?.additionalContext).toContain('claude auth login');
-    });
-  }
-
-  it('drops the Claude login hint for the default (empty) fallback on a personal provider', async () => {
-    // The default fallback is no backup for any provider but claude. A personal
-    // Gemini install has none, so a stale Claude login is not its problem.
-    provider = 'gemini';
-    quotaFallbackProvider = '';
-    staleReason = 'expired keychain entry';
-    const { contextHandler } = await import('../../../src/cli/handlers/context.js');
-    const result = await contextHandler.execute({
-      sessionId: 'session-stale-default-fallback',
-      cwd: '/tmp/repo',
-      platform: 'codex',
-    });
-    expect(result.hookSpecificOutput?.additionalContext).toBe('context from worker');
-  });
-
-  it('drops the Claude login hint for the default (empty) fallback on the cmem gateway', async () => {
-    // The gateway's own trial-expiry fallback is a separate path (the
-    // 'gateway fallback' case); a quota backup is not chosen by default there.
-    provider = 'openrouter';
-    openRouterBaseUrl = 'https://cmem.ai/api/inference/v1';
-    quotaFallbackProvider = '';
-    staleReason = 'expired keychain entry';
-    const { contextHandler } = await import('../../../src/cli/handlers/context.js');
-    const result = await contextHandler.execute({
-      sessionId: 'session-stale-gateway-default-fallback',
-      cwd: '/tmp/repo',
-      platform: 'codex',
-    });
-    expect(result.hookSpecificOutput?.additionalContext).toBe('context from worker');
-  });
-
-  it('keeps the Claude login hint for a configured Claude quota fallback', async () => {
-    provider = 'codex';
-    quotaFallbackProvider = ' claude ';
-    staleReason = 'expired keychain entry';
-    const { contextHandler } = await import('../../../src/cli/handlers/context.js');
-    const result = await contextHandler.execute({
-      sessionId: 'session-stale-claude-fallback',
-      cwd: '/tmp/repo',
-      platform: 'codex',
-    });
-    expect(result.hookSpecificOutput?.additionalContext).toContain('claude auth login');
-  });
-
-  it('keeps the Claude login hint while the primary cmem gateway falls back to Claude', async () => {
-    provider = 'openrouter';
-    openRouterBaseUrl = 'https://cmem.ai/api/gateway';
-    proFallbackAt = new Date().toISOString();
-    staleReason = 'expired keychain entry';
-    const { contextHandler } = await import('../../../src/cli/handlers/context.js');
-    const result = await contextHandler.execute({
-      sessionId: 'session-stale-cmem-fallback',
-      cwd: '/tmp/repo',
-      platform: 'codex',
-    });
-    expect(result.hookSpecificOutput?.additionalContext).toContain('claude auth login');
-  });
-
-  it('keeps the Claude login hint when a source is mapped to Claude, whatever the global provider', async () => {
-    provider = 'codex';
-    quotaFallbackProvider = 'gemini';
-    staleReason = 'expired keychain entry';
-    const { contextHandler } = await import('../../../src/cli/handlers/context.js');
-    const hintFor = async (bySource: string, sessionId: string) => {
-      providerBySource = bySource;
-      const result = await contextHandler.execute({ sessionId, cwd: '/tmp/repo', platform: 'codex' });
-      return result.hookSpecificOutput?.additionalContext;
-    };
-
-    expect(await hintFor('{"claude":"claude"}', 'session-stale-mapped')).toContain('claude auth login');
-    expect(await hintFor('{"cursor":"gemini"}', 'session-stale-mapped-other')).not.toContain('claude auth login');
-    // A malformed map is ignored, as dispatch ignores it.
-    expect(await hintFor('{"claude":"nope"}', 'session-stale-malformed')).not.toContain('claude auth login');
-  });
 
   describe('cmem fallback notice with a source mapped to the gateway', () => {
     const noticeMarker = path.join(paths.dataDir(), PRO_FALLBACK_NOTICE_MARKER);

@@ -864,11 +864,10 @@ export async function processAgentResponse(
     if (answersQueuedWork) {
       clearRejectedOutput(session);
       // A provider that answers the same batch twice without usable output is
-      // not serving it. When a fallback is configured and can take the work,
-      // hold the provider briefly and hand the batch there in a fresh
-      // generation instead of dropping it. With no fallback (the default) the
-      // batch is dropped as before. Once there, the batch gets the same one
-      // retry; the fallback is never routed around itself.
+      // not serving it. When the fallback (by default the Anthropic plan) can
+      // take the work, hold the provider briefly and hand the batch there in a
+      // fresh generation instead of dropping it. Once there, the batch gets
+      // the same one retry; the fallback is never routed around itself.
       const fallback = session.currentProvider
         ? routeAroundUnservableProviderIfLoaded(
           session.currentProvider,

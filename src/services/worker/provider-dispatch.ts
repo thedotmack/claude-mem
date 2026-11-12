@@ -14,24 +14,21 @@
  * so subscribing can recover automatically. User-owned openrouter.ai (or any
  * non-gateway) base URLs ignore the fallback marker entirely.
  *
- * Provider fallback (CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER): while the selected
- * provider's breaker holds because it cannot serve (a spent allowance, a rate
- * limit or over-capacity refusal that outlasted its retries, an outage or
- * repeated unusable replies — see routeAroundUnservableProvider), every plain
- * return is routed to the fallback, provided it can serve (for Claude: a Claude
- * login or key exists) and is not itself held. Once the window elapses the
- * primary is re-probed and takes the work back. 'off' leaves dispatch waiting
- * on the primary. The cmem-gateway branch keeps its own marker and runs first,
- * untouched.
- *
- * The DEFAULT fallback (empty, nothing chosen) is the same as 'off': no backup
- * for any selected provider, the cmem.ai gateway included (its own trial-expiry
- * fallback is a separate branch and is unchanged). Spending the user's
- * Anthropic subscription because their own provider ran out is not a choice
- * they made; CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER=claude turns it on.
+ * Provider fallback (CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER, default 'claude' —
+ * the Anthropic plan): while the selected provider's breaker holds because it
+ * cannot serve (a spent allowance, a rate limit or over-capacity refusal that
+ * outlasted its retries, an outage or repeated unusable replies — see
+ * routeAroundUnservableProvider), every plain return is routed to the
+ * fallback, provided it can serve (for Claude: a Claude login or key exists)
+ * and is not itself held. Once the window elapses the primary is re-probed and
+ * takes the work back. 'off' leaves dispatch waiting on the primary. The
+ * cmem-gateway branch keeps its own marker and runs first, untouched.
  */
 
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
+import { readFileSync } from 'fs';
+import { parseJsonWithBom } from '../../shared/atomic-json.js';
+import { settingsTarget } from '../../shared/settings-document.js';
 import { paths } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
@@ -120,14 +117,15 @@ export type QuotaFallbackProvider = typeof QUOTA_FALLBACK_PROVIDERS[number];
 export const QUOTA_FALLBACK_OFF = 'off';
 
 /**
- * The configured fallback, or null when there is none: 'off', empty (nothing
- * chosen, the default) or an unrecognised value. Empty is the same as 'off'. A
- * backup exists only when one is chosen, and the Anthropic plan is one of the
- * choices ('claude'), never the default.
+ * The configured fallback, or null when it is turned off ('off') or the value
+ * is unrecognised. Empty means the default, the Anthropic plan: settings files
+ * written before it became the default persisted "" for "nothing chosen", and
+ * those installs get the fallback too. Only an explicit 'off' opts out.
  */
 export function readQuotaFallbackProvider(): QuotaFallbackProvider | null {
   const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
   const raw = String(settings.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER ?? '').trim();
+  if (raw === '') return 'claude';
   return (QUOTA_FALLBACK_PROVIDERS as readonly string[]).includes(raw) ? raw as QuotaFallbackProvider : null;
 }
 
@@ -270,15 +268,17 @@ function noteQuotaFallbackTransition(primary: SelectableProvider, routed: Routed
 
   switch (next) {
     case 'fallback': {
-      // Name both providers: the primary that stopped and the one now doing
-      // the work. A Claude backup spends the owner's Anthropic account, so
-      // say that and how to stop it.
+      // Name both providers by the names people know them by (cmem.ai, not
+      // openrouter): the primary that stopped and the one now doing the work.
+      // A Claude backup spends the owner's Anthropic account, so say that and
+      // how to stop it.
+      const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
       const used = routed.provider === 'claude'
         ? 'the Anthropic plan (Claude), which spends your Anthropic account,'
-        : routed.provider;
+        : quotaProviderDisplayName(routed.provider, settings);
       logger.warn(
         'SESSION',
-        `Primary ${primary} cannot serve right now; memory runs on ${used} until it recovers. To stop this, set CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER=off`,
+        `Primary (${quotaProviderDisplayName(primary, settings)}) cannot serve right now; memory runs on ${used} until it recovers. To stop this, set CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER=off`,
         { primary, fallback: routed.provider, window: quotaBreakerOf(primary)?.window ?? 'quota' },
       );
       return;
@@ -366,7 +366,7 @@ function routedProviderFor(primary: SelectableProvider): SelectableProvider {
 /**
  * Where memory capture runs while `held` is in a quota cooldown: the provider
  * dispatch is using, when that is a different one and not itself holding.
- * Null otherwise.
+ * Null otherwise, and always null with the fallback turned off.
  *
  * Read by the session-start notice, through the mirrored cooldown. It asks
  * dispatch rather than `quotaFallbackTarget(held)` because the held provider
@@ -382,6 +382,7 @@ function routedProviderFor(primary: SelectableProvider): SelectableProvider {
 export function quotaServingProvider(held: QuotaProvider, nowMs: number = Date.now()): SelectableProvider | null {
   // The primary Claude credential is held, but runs go on the other one meanwhile.
   if (held === 'claude' && claudeQuotaStandIn()) return 'claude';
+  if (readQuotaFallbackProvider() === null) return null;
   // The held provider's own routing when it is a primary here (the global one
   // or a mapped one). Otherwise it is only a fallback, and capture continues
   // only if every route still has a provider serving: a primary that was
@@ -403,6 +404,19 @@ function quotaProviderDisplayName(provider: string, settings: SettingsDefaults, 
       return preset.id === 'custom' ? 'your OpenAI-compatible endpoint' : preset.label;
     }
     default: throw new Error(`Cannot name quota notice provider: ${provider}`);
+  }
+}
+
+/** Defaults are merged by the settings reader; inspect the actual choice for the opt-out hint. */
+function usesDefaultClaudeBackup(): boolean {
+  const override = process.env.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER;
+  if (override !== undefined) return override.trim() === '';
+  try {
+    const document = parseJsonWithBom<Record<string, unknown>>(readFileSync(paths.settings(), 'utf8'));
+    return !String(settingsTarget(document).CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER ?? '').trim();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true;
+    throw error;
   }
 }
 
@@ -453,6 +467,7 @@ const quotaNoticeResolution: QuotaFallbackResolver = (held, nowMs, activeHolds) 
       mainDisplayName: displayName(main, mainAuth),
       mainRetryName: retryName(main, mainAuth),
       ...(backup && backup !== main ? { backupProvider: backup, backupDisplayName: displayName(backup, mainAuth) } : {}),
+      defaultClaudeBackup: usesDefaultClaudeBackup(),
       ...(serving ? { servingProvider: serving, servingDisplayName } : {}),
       ...(servingAuth ? { servingAuth } : {}),
       holds,
