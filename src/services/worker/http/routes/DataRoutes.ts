@@ -27,6 +27,7 @@ import { assertCanonicalDecimal, type ContentKind } from '../../../sync/Canonica
 import type { CloudSync } from '../../../sync/CloudSync.js';
 import { emitContextInvalidation } from '../../../../shared/context-invalidation.js';
 import { parseProjectList } from '../../../../shared/project-list.js';
+import { LISTING_OFFSET_CAP_MESSAGE, MAX_LISTING_OFFSET, capListingPage } from '../../../../shared/listing-offset-cap.js';
 import { parseStringListField } from '../../../sync/string-list-field.js';
 import { projectReadKeysFor } from '../../search/project-where-filter.js';
 import { scheduleChromaRowCleanup, type IndexedRowKind } from '../../../sync/chroma-row-cleanup.js';
@@ -259,24 +260,21 @@ export class DataRoutes extends BaseRouteHandler {
     const page = this.parsePaginationParams(req, res);
     if (!page) return;
     const { offset, limit, project, platformSource, contentSessionId } = page;
-    const result = this.paginationHelper.getObservations(offset, limit, project, platformSource, contentSessionId);
-    res.json(result);
+    res.json(capListingPage(this.paginationHelper.getObservations(offset, limit, project, platformSource, contentSessionId), offset, limit));
   });
 
   private handleGetSummaries = this.wrapHandler((req: Request, res: Response): void => {
     const page = this.parsePaginationParams(req, res);
     if (!page) return;
     const { offset, limit, project, platformSource, contentSessionId } = page;
-    const result = this.paginationHelper.getSummaries(offset, limit, project, platformSource, contentSessionId);
-    res.json(result);
+    res.json(capListingPage(this.paginationHelper.getSummaries(offset, limit, project, platformSource, contentSessionId), offset, limit));
   });
 
   private handleGetPrompts = this.wrapHandler((req: Request, res: Response): void => {
     const page = this.parsePaginationParams(req, res);
     if (!page) return;
     const { offset, limit, project, platformSource, contentSessionId } = page;
-    const result = this.paginationHelper.getPrompts(offset, limit, project, platformSource, contentSessionId);
-    res.json(result);
+    res.json(capListingPage(this.paginationHelper.getPrompts(offset, limit, project, platformSource, contentSessionId), offset, limit));
   });
 
   private handleGetObservationById = this.wrapHandler((req: Request, res: Response): void => {
@@ -357,8 +355,12 @@ export class DataRoutes extends BaseRouteHandler {
     const toolName = asString(req.query.tool_name ?? req.query.toolName);
 
     const requestedOffset = asNumber(req.query.offset);
-    if (requestedOffset !== undefined && (!Number.isSafeInteger(requestedOffset) || requestedOffset < 0 || requestedOffset > DataRoutes.MAX_LISTING_OFFSET)) {
-      this.badRequest(res, `offset must be at most ${DataRoutes.MAX_LISTING_OFFSET}; narrow the listing with filters to reach older rows`);
+    if (requestedOffset !== undefined && (!Number.isSafeInteger(requestedOffset) || requestedOffset < 0)) {
+      this.badRequest(res, 'offset must be a non-negative integer');
+      return;
+    }
+    if (requestedOffset !== undefined && requestedOffset > MAX_LISTING_OFFSET) {
+      this.badRequest(res, LISTING_OFFSET_CAP_MESSAGE);
       return;
     }
 
@@ -641,17 +643,20 @@ export class DataRoutes extends BaseRouteHandler {
     const project = BaseRouteHandler.firstString(req.query.project);
     const requestedLimit = Number(BaseRouteHandler.firstString(req.query.limit));
     const requestedOffset = Number(BaseRouteHandler.firstString(req.query.offset));
-    if (Number.isFinite(requestedOffset) && requestedOffset > DataRoutes.MAX_LISTING_OFFSET) {
-      this.badRequest(res, `offset must be at most ${DataRoutes.MAX_LISTING_OFFSET}; narrow the listing with filters to reach older rows`);
+    if (Number.isFinite(requestedOffset) && requestedOffset > MAX_LISTING_OFFSET) {
+      this.badRequest(res, LISTING_OFFSET_CAP_MESSAGE);
       return;
     }
+    const offset = Number.isFinite(requestedOffset) && requestedOffset > 0 ? requestedOffset : undefined;
     // { sessions, hasMore }: the viewer pages through older sessions with offset.
-    res.json(store.getSessionCatalog({
+    const catalog = store.getSessionCatalog({
       project,
       platformSource: this.getOptionalPlatformSourceFromRequest(req),
       limit: Number.isFinite(requestedLimit) && requestedLimit > 0 ? requestedLimit : undefined,
-      offset: Number.isFinite(requestedOffset) && requestedOffset > 0 ? requestedOffset : undefined,
-    }));
+      offset,
+    });
+    // The store clamps the limit; a page with more after it is exactly that long.
+    res.json(capListingPage(catalog, offset ?? 0, catalog.sessions.length));
   });
 
   /**
@@ -800,18 +805,15 @@ export class DataRoutes extends BaseRouteHandler {
     res.json({ isProcessing, queueDepth, parkedSessions, lastSuccessfulStoreAt, abandonedStallSessions });
   });
 
-  /** Same ceiling as the jobs listing and the server-plane viewer feeds: a deep
-   * OFFSET makes SQLite scan and discard every skipped row, so one read-scoped
-   * request must not be able to demand an unbounded walk (#5495's delete burst
-   * showed how one caller can starve everything else; #5330 set the pattern). */
-  private static readonly MAX_LISTING_OFFSET = 10_000;
-
   private parsePaginationParams(req: Request, res: Response): { offset: number; limit: number; project?: string; platformSource?: string; contentSessionId?: string } | null {
     const requestedOffset = parseInt(req.query.offset as string, 10) || 0;
     const requestedLimit = parseInt(req.query.limit as string, 10) || 20;
     const offset = Math.max(Number.isSafeInteger(requestedOffset) ? requestedOffset : 0, 0);
-    if (offset > DataRoutes.MAX_LISTING_OFFSET) {
-      this.badRequest(res, `offset must be at most ${DataRoutes.MAX_LISTING_OFFSET}; narrow the listing with filters to reach older rows`);
+    // Same ceiling as the server plane's feeds and the jobs listing: a deep
+    // OFFSET makes SQLite scan and discard every skipped row on the shared
+    // connection (#5495 showed how one caller can starve the rest).
+    if (offset > MAX_LISTING_OFFSET) {
+      this.badRequest(res, LISTING_OFFSET_CAP_MESSAGE);
       return null;
     }
     // SQLite interprets a negative LIMIT as unbounded, including limit + 1

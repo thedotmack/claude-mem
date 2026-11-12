@@ -726,7 +726,7 @@ The TV's `?project=` and `?source=` filters are **client-side only**. They are d
 
 Accepted risks, stated plainly:
 
-1. **`GET /api/observations` returns full observation bodies** — `narrative`, `facts`, `text`, `files_read`, `files_modified` — for **every project on the box**, not just the four fields the TV renders. A token holder can page through the entire memory database with `offset`.
+1. **`GET /api/observations` returns full observation bodies** — `narrative`, `facts`, `text`, `files_read`, `files_modified` — for **every project on the box**, not just the four fields the TV renders. A token holder can page back through the newest 10,000 observations for each filter with `offset`; an `offset` above 10,000 answers 400.
 2. **`/stream` is unfiltered.** It carries every observation for every project on the box, plus the project catalog and processing status. There is no per-client filtering.
 3. **No rate limiting.** A token holder can hammer `GET /api/observations` freely.
 4. **The token is readable on loopback** via `GET /api/settings`, exactly like your provider API keys are today. It is deliberately *not* writable through `POST /api/settings` (that route is unauthenticated), so it can only be set by someone with filesystem or environment access.
