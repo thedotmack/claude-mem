@@ -6,7 +6,7 @@ import { normalizeRequestStatus, presentStatus } from './status-normalization.ts
 
 const now = Date.parse('2026-10-20T12:00:00Z')
 const item = (status: string, kind = 'work-state') => ({ kind, status, lastUpdateEpoch: now })
-const statusOf = (items: ReturnType<typeof item>[], lifecycle: { status: string; explicit: boolean; complete?: boolean | null } | null = null, checked = false) =>
+const statusOf = (items: Array<ReturnType<typeof item> & { judgedStatus?: string | null }>, lifecycle: { status: string; explicit: boolean; complete?: boolean | null } | null = null, checked = false) =>
   normalizeRequestStatus({ items, lifecycle, checked }, now)
 
 describe('request status normalization', () => {
@@ -28,6 +28,14 @@ describe('request status normalization', () => {
       assert.equal(statusOf([item('doing')], { explicit: true, status }, true), 'checked')
     })
   }
+
+  it("shows Jev's judged status instead of a quiet agent's recorded one", () => {
+    const old = now - 3 * 86400000
+    assert.equal(statusOf([{ kind: 'work-state', status: 'doing', judgedStatus: 'needs-review', lastUpdateEpoch: old }]), 'needs-review')
+    assert.equal(statusOf([{ kind: 'work-state', status: 'doing', judgedStatus: 'needs-you', lastUpdateEpoch: old }]), 'needs-you')
+    assert.equal(statusOf([{ kind: 'work-state', status: 'doing', judgedStatus: 'dropped', lastUpdateEpoch: old }]), 'closed')
+    assert.equal(statusOf([{ kind: 'work-state', status: 'doing', judgedStatus: null, lastUpdateEpoch: old }]), 'quiet')
+  })
 
   it('does not turn an unknown explicit lifecycle label into a human handoff', () => {
     const normalized = statusOf([item('doing')], { explicit: true, status: 'awaiting-something-else' })

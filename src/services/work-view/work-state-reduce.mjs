@@ -1,12 +1,23 @@
 // Work-state rows replayed into lists, tasks and events. Shared by the data source (data-source.mjs) and My Focus
 // (my-focus.mjs), which must not import each other.
-import { isSharedWorkList } from './shared-records.mjs';
+import { isSharedWorkList, sharedWorkListSql } from './shared-records.mjs';
 import { isClosedWorkStateStatus as isClosed } from './work-state-status.mjs';
 const normalizedKey = (value) => String(value).replace(/[A-Z]/g, (letter) => letter.toLowerCase());
 const iso = (epoch) => epoch == null ? null : new Date(epoch).toISOString();
 const effectiveStatus = (status) => status == null || status === '' ? 'unknown' : String(status).toLowerCase();
 const listId = (project, name) => JSON.stringify([normalizedKey(project), name]);
 const taskId = (parentId, name) => JSON.stringify([parentId, name]);
+
+/** The work-state rows My Work replays, read one way for every reader whose keys must agree with the view
+ * (data-source.mjs builds the view; work-state-labels.mjs keys a label by the item's latest entry). Synced rows
+ * carry their origin device and local id, which order rows written in the same millisecond (reduceWorkState).
+ * Shared rows, most of this table on a busy replica, stay in SQLite: the reducer drops them anyway. */
+export function readWorkStateRows(database) {
+  const columns = new Set(database.prepare('PRAGMA table_info(work_state_entries)').all().map((column) => column.name));
+  const origin = ['origin_device_id', 'origin_local_id'].filter((column) => columns.has(column));
+  return database.prepare(`SELECT id, project, list_name, fields, created_at_epoch${origin.length ? `, ${origin.join(', ')}` : ''}
+    FROM work_state_entries WHERE NOT ${sharedWorkListSql('list_name')}`).all();
+}
 
 // Entries are patches, not full records. This is the same append/merge behavior
 // as claude-mem's WorkStateRenderer: state and named tasks are separate maps.

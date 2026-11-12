@@ -1,4 +1,5 @@
 import type { LedgerDatabase, RefreshNeeds } from './request-groups.mjs';
+import type { LabelRunResult } from './work-state-labels.mjs';
 
 export type RefreshState = 'idle' | 'running' | 'ok' | 'failed' | 'waiting-for-agent';
 export interface RefreshStepTiming { step: string; agent: string; startedAt: string; finishedAt: string; groups?: number }
@@ -35,7 +36,11 @@ export class AutoRefreshWorker {
     log?: (level: 'info' | 'warn', message: string, data?: Record<string, unknown>) => void;
     /** The worker's sync device id ('' when cloud sync never started), so my-focus rows replay in its order. */
     localDeviceId: () => string;
+    /** Jev labels for open work-state items (work-state-labels.mjs); null when the install has no Jev. */
+    labelWorkState?: (() => Promise<LabelRunResult | null>) | null;
   });
+  /** Starts a labeling run unless one is going; the promise never rejects. Null without labelWorkState. */
+  labelInBackground(): Promise<LabelRunResult | null> | null;
   /** True from the moment a run starts until it finishes. */
   readonly busy: boolean;
   status(): RefreshStatus | null;
