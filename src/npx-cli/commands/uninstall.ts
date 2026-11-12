@@ -495,6 +495,10 @@ export async function runUninstallCommand(): Promise<void> {
       const { uninstallAntigravityCliHooks } = await import('../../services/integrations/AntigravityCliHooksInstaller.js');
       return uninstallAntigravityCliHooks();
     }},
+    { label: 'Gemini CLI hooks', fn: async () => {
+      const { uninstallGeminiHooks } = await import('../../services/integrations/GeminiHooksInstaller.js');
+      return uninstallGeminiHooks();
+    }},
     { label: 'Kimi Code hooks + MCP', fn: async () => {
       const { uninstallKimiHooks } = await import('../../services/integrations/KimiHooksInstaller.js');
       return uninstallKimiHooks();
