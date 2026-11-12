@@ -1,5 +1,5 @@
 
-import { relative, isAbsolute, join, normalize } from 'path';
+import { relative, isAbsolute, join, normalize, sep } from 'path';
 import { isProjectExcluded } from '../utils/project-filter.js';
 import { loadFromFileOnce } from './hook-settings.js';
 import {
@@ -28,7 +28,7 @@ function isWithin(child: string, parent: string): boolean {
   const normParent = normalize(parent);
   if (normChild === normParent) return true;
   const rel = relative(normParent, normChild);
-  return rel.length > 0 && !rel.startsWith('..') && !isAbsolute(rel);
+  return rel.length > 0 && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 }
 
 export function shouldTrackProject(cwd: string): boolean {

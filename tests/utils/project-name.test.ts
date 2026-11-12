@@ -242,6 +242,26 @@ describe('getProjectName', () => {
       expect(resolveInChild(scratch, env)).toEqual({ name: 'scratch', allProjects: ['scratch'] });
       expect(resolveInChild(join(pluginDir, 'scripts'), env)).toEqual({ name: 'scripts', allProjects: ['scripts'] });
     });
+
+    it('ignores markers in config descendants whose names start with two dots', async () => {
+      const { mkdirSync, writeFileSync } = await import('fs');
+      const { join } = await import('path');
+      const fakeConfig = join(tmp, 'dot-prefix-config');
+      for (const name of ['..cache', '...']) {
+        const marked = join(fakeConfig, name);
+        const nested = join(marked, 'scripts');
+        mkdirSync(nested, { recursive: true });
+        writeFileSync(join(marked, '.claude-mem-project'), '');
+        expect(resolveInChild(nested, { CLAUDE_CONFIG_DIR: fakeConfig })).toEqual({ name: 'scripts', allProjects: ['scripts'] });
+      }
+
+      const sibling = join(fakeConfig, '..', 'adjacent-project');
+      mkdirSync(join(sibling, 'src'), { recursive: true });
+      writeFileSync(join(sibling, '.claude-mem-project'), '');
+      expect(resolveInChild(join(sibling, 'src'), { CLAUDE_CONFIG_DIR: fakeConfig })).toEqual({
+        name: 'adjacent-project', allProjects: ['src', 'adjacent-project'],
+      });
+    });
   });
 
   describe('#3437 — Claude project dir anchors SDK/subagent sessions', () => {
