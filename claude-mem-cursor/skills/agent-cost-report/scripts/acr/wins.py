@@ -132,7 +132,7 @@ def gh_pr_view(number, repo):
 
 
 # ---- read-only merged-PR source (GitHub) ----
-WINS_REPOS = ("thedotmack/claude-mem",)      # default repos for the merged-PR list; override with `rollup --wins-repo`
+WINS_REPOS = ()      # repository-wide merged-PR lookup requires explicit `rollup --wins-repo`
 GH_SOURCE = "github_merged_prs"
 GH_LIST_LIMIT = 200
 

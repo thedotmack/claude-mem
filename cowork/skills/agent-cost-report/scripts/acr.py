@@ -163,7 +163,7 @@ def build_parser():
     r.add_argument("--prices", metavar="FILE", help="price table to use instead of DIR/prices.json")
     r.add_argument("--db", metavar="FILE", help=argparse.SUPPRESS)
     r.add_argument("--no-gh", action="store_true", help="skip every gh call: the merged-PR list source and the per-PR confirmation (wins from GitHub show as unavailable)")
-    r.add_argument("--wins-repo", action="append", metavar="OWNER/REPO", help="repo(s) for the read-only merged-PR wins source (default: thedotmack/claude-mem; repeatable)")
+    r.add_argument("--wins-repo", action="append", metavar="OWNER/REPO", help="repo(s) for the read-only merged-PR wins source (off by default; repeatable)")
     r.add_argument("--no-behavior", action="store_true", help="skip the Phase 2B behavior pass (no mistakes line)")
     r.add_argument("--classify", action="store_true", help="run the optional classifier on unsettled candidates (off by default, G8)")
     r.add_argument("--classify-budget", type=float, metavar="USD", help="hard cap per run for --classify (default $2.00, G8)")
