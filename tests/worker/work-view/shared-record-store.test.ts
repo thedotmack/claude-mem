@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
+import { removeTempDir } from '../../helpers/temp-dir.js';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
@@ -20,7 +21,7 @@ function fixture(deviceId: string) {
   disposables.push(() => db.close());
   return { db, store, deviceId };
 }
-afterEach(() => { for (const dispose of disposables.splice(0).reverse()) dispose(); });
+afterEach(async () => { for (const dispose of disposables.splice(0).reverse()) await dispose(); });
 function nativeRows(db: Database) {
   return db.query('SELECT * FROM work_state_entries WHERE origin_device_id IS NULL ORDER BY id').all() as Array<Record<string, any>>;
 }
@@ -51,7 +52,7 @@ describe('shared My Work records', () => {
   test('a restarted read-only process reconstructs complete state without writing', () => {
     const dir = mkdtempSync(join(tmpdir(), 'shared-record-restart-'));
     const path = join(dir, 'state.db');
-    disposables.push(() => rmSync(dir, { recursive: true, force: true }));
+    disposables.push(() => removeTempDir(dir));
     const writer = new Database(path);
     new SessionStore(writer);
     publishSharedRecords(writer, { deviceId: 'device-a', project: 'repo', updates: [{ kind: 'group', key: 'g', value: { title: 'Durable' } }] });
@@ -235,7 +236,7 @@ describe('shared My Work records', () => {
     b.store.appendWorkStateEntry({ project: 'repo', listName: 'ordinary', fields: { note: 'local' } });
     publishSharedRecords(a.db, { deviceId: a.deviceId, project: 'repo', now: NOW, updates: [{ kind: 'group', key: 'g', value: { title: 'Shared title' } }] });
     const directory = mkdtempSync(join(tmpdir(), 'shared-record-sync-'));
-    disposables.push(() => rmSync(directory, { recursive: true, force: true }));
+    disposables.push(() => removeTempDir(directory));
     const captured: ReturnType<typeof wireRows> = [];
     let seq = 0;
     const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -262,7 +263,7 @@ describe('shared My Work records', () => {
   test('CloudSync keeps shared rows and frozen bytes pending by default while ordinary work state continues', async () => {
     const a = fixture('device-a');
     const directory = mkdtempSync(join(tmpdir(), 'shared-upload-gate-'));
-    disposables.push(() => rmSync(directory, { recursive: true, force: true }));
+    disposables.push(() => removeTempDir(directory));
     publishSharedRecords(a.db, { deviceId: a.deviceId, project: 'repo', now: NOW,
       updates: [{ kind: 'group', key: 'a', value: { title: 'Frozen shared value' } }] });
     const sent: ReturnType<typeof wireRows> = [];

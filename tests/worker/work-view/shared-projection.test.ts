@@ -15,12 +15,13 @@ import { createHumanCopyInput, humanCopyFingerprint } from '../../../src/service
 import { HumanCopyWorker } from '../../../src/services/work-view/human-copy-worker.mjs';
 import { WorkStateSource } from '../../../src/services/work-view/data-source.mjs';
 import { sharedReviewDescriptor } from '../../../src/services/work-view/shared-reviews.mjs';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { removeTempDir } from '../../helpers/temp-dir.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const cleanup: Array<() => void> = [];
-afterEach(() => { while (cleanup.length) cleanup.pop()!(); });
+afterEach(async () => { while (cleanup.length) await cleanup.pop()!(); });
 const NOW = Date.now();
 function store(path = ':memory:') {
   const db = new Database(path);
@@ -223,7 +224,7 @@ test('canonical writers cannot replace or delete another origin\'s refresh or pr
 
 test('incompatible independent group memberships surface the same conflict in opposite canonical arrival orders', () => {
   const dir = mkdtempSync(join(tmpdir(), 'shared-membership-'));
-  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  cleanup.push(() => removeTempDir(dir));
   const first = store(), second = store(), left = store(join(dir, 'memory.db')), right = store();
   const common = JSON.stringify(['conversation', 'claude', 'shared']);
   const anchorA = JSON.stringify(['conversation', 'claude', 'anchor-a']);
@@ -271,7 +272,7 @@ test('malformed nested shared values cannot replace valid state or carry private
 
 test('the actual read-only data source consumes complete shared state without local ledger files', () => {
   const dir = mkdtempSync(join(tmpdir(), 'shared-work-source-'));
-  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  cleanup.push(() => removeTempDir(dir));
   const path = join(dir, 'memory.db');
   const owner = store(path);
   const key = JSON.stringify(['conversation', 'claude', 'stable-conversation']);
@@ -292,7 +293,7 @@ test('the actual read-only data source consumes complete shared state without lo
 
 test('cached reads avoid shared reference lookups and fresh reads resolve later canonical prompts', () => {
   const dir = mkdtempSync(join(tmpdir(), 'shared-reference-cache-'));
-  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  cleanup.push(() => removeTempDir(dir));
   const owner = store(), receiver = store(join(dir, 'memory.db'));
   const sessionId = owner.createSDKSession('late-prompt', 'repo', 'Build late evidence', undefined, 'claude');
   owner.saveUserPrompt('late-prompt', 1, 'Build late evidence', sessionId);
@@ -383,7 +384,7 @@ test('stable prompt exclusions survive receiving row numbers and never expose re
 
 test('rules-only reads use shared story suggestions without requiring local story files', () => {
   const dir = mkdtempSync(join(tmpdir(), 'shared-rules-source-'));
-  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  cleanup.push(() => removeTempDir(dir));
   const path = join(dir, 'memory.db');
   const owner = store(path);
   publishSharedRecords(owner.db, { deviceId: 'a', project: 'repo', validateValue: isSharedProjectionValue, updates: [{ kind: 'story', key: 'current', value: { narrative: 'What the owner wants.', preferences: [{ preference: 'Keep the copied results consistent.', kind: 'directive', supportCount: 1, quotes: [] }] } }] });

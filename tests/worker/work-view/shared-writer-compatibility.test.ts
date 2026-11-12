@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { removeTempDir } from '../../helpers/temp-dir.js';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
@@ -9,10 +10,10 @@ import { sharedRecordKey } from '../../../src/services/work-view/shared-records.
 import { resolvePythonCommand } from '../../../src/services/work-view/python.js';
 
 const disposals: Array<() => void> = [];
-afterEach(() => { for (const dispose of disposals.splice(0).reverse()) dispose(); });
+afterEach(async () => { for (const dispose of disposals.splice(0).reverse()) await dispose(); });
 function fixture() {
   const directory = mkdtempSync(join(tmpdir(), 'shared-writer-compat-'));
-  disposals.push(() => rmSync(directory, { recursive: true, force: true }));
+  disposals.push(() => removeTempDir(directory));
   const ledger = join(directory, 'work-view'); mkdirSync(ledger);
   const store = new SessionStore(join(directory, 'claude-mem.db'));
   disposals.push(() => store.close());

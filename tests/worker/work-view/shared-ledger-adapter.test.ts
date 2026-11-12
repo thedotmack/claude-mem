@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
+import { removeTempDir } from '../../helpers/temp-dir.js';
 import { join, posix, win32 } from 'node:path';
 import { Database } from 'bun:sqlite';
 import { tmpdir } from 'node:os';
@@ -18,10 +19,10 @@ import { SyncApply } from '../../../src/services/sync/SyncApply.js';
 import { upsertToolUse } from '../../../src/services/sqlite/tool-uses.js';
 
 const disposals: Array<() => void> = [];
-afterEach(() => { for (const dispose of disposals.splice(0).reverse()) dispose(); });
+afterEach(async () => { for (const dispose of disposals.splice(0).reverse()) await dispose(); });
 function fixture(deviceId = 'device-a') {
   const dir = mkdtempSync(join(tmpdir(), 'shared-ledger-'));
-  disposals.push(() => rmSync(dir, { recursive: true, force: true }));
+  disposals.push(() => removeTempDir(dir));
   const databasePath = join(dir, 'memory.db');
   const store = new SessionStore(databasePath);
   store.setLocalSyncDeviceId(deviceId);

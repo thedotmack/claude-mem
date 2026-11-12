@@ -1,6 +1,7 @@
 import { afterEach, expect, spyOn, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
+import { removeTempDir } from '../../helpers/temp-dir.js';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
@@ -17,9 +18,9 @@ import { WorkStateSource } from '../../../src/services/work-view/data-source.mjs
 const AWS = 'AKIA' + 'ABCDEFGHIJKLMNOP';
 const cleanup: Array<() => void> = [];
 let settings: ReturnType<typeof spyOn> | null = null;
-afterEach(() => {
+afterEach(async () => {
   settings?.mockRestore(); settings = null; _resetRedactionConfigCache();
-  for (const dispose of cleanup.splice(0).reverse()) dispose();
+  for (const dispose of cleanup.splice(0).reverse()) await dispose();
 });
 function policy(enabled: boolean, custom: string[] = []) {
   settings?.mockRestore();
@@ -102,7 +103,7 @@ test('origin and recipient custom policies keep the same verified identity with 
 });
 
 test('redacted complete state survives restart and remains previous state until every later batch member arrives', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'shared-redaction-')); cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  const dir = mkdtempSync(join(tmpdir(), 'shared-redaction-')); cleanup.push(() => removeTempDir(dir));
   policy(false); const a = fixture('a'), b = fixture('b', join(dir, 'state.db')); story(a, `first ${AWS}`); const first = wires(a);
   policy(true); apply(b, first); const revision = read(b).revision;
   const reader = new Database(join(dir, 'state.db'), { readonly: true });
@@ -150,7 +151,7 @@ test('receipt persistence failure rolls back the transformed entry and retains p
 });
 
 test('the rules-only reader binds redaction receipts without needing a local story file', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'shared-redaction-rules-')); cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  const dir = mkdtempSync(join(tmpdir(), 'shared-redaction-rules-')); cleanup.push(() => removeTempDir(dir));
   policy(false); const a = fixture('a'), b = fixture('b', join(dir, 'state.db'));
   publishSharedRecords(a.db, { deviceId: 'a', project: 'repo', validateValue: isSharedProjectionValue, updates: [{ kind: 'story', key: 'current', value: { preferences: [{ preference: `Avoid ${AWS}`, kind: 'directive', quotes: [{ quote: 'Keep private data private.' }] }] } }] });
   policy(true); apply(b, wires(a));

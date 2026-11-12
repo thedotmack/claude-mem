@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { removeTempDir } from '../../helpers/temp-dir.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
@@ -9,12 +10,12 @@ import { publishSharedRecords } from '../../../src/services/work-view/shared-rec
 import { isSharedProjectionValue } from '../../../src/services/work-view/shared-projection.mjs';
 
 const cleanups: Array<() => void> = [];
-afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); });
+afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 
 describe('rules-only reader', () => {
   it('reads only saved rule rows and story, without any activity or evidence SQL', () => {
     const dir = mkdtempSync(join(tmpdir(), 'rules-only-'));
-    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    cleanups.push(() => removeTempDir(dir));
     const databasePath = join(dir, 'source.db');
     const writer = new Database(databasePath);
     cleanups.push(() => writer.close());
@@ -48,7 +49,7 @@ describe('rules-only reader', () => {
     // Shared My Work rows are most of work_state_entries on a busy replica (24,424 of 36,407 rows, 50 MB, on the
     // cloud viewer's account). A rules request must not load them all into memory again.
     const dir = mkdtempSync(join(tmpdir(), 'rules-only-shared-'));
-    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    cleanups.push(() => removeTempDir(dir));
     const databasePath = join(dir, 'source.db');
     const owner = new SessionStore(databasePath);
     cleanups.push(() => owner.close());
