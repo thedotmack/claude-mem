@@ -1,0 +1,9 @@
+{
+  "name": "claude-mem-elizaos-example",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@elizaos/core": "1.7.2",
+    "@elizaos/plugin-mcp": "1.7.0"
+  }
+}

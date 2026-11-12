@@ -18,7 +18,7 @@ import type { ViewerSyncStatus } from '../../../../shared/viewer-sync-status.js'
 import { workViewOverview, workViewRequestDetail } from '../../../work-view/overview.js';
 import { FILE_CONTENT_TYPES } from '../../../work-view/work-product.mjs';
 import { isInsideDeliverablesDir } from '../../../../shared/deliverables.js';
-import { contentFingerprint, LocalReviewStore } from '../../../work-view/review-store.js';
+import { contentFingerprint, priorContentFingerprint, LocalReviewStore } from '../../../work-view/review-store.js';
 import { MY_RULES_LIST, renderRulesFile, ruleRowFields, type SavedRule } from '../../../work-view/my-rules.mjs';
 import { focusAreaRowFields, MY_FOCUS_LIST, navWordIn, OTHER_FOCUS_AREA_ID, ownerGoalsAreaRows, placementRowFields, PROPOSAL_KINDS, readFocus, routerFocusRows, seedFocusRows, seedUndoRows, type FocusArea, type RouterFocusBody } from '../../../work-view/my-focus.mjs';
 import { MAX_WORK_STATE_FIELDS_JSON_CHARS } from '../../../work-view/work-state-limits.mjs';
@@ -38,7 +38,9 @@ import { isOpenRouterApiUrl } from '../../../../shared/openrouter-base-url.js';
 import { FOCUS_CHANGED_MESSAGE, focusChangeVersion } from '../../../../shared/focus-change-version.js';
 import { runAgentTask } from '../../../agent-runner/run.js';
 import { ledgerSignature, readLedger } from '../../../work-view/request-groups.mjs';
-import { configuredJudge, decideSuggestion } from '../../../work-view/request-judge.mjs';
+import { configuredJudge, decideSuggestion, jevClientFromSettings } from '../../../work-view/request-judge.mjs';
+import { labelOpenWorkState } from '../../../work-view/work-state-labels.mjs';
+import { normalizeRequestStatus } from '../../../../ui/my-work/src/live/status-normalization.js';
 import { configuredFocusJudge } from '../../../work-view/focus-judge.mjs';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { captureEvent } from '../../../telemetry/telemetry.js';
@@ -59,6 +61,7 @@ const READY_FOR_CHECK_LIFECYCLE_STATUSES = [
   'needs-review', 'review', 'in-review', 'awaiting-review', 'ready-for-review',
 ];
 type RecordedLifecycle = { explicit?: boolean; complete?: boolean | null; status?: string | null; atEpoch?: number | null } | null | undefined;
+type ReadyCheckItem = { kind: string; status: string; judgedStatus?: string | null; lastUpdateEpoch?: number };
 
 /** Mirrors the viewer's reviewIsNewerThanLifecycle (src/ui/my-work/src/live/to-work-model.ts). */
 function reviewIsNewerThanLifecycle(review: { checkedAt?: string | null }, lifecycle: RecordedLifecycle): boolean {
@@ -75,9 +78,16 @@ function processIsAlive(pid: number): boolean {
 
 /** Ready for a person's check: the explicit lifecycle says so, or a memory review newer than it reached 100%.
  * The viewer offers "Mark checked" on exactly these requests. */
-export function isReportedReadyForCheck(request: { lifecycle?: RecordedLifecycle; progress?: { percent?: number; checkedAt?: string | null } | null }): boolean {
+export function isReportedReadyForCheck(request: { lifecycle?: RecordedLifecycle; progress?: { percent?: number; checkedAt?: string | null } | null; items?: ReadyCheckItem[] }, now = Date.now()): boolean {
   const { lifecycle, progress } = request;
   if (progress?.percent === 100 && reviewIsNewerThanLifecycle(progress, lifecycle)) return true;
+  // Item statuses, Jev's judged ones included, read with the viewer's own rule: an item an agent marked needs-review,
+  // or one a confident label judged finished, makes the viewer offer "Mark checked", so the check is accepted.
+  if (request.items?.length) {
+    const itemStatus = normalizeRequestStatus({ items: request.items, checked: false,
+      lifecycle: lifecycle?.explicit ? { status: lifecycle.status ?? null, explicit: true, complete: lifecycle.complete } : null }, now);
+    if (itemStatus === 'needs-review' || itemStatus === 'done') return true;
+  }
   if (!lifecycle?.explicit) return false;
   const status = String(lifecycle.status ?? '').trim().toLowerCase().replace(/[_ ]/g, '-');
   return lifecycle.complete === true || READY_FOR_CHECK_LIFECYCLE_STATUSES.includes(status);
@@ -160,6 +170,7 @@ const focusBody = z.object({
 // focusBody. The evidence is one line pointing at the owner-goals item that holds the quotes; 300 characters
 // keeps the whole area inside one 2000-character work-state row. No count cap: the owner has as many areas as they have.
 const ownerGoalsFocusBody = z.object({
+  save_key: z.string().regex(/^[a-f0-9]{24}:[a-f0-9]{64}$/).optional(),
   areas: z.array(z.object({
     name: z.string().trim().min(1).max(80),
     goal: z.string().trim().min(1).max(300),
@@ -466,6 +477,14 @@ export function defaultAutoRefresh(ledgerDir: string, settingsPath = USER_SETTIN
       const task = buildRefreshTask({ needs, reason, dataDir: DATA_DIR, ledgerDir, pluginRoot: getPackageRoot(), openDatabase, localDeviceId, saveFocus,
         judge: configuredJudge(settingsPath), focusJudge: configuredFocusJudge(settingsPath) });
       return { ...(await runAgentTask(task)), steps: task.steps };
+    },
+    // Jev labels open work-state items on every check; read from settings each time, like the judges.
+    labelWorkState: async () => {
+      const client = jevClientFromSettings(SettingsDefaultsManager.loadFromFile(settingsPath, true, { readOnly: true }));
+      if (!client) return null;
+      const database = openDatabase();
+      try { return await labelOpenWorkState({ dir: ledgerDir, database, client, localDeviceId: localDeviceId() }); }
+      finally { database.close(); }
     },
     log: (level, message, data) => (level === 'info' ? logger.info : logger.warn).call(logger, 'WORKER', message, data),
     localDeviceId,
@@ -1139,8 +1158,24 @@ export class WorkViewRoutes extends BaseRouteHandler {
       if (sharedEnabled) {
         request.review = shared ?? { checked: false, checkedAtEpoch: null, actor: null, available: false, mode: 'shared' };
       } else {
-        const override = this.reviews.readOverride(request.id, request.contentFingerprint, shared?.hash ?? null);
-        const legacy = this.reviews.read(request.id, legacyFingerprint);
+        let override = this.reviews.readOverride(request.id, request.contentFingerprint, shared?.hash ?? null);
+        let legacy = this.reviews.read(request.id, legacyFingerprint);
+        if (request.sourceProductHash && (!legacy.checked || !override)) {
+          const prior = priorContentFingerprint(request);
+          const priorReview = this.reviews.read(request.id, prior);
+          const priorOverride = this.reviews.readOverride(request.id, prior, shared?.hash ?? null);
+          const productsAt = request.sourceProductRecordedAtEpoch;
+          // Products can arrive after the old check but before the first
+          // upgraded read. Unknown or equal timestamps cannot prove order.
+          const productsPredateChecks = [priorReview, priorOverride].every(review => !review?.checked ||
+            (typeof productsAt === 'number' && Number.isFinite(productsAt) &&
+              typeof review.checkedAtEpoch === 'number' && productsAt < review.checkedAtEpoch));
+          if ((priorReview.checked || priorOverride) && productsPredateChecks) {
+            this.reviews.adoptFingerprint(request.id, prior, legacyFingerprint);
+            legacy = this.reviews.read(request.id, legacyFingerprint);
+            override = this.reviews.readOverride(request.id, request.contentFingerprint, shared?.hash ?? null);
+          }
+        }
         const accepted = override ?? (shared?.matches || shared?.conflict ? shared : legacy);
         request.review = { ...accepted, mode: 'local', legacy: !override && accepted === legacy && legacy.checked };
       }
@@ -1365,12 +1400,15 @@ export class WorkViewRoutes extends BaseRouteHandler {
 
   /** Owner-goals' mined focus areas, as my-focus suggestions. Answers each mined area's id, in order. */
   private suggestOwnerGoalsAreas = async (req: Request, res: Response): Promise<void> => {
-    const { areas } = req.body as z.infer<typeof ownerGoalsFocusBody>;
+    const { areas, save_key } = req.body as z.infer<typeof ownerGoalsFocusBody>;
     if (!this.appendWorkStateEntry) { res.status(503).json({ error: 'Saving focus areas is unavailable on this worker.' }); return; }
     const snapshot = await this.ownerStateSnapshot();
     if (!snapshot.source.connected) { res.status(503).json({ error: 'Local work is unavailable. Reconnect before saving focus areas.' }); return; }
     let planned: ReturnType<typeof ownerGoalsAreaRows>;
-    try { planned = ownerGoalsAreaRows(areas, (snapshot.focusAreas ?? []) as FocusArea[]); }
+    try {
+      const scope = JSON.stringify([this.homeProject ?? getProjectContext(homedir()).primary, this.getLocalDeviceId()]);
+      planned = ownerGoalsAreaRows(areas, (snapshot.focusAreas ?? []) as FocusArea[], undefined, save_key ? { key: save_key, scope } : undefined);
+    }
     catch (error) { this.badRequest(res, error instanceof Error ? error.message : String(error)); return; }
     const project = this.homeProject ?? getProjectContext(homedir()).primary;
     for (const fields of planned.rows) this.appendWorkStateEntry({ project, listName: MY_FOCUS_LIST, fields });

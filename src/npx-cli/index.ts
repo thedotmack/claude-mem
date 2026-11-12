@@ -45,7 +45,7 @@ ${styleText('bold', 'Install Commands')} (no Bun required):
   ${styleText('cyan', 'npx claude-mem install --runtime server --server-url <url>')}   Point the server runtime at a specific base URL
   ${styleText('cyan', 'npx claude-mem repair')}                Repair runtime (re-runs Bun/uv setup and bun install in plugin cache)
   ${styleText('cyan', 'npx claude-mem prune [--dry-run] [--keep <n>]')}   Remove superseded plugin cache versions (keeps newest 2 + live worker + registered install)
-  ${styleText('cyan', 'npx claude-mem update')}               Update to latest version (refreshes the hook launcher)
+  ${styleText('cyan', 'npx claude-mem update')}               Update while keeping your setup; asks only for missing configuration
   ${styleText('cyan', 'npx claude-mem uninstall')}            Remove plugin, configs and the hook launcher
   ${styleText('cyan', 'npx claude-mem version')}              Print version
 

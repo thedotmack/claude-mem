@@ -15,7 +15,7 @@ import { WORK_STATE_RULE, mcpServerInstructions } from '../../src/shared/memory-
 async function withServer(
   env: Record<string, string>,
   run: (client: Client, workStateHits: () => string[], workStateWrites: () => Array<Record<string, unknown>>) => Promise<void>,
-  options: { cwd?: string; pwd?: string; clientName?: string; roots?: Array<{ uri: string; name?: string }> } = {},
+  options: { cwd?: string; pwd?: string; clientName?: string; roots?: Array<{ uri: string; name?: string }>; workStateText?: string } = {},
 ): Promise<void> {
   const hits: string[] = [];
   const writes: Array<Record<string, unknown>> = [];
@@ -24,7 +24,8 @@ async function withServer(
   app.use((req, _res, next) => { hits.push(`${req.method} ${req.path}`); next(); });
   app.get('/api/health', (_req, res) => res.json({ status: 'ok' }));
   app.post('/api/work-state/entries', (req, res) => { writes.push(req.body); res.json({ entries: [] }); });
-  app.get('/api/work-state', (_req, res) => res.json({ entries: [] }));
+  app.get('/api/work-state', (_req, res) => options.workStateText === undefined
+    ? res.json({ entries: [] }) : res.type('text').send(options.workStateText));
   const server = app.listen(0, '127.0.0.1');
   await new Promise<void>(resolve => server.once('listening', resolve));
   const { port } = server.address() as { port: number };
@@ -75,6 +76,16 @@ const workStateCalls = [
 ];
 
 describe('CLAUDE_MEM_WORK_STATE_ENABLED over stdio (#4606)', () => {
+  it('carries work-state truncation metadata and complete-export guidance over MCP', async () => {
+    await withServer({}, async client => {
+      const result = await client.callTool(workStateCalls[1]) as CallToolResult;
+      expect(result._meta).toEqual({ 'claude-mem/truncated': true });
+      const text = result.content.filter(block => block.type === 'text').map(block => block.text).join('\n');
+      expect(text).toContain('/api/work-state/export');
+      expect(Buffer.byteLength(text)).toBeLessThanOrEqual(32 * 1024);
+    }, { workStateText: '任務'.repeat(10_000) });
+  }, 20_000);
+
   it('turned off: tools/list hides both work_state tools and tools/call rejects them without reaching the worker', async () => {
     await withServer({ CLAUDE_MEM_WORK_STATE_ENABLED: 'false' }, async (client, workStateHits) => {
       const names = (await client.listTools()).tools.map(tool => tool.name);

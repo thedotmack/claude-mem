@@ -27,7 +27,8 @@ function globToRegex(pattern: string): RegExp {
     .replace(/<<<GLOBSTAR>>>/g, '.*')
     .replace(/<<<GLOBSTAR_DIR>>>\//g, '(?:.*/)?');
 
-  return new RegExp(`^${regex}$`);
+  // Directory names may contain line terminators, which globstars must also match.
+  return new RegExp(`^${regex}$`, 's');
 }
 
 /**

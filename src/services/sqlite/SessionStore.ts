@@ -2888,6 +2888,17 @@ export class SessionStore {
       logger.debug('DB', 'Added metadata column to observations table (#2116)');
     }
 
+    // Match saveMemory's guarded JSON expression so replay checks can seek to
+    // a fingerprint while holding the write lock. Ordinary observations do not
+    // need an entry, and malformed legacy metadata must remain safe to read.
+    this.db.run(`
+      CREATE INDEX IF NOT EXISTS idx_observations_source_fingerprint ON observations(
+        project,
+        CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.sourceFingerprint') END,
+        id DESC
+      ) WHERE CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.sourceFingerprint') END IS NOT NULL
+    `);
+
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(30, new Date().toISOString());
   }
 

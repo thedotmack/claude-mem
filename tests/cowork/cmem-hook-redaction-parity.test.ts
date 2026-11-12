@@ -67,6 +67,8 @@ const SAMPLES: Record<string, Sample[]> = {
   postman_key: [{ text: 'PMAK-' + rep('b', 24) + '-' + rep('c', 34) }],
   pulumi_token: [{ text: 'pul-' + rep('d', 40) }],
   doppler_token: [{ text: 'dp.pt.' + rep('D', 43) }],
+  heroku_key: [{ text: 'HRKU-AA' + rep('h', 58) }],
+  atlassian_token: [{ text: 'ATATT3' + rep('A', 186) }],
   slack_webhook: [{ text: 'https://hooks.slack.com/services/T0000000/B0000000/' + rep('K', 24), secret: rep('K', 24) }],
   discord_webhook: [{ text: 'https://discord.com/api/webhooks/12345678901234567/' + rep('C', 60), secret: rep('C', 60) }],
   claude_mem_key: [{ text: 'cmem_' + rep('M', 32) }, { text: 'cm_pro_' + rep('m', 16) }],

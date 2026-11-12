@@ -1477,7 +1477,7 @@ describe("per-user device admission bound", () => {
 describe("fail-soft Durable Object errors", () => {
 	const quota = new Error("Exceeded allowed volume of requests in Durable Objects free tier");
 
-	function throwingHub(overrides: Record<string, unknown> = {}) {
+	function throwingHub(overrides: Record<string, unknown> = {}): Env["SYNC_HUB"] {
 		return {
 			getByName: () => ({
 				fetch: async () => {
@@ -1488,7 +1488,7 @@ describe("fail-soft Durable Object errors", () => {
 				},
 				...overrides,
 			}),
-		};
+		} as unknown as Env["SYNC_HUB"];
 	}
 
 	it("returns 503 Retry-After when the websocket upgrade stub throws", async () => {

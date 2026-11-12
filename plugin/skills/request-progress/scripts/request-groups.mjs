@@ -995,7 +995,13 @@ var init_SettingsDefaultsManager = __esm({
       // always the seeded value. A 'false' typed by hand reads the same and moves
       // too; typing it changed nothing while 'false' was the default. After this
       // one move, a 'false' saved by the "Keep images" switch or by hand stays.
-      { key: "CLAUDE_MEM_MEDIA_CAPTURE_ENABLED", legacy: "false", markerTag: "media-capture-default-on-v1", unit: "", applyOnlyWhenSaved: true }
+      { key: "CLAUDE_MEM_MEDIA_CAPTURE_ENABLED", legacy: "false", markerTag: "media-capture-default-on-v1", unit: "", applyOnlyWhenSaved: true },
+      // Seeded '400000' from #3800 until the default came down to 100000 (#5023):
+      // an observer turn measured about 100K tokens at 400000 and about 26K at
+      // 100000. Any other saved value is a deliberate choice and stays. A budget
+      // too long only costs tokens, so a failed rewrite may use the new default in
+      // memory, like the deadlines.
+      { key: "CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS", legacy: "400000", markerTag: "observer-max-conversation-chars-v1", unit: " chars", applyOnlyWhenSaved: false }
     ];
     raisedDefaultFailuresReported = /* @__PURE__ */ new Set();
     SettingsDefaultsManager = class {
@@ -1182,8 +1188,11 @@ var init_SettingsDefaultsManager = __esm({
         CLAUDE_MEM_CODEX_SUBAGENT_INGESTION: "false",
         CLAUDE_MEM_MAX_CONCURRENT_AGENTS: "2",
         // Max concurrent Claude SDK agent subprocesses
-        CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS: "400000",
-        // Retire an observer conversation past this size and start a fresh generation (#3800)
+        // Retire an observer conversation past this size and start a fresh generation (#3800).
+        // 100000, not the first default of 400000: #5023 measured about 100K tokens per
+        // observer turn at 400000 and about 26K at 100000. Installs seeded with '400000'
+        // move once (CHANGED_SHIPPED_DEFAULTS).
+        CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS: "100000",
         CLAUDE_MEM_OBSERVER_THINKING: "disabled",
         // Observer thinking param: 'disabled' (shipped) | 'adaptive' | 'enabled[:budget]' | 'omit' — an always-thinking gateway upstream rejects 'disabled' with 400/1210 (#4732)
         CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW: "",
@@ -1691,10 +1700,666 @@ var init_SettingsDefaultsManager = __esm({
   }
 });
 
+// src/utils/redaction.ts
+import { existsSync as existsSync8, readFileSync as readFileSync6 } from "fs";
+function genericBuiltinRegex(lookbehind) {
+  return new RegExp(`${lookbehind}${GENERIC_VALUE}`, "gi");
+}
+function webhookHost(host) {
+  const ci = host.replace(/\\.|[a-z]/g, (c) => c.length === 1 ? `[${c}${c.toUpperCase()}]` : c);
+  return String.raw`(?:^|\/\/|@|[^\w.\/@%-])${ci}`;
+}
+function keyedLookbehind(key) {
+  return `(?<=${key}${OPTIONAL_QUOTE}${BOUNDED_SPACE}[=:]${BOUNDED_SPACE}${OPTIONAL_QUOTE})`;
+}
+function matchAfterEscapedWhitespace(pattern) {
+  const source = pattern.regex.source.replace(/(^|\||\(\?:)\\b/g, `$1${ESCAPED_WHITESPACE_OR_WORD_BOUNDARY}`);
+  return { ...pattern, regex: new RegExp(source, pattern.regex.flags) };
+}
+function redactSensitive(input, config) {
+  if (!config.enabled || input.length === 0) {
+    return { redacted: input, counts: {}, oversize: false };
+  }
+  if (input.length > MAX_INPUT_CHARS) {
+    logger.warn("REDACT", "field exceeds the 1M-char redaction cap; replaced by an oversize marker", void 0, {
+      inputLength: input.length
+    });
+    return { redacted: OVERSIZE_MARKER, counts: { oversize: 1 }, oversize: true };
+  }
+  const disabled = new Set(config.disabledBuiltinPatterns ?? []);
+  const counts = {};
+  let working = input;
+  const compiledCustom = [];
+  for (const cp of config.customPatterns ?? []) {
+    if (!cp.name || cp.name.length === 0) {
+      logger.warn("REDACT", "custom pattern skipped: missing name", void 0, { pattern: cp });
+      continue;
+    }
+    try {
+      compiledCustom.push({ name: cp.name, regex: new RegExp(cp.regex, "g") });
+    } catch (error) {
+      logger.warn("REDACT", "custom pattern skipped: invalid regex", { name: cp.name }, error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+  const allPatterns = [
+    ...compiledCustom,
+    ...BUILTIN_REDACTION_PATTERNS,
+    ...config.genericEnabled ? GENERIC_REDACTION_PATTERNS : []
+  ];
+  for (const pattern of allPatterns) {
+    if (disabled.has(pattern.name)) continue;
+    pattern.regex.lastIndex = 0;
+    working = working.replace(pattern.regex, () => {
+      counts[pattern.name] = (counts[pattern.name] ?? 0) + 1;
+      return `<redacted type='${pattern.name}'/>`;
+    });
+  }
+  if (config.logMatches && Object.keys(counts).length > 0) {
+    logger.debug("REDACT", "patterns matched", void 0, { counts });
+  }
+  return { redacted: working, counts, oversize: false };
+}
+function safeParseCustomPatterns(raw) {
+  if (!raw || raw.trim() === "") return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      logger.warn("REDACT", "CLAUDE_MEM_REDACT_CUSTOM_PATTERNS is not a JSON array, ignoring");
+      return [];
+    }
+    return parsed.filter((p) => p && typeof p.name === "string" && typeof p.regex === "string");
+  } catch (error) {
+    logger.warn(
+      "REDACT",
+      "failed to parse CLAUDE_MEM_REDACT_CUSTOM_PATTERNS as JSON",
+      void 0,
+      error instanceof Error ? error : new Error(String(error))
+    );
+    return [];
+  }
+}
+function loadRedactionConfig(settings2) {
+  return {
+    enabled: settings2.CLAUDE_MEM_REDACT_ENABLED === "true",
+    disabledBuiltinPatterns: (settings2.CLAUDE_MEM_REDACT_DISABLED_BUILTINS ?? "").split(",").map((s) => s.trim()).filter(Boolean),
+    customPatterns: safeParseCustomPatterns(settings2.CLAUDE_MEM_REDACT_CUSTOM_PATTERNS ?? "[]"),
+    logMatches: settings2.CLAUDE_MEM_REDACT_LOG_MATCHES === "true",
+    genericEnabled: settings2.CLAUDE_MEM_REDACT_GENERIC_ENABLED === "true"
+  };
+}
+function readSettingsText(settingsPath) {
+  if (!existsSync8(settingsPath)) return null;
+  try {
+    return readFileSync6(settingsPath, "utf-8");
+  } catch {
+    return "";
+  }
+}
+function isUnreadableSettings(text5) {
+  if (text5 === null) return false;
+  try {
+    const parsed = JSON.parse(stripUtf8Bom(text5));
+    return parsed === null || typeof parsed !== "object" || Array.isArray(parsed);
+  } catch {
+    return true;
+  }
+}
+function configForUnreadableSettings(settingsPath, text5, loaded) {
+  if (process.env.CLAUDE_MEM_REDACT_ENABLED === "false") return loaded;
+  const requested = lastLoadedConfig?.enabled === true || REDACTION_REQUESTED_IN_RAW.test(text5);
+  if (!requested) return loaded;
+  if (!warnedUnreadableSettings) {
+    warnedUnreadableSettings = true;
+    logger.warn("REDACT", "settings.json could not be read; secret redaction stays on until it is repaired", {
+      settingsPath,
+      using: lastLoadedConfig?.enabled ? "the last configuration that loaded" : "the built-in patterns"
+    });
+  }
+  return lastLoadedConfig?.enabled ? lastLoadedConfig : BUILTINS_ONLY;
+}
+function getRedactionConfig(settingsPath = USER_SETTINGS_PATH) {
+  const now = Date.now();
+  if (cachedConfig && now - cacheStamp < CACHE_TTL_MS) {
+    return cachedConfig;
+  }
+  const settings2 = SettingsDefaultsManager.loadFromFile(settingsPath);
+  const loaded = loadRedactionConfig(settings2);
+  const text5 = loaded.enabled ? null : readSettingsText(settingsPath);
+  if (isUnreadableSettings(text5)) {
+    cachedConfig = configForUnreadableSettings(settingsPath, text5, loaded);
+  } else {
+    cachedConfig = loaded;
+    lastLoadedConfig = loaded;
+  }
+  cacheStamp = now;
+  return cachedConfig;
+}
+function genericMarkerForKeyedValue(key, value, config) {
+  if (!config.genericEnabled) return null;
+  const name = GENERIC_PASSWORD_KEY.test(key) ? "generic_password" : GENERIC_TOKEN_KEY.test(key) ? "generic_token" : null;
+  if (!name) return null;
+  if (config.disabledBuiltinPatterns?.includes(name)) return null;
+  if (!WHOLE_GENERIC_VALUE.test(value) || !/[A-Za-z]/.test(value)) return null;
+  return `<redacted type='${name}'/>`;
+}
+function bearerMarkerForKeyedValue(key, value, config) {
+  if (!config.genericEnabled || config.disabledBuiltinPatterns?.includes("bearer_token")) return null;
+  if (!AUTHORIZATION_KEY.test(key)) return null;
+  const match = KEYED_BEARER_VALUE.exec(value);
+  return match ? `${match[1]}<redacted type='bearer_token'/>${value.slice(match[0].length)}` : null;
+}
+function basicMarkerForKeyedValue(key, value, config) {
+  if (!config.genericEnabled || config.disabledBuiltinPatterns?.includes("basic_auth")) return null;
+  if (!AUTHORIZATION_KEY.test(key)) return null;
+  const match = KEYED_BASIC_VALUE.exec(value);
+  return match ? `${match[1]}<redacted type='basic_auth'/>${value.slice(match[0].length)}` : null;
+}
+function awsSessionTokenMarkerForKeyedValue(key, value, config) {
+  if (config.disabledBuiltinPatterns?.includes("aws_session_token")) return null;
+  if (!AWS_SESSION_TOKEN_KEY.test(key) || !WHOLE_AWS_SESSION_TOKEN_VALUE.test(value)) return null;
+  return "<redacted type='aws_session_token'/>";
+}
+function awsSecretKeyMarkerForKeyedValue(key, value, config) {
+  if (config.disabledBuiltinPatterns?.includes("aws_secret_key")) return null;
+  if (!AWS_SECRET_KEY_KEY.test(key) || !WHOLE_AWS_SECRET_KEY_VALUE.test(value)) return null;
+  return "<redacted type='aws_secret_key'/>";
+}
+function cookieMarkerForKeyedValue(key, value, config) {
+  if (config.disabledBuiltinPatterns?.includes("cookie_header")) return null;
+  if (!COOKIE_KEY.test(key) || value.trim().length < 4) return null;
+  return "<redacted type='cookie_header'/>";
+}
+function redactJsonStrings(value, config = getRedactionConfig()) {
+  if (!config.enabled) return value;
+  const walk = (node, key) => {
+    if (typeof node === "string") {
+      const cookieMarker = key === void 0 ? null : cookieMarkerForKeyedValue(key, node, config);
+      if (cookieMarker) return cookieMarker;
+      const result = redactSensitive(node, config);
+      if (key === void 0 || Object.keys(result.counts).length > 0) return result.redacted;
+      return awsSessionTokenMarkerForKeyedValue(key, node, config) ?? awsSecretKeyMarkerForKeyedValue(key, node, config) ?? bearerMarkerForKeyedValue(key, node, config) ?? basicMarkerForKeyedValue(key, node, config) ?? genericMarkerForKeyedValue(key, node, config) ?? result.redacted;
+    }
+    if (Array.isArray(node)) return node.map((child) => walk(child, key !== void 0 && COOKIE_KEY.test(key) ? key : void 0));
+    if (node !== null && typeof node === "object") {
+      return Object.fromEntries(Object.entries(node).map(([childKey, child]) => [childKey, walk(child, childKey)]));
+    }
+    return node;
+  };
+  return walk(value);
+}
+var GENERIC_VALUE_CLASS, GENERIC_VALUE, OPTIONAL_QUOTE, BOUNDED_SPACE, BARE_TOKEN_KEY, ESCAPED_QUOTE, STRING_EDGE, ASSIGNMENT_START, LINE_START, LINE_END, GENERIC_TOKEN_REGEX, ESCAPED_WHITESPACE_OR_WORD_BOUNDARY, COOKIE_VALUE_CHAR, BUILTIN_REDACTION_PATTERNS, GENERIC_REDACTION_PATTERNS, MAX_INPUT_CHARS, OVERSIZE_MARKER, cachedConfig, cacheStamp, CACHE_TTL_MS, lastLoadedConfig, warnedUnreadableSettings, BUILTINS_ONLY, REDACTION_REQUESTED_IN_RAW, GENERIC_PASSWORD_KEY, GENERIC_TOKEN_KEY, WHOLE_GENERIC_VALUE, AUTHORIZATION_KEY, KEYED_BEARER_VALUE, KEYED_BASIC_VALUE, AWS_SESSION_TOKEN_KEY, WHOLE_AWS_SESSION_TOKEN_VALUE, AWS_SECRET_KEY_KEY, WHOLE_AWS_SECRET_KEY_VALUE, COOKIE_KEY;
+var init_redaction = __esm({
+  "src/utils/redaction.ts"() {
+    "use strict";
+    init_logger();
+    init_SettingsDefaultsManager();
+    init_paths();
+    init_atomic_json();
+    GENERIC_VALUE_CLASS = String.raw`[A-Za-z0-9_.\-+/=~@#$%^*!?]`;
+    GENERIC_VALUE = `(?=${GENERIC_VALUE_CLASS}{8})${GENERIC_VALUE_CLASS}*[A-Za-z]${GENERIC_VALUE_CLASS}*`;
+    OPTIONAL_QUOTE = String.raw`(?:\\{0,3}["'])?`;
+    BOUNDED_SPACE = String.raw`\s{0,8}`;
+    BARE_TOKEN_KEY = String.raw`(?:token|secret|api_key)`;
+    ESCAPED_QUOTE = String.raw`\\{0,3}["']`;
+    STRING_EDGE = String.raw`(?<!\\)"`;
+    ASSIGNMENT_START = String.raw`(?:^|[\s?&]|\\[nrt]|${STRING_EDGE})`;
+    LINE_START = String.raw`(?:^|\n|\\n|${STRING_EDGE})[ \t]{0,8}(?:-[ \t]{1,8})?`;
+    LINE_END = String.raw`(?:${ESCAPED_QUOTE})?[ \t]{0,8}(?:$|\r?\n|\\{1,3}[rn]|#|${STRING_EDGE})`;
+    GENERIC_TOKEN_REGEX = new RegExp([
+      `${keyedLookbehind(String.raw`\b\w*_${BARE_TOKEN_KEY}`)}${GENERIC_VALUE}`,
+      `(?<=${ESCAPED_QUOTE}${BARE_TOKEN_KEY}${ESCAPED_QUOTE}${BOUNDED_SPACE}:${BOUNDED_SPACE}${ESCAPED_QUOTE})${GENERIC_VALUE}`,
+      `(?<=${ASSIGNMENT_START}${BARE_TOKEN_KEY}=${OPTIONAL_QUOTE})${GENERIC_VALUE}(?!\\(|${GENERIC_VALUE_CLASS})`,
+      String.raw`(?<=--(?:[a-z0-9]+[-_])*(?:token|secret|api[-_]key)(?:=|[ \t]{1,8})${OPTIONAL_QUOTE})${GENERIC_VALUE}`,
+      `(?<=${LINE_START}${BARE_TOKEN_KEY}:[ \\t]{1,8}${OPTIONAL_QUOTE})${GENERIC_VALUE}(?=${LINE_END})`
+    ].join("|"), "gi");
+    ESCAPED_WHITESPACE_OR_WORD_BOUNDARY = String.raw`(?:(?<=\\[nrt])|\b)`;
+    COOKIE_VALUE_CHAR = String.raw`[^\\\n\r"'\`<]`;
+    BUILTIN_REDACTION_PATTERNS = [
+      // A `Cookie`/`Set-Cookie` header value is a session credential whatever the
+      // cookie is named (`Cookie: sessionid=...`, `set-cookie: sid=...`), as printed
+      // by `curl -v`, a proxy log or a captured response dump. Only the value is
+      // replaced, so the key stays readable. The Cowork shim has redacted these
+      // since the plugin landed (its COOKIE_RE, #3733), so the same session text
+      // was redacted on the way to cmem.ai and stored verbatim by the local worker.
+      // keyedLookbehind takes JSON-escaped keys (`\"Cookie\":\"…\"`); an optional
+      // `[` takes the first entry of Node's `"set-cookie": ["…"]` array. The value
+      // stops at a line end, a quote or a backslash, so in `JSON.stringify` text it
+      // ends before an escaped `\n` or `\"` and leaves the rest of the payload and
+      // its JSON intact, and at `<`, so it never re-redacts its own marker. The
+      // 4-char floor keeps a bare `Cookie: x` placeholder out. First in the list:
+      // the whole header value goes before a vendor pattern can split it with its
+      // marker and leave a later cookie in the same header readable.
+      { name: "cookie_header", regex: new RegExp(`(?<=(?:\\b(?:set-)?cookie)${OPTIONAL_QUOTE}${BOUNDED_SPACE}[=:]${BOUNDED_SPACE}(?:\\[${BOUNDED_SPACE})?${OPTIONAL_QUOTE})(?![ \\t])${COOKIE_VALUE_CHAR}{4,}`, "gi") },
+      // The password in a URL's userinfo: `postgres://app:hunter2@db/prod`,
+      // `redis://:hunter2@cache:6379/0`, `https://user:pass@host/repo.git` (what
+      // `git remote -v` and a DATABASE_URL print). Only the password is replaced,
+      // so the scheme, user and host stay readable. The value stops at `/`, `@`,
+      // whitespace and quotes; a `<` start keeps an earlier marker and a `$`/`{`
+      // start keeps a `${DB_PASS}` placeholder from being taken for a secret.
+      // First in the list, so the whole password goes before a vendor pattern can
+      // split it with its marker and leave the rest of it behind.
+      { name: "url_credentials", regex: /(?<=\b[a-z][a-z0-9+.-]*:\/\/[^\s:\/@'"<>]*:)(?![${<])[^\s\/@'"<>]+(?=@)/gi },
+      // `AKIA` is a long-term access key ID; `ASIA` is the temporary one that STS,
+      // SSO and instance roles hand out (`aws sts assume-role`, `aws configure
+      // export-credentials`), printed next to its secret and session token.
+      { name: "aws_access_key", regex: /(?:AKIA|ASIA)[0-9A-Z]{16}/g },
+      // Anchored to its key names: `AWS_SECRET_ACCESS_KEY=…` in env output,
+      // `aws_secret_access_key = …` in ~/.aws/credentials and SDK arguments (any
+      // letter case), and `"SecretAccessKey": "…"` in `aws sts` / `aws configure
+      // export-credentials` JSON, which prints it beside the ASIA key ID and the
+      // session token. keyedLookbehind also takes JSON-style `"KEY": "val"`.
+      { name: "aws_secret_key", regex: new RegExp(`${keyedLookbehind(String.raw`(?:aws_secret_access_key|\bSecretAccessKey)`)}[A-Za-z0-9/+=]{40}`, "gi") },
+      // The session token of temporary credentials (STS, SSO, `aws configure
+      // export-credentials`) grants access together with the key pair, so it is
+      // anchored to its key names the same way: `AWS_SESSION_TOKEN=…` in env
+      // output, `aws_session_token = …` in ~/.aws/credentials and
+      // `"SessionToken": "…"` in `aws sts` JSON. Real tokens run to hundreds of
+      // base64 characters; the 100-char floor keeps short placeholders out.
+      { name: "aws_session_token", regex: new RegExp(`${keyedLookbehind(String.raw`\b(?:aws_session_token|SessionToken)`)}[A-Za-z0-9/+=]{100,}`, "gi") },
+      { name: "github_pat", regex: /\bgh[oprsu]_[A-Za-z0-9]{36}\b|\bgithub_pat_[A-Za-z0-9_]{82}\b/g },
+      // openai_key, anthropic_key, slack_token, jwt and google_api_key end in a
+      // class that includes `-`. A closing `\b` after a `-` needs a word character
+      // to follow, so a Google key ending in `-` was not redacted at all and the
+      // others left their final `-` in the stored text. `(?!\w)` is the same
+      // "the token ends here" check without that gap.
+      { name: "openai_key", regex: /\bsk-(?!ant-)[A-Za-z0-9_-]{20,}(?!\w)/g },
+      { name: "anthropic_key", regex: /\bsk-ant-[A-Za-z0-9_-]{20,}(?!\w)/g },
+      // Slack bot/user/legacy tokens (`xoxb-`, `xoxp-`, …), refresh tokens from
+      // token rotation (`xoxe-`) and app-level Socket Mode tokens (`xapp-`).
+      { name: "slack_token", regex: /\b(?:xox[abeprs]|xapp)-[A-Za-z0-9-]{10,}(?!\w)/g },
+      { name: "jwt", regex: /\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?!\w)/g },
+      // A PGP secret key is armored as `PRIVATE KEY BLOCK`, and an encrypted
+      // PKCS#8 key as `ENCRYPTED PRIVATE KEY`.
+      { name: "private_key_pem", regex: /-----BEGIN (?:RSA |DSA |EC |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY(?: BLOCK)?-----[\s\S]*?-----END (?:RSA |DSA |EC |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY(?: BLOCK)?-----/g },
+      // API keys (`sk_`/`pk_`/`rk_`) and webhook signing secrets (`whsec_`, what
+      // `stripe listen` prints and STRIPE_WEBHOOK_SECRET holds), which forge events.
+      { name: "stripe_key", regex: /\b(?:(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{24,}|whsec_[A-Za-z0-9]{32,})\b/g },
+      { name: "google_api_key", regex: /\bAIza[0-9A-Za-z_-]{35}(?!\w)/g },
+      // Google OAuth 2.0 access tokens: `ya29.` + a base64url body, plus the
+      // `ya29.c.` form the GCE metadata server hands out. `gcloud auth
+      // print-access-token`, `curl -H "Authorization: Bearer …"` lines and token
+      // JSON print them; each grants an hour of the account's API access.
+      { name: "google_oauth_token", regex: /\bya29\.(?:c\.)?[0-9A-Za-z_-]{20,}(?!\w)/g },
+      // GitLab personal/project/group access tokens (`glpat-`), deploy tokens (`gldt-`),
+      // and runner authentication tokens (`glrt-` + 20 chars; newer routable tokens
+      // add dot-separated segments), Hugging Face user access tokens (`hf_` + 34 chars),
+      // npm access tokens (`npm_` + 36 chars) and Docker Hub personal access tokens
+      // (`dckr_pat_` + 27 chars): credentials printed in config files, CLI commands
+      // (`glab`, `huggingface-cli`, `npm`, `docker login`), and env dumps.
+      { name: "gitlab_token", regex: /\bgl(?:pat|dt|rt)-[A-Za-z0-9_-]{20,}(?:\.[A-Za-z0-9_-]+)*(?!\w)/g },
+      { name: "huggingface_token", regex: /\bhf_[A-Za-z0-9]{30,}\b/g },
+      { name: "npm_token", regex: /\bnpm_[A-Za-z0-9]{36}\b/g },
+      { name: "docker_pat", regex: /\bdckr_pat_[A-Za-z0-9_-]{27,}(?!\w)/g },
+      // Linear personal API keys (`lin_api_` + 40 alphanumerics) and Notion
+      // integration tokens (`ntn_` + 46 alphanumerics, and the older `secret_` +
+      // 43): what `LINEAR_API_KEY=…` / `NOTION_TOKEN=…` lines, MCP server configs
+      // and `curl -H "Authorization: …"` commands print. Fixed lengths keep
+      // `secret_` words and short look-alikes out.
+      { name: "linear_key", regex: /\blin_api_[A-Za-z0-9]{40}(?!\w)/g },
+      { name: "notion_token", regex: /\b(?:ntn_[A-Za-z0-9]{46}|secret_[A-Za-z0-9]{43})(?!\w)/g },
+      // SendGrid API keys (`SG.` + 22 + `.` + 43 base64url chars), DigitalOcean
+      // personal access, OAuth and refresh tokens (`dop_v1_`/`doo_v1_`/`dor_v1_` +
+      // 64 hex) and Shopify Admin API, app and shared-secret tokens (`shpat_`,
+      // `shpca_`, `shppa_`, `shpss_` + 32 hex): what `doctl`, the Shopify CLI and
+      // `.env` dumps print.
+      { name: "sendgrid_key", regex: /\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}(?![\w-])/g },
+      { name: "digitalocean_token", regex: /\bdo[opr]_v1_[a-f0-9]{64}\b/g },
+      { name: "shopify_token", regex: /\bshp(?:at|ca|pa|ss)_[a-fA-F0-9]{32}\b/g },
+      // PyPI API tokens: `pypi-` + a base64url macaroon whose header always
+      // starts `AgE` (pypi.org and test.pypi.org alike), printed by `twine`,
+      // `uv publish` and `~/.pypirc` dumps. Real tokens run past 150 characters.
+      { name: "pypi_token", regex: /\bpypi-AgE[A-Za-z0-9_-]{50,}(?!\w)/g },
+      // Databricks personal access tokens (`dapi` + 32 hex, sometimes with a
+      // `-<digit>` suffix) that DATABRICKS_TOKEN, `~/.databrickscfg` and
+      // `databricks tokens create` print, and HashiCorp Vault service and batch
+      // tokens (`hvs.` + 90-120 and `hvb.` + 138-300 base64url chars) that
+      // VAULT_TOKEN, `~/.vault-token` and `vault login` / `vault token create`
+      // print.
+      { name: "databricks_token", regex: /\bdapi[a-f0-9]{32}(?:-\d)?(?!\w)/g },
+      { name: "vault_token", regex: /\b(?:hvs\.[\w-]{90,120}|hvb\.[\w-]{138,300})(?![\w-])/g },
+      // Two OpenAI-compatible providers this project onboards users for
+      // (src/shared/openai-compat-presets.ts): NVIDIA NIM issues `nvapi-` keys and
+      // Runcrate issues `rc_live_` keys. Both presets tell the user the prefix in
+      // their installer hint, and neither was claimed by openai_key (`sk-`), so a
+      // key pasted into a session (or printed by a `curl`/`.env` dump) was stored
+      // verbatim. 32+ trailing chars keeps short placeholders out.
+      { name: "nvidia_nim_key", regex: /\bnvapi-[A-Za-z0-9_-]{32,}(?!\w)/g },
+      { name: "runcrate_key", regex: /\brc_live_[A-Za-z0-9_-]{24,}(?!\w)/g },
+      // Groq API keys (`gsk_` + 52 alphanumerics) and xAI API keys (`xai-` + 80
+      // chars): LLM provider keys that `.env` files, `export GROQ_API_KEY=…` /
+      // `XAI_API_KEY=…` lines and `curl -H "Authorization: Bearer …"` commands
+      // print. Neither prefix is claimed by openai_key, so they stayed in the text.
+      { name: "groq_key", regex: /\bgsk_[A-Za-z0-9]{52}(?!\w)/g },
+      { name: "xai_key", regex: /\bxai-[A-Za-z0-9_]{80}(?!\w)/g },
+      // Perplexity API keys (`pplx-` + 48 alphanumerics): an LLM provider key
+      // that `.env` files, `export PERPLEXITY_API_KEY=…` lines and `curl -H
+      // "Authorization: Bearer …"` commands print. The prefix is not claimed by
+      // openai_key, and Perplexity model ids share it (`pplx-embed-v1-4b`), so
+      // the fixed 48-char alphanumeric body keeps the model ids out.
+      { name: "perplexity_key", regex: /\bpplx-[A-Za-z0-9]{48}(?!\w)/g },
+      // Supabase personal access tokens (`sbp_` + 40 hex, what `supabase login`
+      // stores and SUPABASE_ACCESS_TOKEN holds) and Sentry auth tokens: personal
+      // ones (`sntryu_` + 64 hex) and organization ones (`sntrys_` + a base64
+      // payload + `_` + a 43-char base64 secret), which SENTRY_AUTH_TOKEN lines,
+      // `.sentryclirc` dumps and source-map upload commands print.
+      { name: "supabase_token", regex: /\bsbp_[a-f0-9]{40}(?!\w)/g },
+      { name: "sentry_token", regex: /\b(?:sntryu_[a-f0-9]{64}(?!\w)|sntrys_[A-Za-z0-9+\/]{20,}={0,2}_[A-Za-z0-9+\/]{43}(?![\w+\/]))/g },
+      // Grafana tokens: service account tokens (`glsa_` + 32 alphanumerics + `_`
+      // + an 8-hex checksum) and Grafana Cloud access policy / API tokens (`glc_`
+      // + a base64 payload), which GRAFANA_TOKEN / GRAFANA_SERVICE_ACCOUNT_TOKEN
+      // lines, Terraform provider configs and `curl -H "Authorization: Bearer …"`
+      // commands print. Postman API keys (`PMAK-` + 24 hex + `-` + 34 hex), which
+      // POSTMAN_API_KEY lines and `newman` / `postman` CLI commands print.
+      { name: "grafana_token", regex: /\b(?:glsa_[A-Za-z0-9]{32}_[A-Fa-f0-9]{8}(?!\w)|glc_[A-Za-z0-9+\/]{32,400}={0,2}(?![\w+\/=]))/g },
+      { name: "postman_key", regex: /\bPMAK-[a-f0-9]{24}-[a-f0-9]{34}(?!\w)/g },
+      // Pulumi access tokens (`pul-` + 40 hex), which PULUMI_ACCESS_TOKEN lines,
+      // `pulumi login` output and CI configs print. Doppler personal tokens
+      // (`dp.pt.` + 43 alphanumerics), which DOPPLER_TOKEN lines and
+      // `doppler configure` dumps print.
+      { name: "pulumi_token", regex: /\bpul-[a-f0-9]{40}(?!\w)/g },
+      { name: "doppler_token", regex: /\bdp\.pt\.[A-Za-z0-9]{43}(?!\w)/g },
+      // Heroku API keys in the current format (`HRKU-AA` + 58 characters), which
+      // HEROKU_API_KEY lines, `heroku auth:token` output and ~/.netrc dumps print.
+      // Atlassian API tokens (`ATATT3` + 186 characters), which JIRA_API_TOKEN /
+      // CONFLUENCE_API_TOKEN lines and `acli` / `curl -u user:token` commands print.
+      { name: "heroku_key", regex: /\bHRKU-AA[0-9A-Za-z_-]{58}(?![\w-])/g },
+      { name: "atlassian_token", regex: /\bATATT3[A-Za-z0-9_=-]{186}(?![\w=-])/g },
+      // Incoming webhook URLs carry their secret in the path, so anyone holding
+      // one can post to the channel: Slack (`hooks.slack.com/services/T…/B…/…`,
+      // plus workflow and trigger URLs) and Discord (`discord.com/api/webhooks/
+      // <id>/<token>`, discordapp.com and the ptb/canary hosts too), as printed by
+      // `.env` dumps, CI configs and `curl -X POST` commands. Only the last path
+      // segment is replaced, so the host and the workspace/channel ids stay
+      // readable. The host must start the URL's host part (after `//`, `@`, or a
+      // non-URL character), so `example.com/hooks.slack.com/…` keeps its path, and
+      // it matches in any letter case, as DNS does; the path stays case-sensitive.
+      { name: "slack_webhook", regex: new RegExp(String.raw`(?<=${webhookHost(String.raw`hooks\.slack\.com`)}\/(?:services|workflows|triggers)\/T[A-Z0-9]+\/[A-Z0-9]+\/(?:[0-9]+\/)?)[A-Za-z0-9]{20,}(?!\w)`, "g") },
+      { name: "discord_webhook", regex: new RegExp(String.raw`(?<=${webhookHost(String.raw`(?:(?:ptb|canary)\.)?discord(?:app)?\.com`)}\/api\/(?:v\d+\/)?webhooks\/[0-9]{17,20}\/)[A-Za-z0-9_-]{60,}(?![\w-])`, "g") },
+      // claude-mem's own credentials: server API keys (`cmem_` + 43 base64url
+      // chars, server-bootstrap.ts createRawApiKey) and cmem.ai Pro memory keys.
+      { name: "claude_mem_key", regex: /\bcmem_[A-Za-z0-9_-]{32,}|\bcm_pro_[A-Za-z0-9_-]{8,}/g }
+    ].map(matchAfterEscapedWhitespace);
+    GENERIC_REDACTION_PATTERNS = [
+      // `pwd` only as a suffix (`DB_PWD`, `MYSQL_PWD`): the bare `PWD` and
+      // `OLDPWD` environment variables hold a working directory, not a secret.
+      { name: "generic_password", regex: genericBuiltinRegex(keyedLookbehind(String.raw`\b(?:\w*_?(?:password|passwd)|\w+_pwd)`)) },
+      { name: "generic_token", regex: GENERIC_TOKEN_REGEX },
+      { name: "bearer_token", regex: genericBuiltinRegex(`(?<=\\bAuthorization${OPTIONAL_QUOTE}${BOUNDED_SPACE}:${BOUNDED_SPACE}${OPTIONAL_QUOTE}Bearer${BOUNDED_SPACE})`) },
+      // `Authorization: Basic …` carries base64(user:password), a password anyone
+      // can decode, as in `curl -H "Authorization: Basic dXNlcjpodW50ZXIy"`.
+      { name: "basic_auth", regex: genericBuiltinRegex(`(?<=\\bAuthorization${OPTIONAL_QUOTE}${BOUNDED_SPACE}:${BOUNDED_SPACE}${OPTIONAL_QUOTE}Basic${BOUNDED_SPACE})`) }
+    ];
+    MAX_INPUT_CHARS = 1024 * 1024;
+    OVERSIZE_MARKER = "<redacted type='oversize'/>";
+    cachedConfig = null;
+    cacheStamp = 0;
+    CACHE_TTL_MS = 5e3;
+    lastLoadedConfig = null;
+    warnedUnreadableSettings = false;
+    BUILTINS_ONLY = { enabled: true, disabledBuiltinPatterns: [], customPatterns: [], logMatches: false };
+    REDACTION_REQUESTED_IN_RAW = /"CLAUDE_MEM_REDACT_ENABLED"\s*:\s*"true"/;
+    GENERIC_PASSWORD_KEY = /(?:password|passwd)$|\w_pwd$/i;
+    GENERIC_TOKEN_KEY = /(?:^|_)(?:secret|token|api_key)$/i;
+    WHOLE_GENERIC_VALUE = new RegExp(`^${GENERIC_VALUE_CLASS}{8,}$`);
+    AUTHORIZATION_KEY = /^(?:proxy-)?authorization$/i;
+    KEYED_BEARER_VALUE = new RegExp(`^(${BOUNDED_SPACE}Bearer${BOUNDED_SPACE})${GENERIC_VALUE}`, "i");
+    KEYED_BASIC_VALUE = new RegExp(`^(${BOUNDED_SPACE}Basic${BOUNDED_SPACE})${GENERIC_VALUE}`, "i");
+    AWS_SESSION_TOKEN_KEY = /^(?:aws_session_token|SessionToken)$/i;
+    WHOLE_AWS_SESSION_TOKEN_VALUE = /^[A-Za-z0-9/+=]{100,}$/;
+    AWS_SECRET_KEY_KEY = /^(?:aws_secret_access_key|SecretAccessKey)$/i;
+    WHOLE_AWS_SECRET_KEY_VALUE = /^[A-Za-z0-9/+=]{40}$/;
+    COOKIE_KEY = /^(?:set-)?cookie$/i;
+  }
+});
+
+// src/services/sync/diagnostic-redaction.ts
+function redactSyncDiagnostic(value, config = getRedactionConfig()) {
+  if (!config.enabled) return value;
+  let remainingNodes = 5e4;
+  const text5 = (input, keys = []) => {
+    if (!keys.length) return redactSensitive(input, config).redacted;
+    for (const key of keys) {
+      const redacted = redactJsonStrings({ [key]: input }, config)[key];
+      if (redacted !== input) return redacted;
+    }
+    return input;
+  };
+  const walk = (input, depth, keys = []) => {
+    if (depth > 32 || --remainingNodes < 0) return BUDGET_MARKER;
+    if (typeof input === "string") {
+      if (input.length > MAX_DIAGNOSTIC_CHARS) return redactSensitive(input, config).redacted;
+      try {
+        const parsed = JSON.parse(input);
+        if (parsed !== null && (typeof parsed === "object" || typeof parsed === "string")) {
+          const sanitized = walk(parsed, depth + 1, keys);
+          const serialized = JSON.stringify(sanitized);
+          if (serialized !== JSON.stringify(parsed)) return serialized;
+        }
+      } catch {
+      }
+      return text5(input, keys);
+    }
+    if (Array.isArray(input)) return input.length > remainingNodes ? BUDGET_MARKER : input.map((item) => walk(item, depth + 1, keys));
+    if (input && typeof input === "object") {
+      const entries = Object.entries(input);
+      if (entries.length > remainingNodes) return BUDGET_MARKER;
+      return Object.fromEntries(entries.map(([name, item]) => [text5(name, keys), walk(item, depth + 1, [name, ...keys])]));
+    }
+    return input;
+  };
+  return walk(value, 0);
+}
+var MAX_DIAGNOSTIC_CHARS, BUDGET_MARKER;
+var init_diagnostic_redaction = __esm({
+  "src/services/sync/diagnostic-redaction.ts"() {
+    "use strict";
+    init_redaction();
+    MAX_DIAGNOSTIC_CHARS = 1024 * 1024;
+    BUDGET_MARKER = "<redacted type='diagnostic_budget'/>";
+  }
+});
+
+// src/shared/media-contract.ts
+function object(value, keys, code) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) throw new MediaError(code);
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) throw new MediaError(code);
+  const record = value;
+  if (Object.keys(record).some((key) => !keys.includes(key))) throw new MediaError(code);
+  return record;
+}
+function boundedString(value, pattern, max, code) {
+  if (typeof value !== "string" || value.length > max || !pattern.test(value)) throw new MediaError(code);
+  return value;
+}
+function validateMediaManifest(value) {
+  const record = object(value, ["version", "attachments", "overflow"], "invalid_manifest");
+  if (record.version !== MEDIA_MANIFEST_VERSION || !Array.isArray(record.attachments)) throw new MediaError("invalid_manifest");
+  if (record.attachments.length > MEDIA_LIMITS.maxObservationRefs) throw new MediaError("manifest_too_large");
+  if (record.overflow !== void 0 && typeof record.overflow !== "boolean") throw new MediaError("invalid_manifest");
+  const ids = /* @__PURE__ */ new Set();
+  const attachments = Array.from(record.attachments, (value2) => {
+    const ref = object(value2, ["id", "label", "inspection"], "invalid_manifest");
+    const id = boundedString(ref.id, UUID_V4, 36, "invalid_manifest");
+    const label = boundedString(ref.label, LABEL, MEDIA_LIMITS.maxLabelChars, "invalid_manifest");
+    if (ids.has(id) || ref.inspection !== "inspected" && ref.inspection !== "uninspected") throw new MediaError("invalid_manifest");
+    ids.add(id);
+    return { id, label, inspection: ref.inspection };
+  });
+  const result = { version: MEDIA_MANIFEST_VERSION, attachments };
+  if (record.overflow !== void 0) result.overflow = record.overflow;
+  if (new TextEncoder().encode(JSON.stringify(result)).length > MEDIA_LIMITS.maxManifestBytes) throw new MediaError("manifest_too_large");
+  return result;
+}
+var MEDIA_MANIFEST_VERSION, MEDIA_METADATA_NAMESPACE, MEDIA_LIMITS, MediaError, UUID_V4, LABEL;
+var init_media_contract = __esm({
+  "src/shared/media-contract.ts"() {
+    "use strict";
+    MEDIA_MANIFEST_VERSION = 1;
+    MEDIA_METADATA_NAMESPACE = "cmem_media_v1";
+    MEDIA_LIMITS = Object.freeze({
+      // Abuse protection: caps one event at 4 stored images (about 13 MiB) and one
+      // observer turn at 4 derivatives (maxGatewayImageBytes).
+      maxImagesPerEvent: 4,
+      // Provider maximum: Vercel Functions take request bodies up to 4.5 MB; this
+      // plus maxUploadBodyBytes' multipart overhead (3.06 MiB, 3.2 MB) fits.
+      maxSourceBytes: 3 * 1024 * 1024,
+      // Same bound for the stored full-size copy: a lossless re-encode of an accepted
+      // source must still fit, and a stored copy is served back in one Vercel
+      // response, also limited to 4.5 MB.
+      maxCanonicalBytes: 3 * 1024 * 1024,
+      // Owner's rule, 2026-11-05/06: no stored copy is multiple megabytes, and every
+      // copy is lossy WebP. Both converters fit each canonical they encode into this.
+      // maxCanonicalBytes stays the bound for an accepted upload and for reading a
+      // copy stored before this rule (lossless, up to 3 MiB). Measured 2026-11-06 at
+      // quality 80: the largest of 29 real screenshots is 406 KiB, and a 2800x23880
+      // full-page screenshot fitted to 8192 px is 528 KiB, so all keep full
+      // resolution with about 2 times headroom.
+      maxEncodedCanonicalBytes: 1024 * 1024,
+      // Abuse protection (decompression bombs): a decode holds about 4 bytes per
+      // pixel, so at most about 96 MB. A 6016x3384 display (20.4 million px) fits.
+      maxPixels: 24e6,
+      // Abuse protection: bounds long thin images that pass maxPixels. An 8K
+      // display (7680 px wide) fits.
+      maxDimension: 8192,
+      // Abuse protection: one conversion holds a shared instance's CPU. The upload
+      // route's 59 s maxDuration fits this plus two 20 s Storage writes.
+      conversionTimeoutSeconds: 5,
+      // Abuse protection: instances serve concurrent requests, so one decode of up
+      // to about 96 MB runs at a time; others fail fast as conversion_busy and retry.
+      maxConcurrentConversions: 1,
+      // Abuse protection on what a model is sent: 4 of these make the 1 MiB
+      // maxGatewayImageBytes.
+      maxDerivativeBytes: 256 * 1024,
+      // Provider maximum: Anthropic downscales images whose long edge is above
+      // 1,568 px (standard tier, platform.claude.com/docs/en/build-with-claude/vision),
+      // so pixels beyond that cost tokens and add nothing.
+      maxDerivativeDimension: 1536,
+      // One largest source as base64 (3 MiB x 4/3 = 4 MiB), so the local event JSON
+      // stays under its existing 5 MB cap.
+      maxInlineEncodedBytes: 4 * 1024 * 1024,
+      // Abuse protection: metadata.cmem_media_v1 syncs to every device; 32 refs of
+      // about 120 bytes each stay inside maxManifestBytes.
+      maxObservationRefs: 32,
+      // Abuse protection: labels are generated (event1_image1); 64 leaves room and
+      // keeps a ref small.
+      maxLabelChars: 64,
+      // Abuse protection: bounds one manifest; 32 refs need about 4 KiB.
+      maxManifestBytes: 8192,
+      // Abuse protection: bounds the private provenance row; its largest part is
+      // the 4096-character locator.
+      maxProvenanceBytes: 8192,
+      // Operating-system maximum: PATH_MAX is 4096 on Linux (1024 on macOS).
+      maxSourceLocatorChars: 4096,
+      // maxImagesPerEvent x maxDerivativeBytes: the most one observer turn can send.
+      maxGatewayImageBytes: 4 * 256 * 1024,
+      // maxSourceBytes plus 64 KiB for the manifest (8 KiB at most) and multipart
+      // headers; still under Vercel's 4.5 MB request body maximum.
+      maxUploadBodyBytes: 3 * 1024 * 1024 + 64 * 1024,
+      // Abuse protection, sized so a paying user's images are not refused (owner,
+      // 2026-11-05: "dont throw away images, on cloud they'll be PAYING me").
+      // Measured 2026-11-05: the median converted pair (canonical plus derivative)
+      // of 27 real screenshots is 321 KiB, so 100 screenshots a day is about
+      // 11.2 GiB a year. Past the Pro plan's 100 GB, Supabase Storage costs $0.0213
+      // per GB a month (supabase.com/docs/guides/platform/manage-your-usage/
+      // storage-size, read 2026-11-05), so a full owner (26.8 GB) costs about $0.57
+      // a month. Pro enforces it: uploads past it answer 413 quota_exceeded and the
+      // image stays on the computer.
+      ownerQuotaBytes: 25 * 1024 * 1024 * 1024
+    });
+    MediaError = class extends Error {
+      constructor(code, message = code) {
+        super(message);
+        this.code = code;
+        this.name = "MediaError";
+      }
+      code;
+    };
+    UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+    LABEL = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+  }
+});
+
+// src/services/sync/CanonicalContent.ts
+import { createHash as createHash2, randomUUID } from "crypto";
+function jsonError(message) {
+  const reason = redactSyncDiagnostic(message);
+  logger.debug("CLOUD_SYNC", "Rejected invalid canonical content", { reason });
+  throw new Error(`canonical content: ${reason}`);
+}
+function canonicalJson(value) {
+  return JSON.stringify(normalizeJson(value, /* @__PURE__ */ new Set()));
+}
+function normalizeJson(value, seen) {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) jsonError("numbers must be finite");
+    if (!Number.isSafeInteger(value) && Number.isInteger(value)) {
+      jsonError("integers must be safe; use decimal strings for uint64 values");
+    }
+    if (Object.is(value, -0)) return 0;
+    return value;
+  }
+  if (typeof value !== "object") jsonError(`unsupported JSON value ${typeof value}`);
+  if (seen.has(value)) jsonError("cycles are not allowed");
+  seen.add(value);
+  try {
+    if (Array.isArray(value)) return value.map((item) => normalizeJson(item, seen));
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+      jsonError("objects must be plain objects");
+    }
+    const input = value;
+    const output2 = {};
+    for (const key of Object.keys(input).sort()) {
+      const item = input[key];
+      if (item === void 0) jsonError(`undefined is not allowed at ${key}`);
+      output2[key] = normalizeJson(item, seen);
+    }
+    return output2;
+  } finally {
+    seen.delete(value);
+  }
+}
+function sha256Base64Url(value) {
+  return createHash2("sha256").update(value, "utf8").digest("base64url");
+}
+function assertCanonicalDecimal(value, options = {}) {
+  if (typeof value !== "string" || !CANONICAL_DECIMAL.test(value)) {
+    return jsonError("decimal values must be unsigned base-10 strings without leading zeroes");
+  }
+  if (BigInt(value) > UINT64_MAX) jsonError("decimal value exceeds uint64");
+  if (options.positive && value === "0") jsonError("decimal value must be positive");
+  return value;
+}
+function compareCanonicalDecimals(left, right) {
+  assertCanonicalDecimal(left);
+  assertCanonicalDecimal(right);
+  if (left.length !== right.length) return left.length < right.length ? -1 : 1;
+  if (left === right) return 0;
+  return left < right ? -1 : 1;
+}
+function incrementCanonicalDecimal(value) {
+  const canonical = assertCanonicalDecimal(value);
+  if (BigInt(canonical) === UINT64_MAX) jsonError("uint64 sequence overflow");
+  return (BigInt(canonical) + 1n).toString(10);
+}
+var CANONICAL_DECIMAL, UINT64_MAX;
+var init_CanonicalContent = __esm({
+  "src/services/sync/CanonicalContent.ts"() {
+    "use strict";
+    init_logger();
+    init_diagnostic_redaction();
+    init_media_contract();
+    CANONICAL_DECIMAL = /^(?:0|[1-9][0-9]*)$/;
+    UINT64_MAX = 18446744073709551615n;
+  }
+});
+
 // src/services/work-view/work-product.mjs
 import { statSync as statSync3 } from "node:fs";
 import { basename as basename4, extname, isAbsolute } from "node:path";
-import { createHash as createHash2 } from "node:crypto";
+import { createHash as createHash3 } from "node:crypto";
 function safeWebUrl(value) {
   if (typeof value !== "string") return null;
   try {
@@ -2025,7 +2690,7 @@ function productsFromFields(fields, { atEpoch = null, sourceRef: sourceRef2 = nu
 }
 function localProductId(ref) {
   if (!ref || !["observation", "work-state", "deliverable"].includes(ref.kind) || typeof ref.device !== "string" || !ref.device || !/^\d+$/.test(String(ref.row ?? "")) || ref.index !== void 0 && (!Number.isSafeInteger(ref.index) || ref.index < 0)) return null;
-  return `local_${createHash2("sha256").update(JSON.stringify([ref.kind, ref.device, String(ref.row), ref.index ?? 0])).digest("hex")}`;
+  return `local_${createHash3("sha256").update(JSON.stringify([ref.kind, ref.device, String(ref.row), ref.index ?? 0])).digest("hex")}`;
 }
 function mergeProducts(lists, limit = 60) {
   const recorded = lists.flat();
@@ -2224,7 +2889,7 @@ var init_work_product = __esm({
 });
 
 // src/utils/worktree.ts
-import { existsSync as existsSync8, statSync as statSync4, readFileSync as readFileSync6 } from "fs";
+import { existsSync as existsSync9, statSync as statSync4, readFileSync as readFileSync7 } from "fs";
 import path from "path";
 function detectWorktree(cwd) {
   const gitPath = path.join(cwd, ".git");
@@ -2242,7 +2907,7 @@ function detectWorktree(cwd) {
   }
   let content;
   try {
-    content = readFileSync6(gitPath, "utf-8").trim();
+    content = readFileSync7(gitPath, "utf-8").trim();
   } catch (error) {
     logger.warn("GIT", "Failed to read .git file", { error: error instanceof Error ? error.message : String(error) });
     return NOT_A_WORKTREE;
@@ -2275,7 +2940,7 @@ function detectWorktree(cwd) {
     };
   }
   const bareWorktreeMatch = gitdirPath.match(/^(.+)[/\\]worktrees[/\\]([^/\\]+)$/s);
-  if (bareWorktreeMatch && existsSync8(path.join(gitdirPath, "commondir"))) {
+  if (bareWorktreeMatch && existsSync9(path.join(gitdirPath, "commondir"))) {
     const parentRepoPath = bareWorktreeMatch[1];
     const parentProjectName = bareRepositoryProjectName(parentRepoPath);
     if (parentProjectName) {
@@ -2421,7 +3086,7 @@ var init_project_environments = __esm({
 
 // src/utils/project-name.ts
 import path2 from "path";
-import { existsSync as existsSync9, realpathSync as realpathSync3, statSync as statSync5 } from "fs";
+import { existsSync as existsSync10, realpathSync as realpathSync3, statSync as statSync5 } from "fs";
 import { homedir as homedir7, tmpdir } from "os";
 import { execFileSync } from "child_process";
 function findGitRepoRoot(dir) {
@@ -2471,7 +3136,7 @@ function findMarkerProjectRoot(dir) {
     if (parent === current) {
       return null;
     }
-    if (PROJECT_ROOT_MARKERS.some((marker) => existsSync9(path2.join(current, marker)))) {
+    if (PROJECT_ROOT_MARKERS.some((marker) => existsSync10(path2.join(current, marker)))) {
       return current;
     }
     current = parent;
@@ -2681,7 +3346,7 @@ var init_project_name = __esm({
 });
 
 // src/services/work-view/session-project.mjs
-import { existsSync as existsSync10, realpathSync as realpathSync4 } from "node:fs";
+import { existsSync as existsSync11, realpathSync as realpathSync4 } from "node:fs";
 import { homedir as homedir8, tmpdir as tmpdir2 } from "node:os";
 import { basename as basename6, dirname as dirname5, join as join9, resolve as resolve3, sep as sep2 } from "node:path";
 function projectRoot(project, gitRemoteNames = useGitRemoteProjectNames()) {
@@ -2710,7 +3375,7 @@ function repoRootOf(path4) {
       break;
     }
     visited.push(current);
-    if (existsSync10(join9(current, ".git"))) {
+    if (existsSync11(join9(current, ".git"))) {
       found = current;
       break;
     }
@@ -2747,7 +3412,7 @@ function pathsIn(toolInput, platform = process.platform) {
 }
 function folderNeedsProject(folder, storedProject) {
   if (!folder) return TEMP_PROJECT_NAMES.has(storedProject);
-  if (existsSync10(folder)) return !repoRootOf(folder);
+  if (existsSync11(folder)) return !repoRootOf(folder);
   return isAgentScratchFolder(folder);
 }
 function projectFromToolPaths(toolInputs) {
@@ -2846,7 +3511,7 @@ var init_session_project = __esm({
     isAbsoluteOn = (path4, platform) => path4.startsWith("/") && !path4.startsWith("//") || platform === "win32" && /^[A-Za-z]:[/\\]/.test(path4);
     checkoutForPath = (path4) => {
       let current = path4;
-      while (current !== dirname5(current) && !existsSync10(current)) current = dirname5(current);
+      while (current !== dirname5(current) && !existsSync11(current)) current = dirname5(current);
       return repoRootOf(current);
     };
     derivedCache = /* @__PURE__ */ new Map();
@@ -2855,6 +3520,7 @@ var init_session_project = __esm({
 });
 
 // src/services/work-view/request-projection.mjs
+import { createHash as createHash4 } from "node:crypto";
 function requestMediaSummary(activity) {
   const refs = /* @__PURE__ */ new Map();
   for (const entry of activity) for (const ref of entry.media?.attachments ?? []) if (!refs.has(ref.id)) refs.set(ref.id, ref);
@@ -2921,6 +3587,11 @@ function originalFor(session, prompts) {
 function buildHumanRequests(view, records2 = {}, { titleCache = {}, ledger = null, onProductFile = null } = {}) {
   const sessions = new Map((records2.sessions ?? []).map((session) => [session.id, session]));
   const prompts = records2.prompts ?? [];
+  const promptsBySession = /* @__PURE__ */ new Map();
+  for (const prompt of prompts) {
+    if (!promptsBySession.has(prompt.session_db_id)) promptsBySession.set(prompt.session_db_id, []);
+    promptsBySession.get(prompt.session_db_id).push(prompt);
+  }
   const flattened = (view.agents ?? []).flatMap((agent) => (agent.work ?? []).map((item) => ({ ...item, agentId: agent.id, agentLabel: agent.label, agentSessionId: agent.sessionId })));
   const subagentIds = new Set((view.agents ?? []).filter((agent) => agent.isSubagent).map((agent) => agent.id));
   const activityPool = /* @__PURE__ */ new Map();
@@ -2998,7 +3669,7 @@ function buildHumanRequests(view, records2 = {}, { titleCache = {}, ledger = nul
   };
   for (const [key, session] of [...sessionsByKey].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) {
     if (explicitIds.has(key) || ledger?.groups?.ignored?.[key]) continue;
-    const original = originalFor(session, prompts);
+    const original = originalFor(session, promptsBySession.get(session.id) ?? []);
     if (!original) continue;
     const groupId = groupFor(key, session);
     addProject(requestFor(groupId ? JSON.stringify(["overall-request", groupId]) : key, { key, original, groupId }), session.project);
@@ -3019,7 +3690,7 @@ function buildHumanRequests(view, records2 = {}, { titleCache = {}, ledger = nul
       unlinkedWork.push({ ...item, reason: "multiple-explicit-requests-without-item-link" });
       continue;
     }
-    let original = session ? originalFor(session, prompts) : null;
+    let original = session ? originalFor(session, promptsBySession.get(session.id) ?? []) : null;
     const explicitText = isHumanActionRequest(item.requestText) ? requestText(item.requestText) : null;
     if (!original && explicit && explicitText) original = { text: explicitText, source: "explicit-work-state-request", sourceId: item.id, url: item.url, promptNumber: null, atEpoch: item.lastUpdateEpoch ?? null };
     if (!original || !key && !explicit) {
@@ -3060,17 +3731,15 @@ function buildHumanRequests(view, records2 = {}, { titleCache = {}, ledger = nul
     const session = sessionsByKey.get(record.conversationKey);
     if (session) attach(session, record.products ?? []);
   }
-  const sessionIdsByKey = /* @__PURE__ */ new Map(), promptsBySession = /* @__PURE__ */ new Map();
+  const sessionIdsByKey = /* @__PURE__ */ new Map();
   for (const session of sessions.values()) {
     const key = conversationKey(session);
     if (key) sessionIdsByKey.set(key, [...sessionIdsByKey.get(key) ?? [], session.id]);
   }
-  for (const prompt of prompts) {
-    if (!promptsBySession.has(prompt.session_db_id)) promptsBySession.set(prompt.session_db_id, []);
-    promptsBySession.get(prompt.session_db_id).push(prompt);
-  }
   for (const request of requests.values()) {
     const merged = mergeProducts([...recordedProducts.get(request) ?? [], ...request.items.flatMap((item) => item.workProduct ?? [])]);
+    request.sourceProductHash = createHash4("sha256").update(canonicalJson(JSON.parse(JSON.stringify(merged)))).digest("hex");
+    request.sourceProductRecordedAtEpoch = merged.every((product) => Number.isFinite(product.atEpoch) && product.atEpoch > 0) ? merged.reduce((latest, product) => Math.max(latest, product.atEpoch), 0) : null;
     const copies = merged.filter((product) => product.deliverable && product.sourcePath);
     const coverage = new Map(copies.map((copy) => [copy, copyCoversSource(copy, copy.sourcePath)]));
     const covered = (product) => Boolean(product.path) && copies.some((copy) => copy.sourcePath === product.path && coverage.get(copy));
@@ -3144,6 +3813,7 @@ var REQUEST_MEDIA_PREVIEW_LIMIT, ENGLISH_ACTION, IMPERATIVE_OPENING, NOT_A_VERB,
 var init_request_projection = __esm({
   "src/services/work-view/request-projection.mjs"() {
     "use strict";
+    init_CanonicalContent();
     init_work_product();
     init_session_project();
     REQUEST_MEDIA_PREVIEW_LIMIT = 4;
@@ -3186,656 +3856,6 @@ var init_owner_goals = __esm({
 var init_work_state_limits = __esm({
   "src/services/work-view/work-state-limits.mjs"() {
     "use strict";
-  }
-});
-
-// src/utils/redaction.ts
-import { existsSync as existsSync11, readFileSync as readFileSync7 } from "fs";
-function genericBuiltinRegex(lookbehind) {
-  return new RegExp(`${lookbehind}${GENERIC_VALUE}`, "gi");
-}
-function webhookHost(host) {
-  const ci = host.replace(/\\.|[a-z]/g, (c) => c.length === 1 ? `[${c}${c.toUpperCase()}]` : c);
-  return String.raw`(?:^|\/\/|@|[^\w.\/@%-])${ci}`;
-}
-function keyedLookbehind(key) {
-  return `(?<=${key}${OPTIONAL_QUOTE}${BOUNDED_SPACE}[=:]${BOUNDED_SPACE}${OPTIONAL_QUOTE})`;
-}
-function matchAfterEscapedWhitespace(pattern) {
-  const source = pattern.regex.source.replace(/(^|\||\(\?:)\\b/g, `$1${ESCAPED_WHITESPACE_OR_WORD_BOUNDARY}`);
-  return { ...pattern, regex: new RegExp(source, pattern.regex.flags) };
-}
-function redactSensitive(input, config) {
-  if (!config.enabled || input.length === 0) {
-    return { redacted: input, counts: {}, oversize: false };
-  }
-  if (input.length > MAX_INPUT_CHARS) {
-    logger.warn("REDACT", "field exceeds the 1M-char redaction cap; replaced by an oversize marker", void 0, {
-      inputLength: input.length
-    });
-    return { redacted: OVERSIZE_MARKER, counts: { oversize: 1 }, oversize: true };
-  }
-  const disabled = new Set(config.disabledBuiltinPatterns ?? []);
-  const counts = {};
-  let working = input;
-  const compiledCustom = [];
-  for (const cp of config.customPatterns ?? []) {
-    if (!cp.name || cp.name.length === 0) {
-      logger.warn("REDACT", "custom pattern skipped: missing name", void 0, { pattern: cp });
-      continue;
-    }
-    try {
-      compiledCustom.push({ name: cp.name, regex: new RegExp(cp.regex, "g") });
-    } catch (error) {
-      logger.warn("REDACT", "custom pattern skipped: invalid regex", { name: cp.name }, error instanceof Error ? error : new Error(String(error)));
-    }
-  }
-  const allPatterns = [
-    ...compiledCustom,
-    ...BUILTIN_REDACTION_PATTERNS,
-    ...config.genericEnabled ? GENERIC_REDACTION_PATTERNS : []
-  ];
-  for (const pattern of allPatterns) {
-    if (disabled.has(pattern.name)) continue;
-    pattern.regex.lastIndex = 0;
-    working = working.replace(pattern.regex, () => {
-      counts[pattern.name] = (counts[pattern.name] ?? 0) + 1;
-      return `<redacted type='${pattern.name}'/>`;
-    });
-  }
-  if (config.logMatches && Object.keys(counts).length > 0) {
-    logger.debug("REDACT", "patterns matched", void 0, { counts });
-  }
-  return { redacted: working, counts, oversize: false };
-}
-function safeParseCustomPatterns(raw) {
-  if (!raw || raw.trim() === "") return [];
-  try {
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) {
-      logger.warn("REDACT", "CLAUDE_MEM_REDACT_CUSTOM_PATTERNS is not a JSON array, ignoring");
-      return [];
-    }
-    return parsed.filter((p) => p && typeof p.name === "string" && typeof p.regex === "string");
-  } catch (error) {
-    logger.warn(
-      "REDACT",
-      "failed to parse CLAUDE_MEM_REDACT_CUSTOM_PATTERNS as JSON",
-      void 0,
-      error instanceof Error ? error : new Error(String(error))
-    );
-    return [];
-  }
-}
-function loadRedactionConfig(settings2) {
-  return {
-    enabled: settings2.CLAUDE_MEM_REDACT_ENABLED === "true",
-    disabledBuiltinPatterns: (settings2.CLAUDE_MEM_REDACT_DISABLED_BUILTINS ?? "").split(",").map((s) => s.trim()).filter(Boolean),
-    customPatterns: safeParseCustomPatterns(settings2.CLAUDE_MEM_REDACT_CUSTOM_PATTERNS ?? "[]"),
-    logMatches: settings2.CLAUDE_MEM_REDACT_LOG_MATCHES === "true",
-    genericEnabled: settings2.CLAUDE_MEM_REDACT_GENERIC_ENABLED === "true"
-  };
-}
-function readSettingsText(settingsPath) {
-  if (!existsSync11(settingsPath)) return null;
-  try {
-    return readFileSync7(settingsPath, "utf-8");
-  } catch {
-    return "";
-  }
-}
-function isUnreadableSettings(text5) {
-  if (text5 === null) return false;
-  try {
-    const parsed = JSON.parse(stripUtf8Bom(text5));
-    return parsed === null || typeof parsed !== "object" || Array.isArray(parsed);
-  } catch {
-    return true;
-  }
-}
-function configForUnreadableSettings(settingsPath, text5, loaded) {
-  if (process.env.CLAUDE_MEM_REDACT_ENABLED === "false") return loaded;
-  const requested = lastLoadedConfig?.enabled === true || REDACTION_REQUESTED_IN_RAW.test(text5);
-  if (!requested) return loaded;
-  if (!warnedUnreadableSettings) {
-    warnedUnreadableSettings = true;
-    logger.warn("REDACT", "settings.json could not be read; secret redaction stays on until it is repaired", {
-      settingsPath,
-      using: lastLoadedConfig?.enabled ? "the last configuration that loaded" : "the built-in patterns"
-    });
-  }
-  return lastLoadedConfig?.enabled ? lastLoadedConfig : BUILTINS_ONLY;
-}
-function getRedactionConfig(settingsPath = USER_SETTINGS_PATH) {
-  const now = Date.now();
-  if (cachedConfig && now - cacheStamp < CACHE_TTL_MS) {
-    return cachedConfig;
-  }
-  const settings2 = SettingsDefaultsManager.loadFromFile(settingsPath);
-  const loaded = loadRedactionConfig(settings2);
-  const text5 = loaded.enabled ? null : readSettingsText(settingsPath);
-  if (isUnreadableSettings(text5)) {
-    cachedConfig = configForUnreadableSettings(settingsPath, text5, loaded);
-  } else {
-    cachedConfig = loaded;
-    lastLoadedConfig = loaded;
-  }
-  cacheStamp = now;
-  return cachedConfig;
-}
-function genericMarkerForKeyedValue(key, value, config) {
-  if (!config.genericEnabled) return null;
-  const name = GENERIC_PASSWORD_KEY.test(key) ? "generic_password" : GENERIC_TOKEN_KEY.test(key) ? "generic_token" : null;
-  if (!name) return null;
-  if (config.disabledBuiltinPatterns?.includes(name)) return null;
-  if (!WHOLE_GENERIC_VALUE.test(value) || !/[A-Za-z]/.test(value)) return null;
-  return `<redacted type='${name}'/>`;
-}
-function bearerMarkerForKeyedValue(key, value, config) {
-  if (!config.genericEnabled || config.disabledBuiltinPatterns?.includes("bearer_token")) return null;
-  if (!AUTHORIZATION_KEY.test(key)) return null;
-  const match = KEYED_BEARER_VALUE.exec(value);
-  return match ? `${match[1]}<redacted type='bearer_token'/>${value.slice(match[0].length)}` : null;
-}
-function basicMarkerForKeyedValue(key, value, config) {
-  if (!config.genericEnabled || config.disabledBuiltinPatterns?.includes("basic_auth")) return null;
-  if (!AUTHORIZATION_KEY.test(key)) return null;
-  const match = KEYED_BASIC_VALUE.exec(value);
-  return match ? `${match[1]}<redacted type='basic_auth'/>${value.slice(match[0].length)}` : null;
-}
-function awsSessionTokenMarkerForKeyedValue(key, value, config) {
-  if (config.disabledBuiltinPatterns?.includes("aws_session_token")) return null;
-  if (!AWS_SESSION_TOKEN_KEY.test(key) || !WHOLE_AWS_SESSION_TOKEN_VALUE.test(value)) return null;
-  return "<redacted type='aws_session_token'/>";
-}
-function awsSecretKeyMarkerForKeyedValue(key, value, config) {
-  if (config.disabledBuiltinPatterns?.includes("aws_secret_key")) return null;
-  if (!AWS_SECRET_KEY_KEY.test(key) || !WHOLE_AWS_SECRET_KEY_VALUE.test(value)) return null;
-  return "<redacted type='aws_secret_key'/>";
-}
-function cookieMarkerForKeyedValue(key, value, config) {
-  if (config.disabledBuiltinPatterns?.includes("cookie_header")) return null;
-  if (!COOKIE_KEY.test(key) || value.trim().length < 4) return null;
-  return "<redacted type='cookie_header'/>";
-}
-function redactJsonStrings(value, config = getRedactionConfig()) {
-  if (!config.enabled) return value;
-  const walk = (node, key) => {
-    if (typeof node === "string") {
-      const cookieMarker = key === void 0 ? null : cookieMarkerForKeyedValue(key, node, config);
-      if (cookieMarker) return cookieMarker;
-      const result = redactSensitive(node, config);
-      if (key === void 0 || Object.keys(result.counts).length > 0) return result.redacted;
-      return awsSessionTokenMarkerForKeyedValue(key, node, config) ?? awsSecretKeyMarkerForKeyedValue(key, node, config) ?? bearerMarkerForKeyedValue(key, node, config) ?? basicMarkerForKeyedValue(key, node, config) ?? genericMarkerForKeyedValue(key, node, config) ?? result.redacted;
-    }
-    if (Array.isArray(node)) return node.map((child) => walk(child, key !== void 0 && COOKIE_KEY.test(key) ? key : void 0));
-    if (node !== null && typeof node === "object") {
-      return Object.fromEntries(Object.entries(node).map(([childKey, child]) => [childKey, walk(child, childKey)]));
-    }
-    return node;
-  };
-  return walk(value);
-}
-var GENERIC_VALUE_CLASS, GENERIC_VALUE, OPTIONAL_QUOTE, BOUNDED_SPACE, BARE_TOKEN_KEY, ESCAPED_QUOTE, STRING_EDGE, ASSIGNMENT_START, LINE_START, LINE_END, GENERIC_TOKEN_REGEX, ESCAPED_WHITESPACE_OR_WORD_BOUNDARY, COOKIE_VALUE_CHAR, BUILTIN_REDACTION_PATTERNS, GENERIC_REDACTION_PATTERNS, MAX_INPUT_CHARS, OVERSIZE_MARKER, cachedConfig, cacheStamp, CACHE_TTL_MS, lastLoadedConfig, warnedUnreadableSettings, BUILTINS_ONLY, REDACTION_REQUESTED_IN_RAW, GENERIC_PASSWORD_KEY, GENERIC_TOKEN_KEY, WHOLE_GENERIC_VALUE, AUTHORIZATION_KEY, KEYED_BEARER_VALUE, KEYED_BASIC_VALUE, AWS_SESSION_TOKEN_KEY, WHOLE_AWS_SESSION_TOKEN_VALUE, AWS_SECRET_KEY_KEY, WHOLE_AWS_SECRET_KEY_VALUE, COOKIE_KEY;
-var init_redaction = __esm({
-  "src/utils/redaction.ts"() {
-    "use strict";
-    init_logger();
-    init_SettingsDefaultsManager();
-    init_paths();
-    init_atomic_json();
-    GENERIC_VALUE_CLASS = String.raw`[A-Za-z0-9_.\-+/=~@#$%^*!?]`;
-    GENERIC_VALUE = `(?=${GENERIC_VALUE_CLASS}{8})${GENERIC_VALUE_CLASS}*[A-Za-z]${GENERIC_VALUE_CLASS}*`;
-    OPTIONAL_QUOTE = String.raw`(?:\\{0,3}["'])?`;
-    BOUNDED_SPACE = String.raw`\s{0,8}`;
-    BARE_TOKEN_KEY = String.raw`(?:token|secret|api_key)`;
-    ESCAPED_QUOTE = String.raw`\\{0,3}["']`;
-    STRING_EDGE = String.raw`(?<!\\)"`;
-    ASSIGNMENT_START = String.raw`(?:^|[\s?&]|\\[nrt]|${STRING_EDGE})`;
-    LINE_START = String.raw`(?:^|\n|\\n|${STRING_EDGE})[ \t]{0,8}(?:-[ \t]{1,8})?`;
-    LINE_END = String.raw`(?:${ESCAPED_QUOTE})?[ \t]{0,8}(?:$|\r?\n|\\{1,3}[rn]|#|${STRING_EDGE})`;
-    GENERIC_TOKEN_REGEX = new RegExp([
-      `${keyedLookbehind(String.raw`\b\w*_${BARE_TOKEN_KEY}`)}${GENERIC_VALUE}`,
-      `(?<=${ESCAPED_QUOTE}${BARE_TOKEN_KEY}${ESCAPED_QUOTE}${BOUNDED_SPACE}:${BOUNDED_SPACE}${ESCAPED_QUOTE})${GENERIC_VALUE}`,
-      `(?<=${ASSIGNMENT_START}${BARE_TOKEN_KEY}=${OPTIONAL_QUOTE})${GENERIC_VALUE}(?!\\(|${GENERIC_VALUE_CLASS})`,
-      String.raw`(?<=--(?:[a-z0-9]+[-_])*(?:token|secret|api[-_]key)(?:=|[ \t]{1,8})${OPTIONAL_QUOTE})${GENERIC_VALUE}`,
-      `(?<=${LINE_START}${BARE_TOKEN_KEY}:[ \\t]{1,8}${OPTIONAL_QUOTE})${GENERIC_VALUE}(?=${LINE_END})`
-    ].join("|"), "gi");
-    ESCAPED_WHITESPACE_OR_WORD_BOUNDARY = String.raw`(?:(?<=\\[nrt])|\b)`;
-    COOKIE_VALUE_CHAR = String.raw`[^\\\n\r"'\`<]`;
-    BUILTIN_REDACTION_PATTERNS = [
-      // A `Cookie`/`Set-Cookie` header value is a session credential whatever the
-      // cookie is named (`Cookie: sessionid=...`, `set-cookie: sid=...`), as printed
-      // by `curl -v`, a proxy log or a captured response dump. Only the value is
-      // replaced, so the key stays readable. The Cowork shim has redacted these
-      // since the plugin landed (its COOKIE_RE, #3733), so the same session text
-      // was redacted on the way to cmem.ai and stored verbatim by the local worker.
-      // keyedLookbehind takes JSON-escaped keys (`\"Cookie\":\"…\"`); an optional
-      // `[` takes the first entry of Node's `"set-cookie": ["…"]` array. The value
-      // stops at a line end, a quote or a backslash, so in `JSON.stringify` text it
-      // ends before an escaped `\n` or `\"` and leaves the rest of the payload and
-      // its JSON intact, and at `<`, so it never re-redacts its own marker. The
-      // 4-char floor keeps a bare `Cookie: x` placeholder out. First in the list:
-      // the whole header value goes before a vendor pattern can split it with its
-      // marker and leave a later cookie in the same header readable.
-      { name: "cookie_header", regex: new RegExp(`(?<=(?:\\b(?:set-)?cookie)${OPTIONAL_QUOTE}${BOUNDED_SPACE}[=:]${BOUNDED_SPACE}(?:\\[${BOUNDED_SPACE})?${OPTIONAL_QUOTE})(?![ \\t])${COOKIE_VALUE_CHAR}{4,}`, "gi") },
-      // The password in a URL's userinfo: `postgres://app:hunter2@db/prod`,
-      // `redis://:hunter2@cache:6379/0`, `https://user:pass@host/repo.git` (what
-      // `git remote -v` and a DATABASE_URL print). Only the password is replaced,
-      // so the scheme, user and host stay readable. The value stops at `/`, `@`,
-      // whitespace and quotes; a `<` start keeps an earlier marker and a `$`/`{`
-      // start keeps a `${DB_PASS}` placeholder from being taken for a secret.
-      // First in the list, so the whole password goes before a vendor pattern can
-      // split it with its marker and leave the rest of it behind.
-      { name: "url_credentials", regex: /(?<=\b[a-z][a-z0-9+.-]*:\/\/[^\s:\/@'"<>]*:)(?![${<])[^\s\/@'"<>]+(?=@)/gi },
-      // `AKIA` is a long-term access key ID; `ASIA` is the temporary one that STS,
-      // SSO and instance roles hand out (`aws sts assume-role`, `aws configure
-      // export-credentials`), printed next to its secret and session token.
-      { name: "aws_access_key", regex: /(?:AKIA|ASIA)[0-9A-Z]{16}/g },
-      // Anchored to its key names: `AWS_SECRET_ACCESS_KEY=…` in env output,
-      // `aws_secret_access_key = …` in ~/.aws/credentials and SDK arguments (any
-      // letter case), and `"SecretAccessKey": "…"` in `aws sts` / `aws configure
-      // export-credentials` JSON, which prints it beside the ASIA key ID and the
-      // session token. keyedLookbehind also takes JSON-style `"KEY": "val"`.
-      { name: "aws_secret_key", regex: new RegExp(`${keyedLookbehind(String.raw`(?:aws_secret_access_key|\bSecretAccessKey)`)}[A-Za-z0-9/+=]{40}`, "gi") },
-      // The session token of temporary credentials (STS, SSO, `aws configure
-      // export-credentials`) grants access together with the key pair, so it is
-      // anchored to its key names the same way: `AWS_SESSION_TOKEN=…` in env
-      // output, `aws_session_token = …` in ~/.aws/credentials and
-      // `"SessionToken": "…"` in `aws sts` JSON. Real tokens run to hundreds of
-      // base64 characters; the 100-char floor keeps short placeholders out.
-      { name: "aws_session_token", regex: new RegExp(`${keyedLookbehind(String.raw`\b(?:aws_session_token|SessionToken)`)}[A-Za-z0-9/+=]{100,}`, "gi") },
-      { name: "github_pat", regex: /\bgh[oprsu]_[A-Za-z0-9]{36}\b|\bgithub_pat_[A-Za-z0-9_]{82}\b/g },
-      // openai_key, anthropic_key, slack_token, jwt and google_api_key end in a
-      // class that includes `-`. A closing `\b` after a `-` needs a word character
-      // to follow, so a Google key ending in `-` was not redacted at all and the
-      // others left their final `-` in the stored text. `(?!\w)` is the same
-      // "the token ends here" check without that gap.
-      { name: "openai_key", regex: /\bsk-(?!ant-)[A-Za-z0-9_-]{20,}(?!\w)/g },
-      { name: "anthropic_key", regex: /\bsk-ant-[A-Za-z0-9_-]{20,}(?!\w)/g },
-      // Slack bot/user/legacy tokens (`xoxb-`, `xoxp-`, …), refresh tokens from
-      // token rotation (`xoxe-`) and app-level Socket Mode tokens (`xapp-`).
-      { name: "slack_token", regex: /\b(?:xox[abeprs]|xapp)-[A-Za-z0-9-]{10,}(?!\w)/g },
-      { name: "jwt", regex: /\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?!\w)/g },
-      // A PGP secret key is armored as `PRIVATE KEY BLOCK`, and an encrypted
-      // PKCS#8 key as `ENCRYPTED PRIVATE KEY`.
-      { name: "private_key_pem", regex: /-----BEGIN (?:RSA |DSA |EC |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY(?: BLOCK)?-----[\s\S]*?-----END (?:RSA |DSA |EC |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY(?: BLOCK)?-----/g },
-      // API keys (`sk_`/`pk_`/`rk_`) and webhook signing secrets (`whsec_`, what
-      // `stripe listen` prints and STRIPE_WEBHOOK_SECRET holds), which forge events.
-      { name: "stripe_key", regex: /\b(?:(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{24,}|whsec_[A-Za-z0-9]{32,})\b/g },
-      { name: "google_api_key", regex: /\bAIza[0-9A-Za-z_-]{35}(?!\w)/g },
-      // Google OAuth 2.0 access tokens: `ya29.` + a base64url body, plus the
-      // `ya29.c.` form the GCE metadata server hands out. `gcloud auth
-      // print-access-token`, `curl -H "Authorization: Bearer …"` lines and token
-      // JSON print them; each grants an hour of the account's API access.
-      { name: "google_oauth_token", regex: /\bya29\.(?:c\.)?[0-9A-Za-z_-]{20,}(?!\w)/g },
-      // GitLab personal/project/group access tokens (`glpat-`), deploy tokens (`gldt-`),
-      // and runner authentication tokens (`glrt-` + 20 chars; newer routable tokens
-      // add dot-separated segments), Hugging Face user access tokens (`hf_` + 34 chars),
-      // npm access tokens (`npm_` + 36 chars) and Docker Hub personal access tokens
-      // (`dckr_pat_` + 27 chars): credentials printed in config files, CLI commands
-      // (`glab`, `huggingface-cli`, `npm`, `docker login`), and env dumps.
-      { name: "gitlab_token", regex: /\bgl(?:pat|dt|rt)-[A-Za-z0-9_-]{20,}(?:\.[A-Za-z0-9_-]+)*(?!\w)/g },
-      { name: "huggingface_token", regex: /\bhf_[A-Za-z0-9]{30,}\b/g },
-      { name: "npm_token", regex: /\bnpm_[A-Za-z0-9]{36}\b/g },
-      { name: "docker_pat", regex: /\bdckr_pat_[A-Za-z0-9_-]{27,}(?!\w)/g },
-      // Linear personal API keys (`lin_api_` + 40 alphanumerics) and Notion
-      // integration tokens (`ntn_` + 46 alphanumerics, and the older `secret_` +
-      // 43): what `LINEAR_API_KEY=…` / `NOTION_TOKEN=…` lines, MCP server configs
-      // and `curl -H "Authorization: …"` commands print. Fixed lengths keep
-      // `secret_` words and short look-alikes out.
-      { name: "linear_key", regex: /\blin_api_[A-Za-z0-9]{40}(?!\w)/g },
-      { name: "notion_token", regex: /\b(?:ntn_[A-Za-z0-9]{46}|secret_[A-Za-z0-9]{43})(?!\w)/g },
-      // SendGrid API keys (`SG.` + 22 + `.` + 43 base64url chars), DigitalOcean
-      // personal access, OAuth and refresh tokens (`dop_v1_`/`doo_v1_`/`dor_v1_` +
-      // 64 hex) and Shopify Admin API, app and shared-secret tokens (`shpat_`,
-      // `shpca_`, `shppa_`, `shpss_` + 32 hex): what `doctl`, the Shopify CLI and
-      // `.env` dumps print.
-      { name: "sendgrid_key", regex: /\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}(?![\w-])/g },
-      { name: "digitalocean_token", regex: /\bdo[opr]_v1_[a-f0-9]{64}\b/g },
-      { name: "shopify_token", regex: /\bshp(?:at|ca|pa|ss)_[a-fA-F0-9]{32}\b/g },
-      // PyPI API tokens: `pypi-` + a base64url macaroon whose header always
-      // starts `AgE` (pypi.org and test.pypi.org alike), printed by `twine`,
-      // `uv publish` and `~/.pypirc` dumps. Real tokens run past 150 characters.
-      { name: "pypi_token", regex: /\bpypi-AgE[A-Za-z0-9_-]{50,}(?!\w)/g },
-      // Databricks personal access tokens (`dapi` + 32 hex, sometimes with a
-      // `-<digit>` suffix) that DATABRICKS_TOKEN, `~/.databrickscfg` and
-      // `databricks tokens create` print, and HashiCorp Vault service and batch
-      // tokens (`hvs.` + 90-120 and `hvb.` + 138-300 base64url chars) that
-      // VAULT_TOKEN, `~/.vault-token` and `vault login` / `vault token create`
-      // print.
-      { name: "databricks_token", regex: /\bdapi[a-f0-9]{32}(?:-\d)?(?!\w)/g },
-      { name: "vault_token", regex: /\b(?:hvs\.[\w-]{90,120}|hvb\.[\w-]{138,300})(?![\w-])/g },
-      // Two OpenAI-compatible providers this project onboards users for
-      // (src/shared/openai-compat-presets.ts): NVIDIA NIM issues `nvapi-` keys and
-      // Runcrate issues `rc_live_` keys. Both presets tell the user the prefix in
-      // their installer hint, and neither was claimed by openai_key (`sk-`), so a
-      // key pasted into a session (or printed by a `curl`/`.env` dump) was stored
-      // verbatim. 32+ trailing chars keeps short placeholders out.
-      { name: "nvidia_nim_key", regex: /\bnvapi-[A-Za-z0-9_-]{32,}(?!\w)/g },
-      { name: "runcrate_key", regex: /\brc_live_[A-Za-z0-9_-]{24,}(?!\w)/g },
-      // Groq API keys (`gsk_` + 52 alphanumerics) and xAI API keys (`xai-` + 80
-      // chars): LLM provider keys that `.env` files, `export GROQ_API_KEY=…` /
-      // `XAI_API_KEY=…` lines and `curl -H "Authorization: Bearer …"` commands
-      // print. Neither prefix is claimed by openai_key, so they stayed in the text.
-      { name: "groq_key", regex: /\bgsk_[A-Za-z0-9]{52}(?!\w)/g },
-      { name: "xai_key", regex: /\bxai-[A-Za-z0-9_]{80}(?!\w)/g },
-      // Perplexity API keys (`pplx-` + 48 alphanumerics): an LLM provider key
-      // that `.env` files, `export PERPLEXITY_API_KEY=…` lines and `curl -H
-      // "Authorization: Bearer …"` commands print. The prefix is not claimed by
-      // openai_key, and Perplexity model ids share it (`pplx-embed-v1-4b`), so
-      // the fixed 48-char alphanumeric body keeps the model ids out.
-      { name: "perplexity_key", regex: /\bpplx-[A-Za-z0-9]{48}(?!\w)/g },
-      // Supabase personal access tokens (`sbp_` + 40 hex, what `supabase login`
-      // stores and SUPABASE_ACCESS_TOKEN holds) and Sentry auth tokens: personal
-      // ones (`sntryu_` + 64 hex) and organization ones (`sntrys_` + a base64
-      // payload + `_` + a 43-char base64 secret), which SENTRY_AUTH_TOKEN lines,
-      // `.sentryclirc` dumps and source-map upload commands print.
-      { name: "supabase_token", regex: /\bsbp_[a-f0-9]{40}(?!\w)/g },
-      { name: "sentry_token", regex: /\b(?:sntryu_[a-f0-9]{64}(?!\w)|sntrys_[A-Za-z0-9+\/]{20,}={0,2}_[A-Za-z0-9+\/]{43}(?![\w+\/]))/g },
-      // Grafana tokens: service account tokens (`glsa_` + 32 alphanumerics + `_`
-      // + an 8-hex checksum) and Grafana Cloud access policy / API tokens (`glc_`
-      // + a base64 payload), which GRAFANA_TOKEN / GRAFANA_SERVICE_ACCOUNT_TOKEN
-      // lines, Terraform provider configs and `curl -H "Authorization: Bearer …"`
-      // commands print. Postman API keys (`PMAK-` + 24 hex + `-` + 34 hex), which
-      // POSTMAN_API_KEY lines and `newman` / `postman` CLI commands print.
-      { name: "grafana_token", regex: /\b(?:glsa_[A-Za-z0-9]{32}_[A-Fa-f0-9]{8}(?!\w)|glc_[A-Za-z0-9+\/]{32,400}={0,2}(?![\w+\/=]))/g },
-      { name: "postman_key", regex: /\bPMAK-[a-f0-9]{24}-[a-f0-9]{34}(?!\w)/g },
-      // Pulumi access tokens (`pul-` + 40 hex), which PULUMI_ACCESS_TOKEN lines,
-      // `pulumi login` output and CI configs print. Doppler personal tokens
-      // (`dp.pt.` + 43 alphanumerics), which DOPPLER_TOKEN lines and
-      // `doppler configure` dumps print.
-      { name: "pulumi_token", regex: /\bpul-[a-f0-9]{40}(?!\w)/g },
-      { name: "doppler_token", regex: /\bdp\.pt\.[A-Za-z0-9]{43}(?!\w)/g },
-      // Incoming webhook URLs carry their secret in the path, so anyone holding
-      // one can post to the channel: Slack (`hooks.slack.com/services/T…/B…/…`,
-      // plus workflow and trigger URLs) and Discord (`discord.com/api/webhooks/
-      // <id>/<token>`, discordapp.com and the ptb/canary hosts too), as printed by
-      // `.env` dumps, CI configs and `curl -X POST` commands. Only the last path
-      // segment is replaced, so the host and the workspace/channel ids stay
-      // readable. The host must start the URL's host part (after `//`, `@`, or a
-      // non-URL character), so `example.com/hooks.slack.com/…` keeps its path, and
-      // it matches in any letter case, as DNS does; the path stays case-sensitive.
-      { name: "slack_webhook", regex: new RegExp(String.raw`(?<=${webhookHost(String.raw`hooks\.slack\.com`)}\/(?:services|workflows|triggers)\/T[A-Z0-9]+\/[A-Z0-9]+\/(?:[0-9]+\/)?)[A-Za-z0-9]{20,}(?!\w)`, "g") },
-      { name: "discord_webhook", regex: new RegExp(String.raw`(?<=${webhookHost(String.raw`(?:(?:ptb|canary)\.)?discord(?:app)?\.com`)}\/api\/(?:v\d+\/)?webhooks\/[0-9]{17,20}\/)[A-Za-z0-9_-]{60,}(?![\w-])`, "g") },
-      // claude-mem's own credentials: server API keys (`cmem_` + 43 base64url
-      // chars, server-bootstrap.ts createRawApiKey) and cmem.ai Pro memory keys.
-      { name: "claude_mem_key", regex: /\bcmem_[A-Za-z0-9_-]{32,}|\bcm_pro_[A-Za-z0-9_-]{8,}/g }
-    ].map(matchAfterEscapedWhitespace);
-    GENERIC_REDACTION_PATTERNS = [
-      // `pwd` only as a suffix (`DB_PWD`, `MYSQL_PWD`): the bare `PWD` and
-      // `OLDPWD` environment variables hold a working directory, not a secret.
-      { name: "generic_password", regex: genericBuiltinRegex(keyedLookbehind(String.raw`\b(?:\w*_?(?:password|passwd)|\w+_pwd)`)) },
-      { name: "generic_token", regex: GENERIC_TOKEN_REGEX },
-      { name: "bearer_token", regex: genericBuiltinRegex(`(?<=\\bAuthorization${OPTIONAL_QUOTE}${BOUNDED_SPACE}:${BOUNDED_SPACE}${OPTIONAL_QUOTE}Bearer${BOUNDED_SPACE})`) },
-      // `Authorization: Basic …` carries base64(user:password), a password anyone
-      // can decode, as in `curl -H "Authorization: Basic dXNlcjpodW50ZXIy"`.
-      { name: "basic_auth", regex: genericBuiltinRegex(`(?<=\\bAuthorization${OPTIONAL_QUOTE}${BOUNDED_SPACE}:${BOUNDED_SPACE}${OPTIONAL_QUOTE}Basic${BOUNDED_SPACE})`) }
-    ];
-    MAX_INPUT_CHARS = 1024 * 1024;
-    OVERSIZE_MARKER = "<redacted type='oversize'/>";
-    cachedConfig = null;
-    cacheStamp = 0;
-    CACHE_TTL_MS = 5e3;
-    lastLoadedConfig = null;
-    warnedUnreadableSettings = false;
-    BUILTINS_ONLY = { enabled: true, disabledBuiltinPatterns: [], customPatterns: [], logMatches: false };
-    REDACTION_REQUESTED_IN_RAW = /"CLAUDE_MEM_REDACT_ENABLED"\s*:\s*"true"/;
-    GENERIC_PASSWORD_KEY = /(?:password|passwd)$|\w_pwd$/i;
-    GENERIC_TOKEN_KEY = /(?:^|_)(?:secret|token|api_key)$/i;
-    WHOLE_GENERIC_VALUE = new RegExp(`^${GENERIC_VALUE_CLASS}{8,}$`);
-    AUTHORIZATION_KEY = /^(?:proxy-)?authorization$/i;
-    KEYED_BEARER_VALUE = new RegExp(`^(${BOUNDED_SPACE}Bearer${BOUNDED_SPACE})${GENERIC_VALUE}`, "i");
-    KEYED_BASIC_VALUE = new RegExp(`^(${BOUNDED_SPACE}Basic${BOUNDED_SPACE})${GENERIC_VALUE}`, "i");
-    AWS_SESSION_TOKEN_KEY = /^(?:aws_session_token|SessionToken)$/i;
-    WHOLE_AWS_SESSION_TOKEN_VALUE = /^[A-Za-z0-9/+=]{100,}$/;
-    AWS_SECRET_KEY_KEY = /^(?:aws_secret_access_key|SecretAccessKey)$/i;
-    WHOLE_AWS_SECRET_KEY_VALUE = /^[A-Za-z0-9/+=]{40}$/;
-    COOKIE_KEY = /^(?:set-)?cookie$/i;
-  }
-});
-
-// src/services/sync/diagnostic-redaction.ts
-function redactSyncDiagnostic(value, config = getRedactionConfig()) {
-  if (!config.enabled) return value;
-  let remainingNodes = 5e4;
-  const text5 = (input, keys = []) => {
-    if (!keys.length) return redactSensitive(input, config).redacted;
-    for (const key of keys) {
-      const redacted = redactJsonStrings({ [key]: input }, config)[key];
-      if (redacted !== input) return redacted;
-    }
-    return input;
-  };
-  const walk = (input, depth, keys = []) => {
-    if (depth > 32 || --remainingNodes < 0) return BUDGET_MARKER;
-    if (typeof input === "string") {
-      if (input.length > MAX_DIAGNOSTIC_CHARS) return redactSensitive(input, config).redacted;
-      try {
-        const parsed = JSON.parse(input);
-        if (parsed !== null && (typeof parsed === "object" || typeof parsed === "string")) {
-          const sanitized = walk(parsed, depth + 1, keys);
-          const serialized = JSON.stringify(sanitized);
-          if (serialized !== JSON.stringify(parsed)) return serialized;
-        }
-      } catch {
-      }
-      return text5(input, keys);
-    }
-    if (Array.isArray(input)) return input.length > remainingNodes ? BUDGET_MARKER : input.map((item) => walk(item, depth + 1, keys));
-    if (input && typeof input === "object") {
-      const entries = Object.entries(input);
-      if (entries.length > remainingNodes) return BUDGET_MARKER;
-      return Object.fromEntries(entries.map(([name, item]) => [text5(name, keys), walk(item, depth + 1, [name, ...keys])]));
-    }
-    return input;
-  };
-  return walk(value, 0);
-}
-var MAX_DIAGNOSTIC_CHARS, BUDGET_MARKER;
-var init_diagnostic_redaction = __esm({
-  "src/services/sync/diagnostic-redaction.ts"() {
-    "use strict";
-    init_redaction();
-    MAX_DIAGNOSTIC_CHARS = 1024 * 1024;
-    BUDGET_MARKER = "<redacted type='diagnostic_budget'/>";
-  }
-});
-
-// src/shared/media-contract.ts
-function object(value, keys, code) {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) throw new MediaError(code);
-  const prototype = Object.getPrototypeOf(value);
-  if (prototype !== Object.prototype && prototype !== null) throw new MediaError(code);
-  const record = value;
-  if (Object.keys(record).some((key) => !keys.includes(key))) throw new MediaError(code);
-  return record;
-}
-function boundedString(value, pattern, max, code) {
-  if (typeof value !== "string" || value.length > max || !pattern.test(value)) throw new MediaError(code);
-  return value;
-}
-function validateMediaManifest(value) {
-  const record = object(value, ["version", "attachments", "overflow"], "invalid_manifest");
-  if (record.version !== MEDIA_MANIFEST_VERSION || !Array.isArray(record.attachments)) throw new MediaError("invalid_manifest");
-  if (record.attachments.length > MEDIA_LIMITS.maxObservationRefs) throw new MediaError("manifest_too_large");
-  if (record.overflow !== void 0 && typeof record.overflow !== "boolean") throw new MediaError("invalid_manifest");
-  const ids = /* @__PURE__ */ new Set();
-  const attachments = Array.from(record.attachments, (value2) => {
-    const ref = object(value2, ["id", "label", "inspection"], "invalid_manifest");
-    const id = boundedString(ref.id, UUID_V4, 36, "invalid_manifest");
-    const label = boundedString(ref.label, LABEL, MEDIA_LIMITS.maxLabelChars, "invalid_manifest");
-    if (ids.has(id) || ref.inspection !== "inspected" && ref.inspection !== "uninspected") throw new MediaError("invalid_manifest");
-    ids.add(id);
-    return { id, label, inspection: ref.inspection };
-  });
-  const result = { version: MEDIA_MANIFEST_VERSION, attachments };
-  if (record.overflow !== void 0) result.overflow = record.overflow;
-  if (new TextEncoder().encode(JSON.stringify(result)).length > MEDIA_LIMITS.maxManifestBytes) throw new MediaError("manifest_too_large");
-  return result;
-}
-var MEDIA_MANIFEST_VERSION, MEDIA_METADATA_NAMESPACE, MEDIA_LIMITS, MediaError, UUID_V4, LABEL;
-var init_media_contract = __esm({
-  "src/shared/media-contract.ts"() {
-    "use strict";
-    MEDIA_MANIFEST_VERSION = 1;
-    MEDIA_METADATA_NAMESPACE = "cmem_media_v1";
-    MEDIA_LIMITS = Object.freeze({
-      // Abuse protection: caps one event at 4 stored images (about 13 MiB) and one
-      // observer turn at 4 derivatives (maxGatewayImageBytes).
-      maxImagesPerEvent: 4,
-      // Provider maximum: Vercel Functions take request bodies up to 4.5 MB; this
-      // plus maxUploadBodyBytes' multipart overhead (3.06 MiB, 3.2 MB) fits.
-      maxSourceBytes: 3 * 1024 * 1024,
-      // Same bound for the stored full-size copy: a lossless re-encode of an accepted
-      // source must still fit, and a stored copy is served back in one Vercel
-      // response, also limited to 4.5 MB.
-      maxCanonicalBytes: 3 * 1024 * 1024,
-      // Owner's rule, 2026-11-05/06: no stored copy is multiple megabytes, and every
-      // copy is lossy WebP. Both converters fit each canonical they encode into this.
-      // maxCanonicalBytes stays the bound for an accepted upload and for reading a
-      // copy stored before this rule (lossless, up to 3 MiB). Measured 2026-11-06 at
-      // quality 80: the largest of 29 real screenshots is 406 KiB, and a 2800x23880
-      // full-page screenshot fitted to 8192 px is 528 KiB, so all keep full
-      // resolution with about 2 times headroom.
-      maxEncodedCanonicalBytes: 1024 * 1024,
-      // Abuse protection (decompression bombs): a decode holds about 4 bytes per
-      // pixel, so at most about 96 MB. A 6016x3384 display (20.4 million px) fits.
-      maxPixels: 24e6,
-      // Abuse protection: bounds long thin images that pass maxPixels. An 8K
-      // display (7680 px wide) fits.
-      maxDimension: 8192,
-      // Abuse protection: one conversion holds a shared instance's CPU. The upload
-      // route's 59 s maxDuration fits this plus two 20 s Storage writes.
-      conversionTimeoutSeconds: 5,
-      // Abuse protection: instances serve concurrent requests, so one decode of up
-      // to about 96 MB runs at a time; others fail fast as conversion_busy and retry.
-      maxConcurrentConversions: 1,
-      // Abuse protection on what a model is sent: 4 of these make the 1 MiB
-      // maxGatewayImageBytes.
-      maxDerivativeBytes: 256 * 1024,
-      // Provider maximum: Anthropic downscales images whose long edge is above
-      // 1,568 px (standard tier, platform.claude.com/docs/en/build-with-claude/vision),
-      // so pixels beyond that cost tokens and add nothing.
-      maxDerivativeDimension: 1536,
-      // One largest source as base64 (3 MiB x 4/3 = 4 MiB), so the local event JSON
-      // stays under its existing 5 MB cap.
-      maxInlineEncodedBytes: 4 * 1024 * 1024,
-      // Abuse protection: metadata.cmem_media_v1 syncs to every device; 32 refs of
-      // about 120 bytes each stay inside maxManifestBytes.
-      maxObservationRefs: 32,
-      // Abuse protection: labels are generated (event1_image1); 64 leaves room and
-      // keeps a ref small.
-      maxLabelChars: 64,
-      // Abuse protection: bounds one manifest; 32 refs need about 4 KiB.
-      maxManifestBytes: 8192,
-      // Abuse protection: bounds the private provenance row; its largest part is
-      // the 4096-character locator.
-      maxProvenanceBytes: 8192,
-      // Operating-system maximum: PATH_MAX is 4096 on Linux (1024 on macOS).
-      maxSourceLocatorChars: 4096,
-      // maxImagesPerEvent x maxDerivativeBytes: the most one observer turn can send.
-      maxGatewayImageBytes: 4 * 256 * 1024,
-      // maxSourceBytes plus 64 KiB for the manifest (8 KiB at most) and multipart
-      // headers; still under Vercel's 4.5 MB request body maximum.
-      maxUploadBodyBytes: 3 * 1024 * 1024 + 64 * 1024,
-      // Abuse protection, sized so a paying user's images are not refused (owner,
-      // 2026-11-05: "dont throw away images, on cloud they'll be PAYING me").
-      // Measured 2026-11-05: the median converted pair (canonical plus derivative)
-      // of 27 real screenshots is 321 KiB, so 100 screenshots a day is about
-      // 11.2 GiB a year. Past the Pro plan's 100 GB, Supabase Storage costs $0.0213
-      // per GB a month (supabase.com/docs/guides/platform/manage-your-usage/
-      // storage-size, read 2026-11-05), so a full owner (26.8 GB) costs about $0.57
-      // a month. Pro enforces it: uploads past it answer 413 quota_exceeded and the
-      // image stays on the computer.
-      ownerQuotaBytes: 25 * 1024 * 1024 * 1024
-    });
-    MediaError = class extends Error {
-      constructor(code, message = code) {
-        super(message);
-        this.code = code;
-        this.name = "MediaError";
-      }
-      code;
-    };
-    UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-    LABEL = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
-  }
-});
-
-// src/services/sync/CanonicalContent.ts
-import { createHash as createHash3, randomUUID } from "crypto";
-function jsonError(message) {
-  const reason = redactSyncDiagnostic(message);
-  logger.debug("CLOUD_SYNC", "Rejected invalid canonical content", { reason });
-  throw new Error(`canonical content: ${reason}`);
-}
-function canonicalJson(value) {
-  return JSON.stringify(normalizeJson(value, /* @__PURE__ */ new Set()));
-}
-function normalizeJson(value, seen) {
-  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
-  if (typeof value === "number") {
-    if (!Number.isFinite(value)) jsonError("numbers must be finite");
-    if (!Number.isSafeInteger(value) && Number.isInteger(value)) {
-      jsonError("integers must be safe; use decimal strings for uint64 values");
-    }
-    if (Object.is(value, -0)) return 0;
-    return value;
-  }
-  if (typeof value !== "object") jsonError(`unsupported JSON value ${typeof value}`);
-  if (seen.has(value)) jsonError("cycles are not allowed");
-  seen.add(value);
-  try {
-    if (Array.isArray(value)) return value.map((item) => normalizeJson(item, seen));
-    const prototype = Object.getPrototypeOf(value);
-    if (prototype !== Object.prototype && prototype !== null) {
-      jsonError("objects must be plain objects");
-    }
-    const input = value;
-    const output2 = {};
-    for (const key of Object.keys(input).sort()) {
-      const item = input[key];
-      if (item === void 0) jsonError(`undefined is not allowed at ${key}`);
-      output2[key] = normalizeJson(item, seen);
-    }
-    return output2;
-  } finally {
-    seen.delete(value);
-  }
-}
-function sha256Base64Url(value) {
-  return createHash3("sha256").update(value, "utf8").digest("base64url");
-}
-function assertCanonicalDecimal(value, options = {}) {
-  if (typeof value !== "string" || !CANONICAL_DECIMAL.test(value)) {
-    return jsonError("decimal values must be unsigned base-10 strings without leading zeroes");
-  }
-  if (BigInt(value) > UINT64_MAX) jsonError("decimal value exceeds uint64");
-  if (options.positive && value === "0") jsonError("decimal value must be positive");
-  return value;
-}
-function compareCanonicalDecimals(left, right) {
-  assertCanonicalDecimal(left);
-  assertCanonicalDecimal(right);
-  if (left.length !== right.length) return left.length < right.length ? -1 : 1;
-  if (left === right) return 0;
-  return left < right ? -1 : 1;
-}
-function incrementCanonicalDecimal(value) {
-  const canonical = assertCanonicalDecimal(value);
-  if (BigInt(canonical) === UINT64_MAX) jsonError("uint64 sequence overflow");
-  return (BigInt(canonical) + 1n).toString(10);
-}
-var CANONICAL_DECIMAL, UINT64_MAX;
-var init_CanonicalContent = __esm({
-  "src/services/sync/CanonicalContent.ts"() {
-    "use strict";
-    init_logger();
-    init_diagnostic_redaction();
-    init_media_contract();
-    CANONICAL_DECIMAL = /^(?:0|[1-9][0-9]*)$/;
-    UINT64_MAX = 18446744073709551615n;
   }
 });
 
@@ -4888,7 +4908,7 @@ var init_request_judge = __esm({
 
 // src/services/work-view/request-groups.mjs
 import { Database } from "bun:sqlite";
-import { createHash as createHash4 } from "node:crypto";
+import { createHash as createHash5 } from "node:crypto";
 import { readFileSync as readFileSync9, readdirSync, statSync as statSync6 } from "node:fs";
 import { homedir as homedir9 } from "node:os";
 import { join as join11 } from "node:path";
@@ -5408,7 +5428,7 @@ function requestRecord(ledger, groupId, asks) {
 }
 function focusBasis(ledger, groupId) {
   const group = ledger.groups.groups[groupId];
-  return createHash4("sha256").update(JSON.stringify({ title: group.title, firstAsk: group.anchorAsk?.text ?? null, conversations: groupConversations(ledger, groupId) })).digest("hex").slice(0, 16);
+  return createHash5("sha256").update(JSON.stringify({ title: group.title, firstAsk: group.anchorAsk?.text ?? null, conversations: groupConversations(ledger, groupId) })).digest("hex").slice(0, 16);
 }
 function focusDue(ledger, focus, localDeviceId2) {
   return Object.keys(ledger.groups.groups).filter((groupId) => {
@@ -5729,7 +5749,7 @@ var init_request_groups = __esm({
     LINK_KINDS = ["shared-work-list", "shared-request-id", "agent-judgment", "judge"];
     MAX_READINGS = 20;
     iso3 = (epoch2) => Number.isFinite(epoch2) && epoch2 > 0 ? new Date(epoch2).toISOString() : null;
-    groupIdFor = (anchorConversationKey) => `g_${createHash4("sha256").update(anchorConversationKey).digest("hex").slice(0, 12)}`;
+    groupIdFor = (anchorConversationKey) => `g_${createHash5("sha256").update(anchorConversationKey).digest("hex").slice(0, 12)}`;
     emptyGroups = () => ({ version: 1, updatedAt: null, conversations: {}, groups: {}, ignored: {} });
     isIsoOrNull = (value) => value === null || typeof value === "string" && Number.isFinite(Date.parse(value));
     textTarget = (max) => Math.floor(max * 0.75 / 10) * 10;
@@ -5747,7 +5767,7 @@ var init_request_groups = __esm({
       const asks = openingAsks(database, ledger, groupIds.flatMap((groupId) => groupConversations(ledger, groupId)));
       return groupIds.map((groupId) => requestRecord(ledger, groupId, asks));
     };
-    otherPassHash = (ledger, groupIds) => groupIds.length ? createHash4("sha256").update(JSON.stringify(groupIds.map((groupId) => [ledger.groups.groups[groupId].anchor, focusBasis(ledger, groupId)]).sort())).digest("hex").slice(0, 16) : null;
+    otherPassHash = (ledger, groupIds) => groupIds.length ? createHash5("sha256").update(JSON.stringify(groupIds.map((groupId) => [ledger.groups.groups[groupId].anchor, focusBasis(ledger, groupId)]).sort())).digest("hex").slice(0, 16) : null;
     focusAreaRecord = (area) => ({ focusAreaId: area.focusAreaId, name: area.name, goal: area.goal, about: area.about, status: area.status });
     AREA_NAME_MAX = 80;
     AREA_SENTENCE_MAX = 300;
@@ -5808,14 +5828,14 @@ import { existsSync as existsSync13 } from "node:fs";
 init_request_groups();
 import { readFileSync as readFileSync10, readdirSync as readdirSync2, mkdirSync as mkdirSync4, renameSync as renameSync3, writeFileSync as writeFileSync3, unlinkSync as unlinkSync2, statSync as statSync7 } from "node:fs";
 import { join as join12 } from "node:path";
-import { createHash as createHash7 } from "node:crypto";
+import { createHash as createHash8 } from "node:crypto";
 
 // src/services/work-view/agent-view.mjs
 init_request_projection();
 init_owner_goals();
 
 // src/services/work-view/my-rules.mjs
-import { createHash as createHash5 } from "node:crypto";
+import { createHash as createHash6 } from "node:crypto";
 var MY_RULES_LIST = "my-rules";
 var RULE_TASK_PREFIX = "Rule: ";
 var RULE_SCOPE_TIERS = ["everywhere", "project", "situation"];
@@ -5824,7 +5844,7 @@ var SAVED_RULE_STATUSES = ["on", "off", "replaced", "dismissed", "suggested"];
 var MAX_QUOTES = 3;
 var MAX_QUOTE_CHARS = 200;
 var isMyRulesList = (name) => name === MY_RULES_LIST;
-var ruleIdForPreference = (preference2) => `pref_${createHash5("sha256").update(String(preference2)).digest("hex").slice(0, 12)}`;
+var ruleIdForPreference = (preference2) => `pref_${createHash6("sha256").update(String(preference2)).digest("hex").slice(0, 12)}`;
 var text3 = (value) => typeof value === "string" ? value.trim() : "";
 var count = (value) => typeof value === "number" && Number.isFinite(value) ? value : null;
 var quoteCount = (value) => Number.isSafeInteger(value) && value >= 0 ? value : null;
@@ -5986,8 +6006,57 @@ function observationMediaFromMetadata(metadataJson) {
   }
 }
 
-// src/services/work-view/agent-view.mjs
+// src/services/work-view/work-state-labels.mjs
+init_my_focus();
+init_owner_goals();
+init_request_judge();
+init_atomic_json();
+init_redaction();
+init_work_state_reduce();
 init_work_state_status();
+var JUDGED_WORK_STATES = {
+  working: { criterion: "Still being worked on: the notes describe work under way, and nothing says it finished, stalled or waits on someone", recordedStatus: "doing" },
+  not_started: { criterion: "Not started yet: planned, or a step of a plan waiting its turn after another step", recordedStatus: "todo" },
+  waiting_on_person: { criterion: "Waiting on the person: a decision, review, approval, login, answer or merge only they can give", recordedStatus: "needs-you" },
+  waiting_on_other: { criterion: "Waiting on something else: CI, a running job, a release, another agent, a date or an outside service", recordedStatus: "doing" },
+  finished: { criterion: "Finished: the notes say the work already finished, shipped, merged or was verified, though it was never marked done", recordedStatus: "needs-review" },
+  abandoned: { criterion: "Abandoned: superseded, replaced, moved elsewhere or no longer wanted", recordedStatus: "dropped" }
+};
+var LABEL_THRESHOLD = 0.8;
+var REPLACEABLE_STATUSES = /* @__PURE__ */ new Set(["doing", "unknown", "open"]);
+var TODO_REPLACEMENTS = /* @__PURE__ */ new Set(["finished", "abandoned"]);
+var NOT_NOTES = /* @__PURE__ */ new Set(["task", "status"]);
+var notesOf = (fields) => Object.fromEntries(Object.entries(fields).filter(([key, value]) => !NOT_NOTES.has(key) && value !== null));
+function workStateItems(state) {
+  return state.lists.filter((list2) => !isOwnerGoalsList(list2.name) && !isMyRulesList(list2.name) && !isMyFocusList(list2.name) && !isAgentLifecycleList(list2.name)).flatMap((list2) => {
+    const stateEntryId = state.events.find((event) => event.listId === list2.id && event.task === null)?.id ?? 0;
+    const listNotesSent = Object.keys(notesOf(list2.fields)).length > 0;
+    return [
+      ...list2.tasks.map((task) => ({ ...task, list: list2, recordKind: "task", labelKey: listNotesSent ? `${task.latestEntryId}:${stateEntryId}` : String(task.latestEntryId) })),
+      ...Object.keys(list2.fields).some((key) => key !== "task") ? [{ id: list2.id, name: list2.name, fields: list2.fields, status: list2.status, isOpen: !isClosedWorkStateStatus(list2.status), updatedAtEpoch: list2.stateUpdatedAtEpoch, latestEntryId: stateEntryId, labelKey: String(stateEntryId), list: list2, recordKind: "list" }] : []
+    ];
+  });
+}
+function appliedLabel(item, labels, threshold = LABEL_THRESHOLD) {
+  const label = labels?.[item.labelKey];
+  if (!label) return { judgedStatus: null, nextField: null, resultField: null, label: null };
+  const recorded = item.recordKind === "list" ? item.fields?.status == null || item.fields.status === "" ? "open" : item.fields.status : item.status;
+  return {
+    judgedStatus: label.stateP >= threshold ? judgedStatusFor(recorded, label.state) : null,
+    nextField: label.nextField && label.nextP >= threshold ? label.nextField : null,
+    resultField: label.resultField && label.resultP >= threshold ? label.resultField : null,
+    label
+  };
+}
+function judgedStatusFor(recordedStatus, judgedState) {
+  const recorded = String(recordedStatus ?? "unknown").toLowerCase();
+  if (recorded === "todo" ? !TODO_REPLACEMENTS.has(judgedState) : !REPLACEABLE_STATUSES.has(recorded)) return null;
+  const status = JUDGED_WORK_STATES[judgedState]?.recordedStatus;
+  if (!status) throw new TypeError(`"${judgedState}" is not a judged work state.`);
+  return status === recorded ? null : status;
+}
+
+// src/services/work-view/agent-view.mjs
 var PROJECT_KEY = (value) => String(value ?? "").replace(/[A-Z]/g, (c) => c.toLowerCase());
 var PLATFORMS = { codex: "Codex", claude: "Claude Code", gemini: "Gemini CLI", "gemini-cli": "Gemini CLI", "antigravity-cli": "Antigravity CLI", kimi: "Kimi", "hermes-cli": "Hermes", "pi-agent": "Pi" };
 var platformLabel = (platform) => PLATFORMS[platform] ?? compactText(platform, 48) ?? "Unassigned";
@@ -6133,7 +6202,7 @@ function launchRequest(launch) {
   const text5 = launch.description ?? launch.prompt;
   return text5 ? { text: text5, source: "agent-launch", sourceId: launch.shared ? null : launch.toolUseId, url: launch.shared ? null : `/api/work-view/evidence/tool-use/${launch.toolUseId}` } : null;
 }
-function buildAgentView(state, records2, { now = Date.now(), workLimit = 240, activityLimit = 160, recentMs = 15 * 60 * 1e3, titleCache = {}, ledger = null, onProductFile = null } = {}) {
+function buildAgentView(state, records2, { now = Date.now(), workLimit = 240, activityLimit = 160, recentMs = 15 * 60 * 1e3, titleCache = {}, ledger = null, onProductFile = null, workStateLabels = null } = {}) {
   const { calls = [], observations = [], summaries = [], sessions = [], prompts = [], agentLaunches = [], agentToolActivity = [] } = records2;
   const launches = readAgentLaunches(agentLaunches);
   const lastToolEpochs = new Map(agentToolActivity.map((row) => [lifecycleKey(row.platform_source, row.content_session_id, row.agent_id), Number(row.last_epoch) || 0]));
@@ -6272,10 +6341,7 @@ function buildAgentView(state, records2, { now = Date.now(), workLimit = 240, ac
     group.activity.push(entry);
     activity.push({ ...entry, agentGroupId: group.id });
   }
-  const candidates = state.lists.filter((list2) => !isOwnerGoalsList(list2.name) && !isMyRulesList(list2.name) && !isMyFocusList(list2.name) && !isAgentLifecycleList(list2.name)).flatMap((list2) => [
-    ...list2.tasks.map((task) => ({ ...task, list: list2, recordKind: "task" })),
-    ...Object.keys(list2.fields).some((key) => key !== "task") ? [{ id: list2.id, name: list2.name, fields: list2.fields, status: list2.status, isOpen: !isClosedWorkStateStatus(list2.status), updatedAtEpoch: list2.stateUpdatedAtEpoch, latestEntryId: state.events.find((event) => event.listId === list2.id && event.task === null)?.id ?? 0, list: list2, recordKind: "list" }] : []
-  ]).sort((a, b) => b.updatedAtEpoch - a.updatedAtEpoch).slice(0, workLimit);
+  const candidates = workStateItems(state).sort((a, b) => b.updatedAtEpoch - a.updatedAtEpoch).slice(0, workLimit);
   function uniqueCall(event) {
     const matches = (callsByKey.get(callKey(event.originProject ?? event.project, event.listName, event.fields)) ?? []).filter((call) => Math.abs(call.created_at_epoch - event.atEpoch) <= 5e3);
     return matches.length === 1 ? matches[0] : records2.sharedAttributions?.get(event.id) ?? null;
@@ -6306,8 +6372,13 @@ function buildAgentView(state, records2, { now = Date.now(), workLimit = 240, ac
     const explicitRequest = fieldText(item.fields, ["request", "human_request", "user_request"], 500);
     const requestKey = confirmedRequestKey(session, call?.prompt_number);
     const request = { ...explicitRequest ?? requestFor(session, call?.prompt_number) ?? { text: compactText(item.name, 500), source: item.recordKind === "task" ? "task-label" : "list-label", sourceId: item.id, url: null }, key: requestKey };
-    const next = fieldText(item.fields, ["next_step", "nextStep", "next", "next_action", "remaining", "pending", "then_run"]);
-    const outcome2 = fieldText(item.fields, ["outcome", "result", "completed", "verified", "verification"]);
+    const labeled = appliedLabel(item, workStateLabels?.labels);
+    const jevField = (name) => {
+      const found = name ? fieldText(item.fields, [name]) : null;
+      return found ? { ...found, pickedBy: "jev" } : null;
+    };
+    const next = fieldText(item.fields, ["next_step", "nextStep", "next", "next_action", "remaining", "pending", "then_run"]) ?? jevField(labeled.nextField);
+    const outcome2 = fieldText(item.fields, ["outcome", "result", "completed", "verified", "verification"]) ?? jevField(labeled.resultField);
     const progress = fieldText(item.fields, ["human_summary", "summary", "progress", "phase", "stage", "status_note"]);
     const entry = {
       id: item.id,
@@ -6326,6 +6397,8 @@ function buildAgentView(state, records2, { now = Date.now(), workLimit = 240, ac
       outcome: outcome2,
       progress,
       owner,
+      judgedStatus: labeled.judgedStatus,
+      judgment: labeled.label ? { state: labeled.label.state, probability: labeled.label.stateP, model: labeled.label.model, at: labeled.label.at } : null,
       requestId: ["string", "number"].includes(typeof (item.fields.request_id ?? item.list.fields.request_id)) ? String(item.fields.request_id ?? item.list.fields.request_id).trim() || null : null,
       requestText: fieldText(item.fields, ["human_request", "request", "user_request"], 1200)?.text ?? fieldText(item.list.fields, ["human_request", "request", "user_request"], 1200)?.text ?? null,
       requestStatus: typeof (item.fields.request_status ?? item.list.fields.request_status) === "string" ? item.fields.request_status ?? item.list.fields.request_status : null,
@@ -6519,7 +6592,7 @@ init_request_projection();
 init_work_product();
 
 // src/services/work-view/human-copy.mjs
-import { createHash as createHash6 } from "node:crypto";
+import { createHash as createHash7 } from "node:crypto";
 var HUMAN_COPY_MAX_CHARS = 18e3;
 function text4(value, max) {
   if (typeof value !== "string") return "";
@@ -6606,7 +6679,7 @@ function humanCopyFingerprint(input) {
       observations: stream.observations.map(({ title, summary }) => ({ title, summary })).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))
     }))
   };
-  return createHash6("sha256").update(JSON.stringify(meaningful)).digest("hex");
+  return createHash7("sha256").update(JSON.stringify(meaningful)).digest("hex");
 }
 function exactKeys(object3, keys, label) {
   if (!object3 || typeof object3 !== "object" || Array.isArray(object3) || Object.keys(object3).length !== keys.length || keys.some((key) => !Object.hasOwn(object3, key))) throw new TypeError(`${label} has an invalid shape.`);
@@ -7538,7 +7611,7 @@ function publishSharedRecords(db, { deviceId, project, updates, now = Date.now()
 init_shared_records();
 init_CanonicalContent();
 init_redaction();
-var digest = (value) => createHash7("sha256").update(canonicalJson(value ?? null)).digest("hex");
+var digest = (value) => createHash8("sha256").update(canonicalJson(value ?? null)).digest("hex");
 var MAX_FILE_BYTES = 8 * 1024 * 1024;
 var fixedFiles = ["request-groups.json", "story.json", "refresh.json", "agent-written-prompts.json"];
 var fileKinds = (name) => name === "request-groups.json" ? ["group", "ignored"] : name === "story.json" ? ["story"] : name === "refresh.json" ? ["refresh"] : name === "agent-written-prompts.json" ? ["exclusion"] : /^progress\/g_[a-f0-9]{12}\.json$/.test(name) ? ["progress"] : [];

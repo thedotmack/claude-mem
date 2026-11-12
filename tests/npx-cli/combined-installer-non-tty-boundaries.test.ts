@@ -249,4 +249,21 @@ it('keeps a persisted OpenRouter account without making an OAuth request', async
   }
 });
 
+for (const provider of ['claude', 'openrouter']) {
+  it(`updates ${provider} without an optional sign-in, setup prompts or runtime reset`, async () => {
+    allowInstall = true;
+    const document = JSON.parse(original.toString());
+    document.env.CLAUDE_MEM_PROVIDER = provider;
+    document.env.CLAUDE_MEM_RUNTIME = 'server';
+    writeFileSync(settingsPath, JSON.stringify(document));
+    await runInstallCommand({ update: true });
+    expect(lines.join('\n')).toContain('claude-mem updated successfully!');
+    expect(lines.join('\n')).not.toContain('Optional: sign in');
+    expect(httpCalls).toBe(0);
+    expect(bootstrapCalls).toBe(0);
+    expect(keyPersistenceCalls).toBe(0);
+    expect(JSON.parse(readFileSync(settingsPath, 'utf8')).env).toEqual(document.env);
+  });
+}
+
 }

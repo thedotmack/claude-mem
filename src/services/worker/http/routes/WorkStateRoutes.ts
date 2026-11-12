@@ -73,7 +73,8 @@ export class WorkStateRoutes extends BaseRouteHandler {
 
   setupRoutes(app: express.Application): void {
     app.post('/api/work-state/entries', validateBody(workStateWriteSchema), this.handleWrite.bind(this));
-    app.get('/api/work-state', this.handleRead.bind(this));
+    app.get('/api/work-state', this.handleRead());
+    app.get('/api/work-state/export', this.handleRead(true));
   }
 
   private handleWrite = this.wrapHandler((req: Request, res: Response): void => {
@@ -128,7 +129,7 @@ export class WorkStateRoutes extends BaseRouteHandler {
       : `${saved} Nothing in it is open now.`);
   });
 
-  private handleRead = this.wrapHandler((req: Request, res: Response): void => {
+  private handleRead = (exportHistory = false) => this.wrapHandler((req: Request, res: Response): void => {
     // The read still resolves the project from `cwd`, and that resolution runs
     // `git` in it (findGitRepoRoot), so another browser page must not choose
     // the directory, even with a no-cors fetch that sends no Origin. Hooks, the
@@ -147,6 +148,14 @@ export class WorkStateRoutes extends BaseRouteHandler {
 
     const checkout = getProjectContext(cwd);
     const entries = this.dbManager.getSessionStore().getWorkStateEntries(checkout.allProjects, list);
+    // Export the ordered patches, including closures and cleared fields, rather
+    // than the presentation text that an MCP client may have to shorten.
+    if (exportHistory) {
+      res.setHeader('Cache-Control', 'no-store');
+      res.setHeader('Content-Disposition', 'attachment; filename="work-state.json"');
+      res.json({ version: 1, project: checkout.primary, projects: checkout.allProjects, list: list ?? null, entries });
+      return;
+    }
     const lines = renderWorkStateLines(entries, Date.now(), includeClosed);
 
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
