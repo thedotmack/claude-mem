@@ -375,6 +375,8 @@ const SECRET_PATTERNS: RegExp[] = [
   /(?<=\\[nrt]|\b)PMAK-[a-f0-9]{24}-[a-f0-9]{34}(?!\w)/g,                     // Postman API keys
   /(?<=\\[nrt]|\b)pul-[a-f0-9]{40}(?!\w)/g,                                     // Pulumi access tokens
   /(?<=\\[nrt]|\b)dp\.pt\.[A-Za-z0-9]{43}(?!\w)/g,                              // Doppler personal tokens
+  /(?<=\\[nrt]|\b)HRKU-AA[0-9A-Za-z_-]{58}(?![\w-])/g,                          // Heroku API keys
+  /(?<=\\[nrt]|\b)ATATT3[A-Za-z0-9_=-]{186}(?![\w=-])/g,                        // Atlassian API tokens
   /(?<=\\[nrt]|\b)cmem_[A-Za-z0-9_-]{32,}(?!\w)/g,                              // claude-mem server API keys
   /(?<=\\[nrt]|\b)cm_pro_[A-Za-z0-9_-]{8,}(?!\w)/g,                             // claude-mem Pro memory keys
   new RegExp(String.raw`(?<=${webhookHost(String.raw`hooks\.slack\.com`)}\/(?:services|workflows|triggers)\/T[A-Z0-9]+\/[A-Z0-9]+\/(?:[0-9]+\/)?)[A-Za-z0-9]{20,}(?!\w)`, "g"), // Slack incoming/workflow/trigger webhooks
