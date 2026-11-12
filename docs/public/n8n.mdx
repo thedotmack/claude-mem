@@ -14,7 +14,7 @@ Import `examples/n8n/memory.workflow.json`. The file has no workflow ID, so it c
 
 Edit the Configure node before running:
 
-- `baseUrl` is your actual worker origin, including its port. The included `37700` is a placeholder, not port discovery.
+- `baseUrl` is your actual worker origin, including its port. The included `37700` is a placeholder, not port discovery. To find the port, read `CLAUDE_MEM_WORKER_PORT` in `~/.claude-mem/settings.json`. If it isn't set, the worker uses its per-user default, `37700 + (your user ID % 100)`, which `echo $((37700 + $(id -u) % 100))` prints on macOS and Linux. Check it with `curl -s http://127.0.0.1:PORT/api/health`.
 - `project` is the exact Claude-Mem project name you want to save and read.
 - `text`, `title` and `query` describe the explicitly requested note and lookup.
 
