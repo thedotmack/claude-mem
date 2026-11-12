@@ -1,6 +1,16 @@
 import { describe, expect, it, spyOn } from 'bun:test';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 
-import { buildObservationPrompt, buildSummaryPrompt, stripImagePayloadsFromField } from '../../src/sdk/prompts.js';
+import {
+  OBS_PROMPT_FIELD_MAX_CHARS,
+  buildContinuationPrompt,
+  buildInitPrompt,
+  buildObservationPrompt,
+  buildSummaryPrompt,
+  stripImagePayloadsFromField,
+} from '../../src/sdk/prompts.js';
+import type { ModeConfig } from '../../src/services/domain/types.js';
 
 const summaryMode = {
   prompts: {
@@ -92,6 +102,36 @@ describe('buildObservationPrompt', () => {
     }, summaryMode);
 
     expect(prompt).toContain('reply with exactly <skip_summary reason="nothing durable" /> instead of an empty response or prose');
+  });
+});
+
+// #5023: a fresh observer generation opens with the init or continuation
+// prompt, and the 100000-char generation budget is checked before its first
+// observation, so the user's request in it is bounded like one tool field.
+describe('framing prompts bound the user request (#5023)', () => {
+  const CODE_MODE = JSON.parse(readFileSync(join(import.meta.dir, '../../plugin/modes/code.json'), 'utf8')) as ModeConfig;
+  const hugePrompt = 'HEAD_SENTINEL' + 'p'.repeat(200_000) + 'TAIL_SENTINEL';
+  const userRequestOf = (prompt: string): string => prompt.match(/<user_request>([\s\S]*?)<\/user_request>/)![1];
+  const templateChars = (build: (userPrompt: string) => string): number => build('').length;
+
+  const builders: Array<[string, (userPrompt: string) => string]> = [
+    ['buildInitPrompt', userPrompt => buildInitPrompt('repo', 'content-5023', userPrompt, CODE_MODE)],
+    ['buildContinuationPrompt', userPrompt => buildContinuationPrompt(userPrompt, 3, 'content-5023', CODE_MODE)],
+  ];
+
+  it.each(builders)('%s keeps the head and tail of a 200k-char prompt within the field limit', (_name, build) => {
+    const prompt = build(hugePrompt);
+    const request = userRequestOf(prompt);
+    expect(request.startsWith('HEAD_SENTINEL')).toBe(true);
+    expect(request.endsWith('TAIL_SENTINEL')).toBe(true);
+    expect(request).toContain(`original_size_chars="${hugePrompt.length}" reason="oversize"`);
+    expect(request.length).toBeLessThanOrEqual(OBS_PROMPT_FIELD_MAX_CHARS);
+    expect(prompt.length).toBeLessThanOrEqual(OBS_PROMPT_FIELD_MAX_CHARS + templateChars(build));
+  });
+
+  it.each(builders)('%s embeds a prompt within the limit unchanged', (_name, build) => {
+    const fits = 'q'.repeat(OBS_PROMPT_FIELD_MAX_CHARS);
+    expect(userRequestOf(build(fits))).toBe(fits);
   });
 });
 
