@@ -147,6 +147,7 @@ const QUERIES: Record<string, string> = {
 (decorated_definition definition: (_) @decorated_inner) @decorated_outer
 (function_definition name: (identifier) @name type_parameters: (_)? @sig_end parameters: (_) @sig_end return_type: (_)? @sig_end body: (block) @body) @func
 (class_definition name: (identifier) @name type_parameters: (_)? @sig_end superclasses: (_)? @sig_end body: (block) @body) @cls
+(block . (expression_statement [(string) @python_docstring (concatenated_string (string) @python_docstring)])) @python_docstring_body
 (import_statement) @imp
 (import_from_statement) @imp
 `,
@@ -720,23 +721,18 @@ function findCommentAbove(lines: string[], startRow: number, language: string): 
   return commentLines.length > 0 ? commentLines.join("\n").trim() : undefined;
 }
 
-// A docstring is the first statement of the body, which a multi-line signature
-// pushes below the `def` row. Its text can start on the row after the opening
-// quotes, and a raw or unicode docstring opens with r""" or u""".
-function findPythonDocstringFromLines(lines: string[], bodyRow: number, endRow: number): string | undefined {
-  for (let i = bodyRow; i <= Math.min(bodyRow + 2, endRow); i++) {
-    const trimmed = lines[i]?.trim();
-    if (!trimmed) continue;
-    if (!/^[rRuU]?(?:"""|''')/.test(trimmed)) break;
-    let docstring = trimmed.replace(/^[rRuU]/, "");
-    if (docstring.length === 3) {
-      const summary = lines.slice(i + 1, endRow + 1).find(line => line.trim() !== "");
-      if (summary !== undefined) docstring += `\n${summary.trim()}`;
-    }
-    // An empty docstring has no summary, so the comment above stays the one.
-    return docstring.replace(/"""|'''/g, "").trim() ? docstring : undefined;
+// The first string statement is a docstring even when it shares the `def` or
+// `class` row. Native ranges also exclude statements following its semicolon.
+function pythonDocstringText(lines: string[], captures: RawCapture[]): string | undefined {
+  let text = "";
+  for (const capture of captures) {
+    const literal = captureLines(lines, capture).join("\n");
+    const opening = /^[rRuU]?("""|'''|"|')/.exec(literal);
+    // Bytes and interpolated strings are expressions, not Python docstrings.
+    if (!opening) return undefined;
+    text += literal.slice(opening[0].length, -opening[1].length);
   }
-  return undefined;
+  return text.trim() || undefined;
 }
 
 function isExported(
@@ -797,6 +793,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   // the whole-group match a member also produces is dropped.
   const goTypeGroups = new Set<string>();
   const decoratedRanges = new Map<string, RawCapture>();
+  const pythonDocstrings = new Map<string, RawCapture[]>();
   const signatureTerminators = new Map<string, RawCapture>();
   const swiftParameters = new Map<string, string[]>();
   const swiftHeaders = new Map<string, { generics?: string; constraints?: string }>();
@@ -809,6 +806,14 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   const containers: Array<{ sym: CodeSymbol; range: RawCapture }> = [];
 
   for (const match of matches) {
+    const docstringBody = match.captures.find(c => c.tag === "python_docstring_body");
+    const docstring = match.captures.find(c => c.tag === "python_docstring");
+    if (docstringBody && docstring) {
+      const key = `${docstringBody.startRow}:${docstringBody.startCol}`;
+      const parts = pythonDocstrings.get(key) ?? [];
+      parts.push(docstring);
+      pythonDocstrings.set(key, parts);
+    }
     for (const cap of match.captures) {
       if (cap.tag === "haskell_default") haskellDefaults.push(cap);
       if (cap.tag === "terminated_signature") {
@@ -1039,8 +1044,9 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       : startRow;
     const comment = language === "markdown" ? undefined : findCommentAbove(lines, commentStartRow, language);
     const body = match.captures.find(c => c.tag === "body");
-    const docstring = language === "python" && body
-      ? findPythonDocstringFromLines(lines, body.startRow, endRow)
+    const docstringCapture = body && pythonDocstrings.get(`${body.startRow}:${body.startCol}`);
+    const docstring = docstringCapture
+      ? pythonDocstringText(lines, docstringCapture)
       : undefined;
 
     const sym: CodeSymbol = {
