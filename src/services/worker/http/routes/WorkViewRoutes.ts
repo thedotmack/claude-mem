@@ -35,6 +35,7 @@ import { FocusShareError, FocusShares } from '../../../work-view/focus-share.js'
 import { FocusSharePublisher } from '../../../work-view/focus-share-publisher.js';
 import { cmemProOrigin } from '../../../../shared/cmem-gateway.js';
 import { isOpenRouterApiUrl } from '../../../../shared/openrouter-base-url.js';
+import { FOCUS_CHANGED_MESSAGE, focusChangeVersion } from '../../../../shared/focus-change-version.js';
 import { runAgentTask } from '../../../agent-runner/run.js';
 import { ledgerSignature, readLedger } from '../../../work-view/request-groups.mjs';
 import { configuredJudge, decideSuggestion } from '../../../work-view/request-judge.mjs';
@@ -46,8 +47,10 @@ import { validateBody } from '../middleware/validateBody.js';
 import type { SetupScan, SetupScanState } from '../../../prompt-import/setup-scan.js';
 import { readHistoryCounts, type HistoryImport } from '../../../setup/history-import.js';
 import { createSetupTelemetry } from '../../../setup/telemetry.js';
+import { createSetupInstallerResumer } from '../../../setup/resume-installer.js';
 import { hasActiveSetupSession, hasProConfiguration, readSetupState, setupStatePath, writeSetupState, type SetupStateFile, type SetupStateView } from '../../../../shared/setup-state.js';
 import { SETUP_BRANCHES, SETUP_INSTALLER_STAGES, SETUP_MEMORY_BILLINGS } from '../../../../shared/setup-funnel.js';
+import { hasPendingInstallSetup, SETUP_INSTALL_STATUSES } from '../../../../shared/setup-install.js';
 
 // A request is ready for a human check once its explicit lifecycle reports it complete, shipped, or waiting for review.
 // Statuses are compared lowercased with `_` and spaces read as `-`, matching the viewer's status normalization.
@@ -150,6 +153,7 @@ const focusBody = z.object({
   /** reorder: every area in the owner's order, first = highest priority. */
   focusAreaIds: z.array(focusAreaIdField).min(1).optional(),
   requestId: z.string().min(1).max(2000).optional(),
+  expectedVersion: z.string().min(1).optional(),
 }).strict();
 
 // The focus areas owner-goals mined from the owner's prompts (save_goals.py). Same name and goal bounds as
@@ -244,7 +248,8 @@ const homeRelative = (path: string) => path === homedir() || path.startsWith(`${
 /** The line that makes Claude Code load the approved rules with the owner's user-level instructions.
  * It names the rules file the worker actually writes, so a custom data folder is still the one loaded. */
 export function myRulesImportLine(rulesFilePath: string): string {
-  return `@${homeRelative(rulesFilePath)}`;
+  // Claude Code ends @path at an unescaped space; quoting the path is not an import.
+  return `@${homeRelative(rulesFilePath).replaceAll(' ', '\\ ')}`;
 }
 
 interface WorkStateWrite { project: string; listName: string; fields: Record<string, string | number | boolean | null> }
@@ -279,6 +284,8 @@ interface WorkViewOptions {
   setupScan?: SetupScan | null;
   /** The install funnel's per-machine state file (choice, installer stage, completion). */
   setupStatePath?: string;
+  /** Starts the installed setup executor when a person opens deferred onboarding. */
+  resumeSetup?: (retry?: boolean) => Promise<void>;
   setupTelemetry?: ReturnType<typeof createSetupTelemetry>;
   /** Read for `alreadyPro`; defaults to ~/.claude-mem/settings.json. */
   settingsPath?: string;
@@ -299,6 +306,48 @@ const SETUP_WORK_SHOWN = 5;
 const setupScanBody = z.object({ improveProduct: z.boolean().optional() }).strict();
 const setupScanConsentBody = z.object({ upload: z.boolean(), agents: z.array(z.enum(['claude-code', 'codex', 'gemini-cli', 'antigravity-cli', 'opencode'])).optional(), improveProduct: z.boolean().optional() }).strict();
 const setupScanPreferencesBody = z.object({ improveProduct: z.boolean() }).strict();
+// Request-size and abuse caps on loopback writes, set about twice what the installer offers today (measured
+// 2026-11-11: 19 agents in ide-detection.ts, 30 bundled skills, the longest id 17 characters). The email cap is RFC 5321's 254-character path
+// limit; the note and error caps match the setup page's textarea and the installer's other setup errors.
+const setupInstallId = z.string().min(1).max(80);
+const setupInstallSelectionBody = z.object({
+  agents: z.array(setupInstallId).min(1).max(40),
+  skills: z.array(setupInstallId).max(200),
+  installClaudeCode: z.boolean(),
+  disableAutoMemory: z.boolean(),
+  telemetryEnabled: z.boolean(),
+  email: z.union([z.literal(''), z.email().max(254)]).optional(),
+  note: z.string().max(2000).optional(),
+  emailProvided: z.boolean().optional(),
+  claudeModel: z.string().trim().min(1).max(200).optional(),
+  dshProfile: z.string().trim().min(1).max(200).optional(),
+}).strict();
+const setupInstallCatalogBody = z.object({
+  agents: z.array(z.object({ id: setupInstallId, label: z.string().max(200), hint: z.string().max(1000), detected: z.boolean() }).strict()).min(1).max(40),
+  skills: z.array(z.object({ id: setupInstallId, label: z.string().max(200), description: z.string().max(2000), required: z.boolean().optional() }).strict()).max(200),
+  defaults: setupInstallSelectionBody,
+  reinstall: z.boolean(),
+  telemetryLocked: z.boolean().optional(),
+  skillsLocked: z.boolean().optional(),
+  emailEnabled: z.boolean().optional(),
+  signupSaved: z.boolean().optional(),
+}).strict();
+const setupInstallReportBody = z.object({
+  status: z.enum(SETUP_INSTALL_STATUSES),
+  catalog: setupInstallCatalogBody.optional(),
+  error: z.string().max(2000).nullable().optional(),
+}).strict();
+/**
+ * Localhost pages can read the worker's setup state (GET /api/setup/state and the `setup-state` event frame), and
+ * the signup email and note are data no such page may read (SettingsRoutes keeps them out of /api/settings too).
+ * Only the installer reads them, from the state file.
+ */
+function redactSetupInstall(install: SetupStateFile['install']): SetupStateFile['install'] {
+  if (!install?.selection) return install;
+  const { email, note: _note, ...selection } = install.selection;
+  return { ...install, selection: email ? { ...selection, emailProvided: true } : selection };
+}
+
 // On The Go is always CMEM Pro: standalone Cloud Sync on your own tokens has no price yet (gap G1).
 const setupChoiceBody = z.object({
   branch: z.enum(SETUP_BRANCHES),
@@ -313,9 +362,11 @@ const setupInstallerBody = z.object({
   checkout: z.enum(['waiting', 'paid', 'failed']).optional(),
 }).strict();
 const setupCheckoutBody = z.object({}).strict();
+const setupResumeBody = z.object({ retry: z.boolean().optional() }).strict();
 const setupCompleteBody = z.object({
   /** Finish Setup's picked tools; the installer sets up the local ones it has not installed. */
-  tools: z.array(z.string().min(1).max(40)).max(20).optional(),
+  // Abuse cap: Finish Setup lists the selected agents (19 offered today) plus 3 cloud readers, so 40 leaves room.
+  tools: z.array(z.string().min(1).max(40)).max(40).optional(),
   // Checked separately so a bad analytics payload cannot block real setup.
   telemetry: z.unknown().optional(),
 }).strict();
@@ -399,7 +450,10 @@ export function defaultAutoRefresh(ledgerDir: string, settingsPath = USER_SETTIN
     return database;
   };
   // Setup's only extraction is hosted. Once setup is complete, ongoing refresh keeps its existing local path.
-  const setupRunning = () => setupActive() || (readSetupState(setupPath).status !== 'complete' && hasActiveSetupSession(setupPath));
+  const setupRunning = () => {
+    const state = readSetupState(setupPath);
+    return setupActive() || hasPendingInstallSetup(state) || (state.status !== 'complete' && hasActiveSetupSession(setupPath));
+  };
   return new AutoRefreshWorker({
     dir: ledgerDir,
     openDatabase,
@@ -476,6 +530,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
   private hostedIntent: Pick<HostedIntent, 'run' | 'state'> | null;
   private focusShares: NonNullable<WorkViewOptions['focusShares']> | null;
   private focusSharePublisher: FocusSharePublisher | null;
+  private resumeSetup: (retry?: boolean) => Promise<void>;
 
   constructor(options: WorkViewOptions = {}) {
     super();
@@ -516,6 +571,9 @@ export class WorkViewRoutes extends BaseRouteHandler {
     this.claudeInstructionsPath = options.claudeInstructionsPath ?? join(CLAUDE_CONFIG_DIR, 'CLAUDE.md');
     this.setupScan = options.setupScan ?? null;
     this.setupStatePath = options.setupStatePath ?? setupStatePath();
+    this.resumeSetup = options.resumeSetup ?? createSetupInstallerResumer(this.setupStatePath, {
+      onStateChange: () => this.broadcast('setup-state', this.setupStateView()),
+    });
     this.setupTelemetry = options.setupTelemetry ?? null;
     this.settingsPath = options.settingsPath ?? USER_SETTINGS_PATH;
     this.historyImport = options.historyImport ?? null;
@@ -584,7 +642,8 @@ export class WorkViewRoutes extends BaseRouteHandler {
     // Waiting for the upload answer is not active: a closed tab never answers, and that must not hold local work
     // paused. The installer's session below still covers a setup in progress; reopening the page rejoins the question.
     if (!['idle', 'done', 'failed', 'awaiting-consent'].includes(scanPhase)) return true;
-    return readSetupState(statePath).status !== 'complete' && hasActiveSetupSession(statePath);
+    const state = readSetupState(statePath);
+    return hasPendingInstallSetup(state) || (state.status !== 'complete' && hasActiveSetupSession(statePath));
   }
 
   private scheduleRulesFileRebuild(): void {
@@ -817,6 +876,16 @@ export class WorkViewRoutes extends BaseRouteHandler {
       res.json(this.setupStateView());
     }));
     app.post('/api/setup/choice', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupChoiceBody), this.wrapHandler(this.saveSetupChoice));
+    app.post('/api/setup/install', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupInstallSelectionBody), this.wrapHandler(this.configureSetupInstall));
+    app.post('/api/setup/install/installer', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupInstallReportBody), this.wrapHandler(this.reportSetupInstall));
+    app.post('/api/setup/resume', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupResumeBody), this.wrapHandler(async (req, res) => {
+      const state = readSetupState(this.setupStatePath);
+      if (state.status !== 'pending' || !state.install) { res.status(409).json({ error: 'There is no pending installation to resume.' }); return; }
+      try { await this.resumeSetup(req.body.retry); } catch (error) {
+        res.status(503).json({ error: error instanceof Error ? error.message : String(error) }); return;
+      }
+      res.status(202).json(this.setupStateView());
+    }));
     app.post('/api/setup/installer', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupInstallerBody), this.wrapHandler(this.saveInstallerStage));
     app.post('/api/setup/checkout', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupCheckoutBody), this.wrapHandler(this.requestCheckout));
     app.post('/api/setup/import', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupImportBody), this.wrapHandler(this.startHistoryImport));
@@ -826,7 +895,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
   private setupStateView(state: SetupStateFile = readSetupState(this.setupStatePath)): SetupStateView {
     const settings = SettingsDefaultsManager.loadFromFile(this.settingsPath, true, { readOnly: true }) as unknown as Record<string, unknown>;
     const historyImport = this.historyImport?.state() ?? null;
-    return { ...state, alreadyPro: hasProConfiguration(settings), history: this.historyCounts(), historyImport, backgroundWorkRunning: this.backgroundWorkRunning({ countScanWaitingForUploadAnswer: true }) };
+    return { ...state, install: redactSetupInstall(state.install), alreadyPro: hasProConfiguration(settings), history: this.historyCounts(), historyImport, backgroundWorkRunning: this.backgroundWorkRunning({ countScanWaitingForUploadAnswer: true }) };
   }
 
   /**
@@ -895,11 +964,66 @@ export class WorkViewRoutes extends BaseRouteHandler {
     res.json(view);
   }
 
+  /** Only choices from this installer's catalog can become filesystem actions. */
+  private configureSetupInstall = async (req: Request, res: Response): Promise<void> => {
+    const selection = req.body as z.infer<typeof setupInstallSelectionBody>;
+    const state = readSetupState(this.setupStatePath);
+    const install = state.install;
+    if (state.status === 'complete' || !install || (install.status !== 'waiting' && install.status !== 'failed')) {
+      res.status(409).json({ error: 'The installer is not waiting for installation choices.' }); return;
+    }
+    const unique = (values: string[]) => new Set(values).size === values.length;
+    if (!unique(selection.agents) || !unique(selection.skills)
+      || selection.agents.some(id => !install.catalog.agents.some(agent => agent.id === id))
+      || selection.skills.some(id => !install.catalog.skills.some(skill => skill.id === id))
+      || install.catalog.skills.some(skill => skill.required && !selection.skills.includes(skill.id))) {
+      res.status(400).json({ error: 'Choose agents and skills offered by this installer, including required skills.' }); return;
+    }
+    if (install.catalog.telemetryLocked && selection.telemetryEnabled !== install.catalog.defaults.telemetryEnabled) {
+      res.status(400).json({ error: 'Usage sharing is controlled by your existing preference.' }); return;
+    }
+    if (install.catalog.skillsLocked && (selection.skills.length !== install.catalog.defaults.skills.length
+      || selection.skills.some(id => !install.catalog.defaults.skills.includes(id)))) {
+      res.status(400).json({ error: 'Skill selection is controlled by your environment.' }); return;
+    }
+    if (install.catalog.emailEnabled === false && (selection.email || selection.note)) {
+      res.status(400).json({ error: 'Email signup is unavailable for this installation.' }); return;
+    }
+    // Served views drop the email, so a retry that still wants the stored signup says so instead of resending it.
+    const { emailProvided, ...chosen } = selection;
+    const keepStoredEmail = emailProvided === true && !chosen.email && install.status === 'failed' && !!install.selection?.email;
+    const stored = keepStoredEmail ? { ...chosen, email: install.selection!.email, note: chosen.note ?? install.selection!.note } : chosen;
+    writeSetupState({ ...state, install: { ...install, selection: stored, status: 'installing', error: null } }, this.setupStatePath);
+    try { await this.resumeSetup(true); } catch (error) {
+      res.status(503).json({ error: error instanceof Error ? error.message : String(error) }); return;
+    }
+    this.saveSetupState(readSetupState(this.setupStatePath), res);
+  };
+
+  private reportSetupInstall = (req: Request, res: Response): void => {
+    const { status, catalog, error } = req.body as z.infer<typeof setupInstallReportBody>;
+    const state = readSetupState(this.setupStatePath);
+    if (state.status === 'complete') { res.status(409).json({ error: 'Setup is already complete.' }); return; }
+    if (status === 'waiting') {
+      if (!catalog) { res.status(400).json({ error: 'Installation choices require a catalog.' }); return; }
+      this.saveSetupState({ ...state, install: { status, catalog, selection: null, error: null } }, res);
+      return;
+    }
+    if (!state.install?.selection || state.install.status !== 'installing' || status === 'installing') {
+      res.status(409).json({ error: 'Choose installation options before reporting the result.' }); return;
+    }
+    // The signup has been applied once the install is ready; a failed run keeps it on disk for the explicit retry.
+    const { email: _email, note: _note, ...withoutSignup } = state.install.selection;
+    const selection = status === 'ready' ? withoutSignup : state.install.selection;
+    this.saveSetupState({ ...state, install: { ...state.install, selection, status, error: error ?? null } }, res);
+  };
+
   /** The choice can change until the installer acts on it; after that the installer holds the result. */
   private saveSetupChoice = (req: Request, res: Response): void => {
     const { branch, memoryBilling } = req.body as z.infer<typeof setupChoiceBody>;
     const state = readSetupState(this.setupStatePath);
     if (state.status === 'complete') { res.status(409).json({ error: 'Setup is already complete.', state: this.setupStateView(state) }); return; }
+    if (state.install && state.install.status !== 'ready') { res.status(409).json({ error: 'Finish installing your agents before choosing memory storage.' }); return; }
     const applied = state.installer && state.installer.stage !== 'waiting-for-choice' && state.installer.stage !== 'failed';
     if (applied && (state.choice?.branch !== branch || state.choice?.memoryBilling !== memoryBilling)) {
       res.status(409).json({ error: 'The installer already applied the earlier choice.', state: this.setupStateView(state) });
@@ -938,9 +1062,14 @@ export class WorkViewRoutes extends BaseRouteHandler {
     const { tools } = req.body as z.infer<typeof setupCompleteBody>;
     const state = readSetupState(this.setupStatePath);
     if (state.status === 'complete') { res.setHeader('Cache-Control', 'no-store'); res.json(this.setupStateView(state)); return; }
+    if (state.install && state.install.status !== 'ready') { res.status(409).json({ error: 'Finish installing your agents before completing setup.' }); return; }
     if (!state.choice) { res.status(409).json({ error: 'Choose where to keep your memory before finishing setup.', state: this.setupStateView(state) }); return; }
-    if (state.installer?.stage === 'go-awaiting-checkout' && state.checkout?.state !== 'paid') {
-      res.status(409).json({ error: 'Finish checkout before finishing setup.', state: this.setupStateView(state) });
+    const providerReady = state.choice.branch === 'home'
+      ? state.installer?.stage === 'home-ready'
+      : state.installer?.stage === 'go-kept-existing-pro'
+        || (state.installer?.stage === 'go-awaiting-checkout' && state.checkout?.state === 'paid');
+    if (!providerReady) {
+      res.status(409).json({ error: 'Finish setting up your memory provider before finishing setup.', state: this.setupStateView(state) });
       return;
     }
     const captureCompletion = this.setupTelemetry?.prepareCompletion(req.body.telemetry);
@@ -1158,12 +1287,16 @@ export class WorkViewRoutes extends BaseRouteHandler {
 
   /** The owner's focus decisions, saved as my-focus rows. Owner rows are never overridden by a refresh. */
   private saveFocus = async (req: Request, res: Response): Promise<void> => {
-    const { action, focusAreaId, name, goal, intoFocusAreaId, focusAreaIds, requestId } = req.body as z.infer<typeof focusBody>;
+    const { action, focusAreaId, name, goal, intoFocusAreaId, focusAreaIds, requestId, expectedVersion } = req.body as z.infer<typeof focusBody>;
     if (!this.appendWorkStateEntry) { res.status(503).json({ error: 'Saving focus areas is unavailable on this worker.' }); return; }
     // Moving a request looks the request up, and a request can be minutes old: that check reads fresh.
     const snapshot = await (action === 'move-request' ? this.snapshot() : this.ownerStateSnapshot());
     if (!snapshot.source.connected) { res.status(503).json({ error: 'Local work is unavailable. Reconnect before changing focus areas.' }); return; }
     const areas = (snapshot.focusAreas ?? []) as FocusArea[];
+    // ownerEdit serializes this fresh read, version check and every row below with other owner writes.
+    if (expectedVersion !== undefined && expectedVersion !== focusChangeVersion(req.body, areas, snapshot.humanRequests)) {
+      res.status(409).json({ error: FOCUS_CHANGED_MESSAGE, snapshot }); return;
+    }
     const areaById = new Map(areas.map(area => [area.focusAreaId, area]));
     const ownRow = (area: FocusArea, change: Partial<FocusArea>) => focusAreaRowFields({ ...area, ...change, decidedBy: 'owner' });
     const rows: Record<string, string | number | boolean | null>[] = [];

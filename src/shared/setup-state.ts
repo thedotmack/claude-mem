@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import { isCmemGatewayUrl } from './cmem-gateway.js';
 import { resolveDataDir } from './paths.js';
 import { randomUUID } from 'node:crypto';
+import type { SetupInstallState } from './setup-install.js';
 import {
   isSetupId, type SetupBranch, type SetupCheckoutState, type SetupInstallerStage, type SetupMemoryBilling,
   type SetupStatus, type SetupTelemetryContext,
@@ -19,6 +20,8 @@ export interface SetupCheckout { state: SetupCheckoutState; requests: number; er
 
 export interface SetupStateFile {
   status: SetupStatus;
+  /** Present when the installer offers agent and integration configuration in the browser. */
+  install?: SetupInstallState | null;
   choice: SetupChoice | null;
   installer: SetupInstallerReport | null;
   checkout: SetupCheckout | null;
@@ -102,6 +105,7 @@ export function readSetupState(path: string = setupStatePath()): SetupStateFile 
   }
   return {
     status: parsed.status,
+    ...(parsed.install ? { install: parsed.install } : {}),
     choice: parsed.choice ?? null,
     installer: parsed.installer ?? null,
     checkout: parsed.checkout ?? null,

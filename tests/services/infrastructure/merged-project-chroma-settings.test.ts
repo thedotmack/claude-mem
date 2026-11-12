@@ -161,8 +161,8 @@ function expectChromaPatch(result: AdoptionResult | ProjectMergeResult): void {
   const patches = chromaCalls.filter(call => call.name === 'chroma_update_documents');
   expect(patches.map(call => call.args.ids)).toEqual([['observation_1'], ['session_summary_1']]);
   expect(patches.map(call => call.args.metadatas)).toEqual([
-    [{ doc_type: 'observation', sqlite_id: 1, merged_into_project: targetProject }],
-    [{ doc_type: 'session_summary', sqlite_id: 1, merged_into_project: targetProject }]
+    [{ merged_into_project: targetProject }],
+    [{ merged_into_project: targetProject }]
   ]);
 }
 

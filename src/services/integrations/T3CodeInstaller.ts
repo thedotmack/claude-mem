@@ -10,7 +10,7 @@ import { dirname, join, resolve } from 'node:path';
 import { parse as parseShell } from 'shell-quote';
 import { readJsonFileWithBom, writeJsonFileAtomic } from '../../shared/atomic-json.js';
 import { buildSpawnSyncInvocation, lookupWindowsCommand } from '../../shared/spawn.js';
-import { disableCodexPluginForHome, installCodexPluginForHome } from './CodexCliInstaller.js';
+import { disableCodexPluginForHome, installCodexPluginForHome, readTomlBooleanInTable } from './CodexCliInstaller.js';
 
 const CLAUDE_PLUGIN = 'claude-mem@thedotmack';
 const CODEX_PLUGIN = 'claude-mem@claude-mem-local';
@@ -205,18 +205,7 @@ function pluginEnabled(provider: T3CodeProvider, requireHooks = true): boolean {
     return isRecord(settings.enabledPlugins) && settings.enabledPlugins[CLAUDE_PLUGIN] === true;
   }
   const content = readFileSync(file, 'utf-8');
-  const enabledInTable = (header: string, key: string): boolean => {
-    let inTable = false;
-    let enabled = false;
-    for (const line of content.split(/\r?\n/)) {
-      if (/^\s*\[/.test(line)) inTable = line.replace(/\s+#.*$/, '').trim() === header;
-      else if (inTable) {
-        const value = line.match(new RegExp(`^\\s*${key}\\s*=\\s*(true|false)\\s*(?:#.*)?$`));
-        if (value) enabled = value[1] === 'true';
-      }
-    }
-    return enabled;
-  };
+  const enabledInTable = (header: string, key: string): boolean => readTomlBooleanInTable(content, header, key) === true;
   return enabledInTable(`[plugins."${CODEX_PLUGIN}"]`, 'enabled')
     && (!requireHooks || enabledInTable('[features]', 'hooks'));
 }

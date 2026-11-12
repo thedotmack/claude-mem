@@ -1,6 +1,6 @@
 import { expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -35,7 +35,7 @@ function transcripts(codex: string, data: string, label: string, tokens: number)
   } finally { db.close(); }
 }
 
-for (const mode of ['unset', 'empty', 'absolute', 'relative', 'literal-spaces', 'literal-tilde', 'alternate-home', 'same-home-relative', 'missing']) {
+for (const mode of ['unset', 'empty', 'absolute', 'relative', 'literal-spaces', 'literal-tilde', 'alternate-home', 'same-home-relative', 'archive-only', 'missing']) {
   it(`imports only the selected native Codex/OpenCode history: ${mode}`, () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), 'cmem-native-history-')));
     try {
@@ -46,6 +46,12 @@ for (const mode of ['unset', 'empty', 'absolute', 'relative', 'literal-spaces', 
       transcripts(join(home, '.codex'), join(home, '.local', 'share'), 'default', 11);
       transcripts(customCodex, customData, 'active', 111);
       transcripts(join(alternate, '.codex'), join(alternate, '.local', 'share'), 'alternate', 22);
+      if (mode === 'archive-only') {
+        const archive = join(customCodex, 'archived_sessions');
+        mkdirSync(archive);
+        renameSync(join(customCodex, 'sessions', '2026', '11', '02', 'rollout.jsonl'), join(archive, 'rollout.jsonl'));
+        rmSync(join(customCodex, 'sessions'), { recursive: true });
+      }
       if (mode === 'missing') {
         rmSync(customCodex, { recursive: true });
         rmSync(customData, { recursive: true });

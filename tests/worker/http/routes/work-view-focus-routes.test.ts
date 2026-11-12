@@ -6,6 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Server } from 'node:http';
 import { WorkViewRoutes } from '../../../../src/services/worker/http/routes/WorkViewRoutes.js';
+import { focusChangeVersion } from '../../../../src/shared/focus-change-version.js';
+import { toWorkModel } from '../../../../src/ui/my-work/src/live/to-work-model.ts';
 import { focusAreaRowFields, placementRowFields } from '../../../../src/services/work-view/my-focus.mjs';
 import { SessionStore } from '../../../../src/services/sqlite/SessionStore.js';
 import { SyncApply, type SyncOp } from '../../../../src/services/sync/SyncApply.js';
@@ -91,6 +93,68 @@ const ownerRows = () => (source.prepare("SELECT project, fields FROM work_state_
   .map(row => ({ project: row.project, fields: JSON.parse(row.fields) }));
 
 describe('My Focus routes', () => {
+  it('accepts a matching Undo version and ignores unrelated focus activity', async () => {
+    const undo = { action: 'rename', focusAreaId: 'fa_viewer', name: 'Viewer' };
+    const saved = await (await saveFocus({ ...undo, name: 'Saved name' })).json();
+    const shown = toWorkModel(saved, Date.now());
+    const expectedVersion = focusChangeVersion(undo, shown.focusAreas, shown.requests);
+    await saveFocus({ action: 'done', focusAreaId: 'fa_community' });
+    const response = await saveFocus({ ...undo, expectedVersion });
+    expect(response.status).toBe(200);
+    const view = await response.json();
+    expect(areaById(view, 'fa_viewer').name).toBe('Viewer');
+    expect(areaById(view, 'fa_community').status).toBe('done');
+  });
+
+  it.each([
+    { name: 'area', saved: { action: 'rename', focusAreaId: 'fa_viewer', name: 'Saved name' },
+      undo: { action: 'rename', focusAreaId: 'fa_viewer', name: 'Viewer' },
+      newer: { action: 'rename', focusAreaId: 'fa_viewer', name: 'Newer decision' },
+      kept: (view: any) => areaById(view, 'fa_viewer').name === 'Newer decision' },
+    { name: 'request placement', saved: { action: 'move-request', requestId: REQUEST_ID, focusAreaId: 'fa_endless' },
+      undo: { action: 'move-request', requestId: REQUEST_ID, focusAreaId: 'other' },
+      newer: { action: 'move-request', requestId: REQUEST_ID, focusAreaId: 'fa_community' },
+      kept: (view: any) => request(view).focusAreaId === 'fa_community' },
+    { name: 'order', saved: { action: 'reorder', focusAreaIds: ['fa_community', 'fa_viewer', 'fa_endless'] },
+      undo: { action: 'reorder', focusAreaIds: ['fa_viewer', 'fa_endless', 'fa_community'] },
+      newer: { action: 'reorder', focusAreaIds: ['fa_endless', 'fa_community', 'fa_viewer'] },
+      kept: (view: any) => view.focusAreas.filter((area: any) => area.status === 'kept').map((area: any) => area.focusAreaId).join(',') === 'fa_endless,fa_community,fa_viewer' },
+  ])('checks an Undo $name version after the preceding write finishes', async ({ saved, undo, newer, kept }) => {
+    for (const id of ['fa_viewer', 'fa_endless', 'fa_community']) await saveFocus({ action: 'keep', focusAreaId: id });
+    const receipt = await (await saveFocus(saved)).json();
+    const shown = toWorkModel(receipt, Date.now());
+    const expectedVersion = focusChangeVersion(undo, shown.focusAreas, shown.requests);
+    const reader = (routes as any).sourceReader;
+    const realRead = reader.read.bind(reader);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let reading!: () => void;
+    const started = new Promise<void>(resolve => { reading = resolve; });
+    reader.read = (...args: [number, string]) => {
+      reader.read = realRead;
+      reading();
+      return realRead(...args).then(async (view: unknown) => { await gate; return view; });
+    };
+    const before = ownerRows().length;
+    const changing = saveFocus(newer);
+    try {
+      await started;
+      const fence = (routes as any).ownerReadFence;
+      const undoing = saveFocus({ ...undo, expectedVersion });
+      // The Undo must reach the edit queue while the preceding write is still held.
+      while ((routes as any).ownerReadFence === fence) await Bun.sleep(1);
+      release();
+      expect((await changing).status).toBe(200);
+      const refused = await undoing;
+      expect(refused.status).toBe(409);
+      const answer = await refused.json();
+      expect(answer.error).toMatch(/changed since your edit/);
+      expect(kept(answer.snapshot)).toBe(true);
+      expect(kept(await snapshot())).toBe(true);
+      expect(ownerRows().length - before).toBe(newer.action === 'reorder' ? 3 : 1);
+    } finally { release(); await changing; }
+  });
+
   it('a read already running before an edit never answers that edit', async () => {
     const reader = (routes as any).sourceReader;
     const realRead = reader.read.bind(reader);

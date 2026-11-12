@@ -74,9 +74,9 @@ describe('projectReadKeys adopted-row scoping (#4782)', () => {
       store.db.run(`UPDATE observations SET merged_into_project = 'work' WHERE title = 'REPO_RECORD'`);
       store.db.run(`UPDATE session_summaries SET merged_into_project = 'work' WHERE request = 'REPO_RECORD'`);
 
-      // The repo is a whole merge into work: promoted. The worktree is not
-      // merged into work itself: reachable only through the repo's rows.
-      expect(projectReadKeys(store.db, ['work'])).toEqual(['work', 'repo']);
+      // Each source is a whole merge into a known key, so the complete chain
+      // is available if work is subsequently merged into another environment.
+      expect(projectReadKeys(store.db, ['work'])).toEqual(['work', 'repo', 'repo/feature']);
     } finally {
       store.close();
     }

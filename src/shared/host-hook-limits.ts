@@ -8,12 +8,23 @@ import { HOOK_TIMEOUTS, getTimeout, hookProcessOverheadMs } from './hook-constan
 export const ANTIGRAVITY_HOOK_TIMEOUT_MS = 30_000;
 
 /**
+ * The per-hook timeout the Gemini CLI installer registers for every claude-mem
+ * hook in ~/.gemini/settings.json (milliseconds, the unit Gemini CLI reads).
+ * 60 s is Gemini CLI's own documented default (docs/hooks/reference.md,
+ * "Execution timeout in milliseconds (default: 60000)"), so registering it
+ * explicitly changes nothing about when Gemini kills a hook; it only gives the
+ * server-runtime SessionStart read a known budget.
+ */
+export const GEMINI_HOOK_TIMEOUT_MS = 60_000;
+
+/**
  * How long each host lets the SessionStart context hook run before it kills
  * the hook and drops its output, keyed by the platform id the hook command
  * passes (`hook <platform> context`). One place per host:
  * - claude-code: the SessionStart context hook `timeout` in plugin/hooks/hooks.json;
  * - codex: the SessionStart `timeout` in plugin/hooks/codex-hooks.json;
- * - antigravity(-cli): the installer's per-hook timeout above.
+ * - antigravity(-cli): the installer's per-hook timeout above;
+ * - gemini: the Gemini CLI installer's per-hook timeout above.
  * tests/shared/host-hook-limits.test.ts fails when a registration drifts.
  */
 export const SESSION_START_HOOK_LIMIT_MS: Readonly<Record<string, number>> = Object.freeze({
@@ -21,6 +32,7 @@ export const SESSION_START_HOOK_LIMIT_MS: Readonly<Record<string, number>> = Obj
   codex: 20_000,
   'antigravity-cli': ANTIGRAVITY_HOOK_TIMEOUT_MS,
   antigravity: ANTIGRAVITY_HOOK_TIMEOUT_MS,
+  gemini: GEMINI_HOOK_TIMEOUT_MS,
 });
 
 /**

@@ -165,6 +165,23 @@ describe('native function signature boundaries', () => {
     }, 120000);
   }
 
+  test('retains annotation braces on compact record constructor headers', () => {
+    const source = [
+      'record Tagged(int value) {',
+      '  @Tags({"{", "compactNeedle"})',
+      '  public Tagged {',
+      '    if (value < 0) throw new IllegalArgumentException("negative value");',
+      '  }',
+      '  int read() { return value; }',
+      '}',
+    ].join('\n');
+    const found = symbols(source, 'Tagged.java');
+    expect(found.get('Tagged(int value)')?.signature).toBe('@Tags({"{", "compactNeedle"}) public Tagged');
+    const unfolded = unfoldSymbol(source, 'Tagged.java', 'Tagged.Tagged(int value)');
+    expect(unfolded).toContain('if (value < 0)');
+    expect(unfolded).not.toContain('int read()');
+  }, 120000);
+
   test('keeps bodyless declarations as complete native headers', () => {
     const examples = [
   [

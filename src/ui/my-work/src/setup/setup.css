@@ -128,6 +128,76 @@
 .scan-retry { margin-top: 20px; padding: 10px 24px; border: 0; border-radius: 999px; background: #1c2030; color: #fff !important; font-weight: 600; }
 .scan-retry:disabled { opacity: .55; cursor: wait; }
 
+/* Agent installation, before the memory scan. */
+.setup-main.step-install { width: min(1040px, calc(100% - 64px)); }
+.step-install .page-heading { margin-bottom: 32px; }
+.step-install .page-heading h1 { font-size: clamp(32px, 4vw, 52px); }
+.install-form { text-align: left; }
+.install-form .panel { padding: 28px; }
+.install-form fieldset { min-width: 0; margin: 0; }
+.install-section-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
+.install-section-heading h2 { font-size: 22px; font-weight: 600; }
+.install-section-heading > span, .install-help { color: var(--muted); font-size: 15px; }
+.install-section-heading > span { white-space: nowrap; }
+.install-search { display: flex; align-items: center; gap: 10px; margin: 20px 0; padding: 10px 14px; border: 1px solid var(--line); border-radius: 10px; }
+.install-search svg { width: 18px; color: var(--muted); }
+.install-search input { width: 100%; border: 0; outline: 0; background: transparent; }
+.install-search:focus-within { outline: 3px solid var(--focus); outline-offset: 3px; }
+.install-agent-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.install-agent { display: flex; align-items: center; gap: 10px; min-height: 72px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; cursor: pointer; }
+.install-agent:has(input:checked) { border-color: var(--violet); background: var(--tint); }
+.install-agent input, .install-option input { flex: none; width: 18px; height: 18px; accent-color: var(--violet); }
+.install-agent strong { display: block; font-size: 16px; font-weight: 600; }
+.install-agent small { display: block; color: var(--muted); font-size: 12px; line-height: 1.4; }
+.install-detected { margin-left: auto; color: var(--violet); font-size: 11px; }
+.install-options { margin-top: 20px; }
+.install-options > summary { display: flex; justify-content: space-between; cursor: pointer; font-size: 19px; font-weight: 600; }
+.install-options > summary::after { content: '+'; margin-left: 16px; }
+.install-options[open] > summary::after { content: '−'; }
+.install-options > summary > span { margin-left: auto; color: var(--muted); font-size: 15px; font-weight: 400; }
+.install-options fieldset { margin-top: 28px; padding: 0; border: 0; }
+.install-options legend { margin-bottom: 8px; font-size: 18px; font-weight: 600; }
+.install-option { display: flex; align-items: flex-start; gap: 12px; cursor: pointer; }
+.install-option input { margin-top: 3px; }
+.install-option strong { display: block; font-size: 15px; font-weight: 600; }
+.install-option small { display: block; margin-top: 3px; color: var(--muted); font-size: 14px; line-height: 1.45; }
+.install-option em { margin-left: 8px; color: var(--muted); font-size: 12px; font-style: normal; font-weight: 400; }
+.install-option:has(input:disabled) { cursor: default; }
+.install-host, .install-reinstall { margin-top: 24px; }
+.install-skill-actions { display: flex; gap: 18px; margin: 12px 0; }
+.install-skill-actions .text-action { font-size: 14px; }
+.install-skill-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px 28px; max-height: 320px; overflow-y: auto; padding: 8px 4px; }
+.install-options fieldset > .install-option { margin-top: 18px; }
+.install-model { display: grid; gap: 6px; max-width: 430px; font-size: 15px; }
+.install-model select, .install-model input, .install-email input, .install-email textarea { width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: #fff; font: inherit; }
+.install-model small { color: var(--muted); font-size: 13px; }
+.install-email { display: grid; gap: 16px; max-width: 520px; margin: 18px 0 0 30px; }
+.install-email label { display: grid; gap: 6px; font-size: 15px; }
+.install-form .primary:disabled { opacity: .5; cursor: default; }
+.install-loading, .install-progress { display: grid; justify-items: center; gap: 20px; color: var(--muted); }
+.install-loading { margin-top: 36px !important; }
+.install-progress { max-width: 620px; margin: auto; }
+.install-progress > svg { width: 30px; height: 30px; color: var(--violet); }
+.install-progress ul { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px 24px; margin: 0; padding: 0; list-style: none; }
+.install-progress li { display: flex; align-items: center; gap: 6px; font-size: 15px; }
+.install-progress li svg { width: 16px; height: 16px; }
+.tool-installed { display: block; color: var(--muted); font-size: 13px; font-weight: 400; }
+@media (prefers-reduced-motion: no-preference) {
+  .install-spinner { animation: install-spin 1.4s linear infinite; }
+}
+@keyframes install-spin { to { transform: rotate(360deg); } }
+@media (max-width: 850px) {
+  .install-agent-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 560px) {
+  .setup-main.step-install { width: calc(100% - 32px); }
+  .install-form .panel { padding: 20px; }
+  .install-agent-options, .install-skill-options { grid-template-columns: 1fr; }
+  .install-agent { min-height: 62px; }
+  .install-skill-options { max-height: 360px; }
+  .install-email { margin-left: 0; }
+}
+
 /* Reveal. */
 .setup-main.step-reveal { width: min(1280px, calc(100% - 64px)); }
 .reveal-sets { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; text-align: left; }

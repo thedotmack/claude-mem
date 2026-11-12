@@ -592,6 +592,26 @@ async function runViewerMatrix(a: Device, b: Device, c: Device, viewers: MatrixV
   const find = (snapshot: any) => snapshot.humanRequests.find((request: any) => request.groupId === groupId);
   await waitForAsync(async () => !!find(await local.snapshot()) && !!find(await hosted.snapshot()), 'grouped request on both viewers').catch(async error => {
     for (const viewer of [local, hosted]) { const snap = await viewer.snapshot(); console.error('GROUP_DEBUG', JSON.stringify({expected:groupId,source:snap.source,shared:snap.sharedState,requests:snap.humanRequests.map((r:any)=>({id:r.id,groupId:r.groupId,title:r.title,keys:r.conversationKeys})),localShared:viewer.shared.status()})); } throw error; });
+  // A request appearing on two viewers does not mean the origin's provenance has been published or pulled
+  // everywhere, and the middle viewer was never waited on. Repeat the same publish/pull pass until the three
+  // replicas agree. Never loosen the check below: a replica whose descriptor stays incomplete must still fail.
+  const converged = async () => {
+    const [x, y, z] = [find(await local.snapshot()), find(await middle.snapshot()), find(await hosted.snapshot())];
+    if (x && y && z && x.contentFingerprint === y.contentFingerprint && x.contentFingerprint === z.contentFingerprint
+      && x.sharedReviewDescriptor?.fingerprint === z.sharedReviewDescriptor?.fingerprint) return true;
+    await local.shared.reconcile();
+    await drainDevice(a); await drainDevice(b); await drainDevice(c);
+    await Promise.all([pullToHead(a), pullToHead(b), pullToHead(c)]);
+    await hosted.shared.reconcile();
+    return false;
+  };
+  await waitForAsync(converged, 'review fingerprints to converge across replicas').catch(async error => {
+    const views = await Promise.all([local, middle, hosted].map(async viewer => find(await viewer.snapshot())));
+    console.error('FINGERPRINT_DEBUG', JSON.stringify(views.map(v => v && ({ content: v.contentFingerprint,
+      complete: v.sharedReviewDescriptor?.complete, missing: v.sharedReviewDescriptor?.missingEvidence }))),
+      JSON.stringify(local.shared.status()));
+    throw error;
+  });
   const av = find(await local.snapshot()), bv = find(await middle.snapshot()), cv = find(await hosted.snapshot());
   check(av.progress.percent === 60 && cv.progress.percent === 60 && cv.conversationKeys.length === 2,
     'shared group membership and 60 percent progress converge');

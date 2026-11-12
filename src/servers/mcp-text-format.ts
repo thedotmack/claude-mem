@@ -205,7 +205,32 @@ export function formatMcpPayload(purpose: McpTextPurpose, payload: unknown): Mcp
     }
     case 'corpus-build': text = `Corpus ready.\n${corpusSummary(data)}\nUse prime_corpus before querying.`; break;
     case 'corpus-prime': text = `Corpus ${line(data.name, 'requested corpus')} primed. Use query_corpus to ask a question.`; break;
-    case 'corpus-query': text = `Corpus answer:\n\n${typeof data.answer === 'string' ? data.answer : 'No answer returned.'}`; break;
+    case 'corpus-query': {
+      const answer = typeof data.answer === 'string' ? data.answer : 'No answer returned.';
+      // The API corpus agent answers from an excerpt; say so when matches were left out.
+      // The notices go before the answer: mcpTextResult keeps only the first 32 KiB,
+      // so a long answer would cut off notices placed after it.
+      // A count is a number or it is absent: Number(null) would read as a count of 0.
+      const count = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) ? value : NaN);
+      const sent = count(data.observations_sent);
+      const matching = count(data.observations_matching);
+      const inCorpus = count(data.observations_in_corpus);
+      const truncated = count(data.observations_truncated);
+      const notices = [
+        Number.isFinite(sent) && Number.isFinite(matching) && sent < matching
+          ? `Partial excerpt: the answer saw ${sent} of the ${matching} observations that match the question.`
+          : '',
+        // Nothing matched: the excerpt is the most recent observations, not a selection.
+        Number.isFinite(sent) && matching === 0 && Number.isFinite(inCorpus) && sent < inCorpus
+          ? `Partial excerpt: no observation matches the question, so the answer saw only the ${sent} most recent of the ${inCorpus} in the corpus.`
+          : '',
+        Number.isFinite(truncated) && truncated > 0
+          ? `Cut: the text of ${truncated} ${truncated === 1 ? 'observation' : 'observations'} the answer saw was shortened to fit the excerpt budget.`
+          : '',
+      ].filter(Boolean);
+      text = `Corpus answer:\n\n${notices.length ? `${notices.join('\n')}\n\n` : ''}${answer}`;
+      break;
+    }
   }
   return mcpTextResult(text);
 }

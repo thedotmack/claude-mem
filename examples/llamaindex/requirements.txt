@@ -1,0 +1,4 @@
+llama-index-tools-mcp==0.6.0
+llama-index-core==0.14.25
+llama-index-workflows==2.26.1
+mcp==2.3.0

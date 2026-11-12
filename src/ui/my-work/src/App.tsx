@@ -142,13 +142,22 @@ function RequestDetailLoading({ title, onClose }: { title: string; onClose: () =
 }
 
 export default function App() {
-  // Only the explicit installer handoff opens setup. Missing state on an
-  // existing installation must never lock My Work behind checkout.
+  // An agent may leave setup for the person's first visit. Only a persisted
+  // install handoff opens it automatically; old installations and cloud readers keep My Work.
   const page = useStore((state) => state.view.page)
   const finishSetup = useStore.use.finishSetup()
   // Once per mount, read from the store at effect time. Depending on the action
   // identity re-posted an open whenever that function was replaced.
   useEffect(() => { useStore.getState().reportOpen() }, [])
+  useEffect(() => {
+    if (page === 'setup' || isServedFromCloud(window.location.hostname)
+      || new URLSearchParams(window.location.search).get('source') === 'sample') return
+    let active = true
+    void import('@/setup/setup-data').then(module => module.setupPending()).then(pending => {
+      if (active && pending && useStore.getState().view.page === 'app') useStore.getState().startSetup()
+    }).catch(() => { /* No confirmed handoff: keep the existing workspace usable. */ })
+    return () => { active = false }
+  }, [page])
   if (page !== 'setup') return <WorkApp />
   return <MotionConfig reducedMotion="user"><Suspense fallback={null}><SetupPage onComplete={finishSetup} /></Suspense></MotionConfig>
 }

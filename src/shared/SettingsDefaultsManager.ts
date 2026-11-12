@@ -437,6 +437,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_WORK_VIEW_CODEX_MODEL: string;
   CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL: string;
   CLAUDE_MEM_WORK_VIEW_API_MODEL: string;
+  CLAUDE_MEM_CORPUS_AGENT: string;
   CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE: string;
   // Automatic local DB snapshots (BackupManager). Opt-in via ENABLED.
   CLAUDE_MEM_BACKUP_ENABLED: string;
@@ -763,6 +764,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_WORK_VIEW_CODEX_MODEL: '',  // #5164 — same for Codex; empty keeps the per-step table
     CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL: '', // #5164 — same for Gemini; empty keeps flash-lite/flash per step
     CLAUDE_MEM_WORK_VIEW_API_MODEL: '', // Model for every My Work refresh step on the selected API provider; empty keeps the provider's configured model
+    CLAUDE_MEM_CORPUS_AGENT: '', // Which agent answers knowledge-corpus prime/query/reprime: '' uses the Claude Agent SDK (the Claude subscription); 'api' answers over chat completions on the selected openrouter/openai-compatible provider and spends that provider's credit
     CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE: '', // Language for My Work's generated text (titles, reviews, story), such as 'Turkish'. No extra model call; empty uses the language the grouping step finds in the owner's asks, decided once per run (#5660)
     // Automatic local DB snapshots (BackupManager). Off by default; opt-in.
     CLAUDE_MEM_BACKUP_ENABLED: 'false',

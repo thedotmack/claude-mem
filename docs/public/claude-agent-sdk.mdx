@@ -1,0 +1,38 @@
+---
+title: Claude Agent SDK
+description: Explicitly save and recall project memory from a Claude Agent SDK application.
+icon: code
+---
+
+The [runnable TypeScript example](https://github.com/thedotmack/claude-mem/blob/main/examples/claude-agent-sdk/memory.ts) connects the Claude Agent SDK to Claude-Mem's existing local MCP server. It explicitly saves one synthetic note, searches its project, inspects the matching timeline and retrieves the selected observation.
+
+## Run the example
+
+From a Claude-Mem source checkout with Bun and npm dependencies installed:
+
+```bash
+npm run build
+bun examples/claude-agent-sdk/memory.ts \
+  --project sdk-practice \
+  --server plugin/scripts/mcp-server.cjs
+```
+
+Use your existing supported Claude Agent SDK authentication. Never put keys into the example, prompt or command arguments. The run sends the synthetic note, tool results and recalled memory to your selected Claude model and uses that model's credits. Set `CLAUDE_MEM_EXAMPLE_MODEL` to choose another supported model. Explicit saves do not require the background observer to run.
+
+The selected project is fixed by the command. The permission callback rejects alternate project names and server-project IDs, adds the selected project to ID-based reads, and authorizes only save, search, timeline and observation retrieval. It does not authorize raw tool-history reads, shell commands or file edits. Settings files and other MCP servers are not loaded.
+
+This is explicit memory access, not automatic capture. It changes no IDE configuration and stores no SDK session transcript. The saved memory remains until you delete it through Claude-Mem. Disconnect by stopping the example and removing its MCP configuration from your own application.
+
+## Verification and failures
+
+Verified with `@anthropic-ai/claude-agent-sdk` 0.3.322 on macOS. A repeatable test runs the actual SDK and rebuilt MCP server against a local fake model, without an account or paid calls:
+
+```bash
+python3 tests/fixtures/claude-agent-sdk-smoke.py
+```
+
+The test saves and retrieves a known note while withholding another project's record, even when the model requests both IDs. It disables automatic capture in its isolated database. The fake model verifies integration plumbing, not real-model quality. Windows and Linux were not tested.
+
+An absent MCP bundle fails before the run. Tool errors or an incomplete four-tool workflow fail the example instead of reporting completion. Check the worker, selected project and SDK authentication when a run fails.
+
+See the official [SDK MCP guide](https://code.claude.com/docs/en/agent-sdk/mcp) and [permission guide](https://code.claude.com/docs/en/agent-sdk/permissions) when adapting it.

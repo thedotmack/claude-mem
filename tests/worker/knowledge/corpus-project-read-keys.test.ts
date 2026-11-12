@@ -33,19 +33,23 @@ function fixture() {
   const adopted = add('private', 'adopted', 'work');
   add('private', 'unadopted');
   add('unrelated', 'unrelated');
-  // Expansion is one hop, not recursively repeated by downstream search.
-  add('deep', 'too-deep', 'repo/feature');
+  // Whole merges retain every generation, not only the first adopted worktree.
+  const deep = add('deep', 'adopted-through-chain', 'repo/feature');
+  // A partial source is not a read key. Neither its direct nor deeper adopted
+  // descendants may cross that boundary into work, even in semantic results.
+  add('private/feature', 'unadopted-child', 'private');
+  add('private/deep', 'unadopted-grandchild', 'private/feature');
   const search = new SessionSearch(store.db);
   const chroma = { queryChroma: async () => ({
     ids: rows.map(row => row.id), distances: rows.map(() => 0.1),
     metadatas: rows.map(row => ({ ...row, sqlite_id: row.id, doc_type: 'observation' })),
   }) } as unknown as ChromaSync;
-  return { search, chroma, expected: [own, repo, worktree, adopted].sort((a, b) => a - b) };
+  return { search, chroma, expected: [own, repo, worktree, adopted, deep].sort((a, b) => a - b) };
 }
 
 describe('corpus project scope matches interactive memory retrieval', () => {
   for (const mode of ['filter-only', 'keyword', 'semantic', 'semantic-empty'] as const) {
-    it(`keeps adopted worktree rows without unrelated rows (${mode})`, async () => {
+    it(`keeps whole merge chains without crossing partial adoption (${mode})`, async () => {
       const { search, chroma, expected } = fixture();
       const query = mode === 'filter-only' ? undefined : 'needle';
       const vector = mode.startsWith('semantic') ? chroma : null;

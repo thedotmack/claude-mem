@@ -158,10 +158,8 @@ describe('ChromaSync sqlite_id-only lookups (#4682)', () => {
       'parent'
     );
 
-    const patchedObs = updateCalls().find(c =>
-      (c.args.metadatas as any[])[0]?.doc_type === 'observation');
-    const patchedSummary = updateCalls().find(c =>
-      (c.args.metadatas as any[])[0]?.doc_type === 'session_summary');
+    const patchedObs = updateCalls().find(c => c.args.ids.includes('obs_5_narrative'));
+    const patchedSummary = updateCalls().find(c => c.args.ids.includes('summary_5_request'));
 
     expect(patchedObs?.args.ids.sort()).toEqual(referenceSelect('observation', [5]).sort());
     expect(patchedSummary?.args.ids.sort()).toEqual(referenceSelect('session_summary', [5]).sort());
@@ -265,8 +263,8 @@ describe('ChromaSync sqlite_id-only lookups (#4682)', () => {
     expect(updates).toHaveLength(1);
     expect(updates[0].args.ids).toEqual(['obs_10_narrative', 'obs_11_narrative']);
     expect(updates[0].args.metadatas).toEqual([
-      { sqlite_id: 10, doc_type: 'observation', merged_into_project: 'parent' },
-      { sqlite_id: 11, doc_type: 'observation', merged_into_project: 'parent' }
+      { merged_into_project: 'parent' },
+      { merged_into_project: 'parent' }
     ]);
   });
 

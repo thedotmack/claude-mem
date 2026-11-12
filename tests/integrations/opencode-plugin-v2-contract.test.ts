@@ -654,8 +654,8 @@ describe("OpenCode V2 callbacks drive the worker", () => {
     }));
 
     expect(worker.to("/api/sessions/observations").map((request) => request.body!.tool_response)).toEqual([
-      "ENOENT: src/parser.ts",
-      "permission denied",
+      { is_error: true, error: "ENOENT: src/parser.ts" },
+      { is_error: true, error: "permission denied" },
     ]);
   });
 

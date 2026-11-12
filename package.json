@@ -1,6 +1,6 @@
 {
   "name": "claude-mem",
-  "version": "15.17.0",
+  "version": "15.17.1",
   "description": "Persistent memory for AI coding agents: the next session starts where the last one left off. Works with Claude Code, Codex, Cursor, OpenCode and more.",
   "keywords": [
     "claude",
@@ -164,6 +164,7 @@
     "dompurify": "^3.4.9",
     "express": "^5.2.1",
     "ioredis": "^5.10.1",
+    "json5": "^2.2.3",
     "pg": "^8.20.0",
     "posthog-node": "^5.36.15",
     "react": "^19.2.6",

@@ -38,6 +38,8 @@ describe('POST /v1/keys + GET /v1/connect', () => {
   let port: number;
   let writeKey: string;
   let readKey: string;
+  let teamId: string;
+  let projectId: string;
   let spies: ReturnType<typeof spyOn>[] = [];
 
   beforeEach(async () => {
@@ -52,6 +54,8 @@ describe('POST /v1/keys + GET /v1/connect', () => {
     storage = createPostgresStorageRepositories(client);
     const team = await storage.teams.create({ name: 'team' });
     const project = await storage.projects.create({ teamId: team.id, name: 'p' });
+    teamId = team.id;
+    projectId = project.id;
 
     const w = newApiKey(); writeKey = w.raw;
     await storage.auth.createApiKey({ keyHash: w.hash, teamId: team.id, projectId: project.id, actorId: 't', scopes: ['memories:read', 'memories:write'] });
@@ -157,6 +161,54 @@ describe('POST /v1/keys + GET /v1/connect', () => {
       method: 'POST', headers: { Authorization: `Bearer ${readKey}`, 'Content-Type': 'application/json' }, body: '{}',
     });
     expect([401, 403]).toContain(r.status);
+  });
+
+  it('a write-only capture key cannot mint access to existing memories', async () => {
+    const captureKey = newApiKey();
+    await storage.auth.createApiKey({
+      keyHash: captureKey.hash, teamId, projectId, actorId: 'capture', scopes: ['memories:write'],
+    });
+    const memory = await storage.observations.create({
+      teamId, projectId, kind: 'manual', content: 'Existing private project memory',
+    });
+    const readRequest = () => ({
+      method: 'POST',
+      headers: { Authorization: `Bearer ${captureKey.raw}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectId, ids: [memory.id] }),
+    });
+    const deniedRead = await fetch(url('/v1/observations/batch'), readRequest());
+    expect(deniedRead.status).toBe(403);
+    await deniedRead.text();
+
+    const countBefore = await client.query('SELECT COUNT(*)::int AS count FROM api_keys');
+    const issued = await fetch(url('/v1/keys'), {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${captureKey.raw}`, 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    const result = await issued.json() as { apiKey?: string };
+    expect(issued.status).toBe(403);
+    expect(result.apiKey).toBeUndefined();
+    expect((await client.query('SELECT COUNT(*)::int AS count FROM api_keys')).rows)
+      .toEqual(countBefore.rows);
+  });
+
+  it('a wildcard key can mint a read-only key in its existing project scope', async () => {
+    const adminKey = newApiKey();
+    await storage.auth.createApiKey({
+      keyHash: adminKey.hash, teamId, projectId, actorId: 'admin', scopes: ['*'],
+    });
+    const response = await fetch(url('/v1/keys'), {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${adminKey.raw}`, 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    expect(response.status).toBe(201);
+    const minted = await response.json() as { id: string; scopes: string[] };
+    expect(minted.scopes).toEqual(['memories:read']);
+    const row = await storage.auth.getApiKeyById(minted.id);
+    expect(row?.projectId).toBe(projectId);
+    expect(row?.teamId).toBe(teamId);
   });
 
   it('GET /v1/connect returns the command with a placeholder key', async () => {
