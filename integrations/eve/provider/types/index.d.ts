@@ -11,11 +11,13 @@
  *   other claude-mem clients use, all free) and `remember` (save_memory).
  * - capture: after every completed turn, one live handoff to
  *   `/api/hooks/ingest`: the prompt, one observation per tool call, and a
- *   summary request, with secret-shaped text redacted before anything is
+ *   summary request, with `<private>` and claude-mem's context and system tag
+ *   regions removed and secret-shaped text redacted before anything is cut or
  *   sent (the Cowork client's patterns). Hosted claude-mem turns those into memory on the key
  *   owner's inference allowance. Each request is sent once, with no retry,
  *   spool, or queue: a failed send is reported with what was and was not
- *   accepted, and the rest of that turn is not recorded. Replays are
+ *   accepted, a reply that stored fewer envelopes than were sent is logged,
+ *   and the rest of a failed turn is not recorded. Replays are
  *   deduplicated by the turn and tool call IDs and by an idempotency key
  *   derived from eve's `operationId`.
  */

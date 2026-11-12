@@ -3,7 +3,8 @@
 // it cannot import the worker's src/utils/redaction.ts (see the comment there).
 // cmem-hook-redaction-parity.test.ts holds Cowork to the worker; this test
 // holds the eve copy to Cowork, so a pattern added to one and not the other
-// fails here instead of letting that key shape reach cmem.ai from eve.
+// fails here instead of letting that key shape reach cmem.ai from eve. The
+// same holds for its copy of Cowork's <private> and system tag stripping.
 import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -77,4 +78,63 @@ describe('eve provider redaction matches the Cowork shim', () => {
       expect(eve.redactSecrets(sample)).toBe(cowork.redactSecrets(sample));
     });
   }
+});
+
+interface PrivacyStripping {
+  STRIP_TAGS_RE: RegExp;
+  stripPrivacyRegions: (text: string) => string;
+}
+
+// Each copy's tag stripping runs from `const STRIP_TAGS_RE` through the end of
+// `function stripPrivacyRegions`, evaluated the same way as the redaction block.
+function loadPrivacyStripping(file: string): PrivacyStripping {
+  const source = readFileSync(file, 'utf8');
+  const start = source.indexOf('const STRIP_TAGS_RE =');
+  const fnStart = source.indexOf('function stripPrivacyRegions(', start);
+  const end = source.indexOf('\n}\n', fnStart);
+  if (start === -1 || fnStart === -1 || end === -1) throw new Error(`privacy stripping block not found in ${file}`);
+  const block = new Bun.Transpiler({ loader: 'ts' }).transformSync(source.slice(start, end + 2));
+  return new Function(`${block}\nreturn { STRIP_TAGS_RE, stripPrivacyRegions };`)() as PrivacyStripping;
+}
+
+// One input per stripped form: each tag in the list, attributes, multiline
+// regions, the HTML-escaped <private> form, an unclosed region (left for the
+// server, in both copies), and plain text.
+const PRIVACY_SAMPLES = [
+  'keep <private>drop this</private> keep',
+  'keep <private reason="x">drop\nacross lines</private> keep',
+  '<claude-mem-context source="cmem.ai">old memory</claude-mem-context>after',
+  'a<system_instruction>x</system_instruction>b<system-instruction>y</system-instruction>c',
+  'a<persisted-output>x</persisted-output>b<system-reminder>y</system-reminder>c',
+  'escaped &lt;private&gt;drop&lt;/private&gt; and &LT;PRIVATE&GT;drop too&LT;/PRIVATE&GT; kept',
+  '{"note":"<private>in json</private>","path":"a.ts"}',
+  'an unclosed <private> region stays for the server',
+  'plain text with <b>html</b> and src/a.ts stays as it is',
+];
+
+describe('eve provider privacy tag stripping matches the Cowork shim', () => {
+  const cowork = loadPrivacyStripping(COWORK);
+  const eve = loadPrivacyStripping(EVE);
+
+  it('has the same tag pattern', () => {
+    expect(shape(eve.STRIP_TAGS_RE)).toEqual(shape(cowork.STRIP_TAGS_RE));
+  });
+
+  for (const sample of PRIVACY_SAMPLES) {
+    it(`strips the same way: ${sample.slice(0, 40)}`, () => {
+      expect(eve.stripPrivacyRegions(sample)).toBe(cowork.stripPrivacyRegions(sample));
+    });
+  }
+
+  it('strips the function body identically, not just on these samples', () => {
+    const body = (file: string) => {
+      const source = readFileSync(file, 'utf8');
+      const fnStart = source.indexOf('function stripPrivacyRegions(');
+      return source
+        .slice(source.indexOf('{', fnStart), source.indexOf('\n}\n', fnStart))
+        .replace(/\s+/g, ' ')
+        .replaceAll('"', "'");
+    };
+    expect(body(EVE)).toBe(body(COWORK));
+  });
 });

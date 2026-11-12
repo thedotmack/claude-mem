@@ -11,11 +11,13 @@
  *   other claude-mem clients use, all free) and `remember` (save_memory).
  * - capture: after every completed turn, one live handoff to
  *   `/api/hooks/ingest`: the prompt, one observation per tool call, and a
- *   summary request, with secret-shaped text redacted before anything is
+ *   summary request, with `<private>` and claude-mem's context and system tag
+ *   regions removed and secret-shaped text redacted before anything is cut or
  *   sent (the Cowork client's patterns). Hosted claude-mem turns those into memory on the key
  *   owner's inference allowance. Each request is sent once, with no retry,
  *   spool, or queue: a failed send is reported with what was and was not
- *   accepted, and the rest of that turn is not recorded. Replays are
+ *   accepted, a reply that stored fewer envelopes than were sent is logged,
+ *   and the rest of a failed turn is not recorded. Replays are
  *   deduplicated by the turn and tool call IDs and by an idempotency key
  *   derived from eve's `operationId`.
  */
@@ -403,15 +405,32 @@ function redactSecrets(text: string): string {
   return out.replace(KEYVALUE_RE, `$1${REDACTED}`);
 }
 
+// ---------- privacy tags ----------
+// <private>…</private> regions are never stored, and claude-mem's own context
+// and system tags are dropped so injected blocks do not echo back into memory.
+// The regions are removed from the whole text before any cut: a cut that drops
+// a closing tag would leave the private text unremovable by the server's own
+// filter, which removes a region only when its close is present.
+//
+// Copied from the Cowork hosted client, cowork/scripts/cmem-hook.mjs
+// (STRIP_TAGS_RE and stripPrivacyRegions, used by its clean()), for the same
+// reason as the redaction copy above. Change both copies together;
+// tests/cowork/eve-provider-redaction-parity.test.ts holds them equal.
+const STRIP_TAGS_RE = /<(private|claude-mem-context|system_instruction|system-instruction|persisted-output|system-reminder)\b[^>]*>[\s\S]*?<\/\1>/g;
+function stripPrivacyRegions(text: string): string {
+  return text.replace(STRIP_TAGS_RE, '').replace(/&lt;private\b[\s\S]*?&lt;\/private&gt;/gi, '');
+}
+
 /**
  * Cowork's clean() without its truncation: a non-string value is serialized to
- * JSON first, so every nested string is scanned, and the redacted text is what
- * is sent. Runs before the size checks, so a cut can never split a secret and
- * leave part of it readable.
+ * JSON first, so every nested string is scanned, privacy-tagged regions are
+ * removed, and the redacted text is what is sent. Runs before the size checks,
+ * so a cut can never split a secret or a private region and leave part of it
+ * readable.
  */
 function redactedField(value: unknown): unknown {
   if (value == null) return value;
-  return redactSecrets(typeof value === "string" ? value : JSON.stringify(value));
+  return redactSecrets(stripPrivacyRegions(typeof value === "string" ? value : JSON.stringify(value)));
 }
 
 // Cowork's never-send list (ALWAYS_SKIP in cowork/scripts/cmem-hook.mjs): the
@@ -538,24 +557,31 @@ interface ToolResultLike {
   output: ToolOutputLike;
 }
 
+const isPersonsHistoryMessage = (message: HistoryMessage) =>
+  message.role === "user" && isPersonsMessage(message as HistoryMessage & { role: "user" });
+
 /**
- * This turn's tool calls, each with its result when there is one. eve's turn
- * is everything after the last user message in the finished history (the same
- * rule eve uses to derive `turn.input`).
+ * This turn's tool calls, each with its result when there is one, from the
+ * finished history.
+ *
+ * When this turn's input has a person's message, the turn starts after the
+ * person's last message: eve's own user-role notes (a task.result or a
+ * continuation, say) can land mid-turn, so stopping at any user-role message
+ * would drop this turn's earlier tool calls. When the input has no person's
+ * message (only eve's notes), the person's last message in history belongs to
+ * an earlier turn, whose tool calls were recorded under that turn's ID, so the
+ * turn is everything after the last user-role message (the rule eve uses to
+ * derive `turn.input`).
  */
-function turnToolCalls(messages: readonly HistoryMessage[]): Array<{ call: ToolCallLike; result: ToolResultLike | undefined }> {
-  // The turn starts after the person's last message. eve's own user-role notes
-  // (a task.result or a continuation, say) can land mid-turn, so stopping at
-  // any user-role message would drop this turn's earlier tool calls. With no
-  // person's message in history, the last user-role message bounds the turn.
-  const isTurnStart = (message: HistoryMessage) =>
-    message.role === "user" && isPersonsMessage(message as HistoryMessage & { role: "user" });
+function turnToolCalls(
+  messages: readonly HistoryMessage[],
+  input: readonly HistoryMessage[],
+): Array<{ call: ToolCallLike; result: ToolResultLike | undefined }> {
+  const isTurnStart = input.some(isPersonsHistoryMessage)
+    ? isPersonsHistoryMessage
+    : (message: HistoryMessage) => message.role === "user";
   let start = messages.length;
   while (start > 0 && !isTurnStart(messages[start - 1]!)) start -= 1;
-  if (start === 0) {
-    start = messages.length;
-    while (start > 0 && messages[start - 1]!.role !== "user") start -= 1;
-  }
   const calls: ToolCallLike[] = [];
   const results = new Map<string, ToolResultLike>();
   for (const message of messages.slice(start)) {
@@ -600,7 +626,8 @@ function turnEnvelopes(context: MemoryTurnCompletedContext, config: ResolvedOpti
     // Deduplication rides on tool_use_id and idempotency_key, not on ts.
     ts: Math.floor(Date.now() / 1000),
   };
-  const prompt = redactSecrets(userTextOf(context.turn.input));
+  // Privacy regions out, then secrets, both on the whole text before fitPrompt cuts it.
+  const prompt = redactSecrets(stripPrivacyRegions(userTextOf(context.turn.input)).trim());
   const envelopes: Envelope[] = [
     {
       ...base,
@@ -613,7 +640,7 @@ function turnEnvelopes(context: MemoryTurnCompletedContext, config: ResolvedOpti
   ];
   // The agent's own claude-mem tools and any other memory tools are never recorded as work.
   const ownToolPrefix = `${context.memory.slot}__`;
-  for (const { call, result } of turnToolCalls(context.messages)) {
+  for (const { call, result } of turnToolCalls(context.messages, context.turn.input)) {
     if (call.toolName.startsWith(ownToolPrefix) || NEVER_CAPTURED_TOOL_PATTERN.test(call.toolName)) continue;
     if (!result) {
       // No outcome to record (a call the turn ended before answering, such as
@@ -705,17 +732,44 @@ function ingestRequests(envelopes: readonly Envelope[]): Envelope[][] {
   return requests;
 }
 
-/** Plain words for what a failed capture left recorded and not recorded. */
-function captureOutcome(requests: readonly Envelope[][], failedIndex: number): string {
+// Why hosted ingest's `accepted` can be lower than the envelopes sent: it
+// counts only rows newly stored (stageEnvelopes in claude-mem-pro
+// src/lib/hooks/ingest.ts), so a replay it deduplicates is not counted, and
+// parseIngestBody (src/lib/hooks/envelope.ts) drops an invalid envelope from a
+// batch while still answering 202.
+const NOT_NEWLY_STORED_REASON =
+  "already recorded by an earlier send of this turn, or dropped by the server";
+
+/** The `accepted` count from a 202 body: newly stored envelopes. Undefined when the body has none. */
+function acceptedCountOf(body: string): number | undefined {
+  try {
+    const accepted = (JSON.parse(body) as { accepted?: unknown }).accepted;
+    return Number.isInteger(accepted) && (accepted as number) >= 0 ? (accepted as number) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Plain words for what a failed capture left recorded and not recorded.
+ * `acceptedPerRequest` holds the server's `accepted` count for each request
+ * before the failed one.
+ */
+function captureOutcome(requests: readonly Envelope[][], failedIndex: number, acceptedPerRequest: readonly number[]): string {
   const total = requests.flat().length;
   if (failedIndex === 0) {
     return `nothing from this turn was recorded (${total} envelopes in ${requests.length} request(s))`;
   }
-  const acceptedEnvelopes = requests.slice(0, failedIndex).flat().length;
+  const sentEnvelopes = requests.slice(0, failedIndex).flat().length;
+  const acceptedEnvelopes = acceptedPerRequest.reduce((sum, count) => sum + count, 0);
   const notSentRequests = requests.length - failedIndex - 1;
+  const notNewlyStored = sentEnvelopes - acceptedEnvelopes;
   return (
     `${acceptedEnvelopes} of ${total} envelopes were accepted (requests 1-${failedIndex} of ${requests.length}); ` +
-    `the other ${total - acceptedEnvelopes} are not recorded (request ${failedIndex + 1} failed and ${notSentRequests} request(s) after it were not sent)`
+    `${total - sentEnvelopes} are not recorded (request ${failedIndex + 1} failed and ${notSentRequests} request(s) after it were not sent)` +
+    (notNewlyStored > 0
+      ? `; ${notNewlyStored} sent in the accepted requests were not newly stored (${NOT_NEWLY_STORED_REASON})`
+      : "")
   );
 }
 
@@ -723,10 +777,12 @@ function captureOutcome(requests: readonly Envelope[][], failedIndex: number): s
  * One live handoff: each request is attempted once, in order. A failure throws
  * (eve logs it), says how much of the turn was accepted, and nothing is kept
  * for later, so an outage leaves a gap in memory instead of creating spend
- * after the user has moved on.
+ * after the user has moved on. A 202 that stored fewer envelopes than were
+ * sent is logged, not retried.
  */
 async function sendTurn(config: ResolvedOptions, context: MemoryTurnCompletedContext): Promise<void> {
   const requests = ingestRequests(turnEnvelopes(context, config));
+  const acceptedPerRequest: number[] = [];
   for (const [index, batch] of requests.entries()) {
     let failure: Error | undefined;
     try {
@@ -740,19 +796,40 @@ async function sendTurn(config: ResolvedOptions, context: MemoryTurnCompletedCon
         signal: context.abortSignal,
       });
       const body = await response.text();
-      if (!response.ok) failure = httpFailure("capture (hooks ingest)", response, body);
+      if (!response.ok) {
+        failure = httpFailure("capture (hooks ingest)", response, body);
+      } else {
+        const accepted = acceptedCountOf(body);
+        // A reply without the count confirms nothing, so it counts as 0 accepted and is logged.
+        acceptedPerRequest.push(accepted ?? 0);
+        if (accepted === undefined || accepted < batch.length) {
+          console.warn(
+            accepted === undefined
+              ? `[claude-mem/eve] capture reply had no accepted count; cannot confirm what was stored, not retried`
+              : `[claude-mem/eve] capture stored ${accepted} of ${batch.length} envelopes sent, not retried; the other ${batch.length - accepted} were ${NOT_NEWLY_STORED_REASON}`,
+            {
+              sessionId: context.session.id,
+              request: `${index + 1} of ${requests.length}`,
+              envelopesSent: batch.length,
+              envelopesAccepted: accepted ?? null,
+            },
+          );
+        }
+      }
     } catch (error) {
       if (context.abortSignal.aborted) throw error;
       failure = new Error(`claude-mem: capture (hooks ingest) failed: ${errorMessage(error)}`, { cause: error });
     }
     if (failure) {
-      const outcome = captureOutcome(requests, index);
-      const acceptedEnvelopes = requests.slice(0, index).flat().length;
+      const outcome = captureOutcome(requests, index, acceptedPerRequest);
+      const sentEnvelopes = requests.slice(0, index).flat().length;
+      const acceptedEnvelopes = acceptedPerRequest.reduce((sum, count) => sum + count, 0);
       console.error(`[claude-mem/eve] capture failed after one attempt, not retried; ${outcome}`, {
         error: failure.message,
         sessionId: context.session.id,
         envelopesAccepted: acceptedEnvelopes,
-        envelopesNotRecorded: requests.flat().length - acceptedEnvelopes,
+        envelopesSentNotNewlyStored: sentEnvelopes - acceptedEnvelopes,
+        envelopesNotRecorded: requests.flat().length - sentEnvelopes,
         requestsAccepted: index,
         requestsNotSent: requests.length - index - 1,
       });
@@ -772,8 +849,13 @@ export function claudeMem(options: ClaudeMemOptions): MemoryProvider {
       // The search query is the newest user text, cut to the server's 500-character
       // query maximum (dumb_search's maxLength). This only bounds the search
       // terms: nothing is stored and the conversation itself is untouched, so
-      // the cut needs no marker.
-      const query = userTextOf(context.turn.input).replace(/\s+/g, " ").slice(-SEARCH_QUERY_MAX_CHARACTERS).trim();
+      // the cut needs no marker. <private> regions and secret-shaped text are
+      // removed first, as capture does, so neither leaves the deployment as
+      // search terms.
+      const query = redactSecrets(stripPrivacyRegions(userTextOf(context.turn.input)))
+        .replace(/\s+/g, " ")
+        .slice(-SEARCH_QUERY_MAX_CHARACTERS)
+        .trim();
       const reads = await Promise.all([
         // Every turn, under one message ID: eve replaces the previous turn's
         // copy, so the context stays one block, a failed read is read afresh on the

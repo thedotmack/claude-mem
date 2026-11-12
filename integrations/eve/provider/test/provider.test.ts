@@ -318,6 +318,17 @@ test("recall searches for the person's message only, not eve's catalog announcem
   assert.equal(callNamed("dumb_search").arguments.query, HUMAN_TEXT);
 });
 
+test("the recall query never carries private regions or secrets", async () => {
+  const provider = claudeMem({ apiKey: "k", baseUrl });
+  await provider.recall["turn.started"](
+    turnContext("deploy notes <private>my diary entry</private> with api_key=abc123secretvalue please"),
+  );
+  const query = callNamed("dumb_search").arguments.query as string;
+  assert.ok(query.includes("deploy notes"), query);
+  assert.ok(!query.includes("my diary entry"), query);
+  assert.ok(!query.includes("abc123secretvalue"), query);
+});
+
 test("capture's prompt is the person's message only, not eve's catalog announcement or other notes", async () => {
   const provider = claudeMem({ apiKey: "k", baseUrl });
   const input = eveTurnInput("turn_0");
@@ -527,6 +538,34 @@ test("an eve note landing mid-turn does not hide the turn's earlier tool calls",
   await capture(provider, context as never);
   const observations = sentEnvelopes().filter((envelope) => envelope.event === "observation");
   assert.deepEqual(observations.map((envelope) => envelope.payload.tool_use_id), ["turn_2:before", "turn_2:after"]);
+});
+
+test("a turn whose input is only eve's notes never re-sends an earlier turn's tool calls", async () => {
+  const provider = claudeMem({ apiKey: "k", baseUrl });
+  const earlier = [
+    userMessage("first"),
+    { role: "assistant", content: [{ type: "tool-call", toolCallId: "old", toolName: "bash", input: {} }] },
+    { role: "tool", content: [{ type: "tool-result", toolCallId: "old", toolName: "bash", output: { type: "text", value: "x" } }] },
+    { role: "assistant", content: "ok" },
+  ];
+  const input = [{ role: "user", kind: "task.result", content: [{ type: "text", text: "task finished" }] }];
+  await capture(provider, {
+    abortSignal: new AbortController().signal,
+    memory: { scope, slot: "memory" },
+    messages: [
+      ...earlier,
+      ...input,
+      { role: "assistant", content: [{ type: "tool-call", toolCallId: "new", toolName: "bash", input: {} }] },
+      { role: "tool", content: [{ type: "tool-result", toolCallId: "new", toolName: "bash", output: { type: "text", value: "y" } }] },
+      { role: "assistant", content: "Done." },
+    ],
+    operationId: "eve-memory-operation-v1:session-1:2:turn_2:turn.completed:memory",
+    session: { id: "session-1" },
+    turn: { id: "turn_2", sequence: 2, input },
+  } as never);
+  const observations = sentEnvelopes().filter((envelope) => envelope.event === "observation");
+  assert.deepEqual(observations.map((envelope) => envelope.payload.tool_use_id), ["turn_2:new"]);
+  assert.doesNotMatch(JSON.stringify(sentEnvelopes()), /:old"/);
 });
 
 test("a tool call without a result is skipped with a warning", async () => {
@@ -756,6 +795,39 @@ test("a field over the server maximum is cut with an explicit marker and logged,
   assert.equal(logged.length, 2);
 });
 
+test("private text in a prompt and in tool fields never reaches ingest, even when a private region crosses the cut", async () => {
+  const provider = claudeMem({ apiKey: "k", baseUrl });
+  const privateRegion = (size: number) => `<private>PRIVATE_MARKER ${"s".repeat(size)}</private>`;
+  // Each region starts before its field's cut and ends after it, and each field
+  // is still over the maximum once the region is gone, so the cut still runs.
+  const prompt = `${"p".repeat(4_000)}${privateRegion(3_000)}${"p".repeat(2_000)}`;
+  const output = `${"z".repeat(39_000)}${privateRegion(5_000)}${"z".repeat(10_000)}`;
+  const input = {
+    path: "notes.md",
+    note: `kept <system-reminder>REMINDER_MARKER</system-reminder> and &lt;private&gt;ESCAPED_MARKER&lt;/private&gt; ${"i".repeat(45_000)}`,
+  };
+  const logged: unknown[] = [];
+  await quietly(
+    () => capture(provider, completedContext(prompt, [{ id: "big", name: "read_file", input, output: { type: "text", value: output } }])),
+    logged,
+  );
+  ingests.forEach(assertHostedRequest);
+  const sent = JSON.stringify(ingests.map((request) => request.body));
+  assert.doesNotMatch(sent, /PRIVATE_MARKER|REMINDER_MARKER|ESCAPED_MARKER|private>|system-reminder|sss/);
+  const [init, observation] = ingests[0].body.batch;
+  assert.match(init.payload.prompt, /^p+\n\[truncated by claude-mem\/eve: \d+ chars over server max\]$/);
+  assert.match(observation.payload.tool_response, /^z+\n\[truncated by claude-mem\/eve: \d+ chars over server max\]$/);
+  assert.match(observation.payload.tool_input, /^\{"path":"notes\.md","note":"kept  and  i+\n\[truncated/);
+  assert.equal(logged.length, 3, "all three fields were still cut");
+});
+
+test("a prompt that is only private text sends no prompt", async () => {
+  const provider = claudeMem({ apiKey: "k", baseUrl });
+  await capture(provider, completedContext("<private>PRIVATE_MARKER</private>", []));
+  assert.equal(sentEnvelopes().find((envelope) => envelope.event === "session-init")!.payload.prompt, undefined);
+  assert.doesNotMatch(JSON.stringify(sentEnvelopes()), /PRIVATE_MARKER/);
+});
+
 const paidEvents = (request: IngestRequest) =>
   request.body.batch.filter((envelope) => envelope.event !== "session-init").length;
 
@@ -830,7 +902,7 @@ test("a later request failing reports what was accepted and what was not, with n
     () =>
       assert.rejects(
         capture(provider, completedContext("do 25 things", uses)),
-        /HTTP 503\..*not retried: 11 of 27 envelopes were accepted \(requests 1-1 of 3\); the other 16 are not recorded \(request 2 failed and 1 request\(s\) after it were not sent\)/,
+        /HTTP 503\..*not retried: 11 of 27 envelopes were accepted \(requests 1-1 of 3\); 16 are not recorded \(request 2 failed and 1 request\(s\) after it were not sent\)/,
       ),
     logged,
   );
@@ -844,6 +916,94 @@ test("a later request failing reports what was accepted and what was not, with n
       error: undefined,
       sessionId: "session-1",
       envelopesAccepted: 11,
+      envelopesSentNotNewlyStored: 0,
+      envelopesNotRecorded: 16,
+      requestsAccepted: 1,
+      requestsNotSent: 1,
+    },
+  );
+});
+
+test("a 202 that stored fewer envelopes than were sent is logged once, not thrown or retried", async () => {
+  const provider = claudeMem({ apiKey: "k", baseUrl });
+  ingestReply = (request, res) => {
+    res.writeHead(202, { "content-type": "application/json" });
+    res.end(JSON.stringify({ accepted: request.body.batch.length - 2 }));
+  };
+  const logged: unknown[][] = [];
+  await quietly(
+    () =>
+      capture(
+        provider,
+        completedContext("two tools", [
+          { id: "a", name: "bash", input: {}, output: { type: "text", value: "x" } },
+          { id: "b", name: "bash", input: {}, output: { type: "text", value: "y" } },
+        ]),
+      ),
+    logged,
+  );
+  assert.equal(ingests.length, 1, "not retried");
+  assert.equal(logged.length, 1);
+  assert.equal(
+    logged[0][0],
+    "[claude-mem/eve] capture stored 2 of 4 envelopes sent, not retried; the other 2 were already recorded by an earlier send of this turn, or dropped by the server",
+  );
+  assert.deepEqual(logged[0][1], { sessionId: "session-1", request: "1 of 1", envelopesSent: 4, envelopesAccepted: 2 });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(ingests.length, 1, "nothing is sent later on its own");
+});
+
+test("a 202 whose body has no accepted count is logged as unconfirmed", async () => {
+  const provider = claudeMem({ apiKey: "k", baseUrl });
+  ingestReply = (_request, res) => {
+    res.writeHead(202, { "content-type": "application/json" });
+    res.end("{}");
+  };
+  const logged: unknown[][] = [];
+  await quietly(() => capture(provider, completedContext("hi", [])), logged);
+  assert.equal(ingests.length, 1);
+  assert.equal(logged.length, 1);
+  assert.match(String(logged[0][0]), /no accepted count; cannot confirm what was stored, not retried/);
+  assert.deepEqual(logged[0][1], { sessionId: "session-1", request: "1 of 1", envelopesSent: 2, envelopesAccepted: null });
+});
+
+test("a later failure reports the server's accepted counts, not the envelopes sent", async () => {
+  const provider = claudeMem({ apiKey: "k", baseUrl });
+  ingestReply = (request, res) => {
+    if (ingests.length === 1) {
+      res.writeHead(202, { "content-type": "application/json" });
+      res.end(JSON.stringify({ accepted: request.body.batch.length - 3 }));
+      return;
+    }
+    res.writeHead(503, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "unavailable" }));
+  };
+  const uses: ToolUse[] = Array.from({ length: 25 }, (_, index) => ({
+    id: `call_${index}`,
+    name: "bash",
+    input: {},
+    output: { type: "text", value: "x" },
+  }));
+  const logged: unknown[][] = [];
+  await quietly(
+    () =>
+      assert.rejects(
+        capture(provider, completedContext("do 25 things", uses)),
+        /not retried: 8 of 27 envelopes were accepted \(requests 1-1 of 3\); 16 are not recorded \(request 2 failed and 1 request\(s\) after it were not sent\); 3 sent in the accepted requests were not newly stored \(already recorded by an earlier send of this turn, or dropped by the server\)/,
+      ),
+    logged,
+  );
+  assert.equal(ingests.length, 2);
+  // One warning for the short first reply, one error for the failure.
+  assert.equal(logged.length, 2);
+  assert.match(String(logged[0][0]), /capture stored 8 of 11 envelopes sent/);
+  assert.deepEqual(
+    { ...(logged[1][1] as Record<string, unknown>), error: undefined },
+    {
+      error: undefined,
+      sessionId: "session-1",
+      envelopesAccepted: 8,
+      envelopesSentNotNewlyStored: 3,
       envelopesNotRecorded: 16,
       requestsAccepted: 1,
       requestsNotSent: 1,
