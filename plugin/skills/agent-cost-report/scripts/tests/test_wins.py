@@ -100,6 +100,15 @@ class Build(Transcripts):
         return wins.build(list(files), S, E, list(ship_obs), self.sessions(), rows or {}, ratio, DAYS, gh=gh or fake_gh({}), remote=remote,
                           use_gh=(gh is not None or gh_list is not None), repos=repos, gh_list=gh_list)
 
+    def test_default_does_not_import_an_unselected_repository(self):
+        calls = []
+        def lister(repo, start, end):
+            calls.append(repo)
+            return [dict(number=123, title="Someone else's change", url="https://github.com/o/r/pull/123", ts_ms=S + H)], "ok"
+        block, _ = wins.build([], S, E, [], {}, {}, None, DAYS, gh_list=lister)
+        self.assertEqual(calls, [])
+        self.assertEqual(block["items"], [])
+
     def test_no_link_means_every_usd_null(self):
         f = self.write("a.jsonl", tool_lines("cs1", S + 2 * H, "gh pr merge 5 --repo o/r"))
         block, by_day = self.build([f], self.ship(), rows={"cs1": [usage_row("cs1", S + H, 1_000_000)]})
