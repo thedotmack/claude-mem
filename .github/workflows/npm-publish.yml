@@ -24,7 +24,7 @@ jobs:
       - name: Install Bun (required by smoke:clean-room)
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.4.4
       - run: npm install --ignore-scripts
       - run: npm run build
       - run: npm run smoke:clean-room
