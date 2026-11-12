@@ -293,10 +293,15 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
   let exportedAt = new Date(now()).toISOString();
   const checkpointPath = ownerGoalsCheckpointPath(ledgerDir);
   let goalsCheckpoint: OwnerGoalsCheckpoint | null = null;
-  const checkMappingSnapshot = (progress: OwnerGoalsCheckpoint, generatedAt: string | null | undefined) => {
+  // Set when prepare drops first-map progress that a newer snapshot superseded; reported with the goals step.
+  let discardedCheckpointNote: string | null = null;
+  const mappingSnapshotMatches = (progress: OwnerGoalsCheckpoint, generatedAt: string | null | undefined) => {
     const current = generatedAt || null;
-    if (progress.deviceId !== options.localDeviceId()
-      || (current !== progress.baseGeneratedAt && !(progress.save && current === progress.exportedAt))) {
+    return progress.deviceId === options.localDeviceId()
+      && (current === progress.baseGeneratedAt || Boolean(progress.save && current === progress.exportedAt));
+  };
+  const checkMappingSnapshot = (progress: OwnerGoalsCheckpoint, generatedAt: string | null | undefined) => {
+    if (!mappingSnapshotMatches(progress, generatedAt)) {
       throw batchFailure('Saved owner goals or the local device changed while mapping. Checked progress remains at ' + checkpointPath + '; it will not overwrite the newer snapshot.');
     }
   };
@@ -310,7 +315,15 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
     // A withdrawn area (a seed undo) is no match target: the owner never had it, so it is left out of the saved areas.
     try { savedGoals = readGoals(database); savedAreas = readFocusAreas(database, { localDeviceId: options.localDeviceId() }).filter(area => !isWithdrawnArea(area)); } finally { database.close(); }
     goalsCheckpoint = readOwnerGoalsCheckpoint(checkpointPath);
-    if (goalsCheckpoint) checkMappingSnapshot(goalsCheckpoint, savedGoals.generatedAt);
+    discardedCheckpointNote = null;
+    if (goalsCheckpoint && !mappingSnapshotMatches(goalsCheckpoint, savedGoals.generatedAt)) {
+      // A newer snapshot (another device's first map, a manual /owner-goals run) or another device wins. Keeping
+      // this progress would refuse every later refresh, so drop it and update the saved snapshot the normal way.
+      // The in-run check above still refuses, so the run that noticed the change never overwrites it.
+      rmSync(checkpointPath, { force: true });
+      goalsCheckpoint = null;
+      discardedCheckpointNote = 'discarded first-map progress: a newer goals snapshot was saved';
+    }
     // A valid snapshot can contain only rules, which live in the story rather than the owner-goals list.
     const hasSavedItems = savedGoals.goals.length > 0
       || (readLedger(ledgerDir).story?.preferences ?? []).some((preference: { source?: string }) => preference.source === 'owner-goals');
@@ -458,7 +471,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
     ].join(' ');
 
     try {
-      const done: string[] = [];
+      const done: string[] = discardedCheckpointNote ? [discardedCheckpointNote] : [];
       if (needs.goalsStale) {
         // With saved goals, update them from the prompts typed since; otherwise map the whole window.
         if (!savedGoals || !exported) throw new Error('The owner prompts were not prepared.');
@@ -576,17 +589,32 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
             // Validate current evidence before republishing local map/output artifacts as well as before
             // worker writes. The final save repeats this check, preserving the same payload and watermark.
             const readyInput = writeInput('ready-owner-goals', progress.goals);
-            const rechecked = JSON.parse(await runScript([paths.saveScript, '--goals', readyInput, '--prompts', promptsPath,
-              '--ledger-dir', ledgerDir, '--dry-run', '--save-key', progress.save.key])) as CheckedGoals;
-            if (ownerGoalsSaveKey(rechecked.focus_areas.areas, progress.save.key.split(':')[0]) !== progress.save.key) {
-              throw batchFailure('The checked focus payload no longer matches its retained save key.');
+            const saveKey = progress.save.key;
+            // A refused recheck means the frozen payload can never be saved as-is (its evidence was deleted, redacted or
+            // aged out), so every retry would refuse again. Remove the checkpoint, which also removes its copy of that
+            // evidence, and fail this run; the next refresh maps the window again. A spawn error keeps the checkpoint.
+            const discardUnsaveable = (reason: string) => {
+              rmSync(checkpointPath, { force: true });
+              goalsCheckpoint = null;
+              return batchFailure('The checked owner-goals snapshot can no longer be saved, so its mapping checkpoint was removed and the next refresh maps the window again. ' + reason);
+            };
+            let rechecked: CheckedGoals;
+            try {
+              rechecked = JSON.parse(await runScript([paths.saveScript, '--goals', readyInput, '--prompts', promptsPath,
+                '--ledger-dir', ledgerDir, '--dry-run', '--save-key', saveKey])) as CheckedGoals;
+            } catch (error) {
+              if ((error as { retryable?: boolean })?.retryable !== true) throw error;
+              throw discardUnsaveable((error as Error).message);
+            }
+            if (ownerGoalsSaveKey(rechecked.focus_areas.areas, saveKey.split(':')[0]) !== saveKey) {
+              throw discardUnsaveable('The checked focus payload no longer matches its retained save key.');
             }
             writeFileSync(goalsPath, JSON.stringify(progress.goals, null, 2), { mode: 0o600 });
             const mapPath = join(goalsFolder, 'owner-map.md');
             writeFileSync(mapPath, '# Owner goals map\n\nModel-written audit notes; goal quotes are checked separately. Earlier batch maps are omitted when their source changes.\n\n'
               + progress.maps.map((map, index) => '## Batch ' + (index + 1) + '\n\n' + map).join('\n\n'), { mode: 0o600 });
             await runScript([paths.saveScript, '--goals', goalsPath, '--prompts', promptsPath, '--map', mapPath,
-              '--ledger-dir', ledgerDir, '--save-key', progress.save.key]);
+              '--ledger-dir', ledgerDir, '--save-key', saveKey]);
             rmSync(checkpointPath, { force: true });
             goalsCheckpoint = null;
             done.push('goals mapped' + (progress.droppedUnverifiedQuotes.length ? ` (${progress.droppedUnverifiedQuotes.length} unverified quotes dropped)` : ''));

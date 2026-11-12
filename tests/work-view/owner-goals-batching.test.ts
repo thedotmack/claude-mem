@@ -326,19 +326,41 @@ describe('initial owner-goals batches', () => {
     } finally { fixture.close(); }
   }, 60_000);
 
-  it('does not overwrite a snapshot saved elsewhere while the first mapping was incomplete', async () => {
-    const fixture = harness(prompts(450, 2800));
+  it('discards first-map progress a snapshot saved elsewhere superseded, then updates that snapshot incrementally', async () => {
+    const source = prompts(450, 2800);
+    const fixture = harness(source);
     let calls = 0;
     try {
       await expect(run(fixture, async question => {
         if (++calls === 1) return answer(question);
         throw new Error('temporary provider failure');
       })).rejects.toThrow('temporary provider failure');
-      fixture.worker.rows.push({ id: 1, project: 'home', list_name: 'owner-goals', fields: JSON.stringify({ generated_at: new Date(NOW + 1000).toISOString() }), created_at_epoch: 1 });
-      await expect(run(fixture, async () => { throw new Error('must not ask'); })).rejects.toThrow('will not overwrite the newer snapshot');
       expect(existsSync(checkpointFile(fixture.ledgerDir))).toBe(true);
+      // Another device (or a manual /owner-goals run) saves a first map while this one is incomplete.
+      const elsewhere = new Date(NOW + 1000).toISOString();
+      fixture.worker.rows.push(
+        { id: 1, project: 'home', list_name: 'owner-goals', fields: JSON.stringify({ generated_at: elsewhere }), created_at_epoch: 1 },
+        { id: 2, project: 'home', list_name: 'owner-goals', created_at_epoch: 1, fields: JSON.stringify({
+          task: 'Ask: Ship the release', goal_kind: 'ask', title: 'Ship the release', status: 'todo', rank: 1, snapshot: elsewhere }) });
+      const later = { ...source[0], nativePromptId: 'later', at: NOW + 120_000, text: 'TURN: later\nShip the follow-up.' };
+      fixture.source(source.concat(later));
+      fixture.now(NOW + 180_000);
+      const questions: string[] = [];
+      const result = await run(fixture, async question => {
+        questions.push(question);
+        const path = /are in (\S+new-owner-prompts\.md)\./.exec(question)?.[1];
+        if (!path) throw new Error('Expected the incremental update question, not another first map.');
+        const at = /^## (\d{4}-\d{2}-\d{2} \d{2}:\d{2}) · /m.exec(readFileSync(path, 'utf8'))![1];
+        const evidence = [{ at, quote: 'TURN: later' }];
+        return JSON.stringify({ window_days: 31, human_summary: 'Ship the follow-up.', focus_areas: [], rules: [],
+          asks: [{ title: 'Ship the follow-up', focus_area: null, rank: 1, latest_at: at, times_asked: 1, evidence }] });
+      });
+      expect(result).toContain('discarded first-map progress: a newer goals snapshot was saved');
+      expect(result).toContain('goals updated');
+      expect(questions).toHaveLength(1);
+      expect(existsSync(checkpointFile(fixture.ledgerDir))).toBe(false);
     } finally { fixture.close(); }
-  });
+  }, 60_000);
 });
 
 describe('checked owner-goals final save recovery', () => {
@@ -385,10 +407,16 @@ describe('checked owner-goals final save recovery', () => {
         const before = fixture.worker.rows.length;
         fixture.source(change === 'empty-window' ? [] : source.map((prompt, index) =>
           index === 0 ? { ...prompt, text: change === 'redact' ? '<private>' + prompt.text + '</private>' : 'Removed evidence.' } : prompt));
-        await expect(run(fixture, async () => { throw new Error('must not infer again'); })).rejects.toThrow();
+        await expect(run(fixture, async () => { throw new Error('must not infer again'); })).rejects.toThrow('mapping checkpoint was removed');
         expect(fixture.worker.rows).toHaveLength(before);
         expect(watermarks(fixture)).toHaveLength(0);
-        expect(existsSync(checkpointFile(fixture.ledgerDir))).toBe(true);
+        // Every retry would refuse the same frozen payload, so the checkpoint and its copy of the evidence are gone.
+        expect(existsSync(checkpointFile(fixture.ledgerDir))).toBe(false);
+        if (change === 'redact') {
+          expect(await run(fixture, async question => answer(question))).toBe('goals mapped.');
+          expect(watermarks(fixture)).toHaveLength(1);
+          expect(existsSync(checkpointFile(fixture.ledgerDir))).toBe(false);
+        }
       } finally { fixture.close(); }
     }, 60_000);
   }

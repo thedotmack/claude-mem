@@ -100,15 +100,19 @@ writes without another model call or another set of focus ids.
 A retry still validates against the **current** prompt export. With a save key,
 any validator mutation (including automatic quote aging) is refused before a
 write, as is an invalid quote. Deleted, excluded or redacted evidence cannot be
-revived from an old frozen prompt file. Such a refusal retains the checkpoint
-for inspection instead of silently changing its payload/key or paying to map
-the window again. New prompts that leave the checked evidence intact do not
+revived from an old frozen prompt file. Such a refusal never changes the
+payload or key. Because every retry would refuse the same way, the refresh
+removes the checkpoint (and its copy of that evidence) and fails the run; the
+next refresh maps the window again, matching any areas the partial save created.
+New prompts that leave the checked evidence intact do not
 block saving; the original watermark leaves those prompts due for the next
 inclusive-minute incremental export.
 
 The checkpoint is private to this workflow and is removed only after the save
-succeeds. A different saved snapshot or local device during mapping refuses
-recovery rather than overwriting that newer state. These snapshot checks guard
+succeeds or is refused as above. A different saved snapshot or local device
+during mapping stops that run before it overwrites the newer state. The next
+refresh discards the superseded progress and updates the saved snapshot the
+normal way, reporting the discard. These snapshot checks guard
 each batch and final save; they are not an atomic cross-process compare-and-set
 across the separate HTTP writes. It is not an exactly-once billing guarantee for an unanswered in-flight provider request: only completed,
 validated answers can be reused.

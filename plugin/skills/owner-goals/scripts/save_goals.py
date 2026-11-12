@@ -389,7 +389,7 @@ def main():
     if problems:
         sys.exit("these quotes are not the owner's words at that time; fix them in the goals JSON:\n- " + "\n- ".join(problems))
     if checked_input is not None and json.dumps(goals, sort_keys=True) != checked_input:
-        sys.exit("owner prompt evidence changed since this checked save; no writes were made, and the mapping checkpoint is retained")
+        sys.exit("owner prompt evidence changed since this checked save; no writes were made, and this checked payload cannot be saved")
     titles = [f'{KIND_LABELS["focus-area"]}: {str(area["title"]).strip()}' for area in areas] + [f'{KIND_LABELS["ask"]}: {str(ask["title"]).strip()}' for ask in asks]
     if len(set(titles)) != len(titles):
         sys.exit("two items share a title; give each focus area and ask its own title")
