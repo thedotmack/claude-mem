@@ -321,6 +321,9 @@ export async function resolveClaudeAutoMemoryChoice(
     return 'disable';
   }
 
+  // Updating never changes or re-asks this optional preference.
+  if (options.update) return 'not-applicable';
+
   if (!isInteractive) {
     return 'leave-enabled';
   }
@@ -1194,6 +1197,17 @@ function requireSupportedRuntime(selectedIDEs: string[], runtime: RuntimeId): vo
 }
 
 async function promptRuntime(options: InstallOptions, selectedIDEs: string[]): Promise<RuntimeId> {
+  if (options.update && options.runtime === undefined) {
+    // Older installs used the worker before this setting existed. In particular,
+    // do not run server bootstrap again: that can replace a saved URL or key.
+    const stored = readPersistedInstallerSettings().CLAUDE_MEM_RUNTIME;
+    const runtime = normalizeRuntimeFlag(typeof stored === 'string' ? stored : 'worker');
+    if (runtime !== null) {
+      requireSupportedRuntime(selectedIDEs, runtime);
+      return runtime;
+    }
+    // An unrecognised runtime still needs the ordinary selection/validation.
+  }
   // #2543 — non-interactive runtime selection via `--runtime`. When the flag is
   // present we never prompt and never fall back to the worker path: we resolve
   // the requested runtime deterministically and, for the server runtime, plan +
@@ -1377,7 +1391,7 @@ export async function promptProvider(
     log.info('Configured claude-mem to use your logged-in Claude SDK account.');
   };
 
-  // A provider reused from settings on a non-interactive run is already fully
+  // A provider reused from settings on an update or non-interactive run is already
   // configured. Re-running the claude branch would call useSubscriptionAuth(),
   // which blanks cloud-sync and the Pro memory key — a persisted Pro config
   // must survive a non-TTY `npx claude-mem update` untouched.
@@ -2356,6 +2370,7 @@ async function requireInstallerOAuthLogin(version: string): Promise<InstallerOAu
  * The server ignores `source` today and will allowlist it separately.
  */
 export async function offerDeferredLogin(options: InstallOptions, version: string): Promise<void> {
+  if (options.update) return;
   if (isInteractive) return;
   if (providerNeedsAccount(options.provider)) return;
   if (process.env.CI) return;
@@ -2654,19 +2669,19 @@ export function providerNeedsAccount(provider: InstallOptions['provider']): bool
 export interface InstallOptions {
   /** Agent shells can open human setup now, or leave it pending for the first GUI visit. */
   setup?: SetupMode;
-  /** Internal command purpose: unattended updates keep the installed configuration. */
+  /** Internal command purpose: updates keep configured choices and ask only for missing requirements. */
   update?: boolean;
   ide?: string;
   dshProfile?: string;
   /**
    * `openai-compatible` is never a flag value: it is only ever kept from
-   * settings.json by a non-interactive run (`providerSource: 'persisted'`).
+   * settings.json by an update or non-interactive run (`providerSource: 'persisted'`).
    */
   provider?: 'claude' | 'codex' | 'gemini' | 'openrouter' | 'openai-compatible' | 'host';
   /**
    * How `provider` was decided. `flag` for an explicit `--provider` (and the
    * grok-bot implicit cmem default set in index.ts), `default` when a fresh
-   * non-interactive run fell back to claude, `persisted` when a non-interactive
+   * non-interactive run fell back to claude, `persisted` when an update or non-interactive
    * run reused the provider already in settings, `prompt` for the interactive
    * multiselect, `browser` for the install funnel's At Home choice. Reported on
    * install_completed as `provider_source`.
@@ -2898,6 +2913,52 @@ function hasPersonalProviderKey(provider: 'gemini' | 'openrouter', persisted: Re
   );
 }
 
+function isPersistedProvider(value: unknown): value is ProviderId {
+  return value === 'claude' || value === 'codex' || value === 'gemini'
+    || value === 'openrouter' || value === 'openai-compatible';
+}
+
+/** Match the worker's credential lookup, including the saved CMEM gateway tuple lock. */
+function missingProviderKey(provider: ProviderId, persisted: Record<string, unknown>): { keyName: string; cmemGateway: boolean } | null {
+  if (provider !== 'gemini' && provider !== 'openrouter') return null;
+  const keyName = provider === 'gemini' ? 'CLAUDE_MEM_GEMINI_API_KEY' : 'CLAUDE_MEM_OPENROUTER_API_KEY';
+  const cmemGateway = provider === 'openrouter'
+    && isCmemGatewayUrl(String(persisted.CLAUDE_MEM_OPENROUTER_BASE_URL ?? ''))
+    && !Object.prototype.hasOwnProperty.call(process.env, 'CLAUDE_MEM_OPENROUTER_BASE_URL');
+  const hasKey = cmemGateway ? holdsKey(persisted[keyName]) : hasPersonalProviderKey(provider, persisted);
+  return hasKey ? null : { keyName, cmemGateway };
+}
+
+/** An update repairs only the missing credential; it never switches a saved provider on cancellation. */
+async function completeUpdateProviderSetup(options: InstallOptions, version: string): Promise<InstallerOAuthPairing | null> {
+  if (!options.update || options.providerSource !== 'persisted' || !options.provider) return null;
+  const missing = missingProviderKey(options.provider, readPersistedInstallerSettings());
+  if (!missing) return null;
+  if (!isInteractive) throw new Error('Provider credentials are missing. Run npx claude-mem update in an interactive terminal to finish setup.');
+  log.info(`The configured ${options.provider} provider needs its missing API key to finish setup.`);
+  if (missing.cmemGateway) {
+    const pairing = await requireInstallerOAuthLogin(version);
+    const enrollment = pairing && await completeCmemTrialPairing(pairing, version);
+    if (!enrollment || !enrollment.memory || !activateBrowserEnrollment(enrollment)) {
+      throw new Error('CMEM Pro credentials are still missing. Run npx claude-mem install to finish account setup.');
+    }
+    return pairing;
+  }
+  const apiKey = await p.password({
+    message: `Paste your ${options.provider === 'gemini' ? 'Gemini' : 'OpenRouter'} API key:`,
+    mask: '*',
+    validate: (value?: string) => value?.trim() ? undefined : 'API key required',
+  });
+  if (p.isCancel(apiKey) || !String(apiKey).trim()) {
+    throw new Error('Provider setup cancelled. Your existing provider configuration was kept.');
+  }
+  // Keep the endpoint, model, sync account and any custom provider settings.
+  if (!mergeSettings({ [missing.keyName]: String(apiKey).trim() })) {
+    throw new Error('Could not save the missing provider API key.');
+  }
+  return null;
+}
+
 /** Exported for the non-interactive contract tests; not part of the CLI surface. */
 export function validateNonInteractiveProvider(
   options: InstallOptions,
@@ -2919,38 +2980,21 @@ export function validateNonInteractiveProvider(
     // keeps its memory key in CLAUDE_MEM_OPENROUTER_API_KEY by design.
     const persisted = readPersistedInstallerSettings();
     const persistedProvider = persisted.CLAUDE_MEM_PROVIDER;
-    if (
-      persistedProvider === 'claude' || persistedProvider === 'codex' || persistedProvider === 'gemini'
-      || persistedProvider === 'openrouter' || persistedProvider === 'openai-compatible'
-    ) {
+    if (isPersistedProvider(persistedProvider)) {
       // Codex, like claude, authenticates through a local login rather than a
       // saved key, and openai-compatible may point at a local server that takes
       // no key at all, so there is nothing to validate before keeping them.
-      if (persistedProvider === 'gemini' || persistedProvider === 'openrouter') {
-        const persistedKeyName = persistedProvider === 'gemini'
-          ? 'CLAUDE_MEM_GEMINI_API_KEY'
-          : 'CLAUDE_MEM_OPENROUTER_API_KEY';
-        // A persisted cmem gateway tuple is locked by the worker to the saved
-        // key: it ignores a key-only override and never pools, so only that
-        // key counts. An exported base URL unlocks the tuple (the worker then
-        // runs on the exported URL and key), so the lock is mirrored exactly:
-        // gateway URL on disk AND no base-URL override in the environment.
-        const persistedCmemGateway = persistedProvider === 'openrouter'
-          && isCmemGatewayUrl(String(persisted.CLAUDE_MEM_OPENROUTER_BASE_URL ?? ''))
-          && !Object.prototype.hasOwnProperty.call(process.env, 'CLAUDE_MEM_OPENROUTER_BASE_URL');
-        const hasKey = persistedCmemGateway
-          ? holdsKey(persisted[persistedKeyName])
-          : hasPersonalProviderKey(persistedProvider, persisted);
-        if (!hasKey) {
-          installerError(ErrorSeverity.ABORT, {
-            component: 'provider-credentials',
-            phase: 'non-interactive-validation',
-            cause: new Error(`The configured ${persistedProvider} provider has no API key saved${persistedCmemGateway ? '' : ' or exported'}, so a non-interactive run cannot keep it.`),
-            remediation: persistedCmemGateway
-              ? `Save ${persistedKeyName} in ~/.claude-mem/settings.json (the cmem gateway ignores an exported key), pass --provider claude to switch to your Anthropic plan, or run the installer in an interactive terminal.`
-              : `Save ${persistedKeyName} in ~/.claude-mem/settings.json or export it in the environment, pass --provider claude to switch to your Anthropic plan, or run the installer in an interactive terminal.`,
-          }, summary);
-        }
+      const missing = missingProviderKey(persistedProvider, persisted);
+      if (missing) {
+        const { keyName: persistedKeyName, cmemGateway: persistedCmemGateway } = missing;
+        installerError(ErrorSeverity.ABORT, {
+          component: 'provider-credentials',
+          phase: 'non-interactive-validation',
+          cause: new Error(`The configured ${persistedProvider} provider has no API key saved${persistedCmemGateway ? '' : ' or exported'}, so a non-interactive run cannot keep it.`),
+          remediation: persistedCmemGateway
+            ? `Save ${persistedKeyName} in ~/.claude-mem/settings.json (the cmem gateway ignores an exported key), pass --provider claude to switch to your Anthropic plan, or run the installer in an interactive terminal.`
+            : `Save ${persistedKeyName} in ~/.claude-mem/settings.json or export it in the environment, pass --provider claude to switch to your Anthropic plan, or run the installer in an interactive terminal.`,
+        }, summary);
       }
       options.provider = persistedProvider;
       options.providerSource = 'persisted';
@@ -3167,6 +3211,19 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
 
   const installStartedAt = Date.now();
   const version = readPluginVersion();
+  // Snapshot before settings getters can fill defaults. A legacy install has
+  // no browser completion marker; its saved provider still counts as setup.
+  const savedSetup = readSetupState();
+  if (options.update && !options.provider) {
+    const persisted = readPersistedInstallerSettings();
+    const provider = persisted.CLAUDE_MEM_PROVIDER;
+    const legacyDefault = provider === undefined && !savedSetup.install
+      && existsSync(join(marketplaceDirectory(), 'plugin', '.claude-plugin', 'plugin.json'));
+    if ((isInteractive && isPersistedProvider(provider)) || legacyDefault) {
+      options.provider = isPersistedProvider(provider) ? provider : 'claude';
+      options.providerSource = 'persisted';
+    }
+  }
   const resumeSetup = options.setup === 'resume';
   const defaultDeferredSetup = !isInteractive && !options.update && !options.provider && !options.ide && !options.noAutoStart
     && (!options.runtime || options.runtime === 'worker') && !isInstallRunByAutoUpdate();
@@ -3178,10 +3235,10 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   let installedUvVersion: string | undefined;
 
   if (isInteractive) {
-    await playBanner();
-    p.intro(styleText(['bgCyan', 'black'], ' claude-mem install '));
+    if (!options.update) await playBanner();
+    p.intro(styleText(['bgCyan', 'black'], options.update ? ' claude-mem update ' : ' claude-mem install '));
   } else {
-    console.log('claude-mem install');
+    console.log(options.update ? 'claude-mem update' : 'claude-mem install');
   }
   const marketplaceDir = marketplaceDirectory();
   const alreadyInstalled = existsSync(join(marketplaceDir, 'plugin', '.claude-plugin', 'plugin.json'));
@@ -3233,7 +3290,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   const claudeCodeTooOldWarning = claudeCodeVersionTooOldWarning(detectClaudeCodeVersion());
   if (claudeCodeTooOldWarning) log.warn(claudeCodeTooOldWarning);
 
-  const setupComplete = readSetupState().status === 'complete';
+  const setupComplete = savedSetup.status === 'complete';
   const browserSetup = deferSetup || resumeSetup || options.setup === 'browser' || shouldUseBrowserSetup({
     interactive: isInteractive, provider: options.provider, noAutoStart: options.noAutoStart,
     runtime: normalizeRuntimeFlag(options.runtime ?? 'worker') ?? 'worker', setupComplete, update: options.update,
@@ -3241,9 +3298,9 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   const resumedState = resumeSetup ? readSetupState() : null;
   if (resumeSetup && !resumedState?.install) throw new Error('There is no deferred setup to resume.');
   const installCatalog = resumedState?.install?.catalog ?? (browserSetup ? browserInstallCatalog(options, alreadyInstalled) : null);
-  if (!browserSetup) await promptEmailOptIn(version);
+  if (!browserSetup && !options.update) await promptEmailOptIn(version);
 
-  if (alreadyInstalled && !browserSetup) {
+  if (alreadyInstalled && !browserSetup && !options.update) {
     if (process.stdin.isTTY) {
       const shouldContinue = await p.confirm({
         message: 'Overwrite existing installation?',
@@ -3270,6 +3327,14 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     }
   } else if (browserSetup) {
     selectedIDEs = [];
+  } else if (options.update && (alreadyInstalled || setupComplete || savedSetup.install?.selection || options.providerSource === 'persisted')) {
+    const savedAgents = savedSetup.install?.selection?.agents ?? [];
+    const savedTools = (savedSetup.tools ?? []).map(tool => FINISH_SETUP_LOCAL_TOOL_IDES[tool]).filter(Boolean);
+    selectedIDEs = [...new Set([...savedAgents, ...savedTools].map(canonicalIntegrationId))];
+    // Legacy installers did not record agent selections. Refresh the shared
+    // plugin without opting into every agent merely detected on the machine.
+    if (!selectedIDEs.length) selectedIDEs = ['claude-code'];
+    options.dshProfile ??= savedSetup.install?.selection?.dshProfile;
   } else if (process.stdin.isTTY) {
     selectedIDEs = await promptForIDESelection();
   } else {
@@ -3353,6 +3418,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
       {
         title: 'Enabling plugin in Claude settings',
         task: async () => {
+          if (options.update && alreadyInstalled) return 'Keeping Claude Code plugin preferences';
           enablePluginInClaudeSettings();
           return `Plugin enabled ${styleText('green', 'OK')}`;
         },
@@ -3601,6 +3667,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   // The terminal flow: non-TTY (agent-run) installs, --provider, --no-auto-start,
   // the server runtime, and machines that already finished the funnel.
   const terminalAccountAndProvider = async (): Promise<ProviderId> => {
+    oauthPairing = await completeUpdateProviderSetup(options, version);
     // Login runs up front for an install that named an account-backed provider.
     // An install that named a provider needing no claude-mem account skips it.
     // `--provider claude` (or the non-interactive default to claude) runs memory on the user's own Anthropic
@@ -3624,7 +3691,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     // prompt picks CMEM Pro: the email opt-in up front is the lead capture, so
     // the account is no longer a gate in front of a local install.
     if (options.providerSource === 'persisted') {
-      log.info(`Skipping claude-mem login: keeping the existing account and ${options.provider} configuration.`);
+      if (!oauthPairing) log.info(`Skipping claude-mem login: keeping the existing account and ${options.provider} configuration.`);
     } else if (isInteractive && !options.provider) {
       // Sign-in waits for the provider prompt (CMEM Pro only).
     } else if (providerNeedsAccount(options.provider)) {
@@ -3648,7 +3715,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     };
     const selectedProvider = await promptProvider(options, oauthPairing, version, signInForCmem);
     if (selectedProvider === 'claude') {
-      await promptClaudeModel(options);
+      await promptClaudeModel(options, isInteractive && !(options.update && options.providerSource === 'persisted'));
     }
     return selectedProvider;
   };
@@ -3713,7 +3780,9 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   // (which captures failures that happen AFTER bufferConsole returns), not a
   // stale local count.
   const hasFailures = summary.failedIDEs.length > 0;
-  const installStatus = hasFailures ? 'Installation Partial' : 'Installation Complete';
+  const installStatus = options.update
+    ? hasFailures ? 'Update Partial' : 'Update Complete'
+    : hasFailures ? 'Installation Partial' : 'Installation Complete';
   // Keyed on whether a pairing actually ran, not on the provider class: a
   // persisted account-backed provider skips login and must not claim it. A
   // persisted claude/host provider holds no claude-mem account at all, so it
@@ -3859,7 +3928,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   // they have not seen yet), the uninstall warning (uninstall trivia on the
   // install screen), and the A/B "two paths" framing that dressed up "just
   // start working" as a decision the user has to make.
-  const nextSteps = [
+  const nextSteps = options.update ? [nextStepsHeadline] : [
     nextStepsHeadline,
     ``,
     `${styleText('bold', 'Start working.')} Memory builds passively from your first prompt — observations stream in as your agent reads, edits, and runs commands.`,
@@ -3878,14 +3947,14 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     p.note(nextSteps.join('\n'), 'Next Steps');
     // Deliberately the last interaction of the flow: consent is asked after
     // the product is installed and working, never as a gate in front of it.
-    if (!browserSetup) await promptTelemetryOptIn();
+    if (!browserSetup && !options.update) await promptTelemetryOptIn();
     if (workerFailedToStart) {
       p.outro(styleText('red', 'claude-mem installed, but the worker did not start.'));
       process.exitCode = 1;
     } else if (failedIDEs.length > 0) {
       p.outro(styleText('yellow', 'claude-mem installed, but setup failed for some agents.'));
     } else {
-      p.outro(styleText('green', 'claude-mem installed successfully!'));
+      p.outro(styleText('green', options.update ? 'claude-mem updated successfully!' : 'claude-mem installed successfully!'));
     }
   } else {
     console.log('\n  Next Steps');
@@ -3897,7 +3966,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
       console.log('\nclaude-mem installed, but setup failed for some agents.');
       process.exitCode = 1;
     } else {
-      console.log('\nclaude-mem installed successfully!');
+      console.log(options.update ? '\nclaude-mem updated successfully!' : '\nclaude-mem installed successfully!');
     }
     // Keep the optional sign-in link separate from the local setup page.
     try {

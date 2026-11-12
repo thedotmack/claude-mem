@@ -24,9 +24,9 @@ describe('shouldUseBrowserSetup', () => {
   it('also uses the GUI to reconfigure an existing installation', () => {
     expect(shouldUseBrowserSetup({ ...GUI, setupComplete: true })).toBe(true);
   });
-  it('keeps the terminal for npx claude-mem update on a machine that finished setup', () => {
+  it('keeps updates in the terminal so only missing requirements are asked', () => {
     expect(shouldUseBrowserSetup({ ...GUI, setupComplete: true, update: true })).toBe(false);
-    expect(shouldUseBrowserSetup({ ...GUI, update: true })).toBe(true);
+    expect(shouldUseBrowserSetup({ ...GUI, update: true })).toBe(false);
   });
 });
 
