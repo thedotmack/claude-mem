@@ -1,0 +1,84 @@
+---
+title: Vercel Chat SDK
+description: Explicitly save and recall one project's memories through a local Chat SDK Web adapter.
+---
+
+## What this example does
+
+The runnable example in `examples/vercel-chat/` uses the real Chat SDK and its official Web adapter. A local authenticated chat accepts three commands:
+
+| Command | Result |
+| --- | --- |
+| `save <note>` | Explicitly saves that text through the worker's memory API and returns its observation ID. |
+| `search <query>` | Searches observations in the server-configured project. |
+| `get <ID>` | Retrieves that project's saved observation, or an empty array for an ID outside it. |
+
+This is explicit save and recall. It does not capture conversations automatically, inject memories into a model, or connect a Slack or Discord account. No model or platform account is required for the local Web workflow.
+
+Tested on macOS with Bun 1.4.4, `chat` 4.44.0, `@chat-adapter/web` 4.44.0 and `@chat-adapter/state-memory` 4.44.0. Windows and Linux were not tested.
+
+Official references: [Chat SDK](https://chat-sdk.dev/docs), [Web adapter and authentication](https://chat-sdk.dev/adapters/official/web), and [memory state adapter](https://chat-sdk.dev/adapters/official/memory).
+
+## Setup
+
+Use a checkout of Claude-Mem with a running local worker. For testing, use a separate worker/database as described in [Development](/development). The demo never starts or configures the worker itself.
+
+From the Claude-Mem checkout, install the example's separate dependencies:
+
+```bash
+npm install --prefix examples/vercel-chat
+```
+
+Start the demo from the project directory whose exclusion rules should apply, using the absolute path to the example:
+
+```bash
+export CHAT_MEMORY_PROJECT='chat-practice'
+export CLAUDE_MEM_WORKER_URL='http://127.0.0.1:37777'
+export CHAT_DEMO_PORT='3210'
+export CHAT_DEMO_TOKEN="$(openssl rand -hex 32)"
+bun /absolute/path/to/claude-mem/examples/vercel-chat/memory.mjs
+```
+
+Use the worker's actual port. The worker URL must be a plain `http://127.0.0.1:PORT` origin without credentials, path or query parameters. The demo listens only on `127.0.0.1`. The token must have at least 24 characters and is not printed by the example. Keep it in the environment of your HTTP client too.
+
+The Web adapter's official `getUser` callback checks the bearer token and identifies one local owner. The project comes only from `CHAT_MEMORY_PROJECT`, not from client message fields or thread names. Do not expose this single-owner example as a public or shared application. A deployed application needs its own authenticated user-to-project authorization.
+
+## Try the commands
+
+In another terminal with the same `CHAT_DEMO_TOKEN` and `CHAT_DEMO_PORT`, send a message using the Web adapter's AI SDK HTTP protocol:
+
+```bash
+curl --fail-with-body -N "http://127.0.0.1:${CHAT_DEMO_PORT}/chat" \
+  -H "Authorization: Bearer ${CHAT_DEMO_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  --data '{"id":"practice","messages":[{"id":"note-1","role":"user","parts":[{"type":"text","text":"save Restore must reject snapshots missing required tables."}]}]}'
+```
+
+The response is a stream of `data:` events. Its `text-delta` contains the worker's JSON save receipt. Keep the numeric observation ID.
+
+For later recall, send the same request with a new message ID and `text` set to `search restore snapshots`, then `get <the returned numeric ID>`. The conversation `id` can also change: saved memory belongs to the configured project and survives chat restarts. Message IDs should be stable for redelivery of the same event and new for a new command.
+
+Only `save` writes a memory. Plain conversation returns help. Repeated delivery of an identical save uses the worker's existing transactional `sourceFingerprint` deduplication. The fingerprint includes the thread, message ID and exact command text. No model is called, and there is no automatic retry after an ambiguous write.
+
+The demo passes its working directory to explicit saves so the worker's project exclusion check applies. A skipped or unconfirmed save is reported as an error. Existing worker retention and synchronization settings still apply to successfully saved notes.
+
+## Repeatable verification
+
+From the Claude-Mem checkout, with the example dependencies installed and current bundles built:
+
+```bash
+BUN_BIN=/absolute/path/to/bun python3 tests/fixtures/vercel-chat-smoke.py
+```
+
+The fixture uses a temporary home, settings file, database and free localhost ports. It exercises the actual Web adapter HTTP stream and the rebuilt worker. It verifies exact note text, later-thread recall, duplicate receipt handling, a matching foreign project's exclusion from search and selected-ID retrieval, rejected unauthenticated requests, excluded-project saves, and explicit errors when the worker stops. It makes no paid inference calls and stops its processes on exit.
+
+This checks the local SDK transport, not a browser UI or any external chat platform.
+
+## Troubleshooting and disconnect
+
+- **HTTP 401:** ensure the client and server use the same token. No token is sent to the worker.
+- **Worker error in a `text-delta`:** an HTTP stream can succeed while the command fails. Inspect the returned JSON for `error`; do not treat HTTP 200 alone as a successful save.
+- **Empty retrieval:** use the saved numeric ID and the same server-configured project. An ID from another project is intentionally withheld.
+- **Excluded project:** run from the intended directory and check the worker's exclusion settings. The demo does not override them.
+
+Press Ctrl+C in the demo terminal to stop it. Its chat state is held only in RAM, and message history persistence is disabled. Saved worker memories remain. No Claude, Codex or platform configuration is installed or changed; removing the example dependencies disconnects nothing else.

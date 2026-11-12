@@ -130,6 +130,7 @@
           "claude-agent-sdk",
           "crewai-integration",
           "elizaos",
+          "vercel-chat",
           "google-adk-integration",
           "haystack",
           "langgraph-integration",
