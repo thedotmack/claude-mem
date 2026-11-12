@@ -7,10 +7,10 @@ import { parseFile, parseFilesBatch } from '../../../src/services/smart-file-rea
 import { searchCodebase } from '../../../src/services/smart-file-read/search.js';
 
 describe('native batches parse the source that was read', () => {
-  for (const [relativePath, content, replacement] of [
-    ['module.ts', 'export function capturedSnapshot() { return 1; }', 'export function x() { return 2; }'],
-    ['module.py', 'def captured_snapshot():\n    return 1\n', 'def x():\n    return 2\n'],
-    ['module.rs', 'pub fn captured_snapshot() -> i32 { 1 }', 'pub fn x() -> i32 { 2 }'],
+  for (const [relativePath, content, replacement, expectedName, expectedSignature] of [
+    ['module.ts', 'export function capturedSnapshot() { return 1; }', 'export function x() { return 2; }', 'capturedSnapshot', 'export function capturedSnapshot()'],
+    ['module.py', 'def captured_snapshot():\n    return 1\n', 'def x():\n    return 2\n', 'captured_snapshot', 'def captured_snapshot()'],
+    ['module.rs', 'pub fn captured_snapshot() -> i32 { 1 }', 'pub fn x() -> i32 { 2 }', 'captured_snapshot', 'pub fn captured_snapshot() -> i32'],
   ]) {
     test(`an edited ${relativePath} keeps capture offsets consistent with its supplied content`, () => {
       const directory = mkdtempSync(join(tmpdir(), 'cm-batch-snapshot-'));
@@ -18,6 +18,8 @@ describe('native batches parse the source that was read', () => {
         const absolutePath = join(directory, relativePath);
         writeFileSync(absolutePath, replacement);
         const parsed = parseFilesBatch([{ absolutePath, relativePath, content }]);
+        expect(parsed.get(relativePath)?.symbols.map(symbol => symbol.name)).toEqual([expectedName]);
+        expect(parsed.get(relativePath)?.symbols[0]?.signature).toBe(expectedSignature);
         expect(parsed.get(relativePath)).toEqual(parseFile(content, relativePath));
       } finally {
         rmSync(directory, { recursive: true, force: true });
@@ -36,7 +38,10 @@ describe('native batches parse the source that was read', () => {
       });
       rmSync(files[0].absolutePath);
       const parsed = parseFilesBatch(files);
-      for (const file of files) expect(parsed.get(file.relativePath)).toEqual(parseFile(file.content, file.relativePath));
+      for (const [index, file] of files.entries()) {
+        expect(parsed.get(file.relativePath)?.symbols.map(symbol => symbol.name)).toEqual([`retained${index}`]);
+        expect(parsed.get(file.relativePath)).toEqual(parseFile(file.content, file.relativePath));
+      }
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
@@ -54,6 +59,8 @@ describe('native batches parse the source that was read', () => {
         return { absolutePath, relativePath, content };
       });
       const parsed = parseFilesBatch(files);
+      expect(parsed.get(files[0].relativePath)?.symbols.map(symbol => symbol.name)).toEqual(['readData']);
+      expect(parsed.get(files[1].relativePath)?.symbols.map(symbol => symbol.name)).toEqual(['Reader']);
       for (const file of files) expect(parsed.get(file.relativePath)).toEqual(parseFile(file.content, file.relativePath));
     } finally {
       rmSync(directory, { recursive: true, force: true });
