@@ -128,6 +128,7 @@
           "autogen-integration",
           "claude-agent-sdk",
           "crewai-integration",
+          "elizaos",
           "google-adk-integration",
           "haystack",
           "langgraph-integration",
