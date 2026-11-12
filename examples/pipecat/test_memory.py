@@ -26,9 +26,9 @@ class Collector(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
-async def run_pipeline(frames, *, enabled=True):
+async def run_pipeline(frames, *, enabled=True, deadline_seconds=10):
     collector = Collector()
-    memory = ProjectMemory("voice-demo", "/unused/mcp-server.cjs", "/unused", enabled=enabled)
+    memory = ProjectMemory("voice-demo", "/unused/mcp-server.cjs", "/unused", enabled=enabled, deadline_seconds=deadline_seconds)
     worker = PipelineWorker(Pipeline([memory, collector]), enable_rtvi=False, enable_turn_tracking=False)
     await worker.queue_frames([*frames, EndFrame()])
     runner = WorkerRunner(handle_sigint=False)
@@ -59,14 +59,32 @@ class MemoryPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([frame.success for frame in results], [True, True])
         self.assertIn("amber", results[1].text)
 
-    async def test_memory_failure_is_reported_and_later_audio_keeps_flowing(self):
+    async def test_hung_worker_hits_the_deadline_and_later_audio_keeps_flowing(self):
+        # execute_memory stays real; only the MCP session hangs. The deadline
+        # must cancel the hung call; without it the call runs its full 10 s.
+        hung = {"cancelled": False}
+
+        async def hang(*args, **kwargs):
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                hung["cancelled"] = True
+                raise
+
+        session = type("Session", (), {"call_tool": hang})()
+
+        @asynccontextmanager
+        async def connected(*args):
+            yield session
+
         audio = InputAudioRawFrame(audio=b"\0" * 320, sample_rate=16000, num_channels=1)
-        with patch("memory.execute_memory", new_callable=AsyncMock, side_effect=TimeoutError("PRIVATE_PAYLOAD")):
-            frames = await run_pipeline([SaveMemoryFrame(text="Selected text"), audio])
+        with patch("memory.memory_session", connected):
+            frames = await run_pipeline([SaveMemoryFrame(text="Selected text"), audio], deadline_seconds=0.2)
         results = [frame for frame in frames if isinstance(frame, MemoryResultFrame)]
         self.assertEqual(len(results), 1)
+        self.assertTrue(hung["cancelled"], "the deadline did not cancel the hung memory call")
         self.assertFalse(results[0].success)
-        self.assertNotIn("PRIVATE_PAYLOAD", results[0].text)
+        self.assertNotIn("Selected text", results[0].text)
         self.assertIn(audio, frames)
 
     async def test_disabled_memory_does_not_connect(self):

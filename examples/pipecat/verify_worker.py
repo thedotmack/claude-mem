@@ -8,7 +8,7 @@ import re
 import tempfile
 from uuid import uuid4
 
-from memory import RecallMemoryFrame, SaveMemoryFrame, run_demo
+from memory import RecallMemoryFrame, SaveMemoryFrame, memory_session, run_demo
 
 
 async def verify():
@@ -28,7 +28,14 @@ async def verify():
         recalled = await run_demo(project, RecallMemoryFrame(query="Voice demo decision", observation_id=first), server, cwd)
         assert recalled.success and note in recalled.text
         foreign = await run_demo(project, RecallMemoryFrame(query="Voice demo decision", observation_id=other), server, cwd)
-        assert note not in foreign.text.split("\n\n")[-1], "another project's details were returned"
+        assert not foreign.success, "a recall anchored on another project's ID succeeded"
+        # The scoped timeline rejects the foreign anchor first, so ask for the
+        # details directly to check that selected-detail reads are scoped too.
+        async with memory_session(server, cwd) as session:
+            details = await session.call_tool("get_observations", arguments={
+                "project": project, "projects": json.dumps([project], ensure_ascii=False), "ids": [other]})
+        details_text = "\n".join(block.text for block in details.content if block.type == "text")
+        assert not details.is_error and note not in details_text, "another project's details were returned"
         failed = await run_demo(project, SaveMemoryFrame(text=note), str(Path(cwd) / "missing-server.cjs"), cwd)
         assert not failed.success
         return {"first_id": first, "repeated_id": repeated, "other_project_id": other,

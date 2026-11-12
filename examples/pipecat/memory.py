@@ -21,6 +21,13 @@ from pipecat.pipeline.worker import PipelineWorker
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 
+# One explicit save or recall holds this stage until it finishes, so later
+# data frames (transcripts, text) wait behind it. The deadline caps that wait
+# when the worker or MCP server is down or hung; it covers starting the MCP
+# server and its calls.
+MEMORY_DEADLINE_SECONDS = 10
+
+
 @dataclass
 class SaveMemoryFrame(DataFrame):
     """Created by the application only after the user selects text to preserve."""
@@ -64,7 +71,7 @@ async def checked_call(session, name: str, arguments: dict) -> str:
     return text
 
 
-async def execute_memory(project: str, frame, server: str, cwd: str) -> str:
+async def execute_memory(project: str, frame, server: str, cwd: str, deadline_seconds: float = MEMORY_DEADLINE_SECONDS) -> str:
     if not isinstance(project, str) or not project.strip():
         raise ValueError("Choose a nonempty project.")
     if isinstance(frame, SaveMemoryFrame):
@@ -78,7 +85,7 @@ async def execute_memory(project: str, frame, server: str, cwd: str) -> str:
         raise ValueError("Choose an explicit memory operation.")
 
     # Bound connection and calls; the SDK separately bounds subprocess shutdown.
-    async with asyncio.timeout(10):
+    async with asyncio.timeout(deadline_seconds):
         async with memory_session(server, cwd) as session:
             if isinstance(frame, SaveMemoryFrame):
                 text = await checked_call(session, "save_memory", {
@@ -98,9 +105,11 @@ async def execute_memory(project: str, frame, server: str, cwd: str) -> str:
 
 
 class ProjectMemory(FrameProcessor):
-    def __init__(self, project: str, server: str, cwd: str, *, enabled: bool = True):
+    def __init__(self, project: str, server: str, cwd: str, *, enabled: bool = True,
+                 deadline_seconds: float = MEMORY_DEADLINE_SECONDS):
         super().__init__()
         self.project, self.server, self.cwd, self.enabled = project, server, cwd, enabled
+        self.deadline_seconds = deadline_seconds
 
     async def process_frame(self, frame, direction):
         await super().process_frame(frame, direction)
@@ -109,7 +118,7 @@ class ProjectMemory(FrameProcessor):
                 result = MemoryResultFrame(text="Memory is disabled. No operation was performed.", success=False)
             else:
                 try:
-                    text = await execute_memory(self.project, frame, self.server, self.cwd)
+                    text = await execute_memory(self.project, frame, self.server, self.cwd, self.deadline_seconds)
                     result = MemoryResultFrame(text=text)
                 except Exception:
                     result = MemoryResultFrame(text="Memory could not confirm this operation. Check the worker connection before trying again.", success=False)
