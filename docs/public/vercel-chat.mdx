@@ -33,14 +33,14 @@ Start the demo from the project directory whose exclusion rules should apply, us
 
 ```bash
 export CHAT_MEMORY_PROJECT='chat-practice'
-export CLAUDE_MEM_WORKER_URL='http://127.0.0.1:37777'
+export CLAUDE_MEM_WORKER_URL="http://127.0.0.1:$((37700 + $(id -u) % 100))"
 export CHAT_DEMO_PORT='3210'
 export CHAT_DEMO_TOKEN="$(openssl rand -hex 32)"
 bun /absolute/path/to/claude-mem/examples/vercel-chat/memory.mjs &
 CHAT_DEMO_PID=$!
 ```
 
-Use the worker's actual port. The worker URL must be a plain `http://127.0.0.1:PORT` origin without credentials, path or query parameters. The demo listens only on `127.0.0.1`. The token must have at least 24 characters and is not printed by the example. Keep it in the environment of your HTTP client too.
+That line computes the worker's per-user default port, `37700 + (your user ID % 100)`, on macOS and Linux. If `CLAUDE_MEM_WORKER_PORT` is set in `~/.claude-mem/settings.json`, use that port instead. Check it with `curl -s "$CLAUDE_MEM_WORKER_URL/api/health"`. The demo has no default and exits if `CLAUDE_MEM_WORKER_URL` is unset. The worker URL must be a plain `http://127.0.0.1:PORT` origin without credentials, path or query parameters. The demo listens only on `127.0.0.1`. The token must have at least 24 characters and is not printed by the example. Keep it in the environment of your HTTP client too.
 
 The Web adapter's official `getUser` callback checks the bearer token and identifies one local owner. The project comes only from `CHAT_MEMORY_PROJECT`, not from client message fields or thread names. Do not expose this single-owner example as a public or shared application. A deployed application needs its own authenticated user-to-project authorization.
 

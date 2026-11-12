@@ -130,7 +130,6 @@
           "claude-agent-sdk",
           "crewai-integration",
           "elizaos",
-          "vercel-chat",
           "google-adk-integration",
           "haystack",
           "langgraph-integration",
@@ -142,7 +141,8 @@
           "pydantic-ai-integration",
           "smolagents-integration",
           "strands-agents-integration",
-          "vercel-ai-sdk"
+          "vercel-ai-sdk",
+          "vercel-chat"
         ]
       },
       {

@@ -6,10 +6,14 @@ import { createMemoryState } from '@chat-adapter/state-memory';
 // One local owner and one project. Client messages cannot select either identity.
 const project = process.env.CHAT_MEMORY_PROJECT;
 const token = process.env.CHAT_DEMO_TOKEN;
-const worker = new URL(process.env.CLAUDE_MEM_WORKER_URL || 'http://127.0.0.1:37777');
 if (!project?.trim() || !token || token.length < 24) {
   throw new Error('Set CHAT_MEMORY_PROJECT and a CHAT_DEMO_TOKEN of at least 24 characters');
 }
+// No default port: the worker's port differs per user (37700 + uid % 100 unless CLAUDE_MEM_WORKER_PORT is set).
+if (!process.env.CLAUDE_MEM_WORKER_URL) {
+  throw new Error('Set CLAUDE_MEM_WORKER_URL to your worker, for example http://127.0.0.1:PORT (see the setup guide for finding PORT)');
+}
+const worker = new URL(process.env.CLAUDE_MEM_WORKER_URL);
 if (worker.protocol !== 'http:' || worker.hostname !== '127.0.0.1' || worker.username || worker.password || worker.pathname !== '/' || worker.search || worker.hash) {
   throw new Error('CLAUDE_MEM_WORKER_URL must be a credential-free http://127.0.0.1:PORT origin');
 }
