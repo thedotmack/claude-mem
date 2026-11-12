@@ -68,6 +68,17 @@ const OBSERVATION_SCHEMA_TAGS = new Set([
   'files_read', 'files_modified', 'file', 'attachments', 'attachment',
 ]);
 
+// XML 1.0 S allows only space, tab, CR and LF before a tag's closing `>`.
+// Share root patterns with the cut-off detector so a complete accepted reply
+// is not reported as unfinished. Attributes remain outside this text schema.
+const XML_TAG_SPACE = '[ \\t\\r\\n]*';
+function elementPattern(name: string): string {
+  return `<${name}${XML_TAG_SPACE}>([\\s\\S]*?)</${name}${XML_TAG_SPACE}>`;
+}
+export const OBSERVATION_OPEN_TAG = new RegExp(`<observation${XML_TAG_SPACE}>`, 'i');
+export const OBSERVATION_BLOCK = new RegExp(elementPattern('observation'), 'i');
+export const SUMMARY_BLOCK = new RegExp(elementPattern('summary'), 'i');
+
 /**
  * docs/media-contract-v1.md "Observation XML attachment refs": lowercase tags,
  * matched case-sensitively (unlike every other field here), first block only.
@@ -180,7 +191,7 @@ function parseObservationBlocks(
 ): ParsedObservation[] {
   const observations: ParsedObservation[] = [];
 
-  const observationRegex = /<observation>([\s\S]*?)<\/observation>/gi;
+  const observationRegex = new RegExp(OBSERVATION_BLOCK.source, 'gi');
   const markup = maskXmlLiteralMarkup(text);
 
   let match;
@@ -272,8 +283,7 @@ function parseObservationBlocks(
 }
 
 function parseSummaryBlock(text: string, correlationId?: string | number): ParsedSummary | null {
-  const summaryRegex = /<summary>([\s\S]*?)<\/summary>/i;
-  const summaryMatch = summaryRegex.exec(maskXmlLiteralMarkup(text));
+  const summaryMatch = SUMMARY_BLOCK.exec(maskXmlLiteralMarkup(text));
   if (!summaryMatch) return null;
 
   const summaryContent = originalElementBody(text, summaryMatch);
@@ -336,7 +346,7 @@ function decodeXmlReferences(value: string): string {
 }
 
 function extractField(content: string, fieldName: string): string | null {
-  const regex = new RegExp(`<${fieldName}>([\\s\\S]*?)</${fieldName}>`, 'i');
+  const regex = new RegExp(elementPattern(fieldName), 'i');
   const match = regex.exec(maskXmlLiteralMarkup(content));
   if (!match) return null;
 
@@ -353,11 +363,11 @@ function extractField(content: string, fieldName: string): string | null {
  */
 function extractTypeField(content: string): string | null {
   const markup = maskXmlLiteralMarkup(content);
-  const match = /<type>((?:(?!<type>)[\s\S])*?)<\/type>/i.exec(markup);
+  const match = /<type[ \t\r\n]*>((?:(?!<type[ \t\r\n]*>)[\s\S])*?)<\/type[ \t\r\n]*>/i.exec(markup);
   if (!match) {
     // No </type> at all: the model closed it with a stray tag
     // (`<type>gotcha</reasoning_effort>`). Accept one bare id, never prose.
-    const stray = /<type>\s*([A-Za-z][\w-]*)\s*<\/[A-Za-z_][\w-]*\s*>/i.exec(markup);
+    const stray = /<type[ \t\r\n]*>\s*([A-Za-z][\w-]*)\s*<\/[A-Za-z_][\w-]*[ \t\r\n]*>/i.exec(markup);
     return stray ? stray[1] : null;
   }
 
@@ -368,7 +378,7 @@ function extractTypeField(content: string): string | null {
 function extractArrayElements(content: string, arrayName: string, elementName: string): string[] {
   const elements: string[] = [];
 
-  const arrayRegex = new RegExp(`<${arrayName}>([\\s\\S]*?)</${arrayName}>`, 'i');
+  const arrayRegex = new RegExp(elementPattern(arrayName), 'i');
   const arrayMatch = arrayRegex.exec(maskXmlLiteralMarkup(content));
 
   if (!arrayMatch) {
@@ -378,7 +388,7 @@ function extractArrayElements(content: string, arrayName: string, elementName: s
   const arrayContent = originalElementBody(content, arrayMatch);
   const arrayMarkup = maskXmlLiteralMarkup(arrayContent);
 
-  const elementRegex = new RegExp(`<${elementName}>([\\s\\S]*?)</${elementName}>`, 'gi');
+  const elementRegex = new RegExp(elementPattern(elementName), 'gi');
   let elementMatch;
   while ((elementMatch = elementRegex.exec(arrayMarkup)) !== null) {
     const trimmed = decodeXmlReferences(originalElementBody(arrayContent, elementMatch).trim());
@@ -397,7 +407,7 @@ function extractUnstructuredObservationText(content: string): string | null {
 
   const stripped = content
     .replace(
-      /<(type|title|subtitle|narrative|facts|concepts|files_read|files_modified|attachments)(?:\s*\/>|>[\s\S]*?<\/\1>)/gi,
+      /<(type|title|subtitle|narrative|facts|concepts|files_read|files_modified|attachments)(?:[ \t\r\n]*\/>|[ \t\r\n]*>[\s\S]*?<\/\1[ \t\r\n]*>)/gi,
       ' '
     )
     .replace(/<[^>]+>/g, ' ')
