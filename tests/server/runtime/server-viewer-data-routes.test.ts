@@ -34,6 +34,7 @@ describe('ServerViewerRoutes data endpoints', () => {
   let server: Server | null = null;
   let baseUrl: string;
   let teamId: string;
+  let projectId: string;
   let teamKey: string;
   let projectKey: string;
   let loggerSpies: ReturnType<typeof spyOn>[] = [];
@@ -87,6 +88,7 @@ describe('ServerViewerRoutes data endpoints', () => {
     const team = await storage.teams.create({ name: 'team' });
     teamId = team.id;
     const project = await storage.projects.create({ teamId: team.id, name: 'server-project' });
+    projectId = project.id;
     const otherProject = await storage.projects.create({ teamId: team.id, name: 'other-project' });
     const otherTeam = await storage.teams.create({ name: 'other-team' });
     const foreignProject = await storage.projects.create({ teamId: otherTeam.id, name: 'foreign-project' });
@@ -204,6 +206,53 @@ describe('ServerViewerRoutes data endpoints', () => {
     await startServer();
     const body = await (await get('/api/observations', projectKey)).json() as { items: Array<{ text: string }> };
     expect(body.items.map(item => item.text)).toEqual(['Fixed login redirect loop.']);
+  });
+
+  async function addEventMemory(serverSessionId: string | null = null): Promise<string> {
+    const event = await storage.agentEvents.create({
+      projectId, teamId, serverSessionId, sourceAdapter: 'api',
+      eventType: 'tool_use', platformSource: 'opencode',
+      payload: { tool_name: 'Read', tool_response: 'The cache now expires.' },
+      occurredAt: Date.now(),
+    });
+    const observation = await storage.observations.create({
+      projectId, teamId, serverSessionId, kind: 'discovery',
+      content: 'The cache expires.', metadata: { project: 'event-repo' },
+    });
+    await storage.observationSources.addSource({
+      observationId: observation.id, projectId, teamId,
+      sourceType: 'agent_event', sourceId: event.id,
+    });
+    return observation.id;
+  }
+
+  it('filters sessionless memories by their captured event platform', async () => {
+    const id = await addEventMemory();
+    await startServer();
+    const body = await (await get('/api/observations?platformSource=opencode', projectKey)).json() as {
+      items: Array<{ id: string; platform_source: string }>;
+    };
+    expect(body.items.map(item => [item.id, item.platform_source])).toEqual([[id, 'opencode']]);
+    const claude = await (await get('/api/observations?platformSource=claude', teamKey)).json() as {
+      items: Array<{ id: string }>;
+    };
+    expect(claude.items.map(item => item.id)).not.toContain(id);
+  });
+
+  it('uses event provenance in the project catalog without overriding a linked session', async () => {
+    await addEventMemory();
+    const [session] = await storage.sessions.listByProject(projectId, teamId);
+    const linkedId = await addEventMemory(session!.id);
+    await startServer();
+    const catalog = await (await get('/api/projects', projectKey)).json() as {
+      projectsBySource: Record<string, string[]>;
+    };
+    expect(catalog.projectsBySource.opencode).toEqual(['event-repo']);
+    expect(catalog.projectsBySource.codex).toContain('event-repo');
+    const linked = await (await get('/api/observations?platformSource=codex', projectKey)).json() as {
+      items: Array<{ id: string; platform_source: string }>;
+    };
+    expect(linked.items.find(item => item.id === linkedId)?.platform_source).toBe('codex');
   });
 
   it('filters by project label and session, and pages with hasMore', async () => {

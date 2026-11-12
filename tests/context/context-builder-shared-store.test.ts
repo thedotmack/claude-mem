@@ -76,7 +76,11 @@ function observationRow(index: number, extra: Record<string, unknown> = {}) {
     serverSessionId: 'server-session-1',
     kind: 'bugfix',
     content: `Observation ${index} body`,
-    metadata: { title: `Observation ${index}`, narrative: 'n'.repeat(400), project: 'demo' },
+    // Carries a mode concept: a store that honors the filters it was sent
+    // (#5623) only returns rows passing them, and the client enforces them
+    // again on what it receives (#5972) -- a concept-less row is one the
+    // store would never have answered with under this file's config.
+    metadata: { title: `Observation ${index}`, narrative: 'n'.repeat(400), project: 'demo', concepts: ['how-it-works'] },
     createdAtEpoch: 1_760_000_000_000 - index * 60_000,
     ...extra,
   };

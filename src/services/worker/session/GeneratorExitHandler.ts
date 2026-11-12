@@ -3,7 +3,7 @@ import type { SessionManager } from '../SessionManager.js';
 import type { SessionCompletionHandler } from './SessionCompletionHandler.js';
 import { logger } from '../../../utils/logger.js';
 import { getSdkProcessForSession, ensureSdkProcessExit } from '../../../supervisor/process-registry.js';
-import { abortCategoryOf, PRESERVED_ABORT_CATEGORIES } from './abort-reason.js';
+import { abortCategoryOf, CAPTURE_DISABLED_ABORT_REASON, PRESERVED_ABORT_CATEGORIES } from './abort-reason.js';
 
 export interface GeneratorExitDependencies {
   sessionManager: SessionManager;
@@ -50,13 +50,13 @@ export async function handleGeneratorExit(
   if (!resumesOnTransportBackoff) {
     sessionManager.clearTransportResume?.(sessionDbId);
   }
-  if (abortCategory === 'quota' || abortCategory === 'auth') {
+  if (abortCategory === 'quota' || abortCategory === 'auth' || abortCategory === CAPTURE_DISABLED_ABORT_REASON) {
     sessionManager.discardBufferedWork(sessionDbId);
     session.pendingAgentId = null;
     session.pendingAgentType = null;
     session.paidSendBudget = undefined;
     session.pausedReason = abortCategory;
-    logger.warn('SESSION', 'Observer unavailable; skipped pending inputs, awaiting fresh activity', {
+    logger.warn('SESSION', 'Observer stopped; skipped pending inputs, awaiting fresh activity', {
       sessionId: sessionDbId,
       reason: abortCategory,
     });

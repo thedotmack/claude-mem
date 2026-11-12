@@ -81,17 +81,42 @@ const MAX_PARSED_ATTACHMENTS = 16;
 const MAX_PARSED_ATTACHMENT_CHARS = 128;
 
 function extractAttachmentLabels(content: string): string[] | undefined {
-  const block = ATTACHMENTS_BLOCK.exec(content);
+  const block = ATTACHMENTS_BLOCK.exec(maskXmlLiteralMarkup(content));
   if (!block) return undefined;
+  const body = originalElementBody(content, block);
   const labels: string[] = [];
-  for (const element of block[1].matchAll(ATTACHMENT_ELEMENT)) {
+  for (const element of maskXmlLiteralMarkup(body).matchAll(ATTACHMENT_ELEMENT)) {
     if (labels.length >= MAX_PARSED_ATTACHMENTS) break;
-    labels.push(element[1].trim().slice(0, MAX_PARSED_ATTACHMENT_CHARS));
+    labels.push(originalElementBody(body, element).trim().slice(0, MAX_PARSED_ATTACHMENT_CHARS));
   }
   return labels.length > 0 ? labels : undefined;
 }
 
 export const SKIP_SUMMARY_TAG = /<skip_summary(?:\s+reason\s*=\s*(?:"([^"]*)"|'([^']*)'))?\s*\/>/i;
+
+/**
+ * Hide markup inside CDATA sections and comments without changing offsets into
+ * the original text. An observer reply can quote XML examples in those regions;
+ * the tags they contain must not end a record or select its fields. Callers
+ * match structure on the masked view, then read field values from the original
+ * reply by offset, so each masked character is replaced one for one.
+ *
+ * Only terminated literals are masked. A bare `<!--` or `<![CDATA[` in prose
+ * (an observation about HTML, say) stays visible text, so it cannot hide every
+ * later closing tag and turn a valid reply into a parse failure that is resent.
+ * Comments cannot nest: a later opener starts a new candidate instead of
+ * pairing its terminator with a bare opener in an earlier observation.
+ */
+export function maskXmlLiteralMarkup(text: string): string {
+  return text.replace(/<!\[CDATA\[[\s\S]*?\]\]>|<!--(?:(?!<!--)[\s\S])*?-->/g,
+    literal => literal.replace(/[<>]/g, ' '));
+}
+
+/** Recover an element's original body after matching its structure on masked text. */
+function originalElementBody(text: string, match: RegExpExecArray): string {
+  const start = match.index + match[0].indexOf('>') + 1;
+  return text.slice(start, start + match[1].length);
+}
 
 export function parseAgentXml(raw: string, correlationId?: string | number): ParseResult {
   if (typeof raw !== 'string' || !raw.trim()) {
@@ -100,10 +125,12 @@ export function parseAgentXml(raw: string, correlationId?: string | number): Par
 
   raw = stripCodeFences(raw);
 
-  const firstRoot = /<(observation|summary)\b/i.exec(raw);
-  const skipMatch = SKIP_SUMMARY_TAG.exec(raw);
+  const markup = maskXmlLiteralMarkup(raw);
+  const firstRoot = /<(observation|summary)\b/i.exec(markup);
+  const skipMatch = SKIP_SUMMARY_TAG.exec(markup);
   if (skipMatch && (!firstRoot || skipMatch.index < firstRoot.index)) {
-    const reason = skipMatch[1] ?? skipMatch[2];
+    const originalSkip = SKIP_SUMMARY_TAG.exec(raw.slice(skipMatch.index, skipMatch.index + skipMatch[0].length))!;
+    const reason = originalSkip[1] ?? originalSkip[2];
     return {
       valid: true,
       observations: [],
@@ -154,10 +181,11 @@ function parseObservationBlocks(
   const observations: ParsedObservation[] = [];
 
   const observationRegex = /<observation>([\s\S]*?)<\/observation>/gi;
+  const markup = maskXmlLiteralMarkup(text);
 
   let match;
-  while ((match = observationRegex.exec(text)) !== null) {
-    const obsContent = match[1];
+  while ((match = observationRegex.exec(markup)) !== null) {
+    const obsContent = originalElementBody(text, match);
 
     const type = extractTypeField(obsContent);
     const title = unwrapLabelWrappedTitle(extractField(obsContent, 'title'));
@@ -216,7 +244,7 @@ function parseObservationBlocks(
       const salvage = extractObservationFallback(salvageNarrative);
       finalTitle = salvage.title;
       finalNarrative = salvage.narrative;
-      for (const tag of obsContent.matchAll(/<\/?([A-Za-z_][\w-]*)\b[^>]*>/g)) {
+      for (const tag of maskXmlLiteralMarkup(obsContent).matchAll(/<\/?([A-Za-z_][\w-]*)\b[^>]*>/g)) {
         const name = tag[1].toLowerCase();
         if (!OBSERVATION_SCHEMA_TAGS.has(name)) schemaDrift?.add(name);
       }
@@ -245,10 +273,10 @@ function parseObservationBlocks(
 
 function parseSummaryBlock(text: string, correlationId?: string | number): ParsedSummary | null {
   const summaryRegex = /<summary>([\s\S]*?)<\/summary>/i;
-  const summaryMatch = summaryRegex.exec(text);
+  const summaryMatch = summaryRegex.exec(maskXmlLiteralMarkup(text));
   if (!summaryMatch) return null;
 
-  const summaryContent = summaryMatch[1];
+  const summaryContent = originalElementBody(text, summaryMatch);
 
   const request = extractField(summaryContent, 'request');
   const investigated = extractField(summaryContent, 'investigated');
@@ -309,10 +337,10 @@ function decodeXmlReferences(value: string): string {
 
 function extractField(content: string, fieldName: string): string | null {
   const regex = new RegExp(`<${fieldName}>([\\s\\S]*?)</${fieldName}>`, 'i');
-  const match = regex.exec(content);
+  const match = regex.exec(maskXmlLiteralMarkup(content));
   if (!match) return null;
 
-  const trimmed = decodeXmlReferences(match[1].trim());
+  const trimmed = decodeXmlReferences(originalElementBody(content, match).trim());
   return trimmed.trim() === '' ? null : trimmed;
 }
 
@@ -324,15 +352,16 @@ function extractField(content: string, fieldName: string): string | null {
  * it is dropped.
  */
 function extractTypeField(content: string): string | null {
-  const match = /<type>((?:(?!<type>)[\s\S])*?)<\/type>/i.exec(content);
+  const markup = maskXmlLiteralMarkup(content);
+  const match = /<type>((?:(?!<type>)[\s\S])*?)<\/type>/i.exec(markup);
   if (!match) {
     // No </type> at all: the model closed it with a stray tag
     // (`<type>gotcha</reasoning_effort>`). Accept one bare id, never prose.
-    const stray = /<type>\s*([A-Za-z][\w-]*)\s*<\/[A-Za-z_][\w-]*\s*>/i.exec(content);
+    const stray = /<type>\s*([A-Za-z][\w-]*)\s*<\/[A-Za-z_][\w-]*\s*>/i.exec(markup);
     return stray ? stray[1] : null;
   }
 
-  const value = decodeXmlReferences(match[1].replace(/<\/?[A-Za-z_][\w-]*\b[^>]*>/g, '')).trim();
+  const value = decodeXmlReferences(originalElementBody(content, match).replace(/<\/?[A-Za-z_][\w-]*\b[^>]*>/g, '')).trim();
   return value === '' ? null : value;
 }
 
@@ -340,18 +369,19 @@ function extractArrayElements(content: string, arrayName: string, elementName: s
   const elements: string[] = [];
 
   const arrayRegex = new RegExp(`<${arrayName}>([\\s\\S]*?)</${arrayName}>`, 'i');
-  const arrayMatch = arrayRegex.exec(content);
+  const arrayMatch = arrayRegex.exec(maskXmlLiteralMarkup(content));
 
   if (!arrayMatch) {
     return elements;
   }
 
-  const arrayContent = arrayMatch[1];
+  const arrayContent = originalElementBody(content, arrayMatch);
+  const arrayMarkup = maskXmlLiteralMarkup(arrayContent);
 
   const elementRegex = new RegExp(`<${elementName}>([\\s\\S]*?)</${elementName}>`, 'gi');
   let elementMatch;
-  while ((elementMatch = elementRegex.exec(arrayContent)) !== null) {
-    const trimmed = decodeXmlReferences(elementMatch[1].trim());
+  while ((elementMatch = elementRegex.exec(arrayMarkup)) !== null) {
+    const trimmed = decodeXmlReferences(originalElementBody(arrayContent, elementMatch).trim());
     if (trimmed.trim()) {
       elements.push(trimmed);
     }

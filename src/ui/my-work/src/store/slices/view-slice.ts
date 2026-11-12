@@ -107,6 +107,14 @@ export const createViewSlice = (environment: StoreEnvironment): SliceCreator<Vie
       get().reconcileOpenRequest()
     },
 
+    startSetup: () => {
+      const url = new URL(environment.href())
+      url.searchParams.set('setup', '1')
+      environment.writeUrl(url, true)
+      if (environment.reportsUsage) environment.sendUsage(usageReport('setup', get().view.section))
+      set((state) => { state.view.page = 'setup' })
+    },
+
     finishSetup: () => {
       const url = new URL(environment.href())
       url.searchParams.delete('setup')

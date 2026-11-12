@@ -100,4 +100,19 @@ describe('getObservationsByFilePath — multi-candidate path matching (#2691)', 
     const relativeMatches = getObservationsByFilePath(store.db, ['C:/Users/dev/proj/src/services/win-relative.ts', 'src/services/win-relative.ts']);
     expect(relativeMatches.map(o => o.id)).toContain(relativeId);
   });
+  it('keeps a literal backslash in a POSIX absolute filename distinct from a separator', () => {
+    const path = String.raw`/repo/src/main\draft.ts`;
+    const id = seedObservationWithReadPath(path, 'literal-backslash');
+    seedObservationWithReadPath('/repo/src/main/draft.ts', 'different-file');
+    expect(getObservationsByFilePath(store.db, path).map(row => row.id)).toEqual([id]);
+  });
+
+  it('preserves literal backslashes in relative candidates of a POSIX lookup', () => {
+    const absolute = String.raw`/repo/src/main\draft.ts`;
+    const relative = String.raw`src/main\draft.ts`;
+    const id = seedObservationWithReadPath(relative, 'literal-relative');
+    seedObservationWithReadPath('src/main/draft.ts', 'other-relative');
+    expect(getObservationsByFilePath(store.db, [absolute, relative]).map(row => row.id)).toEqual([id]);
+  });
+
 });

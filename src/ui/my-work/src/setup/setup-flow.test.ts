@@ -1,7 +1,7 @@
 // Run with `npm test`. The funnel step machine (install-funnel plan Phase 3, item 1).
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { choiceLocked, guardStep, initialFlowState, nextAfterSavings, type SetupFlowState } from './setup-flow.ts'
+import { choiceLocked, guardStep, hydrateSetupChoice, initialFlowState, nextAfterSavings, type SetupFlowState } from './setup-flow.ts'
 
 const state = (changes: Partial<SetupFlowState> = {}): SetupFlowState => ({ ...initialFlowState(false), ...changes })
 const decided = (changes: Partial<SetupFlowState> = {}) => state({ scanComplete: true, revealContinued: true, choiceContinued: true, savingsComplete: true, ...changes })
@@ -17,6 +17,12 @@ describe('nextAfterSavings', () => {
 })
 
 describe('guardStep', () => {
+  it('holds every screen behind agent installation and opens the scan only when ready', () => {
+    assert.equal(guardStep('scan', state({ installationComplete: false })), 'install')
+    assert.equal(guardStep('workspace', decided({ installationComplete: false })), 'install')
+    assert.equal(guardStep('install', state()), 'scan')
+    assert.equal(guardStep('install', state({ scanComplete: true })), 'reveal')
+  })
   it('holds every step behind a finished scan', () => {
     assert.equal(guardStep('reveal', state()), 'scan')
     assert.equal(guardStep('workspace', state()), 'scan')
@@ -53,5 +59,21 @@ describe('choiceLocked', () => {
     assert.equal(choiceLocked('waiting-for-choice'), false)
     assert.equal(choiceLocked('failed'), false)
     for (const stage of ['home-ready', 'go-kept-existing-pro', 'go-awaiting-checkout'] as const) assert.equal(choiceLocked(stage), true)
+  })
+})
+
+describe('saved storage choice', () => {
+  const home = { branch: 'home' as const, memoryBilling: 'existing' as const }
+  it('restores Home after a reload instead of submitting the default On The Go choice', () => {
+    const restored = hydrateSetupChoice(state(), home, false, 'home-ready')
+    assert.equal(restored.branch, 'home')
+    assert.equal(restored.memoryBilling, 'existing')
+    assert.equal(nextAfterSavings(restored), 'finish-setup')
+  })
+  it('preserves a choice being edited until the worker has locked its committed choice', () => {
+    const edited = state({ branch: 'go', memoryBilling: 'hosted' })
+    assert.equal(hydrateSetupChoice(edited, home, true, 'waiting-for-choice'), edited)
+    assert.equal(hydrateSetupChoice(edited, home, true, 'failed'), edited)
+    assert.equal(hydrateSetupChoice(edited, home, true, 'home-ready').branch, 'home')
   })
 })
