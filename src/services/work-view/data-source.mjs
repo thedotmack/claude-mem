@@ -4,13 +4,12 @@ import { readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { reduceWorkState } from './work-state-reduce.mjs';
+import { readWorkStateRows, reduceWorkState } from './work-state-reduce.mjs';
 import { activitySignature, buildAgentView, readAgentRecords, readEvidence } from './agent-view.mjs';
 import { ledgerSignature, openSuggestions, readLedger } from './request-groups.mjs';
 import { recordedFile, bucketFileAvailable, copyCoversSource, servableFile } from './work-product.mjs';
 import { buildRules, MY_RULES_LIST } from './my-rules.mjs';
 import { readSharedRecords, workStateRowsRevision } from './shared-record-store.mjs';
-import { sharedWorkListSql } from './shared-records.mjs';
 import { readWorkStateLabels, WORK_STATE_LABELS_FILE } from './work-state-labels.mjs';
 import { applySharedProjection, decorateSharedView, isSharedProjectionValue } from './shared-projection.mjs';
 import { sharedReviewDescriptor, readSharedReview, sharedSuggestionDescriptor, sharedConflictSuggestions } from './shared-reviews.mjs';
@@ -159,10 +158,7 @@ export class WorkStateSource {
           // or work-state row arriving after its shared reference is visible.
           const sharedLedger = applySharedProjection(database, this.sharedState, { ledger: this.ledger, deviceId: this.localDeviceId }).ledger;
           if (signature !== this.signature || !this.source.connected) {
-            const originColumns = ['origin_device_id', 'origin_local_id'].filter(column => this.columns.has(column));
-            // The reducer drops shared rows, which are most of this table on a busy replica: leave them in SQLite.
-            const entries = database.prepare(`SELECT id, project, list_name, fields, created_at_epoch${originColumns.length ? `, ${originColumns.join(', ')}` : ''}
-              FROM work_state_entries WHERE NOT ${sharedWorkListSql('list_name')}`).all();
+            const entries = readWorkStateRows(database);
             const currentProjectScope = resolveReadScope(database, [this.parentProject, this.currentProject]);
             const requested = new Set([this.parentProject, this.currentProject].map(normalizedKey));
             // Match worker's scope_project only for directly requested legacy keys.

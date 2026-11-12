@@ -20,8 +20,8 @@ import { isMyRulesList } from './my-rules.mjs';
 import { isOwnerGoalsList } from './owner-goals.mjs';
 import { answerOf, MAX_CANDIDATE_REQUESTS } from './request-judge.mjs';
 import { writeJsonFileAtomic } from '../../shared/atomic-json.js';
-import { sharedWorkListSql } from './shared-records.mjs';
-import { reduceWorkState } from './work-state-reduce.mjs';
+import { redactJsonStrings } from '../../utils/redaction.js';
+import { readWorkStateRows, reduceWorkState } from './work-state-reduce.mjs';
 import { isClosedWorkStateStatus } from './work-state-status.mjs';
 
 export const WORK_STATE_LABELS_FILE = 'work-state-labels.json';
@@ -57,6 +57,7 @@ const RESULT_INSTRUCTIONS = 'Which field of `item.notes` says what the work prod
 /** Keys that are not notes: the item's name and its status word, which the question already carries. */
 const NOT_NOTES = new Set(['task', 'status']);
 const DAY_MS = 86400000;
+const notesOf = (fields) => Object.fromEntries(Object.entries(fields).filter(([key, value]) => !NOT_NOTES.has(key) && value !== null));
 /** The pause between label calls. The CMEM Pro gateway allows 120 decisions a minute per user (claude-mem-pro
  * src/lib/jev/gateway.ts DECISIONS_PER_MINUTE) and the request and focus judges share that minute, so labeling
  * takes at most half: one call a second. Measured 2026-11-11: unpaced, 78 calls in 22 s drew a 429. */
@@ -65,12 +66,18 @@ export const LABEL_CALL_INTERVAL_MS = 1000;
 const SERVICE_FAILURE = /^Jev (?:answered (?!400\b)\d{3}\b|request failed: )/;
 
 /** Open agent-written work-state items as My Work lists them: tasks, and each list's own state when it has any.
- * System lists (owner goals, My Rules, My Focus, agent lifecycle) are not agent work notes. */
+ * System lists (owner goals, My Rules, My Focus, agent lifecycle) are not agent work notes. `labelKey` names the
+ * version a label judged: the item's latest entry, and for a task whose list has notes (sent as list_notes) the
+ * list's latest state entry too, so a write to either asks again. */
 export function workStateItems(state) {
-  return state.lists.filter((list) => !isOwnerGoalsList(list.name) && !isMyRulesList(list.name) && !isMyFocusList(list.name) && !isAgentLifecycleList(list.name)).flatMap((list) => [
-    ...list.tasks.map((task) => ({ ...task, list, recordKind: 'task' })),
-    ...(Object.keys(list.fields).some((key) => key !== 'task') ? [{ id: list.id, name: list.name, fields: list.fields, status: list.status, isOpen: !isClosedWorkStateStatus(list.status), updatedAtEpoch: list.stateUpdatedAtEpoch, latestEntryId: state.events.find((event) => event.listId === list.id && event.task === null)?.id ?? 0, list, recordKind: 'list' }] : []),
-  ]);
+  return state.lists.filter((list) => !isOwnerGoalsList(list.name) && !isMyRulesList(list.name) && !isMyFocusList(list.name) && !isAgentLifecycleList(list.name)).flatMap((list) => {
+    const stateEntryId = state.events.find((event) => event.listId === list.id && event.task === null)?.id ?? 0;
+    const listNotesSent = Object.keys(notesOf(list.fields)).length > 0;
+    return [
+      ...list.tasks.map((task) => ({ ...task, list, recordKind: 'task', labelKey: listNotesSent ? `${task.latestEntryId}:${stateEntryId}` : String(task.latestEntryId) })),
+      ...(Object.keys(list.fields).some((key) => key !== 'task') ? [{ id: list.id, name: list.name, fields: list.fields, status: list.status, isOpen: !isClosedWorkStateStatus(list.status), updatedAtEpoch: list.stateUpdatedAtEpoch, latestEntryId: stateEntryId, labelKey: String(stateEntryId), list, recordKind: 'list' }] : []),
+    ];
+  });
 }
 
 /** The labels file, or an empty one when it does not exist yet. Any other read or parse failure throws. */
@@ -84,8 +91,6 @@ export function readWorkStateLabels(dir) {
     throw error;
   }
 }
-
-const notesOf = (fields) => Object.fromEntries(Object.entries(fields).filter(([key, value]) => !NOT_NOTES.has(key) && value !== null));
 
 /** One Jev call for one item: the state choice, and the two field choices when the item has 1 to 19 note fields
  * (one choice takes at most MAX_CANDIDATE_REQUESTS options plus `none`; more are left unasked, and the label says so). */
@@ -107,7 +112,8 @@ export async function labelItem(client, item, now) {
     questions.next = { type: 'choice', instructions: NEXT_INSTRUCTIONS, criteria: { ...options, none: 'No field says what is left or next' } };
     questions.result = { type: 'choice', instructions: RESULT_INSTRUCTIONS, criteria: { ...options, none: 'No field says what it produced' } };
   }
-  const answered = await client.decide(state, questions);
+  // Agent notes can hold tokens, keys and cookies: redact every string before it leaves this computer.
+  const answered = await client.decide(redactJsonStrings(state), questions);
   const choice = (id) => {
     const answer = answerOf(answered, id, 'choice');
     const probability = answer.probabilities?.[answer.choice];
@@ -136,14 +142,14 @@ export async function labelItem(client, item, now) {
 /** Labels every open item whose current version has no label and no recorded failure, one after another, and
  * writes the file. Labels and failures of versions that are no longer an open item's latest are removed, so the
  * file holds only current open items. Returns what it did; throws only when the database or file cannot be read. */
-export async function labelOpenWorkState({ dir, database, client, now = Date.now, intervalMs = LABEL_CALL_INTERVAL_MS, wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) }) {
-  const rows = database.prepare(`SELECT id, project, list_name, fields, created_at_epoch FROM work_state_entries WHERE NOT ${sharedWorkListSql('list_name')} ORDER BY id`).all();
-  const items = workStateItems(reduceWorkState(rows, { currentProject: '' })).filter((item) => item.isOpen && item.latestEntryId > 0);
+export async function labelOpenWorkState({ dir, database, client, localDeviceId = '', now = Date.now, intervalMs = LABEL_CALL_INTERVAL_MS, wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) }) {
+  // Replayed exactly as My Work replays them (data-source.mjs), so each label's key is the version the view shows.
+  const items = workStateItems(reduceWorkState(readWorkStateRows(database), { currentProject: '', localDeviceId })).filter((item) => item.isOpen && item.latestEntryId > 0);
   const previous = readWorkStateLabels(dir);
-  const current = new Set(items.map((item) => String(item.latestEntryId)));
+  const current = new Set(items.map((item) => item.labelKey));
   const keep = (record) => Object.fromEntries(Object.entries(record).filter(([entryId]) => current.has(entryId)));
   const file = { schemaVersion: 1, labels: keep(previous.labels), failures: keep(previous.failures) };
-  const pending = items.filter((item) => !file.labels[item.latestEntryId] && !file.failures[item.latestEntryId]);
+  const pending = items.filter((item) => !file.labels[item.labelKey] && !file.failures[item.labelKey]);
   const size = (record) => Object.keys(record.labels).length + Object.keys(record.failures).length;
   const removed = size(previous) - size(file);
   // Labels are this install's own derived data, never shared, so the plain atomic write and not the ledger's
@@ -153,12 +159,12 @@ export async function labelOpenWorkState({ dir, database, client, now = Date.now
   let labeled = 0, failed = null, serviceFailure = null;
   for (const [index, item] of pending.entries()) {
     if (index) await wait(intervalMs);
-    try { file.labels[item.latestEntryId] = await labelItem(client, item, now()); labeled++; }
+    try { file.labels[item.labelKey] = await labelItem(client, item, now()); labeled++; }
     catch (error) {
       const message = String(error instanceof Error ? error.message : error).slice(0, 500);
       if (SERVICE_FAILURE.test(message)) { serviceFailure = message; break; }
       failed = { entryId: item.latestEntryId, at: new Date(now()).toISOString(), error: message };
-      file.failures[item.latestEntryId] = { at: failed.at, error: failed.error };
+      file.failures[item.labelKey] = { at: failed.at, error: failed.error };
       save();
       break;
     }
@@ -171,10 +177,13 @@ export async function labelOpenWorkState({ dir, database, client, now = Date.now
  * fields that hold its next step and result. Null fields mean "show it as written". A label of an older version,
  * or under LABEL_THRESHOLD, changes nothing. */
 export function appliedLabel(item, labels, threshold = LABEL_THRESHOLD) {
-  const label = labels?.[item.latestEntryId];
+  const label = labels?.[item.labelKey];
   if (!label) return { judgedStatus: null, nextField: null, resultField: null, label: null };
+  // A list's reduced status is `open` for any word that is not closed, so `blocked` would read as replaceable.
+  // Its recorded word decides instead; no word at all is `open`.
+  const recorded = item.recordKind === 'list' ? (item.fields?.status == null || item.fields.status === '' ? 'open' : item.fields.status) : item.status;
   return {
-    judgedStatus: label.stateP >= threshold ? judgedStatusFor(item.status, label.state) : null,
+    judgedStatus: label.stateP >= threshold ? judgedStatusFor(recorded, label.state) : null,
     nextField: label.nextField && label.nextP >= threshold ? label.nextField : null,
     resultField: label.resultField && label.resultP >= threshold ? label.resultField : null,
     label,

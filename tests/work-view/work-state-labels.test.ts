@@ -3,11 +3,14 @@ import { Database } from 'bun:sqlite';
 import { rmSync } from 'node:fs';
 import { buildAgentView } from '../../src/services/work-view/agent-view.mjs';
 import { AutoRefreshWorker } from '../../src/services/work-view/auto-refresh-worker.mjs';
-import { reduceWorkState } from '../../src/services/work-view/work-state-reduce.mjs';
+import { readWorkStateRows, reduceWorkState } from '../../src/services/work-view/work-state-reduce.mjs';
 import {
-  appliedLabel, judgedStatusFor, JUDGED_WORK_STATES, LABEL_THRESHOLD, labelOpenWorkState, readWorkStateLabels,
+  appliedLabel, judgedStatusFor, JUDGED_WORK_STATES, LABEL_THRESHOLD, labelOpenWorkState, readWorkStateLabels, workStateItems,
 } from '../../src/services/work-view/work-state-labels.mjs';
+import { isReportedReadyForCheck } from '../../src/services/worker/http/routes/WorkViewRoutes.js';
+import { normalizeRequestStatus } from '../../src/ui/my-work/src/live/status-normalization.js';
 import { scratchDir } from '../helpers/scratch-dir.js';
+import { _resetRedactionConfigCache } from '../../src/utils/redaction.js';
 
 const DAY = 86400000, NOW = 100 * DAY;
 
@@ -62,7 +65,8 @@ describe('Jev work-state labels', () => {
       expect(calls[0].state.item).toMatchObject({ list: 'release', recorded_status: 'doing', days_since_last_update: 10, notes: { left: 'Merged; nothing left', work_product: 'https://github.com/o/r/pull/1' } });
       expect(Object.keys(calls[0].questions.state.criteria)).toEqual(Object.keys(JUDGED_WORK_STATES));
       const labels = readWorkStateLabels(dir).labels;
-      expect(labels[shipped]).toMatchObject({ state: 'finished', stateP: 0.9, nextField: 'left', nextP: 0.85, resultField: 'work_product', resultP: 0.95, model: 'typesafe/jev-1.14-test' });
+      // The task's list has notes (sent as list_notes), so its label covers the list's state version too.
+      expect(labels[`${shipped}:${listState}`]).toMatchObject({ state: 'finished', stateP: 0.9, nextField: 'left', nextP: 0.85, resultField: 'work_product', resultP: 0.95, model: 'typesafe/jev-1.14-test' });
       expect(labels[listState]).toMatchObject({ state: 'working', nextField: null, resultField: null });
 
       expect(await labelOpenWorkState({ dir, database: db, client, now: () => NOW, wait: async () => {} })).toMatchObject({ labeled: 0, removed: 0 });
@@ -71,7 +75,7 @@ describe('Jev work-state labels', () => {
       // A new write is a new version: it is asked, and the old version's label goes.
       const rewritten = write(db, 'release', { task: 'Ship 1.2', status: 'doing', left: 'Waiting on CI' }, NOW - DAY);
       expect(await labelOpenWorkState({ dir, database: db, client, now: () => NOW, wait: async () => {} })).toMatchObject({ labeled: 1, removed: 1 });
-      expect(Object.keys(readWorkStateLabels(dir).labels).sort()).toEqual([String(listState), String(rewritten)].sort());
+      expect(Object.keys(readWorkStateLabels(dir).labels).sort()).toEqual([String(listState), `${rewritten}:${listState}`].sort());
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
@@ -133,6 +137,92 @@ describe('Jev work-state labels', () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
+  it('keys a label by the version My Work replays: synced rows at one time order by origin device', async () => {
+    const dir = scratchDir('work-state-labels');
+    try {
+      const db = database();
+      db.exec('ALTER TABLE work_state_entries ADD COLUMN origin_device_id TEXT');
+      db.exec('ALTER TABLE work_state_entries ADD COLUMN origin_local_id TEXT');
+      const synced = (id: number, device: string, note: string) => db.prepare('INSERT INTO work_state_entries VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .run(id, 'repo', 'release', JSON.stringify({ task: 'Ship 1.2', status: 'doing', note }), NOW - DAY, device, '1');
+      // Same millisecond from two devices: the view replays device 'a' before 'b', whatever the local ids say.
+      synced(1, 'b-device', 'written on b');
+      synced(2, 'a-device', 'written on a');
+      const view = reduceWorkState(readWorkStateRows(db), { currentProject: '', localDeviceId: 'local' });
+      expect(view.lists[0].tasks[0].latestEntryId).toBe(1);
+      const { calls, client } = fakeJev((question) => ({ choice: question === 'state' ? 'working' : 'none', p: 0.9 }));
+      await labelOpenWorkState({ dir, database: db, client, localDeviceId: 'local', now: () => NOW, wait: async () => {} });
+      expect(calls[0].state.item.notes.note).toBe('written on b');
+      expect(Object.keys(readWorkStateLabels(dir).labels)).toEqual(['1']);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("a list's own recorded status decides whether its label may replace it", () => {
+    const db = database();
+    const blocked = write(db, 'release', { status: 'blocked', phase: 'Waiting on the vendor' });
+    const quiet = write(db, 'notes', { phase: 'Drafting' });
+    const state = reduceWorkState(db.prepare('SELECT * FROM work_state_entries').all() as any, { currentProject: '' });
+    const lists = workStateItems(state).filter((item: any) => item.recordKind === 'list');
+    const finished = { at: '', model: 'm', state: 'finished' as const, stateP: 0.9, nextField: null, nextP: null, resultField: null, resultP: null };
+    const byName = (name: string) => lists.find((item: any) => item.name === name);
+    // The reducer reports `open` for both, but only the list with no status word of its own is a quiet claim.
+    expect(byName('release').status).toBe('open');
+    expect(appliedLabel(byName('release'), { [blocked]: finished }).judgedStatus).toBeNull();
+    expect(appliedLabel(byName('notes'), { [quiet]: finished }).judgedStatus).toBe('needs-review');
+  });
+
+  it("a write to only the task's list asks again, since its notes were part of the question", async () => {
+    const dir = scratchDir('work-state-labels');
+    try {
+      const db = database();
+      write(db, 'release', { phase: 'Shipping' });
+      write(db, 'release', { task: 'Ship 1.2', status: 'doing', note: 'x' });
+      const { calls, client } = fakeJev((question) => ({ choice: question === 'state' ? 'working' : 'none', p: 0.9 }));
+      const run = () => labelOpenWorkState({ dir, database: db, client, now: () => NOW, wait: async () => {} });
+      await run();
+      expect(calls.filter((call) => call.state.item.name === 'Ship 1.2')).toHaveLength(1);
+      write(db, 'release', { phase: 'Shipped; waiting on nothing' });
+      await run();
+      const asked = calls.filter((call) => call.state.item.name === 'Ship 1.2');
+      expect(asked).toHaveLength(2);
+      expect(asked[1].state.item.list_notes).toEqual({ phase: 'Shipped; waiting on nothing' });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('redacts secrets in agent notes before they are sent to Jev, while redaction is on', async () => {
+    const dir = scratchDir('work-state-labels');
+    const previous = process.env.CLAUDE_MEM_REDACT_ENABLED;
+    process.env.CLAUDE_MEM_REDACT_ENABLED = 'true';
+    _resetRedactionConfigCache();
+    try {
+      const db = database();
+      const token = 'ghp_' + 'A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8';
+      write(db, 'deploy', { phase: `Deploy key ${token}` });
+      write(db, 'deploy', { task: 'Rotate keys', status: 'doing', note: `export GITHUB_TOKEN=${token}`, api_key: 'sk-live-0123456789abcdefghij' });
+      const { calls, client } = fakeJev((question) => ({ choice: question === 'state' ? 'working' : 'none', p: 0.9 }));
+      await labelOpenWorkState({ dir, database: db, client, now: () => NOW, wait: async () => {} });
+      const sent = JSON.stringify(calls.map((call) => call.state));
+      expect(calls.length).toBeGreaterThan(0);
+      expect(sent).not.toContain(token);
+      expect(sent).not.toContain('sk-live-0123456789abcdefghij');
+      expect(sent).toContain('redacted');
+    } finally {
+      if (previous === undefined) delete process.env.CLAUDE_MEM_REDACT_ENABLED; else process.env.CLAUDE_MEM_REDACT_ENABLED = previous;
+      _resetRedactionConfigCache();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('the check route accepts what the viewer offers "Mark checked" for, including a confident finished label', () => {
+    const item = (fields: Record<string, unknown>) => ({ kind: 'work-state', status: 'doing', lastUpdateEpoch: NOW, ...fields });
+    expect(isReportedReadyForCheck({ lifecycle: null, progress: null, items: [item({})] }, NOW)).toBe(false);
+    expect(isReportedReadyForCheck({ lifecycle: null, progress: null, items: [item({ judgedStatus: 'needs-review' })] }, NOW)).toBe(true);
+    expect(isReportedReadyForCheck({ lifecycle: null, progress: null, items: [item({ status: 'needs-review' })] }, NOW)).toBe(true);
+    // Anything waiting on the person comes first in the viewer, so it is not offered as ready to check.
+    expect(isReportedReadyForCheck({ lifecycle: null, progress: null, items: [item({ judgedStatus: 'needs-review' }), item({ judgedStatus: 'needs-you' })] }, NOW)).toBe(false);
+    expect(normalizeRequestStatus({ items: [item({ judgedStatus: 'needs-review' })], lifecycle: null, checked: false }, NOW)).toBe('needs-review');
+  });
+
   it('replaces only statuses a quiet agent leaves behind, and a todo only with finished or abandoned', () => {
     expect(judgedStatusFor('doing', 'finished')).toBe('needs-review');
     expect(judgedStatusFor('doing', 'waiting_on_person')).toBe('needs-you');
@@ -147,9 +237,9 @@ describe('Jev work-state labels', () => {
 
   it('applies a label only to the version it judged and only at the threshold', () => {
     const label = { at: '', model: 'm', state: 'finished' as const, stateP: LABEL_THRESHOLD, nextField: 'left', nextP: LABEL_THRESHOLD - 0.01, resultField: 'work_product', resultP: 0.99 };
-    expect(appliedLabel({ latestEntryId: 7, status: 'doing' }, { 7: label })).toEqual({ judgedStatus: 'needs-review', nextField: null, resultField: 'work_product', label });
-    expect(appliedLabel({ latestEntryId: 8, status: 'doing' }, { 7: label })).toEqual({ judgedStatus: null, nextField: null, resultField: null, label: null });
-    expect(appliedLabel({ latestEntryId: 7, status: 'doing' }, { 7: { ...label, stateP: LABEL_THRESHOLD - 0.01 } }).judgedStatus).toBeNull();
+    expect(appliedLabel({ labelKey: '7', status: 'doing' }, { 7: label })).toEqual({ judgedStatus: 'needs-review', nextField: null, resultField: 'work_product', label });
+    expect(appliedLabel({ labelKey: '8', status: 'doing' }, { 7: label })).toEqual({ judgedStatus: null, nextField: null, resultField: null, label: null });
+    expect(appliedLabel({ labelKey: '7', status: 'doing' }, { 7: { ...label, stateP: LABEL_THRESHOLD - 0.01 } }).judgedStatus).toBeNull();
   });
 
   it('My Work shows the judged status and the next step and result from the fields Jev named', () => {

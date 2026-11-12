@@ -40,6 +40,7 @@ import { runAgentTask } from '../../../agent-runner/run.js';
 import { ledgerSignature, readLedger } from '../../../work-view/request-groups.mjs';
 import { configuredJudge, decideSuggestion, jevClientFromSettings } from '../../../work-view/request-judge.mjs';
 import { labelOpenWorkState } from '../../../work-view/work-state-labels.mjs';
+import { normalizeRequestStatus } from '../../../../ui/my-work/src/live/status-normalization.js';
 import { configuredFocusJudge } from '../../../work-view/focus-judge.mjs';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { captureEvent } from '../../../telemetry/telemetry.js';
@@ -60,6 +61,7 @@ const READY_FOR_CHECK_LIFECYCLE_STATUSES = [
   'needs-review', 'review', 'in-review', 'awaiting-review', 'ready-for-review',
 ];
 type RecordedLifecycle = { explicit?: boolean; complete?: boolean | null; status?: string | null; atEpoch?: number | null } | null | undefined;
+type ReadyCheckItem = { kind: string; status: string; judgedStatus?: string | null; lastUpdateEpoch?: number };
 
 /** Mirrors the viewer's reviewIsNewerThanLifecycle (src/ui/my-work/src/live/to-work-model.ts). */
 function reviewIsNewerThanLifecycle(review: { checkedAt?: string | null }, lifecycle: RecordedLifecycle): boolean {
@@ -76,9 +78,16 @@ function processIsAlive(pid: number): boolean {
 
 /** Ready for a person's check: the explicit lifecycle says so, or a memory review newer than it reached 100%.
  * The viewer offers "Mark checked" on exactly these requests. */
-export function isReportedReadyForCheck(request: { lifecycle?: RecordedLifecycle; progress?: { percent?: number; checkedAt?: string | null } | null }): boolean {
+export function isReportedReadyForCheck(request: { lifecycle?: RecordedLifecycle; progress?: { percent?: number; checkedAt?: string | null } | null; items?: ReadyCheckItem[] }, now = Date.now()): boolean {
   const { lifecycle, progress } = request;
   if (progress?.percent === 100 && reviewIsNewerThanLifecycle(progress, lifecycle)) return true;
+  // Item statuses, Jev's judged ones included, read with the viewer's own rule: an item an agent marked needs-review,
+  // or one a confident label judged finished, makes the viewer offer "Mark checked", so the check is accepted.
+  if (request.items?.length) {
+    const itemStatus = normalizeRequestStatus({ items: request.items, checked: false,
+      lifecycle: lifecycle?.explicit ? { status: lifecycle.status ?? null, explicit: true, complete: lifecycle.complete } : null }, now);
+    if (itemStatus === 'needs-review' || itemStatus === 'done') return true;
+  }
   if (!lifecycle?.explicit) return false;
   const status = String(lifecycle.status ?? '').trim().toLowerCase().replace(/[_ ]/g, '-');
   return lifecycle.complete === true || READY_FOR_CHECK_LIFECYCLE_STATUSES.includes(status);
@@ -473,7 +482,7 @@ export function defaultAutoRefresh(ledgerDir: string, settingsPath = USER_SETTIN
       const client = jevClientFromSettings(SettingsDefaultsManager.loadFromFile(settingsPath, true, { readOnly: true }));
       if (!client) return null;
       const database = openDatabase();
-      try { return await labelOpenWorkState({ dir: ledgerDir, database, client }); }
+      try { return await labelOpenWorkState({ dir: ledgerDir, database, client, localDeviceId: localDeviceId() }); }
       finally { database.close(); }
     },
     log: (level, message, data) => (level === 'info' ? logger.info : logger.warn).call(logger, 'WORKER', message, data),

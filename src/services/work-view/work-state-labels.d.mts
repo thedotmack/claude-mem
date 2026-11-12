@@ -21,7 +21,8 @@ export interface WorkStateLabel {
   /** Present when the item had more note fields than one choice takes, so the field questions were not asked. */
   fieldsNotAsked?: string;
 }
-/** Keyed by the item's latest work-state entry id: one label per item version. */
+/** Keyed by the item's labelKey (workStateItems): its latest entry id, plus its list's latest state entry id when the
+ * list's notes were sent. One label per item version. */
 export interface WorkStateLabelsFile { schemaVersion: 1; labels: Record<string, WorkStateLabel>; failures: Record<string, { at: string; error: string }> }
 /** serviceFailure: the message when the service refused or failed a call (not a 400); that item counts as not reached. */
 export interface LabelRunResult { open: number; labeled: number; removed: number; notReached: number; failed: { entryId: number; at: string; error: string } | null; serviceFailure: string | null }
@@ -29,6 +30,6 @@ export interface LabelRunResult { open: number; labeled: number; removed: number
 export function workStateItems(state: any): any[];
 export function readWorkStateLabels(dir: string): WorkStateLabelsFile;
 export function labelItem(client: JevClient, item: any, now: number): Promise<WorkStateLabel>;
-export function labelOpenWorkState(options: { dir: string; database: LedgerDatabase; client: JevClient; now?: () => number; intervalMs?: number; wait?: (ms: number) => Promise<void> }): Promise<LabelRunResult>;
-export function appliedLabel(item: { latestEntryId: number; status: string }, labels: Record<string, WorkStateLabel> | null | undefined, threshold?: number): { judgedStatus: string | null; nextField: string | null; resultField: string | null; label: WorkStateLabel | null };
+export function labelOpenWorkState(options: { dir: string; database: LedgerDatabase; client: JevClient; localDeviceId?: string; now?: () => number; intervalMs?: number; wait?: (ms: number) => Promise<void> }): Promise<LabelRunResult>;
+export function appliedLabel(item: { labelKey: string; status: string; recordKind?: 'task' | 'list'; fields?: Record<string, unknown> }, labels: Record<string, WorkStateLabel> | null | undefined, threshold?: number): { judgedStatus: string | null; nextField: string | null; resultField: string | null; label: WorkStateLabel | null };
 export function judgedStatusFor(recordedStatus: string | null | undefined, judgedState: JudgedWorkState): string | null;
