@@ -332,6 +332,7 @@ export class SessionStore {
     this.ensureDeliverablesTable();
     this.ensureHookSpoolConsumedTable();
     this.ensureProjectRecencyIndexes();
+    this.ensureSessionCatalogRecencyIndex();
     this.ensureMergedIntoProjectCoveringIndexes();
     this.ensureNativePromptIdentity();
     this.ensureObservationFileIndex();
@@ -2151,6 +2152,14 @@ export class SessionStore {
     this.db.run('CREATE INDEX IF NOT EXISTS idx_summaries_project_nocase_recent ON session_summaries(project COLLATE NOCASE, created_at_epoch DESC)');
     this.db.run('CREATE INDEX IF NOT EXISTS idx_summaries_merged_into_nocase_recent ON session_summaries(merged_into_project COLLATE NOCASE, created_at_epoch DESC)');
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(63, new Date().toISOString());
+  }
+
+  // A project-filtered viewer catalog needs only its next page. Include both
+  // ordering keys so SQLite can stop in index order instead of sorting every
+  // session in the project, including sessions tied at the same millisecond.
+  private ensureSessionCatalogRecencyIndex(): void {
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_sdk_sessions_project_nocase_recent
+      ON sdk_sessions(project COLLATE NOCASE, started_at_epoch DESC, id DESC)`);
   }
 
   // v64 — projectReadKeys (context cache, every SessionStart render) reads
