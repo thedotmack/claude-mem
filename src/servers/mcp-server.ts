@@ -577,7 +577,12 @@ const tools: McpToolDefinition[] = [
     },
     handler: async (args: any) => {
       if (selectRuntime() === 'server') return mcpTextResult('save_memory requires worker runtime. To save a note in the selected server, use observation_add with content and optional projectId.', true);
-      return callWorker('/api/memory/save', { body: { ...args, project: args?.project || currentCheckout().primary } });
+      // Send the checkout so the worker applies CLAUDE_MEM_EXCLUDED_PROJECTS to
+      // an explicit note exactly as it does to an HTTP save (#6098); project
+      // inference stays in the route when the caller names none.
+      return callWorker('/api/memory/save', {
+        body: { ...args, project: args?.project || currentCheckout().primary, cwd: getRequestCwd() },
+      });
     },
   },
   {
