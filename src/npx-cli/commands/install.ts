@@ -676,7 +676,8 @@ export function makeIDETask(ideId: string, summary: InstallSummary, dshProfile?:
     case 'copilot-cli':
     case 'goose':
     case 'roo-code':
-    case 'warp': {
+    case 'warp':
+    case 'zed': {
       const allIDEs = detectInstalledIDEs();
       const ideInfo = allIDEs.find((i) => i.id === ideId);
       const ideLabel = ideInfo?.label ?? ideId;
