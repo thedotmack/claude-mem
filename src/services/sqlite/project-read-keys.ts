@@ -79,19 +79,26 @@ function readProjectKeyPass(db: Database, requested: string[]): string[] {
     `SELECT project FROM session_summaries WHERE project COLLATE NOCASE IN (${placeholders})`,
     `SELECT merged_into_project FROM session_summaries WHERE merged_into_project COLLATE NOCASE IN (${placeholders})`,
     // Projects whose every stored row is stamped into one of `projects`.
+    // Both sides use covering indexes. The row-id membership check can stop
+    // at the first unadopted row instead of counting every row in a source.
+    // Already-known projects get all their literal spellings from the first
+    // lookups, so they need no whole-merge check on later chain passes.
     `SELECT candidates.key FROM (
         SELECT project AS key FROM observations WHERE merged_into_project COLLATE NOCASE IN (${placeholders})
         UNION
         SELECT project AS key FROM session_summaries WHERE merged_into_project COLLATE NOCASE IN (${placeholders})
       ) candidates
-      WHERE (
-        (SELECT COUNT(*) FROM observations WHERE project COLLATE NOCASE = candidates.key)
-        + (SELECT COUNT(*) FROM session_summaries WHERE project COLLATE NOCASE = candidates.key)
-      ) = (
-        (SELECT COUNT(*) FROM observations
-          WHERE project COLLATE NOCASE = candidates.key AND merged_into_project COLLATE NOCASE IN (${placeholders}))
-        + (SELECT COUNT(*) FROM session_summaries
-          WHERE project COLLATE NOCASE = candidates.key AND merged_into_project COLLATE NOCASE IN (${placeholders}))
+      WHERE candidates.key COLLATE NOCASE NOT IN (${placeholders})
+        AND NOT EXISTS (
+        SELECT 1 FROM observations
+        WHERE project COLLATE NOCASE = candidates.key AND id NOT IN (
+          SELECT id FROM observations WHERE merged_into_project COLLATE NOCASE IN (${placeholders})
+        )
+      ) AND NOT EXISTS (
+        SELECT 1 FROM session_summaries
+        WHERE project COLLATE NOCASE = candidates.key AND id NOT IN (
+          SELECT id FROM session_summaries WHERE merged_into_project COLLATE NOCASE IN (${placeholders})
+        )
       )`,
   ];
   const statement = db.prepare(lookups.join(' UNION '));
