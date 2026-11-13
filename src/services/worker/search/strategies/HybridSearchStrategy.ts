@@ -40,8 +40,11 @@ export class HybridSearchStrategy {
     const metadataResults = this.sessionSearch.findByFile(filePath, filterOptions);
     const sessions = metadataResults.sessions;
 
-    if (metadataResults.observations.length === 0) {
-      return { observations: [], sessions, usedChroma: false };
+    // SQLite already selected the requested date-ordered page. Its rows and
+    // order cannot benefit from semantic ranking, so do not make this lookup
+    // wait for (or fail with) an unrelated embedding service.
+    if (metadataResults.observations.length === 0 || orderBy === 'date_asc' || orderBy === 'date_desc') {
+      return { observations: metadataResults.observations, sessions, usedChroma: false };
     }
 
     const ids = metadataResults.observations.map(obs => obs.id);
