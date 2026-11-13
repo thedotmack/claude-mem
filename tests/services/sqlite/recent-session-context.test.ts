@@ -61,9 +61,17 @@ describe('recent session context selection', () => {
     } finally {
       store.db.prepare = prepare;
     }
-    const plan = (store.db.query(`EXPLAIN QUERY PLAN ${query}`).all('app', 3) as Array<{ detail: string }>)
-      .map(row => row.detail).join('\n');
-    expect(plan).not.toContain('GROUP BY');
-    expect(plan).toContain('USING COVERING INDEX');
+    const plan = store.db.query(`EXPLAIN QUERY PLAN ${query}`).all('app', 3) as Array<{ id: number; parent: number; detail: string }>;
+    expect(plan.map(row => row.detail).join('\n')).not.toContain('GROUP BY');
+    const sessionRead = plan.find(row => row.detail.includes('SEARCH s USING INDEX idx_sdk_sessions_project_nocase_recent'));
+    expect(sessionRead).toBeDefined();
+    // The summary EXISTS lookup has its own covering index; that alone says
+    // nothing about whether the session history is scanned and sorted first.
+    const innerPlan = plan.filter(row => row.parent === sessionRead!.parent);
+    expect(innerPlan.some(row => row.detail.includes('TEMP B-TREE'))).toBe(false);
+    const sorts = plan.filter(row => row.detail.includes('TEMP B-TREE FOR ORDER BY'));
+    expect(sorts).toHaveLength(1);
+    expect(sorts[0].parent).toBe(0); // only the outer chronological sort
+    expect(plan.some(row => row.detail.includes('SEARCH sum USING COVERING INDEX'))).toBe(true);
   });
 });
