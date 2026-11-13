@@ -207,6 +207,14 @@ describe('buildServerGenerationPrompt', () => {
     }
   });
 
+  // What a turn waits for is asked only of the local observer (src/sdk/prompts.ts) and stored only in local SQLite.
+  it('asks the hosted summary for its six fields and not for what the turn waits for', () => {
+    const { prompt } = buildServerGenerationPrompt(makeContext({ sourceType: 'session_summary' }));
+    const schema = /<summary>\n([\s\S]*?)<\/summary>/.exec(prompt)?.[1] ?? '';
+    expect([...schema.matchAll(/^ {2}<(\w+)>/gm)].map(match => match[1])).toEqual(['request', 'investigated', 'learned', 'completed', 'next_steps', 'notes']);
+    expect(prompt).not.toContain('waiting_for');
+  });
+
   it('keeps offering the skip escape hatch on both job types', () => {
     for (const sourceType of ['agent_event', 'session_summary'] as const) {
       expect(buildServerGenerationPrompt(makeContext({ sourceType })).prompt)

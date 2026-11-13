@@ -11,6 +11,7 @@ import {
   isMcpInlineImageBlock,
   openAiImageUrlOf,
 } from '../shared/native-image-shapes.js';
+import type { WaitingFor } from '../services/work-view/waiting-for.mjs';
 
 export const SUMMARY_MODE_MARKER = 'MODE SWITCH: PROGRESS SUMMARY';
 
@@ -474,6 +475,17 @@ Never reply with an empty response, or with prose such as "Skipping", "No substa
 export const OBSERVATION_SCHEMA_REMINDER =
   'Your previous reply used tags outside the observation format. Use only <type>, <title>, <subtitle>, <facts>, <narrative>, <concepts>, <files_read> and <files_modified> inside each <observation>.';
 
+const WAITING_FOR_MEANING: Record<WaitingFor, string> = {
+  answer: 'it asked the user something it needs before it can go on',
+  review: 'it finished work the user should look at',
+  approval: 'it wants a go-ahead for one specific action, such as a merge, push, deploy, delete or spend',
+  nothing: 'the turn is complete and nothing is owed, such as a question answered or a status given',
+};
+// Fixed English: the allowed words are literals the parser matches, so no mode or language rewrites them.
+const WAITING_FOR_PLACEHOLDER = `[Exactly one of these words, judged only from the observed agent's last message to the user, quoted above: ${
+  Object.entries(WAITING_FOR_MEANING).map(([word, meaning]) => `${word} (${meaning})`).join(' | ')
+}. When unsure between review and nothing, write nothing only if the turn made no work product.]`;
+
 export function buildSummaryPrompt(session: SDKSession, mode: ModeConfig): string {
   const lastAssistantMessage = session.last_assistant_message || (() => {
     logger.error('SDK', 'Missing last_assistant_message in session for summary prompt', {
@@ -502,6 +514,7 @@ ${getPrompt(mode, 'summary_format_instruction')}
   <completed>${getPrompt(mode, 'xml_summary_completed_placeholder')}</completed>
   <next_steps>${getPrompt(mode, 'xml_summary_next_steps_placeholder')}</next_steps>
   <notes>${getPrompt(mode, 'xml_summary_notes_placeholder')}</notes>
+  <waiting_for>${WAITING_FOR_PLACEHOLDER}</waiting_for>
 </summary>
 
 REMINDER: Your response MUST use <summary> as the root tag, NOT <observation>.
