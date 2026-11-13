@@ -86,7 +86,7 @@ export const codexAdapter: PlatformAdapter = {
 
     const source = r.source;
     const sessionSource =
-      source === 'startup' || source === 'resume' || source === 'clear'
+      source === 'startup' || source === 'resume' || source === 'clear' || source === 'fork'
         ? source
         : undefined;
     const sessionId = stringOrUndefined(r.session_id);
