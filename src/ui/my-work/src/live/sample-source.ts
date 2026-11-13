@@ -1,11 +1,13 @@
 // The wireframe fixtures as a data source, for design review (`?source=sample`). Nothing here is real.
-import { assertConsistentRequest, OTHER_FOCUS_AREA_ID, SAMPLE_AGENTS, SAMPLE_DEVICES, SAMPLE_PEOPLE, SAMPLE_REQUESTS, SAMPLE_RUNS, type FocusArea, type FocusChange, type Request } from '../data.ts'
+import { assertConsistentRequest, OTHER_FOCUS_AREA_ID, SAMPLE_AGENTS, SAMPLE_DEVICES, SAMPLE_PEOPLE, SAMPLE_REQUESTS, SAMPLE_RUNS, type FocusArea, type FocusChange, type FocusPlan, type PlanProposal, type Request, type RequestStage, type StageFormatInfo } from '../data.ts'
 import { SAMPLE_CURRENT_PERIOD, SAMPLE_FOCUS_AREAS, SAMPLE_OTHER_ASKS, SAMPLE_PAST_PERIODS } from '../data-goals.ts'
 import { SAMPLE_OWNER_RULES, SAMPLE_RULE_SCOPES, SAMPLE_RULES_LEARNING, type OwnerRule, type RuleChange, type RuleScope } from '../data-rules.ts'
 import { getConnectionStatus } from './connection-status.ts'
 import { byFocusPriority } from './to-focus-model.ts'
 import { navWordIn } from '../../../../services/work-view/nav-words.mjs'
-import type { WorkDataSource, WorkModel } from './work-data-source.ts'
+import { requestChat } from './chat-links.ts'
+import { focusPlanSummary } from './owner-runs-model.ts'
+import type { OwnerRunStart, WorkDataSource, WorkModel } from './work-data-source.ts'
 
 /** Each checked sample request as it was before its check, so Undo restores it exactly. In memory only. */
 const sampleRequestsBeforeCheck = new Map<string, Request>()
@@ -113,6 +115,51 @@ function applySampleFocusChange({ action, focusAreaId, name, goal, intoFocusArea
   }
 }
 
+// ---------- One-click runs, played without an agent or a worker ----------
+
+const SAMPLE_STAGE_FORMATS: StageFormatInfo[] = [
+  { id: 'brief', label: 'Brief', builtIn: true }, { id: 'one-pager', label: 'One-pager', builtIn: true }, { id: 'technical', label: 'Technical walkthrough', builtIn: true },
+]
+/** The tools the worker can resume a session of (answer-delivery.ts). */
+const SAMPLE_ANSWER_TOOLS = ['claude', 'codex']
+/** The sample request whose delivery fails, so the page's failed state can be seen. */
+const SAMPLE_FAILING_ANSWER_REQUEST = 'r1'
+const SAMPLE_ANSWER_FAILURE = 'The tool exited 1: You have hit your session limit · resets 2:30pm'
+
+let sampleAutoStageFormat: string | null = null
+let samplePlan: FocusPlan | null = null
+/** Click tokens already used: the same click never plays a second run, as on the worker. */
+const sampleClicks = new Set<string>()
+/** How long a sample run takes; a test sets it to 0. */
+let sampleRunMs = 1500
+export const setSampleRunDelay = (ms: number) => { sampleRunMs = ms }
+let publishSampleModel: ((model: WorkModel) => void) | null = null
+const publishSample = async () => publishSampleModel?.(await loadSampleWorkModel())
+const sampleNow = () => new Date().toISOString()
+
+function changeSampleRequest(requestId: string, change: (request: Request) => Request) {
+  const index = SAMPLE_REQUESTS.findIndex((request) => request.id === requestId)
+  if (index >= 0) SAMPLE_REQUESTS[index] = change(SAMPLE_REQUESTS[index])
+}
+
+const withSampleStage = (request: Request, stage: RequestStage): Request => ({ ...request, stages: [stage, ...(request.stages ?? []).filter((entry) => entry.formatId !== stage.formatId)] })
+
+/** Suggestions for the sample areas, as the worker's checks would pass them: an order that differs, goals, next asks. */
+function samplePlanProposals(focusAreaId: string | null): PlanProposal[] {
+  const kept = sampleFocusAreas.filter((area) => area.status === 'kept' && !area.mergedInto)
+  const planned = focusAreaId === null ? kept : sampleFocusAreas.filter((area) => area.id === focusAreaId)
+  const proposals: PlanProposal[] = []
+  if (focusAreaId === null && kept.length > 1) {
+    const [first, second, ...rest] = kept
+    proposals.push({ kind: 'reorder', focusAreaIds: [second.id, first.id, ...rest.map((area) => area.id)], moves: [{ focusAreaId: second.id, reason: 'One request there waits on your check.' }] })
+  }
+  for (const area of planned.slice(0, 2)) {
+    proposals.push({ kind: 'goal', focusAreaId: area.id, goal: `Everything in ${area.name} can be checked from My Work.`, reason: 'The current goal names the work, not what done looks like.' })
+    proposals.push({ kind: 'next-asks', focusAreaId: area.id, asks: [{ text: `List what is still open in ${area.name}.`, reason: 'Two requests have no recorded next step.' }] })
+  }
+  return proposals
+}
+
 const loadSampleWorkModel = async (): Promise<WorkModel> => ({
   sourceKind: 'sample',
   requests: [...SAMPLE_REQUESTS],
@@ -141,6 +188,9 @@ const loadSampleWorkModel = async (): Promise<WorkModel> => ({
     progress: { label: SAMPLE_RUNS.progress.label, lastRunAt: SAMPLE_RUNS.progress.lastRunAt, deviceName: sampleDeviceName(SAMPLE_RUNS.progress.deviceId) },
   },
   refresh: null,
+  stageFormats: SAMPLE_STAGE_FORMATS,
+  autoStageFormat: sampleAutoStageFormat,
+  focusPlan: samplePlan ? focusPlanSummary(samplePlan) : null,
   sourceHealth: { connected: true, error: null },
   // Sample mode demonstrates the indicator (LiveIndicator labels it a demonstration); nothing streams.
   connection: getConnectionStatus({ now: 0 }),
@@ -149,8 +199,11 @@ const loadSampleWorkModel = async (): Promise<WorkModel> => ({
 export const sampleSource: WorkDataSource = {
   sourceKind: 'sample',
   loadWorkModel: loadSampleWorkModel,
-  // The sample demo flip (playDemoUpdates) stands in for live updates; there is no feed to subscribe to.
-  subscribeToLiveUpdates: () => () => {},
+  // There is no feed. The sample's own one-click runs publish their result through this, as the worker's feed would.
+  subscribeToLiveUpdates: (onWorkModel) => {
+    publishSampleModel = onWorkModel
+    return () => { if (publishSampleModel === onWorkModel) publishSampleModel = null }
+  },
 
   async saveRuleChange(change) {
     applySampleRuleChange(change)
@@ -165,6 +218,62 @@ export const sampleSource: WorkDataSource = {
   refreshWork: async () => ({ state: 'idle' }),
   // Sample agents are fixtures with no recorded state to change.
   markAgentFinished: () => Promise.reject(new Error('Sample agents have no recorded state to change.')),
+
+  /**
+   * Plays an answer's delivery: on its way, then taken by the session's tool, or failed with a reason for the one
+   * sample request that shows a failure. A tool the worker cannot resume refuses, as it does live.
+   */
+  async answerRequest(requestId, _text, token): Promise<OwnerRunStart> {
+    const request = SAMPLE_REQUESTS.find((entry) => entry.id === requestId)
+    if (!request) throw new Error('Sending your answer could not start: That request is not in your work.')
+    if (sampleClicks.has(token)) return { outcome: 'duplicate' }
+    const platform = requestChat(request)?.platform
+    if (!platform || !SAMPLE_ANSWER_TOOLS.includes(platform)) return { outcome: 'refused', reason: 'Answers can be sent to Claude Code and Codex sessions only. Open the chat to answer this one.' }
+    if (request.answer?.state === 'answering') throw new Error('Sending your answer could not start: Your last answer to this request is still being delivered.')
+    sampleClicks.add(token)
+    const ended: Request['answer'] = requestId === SAMPLE_FAILING_ANSWER_REQUEST ? { state: 'failed', error: SAMPLE_ANSWER_FAILURE } : { state: 'delivered' }
+    changeSampleRequest(requestId, (entry) => ({ ...entry, answer: { state: 'answering' } }))
+    // Delivered: the agent has its reply, so the question no longer stands; the delivery still shows.
+    setTimeout(() => { changeSampleRequest(requestId, ({ question, ...entry }) => ({ ...entry, ...(ended.state === 'failed' ? { question } : {}), answer: ended })); void publishSample() }, sampleRunMs)
+    void publishSample()
+    return { outcome: 'started' }
+  },
+
+  /** Plays one stage being made: generating, then ready. A sample stage has no document behind its link. */
+  async generateStage(requestId, formatId, token): Promise<OwnerRunStart> {
+    const request = SAMPLE_REQUESTS.find((entry) => entry.id === requestId)
+    if (!request) throw new Error('The stage could not start: That request is not in your work.')
+    if (sampleClicks.has(token)) return { outcome: 'duplicate' }
+    if (!SAMPLE_STAGE_FORMATS.some((format) => format.id === formatId)) throw new Error('The stage could not start: That stage format does not exist.')
+    if (request.stages?.some((stage) => stage.formatId === formatId && stage.state === 'generating')) throw new Error('The stage could not start: This stage is already being made.')
+    sampleClicks.add(token)
+    const stage: RequestStage = { formatId, state: 'generating', error: null, outdated: false }
+    changeSampleRequest(requestId, (entry) => withSampleStage(entry, stage))
+    setTimeout(() => { changeSampleRequest(requestId, (entry) => withSampleStage(entry, { ...stage, state: 'ready', href: '#' })); void publishSample() }, sampleRunMs)
+    void publishSample()
+    return { outcome: 'started' }
+  },
+
+  /** Off until chosen; choosing a format makes nothing by itself. */
+  async setAutoStageFormat(formatId) {
+    if (formatId !== null && !SAMPLE_STAGE_FORMATS.some((format) => format.id === formatId)) throw new Error('The automatic stage setting was not saved: That stage format does not exist.')
+    sampleAutoStageFormat = formatId
+    return loadSampleWorkModel()
+  },
+
+  /** Plays planning help: planning, then ready with proposals for the sample areas. Nothing is applied. */
+  async planFocus(focusAreaId, token): Promise<OwnerRunStart> {
+    if (sampleClicks.has(token)) return { outcome: 'duplicate' }
+    if (focusAreaId !== null && !sampleFocusAreas.some((area) => area.id === focusAreaId)) throw new Error('Planning help could not start: That focus area is not in your focus areas.')
+    if (samplePlan?.state === 'planning') throw new Error('Planning help could not start: A plan is already being made.')
+    sampleClicks.add(token)
+    const planning: FocusPlan = { state: 'planning', focusAreaId, startedAt: sampleNow(), generatedAt: null, error: null, proposals: [], skipped: [] }
+    samplePlan = planning
+    setTimeout(() => { samplePlan = { ...planning, state: 'ready', generatedAt: sampleNow(), proposals: samplePlanProposals(focusAreaId) }; void publishSample() }, sampleRunMs)
+    void publishSample()
+    return { outcome: 'started' }
+  },
+  loadFocusPlan: async () => samplePlan,
 
   /** Checking hands the request back to you to ship; it never marks it shipped. Fixtures have no fingerprint to guard. */
   async setRequestChecked(requestId, _expectedFingerprint, checked) {

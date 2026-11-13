@@ -10,9 +10,10 @@ import { getConnectionStatus, type ConnectionStatus } from './connection-status.
 import { browserHostname, browserVisibility, isServedFromCloud, type PageVisibility } from './served-from.ts'
 import { conflictReason, readReviewResponse, readSaveReceipt, type ReviewResult } from './review-response.ts'
 import { toWorkModel } from './to-work-model.ts'
-import type { MappedWorkModel, RuleSaveResult, WorkDataSource, WorkModel } from './work-data-source.ts'
+import type { MappedWorkModel, OwnerRunStart, RuleSaveResult, WorkDataSource, WorkModel } from './work-data-source.ts'
 import { SaveRefusedError } from '../data.ts'
-import type { Request as WorkRequest } from '../data.ts'
+import type { FocusPlan, Request as WorkRequest } from '../data.ts'
+import { OWNER_RUN_START_STATES } from '../../../../services/work-view/owner-runs.mjs'
 import type { WorkViewSnapshot, WorkViewSource } from './work-view-api-types.ts'
 import { expandWorkViewOverview, type WorkViewOverview, type WorkViewOverviewModel, type WorkViewRequestDetail } from './work-view-overview.ts'
 import { mergeRequestDetail } from './request-detail-state.ts'
@@ -49,6 +50,10 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
   const WORK_VIEW_LOAD_RULES_URL = '/api/work-view/rules/load-in-claude-code'
   const WORK_VIEW_REFRESH_URL = '/api/work-view/refresh'
   const WORK_VIEW_MARK_AGENT_FINISHED_URL = '/api/work-view/agents/mark-finished'
+  const WORK_VIEW_ANSWER_URL = '/api/work-view/answer'
+  const WORK_VIEW_STAGE_URL = '/api/work-view/stage'
+  const WORK_VIEW_AUTO_STAGE_URL = '/api/work-view/stage/auto'
+  const WORK_VIEW_FOCUS_PLAN_URL = '/api/work-view/focus/plan'
   const CONTENT_FINGERPRINT_PATTERN = /^[a-f0-9]{64}$/
   const CONNECTION_TICK_MS = 1000
   const SOURCE_KIND = isServedFromCloud(options.hostname ?? browserHostname() ?? 'localhost') ? 'cloud' : 'local'
@@ -100,7 +105,7 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
   function modelSignature(model: MappedWorkModel | WorkViewOverviewModel): string {
     let signature = modelSignatures.get(model)
     if (signature === undefined) {
-      signature = JSON.stringify([model.agents, model.devices, model.people, model.requests, model.requestReadErrors, model.unlinkedWorkCount, model.sourceHealth, model.focusAreas, model.otherAsks, model.currentPeriod, model.pastPeriods, model.goalsReadError, model.lastRuns, model.refresh, model.rules, model.ruleScopes, model.rulesLearning, model.rulesFile, model.rulesReadError, model.buildStory, model.sharedState])
+      signature = JSON.stringify([model.agents, model.devices, model.people, model.requests, model.requestReadErrors, model.unlinkedWorkCount, model.sourceHealth, model.focusAreas, model.otherAsks, model.currentPeriod, model.pastPeriods, model.goalsReadError, model.lastRuns, model.refresh, model.rules, model.ruleScopes, model.rulesLearning, model.rulesFile, model.rulesReadError, model.buildStory, model.sharedState, model.stageFormats, model.autoStageFormat, model.focusPlan])
       modelSignatures.set(model, signature)
     }
     return signature
@@ -256,6 +261,36 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
     return { model: receipt, savedRuleId: typeof savedRuleId === 'string' ? savedRuleId : null, ...(save ? { save } : {}) }
   }
 
+  /**
+   * POSTs one click to a route that starts at most one agent run and answers before it ends. `refused` is the worker
+   * saying nothing was started and why (the page has a fallback); any other failure throws its reason.
+   */
+  async function postOwnerRun(url: string, body: unknown, what: string): Promise<OwnerRunStart> {
+    const response = await fetchImpl(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+    type StartAnswer = { state?: unknown; error?: unknown; refusal?: unknown } | null
+    const answer = await (response.json() as Promise<StartAnswer>).catch((): StartAnswer => null)
+    const reason = typeof answer?.error === 'string' ? answer.error : `the worker answered ${response.status}`
+    if (!response.ok) {
+      if (answer?.refusal === true) return { outcome: 'refused', reason }
+      throw new Error(`${what} could not start: ${reason}`)
+    }
+    const state = OWNER_RUN_START_STATES.find((known) => known === answer?.state)
+    if (!state) throw new Error(`${what} may have started, but the worker's answer could not be read. Watch the request for its result.`)
+    return { outcome: state }
+  }
+
+  const ownerRuns: Pick<WorkDataSource, 'answerRequest' | 'generateStage' | 'setAutoStageFormat' | 'planFocus' | 'loadFocusPlan'> = {
+    answerRequest: (requestId, text, token) => postOwnerRun(WORK_VIEW_ANSWER_URL, { requestId, text, token }, 'Sending your answer'),
+    generateStage: (requestId, formatId, token) => postOwnerRun(WORK_VIEW_STAGE_URL, { requestId, formatId, token }, 'The stage'),
+    setAutoStageFormat: async (formatId) => (await postForWorkModel(WORK_VIEW_AUTO_STAGE_URL, { formatId }, 'The automatic stage setting')).model,
+    planFocus: (focusAreaId, token) => postOwnerRun(WORK_VIEW_FOCUS_PLAN_URL, { focusAreaId, token }, 'Planning help'),
+    async loadFocusPlan() {
+      const { response, body } = await readJson(WORK_VIEW_FOCUS_PLAN_URL)
+      if (!response.ok) throw new Error(`The plan could not be read (${response.status}). Try again.`)
+      return (body as { plan?: FocusPlan | null } | null)?.plan ?? null
+    },
+  }
+
   const localSource: WorkDataSource = {
     sourceKind: SOURCE_KIND,
 
@@ -400,6 +435,10 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
       return await response.json() as { state: string }
     },
     markAgentFinished: async (agentId) => (await postForWorkModel(WORK_VIEW_MARK_AGENT_FINISHED_URL, { agentGroupId: agentId }, 'Marking the agent finished')).model,
+
+    // Owner runs start an agent on this computer, so only the worker's own page has them: the cloud viewer has no
+    // such actions, and an answer typed there falls back to copying it and opening the chat.
+    ...(SOURCE_KIND === 'local' ? ownerRuns : {}),
 
     subscribeToLiveUpdates(onWorkModel, onConnectionChange) {
       const stopActivity = startViewerActivity({ ...options.activityOptions, enabled: SOURCE_KIND === 'local', fetchImpl })

@@ -21,6 +21,8 @@ import { PRODUCT_ICON } from '@/lib/product-icons'
 import { cn } from '@/lib/utils'
 import { AgentIcon, FocusAreaChip, NextMove, ProductLink, ProgressMeter, StateBadge } from './bits'
 import { ChatLink } from './chat-link'
+import { RequestAnswer } from './request-answer'
+import { RequestStages } from './request-stages'
 import { FocusChangeBar, useFocusChanges } from './focus-changes'
 import { OpenFollowUps } from './request-card'
 import { mergeRequestDetail, requestDetailKey } from '@/live/request-detail-state'
@@ -291,6 +293,7 @@ function LoadedRequestDetail({ request, onClose, onOpenFocus }: { request: Reque
         </Req>
 
         <div className="space-y-6 p-5 md:p-6">
+          <RequestAnswer request={request} />
           <CheckAction key={request.id} request={request} />
           <SuggestionAction key={`suggestion:${request.id}`} request={request} />
           <OpenFollowUps request={request} />
@@ -327,6 +330,8 @@ function LoadedRequestDetail({ request, onClose, onOpenFocus }: { request: Reque
               )}
             </Section>
           </Req>
+
+          <RequestStages request={request} />
 
           {request.workstreams.length > 0 && (
             <Req ids={['R3.4']}>

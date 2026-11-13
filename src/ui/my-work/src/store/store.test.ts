@@ -543,3 +543,97 @@ describe('My Focus saves', () => {
     } finally { stop() }
   })
 })
+
+describe('one-click owner runs', () => {
+  const loaded = async (overrides: Partial<WorkDataSource>) => {
+    const { store } = testStore()
+    const { source, feed, reads } = fakeSource(overrides)
+    store.getState().startWorkSource(source)
+    reads[0].resolve(LOCAL_MODEL)
+    await settle()
+    return { store, feed }
+  }
+
+  it('sends each click once with a token of its own, and a double click sends one', async () => {
+    const sent: { requestId: string; text: string; token: string }[] = []
+    const start = deferred<{ outcome: 'started' }>()
+    const { store } = await loaded({ answerRequest: (requestId, text, token) => { sent.push({ requestId, text, token }); return start.promise } })
+    const first = store.getState().answerRequest('r5', 'Linear.')
+    assert.deepEqual(await store.getState().answerRequest('r5', 'Linear.'), { outcome: 'duplicate' })
+    start.resolve({ outcome: 'started' })
+    assert.deepEqual(await first, { outcome: 'started' })
+    await store.getState().answerRequest('r5', 'Linear, again.')
+    assert.equal(sent.length, 2)
+    assert.notEqual(sent[0].token, sent[1].token)
+    assert.match(sent[0].token, /^[A-Za-z0-9_-]{8,64}$/)
+  })
+
+  it('passes a refusal through for the fallback, and says so when the source cannot do it', async () => {
+    const { store } = await loaded({ answerRequest: async () => ({ outcome: 'refused', reason: 'Codex is not installed on this computer.' }) })
+    assert.deepEqual(await store.getState().answerRequest('r5', 'Linear.'), { outcome: 'refused', reason: 'Codex is not installed on this computer.' })
+    assert.deepEqual(store.getState().work.sentAnswers, {})
+    assert.equal((await store.getState().generateStage('r3', 'brief')).outcome, 'refused')
+  })
+
+  it('keeps a sent answer until its delivery goes through, so a failed one can be copied', async () => {
+    const { store, feed } = await loaded({ answerRequest: async () => ({ outcome: 'started' }) })
+    await store.getState().answerRequest('r5', 'Keep the linear forecast.')
+    assert.deepEqual(store.getState().work.sentAnswers, { r5: 'Keep the linear forecast.' })
+    const withAnswer = (answer: WorkModel['requests'][number]['answer']): WorkModel => ({ ...LOCAL_MODEL, requests: LOCAL_MODEL.requests.map((request) => request.id === 'r5' ? { ...request, answer } : request) })
+    feed.onModel(withAnswer({ state: 'failed', error: 'The tool exited 1' }))
+    assert.deepEqual(store.getState().work.sentAnswers, { r5: 'Keep the linear forecast.' })
+    feed.onModel(withAnswer({ state: 'delivered' }))
+    assert.deepEqual(store.getState().work.sentAnswers, {})
+  })
+
+  it('starts a stage and a plan through the source, and shows the model a saved automatic choice answered', async () => {
+    const calls: unknown[] = []
+    const { store } = await loaded({
+      generateStage: async (requestId, formatId, token) => { calls.push(['stage', requestId, formatId, typeof token]); return { outcome: 'started' } },
+      planFocus: async (focusAreaId, token) => { calls.push(['plan', focusAreaId, typeof token]); return { outcome: 'started' } },
+      setAutoStageFormat: async (formatId) => { calls.push(['auto', formatId]); return { ...LOCAL_MODEL, autoStageFormat: formatId } },
+    })
+    await store.getState().generateStage('r3', 'brief')
+    await store.getState().planFocus(null)
+    await store.getState().setAutoStageFormat('brief')
+    assert.deepEqual(calls, [['stage', 'r3', 'brief', 'string'], ['plan', null, 'string'], ['auto', 'brief']])
+    const load = store.getState().work.load
+    assert.equal(load.state === 'loaded' && load.model.autoStageFormat, 'brief')
+  })
+
+  it('reads a plan\'s proposals once when the model says it is ready, and drops them when it is not', async () => {
+    const plan = { state: 'ready' as const, focusAreaId: null, startedAt: 'a', generatedAt: 'b', error: null, skipped: [], proposals: [{ kind: 'goal' as const, focusAreaId: 'fa-viewer', goal: 'g', reason: 'r' }] }
+    let reads = 0
+    const { store, feed } = await loaded({ loadFocusPlan: async () => { reads++; return plan } })
+    const summary = { state: 'ready' as const, focusAreaId: null, startedAt: 'a', generatedAt: 'b', error: null, proposals: 1 }
+    feed.onModel({ ...LOCAL_MODEL, focusPlan: { ...summary, state: 'planning', generatedAt: null, proposals: 0 } })
+    await settle()
+    assert.equal(store.getState().work.focusPlan, null)
+    feed.onModel({ ...LOCAL_MODEL, focusPlan: summary })
+    feed.onModel({ ...withRequests(2), focusPlan: summary })
+    await settle()
+    assert.deepEqual(store.getState().work.focusPlan, plan)
+    assert.equal(reads, 1)
+    feed.onModel({ ...LOCAL_MODEL, focusPlan: { ...summary, state: 'failed', generatedAt: null, error: 'Claude Code: quota', proposals: 0 } })
+    await settle()
+    assert.equal(store.getState().work.focusPlan, null)
+  })
+
+  it('never shows a plan whose read finishes after the model has moved on to another plan', async () => {
+    const plan = (generatedAt: string, goal: string) => ({ state: 'ready' as const, focusAreaId: null, startedAt: 'a', generatedAt, error: null, skipped: [], proposals: [{ kind: 'goal' as const, focusAreaId: 'fa-viewer', goal, reason: 'r' }] })
+    const summary = { state: 'ready' as const, focusAreaId: null, startedAt: 'a', generatedAt: 'first', error: null, proposals: 1 }
+    const reads = [deferred<ReturnType<typeof plan>>(), deferred<ReturnType<typeof plan>>()]
+    let started = 0
+    const { store, feed } = await loaded({ loadFocusPlan: () => reads[started++].promise })
+    feed.onModel({ ...LOCAL_MODEL, focusPlan: summary })
+    feed.onModel({ ...LOCAL_MODEL, focusPlan: { ...summary, state: 'planning', generatedAt: null, proposals: 0 } })
+    reads[0].resolve(plan('first', 'old goal'))
+    await settle()
+    assert.equal(store.getState().work.focusPlan, null)
+
+    feed.onModel({ ...LOCAL_MODEL, focusPlan: { ...summary, generatedAt: 'second' } })
+    reads[1].resolve(plan('second', 'new goal'))
+    await settle()
+    assert.deepEqual(store.getState().work.focusPlan, plan('second', 'new goal'))
+  })
+})

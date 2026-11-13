@@ -31,6 +31,7 @@ import type { BuildStory, RequestReadError } from '@/live/work-data-source'
 import { createFocusAreaResolver } from '@/live/to-focus-model'
 import { cardGridEntries } from '@/live/card-groups'
 import { FocusOverview } from '@/components/focus-overview'
+import { FocusPlanPanel } from '@/components/focus-plan'
 import '@/components/focus-overview.css'
 
 type View = WorkListView
@@ -523,6 +524,7 @@ export function MyWork({ focusAreaId, onOpen, onOpenFocus, onOpenRules }: { focu
       {/* Every request in the area, closed ones too: the combined progress counts each reviewed request (D1's rule). */}
       {area ? <FocusHeader key={area.id} area={area} requests={requests} changes={focusChanges} />
         : focusAreaId === OTHER_FOCUS_AREA_ID && <OtherHeader requests={requests} />}
+      {(!focusAreaId || area) && <FocusPlanPanel focusAreaId={area?.id ?? null} changes={focusChanges} />}
       {!focusAreaId && <h2 className="section-label">{t('All requests')}</h2>}
       <Summary requests={requests.filter((request) => !request.closed)} onOpen={onOpen} onShowNeedsYou={() => setFilter('needs-you')} onShowWorking={() => setFilter('working')} />
       <ChangeTicker onOpen={(requestId) => { const request = allRequests.find((entry) => entry.id === requestId); if (request) onOpen(request) }} />

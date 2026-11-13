@@ -1,13 +1,13 @@
 // The one My Work store is these slices bound together (index.ts). Each slice keeps its state under one key
 // (`work`, `view`, `rules`) and its actions at the top level, after MemeDeck's lib/store.
-import type { FocusChange, Request } from '../data.ts'
+import type { FocusChange, FocusPlan, Request } from '../data.ts'
 import type { OwnerRule, RuleChange } from '../data-rules.ts'
 import type { ConnectionStatus } from '../live/connection-status.ts'
 import type { ReviewResult } from '../live/review-response.ts'
 import type { RuleDecision, SavedRuleDecision } from '../live/rule-actions.ts'
 import type { RequestChange } from '../live/update-queue.ts'
 import type { UsageReport } from '../live/usage.ts'
-import type { RuleSaveResult, SuggestionSaveResult, WorkDataSource, WorkModel } from '../live/work-data-source.ts'
+import type { OwnerRunStart, RuleSaveResult, SuggestionSaveResult, WorkDataSource, WorkModel } from '../live/work-data-source.ts'
 
 // ---------- Work: the active source's model ----------
 
@@ -27,6 +27,11 @@ export interface WorkState {
   sourceKind: WorkDataSource['sourceKind'] | null
   /** A save went through but reading the model after it failed. The save stands; this says why the screen may lag. */
   refreshError: string | null
+  /** The latest ready focus plan with its proposals, read when the model says one is ready; null otherwise. */
+  focusPlan: FocusPlan | null
+  /** The answer this page last sent each request, by request id, until its delivery went through: a failed one can be
+   * copied. In memory only: the worker never stores an answer's text. */
+  sentAnswers: Record<string, string>
 }
 
 export interface WorkSlice {
@@ -48,6 +53,18 @@ export interface WorkSlice {
   markAgentFinished: (agentId: string) => Promise<void>
   loadRulesInClaudeCode: () => Promise<void>
   refreshWork: () => Promise<{ state: string }>
+  /**
+   * Sends the owner's answer into the request's own agent session. One click is at most one run: `started` means the
+   * tool was started (the request's `answer` then says delivered or failed), `refused` means nothing was sent and the
+   * page should fall back to copying the answer and opening the chat.
+   */
+  answerRequest: (requestId: string, text: string) => Promise<OwnerRunStart>
+  /** Starts one stage of a request in one of `model.stageFormats`. The request's `stages` (detail) carry the result. */
+  generateStage: (requestId: string, formatId: string) => Promise<OwnerRunStart>
+  /** Turns automatic stages on (a format id) or off (null). Off until the owner turns it on; saving it generates nothing. */
+  setAutoStageFormat: (formatId: string | null) => Promise<void>
+  /** Starts planning help for one focus area, or all of them (null). `model.focusPlan` carries its state; `work.focusPlan` its proposals. */
+  planFocus: (focusAreaId: string | null) => Promise<OwnerRunStart>
   /** Sample mode only: replace one fixture request everywhere. */
   updateSampleRequest: (id: string, change: (request: Request) => Request) => void
   /** Sample mode only: the wireframe agent finishes while you watch. Returns the stop. */

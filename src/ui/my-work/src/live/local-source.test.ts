@@ -791,3 +791,66 @@ describe('a hidden cloud tab', () => {
     } finally { stop(); clock.restore() }
   })
 })
+
+describe('one-click owner runs', () => {
+  function recording(answers: Record<string, () => Response>) {
+    const posts: { url: string; method: string; body: unknown }[] = []
+    const fetcher = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      const url = String(input)
+      posts.push({ url, method: init?.method ?? 'GET', body: init?.body ? JSON.parse(String(init.body)) : null })
+      return (answers[url] ?? (() => json({ error: 'unexpected' }, 500)))()
+    }) as typeof fetch
+    return { posts, ...harness(fetcher) }
+  }
+
+  it('posts each click with its token and reads how the run began', async () => {
+    const { local, posts } = recording({
+      '/api/work-view/answer': () => json({ state: 'started' }, 202),
+      '/api/work-view/stage': () => json({ state: 'duplicate' }),
+      '/api/work-view/focus/plan': () => json({ state: 'started' }, 202),
+    })
+    assert.deepEqual(await local.answerRequest!('request-a', 'Keep the linear forecast; rm -rf ~', 'click-000001'), { outcome: 'started' })
+    assert.deepEqual(await local.generateStage!('request-a', 'brief', 'click-000002'), { outcome: 'duplicate' })
+    assert.deepEqual(await local.planFocus!(null, 'click-000003'), { outcome: 'started' })
+    assert.deepEqual(posts, [
+      { url: '/api/work-view/answer', method: 'POST', body: { requestId: 'request-a', text: 'Keep the linear forecast; rm -rf ~', token: 'click-000001' } },
+      { url: '/api/work-view/stage', method: 'POST', body: { requestId: 'request-a', formatId: 'brief', token: 'click-000002' } },
+      { url: '/api/work-view/focus/plan', method: 'POST', body: { focusAreaId: null, token: 'click-000003' } },
+    ])
+  })
+
+  it('a refusal comes back as words to show beside the fallback; any other failure throws its reason', async () => {
+    const { local } = recording({
+      '/api/work-view/answer': () => json({ error: 'Codex is not installed on this computer. Open the chat to answer it.', refusal: true }, 409),
+      '/api/work-view/stage': () => json({ error: 'This stage is already being made.' }, 409),
+      '/api/work-view/focus/plan': () => new Response('gateway', { status: 502 }),
+    })
+    assert.deepEqual(await local.answerRequest!('request-a', 'yes', 'click-000001'), { outcome: 'refused', reason: 'Codex is not installed on this computer. Open the chat to answer it.' })
+    await assert.rejects(local.generateStage!('request-a', 'brief', 'click-000002'), /The stage could not start: This stage is already being made\./)
+    await assert.rejects(local.planFocus!('fa', 'click-000003'), /Planning help could not start: the worker answered 502/)
+  })
+
+  it('the cloud viewer has no owner runs: nothing there can start an agent on a computer', () => {
+    const cloud = harness(async () => json({ error: 'unexpected' }, 500), 100, { hostname: 'cmem.ai' }).local
+    assert.equal(cloud.sourceKind, 'cloud')
+    assert.deepEqual([cloud.answerRequest, cloud.generateStage, cloud.setAutoStageFormat, cloud.planFocus, cloud.loadFocusPlan], [undefined, undefined, undefined, undefined, undefined])
+  })
+
+  it('an unreadable start answer is never reported as started', async () => {
+    const { local } = recording({ '/api/work-view/answer': () => json({ state: 'queued' }) })
+    await assert.rejects(local.answerRequest!('request-a', 'yes', 'click-000001'), /may have started, but the worker's answer could not be read/)
+  })
+
+  it('saves the automatic stage choice and shows the model the worker answered, and reads the plan with its proposals', async () => {
+    const plan = { state: 'ready', focusAreaId: null, token: 't', pid: 1, startedAt: 'a', generatedAt: 'b', error: null, skipped: [], proposals: [{ kind: 'goal', focusAreaId: 'fa', goal: 'g', reason: 'r' }] }
+    const answered = { ...snapshot(), stageFormats: [{ id: 'brief', label: 'Brief', builtIn: true }], autoStageFormat: 'brief', focusPlan: plan }
+    const { local, posts } = recording({ '/api/work-view/stage/auto': () => json(answered), '/api/work-view/focus/plan': () => json({ plan }) })
+    const model = await local.setAutoStageFormat!('brief')
+    assert.deepEqual(posts[0], { url: '/api/work-view/stage/auto', method: 'POST', body: { formatId: 'brief' } })
+    assert.equal(model.autoStageFormat, 'brief')
+    assert.deepEqual(model.stageFormats!.map((format) => format.id), ['brief'])
+    assert.deepEqual(model.focusPlan, { state: 'ready', focusAreaId: null, startedAt: 'a', generatedAt: 'b', error: null, proposals: 1 })
+    assert.deepEqual((await local.loadFocusPlan!())!.proposals, plan.proposals)
+    assert.equal(posts[1].method, 'GET')
+  })
+})
