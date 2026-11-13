@@ -79,7 +79,7 @@ emv_use_stack() {
   export HERMES_HOME=$EMV_STACK/hermes-home OPENCLAW_STATE_DIR=$EMV_STACK/openclaw-state OPENCLAW_CONFIG_PATH=$EMV_STACK/openclaw-state/openclaw.json
   export XDG_CONFIG_HOME=$HOME/.config XDG_DATA_HOME=$HOME/.local/share XDG_CACHE_HOME=$HOME/.cache XDG_STATE_HOME=$HOME/.local/state
   # Package caches stay shared (they are caches, not configuration) so a sandbox HOME does not re-download them.
-  export npm_config_cache=$EMV_REAL_HOME/.npm BUN_INSTALL_CACHE_DIR=$EMV_REAL_HOME/.bun/install/cache
+  export npm_config_cache=$EMV_REAL_HOME/.npm BUN_INSTALL_CACHE_DIR=$EMV_REAL_HOME/.bun/install/cache UV_CACHE_DIR=$EMV_REAL_HOME/.cache/uv
   # The sandbox HOME's ~/.local/bin comes before your own PATH: the `release` configuration's hooks run the
   # `claude-mem` launcher its installer put there, never the one in your real ~/.local/bin.
   export PATH=$EMV_STACK/bin:$HOME/.local/bin:$EMV_REAL_PATH

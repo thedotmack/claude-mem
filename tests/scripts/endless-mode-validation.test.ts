@@ -645,6 +645,53 @@ describe('forward harness: chat-completions agents', () => {
   });
 });
 
+describe('forward harness: removing a finished run\'s installs', () => {
+  it('removes packages, browsers, toolchains and package caches, and keeps every result', () => {
+    const stack = join(scratch, 'prune', 'stacks', 'release');
+    const installs = [
+      'proj/node_modules/left-pad/index.js',
+      'home/.claude/plugins/marketplaces/thedotmack/plugin/node_modules/x/index.js',
+      'home/.cache/uv/archive-v0/x/chromadb/__init__.py',
+      'home/.local/share/claude-mem/venv/lib/python3.14/site-packages/x.py',
+      'home/Library/Caches/ms-playwright/chromium-1193/Chromium.app/x',
+      'hermes-home/tools/node-26.12.1-darwin-arm64/bin/node',
+      'hermes-home/tools/python-3.14.9+20261021-darwin-arm64/bin/python3',
+      'hermes-home/tools/uv-0.13.5-darwin-arm64/uv',
+      'hermes-home/tools/chromium-1208/chrome-mac-arm64/x',
+      'hermes-home/agent/__pycache__/x.pyc',
+    ];
+    const results = [
+      'data/claude-mem.db',
+      'tee-codex/0001-req.body',
+      'tee-anthropic/extracted.jsonl',
+      'logs/session.log',
+      'snapshots/t1/index.html',
+      'hermes-home/tools/facts.json',
+      'hermes-home/sessions/s1.jsonl',
+      'home/Library/Caches/claude-cli-nodejs/proj/mcp-logs-plugin-claude-mem-mcp-search/2026-11-10.jsonl',
+    ];
+    for (const file of [...installs, ...results]) {
+      mkdirSync(join(stack, file, '..'), { recursive: true });
+      writeFileSync(join(stack, file), 'x');
+    }
+    const run = Bun.spawnSync(['zsh', join(HARNESS, 'forward/lib/prune-installs.sh'), stack], { cwd: REPO_ROOT });
+    expect(run.exitCode).toBe(0);
+    expect(run.stdout.toString()).toContain('removed 10 folders');
+    for (const file of installs) expect(existsSync(join(stack, file))).toBe(false);
+    for (const file of results) expect(existsSync(join(stack, file))).toBe(true);
+
+    const again = Bun.spawnSync(['zsh', join(HARNESS, 'forward/lib/prune-installs.sh'), stack], { cwd: REPO_ROOT });
+    expect(again.exitCode).toBe(0);
+    expect(again.stdout.toString()).toContain('nothing installed');
+  });
+
+  it('fails loudly on a stack that does not exist', () => {
+    const run = Bun.spawnSync(['zsh', join(HARNESS, 'forward/lib/prune-installs.sh'), join(scratch, 'no-such-stack')], { cwd: REPO_ROOT });
+    expect(run.exitCode).toBe(1);
+    expect(run.stderr.toString()).toContain('no such stack');
+  });
+});
+
 describe('forward harness: private instruction files', () => {
   it('excludes the instruction files above the sandbox project, including ~/.claude/CLAUDE.md, and not the project itself', () => {
     const script = `source '${join(HARNESS, 'forward/lib/env.sh')}' && emv_claude_md_excludes`;

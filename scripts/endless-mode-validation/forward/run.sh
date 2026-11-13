@@ -8,6 +8,9 @@
 #                   its own last finished one (a budget stop leaves them at different turns). A continued run clears the old budget stop.
 #   EMV_BUDGET_USD  openrouter-deepseek-flash only: stop every configuration after the slowest one's current turn once the key's total
 #                   OpenRouter spend reaches this many USD (budget-watch.sh) [unset: no stop]
+#   EMV_KEEP_INSTALLS  set to keep each stack's installs after a clean finish, to continue the run to more turns later.
+#                   [unset: a run that finishes with no failure and no budget stop removes them (lib/prune-installs.sh);
+#                   a failed or budget-stopped run always keeps them, so it can be continued]
 #   EMV_PRICES      prices file for the tables [by profile: prices/anthropic-claude-opus-5-5.json, prices/openai-gpt-6.1-sol.json,
 #                   or the frozen card EMV_CARD for openrouter-deepseek-flash]
 # Output: $EMV_RUN_DIR/results/{<config>.json, tables.md, real-configs-before.txt, real-configs-after.txt}
@@ -33,6 +36,7 @@ fi
 emv_check_profile || exit
 python3 $EMV_FORWARD_DIR/check-prompts.py $EMV_PROMPTS >&2 || { echo "$EMV_PROMPTS refers to turns by number; reword those prompts by content" >&2; exit 2; }
 [[ $first == auto ]] && rm -f $EMV_RUN_DIR/logs/budget-stop-turn
+[[ $first == 1 || ! -e $EMV_RUN_DIR/logs/installs-pruned ]] || { echo "$EMV_RUN_DIR finished and its installs were removed, so it cannot be continued; start a new run (EMV_KEEP_INSTALLS keeps them)" >&2; exit 2; }
 [[ ! -d $EMV_RUN_DIR/stacks || $first != 1 ]] || { echo "$EMV_RUN_DIR already has stacks; pick a new EMV_RUN_NAME, or set EMV_FIRST_TURN to continue" >&2; exit 2; }
 
 say "run $EMV_RUN_NAME: turns $first-$turns, configs ${configs[*]}, agent $EMV_AGENT, profile $EMV_MODEL_PROFILE, model $([[ $EMV_AGENT == codex && $EMV_MODEL_PROFILE != openrouter-deepseek-flash ]] && echo $EMV_CODEX_MODEL || emv_claude_model), pin $([[ $EMV_MODEL_PROFILE == openrouter-deepseek-flash ]] && emv_pin_provider || echo none), commit $(git -C $EMV_REPO_ROOT rev-parse --short HEAD)"
@@ -129,3 +133,10 @@ PY
 [[ -z $bad ]] || { say "MEASUREMENT INCOMPLETE: $bad (see logs/extract.err)"; failed=$((failed + 1)); }
 say "results in $R (tables.md, <config>.json); judges' artifacts in $EMV_RUN_DIR/artifacts"
 (( failed == 0 && configs_ok == 0 )) || { say "FAILED: $failed session(s) failed, real-config check exit $configs_ok"; exit 1; }
+# Finished cleanly: the installs (1 to 7 GB a run) go, the results stay. A budget stop is meant to be continued.
+if [[ -z $EMV_KEEP_INSTALLS && ! -e $EMV_RUN_DIR/logs/budget-stop-turn ]]; then
+  stacks=(); for c in $configs; do stacks+=($EMV_RUN_DIR/stacks/$c); done
+  zsh $EMV_FORWARD_DIR/lib/prune-installs.sh $stacks 2>&1 | tee -a $L
+  (( ${pipestatus[1]} == 0 )) || { say "FAILED: could not remove the installs"; exit 1; }
+  touch $EMV_RUN_DIR/logs/installs-pruned
+fi
