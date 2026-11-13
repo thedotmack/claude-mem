@@ -50,6 +50,7 @@
           "usage/private-tags",
           "usage/auto-redaction",
           "usage/export-import",
+          "usage/import-providers",
           "usage/memory-ingest",
           "usage/manual-recovery",
           "usage/folder-context"

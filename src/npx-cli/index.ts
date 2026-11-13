@@ -70,6 +70,8 @@ ${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed p
   ${styleText('cyan', 'npx claude-mem project merge <from> <into> [--dry-run]')}    Fold one project's memory into another (non-destructive, syncs)
   ${styleText('cyan', 'npx claude-mem backup run|status|list')}   Manage local DB snapshots
   ${styleText('cyan', 'npx claude-mem restore <file>')}       Restore the DB from a snapshot
+  ${styleText('cyan', 'npx claude-mem import --from mem0 --source-account <label> --user <id> --project <name>')}   Import Mem0 memories (MEM0_API_KEY)
+  ${styleText('cyan', 'npx claude-mem import --from supermemory --source-account <label> --namespace <id> --project <name>')}   Import Supermemory memories (SUPERMEMORY_API_KEY); add --documents for source text or --dry-run to preview
   ${styleText('cyan', 'npx claude-mem transcript watch')}     Start transcript watcher
   ${styleText('cyan', 'npx claude-mem memory ingest [--source <dir> | --all] [--dry-run] [--require-cwd]')}   Import Claude Code auto-memory notes as observations
   ${styleText('cyan', 'npx claude-mem antigravity-cli install|status|uninstall')}   Manage Antigravity CLI hooks + MCP config
@@ -169,7 +171,7 @@ function parseInstallOptions(argv: string[]): InstallOptions {
 const HELP_AWARE_COMMANDS = new Set([
   '', 'install', 'update', 'upgrade', 'uninstall', 'remove', 'repair', 'prune', 'start', 'stop', 'restart',
   'adopt', 'cleanup',
-  'memory', 'telemetry', 'project', 'backup', 'restore', 'server', 'worker', 'transcript',
+  'memory', 'import', 'telemetry', 'project', 'backup', 'restore', 'server', 'worker', 'transcript',
   'gemini', 'kimi', 'devin', 'antigravity-cli', 'pi',
 ]);
 
@@ -181,6 +183,11 @@ async function main(): Promise<void> {
   }
 
   switch (command) {
+    case 'import': {
+      const { runImportCommand } = await import('./commands/import-memory.js');
+      await runImportCommand(args.slice(1));
+      break;
+    }
     case '':
     case 'install': {
       const { runInstallCommand } = await import('./commands/install.js');
