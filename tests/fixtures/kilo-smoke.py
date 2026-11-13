@@ -100,6 +100,8 @@ try:
     saved = run([('save_memory', {'text': text, 'project': 'kilo-fixture'})], 'save')[0]
     assert saved['state']['status'] == 'completed' and 'Saved memory #' in saved['state']['output'], saved
     note = next(row for row in http('/api/search?query=restore&project=kilo-fixture&type=observations&format=json')['observations'] if row['narrative'] == text)
+    receipt = re.search(r'Saved memory #(\d+)(?!\d)', saved['state']['output'])
+    assert receipt and int(receipt[1]) == note['id'], (saved, note)
     recalled = run([('search', {'query': 'restore snapshots', 'project': 'kilo-fixture'}),
                     ('get_observations', {'ids': [note['id'], foreign], 'project': 'kilo-fixture'})], 'recall')
     assert saved['sessionID'] != recalled[0]['sessionID'], 'Recall reused the save session'
