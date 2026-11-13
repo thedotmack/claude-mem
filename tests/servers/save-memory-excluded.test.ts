@@ -15,6 +15,13 @@ function observationCount(db: Database): number {
   return (db.query('SELECT COUNT(*) AS count FROM observations').get() as { count: number }).count;
 }
 
+function modelText(result: CallToolResult): string {
+  return result.content
+    .filter((block): block is { type: 'text'; text: string } => block.type === 'text' && typeof block.text === 'string')
+    .map((block) => block.text)
+    .join('\n');
+}
+
 /**
  * `save_memory` is the same explicit write as `POST /api/memory/save`, so it must
  * reach the worker with the checkout the call was made in. Without `cwd` the
@@ -74,20 +81,26 @@ describe('save_memory honors CLAUDE_MEM_EXCLUDED_PROJECTS', () => {
     try {
       const before = observationCount(db);
 
-      await saveFrom(excludedDir, { text: 'EXCLUDED_NOTE_BODY', title: 'Excluded note' });
+      const skipped = await saveFrom(excludedDir, { text: 'EXCLUDED_NOTE_BODY', title: 'Excluded note' });
       expect(observationCount(db)).toBe(before);
+      expect(skipped.isError).toBe(true);
+      expect(modelText(skipped)).toContain('Not saved');
+      expect(modelText(skipped)).toContain('excluded by CLAUDE_MEM_EXCLUDED_PROJECTS');
 
       // Naming another project must not bypass the checkout's exclusion.
-      await saveFrom(excludedDir, {
+      const skippedWithProject = await saveFrom(excludedDir, {
         text: 'EXCLUDED_NOTE_WITH_PROJECT',
         title: 'Excluded note with project',
         project: 'somewhere-else',
       });
       expect(observationCount(db)).toBe(before);
+      expect(skippedWithProject.isError).toBe(true);
+      expect(modelText(skippedWithProject)).toContain('Not saved');
 
       const saved = await saveFrom(allowedDir, { text: 'ALLOWED_NOTE_BODY', title: 'Allowed note' });
       expect(observationCount(db)).toBe(before + 1);
-      expect((saved.content as Array<{ type: string; text?: string }>).some((block) => block.type === 'text')).toBe(true);
+      expect(saved.isError).toBeFalsy();
+      expect(modelText(saved)).toStartWith('Saved memory #');
     } finally {
       if (previousExclusions === undefined) delete process.env.CLAUDE_MEM_EXCLUDED_PROJECTS;
       else process.env.CLAUDE_MEM_EXCLUDED_PROJECTS = previousExclusions;
