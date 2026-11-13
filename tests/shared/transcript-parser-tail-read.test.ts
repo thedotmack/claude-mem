@@ -155,6 +155,29 @@ describe('transcript-parser tail read', () => {
     expect(extractLastMessage(path, 'user', false, opts)).toBe('tail');
   });
 
+  it('assembles long UTF-8 records in file order across every byte alignment', () => {
+    const text = 'start ' + '记忆🙂 café '.repeat(200) + ' end';
+    for (const prefix of ['', userLine('earlier') + '\n']) {
+      for (const ending of ['', '\n', '\r\n']) {
+        writeFileSync(path, prefix + assistantLine(text) + ending);
+        for (const maxChunkBytes of [1, 7, 31, 64]) {
+          expect(extractLastAssistantTurn(path, false, { initialBytes: 1, maxChunkBytes }))
+            .toEqual({ text, model: 'claude-opus-4-1' });
+        }
+      }
+    }
+  });
+
+  it('keeps consecutive fragmented records separate when a chunk starts at a newline', () => {
+    const text = '前一条 '.repeat(300);
+    const last = '后一条 '.repeat(500);
+    writeFileSync(path, [assistantLine(text), userLine('next'), assistantLine(last)].join('\n') + '\n');
+    for (const maxChunkBytes of [1, 9, 65]) {
+      expect(extractLastMessage(path, 'assistant', false, { initialBytes: 1, maxChunkBytes })).toBe(last);
+      expect(extractLastMessage(path, 'user', false, { initialBytes: 1, maxChunkBytes })).toBe('next');
+    }
+  });
+
   it('drops the partial first line of a window instead of parsing a torn JSON line', () => {
     // Window boundary deliberately lands inside the filler line. The torn
     // fragment must not be mistaken for an entry, and the real last text must
