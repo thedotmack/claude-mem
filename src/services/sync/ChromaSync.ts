@@ -481,6 +481,13 @@ export class ChromaSync {
   private static corruptSegmentBatches = new Map<string, Set<string>>();
 
   /**
+   * In-flight collection drops, per collection. Deduplicates concurrent
+   * corrupt-segment drop requests so chroma_delete_collection is not invoked
+   * multiple times simultaneously (#6113).
+   */
+  private static inFlightDrops = new Map<string, Promise<void>>();
+
+  /**
    * Collections dropped once already in this process. If the rebuilt
    * collection fails the same way, Chroma itself is broken: report it rather
    * than drop and rebuild in a loop.
@@ -666,7 +673,15 @@ export class ChromaSync {
       return;
     }
 
-    await this.dropCorruptCollection(cause);
+    let dropPromise = ChromaSync.inFlightDrops.get(this.collectionName);
+    if (!dropPromise) {
+      dropPromise = this.dropCorruptCollection(cause).finally(() => {
+        ChromaSync.inFlightDrops.delete(this.collectionName);
+      });
+      ChromaSync.inFlightDrops.set(this.collectionName, dropPromise);
+    }
+
+    await dropPromise;
     throw new ChromaCorruptCollectionError(
       `Corrupt collection ${this.collectionName} dropped; rebuilding it from SQLite`,
       cause

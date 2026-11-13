@@ -35,6 +35,7 @@ const statics = ChromaSync as unknown as {
   backfillInProgress: boolean;
   collectionGeneration: number;
   corruptSegmentBatches: Map<string, Set<string>>;
+  inFlightDrops: Map<string, Promise<void>>;
   droppedCollections: Set<string>;
   failedDropAttempts: Map<string, number>;
   lastCollectionDrop: unknown;
@@ -80,6 +81,7 @@ beforeEach(() => {
   statics.backfillStore = null;
   statics.backfillInProgress = false;
   statics.corruptSegmentBatches.clear();
+  statics.inFlightDrops?.clear();
   statics.droppedCollections.clear();
   statics.failedDropAttempts.clear();
   statics.lastCollectionDrop = null;
@@ -245,6 +247,53 @@ describe('ChromaSync corrupt-collection handling (#3202)', () => {
     expect(await sync.addDocuments([makeDoc('d4')])).toBe(0);
 
     expect(calls('chroma_delete_collection')).toBe(1);
+  });
+
+  it('deduplicates concurrent corrupt segment drops so delete runs at most once (#6113)', async () => {
+    let deleteStarted = false;
+    let finishDelete: () => void = () => {};
+    const deleteGate = new Promise<void>((resolve) => {
+      finishDelete = resolve;
+    });
+
+    installCallTool(async (tool) => {
+      if (tool === 'chroma_add_documents') throw CORRUPT_SEGMENT_ERROR;
+      if (tool === 'chroma_delete_collection') {
+        deleteStarted = true;
+        await deleteGate;
+        return {};
+      }
+      return {};
+    });
+
+    const sync1 = new ChromaSync('claude-mem');
+    const sync2 = new ChromaSync('claude-mem');
+
+    // Confirm batch 1 on sync1
+    await sync1.addDocuments([makeDoc('d0')]);
+
+    // Fire 10 concurrent writes that fail with corrupt segment while delete is in flight
+    const concurrentWrites = Promise.allSettled(
+      Array.from({ length: 10 }, (_, i) => sync2.addDocuments([makeDoc(`d${i + 1}`)]))
+    );
+
+    // Wait until delete is initiated
+    for (let i = 0; i < 50 && !deleteStarted; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(deleteStarted).toBe(true);
+    // At this point, delete is in flight; release it
+    finishDelete();
+
+    const results = await concurrentWrites;
+    // Exactly 1 drop call was executed
+    expect(calls('chroma_delete_collection')).toBe(1);
+
+    // Every concurrent write that reached the drop threw ChromaCorruptCollectionError
+    const corruptErrors = results.filter(
+      (r) => r.status === 'rejected' && r.reason instanceof ChromaCorruptCollectionError
+    );
+    expect(corruptErrors.length).toBe(10);
   });
 
   it('rebuilds even when chroma-mcp commits the delete but the call rejects', async () => {
