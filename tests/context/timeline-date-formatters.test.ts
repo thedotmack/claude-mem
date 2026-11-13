@@ -84,15 +84,30 @@ describe('timeline locale formatting', () => {
   });
 
   it('observes a changed default time zone on the next actual timeline render', () => {
-    ModeManager.getInstance().loadMode('code');
-    const utc = inZone('UTC', () => ({
-      lines: renderAgentTimeline(timeline, new Set(), config).join('\n'),
-      day: formatDate(timestamp), time: formatTime(timestamp),
-    }));
-    const pacific = inZone('America/Los_Angeles', () => ({
-      lines: renderAgentTimeline(timeline, new Set(), config).join('\n'),
-      day: formatDate(timestamp), time: formatTime(timestamp),
-    }));
+    // Other suites replace process.env with a plain object. In Bun, later TZ
+    // assignments then no longer update ICU's default zone. Use a fresh process
+    // while keeping both renders in that same process to test cache lifetime.
+    const result = Bun.spawnSync([process.execPath, '-e', `
+      import { formatDate, formatTime } from './src/shared/timeline-formatting.ts';
+      import { renderAgentTimeline } from './src/services/context/sections/TimelineRenderer.ts';
+      import { ModeManager } from './src/services/domain/ModeManager.ts';
+      ModeManager.getInstance().loadMode('code');
+      const timeline = ${JSON.stringify(timeline)};
+      const config = {
+        ...${JSON.stringify(config)},
+        observationTypes: new Set(['discovery']), observationConcepts: new Set(),
+      };
+      const render = zone => {
+        process.env.TZ = zone;
+        return {
+          lines: renderAgentTimeline(timeline, new Set(), config).join('\\n'),
+          day: formatDate(${JSON.stringify(timestamp)}), time: formatTime(${JSON.stringify(timestamp)}),
+        };
+      };
+      console.log(JSON.stringify({ utc: render('UTC'), pacific: render('America/Los_Angeles') }));
+    `], { cwd: process.cwd(), env: { ...process.env, TZ: 'UTC' } });
+    expect(result.exitCode).toBe(0);
+    const { utc, pacific } = JSON.parse(new TextDecoder().decode(result.stdout));
     expect(utc.lines).toContain(utc.day);
     expect(utc.lines).toContain(utc.time);
     expect(pacific.lines).toContain(pacific.day);
