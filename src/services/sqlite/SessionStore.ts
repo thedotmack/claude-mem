@@ -3342,12 +3342,11 @@ export class SessionStore {
           s.started_at,
           s.started_at_epoch,
           s.user_prompt,
-          CASE WHEN sum.memory_session_id IS NOT NULL THEN 1 ELSE 0 END as has_summary
+          EXISTS (SELECT 1 FROM session_summaries sum
+            WHERE sum.memory_session_id = s.memory_session_id) as has_summary
         FROM sdk_sessions s
-        LEFT JOIN session_summaries sum ON s.memory_session_id = sum.memory_session_id
         WHERE s.project COLLATE NOCASE = ? AND s.memory_session_id IS NOT NULL
         ${platformClause}
-        GROUP BY s.memory_session_id
         ORDER BY s.started_at_epoch DESC
         LIMIT ?
       )
