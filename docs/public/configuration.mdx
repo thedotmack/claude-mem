@@ -761,7 +761,7 @@ Accepted risks, stated plainly:
 2. **`/stream` is unfiltered.** It carries every observation for every project on the box, plus the project catalog and processing status. There is no per-client filtering.
 3. **No rate limiting.** A token holder can hammer `GET /api/observations` freely.
 4. **The token is readable on loopback** via `GET /api/settings`, exactly like your provider API keys are today. It is deliberately *not* writable through `POST /api/settings` (that route is unauthenticated), so it can only be set by someone with filesystem or environment access.
-5. **`/stream` is not side-effect-free.** Every new connection triggers an `initial_load` broadcast to *all* connected clients, and the client list is unbounded. A token holder reconnecting in a loop can therefore disturb the operator's own local viewer. This is pre-existing worker behavior; the token is what newly makes it reachable from the LAN.
+5. **`/stream` does not limit concurrent subscribers.** Each connection receives its own `initial_load` snapshot without resetting other viewers, but the client list remains unbounded. A token holder opening many connections can still consume connection and memory resources. This connection-limit concern is pre-existing worker behavior; the token is what newly makes it reachable from the LAN.
 
 ### Manual Configuration
 
