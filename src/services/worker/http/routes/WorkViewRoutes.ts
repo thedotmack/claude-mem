@@ -4,10 +4,11 @@ import { createHash, randomBytes } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, extname, join } from 'node:path';
+import { spawn } from 'node:child_process';
 import { z } from 'zod';
 import { Database } from 'bun:sqlite';
 import { CLAUDE_CONFIG_DIR, DATA_DIR, DB_PATH, getPackageRoot, USER_SETTINGS_PATH } from '../../../../shared/paths.js';
-import { currentContextGeneration, onContextInvalidation } from '../../../../shared/context-invalidation.js';
+import { currentContextGeneration, noteUserSettingsSaved, onContextInvalidation } from '../../../../shared/context-invalidation.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { logger } from '../../../../utils/logger.js';
 import { hasForwardedClientHeaders, hasLoopbackHostHeader, isLocalhost } from '../../../../server/middleware/request-auth-helpers.js';
@@ -16,6 +17,8 @@ import { WorkViewReadWorkerClient } from '../../../work-view/WorkViewReadWorkerC
 import { boundedDurationMs, type WorkViewReadPurpose } from '../../../work-view/WorkViewReadProtocol.js';
 import type { ViewerSyncStatus } from '../../../../shared/viewer-sync-status.js';
 import { workViewOverview, workViewRequestDetail } from '../../../work-view/overview.js';
+import { isAwaitingCheck, isReadyForCheck } from '../../../../ui/my-work/src/live/to-work-model.js';
+import type { WorkViewHumanRequest as ApiHumanRequest } from '../../../../ui/my-work/src/live/work-view-api-types.js';
 import { FILE_CONTENT_TYPES } from '../../../work-view/work-product.mjs';
 import { isInsideDeliverablesDir } from '../../../../shared/deliverables.js';
 import { contentFingerprint, priorContentFingerprint, LocalReviewStore } from '../../../work-view/review-store.js';
@@ -36,11 +39,19 @@ import { FocusSharePublisher } from '../../../work-view/focus-share-publisher.js
 import { cmemProOrigin } from '../../../../shared/cmem-gateway.js';
 import { isOpenRouterApiUrl } from '../../../../shared/openrouter-base-url.js';
 import { FOCUS_CHANGED_MESSAGE, focusChangeVersion } from '../../../../shared/focus-change-version.js';
-import { runAgentTask } from '../../../agent-runner/run.js';
+import { runAgentTask, type AgentRunResult, type AgentTask } from '../../../agent-runner/run.js';
+import { detectUsableAgents, type UsableAgent } from '../../../agent-runner/detect.js';
+import { MAX_ANSWER_CHARS, OWNER_RUN_TOKEN_PATTERN, STAGE_DELIVERABLE_KIND, STAGE_FORMAT_ID_PATTERN, type OwnerRunStartState } from '../../../work-view/owner-runs.mjs';
+import { OwnerRunStore } from '../../../work-view/owner-run-store.js';
+import { deliverAnswer, resolveAnswerTarget } from '../../../work-view/answer-delivery.js';
+import { readStageFormats, stageFormatInfo, type StageFormat, type StageFormatInfo } from '../../../work-view/stage-formats.js';
+import { autoStageAfterRefresh, claimStage, generateStage, resolveAutoStageFormat, type StageClaim, type StageDependencies, type StageRequest } from '../../../work-view/stage-task.js';
+import { focusPlanInput, planFocus, type PlanSourceRequest } from '../../../work-view/focus-plan-task.js';
+import type { RecordDeliverableInput } from '../../../sqlite/deliverables.js';
+import { updateSettingsDocument } from '../../../../shared/settings-document.js';
 import { ledgerSignature, readLedger } from '../../../work-view/request-groups.mjs';
 import { configuredJudge, decideSuggestion, jevClientFromSettings } from '../../../work-view/request-judge.mjs';
 import { labelOpenWorkState } from '../../../work-view/work-state-labels.mjs';
-import { normalizeRequestStatus } from '../../../../ui/my-work/src/live/status-normalization.js';
 import { configuredFocusJudge } from '../../../work-view/focus-judge.mjs';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { captureEvent } from '../../../telemetry/telemetry.js';
@@ -54,44 +65,14 @@ import { hasActiveSetupSession, hasProConfiguration, readSetupState, setupStateP
 import { SETUP_BRANCHES, SETUP_INSTALLER_STAGES, SETUP_MEMORY_BILLINGS } from '../../../../shared/setup-funnel.js';
 import { hasPendingInstallSetup, SETUP_INSTALL_STATUSES } from '../../../../shared/setup-install.js';
 
-// A request is ready for a human check once its explicit lifecycle reports it complete, shipped, or waiting for review.
-// Statuses are compared lowercased with `_` and spaces read as `-`, matching the viewer's status normalization.
-const READY_FOR_CHECK_LIFECYCLE_STATUSES = [
-  'done', 'completed', 'complete', 'shipped', 'delivered',
-  'needs-review', 'review', 'in-review', 'awaiting-review', 'ready-for-review',
-];
-type RecordedLifecycle = { explicit?: boolean; complete?: boolean | null; status?: string | null; atEpoch?: number | null } | null | undefined;
-type ReadyCheckItem = { kind: string; status: string; judgedStatus?: string | null; lastUpdateEpoch?: number };
-
-/** Mirrors the viewer's reviewIsNewerThanLifecycle (src/ui/my-work/src/live/to-work-model.ts). */
-function reviewIsNewerThanLifecycle(review: { checkedAt?: string | null }, lifecycle: RecordedLifecycle): boolean {
-  if (!lifecycle?.explicit || !lifecycle.atEpoch) return true;
-  const reviewedAt = Date.parse(review.checkedAt ?? '');
-  return Number.isFinite(reviewedAt) && reviewedAt >= lifecycle.atEpoch;
-}
-
 /** True while a process with this pid exists (signal 0 checks without signalling). */
 function processIsAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
 
-/** Ready for a person's check: the explicit lifecycle says so, or a memory review newer than it reached 100%.
- * The viewer offers "Mark checked" on exactly these requests. */
-export function isReportedReadyForCheck(request: { lifecycle?: RecordedLifecycle; progress?: { percent?: number; checkedAt?: string | null } | null; items?: ReadyCheckItem[] }, now = Date.now()): boolean {
-  const { lifecycle, progress } = request;
-  if (progress?.percent === 100 && reviewIsNewerThanLifecycle(progress, lifecycle)) return true;
-  // Item statuses, Jev's judged ones included, read with the viewer's own rule: an item an agent marked needs-review,
-  // or one a confident label judged finished, makes the viewer offer "Mark checked", so the check is accepted.
-  if (request.items?.length) {
-    const itemStatus = normalizeRequestStatus({ items: request.items, checked: false,
-      lifecycle: lifecycle?.explicit ? { status: lifecycle.status ?? null, explicit: true, complete: lifecycle.complete } : null }, now);
-    if (itemStatus === 'needs-review' || itemStatus === 'done') return true;
-  }
-  if (!lifecycle?.explicit) return false;
-  const status = String(lifecycle.status ?? '').trim().toLowerCase().replace(/[_ ]/g, '-');
-  return lifecycle.complete === true || READY_FOR_CHECK_LIFECYCLE_STATUSES.includes(status);
-}
+/** What a stage file is served under: no script, no styles, no images, no connections, forms or navigation, in a sandbox with no permissions. */
+export const STAGE_CONTENT_SECURITY_POLICY = "default-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'; sandbox";
 
 /** Recorded files plus the text kinds an agent attaches as a deliverable, served so a browser shows them rather than downloads them. */
 const DELIVERABLE_CONTENT_TYPES: Readonly<Record<string, string>> = {
@@ -230,6 +211,14 @@ const seedFocusBody = z.discriminatedUnion('action', [
   }).strict(),
 ]);
 
+// Owner runs: one click, one agent run (owner-runs.mjs). The token is the click's own id, made by the page.
+const ownerRunToken = z.string().regex(OWNER_RUN_TOKEN_PATTERN);
+const stageFormatIdField = z.string().regex(STAGE_FORMAT_ID_PATTERN);
+const answerBody = z.object({ requestId: z.string().min(1).max(2000), text: z.string().trim().min(1).max(MAX_ANSWER_CHARS), token: ownerRunToken }).strict();
+const stageBody = z.object({ requestId: z.string().min(1).max(2000), formatId: stageFormatIdField, token: ownerRunToken }).strict();
+const autoStageBody = z.object({ formatId: stageFormatIdField.nullable() }).strict();
+const focusPlanBody = z.object({ focusAreaId: focusAreaIdField.nullable(), token: ownerRunToken }).strict();
+
 const markAgentFinishedBody = z.object({
   agentGroupId: z.string().min(1).max(2000),
 }).strict();
@@ -283,6 +272,8 @@ interface WorkViewOptions {
   autoRefresh?: AutoRefreshWorker | null;
   /** Overall-request ledger written by the request-progress skill; null disables it. */
   ledgerDir?: string | null;
+  /** Where each tool keeps its transcripts, read for whose move a chat is; the tools' own folders unless a test names others. */
+  transcriptRoots?: { claudeProjectsDir?: string; codexHome?: string };
   /** Saves one work-state row (rule changes). Without it, rules are read-only. */
   appendWorkStateEntry?: ((entry: WorkStateWrite) => void) | null;
   /** The project rule rows are saved under: the home folder's, like owner-goals. */
@@ -308,6 +299,16 @@ interface WorkViewOptions {
   focusShares?: Pick<FocusShares, 'connected' | 'list' | 'publish' | 'stop' | 'comments' | 'comment'> | null;
   /** How often shared focus pages are republished from this worker; 0 stops the timer (tests). */
   focusSharePublishEveryMs?: number;
+  /** Runs a stage or a focus plan on the owner's own agent; the shared runner (runAgentTask) unless a test injects one. */
+  runAgent?: (task: AgentTask) => Promise<AgentRunResult>;
+  /** Which agent tools are installed and logged in, for sending an answer. */
+  detectAgents?: () => Promise<UsableAgent[]>;
+  /** Starts the answer's tool and a stage's `git show`; a test injects a fake. */
+  spawnImpl?: typeof spawn;
+  /** Records a stage's file in the deliverables table so the deliverables route serves it. Without it a stage has no link. */
+  recordDeliverable?: ((input: RecordDeliverableInput) => { id: number }) | null;
+  /** The installed plugin folder holding skills/; the package root unless a test names one. */
+  pluginRoot?: string;
 }
 
 /** One overall request on the Reveal, read from the request-group ledger so new installs (prompts only) have work too. */
@@ -454,7 +455,8 @@ export function configuredHumanCopyProvider(settingsPath = USER_SETTINGS_PATH): 
 /** My Work's automatic refresh on the user's own logged-in agent, unless
  * CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH is 'false' (checked on every tick). */
 export function defaultAutoRefresh(ledgerDir: string, settingsPath = USER_SETTINGS_PATH, setupPath = setupStatePath(), setupActive = () => false,
-  localDeviceId: () => string, saveFocus: (body: RouterFocusBody) => { placed: number; focusAreaIds: string[] } | Promise<{ placed: number; focusAreaIds: string[] }>): AutoRefreshWorker {
+  localDeviceId: () => string, saveFocus: (body: RouterFocusBody) => { placed: number; focusAreaIds: string[] } | Promise<{ placed: number; focusAreaIds: string[] }>,
+  afterRefresh: (refreshState: string, startedAtEpoch: number) => Promise<unknown> = async () => {}): AutoRefreshWorker {
   const openDatabase = () => {
     const database = new Database(DB_PATH, { readonly: true, create: false });
     database.exec('PRAGMA busy_timeout = 1500');
@@ -476,7 +478,11 @@ export function defaultAutoRefresh(ledgerDir: string, settingsPath = USER_SETTIN
       // The judges are read from settings per run, so a provider change applies to the next refresh.
       const task = buildRefreshTask({ needs, reason, dataDir: DATA_DIR, ledgerDir, pluginRoot: getPackageRoot(), openDatabase, localDeviceId, saveFocus,
         judge: configuredJudge(settingsPath), focusJudge: configuredFocusJudge(settingsPath) });
-      return { ...(await runAgentTask(task)), steps: task.steps };
+      const startedAtEpoch = Date.now();
+      const outcome = { ...(await runAgentTask(task)), steps: task.steps };
+      // The owner's opt-in automatic stages follow a refresh that ran; their failure is theirs, never the refresh's.
+      await afterRefresh(outcome.state, startedAtEpoch).catch(error => logger.warn('WORKER', 'Automatic stages after the refresh failed', { error: error instanceof Error ? error.message : String(error) }));
+      return outcome;
     },
     // Jev labels open work-state items on every check; read from settings each time, like the judges.
     labelWorkState: async () => {
@@ -549,6 +555,14 @@ export class WorkViewRoutes extends BaseRouteHandler {
   private hostedIntent: Pick<HostedIntent, 'run' | 'state'> | null;
   private focusShares: NonNullable<WorkViewOptions['focusShares']> | null;
   private focusSharePublisher: FocusSharePublisher | null;
+  private ownerRuns: OwnerRunStore | null;
+  private ownerRunsInFlight = new Set<Promise<unknown>>();
+  private runAgent: (task: AgentTask) => Promise<AgentRunResult>;
+  private detectAgents: () => Promise<UsableAgent[]>;
+  private spawnImpl: typeof spawn;
+  private recordDeliverable: WorkViewOptions['recordDeliverable'];
+  private pluginRoot: string;
+  private stageSettingsRead: { at: number; value: { stageFormats: StageFormatInfo[]; autoStageFormat: string | null } } | null = null;
   private resumeSetup: (retry?: boolean) => Promise<void>;
 
   constructor(options: WorkViewOptions = {}) {
@@ -569,8 +583,9 @@ export class WorkViewRoutes extends BaseRouteHandler {
       databasePath: options.databasePath ?? DB_PATH,
       pollIntervalMs: this.pollIntervalMs,
       ledgerDir,
+      transcriptRoots: options.transcriptRoots,
     });
-    this.sourceReader = new WorkViewReadWorkerClient({ databasePath: options.databasePath ?? DB_PATH, ledgerDir, pollIntervalMs: this.pollIntervalMs });
+    this.sourceReader = new WorkViewReadWorkerClient({ databasePath: options.databasePath ?? DB_PATH, ledgerDir, pollIntervalMs: this.pollIntervalMs, transcriptRoots: options.transcriptRoots });
     this.reviews = new LocalReviewStore(options.reviewPath ?? join(DATA_DIR, 'work-view-reviews.db'));
     this.humanCopy = options.humanCopy === undefined
       ? new HumanCopyWorker({ provider: configuredHumanCopyProvider(), cachePath: join(DATA_DIR, 'work-view', 'human-copy.json'), persistSharedCopy: options.persistSharedCopy,
@@ -581,8 +596,18 @@ export class WorkViewRoutes extends BaseRouteHandler {
     // A test or demo with its own ledger never starts an agent unless it passes one in.
     this.autoRefresh = options.autoRefresh === undefined
       ? (options.ledgerDir === undefined && ledgerDir ? defaultAutoRefresh(ledgerDir, options.settingsPath, options.setupStatePath,
-        () => this.setupIsActive(), () => this.getLocalDeviceId(), body => this.recordRouterFocus(body)) : null)
+        () => this.setupIsActive(), () => this.getLocalDeviceId(), body => this.recordRouterFocus(body),
+        (refreshState, startedAtEpoch) => this.autoStage(refreshState, startedAtEpoch)) : null)
       : options.autoRefresh;
+    this.runAgent = options.runAgent ?? (task => runAgentTask(task));
+    this.detectAgents = options.detectAgents ?? (() => detectUsableAgents());
+    this.spawnImpl = options.spawnImpl ?? spawn;
+    this.recordDeliverable = options.recordDeliverable ?? null;
+    this.pluginRoot = options.pluginRoot ?? getPackageRoot();
+    this.ownerRuns = ledgerDir ? new OwnerRunStore(ledgerDir) : null;
+    // A run this worker never finished was cut off by a restart: it is marked failed, and nothing starts it again.
+    try { this.ownerRuns?.repairInterrupted(); }
+    catch (error) { logger.warn('WORKER', 'Owner runs could not be read at startup', { error: error instanceof Error ? error.message : String(error) }); }
     this.autoRefresh?.start();
     this.appendWorkStateEntry = options.appendWorkStateEntry ?? null;
     this.homeProject = options.homeProject;
@@ -838,8 +863,11 @@ export class WorkViewRoutes extends BaseRouteHandler {
       }
       res.setHeader('Cache-Control', 'no-store');
       res.setHeader('X-Content-Type-Options', 'nosniff');
-      res.setHeader('Content-Security-Policy', 'sandbox allow-scripts');
-      res.type(DELIVERABLE_CONTENT_TYPES[extname(deliverable.path).toLowerCase()] ?? 'application/octet-stream');
+      // A stage is text an agent wrote from untrusted conversation text. It is served as plain text under a policy that
+      // runs no script and loads or sends nothing, whatever the file holds or is named.
+      const stage = deliverable.kind === STAGE_DELIVERABLE_KIND;
+      res.setHeader('Content-Security-Policy', stage ? STAGE_CONTENT_SECURITY_POLICY : 'sandbox allow-scripts');
+      res.type(stage ? 'text/plain; charset=utf-8' : DELIVERABLE_CONTENT_TYPES[extname(deliverable.path).toLowerCase()] ?? 'application/octet-stream');
       res.sendFile(deliverable.path, { dotfiles: 'allow' });
     }));
     app.post('/api/work-view/review', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(reviewBody), this.wrapHandler(this.ownerEdit(this.review)));
@@ -858,6 +886,15 @@ export class WorkViewRoutes extends BaseRouteHandler {
     app.post('/api/work-view/suggestions', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(suggestionBody), this.wrapHandler(this.ownerEdit(this.answerSuggestion)));
     app.post('/api/work-view/rules/load-in-claude-code', workViewLoopbackOnly, requireWorkViewOrigin, this.wrapHandler(this.ownerEdit(this.loadRulesInClaudeCode)));
     app.post('/api/work-view/refresh', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(z.object({}).strict()), this.wrapHandler(this.startManualRefresh));
+    // Owner runs. Each answers as soon as its one run has started; the snapshot carries how it ended.
+    app.post('/api/work-view/answer', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(answerBody), this.wrapHandler(this.startAnswer));
+    app.post('/api/work-view/stage', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(stageBody), this.wrapHandler(this.startStage));
+    app.post('/api/work-view/stage/auto', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(autoStageBody), this.wrapHandler(this.ownerEdit(this.saveAutoStageFormat)));
+    app.post('/api/work-view/focus/plan', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(focusPlanBody), this.wrapHandler(this.startFocusPlan));
+    app.get('/api/work-view/focus/plan', workViewLoopbackOnly, requireWorkViewReadOrigin, this.wrapHandler((_req, res) => {
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ plan: this.ownerRuns?.read().plan ?? null });
+    }));
     app.post('/api/work-view/usage', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(usageBody), this.wrapHandler(this.recordUsage));
     // Shared focus pages: this worker signs the cmem.ai calls, so the sync credential never reaches the page.
     app.get('/api/work-view/focus/shares', workViewLoopbackOnly, requireWorkViewReadOrigin, this.wrapHandler(this.listFocusShares));
@@ -1187,7 +1224,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
       sharedState: { ...((view.sharedState && typeof view.sharedState === 'object') ? view.sharedState : {}),
         ...(this.getSharedStatus?.() ?? { enabled: false }) },
       ...(this.saveSharedLedgerFile ? { sharedPersistenceVersion: 1 } : {}),
-      rulesFile: this.rulesFileStatus(snapshot), setup: this.setupView(view), revision: `${snapshot.revision}:${reviewRevision}:${this.humanCopy?.revision ?? 0}` };
+      rulesFile: this.rulesFileStatus(snapshot), ...this.stageSettings(), setup: this.setupView(view), revision: `${snapshot.revision}:${reviewRevision}:${this.humanCopy?.revision ?? 0}` };
     this.lastSnapshotDiagnostic = { purpose, postprocessMs: boundedDurationMs(Number(process.hrtime.bigint() - startedAt) / 1e6) };
     return this.getSyncStatus ? { ...result, sync: this.getSyncStatus() } : result;
   }
@@ -1621,6 +1658,171 @@ export class WorkViewRoutes extends BaseRouteHandler {
     this.publish(updated);
   };
 
+  /** The stage formats My Work lists and the owner's automatic-stage choice. Both are files, re-read at most once a second. */
+  private stageSettings(): { stageFormats: StageFormatInfo[]; autoStageFormat: string | null } {
+    if (this.stageSettingsRead && Date.now() - this.stageSettingsRead.at < 1000) return this.stageSettingsRead.value;
+    const dataDir = dirname(this.settingsPath);
+    let value: { stageFormats: StageFormatInfo[]; autoStageFormat: string | null } = { stageFormats: [], autoStageFormat: null };
+    try { value = { stageFormats: readStageFormats(dataDir).formats.map(stageFormatInfo), autoStageFormat: resolveAutoStageFormat(this.settingsPath, dataDir)?.id ?? null }; }
+    catch (error) { logger.warn('HTTP', 'Stage formats could not be read', { error: error instanceof Error ? error.message : String(error) }); }
+    this.stageSettingsRead = { at: Date.now(), value };
+    return value;
+  }
+
+  /** Resolves when every owner run this worker started has ended (shutdown and tests). */
+  async whenOwnerRunsSettle(): Promise<void> {
+    while (this.ownerRunsInFlight.size) await Promise.allSettled([...this.ownerRunsInFlight]);
+  }
+
+  private trackOwnerRun(run: Promise<unknown>): void {
+    const tracked = run.catch(error => logger.warn('HTTP', 'An owner run ended with an error', { error: error instanceof Error ? error.message : String(error) }))
+      .finally(() => { this.ownerRunsInFlight.delete(tracked); this.publish(); });
+    this.ownerRunsInFlight.add(tracked);
+  }
+
+  /** What every start route checks first: the store exists, this click has not already started a run, and setup is not running. */
+  private ownerRunStart(res: Response, token: string): OwnerRunStore | null {
+    if (!this.ownerRuns) { res.status(503).json({ error: 'This worker keeps no record of runs, so it starts none.' }); return null; }
+    if (this.ownerRuns.hasToken(token)) { this.ownerRunStarted(res, 'duplicate'); return null; }
+    // Setup spends nothing it did not ask for (the refresh's own rule, AutoRefreshWorker.runNow).
+    if (this.setupIsActive()) { res.status(409).json({ error: 'This is unavailable until setup finishes.' }); return null; }
+    return this.ownerRuns;
+  }
+
+  private ownerRunStarted(res: Response, state: OwnerRunStartState): void {
+    res.setHeader('Cache-Control', 'no-store');
+    res.status(state === 'started' ? 202 : 200).json({ state });
+  }
+
+  /**
+   * Sends the owner's answer to the request's latest conversation as one turn of its own tool (answer-delivery.ts),
+   * and answers once that tool has been started. A refusal (`refusal: true`) names why nothing was sent, so My Work
+   * falls back to copying the answer and opening the chat.
+   */
+  private startAnswer = async (req: Request, res: Response): Promise<void> => {
+    const { requestId, text, token } = req.body as z.infer<typeof answerBody>;
+    const store = this.ownerRunStart(res, token);
+    if (!store) return;
+    const snapshot = await this.snapshot();
+    if (!snapshot.source.connected) { res.status(503).json({ error: 'Local work is unavailable. Reconnect before answering.' }); return; }
+    const request = snapshot.humanRequests.find(item => item.id === requestId);
+    if (!request) { this.notFound(res, 'That request is not in your work.'); return; }
+    const target = await resolveAnswerTarget(request, { sessionCwd: (platform, sessionId) => this.source.sessionCwd(platform, sessionId), detectAgents: this.detectAgents });
+    if ('refusal' in target) { res.status(409).json({ error: target.refusal, refusal: true }); return; }
+    // Checked again after the reads above, with no await before the record is written: two posts of one click start one run.
+    if (store.hasToken(token)) { this.ownerRunStarted(res, 'duplicate'); return; }
+    if (store.read().answers[requestId]?.state === 'answering') { res.status(409).json({ error: 'Your last answer to this request is still being delivered.' }); return; }
+    store.beginAnswer(requestId, token, target.platform);
+    this.trackOwnerRun(deliverAnswer(target, text, { spawnImpl: this.spawnImpl })
+      .then(error => store.finishAnswer(requestId, token, error), error => store.finishAnswer(requestId, token, String(error?.message ?? error).slice(0, 500))));
+    logger.debug('HTTP', 'Answer delivery started', { platform: target.platform });
+    this.ownerRunStarted(res, 'started');
+    this.publish();
+  };
+
+  private stageDependencies(store: OwnerRunStore): StageDependencies {
+    return {
+      dataDir: dirname(this.settingsPath), ledgerDir: this.ledgerDir!, pluginRoot: this.pluginRoot, store,
+      openDatabase: () => new Database(this.databasePath, { readonly: true, create: false }),
+      runAgent: this.runAgent, spawnImpl: this.spawnImpl,
+      sessionCwd: (platform, sessionId) => this.source.sessionCwd(platform, sessionId),
+      recordDeliverable: this.recordDeliverable,
+    };
+  }
+
+  /** The request as a stage reads it; null while no refresh has grouped it, since a stage reviews a grouped request. */
+  private stageRequest(request: WorkViewSnapshot['humanRequests'][number]): StageRequest | null {
+    if (!request.groupId) return null;
+    return {
+      id: request.id, groupId: request.groupId, title: typeof request.title === 'string' ? request.title : null,
+      conversationKeys: request.conversationKeys ?? [], workProduct: (request.workProduct ?? []) as StageRequest['workProduct'],
+    };
+  }
+
+  /** Starts one stage of one request in one format (stage-task.ts) and answers once it is recorded as generating. */
+  private startStage = async (req: Request, res: Response): Promise<void> => {
+    const { requestId, formatId, token } = req.body as z.infer<typeof stageBody>;
+    const store = this.ownerRunStart(res, token);
+    if (!store) return;
+    const format = readStageFormats(dirname(this.settingsPath)).formats.find(candidate => candidate.id === formatId);
+    if (!format) { this.notFound(res, 'That stage format does not exist.'); return; }
+    const snapshot = await this.snapshot();
+    if (!snapshot.source.connected) { res.status(503).json({ error: 'Local work is unavailable. Reconnect before staging.' }); return; }
+    const found = snapshot.humanRequests.find(item => item.id === requestId);
+    if (!found) { this.notFound(res, 'That request is not in your work.'); return; }
+    const request = this.stageRequest(found);
+    if (!request) { res.status(409).json({ error: 'This request has not been grouped by a refresh yet. Refresh, then stage it.' }); return; }
+    if (store.hasToken(token)) { this.ownerRunStarted(res, 'duplicate'); return; }
+    const dependencies = this.stageDependencies(store);
+    const claim = claimStage(dependencies, request, format, { token, trigger: 'owner' });
+    if (!claim) { res.status(409).json({ error: 'This stage is already being made.' }); return; }
+    this.trackOwnerRun(generateStage(dependencies, request, format, claim));
+    logger.debug('HTTP', 'Stage started', { format: format.id });
+    this.ownerRunStarted(res, 'started');
+    this.publish();
+  };
+
+  /** The owner's opt-in automatic stages after a refresh (stage-task.ts autoStageAfterRefresh). Off unless the setting names a format. */
+  private async autoStage(refreshState: string, refreshStartedAtEpoch: number): Promise<void> {
+    const store = this.ownerRuns;
+    if (!store || !this.ledgerDir) return;
+    await autoStageAfterRefresh({
+      ledgerDir: this.ledgerDir, format: resolveAutoStageFormat(this.settingsPath, dirname(this.settingsPath)), refreshState, refreshStartedAtEpoch,
+      awaitingCheck: async () => {
+        const now = Date.now();
+        return new Set((await this.snapshot()).humanRequests.flatMap(item => item.groupId && isAwaitingCheck(item as unknown as ApiHumanRequest, now) ? [item.groupId] : []));
+      },
+      generate: async (groupId: string, format: StageFormat) => {
+        const found = (await this.snapshot()).humanRequests.find(item => item.groupId === groupId);
+        const request = found && this.stageRequest(found);
+        if (!request) return;
+        const dependencies = this.stageDependencies(store);
+        // The owner may have started this stage while the request was being read: their run is the stage.
+        let claim: StageClaim | null = null;
+        try { claim = claimStage(dependencies, request, format, { token: null, trigger: 'auto' }); }
+        catch (error) { logger.warn('WORKER', 'An automatic stage could not be started', { error: error instanceof Error ? error.message : String(error) }); }
+        if (!claim) return;
+        await generateStage(dependencies, request, format, claim);
+        this.publish();
+      },
+    });
+  }
+
+  /** Turns automatic stages on (a format id) or off (null). It only saves the setting; nothing is generated by saving it. */
+  private saveAutoStageFormat = async (req: Request, res: Response): Promise<void> => {
+    const { formatId } = req.body as z.infer<typeof autoStageBody>;
+    const dataDir = dirname(this.settingsPath);
+    if (formatId !== null && !readStageFormats(dataDir).formats.some(format => format.id === formatId)) { this.notFound(res, 'That stage format does not exist.'); return; }
+    const result = updateSettingsDocument(this.settingsPath, { CLAUDE_MEM_WORK_VIEW_AUTO_STAGE_FORMAT: formatId ?? '' }, SettingsDefaultsManager.getAllDefaults());
+    if (result.status === 'refused') { res.status(500).json({ error: 'The settings file could not be updated. Repair or restore it, then try again.' }); return; }
+    noteUserSettingsSaved();
+    this.stageSettingsRead = null;
+    const updated = await this.snapshot();
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(updated);
+    this.publish(updated);
+  };
+
+  /** Starts one focus plan (focus-plan-task.ts) for one area or all of them, and answers once it is recorded as planning. */
+  private startFocusPlan = async (req: Request, res: Response): Promise<void> => {
+    const { focusAreaId, token } = req.body as z.infer<typeof focusPlanBody>;
+    const store = this.ownerRunStart(res, token);
+    if (!store) return;
+    const snapshot = await this.snapshot();
+    if (!snapshot.source.connected) { res.status(503).json({ error: 'Local work is unavailable. Reconnect before planning.' }); return; }
+    const input = focusPlanInput((snapshot.focusAreas ?? []) as FocusArea[], snapshot.humanRequests as unknown as PlanSourceRequest[], focusAreaId);
+    if (focusAreaId !== null && !input.areas.length) { this.notFound(res, 'That focus area is not in your focus areas.'); return; }
+    if (!input.areas.length) { res.status(409).json({ error: 'You have no focus areas to plan yet.' }); return; }
+    if (store.hasToken(token)) { this.ownerRunStarted(res, 'duplicate'); return; }
+    if (store.read().plan?.state === 'planning') { res.status(409).json({ error: 'A plan is already being made.' }); return; }
+    this.trackOwnerRun(planFocus({ dataDir: dirname(this.settingsPath), ledgerDir: this.ledgerDir!, pluginRoot: this.pluginRoot, store, runAgent: this.runAgent },
+      input, { token, focusAreaId }));
+    logger.debug('HTTP', 'Focus plan started', { scope: input.scope });
+    this.ownerRunStarted(res, 'started');
+    this.publish();
+  };
+
+
   /** Starts an on-demand refresh and answers before the run ends, which can take many minutes. */
   private startManualRefresh = async (_req: Request, res: Response): Promise<void> => {
     if (!this.autoRefresh) { res.status(503).json({ error: 'Refresh is unavailable on this worker.' }); return; }
@@ -1676,7 +1878,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
       res.status(409).json({ error: 'This work changed. Read the latest result before checking it.', snapshot });
       return;
     }
-    if (checked && !isReportedReadyForCheck(request)) { res.status(409).json({ error: 'This request has not been reported complete.', snapshot }); return; }
+    if (checked && !isReadyForCheck(request as unknown as ApiHumanRequest, Date.now())) { res.status(409).json({ error: 'This request has not been reported complete.', snapshot }); return; }
     let save: { scope: 'local' | 'shared'; state: 'saved' | 'queued' | 'unchanged' };
     if (sharedEnabled) {
       if (!this.saveSharedReview || !request.sharedReviewDescriptor?.complete) { res.status(503).json({ error: 'Shared review persistence is unavailable.' }); return; }
@@ -1781,7 +1983,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
     if (this.closed || !this.clients.size) return;
     if (!snapshot) { this.publishFreshRead(); return; }
     // rulesFile changes without a new revision when the rules are loaded in Claude Code; other tabs must still see it.
-    const signature = JSON.stringify([snapshot.revision, snapshot.source.connected, snapshot.source.error, snapshot.setup, snapshot.rulesFile]);
+    const signature = JSON.stringify([snapshot.revision, snapshot.source.connected, snapshot.source.error, snapshot.setup, snapshot.rulesFile, snapshot.stageFormats, snapshot.autoStageFormat]);
     if (signature !== this.signature) {
       this.signature = signature;
       for (const client of this.clients) if (!this.overviewClients.has(client)) this.send(client, 'work-view', snapshot);

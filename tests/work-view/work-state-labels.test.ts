@@ -7,7 +7,7 @@ import { readWorkStateRows, reduceWorkState } from '../../src/services/work-view
 import {
   appliedLabel, judgedStatusFor, JUDGED_WORK_STATES, LABEL_THRESHOLD, labelOpenWorkState, readWorkStateLabels, workStateItems,
 } from '../../src/services/work-view/work-state-labels.mjs';
-import { isReportedReadyForCheck } from '../../src/services/worker/http/routes/WorkViewRoutes.js';
+import { isReadyForCheck } from '../../src/ui/my-work/src/live/to-work-model.js';
 import { normalizeRequestStatus } from '../../src/ui/my-work/src/live/status-normalization.js';
 import { scratchDir } from '../helpers/scratch-dir.js';
 import { _resetRedactionConfigCache } from '../../src/utils/redaction.js';
@@ -215,6 +215,7 @@ describe('Jev work-state labels', () => {
 
   it('the check route accepts what the viewer offers "Mark checked" for, including a confident finished label', () => {
     const item = (fields: Record<string, unknown>) => ({ kind: 'work-state', status: 'doing', lastUpdateEpoch: NOW, ...fields });
+    const isReportedReadyForCheck = (request: { lifecycle: null; progress: null; items: unknown[] }, now: number) => isReadyForCheck(request as Parameters<typeof isReadyForCheck>[0], now);
     expect(isReportedReadyForCheck({ lifecycle: null, progress: null, items: [item({})] }, NOW)).toBe(false);
     expect(isReportedReadyForCheck({ lifecycle: null, progress: null, items: [item({ judgedStatus: 'needs-review' })] }, NOW)).toBe(true);
     expect(isReportedReadyForCheck({ lifecycle: null, progress: null, items: [item({ status: 'needs-review' })] }, NOW)).toBe(true);
