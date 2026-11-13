@@ -1,0 +1,278 @@
+---
+title: Aider Integration
+description: Persistent memory for Aider — file-based context injection via .aider.conf.yml read:; no automatic capture, no MCP client
+icon: code
+---
+
+## Overview
+
+The Aider integration connects Aider's terminal sessions to claude-mem
+through the one surface Aider actually offers: the conventions file it
+loads read-only into every session. The installer adds one entry — the
+per-project memory file `.claude-mem/aider-memory.md` — to the `read:` list
+in the project's `.aider.conf.yml`, and `aider sync` refreshes that file
+from the claude-mem worker before a session. Aider then answers from past
+decisions without you re-explaining them.
+
+<Warning>
+**No automatic capture.** Aider exposes no hooks, no tool-call events,
+no plugin API, and no MCP client (as of 0.86.x), so Aider sessions are
+not recorded. Nothing is saved unless you save it explicitly through the
+worker API (see below), and nothing is refreshed unless you run
+`aider sync`. File-based context injection is not capture.
+</Warning>
+
+## Capabilities
+
+| Capability | Aider |
+|---|---|
+| Automatic capture | **No** — Aider exposes no hooks or transcript events; no transcript watcher ships in this integration |
+| Explicit save | **Via worker API only** — `POST /api/memory/save` (see below). No `save-note` CLI wrapper exists yet, and Aider itself cannot save (no MCP client). Manual notes are searchable immediately but never render into the injected file (no concepts — see Known limitations) |
+| Recall | **Via the injected memory file** + `npx claude-mem search <query>` outside Aider |
+| Injection | **Yes** — `.claude-mem/aider-memory.md` loaded via `.aider.conf.yml` `read:` (read-only, cached) |
+| Export | **`aider sync`** — refreshes the memory file from `GET /api/context/inject` |
+| MCP recall client | **No** — Aider has no MCP client as of 0.86.x |
+
+Catalog-ready description: Aider connects to claude-mem as a file-based
+context integration. It injects per-project memory into every session
+through `.aider.conf.yml` `read:`; it does not automatically capture
+sessions and has no MCP client.
+
+## How It Works
+
+The installer merges one entry into the `read:` list of your project's
+`.aider.conf.yml`:
+
+```yaml
+read:
+  - CONVENTIONS.md
+  - .claude-mem/aider-memory.md  # claude-mem (managed)
+```
+
+If the project has no `read:` key yet, the installer appends a managed
+block instead:
+
+```yaml
+# >>> claude-mem aider (managed by claude-mem; do not edit) >>>
+read:
+  - .claude-mem/aider-memory.md
+# <<< claude-mem aider <<<
+```
+
+Aider loads every `read:` file read-only into the session (cached, and
+re-read when it changes). The memory file itself is refreshed from the
+worker — `GET /api/context/inject`, the same endpoint Cursor's context
+refresh uses — so the decisions other agents saved for this project show
+up in Aider. The file lives under `.claude-mem/` in the project, next to
+nothing you own: it never collides with your files, and it is meant to
+stay local (see `.gitignore` below).
+
+The merge is text-level: your other keys, comments, key order, and API
+keys are preserved byte-for-byte. A config whose `read:` region is
+ambiguous (duplicate `read:` keys, an unclosed flow list, tab
+indentation) is refused — the file is left untouched and the installer
+says why, instead of replacing it with an empty object.
+
+## Installation
+
+Prerequisites: Aider 0.86.x (`pip install aider-chat`), a model key or local model (Aider needs one to run), and claude-mem installed with the worker running (`npx claude-mem start`).
+
+Run the interactive installer and let it auto-detect Aider:
+
+```bash
+npx claude-mem install
+```
+
+Or install only the Aider integration, from the project root:
+
+```bash
+npx claude-mem install --ide aider
+```
+
+What the installer does:
+
+- Resolves your config: the project's `.aider.conf.yml` (git root first,
+  then the working directory, then `~/.aider.conf.yml` — Aider's own
+  search order).
+- Backs up an existing `.aider.conf.yml` first, as
+  `.aider.conf.yml.bak-YYYYMMDD` (owner-only, mode `0600`, one per day).
+- Merges `.claude-mem/aider-memory.md` into `read:`, preserving every
+  other key, comment, and entry. Re-running install is a no-op.
+- Creates `.claude-mem/aider-memory.md` with a placeholder, then
+  best-effort refreshes it from the worker. If the worker is not
+  running, install still succeeds — run `npx claude-mem aider sync`
+  once it is.
+
+### Keep the memory file local
+
+The memory file holds past-session context for this project. Add it to
+`.gitignore` so it is never committed:
+
+```
+.claude-mem/
+```
+
+### Manual setup
+
+If you prefer not to run the installer, add the entry yourself to the
+project's `.aider.conf.yml` (create the file if it does not exist):
+
+```yaml
+read:
+  - .claude-mem/aider-memory.md
+```
+
+Then create `.claude-mem/aider-memory.md` and run
+`npx claude-mem aider sync` to fill it. The path is relative to the
+directory you run Aider from — run Aider from the project root.
+
+## Refreshing memory
+
+Before a session, refresh the memory file from the worker:
+
+```bash
+npx claude-mem aider sync
+```
+
+This fetches `GET /api/context/inject?project=<name>&cwd=<project>` and
+writes the result into the managed `<claude-mem-context>` block of
+`.claude-mem/aider-memory.md`. Notes you write in that file outside the
+block are preserved. If the worker is unreachable, sync fails honestly
+with an error and leaves the file untouched — it never reports a refresh
+it did not do. An empty result (no memory yet) leaves the file alone.
+
+## Verification
+
+1. Run `npx claude-mem aider status` — it reports installed and the
+   memory file path.
+2. Have a session observation for this project first: finish a session in
+   another agent (Claude Code, Cursor, …) where the decision was made —
+   for example, "The project uses SQLite for local persistence." The
+   observer turns it into a concept-tagged observation, which is what the
+   SessionStart rendering includes.
+3. Run `npx claude-mem aider sync`, then open
+   `.claude-mem/aider-memory.md` and check the decision title is listed
+   in it. The file carries the SessionStart index — decision titles and
+   timeline, not full narratives (the worker renders full text only for
+   the full-observation set, which defaults to zero). Full text is
+   retrieved with search or the viewer.
+4. Start Aider from the project root (`aider`). Aider adds the memory
+   file to the chat read-only — `.aider.chat.history.md` records the
+   line `Added .claude-mem/aider-memory.md to the chat (read-only).`
+5. Ask Aider about the known decision ("What did we decide about local
+   persistence in this project?") — it should answer from the injected
+   context. Then search from outside Aider to confirm the same memory is
+   still there:
+
+```bash
+npx claude-mem search "SQLite local persistence"
+```
+
+### Explicit save (worker API)
+
+Aider cannot save memory itself, so save from outside the session. The
+worker API accepts an explicit note:
+
+```bash
+curl -X POST http://127.0.0.1:<worker-port>/api/memory/save \
+  -H 'Content-Type: application/json' \
+  -d '{"text": "The project uses SQLite for local persistence.", "project": "my-project"}'
+```
+
+(The worker port is `37700 + uid % 100` by default; check
+`~/.claude-mem/settings.json` or `CLAUDE_MEM_WORKER_PORT` for yours.)
+The note is searchable immediately with `npx claude-mem search` — but
+note the limitation below: a manually saved note has no concepts, so the
+SessionStart compiler does not render it into the memory file. Manual
+notes are for search and the viewer; the injected file carries session
+observations. A `save-note` CLI wrapper does not exist yet — that is an
+open maintainer question, not a hidden feature.
+
+## Troubleshooting
+
+- **Aider does not load the memory file:** run Aider from the project
+  root — `read:` paths are relative to where Aider runs. Check
+  `npx claude-mem aider status` and that `.claude-mem/aider-memory.md`
+  exists.
+- **`read:` entry missing after install:** check the installer targeted
+  the config you expected (`npx claude-mem aider status` prints the
+  path). Aider searches git root, then cwd, then `$HOME` — a
+  `~/.aider.conf.yml` and a project `.aider.conf.yml` are different
+  files.
+- **Install fails with "Duplicate top-level `read:` key":** your
+  `.aider.conf.yml` has two `read:` keys. Remove one (your original
+  bytes are also in the `.aider.conf.yml.bak-YYYYMMDD` backup) and
+  re-run install.
+- **Install fails with a flow-list or indentation error:** write `read:`
+  as a block list with space indentation (YAML forbids tabs) and re-run
+  install.
+- **`aider sync` fails with "Worker is not running":** start it with
+  `npx claude-mem start`, then sync again. The memory file is untouched
+  on failure.
+- **Memory file is empty after sync:** there is no session memory for
+  this project yet. Finish a session in another agent (Claude Code,
+  Cursor, …) where a decision is made, then sync again. A manually
+  saved note does not populate the file (see Known limitations) — it is
+  searchable, not injectable.
+- **API key in `.aider.conf.yml`:** never put keys in the config file
+  itself if you can avoid it — use environment variables or a `.env`
+  file. The installer never prints config contents, but Aider writes a
+  `--api-key` passed on the command line into `.aider.chat.history.md`,
+  so prefer env vars there too.
+
+## Uninstall
+
+```bash
+npx claude-mem uninstall
+```
+
+The global uninstall removes only the claude-mem entry from `read:` —
+the managed block, or the list entry carrying the
+`# claude-mem (managed)` comment. A `read:` entry you wrote yourself is
+left alone, as are all your other settings. Your memory file is left
+untouched (memory is never deleted as a side effect) — delete
+`.claude-mem/aider-memory.md` yourself if you no longer want it. Or
+remove the entry by hand from `.aider.conf.yml`.
+
+## Known limitations
+
+- No automatic capture of Aider sessions (no host hook surface). A
+  transcript-file watcher on `.aider.chat.history.md` was proposed in
+  the scope comment on #5893 and is pending a maintainer ruling — it is
+  deliberately not shipped here.
+- No MCP client in Aider as of 0.86.x, so no in-chat recall tools and no
+  in-chat explicit save. Recall is the injected file plus
+  `npx claude-mem search` outside Aider.
+- The injected file is the SessionStart index — decision titles and
+  timeline, not full narratives (the worker renders full text only for
+  the full-observation set, which defaults to zero). A note saved only
+  via `POST /api/memory/save` never appears in the file: manual saves
+  carry no concepts, and the SessionStart compiler renders only
+  concept-tagged session observations (only the Grok Bot index writer
+  opts into manual saves). Manual notes are searchable immediately; the
+  file carries session memory.
+- No `save-note` CLI wrapper exists; explicit save is the worker API
+  call above.
+- The live Aider run could not get a model answer on this machine (no
+  model key available, and none is bundled or sought): with a dummy key,
+  Aider 0.86.2 loaded the generated `.aider.conf.yml` (verbose dump:
+  `read: ['.claude-mem/aider-memory.md']`) and added the memory file to
+  the chat read-only (`.aider.chat.history.md`: `Added
+  .claude-mem/aider-memory.md to the chat (read-only).`), then failed at
+  the model call as expected. The in-session answer step needs a run
+  with a real model key (yours or a maintainer's).
+- Aider's releases have stalled — latest package 0.86.2 (Feb 2026), no
+  commits on main since 22 May 2026. If native MCP support lands, this
+  integration should be revisited as an MCP recall client.
+- Windows paths in `.aider.conf.yml` (`C:\...` entries) are preserved
+  by the merge but were not verified by running Aider on Windows.
+
+## Official reference
+
+- Aider conventions / `read:` files: https://aider.chat/docs/usage/conventions
+- Aider config file (`.aider.conf.yml`): https://aider.chat/docs/config/aider_conf.html
+- Aider chat history files: https://aider.chat/docs/faq.html
+- Aider MCP status (no native client as of 0.86.x; open RFC):
+  https://github.com/Aider-AI/aider/issues/4506
+- claude-mem worker API / platform integration:
+  https://docs.claude-mem.ai/platform-integration

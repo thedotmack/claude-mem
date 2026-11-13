@@ -357,7 +357,7 @@ export async function resolveClaudeAutoMemoryChoice(
   return choice;
 }
 
-export function makeIDETask(ideId: string, summary: InstallSummary, dshProfile?: string): TaskDescriptor | null {
+export function makeIDETask(ideId: string, summary: InstallSummary, dshProfile?: string, noAutoStart?: boolean): TaskDescriptor | null {
   const recordFailure = (label: string, output: string) => {
     // Route every per-IDE failure through the central decision point. A single
     // IDE failure is FAIL_LOUD_PER_IDE (partial install); the summary headline
@@ -435,6 +435,25 @@ export function makeIDETask(ideId: string, summary: InstallSummary, dshProfile?:
             return `Kimi Code: hooks + MCP installed ${styleText('green', 'OK')}`;
           }
           return `Kimi Code: hooks installed; MCP setup failed — run \`npx claude-mem kimi install\` ${styleText('yellow', '!')}`;
+        },
+      };
+    }
+
+    case 'aider': {
+      return {
+        title: 'Aider: installing file-based context',
+        task: async (message) => {
+          message('Loading Aider installer…');
+          const { installAiderIntegration } = await import('../../services/integrations/AiderInstaller.js');
+          message('Installing Aider context…');
+          // --no-auto-start: the best-effort refresh must not start a worker
+          // before this install run honours that flag below.
+          const { result, output } = await bufferConsole(async () => installAiderIntegration({ noAutoStart }));
+          if (result !== 0) {
+            recordFailure('Aider: file-based context installation failed', output);
+            return `Aider: file-based context installation failed ${styleText('red', 'FAIL')}`;
+          }
+          return `Aider: file-based context installed ${styleText('green', 'OK')}`;
         },
       };
     }
@@ -706,10 +725,10 @@ export function makeIDETask(ideId: string, summary: InstallSummary, dshProfile?:
   }
 }
 
-async function setupIDEs(selectedIDEs: string[], summary: InstallSummary, dshProfile?: string): Promise<string[]> {
+async function setupIDEs(selectedIDEs: string[], summary: InstallSummary, dshProfile?: string, noAutoStart?: boolean): Promise<string[]> {
   const tasks: TaskDescriptor[] = [];
   for (const ideId of selectedIDEs) {
-    const taskDescriptor = makeIDETask(ideId, summary, dshProfile);
+    const taskDescriptor = makeIDETask(ideId, summary, dshProfile, noAutoStart);
     if (taskDescriptor) tasks.push(taskDescriptor);
   }
 
@@ -3496,7 +3515,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     options.model = browserModelChoice(resumedState.install.selection, resumedState.install.catalog, options.model);
   }
 
-  const failedIDEs = browserSetup ? [] : await setupIDEs(selectedIDEs, summary, options.dshProfile);
+  const failedIDEs = browserSetup ? [] : await setupIDEs(selectedIDEs, summary, options.dshProfile, options.noAutoStart);
 
   // Optionally disable Claude Code's built-in auto-memory (CLAUDE_CODE_DISABLE_AUTO_MEMORY=1)
   // when the user explicitly opts in, either through the interactive prompt or
@@ -3592,7 +3611,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
               registerPlugin(version);
               if (selection.agents.includes('claude-code')) enablePluginInClaudeSettings();
               const attempt = createInstallSummary();
-              await setupIDEs(selection.agents, attempt, selection.dshProfile ?? options.dshProfile);
+              await setupIDEs(selection.agents, attempt, selection.dshProfile ?? options.dshProfile, options.noAutoStart);
               if (attempt.failedIDEs.length) {
                 throw new Error(`Could not finish setup for ${attempt.failedIDEs.join(', ')}. ${attempt.warnings.map(w => w.message).join(' ')}`);
               }
@@ -3663,7 +3682,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   const newlyPickedIDEs = pickedTools.map((tool) => FINISH_SETUP_LOCAL_TOOL_IDES[tool]).filter((ide): ide is string => Boolean(ide) && !selectedIDEs.includes(ide!));
   if (newlyPickedIDEs.length) {
     // Failures land on summary.failedIDEs, the same list the summary reads.
-    await setupIDEs(newlyPickedIDEs, summary, options.dshProfile);
+    await setupIDEs(newlyPickedIDEs, summary, options.dshProfile, options.noAutoStart);
     selectedIDEs = [...selectedIDEs, ...newlyPickedIDEs];
   }
 
