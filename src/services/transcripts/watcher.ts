@@ -226,7 +226,8 @@ class FileTailer {
   private closed = false;
   private readonly isZstd: boolean;
   /** JSONL only: the bytes of the unterminated record between `offset` and `readOffset`. */
-  private pendingRecord: Buffer = Buffer.alloc(0);
+  private pendingRecordParts: Buffer[] = [];
+  private pendingRecordBytes = 0;
   /**
    * zstd only: how many lines of the frame at `offset` were dispatched before
    * reading stopped, so a restart resumes at the next unread line. Persisted
@@ -338,7 +339,8 @@ class FileTailer {
       if (keepsCheckpointBytes(this.filePath, identity, size, this.tailState.offset, this.checkpointFingerprint)) {
         // An unterminated record past the checkpoint is read again, from the new file.
         this.tailState.readOffset = this.tailState.offset;
-        this.pendingRecord = Buffer.alloc(0);
+        this.pendingRecordParts = [];
+        this.pendingRecordBytes = 0;
       } else {
         replaced = true;
       }
@@ -352,7 +354,8 @@ class FileTailer {
       this.tailState.readOffset = 0;
       this.tailState.partial = '';
       this.zstdPartialBytes = undefined;
-      this.pendingRecord = Buffer.alloc(0);
+      this.pendingRecordParts = [];
+      this.pendingRecordBytes = 0;
       this.frameLinesDone = 0;
     }
 
@@ -400,17 +403,20 @@ class FileTailer {
     if (chunk.length === 0) return;
     this.tailState.readOffset = readFrom + chunk.length;
 
-    // buffer[0] is the byte at the checkpoint.
-    const buffer = this.pendingRecord.length > 0 ? Buffer.concat([this.pendingRecord, chunk]) : chunk;
-    const base = this.tailState.offset;
     let lineStart = 0;
     let dispatched = 0;
-    for (let newline = buffer.indexOf(0x0a); newline !== -1; newline = buffer.indexOf(0x0a, lineStart)) {
+    for (let newline = chunk.indexOf(0x0a); newline !== -1; newline = chunk.indexOf(0x0a, lineStart)) {
       if (this.closed) {
-        this.checkpoint(base + lineStart);
+        this.checkpoint(this.tailState.offset);
         return;
       }
-      const line = buffer.toString('utf8', lineStart, newline).trim();
+      const tail = chunk.subarray(lineStart, newline);
+      const bytes = this.pendingRecordParts.length
+        ? Buffer.concat([...this.pendingRecordParts, tail], this.pendingRecordBytes + tail.length)
+        : tail;
+      this.pendingRecordParts = [];
+      this.pendingRecordBytes = 0;
+      const line = bytes.toString('utf8').trim();
       if (line) {
         try {
           await this.onLine(line);
@@ -419,15 +425,19 @@ class FileTailer {
         }
       }
       lineStart = newline + 1;
-      this.tailState.offset = base + lineStart;
+      this.tailState.offset = readFrom + lineStart;
       if (line && ++dispatched % YIELD_EVERY_N_LINES === 0) {
         this.checkpoint(this.tailState.offset);
         await yieldToEventLoop();
       }
     }
 
-    this.pendingRecord = Buffer.from(buffer.subarray(lineStart));
-    this.checkpoint(base + lineStart);
+    if (lineStart < chunk.length) {
+      const tail = lineStart === 0 ? chunk : Buffer.from(chunk.subarray(lineStart));
+      this.pendingRecordParts.push(tail);
+      this.pendingRecordBytes += tail.length;
+    }
+    this.checkpoint(this.tailState.offset);
     if (this.tailState.readOffset < size) this.readPending = true;
   }
 
