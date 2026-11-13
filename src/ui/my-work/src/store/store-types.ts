@@ -1,13 +1,14 @@
 // The one My Work store is these slices bound together (index.ts). Each slice keeps its state under one key
 // (`work`, `view`, `rules`) and its actions at the top level, after MemeDeck's lib/store.
-import type { FocusChange, Request } from '../data.ts'
+import type { FocusChange, FocusIconUpload, FocusPlan, Request } from '../data.ts'
 import type { OwnerRule, RuleChange } from '../data-rules.ts'
 import type { ConnectionStatus } from '../live/connection-status.ts'
 import type { ReviewResult } from '../live/review-response.ts'
 import type { RuleDecision, SavedRuleDecision } from '../live/rule-actions.ts'
+import type { FocusArrangement } from '../live/thread-groups.ts'
 import type { RequestChange } from '../live/update-queue.ts'
 import type { UsageReport } from '../live/usage.ts'
-import type { RuleSaveResult, SuggestionSaveResult, WorkDataSource, WorkModel } from '../live/work-data-source.ts'
+import type { OwnerRunStart, RuleSaveResult, SuggestionSaveResult, WorkDataSource, WorkModel } from '../live/work-data-source.ts'
 
 // ---------- Work: the active source's model ----------
 
@@ -27,6 +28,10 @@ export interface WorkState {
   sourceKind: WorkDataSource['sourceKind'] | null
   /** A save went through but reading the model after it failed. The save stands; this says why the screen may lag. */
   refreshError: string | null
+  /** The latest ready focus plan with its proposals, read when the model says one is ready; null otherwise. */
+  focusPlan: FocusPlan | null
+  /** The answer this page last sent each request, kept until its delivery went through so a failed one can be copied (live/answer-line.ts). */
+  sentAnswers: Readonly<Record<string, string>>
 }
 
 export interface WorkSlice {
@@ -48,6 +53,22 @@ export interface WorkSlice {
   markAgentFinished: (agentId: string) => Promise<void>
   loadRulesInClaudeCode: () => Promise<void>
   refreshWork: () => Promise<{ state: string }>
+  /**
+   * Sends the owner's answer into the request's own agent session. One click is at most one run: `started` means the
+   * tool was started (the request's `answer` then says delivered or failed), `refused` means nothing was sent and the
+   * page should fall back to copying the answer and opening the chat.
+   */
+  answerRequest: (requestId: string, text: string) => Promise<OwnerRunStart>
+  /** Starts one stage of a request in one of `model.stageFormats`. The request's `stages` (detail) and `readyStages` carry the result. */
+  generateStage: (requestId: string, formatId: string) => Promise<OwnerRunStart>
+  /** Turns automatic stages on (a format id) or off (null). Off until the owner turns it on; saving it generates nothing. */
+  setAutoStageFormat: (formatId: string | null) => Promise<void>
+  /** Starts planning help for one focus area, or all of them (null). `model.focusPlan` carries its state; `work.focusPlan` its proposals. */
+  planFocus: (focusAreaId: string | null) => Promise<OwnerRunStart>
+  /** Saves an image as a focus area's icon, or removes the icon (null). Rejects with the reason it was not saved. */
+  setFocusIcon: (focusAreaId: string, upload: FocusIconUpload | null) => Promise<void>
+  /** Starts one run of the owner's agent that draws an icon for a focus area. The area's `iconRun` says how it goes. */
+  generateFocusIcon: (focusAreaId: string, direction?: string) => Promise<OwnerRunStart>
   /** Sample mode only: replace one fixture request everywhere. */
   updateSampleRequest: (id: string, change: (request: Request) => Request) => void
   /** Sample mode only: the wireframe agent finishes while you watch. Returns the stop. */
@@ -59,12 +80,17 @@ export interface WorkSlice {
 /** `setup` is the install funnel (`?setup=1`): a full page outside the nav that becomes My Work when it completes. */
 export type Page = 'setup' | 'app'
 export type NavPage = 'work' | 'rules'
-/** What the main column shows: a page, or one of the focus views the rail opens. */
+/** What the page shows: My Focus or My Rules, or one of the focus views the header links to. */
 export type Section = NavPage | 'suggested' | 'past-focus'
-export type WorkListView = 'cards' | 'list' | 'agents' | 'team'
-export type WorkFilter = 'all' | 'needs-you' | 'working' | 'shipped' | 'closed'
-export type WorkSort = 'attention' | 'started' | 'progress'
-export type FocusArtwork = 'full' | 'compact' | 'off'
+/** The top level shows the focuses as lines that open onto their threads, or as one card each; By agent and Team are offered only with the team switch on. */
+export const WORK_LIST_VIEWS = ['threads', 'cards', 'agents', 'team'] as const
+export type WorkListView = (typeof WORK_LIST_VIEWS)[number]
+/** How one focus shows its threads, in the opened focus line and on the focus page: rows, columns by what is next, or a card each. */
+export const FOCUS_THREAD_VIEWS = ['threads', 'board', 'cards'] as const
+export type FocusThreadView = (typeof FOCUS_THREAD_VIEWS)[number]
+/** Open is the default: everything that does not rest. Done holds what does (shipped, checked, closed) and shows only when picked. */
+export const WORK_FILTERS = ['open', 'needs-you', 'working', 'done'] as const
+export type WorkFilter = (typeof WORK_FILTERS)[number]
 export interface Workspace { mode: 'home' | 'web'; team: boolean; connected: boolean }
 export type FocusSelection = { kind: 'area'; focusAreaId: string } | { kind: 'suggested' } | { kind: 'past-focus' } | null
 
@@ -85,10 +111,13 @@ export interface ViewState {
   showSpec: boolean
   dark: boolean
   listView: WorkListView
+  /** One choice for every focus, per viewer. */
+  focusThreadView: FocusThreadView
   filter: WorkFilter
-  sort: WorkSort
-  /** Display density only; changing it never requests image generation. */
-  focusArtwork: FocusArtwork
+  /** How the focus list is laid out: the owner's order, or the same order under a heading per initiative. */
+  focusArrangement: FocusArrangement
+  /** The board's Done column: a narrow header with its count until the person opens it. */
+  doneColumnOpen: boolean
 }
 
 export interface ViewSlice {
@@ -109,9 +138,10 @@ export interface ViewSlice {
   setShowSpec: (showSpec: boolean) => void
   setDark: (dark: boolean) => void
   setListView: (listView: WorkListView) => void
+  setFocusThreadView: (focusThreadView: FocusThreadView) => void
   setFilter: (filter: WorkFilter) => void
-  setSort: (sort: WorkSort) => void
-  setFocusArtwork: (focusArtwork: FocusArtwork) => void
+  setFocusArrangement: (focusArrangement: FocusArrangement) => void
+  setDoneColumnOpen: (open: boolean) => void
 }
 
 // ---------- Rules: the receipts and Undo for My Rules saves ----------

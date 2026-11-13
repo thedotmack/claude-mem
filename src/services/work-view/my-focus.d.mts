@@ -11,8 +11,20 @@ export interface FocusArea {
   about: string | null; status: FocusAreaStatus;
   priorityRank: number | null; ownerRank: number | null; source: FocusAreaSource;
   mergedInto: string | null; evidence: string | null; decidedBy: FocusAreaDecidedBy; savedAt: string | null;
+  /** The owner's own notes on the area (a "Notes:" row only the owner writes); null when there are none. */
+  notes: string | null;
+  /** The initiative the owner filed the area under (an "Initiative:" row only the owner writes); null when they filed it
+   * nowhere. In the snapshot it is the name the board shows, which may be a guess (focus-initiative.mjs). */
+  initiative: string | null;
+  /** Set when the owner filed the area under no initiative: `initiative` is then null and no guess takes its place. */
+  initiativeNone?: true;
 }
-export function focusAreaRowFields(area: Omit<FocusArea, 'savedAt' | 'about'> & { about?: string | null }): Record<string, string | number | null>;
+export function focusAreaRowFields(area: Omit<FocusArea, 'savedAt' | 'about' | 'notes' | 'initiative' | 'initiativeNone'> & { about?: string | null }): Record<string, string | number | null>;
+/** The owner's initiative row for one area; an empty name clears it back to the guess, or with `none` files the area
+ * under no initiative. Throws a RangeError over MAX_FOCUS_INITIATIVE_CHARS. */
+export function focusInitiativeRowFields(focusAreaId: string, initiative: string, options?: { none?: boolean }): Record<string, string | boolean | null>;
+/** The owner's notes row for one area; empty notes clear them. Throws a RangeError over MAX_FOCUS_NOTES_CHARS. */
+export function focusNotesRowFields(focusAreaId: string, notes: string): Record<string, string | null>;
 export function placementRowFields(placement: {
   anchorConversationKey: string; focusAreaId: string; placedBy: 'router' | 'owner'; confidence?: number | null; basis?: string | null; evidence?: string | null;
 }): Record<string, string | number | null>;

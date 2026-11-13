@@ -39,7 +39,7 @@ describe('requestChanges', () => {
   })
 
   it('never reports a progress drop or a closed new request', () => {
-    assert.deepEqual(requestChanges([live('a', 'working', 60)], [live('a', 'working', 40), live('z', 'idle', null, { closed: true })], 1), [])
+    assert.deepEqual(requestChanges([live('a', 'working', 60)], [live('a', 'working', 40), live('z', 'closed', null)], 1), [])
   })
 
   it('uses the title being written while a request has no title yet', () => {

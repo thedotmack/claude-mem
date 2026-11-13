@@ -28,8 +28,8 @@ export function useFocusChanges() {
   const { focusAreas, requests } = useWorkModel()
   const { history, saving, error } = useStore.use.focus()
   const { applyFocusChange, undoLastFocusChange } = useStore.getState()
-  /** `record: false` when the screen shows its own Undo for it (a decided suggestion card). Resolves true when saved. */
-  const apply = (change: FocusChange, { record = true } = {}) => applyFocusChange(change, record ? describeFocusChange(change, focusAreas, requests) : null)
+  /** `record: false` when the screen shows its own Undo for it (a decided suggestion card); `heading` is the initiative heading a rename was typed on. Resolves true when saved. */
+  const apply = (change: FocusChange, { record = true, heading }: { record?: boolean; heading?: string } = {}) => applyFocusChange(change, record ? describeFocusChange(change, focusAreas, requests, heading) : null)
   return { last: history.at(-1) ?? null, apply, undoLast: undoLastFocusChange, error, saving }
 }
 

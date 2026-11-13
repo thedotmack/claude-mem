@@ -107,6 +107,21 @@ describe('My Focus routes', () => {
     expect(areaById(view, 'fa_community').status).toBe('done');
   });
 
+  it('refuses a notes Undo whose version predates newer notes, and keeps the newer notes', async () => {
+    const undo = { action: 'edit-notes', focusAreaId: 'fa_viewer', notes: '' };
+    const saved = await (await saveFocus({ ...undo, notes: 'Mine' })).json();
+    const shown = toWorkModel(saved, Date.now());
+    const expectedVersion = focusChangeVersion(undo, shown.focusAreas, shown.requests);
+    expect((await saveFocus({ ...undo, notes: 'Newer, from another tab' })).status).toBe(200);
+    const refused = await saveFocus({ ...undo, expectedVersion });
+    expect(refused.status).toBe(409);
+    expect(areaById(await snapshot(), 'fa_viewer').notes).toBe('Newer, from another tab');
+    const current = toWorkModel(await snapshot(), Date.now());
+    await saveFocus({ action: 'rename', focusAreaId: 'fa_viewer', name: 'Renamed elsewhere' });
+    expect((await saveFocus({ ...undo, expectedVersion: focusChangeVersion(undo, current.focusAreas, current.requests) })).status).toBe(200);
+    expect(areaById(await snapshot(), 'fa_viewer').notes).toBeNull();
+  });
+
   it.each([
     { name: 'area', saved: { action: 'rename', focusAreaId: 'fa_viewer', name: 'Saved name' },
       undo: { action: 'rename', focusAreaId: 'fa_viewer', name: 'Viewer' },
@@ -196,6 +211,97 @@ describe('My Focus routes', () => {
     expect(areaById(await snapshot(), 'fa_viewer')).toMatchObject({ name: 'The viewer', goal: 'Show the work plainly.' });
   });
 
+  it('saves the owner\'s notes without deciding the area, keeps them through a system row, and clears them when emptied', async () => {
+    const notes = `Why it matters; rm -rf "$HOME" \`x\`\n${'n'.repeat(1900)}`;
+    let response = await saveFocus({ action: 'edit-notes', focusAreaId: 'fa_viewer', notes });
+    expect(response.status).toBe(200);
+    expect(areaById(await response.json(), 'fa_viewer')).toMatchObject({ notes, status: 'suggested', decidedBy: 'system' });
+    insertRow(suggestedArea('fa_viewer', 'Viewer', 2));
+    expect(areaById(await snapshot(), 'fa_viewer')).toMatchObject({ notes, priorityRank: 2 });
+    expect((await saveFocus({ action: 'edit-notes', focusAreaId: 'fa_viewer', notes: 'n'.repeat(2001) })).status).toBe(400);
+    expect((await saveFocus({ action: 'edit-notes', focusAreaId: 'fa_viewer' })).status).toBe(400);
+    expect((await saveFocus({ action: 'edit-notes', focusAreaId: 'missing', notes: 'x' })).status).toBe(404);
+    response = await saveFocus({ action: 'edit-notes', focusAreaId: 'fa_viewer', notes: '   ' });
+    expect(areaById(await response.json(), 'fa_viewer').notes).toBeNull();
+  });
+
+  it('files several areas under one initiative in one change, keeps it through a system row, and clears it back to the guess', async () => {
+    // The request ran in example-project; placed in Viewer, that folder is Viewer's guess.
+    insertRow(placementRowFields({ anchorConversationKey: CONVERSATION, focusAreaId: 'fa_viewer', placedBy: 'owner', evidence: 'moved' }));
+    expect(areaById(await snapshot(), 'fa_viewer')).toMatchObject({ initiative: 'example-project', initiativeGuess: true });
+    expect(areaById(await snapshot(), 'fa_endless').initiative).toBeNull();
+    const before = ownerRows().length;
+    let response = await saveFocus({ action: 'set-initiative', focusAreaIds: ['fa_viewer', 'fa_endless'], initiative: '  Kite maps ' });
+    expect(response.status).toBe(200);
+    let view = await response.json();
+    for (const id of ['fa_viewer', 'fa_endless']) {
+      expect(areaById(view, id)).toMatchObject({ initiative: 'Kite maps', status: 'suggested', decidedBy: 'system' });
+      expect(areaById(view, id)).not.toHaveProperty('initiativeGuess');
+    }
+    expect(ownerRows().length - before).toBe(2);
+    // A refresh re-ranks the suggestion: the owner's initiative stands, and the guess never replaces it.
+    insertRow(suggestedArea('fa_viewer', 'Viewer', 2));
+    expect(areaById(await snapshot(), 'fa_viewer')).toMatchObject({ initiative: 'Kite maps', priorityRank: 2 });
+    // Another area joins under the same name in another case: one initiative, the first spelling.
+    view = await (await saveFocus({ action: 'set-initiative', focusAreaIds: ['fa_community'], initiative: 'KITE MAPS' })).json();
+    expect(areaById(view, 'fa_community').initiative).toBe('Kite maps');
+    view = await (await saveFocus({ action: 'set-initiative', focusAreaIds: ['fa_viewer', 'fa_endless'], initiative: '' })).json();
+    expect(areaById(view, 'fa_viewer')).toMatchObject({ initiative: 'example-project', initiativeGuess: true });
+    expect(areaById(view, 'fa_endless').initiative).toBeNull();
+  });
+
+  it('files an area under no initiative so the folder guess does not come back, across a fresh read of the ledger', async () => {
+    insertRow(placementRowFields({ anchorConversationKey: CONVERSATION, focusAreaId: 'fa_viewer', placedBy: 'owner', evidence: 'moved' }));
+    expect(areaById(await snapshot(), 'fa_viewer')).toMatchObject({ initiative: 'example-project', initiativeGuess: true });
+    const guessed = focusChangeVersion({ action: 'set-initiative', focusAreaIds: ['fa_viewer'] }, (await snapshot()).focusAreas, []);
+    const response = await saveFocus({ action: 'set-initiative', focusAreaIds: ['fa_viewer'], initiative: '', noInitiative: true });
+    expect(response.status).toBe(200);
+    const view = await response.json();
+    expect(areaById(view, 'fa_viewer')).toMatchObject({ initiative: null, initiativeNone: true });
+    expect(areaById(view, 'fa_viewer')).not.toHaveProperty('initiativeGuess');
+    // Filed under none is the owner's own version, not the same as never filed.
+    expect(focusChangeVersion({ action: 'set-initiative', focusAreaIds: ['fa_viewer'] }, view.focusAreas, [])).not.toBe(guessed);
+    // A refresh row changes the ledger, so the next read replays every row: the filing stands.
+    insertRow(suggestedArea('fa_viewer', 'Viewer', 2));
+    expect(areaById(await snapshot(), 'fa_viewer')).toMatchObject({ initiative: null, initiativeNone: true, priorityRank: 2 });
+    // Undo to the guess is the plain empty filing; a name with the none marker is refused.
+    expect((await saveFocus({ action: 'set-initiative', focusAreaIds: ['fa_viewer'], initiative: 'Kite maps', noInitiative: true })).status).toBe(400);
+    const cleared = await (await saveFocus({ action: 'set-initiative', focusAreaIds: ['fa_viewer'], initiative: '' })).json();
+    expect(areaById(cleared, 'fa_viewer')).toMatchObject({ initiative: 'example-project', initiativeGuess: true });
+    expect(areaById(cleared, 'fa_viewer')).not.toHaveProperty('initiativeNone');
+  });
+
+  it('refuses an initiative that is too long, names an unknown or repeated area, or has no name field', async () => {
+    const save = (body: Record<string, unknown>) => saveFocus({ action: 'set-initiative', ...body });
+    expect((await save({ focusAreaIds: ['fa_viewer'], initiative: 'x'.repeat(61) })).status).toBe(400);
+    expect((await save({ focusAreaIds: ['fa_viewer'], initiative: `  ${'x'.repeat(60)}  ` })).status).toBe(200);
+    expect((await save({ focusAreaIds: ['fa_viewer', 'fa_missing'], initiative: 'Kite maps' })).status).toBe(404);
+    expect((await save({ focusAreaIds: ['fa_viewer', 'fa_viewer'], initiative: 'Kite maps' })).status).toBe(400);
+    expect((await save({ focusAreaIds: ['fa_viewer'] })).status).toBe(400);
+    expect((await save({ focusAreaId: 'fa_viewer', initiative: 'Kite maps' })).status).toBe(400);
+    expect((await save({ focusAreaIds: [], initiative: 'Kite maps' })).status).toBe(400);
+    expect((await save({ focusAreaIds: ['other'], initiative: 'Kite maps' })).status).toBe(404);
+    // Nothing was half saved by the refused change that named a real area first.
+    expect(areaById(await snapshot(), 'fa_viewer').initiative).toBe('x'.repeat(60));
+  });
+
+  it('undoes a rename of a heading for every area, and refuses the Undo once one of them was filed again', async () => {
+    const undo = { action: 'set-initiative', focusAreaIds: ['fa_viewer', 'fa_endless'], initiative: '' };
+    const saved = await (await saveFocus({ ...undo, initiative: 'Kite maps' })).json();
+    const shown = toWorkModel(saved, Date.now());
+    const expectedVersion = focusChangeVersion(undo, shown.focusAreas, shown.requests);
+    // Activity on another area is not a newer version of these two.
+    await saveFocus({ action: 'set-initiative', focusAreaIds: ['fa_community'], initiative: 'Small bets' });
+    expect((await saveFocus({ ...undo, expectedVersion })).status).toBe(200);
+    expect(areaById(await snapshot(), 'fa_viewer').initiative).toBeNull();
+    expect(areaById(await snapshot(), 'fa_community').initiative).toBe('Small bets');
+    await saveFocus({ ...undo, initiative: 'Kite maps' });
+    await saveFocus({ action: 'set-initiative', focusAreaIds: ['fa_endless'], initiative: 'Small bets' });
+    expect((await saveFocus({ ...undo, expectedVersion })).status).toBe(409);
+    expect(areaById(await snapshot(), 'fa_endless').initiative).toBe('Small bets');
+    expect(areaById(await snapshot(), 'fa_viewer').initiative).toBe('Kite maps');
+  });
+
   it('shows the areas in priority order and the request as not sorted yet', async () => {
     const view = await snapshot();
     expect(view.focusAreas.map((area: any) => area.name)).toEqual(['Viewer', 'Endless Mode', 'Community']);
@@ -265,6 +371,9 @@ describe('My Focus routes', () => {
     let view = await (await saveFocus({ action: 'merge', focusAreaId: 'fa_community', intoFocusAreaId: 'fa_viewer' })).json();
     expect(areaById(view, 'fa_community').mergedInto).toBe('fa_viewer');
     expect(request(view).focusAreaId).toBe('fa_viewer');
+    // The area its requests land in takes their folder as its guess; the merged one holds none.
+    expect(areaById(view, 'fa_viewer')).toMatchObject({ initiative: 'example-project', initiativeGuess: true });
+    expect(areaById(view, 'fa_community').initiative).toBeNull();
     expect((await saveFocus({ action: 'merge', focusAreaId: 'fa_endless', intoFocusAreaId: 'fa_community' })).status).toBe(409);
     expect((await saveFocus({ action: 'keep', focusAreaId: 'fa_community' })).status).toBe(409);
     view = await (await saveFocus({ action: 'restore-suggestion', focusAreaId: 'fa_community' })).json();
@@ -288,16 +397,39 @@ describe('My Focus routes', () => {
     expect(view.focusAreas.map((area: any) => area.ownerRank)).toEqual([1, 2, 3]);
   });
 
-  it('orders kept areas only: a suggestion is never listed, never written as the owner\'s, and still takes refresh rows', async () => {
+  it('a suggestion left out of the order is never written as the owner\'s and still takes refresh rows', async () => {
     await saveFocus({ action: 'keep', focusAreaId: 'fa_viewer' });
     await saveFocus({ action: 'keep', focusAreaId: 'fa_endless' });
     expect((await saveFocus({ action: 'reorder', focusAreaIds: ['fa_endless'] })).status).toBe(400);
-    expect((await saveFocus({ action: 'reorder', focusAreaIds: ['fa_endless', 'fa_viewer', 'fa_community'] })).status).toBe(400);
     const before = ownerRows().length;
     const view = await (await saveFocus({ action: 'reorder', focusAreaIds: ['fa_endless', 'fa_viewer'] })).json();
     expect(view.focusAreas.slice(0, 2).map((area: any) => [area.focusAreaId, area.ownerRank])).toEqual([['fa_endless', 1], ['fa_viewer', 2]]);
     expect(ownerRows().slice(before).map((row: any) => row.fields.focus_area_id)).toEqual(['fa_endless', 'fa_viewer']);
     expect(areaById(view, 'fa_community')).toMatchObject({ status: 'suggested', ownerRank: null, decidedBy: 'system' });
+  });
+
+  it('keeps a suggestion listed in the order and places it there in the same change, and one Undo version covers both', async () => {
+    await saveFocus({ action: 'keep', focusAreaId: 'fa_viewer' });
+    await saveFocus({ action: 'keep', focusAreaId: 'fa_endless' });
+    const place = { action: 'reorder', focusAreaIds: ['fa_viewer', 'fa_community', 'fa_endless'] };
+    const stale = focusChangeVersion(place, (await snapshot()).focusAreas, []);
+    const response = await saveFocus(place);
+    expect(response.status).toBe(200);
+    const view = await response.json();
+    expect(view.focusAreas.map((area: any) => [area.focusAreaId, area.status, area.ownerRank])).toEqual([['fa_viewer', 'kept', 1], ['fa_community', 'kept', 2], ['fa_endless', 'kept', 3]]);
+    expect(areaById(view, 'fa_community').decidedBy).toBe('owner');
+    // The version a client held from before the keep no longer matches: the suggestion's status was part of it.
+    expect((await saveFocus({ ...place, expectedVersion: stale })).status).toBe(409);
+    // Undo: back to a suggestion, out of the order, and the two kept areas as they were.
+    const back = await (await saveFocus({ action: 'restore-suggestion', focusAreaId: 'fa_community' })).json();
+    expect(areaById(back, 'fa_community')).toMatchObject({ status: 'suggested', ownerRank: null });
+    expect((await saveFocus({ action: 'reorder', focusAreaIds: ['fa_viewer', 'fa_endless'] })).status).toBe(200);
+  });
+
+  it('refuses an order that lists a done, dismissed or merged area beside the kept ones', async () => {
+    for (const id of ['fa_viewer', 'fa_endless']) await saveFocus({ action: 'keep', focusAreaId: id });
+    await saveFocus({ action: 'dismiss', focusAreaId: 'fa_community' });
+    expect((await saveFocus({ action: 'reorder', focusAreaIds: ['fa_viewer', 'fa_endless', 'fa_community'] })).status).toBe(400);
   });
 
   it('leaves dismissed, done and merged areas out of the order', async () => {

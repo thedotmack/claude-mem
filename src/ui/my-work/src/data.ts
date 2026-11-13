@@ -2,6 +2,49 @@
 import type { WorkModel } from './live/work-data-source.ts'
 import type { WorkViewFocusArea, WorkViewMediaManifest, WorkViewRequestMedia } from './live/work-view-api-types.ts'
 import { SAMPLE_MEDIA_REFS } from './components/observation-media/sample-media.ts'
+import { RISK_LEVELS } from '../../../services/work-view/risk-levels.mjs'
+import { HUMAN_NEEDS, type HumanNeed } from '../../../services/work-view/waiting-for.mjs'
+import type { AnswerRunState, IconRunState, PlanProposal, PlanState, StageState } from '../../../services/work-view/owner-runs.mjs'
+import type { WorkViewStageFormat } from './live/work-view-api-types.ts'
+import type { FocusIconUploadFormat } from '../../../services/work-view/focus-icon-limits.mjs'
+import type { FocusAction } from '../../../shared/focus-change-version.ts'
+
+/** Green to red. The one definition is the worker's (risk-levels.mjs); labels and colors are Record<Risk, …>. */
+export { RISK_LEVELS }
+export type Risk = (typeof RISK_LEVELS)[number]
+/** One format a request can be staged in, as the worker lists it: built in, or a file of the owner's. */
+export type StageFormatInfo = WorkViewStageFormat
+
+/** One stage of a request: a staged review in one format. `href` opens it once it is `ready`. The states are the
+ * worker's (owner-runs.mjs STAGE_STATES); word them in a Record<StageState, …>. */
+export interface RequestStage {
+  formatId: string
+  state: StageState
+  href?: string
+  /** ISO times. `reviewedThrough` is the progress review it was made for. */
+  startedAt: string
+  generatedAt: string | null
+  reviewedThrough: string | null
+  /** Why it failed. Nothing retries a failed stage; the owner may ask again. */
+  error: string | null
+  /** 'auto': made by the owner's opt-in setting after a refresh. */
+  trigger: 'owner' | 'auto'
+  /** A ready stage the work has moved past: the request was reviewed again, or its records changed, after this was written. It can be read and made again; it is not what a check certifies. */
+  outdated: boolean
+}
+
+/** The owner's latest focus plan as the model carries it: its state and how many proposals it holds. The proposals
+ * themselves are read when it is ready (store `work.focusPlan`). */
+export interface FocusPlanSummary { state: PlanState; focusAreaId: string | null; startedAt: string; generatedAt: string | null; error: string | null; proposals: number }
+/** The plan with its proposals. Every proposal is a suggestion until the owner applies it (live/owner-runs-model.ts planProposalChange). */
+export interface FocusPlan extends Omit<FocusPlanSummary, 'proposals'> { proposals: PlanProposal[]; skipped: string[] }
+export type { PlanProposal }
+
+/** What a person's move is. The one definition is the worker's (waiting-for.mjs). */
+export { HUMAN_NEEDS }
+export type { HumanNeed }
+/** Whose move is next. A person's move always says what kind of thing it needs from them. */
+export type NextActor = { who: 'bot' } | { who: 'human'; need: HumanNeed }
 
 export interface Device { id: string; name: string; syncedMinutesAgo: number; online: boolean }
 /** 'other' is any platform without its own mark (a neutral mark is shown). */
@@ -20,7 +63,24 @@ export interface Agent {
 }
 
 export type Stage = 'Planning' | 'Building' | 'Reviewing' | 'Shipped'
-export type LiveState = 'working' | 'needs-check' | 'your-move' | 'idle' | 'shipped'
+/**
+ * Where a request stands. The one writer is presentStatus (live/status-normalization.ts).
+ *
+ *   working | idle  -> your-move | needs-check      the agent stops on something a person owes
+ *   needs-check     -> checked                      the person marks it checked; a newer version of the request undoes it
+ *   any but shipped -> closed                       every item dropped, or the latest chat archived; un-archived, it reopens
+ *   any             -> shipped                      a recorded ship
+ *
+ * `checked`, `closed` and `shipped` rest: nothing is owed and nothing moves (DONE_STATES).
+ */
+export type LiveState = 'working' | 'needs-check' | 'your-move' | 'idle' | 'checked' | 'closed' | 'shipped'
+
+/** Attention first: what waits on you, then what to check, then what is moving, then the rest. */
+export const ATTENTION_ORDER: readonly LiveState[] = ['your-move', 'needs-check', 'working', 'idle', 'checked', 'closed', 'shipped']
+/** The states that rest. Together they are the Done bucket of the list, the board and the counts. */
+export const DONE_STATES = ['checked', 'closed', 'shipped'] as const satisfies readonly LiveState[]
+export type DoneState = (typeof DONE_STATES)[number]
+export const isDoneState = (state: LiveState): state is DoneState => (DONE_STATES as readonly LiveState[]).includes(state)
 
 export interface Quote { at: string; quote: string }
 export type WorkProductKind = 'PR' | 'Commit' | 'Branch' | 'Page' | 'Deck' | 'Doc' | 'File' | 'Link'
@@ -69,9 +129,23 @@ export interface Request {
   }
   /** Only shown through measuredEstimate(), which checks the readings behind it. */
   estimate: string | null
-  next: { who: 'bot' | 'human'; text: string }
+  next: { text: string } & NextActor
+  /** How much could go wrong if this went out unreviewed, from the last memory review. Absent means not rated. */
+  risk?: { level: Risk; reason: string }
+  /** One phrase: why the request matters to the owner, as the goal or principle it serves. Never a restatement of the request. */
+  why?: string
+  /** What the agent is waiting to be told. `background` is what the person may need to know to answer; it rides the detail read, not the overview. */
+  question?: { text: string; background?: { text: string }[]; hasBackground?: true }
+  /** The request's primary conversation. `resumeCommand` is set only for a tool with a documented resume command. */
+  /** The tool and session of its latest conversation, set only when the request's own id does not already name them (chat-links.ts requestChat). `transcriptHref` only when the tool has no link of its own. */
+  chat?: { platform: string; sessionId?: string; transcriptHref?: string }
+  /** The answer the owner last sent from My Work: on its way, taken by the session's tool, or failed with the reason (owner-runs.mjs ANSWER_RUN_STATES). */
+  answer?: { state: AnswerRunState; error?: string }
+  /** The format ids with a stage ready to open. Rides the compact overview; absent when there are none. */
+  readyStages?: string[]
+  /** Every stage made or being made for it. Rides the detail read, not the overview. */
+  stages?: RequestStage[]
   terminal: string[]
-  activityWord: string
   workstreams: { title: string; tasks: { name: string; done: boolean }[] }[]
   /** `media`: the record's image refs (ids and labels only); absent when it has none. */
   granular: { kind: 'work' | 'memory'; text: string; at: string; media?: WorkViewMediaManifest }[]
@@ -97,8 +171,6 @@ export interface Request {
   contentFingerprint?: string
   /** Free-text stage from the title writer. Hover text only; the stage chip comes from the recorded status. */
   stageNote?: string
-  /** Every item was dropped. Hidden unless the filter is Closed. */
-  closed?: boolean
 }
 
 /** The permanent bucket for requests that fit no area. Never an area id (my-focus.mjs OTHER_FOCUS_AREA_ID). */
@@ -130,18 +202,39 @@ export interface FocusArea {
   quotes: Quote[]
   /** Owner-goals asks in this area. None is linked to a request, so each reads "Not started". */
   asks: FocusAsk[]
+  /** The owner's own notes: why it matters, context, anything. Null or absent when there are none. A refresh never writes them. */
+  notes?: string | null
+  /** The initiative it sits under when the list is arranged by initiative: the one the owner filed it under, else a guess from the folders its requests ran in. Absent when it has none. */
+  initiative?: string
+  /** Set when `initiative` is the guess, which a filing by the owner replaces and a refresh never does the other way. */
+  initiativeGuess?: true
+  /** Set when the owner filed it under no heading: it has no `initiative`, and no guess takes that place. */
+  initiativeNone?: true
+  /** The owner's icon for this area: its version on this computer's worker, or a `data:` image in the sample. Absent when it has none. */
+  icon?: string
+  /** The icon's generation while it runs, or why it failed (owner-runs.mjs ICON_RUN_STATES). Absent otherwise. */
+  iconRun?: { state: IconRunState; error: string | null }
 }
+
+/** An image the page drew for a focus icon, as POST /api/work-view/focus-icon takes it: base64 of a WebP or PNG. */
+export interface FocusIconUpload { format: FocusIconUploadFormat; data: string }
 
 /** One owner change to My Focus, as POST /api/work-view/focus takes it (WorkViewRoutes.ts focusBody). */
 export interface FocusChange {
-  action: 'keep' | 'rename' | 'edit-goal' | 'merge' | 'dismiss' | 'done' | 'reorder' | 'move-request' | 'restore-suggestion'
+  action: FocusAction
   focusAreaId?: string
   /** False when the request has no conversation to file a move under (the worker refuses it). Sample fixtures leave it out. */
   canMoveFocus?: boolean
   name?: string
   goal?: string
+  /** edit-notes: the owner's notes, at most 2000 characters; empty clears them. */
+  notes?: string
+  /** set-initiative: the heading `focusAreaIds` are filed under, at most 60 characters; empty clears it back to the guess. */
+  initiative?: string
+  /** set-initiative with an empty name: filed under no heading by the owner, which no guess replaces. */
+  noInitiative?: true
   intoFocusAreaId?: string
-  /** reorder: every live area (not dismissed, not merged), first = highest priority. */
+  /** reorder: every kept area, first = highest priority, plus any suggested area to keep at its place. set-initiative: the areas to file. */
   focusAreaIds?: string[]
   requestId?: string
   /** Undo's saved version. The worker compares it inside the ordered read-and-write operation. */
@@ -182,7 +275,7 @@ export const SAMPLE_AGENTS: Agent[] = [
 export const SAMPLE_PEOPLE = ['Alex', 'Sam', 'Priya']
 
 const PULL_REQUEST = 'https://example.com/pull/'
-const emptyRequest = { activityWord: '', workstreams: [], granular: [], conversations: [], prompts: [], workProduct: [], followUps: [], story: [], evidence: [], terminal: [] }
+const emptyRequest = { workstreams: [], granular: [], conversations: [], prompts: [], workProduct: [], followUps: [], story: [], evidence: [], terminal: [] }
 
 /**
  * Today's requests: the single source of request state. Pages read them by id (requestById) or through
@@ -194,7 +287,9 @@ export const SAMPLE_REQUESTS: Request[] = [
     id: 'r1', title: 'Spec and wireframe the new work viewer', summary: 'Turn your prompts into a spec, then a React wireframe that traces every element back to it.',
     focusAreaId: 'fa-viewer', askedBy: 'Alex', agentId: 'claude', startedAt: 'Oct 20, 1:16 pm', startedAtIso: '2026-10-20T13:16:00-07:00', runningFor: '42 min', stage: 'Building', state: 'working',
     progress: { percent: 70, readings: 3, reviewedAt: '1:50 pm', history: [30, 55, 70], coverage: { reviewed: 2, total: 2 } }, estimate: 'at this pace, about Oct 21',
-    next: { who: 'bot', text: 'Finish the My Rules screens' }, activityWord: 'Editing',
+    next: { who: 'bot', text: 'Finish the My Rules screens' }, why: 'See all my agent work in one place',
+    risk: { level: 'low', reason: 'A wireframe on sample data; nothing ships from it.' },
+    chat: { platform: 'claude', sessionId: '6f1c2a9e-4b7d-4e0a-9c35-2d8f7a1b0c11' },
     workstreams: [
       { title: 'Spec', tasks: [{ name: 'Derive from 466 prompts', done: true }, { name: 'Decide open questions', done: true }] },
       { title: 'Wireframe', tasks: [{ name: 'Requirement ledger', done: true }, { name: 'My Work screens', done: true }, { name: 'My Rules screens', done: false }] },
@@ -223,7 +318,8 @@ export const SAMPLE_REQUESTS: Request[] = [
   {
     ...emptyRequest,
     id: 'r2', title: null, summary: null, askedBy: 'Alex', agentId: 'codex', startedAt: 'Oct 20, 1:58 pm', startedAtIso: '2026-10-20T13:58:00-07:00', runningFor: '3 min', stage: 'Planning', state: 'working',
-    progress: { percent: 0, readings: 0, reviewedAt: '—', history: [] }, estimate: null, next: { who: 'bot', text: 'Read the current usage rollup' }, activityWord: 'Searching',
+    progress: { percent: 0, readings: 0, reviewedAt: '—', history: [] }, estimate: null, next: { who: 'bot', text: 'Read the current usage rollup' },
+    chat: { platform: 'codex', sessionId: '01a18a2e-1d34-7000-8000-000000000002' },
     resolvesTo: { title: 'Show real usage on the price forecast page', summary: 'Lead with what you spend today, then what it costs as usage grows.' },
     terminal: ['$ work_state_write list=usage-forecast', '  task: "read current usage rollup" status=doing', '$ rg "forecast" src/app/admin', '  12 matches in 4 files'],
   },
@@ -232,7 +328,9 @@ export const SAMPLE_REQUESTS: Request[] = [
     id: 'r3', title: 'Move embeddings into their own table', summary: 'Stops write stalls by keeping vector indexes off the main content table.',
     focusAreaId: 'fa-sync', askedBy: 'Alex', agentId: 'claude-sync', startedAt: 'Oct 17, 7:55 am', startedAtIso: '2026-10-17T07:55:00-07:00', runningFor: '3 days', stage: 'Reviewing', state: 'needs-check',
     progress: { percent: 100, readings: 4, reviewedAt: 'Oct 20, 9:10 am', history: [40, 70, 90, 100], coverage: { reviewed: 2, total: 2 } }, estimate: null,
-    next: { who: 'human', text: 'Check the remap queue drained' },
+    next: { who: 'human', need: 'review', text: 'Check the remap queue drained' },
+    risk: { level: 'high', reason: 'A migration moves every stored vector; a missed remap loses search results.' }, why: 'Sync people can depend on',
+    chat: { platform: 'claude', sessionId: 'b2d94e17-83ac-4f56-a1e0-7c3b5d9f2a48' },
     workstreams: [
       { title: 'Vectors table', tasks: [{ name: 'Migration for the new table', done: true }, { name: 'Write path moved', done: true }] },
       { title: 'Remap', tasks: [{ name: 'Remap target selection', done: true }, { name: 'Embedding job rate recorded', done: true }] },
@@ -245,20 +343,37 @@ export const SAMPLE_REQUESTS: Request[] = [
     id: 'r4', title: 'Live request monitor with cards and list', summary: 'The first live version of My Work, with sortable list.',
     focusAreaId: 'fa-viewer', askedBy: 'Sam', agentId: 'codex', startedAt: 'Oct 16, 9:39 am', startedAtIso: '2026-10-16T09:39:00-07:00', runningFor: '2 days', stage: 'Shipped', state: 'shipped',
     progress: { percent: 100, readings: 5, reviewedAt: 'Oct 19', completedAt: 'Oct 18', history: [20, 45, 70, 90, 100], coverage: { reviewed: 3, total: 3 } }, estimate: null,
-    next: { who: 'human', text: 'Write the release notes' },
+    next: { who: 'human', need: 'approval', text: 'Approve the release notes' },
+    risk: { level: 'low', reason: 'Already shipped; only the follow-ups are open.' }, why: 'See all my agent work in one place',
+    chat: { platform: 'codex', sessionId: '01a175ea-0339-7000-8000-000000000001' },
     workProduct: [{ kind: 'PR', label: '#330 live human-request monitor', href: `${PULL_REQUEST}330` }, { kind: 'Deck', label: 'Launch walkthrough', href: '#', deliverable: true }],
-    followUps: [{ tag: 'Docs', text: 'Write the release notes', done: false }, { tag: 'Promo', text: 'Launch post with walkthrough', done: false }, { tag: 'Other', text: 'Telemetry dashboard', done: true }],
+    followUps: [{ tag: 'Docs', text: 'Approve the release notes', done: false }, { tag: 'Promo', text: 'Launch post with walkthrough', done: false }, { tag: 'Other', text: 'Telemetry dashboard', done: true }],
   },
   {
     ...emptyRequest,
     id: 'r5', title: 'Fix the admin model price page', summary: 'Show current usage first, with scaling estimates below.',
     focusAreaId: OTHER_FOCUS_AREA_ID, askedBy: 'Priya', agentId: 'gemini', startedAt: 'Oct 20, 12:40 pm', startedAtIso: '2026-10-20T12:40:00-07:00', runningFor: '1 hr', stage: 'Building', state: 'your-move',
     progress: { percent: 30, readings: 1, reviewedAt: '1:30 pm', history: [30], coverage: { reviewed: 1, total: 2 } }, estimate: null,
-    next: { who: 'human', text: 'Pick which forecast to keep' },
+    next: { who: 'human', need: 'answer', text: 'Pick which forecast to keep' },
+    risk: { level: 'medium', reason: 'Two forecast drafts are live on the admin page until one is removed.' }, why: 'Pricing people can trust',
+    question: { text: 'Which forecast should stay on the price page: linear or seasonal?', background: [{ text: 'Linear is one line of math and matched the last three months within 4%.' }, { text: 'Seasonal tracks the December spike but needs a year of history; you have five months.' }, { text: 'Both drafts are live on the admin page until one is removed.' }] },
+    chat: { platform: 'gemini', transcriptHref: '#' },
     workstreams: [
       { title: 'Usage first', tasks: [{ name: 'Current usage table', done: true }] },
       { title: 'Forecasts', tasks: [{ name: 'Two forecast drafts', done: true }, { name: 'Keep one, remove the other', done: false }] },
     ],
+  },
+  {
+    // Filed under a suggested focus, so the list has a suggested line to move, keep and file.
+    ...emptyRequest,
+    id: 'r6', title: 'Draft the team plan page', summary: 'A first pass at the self-serve team plan page.',
+    focusAreaId: 'fa-team', askedBy: 'Alex', agentId: 'codex', startedAt: 'Oct 19, 4:05 pm', startedAtIso: '2026-10-19T16:05:00-07:00', runningFor: '1 day', stage: 'Building', state: 'idle',
+    progress: { percent: 20, readings: 1, reviewedAt: '9:10 am', history: [20], coverage: { reviewed: 1, total: 1 } }, estimate: null,
+    next: { who: 'bot', text: 'Lay out the plan comparison' }, why: 'Teams can start without a call',
+    // The agent took the question's answer and its tool then stopped: the row says so though it asks nothing now.
+    answer: { state: 'failed', error: 'Codex stopped before it read your answer.' },
+    chat: { platform: 'codex', transcriptHref: '#' },
+    workstreams: [{ title: 'Plan page', tasks: [{ name: 'Outline', done: true }, { name: 'Plan comparison', done: false }] }],
   },
 ]
 
@@ -268,10 +383,11 @@ export function assertConsistentRequest(request: Request): Request {
     const { state, stage, progress, next } = request
     if ((state === 'shipped') !== (stage === 'Shipped')) return 'only shipped requests are in the Shipped stage'
     if (state === 'shipped' && (progress.percent !== 100 || !progress.completedAt)) return 'shipped requests are 100% with a completion date'
-    if (state === 'needs-check' && (stage !== 'Reviewing' || next.who !== 'human')) return 'a request done but not checked is in Reviewing and waits on a person'
+    if (state === 'needs-check' && (stage !== 'Reviewing' || next.who !== 'human' || next.need !== 'review')) return 'a request done but not checked is in Reviewing and waits on a person’s review'
     if (state === 'your-move' && next.who !== 'human') return 'Your move means the next step is a person’s'
     if (state === 'working' && (next.who !== 'bot' || (progress.percent ?? 0) >= 100 || stage === 'Reviewing')) return 'a working request has an agent next step and is not finished'
-    if (!next.text) return 'every request says what happens next'
+    if ((state === 'checked' || state === 'closed') && next.who !== 'bot') return 'a checked or closed request owes nobody a move'
+    if (!next.text && state !== 'checked' && state !== 'closed') return 'every open request says what happens next'
     if (progress.history && progress.history.length !== progress.readings) return 'reading count matches the readings'
     if (progress.history?.length && progress.history.at(-1) !== progress.percent) return 'percent is the latest reading'
     return null
@@ -283,6 +399,10 @@ SAMPLE_REQUESTS.forEach(assertConsistentRequest)
 
 /** Waits on you: your move, or done and waiting for your check. The nav counts and the Needs you filter both use this. */
 export const needsYou = (request: Request) => request.state === 'your-move' || request.state === 'needs-check'
+/** Rests in Done: checked, closed or shipped, with nothing owed. A shipped request that still owes a person a move is open. */
+export const isDone = (request: Pick<Request, 'state' | 'next'>) => request.next.who !== 'human' && isDoneState(request.state)
+/** Closed without shipping: every item dropped, or its latest chat archived. */
+export const isClosed = (request: Pick<Request, 'state'>) => request.state === 'closed'
 
 /** A save the worker refused, with the snapshot it answered: the screen shows that state, then the reason. */
 export class SaveRefusedError extends Error {

@@ -87,6 +87,23 @@ export function conversationKey(session) {
   return JSON.stringify(['conversation', session.platform_source, session.content_session_id]);
 }
 
+/**
+ * The one conversation of a request that an answer, its turn state and its chat link all mean: the one whose owner
+ * wrote last, by `recordedAt(key)` (a session's newest prompt, else its start). Prompts are the one time recorded for
+ * every tool; observations and summaries exist only for sessions whose hooks ran. Key order says nothing about time.
+ * A single conversation needs no time. Among several, one with no recorded time is never chosen, and with none
+ * recorded the answer is null: nothing is guessed. Equal times take the greater key, the same on every replica.
+ */
+export function latestConversationKey(conversationKeys, recordedAt) {
+  if (conversationKeys.length < 2) return conversationKeys[0] ?? null;
+  let latest = null, latestAt = 0;
+  for (const key of conversationKeys) {
+    const at = recordedAt(key);
+    if (Number.isFinite(at) && at > 0 && (at > latestAt || (at === latestAt && key > latest))) { latest = key; latestAt = at; }
+  }
+  return latest;
+}
+
 function compareSourceOrder(a = null, b = null) {
   if (!a || !b) return 0;
   const time = a[0] - b[0];
@@ -322,6 +339,8 @@ export function buildHumanRequests(view, records = {}, { titleCache = {}, ledger
       });
     const relatedIds = new Set(request.conversationKeys.flatMap((key) => sessionIdsByKey.get(key) ?? []));
     const related = [...relatedIds].flatMap((id) => promptsBySession.get(id) ?? []);
+    request.latestConversationKey = latestConversationKey(request.conversationKeys, (key) => Math.max(0, ...(sessionIdsByKey.get(key) ?? [])
+      .flatMap((id) => [sessions.get(id)?.started_at_epoch ?? 0, ...(promptsBySession.get(id) ?? []).map((prompt) => prompt.created_at_epoch ?? 0)])));
     // A new ask is activity on its request, even before any agent records work.
     request.updatedAtEpoch = Math.max(request.updatedAtEpoch, request.original.atEpoch ?? 0, ...related.map((prompt) => prompt.created_at_epoch ?? 0));
     if (!request.agentIds.length) for (const agent of view.agents ?? []) if (relatedIds.has(agent.sessionId) && !request.agentIds.includes(agent.id)) request.agentIds.push(agent.id);

@@ -1,6 +1,5 @@
 import { displayTime } from '@/lib/display-time'
 import { useEffect, useState } from 'react'
-import { CheckIcon } from 'lucide-react'
 import { useReducedMotion } from 'motion/react'
 import { interpolate, useI18n } from '@/lib/i18n'
 import { Shimmer } from '@/components/ai-elements/shimmer'
@@ -8,17 +7,15 @@ import { Terminal, TerminalContent } from '@/components/ai-elements/terminal'
 import { EncryptedText } from '@/components/aceternity/encrypted-text'
 import { GlowingEffect } from '@/components/aceternity/glowing-effect'
 import { RunningFor } from '@/components/live-motion'
-import { SaveButton } from '@/components/save-button'
-import { Button, buttonVariants } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
-import { isCardDeliverable } from '@/lib/deliverables'
-import { PRODUCT_ICON } from '@/lib/product-icons'
 import { Req } from '@/spec/req'
-import type { Request } from '@/data'
-import { requestById, useFreshlyUpdated, useStore, useWorkspace } from '@/store'
-import { AgentIcon, FocusAreaChip, NextMove, ProductLink, ProgressMeter, StateBadge } from './bits'
+import { isDoneState, needsYou, type Request } from '@/data'
+import { useFreshlyUpdated, useWorkspace } from '@/store'
+import { AgentIcon, NextMove, ProgressMeter, StateBadge } from './bits'
+import { Deliverables, OpenFollowUps } from './request-sections'
+import { ChatLinks, useRequestChatLinks } from './thread-list'
 import { MediaCountBadge, ObsMediaStrip } from './observation-media/ObsMedia'
 
 /**
@@ -54,14 +51,13 @@ function useAgentViewTransform(request: Request) {
     return () => clearTimeout(settle)
   }, [phase, untitled])
   const text = request.title ? { title: request.title, summary: request.summary } : phase === 'fresh' || phase === 'human' ? request.resolvesTo! : null
-  const word = phase === 'translating' ? 'Translating' : request.activityWord
-  return { phase, text, word }
+  return { phase, text }
 }
 
-function ActivitySpinner({ word, settled }: { word: string; settled: boolean }) {
+/** The agent's own activity word is no longer recorded, so a card at work says Working. */
+function ActivitySpinner({ translating, settled }: { translating: boolean; settled: boolean }) {
   const { t } = useI18n()
-  const { mode } = useWorkspace()
-  const label = settled ? t('Just updated') : mode === 'web' && word !== 'Translating' ? t('Working') : word === 'Translating' ? t('Translating') : word
+  const label = t(settled ? 'Just updated' : translating ? 'Translating' : 'Working')
   return (
     <Req ids={['D5']}>
       <Tooltip>
@@ -78,83 +74,11 @@ function ActivitySpinner({ word, settled }: { word: string; settled: boolean }) 
   )
 }
 
-/** After ship (decision 4): the open Docs, Promo and Other follow-ups, each one actionable. Nothing renders when none are open. */
-export function OpenFollowUps({ request, limit }: { request: Request; limit?: number }) {
-  const { t } = useI18n()
-  const open = request.followUps.filter((followUp) => !followUp.done)
-  if (request.state !== 'shipped' || open.length === 0) return null
-  const inStore = requestById(request.id) !== null
-  // Finishing a follow-up moves the next step on to the next open one, so the card never names finished work.
-  const finish = (text: string) => useStore.getState().updateSampleRequest(request.id, (current) => {
-    const followUps = current.followUps.map((followUp) => followUp.text === text ? { ...followUp, done: true } : followUp)
-    const stillOpen = followUps.find((followUp) => !followUp.done)
-    return { ...current, followUps, next: stillOpen ? { who: 'human', text: stillOpen.text } : { who: 'bot', text: t('Nothing left after ship') } }
-  })
-  return (
-    <Req ids={['R5.7']}>
-      <div className="space-y-1">
-        <p className="section-label">{interpolate(t('Open after ship · {count}'), { count: open.length })}</p>
-        <ul className="divide-y divide-border/70">
-          {open.slice(0, limit).map((followUp) => (
-            <li key={followUp.text} className="flex min-h-11 items-center gap-2 text-sm md:min-h-9">
-              <span className="w-12 shrink-0 text-[11px] font-medium text-muted-foreground uppercase">{followUp.tag}</span>
-              <span className="min-w-0 flex-1 truncate">{followUp.text}</span>
-              {inStore && <SaveButton className={cn(buttonVariants({ variant: 'ghost', size: 'sm' }), 'h-11 shrink-0 text-xs md:h-7')} onClick={() => finish(followUp.text)}><CheckIcon />{t('Done')}</SaveButton>}
-            </li>
-          ))}
-        </ul>
-      </div>
-    </Req>
-  )
-}
-
-/** The card is a portrait tile: three chips fill one row at phone width, so any more open the drawer's full list. */
-const CARD_DELIVERABLES = 3
-
-/**
- * Deliverables, on the front of the card (R5.12): a deck, a
- * report, a page, a PR, each one click away. Bucket copies claude-mem kept are
- * marked as deliverables by the mapper; the drawer keeps the full list with
- * commits and branches.
- */
-export function Deliverables({ request, onOpen }: { request: Request; onOpen: () => void }) {
-  const { t } = useI18n()
-  const products = request.workProduct.filter(isCardDeliverable)
-  const count = request.detailLoaded === false ? request.detailCounts?.workProduct ?? products.length : products.length
-  if (count === 0) return null
-  const shown = products.slice(0, CARD_DELIVERABLES)
-  const hidden = Math.max(0, count - shown.length)
-  return (
-    <Req ids={['R5.12', 'R5.10']}>
-      <div className="space-y-1">
-        <p className="section-label">{interpolate(t('Deliverables · {count}'), { count })}</p>
-        <ul className="flex flex-wrap gap-1.5">
-          {shown.map((product, index) => {
-            const Icon = PRODUCT_ICON[product.kind]
-            return (
-              <li key={`${index}-${product.label}`} className="min-w-0 max-w-full">
-                <ProductLink href={product.href} className="inline-flex min-h-8 max-w-full items-center gap-1.5 rounded-md border bg-card px-2 py-1 text-xs hover:bg-surface">
-                  <Icon className="size-3.5 shrink-0 text-muted-foreground" />
-                  <span className="truncate">{product.label}</span>
-                </ProductLink>
-              </li>
-            )
-          })}
-          {hidden > 0 && (
-            <li>
-              <Button variant="ghost" size="sm" className="h-8 px-2 text-xs" onClick={onOpen} aria-label={interpolate(t('Open the request to see {count} more deliverables'), { count: hidden })}>{interpolate(t('+{count} more'), { count: hidden })}</Button>
-            </li>
-          )}
-        </ul>
-      </div>
-    </Req>
-  )
-}
-
-export function RequestCard({ request, onOpen, onOpenFocus }: { request: Request; onOpen: () => void; onOpenFocus: (focusAreaId: string) => void }) {
+/** One request of a focus as a portrait card. It sits inside its focus, so it does not name the focus again. */
+export function RequestCard({ request, onOpen }: { request: Request; onOpen: () => void }) {
   const { t } = useI18n()
   const { team } = useWorkspace()
-  const { phase, text, word } = useAgentViewTransform(request)
+  const { phase, text } = useAgentViewTransform(request)
   // The spinner means an agent is on it: an idle card still waiting on its title (or one whose title writer
   // is unavailable) shows no spinner, only its badge.
   const fresh = phase === 'fresh'
@@ -162,7 +86,10 @@ export function RequestCard({ request, onOpen, onOpenFocus }: { request: Request
   // Its recorded content changed in the update just applied (decision 5's "Just updated" dot).
   const contentJustUpdated = useFreshlyUpdated(request.id)
   // Only a card that needs you gets the edge glow that follows the pointer, so it reads as "this one" (R10.2).
-  const waitingOnYou = request.state === 'your-move' || request.state === 'needs-check'
+  const waitingOnYou = needsYou(request)
+  const links = useRequestChatLinks(request)
+  // The agent's question is the next step while it waits for an answer, as on the thread row.
+  const next = { ...request.next, text: t(request.question?.text ?? request.next.text) }
   const reviewed = request.progress.readings > 0 || !!request.progress.completedAt
   return (
     <Req ids={['R1.1', 'R2.1', 'R4.1', 'R3.3', 'R10.2']}>
@@ -172,17 +99,15 @@ export function RequestCard({ request, onOpen, onOpenFocus }: { request: Request
         <CardHeader className="flex flex-row items-center justify-between gap-2 px-4 md:px-5">
           <div className="flex min-w-0 items-center gap-2">
             <AgentIcon agentId={request.agentId} />
-            {/* Where it belongs, up front beside who is on it. */}
-            <FocusAreaChip focusAreaId={request.focusAreaId} onOpen={onOpenFocus} />
             <Req ids={['R5.2', 'R9.3']}>
               <span className={cn('truncate text-xs text-muted-foreground', !team && 'sr-only')}>{interpolate(t('asked by {askedBy}'), { askedBy: request.askedBy })}</span>
             </Req>
           </div>
           <div className="flex items-center gap-1.5">
             {/* A status change cross-fades the badge, so the move is seen, not just the result. */}
-            <span key={request.state} className="motion-safe:animate-in motion-safe:fade-in motion-safe:zoom-in-95 motion-safe:duration-500"><StateBadge state={request.state} /></span>
+            <span key={request.state} className="motion-safe:animate-in motion-safe:fade-in motion-safe:zoom-in-95 motion-safe:duration-500"><StateBadge state={request.state} next={request.next} /></span>
             {request.media && <MediaCountBadge media={{ version: 1, attachments: request.media.preview }} count={request.media.count} />}
-            {((phase !== 'human' && request.state === 'working') || fresh || contentJustUpdated) && <ActivitySpinner word={word} settled={fresh || contentJustUpdated} />}
+            {((phase !== 'human' && request.state === 'working') || fresh || contentJustUpdated) && <ActivitySpinner translating={phase === 'translating'} settled={fresh || contentJustUpdated} />}
           </div>
         </CardHeader>
 
@@ -211,7 +136,7 @@ export function RequestCard({ request, onOpen, onOpenFocus }: { request: Request
 
           {/* What happens next comes straight after what it is: the one line most people read a card for. Shipped
               work's next moves are its open follow-ups, so the card lists those instead of repeating one. */}
-          {!(request.state === 'shipped' && request.followUps.some((followUp) => !followUp.done)) && <NextMove next={request.next} />}
+          {!(request.state === 'shipped' && request.followUps.some((followUp) => !followUp.done)) && <NextMove next={next} />}
 
           <Deliverables request={request} onOpen={onOpen} />
 
@@ -229,12 +154,13 @@ export function RequestCard({ request, onOpen, onOpenFocus }: { request: Request
                 <dl className="flex flex-wrap items-center gap-x-2 gap-y-0.5 [&>div+div]:before:mr-1 [&>div+div]:before:content-['·']">
                   <div className="flex gap-1"><dt className="sr-only">{t('Stage')}</dt><dd className="font-medium text-foreground/85" title={request.stageNote}>{t(request.stage)}</dd></div>
                   <div className="flex gap-1"><dt>{t('Started')}</dt><dd><time dateTime={request.startedAtIso}>{displayTime(request.startedAt)}</time></dd></div>
-                  <div className="flex gap-1"><dt>{request.state === 'shipped' ? t('Took') : t('Running')}</dt><dd className="tabular-nums"><RunningFor request={request} /></dd></div>
+                  <div className="flex gap-1"><dt>{isDoneState(request.state) ? t('Took') : t('Running')}</dt><dd className="tabular-nums"><RunningFor request={request} /></dd></div>
                 </dl>
               </Req>
+              {links && <span className="-my-2 ml-auto md:-my-1"><ChatLinks chat={links} showTranscript /></span>}
             </div>
           </div>
-                </CardContent>
+        </CardContent>
       </Card>
       </div>
     </Req>

@@ -7,11 +7,14 @@ import { createHash } from 'node:crypto';
 import { readWorkStateRows, reduceWorkState } from './work-state-reduce.mjs';
 import { activitySignature, buildAgentView, readAgentRecords, readEvidence } from './agent-view.mjs';
 import { ledgerSignature, openSuggestions, readLedger } from './request-groups.mjs';
+import { focusIconKey } from './focus-icons.mjs';
 import { recordedFile, bucketFileAvailable, copyCoversSource, servableFile } from './work-product.mjs';
 import { buildRules, MY_RULES_LIST } from './my-rules.mjs';
 import { readSharedRecords, workStateRowsRevision } from './shared-record-store.mjs';
 import { readWorkStateLabels, WORK_STATE_LABELS_FILE } from './work-state-labels.mjs';
 import { applySharedProjection, decorateSharedView, isSharedProjectionValue } from './shared-projection.mjs';
+import { TurnStateReader } from './turn-state-reader.mjs';
+import { waitingForTurn } from './waiting-for.mjs';
 import { sharedReviewDescriptor, readSharedReview, sharedSuggestionDescriptor, sharedConflictSuggestions } from './shared-reviews.mjs';
 
 // reduceWorkState lives in work-state-reduce.mjs so my-focus.mjs can replay rows without importing this module.
@@ -57,6 +60,9 @@ export function resolveReadScope(database, requestedKeys) {
   }
 }
 
+// The most a snapshot spends reading transcripts that changed; the rest keep their last known state until the next one.
+const TURN_READ_BUDGET_MS = 150;
+
 export class WorkStateSource {
   constructor({
     databasePath = process.env.CLAUDE_MEM_DB ?? join(homedir(), '.claude-mem', 'claude-mem.db'),
@@ -66,6 +72,7 @@ export class WorkStateSource {
     ledgerDir = null,
     pollIntervalMs = 1000,
     localDeviceId = '',
+    transcriptRoots = {},
   } = {}) {
     this.databasePath = databasePath;
     this.currentProject = currentProject;
@@ -92,6 +99,8 @@ export class WorkStateSource {
     this.workStateRevision = null;
     this.workStateDataVersion = null;
     this.sharedState = null;
+    this.turnStates = new TurnStateReader(transcriptRoots);
+    this.turnSignature = '';
     this.source = {
       kind: 'claude-mem-work-state', mode: 'read-only-sqlite', connected: false,
       pollIntervalMs, lastCheckedAt: null, lastUpdatedAt: null, error: null,
@@ -318,6 +327,26 @@ export class WorkStateSource {
     this.ledgerSignature = signature;
   }
 
+  /**
+   * An ended turn with what it waits for, when the conversation's latest session summary was written for that turn
+   * and recorded it (waiting-for.mjs). One indexed read per ended turn; a database without the column adds nothing.
+   */
+  withWaitingFor(turn, conversationKey) {
+    if (turn?.reason !== 'turn-ended') return turn;
+    try {
+      const [, platform, sessionId] = JSON.parse(conversationKey);
+      const row = this.openDatabase().prepare(`SELECT summary.waiting_for AS waitingFor, summary.created_at_epoch AS createdAtEpoch,
+        (SELECT MAX(created_at_epoch) FROM user_prompts WHERE session_db_id = session.id) AS lastOwnerPromptEpoch
+        FROM sdk_sessions session JOIN session_summaries summary ON summary.memory_session_id = session.memory_session_id
+        WHERE session.platform_source = ? AND session.content_session_id = ?
+        ORDER BY summary.created_at_epoch DESC, summary.id DESC LIMIT 1`).get(platform, sessionId);
+      const waitingFor = row ? waitingForTurn({ turnEndedAtEpoch: turn.atEpoch, lastOwnerPromptEpoch: row.lastOwnerPromptEpoch, summary: row }) : null;
+      return waitingFor ? { ...turn, waitingFor } : turn;
+    } catch {
+      return turn;
+    }
+  }
+
   agentsSnapshot() {
     const now = Date.now();
     // The judge's suggestions ("Looks like part of <request>"), each on the card of the conversation it is about.
@@ -329,12 +358,32 @@ export class WorkStateSource {
       const descriptor = sharedSuggestionDescriptor(this.sharedState, suggestion.conversationKey);
       return { ...suggestion, expectedSuggestionHash: descriptor.hash, sharedConflict: descriptor.conflict };
     });
+    // Owner runs are this computer's own records, so they are read from the local ledger, never the shared projection.
+    const ownerRuns = this.ledger?.ownerRuns ?? null;
+    const deadline = now + TURN_READ_BUDGET_MS;
     const humanRequests = (this.agentView.humanRequests ?? []).map((request) => {
+      const turn = this.withWaitingFor(this.turnStates.readConversation(request.latestConversationKey, { deadline }), request.latestConversationKey);
       const suggestion = suggestions.find((entry) => (entry.sharedConflict || entry.requestId !== request.groupId) && (request.conversationKeys ?? []).includes(entry.conversationKey));
-      return suggestion ? { ...request, suggestion } : request;
+      const stages = request.groupId ? ownerRuns?.stages?.[request.groupId] : undefined;
+      const answer = ownerRuns?.answers?.[request.id];
+      return suggestion || stages || answer || turn ? { ...request, ...(suggestion ? { suggestion } : {}), ...(stages ? { stages } : {}), ...(answer ? { answer } : {}), ...(turn ? { turn } : {}) } : request;
+    });
+    // A transcript moves without a database write. Whose move it is must still reach an open page, so a change
+    // counts as a new revision; an agent's own progress through a turn does not.
+    const turnSignature = humanRequests.filter((request) => request.turn).map(({ id, turn }) => `${id}:${turn.reason}:${turn.state === 'owner-turn' ? turn.atEpoch : ''}`).join('|');
+    if (turnSignature !== this.turnSignature) {
+      this.turnSignature = turnSignature;
+      this.agentView = { ...this.agentView, revision: ++this.agentRevision };
+    }
+    // An area's icon is this computer's own file, and its run this computer's own record: neither is in a my-focus row.
+    const focusAreas = this.agentView.focusAreas?.map((area) => {
+      const icon = this.ledger?.focusIcons?.get(focusIconKey(area.focusAreaId));
+      const run = ownerRuns?.icons?.[area.focusAreaId];
+      return icon || run ? { ...area, ...(icon ? { icon: icon.version } : {}), ...(run ? { iconRun: { state: run.state, error: run.error } } : {}) } : area;
     });
     return {
       ...this.agentView,
+      ...(focusAreas ? { focusAreas } : {}),
       humanRequests,
       suggestions,
       teamMode: process.env.WORK_STATE_TEAM_MODE === '1',
@@ -343,6 +392,8 @@ export class WorkStateSource {
       story: ledger ? { reviews: Object.values(ledger.progress), story: ledger.story, groups: Object.keys(ledger.groups.groups).length } : null,
       // The automatic refresh's last run (refresh.json): running, ok, failed or waiting-for-agent.
       refresh: ledger?.refresh ?? null,
+      // The owner's latest focus plan (owner-runs.json); its proposals are suggestions until the owner applies one.
+      focusPlan: ownerRuns?.plan ?? null,
       // Age labels change with the clock without declaring a task or session
       // live. Stored session status remains separate from recent activity.
       agents: this.agentView.agents.map((agent) => ({ ...agent, presence: {
@@ -363,6 +414,14 @@ export class WorkStateSource {
   file(kind, id, index, localDeviceId = this.localDeviceId) {
     try { return recordedFile((sql, params) => this.openDatabase().prepare(sql).all(...params), kind, id, index, localDeviceId); }
     catch { return null; }
+  }
+
+  /** The folder a recorded session ran in, from the worker's own session row; null when it was never recorded. */
+  sessionCwd(platform, sessionId) {
+    try {
+      const row = this.openDatabase().prepare('SELECT cwd FROM sdk_sessions WHERE platform_source = ? AND content_session_id = ?').get(platform, sessionId);
+      return typeof row?.cwd === 'string' && row.cwd ? row.cwd : null;
+    } catch { return null; }
   }
 
   /** The bucket copy a deliverables row names, while it still exists; null when the row is unknown, the copy is gone, or the table does not exist yet. */

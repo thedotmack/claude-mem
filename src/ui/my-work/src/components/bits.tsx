@@ -11,6 +11,7 @@ import { Spinner } from '@/components/ui/spinner'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
+import { STATE_LABEL, statusLabel, statusTone } from '@/live/status-label'
 import { isSampleHref, measuredEstimate, SAMPLE_DEVICES, OTHER_FOCUS_AREA_ID, type Device, type LiveState, type Request, type Run, type SkillRun } from '@/data'
 import { agentById, deviceById, useConnection, useStore, useWorkModel, useWorkspace } from '@/store'
 import type { AutoRefresh } from '@/live/work-data-source'
@@ -51,36 +52,39 @@ export function AgentIcon({ agentId, withDevice = false }: { agentId: string; wi
   )
 }
 
-export const STATE_LABEL: Record<LiveState, string> = {
-  working: 'Working', 'needs-check': 'Done, not checked', 'your-move': 'Your move', idle: 'Idle', shipped: 'Shipped',
-}
-
-/** Attention first: what waits on you, then what to check, then what is moving, then the rest. */
-export const ATTENTION_ORDER: LiveState[] = ['your-move', 'needs-check', 'working', 'idle', 'shipped']
-
-/** Each state's colors, shared by the badge and the List view's flipboard so both read as the same state. */
+/** Each state's colors. */
 export const STATE_SURFACE: Record<LiveState, string> = {
   working: 'border-working-border bg-working text-working-foreground',
   'needs-check': 'border-review-border bg-review text-review-foreground',
   'your-move': 'border-attention-border bg-attention font-medium text-attention-foreground',
   idle: 'border-idle-border bg-idle text-idle-foreground',
+  checked: 'border-shipped-border bg-transparent text-shipped-foreground',
+  closed: 'border-idle-border bg-transparent text-idle-foreground',
   shipped: 'border-shipped-border bg-shipped text-shipped-foreground',
 }
 
+/** The state's dot, shared by the badge and the thread list. */
+export const STATE_DOT: Record<LiveState, string> = {
+  working: 'bg-working-foreground motion-safe:animate-pulse',
+  'needs-check': 'bg-review-foreground',
+  'your-move': 'bg-attention-foreground',
+  idle: 'bg-idle-foreground',
+  // Resting without a ship: the shipped color, lighter, and a hollow ring for a thread that was closed.
+  checked: 'bg-shipped-foreground/50',
+  closed: 'border border-idle-foreground bg-transparent',
+  shipped: 'bg-shipped-foreground',
+}
+
 /** One glance tells working, done-but-unchecked, waiting on you and shipped apart (§6). State is the only thing colored. */
-export function StateBadge({ state }: { state: LiveState }) {
+export function StateBadge({ state, next }: { state: LiveState; next?: Request['next'] }) {
   const { t } = useI18n()
+  // With the next step, the badge says what a person owes ("Needs you · review") in that move's colours.
+  const tone = next ? statusTone({ state, next }) : state
   return (
     <Req ids={['R6.2']}>
-      <Badge variant="outline" className={cn('shrink-0 gap-1.5 font-normal', STATE_SURFACE[state])}>
-        <span className={cn('size-1.5 rounded-full', {
-          'bg-working-foreground motion-safe:animate-pulse': state === 'working',
-          'bg-review-foreground': state === 'needs-check',
-          'bg-attention-foreground': state === 'your-move',
-          'bg-idle-foreground': state === 'idle',
-          'bg-shipped-foreground': state === 'shipped',
-        })} />
-        {t(STATE_LABEL[state])}
+      <Badge variant="outline" className={cn('shrink-0 gap-1.5 font-normal', STATE_SURFACE[tone])}>
+        <span className={cn('size-1.5 rounded-full', STATE_DOT[tone])} />
+        {next ? statusLabel({ state, next }, t) : t(STATE_LABEL[state])}
       </Badge>
     </Req>
   )

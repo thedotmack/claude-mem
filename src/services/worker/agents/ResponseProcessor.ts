@@ -41,6 +41,7 @@ import { captureOnlyLinkWrites, hasWaitingCaptureOnlyEvents, skippedTurnCaptureO
 import { deriveLineAnchors, lineAnchorsForObservation, withLineAnchors, type LineAnchor } from '../../../shared/line-anchors.js';
 import { normalizePlatformSource } from '../../../shared/platform-source.js';
 import type { Database } from 'bun:sqlite';
+import type { WaitingFor } from '../../work-view/waiting-for.mjs';
 
 type ObservationFileEvidenceMessage = Pick<PendingMessage, 'type' | 'tool_name' | 'tool_input' | 'tool_response'>;
 
@@ -1345,6 +1346,7 @@ function normalizeSummaryForStorage(summary: ParsedSummary | null): {
   completed: string;
   next_steps: string;
   notes: string | null;
+  waiting_for: WaitingFor | null;
   files_read: string[];
   files_edited: string[];
 } | null {
@@ -1358,6 +1360,7 @@ function normalizeSummaryForStorage(summary: ParsedSummary | null): {
     completed: summary.completed || '',
     next_steps: summary.next_steps || '',
     notes: summary.notes,
+    waiting_for: summary.waiting_for ?? null,
     files_read: [],
     files_edited: [],
   };
@@ -1371,6 +1374,7 @@ export function attachObservationFilesToSummary(
     completed: string;
     next_steps: string;
     notes: string | null;
+    waiting_for?: WaitingFor | null;
     files_read?: string[];
     files_edited?: string[];
   } | null,
@@ -1382,6 +1386,7 @@ export function attachObservationFilesToSummary(
   completed: string;
   next_steps: string;
   notes: string | null;
+  waiting_for?: WaitingFor | null;
   files_read: string[];
   files_edited: string[];
 } | null {

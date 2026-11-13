@@ -3,6 +3,10 @@
 // A status the worker declares a type for is taken from that declaration, never retyped here.
 import type { FocusAreaStatus } from '../../../../services/work-view/my-focus.mjs'
 import type { SavedRule } from '../../../../services/work-view/my-rules.mjs'
+import type { RiskLevel } from '../../../../services/work-view/risk-levels.mjs'
+import type { QuestionNeed } from '../../../../services/work-view/question-needs.mjs'
+import type { TurnState } from '../../../../services/work-view/turn-state.mjs'
+import type { AnswerRun, FocusPlan, IconRunState, StageOutputKind, StageRecord } from '../../../../services/work-view/owner-runs.mjs'
 
 /** One image ref, as src/shared/media-contract.ts MediaAttachmentRef defines it. Restated because My Work's tsconfig
  * (erasableSyntaxOnly) cannot load that file; src/services/work-view/overview.ts fails the root typecheck if they differ. */
@@ -93,10 +97,20 @@ export interface WorkViewProgress {
   milestones?: { at: string | null; text: string }[]
   /** ISO time the review was recorded. */
   checkedAt?: string
+  /** ISO time the reviewer read its evidence: what the review covers ends here, before `checkedAt`. Reviews from older workers leave it out. */
+  reviewedThrough?: string
   /** ISO time the work shipped; set only when state is shipped. */
   shippedAt?: string | null
   /** Recorded history, oldest first; valid older or minimal shared records may omit it. */
   readings?: { at: string; percent: number }[]
+  /** How much could go wrong if the work went out unreviewed. Older workers leave it out. */
+  risk?: { level: RiskLevel; reason?: string }
+  /** One phrase each: the next action, and why the request matters to the owner (the goal or principle it serves). Older workers leave them out. */
+  nextStep?: string
+  why?: string
+  /** What the agent is waiting on the owner for, with what the owner may need to know. Older workers leave it out;
+   * a question recorded without `need` asks for an answer. */
+  question?: { need?: QuestionNeed; text: string; background?: { text: string }[] }
 }
 
 /** One thing a request produced (work-product.mjs). Git kinds carry the sha or branch; `url` is absent when there is
@@ -150,6 +164,9 @@ export interface WorkViewHumanRequest {
   activity: WorkViewActivity[]
   agentIds: string[]
   conversationKeys: string[]
+  /** The conversation whose owner wrote last: where an answer goes, whose transcript `turn` is read from, and the chat
+   * the row opens. Null when the request has several and no recorded time says which; older workers leave it out. */
+  latestConversationKey?: string | null
   requestedBy: string | null
   startedAtEpoch: number | null
   completedAtEpoch: number | null
@@ -166,6 +183,12 @@ export interface WorkViewHumanRequest {
   focusAreaId?: string
   /** The judge thinks this conversation is part of another request; absent when there is nothing to ask. Older workers leave it out. */
   suggestion?: WorkViewRequestSuggestion
+  /** The stages made for it, by format id (owner-runs.json); absent when it has none. Older workers leave it out. */
+  stages?: Record<string, StageRecord>
+  /** The answer the owner last sent it from My Work, and how its delivery ended. Older workers leave it out. */
+  answer?: AnswerRun
+  /** Who holds the next move in its latest conversation, read from the end of that transcript. Absent when it cannot be told; older workers leave it out. */
+  turn?: TurnState
 }
 
 export interface WorkViewAgent {
@@ -277,7 +300,22 @@ export interface WorkViewFocusArea {
   /** 'owner-restore': the owner handed it back to suggestions, so refreshes may update it again. */
   decidedBy: 'owner' | 'system' | 'owner-restore'
   savedAt: string | null
+  /** The owner's own notes on the area; null when there are none. Older workers leave it out. */
+  notes?: string | null
+  /** The initiative the area sits under: the owner's filing, else a guess from its folders (focus-initiative.mjs). Null or absent when it has none. Older workers leave it out. */
+  initiative?: string | null
+  /** Set when `initiative` is the guess, not the owner's filing. */
+  initiativeGuess?: true
+  /** Set when the owner filed the area under no initiative; `initiative` is then null and nothing is guessed. */
+  initiativeNone?: true
+  /** The version of the area's icon on this computer (focus-icons.mjs). Absent when it has none. */
+  icon?: string
+  /** The area's icon generation while it runs, or why it failed. Absent otherwise. */
+  iconRun?: { state: IconRunState; error: string | null }
 }
+
+/** One format a request can be staged in (stage-formats.ts): built in, or a file of the owner's. */
+export interface WorkViewStageFormat { id: string; label: string; output: StageOutputKind; builtIn: boolean }
 
 export interface WorkViewRuleScope { id: string; tier: 'everywhere' | 'project' | 'situation'; name: string }
 
@@ -314,6 +352,12 @@ export interface WorkViewSnapshot {
   refresh?: WorkViewRefresh | null
   /** Every open judge suggestion; each is also on its conversation's request as `suggestion`. Older workers leave it out. */
   suggestions?: WorkViewRequestSuggestion[]
+  /** Every stage format this worker knows. Older workers leave it out. */
+  stageFormats?: WorkViewStageFormat[]
+  /** The format automatic stages are made in; null when the owner has not turned them on. Older workers leave it out. */
+  autoStageFormat?: string | null
+  /** The owner's latest focus plan; null before the first. Older workers leave it out. */
+  focusPlan?: FocusPlan | null
 }
 
 /** Shared display facts are readable before this installation enables new writes. */

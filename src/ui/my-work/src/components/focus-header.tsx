@@ -16,11 +16,12 @@ import { Progress } from '@/components/ui/progress'
 import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
 import { type FocusArea, type FocusAsk, type LiveState, type Quote, type Request } from '@/data'
-import { useStore, useWorkModel } from '@/store'
-import { FocusArtwork } from './focus-artwork'
+import { useWorkModel } from '@/store'
+import { FocusIconMenu, FocusIconProblem, useFocusIconControl } from './focus-icon'
 import { formatPromptDay, formatPromptTime, promptDayKey, shipDayKey } from '@/lib/prompt-time'
 import { navWordIn } from '../../../../services/work-view/nav-words.mjs'
 import { AreaEditDialog, type AreaEdit, type FocusChanges } from './focus-changes'
+import { FocusNotes } from './focus-notes'
 import { SharedMark, ShareFocusDialog } from './share-focus'
 import { canShareArea } from '@/live/to-shared-focus'
 
@@ -45,7 +46,9 @@ const askedAgainAfter = (latestAt: string | null, requests: Request[]) => {
   return shipped && latestAt && promptDayKey(latestAt) > shipDayKey(shipped) ? shipped : null
 }
 
-function statusOf(latestAt: string | null, requests: Request[]): AreaStatus {
+function statusOf(latestAt: string | null, all: Request[]): AreaStatus {
+  // A checked or closed request is neither moving nor stalled: the area stands where the rest of its requests do.
+  const requests = all.filter((request) => request.state !== 'checked' && request.state !== 'closed')
   if (requests.length === 0) return 'nothing'
   const has = (state: LiveState) => requests.some((request) => request.state === state)
   if (has('your-move')) return 'your-move'
@@ -167,7 +170,7 @@ function NotStartedAsks({ asks }: { asks: FocusAsk[] }) {
 function AreaMenu({ area, changes, onEdit, onShare }: { area: FocusArea; changes: FocusChanges; onEdit: (edit: AreaEdit) => void; onShare: () => void }) {
   const { t } = useI18n()
   const { focusAreas } = useWorkModel()
-  // The owner's order covers kept areas only (the worker refuses anything else), all of them at once, as the rail shows them.
+  // The owner's order covers kept areas only (the worker refuses anything else), all of them at once, as the focus list shows them.
   const order = focusAreas.filter((entry) => entry.status === 'kept' && !entry.mergedInto).map((entry) => entry.id)
   const at = order.indexOf(area.id)
   const swap = (other: number) => { const next = [...order]; [next[at], next[other]] = [next[other], next[at]]; changes.apply({ action: 'reorder', focusAreaIds: next }) }
@@ -216,7 +219,7 @@ export function FocusHeader({ area, requests, changes }: { area: FocusArea; requ
   const { t } = useI18n()
   const [edit, setEdit] = useState<AreaEdit | null>(null)
   const [sharing, setSharing] = useState(false)
-  const artwork = useStore((state) => state.view.focusArtwork)
+  const icon = useFocusIconControl(area)
   const navWord = navWordIn(area.name)
   const status = statusOf(area.latestAt, requests)
   const shipped = requests.filter((request) => request.state === 'shipped').length
@@ -224,8 +227,6 @@ export function FocusHeader({ area, requests, changes }: { area: FocusArea; requ
   return (
     <Req ids={['R16.2', 'R12.3']}>
       <HeaderFrame>
-        <div className={`focus-header-intro artwork-${artwork}`}>
-        {artwork !== 'off' && <FocusArtwork area={area} priority />}
         <div className="flex items-start gap-2">
           <div className="min-w-0 flex-1 space-y-1">
             <div className="flex flex-wrap items-center gap-2">
@@ -235,11 +236,13 @@ export function FocusHeader({ area, requests, changes }: { area: FocusArea; requ
               <SharedMark focusAreaId={area.id} onOpen={() => setSharing(true)} />
             </div>
             {area.goal ? <p className="text-[0.95rem] leading-snug">{area.goal}</p> : <p className="text-sm text-muted-foreground italic">{t('Write one sentence saying what this area is for (Edit goal).')}</p>}
+            {/* This page has no focus line of its own, so the icon menu is here. */}
+            <div className="flex flex-wrap items-start gap-x-3 gap-y-1"><FocusIconMenu control={icon} size="page" className="-ml-0.5" /><div className="min-w-0 flex-1 basis-64"><FocusNotes area={area} changes={changes} /></div></div>
+            <FocusIconProblem control={icon} />
             {/* The area's own evidence sits with its goal, so it can't be read as belonging to the asks below. */}
             {area.quotes.length > 0 ? <WhyItsHere quotes={area.quotes} /> : area.evidence && <p className="text-xs text-muted-foreground">{interpolate(t('Why it’s here: {evidence}'), { evidence: area.evidence })}</p>}
           </div>
           <AreaMenu area={area} changes={changes} onEdit={setEdit} onShare={() => setSharing(true)} />
-        </div>
         </div>
         {navWord && <p className="text-xs text-attention-foreground">{interpolate(t('“{name}” reuses the page name “{navWord}”. Rename it so each word means one thing.'), { name: area.name, navWord })}</p>}
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">

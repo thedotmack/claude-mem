@@ -1,12 +1,13 @@
 // The one pure mapper from a WorkViewSnapshot (local worker today, cmem.ai later) to the WorkModel the screens use.
 // It follows the plan's mapping table. Where the snapshot has no value, the field takes the table's "missing" value;
 // nothing is estimated or made up (spec §12). Relative imports with .ts extensions so `node --test` can load it.
-import { assertConsistentRequest, type WorkProductKind, type Agent, type AgentTool, type CurrentPeriod, type Device, type PastPeriod, type Request, type SkillRun } from '../data.ts'
+import { assertConsistentRequest, RISK_LEVELS, type WorkProductKind, type Agent, type AgentTool, type CurrentPeriod, type Device, type PastPeriod, type Request, type SkillRun } from '../data.ts'
 import { createFocusAreaResolver, toFocusModel, type MinedGoalItem } from './to-focus-model.ts'
-import { normalizeRequestStatus, presentStatus, STALE_AFTER_MS, type NormalizedStatus } from './status-normalization.ts'
+import { awaitsCheck, normalizeRequestStatus, presentStatus, STALE_AFTER_MS, type NormalizedStatus } from './status-normalization.ts'
 import type { MappedWorkModel, RequestReadError } from './work-data-source.ts'
 import type { OwnerRule, RuleQuote, RuleRecord } from '../data-rules.ts'
 import type { AutoRefresh, BuildStory } from './work-data-source.ts'
+import { chatHref, chatIsImplied } from './chat-links.ts'
 import { measuredEstimate } from './measured-estimate.ts'
 import { repeatsOwnerWords } from './prompt-echo.ts'
 import { SOLO_REQUESTER } from './work-view-overview.ts'
@@ -14,10 +15,10 @@ import type { WorkViewAgent, WorkViewBuildStory, WorkViewGoalItem, WorkViewGoalL
 
 export const THIS_COMPUTER: Device = { id: 'this-computer', name: 'This computer', syncedMinutesAgo: 0, online: true }
 /** Stands in when a request names no agent the snapshot knows: the card then names the machine (§13.2). */
-const UNRECORDED_AGENT: Agent = { id: 'agent-not-recorded', tool: 'other', name: 'Agent not recorded', role: 'Recorded work', deviceId: THIS_COMPUTER.id }
-const NEXT_STEP_NOT_RECORDED = 'Next step not recorded'
+export const UNRECORDED_AGENT: Agent = { id: 'agent-not-recorded', tool: 'other', name: 'Agent not recorded', role: 'Recorded work', deviceId: THIS_COMPUTER.id }
+export const NEXT_STEP_NOT_RECORDED = 'Next step not recorded'
 /** A request is built from its prompts; until an agent records work it has only asks. */
-const NO_WORK_YET = 'No agent work recorded yet'
+export const NO_WORK_YET = 'No agent work recorded yet'
 const KNOWN_TOOLS: AgentTool[] = ['claude', 'codex', 'gemini']
 const PLATFORM_LABEL: Record<string, string> = { claude: 'Claude Code', codex: 'Codex', gemini: 'Gemini' }
 const EVIDENCE_URL = /^\/api\/work-view\/evidence\/(work-state|observation|prompt|summary|session)\/\d+$/
@@ -106,10 +107,23 @@ export function toAgent(agent: WorkViewAgent): Agent {
   }
 }
 
+/** A checked or closed request has no next step: whatever was recorded is from before it came to rest. */
 function nextTextFor(status: NormalizedStatus, recordedNext: string) {
-  if (status === 'checked') return 'Ship it'
+  if (status === 'checked' || status === 'closed') return ''
   if (status === 'blocked') return `Unblock: ${recordedNext}`
   return recordedNext
+}
+
+/** The request's latest conversation, as the worker names it: where the person goes to answer it. */
+function primaryChat(raw: WorkViewHumanRequest): Request['chat'] {
+  const key = raw.latestConversationKey
+  if (!key) return undefined
+  const [, platform, sessionId] = parseRecordKey(key)
+  if (!platform || !sessionId) return undefined
+  const chat = { platform, sessionId }
+  // The recorded transcript is the fallback only for a tool with no link of its own.
+  const linked = chatHref(chat) === undefined && raw.original.url && EVIDENCE_URL.test(raw.original.url) ? { ...chat, transcriptHref: raw.original.url } : chat
+  return chatIsImplied(raw.id, linked) ? undefined : linked
 }
 
 /** The review's milestones, oldest first, as build-story steps. Every milestone already happened. */
@@ -123,11 +137,48 @@ function storySteps(progress: WorkViewProgress, now: number): Request['story'] {
     .filter((step) => step.label)
 }
 
-/** The worker's check route uses the same rule (WorkViewRoutes.ts reviewIsNewerThanLifecycle). */
-function reviewIsNewerThanLifecycle(review: Pick<WorkViewProgress, 'checkedAt'>, lifecycle: WorkViewHumanRequest['lifecycle']): boolean {
+/**
+ * The last moment a review's evidence covers: when the reviewer read it (`reviewedThrough`), not when the review was
+ * saved. A prompt or a status recorded while the review ran is newer than the review, though older than `checkedAt`.
+ * A review from before the read time was recorded has only its save time.
+ */
+const reviewCoversThrough = (review: Pick<WorkViewProgress, 'checkedAt' | 'reviewedThrough'>): number => Date.parse(review.reviewedThrough ?? review.checkedAt ?? '')
+
+/** A review counts once what it read is at least as new as the explicit status: a reopen after that wins. */
+function reviewIsNewerThanLifecycle(review: Pick<WorkViewProgress, 'checkedAt' | 'reviewedThrough'>, lifecycle: WorkViewHumanRequest['lifecycle']): boolean {
   if (!lifecycle?.explicit || !lifecycle.atEpoch) return true
-  const reviewedAt = Date.parse(review.checkedAt ?? '')
-  return Number.isFinite(reviewedAt) && reviewedAt >= lifecycle.atEpoch
+  return reviewCoversThrough(review) >= lifecycle.atEpoch
+}
+
+/** What one request's records say about where it stands, before any saved check. */
+function recordedStanding(raw: WorkViewHumanRequest) {
+  const updatedAt = raw.updatedAtEpoch ?? Math.max(0, ...raw.items.map((item) => item.lastUpdateEpoch || 0))
+  const recordedReview = raw.progress ?? null
+  // A memory review can be newer than the recorded items: its shipped state and its 100% both count then.
+  // An explicit status recorded after the review (a reopen) wins, and the older review cannot claim it finished.
+  const reviewCounts = !!recordedReview && reviewIsNewerThanLifecycle(recordedReview, raw.lifecycle)
+  const review = reviewCounts || (recordedReview && recordedReview.percent < 100) ? recordedReview : null
+  // A question stands until the owner writes after what the review read: the agent then has its reply, and the next review says what it waits on.
+  const ownerWroteAt = Math.max(0, ...[raw.original, ...raw.scopeUpdates].map((prompt) => prompt.atEpoch ?? 0))
+  const questionText = reviewCounts && review && ownerWroteAt <= reviewCoversThrough(review) ? cleanText(review.question?.text, 240) : ''
+  // With only asks, the latest ask is the request's last update.
+  const items = raw.items.length ? raw.items : [{ kind: 'prompt', status: '', lastUpdateEpoch: updatedAt }]
+  const status = { items, lifecycle: raw.lifecycle, progressState: reviewCounts ? review?.state : null, progressPercent: reviewCounts ? review?.percent : null, question: questionText ? review?.question?.need ?? 'answer' : null, turn: raw.turn ?? null }
+  return { updatedAt, recordedReview, reviewCounts, review, questionText, status }
+}
+
+/**
+ * Ready for a person's check: the request's records report its work finished. One rule for both sides of the action:
+ * My Work offers "Mark checked" on exactly these requests, and the worker's review route saves a check for no other.
+ * A check already saved is left out, so marking the same version checked twice is not refused.
+ */
+export function isReadyForCheck(raw: WorkViewHumanRequest, now: number): boolean {
+  return awaitsCheck(normalizeRequestStatus({ ...recordedStanding(raw).status, checked: false }, now))
+}
+
+/** Filed under Review on the board: ready for a check that nobody has saved yet. Automatic stages are made for exactly these. */
+export function isAwaitingCheck(raw: WorkViewHumanRequest, now: number): boolean {
+  return raw.review?.checked !== true && isReadyForCheck(raw, now)
 }
 
 /** One human request → one Request. Its area follows merges; a placement in no live area reads "Sorting…" (absent).
@@ -136,19 +187,18 @@ function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: numb
   const copy = raw.humanCopy
   const copyReady = !!copy && ['current', 'outdated'].includes(copy.state)
   const generatedTitle = raw.titleSource === 'request-group' || raw.titleSource === 'title-cache'
-  const updatedAt = raw.updatedAtEpoch ?? Math.max(0, ...raw.items.map((item) => item.lastUpdateEpoch || 0))
-  const recordedReview = raw.progress ?? null
-  // A memory review can be newer than the recorded items: its shipped state and its 100% both count then.
-  // An explicit status recorded after the review (a reopen) wins, and the older review cannot claim it finished.
-  const reviewCounts = !!recordedReview && reviewIsNewerThanLifecycle(recordedReview, raw.lifecycle)
-  const review = reviewCounts || (recordedReview && recordedReview.percent < 100) ? recordedReview : null
-  // With only asks, the latest ask is the request's last update.
-  const statusItems = raw.items.length ? raw.items : [{ kind: 'prompt', status: '', lastUpdateEpoch: updatedAt }]
-  const status = normalizeRequestStatus({ items: statusItems, lifecycle: raw.lifecycle, checked: raw.review?.checked === true, progressState: reviewCounts ? review?.state : null, progressPercent: reviewCounts ? review?.percent : null }, now)
+  const { updatedAt, recordedReview, reviewCounts, review, questionText, status: standing } = recordedStanding(raw)
+  const status = normalizeRequestStatus({ ...standing, checked: raw.review?.checked === true }, now)
   const shippedAt = review?.state === 'shipped' && review.shippedAt ? Date.parse(review.shippedAt) : NaN
   const completedEpoch = raw.completedAtEpoch ?? (Number.isFinite(shippedAt) ? shippedAt : null)
-  const { state, stage, who } = presentStatus(status, now - updatedAt <= STALE_AFTER_MS)
-  const recordedNext = (copyReady && cleanText(copy.next, 240))
+  const { state, stage, ...actor } = presentStatus(status, now - updatedAt <= STALE_AFTER_MS)
+  const riskLevel = RISK_LEVELS.find((level) => level === review?.risk?.level)
+  const why = reviewCounts ? cleanText(review?.why, 60) : ''
+  const question = questionText && actor.who === 'human' ? { text: questionText, background: (review?.question?.background ?? []).map((item) => ({ text: cleanText(item.text, 240) })).filter((item) => item.text) } : null
+  const chat = primaryChat(raw)
+  // The review's one phrase wins over the title writer's longer sentence.
+  const recordedNext = (reviewCounts && cleanText(review?.nextStep, 60))
+    || (copyReady && cleanText(copy.next, 240))
     || cleanText(raw.items.find((item) => item.nextStep?.text)?.nextStep?.text, 140)
     || (raw.items.length || raw.activity.length || recordedReview ? NEXT_STEP_NOT_RECORDED : NO_WORK_YET)
   const agentId = agents.some((agent) => agent.id === raw.agentIds[0]) ? raw.agentIds[0] : UNRECORDED_AGENT.id
@@ -169,8 +219,8 @@ function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: numb
   const summary = raw.groupId && recordedReview ? (reviewCounts ? recordedReview.summary?.trim() || null : null) : copyReady && copy.summary?.trim() ? copy.summary.trim() : null
   const summaryRepeatsPrompt = !!summary && repeatsOwnerWords(summary, ownerWords)
   // Check the recorded text before a blocked request adds its "Unblock:" label.
-  // Checked requests use a fixed next step instead of this recorded text.
-  const nextRepeatsPrompt = status !== 'checked' && repeatsOwnerWords(recordedNext, ownerWords)
+  const next = nextTextFor(status, recordedNext)
+  const nextRepeatsPrompt = !!next && repeatsOwnerWords(recordedNext, ownerWords)
 
   return assertConsistentRequest({
     id: raw.id,
@@ -194,7 +244,6 @@ function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: numb
     runningLive: started && completedEpoch === null && status !== 'closed' && raw.lifecycle?.complete !== true ? true : undefined,
     stage,
     state,
-    closed: status === 'closed' || undefined,
     // The percent comes only from a memory review. An explicit shipped lifecycle is complete by definition.
     progress: {
       percent: status === 'shipped' ? 100 : review ? review.percent : null,
@@ -205,12 +254,15 @@ function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: numb
       completedAt: status === 'shipped' && completedEpoch ? formatDateTime(completedEpoch) : undefined,
     },
     estimate: measuredEstimate(readings, status === 'shipped'),
-    next: { who, text: nextTextFor(status, recordedNext) },
+    next: { ...actor, text: next },
+    ...(riskLevel ? { risk: { level: riskLevel, reason: cleanText(review?.risk?.reason, 240) } } : {}),
+    ...(why ? { why } : {}),
+    ...(question ? { question } : {}),
+    ...(chat ? { chat } : {}),
     // No agent activity yet: the card shows the human's own asks instead.
     terminal: raw.activity.length
       ? raw.activity.slice(0, 4).reverse().map((activity) => cleanText(`${activity.kind} ${activity.title}${activity.detail ? `: ${activity.detail}` : ''}`, 160)).filter(Boolean)
       : [raw.original, ...raw.scopeUpdates].slice(-4).map((prompt) => cleanText(`ask ${prompt.text}`, 160)).filter(Boolean),
-    activityWord: copyReady ? 'Working' : 'Translating',
     workstreams: raw.workstreams.map((stream) => ({
       title: cleanText(copy?.workstreams?.find((entry) => entry.id === stream.id)?.title, 115) || 'Supporting work',
       tasks: stream.items.filter((item) => item.kind === 'work-state').map((item) => ({ name: cleanText(item.title, 160) || 'Untitled task', done: ['done', 'completed'].includes(item.status) })),

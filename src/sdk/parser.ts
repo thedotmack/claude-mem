@@ -1,6 +1,7 @@
 
 import { logger } from '../utils/logger.js';
 import { ModeManager } from '../services/domain/ModeManager.js';
+import { parseWaitingFor, type WaitingFor } from '../services/work-view/waiting-for.mjs';
 
 // TODO(#2233): migrate to Anthropic tool-use API for deterministic JSON output. This text-XML path is the bridge.
 // Only strip fences when the entire payload is a single fenced block. Stripping
@@ -39,6 +40,8 @@ export interface ParsedSummary {
   completed: string | null;
   next_steps: string | null;
   notes: string | null;
+  /** What the turn waits for. Null when the reply left it out or named no known value; only a parsed reply carries it. */
+  waiting_for?: WaitingFor | null;
   skipped?: boolean;
   skip_reason?: string | null;
 }
@@ -152,6 +155,7 @@ export function parseAgentXml(raw: string, correlationId?: string | number): Par
         completed: null,
         next_steps: null,
         notes: null,
+        waiting_for: null,
         skipped: true,
         skip_reason: reason === undefined ? null : decodeXmlReferences(reason),
       },
@@ -307,6 +311,7 @@ function parseSummaryBlock(text: string, correlationId?: string | number): Parse
     completed,
     next_steps,
     notes,
+    waiting_for: parseWaitingFor(extractField(summaryContent, 'waiting_for')),
   };
 }
 

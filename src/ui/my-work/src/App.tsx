@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, type ReactNode } from 'react'
 import { MotionConfig } from 'motion/react'
-import { CreditCardIcon, InboxIcon, ListChecksIcon, UsersIcon } from 'lucide-react'
-import { LOCALES, LOCALE_NAMES, useI18n, type Locale } from '@/lib/i18n'
+import { UsersIcon } from 'lucide-react'
+import { interpolate, LOCALES, LOCALE_NAMES, useI18n, type Locale } from '@/lib/i18n'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/hover-card'
@@ -10,34 +10,28 @@ import { Switch } from '@/components/ui/switch'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { TooltipProvider } from '@/components/ui/tooltip'
-import { ActivePill, ClassicViewerLink, DeviceFreshness, FeedbackLink, GitHubStars, LiveIndicator } from '@/components/bits'
+import { ClassicViewerLink, DeviceFreshness, FeedbackLink, GitHubStars, LiveIndicator } from '@/components/bits'
 import { Navbar, NavBody } from '@/components/aceternity/resizable-navbar'
-import { Notch } from '@/components/aceternity/notch'
 import { StickyBanner } from '@/components/aceternity/sticky-banner'
 import { CmemMark } from '@/components/brand'
-import { FocusChipRow, FocusRail, PastFocusLink, SIDE_NAV_PILL } from '@/components/focus-nav'
 import { cn } from '@/lib/utils'
 import { MyWork } from '@/pages/my-work'
+import { ThreadSearch, ThreadSearchButton, useThreadSearch } from '@/components/thread-search'
 import { Req } from '@/spec/req'
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
 import { Spinner } from '@/components/ui/spinner'
-import { needsYou, OTHER_FOCUS_AREA_ID } from '@/data'
-import { ACTIVE_SOURCE, useStore, useWorkModel, useWorkspace, type FocusSelection, type NavPage } from '@/store'
+import { OTHER_FOCUS_AREA_ID } from '@/data'
+import { ACTIVE_SOURCE, useStore, useWorkModel, useWorkspace } from '@/store'
+import type { Section } from '@/store/store-types'
 import { shownFocusAreaId } from '@/store/slices/view-slice'
 import { useFocusSharesLoader } from '@/live/focus-shares'
 import { isServedFromCloud } from '@/live/served-from'
 import { MediaSourceContext } from '@/components/observation-media/ObsMedia'
 import { SAMPLE_MEDIA_SOURCE } from '@/components/observation-media/sample-media'
 import { workerMediaSource } from '@/components/observation-media/worker-media-source'
-/** MY FOCUS sits above these: its areas, Other and Suggested (focus-nav.tsx). Past focus is at the bottom of the rail. */
-const PAGES: { id: NavPage; label: string; icon: typeof InboxIcon; section: string }[] = [
-  { id: 'work', label: 'My Work', icon: InboxIcon, section: 'Monitor' },
-  { id: 'rules', label: 'My Rules', icon: ListChecksIcon, section: 'Steer' },
-]
-const NAV_SECTIONS = [...new Set(PAGES.map((entry) => entry.section))]
 /** Billing, cancel, card and synced devices live on cmem.ai; viewer accounts land here and have no other way there. */
 const ACCOUNT_AND_BILLING_URL = 'https://cmem.ai/account'
-
+const SECTION_LABEL: Record<Section, string> = { work: 'My Focus', rules: 'My Rules', suggested: 'Suggested', 'past-focus': 'Past focus' }
 
 /** Wireframe-only theme switch: starts from ?theme=dark|light, else the system preference. */
 function useDarkMode() {
@@ -46,24 +40,37 @@ function useDarkMode() {
   return dark
 }
 
-/** Small rounded icon tile behind each nav icon, after the fly.io sidebar: a hairline with a soft tile shadow. */
-function NavTile({ icon: Icon, active }: { icon: typeof InboxIcon; active: boolean }) {
-  return (
-    <span className={cn('relative flex size-7 shrink-0 items-center justify-center rounded-lg border shadow-tile', active ? 'border-accent-border bg-card text-primary' : 'bg-card/60 text-muted-foreground')}>
-      <Icon className="size-4" />
-    </span>
-  )
-}
+const HEADER_LINK = 'inline-flex h-11 shrink-0 items-center rounded-sm text-sm whitespace-nowrap text-muted-foreground hover:text-foreground hover:underline focus-visible:outline-2 focus-visible:outline-ring aria-[current=page]:font-medium aria-[current=page]:text-foreground md:h-8'
 
-/** Bottom of the rail, cloud viewer only (R18.1). Same row markup as the pages above it; local My Work has no cmem.ai account to manage. */
-function AccountAndBillingLink() {
-  if (!isServedFromCloud(window.location.hostname)) return null
+/** In the header where it has room; on narrower screens, one line above the page that scrolls sideways. */
+const LINKS_PLACE = {
+  header: { shown: 'hidden lg:flex', row: '' },
+  page: { shown: 'flex lg:hidden', row: '-mx-4 overflow-x-auto px-4 md:mx-0 md:px-0' },
+} as const
+
+/**
+ * Every page, as plain text links: the focus list is home, and the rest are one click from anywhere. Suggested shows
+ * while areas wait for a decision (or it is open); Account & billing only on the cloud viewer, which has an account.
+ * `lead` goes first on the line: on a phone the header has no room left, so the search button sits here.
+ */
+function PageLinks({ section, focused, place, lead }: { section: Section; focused: boolean; place: keyof typeof LINKS_PLACE; lead?: ReactNode }) {
+  const { t } = useI18n()
+  const { focusAreas } = useWorkModel()
+  const { goToPage, selectFocus } = useStore.getState()
+  const suggested = focusAreas.filter((area) => area.status === 'suggested' && !area.mergedInto).length
+  const link = (to: Section, label: string, open: () => void) => (
+    <button type="button" onClick={open} aria-current={section === to && !(to === 'work' && focused) ? 'page' : undefined} className={HEADER_LINK}>{label}</button>
+  )
   return (
-    <Req ids={['R18.1']}>
-      <a href={ACCOUNT_AND_BILLING_URL} title="Account & billing" className="relative flex h-10 w-full items-center gap-2.5 rounded-[10px] px-1.5 text-left text-[0.9rem] text-foreground/85 transition-colors hover:bg-card/70">
-        <NavTile icon={CreditCardIcon} active={false} />
-        <span className="relative hidden lg:inline">Account &amp; billing</span>
-      </a>
+    <Req ids={['R19.11']} className={LINKS_PLACE[place].shown}>
+      <nav aria-label={t('Pages')} className={cn('items-center gap-x-4', LINKS_PLACE[place].shown, LINKS_PLACE[place].row)}>
+        {lead}
+        {link('work', t(SECTION_LABEL.work), () => goToPage('work'))}
+        {link('rules', t(SECTION_LABEL.rules), () => goToPage('rules'))}
+        {(suggested > 0 || section === 'suggested') && link('suggested', suggested > 0 ? interpolate(t('{count} suggested'), { count: suggested }) : t(SECTION_LABEL.suggested), () => selectFocus({ kind: 'suggested' }))}
+        <Req ids={['R16.7']}>{link('past-focus', t(SECTION_LABEL['past-focus']), () => selectFocus({ kind: 'past-focus' }))}</Req>
+        {isServedFromCloud(window.location.hostname) && <Req ids={['R18.1']}><a href={ACCOUNT_AND_BILLING_URL} className={HEADER_LINK}>{t('Account & billing')}</a></Req>}
+      </nav>
     </Req>
   )
 }
@@ -199,17 +206,15 @@ function LoadedApp() {
   const showSpec = useStore((state) => state.view.showSpec)
   const workspace = useWorkspace()
   const dark = useDarkMode()
-  const { goToPage, goToFocus, selectFocus, openRequestDrawer, closeRequestDrawer, setWorkspace, setShowSpec, setDark, playSampleDemo } = useStore.getState()
+  const search = useThreadSearch()
+  const { goToPage, goToFocus, openRequestDrawer, closeRequestDrawer, setWorkspace, setShowSpec, setDark, playSampleDemo } = useStore.getState()
   const focusAreaId = shownFocusAreaId({ section: 'work', focusChoice }, focusAreas)
-  const yourMoveCount = requests.filter(needsYou).length
   // The drawer always shows the current record of today's requests; an older goal-only request shows as it was passed.
   const liveOpenRequest = openRequest ? requests.find((request) => request.id === openRequest.id) ?? (openRequest.fromLiveFeed === false ? openRequest.fallback : null) : null
   // The demo flip is sample data; it never runs against real requests.
   useEffect(() => (sample ? playSampleDemo() : undefined), [sample, playSampleDemo])
-  const selected: FocusSelection = view === 'suggested' || view === 'past-focus' ? { kind: view } : view === 'work' && focusAreaId ? { kind: 'area', focusAreaId } : null
-  const pageActive = (id: NavPage) => view === id && !(id === 'work' && focusAreaId)
   const focusTitle = focusAreaId === OTHER_FOCUS_AREA_ID ? t('Other') : focusAreas.find((area) => area.id === focusAreaId)?.name
-  const heading = view === 'suggested' ? t('Suggested') : view === 'past-focus' ? t('Past focus') : view === 'work' && focusTitle ? focusTitle : t(PAGES.find((entry) => entry.id === view)!.label)
+  const heading = view === 'suggested' ? t('Suggested') : view === 'past-focus' ? t('Past focus') : view === 'work' && focusTitle ? focusTitle : t(SECTION_LABEL[view])
 
   return (
     <MotionConfig reducedMotion="user">
@@ -217,7 +222,7 @@ function LoadedApp() {
       <MediaSourceContext.Provider value={sample ? SAMPLE_MEDIA_SOURCE : workerMediaSource}>
         <TooltipProvider delayDuration={150}>
           <Req ids={['R10.3', 'R10.2']} className="min-h-svh">
-            <div className="min-h-svh pb-[calc(6rem+env(safe-area-inset-bottom))] text-foreground md:pb-0">
+            <div className="min-h-svh pb-[env(safe-area-inset-bottom)] text-foreground">
               {/* Wireframe controls: not part of the product. */}
               <StickyBanner hideOnScroll className="min-h-0 flex-wrap justify-start gap-x-3 gap-y-1 border-b border-border/70 bg-card/85 px-4 py-1.5 pr-12 text-xs whitespace-nowrap backdrop-blur-md md:px-6 md:pr-10">
                 {sample && <Badge variant="outline" className="font-normal">{t('Wireframe · sample data')}</Badge>}
@@ -249,7 +254,9 @@ function LoadedApp() {
                       </span>
                     </Req>
                     <h1 className="min-w-0 truncate text-lg font-semibold tracking-tight whitespace-nowrap md:hidden [.header-pill_&]:text-base">{heading}</h1>
+                    <PageLinks section={view} focused={!!focusAreaId} place="header" />
                     <div className="ml-auto flex shrink-0 items-center gap-0.5 md:gap-2">
+                      <ThreadSearchButton onOpen={search.show} className="hidden md:inline-flex" />
                       <TeamSwitch team={workspace.team} onChange={(team) => setWorkspace({ team })} />
                       <DeviceFreshness />
                       <LiveIndicator />
@@ -262,30 +269,9 @@ function LoadedApp() {
                 </Navbar>
               </header>
 
-              <div className="mx-auto max-w-[1440px] gap-6 px-4 py-4 md:grid md:grid-cols-[52px_minmax(0,1fr)] md:px-6 md:py-6 lg:grid-cols-[184px_minmax(0,1fr)] lg:gap-8">
-                <Req ids={['R16.1']} className="hidden md:block">
-                  <nav aria-label={t('Pages')} className="sticky top-20 hidden max-h-[calc(100svh-6rem)] space-y-5 self-start overflow-y-auto md:block">
-                    <div className="hidden lg:block"><FocusRail selected={selected} onSelect={selectFocus} /></div>
-                    {NAV_SECTIONS.map((section) => (
-                      <div key={section} className="space-y-0.5">
-                        <p className="section-label hidden px-2 pb-1 lg:block">{t(section)}</p>
-                        {PAGES.filter((entry) => entry.section === section).map(({ id, label, icon }) => (
-                          <button key={id} type="button" onClick={() => goToPage(id)} aria-current={pageActive(id) ? 'page' : undefined} title={t(label)} className={cn('relative flex h-10 w-full items-center gap-2.5 rounded-[10px] px-1.5 text-left text-[0.9rem] transition-colors', pageActive(id) ? 'font-medium text-accent-foreground' : 'text-foreground/85 hover:bg-card/70')}>
-                            {pageActive(id) && <ActivePill layoutId={SIDE_NAV_PILL} />}
-                            <NavTile icon={icon} active={pageActive(id)} />
-                            <span className="relative hidden lg:inline">{t(label)}</span>
-                            {id === 'work' && yourMoveCount > 0 && <span className="absolute top-0.5 right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground lg:relative lg:top-auto lg:right-auto lg:ml-auto lg:h-5 lg:min-w-5 lg:text-[11px]">{yourMoveCount}<span className="sr-only"> {t('need you')}</span></span>}
-                          </button>
-                        ))}
-                      </div>
-                    ))}
-                    <div className="hidden border-t border-border/70 pt-3 lg:block"><PastFocusLink selected={selected} onSelect={selectFocus} /></div>
-                    <AccountAndBillingLink />
-                  </nav>
-                </Req>
-
+              <div className="mx-auto max-w-[1440px] px-4 py-4 md:px-6 md:py-6">
                 <main className="min-w-0 space-y-4 md:space-y-5">
-                  <FocusChipRow selected={selected} onSelect={selectFocus} />
+                  <PageLinks section={view} focused={!!focusAreaId} place="page" lead={<ThreadSearchButton onOpen={search.show} className="-ml-2 md:hidden" />} />
                   <Suspense fallback={<PageLoading label={heading} />}>
                     {view === 'work' && <MyWork focusAreaId={focusAreaId} onOpen={openRequestDrawer} onOpenFocus={goToFocus} onOpenRules={() => goToPage('rules')} />}
                     {view === 'suggested' && <SuggestedAreas onOpenFocus={goToFocus} />}
@@ -295,33 +281,7 @@ function LoadedApp() {
                 </main>
               </div>
 
-              <Req ids={['R11.1']} className="md:hidden">
-                <nav aria-label={t('Pages')} className="relative z-30 md:hidden">
-                  <Notch
-                    reveal={false}
-                    showSelectedValue={false}
-                    showDividers={false}
-                    offset={12}
-                    className="rounded-2xl border-border/70 bg-card/95 shadow-panel ring-border/60"
-                    itemClassName="relative h-[60px] min-w-24 flex-col justify-center gap-1 rounded-xl px-3 text-[11px] text-muted-foreground hover:bg-accent/40 hover:text-foreground"
-                    items={PAGES.map(({ id, label, icon }) => ({
-                      id,
-                      currentPage: pageActive(id),
-                      options: [{ id, label: t(label) }],
-                      onChange: () => goToPage(id),
-                      label: (
-                        <>
-                          {pageActive(id) && <ActivePill layoutId="bottom-nav-active-pill" className="rounded-xl" />}
-                          <span className={cn('relative flex flex-col items-center gap-1', pageActive(id) ? 'font-semibold text-accent-foreground' : 'text-muted-foreground')}>
-                            <NavTile icon={icon} active={pageActive(id)} />{t(label)}
-                          </span>
-                          {id === 'work' && yourMoveCount > 0 && <span className="absolute top-1.5 left-[calc(50%+6px)] flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground">{yourMoveCount}<span className="sr-only"> {t('need you')}</span></span>}
-                        </>
-                      ),
-                    }))}
-                  />
-                </nav>
-              </Req>
+              <ThreadSearch search={search} requests={requests} focusAreas={focusAreas} sample={sample} onShow={openRequestDrawer} />
 
               {/* Always mounted: its code loads after first paint, and closing keeps the loaded detail for a reopen. */}
               <Suspense fallback={liveOpenRequest ? <RequestDetailLoading title={liveOpenRequest.title ?? liveOpenRequest.resolvesTo?.title ?? t('Untitled request')} onClose={closeRequestDrawer} /> : null}>

@@ -8,7 +8,7 @@
 // area takes it off the page. Closed requests stay off, as they do on My Work. The owner's own words (quotes,
 // prompts, and any title, summary, next step, ask or goal that repeats them), terminal lines, evidence links, work product,
 // conversations and machine names never leave.
-import { OTHER_FOCUS_AREA_ID, type FocusArea, type Request } from '../data.ts'
+import { isClosed, OTHER_FOCUS_AREA_ID, type FocusArea, type Request } from '../data.ts'
 import { repeatsOwnerWords } from './prompt-echo.ts'
 import { resolveFocusAreaId } from './to-focus-model.ts'
 import type { WorkModel } from './work-data-source.ts'
@@ -16,11 +16,14 @@ import type { WorkModel } from './work-data-source.ts'
 export const SHARED_REQUESTS_MAX = 200
 export const SHARED_ASKS_MAX = 50
 
+/** The states the hosted page words. It lists open requests, and one the owner checked reads there as idle. */
+export type SharedState = Exclude<Request['state'], 'checked' | 'closed'>
+
 export interface SharedRequest {
   id: string
   title: string
   summary: string | null
-  state: Request['state']
+  state: SharedState
   stage: string
   percent: number | null
   next: { who: 'bot' | 'human'; text: string }
@@ -82,7 +85,7 @@ export function toSharedFocusPage(model: Pick<WorkModel, 'requests' | 'focusArea
   // The area header's rollup (focus-header.tsx Rollup): reviewed requests only, closed ones included.
   const reviewed = all.filter((request) => request.progress.readings > 0)
   const percent = reviewed.length ? Math.round(reviewed.reduce((sum, request) => sum + (request.progress.percent ?? 0), 0) / reviewed.length) : null
-  const open = all.filter((request) => !request.closed)
+  const open = all.filter((request) => !isClosed(request))
   const agentName = (request: Request) => model.agents.find((agent) => agent.id === request.agentId)?.name ?? 'Agent not recorded'
   return {
     version: 1,
@@ -99,7 +102,7 @@ export function toSharedFocusPage(model: Pick<WorkModel, 'requests' | 'focusArea
       title: clip(sharedTitle(request), 200),
       summary: request.summary?.trim() && !request.summaryRepeatsPrompt && !titleQuotesPrompt(request.summary, request.prompts)
         ? clip(request.summary.trim(), 600) : null,
-      state: request.state,
+      state: request.state === 'checked' || request.state === 'closed' ? 'idle' : request.state,
       stage: request.stage,
       percent: request.progress.percent,
       next: { who: request.next.who, text: request.nextRepeatsPrompt || titleQuotesPrompt(request.next.text, request.prompts)

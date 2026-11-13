@@ -7,7 +7,7 @@ import { readWorkStateRows, reduceWorkState } from '../../src/services/work-view
 import {
   appliedLabel, judgedStatusFor, JUDGED_WORK_STATES, LABEL_THRESHOLD, labelOpenWorkState, readWorkStateLabels, workStateItems,
 } from '../../src/services/work-view/work-state-labels.mjs';
-import { isReportedReadyForCheck } from '../../src/services/worker/http/routes/WorkViewRoutes.js';
+import { isReadyForCheck } from '../../src/ui/my-work/src/live/to-work-model.js';
 import { normalizeRequestStatus } from '../../src/ui/my-work/src/live/status-normalization.js';
 import { scratchDir } from '../helpers/scratch-dir.js';
 import { _resetRedactionConfigCache } from '../../src/utils/redaction.js';
@@ -215,6 +215,12 @@ describe('Jev work-state labels', () => {
 
   it('the check route accepts what the viewer offers "Mark checked" for, including a confident finished label', () => {
     const item = (fields: Record<string, unknown>) => ({ kind: 'work-state', status: 'doing', lastUpdateEpoch: NOW, ...fields });
+    // The route and the row share one rule (to-work-model.ts isReadyForCheck), asked here of a whole request.
+    const isReportedReadyForCheck = ({ items }: { lifecycle: null; progress: null; items: ReturnType<typeof item>[] }, now: number) => isReadyForCheck({
+      id: 'request', contentFingerprint: 'f', title: 'Request', original: { text: 'Do the thing', atEpoch: NOW }, scopeUpdates: [], humanCopy: null,
+      lifecycle: null, items, workstreams: [], activity: [], agentIds: [], conversationKeys: [], requestedBy: null,
+      startedAtEpoch: NOW, completedAtEpoch: null, updatedAtEpoch: NOW, review: null, progress: null,
+    } as never, now);
     expect(isReportedReadyForCheck({ lifecycle: null, progress: null, items: [item({})] }, NOW)).toBe(false);
     expect(isReportedReadyForCheck({ lifecycle: null, progress: null, items: [item({ judgedStatus: 'needs-review' })] }, NOW)).toBe(true);
     expect(isReportedReadyForCheck({ lifecycle: null, progress: null, items: [item({ status: 'needs-review' })] }, NOW)).toBe(true);

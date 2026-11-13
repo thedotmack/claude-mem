@@ -14,3 +14,16 @@ it('combines current card status with complete detail rather than replacing it w
   assert.equal(merged.workProduct, full.workProduct)
   assert.notEqual(requestDetailKey(summary), requestDetailKey({ ...summary, detailRevision: 'next' }))
 })
+
+it('never pairs an older version\'s evidence with the newest version\'s fingerprint', async () => {
+  const full = (await sampleSource.loadWorkModel()).requests[0]
+  const read = { ...full, contentFingerprint: 'a'.repeat(64), review: { mode: 'shared' as const, hash: 'read', available: true } }
+  const newer = { ...read, contentFingerprint: 'b'.repeat(64), review: { mode: 'shared' as const, hash: 'newer', available: true }, detailLoaded: false, detailRevision: 'next', workProduct: [], evidence: [] }
+  const stale = mergeRequestDetail(newer, read)
+  assert.equal(stale.workProduct, read.workProduct)
+  assert.equal(stale.contentFingerprint, read.contentFingerprint)
+  assert.equal(stale.review?.hash, 'read')
+  const reloaded = mergeRequestDetail(newer, { ...newer, workProduct: read.workProduct })
+  assert.equal(reloaded.contentFingerprint, newer.contentFingerprint)
+  assert.equal(reloaded.review?.hash, 'newer')
+})

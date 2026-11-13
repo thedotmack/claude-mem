@@ -227,7 +227,7 @@ function skillPaths(pluginRoot: string) {
 }
 
 /** A skill's instructions with its folder filled in, for agents without the Skill tool. */
-function inlineSkill(path: string): string {
+export function inlineSkill(path: string): string {
   return readFileSync(path, 'utf8').replaceAll('${CLAUDE_SKILL_DIR}', join(path, '..'));
 }
 
@@ -276,6 +276,50 @@ function goalsJson(saved: ReturnType<typeof readGoals>, story: { preferences?: A
 /** The worker refuses a new area named like a nav item (nav-words.mjs), so every prompt that names areas says so. */
 const NAV_LABEL_RULE = `A focus area's name never reuses a nav label as whole words, in any case: ${NAV_LABELS.map(label => `"${label}"`).join(', ')}. The worker refuses such a name and the whole answer fails.`;
 const focusAreasNote = (path: string) => `The focus areas already saved in My Focus are in ${path} (id, name, goal, status; do not run --print-focus-areas). For each focus area you write, set "matches" to the id of the saved area it already is, whatever its name, or null when none is. Never match by name alone. ${NAV_LABEL_RULE}`;
+
+/**
+ * A stage and a focus plan open files the worker gathered, which a chat-completions provider cannot do, so those
+ * runs keep to the owner's local agents. With none allowed, the runner says so and nothing runs.
+ */
+export function localAgentsOnly<T extends { allowedAgents?: TaskAgentId[]; preferredAgent?: TaskAgentId }>(task: T): T {
+  return {
+    ...task,
+    ...(task.allowedAgents ? { allowedAgents: task.allowedAgents.filter(agent => agent !== 'api') } : {}),
+    ...(task.preferredAgent === 'api' ? { preferredAgent: undefined } : {}),
+  };
+}
+
+/** What every question tells a worker-run agent first: it reads and answers, and the worker saves. */
+export function readOnlyRule(agent: TaskAgentId, run: string): string {
+  return [
+    `You are running in a read-only sandbox for ${run}: you cannot run commands that write or save. Nobody is watching, so never ask a question.`,
+    agent === 'claude-code'
+      ? 'Search claude-mem memory with its MCP tools (search, timeline, get_observations) for evidence beyond the input files.'
+      : 'You have no memory tools: the input files hold the evidence (each conversation\'s asks and observations). Where the skill says to search memory, use them instead.',
+  ].join(' ');
+}
+
+/**
+ * Where and how every worker-run agent task runs (the refresh, a stage, a focus plan): on the owner's own agent as
+ * their settings name it, in the work-view folder, reading only that folder and searching memory. The caller adds `run`.
+ */
+export function readOnlyAgentTask({ reason, dataDir, ledgerDir, pluginRoot }: { reason: string; dataDir: string; ledgerDir: string; pluginRoot: string }): Omit<AgentTask, 'run' | 'prepare'> {
+  return {
+    reason,
+    // The run stays on the agent the owner's settings name (#5189, #5435).
+    ...resolveRefreshAgents(dataDir),
+    // The work-view folder holds every input file; the data dir above it holds .env and settings.json.
+    cwd: ledgerDir,
+    claudeCode: {
+      // The plugin is loaded for its memory-search MCP server; steps read their input files and search memory, nothing else.
+      plugins: [{ type: 'local', path: pluginRoot }],
+      tools: ['Read', 'Grep', 'Glob'],
+      allowedTools: MEMORY_TOOLS.map(tool => `${PLUGIN_MCP_PREFIX}${tool}`),
+      // Prompts carry untrusted conversation text, so file reads are held to the input files' folder.
+      readableFolders: [ledgerDir],
+    },
+  };
+}
 
 export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { steps: StepTiming[] } {
   const { needs, reason, dataDir, ledgerDir, pluginRoot, openDatabase } = options;
@@ -463,12 +507,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       // The path goes first: the runner keeps only the first 500 characters of an error.
       throw refused(new Error(`${name} (raw answer: ${answerPath}): ${refusal}`));
     };
-    const readOnly = [
-      'You are running in a read-only sandbox for claude-mem\'s automatic refresh: you cannot run commands that write or save. Nobody is watching, so never ask a question.',
-      agent === 'claude-code'
-        ? 'Search claude-mem memory with its MCP tools (search, timeline, get_observations) for evidence beyond the input files.'
-        : 'You have no memory tools: the input files hold the evidence (each conversation\'s asks and observations). Where the skill says to search memory, use them instead.',
-    ].join(' ');
+    const readOnly = readOnlyRule(agent, 'claude-mem\'s automatic refresh');
 
     try {
       const done: string[] = discardedCheckpointNote ? [discardedCheckpointNote] : [];
@@ -831,22 +870,5 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
     }
   };
 
-  return {
-    reason,
-    steps,
-    // The refresh runs on the agent the owner's settings name, and stays there (#5189, #5435).
-    ...resolveRefreshAgents(dataDir),
-    // The work-view folder holds every input file; the data dir above it holds .env and settings.json.
-    cwd: ledgerDir,
-    claudeCode: {
-      // The plugin is loaded for its memory-search MCP server; steps read their input files and search memory, nothing else.
-      plugins: [{ type: 'local', path: pluginRoot }],
-      tools: ['Read', 'Grep', 'Glob'],
-      allowedTools: MEMORY_TOOLS.map(tool => `${PLUGIN_MCP_PREFIX}${tool}`),
-      // Prompts carry untrusted conversation text, so file reads are held to the input files' folder.
-      readableFolders: [ledgerDir],
-    },
-    run,
-    prepare: needs.goalsStale ? prepareGoals : undefined,
-  };
+  return { ...readOnlyAgentTask({ reason, dataDir, ledgerDir, pluginRoot }), steps, run, prepare: needs.goalsStale ? prepareGoals : undefined };
 }

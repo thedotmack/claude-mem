@@ -2,10 +2,11 @@ import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { appendReading, applyGroupDecisions, groupIdFor, ledgerSignature, linkBackwards, MAX_READINGS, readCandidates, readGoals, readLedger, refreshNeeds, runCli, storyChaptersToMerge, storyParts, textTarget, validateProgress, validateStory } from '../../src/services/work-view/request-groups.mjs';
+import { reviewIsCurrent, appendReading, applyGroupDecisions, groupIdFor, ledgerSignature, linkBackwards, MAX_READINGS, readCandidates, readGoals, readLedger, refreshNeeds, runCli, storyChaptersToMerge, storyParts, textTarget, validateProgress, validateStory } from '../../src/services/work-view/request-groups.mjs';
 import { readFocus, readFocusAreas } from '../../src/services/work-view/data-source.mjs';
 import { focusAreaRowFields, placementRowFields, routerFocusRows, type RouterFocusBody } from '../../src/services/work-view/my-focus.mjs';
 import { buildHumanRequests } from '../../src/services/work-view/request-projection.mjs';
+import { AutoRefreshWorker } from '../../src/services/work-view/auto-refresh-worker.mjs';
 import { scratchDir } from '../helpers/scratch-dir.js';
 
 const ledgerDir = () => scratchDir('request-groups-test');
@@ -79,6 +80,19 @@ describe('overall requests and progress reviews', () => {
   expect(() => validateProgress({ ...base, percent: 90 }, groups)).toThrow(/percent 100/);
   expect(() => validateProgress({ ...base, state: 'in-progress', percent: 50 }, groups)).toThrow(/Only a shipped/);
   expect(() => validateProgress({ ...base, groupId: 'g_ffffffffffff' }, groups)).toThrow(/Unknown group/);
+  expect(validateProgress(base, groups)).not.toHaveProperty('risk');
+  expect(validateProgress(base, groups)).not.toHaveProperty('format');
+  expect(validateProgress({ ...base, risk: { level: 'high', reason: 'Rewrites the billing table.' } }, groups).risk).toEqual({ level: 'high', reason: 'Rewrites the billing table.' });
+  expect(() => validateProgress({ ...base, risk: { level: 'severe', reason: 'x' } }, groups)).toThrow(/risk\.level must be one of low, medium, high/);
+  expect(() => validateProgress({ ...base, risk: { level: 'low' } }, groups)).toThrow(/risk\.reason/);
+  const brief = validateProgress({ ...base, nextStep: 'Merge PR #93', why: 'Prints match what the screen showed', question: { need: 'answer', text: 'Keep which forecast?', background: [{ text: 'The linear one is cheaper to explain.', evidence: ['101'] }] } }, groups);
+  expect(brief.nextStep).toBe('Merge PR #93');
+  expect(brief.why).toBe('Prints match what the screen showed');
+  expect(brief.question).toEqual({ need: 'answer', text: 'Keep which forecast?', background: [{ text: 'The linear one is cheaper to explain.', evidence: ['101'] }] });
+  expect(validateProgress({ ...base, question: { need: 'approval', text: 'Merge PR #93?' } }, groups).question).toEqual({ need: 'approval', text: 'Merge PR #93?', background: [] });
+  expect(() => validateProgress({ ...base, question: { text: 'Merge PR #93?' } }, groups)).toThrow(/question\.need must be one of answer, approval/);
+  expect(() => validateProgress({ ...base, nextStep: 'x'.repeat(61) }, groups)).toThrow(/nextStep/);
+  expect(() => validateProgress({ ...base, question: { need: 'answer', background: [] } }, groups)).toThrow(/question\.text/);
   expect(() => validateProgress({ ...base, preferences: [{ kind: 'vibe', preference: 'x', quote: 'y' }] }, groups)).toThrow(/kind/);
   expect(() => validateProgress({ ...base, reviewBasis: undefined }, groups)).toThrow(/reviewBasis/);
 });
@@ -565,6 +579,12 @@ describe('overall requests and progress reviews', () => {
     const amend = run(['show', group], NOW + 2 * DAY);
     expect(amend).toMatchObject({ mode: 'amend', amendSince: new Date(NOW).toISOString(), previousReview: { percent: 40 } });
     expect(amend.conversations[0].asks.map((ask: { text: string }) => ask.text)).toEqual(['Now add the release date to each card']);
+    // --full is the whole request whatever was reviewed: every ask and every observation, with the review beside them.
+    const whole = run(['show', group, '--full'], NOW + 2 * DAY);
+    expect(whole).toMatchObject({ mode: 'full', amendSince: null, previousReview: { percent: 40 } });
+    expect(whole.conversations[0].asks.length).toBeGreaterThan(1);
+    expect(whole.conversations[0].asks.at(-1).text).toBe('Now add the release date to each card');
+    expect(whole.conversations[0].observations.map((observation: { title: string }) => observation.title)).toEqual(expect.arrayContaining(['Cards built', 'Release dates on cards']));
     // A merged-in conversation changes what was reviewed: a full review again.
     run(['apply', write('d2.json', { groups: [{ title: 'Release cards', conversations: [key('a'), key('b')], links: [{ kind: 'shared-work-list', conversations: [key('a'), key('b')], evidence: 'work list "release-cards" in repo/tree' }] }] })]);
     const full = run(['show', group], NOW + 2 * DAY);
@@ -726,6 +746,44 @@ describe('overall requests and progress reviews', () => {
     writeFileSync(join(dir, 'refresh.json'), JSON.stringify({ state: 'running' }));
     expect(ledgerSignature(dir)).not.toBe(before);
     expect(readLedger(dir).refresh).toEqual({ state: 'running' });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+  it('a review without the newer fields is not due again: only new activity makes its request due', async () => {
+  const dir = ledgerDir();
+  try {
+    const database = fixtureDatabase();
+    const focus = focusFixture(database);
+    const { run, write } = cliRunner(dir, database, focus.save);
+    saveGoals(database, new Date(NOW).toISOString());
+    const cards = groupIdFor(key('a')), pricing = groupIdFor(key('c'));
+    run(['apply', write('decisions.json', { groups: [{ title: 'Release cards', conversations: [key('a'), key('b')], links: [{ kind: 'shared-work-list', conversations: [key('a'), key('b')], evidence: 'work list "release-cards" in repo/tree' }] }, { title: 'Pricing page', conversations: [key('c')] }] })]);
+    for (const groupId of [cards, pricing]) {
+      run(['record-progress', write('review.json', { groupId, state: 'in-progress', percent: 50, summary: 'Under way.', reviewBasis: run(['show', groupId]).reviewBasis })]);
+      // As an earlier version saved it: no risk, next step, why or question, and one of them with that version's number.
+      const path = join(dir, 'progress', `${groupId}.json`), saved = JSON.parse(readFileSync(path, 'utf8'));
+      expect(saved).not.toHaveProperty('risk');
+      expect(saved).not.toHaveProperty('nextStep');
+      expect(saved).not.toHaveProperty('why');
+      expect(saved).not.toHaveProperty('question');
+      if (groupId === cards) writeFileSync(path, JSON.stringify({ ...saved, format: 1 }));
+    }
+    await run(['record-focus', write('focus.json', { placements: [{ anchor: key('a'), focusAreaId: 'other', evidence: 'Cards.' }, { anchor: key('c'), focusAreaId: 'other', evidence: 'Pricing.' }], proposals: [] })]);
+    await run(['record-focus', '--other', write('other.json', { placements: [], proposals: [] })]);
+
+    expect(refreshNeeds({ dir, database, now: NOW + 1000, localDeviceId: '' })).toEqual({ due: 0, ungrouped: 0, goalsStale: false, unplaced: 0, otherChanged: false, needed: false });
+    expect(run(['pending'], NOW + 1000)).toMatchObject({ due: 0, groups: [] });
+    expect(run(['show', cards], NOW + 1000).mode).toBe('amend');
+    let runs = 0;
+    const worker = new AutoRefreshWorker({ localDeviceId: () => '', dir, openDatabase: () => ({ prepare: database.prepare.bind(database), close() {} }), now: () => NOW + 1000, runJob: async () => { runs += 1; return { state: 'ok', agent: null, result: null, error: null }; } });
+    expect(await worker.check()).toBe('idle');
+    expect(runs).toBe(0);
+
+    database.prepare('INSERT INTO tool_uses (session_db_id, tool_name, tool_input, created_at_epoch) VALUES (?, ?, ?, ?)').run(3, 'Bash', JSON.stringify({ command: 'git push' }), NOW + 2000);
+    expect(refreshNeeds({ dir, database, now: NOW + 3000, localDeviceId: '' })).toMatchObject({ due: 1, needed: true });
+    expect(run(['pending'], NOW + 3000).groups.map((group: { groupId: string }) => group.groupId)).toEqual([pricing]);
+    expect(await worker.check()).toBe('ok');
+    expect(runs).toBe(1);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

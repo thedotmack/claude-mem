@@ -11,6 +11,7 @@ import {
   stripImagePayloadsFromField,
 } from '../../src/sdk/prompts.js';
 import type { ModeConfig } from '../../src/services/domain/types.js';
+import { WAITING_FOR } from '../../src/services/work-view/waiting-for.mjs';
 
 const summaryMode = {
   prompts: {
@@ -90,6 +91,21 @@ describe('buildObservationPrompt', () => {
     expect(prompt).toContain("Used <redacted type='openai_key'/> during setup.");
     expect(prompt).toContain(`If you see a "<redacted type='...'/>" marker`);
     expect(prompt).toContain('do not infer the literal value or copy the marker itself into generated memory content.');
+  });
+
+  it('asks what the turn waits for, naming every allowed word and the last message as the evidence', () => {
+    const prompt = buildSummaryPrompt({
+      id: 1,
+      memory_session_id: 'memory-session-1',
+      project: '/repo',
+      user_prompt: 'summarize',
+      last_assistant_message: 'Shall I merge it?',
+    }, summaryMode);
+    const tag = /<waiting_for>\[([\s\S]*?)\]<\/waiting_for>\n<\/summary>/.exec(prompt)?.[1] ?? '';
+
+    for (const word of WAITING_FOR) expect(tag).toContain(`${word} (`);
+    expect(tag).toContain("judged only from the observed agent's last message to the user");
+    expect(tag).toContain('write nothing only if the turn made no work product');
   });
 
   it('offers the skip sentinel, not silence, when there is nothing to summarize', () => {

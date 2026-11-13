@@ -4,6 +4,7 @@ import { buildHumanRequests } from './request-projection.mjs';
 import { goalKindOf, OWNER_GOALS_LIST, isOwnerGoalsList } from './owner-goals.mjs';
 import { buildRules } from './my-rules.mjs';
 import { buildFocusAreas, placeRequests } from './my-focus.mjs';
+import { withFocusInitiatives } from './focus-initiative.mjs';
 import { isWorkProductField, productsFromFields, readProductRecords } from './work-product.mjs';
 import { agentStopFor, readAgentStops } from './agent-lifecycle.mjs';
 import { withDerivedProjects } from './session-project.mjs';
@@ -453,12 +454,13 @@ export function buildAgentView(state, records, { now = Date.now(), workLimit = 2
   const recentActivity = activity.sort((a, b) => b.atEpoch - a.atEpoch).slice(0, activityLimit);
   const requestProjection = buildHumanRequests({ agents, recentActivity }, records, { titleCache, ledger, onProductFile });
   const { focusAreas, focusAreaIdByAnchor } = buildFocusAreas(state);
+  const humanRequests = placeRequests(requestProjection.humanRequests, focusAreaIdByAnchor, ledger);
   return {
     version: 1, generatedAt: stamp(now), currentProject: state.currentProject, currentProjectScope: state.currentProjectScope,
     agents, recentActivity, goals: buildOwnerGoals(state), goalHistory: buildOwnerGoalHistory(state),
     ...buildRules(state, ledger),
     ...requestProjection,
-    focusAreas, humanRequests: placeRequests(requestProjection.humanRequests, focusAreaIdByAnchor, ledger),
+    focusAreas: withFocusInitiatives(focusAreas, humanRequests), humanRequests,
     coverage: { workRows: candidates.length, workLimit, linkedWork, ownerWork, unattributedWork, observations: observations.length, observationLimit: 300, summaries: summaries.length, livePresenceAvailable: false, summaryMethod: 'bounded-recorded-text', fullHistoryUrl: '/viewer' },
   };
 }

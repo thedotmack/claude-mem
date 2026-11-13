@@ -1,6 +1,6 @@
 // Which requests changed between two work models, so their cards can show the "Just updated" dot, and what changed,
 // so My Work can say it out loud ("Shipped: Move embeddings into their own table").
-import type { LiveState, Request } from '../data.ts'
+import { isClosed, type LiveState, type Request } from '../data.ts'
 
 /** Requests whose recorded content changed, or that are new, since the shown model. */
 export function freshlyUpdatedRequestIds(shown: Request[], next: Request[]): string[] {
@@ -39,7 +39,7 @@ export function requestChanges(shown: Request[], next: Request[], at: number): R
     const previous = before.get(request.id)
     const title = titleOf(request)
     if (!previous) {
-      if (!request.closed) changes.push({ kind: 'new', requestId: request.id, title, at })
+      if (!isClosed(request)) changes.push({ kind: 'new', requestId: request.id, title, at })
     } else if (previous.state !== request.state && !clockOnlyIdle(previous, request)) {
       changes.push({ kind: 'state', requestId: request.id, title, from: previous.state, to: request.state, at })
     } else if (request.progress.percent !== null && request.progress.percent > (previous.progress.percent ?? -1)) {

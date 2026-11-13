@@ -1,0 +1,102 @@
+/**
+ * The formats a finished request can be staged in for review. A format is data: an id, a label, what kind of file it
+ * makes and the instructions the agent follows. The four built-ins are below; the owner adds their own by dropping a
+ * Markdown file in ~/.claude-mem/stage-formats/ (front matter `name` and `output`, then the instructions), and a file
+ * named like a built-in replaces it. My Work lists whatever this module answers; it has no list of its own.
+ */
+import { readdirSync, readFileSync, statSync } from 'fs';
+import { join } from 'path';
+import { STAGE_FORMAT_ID_PATTERN, STAGE_OUTPUT_KINDS, type StageOutputKind } from './owner-runs.mjs';
+
+export interface StageFormat { id: string; label: string; output: StageOutputKind; instructions: string; builtIn: boolean }
+/** A format as My Work lists it: everything but the instructions. */
+export type StageFormatInfo = Omit<StageFormat, 'instructions'>;
+
+export const STAGE_FORMATS_DIRNAME = 'stage-formats';
+const MAX_CUSTOM_FORMATS = 24;
+const MAX_FORMAT_FILE_BYTES = 64 * 1024;
+const MAX_LABEL_CHARS = 40;
+
+export const BUILT_IN_STAGE_FORMATS: readonly StageFormat[] = [
+  {
+    id: 'brief', label: 'Brief', output: 'markdown', builtIn: true,
+    instructions: [
+      'A review the owner reads in under a minute, at most 250 words.',
+      'Open with the ask in the owner\'s own words (one quote), then say in two or three sentences what was made.',
+      'Then "Look at this first": the one or two pieces of evidence that show the result, shown as themselves.',
+      'End with "Not verified": what you could not open or what the evidence does not prove. One line when there is nothing.',
+    ].join(' '),
+  },
+  {
+    id: 'one-pager', label: 'One-pager', output: 'markdown', builtIn: true,
+    instructions: [
+      'One page with these headings, in this order: What you asked, What changed, The evidence, What could go wrong, What to decide.',
+      'Under "The evidence" show each piece as itself, with one line saying what it proves.',
+      'Under "What to decide" list only decisions that are the owner\'s, each as a question they can answer in a sentence.',
+      'At most 600 words.',
+    ].join(' '),
+  },
+  {
+    id: 'deck', label: 'Deck', output: 'html', builtIn: true,
+    instructions: [
+      'One self-contained HTML file of 5 to 9 slides, each a full-viewport section, moved with the arrow keys and by click.',
+      'All CSS and JavaScript inline; load nothing from the network. Readable on a phone and in light or dark mode.',
+      'One idea per slide: the ask (quoted), what was made, one slide per piece of evidence that matters with the evidence filling the slide, what could go wrong, what to decide.',
+      'A slide about a screen shows that screen\'s screenshot. A slide about code shows the changed files and the few lines that matter, taken from the diff.',
+    ].join(' '),
+  },
+  {
+    id: 'technical', label: 'Technical walkthrough', output: 'markdown', builtIn: true,
+    instructions: [
+      'For a reviewer who reads code. Start with the shape of the change from the real diff: which files, how many lines, what moved where.',
+      'Then walk the change in the order a reader should review it, quoting the hunks that carry the risk in fenced code blocks, each with its file path.',
+      'Then "Tests": what the diff adds or changes in tests, and what it leaves untested.',
+      'End with "Not opened": every commit, pull request or file you were told about and could not read.',
+    ].join(' '),
+  },
+];
+
+/** `---` front matter with `key: value` lines, then the body. A file without front matter is all body. */
+function parseFormatFile(text: string): { fields: Record<string, string>; body: string } {
+  const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/.exec(text.replace(/^﻿/, ''));
+  if (!match) return { fields: {}, body: text };
+  const fields: Record<string, string> = {};
+  for (const line of match[1].split(/\r?\n/)) {
+    const pair = /^([A-Za-z][\w-]*)\s*:\s*(.*)$/.exec(line);
+    if (pair) fields[pair[1].toLowerCase()] = pair[2].trim().replace(/^(["'])(.*)\1$/, '$2');
+  }
+  return { fields, body: match[2] };
+}
+
+/**
+ * Every format, built-ins first, then the owner's own in file-name order. A file the reader cannot use (a name that is
+ * not a format id, an unknown `output`, no instructions, too large) is left out and named in `skipped`, never guessed at.
+ */
+export function readStageFormats(dataDir: string): { formats: StageFormat[]; skipped: string[] } {
+  const dir = join(dataDir, STAGE_FORMATS_DIRNAME);
+  let names: string[] = [];
+  try { names = readdirSync(dir).filter(name => name.toLowerCase().endsWith('.md')).sort(); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return { formats: [...BUILT_IN_STAGE_FORMATS], skipped: [`${STAGE_FORMATS_DIRNAME}: ${(error as Error).message}`] }; }
+  const custom = new Map<string, StageFormat>();
+  const skipped: string[] = [];
+  for (const name of names) {
+    const id = name.slice(0, -3).toLowerCase();
+    const skip = (why: string) => { skipped.push(`${name}: ${why}`); };
+    if (!STAGE_FORMAT_ID_PATTERN.test(id)) { skip('its name must be lowercase letters, digits and dashes'); continue; }
+    if (custom.size >= MAX_CUSTOM_FORMATS) { skip(`only ${MAX_CUSTOM_FORMATS} formats are read`); continue; }
+    let text: string;
+    try {
+      const path = join(dir, name);
+      if (statSync(path).size > MAX_FORMAT_FILE_BYTES) { skip('it is too large'); continue; }
+      text = readFileSync(path, 'utf8');
+    } catch (error) { skip((error as Error).message); continue; }
+    const { fields, body } = parseFormatFile(text);
+    const output = (fields.output ?? 'markdown').toLowerCase();
+    if (!(STAGE_OUTPUT_KINDS as readonly string[]).includes(output)) { skip(`output must be ${STAGE_OUTPUT_KINDS.join(' or ')}`); continue; }
+    if (!body.trim()) { skip('it has no instructions'); continue; }
+    custom.set(id, { id, label: (fields.name || id).slice(0, MAX_LABEL_CHARS), output: output as StageOutputKind, instructions: body.trim(), builtIn: false });
+  }
+  return { formats: [...BUILT_IN_STAGE_FORMATS.filter(format => !custom.has(format.id)), ...custom.values()], skipped };
+}
+
+export const stageFormatInfo = ({ instructions: _instructions, ...info }: StageFormat): StageFormatInfo => info;
