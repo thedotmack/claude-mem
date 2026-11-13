@@ -9,6 +9,10 @@ export const MemoryItemSchema = z.object({
   id: z.string().min(1),
   projectId: z.string().min(1),
   serverSessionId: z.string().min(1).nullable().default(null),
+  // Provenance: which agent/platform produced this observation (claude, codex,
+  // cursor, cowork, muse, ...). Denormalized from server_sessions at write time
+  // so search results carry it without a JOIN. Null = created before provenance.
+  platformSource: z.string().min(1).nullable().default(null),
   legacyObservationId: z.number().int().positive().nullable().default(null),
   kind: MemoryItemKindSchema,
   type: z.string().min(1),

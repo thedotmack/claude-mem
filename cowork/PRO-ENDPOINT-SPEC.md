@@ -7,7 +7,7 @@ server-side; this is deliberately the same shape as the local pipeline so the
 existing worker code path can be reused.
 
 Client reference implementation: `scripts/cmem-hook.mjs` in the
-`cmem-pro` plugin (this package).
+`claude-mem-cowork` plugin (this package).
 
 ---
 
@@ -18,6 +18,28 @@ Both endpoints reuse the existing `/api/mcp` bearer validation:
 {"error":"invalid_token"}` (+ `WWW-Authenticate` per the OAuth work).
 Clients also send `X-CMEM-Platform: cowork` — store it as `platformSource`
 on everything created from the request.
+
+### Provenance (required)
+
+Every ingested event MUST carry provenance answering *which agent made this*,
+so any agent reading memory can tell "this came from your Cursor session
+yesterday":
+
+| Field | Required | Meaning |
+|---|---|---|
+| `platform` (envelope) / `X-CMEM-Platform` (header) | **yes** | Agent family: `claude`, `codex`, `cursor`, `cowork`, `muse`, `chatgpt`, ... Lowercased, normalized server-side via `normalizePlatformSource`. Missing/empty MUST NOT silently default to `claude` — record as `unknown`. |
+| `payload.agent_id` | no | Specific agent instance id, when the client has one. |
+| `payload.agent_type` | no | Agent role/type, when the client has one. |
+| `payload.client_version` | no | Client build version, for debugging skew. |
+
+Server-side rules:
+- Normalize `platform` with the shared `normalizePlatformSource` (same as local).
+- Persist the normalized value on the event row (`platform_source`), the
+  session row, and the generated observation row (denormalized) — never only
+  inside the JSON payload.
+- `source_adapter` must reflect the actual client (`{platform}-compat` or a
+  client-provided value), never a hardcoded single value.
+- `received_at` is stamped by the server; the client's `ts` is `captured_at`.
 
 ---
 
@@ -109,24 +131,6 @@ Until this endpoint deploys, the plugin falls back to JSON-RPC
 `initialize` handshake honoring `Mcp-Session-Id`). Nothing to build — just be
 aware injected context = raw memory_search text until `/api/hooks/context`
 ships, so shipping it is what makes injection quality match local.
-
-### 3) `save_memory` tool on the hosted MCP connector
-
-Some hosts (Claude Duet cloud sessions) block the container's own network from
-cmem.ai, so the hooks above can't send anything. The hosted MCP connector still
-works there, because the host calls it through its own connector path.
-
-The hosted connector has `save_memory`:
-
-- **Input:** `text` (required, up to 8000 characters), `title`, `project`,
-  `metadata` (object, free-form provenance such as
-  `{ "host": "duet", "channel": "chan_…" }`).
-- **Behavior:** `<private>` text is dropped and secrets are redacted server-side.
-
-When the plugin can't reach cmem.ai, the injected notice points at the connector
-for recall and says to save durable decisions through `save_memory` if the
-connector offers it. The notice stays conditional because a connection may not
-offer the tool.
 
 ---
 

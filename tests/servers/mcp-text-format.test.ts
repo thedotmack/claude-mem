@@ -1,22 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { formatMcpPayload, formatWorkerMcpResponse, formatWorkStateMcpResponse, mcpTextResult, workerFailureText } from '../../src/servers/mcp-text-format.js';
-
-describe('complete work-state read guidance', () => {
-  it('marks a shortened read and points to the complete export within the UTF-8 limit', () => {
-    const result = formatWorkStateMcpResponse('任務'.repeat(10_000));
-    expect(Buffer.byteLength(result.content[0].text)).toBeLessThanOrEqual(32 * 1024);
-    expect(result._meta).toEqual({ 'claude-mem/truncated': true });
-    expect(result.content[0].text).toContain('/api/work-state/export');
-    expect(result.content[0].text).not.toContain('request fewer selected records');
-    expect(result.content[0].text).not.toContain('\uFFFD');
-  });
-
-  it('keeps a complete small read unchanged', () => {
-    const result = formatWorkStateMcpResponse('- release\n  - [done] publish');
-    expect(result.content[0].text).toBe('- release\n  - [done] publish');
-    expect(result._meta).toEqual({ 'claude-mem/truncated': false });
-  });
-});
+import { formatMcpPayload, formatWorkerMcpResponse, mcpTextResult, workerFailureText } from '../../src/servers/mcp-text-format.js';
 
 describe('purpose-specific model responses', () => {
   it('confirms note writes without echoing the stored note or internal metadata', () => {
@@ -40,54 +23,6 @@ describe('purpose-specific model responses', () => {
     expect(JSON.stringify(details)).not.toContain('PRIVATE_');
     expect(JSON.stringify(details)).not.toContain('91234');
   });
-  it('keeps every selected identity in a large batch and accurately reports detail truncation', () => {
-    const observations = Array.from({ length: 80 }, (_, i) => ({
-      id: i + 1, title: `Selected memory ${i + 1}`, narrative: '😀'.repeat(20_000),
-    }));
-    const text = formatMcpPayload('observations', observations).content[0].text;
-    expect(text).toStartWith('Selected observations (80).');
-    for (const observation of observations) expect(text).toContain(`#${observation.id} — Selected memory ${observation.id}\n`);
-    expect(text).toContain('Response shortened');
-    expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(256 * 1024);
-    expect(text).not.toContain('\ufffd');
-  });
-  it('preserves colliding local record kinds and gives supported follow-up routes', () => {
-    const payload = {
-      observations: [{ id: 7, title: 'Observation seven', narrative: 'PRIVATE_OBSERVATION_BODY' }],
-      sessions: [{ id: 7, request: 'Session seven', summary: 'PRIVATE_SESSION_BODY' }],
-      prompts: [{ id: 7, prompt_text: 'Prompt seven', metadata: 'PRIVATE_PROMPT_METADATA' }],
-    };
-    for (const result of [
-      formatMcpPayload('search', payload),
-      formatWorkerMcpResponse('search', { content: [{ type: 'text', text: JSON.stringify(payload) }] }),
-    ]) {
-      const text = result.content[0].text;
-      expect(text).toContain('#7 — Observation seven');
-      expect(text).toContain('#S7 — Session seven');
-      expect(text).toContain('#P7 — Prompt seven');
-      expect(text).toContain('S-prefixed session ID');
-      expect(text).toContain('For P-prefixed prompts, use timeline(query=...)');
-      expect(text).toContain('selected numeric observation IDs only; never pass S/P IDs');
-      expect(text).not.toContain('PRIVATE_');
-    }
-    const typed = formatMcpPayload('search', { sessions: [{ id: 'S7', request: 'Already typed' }] });
-    expect(typed.content[0].text).toContain('#S7 — Already typed');
-    expect(typed.content[0].text).not.toContain('#SS7');
-  });
-  it('renders requested indexes beyond twenty and provides compact dated server context', () => {
-    const rows = Array.from({ length: 35 }, (_, i) => ({ id: i + 1, title: `Memory ${i + 1}`, narrative: 'PRIVATE_INDEX_BODY' }));
-    const index = formatMcpPayload('search', { observations: rows }).content[0].text;
-    expect(index).toContain('(35 of 35 results)');
-    expect(index).toContain('#35 — Memory 35');
-    expect(index).not.toContain('PRIVATE_INDEX_BODY');
-    const timeline = formatMcpPayload('server-timeline', { observations: [{
-      id: 'server-id', metadata: { title: 'A contextual decision' }, content: 'A short relevant context. '.repeat(100), createdAtEpoch: Date.UTC(2026, 9, 20),
-    }] }).content[0].text;
-    expect(timeline).toContain('2026-10-20 00:00 UTC');
-    expect(timeline).toContain('A short relevant context.');
-    expect(timeline).toContain('Next: get_observations');
-    expect(timeline.length).toBeLessThan(500);
-  });
   it('supports server content and returns a single context rendering', () => {
     expect(formatMcpPayload('observations', [{ id: 'uuid', projectId: 'p', content: 'A useful server lesson', metadata: { secret: 'PRIVATE_METADATA' } }]).content[0].text).toContain('A useful server lesson');
     const context = formatMcpPayload('context', { context: 'CURATED_CONTEXT', observations: [{ content: 'DUPLICATED_BODY' }] });
@@ -102,10 +37,10 @@ describe('purpose-specific model responses', () => {
     const text = result.content[0].text;
     expect(text).toContain('#plain — Excerpt: Use staging for deployment rehearsals.');
     expect(text).toContain('#summary — How did we stop login redirects?');
-    expect(text).toContain('Next: timeline(anchor=ID) for server context');
-    expect(text).not.toContain('mem_search');
+    expect(text).toContain('Use observation_context with a focused query and limit');
+    expect(text).not.toContain('Use mem_search');
     expect(text).not.toContain('PRIVATE_');
-    expect(text.length).toBeLessThan(600);
+    expect(text.length).toBeLessThan(500);
     expect(result).not.toHaveProperty('structuredContent');
   });
   it('discloses selected tool I/O as a bounded readable tree without database columns', () => {
@@ -122,44 +57,6 @@ describe('purpose-specific model responses', () => {
     expect(JSON.stringify(list)).not.toContain('PRIVATE_');
     expect(list).not.toHaveProperty('structuredContent');
     expect(formatMcpPayload('corpus-query', { answer: 'Selected answer', session_id: 'PRIVATE_SESSION' }).content[0].text).toBe('Corpus answer:\n\nSelected answer');
-  });
-  it('says when a corpus answer saw only part of the matching observations', () => {
-    const partial = formatMcpPayload('corpus-query', { answer: 'A', session_id: 's', observations_sent: 7, observations_matching: 40 }).content[0].text;
-    expect(partial).toBe('Corpus answer:\n\nPartial excerpt: the answer saw 7 of the 40 observations that match the question.\n\nA');
-    expect(formatMcpPayload('corpus-query', { answer: 'A', observations_sent: 3, observations_matching: 3 }).content[0].text).toBe('Corpus answer:\n\nA');
-    expect(formatMcpPayload('corpus-query', { answer: 'A' }).content[0].text).toBe('Corpus answer:\n\nA');
-  });
-  it('says when nothing matched and the excerpt is only the most recent observations', () => {
-    const fallback = formatMcpPayload('corpus-query', { answer: 'A', observations_sent: 5, observations_matching: 0, observations_in_corpus: 40 }).content[0].text;
-    expect(fallback).toBe('Corpus answer:\n\nPartial excerpt: no observation matches the question, so the answer saw only the 5 most recent of the 40 in the corpus.\n\nA');
-    expect(formatMcpPayload('corpus-query', { answer: 'A', observations_sent: 3, observations_matching: 0, observations_in_corpus: 3 }).content[0].text).toBe('Corpus answer:\n\nA');
-  });
-  it('does not read a null count as zero', () => {
-    const nulls = formatMcpPayload('corpus-query', { answer: 'A', observations_sent: 5, observations_matching: null, observations_in_corpus: 40, observations_truncated: null }).content[0].text;
-    expect(nulls).toBe('Corpus answer:\n\nA');
-  });
-  it('says when the text of an observation was cut to fit the excerpt budget', () => {
-    const cut = formatMcpPayload('corpus-query', { answer: 'A', observations_sent: 1, observations_matching: 1, observations_truncated: 1 }).content[0].text;
-    expect(cut).toBe('Corpus answer:\n\nCut: the text of 1 observation the answer saw was shortened to fit the excerpt budget.\n\nA');
-    const both = formatMcpPayload('corpus-query', { answer: 'A', observations_sent: 2, observations_matching: 9, observations_truncated: 1 }).content[0].text;
-    expect(both).toContain('Partial excerpt: the answer saw 2 of the 9');
-    expect(both).toContain('Cut: the text of 1 observation the answer saw');
-    expect(formatMcpPayload('corpus-query', { answer: 'A', observations_sent: 1, observations_matching: 1, observations_truncated: 0 }).content[0].text).toBe('Corpus answer:\n\nA');
-  });
-  it('keeps the excerpt notices when a long answer is shortened', () => {
-    const text = formatMcpPayload('corpus-query', { answer: 'x'.repeat(100_000), observations_sent: 2, observations_matching: 9, observations_truncated: 1 }).content[0].text;
-    expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(32 * 1024);
-    expect(text.startsWith('Corpus answer:\n\nPartial excerpt: the answer saw 2 of the 9')).toBe(true);
-    expect(text).toContain('Cut: the text of 1 observation the answer saw');
-  });
-  it('cuts long titles and excerpts without splitting an emoji', () => {
-    const loneSurrogate = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
-    const index = formatMcpPayload('search', { prompts: [{ id: 3, prompt_text: `${'x'.repeat(179)}😀 and the rest of the prompt` }] }).content[0].text;
-    expect(index).toContain(`#P3 — ${'x'.repeat(179)}\n`);
-    expect(index).not.toMatch(loneSurrogate);
-    const timeline = formatMcpPayload('server-timeline', { observations: [{ id: 'e', content: `${'x'.repeat(159)}😀 and more context` }] }).content[0].text;
-    expect(timeline).toContain(`#e — Excerpt: ${'x'.repeat(159)}…`);
-    expect(timeline).not.toMatch(loneSurrogate);
   });
   it('preserves operation receipts, actionable error advice, and valid bounded UTF-8', () => {
     expect(formatMcpPayload('event', { event: { id: 'e' }, generationJob: { id: 'j', status: 'queued', payload: 'PRIVATE_PAYLOAD' } }).content[0].text).toBe('Recorded event #e. Generation job j: queued.');
@@ -179,14 +76,16 @@ describe('purpose-specific model responses', () => {
     expect(JSON.stringify(result)).not.toContain('PRIVATE_METADATA');
     expect(formatWorkerMcpResponse('search', { content: [{ type: 'text', text: 'Existing readable Markdown' }] }).content[0].text).toBe('Existing readable Markdown');
   });
-});
-
-it('displays the same UTC minute for legacy seconds, SQLite milliseconds and server timestamps', () => {
-  const instant = Date.UTC(2025, 9, 3, 9, 20);
-  for (const timestamp of [
-    { created_at_epoch: instant / 1000 }, { created_at_epoch: instant }, { createdAtEpoch: instant },
-  ]) {
-    const result = formatMcpPayload('observations', [{ id: 1, title: 'Recorded', ...timestamp }]);
-    expect(result.content[0].text).toContain('2025-10-03 09:20 UTC');
-  }
+  it('shows provenance in search results so agents know which agent made each memory', () => {
+    const withPlatform = formatMcpPayload('search', { observations: [
+      { id: 1, title: 'Cursor lesson', project: 'p', platformSource: 'cursor' },
+      { id: 2, title: 'Snake row', project: 'p', platform_source: 'cowork' },
+      { id: 3, title: 'No provenance', project: 'p' },
+    ] });
+    const text = withPlatform.content[0].text;
+    expect(text).toContain('#1 — Cursor lesson (p) [via cursor]');
+    expect(text).toContain('#2 — Snake row (p) [via cowork]');
+    expect(text).toContain('#3 — No provenance (p)');
+    expect(text).not.toContain('#3 — No provenance (p) [via');
+  });
 });

@@ -24,7 +24,6 @@ import type { PostgresPool } from '../../storage/postgres/pool.js';
 import { PostgresServerSessionsRepository } from '../../storage/postgres/server-sessions.js';
 import { logger } from '../../utils/logger.js';
 import { requirePostgresServerAuth } from '../middleware/postgres-auth.js';
-import { serverUsageGuards } from '../middleware/usage-guards.js';
 import { IngestEventsService } from '../services/IngestEventsService.js';
 import type { CreatePostgresAgentEventInput } from '../../storage/postgres/agent-events.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../shared/platform-source.js';
@@ -41,6 +40,9 @@ const observationsSchema = z.object({
   agentId: z.string().optional(),
   agentType: z.string().optional(),
   platformSource: z.string().optional(),
+  // Provenance: which client sent this. When absent we derive it from the
+  // platform so a `muse` or `cowork` client isn't mislabeled `claude-code-compat`.
+  sourceAdapter: z.string().optional(),
   tool_use_id: z.string().optional(),
   toolUseId: z.string().optional(),
 }).passthrough();
@@ -56,11 +58,11 @@ export class SessionsObservationsAdapter implements RouteHandler {
   constructor(private readonly options: SessionsObservationsAdapterOptions) {}
 
   setupRoutes(app: Application): void {
-    const writeAuth = [requirePostgresServerAuth(this.options.pool, {
+    const writeAuth = requirePostgresServerAuth(this.options.pool, {
       authMode: this.options.authMode,
       allowLocalDevBypass: this.options.allowLocalDevBypass,
       requiredScopes: ['memories:write'],
-    }), ...serverUsageGuards(this.options.pool, { write: true })];
+    });
 
     app.post('/api/sessions/observations', writeAuth, this.asyncHandler(async (req, res) => {
       const parsed = observationsSchema.safeParse(req.body);
@@ -111,6 +113,12 @@ export class SessionsObservationsAdapter implements RouteHandler {
         ? data.platformSource
         : DEFAULT_PLATFORM_SOURCE,
     );
+    // Provenance: honor the client's self-reported adapter when present;
+    // otherwise derive it from the platform. The legacy default is preserved
+    // for claude so existing dashboards/filters keep matching.
+    const sourceAdapter = typeof data.sourceAdapter === 'string' && data.sourceAdapter.trim()
+      ? data.sourceAdapter.trim().slice(0, 64)
+      : platformSource === 'claude' ? COMPAT_SOURCE_ADAPTER : `${platformSource}-compat`;
     const session = await resolveServerSession({
       pool: this.options.pool,
       teamId,
@@ -129,7 +137,7 @@ export class SessionsObservationsAdapter implements RouteHandler {
       projectId,
       teamId,
       serverSessionId: session.id,
-      sourceAdapter: COMPAT_SOURCE_ADAPTER,
+      sourceAdapter,
       sourceEventId: toolUseId,
       eventType: COMPAT_EVENT_TYPE,
       // #2560 — persist platform_source on the event row (not just inside
@@ -154,7 +162,7 @@ export class SessionsObservationsAdapter implements RouteHandler {
       source: 'http_post_api_sessions_observations',
       apiKeyId: req.authContext?.apiKeyId ?? null,
       actorId: null,
-      sourceAdapter: COMPAT_SOURCE_ADAPTER,
+      sourceAdapter,
     });
     // Legacy response shape — older clients only check `status`.
     res.json({

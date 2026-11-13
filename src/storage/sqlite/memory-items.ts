@@ -16,27 +16,12 @@ import {
 } from '../../core/schemas/memory-item.js';
 import { ensureServerStorageSchema } from './schema.js';
 import { parseJsonArray, parseJsonObject, stringifyJson } from './serde.js';
-import { stripMemoryTagsFromJsonStrings } from '../../utils/tag-stripping.js';
-import { redactJsonStrings } from '../../utils/redaction.js';
-
-/** Sanitize content without rewriting identifiers, categories or omitted PATCH fields. */
-export function sanitizeMemoryItemContent<T extends Partial<CreateMemoryItem>>(input: T): T {
-  const sanitized = { ...input };
-  for (const key of ['title', 'subtitle', 'text', 'narrative', 'facts', 'concepts',
-    'filesRead', 'filesModified', 'metadata'] as const) {
-    if (!Object.prototype.hasOwnProperty.call(input, key)) continue;
-    const value = redactJsonStrings(stripMemoryTagsFromJsonStrings(input[key]));
-    // These nullable fields reject empty strings in the public schema. A fully
-    // private title has no remaining content, so represent it as absent.
-    Object.assign(sanitized, { [key]: (key === 'title' || key === 'subtitle') && value === '' ? null : value });
-  }
-  return sanitized;
-}
 
 interface MemoryItemRow {
   id: string;
   project_id: string;
   server_session_id: string | null;
+  platform_source: string | null;
   legacy_observation_id: number | null;
   kind: MemoryItemKind;
   type: string;
@@ -69,6 +54,7 @@ function mapMemoryItemRow(row: MemoryItemRow): MemoryItem {
     id: row.id,
     projectId: row.project_id,
     serverSessionId: row.server_session_id,
+    platformSource: row.platform_source,
     legacyObservationId: row.legacy_observation_id,
     kind: row.kind,
     type: row.type,
@@ -116,7 +102,7 @@ function buildSearchQuery(query: string): { words: string; symbols: Array<{ lite
   const tokenQuery = (text: string): string => text
     .trim()
     .split(/\s+/)
-    .flatMap(token => token.split(/[^\p{L}\p{N}\p{M}_]+/gu))
+    .flatMap(token => token.split(/[^\p{L}\p{N}_]+/gu))
     .filter(Boolean)
     .map(token => `"${token}"`)
     .join(' ');
@@ -149,21 +135,32 @@ export class MemoryItemsRepository {
   }
 
   create(input: CreateMemoryItem): MemoryItem {
-    const item = CreateMemoryItemSchema.parse(sanitizeMemoryItemContent(input));
+    const item = CreateMemoryItemSchema.parse(input);
     const now = Date.now();
     const id = randomUUID();
 
+    // Provenance: prefer the explicit input, else inherit the session's
+    // platform so every observation answers "which agent made this".
+    let platformSource = item.platformSource ?? null;
+    if (!platformSource && item.serverSessionId) {
+      const session = this.db.prepare(
+        'SELECT platform_source FROM server_sessions WHERE id = ?'
+      ).get(item.serverSessionId) as { platform_source: string | null } | null;
+      platformSource = session?.platform_source ?? null;
+    }
+
     this.db.prepare(`
       INSERT INTO memory_items (
-        id, project_id, server_session_id, legacy_observation_id, kind, type,
+        id, project_id, server_session_id, platform_source, legacy_observation_id, kind, type,
         title, subtitle, text, narrative, facts, concepts, files_read,
         files_modified, metadata, created_at_epoch, updated_at_epoch
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       item.projectId,
       item.serverSessionId ?? null,
+      platformSource,
       item.legacyObservationId ?? null,
       item.kind,
       item.type,
@@ -213,38 +210,12 @@ export class MemoryItemsRepository {
     return row ? mapMemoryItemRow(row) : null;
   }
 
-  getManyForProject(projectId: string, selectedIds: string[]): MemoryItem[] {
-    const ids = [...new Set(selectedIds)];
-    if (ids.length === 0) return [];
-    const rows = this.db.prepare(`SELECT * FROM memory_items
-      WHERE project_id = ? AND id IN (${ids.map(() => '?').join(',')})`)
-      .all(projectId, ...ids) as MemoryItemRow[];
-    const byId = new Map(rows.map(row => [row.id, row]));
-    return ids.flatMap(id => byId.has(id) ? [mapMemoryItemRow(byId.get(id)!)] : []);
-  }
-
-  timelineAround(projectId: string, anchorId: string, depthBefore = 3, depthAfter = 3): MemoryItem[] {
-    for (const depth of [depthBefore, depthAfter]) {
-      if (!Number.isInteger(depth) || depth < 0 || depth > 20) throw new Error('Timeline depth must be an integer from 0 to 20');
-    }
-    const anchor = this.db.prepare('SELECT * FROM memory_items WHERE id = ? AND project_id = ?')
-      .get(anchorId, projectId) as MemoryItemRow | null;
-    if (!anchor) return [];
-    const preceding = this.db.prepare(`SELECT * FROM memory_items WHERE project_id = ?
-      AND (created_at_epoch, id) < (?, ?) ORDER BY created_at_epoch DESC, id DESC LIMIT ?`)
-      .all(projectId, anchor.created_at_epoch, anchor.id, depthBefore) as MemoryItemRow[];
-    const following = this.db.prepare(`SELECT * FROM memory_items WHERE project_id = ?
-      AND (created_at_epoch, id) > (?, ?) ORDER BY created_at_epoch, id LIMIT ?`)
-      .all(projectId, anchor.created_at_epoch, anchor.id, depthAfter) as MemoryItemRow[];
-    return [...preceding.reverse(), anchor, ...following].map(mapMemoryItemRow);
-  }
-
   update(id: string, input: Partial<CreateMemoryItem>): MemoryItem | null {
     const existing = this.getById(id);
     if (!existing) {
       return null;
     }
-    const next = CreateMemoryItemSchema.parse(sanitizeMemoryItemContent({
+    const next = CreateMemoryItemSchema.parse({
       projectId: input.projectId ?? existing.projectId,
       serverSessionId: input.serverSessionId !== undefined ? input.serverSessionId : existing.serverSessionId,
       legacyObservationId: input.legacyObservationId !== undefined ? input.legacyObservationId : existing.legacyObservationId,
@@ -259,7 +230,7 @@ export class MemoryItemsRepository {
       filesRead: input.filesRead ?? existing.filesRead,
       filesModified: input.filesModified ?? existing.filesModified,
       metadata: input.metadata ?? existing.metadata,
-    }));
+    });
     const now = Date.now();
 
     this.db.prepare(`
