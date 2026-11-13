@@ -20,7 +20,7 @@ import { buildWorkerUrl, getWorkerPort, getWorkerHost, fetchWithTimeout, resolve
 import { InvalidWorkerUrlError, normalizeWorkerBaseUrl } from '../shared/worker-url.js';
 import { getCurrentWorkerPid, verifyRestartedWorker } from './restart-verify.js';
 import { runShutdownSequence, WORKER_GRACEFUL_SHUTDOWN_DEADLINE_BASE_MS, type WorkerShutdownReason } from './worker-shutdown.js';
-import { DATA_DIR, DB_PATH, USER_SETTINGS_PATH, ensureDir, paths } from '../shared/paths.js';
+import { DATA_DIR, DB_PATH, USER_SETTINGS_PATH, ensurePrivateDir, paths } from '../shared/paths.js';
 import { HookSpool, migrateLegacySessionEndReplay } from '../shared/hook-spool.js';
 import { HookSpoolDrainer, hookSpoolConsumedMarkers } from './worker/hook-spool-drain.js';
 import { pruneOldLogs } from './worker/log-retention.js';
@@ -279,7 +279,7 @@ const CLEAN_SHUTDOWN_SENTINEL_PATH = path.join(DATA_DIR, '.worker-clean-shutdown
 
 function writeCleanShutdownSentinel(): void {
   try {
-    ensureDir(DATA_DIR);
+    ensurePrivateDir(DATA_DIR);
     writeFileSync(CLEAN_SHUTDOWN_SENTINEL_PATH, new Date().toISOString());
   } catch (error: unknown) {
     // [ANTI-PATTERN IGNORED]: sentinel is best-effort crash-detection metadata; a failed write must not abort graceful shutdown. Logged at warn with path; worst case the next boot reports 'crash' instead of 'clean'.
@@ -1863,7 +1863,7 @@ function parseServerApiKeyOptions(args: string[]): Record<string, string> {
 }
 
 function openServerCommandDatabase(): Database {
-  ensureDir(DATA_DIR);
+  ensurePrivateDir(DATA_DIR);
   return openConfiguredSqliteDatabase(DB_PATH, { create: true, readwrite: true });
 }
 

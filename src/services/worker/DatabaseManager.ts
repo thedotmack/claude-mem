@@ -7,7 +7,7 @@ import { ChromaSync } from '../sync/ChromaSync.js';
 import { CloudSync, isCloudSyncConfigured } from '../sync/CloudSync.js';
 import { BackupManager } from '../backup/BackupManager.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
-import { USER_SETTINGS_PATH, DB_PATH, DATA_DIR } from '../../shared/paths.js';
+import { USER_SETTINGS_PATH, DB_PATH, DATA_DIR, ensurePrivateDir } from '../../shared/paths.js';
 import { MediaStore } from '../media/store.js';
 import { MediaCloudClient, MediaCloudReplicaResolver, MediaCloudSync, mediaCloudUploadsEnabled } from '../media/cloud.js';
 import { cmemProOrigin } from '../../shared/cmem-gateway.js';
@@ -44,6 +44,10 @@ export class DatabaseManager {
   }
 
   async initialize(): Promise<void> {
+    // The runtime hands this manager an already-open database, so the SessionStore and SessionSearch
+    // constructors never take their path-based branch here. Tighten the directory that is about to
+    // hold the database, its WAL files and the settings before anything opens it.
+    ensurePrivateDir(DATA_DIR);
     // Guard before pragmas: journal_mode = WAL persistently rewrites the file,
     // so a database whose schema is newer than this binary's chain must be
     // refused before the shared open touches it (#3609 step 2).
