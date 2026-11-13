@@ -8,6 +8,12 @@ const pairs = [
   ['Read src/config.ts', 'Read src config ts'],
   ['Updated user_name field', 'Updated user name field'],
   ['Pinned v1.2 release', 'Pinned v1 2 release'],
+  ['Updated src/foo-bar', 'Updated src/foo bar'],
+  ['Updated /src/config.ts', 'Updated src/config.ts'],
+  ['Updated source-root/config.ts', 'Updated source root/config.ts'],
+  ['Updated C:\\src\\foo-bar', 'Updated C:\\src\\foo bar'],
+  ['Read .env', 'Read env'],
+  ['Updated _private field', 'Updated private field'],
 ] as const;
 const thresholds = { cosineThreshold: 0.9, vetoThetaIdf: 1 };
 

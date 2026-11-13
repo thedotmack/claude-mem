@@ -32,8 +32,17 @@ export function exactTitleMatch(a: string | null | undefined, b: string | null |
   const norm = normalizeTitle(a);
   if (!norm || norm !== normalizeTitle(b)) return false;
   const identifiers = (value: string | null | undefined): string[] =>
-    (value ?? '').normalize('NFC').toLowerCase()
-      .match(/(?<![\p{L}\p{N}\p{M}])(?:[\p{L}\p{N}\p{M}]+(?:[./_\\:@#=<>]+[\p{L}\p{N}\p{M}]+)+|[\p{L}\p{N}\p{M}]+[+#]+)/gu) ?? [];
+    ((value ?? '').normalize('NFC').toLowerCase()
+      .match(/[\p{L}\p{N}\p{M}._/\\:@#=<>+~-]+/gu) ?? [])
+      // Keep the whole lexical token, including path roots and hyphens.
+      // Matching only an identifier fragment loses the distinguishing suffix
+      // in src/foo-bar and the leading separator in /src/config.ts.
+      .filter(token => /[\p{L}\p{N}]/u.test(token) && (
+        /[/\\]/.test(token)
+        || /[\p{L}\p{N}\p{M}][._:@#=<>+~]+[\p{L}\p{N}\p{M}]/u.test(token)
+        || /^[._~][\p{L}\p{N}\p{M}]/u.test(token)
+        || /[\p{L}\p{N}\p{M}][+#]+$/u.test(token)
+      ));
   return JSON.stringify(identifiers(a)) === JSON.stringify(identifiers(b));
 }
 
