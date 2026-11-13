@@ -1,5 +1,13 @@
 # Claude-Mem architecture rules
 
+## Next release: Claude-Mem 16.0.0
+
+The maintainer has designated direct imports from **Mem0 Platform and
+Supermemory** as an anchor feature of the next public release, **16.0.0**.
+Follow [the v16 release instructions](docs/releases/16.0.0.md). Keep this work in
+pull-request review for the community and reviewers; this instruction is not
+permission to merge, tag, publish or deploy automatically.
+
 Read [the observer lifecycle contract](docs/architecture/observer-lifecycle.md)
 before changing capture, queueing, retries, provider dispatch, or recovery.
 
