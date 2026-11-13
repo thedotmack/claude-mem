@@ -16,6 +16,14 @@ const pairs = [
   ['Updated _private field', 'Updated private field'],
   ['Fixed C++.', 'Fixed C.'],
   ['Fixed C#.', 'Fixed C.'],
+  ['Read src/.', 'Read src/..'],
+  ['Read src\\.', 'Read src\\..'],
+  ['Read .', 'Read ..'],
+  ['Read /', 'Read .'],
+  ['Fixed C++:', 'Fixed C:'],
+  ['Fixed C#:', 'Fixed C:'],
+  ['Read C:', 'Read C'],
+  ['Updated @field', 'Updated field'],
 ] as const;
 const thresholds = { cosineThreshold: 0.9, vetoThetaIdf: 1 };
 

@@ -39,12 +39,18 @@ export function exactTitleMatch(a: string | null | undefined, b: string | null |
       // in src/foo-bar and the leading separator in /src/config.ts.
       // A prose sentence's final period is outside the identifier: retain the
       // C++ in C++. and the same path with or without sentence punctuation.
-      .map(token => token.replace(/\.+$/u, ''))
-      .filter(token => /[\p{L}\p{N}]/u.test(token) && (
-        /[/\\]/.test(token)
-        || /[\p{L}\p{N}\p{M}][._:@#=<>+~]+[\p{L}\p{N}\p{M}]/u.test(token)
-        || /^[._~][\p{L}\p{N}\p{M}]/u.test(token)
-        || /[\p{L}\p{N}\p{M}][+#]+$/u.test(token)
+      // A dot-only path or final path segment is meaningful (. versus ..,
+      // src/. versus src/..); preserve it instead of guessing punctuation.
+      .map(token => /^(?:\.+)$|[/\\]\.+$/u.test(token) ? token : token.replace(/\.+$/u, ''))
+      // Compare complete symbol-bearing tokens, even when another symbol
+      // follows them (C++:). Pure prose hyphens and terminal colons need not
+      // become identifiers, but paths, drive letters and code symbols do.
+      .filter(token => /^\.+$/u.test(token) || /[/\\]/.test(token) || (
+        /[\p{L}\p{N}]/u.test(token) && (
+          /[._@#=<>+~]/.test(token)
+          || /[\p{L}\p{N}\p{M}]:[\p{L}\p{N}\p{M}]/u.test(token)
+          || /^[a-z]:$/u.test(token)
+        )
       ));
   return JSON.stringify(identifiers(a)) === JSON.stringify(identifiers(b));
 }
