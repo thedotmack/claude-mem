@@ -11,8 +11,12 @@ export interface FocusArea {
   about: string | null; status: FocusAreaStatus;
   priorityRank: number | null; ownerRank: number | null; source: FocusAreaSource;
   mergedInto: string | null; evidence: string | null; decidedBy: FocusAreaDecidedBy; savedAt: string | null;
+  /** The owner's own notes on the area (a "Notes:" row only the owner writes); null when there are none. */
+  notes: string | null;
 }
-export function focusAreaRowFields(area: Omit<FocusArea, 'savedAt' | 'about'> & { about?: string | null }): Record<string, string | number | null>;
+export function focusAreaRowFields(area: Omit<FocusArea, 'savedAt' | 'about' | 'notes'> & { about?: string | null }): Record<string, string | number | null>;
+/** The owner's notes row for one area; empty notes clear them. Throws a RangeError over MAX_FOCUS_NOTES_CHARS. */
+export function focusNotesRowFields(focusAreaId: string, notes: string): Record<string, string | null>;
 export function placementRowFields(placement: {
   anchorConversationKey: string; focusAreaId: string; placedBy: 'router' | 'owner'; confidence?: number | null; basis?: string | null; evidence?: string | null;
 }): Record<string, string | number | null>;

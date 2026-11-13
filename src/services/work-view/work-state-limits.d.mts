@@ -1,1 +1,2 @@
 export const MAX_WORK_STATE_FIELDS_JSON_CHARS: 2000;
+export const MAX_FOCUS_NOTES_CHARS: number;

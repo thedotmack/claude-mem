@@ -3,11 +3,12 @@
 // project, so they sync like any other work state (the same pattern as my-rules).
 //   "Focus area: <focusAreaId>"           one area; every row saves the whole area.
 //   "Placement: <anchorConversationKey>"  which area one request sits in.
+//   "Notes: <focusAreaId>"                the owner's notes on one area; only the owner writes this row.
 // A placement is keyed by the request's anchor conversation key (the input groupIdFor
 // hashes), never by the local g_ id. Area ids are never derived from names, so a
 // rename keeps the id. Rows are append-only and replay in write order.
 import { createHash, randomBytes } from 'node:crypto';
-import { MAX_WORK_STATE_FIELDS_JSON_CHARS } from './work-state-limits.mjs';
+import { MAX_FOCUS_NOTES_CHARS, MAX_WORK_STATE_FIELDS_JSON_CHARS } from './work-state-limits.mjs';
 import { reduceWorkState } from './work-state-reduce.mjs';
 import { navWordIn } from './nav-words.mjs';
 
@@ -16,6 +17,7 @@ export const MY_FOCUS_LIST = 'my-focus';
 export const OTHER_FOCUS_AREA_ID = 'other';
 const FOCUS_AREA_TASK_PREFIX = 'Focus area: ';
 const PLACEMENT_TASK_PREFIX = 'Placement: ';
+const NOTES_TASK_PREFIX = 'Notes: ';
 const FOCUS_AREA_STATUSES = ['suggested', 'kept', 'dismissed', 'done'];
 const FOCUS_AREA_SOURCES = ['owner-goals', 'clustering', 'promotion', 'seed', 'owner'];
 /** What the focus step may propose, and the area source each becomes: a cluster of Other requests that are steps of
@@ -68,6 +70,16 @@ export function placementRowFields(placement) {
     focus_area_id: text(placement.focusAreaId), placed_by: placement.placedBy,
     confidence: rank(placement.confidence), basis: text(placement.basis) || null, evidence: text(placement.evidence) || null,
   }, 'placement');
+}
+
+/** The row that saves the owner's notes on one area: why it matters, context, anything. Its own row, so no area row a
+ * refresh or another device writes can carry an older copy of the notes over them. Empty notes clear them. */
+export function focusNotesRowFields(focusAreaId, notes) {
+  const id = text(focusAreaId);
+  if (!id || id === OTHER_FOCUS_AREA_ID) throw new Error(`Notes need a focus area id other than "${OTHER_FOCUS_AREA_ID}".`);
+  if (typeof notes !== 'string') throw new TypeError('Notes are text.');
+  if (notes.trim().length > MAX_FOCUS_NOTES_CHARS) throw new RangeError(`Notes are at most ${MAX_FOCUS_NOTES_CHARS} characters.`);
+  return { task: `${NOTES_TASK_PREFIX}${id}`, focus_area_id: id, notes: notes.trim() || null };
 }
 
 /** A retry key is a nonce plus a commitment to the focus route's normalized payload. Fixed tuple
@@ -185,7 +197,7 @@ export function buildFocusAreas(state, { localDeviceId = null } = {}) {
   if (typeof state.entryCount === 'number' && state.events.length !== state.entryCount) {
     throw new Error('My Focus needs every work-state row; the events were cut.');
   }
-  const areas = new Map(), placements = new Map();
+  const areas = new Map(), placements = new Map(), notes = new Map();
   let otherPassHash = null;
   // state.events is newest first.
   for (const event of [...state.events].reverse()) {
@@ -218,6 +230,8 @@ export function buildFocusAreas(state, { localDeviceId = null } = {}) {
       // The device that wrote the latest row: a router basis is only comparable on the device that computed it.
       placement[placedBy].device = event.sourceOrder?.[1] ?? null;
       placements.set(anchor, placement);
+    } else if (event.task.startsWith(NOTES_TASK_PREFIX)) {
+      notes.set(text(event.fields.focus_area_id) || event.task.slice(NOTES_TASK_PREFIX.length), text(event.fields.notes) || null);
     }
   }
 
@@ -229,7 +243,7 @@ export function buildFocusAreas(state, { localDeviceId = null } = {}) {
       focusAreaId, name: text(fields.name), goal: text(fields.goal) || null, about: text(fields.about) || null, status: fields.status,
       priorityRank: rank(fields.priority_rank), ownerRank: rank(fields.owner_rank), source: fields.source,
       mergedInto: text(fields.merged_into) || null, evidence: text(fields.evidence) || null,
-      decidedBy: fields.decided_by, savedAt,
+      decidedBy: fields.decided_by, savedAt, notes: notes.get(focusAreaId) ?? null,
     };
   })
     // The owner's order wins; areas they have not ordered follow by suggested priority.

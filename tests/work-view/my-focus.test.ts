@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { reduceWorkState } from '../../src/services/work-view/data-source.mjs';
 import {
-  anchorConversationKeyFor, buildFocusAreas, focusAreaRowFields, MY_FOCUS_LIST, navWordIn, ownerGoalsAreaRows, placeRequests, placementRowFields, routerFocusRows,
+  anchorConversationKeyFor, buildFocusAreas, focusAreaRowFields, focusNotesRowFields, MY_FOCUS_LIST, navWordIn, ownerGoalsAreaRows, placeRequests, placementRowFields, routerFocusRows,
 } from '../../src/services/work-view/my-focus.mjs';
 
 const ANCHOR = JSON.stringify(['conversation', 'claude', 'session-1']);
@@ -23,6 +23,26 @@ function focus(rows: Row[]) {
 const areaById = (result: ReturnType<typeof focus>, id: string) => result.focusAreas.find(item => item.focusAreaId === id);
 
 describe('buildFocusAreas', () => {
+  it('keeps the owner\'s notes through every later system row, and clears them only on the owner\'s empty save', () => {
+    const notes = 'Why it matters: the board is how I steer every agent.';
+    const rows: Row[] = [
+      { fields: area('fa_viewer'), at: 1000 },
+      { fields: focusNotesRowFields('fa_viewer', `  ${notes}  `), at: 2000 },
+      // A refresh re-ranks the suggestion, and another device's older build re-saves the area without notes.
+      { fields: area('fa_viewer', { priorityRank: 2 }), at: 3000 },
+      { fields: area('fa_viewer', { status: 'kept', decidedBy: 'owner' }), at: 4000, device: 'other-device' },
+    ];
+    expect(areaById(focus(rows), 'fa_viewer')).toMatchObject({ notes, status: 'kept' });
+    expect(areaById(focus([...rows, { fields: focusNotesRowFields('fa_viewer', ''), at: 5000 }]), 'fa_viewer')!.notes).toBeNull();
+    expect(areaById(focus([{ fields: area('fa_viewer'), at: 1000 }]), 'fa_viewer')!.notes).toBeNull();
+    // Notes on one area never reach another.
+    expect(areaById(focus([...rows, { fields: area('fa_other'), at: 5000 }]), 'fa_other')!.notes).toBeNull();
+    expect(focusNotesRowFields('fa_viewer', 'x'.repeat(2000)).notes).toHaveLength(2000);
+    expect(() => focusNotesRowFields('fa_viewer', 'x'.repeat(2001))).toThrow(RangeError);
+    expect(() => focusNotesRowFields('other', 'x')).toThrow();
+    expect(() => focusNotesRowFields('fa_viewer', 7 as unknown as string)).toThrow(TypeError);
+  });
+
   it('lets the latest row win and keeps the id through a rename', () => {
     const result = focus([
       { fields: area('fa_viewer'), at: 1000 },
