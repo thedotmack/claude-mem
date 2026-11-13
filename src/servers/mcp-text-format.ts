@@ -120,8 +120,19 @@ function corpusSummary(value: unknown): string {
 export function formatMcpPayload(purpose: McpTextPurpose, payload: unknown): McpTextResult {
   const data = record(payload);
   let text: string;
+  let isError = false;
   switch (purpose) {
     case 'save':
+      if (data.success === false || data.skipped === true) {
+        // The worker refused the write (for example project_excluded). Saying
+        // "Saved memory #?" here told the caller a note it never stored (#6098).
+        const reason = typeof data.reason === 'string' ? data.reason : '';
+        isError = true;
+        text = reason === 'project_excluded'
+          ? 'Not saved: this checkout is excluded by CLAUDE_MEM_EXCLUDED_PROJECTS.'
+          : `Not saved${reason ? `: ${line(reason)}.` : '.'}`;
+        break;
+      }
       text = data.duplicate ? `Memory already saved as #${line(data.id, '?')}.`
         : `Saved memory #${line(data.id, '?')}: ${line(data.title, 'Untitled')}.`;
       if (data.project) text += ` Project: ${line(data.project)}.`;
@@ -239,7 +250,7 @@ export function formatMcpPayload(purpose: McpTextPurpose, payload: unknown): Mcp
       break;
     }
   }
-  return mcpTextResult(text);
+  return mcpTextResult(text, isError);
 }
 
 /** Existing Markdown endpoints stay readable; accidental JSON text is converted by its declared purpose. */
