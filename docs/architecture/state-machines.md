@@ -44,6 +44,8 @@ what the program does at run time.
 | Which work-state statuses close an item | `isClosedWorkStateStatus` in `src/services/work-view/work-state-status.mjs` | SessionStart section, work-state tool replies, My Work, owner-goals readers, the write route |
 | Refresh run state | `WorkViewRefreshState` in `src/ui/my-work/src/live/work-view-api-types.ts` | every My Work screen that shows a run |
 | Whose move a conversation is, and why | `TurnState` and `TURN_REASONS` in `src/services/work-view/turn-state.mjs` | the transcript reader, its one writer; the snapshot; My Work's status table (`TURN_STATUS`) |
+| An answer's delivery, a stage's and a focus plan's run, what a plan may propose, how a start route answers | `ANSWER_RUN_STATES`, `STAGE_STATES`, `PLAN_STATES`, `PLAN_PROPOSAL_KINDS` and `OWNER_RUN_START_STATES` in `src/services/work-view/owner-runs.mjs` | the owner-run store, their one writer; the start routes; the snapshot; My Work's words (`ANSWER_STATE`, `STAGE_STATE`, `PLAN_STATE`, `PROPOSAL_KIND`) |
+| What a review's question asks of the owner | `QUESTION_NEEDS` in `src/services/work-view/question-needs.mjs` | the review check (`validateProgress`), the shared-record check, My Work's words (`QUESTION_NEED`) |
 | Rule status, focus area status | `SavedRule['status']` in `my-rules.d.mts`, `FocusAreaStatus` in `my-focus.d.mts` | My Work wire types and UI model |
 
 My Work compiles on its own settings and cannot load every worker file. A

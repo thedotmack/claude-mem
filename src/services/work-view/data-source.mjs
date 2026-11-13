@@ -336,11 +336,15 @@ export class WorkStateSource {
       const descriptor = sharedSuggestionDescriptor(this.sharedState, suggestion.conversationKey);
       return { ...suggestion, expectedSuggestionHash: descriptor.hash, sharedConflict: descriptor.conflict };
     });
+    // Owner runs are this computer's own records, so they are read from the local ledger, never the shared projection.
+    const ownerRuns = this.ledger?.ownerRuns ?? null;
     const deadline = now + TURN_READ_BUDGET_MS;
     const humanRequests = (this.agentView.humanRequests ?? []).map((request) => {
       const turn = this.turnStates.readConversation(request.latestConversationKey, { deadline });
       const suggestion = suggestions.find((entry) => (entry.sharedConflict || entry.requestId !== request.groupId) && (request.conversationKeys ?? []).includes(entry.conversationKey));
-      return suggestion || turn ? { ...request, ...(suggestion ? { suggestion } : {}), ...(turn ? { turn } : {}) } : request;
+      const stages = request.groupId ? ownerRuns?.stages?.[request.groupId] : undefined;
+      const answer = ownerRuns?.answers?.[request.id];
+      return suggestion || stages || answer || turn ? { ...request, ...(suggestion ? { suggestion } : {}), ...(stages ? { stages } : {}), ...(answer ? { answer } : {}), ...(turn ? { turn } : {}) } : request;
     });
     // A transcript moves without a database write. Whose move it is must still reach an open page, so a change
     // counts as a new revision; an agent's own progress through a turn does not.
@@ -359,6 +363,8 @@ export class WorkStateSource {
       story: ledger ? { reviews: Object.values(ledger.progress), story: ledger.story, groups: Object.keys(ledger.groups.groups).length } : null,
       // The automatic refresh's last run (refresh.json): running, ok, failed or waiting-for-agent.
       refresh: ledger?.refresh ?? null,
+      // The owner's latest focus plan (owner-runs.json); its proposals are suggestions until the owner applies one.
+      focusPlan: ownerRuns?.plan ?? null,
       // Age labels change with the clock without declaring a task or session
       // live. Stored session status remains separate from recent activity.
       agents: this.agentView.agents.map((agent) => ({ ...agent, presence: {
@@ -379,6 +385,14 @@ export class WorkStateSource {
   file(kind, id, index, localDeviceId = this.localDeviceId) {
     try { return recordedFile((sql, params) => this.openDatabase().prepare(sql).all(...params), kind, id, index, localDeviceId); }
     catch { return null; }
+  }
+
+  /** The folder a recorded session ran in, from the worker's own session row; null when it was never recorded. */
+  sessionCwd(platform, sessionId) {
+    try {
+      const row = this.openDatabase().prepare('SELECT cwd FROM sdk_sessions WHERE platform_source = ? AND content_session_id = ?').get(platform, sessionId);
+      return typeof row?.cwd === 'string' && row.cwd ? row.cwd : null;
+    } catch { return null; }
   }
 
   /** The bucket copy a deliverables row names, while it still exists; null when the row is unknown, the copy is gone, or the table does not exist yet. */

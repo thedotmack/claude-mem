@@ -5,6 +5,7 @@
 import { statSync } from 'node:fs';
 import { basename, extname, isAbsolute } from 'node:path';
 import { createHash } from 'node:crypto';
+import { STAGE_DELIVERABLE_KIND } from './owner-runs.mjs';
 
 // Files a person opens, not source code. Anything else stays in the work history.
 const FILE_KINDS = {
@@ -640,8 +641,9 @@ export function readProductRecords(read, sinceEpoch, limit = 2000, { database } 
   const productObservations = read(`SELECT id, memory_session_id, prompt_number, files_modified, created_at_epoch FROM observations${indexes.observations ?? ''}
     WHERE created_at_epoch >= ? AND (${FILE_EXTENSION_PATTERN}) ORDER BY id DESC LIMIT ?`, [sinceEpoch, limit]);
   // Bucket copies the Stop hook made; a database from before the table existed has none (safeRead answers []).
+  // A stage is a review of the work, kept in the same bucket; it is never the request's own work product.
   const productDeliverables = read(`SELECT id, project, content_session_id, platform_source, title, kind, source_path, bucket_path, created_at_epoch
-    FROM deliverables WHERE created_at_epoch >= ? ORDER BY id DESC LIMIT ?`, [sinceEpoch, limit]);
+    FROM deliverables WHERE created_at_epoch >= ? AND kind IS NOT ? ORDER BY id DESC LIMIT ?`, [sinceEpoch, STAGE_DELIVERABLE_KIND, limit]);
   return { productCalls, productObservations, productDeliverables };
 }
 

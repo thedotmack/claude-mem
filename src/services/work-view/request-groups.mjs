@@ -11,7 +11,7 @@
 //                                                   (code links, then Jev when the install has it); plan only without --apply
 //   bun request-groups.mjs apply <file|->            persist group decisions
 //   bun request-groups.mjs pending [--days 14] [--limit 48]   groups needing a progress review
-//   bun request-groups.mjs show <groupId>           one group's asks, work lists and dates (only new asks when amending)
+//   bun request-groups.mjs show <groupId> [--full]  one group's asks, work lists and dates (only new asks when amending; --full: all of them)
 //   bun request-groups.mjs record-progress <file|-> persist one progress review
 //   bun request-groups.mjs story-input              reviews whose facts changed since the last story (all without one)
 //   bun request-groups.mjs record-story <file|->    persist the build story and preferences
@@ -31,6 +31,8 @@ import { NO_PROJECT, projectRoot, upgradedGroupRoot, withDerivedProjects } from 
 import { isOwnerDismissedArea, isPlaceableArea, OTHER_FOCUS_AREA_ID, PROPOSAL_KINDS, readFocus } from './my-focus.mjs';
 import { beforeSharedFileWrite } from './shared-file-hooks.mjs';
 import { isClosedWorkStateStatus } from './work-state-status.mjs';
+import { QUESTION_NEEDS } from './question-needs.mjs';
+import { OWNER_RUNS_FILE } from './owner-runs.mjs';
 import { writeJsonFileAtomic } from '../../shared/atomic-json.js';
 
 const DATA_DIR = process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem');
@@ -412,11 +414,15 @@ export function validateProgress(entry, knownGroups, options = {}) {
   if (entry.state === 'shipped' && (entry.percent !== 100 || !entry.shippedAt)) throw new TypeError('A shipped request needs percent 100 and shippedAt.');
   if (entry.state !== 'shipped' && entry.shippedAt) throw new TypeError('Only a shipped request has shippedAt.');
   const milestones = reviewList(entry.milestones, 12, 'milestones', options), preferences = reviewList(entry.preferences, 10, 'preferences', options);
+  const question = entry.question ?? null, background = question ? reviewList(question.background, 4, 'question.background', options) : [];
+  if (question && !QUESTION_NEEDS.includes(question.need)) throw new TypeError(`question.need must be one of ${QUESTION_NEEDS.join(', ')}.`);
   return {
     groupId: entry.groupId, state: entry.state, percent: entry.percent,
     startedAt: entry.startedAt ?? null, shippedAt: entry.shippedAt ?? null, lastActivityAt: entry.lastActivityAt ?? null,
     summary: text(entry.summary, 280, 'summary'),
     narrative: text(entry.narrative, 1200, 'narrative', true),
+    // What the agent is waiting on the owner for, when it is: optional, and a review recorded before this field has none.
+    ...(question ? { question: { need: question.need, text: text(question.text, 200, 'question.text'), background: background.map((item, index) => ({ text: text(item.text, 200, `question.background[${index}].text`), evidence: evidenceList(item.evidence, 6) })) } } : {}),
     milestones: milestones.map((milestone, index) => {
       if (!isIsoOrNull(milestone.at ?? null)) throw new TypeError(`milestones[${index}].at must be an ISO date or null.`);
       return { at: milestone.at ?? null, text: text(milestone.text, 200, `milestones[${index}].text`), evidence: evidenceList(milestone.evidence, 6) };
@@ -580,12 +586,14 @@ export function readLedger(dir = LEDGER_DIR) {
   return {
     groups, progress, story: readJson(join(dir, 'story.json'), null), refresh: readJson(join(dir, 'refresh.json'), null),
     agentWrittenPromptIds: new Set(readJson(join(dir, AGENT_WRITTEN_PROMPTS_FILE), { promptIds: [] }).promptIds ?? []),
+    // The runs the owner started from My Work (owner-run-store.ts): answers, stages and the focus plan.
+    ownerRuns: readJson(join(dir, OWNER_RUNS_FILE), null),
   };
 }
 
 /** Cheap change detector for the monitor's one-second poll. */
 export function ledgerSignature(dir = LEDGER_DIR) {
-  return ['request-groups.json', 'progress', 'story.json', 'refresh.json'].map((name) => {
+  return ['request-groups.json', 'progress', 'story.json', 'refresh.json', OWNER_RUNS_FILE].map((name) => {
     try { const stat = statSync(join(dir, name)); return `${stat.mtimeMs}:${stat.size}`; }
     catch { return 'missing'; }
   }).join('|');
@@ -998,7 +1006,8 @@ export function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now
       // Same conversations as the previous review: the reviewer amends it from what happened since.
       // A membership change (a merge, a split) needs a full review.
       const previous = details.previousReview;
-      const amendSince = previous && reviewIsCurrent(previous, keys, 0) ? previous.reviewedThrough : null;
+      // `--full` asks for the whole request whatever was reviewed: a stage shows all of it, not the update since.
+      const amendSince = !args.includes('--full') && previous && reviewIsCurrent(previous, keys, 0) ? previous.reviewedThrough : null;
       const since = amendSince ? Date.parse(amendSince) : 0;
       // The conversations' own observations (only the new ones when amending), so a reviewer without memory tools has the evidence.
       const observations = db().prepare(`SELECT o.id, o.type, o.title, o.subtitle, o.created_at_epoch FROM observations o

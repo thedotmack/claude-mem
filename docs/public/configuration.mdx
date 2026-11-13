@@ -237,6 +237,7 @@ The goals step updates a saved snapshot from new owner prompts, including a snap
 | `CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL` | empty | Model for every refresh step on Gemini, such as `flash-lite`. Empty keeps the per-step defaults. |
 | `CLAUDE_MEM_WORK_VIEW_API_MODEL` | empty | Model for every refresh step on the selected API provider, such as `anthropic/claude-sonnet-4`. Empty keeps the model your provider is configured with. |
 | `CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE` | empty | Language for the text the refresh writes (request titles, reviews, focus areas, the story), such as `Turkish`. When set, every step except goals is told to write in it, so separate review batches never pick different languages. Empty uses the language most of your asks are written in, decided once per refresh by the grouping step (which already reads them, so it costs no extra model call) and kept for later refreshes that have nothing to group. |
+| `CLAUDE_MEM_WORK_VIEW_AUTO_STAGE_FORMAT` | empty | Opt-in automatic stages. Set it to a stage format id (`brief`, `one-pager`, `technical`, or the file name of your own format in `~/.claude-mem/stage-formats/`). After a refresh records a review that leaves a request waiting for your review, My Work makes that one stage for it: once per review, at most 3 per refresh, never for older requests. Empty is off, and stages are made only when you click. |
 
 ### Knowledge Corpus Agent
 

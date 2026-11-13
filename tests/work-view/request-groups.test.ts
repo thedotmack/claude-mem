@@ -83,6 +83,21 @@ describe('overall requests and progress reviews', () => {
   expect(() => validateProgress({ ...base, reviewBasis: undefined }, groups)).toThrow(/reviewBasis/);
 });
 
+  it('a review may record the question the agent waits on the owner for; a review without one is as before', () => {
+  const groups = { g_000000000001: { title: 'Cards' } };
+  const base = { groupId: 'g_000000000001', state: 'in-progress', percent: 50, summary: 'Under way.', reviewBasis: { checkedThrough: '2026-10-04T00:00:00Z', conversations: [key('a')] } };
+  const plain = validateProgress(base, groups);
+  expect('question' in plain).toBe(false);
+  // Nothing about a review says which format it was written to: an older review is never due again for lacking a field.
+  expect('format' in plain).toBe(false);
+  const asked = validateProgress({ ...base, question: { need: 'approval', text: 'Merge PR 93 now?', background: [{ text: 'CI is green.', evidence: [41] }] } }, groups);
+  expect(asked.question).toEqual({ need: 'approval', text: 'Merge PR 93 now?', background: [{ text: 'CI is green.', evidence: ['41'] }] });
+  expect(validateProgress({ ...base, question: { need: 'answer', text: 'Linear or seasonal?' } }, groups).question).toEqual({ need: 'answer', text: 'Linear or seasonal?', background: [] });
+  expect(() => validateProgress({ ...base, question: { need: 'review', text: 'Look at it?' } }, groups)).toThrow(/question.need must be one of answer, approval/);
+  expect(() => validateProgress({ ...base, question: { need: 'answer', text: 'x'.repeat(201) } }, groups)).toThrow(/question.text/);
+  expect(() => validateProgress({ ...base, question: { need: 'answer', text: 'Which?', background: Array.from({ length: 5 }, () => ({ text: 'x' })) } }, groups)).toThrow(/question.background/);
+});
+
   it('a review over a cap is refused with a target well under it, so the retry does not miss again (Oct 31)', () => {
   const groups = { g_000000000001: { title: 'Cards' } };
   const base = { groupId: 'g_000000000001', state: 'in-progress', percent: 50, summary: 'Under way.', reviewBasis: { checkedThrough: '2026-10-04T00:00:00Z', conversations: [key('a')] } };
@@ -565,6 +580,12 @@ describe('overall requests and progress reviews', () => {
     const amend = run(['show', group], NOW + 2 * DAY);
     expect(amend).toMatchObject({ mode: 'amend', amendSince: new Date(NOW).toISOString(), previousReview: { percent: 40 } });
     expect(amend.conversations[0].asks.map((ask: { text: string }) => ask.text)).toEqual(['Now add the release date to each card']);
+    // --full is the whole request whatever was reviewed: every ask and every observation, with the review beside them.
+    const whole = run(['show', group, '--full'], NOW + 2 * DAY);
+    expect(whole).toMatchObject({ mode: 'full', amendSince: null, previousReview: { percent: 40 } });
+    expect(whole.conversations[0].asks.length).toBeGreaterThan(1);
+    expect(whole.conversations[0].asks.at(-1).text).toBe('Now add the release date to each card');
+    expect(whole.conversations[0].observations.map((observation: { title: string }) => observation.title)).toEqual(expect.arrayContaining(['Cards built', 'Release dates on cards']));
     // A merged-in conversation changes what was reviewed: a full review again.
     run(['apply', write('d2.json', { groups: [{ title: 'Release cards', conversations: [key('a'), key('b')], links: [{ kind: 'shared-work-list', conversations: [key('a'), key('b')], evidence: 'work list "release-cards" in repo/tree' }] }] })]);
     const full = run(['show', group], NOW + 2 * DAY);
