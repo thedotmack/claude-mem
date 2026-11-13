@@ -578,8 +578,11 @@ const tools: McpToolDefinition[] = [
     handler: async (args: any) => {
       if (selectRuntime() === 'server') return mcpTextResult('save_memory requires worker runtime. To save a note in the selected server, use observation_add with content and optional projectId.', true);
       // Send the checkout so the worker applies CLAUDE_MEM_EXCLUDED_PROJECTS to
-      // an explicit note exactly as it does to an HTTP save (#6098); project
-      // inference stays in the route when the caller names none.
+      // an explicit note exactly as it does to an HTTP save (#6098). The project
+      // stays the caller's or the active checkout's; the checkout only gates the
+      // exclusion check. On the HTTP transport the caller's workspace reaches
+      // this call through X-Claude-Mem-Cwd or roots/list; without either, the
+      // server's launch directory is used, which is also what names the project.
       return callWorker('/api/memory/save', {
         body: { ...args, project: args?.project || currentCheckout().primary, cwd: getRequestCwd() },
       });
