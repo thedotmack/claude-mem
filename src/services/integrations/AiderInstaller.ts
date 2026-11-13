@@ -32,6 +32,7 @@ import {
   resolveAiderConfigPath,
 } from '../../shared/aider-paths.js';
 import { cliFlagValue } from '../../shared/cli-flag-value.js';
+import { projectsQueryString } from '../../shared/project-list.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { injectContextIntoMarkdownFile } from '../../utils/context-injection.js';
 import { ensureWorkerRunning, workerHttpRequest } from '../../shared/worker-utils.js';
@@ -55,6 +56,8 @@ const USAGE = 'Usage: claude-mem aider <install|uninstall|status|sync> [--cwd <d
 export interface AiderInstallOptions {
   cwd?: string;
   configPath?: string;
+  /** `--no-auto-start`: refresh from a worker that is already running, never start one. */
+  noAutoStart?: boolean;
 }
 
 interface AiderPaths {
@@ -195,6 +198,15 @@ type AiderReadForm =
   | { kind: 'scalar'; header: number; value: string };
 
 /**
+ * Index of the `]` closing the flow list on `line`, before any trailing
+ * comment: searching the whole line would find a `]` inside `# [shared
+ * docs]` and put the new entry in the comment instead of the list.
+ */
+function flowListCloseIndex(line: string): number {
+  return stripYamlComment(line).lastIndexOf(']');
+}
+
+/**
  * Where the top-level `read:` key and its entries sit in `lines`; null when
  * there is no such key. Throws when the `read:` region is ambiguous or
  * malformed — the caller must refuse to write, never guess.
@@ -228,11 +240,13 @@ function findAiderReadSpan(lines: string[]): AiderReadForm | null {
   }
 
   // Block sequence: runs to the next top-level content line or document end.
+  // A column-zero `- ` line is a list item of this same `read:` list, not a
+  // new top-level key: `read:\n- CONVENTIONS.md` is valid YAML.
   let end = header + 1;
   while (end < lines.length) {
     const line = lines[end];
     if (/^\.\.\.(?:\s|$)/.test(line) || /^---(?:\s|$)/.test(line)) break;
-    if (isYamlContentLine(line) && leadingSpaceCount(line) === 0) break;
+    if (isYamlContentLine(line) && leadingSpaceCount(line) === 0 && !/^-(?:\s|$)/.test(line)) break;
     end++;
   }
   const items: { line: number; value: string }[] = [];
@@ -243,7 +257,7 @@ function findAiderReadSpan(lines: string[]): AiderReadForm | null {
     if (line.includes('\t')) {
       throw new Error('Tab indentation in the `read:` list; YAML forbids tabs — fix the indentation and try again');
     }
-    const itemMatch = /^(\s+)-\s+(.*)$/.exec(line);
+    const itemMatch = /^(\s*)-\s+(.*)$/.exec(line);
     if (!itemMatch) {
       throw new Error('`read:` has a non-list entry; write it as a list of files and try again');
     }
@@ -322,18 +336,27 @@ export function upsertAiderReadEntry(content: string, memoryPath: string): strin
   if (span.kind === 'flow') {
     if (span.items.includes(memoryPath)) return content;
     const line = lines[span.header];
-    const closeAt = line.lastIndexOf(']');
+    const closeAt = flowListCloseIndex(line);
     const inner = line.slice(0, closeAt).trimEnd();
-    const separator = inner.endsWith('[') ? '' : ', ';
-    lines[span.header] = `${inner}${separator}${yamlPlainOrQuoted(memoryPath)}${line.slice(closeAt)}`;
+    // Reuse an existing trailing comma instead of adding a second one:
+    // `read: [CONVENTIONS.md,]` must not become `[CONVENTIONS.md,, ...]`.
+    const separator = inner.endsWith('[') ? '' : inner.endsWith(',') ? ' ' : ', ';
+    const tail = line.slice(closeAt + 1).trimEnd();
+    // Mark the line as ours: uninstall must not remove a flow entry the user
+    // wrote themselves, and a flow list carries no per-entry marker.
+    const marker = tail.includes(AIDER_MANAGED_ENTRY_COMMENT)
+      ? ''
+      : `${tail === '' ? '  ' : ' '}${AIDER_MANAGED_ENTRY_COMMENT}`;
+    lines[span.header] = `${inner}${separator}${yamlPlainOrQuoted(memoryPath)}]${tail}${marker}`;
     return joinLines(lines, eol);
   }
 
   if (span.kind === 'scalar') {
     if (span.value === memoryPath) return content;
-    // Keep the user's scalar exactly as written (quoting included); only
+    // Keep the user's scalar exactly as written — quoting and trailing
+    // comment included — so the comment survives on the original entry; only
     // the new entry is rendered by us.
-    const rawScalar = stripYamlComment(readKeyRest(lines[span.header])!).trim();
+    const rawScalar = readKeyRest(lines[span.header])!.trim();
     lines.splice(
       span.header,
       1,
@@ -355,9 +378,9 @@ export function upsertAiderReadEntry(content: string, memoryPath: string): strin
 /**
  * `content` without the claude-mem `read:` entry; null when there is nothing
  * of ours to remove. Only entries this installer owns are removed: the
- * managed block, or a list entry carrying the managed-entry comment (a flow
- * entry is matched by path — it points at claude-mem's own memory file).
- * A `read:` entry the user wrote themselves is left alone.
+ * managed block, a block entry carrying the managed-entry comment, or a flow
+ * entry on a line the installer marked when it added it. A `read:` entry the
+ * user wrote themselves is left alone.
  */
 export function removeAiderReadEntry(content: string, memoryPath: string): string | null {
   const { lines, eol } = splitLines(stripUtf8Bom(content));
@@ -377,13 +400,18 @@ export function removeAiderReadEntry(content: string, memoryPath: string): strin
   if (span.kind === 'flow') {
     if (!span.items.includes(memoryPath)) return null;
     const line = lines[span.header];
-    const closeAt = line.lastIndexOf(']');
+    // A flow list carries no per-entry marker: only a line this installer
+    // marked when it added the entry is ours to remove. A user who wrote
+    // the memory path themselves keeps their manual setup.
+    if (!line.includes(AIDER_MANAGED_ENTRY_COMMENT)) return null;
+    const closeAt = flowListCloseIndex(line);
     const inner = line.slice(line.indexOf('[') + 1, closeAt);
     const remaining = parseFlowList(`[${inner}]`)!.filter((item) => item !== memoryPath);
+    const tail = line.slice(closeAt + 1).replace(AIDER_MANAGED_ENTRY_COMMENT, '').trimEnd();
     lines[span.header] =
       remaining.length === 0
-        ? 'read:'
-        : `read: [${remaining.map(yamlPlainOrQuoted).join(', ')}]${line.slice(closeAt + 1)}`;
+        ? `read:${tail}`
+        : `read: [${remaining.map(yamlPlainOrQuoted).join(', ')}]${tail}`;
     return joinLines(lines, eol);
   }
 
@@ -424,13 +452,25 @@ export function installAiderConfigFile(configPath: string, memoryPath: string): 
   return true;
 }
 
-async function fetchContextFromWorker(projectName: string, cwd: string): Promise<string | null> {
-  const workerReady = await ensureWorkerRunning();
-  if (!workerReady) {
-    throw new Error('Worker is not running and could not be started. Start it with `npx claude-mem start`.');
+/** The worker fetch behind a refresh: every project key the checkout reads, plus its directory. */
+type AiderFetchContext = (projects: string[], cwd: string) => Promise<string | null>;
+
+async function fetchContextFromWorker(
+  projects: string[],
+  cwd: string,
+  skipWorkerStart = false,
+): Promise<string | null> {
+  if (!skipWorkerStart) {
+    const workerReady = await ensureWorkerRunning();
+    if (!workerReady) {
+      throw new Error('Worker is not running and could not be started. Start it with `npx claude-mem start`.');
+    }
   }
+  // With skipWorkerStart the request still goes out: a worker that is
+  // already running answers, one that is not fails fast and the refresh
+  // reports it instead of starting a worker behind the caller's back.
   const response = await workerHttpRequest(
-    `/api/context/inject?project=${encodeURIComponent(projectName)}&cwd=${encodeURIComponent(cwd)}`,
+    `/api/context/inject?${projectsQueryString(projects)}&cwd=${encodeURIComponent(cwd)}`,
   );
   if (!response.ok) {
     throw new Error(`Worker context request failed: HTTP ${response.status}`);
@@ -448,13 +488,17 @@ async function fetchContextFromWorker(projectName: string, cwd: string): Promise
  */
 export async function refreshAiderMemoryFile(
   options: AiderInstallOptions = {},
-  fetchContext: (projectName: string, cwd: string) => Promise<string | null> = fetchContextFromWorker,
+  fetchContext: AiderFetchContext = (projects, cwd) =>
+    fetchContextFromWorker(projects, cwd, options.noAutoStart ?? false),
 ): Promise<number> {
   const { projectDir, memoryFilePath } = resolveAiderPaths(options);
-  const projectName = getProjectContext(projectDir).primary;
+  const { primary, allProjects } = getProjectContext(projectDir);
   let context: string | null;
   try {
-    context = await fetchContext(projectName, projectDir);
+    // Every key this checkout reads — a distinctly named worktree's parent
+    // project and any configured inherited keys included — so Aider receives
+    // the same shared memory as the other agents.
+    context = await fetchContext(allProjects, projectDir);
   } catch (error) {
     console.error(`Failed to refresh Aider memory: ${error instanceof Error ? error.message : String(error)}`);
     return 1;
@@ -465,13 +509,14 @@ export async function refreshAiderMemoryFile(
   }
   mkdirSync(dirname(memoryFilePath), { recursive: true });
   injectContextIntoMarkdownFile(memoryFilePath, context, AIDER_MEMORY_HEADER);
-  console.log(`  Refreshed Aider memory from project ${projectName} (${memoryFilePath})`);
+  console.log(`  Refreshed Aider memory from project ${primary} (${memoryFilePath})`);
   return 0;
 }
 
 export async function installAiderIntegration(
   options: AiderInstallOptions = {},
-  fetchContext: (projectName: string, cwd: string) => Promise<string | null> = fetchContextFromWorker,
+  fetchContext: AiderFetchContext = (projects, cwd) =>
+    fetchContextFromWorker(projects, cwd, options.noAutoStart ?? false),
 ): Promise<number> {
   const { configPath, memoryFilePath } = resolveAiderPaths(options);
   try {
@@ -563,7 +608,8 @@ export function checkAiderStatus(options: AiderInstallOptions = {}): number {
 
 export async function handleAiderCommand(subcommand: string | undefined, args: string[]): Promise<number> {
   const cwd = cliFlagValue(args, '--cwd') ?? undefined;
-  const options: AiderInstallOptions = cwd ? { cwd } : {};
+  const noAutoStart = args.includes('--no-auto-start');
+  const options: AiderInstallOptions = { ...(cwd ? { cwd } : {}), ...(noAutoStart ? { noAutoStart: true } : {}) };
   switch (subcommand) {
     case 'install':
       return installAiderIntegration(options);

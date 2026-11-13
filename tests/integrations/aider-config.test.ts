@@ -27,6 +27,7 @@ import {
   upsertAiderReadEntry,
 } from '../../src/services/integrations/AiderInstaller.js';
 import { AIDER_MEMORY_RELATIVE_PATH } from '../../src/shared/aider-paths.js';
+import { getProjectContext } from '../../src/utils/project-name.js';
 
 // Aider has no YAML library in this repo and no MCP client or hooks, so the
 // installer merges `.aider.conf.yml` `read:` at the text level (Goose
@@ -116,6 +117,20 @@ describe('upsertAiderReadEntry', () => {
     );
   });
 
+  test('column-zero block list items are recognised and keep their indentation', () => {
+    const original = 'read:\n- CONVENTIONS.md\n- docs/ARCHITECTURE.md\n';
+    expect(upsertAiderReadEntry(original, MEMORY)).toBe(
+      `read:\n- CONVENTIONS.md\n- docs/ARCHITECTURE.md\n- ${MEMORY}  ${AIDER_MANAGED_ENTRY_COMMENT}\n`,
+    );
+  });
+
+  test('column-zero list followed by another key inserts before that key', () => {
+    const original = 'read:\n- CONVENTIONS.md\n\nauto-commits: true\n';
+    expect(upsertAiderReadEntry(original, MEMORY)).toBe(
+      `read:\n- CONVENTIONS.md\n- ${MEMORY}  ${AIDER_MANAGED_ENTRY_COMMENT}\n\nauto-commits: true\n`,
+    );
+  });
+
   test('re-install is byte-identical (idempotent)', () => {
     const original = 'read:\n  - CONVENTIONS.md\n';
     const once = upsertAiderReadEntry(original, MEMORY);
@@ -138,7 +153,19 @@ describe('upsertAiderReadEntry', () => {
   test('appends inside a flow list, preserving the other entries', () => {
     const original = 'read: [CONVENTIONS.md, docs/ARCHITECTURE.md]\n';
     expect(upsertAiderReadEntry(original, MEMORY)).toBe(
-      `read: [CONVENTIONS.md, docs/ARCHITECTURE.md, ${MEMORY}]\n`,
+      `read: [CONVENTIONS.md, docs/ARCHITECTURE.md, ${MEMORY}]  ${AIDER_MANAGED_ENTRY_COMMENT}\n`,
+    );
+  });
+
+  test('a flow list with a trailing comma does not gain a second comma', () => {
+    expect(upsertAiderReadEntry('read: [CONVENTIONS.md,]\n', MEMORY)).toBe(
+      `read: [CONVENTIONS.md, ${MEMORY}]  ${AIDER_MANAGED_ENTRY_COMMENT}\n`,
+    );
+  });
+
+  test('a flow list entry goes before the closing bracket, not into a trailing comment', () => {
+    expect(upsertAiderReadEntry('read: [CONVENTIONS.md] # [shared docs]\n', MEMORY)).toBe(
+      `read: [CONVENTIONS.md, ${MEMORY}] # [shared docs] ${AIDER_MANAGED_ENTRY_COMMENT}\n`,
     );
   });
 
@@ -158,6 +185,13 @@ describe('upsertAiderReadEntry', () => {
     const original = `read: 'CONVENTIONS.md'\n`;
     expect(upsertAiderReadEntry(original, MEMORY)).toBe(
       `read:\n  - 'CONVENTIONS.md'\n  - ${MEMORY}  ${AIDER_MANAGED_ENTRY_COMMENT}\n`,
+    );
+  });
+
+  test('converting a scalar keeps its trailing comment on the original entry', () => {
+    const original = 'read: CONVENTIONS.md # team rules\n';
+    expect(upsertAiderReadEntry(original, MEMORY)).toBe(
+      `read:\n  - CONVENTIONS.md # team rules\n  - ${MEMORY}  ${AIDER_MANAGED_ENTRY_COMMENT}\n`,
     );
   });
 
@@ -257,9 +291,22 @@ describe('removeAiderReadEntry', () => {
     expect(removeAiderReadEntry(original, MEMORY)).toBeNull();
   });
 
-  test('removes the entry from a flow list', () => {
+  test('removes an installer-added flow entry and restores the original', () => {
+    const original = `read: [CONVENTIONS.md, docs/ARCHITECTURE.md]\n`;
+    const merged = upsertAiderReadEntry(original, MEMORY);
+    expect(merged).toContain(AIDER_MANAGED_ENTRY_COMMENT);
+    expect(removeAiderReadEntry(merged, MEMORY)).toBe(original);
+  });
+
+  test('removes an installer-added flow entry with a trailing comment, keeping the comment', () => {
+    const original = 'read: [CONVENTIONS.md] # [shared docs]\n';
+    const merged = upsertAiderReadEntry(original, MEMORY);
+    expect(removeAiderReadEntry(merged, MEMORY)).toBe(original);
+  });
+
+  test('leaves a user-written flow entry alone', () => {
     const original = `read: [CONVENTIONS.md, ${MEMORY}]\n`;
-    expect(removeAiderReadEntry(original, MEMORY)).toBe('read: [CONVENTIONS.md]\n');
+    expect(removeAiderReadEntry(original, MEMORY)).toBeNull();
   });
 
   test('no entry to remove returns null', () => {
@@ -360,6 +407,37 @@ describe('install / status / uninstall (integration)', () => {
     expect(existsSync(memoryFile)).toBe(true);
   });
 
+  test('install with noAutoStart uses a running worker without probing to start one', async () => {
+    // The stub worker answers /api/ready (so the old probing path would find
+    // it "running") and records every path hit: the fixed refresh must go
+    // straight to /api/context/inject and never run a readiness probe.
+    const project = makeProject();
+    const dataDir = path.join(project, 'data');
+    mkdirSync(dataDir, { recursive: true });
+    const child = path.resolve(import.meta.dir, 'aider-no-autostart-child.ts');
+    const run = Bun.spawnSync([process.execPath, child], {
+      cwd: path.resolve(import.meta.dir, '../..'),
+      env: {
+        ...process.env,
+        CLAUDE_MEM_DATA_DIR: dataDir,
+        AIDER_CHILD_PROJECT_DIR: project,
+        AIDER_CHILD_DATA_DIR: dataDir,
+      } as Record<string, string>,
+    });
+    expect(run.exitCode).toBe(0);
+    const result = JSON.parse(run.stdout.toString().trim().split('\n').pop()!) as {
+      code: number;
+      memoryHasContext: boolean;
+      hits: string[];
+    };
+    expect(result.code).toBe(0);
+    expect(result.memoryHasContext).toBe(true);
+    expect(result.hits).toContain('/api/context/inject');
+    expect(result.hits).not.toContain('/api/ready');
+    expect(result.hits).not.toContain('/api/readiness');
+    expect(result.hits).not.toContain('/api/health');
+  }, 30_000);
+
   test('install refreshes the memory file when the worker answers', async () => {
     const project = makeProject();
     const configPath = path.join(project, '.aider.conf.yml');
@@ -443,6 +521,33 @@ describe('refreshAiderMemoryFile', () => {
     expect(again).not.toContain('SQLite');
     expect(again).toContain('# My project notes');
     expect(again.split('<claude-mem-context>').length - 1).toBe(1);
+  });
+
+  test('refresh asks the worker for every project the checkout reads, not just the primary', async () => {
+    // A distinctly named worktree: the parent project's key must reach the
+    // worker too, or its memories never land in the file.
+    const base = mkdtempSync(path.join(tmpdir(), 'aider-worktree-test-'));
+    scratch = base;
+    const parent = path.join(base, 'parent-proj');
+    const worktree = path.join(base, 'feature-wt');
+    mkdirSync(parent, { recursive: true });
+    const git = (...args: string[]) =>
+      Bun.spawnSync(['git', '-c', 'user.name=test', '-c', 'user.email=test@example.com', ...args], { cwd: parent });
+    expect(git('init', '-q', '-b', 'main').exitCode).toBe(0);
+    expect(git('commit', '-q', '--allow-empty', '-m', 'init').exitCode).toBe(0);
+    expect(git('worktree', 'add', '-q', worktree).exitCode).toBe(0);
+    const configPath = path.join(worktree, '.aider.conf.yml');
+    const context = getProjectContext(worktree);
+    expect(context.allProjects.length).toBeGreaterThan(1);
+    expect(context.allProjects).toContain('parent-proj');
+    let received: unknown[] = [];
+    const code = await refreshAiderMemoryFile({ configPath }, async (...args: unknown[]) => {
+      received = args;
+      return 'shared context';
+    });
+    expect(code).toBe(0);
+    expect(received[0]).toEqual(context.allProjects);
+    expect(readFileSync(path.join(worktree, '.claude-mem', 'aider-memory.md'), 'utf-8')).toContain('shared context');
   });
 
   test('worker failure returns 1 and leaves the file untouched', async () => {
