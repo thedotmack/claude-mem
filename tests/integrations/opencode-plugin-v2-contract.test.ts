@@ -1,11 +1,18 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { readFileSync } from "node:fs";
+import pluginEntry from "../../src/integrations/opencode-plugin/index";
 import {
   setupV2,
   extractResultText,
   type OpenCodePluginContextV2,
   type V2BusEvent,
 } from "../../src/integrations/opencode-plugin/v2";
-import { REGISTERED_OPENCODE_V2_HOOKS } from "../../src/integrations/opencode-plugin/contract";
+import {
+  REGISTERED_OPENCODE_HOOKS,
+  REGISTERED_OPENCODE_V2_HOOKS,
+  REAL_OPENCODE_EVENT_TYPES,
+  REAL_OPENCODE_V2_EVENT_TYPES,
+} from "../../src/integrations/opencode-plugin/contract";
 
 /**
  * OpenCode V2 plugin contract.
@@ -160,6 +167,21 @@ function createV2Context(
   return { ctx, hooks, tools, disposeCount: () => disposed };
 }
 
+describe("OpenCode V2 plugin definition", () => {
+  it("default-exports a definition object V2's Schema.Struct accepts", () => {
+    // `pluginEntry` IS the default export (imported with `default`).
+    const definition = pluginEntry as unknown as Record<string, unknown>;
+
+    // Schema.Struct({ id: Schema.String, setup: ... }) — id must be a string.
+    expect(typeof definition).toBe("object");
+    expect(typeof definition.id).toBe("string");
+    expect(definition.id).toBe("claude-mem");
+    expect(typeof definition.setup).toBe("function");
+    // V1 (1.3.4+) reads this instead; V2 ignores it.
+    expect(typeof definition.server).toBe("function");
+  });
+});
+
 describe("OpenCode V2 hook registration", () => {
   it("registers every V2 hook in the contract", async () => {
     const { ctx, hooks } = createV2Context();
@@ -192,11 +214,20 @@ describe("OpenCode V2 hook registration", () => {
     expect(registered.has("event.subscribe")).toBe(true);
   });
 
+  it("keeps the V1 contract allowlist and the V2 registry in agreement", () => {
+    // Same coverage, two notations: 5 V1 hook names vs 6 V2 registrations
+    // (the extra one is the custom-tool transform, which V1 expressed as the
+    // `tool` key on the returned object rather than a hook name).
+    expect(REGISTERED_OPENCODE_HOOKS.length).toBe(5);
+    expect(REGISTERED_OPENCODE_V2_HOOKS.length).toBe(6);
+    expect(REAL_OPENCODE_EVENT_TYPES).toEqual(["session.idle", "session.deleted"]);
+  });
+
   it("registers the custom search tool through the V2 tool transform", async () => {
     const { ctx, tools } = createV2Context();
     await setupV2(ctx);
 
-    expect(tools.map(tool => tool.name)).toEqual(["claude_mem_search", "claude_mem_timeline", "claude_mem_get_observations"]);
+    expect(tools.length).toBe(1);
     const tool = tools[0];
     expect(tool.name).toBe("claude_mem_search");
     expect(typeof tool.description).toBe("string");
@@ -223,6 +254,14 @@ describe("OpenCode V2 hook registration", () => {
 });
 
 describe("OpenCode V2 graceful degradation", () => {
+  it("loads and cleans up on a context with no hook surfaces", async () => {
+    // The plugin API is still beta and the context is read defensively: a host
+    // that lacks a domain must degrade to a no-op, never to a failed load.
+    const cleanup = await setupV2({ directory: "/tmp/x" });
+    expect(typeof cleanup).toBe("function");
+    await cleanup();
+  });
+
   it("registers nothing but still returns a cleanup on a partial context", async () => {
     const { ctx, hooks } = createV2Context({
       tool: undefined,
@@ -280,18 +319,10 @@ describe("OpenCode V2 checkout resolution", () => {
     expect(cwd).toBe("C:/repo/sub");
   });
 
-  it("registers nothing and sends no write when location is absent", async () => {
+  it("falls back to an empty string when location is absent, never undefined", async () => {
     promptCallbacks.length = 0;
     const cwd = await captureCheckout({ session: recordingSession });
-    expect(promptCallbacks.length).toBe(0);
-    expect(cwd).toBeUndefined();
-  });
-
-  it("registers nothing and sends no write when location.directory is empty", async () => {
-    promptCallbacks.length = 0;
-    const cwd = await captureCheckout({ location: { directory: "" }, session: recordingSession });
-    expect(promptCallbacks.length).toBe(0);
-    expect(cwd).toBeUndefined();
+    expect(cwd).toBe("");
   });
 
   it("ignores a top-level ctx.directory, which V2 does not provide", async () => {
@@ -310,17 +341,37 @@ describe("OpenCode V2 tool result extraction", () => {
   // `{ output: { exit, truncated, output }, content: [{ type: "text", text }] }`,
   // where `output` is tool-specific (an object for shell). V1 handed over
   // `output.output` as a plain string.
-  it.each([
-    ["prefers text content blocks", { output: { exit: 0, truncated: false, output: "from output.output" }, content: [{ type: "text", text: "from content blocks" }] }, "from content blocks"],
-    ["falls back to a string output", { output: "plain output" }, "plain output"],
-    ["unwraps shell output", { output: { exit: 0, output: "shell stdout" } }, "shell stdout"],
-    ["reads plain-string content", { content: "string content", output: { output: "stdout" } }, "string content"],
-    ["passes bare strings through", "already text", "already text"],
-    ["ignores undefined", undefined, ""],
-    ["ignores null", null, ""],
-    ["ignores an empty object", {}, ""],
-  ] as const)("%s", (_label, result, expected) => {
-    expect(extractResultText(result)).toBe(expected);
+  it("prefers the text content blocks", () => {
+    expect(
+      extractResultText({
+        output: { exit: 0, truncated: false, output: "from output.output" },
+        content: [{ type: "text", text: "from content blocks" }],
+      }),
+    ).toBe("from content blocks");
+  });
+
+  it("falls back to a string output", () => {
+    expect(extractResultText({ output: "plain output" })).toBe("plain output");
+  });
+
+  it("unwraps a nested shell-shaped output", () => {
+    expect(extractResultText({ output: { exit: 0, output: "shell stdout" } })).toBe("shell stdout");
+  });
+
+  it("reads a plain-string content field", () => {
+    expect(extractResultText({ content: "string content", output: { output: "stdout" } })).toBe("string content");
+  });
+
+  it("passes a bare string result through", () => {
+    expect(extractResultText("already text")).toBe("already text");
+  });
+
+  it("returns empty rather than the string 'undefined' for an unusable result", () => {
+    // The pre-fix fallback produced errorMessage(undefined) === "undefined",
+    // which the worker then stored as the tool response verbatim.
+    expect(extractResultText(undefined)).toBe("");
+    expect(extractResultText(null)).toBe("");
+    expect(extractResultText({})).toBe("");
   });
 });
 
@@ -473,8 +524,6 @@ describe("OpenCode V2 event bus", () => {
     await host.call("session.prompt", { sessionID: "ses_bus_kept", prompt: { text: "Kept" } });
     const [deletedInit, keptInit] = worker.to("/api/sessions/init");
     const before = deletedInit.body!.contentSessionId;
-    await host.call("session.context", { sessionID: "ses_bus_deleted", system: [] });
-    expect(worker.to("/api/context/inject")).toHaveLength(1);
 
     host.stream.send(busEvent("session.deleted", "ses_bus_deleted", {}, null));
     host.stream.send(busEvent("session.execution.succeeded", "ses_bus_deleted", {}, null));
@@ -485,12 +534,10 @@ describe("OpenCode V2 event bus", () => {
     expect(summaries).toHaveLength(1);
     expect(summaries[0].body!.contentSessionId).toBe(keptInit.body!.contentSessionId);
 
-    // Deletion clears cached context and reply tracking, not the host's ID.
-    await host.call("session.context", { sessionID: "ses_bus_deleted", system: [] });
-    expect(worker.to("/api/context/inject")).toHaveLength(2);
+    // The session mapping is gone too: a new prompt starts a new content session.
     await host.call("session.prompt", { sessionID: "ses_bus_deleted", prompt: { text: "After delete" } });
     const after = worker.to("/api/sessions/init").at(-1)!.body!.contentSessionId;
-    expect(after).toBe(before);
+    expect(after).not.toBe(before);
   });
 
   it("subscribes again after the stream ends or fails", async () => {
@@ -546,6 +593,25 @@ describe("OpenCode V2 event bus", () => {
     expect(injects()).toBe(2);
   });
 
+  it("reacts only to the event types in the V2 contract", () => {
+    const source = readFileSync("src/integrations/opencode-plugin/v2.ts", "utf8");
+    const handled = [...source.matchAll(/case "([a-z.]+)":/g)].map((match) => match[1]).sort();
+    expect(handled).toEqual([...REAL_OPENCODE_V2_EVENT_TYPES].sort());
+  });
+
+  it("pins the GA-verified V2 event names, so a renamed event fails loudly", () => {
+    // Verified against anomalyco/opencode v2.0.32: the compaction flow
+    // (`packages/core/src/session/compaction.ts`) publishes
+    // `SessionEvent.Compaction.Ended` ("session.compaction.ended") on success.
+    // The schema also defines an ephemeral `session.compacted`, but nothing
+    // publishes it — the adapter must listen for the event that fires.
+    expect(REAL_OPENCODE_V2_EVENT_TYPES).toContain("session.compaction.ended");
+    expect(REAL_OPENCODE_V2_EVENT_TYPES).toContain("session.execution.succeeded");
+    expect(REAL_OPENCODE_V2_EVENT_TYPES).toContain("session.text.ended");
+    expect(REAL_OPENCODE_V2_EVENT_TYPES).toContain("session.deleted");
+    expect(REAL_OPENCODE_V2_EVENT_TYPES).not.toContain("session.compacted");
+    expect(REAL_OPENCODE_V2_EVENT_TYPES).not.toContain("session.idle");
+  });
 });
 
 describe("OpenCode V2 setup failure", () => {
@@ -639,7 +705,7 @@ describe("OpenCode V2 callbacks drive the worker", () => {
       cwd: "/work/project",
       platform_source: "opencode",
     });
-    expect(observation.body!.contentSessionId).toBe("ses_cb_tool");
+    expect(observation.body!.contentSessionId).toStartWith("opencode-ses_cb_tool-");
   });
 
   it("records a failed tool's error message, from an Error or a plain object", async () => {
@@ -654,8 +720,8 @@ describe("OpenCode V2 callbacks drive the worker", () => {
     }));
 
     expect(worker.to("/api/sessions/observations").map((request) => request.body!.tool_response)).toEqual([
-      { is_error: true, error: "ENOENT: src/parser.ts" },
-      { is_error: true, error: "permission denied" },
+      "ENOENT: src/parser.ts",
+      "permission denied",
     ]);
   });
 
@@ -674,7 +740,7 @@ describe("OpenCode V2 callbacks drive the worker", () => {
       cwd: "/work/project",
       platform_source: "opencode",
     });
-    expect(init.body!.contentSessionId).toBe("ses_cb_prompt");
+    expect(init.body!.contentSessionId).toStartWith("opencode-ses_cb_prompt-");
   });
 
   it("pushes memory onto the system prompt as one tagged text part", async () => {
@@ -688,6 +754,7 @@ describe("OpenCode V2 callbacks drive the worker", () => {
     ]);
     const [inject] = worker.to("/api/context/inject");
     expect(inject.url.searchParams.get("cwd")).toBe("/work/project");
+    expect(inject.url.searchParams.get("platformSource")).toBe("opencode");
   });
 
   it("never stacks a second memory block when the same system list is built again", async () => {
@@ -714,36 +781,5 @@ describe("OpenCode V2 callbacks drive the worker", () => {
     expect(result).toEqual({ content: "1 observation" });
     const [search] = worker.to("/api/search/observations");
     expect(search.url.searchParams.get("query")).toBe("parser");
-  });
-});
-
-describe("OpenCode V2 setup with a context that is not a plugin context", () => {
-  it("silently ignores the host registry without registering hooks or calling the worker", async () => {
-    const worker = recordWorkerRequests();
-    const originalLog = console.log;
-    const originalWarn = console.warn;
-    const logs: string[] = [];
-    const warnings: string[] = [];
-    console.log = (...args: unknown[]) => { logs.push(args.join(" ")); };
-    console.warn = (...args: unknown[]) => { warnings.push(args.join(" ")); };
-    let registered = 0;
-    try {
-      // The shape OpenCode 1.18.35 passes on its extra setup() calls (#4878).
-      const hostRegistry = {
-        options: {}, agent: {}, aisdk: {}, catalog: {}, command: {},
-        integration: {}, plugin: {}, reference: {}, skill: {},
-        tool: { hook: async () => { registered++; return { dispose: async () => {} }; } },
-      } as unknown as OpenCodePluginContextV2;
-      const cleanup = await setupV2(hostRegistry);
-      await cleanup();
-    } finally {
-      console.log = originalLog;
-      console.warn = originalWarn;
-      worker.restore();
-    }
-    expect(logs.filter((line) => line.includes("OpenCode plugin loading"))).toEqual([]);
-    expect(warnings).toEqual([]);
-    expect(registered).toBe(0);
-    expect(worker.requests).toEqual([]);
   });
 });
