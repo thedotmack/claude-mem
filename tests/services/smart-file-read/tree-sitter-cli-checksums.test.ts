@@ -6,6 +6,7 @@ import {
   glibcCompatibleTreeSitterBuild,
   pinnedTreeSitterExecutableSha256,
   TREE_SITTER_EXECUTABLE_SHA256,
+  treeSitterReleaseAssetUrl,
 } from '../../../src/services/smart-file-read/tree-sitter-cli-checksums.js';
 
 // Installs get the tree-sitter-cli version plugin/bun.lock pins, and provisioning
@@ -37,6 +38,29 @@ describe('pinned tree-sitter executable digests', () => {
     expect(pinnedTreeSitterExecutableSha256('0.26.9', 'linux', 'x64')).toBe(TREE_SITTER_EXECUTABLE_SHA256['0.26.9']['linux-x64']);
     expect(pinnedTreeSitterExecutableSha256('0.26.9', 'linux', 'ia32')).toBeUndefined();
     expect(pinnedTreeSitterExecutableSha256('0.0.0', 'linux', 'x64')).toBeUndefined();
+  });
+
+  // The direct download fetches the asset install.js would. A platform with a
+  // pinned digest and no asset URL could never use it.
+  it('names the release asset of every platform it pins a digest for', () => {
+    for (const [version, digests] of Object.entries(TREE_SITTER_EXECUTABLE_SHA256)) {
+      for (const target of Object.keys(digests)) {
+        const [platform, arch] = target.split('-') as [NodeJS.Platform, string];
+        expect(treeSitterReleaseAssetUrl(version, platform, arch)).toMatch(
+          new RegExp(`^https://github\\.com/tree-sitter/tree-sitter/releases/download/v${version.replace(/\./g, '\\.')}/tree-sitter-(macos|linux|windows)-[a-z0-9]+\\.gz$`),
+        );
+      }
+    }
+  });
+
+  // The names are install.js's, not Node's: darwin is macos, ppc64 is powerpc64, ia32 is x86.
+  it('uses the asset names install.js downloads', () => {
+    const assetOf = (platform: NodeJS.Platform, arch: string) => treeSitterReleaseAssetUrl('0.26.9', platform, arch)?.split('/').pop();
+
+    expect(assetOf('darwin', 'arm64')).toBe('tree-sitter-macos-arm64.gz');
+    expect(assetOf('linux', 'ppc64')).toBe('tree-sitter-linux-powerpc64.gz');
+    expect(assetOf('win32', 'ia32')).toBe('tree-sitter-windows-x86.gz');
+    expect(assetOf('linux', 'riscv64')).toBeUndefined();
   });
 
   // #4758: the fallback for glibc older than the release assets need. Only the
