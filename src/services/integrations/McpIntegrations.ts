@@ -1,7 +1,7 @@
 
 import path from 'path';
 import { homedir } from 'os';
-import { existsSync, readFileSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, mkdirSync, writeFileSync } from 'fs';
 import { logger } from '../../utils/logger.js';
 import { getMcpServerAbsolutePath, getNodeAbsolutePath } from './install-paths.js';
 import { readJsonSafe } from '../../utils/json-utils.js';
@@ -336,6 +336,104 @@ Next steps:
 `);
 }
 
+/**
+ * Zed reads MCP servers from the `context_servers` key of settings.json —
+ * `~/.config/zed/settings.json` on Linux and macOS, `%APPDATA%\Zed\settings.json`
+ * on Windows (zed.dev/docs/ai/mcp). The `mcpServers` key is silently ignored
+ * by Zed, so a Zed entry must never be written under that name. A project-level
+ * `.zed/settings.json` exists too, but it is typically committed to git, so
+ * the installer only ever writes the user-level file: an absolute local MCP
+ * path must not leak into a shared repo.
+ */
+export function getZedSettingsPath(platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env): string {
+  if (platform === 'win32') {
+    const appData = env.APPDATA || path.join(homedir(), 'AppData', 'Roaming');
+    return path.win32.join(appData, 'Zed', 'settings.json');
+  }
+  const configHome = env.XDG_CONFIG_HOME || path.join(homedir(), '.config');
+  return path.join(configHome, 'zed', 'settings.json');
+}
+
+/**
+ * Owner-only dated backup of an existing settings file, taken before any
+ * write. Same semantics as KimiHooksInstaller.backupOnce: one backup per day,
+ * never overwritten, mode 0o600 because settings.json can hold provider keys.
+ * settings.json is the user's whole editor config, not a claude-mem-owned
+ * file, so install must never be the first thing to touch it without a copy.
+ */
+function backupZedSettingsOnce(configPath: string): void {
+  const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const backupPath = `${configPath}.bak-${stamp}`;
+  if (existsSync(configPath) && !existsSync(backupPath)) {
+    writeFileSync(backupPath, readFileSync(configPath, 'utf-8'), { mode: 0o600 });
+  }
+}
+
+export async function installZedMcpIntegration(): Promise<number> {
+  console.log('\nInstalling Claude-Mem MCP integration for Zed...\n');
+
+  const mcpServerPath = getMcpServerAbsolutePath();
+  if (!mcpServerPath) {
+    console.error('Could not find MCP server script');
+    console.error('   Expected at: ~/.claude/plugins/marketplaces/thedotmack/plugin/scripts/mcp-server.cjs');
+    return 1;
+  }
+
+  const configPath = getZedSettingsPath();
+
+  try {
+    backupZedSettingsOnce(configPath);
+    // writeMcpJsonConfig parses BOM-tolerantly and refuses (throws) on
+    // malformed JSON instead of replacing it with an empty object, so a
+    // corrupt settings.json is left exactly as it was; the backup above is
+    // the extra safety net for the user's whole editor config.
+    writeMcpJsonConfig(configPath, mcpServerPath, 'context_servers');
+    console.log(`  MCP config written to: ${configPath}`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`\nInstallation failed: ${message}`);
+    return 1;
+  }
+
+  console.log(`
+Installation complete!
+
+MCP config:  ${configPath}
+
+Note: This is an MCP-only integration providing search tools and context.
+Transcript capture is not available for Zed: Zed exposes no agent hooks or
+transcript access, so native Zed Agent sessions are not recorded. Use the
+MCP tools to search memory and save explicit notes.
+
+Next steps:
+  1. Start claude-mem worker: npx claude-mem start
+  2. Restart Zed to pick up the MCP server, then check Settings -> AI -> MCP Servers
+     for a green "Server is active" dot next to claude-mem
+`);
+  return 0;
+}
+
+/**
+ * Remove claude-mem from Zed's context_servers, but only the entry this
+ * installer wrote (its args end with mcp-server.cjs): the name is generic
+ * enough that a user could have their own `claude-mem` server, and uninstall
+ * must never remove that. Returns 0 when an entry was removed. A settings
+ * file that does not parse is left alone (readJsonSafe throws instead of
+ * returning an empty object for it to overwrite).
+ */
+export function uninstallZedMcpIntegration(configPath: string = getZedSettingsPath()): number {
+  const config = readJsonSafe<Record<string, any>>(configPath, {});
+  const entry = config.context_servers?.['claude-mem'] as { args?: unknown } | undefined;
+  if (!entry) return 1;
+  const args = entry.args;
+  const isOurs = Array.isArray(args) && args.some((arg) => typeof arg === 'string' && arg.endsWith('mcp-server.cjs'));
+  if (!isOurs) return 1;
+  delete config.context_servers['claude-mem'];
+  writeJsonFileAtomic(configPath, config);
+  console.log(`  Removed claude-mem from the Zed context servers in: ${configPath}`);
+  return 0;
+}
+
 // NOTE: 'antigravity' is intentionally absent here. It graduated from an
 // MCP-only integration to a full hooks+MCP installer — see
 // AntigravityCliHooksInstaller.ts, which owns Antigravity's install/uninstall
@@ -347,4 +445,5 @@ export const MCP_IDE_INSTALLERS: Record<string, () => Promise<number>> = {
   'goose': installGooseMcpIntegration,
   'roo-code': installMcpIntegration(ROO_CODE_CONFIG),
   'warp': installMcpIntegration(WARP_CONFIG),
+  'zed': installZedMcpIntegration,
 };

@@ -1,0 +1,207 @@
+---
+title: Zed Integration
+description: Persistent memory for Zed — MCP recall and explicit save via Zed's context_servers setting; no automatic capture
+icon: code
+---
+
+## Overview
+
+The Zed integration connects Zed's Agent Panel to claude-mem through Zed's
+native MCP client. It gives you two things:
+
+1. **Recall** — Ask Zed's agent about past work in a project and it searches
+   your claude-mem memory (`search` → `timeline` → `get_observations`) and
+   quotes the saved observation.
+2. **Explicit save** — Tell the agent "save this decision to memory" and it
+   calls `save_memory` to store a durable note.
+
+<Warning>
+**No automatic capture.** Zed exposes no agent hooks, no tool-call events,
+and no transcript access, so native Zed Agent sessions are not recorded.
+MCP recall is not capture: nothing is saved unless you (or the agent, at
+your request) explicitly call `save_memory`. If you run Claude Code or
+Codex inside Zed's terminal, those CLIs record their own sessions through
+their own claude-mem adapters — the Zed integration does not re-capture
+them, and must not be counted twice.
+</Warning>
+
+## Capabilities
+
+| Capability | Zed |
+|---|---|
+| Automatic capture | **No** — Zed exposes no hooks or transcript access |
+| Explicit save | **Yes** — `save_memory` on the bundled MCP server |
+| Recall | **Yes** — `search`, `timeline`, `get_observations` (plus `smart_search`, `dumb_search`, `session_start_context`) |
+| Injection | Manual only — add a memory summary to your project's instruction file (see below) |
+| Export | n/a |
+
+Catalog-ready description: Zed connects to claude-mem as an MCP recall
+client. It can search memory and explicitly save notes; it does not
+automatically capture agent sessions.
+
+## How It Works
+
+The installer adds one stdio entry named `claude-mem` to the
+`context_servers` key of your Zed `settings.json`:
+
+```json
+{
+  "context_servers": {
+    "claude-mem": {
+      "command": "/path/to/node",
+      "args": ["/absolute/path/to/plugin/scripts/mcp-server.cjs"]
+    }
+  }
+}
+```
+
+Zed starts that server when it loads and offers its tools to the agent.
+`search` finds relevant observations, `timeline` shows what happened
+around one, and `get_observations` reads the full entries. `save_memory`
+writes an explicit note into the same worker database every other
+integration uses, so a decision saved from Zed is searchable from Claude
+Code, Cursor, and the rest.
+
+The key is `context_servers`, not `mcpServers`. Zed silently ignores a
+`mcpServers` entry, with no error — if the server never appears, check
+the key name first.
+
+## Installation
+
+Prerequisites: Zed 0.140.0 or later (MCP support since 0.140.0; latest
+release at time of writing: 1.28.1), claude-mem installed, and the
+claude-mem worker running (`npx claude-mem start`).
+
+Run the interactive installer and let it auto-detect Zed:
+
+```bash
+npx claude-mem install
+```
+
+Or install only the Zed integration:
+
+```bash
+npx claude-mem install --ide zed
+```
+
+What the installer does:
+
+- Resolves your settings file: `~/.config/zed/settings.json` on Linux and
+  macOS (`XDG_CONFIG_HOME` is honoured when set), `%APPDATA%\Zed\settings.json`
+  on Windows.
+- Backs up an existing `settings.json` first, as
+  `settings.json.bak-YYYYMMDD` (owner-only, mode `0600`, one per day).
+- Merges the `claude-mem` entry into `context_servers`, preserving every
+  other server and every unrelated setting. Re-running install replaces
+  only its own entry; it never duplicates it.
+- Refuses to touch a `settings.json` that does not parse, instead of
+  replacing it with an empty object.
+
+Restart Zed after install, then check **Settings → AI → MCP Servers** for
+a green "Server is active" dot next to `claude-mem`.
+
+### Project-level settings
+
+Zed also reads `.zed/settings.json` in the workspace root. The installer
+does not write there: that file is typically committed to git, and an
+absolute local MCP path must not leak into a shared repo. If you want a
+project override, copy the entry by hand and keep the path local-only.
+
+### Manual setup
+
+If you prefer not to run the installer, add the entry yourself. Find the
+server path with `npx claude-mem` installed (`plugin/scripts/mcp-server.cjs`
+under the installed plugin), then add to `settings.json`:
+
+```json
+{
+  "context_servers": {
+    "claude-mem": {
+      "command": "node",
+      "args": ["/absolute/path/to/plugin/scripts/mcp-server.cjs"]
+    }
+  }
+}
+```
+
+Use absolute paths: Zed does no substitution in `command` or `args`.
+
+## Verification
+
+1. Restart Zed. In **Settings → AI → MCP Servers**, `claude-mem` shows a
+   green dot and "Server is active".
+2. In the Agent Panel, ask about something you know is in memory, for
+   example: "What did I decide about local persistence in this project?"
+   The agent should call the `search` tool and quote the saved
+   observation.
+3. To verify explicit save, say: "Save to memory: the project uses SQLite
+   for local persistence." Then search for it from another agent or with
+   `npx claude-mem search "SQLite local persistence"` — the note should
+   be there.
+
+How reliably the agent calls MCP tools varies by model (per Zed's own
+docs). If it answers from its own knowledge instead of searching, mention
+the server by name ("search claude-mem for …") or create an agent profile
+with only the `claude-mem` tools enabled.
+
+### Manual context injection (optional)
+
+Zed reads one project instruction file — the first match of `.rules`,
+`.cursorrules`, `.windsurfrules`, `.clinerules`,
+`.github/copilot-instructions.md`, `AGENT.md`, `AGENTS.md`, `CLAUDE.md`,
+`GEMINI.md` — plus your personal `~/.config/zed/AGENTS.md`. To give Zed
+sessions a memory summary, paste one into the file your project actually
+reads (check which one wins first: only the first match is read). The
+installer never writes these files for you.
+
+## Troubleshooting
+
+- **Server never appears / no green dot:** check the key is
+  `context_servers`, not `mcpServers`; check the JSON parses
+  (`python3 -m json.tool ~/.config/zed/settings.json > /dev/null`);
+  restart Zed — context servers load at startup.
+- **`save_memory` is not offered:** you are on the server runtime
+  (CMEM Pro hosted), where `save_memory` is hidden and `observation_add`
+  is the write tool instead. On the default local worker runtime
+  `save_memory` is advertised.
+- **Agent never calls the tools:** mention `claude-mem` by name in the
+  prompt, or use an agent profile with only its tools enabled. Tool
+  calling reliability varies by model.
+- **Install fails with "Corrupt JSON file, refusing to overwrite":** your
+  `settings.json` does not parse. Fix the JSON (your original bytes are
+  also in the `settings.json.bak-YYYYMMDD` backup) and re-run install.
+- **Windows path:** `%APPDATA%\Zed\settings.json`. The Windows path is
+  resolved by the installer but was not verified on a Windows machine;
+  see Known limitations.
+
+## Uninstall
+
+```bash
+npx claude-mem uninstall
+```
+
+The global uninstall removes the `claude-mem` entry from `context_servers`
+only when its args point at claude-mem's own `mcp-server.cjs` — a
+same-named entry you wrote yourself is left alone. All other settings and
+servers are preserved, and your memory is untouched. Or delete the entry
+by hand from `settings.json` and restart Zed.
+
+## Known limitations
+
+- No automatic capture of Zed Agent sessions (no host hook surface).
+- The in-editor demonstration (Agent Panel retrieval) needs a desktop;
+  the installer, config merge, and MCP handshake were verified headless.
+- The Windows settings path (`%APPDATA%\Zed\settings.json`) is resolved
+  by the installer but was not verified on a Windows machine.
+- A Zed user running Claude Code or Codex in Zed's terminal already gets
+  capture from those CLIs' own adapters; this integration adds recall
+  and explicit save only, and does not deduplicate across them.
+
+## Official reference
+
+- Zed MCP documentation: https://zed.dev/docs/ai/mcp (MCP Tools and
+  Prompts; `context_servers` in `settings.json`; tool permissions;
+  External Agents forwarding)
+- Zed Agent settings: https://zed.dev/docs/ai/agent-settings
+- MCP extension authoring (not used here — the plain `context_servers`
+  entry is the first step): https://zed.dev/docs/extensions/mcp-extensions

@@ -8,7 +8,7 @@ import { kimiCodeHome } from '../../shared/kimi-paths.js';
 import { getOpenCodeConfigDirectory } from '../../services/integrations/OpenCodeInstaller.js';
 import { hermesHome } from '../../services/integrations/HermesInstaller.js';
 import { devinConfigPath } from '../../services/integrations/DevinHooksInstaller.js';
-import { getGooseConfigPath } from '../../services/integrations/McpIntegrations.js';
+import { getGooseConfigPath, getZedSettingsPath } from '../../services/integrations/McpIntegrations.js';
 import { lookupWindowsCommandCandidates } from '../../shared/spawn.js';
 
 export interface IDEInfo {
@@ -170,6 +170,13 @@ export function detectInstalledIDEs(): IDEInfo[] {
       id: 'warp',
       label: 'Warp',
       detected: existsSync(join(home, '.warp')) || isCommandInPath('warp'),
+      hint: 'MCP-based integration',
+    },
+    {
+      id: 'zed',
+      label: 'Zed',
+      detected:
+        existsSync(dirname(getZedSettingsPath())) || isCommandInPath('zed'),
       hint: 'MCP-based integration',
     },
   ];

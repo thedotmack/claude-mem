@@ -1,0 +1,35 @@
+{
+  "agent": {
+    "default_model": {
+      "model": "claude-sonnet-4-5",
+      "provider": "zed.dev"
+    },
+    "tool_permissions": {
+      "default": "confirm",
+      "mcp:filesystem:read_file": "allow",
+      "terminal": "deny"
+    }
+  },
+  "buffer_font_size": 15,
+  "context_servers": {
+    "filesystem": {
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "/home/alex/notes"
+      ],
+      "command": "npx"
+    }
+  },
+  "languages": {
+    "Python": {
+      "format_on_save": "on"
+    }
+  },
+  "telemetry": {
+    "diagnostics": false,
+    "metrics": false
+  },
+  "theme": "One Dark",
+  "ui_font_size": 15
+}
