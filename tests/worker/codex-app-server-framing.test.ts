@@ -115,4 +115,22 @@ describe('Codex app-server stdout line framing', () => {
     expect(driver.errors).toEqual([]);
     expect(driver.messages).toEqual([{ id: 1, result: 'current' }]);
   });
+
+  it('stops within a chunk when a dispatched message clears the current child', () => {
+    const driver = createDriver();
+    driver.client.handleMessage = message => {
+      driver.messages.push(message);
+      driver.client.child = null;
+    };
+    driver.send('{"id":1,"result":"stop"}\n{"id":2,"result":"stale"}\n{"id":');
+    expect(driver.messages).toEqual([{ id: 1, result: 'stop' }]);
+    expect(driver.errors).toEqual([]);
+
+    const replacement = {};
+    driver.client.child = replacement;
+    driver.client.handleMessage = message => { driver.messages.push(message); };
+    driver.client.onStdout(replacement, '{"id":3,"result":"replacement"}\n');
+    expect(driver.messages).toEqual([{ id: 1, result: 'stop' }, { id: 3, result: 'replacement' }]);
+    expect(driver.errors).toEqual([]);
+  });
 });
