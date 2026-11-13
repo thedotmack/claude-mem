@@ -76,12 +76,12 @@ export function RevealScreen({ agents, reveal, extraction, uploadedAgents, recen
   const agentNames = withPrompts.map((agent) => agent.label)
   const agentsJoined = locale === 'zh-CN'
     ? (agentNames.length < 2 ? agentNames.join('') : `${agentNames.slice(0, -1).join('、')} 和 ${agentNames[agentNames.length - 1]}`)
-    : locale === 'ko' ? new Intl.ListFormat('ko', { type: 'conjunction' }).format(agentNames)
+    : locale === 'ko' || locale === 'fr' ? new Intl.ListFormat(locale, { type: 'conjunction' }).format(agentNames)
     : joinNames(agentNames)
 
   const leadText = promptCount > 0
     ? interpolate(t('From {count} messages across {agents}: the bigger picture of what you’re working toward.'), {
-        count: promptCount.toLocaleString('en-US'),
+        count: promptCount.toLocaleString(locale === 'fr' ? locale : 'en-US'),
         agents: agentsJoined,
       })
     : undefined

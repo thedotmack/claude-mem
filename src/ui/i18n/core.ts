@@ -9,6 +9,10 @@ import { myworkKo } from './mywork-ko';
 import { setupKo } from './setup-ko';
 import { settingsKo } from './settings-ko';
 import { myworkTr } from './mywork-tr';
+import { viewerFr } from './viewer-fr';
+import { myworkFr } from './mywork-fr';
+import { setupFr } from './setup-fr';
+import { settingsFr } from './settings-fr';
 import { LANGUAGE_STORAGE_KEY, parseLocale, type Locale } from './locale';
 
 export type { Locale } from './locale';
@@ -17,6 +21,7 @@ const catalogs: Partial<Record<Locale, Record<string, string>>> = {
   'zh-CN': { ...viewerZh, ...myworkZh, ...setupZh, ...settingsZh },
   ko: { ...viewerKo, ...myworkKo, ...setupKo, ...settingsKo },
   tr: myworkTr,
+  fr: { ...viewerFr, ...myworkFr, ...setupFr, ...settingsFr },
 };
 const listeners = new Set<() => void>();
 let sessionLocale: Locale = 'en';
