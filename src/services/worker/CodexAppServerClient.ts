@@ -834,10 +834,11 @@ export class CodexAppServerClient {
     const id = this.nextRequestId++;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
+        pending.removeAbort?.();
         this.pending.delete(id);
         const error = new Error(`Codex app-server ${method} timed out after ${timeoutMs}ms`);
         reject(error);
-        this.invalidate(error);
+        this.invalidate(error, child);
       }, timeoutMs);
       const pending: PendingRequest = { resolve, reject, timer };
       if (signal) {
@@ -846,7 +847,7 @@ export class CodexAppServerClient {
           clearTimeout(timer);
           const error = new Error(`Codex app-server ${method} aborted`);
           reject(error);
-          this.invalidate(error);
+          this.invalidate(error, child);
         };
         if (signal.aborted) {
           onAbort();
