@@ -5,7 +5,7 @@ import { existsSync, readFileSync, mkdirSync, writeFileSync } from 'fs';
 import { logger } from '../../utils/logger.js';
 import { getMcpServerAbsolutePath, getNodeAbsolutePath } from './install-paths.js';
 import { readJsonSafe } from '../../utils/json-utils.js';
-import { stripUtf8Bom, writeJsonFileAtomic, writeTextFileAtomic } from '../../shared/atomic-json.js';
+import { parseJsonWithBom, parseJsonc, stripUtf8Bom, writeJsonFileAtomic, writeTextFileAtomic } from '../../shared/atomic-json.js';
 import { injectContextIntoMarkdownFile } from '../../utils/context-injection.js';
 
 export const PLACEHOLDER_CONTEXT = `# claude-mem: Cross-Session Memory
@@ -369,6 +369,301 @@ function backupZedSettingsOnce(configPath: string): void {
   }
 }
 
+function corruptZedSettingsError(configPath: string, cause: unknown): Error {
+  const detail = cause instanceof Error ? cause.message : String(cause);
+  return new Error(`Corrupt JSON file, refusing to overwrite: ${configPath}: ${detail}`);
+}
+
+/**
+ * Read Zed's settings.json. A file that parses as strict JSON takes the
+ * exact current path. A file Zed itself reads fine but strict JSON.parse
+ * refuses — comments or trailing commas — is parsed as JSONC instead, and
+ * `jsonc` tells the caller the file must be edited textually so its
+ * comments survive. A file that parses as neither is corrupt and throws,
+ * so install/uninstall never overwrite it.
+ */
+function readZedSettings(configPath: string): { config: Record<string, any>; jsonc: boolean; raw: string } {
+  const raw = readFileSync(configPath, 'utf-8');
+  try {
+    return { config: parseJsonWithBom<Record<string, any>>(raw), jsonc: false, raw };
+  } catch (strictError) {
+    try {
+      return { config: parseJsonc<Record<string, any>>(raw), jsonc: true, raw };
+    } catch {
+      throw corruptZedSettingsError(configPath, strictError);
+    }
+  }
+}
+
+/** Index just past any whitespace and `//` / `/* *\/` comments from `i`. */
+function skipJsoncTrivia(text: string, i: number): number {
+  for (;;) {
+    const ch = text[i];
+    if (ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r') {
+      i++;
+      continue;
+    }
+    if (ch === '/' && text[i + 1] === '/') {
+      const newline = text.indexOf('\n', i + 2);
+      i = newline === -1 ? text.length : newline + 1;
+      continue;
+    }
+    if (ch === '/' && text[i + 1] === '*') {
+      const end = text.indexOf('*/', i + 2);
+      if (end === -1) throw new Error('Unterminated block comment in Zed settings');
+      i = end + 2;
+      continue;
+    }
+    return i;
+  }
+}
+
+/** Index just past the JSON string starting at `i` (which must be `"`). */
+function scanJsoncString(text: string, i: number): number {
+  i++;
+  while (i < text.length) {
+    if (text[i] === '\\') {
+      i += 2;
+      continue;
+    }
+    if (text[i] === '"') return i + 1;
+    if (text[i] === '\n') throw new Error('Unterminated string in Zed settings');
+    i++;
+  }
+  throw new Error('Unterminated string in Zed settings');
+}
+
+/** Index just past the JSON value starting at `i` (after trivia). */
+function scanJsoncValue(text: string, i: number): number {
+  i = skipJsoncTrivia(text, i);
+  const ch = text[i];
+  if (ch === '"') return scanJsoncString(text, i);
+  if (ch === '{' || ch === '[') {
+    const open = ch;
+    const close = ch === '{' ? '}' : ']';
+    let depth = 0;
+    while (i < text.length) {
+      const c = text[i];
+      if (c === '"') {
+        i = scanJsoncString(text, i);
+        continue;
+      }
+      if (c === '/' && (text[i + 1] === '/' || text[i + 1] === '*')) {
+        i = skipJsoncTrivia(text, i);
+        continue;
+      }
+      if (c === open) depth++;
+      else if (c === close) {
+        depth--;
+        if (depth === 0) return i + 1;
+      }
+      i++;
+    }
+    throw new Error('Unterminated value in Zed settings');
+  }
+  // Literal or number: runs to the next structural character.
+  while (i < text.length && text[i] !== ',' && text[i] !== '}' && text[i] !== ']') i++;
+  return i;
+}
+
+interface JsoncMemberSpan {
+  key: string;
+  keyStart: number;
+  valueStart: number;
+  valueEnd: number;
+  commaAfter: number;
+}
+
+/** Every member of the object starting at `objStart` (`{`). */
+function scanJsoncObjectMembers(text: string, objStart: number, objEnd: number): JsoncMemberSpan[] {
+  const members: JsoncMemberSpan[] = [];
+  let i = skipJsoncTrivia(text, objStart + 1);
+  while (i < objEnd) {
+    if (text[i] === '}') return members;
+    const keyStart = i;
+    if (text[i] !== '"') throw new Error('Expected a string key in Zed settings');
+    const keyEnd = scanJsoncString(text, i);
+    let key: unknown;
+    try {
+      key = JSON.parse(text.slice(keyStart, keyEnd));
+    } catch {
+      throw new Error('Invalid object key in Zed settings');
+    }
+    if (typeof key !== 'string') throw new Error('Expected a string key in Zed settings');
+    i = skipJsoncTrivia(text, keyEnd);
+    if (text[i] !== ':') throw new Error('Expected ":" after an object key in Zed settings');
+    i = skipJsoncTrivia(text, i + 1);
+    const valueStart = i;
+    const valueEnd = scanJsoncValue(text, i);
+    i = skipJsoncTrivia(text, valueEnd);
+    let commaAfter = -1;
+    if (text[i] === ',') {
+      commaAfter = i;
+      i = skipJsoncTrivia(text, i + 1);
+    } else if (text[i] !== '}') {
+      throw new Error('Expected "," or "}" in Zed settings');
+    }
+    members.push({ key, keyStart, valueStart, valueEnd, commaAfter });
+  }
+  return members;
+}
+
+/** The whitespace indent of the line containing `pos`. */
+function jsoncLineIndent(text: string, pos: number): string {
+  const lineStart = text.lastIndexOf('\n', pos - 1) + 1;
+  const match = /^[ \t]*/.exec(text.slice(lineStart, pos));
+  return match ? match[0] : '';
+}
+
+/** Serialize `value` as 2-space JSON, continuation lines indented by `indent`. */
+function formatJsoncValue(value: unknown, indent: string): string {
+  const lines = JSON.stringify(value, null, 2).split('\n');
+  return [lines[0], ...lines.slice(1).map((line) => indent + line)].join('\n');
+}
+
+/**
+ * Insert a `"key": value` member (already formatted as `memberText`) into
+ * the object spanning [objStart, objEnd), preserving every existing byte:
+ * comments, trailing commas and other members are untouched.
+ * `memberIndent` is the indent the new member's line gets.
+ */
+function insertJsoncMember(text: string, objStart: number, objEnd: number, memberText: string, memberIndent: string): string {
+  const members = scanJsoncObjectMembers(text, objStart, objEnd);
+  if (members.length === 0) {
+    const objIndent = jsoncLineIndent(text, objStart);
+    const needsCloseNewline = text[objStart + 1] === '}';
+    return (
+      text.slice(0, objStart + 1) +
+      '\n' +
+      memberIndent +
+      memberText +
+      (needsCloseNewline ? '\n' + objIndent : '') +
+      text.slice(objStart + 1)
+    );
+  }
+  const last = members[members.length - 1];
+  if (last.commaAfter !== -1) {
+    return text.slice(0, last.commaAfter + 1) + '\n' + memberIndent + memberText + text.slice(last.commaAfter + 1);
+  }
+  return text.slice(0, last.valueEnd) + ',\n' + memberIndent + memberText + text.slice(last.valueEnd);
+}
+
+/**
+ * Remove one member from the object spanning [objStart, objEnd), keeping
+ * the file valid: a following comma goes with the member when there is
+ * one; otherwise the comma separating it from the previous member is
+ * kept, which restores a trailing comma the file already had. Returns
+ * null when the key is absent.
+ */
+function removeJsoncMember(text: string, objStart: number, objEnd: number, key: string): string | null {
+  const members = scanJsoncObjectMembers(text, objStart, objEnd);
+  const index = members.findIndex((m) => m.key === key);
+  if (index === -1) return null;
+  const member = members[index];
+  if (index < members.length - 1) {
+    // A comma follows this member: take the whole line with it.
+    const lineStart = text.lastIndexOf('\n', member.keyStart - 1) + 1;
+    const start = /^\s*$/.test(text.slice(lineStart, member.keyStart)) ? lineStart : member.keyStart;
+    let end = member.commaAfter + 1;
+    if (text[end] === '\n') end++;
+    return text.slice(0, start) + text.slice(end);
+  }
+  if (index > 0) {
+    // Last member: the comma before it separates it from the previous
+    // one, and keeping it preserves a trailing comma the file already had.
+    return text.slice(0, members[index - 1].commaAfter + 1) + text.slice(member.valueEnd);
+  }
+  // Only member: take its line too, plus the newline after its value.
+  const lineStart = text.lastIndexOf('\n', member.keyStart - 1) + 1;
+  const start = /^\s*$/.test(text.slice(lineStart, member.keyStart)) ? lineStart : member.keyStart;
+  let end = member.valueEnd;
+  const after = skipJsoncTrivia(text, end);
+  if (text[after] === '}' && text.slice(end, after).includes('\n')) {
+    end = text.indexOf('\n', end) + 1;
+  }
+  return text.slice(0, start) + text.slice(end);
+}
+
+/**
+ * Insert or replace the `claude-mem` entry inside `context_servers`,
+ * editing only that member in the original text: comments, trailing
+ * commas and every unrelated setting survive byte for byte. The caller
+ * has already validated the file parses as JSONC.
+ */
+function upsertZedContextServer(raw: string, entry: { command: string; args: string[] }): string {
+  const bom = raw.startsWith('\uFEFF') ? '\uFEFF' : '';
+  const text = stripUtf8Bom(raw);
+  const objStart = skipJsoncTrivia(text, 0);
+  if (text[objStart] !== '{') throw new Error('Zed settings must be a JSON object');
+  const objEnd = scanJsoncValue(text, objStart);
+  const topMembers = scanJsoncObjectMembers(text, objStart, objEnd);
+  const servers = topMembers.find((m) => m.key === 'context_servers');
+  const topIndent = jsoncLineIndent(text, objStart) + '  ';
+  if (!servers) {
+    const memberText = `"context_servers": ${formatJsoncValue({ 'claude-mem': entry }, topIndent)}`;
+    return bom + insertJsoncMember(text, objStart, objEnd, memberText, topIndent);
+  }
+  const serversObjStart = skipJsoncTrivia(text, servers.valueStart);
+  if (text[serversObjStart] !== '{') throw new Error('Zed settings context_servers must be an object');
+  const serversObjEnd = scanJsoncValue(text, serversObjStart);
+  const inner = scanJsoncObjectMembers(text, serversObjStart, serversObjEnd);
+  const innerIndent = jsoncLineIndent(text, serversObjStart) + '  ';
+  const existing = inner.find((m) => m.key === 'claude-mem');
+  if (existing) {
+    const formatted = formatJsoncValue(entry, jsoncLineIndent(text, existing.keyStart));
+    return bom + text.slice(0, existing.valueStart) + formatted + text.slice(existing.valueEnd);
+  }
+  const memberText = `"claude-mem": ${formatJsoncValue(entry, innerIndent)}`;
+  return bom + insertJsoncMember(text, serversObjStart, serversObjEnd, memberText, innerIndent);
+}
+
+/**
+ * Remove the `claude-mem` entry from `context_servers`, editing only
+ * that member in the original text. Returns null when there is no such
+ * entry. The caller has already checked ownership from the parsed model.
+ */
+function removeZedContextServer(raw: string): string | null {
+  const bom = raw.startsWith('\uFEFF') ? '\uFEFF' : '';
+  const text = stripUtf8Bom(raw);
+  const objStart = skipJsoncTrivia(text, 0);
+  if (text[objStart] !== '{') throw new Error('Zed settings must be a JSON object');
+  const objEnd = scanJsoncValue(text, objStart);
+  const topMembers = scanJsoncObjectMembers(text, objStart, objEnd);
+  const servers = topMembers.find((m) => m.key === 'context_servers');
+  if (!servers) return null;
+  const serversObjStart = skipJsoncTrivia(text, servers.valueStart);
+  if (text[serversObjStart] !== '{') throw new Error('Zed settings context_servers must be an object');
+  const serversObjEnd = scanJsoncValue(text, serversObjStart);
+  const next = removeJsoncMember(text, serversObjStart, serversObjEnd, 'claude-mem');
+  return next === null ? null : bom + next;
+}
+
+/**
+ * Write the claude-mem entry into Zed's settings.json. A file that
+ * parses as strict JSON takes the existing whole-file path
+ * (writeMcpJsonConfig). A JSONC file — comments or trailing commas — is
+ * edited textually so its comments survive (see upsertZedContextServer).
+ * A file that parses as neither is refused, never overwritten.
+ */
+function writeZedMcpJsonConfig(configPath: string, mcpServerPath: string): void {
+  const parentDirectory = path.dirname(configPath);
+  mkdirSync(parentDirectory, { recursive: true });
+  if (!existsSync(configPath)) {
+    writeMcpJsonConfig(configPath, mcpServerPath, 'context_servers');
+    return;
+  }
+  const { config, jsonc, raw } = readZedSettings(configPath);
+  const servers = (config as Record<string, any>).context_servers;
+  if (servers !== undefined && (typeof servers !== 'object' || servers === null || Array.isArray(servers))) {
+    throw new Error(`Zed settings context_servers must be an object, refusing to overwrite: ${configPath}`);
+  }
+  if (!jsonc) {
+    writeMcpJsonConfig(configPath, mcpServerPath, 'context_servers');
+    return;
+  }
+  writeTextFileAtomic(configPath, upsertZedContextServer(raw, buildMcpServerEntry(mcpServerPath)));
+}
+
 export async function installZedMcpIntegration(): Promise<number> {
   console.log('\nInstalling Claude-Mem MCP integration for Zed...\n');
 
@@ -383,11 +678,13 @@ export async function installZedMcpIntegration(): Promise<number> {
 
   try {
     backupZedSettingsOnce(configPath);
-    // writeMcpJsonConfig parses BOM-tolerantly and refuses (throws) on
-    // malformed JSON instead of replacing it with an empty object, so a
-    // corrupt settings.json is left exactly as it was; the backup above is
-    // the extra safety net for the user's whole editor config.
-    writeMcpJsonConfig(configPath, mcpServerPath, 'context_servers');
+    // writeZedMcpJsonConfig parses BOM-tolerantly and refuses (throws) on
+    // a file that parses as neither JSON nor JSONC instead of replacing it
+    // with an empty object, so a corrupt settings.json is left exactly as
+    // it was; the backup above is the extra safety net for the user's
+    // whole editor config. A JSONC file (comments/trailing commas) is
+    // edited textually so its comments survive the merge.
+    writeZedMcpJsonConfig(configPath, mcpServerPath);
     console.log(`  MCP config written to: ${configPath}`);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -418,18 +715,26 @@ Next steps:
  * installer wrote (its args end with mcp-server.cjs): the name is generic
  * enough that a user could have their own `claude-mem` server, and uninstall
  * must never remove that. Returns 0 when an entry was removed. A settings
- * file that does not parse is left alone (readJsonSafe throws instead of
- * returning an empty object for it to overwrite).
+ * file that does not parse is left alone (readZedSettings throws instead of
+ * returning an empty object for it to overwrite). A JSONC file is edited
+ * textually so its comments survive the removal.
  */
 export function uninstallZedMcpIntegration(configPath: string = getZedSettingsPath()): number {
-  const config = readJsonSafe<Record<string, any>>(configPath, {});
+  if (!existsSync(configPath)) return 1;
+  const { config, jsonc, raw } = readZedSettings(configPath);
   const entry = config.context_servers?.['claude-mem'] as { args?: unknown } | undefined;
   if (!entry) return 1;
   const args = entry.args;
   const isOurs = Array.isArray(args) && args.some((arg) => typeof arg === 'string' && arg.endsWith('mcp-server.cjs'));
   if (!isOurs) return 1;
-  delete config.context_servers['claude-mem'];
-  writeJsonFileAtomic(configPath, config);
+  if (!jsonc) {
+    delete config.context_servers['claude-mem'];
+    writeJsonFileAtomic(configPath, config);
+  } else {
+    const next = removeZedContextServer(raw);
+    if (next === null) return 1;
+    writeTextFileAtomic(configPath, next);
+  }
   console.log(`  Removed claude-mem from the Zed context servers in: ${configPath}`);
   return 0;
 }

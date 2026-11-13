@@ -14,10 +14,10 @@ import { getZedSettingsPath } from '../../src/services/integrations/McpIntegrati
 const integrations = path.resolve(import.meta.dir, '../../src/services/integrations/McpIntegrations.ts');
 const fixturesDir = path.resolve(import.meta.dir, '../fixtures/zed');
 const { XDG_CONFIG_HOME: _inheritedXdgConfigHome, ...inheritedEnv } = process.env;
-
 describe('Zed MCP config', () => {
   let tmp: string;
   let home: string;
+  let appdata: string;
   let plugin: string;
   let serverPath: string;
   let configPath: string;
@@ -25,6 +25,7 @@ describe('Zed MCP config', () => {
   beforeEach(() => {
     tmp = mkdtempSync(path.join(tmpdir(), 'zed-mcp-'));
     home = path.join(tmp, 'home');
+    appdata = path.join(tmp, 'appdata');
     plugin = path.join(tmp, 'plugin');
     serverPath = path.join(plugin, 'scripts', 'mcp-server.cjs');
     configPath = path.join(home, '.config', 'zed', 'settings.json');
@@ -38,11 +39,20 @@ describe('Zed MCP config', () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
+  /** Env for spawned children: the temp HOME/USERPROFILE/APPDATA/CLAUDE_PLUGIN_ROOT, plus overrides. */
+  function childEnv(extra: Record<string, string> = {}): Record<string, string> {
+    // APPDATA is set explicitly: on Windows the installer resolves
+    // %APPDATA%\Zed\settings.json, and a real APPDATA inherited from the
+    // developer's environment would make the tests install and uninstall
+    // against their real settings file.
+    return { ...inheritedEnv, HOME: home, USERPROFILE: home, APPDATA: appdata, CLAUDE_PLUGIN_ROOT: plugin, ...extra };
+  }
+
   /** Calls `call` on McpIntegrations in a child process and returns its exit code and stderr. */
   function run(call: string, env: Record<string, string> = {}): { exitCode: number | null; stderr: string } {
     const child = Bun.spawnSync(
       [process.execPath, '-e', `const integrations = await import(${JSON.stringify(integrations)}); process.exit(await integrations.${call});`],
-      { cwd: path.join(tmp, 'project'), env: { ...inheritedEnv, HOME: home, USERPROFILE: home, CLAUDE_PLUGIN_ROOT: plugin, ...env } },
+      { cwd: path.join(tmp, 'project'), env: childEnv(env) },
     );
     return { exitCode: child.exitCode, stderr: child.stderr.toString() };
   }
@@ -210,6 +220,83 @@ describe('Zed MCP config', () => {
     expect(config.context_servers).toEqual({ filesystem, 'claude-mem': { command: process.execPath, args: [serverPath] } });
   });
 
+  it('merges into JSONC settings (comments and trailing commas) and uninstall restores it byte for byte', () => {
+    // Zed accepts // and /* */ comments and trailing commas in
+    // settings.json; a strict JSON.parse refuses such a file, so install
+    // must not fail on it — and must not strip the user's comments either.
+    const original = readFileSync(path.join(fixturesDir, 'linux-settings-comments.json'), 'utf-8');
+    mkdirSync(path.dirname(configPath), { recursive: true });
+    writeFileSync(configPath, original);
+
+    expect(install().exitCode).toBe(0);
+
+    const afterInstall = readFileSync(configPath, 'utf-8');
+    expect(afterInstall).toContain('// Zed settings are JSONC');
+    expect(afterInstall).toContain('// My notes server.');
+    expect(afterInstall).toContain('"default": "confirm", // ask before running MCP tools');
+    const config = JSON.parse(afterInstall.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '').replace(/,(\s*[}\]])/g, '$1'));
+    expect(config.theme).toBe('One Dark');
+    expect(config.context_servers.filesystem).toEqual(filesystem);
+    expect(config.context_servers['claude-mem'].args).toEqual([serverPath]);
+
+    expect(uninstall().exitCode).toBe(0);
+    expect(readFileSync(configPath, 'utf-8')).toBe(original);
+  });
+
+  it('adds context_servers to JSONC settings that have none, preserving comments', () => {
+    const original = '{\n  // Zed settings.\n  "theme": "One Dark",\n}\n';
+    mkdirSync(path.dirname(configPath), { recursive: true });
+    writeFileSync(configPath, original);
+
+    expect(install().exitCode).toBe(0);
+    const afterInstall = readFileSync(configPath, 'utf-8');
+    expect(afterInstall).toContain('// Zed settings.');
+    expect(JSON.parse(afterInstall.replace(/\/\/.*$/gm, '')).context_servers['claude-mem'].args).toEqual([serverPath]);
+
+    expect(uninstall().exitCode).toBe(0);
+    // Uninstall leaves an empty context_servers object (the same behaviour
+    // as the plain-JSON path), but the comment survives and no entry remains.
+    const afterUninstall = readFileSync(configPath, 'utf-8');
+    expect(afterUninstall).toContain('// Zed settings.');
+    expect(JSON.parse(afterUninstall.replace(/\/\/.*$/gm, '').replace(/,(\s*[}\]])/g, '$1'))).toEqual({
+      theme: 'One Dark',
+      context_servers: {},
+    });
+  });
+
+  it('install refuses JSONC that is still malformed and leaves it untouched', () => {
+    const original = '{\n  // hi\n  "theme": "One Dark",\n  /* unclosed comment';
+    mkdirSync(path.dirname(configPath), { recursive: true });
+    writeFileSync(configPath, original);
+
+    const result = install();
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('Corrupt JSON file, refusing to overwrite');
+    expect(readFileSync(configPath, 'utf-8')).toBe(original);
+  });
+
+  it('install refuses a non-object context_servers value in a JSONC file', () => {
+    const original = '{\n  // Zed settings.\n  "theme": "One Dark",\n  "context_servers": "oops",\n}\n';
+    mkdirSync(path.dirname(configPath), { recursive: true });
+    writeFileSync(configPath, original);
+
+    expect(install().exitCode).toBe(1);
+    expect(readFileSync(configPath, 'utf-8')).toBe(original);
+  });
+
+  it('spawned children resolve %APPDATA% from a temporary directory, never the real one', () => {
+    // On Windows the installer resolves %APPDATA%\Zed\settings.json. The
+    // spawned children must see a temporary APPDATA, or the tests install
+    // and uninstall against the developer's real settings file.
+    const script = [
+      `const { getZedSettingsPath } = await import(${JSON.stringify(integrations)});`,
+      `console.log(getZedSettingsPath('win32'));`,
+    ].join('\n');
+    const child = Bun.spawnSync([process.execPath, '-e', script], { env: childEnv() });
+    expect(child.exitCode).toBe(0);
+    expect(child.stdout.toString().trim()).toBe(path.win32.join(appdata, 'Zed', 'settings.json'));
+  });
+
   it('handles paths with spaces in the home and plugin directories', () => {
     const spacedTmp = mkdtempSync(path.join(tmpdir(), 'zed mcp config '));
     const spacedHome = path.join(spacedTmp, 'my home');
@@ -277,6 +364,11 @@ describe('getZedSettingsPath', () => {
       .toBe('C:\\Users\\alex\\AppData\\Roaming\\Zed\\settings.json');
   });
 
+  it('keeps spaces in a %APPDATA% path on Windows', () => {
+    expect(getZedSettingsPath('win32', { APPDATA: 'C:\\Users\\alex smith\\AppData\\Roaming' }))
+      .toBe('C:\\Users\\alex smith\\AppData\\Roaming\\Zed\\settings.json');
+  });
+
   it('falls back to the default Roaming path on Windows without APPDATA', () => {
     expect(getZedSettingsPath('win32', {})).toBe(
       path.win32.join(homedir(), 'AppData', 'Roaming', 'Zed', 'settings.json'));
@@ -306,7 +398,7 @@ describe('Zed installer wiring', () => {
         `console.log(task.title);`,
       ].join('\n');
       const child = Bun.spawnSync([process.execPath, '-e', script], {
-        env: { ...inheritedEnv, HOME: tmpHome, USERPROFILE: tmpHome },
+        env: { ...inheritedEnv, HOME: tmpHome, USERPROFILE: tmpHome, APPDATA: path.join(tmpHome, 'appdata') },
       });
       expect(child.exitCode).toBe(0);
       expect(child.stdout.toString()).toContain('Zed');

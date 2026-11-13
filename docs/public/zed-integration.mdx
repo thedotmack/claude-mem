@@ -170,6 +170,9 @@ installer never writes these files for you.
 - **Install fails with "Corrupt JSON file, refusing to overwrite":** your
   `settings.json` does not parse. Fix the JSON (your original bytes are
   also in the `settings.json.bak-YYYYMMDD` backup) and re-run install.
+  Comments (`//`, `/* */`) and trailing commas are valid in Zed
+  settings and are preserved by install/uninstall — only the
+  `context_servers` entry itself is touched.
 - **Windows path:** `%APPDATA%\Zed\settings.json`. The Windows path is
   resolved by the installer but was not verified on a Windows machine;
   see Known limitations.
