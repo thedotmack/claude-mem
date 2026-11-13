@@ -830,6 +830,41 @@ describe('CodexAppServerClient transport', () => {
     }
   });
 
+  itPosix('does not abort a replacement turn when a timed-out handshake signal fires later', async () => {
+    const fake = createFakeCodex({ mode: 'silent-init' });
+    const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+    const oldController = new AbortController();
+    const options = { codexPath: fake.executable, model: '', reasoningEffort: null,
+      prompt: 'Summarize.', timeoutMs: 5000 };
+    try {
+      await expect(client.runTurn({ ...options, timeoutMs: 1000, signal: oldController.signal }))
+        .rejects.toThrow('initialize timed out');
+      expect(readTrace(fake.trace).some(entry => entry.method === 'initialize')).toBe(true);
+
+      const configPath = join(fake.root, FAKE_CODEX_CONFIG_FILE);
+      const config = JSON.parse(readFileSync(configPath, 'utf8'));
+      writeFileSync(configPath, JSON.stringify({ ...config, mode: 'hold-first-turn' }));
+      const replacement = client.runTurn(options)
+        .then(value => ({ value, error: null }), error => ({ value: null, error }));
+      await waitForTrace(fake.trace, trace => trace.some(entry => entry.method === 'turn/start'));
+      const starts = readTrace(fake.trace).filter(entry => entry.method === 'process/start');
+      expect(starts).toHaveLength(2);
+
+      oldController.abort();
+      // Release the real replacement child. The baseline may already have
+      // killed it through the stale handshake's retained abort callback.
+      try { process.kill(starts[1].pid, 'SIGUSR1'); } catch { /* baseline child exited */ }
+      const result = await replacement;
+      expect(result.error).toBeNull();
+      expect(result.value?.content).toContain('<title>Turn 1</title>');
+      await client.runTurn(options);
+      expect(readTrace(fake.trace).filter(entry => entry.method === 'process/start')).toHaveLength(2);
+    } finally {
+      await client.close();
+      rmSync(fake.root, { recursive: true, force: true });
+    }
+  }, 15_000);
+
   itPosix('rejects queued and future turns without restarting after close', async () => {
     const fake = createFakeCodex({ mode: 'hold-first-turn' });
     const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
