@@ -32,7 +32,10 @@ export function exactTitleMatch(a: string | null | undefined, b: string | null |
   const norm = normalizeTitle(a);
   if (!norm || norm !== normalizeTitle(b)) return false;
   const identifiers = (value: string | null | undefined): string[] =>
-    ((value ?? '').normalize('NFC').toLowerCase()
+    ((value ?? '').normalize('NFC').toLowerCase().trim()
+      // Whole-title bold markup spanning words is presentation. Do not strip
+      // underscores from a single code token such as Python's __init__.
+      .replace(/^__([\s\S]*\s[\s\S]*)__$/u, '$1')
       .match(/[\p{L}\p{N}\p{M}._/\\:@#=<>+~-]+/gu) ?? [])
       // Keep the whole lexical token, including path roots and hyphens.
       // Matching only an identifier fragment loses the distinguishing suffix
@@ -48,7 +51,7 @@ export function exactTitleMatch(a: string | null | undefined, b: string | null |
       .filter(token => /^\.+$/u.test(token) || /[/\\]/.test(token) || (
         /[\p{L}\p{N}]/u.test(token) && (
           /[._@#=<>+~]/.test(token)
-          || /[\p{L}\p{N}\p{M}]:[\p{L}\p{N}\p{M}]/u.test(token)
+          || /[\p{L}\p{N}\p{M}]:+[\p{L}\p{N}\p{M}]/u.test(token)
           || /^[a-z]:$/u.test(token)
         )
       ));

@@ -24,6 +24,10 @@ const pairs = [
   ['Fixed C#:', 'Fixed C:'],
   ['Read C:', 'Read C'],
   ['Updated @field', 'Updated field'],
+  ['Updated foo::bar', 'Updated foo bar'],
+  ['Updated foo::bar::baz', 'Updated foo bar baz'],
+  ['Called __init__', 'Called init'],
+  ['__Updated user_name field__', 'Updated user name field'],
 ] as const;
 const thresholds = { cosineThreshold: 0.9, vetoThetaIdf: 1 };
 
@@ -90,6 +94,16 @@ describe('exact-title dedup preserves code identifiers', () => {
       expect(repeat.id).toBe(first.id);
       expect(repeat.mergedIntoExisting).toBe(true);
       expect(classifyPair(title, `${title}.`, () => 1, thresholds).tier).toBe('exact');
+    });
+  }
+
+  for (const title of ['Fixed parser', 'Fixed C++ parser', 'Updated user_name field']) {
+    it(`ignores Markdown bold wrapping the complete title ${JSON.stringify(title)}`, () => {
+      const first = save(title);
+      const repeat = save(`__${title}__`);
+      expect(repeat.id).toBe(first.id);
+      expect(repeat.mergedIntoExisting).toBe(true);
+      expect(classifyPair(title, `__${title}__`, () => 1, thresholds).tier).toBe('exact');
     });
   }
 });
