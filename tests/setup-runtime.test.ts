@@ -4,6 +4,7 @@ import { spawnSync } from 'child_process';
 import { createHash } from 'crypto';
 import { delimiter, join } from 'path';
 import { tmpdir } from 'os';
+import { gzipSync } from 'zlib';
 import {
   readInstallMarker,
   writeInstallMarker,
@@ -14,7 +15,8 @@ import {
   ensureServerEmbedder,
   provisionTreeSitterCli,
 } from '../src/npx-cli/install/setup-runtime';
-import { ensureTreeSitterCliBinary, treeSitterCliBinaryPath } from '../src/services/smart-file-read/tree-sitter-cli-provision';
+import { ensureTreeSitterCliBinary, isTreeSitterCliBinaryUsable, treeSitterCliBinaryPath } from '../src/services/smart-file-read/tree-sitter-cli-provision';
+import { treeSitterReleaseAssetUrl } from '../src/services/smart-file-read/tree-sitter-cli-checksums';
 import { createInstallSummary, InstallAbortError } from '../src/npx-cli/install/error-reporter';
 import { ErrorSeverity } from '../src/npx-cli/install/error-taxonomy';
 import { IS_WINDOWS } from '../src/npx-cli/utils/paths';
@@ -312,6 +314,20 @@ describe('tree-sitter CLI provisioning (#2910)', () => {
     expect(readdirSync(cliDir).filter(entry => entry.startsWith('.provision-'))).toEqual([]);
   }
 
+  // Stands in for the direct download of the release asset, so no test reaches
+  // the network; `downloads` lists every URL asked for.
+  function releaseAssetServing(answer: () => Buffer) {
+    const downloads: string[] = [];
+    const download = async (url: string): Promise<Buffer> => {
+      downloads.push(url);
+      return answer();
+    };
+    return { download, downloads };
+  }
+  const releaseAssetUnavailable = () => releaseAssetServing(() => {
+    throw new Error('GET release asset answered HTTP 503');
+  });
+
   it('runs the package install script when the executable is missing', async () => {
     const cliDir = writeCliPackage(materializingInstallScript());
 
@@ -322,17 +338,82 @@ describe('tree-sitter CLI provisioning (#2910)', () => {
 
   // The File Read Gate and the parser only check that the executable exists, so
   // a half-written one would send Claude to smart_outline, which cannot parse.
-  it('leaves no executable in place when the download fails partway', async () => {
+  it('leaves no executable in place when the download fails partway and the direct download fails too', async () => {
     const cliDir = writeCliPackage(partialDownloadScript('process.exitCode = 2;'));
+    const { download, downloads } = releaseAssetUnavailable();
 
-    await expect(ensureTreeSitterCliBinary(tempDir, TREE_SITTER_INSTALL_TIMEOUT_MS, pinFixtureBinary)).rejects.toMatchObject({ code: 2 });
+    const provisioning = ensureTreeSitterCliBinary(tempDir, TREE_SITTER_INSTALL_TIMEOUT_MS, pinFixtureBinary, undefined, download);
+    // The install script's own error, with the direct download's reason added.
+    await expect(provisioning).rejects.toMatchObject({ code: 2 });
+    await expect(provisioning).rejects.toThrow('Downloading the release asset directly failed too: GET release asset answered HTTP 503');
+    expect(downloads).toEqual([treeSitterReleaseAssetUrl('0.26.9')!]);
     expectNothingLeftInPlace(cliDir);
   });
 
+  // The timeout is one budget for both attempts: a script that used it up gets
+  // no second download on top.
   it('leaves no executable in place when the download is killed by the timeout', async () => {
     const cliDir = writeCliPackage(partialDownloadScript('setTimeout(() => {}, 5000);'));
+    const { download, downloads } = releaseAssetServing(() => gzipSync(fixtureBinary()));
 
-    await expect(ensureTreeSitterCliBinary(tempDir, 100, pinFixtureBinary)).rejects.toMatchObject({ killed: true });
+    await expect(ensureTreeSitterCliBinary(tempDir, 100, pinFixtureBinary, undefined, download)).rejects.toMatchObject({ killed: true });
+    expect(downloads).toEqual([]);
+    expectNothingLeftInPlace(cliDir);
+  });
+
+  // tree-sitter-cli's install.js turns keep-alive off and has no error handler:
+  // on some networks its request is reset every time ("socket hang up") while a
+  // plain fetch of the same asset succeeds.
+  it('downloads the release asset directly when the install script fails', async () => {
+    const cliDir = writeCliPackage("console.error('Error: socket hang up'); process.exitCode = 1;");
+    const { download, downloads } = releaseAssetServing(() => gzipSync(fixtureBinary()));
+
+    await expect(ensureTreeSitterCliBinary(tempDir, TREE_SITTER_INSTALL_TIMEOUT_MS, pinFixtureBinary, undefined, download)).resolves.toBe('release');
+    expect(downloads).toEqual([treeSitterReleaseAssetUrl('0.26.9')!]);
+    expect(sha256(readFileSync(treeSitterCliBinaryPath(tempDir)))).toBe(pinFixtureBinary());
+    expect(await isTreeSitterCliBinaryUsable(tempDir)).toBe(true);
+    expect(readdirSync(cliDir).filter(entry => entry.startsWith('.provision-'))).toEqual([]);
+  });
+
+  // install.js can also exit 0 after the connection drops mid-transfer, leaving
+  // a truncated executable.
+  it('downloads the release asset directly when the install script exits 0 on a truncated executable', async () => {
+    writeCliPackage(partialDownloadScript(''));
+    const { download, downloads } = releaseAssetServing(() => gzipSync(fixtureBinary()));
+
+    await expect(ensureTreeSitterCliBinary(tempDir, TREE_SITTER_INSTALL_TIMEOUT_MS, pinFixtureBinary, undefined, download)).resolves.toBe('release');
+    expect(downloads).toHaveLength(1);
+    expect(sha256(readFileSync(treeSitterCliBinaryPath(tempDir)))).toBe(pinFixtureBinary());
+  });
+
+  it('does not download directly when the install script delivers the pinned executable', async () => {
+    writeCliPackage(materializingInstallScript());
+    const { download, downloads } = releaseAssetServing(() => gzipSync(fixtureBinary()));
+
+    await expect(ensureTreeSitterCliBinary(tempDir, TREE_SITTER_INSTALL_TIMEOUT_MS, pinFixtureBinary, undefined, download)).resolves.toBe('release');
+    expect(downloads).toEqual([]);
+  });
+
+  // The direct download gets no more trust than install.js: the pinned digest
+  // decides, before anything runs.
+  it.skipIf(process.platform === 'win32')('refuses, without running it, a directly downloaded executable whose SHA-256 is not the pinned one', async () => {
+    const ranMarker = join(tempDir, 'direct-download-ran');
+    const cliDir = writeCliPackage("console.error('Error: socket hang up'); process.exitCode = 1;");
+    const { download } = releaseAssetServing(() => gzipSync(Buffer.from(`#!/bin/sh\ntouch '${ranMarker}'\necho 'tree-sitter 0.26.9'\n`)));
+
+    const provisioning = ensureTreeSitterCliBinary(tempDir, TREE_SITTER_INSTALL_TIMEOUT_MS, pinFixtureBinary, undefined, download);
+    await expect(provisioning).rejects.toMatchObject({ code: 1 });
+    await expect(provisioning).rejects.toThrow(/directly failed too: .* not the pinned [0-9a-f]{64}; it was not run/);
+    expect(existsSync(ranMarker)).toBe(false);
+    expectNothingLeftInPlace(cliDir);
+  });
+
+  it('leaves no executable in place when the direct download is not a gzip stream', async () => {
+    const cliDir = writeCliPackage("console.error('Error: socket hang up'); process.exitCode = 1;");
+    const { download } = releaseAssetServing(() => gzipSync(fixtureBinary()).subarray(0, 12));
+
+    await expect(ensureTreeSitterCliBinary(tempDir, TREE_SITTER_INSTALL_TIMEOUT_MS, pinFixtureBinary, undefined, download))
+      .rejects.toThrow('Downloading the release asset directly failed too');
     expectNothingLeftInPlace(cliDir);
   });
 
@@ -356,7 +437,8 @@ echo 'tree-sitter 0.26.9'
       `require('fs').chmodSync(target, 0o755);`,
     ].join('\n'));
 
-    await expect(ensureTreeSitterCliBinary(tempDir, TREE_SITTER_INSTALL_TIMEOUT_MS, pinFixtureBinary)).rejects.toThrow('not the pinned');
+    await expect(ensureTreeSitterCliBinary(tempDir, TREE_SITTER_INSTALL_TIMEOUT_MS, pinFixtureBinary, undefined, releaseAssetUnavailable().download))
+      .rejects.toThrow('not the pinned');
     expect(existsSync(ranMarker)).toBe(false);
     expectNothingLeftInPlace(cliDir);
   });
@@ -401,7 +483,7 @@ echo 'tree-sitter 0.26.9'
     writeCliPackage("console.error('release asset unavailable'); process.exitCode = 2;");
     const summary = createInstallSummary();
 
-    await expect(provisionTreeSitterCli(tempDir, ErrorSeverity.WARN_CONTINUE, summary)).resolves.toBe(false);
+    await expect(provisionTreeSitterCli(tempDir, ErrorSeverity.WARN_CONTINUE, summary, undefined, releaseAssetUnavailable().download)).resolves.toBe(false);
 
     expect(summary.warnings).toEqual([
       expect.objectContaining({
@@ -421,7 +503,7 @@ echo 'tree-sitter 0.26.9'
 
     let caught: unknown = null;
     try {
-      await provisionTreeSitterCli(tempDir, ErrorSeverity.ABORT, createInstallSummary());
+      await provisionTreeSitterCli(tempDir, ErrorSeverity.ABORT, createInstallSummary(), undefined, releaseAssetUnavailable().download);
     } catch (error) {
       caught = error;
     }
@@ -434,6 +516,8 @@ echo 'tree-sitter 0.26.9'
     const record = JSON.parse(readFileSync(join(tempDir, 'data', 'last-install-error.json'), 'utf-8'));
     expect(record.details).toContain('Downloading https://example/tree-sitter');
     expect(record.details).toContain('release asset unavailable');
+    // Both attempts are on record, so the reader can tell a network problem from a bad asset.
+    expect(record.details).toContain('Downloading the release asset directly failed too: GET release asset answered HTTP 503');
   });
 
   it('repair: reports a provisioner that runs past the install timeout', async () => {

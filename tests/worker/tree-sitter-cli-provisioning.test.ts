@@ -3,6 +3,7 @@ import { createHash } from 'crypto';
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { gzipSync } from 'zlib';
 import { provisionTreeSitterCliForPluginRoot } from '../../src/services/worker/tree-sitter-cli-provisioning.js';
 import { isTreeSitterCliBinaryUsable, treeSitterCliBinaryPath } from '../../src/services/smart-file-read/tree-sitter-cli-provision.js';
 import type { GlibcCompatibleFallback } from '../../src/services/smart-file-read/tree-sitter-cli-provision.js';
@@ -66,8 +67,29 @@ describe('worker tree-sitter CLI provisioning', () => {
   it('rejects when the download fails, so the worker logs it and the next start retries', async () => {
     writeMarketplaceCliPackage("console.error('release asset unavailable'); process.exitCode = 1;");
 
-    await expect(provisionTreeSitterCliForPluginRoot(pluginRoot, () => '0'.repeat(64))).rejects.toMatchObject({ code: 1 });
+    const directDownloadUnavailable = async (): Promise<Buffer> => { throw new Error('release asset unavailable'); };
+
+    await expect(provisionTreeSitterCliForPluginRoot(pluginRoot, () => '0'.repeat(64), undefined, directDownloadUnavailable))
+      .rejects.toMatchObject({ code: 1 });
     expect(existsSync(treeSitterCliBinaryPath(pluginRoot))).toBe(false);
+  });
+
+  // install.js fails on some networks where a plain fetch of the same asset
+  // succeeds; without the direct download every worker start failed the same way.
+  it.skipIf(!hasRepoBinary)('provisions from the direct download when install.js fails', async () => {
+    writeMarketplaceCliPackage("console.error('Error: socket hang up'); process.exitCode = 1;");
+    const downloads: string[] = [];
+    const directDownload = async (url: string): Promise<Buffer> => {
+      downloads.push(url);
+      return gzipSync(readFileSync(REPO_TREE_SITTER_BINARY));
+    };
+
+    expect(await provisionTreeSitterCliForPluginRoot(pluginRoot, pinRepoBinary, undefined, directDownload)).toBe('provisioned');
+    expect(downloads).toHaveLength(1);
+    expect(await isTreeSitterCliBinaryUsable(pluginRoot)).toBe(true);
+    // The next worker start finds a working CLI and downloads nothing.
+    expect(await provisionTreeSitterCliForPluginRoot(pluginRoot, pinRepoBinary, undefined, directDownload)).toBe('already-usable');
+    expect(downloads).toHaveLength(1);
   });
 
   it.skipIf(!hasRepoBinary)('re-downloads when the existing executable is corrupt (SHA mismatch)', async () => {

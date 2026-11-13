@@ -9,11 +9,13 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { gunzipSync } from "node:zlib";
 import { treeSitterBinaryName } from "./tree-sitter-bin-name.js";
 import { isExecutableFile } from "./tree-sitter-bin-path.js";
 import {
   glibcCompatibleTreeSitterBuild,
   pinnedTreeSitterExecutableSha256,
+  treeSitterReleaseAssetUrl,
   type GlibcCompatibleTreeSitterBuild,
 } from "./tree-sitter-cli-checksums.js";
 import { condaPackageUnsupportedReason, treeSitterExecutableFromCondaPackage } from "./tree-sitter-cli-conda.js";
@@ -143,6 +145,34 @@ async function downloadArchive(url: string, timeoutMs: number): Promise<Buffer> 
   return Buffer.from(await response.arrayBuffer());
 }
 
+/** Fetches the gzipped release executable; tests replace it. */
+export type TreeSitterReleaseAssetDownload = (url: string, timeoutMs: number) => Promise<Buffer>;
+
+/**
+ * Put the release executable of `version` at `stagedExecutable` without
+ * install.js: fetch the asset install.js would, and keep it only when it
+ * unpacks to the pinned SHA-256. install.js turns keep-alive off and has no
+ * error handler, so on some networks its request is reset every time, or it
+ * exits 0 on a truncated file, while a plain fetch of the same URL succeeds.
+ */
+async function downloadReleaseExecutable(
+  version: string,
+  pinnedSha256: string,
+  stagedExecutable: string,
+  timeoutMs: number,
+  download: TreeSitterReleaseAssetDownload,
+): Promise<void> {
+  const url = treeSitterReleaseAssetUrl(version);
+  if (!url) throw new Error(`no release asset is known for ${process.platform}-${process.arch}`);
+  const executable = gunzipSync(await download(url, timeoutMs));
+  const executableSha256 = sha256OfBytes(executable);
+  if (executableSha256 !== pinnedSha256) {
+    throw new Error(`${url} unpacks to SHA-256 ${executableSha256}, not the pinned ${pinnedSha256}; it was not run`);
+  }
+  writeFileSync(stagedExecutable, executable);
+  chmodSync(stagedExecutable, 0o755);
+}
+
 const CONDA_FORGE_FALLBACK: GlibcCompatibleFallback = {
   buildFor: glibcCompatibleTreeSitterBuild,
   download: downloadArchive,
@@ -216,13 +246,20 @@ export type TreeSitterCliBinarySource = "already-usable" | "release" | "glibc-co
  * GLIBC_COMPATIBLE_TREE_SITTER_BUILDS. Resolves to where the working
  * executable came from.
  *
- * `pinnedSha256ForVersion` and `glibcFallback` exist for tests; callers pass none.
+ * When install.js fails or leaves anything but the pinned executable, the same
+ * release asset is fetched directly, once, in what is left of
+ * `installTimeoutMs`, and passes the same two checks. If that fails too, the
+ * install.js error is thrown with the direct download's reason appended.
+ *
+ * `pinnedSha256ForVersion`, `glibcFallback` and `downloadReleaseAsset` exist
+ * for tests; callers pass none.
  */
 export async function ensureTreeSitterCliBinary(
   pluginRoot: string,
   installTimeoutMs: number,
   pinnedSha256ForVersion: (version: string) => string | undefined = pinnedTreeSitterExecutableSha256,
   glibcFallback: GlibcCompatibleFallback = CONDA_FORGE_FALLBACK,
+  downloadReleaseAsset: TreeSitterReleaseAssetDownload = downloadArchive,
 ): Promise<TreeSitterCliBinarySource> {
   const cliDir = treeSitterCliPackageDir(pluginRoot);
   if (existsSync(cliDir) && !statSync(cliDir).isDirectory()) {
@@ -288,15 +325,34 @@ export async function ensureTreeSitterCliBinary(
 
   // Inside the package, so the final rename stays on one filesystem.
   const stagingDir = mkdtempSync(join(cliDir, ".provision-"));
+  const deadline = Date.now() + installTimeoutMs;
   try {
-    const installOutput = await runInstallScript(installScript, stagingDir, installTimeoutMs);
     const stagedExecutable = join(stagingDir, treeSitterBinaryName());
-    const downloadedSha256 = existsSync(stagedExecutable) ? sha256OfFile(stagedExecutable) : "(no file)";
-    if (downloadedSha256 !== pinnedSha256) {
-      throw Object.assign(
-        new Error(`The downloaded tree-sitter ${version} executable has SHA-256 ${downloadedSha256}, not the pinned ${pinnedSha256}; it was not run`),
-        installOutput,
-      );
+    let installOutput: { stdout: string; stderr: string } | undefined;
+    let installFailure: Error | undefined;
+    try {
+      installOutput = await runInstallScript(installScript, stagingDir, installTimeoutMs);
+      const downloadedSha256 = existsSync(stagedExecutable) ? sha256OfFile(stagedExecutable) : "(no file)";
+      if (downloadedSha256 !== pinnedSha256) {
+        installFailure = Object.assign(
+          new Error(`The downloaded tree-sitter ${version} executable has SHA-256 ${downloadedSha256}, not the pinned ${pinnedSha256}; it was not run`),
+          installOutput,
+        );
+      }
+    } catch (error) {
+      installFailure = error instanceof Error ? error : new Error(String(error));
+    }
+    if (installFailure) {
+      // A run that used up the budget keeps its own error: nothing is left to download in.
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) throw installFailure;
+      try {
+        await downloadReleaseExecutable(version, pinnedSha256, stagedExecutable, remainingMs, downloadReleaseAsset);
+      } catch (directError) {
+        const detail = directError instanceof Error ? directError.message : String(directError);
+        installFailure.message += ` Downloading the release asset directly failed too: ${detail}`;
+        throw installFailure;
+      }
     }
     const stagedProbe = await answersTreeSitterVersion(stagedExecutable);
     if (!stagedProbe.usable) {
