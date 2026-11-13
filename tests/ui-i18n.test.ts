@@ -14,6 +14,7 @@ import { myworkKo } from '../src/ui/i18n/mywork-ko.ts';
 import { setupKo } from '../src/ui/i18n/setup-ko.ts';
 import { settingsKo } from '../src/ui/i18n/settings-ko.ts';
 import { myworkTr } from '../src/ui/i18n/mywork-tr.ts';
+import { WAITING_FOR_LABEL } from '../src/ui/my-work/src/data.ts';
 
 describe('UI language catalogs', () => {
   it('keeps English as the default and accepts each supported locale', () => {
@@ -78,6 +79,13 @@ describe('UI language catalogs', () => {
     scan(join(root, 'viewer'));
     scan(join(root, 'my-work/src'));
     assert.deepEqual(missing, []);
+  });
+
+  // A label table's words reach t() through a variable, so the scan above cannot see them.
+  it('every waiting-for label on the request card has a translation in each My Work catalog', () => {
+    for (const label of Object.values(WAITING_FOR_LABEL)) {
+      if (label) for (const catalog of [myworkZh, myworkKo, myworkTr]) assert.ok(catalog[label], label);
+    }
   });
 
   for (const catalogs of [[viewerZh, myworkZh, setupZh, settingsZh], [viewerKo, myworkKo, setupKo, settingsKo]]) {

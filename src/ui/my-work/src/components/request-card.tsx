@@ -16,7 +16,7 @@ import { cn } from '@/lib/utils'
 import { isCardDeliverable } from '@/lib/deliverables'
 import { PRODUCT_ICON } from '@/lib/product-icons'
 import { Req } from '@/spec/req'
-import type { Request } from '@/data'
+import { WAITING_FOR_LABEL, type Request } from '@/data'
 import { requestById, useFreshlyUpdated, useStore, useWorkspace } from '@/store'
 import { AgentIcon, FocusAreaChip, NextMove, ProductLink, ProgressMeter, StateBadge } from './bits'
 import { MediaCountBadge, ObsMediaStrip } from './observation-media/ObsMedia'
@@ -232,6 +232,7 @@ export function RequestCard({ request, onOpen, onOpenFocus }: { request: Request
                   <div className="flex gap-1"><dt>{request.state === 'shipped' ? t('Took') : t('Running')}</dt><dd className="tabular-nums"><RunningFor request={request} /></dd></div>
                 </dl>
               </Req>
+              <WaitingForLabel request={request} />
             </div>
           </div>
                 </CardContent>
@@ -239,4 +240,11 @@ export function RequestCard({ request, onOpen, onOpenFocus }: { request: Request
       </div>
     </Req>
   )
+}
+
+/** What the agent said its latest finished turn waits for (R5.13). Its own word, not a status: shipped work owes nothing more. */
+export function WaitingForLabel({ request }: { request: Request }) {
+  const { t } = useI18n()
+  const label = request.waitingFor && request.state !== 'shipped' ? WAITING_FOR_LABEL[request.waitingFor] : null
+  return label ? <Req ids={['R5.13']}><span>{t(label)}</span></Req> : null
 }

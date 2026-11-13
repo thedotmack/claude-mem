@@ -3,7 +3,8 @@
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
 import { test } from 'node:test'
-import { assertConsistentRequest } from '../data.ts'
+import { assertConsistentRequest, WAITING_FOR_LABEL } from '../data.ts'
+import { WAITING_FOR } from '../../../../services/work-view/waiting-for.mjs'
 import { toWorkModel } from './to-work-model.ts'
 import type { WorkViewHumanRequest, WorkViewSnapshot } from './work-view-api-types.ts'
 
@@ -468,4 +469,17 @@ test('image refs ride through: the card summary to Request.media, each record\'s
   assert.equal('media' in request.granular[1], false, 'an image-free record gains no key')
   const [plain] = toWorkModel(snapshotWith([syntheticRequest()]), Date.parse('2026-10-22T12:00:00Z')).requests
   assert.equal('media' in plain, false, 'an image-free request gains no key')
+})
+
+test('what a turn waits for: every worker value has card words, and only a known value reaches the card', () => {
+  const snapshot = readSnapshot(SNAPSHOT_FILES[0])
+  const [raw] = snapshot.humanRequests
+  const mapped = (waitingFor: unknown) => toWorkModel({ ...snapshot, humanRequests: [{ ...raw, waitingFor } as WorkViewHumanRequest] }, snapshotTime(snapshot)).requests[0].waitingFor
+  for (const value of WAITING_FOR) {
+    assert.equal(mapped(value), value)
+    assert.equal(typeof WAITING_FOR_LABEL[value], value === 'nothing' ? 'object' : 'string', `${value} is worded, and nothing owed has no label`)
+  }
+  assert.deepEqual(Object.keys(WAITING_FOR_LABEL).sort(), [...WAITING_FOR].sort())
+  assert.equal(mapped(undefined), undefined, 'an older worker sends none')
+  assert.equal(mapped('merge'), undefined, 'a word this page has no label for is dropped, not shown raw')
 })

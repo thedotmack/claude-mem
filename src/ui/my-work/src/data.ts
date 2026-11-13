@@ -2,6 +2,7 @@
 import type { WorkModel } from './live/work-data-source.ts'
 import type { WorkViewFocusArea, WorkViewMediaManifest, WorkViewRequestMedia } from './live/work-view-api-types.ts'
 import { SAMPLE_MEDIA_REFS } from './components/observation-media/sample-media.ts'
+import type { WaitingFor } from '../../../services/work-view/waiting-for.mjs'
 
 export interface Device { id: string; name: string; syncedMinutesAgo: number; online: boolean }
 /** 'other' is any platform without its own mark (a neutral mark is shown). */
@@ -21,6 +22,11 @@ export interface Agent {
 
 export type Stage = 'Planning' | 'Building' | 'Reviewing' | 'Shipped'
 export type LiveState = 'working' | 'needs-check' | 'your-move' | 'idle' | 'shipped'
+
+/** What the card says a request's latest finished turn waits for (R5.13). Nothing owed is said by showing no label. */
+export const WAITING_FOR_LABEL: Record<WaitingFor, string | null> = {
+  answer: 'Waiting for your answer', review: 'Waiting for your review', approval: 'Waiting for your approval', nothing: null,
+}
 
 export interface Quote { at: string; quote: string }
 export type WorkProductKind = 'PR' | 'Commit' | 'Branch' | 'Page' | 'Deck' | 'Doc' | 'File' | 'Link'
@@ -70,6 +76,8 @@ export interface Request {
   /** Only shown through measuredEstimate(), which checks the readings behind it. */
   estimate: string | null
   next: { who: 'bot' | 'human'; text: string }
+  /** What its latest finished turn waits for, as that turn's session summary recorded it; absent when none says. */
+  waitingFor?: WaitingFor
   terminal: string[]
   activityWord: string
   workstreams: { title: string; tasks: { name: string; done: boolean }[] }[]
@@ -232,7 +240,7 @@ export const SAMPLE_REQUESTS: Request[] = [
     id: 'r3', title: 'Move embeddings into their own table', summary: 'Stops write stalls by keeping vector indexes off the main content table.',
     focusAreaId: 'fa-sync', askedBy: 'Alex', agentId: 'claude-sync', startedAt: 'Oct 17, 7:55 am', startedAtIso: '2026-10-17T07:55:00-07:00', runningFor: '3 days', stage: 'Reviewing', state: 'needs-check',
     progress: { percent: 100, readings: 4, reviewedAt: 'Oct 20, 9:10 am', history: [40, 70, 90, 100], coverage: { reviewed: 2, total: 2 } }, estimate: null,
-    next: { who: 'human', text: 'Check the remap queue drained' },
+    next: { who: 'human', text: 'Check the remap queue drained' }, waitingFor: 'review',
     workstreams: [
       { title: 'Vectors table', tasks: [{ name: 'Migration for the new table', done: true }, { name: 'Write path moved', done: true }] },
       { title: 'Remap', tasks: [{ name: 'Remap target selection', done: true }, { name: 'Embedding job rate recorded', done: true }] },
@@ -254,7 +262,7 @@ export const SAMPLE_REQUESTS: Request[] = [
     id: 'r5', title: 'Fix the admin model price page', summary: 'Show current usage first, with scaling estimates below.',
     focusAreaId: OTHER_FOCUS_AREA_ID, askedBy: 'Priya', agentId: 'gemini', startedAt: 'Oct 20, 12:40 pm', startedAtIso: '2026-10-20T12:40:00-07:00', runningFor: '1 hr', stage: 'Building', state: 'your-move',
     progress: { percent: 30, readings: 1, reviewedAt: '1:30 pm', history: [30], coverage: { reviewed: 1, total: 2 } }, estimate: null,
-    next: { who: 'human', text: 'Pick which forecast to keep' },
+    next: { who: 'human', text: 'Pick which forecast to keep' }, waitingFor: 'answer',
     workstreams: [
       { title: 'Usage first', tasks: [{ name: 'Current usage table', done: true }] },
       { title: 'Forecasts', tasks: [{ name: 'Two forecast drafts', done: true }, { name: 'Keep one, remove the other', done: false }] },

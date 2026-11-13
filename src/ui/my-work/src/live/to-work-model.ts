@@ -10,6 +10,7 @@ import type { AutoRefresh, BuildStory } from './work-data-source.ts'
 import { measuredEstimate } from './measured-estimate.ts'
 import { repeatsOwnerWords } from './prompt-echo.ts'
 import { SOLO_REQUESTER } from './work-view-overview.ts'
+import { parseWaitingFor } from '../../../../services/work-view/waiting-for.mjs'
 import type { WorkViewAgent, WorkViewBuildStory, WorkViewGoalItem, WorkViewGoalList, WorkViewHumanRequest, WorkViewProgress, WorkViewRefresh, WorkViewRule, WorkViewSnapshot, WorkViewWorkProduct } from './work-view-api-types.ts'
 
 export const THIS_COMPUTER: Device = { id: 'this-computer', name: 'This computer', syncedMinutesAgo: 0, online: true }
@@ -162,6 +163,8 @@ function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: numb
     ...raw.items.map((item) => ({ title: `${EVIDENCE_KIND_LABEL[item.url.split('/')[4]] ?? 'Record'}: ${cleanText(item.title, 80)}`, href: item.url })),
   ].filter((source, index, all) => EVIDENCE_URL.test(source.href) && all.findIndex((other) => other.href === source.href) === index)
   const focusAreaId = resolveArea(raw.focusAreaId)
+  // A worker newer than this page may send a word the page has no label for.
+  const waitingFor = parseWaitingFor(raw.waitingFor)
   const title = generatedTitle ? raw.title.trim() || null : copyReady && copy.title?.trim() ? copy.title.trim() : null
   // Checked against the full prompts here, since the card's quotes are cut to 400 characters.
   const ownerWords = [raw.original, ...raw.scopeUpdates].map((prompt) => prompt.text ?? '')
@@ -235,6 +238,7 @@ function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: numb
       .filter((prompt) => prompt.quote),
     workProduct: mapWorkProduct(raw.workProduct),
     ...(raw.media ? { media: raw.media } : {}),
+    ...(waitingFor ? { waitingFor } : {}),
     followUps: [],
     story: review ? storySteps(review, now) : [],
     storyNarrative: review?.narrative?.trim() || undefined,

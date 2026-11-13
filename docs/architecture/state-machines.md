@@ -42,6 +42,7 @@ what the program does at run time.
 | Setup flow: branch, billing, installer stage, checkout, scan phase, history import | `src/shared/setup-funnel.ts` | installer, worker files and request checks, setup page |
 | Dependency status and its wording | `DEPENDENCY_STATUS_LABELS` in `src/shared/dependency-health.ts` | `claude-mem status`, `claude-mem doctor` |
 | Which work-state statuses close an item | `isClosedWorkStateStatus` in `src/services/work-view/work-state-status.mjs` | SessionStart section, work-state tool replies, My Work, owner-goals readers, the write route |
+| What a finished turn waits for | `WAITING_FOR` in `src/services/work-view/waiting-for.mjs` | the summary prompt's wording, the summary parser, `session_summaries.waiting_for`, the snapshot's `humanRequests[].waitingFor`, My Work's card words (`WAITING_FOR_LABEL`) |
 | Refresh run state | `WorkViewRefreshState` in `src/ui/my-work/src/live/work-view-api-types.ts` | every My Work screen that shows a run |
 | Rule status, focus area status | `SavedRule['status']` in `my-rules.d.mts`, `FocusAreaStatus` in `my-focus.d.mts` | My Work wire types and UI model |
 

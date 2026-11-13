@@ -8,6 +8,8 @@ export interface WorkViewRequest extends Record<string, unknown> {
   sharedReview?: import('./shared-reviews.mjs').SharedReviewState;
   /** The conversation its my-focus placement is keyed by (my-focus.mjs placeRequests). */
   anchorConversationKey?: string | null;
+  /** What its latest finished turn waits for (readRequestWaitingFor); absent when no current summary says. */
+  waitingFor?: import('./waiting-for.mjs').WaitingFor;
 }
 export interface WorkViewSnapshot extends Record<string, unknown> {
   revision: number | string;
@@ -29,5 +31,6 @@ export class WorkStateSource {
   deliverable(id: number): { id: number; title: string; kind: string; path: string } | null;
   close(): void;
 }
+export function readRequestWaitingFor(database: { prepare(sql: string): any }, conversationKeys: string[]): import('./waiting-for.mjs').WaitingFor | null;
 export function reduceWorkState(entries: Array<Record<string, any>>, options?: Record<string, any>): any;
 export { readFocus, readFocusAreas } from './my-focus.mjs';

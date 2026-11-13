@@ -3,6 +3,7 @@
 // A status the worker declares a type for is taken from that declaration, never retyped here.
 import type { FocusAreaStatus } from '../../../../services/work-view/my-focus.mjs'
 import type { SavedRule } from '../../../../services/work-view/my-rules.mjs'
+import type { WaitingFor } from '../../../../services/work-view/waiting-for.mjs'
 
 /** One image ref, as src/shared/media-contract.ts MediaAttachmentRef defines it. Restated because My Work's tsconfig
  * (erasableSyntaxOnly) cannot load that file; src/services/work-view/overview.ts fails the root typecheck if they differ. */
@@ -166,6 +167,8 @@ export interface WorkViewHumanRequest {
   focusAreaId?: string
   /** The judge thinks this conversation is part of another request; absent when there is nothing to ask. Older workers leave it out. */
   suggestion?: WorkViewRequestSuggestion
+  /** What its latest finished turn waits for, from that turn's session summary; absent when none says. Older workers leave it out. */
+  waitingFor?: WaitingFor
 }
 
 export interface WorkViewAgent {

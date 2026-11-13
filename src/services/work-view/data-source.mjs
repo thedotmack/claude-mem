@@ -13,6 +13,8 @@ import { readSharedRecords, workStateRowsRevision } from './shared-record-store.
 import { readWorkStateLabels, WORK_STATE_LABELS_FILE } from './work-state-labels.mjs';
 import { applySharedProjection, decorateSharedView, isSharedProjectionValue } from './shared-projection.mjs';
 import { sharedReviewDescriptor, readSharedReview, sharedSuggestionDescriptor, sharedConflictSuggestions } from './shared-reviews.mjs';
+import { isConversationKey } from './request-projection.mjs';
+import { parseWaitingFor } from './waiting-for.mjs';
 
 // reduceWorkState lives in work-state-reduce.mjs so my-focus.mjs can replay rows without importing this module.
 export { reduceWorkState } from './work-state-reduce.mjs';
@@ -20,6 +22,38 @@ export { reduceWorkState } from './work-state-reduce.mjs';
 export { readFocus, readFocusAreas } from './my-focus.mjs';
 
 const normalizedKey = (value) => String(value).replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+
+/**
+ * What a request's latest finished turn waits for (waiting-for.mjs): the value on the newest session summary of its
+ * conversations. Null when no summary said, and when the owner has prompted since, because that summary speaks for a
+ * turn the owner already answered. A database from before the column has no value to give.
+ */
+export function readRequestWaitingFor(database, conversationKeys) {
+  let statement;
+  try {
+    statement = database.prepare(`SELECT summary.waiting_for AS waitingFor, summary.created_at_epoch AS summaryEpoch,
+        (SELECT MAX(created_at_epoch) FROM user_prompts WHERE session_db_id = session.id) AS promptEpoch
+      FROM sdk_sessions session LEFT JOIN session_summaries summary ON summary.id = (
+        SELECT id FROM session_summaries WHERE memory_session_id = session.memory_session_id ORDER BY created_at_epoch DESC, id DESC LIMIT 1)
+      WHERE session.platform_source = ? AND session.content_session_id = ?`);
+  } catch (error) {
+    if (/no such (table|column)/i.test(String(error.message))) return null;
+    throw error;
+  }
+  try {
+    let latest = null;
+    let lastPromptEpoch = 0;
+    for (const key of conversationKeys.filter(isConversationKey)) {
+      for (const row of statement.all(...JSON.parse(key).slice(1))) {
+        lastPromptEpoch = Math.max(lastPromptEpoch, row.promptEpoch ?? 0);
+        if (row.summaryEpoch != null && (!latest || row.summaryEpoch > latest.summaryEpoch)) latest = row;
+      }
+    }
+    return latest && latest.summaryEpoch >= lastPromptEpoch ? parseWaitingFor(latest.waitingFor) : null;
+  } finally {
+    statement.finalize();
+  }
+}
 
 // Compare against the observations used to build the view, not a second stat
 // after rendering: a file can change while linked evidence is being read.
@@ -180,6 +214,8 @@ export class WorkStateSource {
           const evidenceHashes = new Map();
           const evidenceRows = new Map();
           for (const request of this.agentView.humanRequests) {
+            const waitingFor = readRequestWaitingFor(database, request.conversationKeys ?? []);
+            if (waitingFor) request.waitingFor = waitingFor;
             const refs = new Map();
             const add = ref => {
               if (ref && ['work-state', 'observation', 'prompt', 'summary', 'session'].includes(ref.kind)
