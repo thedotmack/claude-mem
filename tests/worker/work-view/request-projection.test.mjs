@@ -1,6 +1,6 @@
 import { test } from 'bun:test';
 import assert from 'node:assert/strict';
-import { buildHumanRequests, humanRequestTitle, isHumanActionRequest, REQUEST_MEDIA_PREVIEW_LIMIT, requestText } from '../../../src/services/work-view/request-projection.mjs';
+import { buildHumanRequests, humanRequestTitle, isHumanActionRequest, latestConversationKey, REQUEST_MEDIA_PREVIEW_LIMIT, requestText } from '../../../src/services/work-view/request-projection.mjs';
 
 const session = { id: 7, platform_source: 'codex', content_session_id: 'native-seven', user_prompt: 'Build a live tracker of my work.', started_at_epoch: 1 };
 const prompts = [
@@ -191,4 +191,36 @@ test('an image several observations link counts once, and an image-free request 
   assert.equal(buildHumanRequests({ agents: [actor] }, { sessions: [session], prompts }).humanRequests[0].media.count, 2);
   actor.activity = [imageActivity(2, 2), imageActivity(3, 3)];
   assert.equal(Object.hasOwn(buildHumanRequests({ agents: [actor] }, { sessions: [session], prompts }).humanRequests[0], 'media'), false);
+});
+
+test('a request names its latest conversation by when its owner last wrote, never by key order', () => {
+  // Both conversations record work for one explicit request. The Codex key comes last and is the older chat.
+  const claude = { ...session, id: 8, platform_source: 'claude', content_session_id: 'native-eight', started_at_epoch: 50 };
+  const work = (id) => item(id, { requestId: 'launch-board', requestText: 'Build the launch board' });
+  const requestOf = (records) => buildHumanRequests({ agents: [agent('b', [work(2)], 8), agent('a', [work(1)])] }, records).humanRequests[0];
+  const claudeKey = JSON.stringify(['conversation', 'claude', 'native-eight']), codexKey = JSON.stringify(['conversation', 'codex', 'native-seven']);
+
+  const request = requestOf({ sessions: [session, claude], prompts: [...prompts, { id: 20, session_db_id: 8, prompt_number: 1, prompt_text: 'Build the launch board', created_at_epoch: 60 }] });
+  assert.deepEqual(request.conversationKeys, [claudeKey, codexKey]);
+  assert.equal(request.latestConversationKey, claudeKey);
+
+  // The older chat gets a newer prompt: it is the latest now.
+  const resumed = requestOf({ sessions: [session, claude], prompts: [...prompts, { id: 21, session_db_id: 7, prompt_number: 4, prompt_text: 'Add the forecast.', created_at_epoch: 70 }] });
+  assert.equal(resumed.latestConversationKey, codexKey);
+
+  // No prompt and no start time on either: nothing says which is latest, so none is named.
+  const untimed = requestOf({ sessions: [{ ...session, started_at_epoch: null }, { ...claude, started_at_epoch: null }], prompts: [] });
+  assert.equal(untimed.conversationKeys.length, 2);
+  assert.equal(untimed.latestConversationKey, null);
+});
+
+test('the latest conversation: one needs no time, an untimed one is never chosen, and a tie takes the greater key', () => {
+  const times = (recorded) => (key) => recorded[key];
+  assert.equal(latestConversationKey([], times({})), null);
+  assert.equal(latestConversationKey(['only'], times({})), 'only');
+  assert.equal(latestConversationKey(['a', 'b', 'c'], times({ a: 30, b: 10, c: 20 })), 'a');
+  assert.equal(latestConversationKey(['a', 'b'], times({ a: 0, b: 5 })), 'b');
+  assert.equal(latestConversationKey(['a', 'b'], times({ a: NaN, b: undefined })), null);
+  assert.equal(latestConversationKey(['a', 'b'], times({ a: 7, b: 7 })), 'b');
+  assert.equal(latestConversationKey(['b', 'a'], times({ a: 7, b: 7 })), 'b');
 });
