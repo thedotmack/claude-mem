@@ -550,10 +550,10 @@ function insertJsoncMember(text: string, objStart: number, objEnd: number, membe
 
 /**
  * Remove one member from the object spanning [objStart, objEnd), keeping
- * the file valid: a following comma goes with the member when there is
- * one; otherwise the comma separating it from the previous member is
- * kept, which restores a trailing comma the file already had. Returns
- * null when the key is absent.
+ * the file valid: the member's own comma goes with it in every branch, so
+ * the file is never left with `,,` or `{,}`. A comma separating it from
+ * the previous member is kept, which restores a trailing comma the file
+ * already had. Returns null when the key is absent.
  */
 function removeJsoncMember(text: string, objStart: number, objEnd: number, key: string): string | null {
   const members = scanJsoncObjectMembers(text, objStart, objEnd);
@@ -571,12 +571,17 @@ function removeJsoncMember(text: string, objStart: number, objEnd: number, key: 
   if (index > 0) {
     // Last member: the comma before it separates it from the previous
     // one, and keeping it preserves a trailing comma the file already had.
-    return text.slice(0, members[index - 1].commaAfter + 1) + text.slice(member.valueEnd);
+    // The comma after this member is its own trailing comma: it must go
+    // with the member, or the file is left with `,,` and no longer parses.
+    const afterMember = member.commaAfter === -1 ? member.valueEnd : member.commaAfter + 1;
+    return text.slice(0, members[index - 1].commaAfter + 1) + text.slice(afterMember);
   }
-  // Only member: take its line too, plus the newline after its value.
+  // Only member: take its line too, plus the newline after its value —
+  // and the comma after it when there is one, or the file is left with
+  // `{,}` and no longer parses.
   const lineStart = text.lastIndexOf('\n', member.keyStart - 1) + 1;
   const start = /^\s*$/.test(text.slice(lineStart, member.keyStart)) ? lineStart : member.keyStart;
-  let end = member.valueEnd;
+  let end = member.commaAfter === -1 ? member.valueEnd : member.commaAfter + 1;
   const after = skipJsoncTrivia(text, end);
   if (text[after] === '}' && text.slice(end, after).includes('\n')) {
     end = text.indexOf('\n', end) + 1;
@@ -733,6 +738,10 @@ export function uninstallZedMcpIntegration(configPath: string = getZedSettingsPa
   } else {
     const next = removeZedContextServer(raw);
     if (next === null) return 1;
+    // The textual edit must still parse as JSONC before it is written:
+    // uninstall writes straight to the user's whole editor config, so a
+    // broken edit must fail loudly here instead of corrupting settings.json.
+    parseJsonc(next);
     writeTextFileAtomic(configPath, next);
   }
   console.log(`  Removed claude-mem from the Zed context servers in: ${configPath}`);

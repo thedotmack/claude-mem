@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, wri
 import { homedir, tmpdir } from 'os';
 import path from 'path';
 import { getZedSettingsPath } from '../../src/services/integrations/McpIntegrations.js';
+import { parseJsonc } from '../../src/shared/atomic-json.js';
 
 // Zed reads MCP servers from the `context_servers` key of settings.json —
 // ~/.config/zed/settings.json on Linux/macOS, %APPDATA%\Zed\settings.json on
@@ -273,6 +274,91 @@ describe('Zed MCP config', () => {
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain('Corrupt JSON file, refusing to overwrite');
     expect(readFileSync(configPath, 'utf-8')).toBe(original);
+  });
+
+  // Greptile P1 (PR #6111): removeJsoncMember left the removed member's own
+  // trailing comma behind, so uninstall wrote `{"other":{},,}` (last member)
+  // or `{,}` (only member) straight to settings.json — invalid JSONC that
+  // Zed cannot read. parseJsonc alone does not catch those (it tolerates a
+  // stray comma), so the tests below assert the raw text has no doubled or
+  // leading comma as well as parsing cleanly.
+  const claudeMemJsonc = '{\n      "command": "node",\n      "args": ["/x/mcp-server.cjs"]\n    }';
+
+  it('uninstall of a last claude-mem entry with a trailing comma leaves valid JSONC, not `,,`', () => {
+    const original = `{\n  "context_servers": {\n    "other": {},\n    "claude-mem": ${claudeMemJsonc},\n  },\n}\n`;
+    mkdirSync(path.dirname(configPath), { recursive: true });
+    writeFileSync(configPath, original);
+
+    expect(uninstall().exitCode).toBe(0);
+    const after = readFileSync(configPath, 'utf-8');
+    expect(after).not.toContain(',,');
+    expect(after).toBe('{\n  "context_servers": {\n    "other": {},\n  },\n}\n');
+    expect(parseJsonc(after)).toEqual({ context_servers: { other: {} } });
+  });
+
+  it('uninstall of an only claude-mem entry with a trailing comma leaves valid JSONC, not `{,}`', () => {
+    const original = `{\n  "context_servers": {\n    "claude-mem": ${claudeMemJsonc},\n  },\n}\n`;
+    mkdirSync(path.dirname(configPath), { recursive: true });
+    writeFileSync(configPath, original);
+
+    expect(uninstall().exitCode).toBe(0);
+    const after = readFileSync(configPath, 'utf-8');
+    expect(after).not.toContain('{,}');
+    expect(after).not.toContain(',,');
+    expect(after).toBe('{\n  "context_servers": {\n  },\n}\n');
+    expect(parseJsonc(after)).toEqual({ context_servers: {} });
+  });
+
+  it('uninstall of a middle claude-mem entry with a trailing comma leaves its neighbours intact', () => {
+    const original = `{\n  "context_servers": {\n    "claude-mem": ${claudeMemJsonc},\n    "other": {},\n  },\n}\n`;
+    mkdirSync(path.dirname(configPath), { recursive: true });
+    writeFileSync(configPath, original);
+
+    expect(uninstall().exitCode).toBe(0);
+    const after = readFileSync(configPath, 'utf-8');
+    expect(after).not.toContain(',,');
+    expect(after).toBe('{\n  "context_servers": {\n    "other": {},\n  },\n}\n');
+    expect(parseJsonc(after)).toEqual({ context_servers: { other: {} } });
+  });
+
+  it('uninstall of a last claude-mem entry keeps a trailing comment and leaves valid JSONC', () => {
+    const original = `{\n  "context_servers": {\n    "other": {},\n    "claude-mem": ${claudeMemJsonc}, // our server\n  },\n}\n`;
+    mkdirSync(path.dirname(configPath), { recursive: true });
+    writeFileSync(configPath, original);
+
+    expect(uninstall().exitCode).toBe(0);
+    const after = readFileSync(configPath, 'utf-8');
+    expect(after).not.toContain(',,');
+    expect(after).toBe('{\n  "context_servers": {\n    "other": {}, // our server\n  },\n}\n');
+    expect(parseJsonc(after)).toEqual({ context_servers: { other: {} } });
+  });
+
+  it('uninstall of a last claude-mem entry in a BOM file keeps the BOM and leaves valid JSONC', () => {
+    const original = `\uFEFF{\n  "context_servers": {\n    "other": {},\n    "claude-mem": ${claudeMemJsonc},\n  },\n}\n`;
+    mkdirSync(path.dirname(configPath), { recursive: true });
+    writeFileSync(configPath, original);
+
+    expect(uninstall().exitCode).toBe(0);
+    const after = readFileSync(configPath, 'utf-8');
+    expect(after.startsWith('\uFEFF')).toBe(true);
+    expect(after).not.toContain(',,');
+    expect(after).toBe('\uFEFF{\n  "context_servers": {\n    "other": {},\n  },\n}\n');
+    expect(parseJsonc(after)).toEqual({ context_servers: { other: {} } });
+  });
+
+  it('uninstall of a last claude-mem entry without a trailing comma leaves valid JSONC', () => {
+    // JSONC only because of the comment; context_servers itself has no
+    // trailing comma after claude-mem. The separating comma stays behind
+    // as a trailing comma, which JSONC allows.
+    const original = `{\n  // Zed settings.\n  "context_servers": {\n    "other": {},\n    "claude-mem": ${claudeMemJsonc}\n  }\n}\n`;
+    mkdirSync(path.dirname(configPath), { recursive: true });
+    writeFileSync(configPath, original);
+
+    expect(uninstall().exitCode).toBe(0);
+    const after = readFileSync(configPath, 'utf-8');
+    expect(after).not.toContain(',,');
+    expect(after).toBe('{\n  // Zed settings.\n  "context_servers": {\n    "other": {},\n  }\n}\n');
+    expect(parseJsonc(after)).toEqual({ context_servers: { other: {} } });
   });
 
   it('install refuses a non-object context_servers value in a JSONC file', () => {
