@@ -130,16 +130,20 @@ export interface FocusArea {
   quotes: Quote[]
   /** Owner-goals asks in this area. None is linked to a request, so each reads "Not started". */
   asks: FocusAsk[]
+  /** The owner's own notes: why it matters, context, anything. Null or absent when there are none. A refresh never writes them. */
+  notes?: string | null
 }
 
 /** One owner change to My Focus, as POST /api/work-view/focus takes it (WorkViewRoutes.ts focusBody). */
 export interface FocusChange {
-  action: 'keep' | 'rename' | 'edit-goal' | 'merge' | 'dismiss' | 'done' | 'reorder' | 'move-request' | 'restore-suggestion'
+  action: 'keep' | 'rename' | 'edit-goal' | 'edit-notes' | 'merge' | 'dismiss' | 'done' | 'reorder' | 'move-request' | 'restore-suggestion'
   focusAreaId?: string
   /** False when the request has no conversation to file a move under (the worker refuses it). Sample fixtures leave it out. */
   canMoveFocus?: boolean
   name?: string
   goal?: string
+  /** edit-notes: the owner's notes, at most 2000 characters; empty clears them. */
+  notes?: string
   intoFocusAreaId?: string
   /** reorder: every live area (not dismissed, not merged), first = highest priority. */
   focusAreaIds?: string[]

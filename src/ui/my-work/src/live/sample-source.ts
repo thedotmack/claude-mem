@@ -5,6 +5,7 @@ import { SAMPLE_OWNER_RULES, SAMPLE_RULE_SCOPES, SAMPLE_RULES_LEARNING, type Own
 import { getConnectionStatus } from './connection-status.ts'
 import { byFocusPriority } from './to-focus-model.ts'
 import { navWordIn } from '../../../../services/work-view/nav-words.mjs'
+import { MAX_FOCUS_NOTES_CHARS } from '../../../../services/work-view/work-state-limits.mjs'
 import type { WorkDataSource, WorkModel } from './work-data-source.ts'
 
 /** Each checked sample request as it was before its check, so Undo restores it exactly. In memory only. */
@@ -56,10 +57,11 @@ const MAX_AREA_GOAL_CHARS = 300
  * The same change the worker saves, applied to the sample areas (WorkViewRoutes `saveFocus`), with the worker's
  * refusals word for word. A body the worker's schema would refuse answers its "ValidationError".
  */
-function applySampleFocusChange({ action, focusAreaId, name, goal, intoFocusAreaId, focusAreaIds, requestId }: FocusChange) {
+function applySampleFocusChange({ action, focusAreaId, name, goal, notes, intoFocusAreaId, focusAreaIds, requestId }: FocusChange) {
   const trimmedName = name?.trim(), trimmedGoal = goal?.trim()
   if (trimmedName !== undefined && (!trimmedName || trimmedName.length > MAX_AREA_NAME_CHARS)) throw new Error('ValidationError')
   if (trimmedGoal !== undefined && (!trimmedGoal || trimmedGoal.length > MAX_AREA_GOAL_CHARS)) throw new Error('ValidationError')
+  if (notes !== undefined && notes.trim().length > MAX_FOCUS_NOTES_CHARS) throw new Error('ValidationError')
   const byId = new Map(sampleFocusAreas.map((area) => [area.id, area]))
   const replace = (id: string, change: Partial<FocusArea>) => { sampleFocusAreas = sampleFocusAreas.map((area) => area.id === id ? { ...area, ...change } : area).sort(byFocusPriority) }
   const stillInFocus = (area: FocusArea | undefined) => !!area && area.status !== 'dismissed' && !area.mergedInto
@@ -98,6 +100,9 @@ function applySampleFocusChange({ action, focusAreaId, name, goal, intoFocusArea
   } else if (action === 'edit-goal') {
     if (!trimmedGoal) throw new Error('Write the goal before saving it.')
     replace(area.id, { goal: trimmedGoal })
+  } else if (action === 'edit-notes') {
+    if (notes === undefined) throw new Error('Send the notes to save; empty notes clear them.')
+    replace(area.id, { notes: notes.trim() || null })
   } else if (action === 'merge') {
     if (!intoFocusAreaId) throw new Error('Choose the area to merge it into.')
     if (intoFocusAreaId === area.id) throw new Error('An area cannot be merged into itself.')

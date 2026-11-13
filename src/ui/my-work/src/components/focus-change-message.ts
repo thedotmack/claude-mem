@@ -31,6 +31,7 @@ export function describeFocusChange(change: FocusChange, areas: FocusArea[], req
     case 'done': return record({ message: uiMessage('Marked “{name}” done', { name }), undo: area ? backTo(area) : null })
     case 'rename': return record({ message: uiMessage('Renamed “{name}” to “{newName}”', { name, newName: change.name?.trim() ?? '' }), undo: area ? [{ action: 'rename', focusAreaId: area.id, name: area.name }] : null })
     case 'edit-goal': return record({ message: uiMessage('Changed the goal of “{name}”', { name }), undo: area?.goal ? [{ action: 'edit-goal', focusAreaId: area.id, goal: area.goal }] : null })
+    case 'edit-notes': return record({ message: uiMessage('Changed the notes on “{name}”', { name }), undo: area ? [{ action: 'edit-notes', focusAreaId: area.id, notes: area.notes ?? '' }] : null })
     case 'merge': {
       const into = areas.find((entry) => entry.id === change.intoFocusAreaId)?.name ?? uiMessage('another area')
       // Only restore-suggestion clears a merge; a kept or done area is then decided again as it was.

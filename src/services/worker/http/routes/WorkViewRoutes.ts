@@ -20,8 +20,8 @@ import { FILE_CONTENT_TYPES } from '../../../work-view/work-product.mjs';
 import { isInsideDeliverablesDir } from '../../../../shared/deliverables.js';
 import { contentFingerprint, priorContentFingerprint, LocalReviewStore } from '../../../work-view/review-store.js';
 import { MY_RULES_LIST, renderRulesFile, ruleRowFields, type SavedRule } from '../../../work-view/my-rules.mjs';
-import { focusAreaRowFields, MY_FOCUS_LIST, navWordIn, OTHER_FOCUS_AREA_ID, ownerGoalsAreaRows, placementRowFields, PROPOSAL_KINDS, readFocus, routerFocusRows, seedFocusRows, seedUndoRows, type FocusArea, type RouterFocusBody } from '../../../work-view/my-focus.mjs';
-import { MAX_WORK_STATE_FIELDS_JSON_CHARS } from '../../../work-view/work-state-limits.mjs';
+import { focusAreaRowFields, focusNotesRowFields, MY_FOCUS_LIST, navWordIn, OTHER_FOCUS_AREA_ID, ownerGoalsAreaRows, placementRowFields, PROPOSAL_KINDS, readFocus, routerFocusRows, seedFocusRows, seedUndoRows, type FocusArea, type RouterFocusBody } from '../../../work-view/my-focus.mjs';
+import { MAX_FOCUS_NOTES_CHARS, MAX_WORK_STATE_FIELDS_JSON_CHARS } from '../../../work-view/work-state-limits.mjs';
 import { AGENT_LIFECYCLE_LIST, agentStopFields } from '../../../work-view/agent-lifecycle.mjs';
 import { getProjectContext } from '../../../../utils/project-name.js';
 import { chatCompletionsHumanCopyProvider, HumanCopyWorker } from '../../../work-view/human-copy-worker.mjs';
@@ -155,10 +155,12 @@ const ruleBody = z.object({
 // A request id is a JSON key, bounded like reviewBody's.
 const focusAreaIdField = z.string().min(1).max(80);
 const focusBody = z.object({
-  action: z.enum(['keep', 'rename', 'edit-goal', 'merge', 'dismiss', 'done', 'reorder', 'move-request', 'restore-suggestion']),
+  action: z.enum(['keep', 'rename', 'edit-goal', 'edit-notes', 'merge', 'dismiss', 'done', 'reorder', 'move-request', 'restore-suggestion']),
   focusAreaId: focusAreaIdField.optional(),
   name: z.string().trim().min(1).max(80).optional(),
   goal: z.string().trim().min(1).max(300).optional(),
+  /** edit-notes: the owner's notes on the area; empty clears them. */
+  notes: z.string().trim().max(MAX_FOCUS_NOTES_CHARS).optional(),
   intoFocusAreaId: focusAreaIdField.optional(),
   /** reorder: every area in the owner's order, first = highest priority. */
   focusAreaIds: z.array(focusAreaIdField).min(1).optional(),
@@ -1322,7 +1324,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
 
   /** The owner's focus decisions, saved as my-focus rows. Owner rows are never overridden by a refresh. */
   private saveFocus = async (req: Request, res: Response): Promise<void> => {
-    const { action, focusAreaId, name, goal, intoFocusAreaId, focusAreaIds, requestId, expectedVersion } = req.body as z.infer<typeof focusBody>;
+    const { action, focusAreaId, name, goal, notes, intoFocusAreaId, focusAreaIds, requestId, expectedVersion } = req.body as z.infer<typeof focusBody>;
     if (!this.appendWorkStateEntry) { res.status(503).json({ error: 'Saving focus areas is unavailable on this worker.' }); return; }
     // Moving a request looks the request up, and a request can be minutes old: that check reads fresh.
     const snapshot = await (action === 'move-request' ? this.snapshot() : this.ownerStateSnapshot());
@@ -1374,6 +1376,10 @@ export class WorkViewRoutes extends BaseRouteHandler {
       } else if (action === 'edit-goal') {
         if (!goal) { this.badRequest(res, 'Write the goal before saving it.'); return; }
         rows.push(ownRow(area, { goal }));
+      } else if (action === 'edit-notes') {
+        // The owner's free text in its own row: it does not decide the area, so a refresh keeps updating a suggestion.
+        if (notes === undefined) { this.badRequest(res, 'Send the notes to save; empty notes clear them.'); return; }
+        rows.push(focusNotesRowFields(area.focusAreaId, notes));
       } else if (action === 'merge') {
         if (!intoFocusAreaId) { this.badRequest(res, 'Choose the area to merge it into.'); return; }
         if (intoFocusAreaId === area.focusAreaId) { this.badRequest(res, 'An area cannot be merged into itself.'); return; }

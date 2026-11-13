@@ -65,6 +65,7 @@ test('saved focus records switch languages repeatedly without changing text or U
     { action: 'merge', focusAreaId: 'source', intoFocusAreaId: 'target' },
     { action: 'reorder', focusAreaIds: ['target', 'source'] },
     { action: 'move-request', requestId: 'request', focusAreaId: OTHER_FOCUS_AREA_ID },
+    { action: 'edit-notes', focusAreaId: 'source', notes: 'Why it matters' },
   ];
   for (const change of changes) {
     const record = describeFocusChange(change, areas, requests);
@@ -79,6 +80,9 @@ test('saved focus records switch languages repeatedly without changing text or U
     { action: 'restore-suggestion', focusAreaId: 'source' }, { action: 'keep', focusAreaId: 'source' },
   ]);
   assert.deepEqual(describeFocusChange(changes[7], areas, requests).undo, [{ action: 'reorder', focusAreaIds: ['source', 'target'] }]);
+  // Undoing the first notes clears them; undoing an edit puts the earlier notes back.
+  assert.deepEqual(describeFocusChange(changes[9], areas, requests).undo, [{ action: 'edit-notes', focusAreaId: 'source', notes: '' }]);
+  assert.deepEqual(describeFocusChange(changes[9], [{ ...areas[0], notes: 'Earlier' }], requests).undo, [{ action: 'edit-notes', focusAreaId: 'source', notes: 'Earlier' }]);
 });
 
 test('focus fallback labels translate but legacy records remain verbatim', () => {

@@ -277,6 +277,8 @@ export interface WorkViewFocusArea {
   /** 'owner-restore': the owner handed it back to suggestions, so refreshes may update it again. */
   decidedBy: 'owner' | 'system' | 'owner-restore'
   savedAt: string | null
+  /** The owner's own notes on the area; null when there are none. Older workers leave it out. */
+  notes?: string | null
 }
 
 export interface WorkViewRuleScope { id: string; tier: 'everywhere' | 'project' | 'situation'; name: string }

@@ -151,3 +151,8 @@ test('a Suggested card owns the Undo for a merge only; a rename or a new goal go
   assert.equal(suggestionEditDecision({ action: 'rename', focusAreaId: 'fa_old', name: 'Shipping' }), null)
   assert.equal(suggestionEditDecision({ action: 'edit-goal', focusAreaId: 'fa_old', goal: 'Ship weekly.' }), null)
 })
+
+test('the owner\'s notes reach the area; an older worker\'s area has none', () => {
+  const model = toWorkModel({ ...baseSnapshot, focusAreas: [area('fa-a', { notes: 'Why it matters: the board steers every agent.' }), area('fa-b')] }, now)
+  assert.deepEqual(model.focusAreas.map((entry) => [entry.id, entry.notes]), [['fa-a', 'Why it matters: the board steers every agent.'], ['fa-b', null]])
+})

@@ -110,6 +110,18 @@ describe('compact work view transport', () => {
     expect(overview.model.requests[0].detailCounts?.workProduct).toBe(40);
   });
 
+  it('carries the owner\'s notes on each focus area and stays under 300 KiB with the longest notes on every area', () => {
+    const snapshot = largeSnapshot(true);
+    (snapshot as any).focusAreas = Array.from({ length: 24 }, (_, index) => ({
+      focusAreaId: `fa_${index}`, name: `Area ${index}`, goal: 'One sentence.', status: 'kept', priorityRank: index, ownerRank: index, source: 'owner',
+      mergedInto: null, evidence: null, decidedBy: 'owner', savedAt: null, notes: index === 23 ? null : 'n'.repeat(2000),
+    }));
+    const overview = workViewOverview(snapshot);
+    expect(overview.model.focusAreas.map(area => area.notes?.length ?? null)).toEqual([...Array.from({ length: 23 }, () => 2000), null]);
+    expect(expandWorkViewOverview(overview).focusAreas[0].notes).toHaveLength(2000);
+    expect(Buffer.byteLength(JSON.stringify(overview))).toBeLessThanOrEqual(300 * 1024);
+  });
+
   it('stays under 300 KiB when every one of the 140 cards carries a full four-image preview', () => {
     const snapshot = largeSnapshot();
     // The longest label the contract allows (64 characters), on every ref.

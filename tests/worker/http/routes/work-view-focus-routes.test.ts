@@ -107,6 +107,21 @@ describe('My Focus routes', () => {
     expect(areaById(view, 'fa_community').status).toBe('done');
   });
 
+  it('refuses a notes Undo whose version predates newer notes, and keeps the newer notes', async () => {
+    const undo = { action: 'edit-notes', focusAreaId: 'fa_viewer', notes: '' };
+    const saved = await (await saveFocus({ ...undo, notes: 'Mine' })).json();
+    const shown = toWorkModel(saved, Date.now());
+    const expectedVersion = focusChangeVersion(undo, shown.focusAreas, shown.requests);
+    expect((await saveFocus({ ...undo, notes: 'Newer, from another tab' })).status).toBe(200);
+    const refused = await saveFocus({ ...undo, expectedVersion });
+    expect(refused.status).toBe(409);
+    expect(areaById(await snapshot(), 'fa_viewer').notes).toBe('Newer, from another tab');
+    const current = toWorkModel(await snapshot(), Date.now());
+    await saveFocus({ action: 'rename', focusAreaId: 'fa_viewer', name: 'Renamed elsewhere' });
+    expect((await saveFocus({ ...undo, expectedVersion: focusChangeVersion(undo, current.focusAreas, current.requests) })).status).toBe(200);
+    expect(areaById(await snapshot(), 'fa_viewer').notes).toBeNull();
+  });
+
   it.each([
     { name: 'area', saved: { action: 'rename', focusAreaId: 'fa_viewer', name: 'Saved name' },
       undo: { action: 'rename', focusAreaId: 'fa_viewer', name: 'Viewer' },
@@ -244,6 +259,24 @@ describe('My Focus routes', () => {
     const rows = ownerRows();
     expect(rows).toHaveLength(3);
     expect(rows.every(row => row.project === 'home' && row.fields.task === 'Focus area: fa_viewer' && row.fields.decided_by === 'owner')).toBe(true);
+  });
+
+  it('saves the owner\'s notes without deciding the area, keeps them through a system row, and clears them when emptied', async () => {
+    const notes = `Why it matters; rm -rf "$HOME" \`x\`\n${'n'.repeat(1900)}`;
+    let response = await saveFocus({ action: 'edit-notes', focusAreaId: 'fa_viewer', notes });
+    expect(response.status).toBe(200);
+    expect(areaById(await response.json(), 'fa_viewer')).toMatchObject({ notes, status: 'suggested', decidedBy: 'system' });
+    insertRow(suggestedArea('fa_viewer', 'Viewer', 2));
+    expect(areaById(await snapshot(), 'fa_viewer')).toMatchObject({ notes, priorityRank: 2 });
+    // An owner decision on the area writes an area row; the notes are not in it and stand.
+    await saveFocus({ action: 'keep', focusAreaId: 'fa_viewer' });
+    expect(areaById(await snapshot(), 'fa_viewer')).toMatchObject({ notes, status: 'kept' });
+    expect(areaById(await snapshot(), 'fa_endless').notes).toBeNull();
+    expect((await saveFocus({ action: 'edit-notes', focusAreaId: 'fa_viewer', notes: 'n'.repeat(2001) })).status).toBe(400);
+    expect((await saveFocus({ action: 'edit-notes', focusAreaId: 'fa_viewer' })).status).toBe(400);
+    expect((await saveFocus({ action: 'edit-notes', focusAreaId: 'missing', notes: 'x' })).status).toBe(404);
+    response = await saveFocus({ action: 'edit-notes', focusAreaId: 'fa_viewer', notes: '   ' });
+    expect(areaById(await response.json(), 'fa_viewer').notes).toBeNull();
   });
 
   it('dismisses and finishes areas, and puts a decided suggestion back', async () => {

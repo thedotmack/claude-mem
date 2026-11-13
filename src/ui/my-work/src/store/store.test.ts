@@ -450,6 +450,27 @@ describe('My Focus saves', () => {
     } finally { stop() }
   })
 
+  it('refuses an old notes Undo after newer notes were saved elsewhere, and allows it after an unrelated rename', async () => {
+    const { store } = testStore()
+    const area = { ...LOCAL_MODEL.focusAreas[0], notes: 'Mine' }
+    const saved = { ...LOCAL_MODEL, focusAreas: [area] }
+    const sent: FocusChange[] = []
+    const { source, feed } = fakeSource({ saveFocusChange: async change => { sent.push(change); return saved } })
+    const stop = store.getState().startWorkSource(source)
+    try {
+      feed.onModel({ ...LOCAL_MODEL, focusAreas: [{ ...area, notes: 'Before' }] })
+      await store.getState().applyFocusChange({ action: 'edit-notes', focusAreaId: area.id, notes: 'Mine' }, {
+        text: 'Changed the notes', undo: [{ action: 'edit-notes', focusAreaId: area.id, notes: 'Before' }],
+      })
+      feed.onModel({ ...saved, focusAreas: [{ ...area, notes: 'Newer, from another tab' }] })
+      assert.equal(await store.getState().undoLastFocusChange(), false)
+      assert.deepEqual(sent.map(change => change.notes), ['Mine'])
+      feed.onModel({ ...saved, focusAreas: [{ ...area, name: 'Renamed in another tab' }] })
+      assert.equal(await store.getState().undoLastFocusChange(), true)
+      assert.deepEqual(sent.map(change => change.notes), ['Mine', 'Before'])
+    } finally { stop() }
+  })
+
   it('refuses an old order Undo after another area is kept', async () => {
     const { store } = testStore()
     const area = { ...LOCAL_MODEL.focusAreas[0], status: 'kept' as const, mergedInto: null }

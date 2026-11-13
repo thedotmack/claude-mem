@@ -1,7 +1,7 @@
 import type { FocusArea } from '../services/work-view/my-focus.mjs';
 
 type VersionArea = Pick<FocusArea, 'name' | 'goal' | 'status' | 'ownerRank' | 'priorityRank' | 'source' | 'mergedInto'>
-  & { about?: string | null } & ({ id: string } | { focusAreaId: string });
+  & { about?: string | null; notes?: string | null } & ({ id: string } | { focusAreaId: string });
 interface VersionRequest { id: string; focusAreaId?: string }
 interface FocusChangeTarget { action: string; focusAreaId?: string; requestId?: string }
 
@@ -22,6 +22,8 @@ export function focusChangeVersion(change: FocusChangeTarget, areas: readonly Ve
     return request ? JSON.stringify([request.id, request.focusAreaId ?? null]) : null;
   }
   const area = areas.find(area => areaId(area) === change.focusAreaId);
+  // Notes are a row of their own (my-focus.mjs focusNotesRowFields): only edit-notes replaces it, and it replaces nothing else.
+  if (change.action === 'edit-notes') return area ? JSON.stringify([areaId(area), 'notes', area.notes || null]) : null;
   return area ? JSON.stringify([areaId(area), area.name, area.goal, area.about ?? null, area.status,
     area.ownerRank, area.priorityRank, area.source, area.mergedInto]) : null;
 }

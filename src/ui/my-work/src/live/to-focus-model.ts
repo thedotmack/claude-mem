@@ -84,7 +84,7 @@ export function toFocusModel(raw: readonly WorkViewFocusArea[] | undefined, mine
   const areas: FocusArea[] = (raw ?? []).map((area) => ({
     id: area.focusAreaId, name: area.name, goal: area.goal, about: area.about ?? null, status: area.status,
     ownerRank: area.ownerRank, priorityRank: area.priorityRank, source: area.source,
-    mergedInto: area.mergedInto, evidence: area.evidence,
+    mergedInto: area.mergedInto, evidence: area.evidence, notes: area.notes ?? null,
     timesAsked: null, latestAt: null, quotes: [], asks: [],
   })).sort(byFocusPriority)
   const resolveArea = createFocusAreaResolver(areas)
