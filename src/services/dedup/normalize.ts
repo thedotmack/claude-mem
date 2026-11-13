@@ -22,6 +22,42 @@ export function normalizeTitle(s: string | null | undefined): string {
   return /[\p{L}\p{N}]/u.test(normalized) ? normalized : '';
 }
 
+/**
+ * The indexed normal form is a candidate key, not proof that two technical
+ * titles identify the same fact. Keep C/C++/C#, paths, field names and version
+ * identifiers apart before a silent merge, while retaining the existing
+ * case, prose-hyphenation and surrounding-punctuation equivalence.
+ */
+export function exactTitleMatch(a: string | null | undefined, b: string | null | undefined): boolean {
+  const norm = normalizeTitle(a);
+  if (!norm || norm !== normalizeTitle(b)) return false;
+  const identifiers = (value: string | null | undefined): string[] =>
+    ((value ?? '').normalize('NFC').toLowerCase().trim()
+      // Whole-title bold markup spanning words is presentation. Do not strip
+      // underscores from a single code token such as Python's __init__.
+      .replace(/^__([\s\S]*\s[\s\S]*)__$/u, '$1')
+      .match(/[\p{L}\p{N}\p{M}._/\\:@#=<>+~-]+/gu) ?? [])
+      // Keep the whole lexical token, including path roots and hyphens.
+      // Matching only an identifier fragment loses the distinguishing suffix
+      // in src/foo-bar and the leading separator in /src/config.ts.
+      // A prose sentence's final period is outside the identifier: retain the
+      // C++ in C++. and the same path with or without sentence punctuation.
+      // A dot-only path or final path segment is meaningful (. versus ..,
+      // src/. versus src/..); preserve it instead of guessing punctuation.
+      .map(token => /^(?:\.+)$|[/\\]\.+$/u.test(token) ? token : token.replace(/\.+$/u, ''))
+      // Compare complete symbol-bearing tokens, even when another symbol
+      // follows them (C++:). Pure prose hyphens and terminal colons need not
+      // become identifiers, but paths, drive letters and code symbols do.
+      .filter(token => /^\.+$/u.test(token) || /[/\\]/.test(token) || (
+        /[\p{L}\p{N}]/u.test(token) && (
+          /[._@#=<>+~]/.test(token)
+          || /[\p{L}\p{N}\p{M}]:+[\p{L}\p{N}\p{M}]/u.test(token)
+          || /^[a-z]:$/u.test(token)
+        )
+      ));
+  return JSON.stringify(identifiers(a)) === JSON.stringify(identifiers(b));
+}
+
 /** Whitespace-only split + lowercase; preserves compound identifiers as single tokens. */
 export function tokenizeWs(s: string | null | undefined): string[] {
   return (s ?? '')
