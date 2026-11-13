@@ -337,7 +337,7 @@ export class ViewerRoutes extends BaseRouteHandler {
     this.sseBroadcaster.addClient(res);
 
     const projectCatalog = this.dbManager.getSessionStore().getProjectCatalog();
-    this.sseBroadcaster.broadcast({
+    this.sseBroadcaster.sendToClient(res, {
       type: 'initial_load',
       projects: projectCatalog.projects,
       sources: projectCatalog.sources,
@@ -349,7 +349,7 @@ export class ViewerRoutes extends BaseRouteHandler {
       try {
         const isProcessing = await this.sessionManager.isAnySessionProcessing();
         const queueDepth = await this.sessionManager.getTotalActiveWork();
-        this.sseBroadcaster.broadcast({
+        this.sseBroadcaster.sendToClient(res, {
           type: 'processing_status',
           isProcessing,
           queueDepth
