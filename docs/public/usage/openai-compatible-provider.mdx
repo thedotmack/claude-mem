@@ -107,6 +107,7 @@ endpoint or model you pinned yourself.
 | `obscurify-ai` | `https://obscurify.ai/v1` | yes |
 | `standardcompute` | `https://api.stdcmpt.com/v1` | yes |
 | `uberllm` | `https://api.uberllm.dev/v1` | yes |
+| `atmorouter` | `https://atmorouter.dev/v1` | yes |
 | `deepseek` | `https://api.deepseek.com/v1` | yes |
 | `opencode-go` | `https://opencode.ai/zen/go/v1` | yes |
 | `opencode-zen` | `https://opencode.ai/zen/v1` | yes |
@@ -468,6 +469,25 @@ passed verbatim. The model list is public at
   "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "uberllm",
   "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<your UberLLM key>",
   "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "deepseek/deepseek-v4.1-flash"
+}
+```
+
+## AtmoRouter
+
+[AtmoRouter](https://atmorouter.dev) is a usage-based gateway with an
+OpenAI-compatible Chat Completions endpoint, billed per token from a prepaid
+USD balance. Model ids carry a route prefix, such as `zai/glm-5.3-flash` (the
+preset's default) or `zai/glm-5.3`, and are passed verbatim. The model list is
+public at `https://atmorouter.dev/v1/models`, and keys (`ar-...`) come from
+Dashboard → API Keys in the [AtmoRouter dashboard](https://atmorouter.dev/dashboard).
+Setup notes are in [the AtmoRouter docs](https://atmorouter.dev/docs/quickstart).
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openai-compatible",
+  "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "atmorouter",
+  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<your AtmoRouter key>",
+  "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "zai/glm-5.3-flash"
 }
 ```
 
