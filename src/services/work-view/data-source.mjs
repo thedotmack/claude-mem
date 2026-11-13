@@ -12,6 +12,7 @@ import { buildRules, MY_RULES_LIST } from './my-rules.mjs';
 import { readSharedRecords, workStateRowsRevision } from './shared-record-store.mjs';
 import { readWorkStateLabels, WORK_STATE_LABELS_FILE } from './work-state-labels.mjs';
 import { applySharedProjection, decorateSharedView, isSharedProjectionValue } from './shared-projection.mjs';
+import { TurnStateReader } from './turn-state-reader.mjs';
 import { sharedReviewDescriptor, readSharedReview, sharedSuggestionDescriptor, sharedConflictSuggestions } from './shared-reviews.mjs';
 
 // reduceWorkState lives in work-state-reduce.mjs so my-focus.mjs can replay rows without importing this module.
@@ -57,6 +58,9 @@ export function resolveReadScope(database, requestedKeys) {
   }
 }
 
+// The most a snapshot spends reading transcripts that changed; the rest keep their last known state until the next one.
+const TURN_READ_BUDGET_MS = 150;
+
 export class WorkStateSource {
   constructor({
     databasePath = process.env.CLAUDE_MEM_DB ?? join(homedir(), '.claude-mem', 'claude-mem.db'),
@@ -66,6 +70,7 @@ export class WorkStateSource {
     ledgerDir = null,
     pollIntervalMs = 1000,
     localDeviceId = '',
+    transcriptRoots = {},
   } = {}) {
     this.databasePath = databasePath;
     this.currentProject = currentProject;
@@ -92,6 +97,8 @@ export class WorkStateSource {
     this.workStateRevision = null;
     this.workStateDataVersion = null;
     this.sharedState = null;
+    this.turnStates = new TurnStateReader(transcriptRoots);
+    this.turnSignature = '';
     this.source = {
       kind: 'claude-mem-work-state', mode: 'read-only-sqlite', connected: false,
       pollIntervalMs, lastCheckedAt: null, lastUpdatedAt: null, error: null,
@@ -329,10 +336,19 @@ export class WorkStateSource {
       const descriptor = sharedSuggestionDescriptor(this.sharedState, suggestion.conversationKey);
       return { ...suggestion, expectedSuggestionHash: descriptor.hash, sharedConflict: descriptor.conflict };
     });
+    const deadline = now + TURN_READ_BUDGET_MS;
     const humanRequests = (this.agentView.humanRequests ?? []).map((request) => {
+      const turn = this.turnStates.readConversation(request.latestConversationKey, { deadline });
       const suggestion = suggestions.find((entry) => (entry.sharedConflict || entry.requestId !== request.groupId) && (request.conversationKeys ?? []).includes(entry.conversationKey));
-      return suggestion ? { ...request, suggestion } : request;
+      return suggestion || turn ? { ...request, ...(suggestion ? { suggestion } : {}), ...(turn ? { turn } : {}) } : request;
     });
+    // A transcript moves without a database write. Whose move it is must still reach an open page, so a change
+    // counts as a new revision; an agent's own progress through a turn does not.
+    const turnSignature = humanRequests.filter((request) => request.turn).map(({ id, turn }) => `${id}:${turn.reason}:${turn.state === 'owner-turn' ? turn.atEpoch : ''}`).join('|');
+    if (turnSignature !== this.turnSignature) {
+      this.turnSignature = turnSignature;
+      this.agentView = { ...this.agentView, revision: ++this.agentRevision };
+    }
     return {
       ...this.agentView,
       humanRequests,
