@@ -152,6 +152,10 @@ export const REQUIREMENTS: Requirement[] = [
 
   // 18. Account (added 2026-11-05, append only): the cloud viewer is where viewer accounts land, so billing is reachable from it.
   { id: 'R18.1', section: '18', kind: 'ui', text: 'On the cloud viewer only, the bottom of the rail links "Account & billing" to cmem.ai/account. My Work served from this computer shows no such link.' },
+
+  // 19. Chat turn and links (added 2026-11-13, append only): a request's card says when its chat waits on the owner, and opens that chat.
+  { id: 'R19.1', section: '19', kind: 'ui', text: 'A request card and the request page link to the request\'s latest chat: "Open in Claude Code" or "Open in Codex" opens it in the tool\'s desktop app, and beside it the terminal command that resumes the session can be copied. Both are built only from a session id that is a UUID; a request with several chats and no recorded time to tell the latest, or a tool with no link of its own, shows neither.' },
+  { id: 'R19.2', section: '19', kind: 'backend', text: 'Whose move a chat is comes from the end of its Claude Code or Codex transcript, read on this computer: only who holds the move, why, and when leave the file. With no status recorded for the request, a chat whose agent ended its turn or asked a question in the last 14 days is the owner\'s move (Needs you), and one whose agent is mid-turn is working. Anything recorded explicitly wins, and shipped work stays shipped.', wireframe: 'status-normalization.ts turnStatus feeds the existing state badge and the Needs you filter, group and counts.' },
 ]
 
 export const REQUIREMENTS_BY_ID = new Map(REQUIREMENTS.map((requirement) => [requirement.id, requirement]))

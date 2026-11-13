@@ -19,6 +19,7 @@ import { Req } from '@/spec/req'
 import type { Request } from '@/data'
 import { requestById, useFreshlyUpdated, useStore, useWorkspace } from '@/store'
 import { AgentIcon, FocusAreaChip, NextMove, ProductLink, ProgressMeter, StateBadge } from './bits'
+import { ChatLink } from './chat-link'
 import { MediaCountBadge, ObsMediaStrip } from './observation-media/ObsMedia'
 
 /**
@@ -212,6 +213,9 @@ export function RequestCard({ request, onOpen, onOpenFocus }: { request: Request
           {/* What happens next comes straight after what it is: the one line most people read a card for. Shipped
               work's next moves are its open follow-ups, so the card lists those instead of repeating one. */}
           {!(request.state === 'shipped' && request.followUps.some((followUp) => !followUp.done)) && <NextMove next={request.next} />}
+
+          {/* Where the move is made: the request's chat in its own tool. */}
+          <ChatLink request={request} className="-mx-2 -my-1.5" />
 
           <Deliverables request={request} onOpen={onOpen} />
 

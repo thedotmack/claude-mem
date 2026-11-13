@@ -545,4 +545,8 @@ export const myworkZh: Record<string, string> = {
   '{count} in Other': '{count} 个在“其他”中',
   '{count} still being sorted': '{count} 个仍在归类中',
   'All requests': '所有请求',
+  'Open in {tool}': '在 {tool} 中打开',
+  'Copy the command that resumes this chat: {command}': '复制恢复此会话的命令：{command}',
+  'Copied': '已复制',
+  'Couldn’t copy': '无法复制',
 };

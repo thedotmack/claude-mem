@@ -524,4 +524,8 @@ export const myworkKo: Record<string, string> = {
   '{count} in Other': '기타에 {count}개',
   '{count} still being sorted': '{count}개 분류 중',
   'All requests': '모든 요청',
+  'Open in {tool}': '{tool}에서 열기',
+  'Copy the command that resumes this chat: {command}': '이 대화를 다시 여는 명령 복사: {command}',
+  'Copied': '복사됨',
+  'Couldn’t copy': '복사하지 못했습니다',
 };

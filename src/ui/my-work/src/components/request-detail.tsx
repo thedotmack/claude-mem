@@ -20,6 +20,7 @@ import { CHANGED_WHILE_READING_MESSAGE, CHECK_UNDONE_MESSAGE, CHECKED_LOCALLY_ME
 import { PRODUCT_ICON } from '@/lib/product-icons'
 import { cn } from '@/lib/utils'
 import { AgentIcon, FocusAreaChip, NextMove, ProductLink, ProgressMeter, StateBadge } from './bits'
+import { ChatLink } from './chat-link'
 import { FocusChangeBar, useFocusChanges } from './focus-changes'
 import { OpenFollowUps } from './request-card'
 import { mergeRequestDetail, requestDetailKey } from '@/live/request-detail-state'
@@ -285,6 +286,7 @@ function LoadedRequestDetail({ request, onClose, onOpenFocus }: { request: Reque
             <SheetTitle className="text-xl leading-snug">{title}</SheetTitle>
             <SheetDescription className="line-clamp-2">{request.summary ?? request.resolvesTo?.summary}</SheetDescription>
             <NextMove next={request.next} className="text-[0.95rem]" />
+            <ChatLink request={request} className="-mx-2" />
           </SheetHeader>
         </Req>
 

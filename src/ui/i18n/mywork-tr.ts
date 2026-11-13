@@ -524,4 +524,8 @@ export const myworkTr: Record<string, string> = {
   '{count} in Other': '“Diğer” bölümünde {count}',
   '{count} still being sorted': '{count} tanesi hâlâ sınıflandırılıyor',
   'All requests': 'Tüm istekler',
+  'Open in {tool}': '{tool} içinde aç',
+  'Copy the command that resumes this chat: {command}': 'Bu sohbeti sürdüren komutu kopyala: {command}',
+  'Copied': 'Kopyalandı',
+  'Couldn’t copy': 'Kopyalanamadı',
 };
