@@ -37,6 +37,9 @@ export function exactTitleMatch(a: string | null | undefined, b: string | null |
       // Keep the whole lexical token, including path roots and hyphens.
       // Matching only an identifier fragment loses the distinguishing suffix
       // in src/foo-bar and the leading separator in /src/config.ts.
+      // A prose sentence's final period is outside the identifier: retain the
+      // C++ in C++. and the same path with or without sentence punctuation.
+      .map(token => token.replace(/\.+$/u, ''))
       .filter(token => /[\p{L}\p{N}]/u.test(token) && (
         /[/\\]/.test(token)
         || /[\p{L}\p{N}\p{M}][._:@#=<>+~]+[\p{L}\p{N}\p{M}]/u.test(token)

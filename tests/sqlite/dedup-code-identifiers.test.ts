@@ -14,6 +14,8 @@ const pairs = [
   ['Updated C:\\src\\foo-bar', 'Updated C:\\src\\foo bar'],
   ['Read .env', 'Read env'],
   ['Updated _private field', 'Updated private field'],
+  ['Fixed C++.', 'Fixed C.'],
+  ['Fixed C#.', 'Fixed C.'],
 ] as const;
 const thresholds = { cosineThreshold: 0.9, vetoThetaIdf: 1 };
 
@@ -72,4 +74,14 @@ describe('exact-title dedup preserves code identifiers', () => {
     expect(save('**FIXED C++ PARSER!**').id).toBe(code.id);
     expect(classifyPair('On-Demand Checkpoint.', 'on demand checkpoint', () => 1, thresholds).tier).toBe('exact');
   });
+
+  for (const title of ['Read src/config.ts', 'Fixed C++', 'Read .env', 'Pinned v1.2']) {
+    it(`ignores sentence punctuation following ${JSON.stringify(title)}`, () => {
+      const first = save(title);
+      const repeat = save(`${title}.`);
+      expect(repeat.id).toBe(first.id);
+      expect(repeat.mergedIntoExisting).toBe(true);
+      expect(classifyPair(title, `${title}.`, () => 1, thresholds).tier).toBe('exact');
+    });
+  }
 });
