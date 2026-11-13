@@ -5,7 +5,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import { assertConsistentRequest, needsYou } from '../data.ts'
 import { chatLinks, requestChat } from './chat-links.ts'
-import { toWorkModel } from './to-work-model.ts'
+import { isAwaitingCheck, isReadyForCheck, toWorkModel } from './to-work-model.ts'
 import type { WorkViewHumanRequest, WorkViewSnapshot } from './work-view-api-types.ts'
 
 const appRoot = new URL('../../', import.meta.url)
@@ -529,4 +529,70 @@ test('image refs ride through: the card summary to Request.media, each record\'s
   assert.equal('media' in request.granular[1], false, 'an image-free record gains no key')
   const [plain] = toWorkModel(snapshotWith([syntheticRequest()]), Date.parse('2026-10-22T12:00:00Z')).requests
   assert.equal('media' in plain, false, 'an image-free request gains no key')
+})
+
+// ---------- Owner actions: the standing question, stages, the answer, and the one readiness rule ----------
+
+const REVIEWED = '2026-10-21T10:00:00.000Z'
+const askedReview = (change: Partial<NonNullable<WorkViewHumanRequest['progress']>> = {}): NonNullable<WorkViewHumanRequest['progress']> => ({
+  state: 'in-progress', percent: 40, checkedAt: '2026-10-21T10:00:30.000Z', reviewedThrough: REVIEWED,
+  question: { need: 'approval', text: 'Merge PR 93 now?', background: [{ text: 'CI is green.' }, { text: '   ' }] }, ...change,
+})
+const questionOf = (raw: WorkViewHumanRequest) => toWorkModel(snapshotWith([raw]), Date.parse('2026-10-22T12:00:00Z')).requests[0].question
+
+test('a review\'s question shows with what was gathered for it, named by the review it came from', () => {
+  assert.deepEqual(questionOf({ ...syntheticRequest(), progress: askedReview() }), { need: 'approval', text: 'Merge PR 93 now?', version: REVIEWED, background: ['CI is green.'] })
+  // A review from before `need` was recorded asks for an answer; one with no question has none.
+  assert.equal(questionOf({ ...syntheticRequest(), progress: askedReview({ question: { text: 'Which one?' } }) })!.need, 'answer')
+  assert.equal(questionOf({ ...syntheticRequest(), progress: askedReview({ question: undefined }) }), undefined)
+  assert.equal(questionOf(syntheticRequest()), undefined)
+})
+
+test('a question stands only while the owner has not written since the review read its evidence', () => {
+  const wrote = (atEpoch: number) => ({ ...syntheticRequest(), progress: askedReview(), scopeUpdates: [{ text: 'Yes, merge it.', atEpoch }] }) as WorkViewHumanRequest
+  assert.ok(questionOf(wrote(Date.parse(REVIEWED) - 1000)), 'written before the review read: the review saw it and still asked')
+  // Written while the review ran: after what it read, though before it was saved (checkedAt).
+  assert.equal(questionOf(wrote(Date.parse(REVIEWED) + 10_000)), undefined)
+  assert.equal(questionOf(wrote(Date.parse(REVIEWED) + 3_600_000)), undefined)
+  // A review from before the read time was recorded has only its save time.
+  const older = { ...wrote(Date.parse(REVIEWED) + 10_000), progress: askedReview({ reviewedThrough: undefined }) }
+  assert.ok(questionOf(older))
+  // A status recorded after the review (a reopen) outranks the review, and its question with it.
+  assert.equal(questionOf({ ...syntheticRequest(), progress: askedReview(), lifecycle: { status: 'doing', explicit: true, complete: false, atEpoch: Date.parse(REVIEWED) + 3_600_000 } } as WorkViewHumanRequest), undefined)
+})
+
+test('a request carries its stages and the last answer\'s delivery, and the model the formats, the setting and the plan', () => {
+  const stage = { state: 'ready' as const, file: '/bucket/s.md', url: '/api/deliverables/3/s.md', startedAt: '2026-10-21T09:00:00.000Z', generatedAt: '2026-10-21T09:01:00.000Z', reviewedThrough: '2026-10-20T09:00:00.000Z', error: null, pid: 1, trigger: 'owner' as const }
+  const raw: WorkViewHumanRequest = { ...syntheticRequest(), progress: askedReview({ question: undefined }), stages: { brief: stage },
+    answer: { state: 'failed', token: 't', platform: 'claude', startedAt: 'a', finishedAt: 'b', error: 'The tool exited 1', pid: 1 } }
+  const plan = { state: 'ready' as const, focusAreaId: null, token: 't', pid: 1, startedAt: 'a', generatedAt: 'b', error: null, skipped: [], proposals: [{ kind: 'goal' as const, focusAreaId: 'fa', goal: 'g', reason: 'r' }] }
+  const model = toWorkModel(snapshotWith([raw], { stageFormats: [{ id: 'brief', label: 'Brief', builtIn: true }], autoStageFormat: null, focusPlan: plan }), Date.parse('2026-10-22T12:00:00Z'))
+  assert.deepEqual(model.requests[0].stages, [{ formatId: 'brief', state: 'ready', href: '/api/deliverables/3/s.md', error: null, outdated: true }])
+  assert.deepEqual(model.requests[0].answer, { state: 'failed', error: 'The tool exited 1' })
+  assert.deepEqual(model.stageFormats, [{ id: 'brief', label: 'Brief', builtIn: true }])
+  assert.equal(model.autoStageFormat, null)
+  assert.deepEqual(model.focusPlan, { state: 'ready', focusAreaId: null, startedAt: 'a', generatedAt: 'b', error: null, proposals: 1 })
+  // An older worker's snapshot adds none of it.
+  const plain = toWorkModel(snapshotWith([syntheticRequest()]), Date.parse('2026-10-22T12:00:00Z'))
+  assert.deepEqual([plain.stageFormats, plain.autoStageFormat, plain.focusPlan, plain.requests[0].stages, plain.requests[0].answer], [undefined, undefined, undefined, undefined, undefined])
+})
+
+test('ready for a check is exactly when the page offers Mark checked, and a saved check is not asked for again', () => {
+  const now = Date.parse('2026-10-22T12:00:00Z')
+  const cases: Array<[string, Partial<WorkViewHumanRequest>]> = [
+    ['finished review', { progress: askedReview({ percent: 100, question: undefined }) }],
+    ['half-done review', { progress: askedReview({ question: undefined }) }],
+    ['shipped review', { progress: askedReview({ state: 'shipped', percent: 100, shippedAt: REVIEWED, question: undefined }) }],
+    ['reported complete', { lifecycle: { status: 'done', explicit: true, complete: true, atEpoch: now - 1000 } as WorkViewHumanRequest['lifecycle'] }],
+    ['nothing recorded', {}],
+  ]
+  for (const [name, change] of cases) {
+    const raw = { ...syntheticRequest(), ...change }
+    const offered = toWorkModel(snapshotWith([raw]), now).requests[0].state === 'needs-check'
+    assert.equal(isReadyForCheck(raw, now), offered, name)
+    assert.equal(isAwaitingCheck(raw, now), offered, name)
+  }
+  const checked = { ...syntheticRequest(), progress: askedReview({ percent: 100, question: undefined }), review: { checked: true, checkedAtEpoch: now, actor: 'local-user', available: true } as WorkViewHumanRequest['review'] }
+  assert.equal(isReadyForCheck(checked, now), true)
+  assert.equal(isAwaitingCheck(checked, now), false)
 })

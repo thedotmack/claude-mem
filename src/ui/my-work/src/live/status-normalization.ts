@@ -83,6 +83,9 @@ const TURN_COUNTS_FOR_MS: Record<TurnHolder, number> = { 'owner-turn': OWNER_TUR
 // What the transcript may decide: only a request nothing recorded has given a status.
 const NOTHING_RECORDED: NormalizedStatus[] = ['unknown', 'quiet']
 
+/** Reported finished and waiting on a person's check: the statuses "Mark checked" applies to. */
+export const awaitsCheck = (status: NormalizedStatus): boolean => status === 'done' || status === 'needs-review'
+
 /** The status a turn state gives a request with nothing more explicit recorded; null when the turn is too old to count. */
 export function turnStatus(turn: TurnState, now: number): NormalizedStatus | null {
   return turn.atEpoch !== null && now - turn.atEpoch <= TURN_COUNTS_FOR_MS[turn.state] ? TURN_STATUS[turn.reason] : null
@@ -104,7 +107,7 @@ export function normalizeRequestStatus({ items, lifecycle, checked, progressStat
   // Reviewed as finished but not shipped: done, waiting on a person's check, never still "working" at 100%.
   else if (progressPercent === 100 && ['in-progress', 'todo', 'unknown', 'quiet'].includes(status)) status = 'needs-review'
   if (turn && NOTHING_RECORDED.includes(status)) status = turnStatus(turn, now) ?? status
-  if (checked && (status === 'done' || status === 'needs-review')) status = 'checked'
+  if (checked && awaitsCheck(status)) status = 'checked'
   return status
 }
 

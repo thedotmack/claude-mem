@@ -3,6 +3,8 @@
 // A status the worker declares a type for is taken from that declaration, never retyped here.
 import type { FocusAreaStatus } from '../../../../services/work-view/my-focus.mjs'
 import type { SavedRule } from '../../../../services/work-view/my-rules.mjs'
+import type { QuestionNeed } from '../../../../services/work-view/question-needs.mjs'
+import type { AnswerRun, FocusPlan, StageRecord } from '../../../../services/work-view/owner-runs.mjs'
 import type { TurnState } from '../../../../services/work-view/turn-state.mjs'
 
 /** One image ref, as src/shared/media-contract.ts MediaAttachmentRef defines it. Restated because My Work's tsconfig
@@ -94,6 +96,11 @@ export interface WorkViewProgress {
   milestones?: { at: string | null; text: string }[]
   /** ISO time the review was recorded. */
   checkedAt?: string
+  /** ISO time the reviewer read its evidence: what the review covers ends here, before `checkedAt`. Reviews from older workers leave it out. */
+  reviewedThrough?: string
+  /** What the agent is waiting on the owner for, with what the owner may need to know. Optional: reviews recorded
+   * before the field, and reviews of work that waits on nobody, have none. */
+  question?: { need?: QuestionNeed; text: string; background?: { text: string }[] }
   /** ISO time the work shipped; set only when state is shipped. */
   shippedAt?: string | null
   /** Recorded history, oldest first; valid older or minimal shared records may omit it. */
@@ -151,8 +158,12 @@ export interface WorkViewHumanRequest {
   activity: WorkViewActivity[]
   agentIds: string[]
   conversationKeys: string[]
-  /** The conversation whose owner wrote last (request-projection.mjs latestConversationKey). Null when it has several and no recorded time says which; older workers leave it out. */
+  /** The conversation whose owner wrote last (request-projection.mjs latestConversationKey): where an answer goes. Null when it has several and no recorded time says which; older workers leave it out. */
   latestConversationKey?: string | null
+  /** The stages made for it, by format id (owner-runs.json); absent when it has none. Older workers leave it out. */
+  stages?: Record<string, StageRecord>
+  /** The answer the owner last sent it from My Work, and how its delivery ended. Older workers leave it out. */
+  answer?: AnswerRun
   requestedBy: string | null
   startedAtEpoch: number | null
   completedAtEpoch: number | null
@@ -284,6 +295,9 @@ export interface WorkViewFocusArea {
   savedAt: string | null
 }
 
+/** One format a request can be staged in (stage-formats.ts): built in, or a file of the owner's. */
+export interface WorkViewStageFormat { id: string; label: string; builtIn: boolean }
+
 export interface WorkViewRuleScope { id: string; tier: 'everywhere' | 'project' | 'situation'; name: string }
 
 /** What the last request-progress story found; null when it has not run. */
@@ -319,6 +333,12 @@ export interface WorkViewSnapshot {
   refresh?: WorkViewRefresh | null
   /** Every open judge suggestion; each is also on its conversation's request as `suggestion`. Older workers leave it out. */
   suggestions?: WorkViewRequestSuggestion[]
+  /** Every stage format this worker knows. Older workers leave it out. */
+  stageFormats?: WorkViewStageFormat[]
+  /** The format automatic stages are made in; null when the owner has not turned them on. Older workers leave it out. */
+  autoStageFormat?: string | null
+  /** The owner's latest focus plan; null before the first. Older workers leave it out. */
+  focusPlan?: FocusPlan | null
 }
 
 /** Shared display facts are readable before this installation enables new writes. */

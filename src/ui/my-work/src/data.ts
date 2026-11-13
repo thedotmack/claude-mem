@@ -2,6 +2,11 @@
 import type { WorkModel } from './live/work-data-source.ts'
 import type { WorkViewFocusArea, WorkViewMediaManifest, WorkViewRequestMedia } from './live/work-view-api-types.ts'
 import { SAMPLE_MEDIA_REFS } from './components/observation-media/sample-media.ts'
+import type { QuestionNeed } from '../../../services/work-view/question-needs.mjs'
+import type { AnswerRunState, FocusPlan as RecordedFocusPlan, StageState } from '../../../services/work-view/owner-runs.mjs'
+export type { PlanProposal } from '../../../services/work-view/owner-runs.mjs'
+/** The latest focus plan as the page reads it: the worker's record without its bookkeeping. */
+export type FocusPlan = Omit<RecordedFocusPlan, 'token' | 'pid'>
 
 export interface Device { id: string; name: string; syncedMinutesAgo: number; online: boolean }
 /** 'other' is any platform without its own mark (a neutral mark is shown). */
@@ -101,7 +106,24 @@ export interface Request {
   closed?: boolean
   /** The tool and session of its latest conversation, set only when the request's own id does not already name them (chat-links.ts requestChat). */
   chat?: { platform: string; sessionId: string }
+  /**
+   * What the agent waits on the owner for, from the last review, while it still stands (to-work-model.ts
+   * standingQuestion). `background` is what the owner may need to know to answer; `version` names the review it came
+   * from. Detail only: the question and its background always come from one read.
+   */
+  question?: { need: QuestionNeed; text: string; version: string; background: string[] }
+  /** Its stages, newest first (owner-runs-model.ts). Detail only. */
+  stages?: RequestStage[]
+  /** The answer the owner last sent it from My Work, and how its delivery went. Rides the overview, so it shows whether or not a question still stands. */
+  answer?: { state: AnswerRunState; error?: string }
 }
+
+/** One stage of a request: a review document in one format. `href` is set only when `ready`; `outdated` when the request was reviewed again after the stage was made. */
+export interface RequestStage { formatId: string; state: StageState; href?: string; error: string | null; outdated: boolean }
+/** One format a request can be staged in, as the worker lists them: built in, or a file of the owner's. */
+export interface StageFormatInfo { id: string; label: string; builtIn: boolean }
+/** The latest focus plan without its proposals: what the overview carries. */
+export type FocusPlanSummary = Pick<FocusPlan, 'state' | 'focusAreaId' | 'startedAt' | 'generatedAt' | 'error'> & { proposals: number }
 
 /** The permanent bucket for requests that fit no area. Never an area id (my-focus.mjs OTHER_FOCUS_AREA_ID). */
 export const OTHER_FOCUS_AREA_ID = 'other'
@@ -197,6 +219,8 @@ export const SAMPLE_REQUESTS: Request[] = [
     focusAreaId: 'fa-viewer', askedBy: 'Alex', agentId: 'claude', startedAt: 'Oct 20, 1:16 pm', startedAtIso: '2026-10-20T13:16:00-07:00', runningFor: '42 min', stage: 'Building', state: 'working',
     progress: { percent: 70, readings: 3, reviewedAt: '1:50 pm', history: [30, 55, 70], coverage: { reviewed: 2, total: 2 } }, estimate: 'at this pace, about Oct 21',
     next: { who: 'bot', text: 'Finish the My Rules screens' }, activityWord: 'Editing',
+    // The sample plays this request's answer as a failed delivery (sample-source.ts), so that state can be seen.
+    question: { need: 'answer', text: 'Should My Rules open on the suggestions or on the rules you approved?', version: 'sample', background: ['Three suggestions are waiting for you right now.', 'The approved rules are what your agents already follow.'] },
     workstreams: [
       { title: 'Spec', tasks: [{ name: 'Derive from 466 prompts', done: true }, { name: 'Decide open questions', done: true }] },
       { title: 'Wireframe', tasks: [{ name: 'Requirement ledger', done: true }, { name: 'My Work screens', done: true }, { name: 'My Rules screens', done: false }] },
@@ -235,6 +259,7 @@ export const SAMPLE_REQUESTS: Request[] = [
     focusAreaId: 'fa-sync', askedBy: 'Alex', agentId: 'claude-sync', startedAt: 'Oct 17, 7:55 am', startedAtIso: '2026-10-17T07:55:00-07:00', runningFor: '3 days', stage: 'Reviewing', state: 'needs-check',
     progress: { percent: 100, readings: 4, reviewedAt: 'Oct 20, 9:10 am', history: [40, 70, 90, 100], coverage: { reviewed: 2, total: 2 } }, estimate: null,
     next: { who: 'human', text: 'Check the remap queue drained' },
+    stages: [{ formatId: 'one-pager', state: 'ready', href: '#', error: null, outdated: true }, { formatId: 'technical', state: 'failed', error: 'Claude Code: You have hit your session limit · resets 2:30pm', outdated: false }],
     workstreams: [
       { title: 'Vectors table', tasks: [{ name: 'Migration for the new table', done: true }, { name: 'Write path moved', done: true }] },
       { title: 'Remap', tasks: [{ name: 'Remap target selection', done: true }, { name: 'Embedding job rate recorded', done: true }] },
@@ -248,6 +273,7 @@ export const SAMPLE_REQUESTS: Request[] = [
     focusAreaId: 'fa-viewer', askedBy: 'Sam', agentId: 'codex', startedAt: 'Oct 16, 9:39 am', startedAtIso: '2026-10-16T09:39:00-07:00', runningFor: '2 days', stage: 'Shipped', state: 'shipped',
     progress: { percent: 100, readings: 5, reviewedAt: 'Oct 19', completedAt: 'Oct 18', history: [20, 45, 70, 90, 100], coverage: { reviewed: 3, total: 3 } }, estimate: null,
     next: { who: 'human', text: 'Write the release notes' },
+    question: { need: 'approval', text: 'The release notes are drafted. Publish them with the launch post?', version: 'sample', background: [] },
     workProduct: [{ kind: 'PR', label: '#330 live human-request monitor', href: `${PULL_REQUEST}330` }, { kind: 'Deck', label: 'Launch walkthrough', href: '#', deliverable: true }],
     followUps: [{ tag: 'Docs', text: 'Write the release notes', done: false }, { tag: 'Promo', text: 'Launch post with walkthrough', done: false }, { tag: 'Other', text: 'Telemetry dashboard', done: true }],
   },
@@ -257,6 +283,7 @@ export const SAMPLE_REQUESTS: Request[] = [
     focusAreaId: OTHER_FOCUS_AREA_ID, askedBy: 'Priya', agentId: 'gemini', startedAt: 'Oct 20, 12:40 pm', startedAtIso: '2026-10-20T12:40:00-07:00', runningFor: '1 hr', stage: 'Building', state: 'your-move',
     progress: { percent: 30, readings: 1, reviewedAt: '1:30 pm', history: [30], coverage: { reviewed: 1, total: 2 } }, estimate: null,
     next: { who: 'human', text: 'Pick which forecast to keep' },
+    question: { need: 'answer', text: 'Which forecast should stay on the price page: linear or seasonal?', version: 'sample', background: ['Linear is one line of math and matched the last three months within 4%.', 'Seasonal tracks the December spike but needs a year of history; you have five months.', 'Both drafts are live on the admin page until one is removed.'] },
     workstreams: [
       { title: 'Usage first', tasks: [{ name: 'Current usage table', done: true }] },
       { title: 'Forecasts', tasks: [{ name: 'Two forecast drafts', done: true }, { name: 'Keep one, remove the other', done: false }] },

@@ -1,6 +1,10 @@
 import type { Request } from '../data.ts'
 
-/** Current card/status fields win, while a complete detail keeps the evidence omitted from its overview. */
+/**
+ * Current card/status fields win, while a complete detail keeps the evidence omitted from its overview. The question
+ * is taken whole from the detail, with its background: both come from one read of one review, so a newer question is
+ * never shown beside what was gathered for an older one.
+ */
 export function mergeRequestDetail(summary: Request, detail: Request): Request {
   return {
     ...detail,
@@ -14,6 +18,8 @@ export function mergeRequestDetail(summary: Request, detail: Request): Request {
     story: detail.story,
     storyNarrative: detail.storyNarrative,
     evidence: detail.evidence,
+    question: detail.question,
+    stages: detail.stages,
     detailLoaded: true,
   }
 }

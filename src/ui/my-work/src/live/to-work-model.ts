@@ -3,11 +3,13 @@
 // nothing is estimated or made up (spec §12). Relative imports with .ts extensions so `node --test` can load it.
 import { assertConsistentRequest, type WorkProductKind, type Agent, type AgentTool, type CurrentPeriod, type Device, type PastPeriod, type Request, type SkillRun } from '../data.ts'
 import { createFocusAreaResolver, toFocusModel, type MinedGoalItem } from './to-focus-model.ts'
-import { normalizeRequestStatus, presentStatus, STALE_AFTER_MS, type NormalizedStatus } from './status-normalization.ts'
+import { awaitsCheck, normalizeRequestStatus, presentStatus, STALE_AFTER_MS, type NormalizedStatus } from './status-normalization.ts'
+import { QUESTION_NEEDS } from '../../../../services/work-view/question-needs.mjs'
 import type { MappedWorkModel, RequestReadError } from './work-data-source.ts'
 import type { OwnerRule, RuleQuote, RuleRecord } from '../data-rules.ts'
 import type { AutoRefresh, BuildStory } from './work-data-source.ts'
 import { chatIsImplied } from './chat-links.ts'
+import { focusPlanSummary, requestStages } from './owner-runs-model.ts'
 import { measuredEstimate } from './measured-estimate.ts'
 import { repeatsOwnerWords } from './prompt-echo.ts'
 import { SOLO_REQUESTER } from './work-view-overview.ts'
@@ -133,11 +135,60 @@ function storySteps(progress: WorkViewProgress, now: number): Request['story'] {
     .filter((step) => step.label)
 }
 
-/** The worker's check route uses the same rule (WorkViewRoutes.ts reviewIsNewerThanLifecycle). */
+/** A review counts once it is at least as new as the explicit status: a reopen recorded after it wins. */
 function reviewIsNewerThanLifecycle(review: Pick<WorkViewProgress, 'checkedAt'>, lifecycle: WorkViewHumanRequest['lifecycle']): boolean {
   if (!lifecycle?.explicit || !lifecycle.atEpoch) return true
   const reviewedAt = Date.parse(review.checkedAt ?? '')
   return Number.isFinite(reviewedAt) && reviewedAt >= lifecycle.atEpoch
+}
+
+type StandingInput = Pick<WorkViewHumanRequest, 'items' | 'lifecycle' | 'progress' | 'turn' | 'updatedAtEpoch'>
+
+/** What one request's records say about where it stands, before any saved check. */
+function recordedStanding(raw: StandingInput) {
+  const updatedAt = raw.updatedAtEpoch ?? Math.max(0, ...raw.items.map((item) => item.lastUpdateEpoch || 0))
+  const recordedReview = raw.progress ?? null
+  // A memory review can be newer than the recorded items: its shipped state and its 100% both count then.
+  // An explicit status recorded after the review (a reopen) wins, and the older review cannot claim it finished.
+  const reviewCounts = !!recordedReview && reviewIsNewerThanLifecycle(recordedReview, raw.lifecycle)
+  const review = reviewCounts || (recordedReview && recordedReview.percent < 100) ? recordedReview : null
+  // With only asks, the latest ask is the request's last update.
+  const items = raw.items.length ? raw.items : [{ kind: 'prompt', status: '', lastUpdateEpoch: updatedAt }]
+  const status = { items, lifecycle: raw.lifecycle, progressState: reviewCounts ? review?.state : null, progressPercent: reviewCounts ? review?.percent : null, turn: raw.turn ?? null }
+  return { updatedAt, recordedReview, reviewCounts, review, status }
+}
+
+/**
+ * Ready for a person's check: the request's records report its work finished. One rule for both sides of the action:
+ * My Work offers "Mark checked" on exactly these requests, and the worker's review route saves a check for no other.
+ * A check already saved is left out, so marking the same version checked twice is not refused.
+ */
+export function isReadyForCheck(raw: StandingInput, now: number): boolean {
+  return awaitsCheck(normalizeRequestStatus({ ...recordedStanding(raw).status, checked: false }, now))
+}
+
+/** Waiting for the owner's review: ready for a check that nobody has saved yet. Automatic stages are made for exactly these. */
+export function isAwaitingCheck(raw: StandingInput & Pick<WorkViewHumanRequest, 'review'>, now: number): boolean {
+  return raw.review?.checked !== true && isReadyForCheck(raw, now)
+}
+
+/**
+ * The question a review recorded, while it still stands: the review counts, and the owner has not written since the
+ * review read its evidence (`reviewedThrough`; a review from before that was recorded has only its save time). Once
+ * the owner writes, the agent has its reply and the next review says what it waits on. `version` names the review the
+ * question came from, so nothing gathered for one question is ever shown beside another.
+ */
+export function standingQuestion(raw: Pick<WorkViewHumanRequest, 'lifecycle' | 'progress' | 'original' | 'scopeUpdates'>): Request['question'] | null {
+  const review = raw.progress
+  if (!review?.question || !reviewIsNewerThanLifecycle(review, raw.lifecycle)) return null
+  const readThrough = review.reviewedThrough ?? review.checkedAt ?? ''
+  const ownerWroteAt = Math.max(0, ...[raw.original, ...raw.scopeUpdates].map((prompt) => prompt.atEpoch ?? 0))
+  const text = cleanText(review.question.text, 240)
+  if (!text || !(ownerWroteAt <= Date.parse(readThrough))) return null
+  return {
+    need: QUESTION_NEEDS.find((need) => need === review.question?.need) ?? 'answer', text, version: readThrough,
+    background: (review.question.background ?? []).map((item) => cleanText(item.text, 240)).filter(Boolean),
+  }
 }
 
 /** One human request → one Request. Its area follows merges; a placement in no live area reads "Sorting…" (absent).
@@ -146,15 +197,10 @@ function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: numb
   const copy = raw.humanCopy
   const copyReady = !!copy && ['current', 'outdated'].includes(copy.state)
   const generatedTitle = raw.titleSource === 'request-group' || raw.titleSource === 'title-cache'
-  const updatedAt = raw.updatedAtEpoch ?? Math.max(0, ...raw.items.map((item) => item.lastUpdateEpoch || 0))
-  const recordedReview = raw.progress ?? null
-  // A memory review can be newer than the recorded items: its shipped state and its 100% both count then.
-  // An explicit status recorded after the review (a reopen) wins, and the older review cannot claim it finished.
-  const reviewCounts = !!recordedReview && reviewIsNewerThanLifecycle(recordedReview, raw.lifecycle)
-  const review = reviewCounts || (recordedReview && recordedReview.percent < 100) ? recordedReview : null
-  // With only asks, the latest ask is the request's last update.
-  const statusItems = raw.items.length ? raw.items : [{ kind: 'prompt', status: '', lastUpdateEpoch: updatedAt }]
-  const status = normalizeRequestStatus({ items: statusItems, lifecycle: raw.lifecycle, checked: raw.review?.checked === true, progressState: reviewCounts ? review?.state : null, progressPercent: reviewCounts ? review?.percent : null, turn: raw.turn ?? null }, now)
+  const { updatedAt, recordedReview, reviewCounts, review, status: standing } = recordedStanding(raw)
+  const status = normalizeRequestStatus({ ...standing, checked: raw.review?.checked === true }, now)
+  const question = standingQuestion(raw)
+  const stages = requestStages(raw)
   const shippedAt = review?.state === 'shipped' && review.shippedAt ? Date.parse(review.shippedAt) : NaN
   const completedEpoch = raw.completedAtEpoch ?? (Number.isFinite(shippedAt) ? shippedAt : null)
   const { state, stage, who } = presentStatus(status, now - updatedAt <= STALE_AFTER_MS)
@@ -218,6 +264,9 @@ function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: numb
     estimate: measuredEstimate(readings, status === 'shipped'),
     next: { who, text: nextTextFor(status, recordedNext) },
     ...(chat ? { chat } : {}),
+    ...(question ? { question } : {}),
+    ...(stages.length ? { stages } : {}),
+    ...(raw.answer ? { answer: { state: raw.answer.state, ...(raw.answer.error ? { error: raw.answer.error } : {}) } } : {}),
     // No agent activity yet: the card shows the human's own asks instead.
     terminal: raw.activity.length
       ? raw.activity.slice(0, 4).reverse().map((activity) => cleanText(`${activity.kind} ${activity.title}${activity.detail ? `: ${activity.detail}` : ''}`, 160)).filter(Boolean)
@@ -492,5 +541,8 @@ export function toWorkModel(snapshot: WorkViewSnapshot, now: number): MappedWork
     buildStory: toBuildStory(snapshot.story?.story ?? null, now),
     lastRuns: { goals: goalsRun, progress: progressRun },
     refresh: toAutoRefresh(snapshot.refresh ?? null),
+    ...(snapshot.stageFormats ? { stageFormats: snapshot.stageFormats } : {}),
+    ...(snapshot.autoStageFormat !== undefined ? { autoStageFormat: snapshot.autoStageFormat } : {}),
+    ...(snapshot.focusPlan !== undefined ? { focusPlan: snapshot.focusPlan ? focusPlanSummary(snapshot.focusPlan) : null } : {}),
   }
 }

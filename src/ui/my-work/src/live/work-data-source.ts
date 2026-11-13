@@ -1,7 +1,8 @@
 // The one boundary between the screens and where work comes from (plan: "The adapter decision").
 // Screens consume a WorkModel and never see API shapes. Implementations: sampleSource (fixtures) and
 // localSource (the worker at localhost:37777); cloudSource (cmem.ai) comes later.
-import type { Agent, CurrentPeriod, Device, FocusArea, FocusAsk, FocusChange, PastPeriod, Request, SkillRun } from '../data.ts'
+import type { Agent, CurrentPeriod, Device, FocusArea, FocusAsk, FocusChange, FocusPlan, FocusPlanSummary, PastPeriod, Request, SkillRun, StageFormatInfo } from '../data.ts'
+import type { OwnerRunStartState } from '../../../../services/work-view/owner-runs.mjs'
 import type { OwnerRule, RuleChange, RulesFile, RulesLearning, RuleScope } from '../data-rules.ts'
 import type { ConnectionStatus } from './connection-status.ts'
 import type { ReviewResult, SaveReceipt } from './review-response.ts'
@@ -49,6 +50,12 @@ export interface WorkModel {
   lastRuns: { goals: SkillRun | null; progress: SkillRun | null }
   /** The worker's automatic refresh of goals and progress. Null in sample mode and on older workers. */
   refresh: AutoRefresh | null
+  /** Every format a request can be staged in, as the worker lists them (built-ins, then the owner's own). Absent on older workers. */
+  stageFormats?: StageFormatInfo[]
+  /** The format automatic stages are made in; null while the owner has not turned them on (the default). */
+  autoStageFormat?: string | null
+  /** The owner's latest focus plan; null before the first. Its proposals are in the store (`work.focusPlan`). */
+  focusPlan?: FocusPlanSummary | null
   /** The backend's own health. `connected: false` means it answered but could not read saved work. */
   sourceHealth: { connected: boolean; error: string | null }
   sharedState?: import('./work-view-api-types.ts').WorkViewSharedState
@@ -65,6 +72,13 @@ export interface BuildStory { recap: string; paragraphs: string[]; writtenAt: st
 /** A saved rule change: the model right after it, and the rule it saved (null from workers that don't say). */
 export interface RuleSaveResult { model: WorkModel; savedRuleId: string | null; save?: SaveReceipt }
 export interface SuggestionSaveResult { model: WorkModel; save?: SaveReceipt }
+
+/**
+ * How a one-click run began (answer, stage, plan). `started`: the worker started its one run, and the model will carry
+ * how it ends. `duplicate`: this click already started one. `refused`: nothing was started, and `reason` says why in
+ * words to show; for an answer the page then falls back to copying it and opening the chat.
+ */
+export type OwnerRunStart = { outcome: OwnerRunStartState } | { outcome: 'refused'; reason: string }
 
 /** What the pure mapper produces; the source adds the connection it measured. */
 export type MappedWorkModel = Omit<WorkModel, 'connection'>
@@ -93,4 +107,14 @@ export interface WorkDataSource {
   loadRulesInClaudeCode(): Promise<WorkModel>
   /** Starts an on-demand refresh of goals and progress on this machine. `state` is `idle` when nothing was due. */
   refreshWork(): Promise<{ state: string }>
+  /** Sends the owner's answer into the request's own agent session. `token` is this click's id: the same token never starts a second run. */
+  answerRequest?(requestId: string, text: string, token: string): Promise<OwnerRunStart>
+  /** Starts one stage of a request in one format. Rejects with the reason when it could not start. */
+  generateStage?(requestId: string, formatId: string, token: string): Promise<OwnerRunStart>
+  /** Turns automatic stages on (a format id) or off (null) and answers with the model after it. It generates nothing by itself. */
+  setAutoStageFormat?(formatId: string | null): Promise<WorkModel>
+  /** Starts planning help for one focus area, or for all of them (null). Rejects with the reason when it could not start. */
+  planFocus?(focusAreaId: string | null, token: string): Promise<OwnerRunStart>
+  /** The latest plan with its proposals; null before the first. */
+  loadFocusPlan?(): Promise<FocusPlan | null>
 }
