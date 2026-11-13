@@ -1,5 +1,5 @@
 
-import { readFile, readdir, stat } from "node:fs/promises";
+import { open, readdir } from "node:fs/promises";
 import { basename, extname, join, relative } from "node:path";
 import { parseFilesBatch, formatFoldedView, qualifySymbolName, matchScore, docCommentSummary, type FoldedFile } from "./parser.js";
 import { detectLanguage } from "./language-map.js";
@@ -98,15 +98,30 @@ async function* walkDir(dir: string, rootDir: string, maxDepth: number = 20): As
 
 async function safeReadFile(filePath: string): Promise<string | null> {
   try {
-    const stats = await stat(filePath);
-    if (stats.size > MAX_FILE_SIZE) return null;
-    if (stats.size === 0) return null;
+    const file = await open(filePath, "r");
+    try {
+      const stats = await file.stat();
+      if (!stats.isFile() || stats.size > MAX_FILE_SIZE || stats.size === 0) return null;
 
-    const content = await readFile(filePath, "utf-8");
-
-    if (content.slice(0, 1000).includes("\0")) return null;
-
-    return content;
+      // Metadata is only an early rejection: generated sources can grow while
+      // being searched. Read at most one byte over the limit from this same
+      // handle, then decode once so UTF-8 split across reads remains intact.
+      const chunks: Buffer[] = [];
+      let bytes = 0;
+      while (bytes <= MAX_FILE_SIZE) {
+        const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, MAX_FILE_SIZE + 1 - bytes));
+        const { bytesRead } = await file.read(chunk, 0, chunk.length, null);
+        if (bytesRead === 0) break;
+        bytes += bytesRead;
+        if (bytes > MAX_FILE_SIZE) return null;
+        chunks.push(chunk.subarray(0, bytesRead));
+      }
+      const content = Buffer.concat(chunks, bytes).toString("utf8");
+      if (content.slice(0, 1000).includes("\0")) return null;
+      return content;
+    } finally {
+      await file.close();
+    }
   } catch (error) {
     logger.debug('WORKER', `safeReadFile: failed to read ${filePath}`, undefined, error instanceof Error ? error : undefined);
     return null;
