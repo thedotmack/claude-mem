@@ -213,7 +213,7 @@ describe('POST /api/work-view/answer', () => {
   });
 
   it('answers, reads the turn of and links the chat whose owner wrote last, whatever the order of its keys', async () => {
-    const olderCodex = '01a18a2e-1d34-4721-8fc0-65a66071db9e';
+    const olderCodex = '7a2d3b0f-5c8e-4f1b-8d46-3e9a8b2c1d22';
     const hour = 3_600_000;
     addConversation(1, 'claude', SESSION, sessionCwd, ASK, Date.now() - hour);
     addConversation(2, 'codex', olderCodex, sessionCwd, 'Start the board', Date.now() - 200 * hour);
@@ -233,7 +233,7 @@ describe('POST /api/work-view/answer', () => {
   });
 
   it('with several chats and no recorded time to tell the latest, names none: no link, and the answer is refused unsent', async () => {
-    const other = '01a18a2e-1d34-4721-8fc0-65a66071db9e';
+    const other = '7a2d3b0f-5c8e-4f1b-8d46-3e9a8b2c1d22';
     addConversation(1, 'claude', SESSION, sessionCwd, ASK, null);
     addConversation(2, 'codex', other, sessionCwd, 'Start the board', null);
     groupTogether([conversation('claude', SESSION), conversation('codex', other)]);
