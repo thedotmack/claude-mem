@@ -28,7 +28,7 @@
  * summary, since V2's context has no V1 `client` to read messages back from.
  *
  * V2's `ctx` is structurally unknown to this package (it ships no dependency on
- * `@opencode-ai/plugin`, to stay bundle-safe), so the surface is typed locally
+ * `@opencode/plugin`, to stay bundle-safe), so the surface is typed locally
  * and read defensively: the plugin API is still beta and field shapes can move.
  */
 
@@ -231,14 +231,8 @@ export async function setupV2(
 ): Promise<() => Promise<void>> {
   // V1 read `ctx.directory`; V2 nests it under `ctx.location`. Without this the
   // worker rejects every write with "Missing cwd when ingesting observation".
-  const directory = context.location?.directory ?? context.directory;
-  if (typeof directory !== "string" || directory === "") {
-    // OpenCode also calls setup() with a host registry that has no checkout.
-    // Registering hooks there would send every write to the worker without a cwd.
-    return async () => {};
-  }
   const ctx: CoreContext = {
-    directory,
+    directory: context.location?.directory ?? "",
     client: context.client,
   };
 
@@ -281,23 +275,12 @@ export async function setupV2(
     await register(() =>
       hook("execute.after", async (event) => {
         const sessionID = event.sessionID;
-        let tool = event.tool;
+        const tool = event.tool;
         if (!sessionID || !tool) return;
         trackSession(sessionID);
-        // Current V2 built-ins use these names; the core keeps V1's vocabulary.
-        if (tool === "patch") tool = "apply_patch";
-        if (tool === "shell") tool = "bash";
         // v2 names the argument bag `input`; `args` is tolerated because the
         // beta shape has moved before.
-        let args = (event.input ?? event.args) as Record<string, unknown> | undefined;
-        const readResultType = (event.result as { output?: { type?: string } } | null)?.output?.type;
-        if (tool === "read" && typeof args?.path === "string"
-          && (readResultType === "file" || readResultType === "text-page")
-          && !/^[a-z][a-z0-9+.-]*:\/\//i.test(args.path)
-          && args.file_path === undefined && args.filePath === undefined) {
-          const { path, ...rest } = args;
-          args = { ...rest, file_path: path };
-        }
+        const args = (event.input ?? event.args) as Record<string, unknown> | undefined;
         // A failed tool still ran, and its error message is the interesting
         // part; v1 received the same string through `output`.
         const result = event.result;
@@ -305,9 +288,7 @@ export async function setupV2(
           event.status === "error"
             ? errorMessage(event.error ?? "")
             : extractResultText(result);
-        await core.captureTool({ tool, sessionID, args, output, failed: event.status === "error",
-          ...(tool !== event.tool ? { nativeToolName: event.tool } : {}),
-        });
+        await core.captureTool({ tool, sessionID, args, output });
       }),
     );
   }
@@ -359,7 +340,7 @@ export async function setupV2(
         editor.add({
           name: "claude_mem_search",
           description:
-            "Smart search (default), step 1: get a memory index. Review claude_mem_timeline, then fetch only selected IDs with claude_mem_get_observations.",
+            "Search claude-mem memory database for past observations, sessions, and context",
           input: {
             type: "object",
             properties: {
@@ -370,18 +351,6 @@ export async function setupV2(
           execute: async (input: Record<string, unknown>) => ({
             content: await core.search(String(input?.query || "")),
           }),
-        });
-        editor.add({
-          name: "claude_mem_timeline",
-          description: "Smart search, step 2: inspect context around an observation ID from claude_mem_search.",
-          input: { type: "object", properties: { anchor: { type: "integer" } }, required: ["anchor"] },
-          execute: async (input: Record<string, unknown>) => ({ content: await core.timeline(Number(input.anchor)) }),
-        });
-        editor.add({
-          name: "claude_mem_get_observations",
-          description: "Smart search, step 3: fetch only IDs selected after reviewing the index and timeline. At most 100 ids per call; split larger selections.",
-          input: { type: "object", properties: { ids: { type: "array", items: { type: "integer" }, minItems: 1, maxItems: 100 } }, required: ["ids"] },
-          execute: async (input: Record<string, unknown>) => ({ content: await core.getObservations(input.ids as number[]) }),
         });
       }),
     );
