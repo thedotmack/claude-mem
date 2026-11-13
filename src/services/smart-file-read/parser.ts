@@ -736,21 +736,21 @@ function pythonDocstringText(lines: string[], captures: RawCapture[]): string | 
 }
 
 function isExported(
-  name: string, startRow: number, endRow: number,
-  exportRanges: Array<{ startRow: number; endRow: number }>,
+  name: string, range: RawCapture,
+  exportRanges: RawCapture[],
   lines: string[], language: string
 ): boolean {
   switch (language) {
     case "javascript":
     case "typescript":
     case "tsx":
-      return exportRanges.some(r => startRow >= r.startRow && endRow <= r.endRow);
+      return exportRanges.some(exportRange => rangeContains(exportRange, range));
     case "python":
       return !name.startsWith("_");
     case "go":
       return name.length > 0 && name[0] === name[0].toUpperCase() && name[0] !== name[0].toLowerCase();
     case "rust":
-      return lines[startRow]?.trimStart().startsWith("pub") ?? false;
+      return lines[range.startRow]?.trimStart().startsWith("pub") ?? false;
     default:
       return true;
   }
@@ -1064,7 +1064,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       jsdoc: [docstring, comment].filter(Boolean).join("\n") || undefined,
       lineStart: decoratedRanges.get(`${startRow}:${kindCapture.startCol}`)?.startRow ?? startRow,
       lineEnd: endRow,
-      exported: isExported(nameCapture?.text || name, startRow, endRow, exportRanges, lines, language),
+      exported: isExported(nameCapture?.text || name, kindCapture, exportRanges, lines, language),
     };
 
     if (CONTAINER_KINDS.has(kind) || LANGUAGE_CONTAINER_KINDS[language]?.has(kind)) {
