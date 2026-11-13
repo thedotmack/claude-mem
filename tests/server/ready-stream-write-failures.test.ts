@@ -80,3 +80,28 @@ it('keeps a healthy readiness stream open until its terminal phase', async () =>
     expect((await stream.next()).done).toBe(true);
   } finally { await h.close(); }
 });
+
+it('handles queued response errors until the closing transport emits close', async () => {
+  const h = await fixture();
+  let destroy: ReturnType<typeof spyOn> | undefined;
+  try {
+    const failed = await h.connect();
+    const response = h.responses[0];
+    const closed = failed.next().then(result => result.done, () => true);
+    // Hold the real response in the error-to-close interval deterministically.
+    // The response, phase subscription and final socket close remain real.
+    destroy = spyOn(response, 'destroy').mockImplementation(() => response);
+    expect(() => response.emit('error', new Error('first failed write'))).not.toThrow();
+    expect(h.tracker.listenerCount()).toBe(0);
+    await Promise.resolve();
+    expect(() => response.emit('error', new Error('queued failed write'))).not.toThrow();
+    expect(() => h.tracker.setInitPhase('ready')).not.toThrow();
+    const socketClosed = new Promise<void>(resolve => response.socket!.once('close', () => resolve()));
+    destroy.mockRestore();
+    destroy = undefined;
+    response.destroy();
+    await socketClosed;
+    expect(await closed).toBe(true);
+    expect(response.listenerCount('error')).toBe(0);
+  } finally { destroy?.mockRestore(); await h.close(); }
+});
