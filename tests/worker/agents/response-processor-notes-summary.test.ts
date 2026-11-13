@@ -33,11 +33,13 @@ describe('notes-only summary replies', () => {
     try {
       expect((await messages.next()).value.type).toBe('summarize');
       const result = await processAgentResponse(
-        '<summary><notes>Migration requires a backup &amp; review.</notes></summary>',
+        '<summary><notes>Migration requires a backup &amp; review.</notes><waiting_for>approval</waiting_for></summary>',
         session, dbManager, manager, undefined, 10, null, 'SDK',
       );
       expect(result?.summaryId).toBeGreaterThan(0);
       expect(store.getSummaryForSession('notes-memory')?.notes).toBe('Migration requires a backup & review.');
+      // What the turn waits for rides the same reply into the same row.
+      expect(store.db.query('SELECT waiting_for FROM session_summaries WHERE id = ?').get(result!.summaryId)).toEqual({ waiting_for: 'approval' });
       expect(manager.getTotalQueueDepth()).toBe(0);
     } finally {
       session.abortController.abort();
