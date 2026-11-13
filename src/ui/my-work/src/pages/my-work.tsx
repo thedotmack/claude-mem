@@ -1,155 +1,57 @@
 import { displayTime } from '@/lib/display-time'
 import { t, useI18n, interpolate } from '@/lib/i18n'
-import { useMemo, useRef, useState, type ReactNode } from 'react'
-import { motion, useReducedMotion } from 'motion/react'
-import { ArrowRightIcon, ArrowUpDownIcon, ChevronDownIcon, ImageIcon, InboxIcon, PlugIcon, TriangleAlertIcon } from 'lucide-react'
+import { useMemo, useRef, useState } from 'react'
+import { motion } from 'motion/react'
+import { InboxIcon, TriangleAlertIcon } from 'lucide-react'
 import { Agent, AgentContent, AgentHeader } from '@/components/ai-elements/agent'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button, buttonVariants } from '@/components/ui/button'
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import { ActivePill, AgentIcon, ATTENTION_ORDER, FocusAreaChip, ManualRefreshButton, NextMove, ProgressMeter, RefreshButton, RefreshStatus, STATE_LABEL, STATE_SURFACE, StateBadge } from '@/components/bits'
-import { PointerHighlight } from '@/components/aceternity/pointer-highlight'
+import { ActivePill, AgentIcon, ManualRefreshButton, NextMove, RefreshButton, RefreshStatus, StateBadge } from '@/components/bits'
 import { TracingBeam } from '@/components/aceternity/tracing-beam'
 import { AgentMark } from '@/components/brand'
 import { FocusChangeBar, useFocusChanges } from '@/components/focus-changes'
 import { FocusHeader, OtherHeader } from '@/components/focus-header'
-import { ChangeTicker } from '@/components/live-motion'
-import { RequestCard } from '@/components/request-card'
-import { SplitFlapText } from '@/components/split-flap'
+import { PlanButton, PlanProposals } from '@/components/focus-plan'
+import { FocusThreadViewSwitch, ThreadList } from '@/components/thread-list'
+import { GLIDE, HoverCell } from '@/components/request-cards'
 import { SaveButton } from '@/components/save-button'
-import { useMatchesMedia } from '@/lib/use-media'
 import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
-import { needsYou, OTHER_FOCUS_AREA_ID, SAMPLE_RUNS, startedTimestamp, type Agent as WorkAgent, type LiveState, type Request } from '@/data'
-import { type WorkFilter, type WorkListView, type WorkSort, deviceById, useFreshlyUpdated, useStore, useWorkModel, useWorkspace } from '@/store'
+import { ATTENTION_ORDER, needsYou, OTHER_FOCUS_AREA_ID, SAMPLE_RUNS, type Agent as WorkAgent, type Request } from '@/data'
+import { type WorkFilter, type WorkListView, deviceById, useStore, useWorkModel, useWorkspace } from '@/store'
+import { WORK_FILTERS, WORK_LIST_VIEWS } from '@/store/store-types'
 import { useShallow } from 'zustand/react/shallow'
 import type { BuildStory, RequestReadError } from '@/live/work-data-source'
 import { createFocusAreaResolver } from '@/live/to-focus-model'
-import { cardGridEntries } from '@/live/card-groups'
+import { FOCUS_ARRANGEMENTS, sortThreads, type FocusArrangement } from '@/live/thread-groups'
+import { INITIATIVE_WORDS } from '@/live/initiative-words'
+import { FILTER_MATCHES } from '@/live/work-filters'
 import { FocusOverview } from '@/components/focus-overview'
 import '@/components/focus-overview.css'
 
 type View = WorkListView
-const VIEWS: { value: View; label: string }[] = [
-  { value: 'cards', label: 'Cards' },
-  { value: 'list', label: 'List' },
-  { value: 'agents', label: 'By agent' },
-  { value: 'team', label: 'Team' },
-]
+/** The top level is the focuses, as lines that open onto their threads or as a card each. By agent and Team cut the requests by who, which only a team needs. */
+const VIEW: Record<View, { label: string; teamOnly?: true; ofFocuses?: true }> = {
+  threads: { label: 'Threads' },
+  // A card per focus: with one focus open there is nothing to lay out, and that focus's own switch has its Cards.
+  cards: { label: 'Cards', ofFocuses: true },
+  agents: { label: 'By agent', teamOnly: true },
+  team: { label: 'Team', teamOnly: true },
+}
+/** The focus list in the owner's order, or that order under the owner's own headings. */
+const ARRANGEMENT: Record<FocusArrangement, string> = { priority: 'Priority', initiative: INITIATIVE_WORDS.name }
 type Filter = WorkFilter
-type SortKey = WorkSort
-// Closed requests (every item dropped) show only under Closed, and that filter appears only when there are some (or it is selected).
-const FILTERS: { value: Filter; label: string; matches: (request: Request) => boolean; dot?: string }[] = [
-  { value: 'all', label: 'All', matches: (request) => !request.closed },
-  { value: 'needs-you', label: 'Needs you', matches: (request) => !request.closed && needsYou(request), dot: 'bg-attention-foreground' },
-  { value: 'working', label: 'Working', matches: (request) => !request.closed && request.state === 'working', dot: 'bg-working-foreground motion-safe:animate-pulse' },
-  { value: 'shipped', label: 'Shipped', matches: (request) => !request.closed && request.state === 'shipped', dot: 'bg-shipped-foreground' },
-  { value: 'closed', label: 'Closed', matches: (request) => !!request.closed },
-]
-const SORTS: { value: SortKey; label: string }[] = [
-  { value: 'attention', label: 'Needs you first' },
-  { value: 'started', label: 'Newest' },
-  { value: 'progress', label: 'Most progress' },
-]
+/** Open is everything that does not rest; Done (shipped, checked, closed) shows only when picked. */
+const FILTER: Record<Filter, { label: string; dot?: string }> = {
+  open: { label: 'Open work' },
+  'needs-you': { label: 'Needs you', dot: 'bg-attention-foreground' },
+  working: { label: 'Working', dot: 'bg-working-foreground motion-safe:animate-pulse' },
+  done: { label: 'Done', dot: 'bg-shipped-foreground/50' },
+}
 const titleOf = (request: Request) => request.title ?? request.resolvesTo?.title ?? 'New request, title being written'
-
-/** Attention first by default (your move, then to check, then working, idle, shipped); newest first within a state. */
-function sortRequests(requests: Request[], sort: SortKey) {
-  const newest = (a: Request, b: Request) => startedTimestamp(b) - startedTimestamp(a)
-  return [...requests].sort((a, b) =>
-    sort === 'progress' ? (b.progress.percent ?? -1) - (a.progress.percent ?? -1) || newest(a, b)
-      : sort === 'started' ? newest(a, b)
-        : ATTENTION_ORDER.indexOf(a.state) - ATTENTION_ORDER.indexOf(b.state) || newest(a, b))
-}
-
-/** How many moving requests the summary names before it says "and N more". */
-const MOVING_NAMED = 3
-
-/** One actionable sentence that leads the page (§12): what needs you is a link straight to it, then what is moving, by name. */
-function Summary({ requests, onOpen, onShowNeedsYou, onShowWorking }: { requests: Request[]; onOpen: (request: Request) => void; onShowNeedsYou: () => void; onShowWorking: () => void }) {
-  const yourMove = requests.filter((request) => request.state === 'your-move')
-  const toCheck = requests.filter((request) => request.state === 'needs-check')
-  const moving = sortRequests(requests.filter((request) => request.state === 'working'), 'started')
-  const first = yourMove[0] ?? toCheck[0]
-  const waiting = yourMove.length + toCheck.length
-  const reduceMotion = useReducedMotion()
-  return (
-    <Req ids={['R12.2', 'R12.3', 'R1.1']}>
-      <div className="space-y-0.5">
-        <p className="flex flex-wrap items-center gap-x-2 text-[0.95rem] leading-snug md:text-base">
-          {first ? (
-            <>
-              <span className="font-semibold">{waiting === 1 ? t("One thing needs you:") : interpolate(t('{count} need you. First:'), { count: waiting })}</span>
-              <button type="button" onClick={() => onOpen(first)} className="inline-flex min-h-11 items-center gap-1 text-left font-semibold text-attention-foreground underline decoration-attention-border underline-offset-4 hover:decoration-current md:min-h-8">
-                {reduceMotion ? first.next.text : <PointerHighlight rectangleClassName="rounded-sm border-attention-border" pointerClassName="text-attention-foreground">{first.next.text}</PointerHighlight>}<ArrowRightIcon className="size-4 shrink-0" />
-              </button>
-            </>
-          ) : <span className="font-semibold">{t("Nothing needs you right now.")}</span>}
-        </p>
-        {/* What is moving, by name: the reader sees which requests are live without opening a filter. */}
-        <p className={cn('flex flex-wrap items-center gap-x-1.5 text-sm text-muted-foreground', first && !reduceMotion && 'pt-4')}>
-          {moving.length ? (
-            <>
-              <span className="inline-flex items-center gap-1.5 text-working-foreground"><span className="size-1.5 rounded-full bg-working-foreground motion-safe:animate-pulse" />Moving now:</span>
-              {/* Phones name the first one; wider screens name up to MOVING_NAMED. */}
-              {moving.slice(0, MOVING_NAMED).map((request, index) => (
-                <span key={request.id} className={cn('min-w-0 items-center', index === 0 ? 'inline-flex' : 'hidden md:inline-flex')}>
-                  <button type="button" onClick={() => onOpen(request)} className="inline-flex min-h-11 max-w-[16rem] items-center truncate text-left text-foreground/85 underline decoration-border underline-offset-4 hover:text-foreground hover:decoration-current md:min-h-6">
-                    <span className="truncate">{titleOf(request)}</span>
-                  </button>
-                  {index < Math.min(moving.length, MOVING_NAMED) - 1 && <span className="hidden md:inline">,</span>}
-                </span>
-              ))}
-              {moving.length > 1 && <button type="button" onClick={onShowWorking} className="min-h-11 underline underline-offset-4 hover:text-foreground md:hidden">and {moving.length - 1} more</button>}
-              {moving.length > MOVING_NAMED && <button type="button" onClick={onShowWorking} className="hidden underline underline-offset-4 hover:text-foreground md:inline md:min-h-6">and {moving.length - MOVING_NAMED} more</button>}
-            </>
-          ) : <span>Nothing is moving right now.</span>}
-          {toCheck.length > 0 && <span>{interpolate(t(' · {count} waiting for your check'), { count: toCheck.length }).trim()}</span>}
-          {waiting > 1 && <>·<button type="button" onClick={onShowNeedsYou} className="min-h-11 underline underline-offset-4 hover:text-foreground md:min-h-6">Show all {waiting} that need you</button></>}
-        </p>
-      </div>
-    </Req>
-  )
-}
-
-/** The build story's recap, after the work: its first paragraph, plus the hero image and sync funnel in the sample (§7, §8). */
-function TodayPanel({ story, onOpenStory }: { story: BuildStory; onOpenStory: () => void }) {
-  const { mode, connected } = useWorkspace()
-  // The daily recap image is not generated from real records yet, so live mode leaves its slot out.
-  const sample = useWorkModel().sourceKind === 'sample'
-  return (
-    <div className={cn('grid gap-4 rounded-xl border bg-card/70 p-4 shadow-panel md:p-5', sample && 'sm:grid-cols-[132px_1fr]')}>
-      {sample && (
-        <Req ids={['R7.4']}>
-          <div className="flex aspect-[3/1] items-center justify-center rounded-lg border border-dashed bg-surface text-muted-foreground sm:aspect-square"><ImageIcon className="size-5" /><span className="sr-only">{t("Today's hero image (not generated in the wireframe)")}</span></div>
-        </Req>
-      )}
-      <div className="min-w-0 space-y-3">
-        <Req ids={['R7.1', 'R7.2']}>
-          <div className="space-y-1">
-            <p className="section-label">{story.writtenAt ? interpolate(t('Build story · {writtenAt}'), { writtenAt: displayTime(story.writtenAt) }) : t("Build story")}</p>
-            <p className="text-sm">{story.recap}</p>
-            <Button variant="link" className="h-11 p-0 text-sm text-accent-foreground md:h-auto" onClick={onOpenStory}>{t("Read the build story")}</Button>
-          </div>
-        </Req>
-        {sample && mode === 'home' && !connected && (
-          <Req ids={['R8.2']}>
-            <div className="flex flex-wrap items-center gap-2 border-t border-border/70 pt-3 text-sm">
-              <PlugIcon className="size-4 text-muted-foreground" />
-              <span className="mr-auto text-muted-foreground">{t("See this on your phone, and in Claude.ai and ChatGPT.")}</span>
-              <Button size="sm" variant="outline" className="h-11 md:h-8">{t("Connect Claude.ai")}</Button>
-              <Button size="sm" variant="outline" className="h-11 md:h-8">{t("Connect ChatGPT")}</Button>
-            </div>
-          </Req>
-        )}
-      </div>
-    </div>
-  )
-}
 
 /** Shipping velocity, the narrative, and the preferences it found (§7). Preferences are the same records My Rules shows. */
 function StorySheet({ open, story, requests, onClose, onOpenRules }: { open: boolean; story: BuildStory; requests: Request[]; onClose: () => void; onOpenRules: () => void }) {
@@ -193,160 +95,6 @@ function StorySheet({ open, story, requests, onClose, onOpenRules }: { open: boo
         </TracingBeam>
       </SheetContent>
     </Sheet>
-  )
-}
-
-/** card-hover-effect, in place: a soft panel fades in behind the card the pointer is on. It never slides between cards. */
-function HoverCell({ children }: { children: ReactNode }) {
-  return (
-    <div className="group/hover-cell relative min-w-0">
-      <span aria-hidden="true" className="pointer-events-none absolute -inset-2 block rounded-2xl bg-accent/70 opacity-0 transition-opacity duration-150 group-hover/hover-cell:opacity-100" />
-      <div className="relative h-full">{children}</div>
-    </div>
-  )
-}
-
-/**
- * The List is a departures board (decision 2, R4.4): each status is a line of split-flap tiles exactly as wide as its
- * label, colored by its state. It riffles in when the List opens and again when the status changes, then stops.
- */
-function FlipStatus({ state }: { state: LiveState }) {
-  return <SplitFlapText text={t(STATE_LABEL[state])} tileClassName={STATE_SURFACE[state]} />
-}
-
-/** A card or row glides to its new place when the order changes (a status moved, a new request arrived). Position only:
- * a card that grows or shrinks snaps, so text never stretches mid-animation. Off under reduced motion (MotionConfig). */
-const GLIDE = { type: 'spring', bounce: 0.15, duration: 0.55 } as const
-
-function CardCell({ request, onOpen, onOpenFocus }: { request: Request; onOpen: (request: Request) => void; onOpenFocus: (focusAreaId: string) => void }) {
-  return (
-    <motion.div layout="position" transition={GLIDE} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="min-w-0">
-      <HoverCell>
-        <RequestCard request={request} onOpen={() => onOpen(request)} onOpenFocus={onOpenFocus} />
-      </HoverCell>
-    </motion.div>
-  )
-}
-
-/**
- * The Cards view. Attention-first with every request shown, the cards sit under section headings in one grid, so a
- * card whose status changes glides from one section to the other. Cards keep their own height: a short card no
- * longer stretches to the tallest card in its row.
- */
-function CardsView({ requests, grouped, readErrors, onOpen, onOpenFocus }: { requests: Request[]; grouped: boolean; readErrors: RequestReadError[]; onOpen: (request: Request) => void; onOpenFocus: (focusAreaId: string) => void }) {
-  const [unfolded, setUnfolded] = useState<Record<string, boolean>>({})
-  const errors = readErrors.map((readError) => <RequestReadErrorCard key={readError.requestId} readError={readError} />)
-  if (!grouped) {
-    return (
-      <div className="grid grid-cols-1 items-start gap-4 sm:grid-cols-2 xl:grid-cols-3">
-        {requests.map((request) => <CardCell key={request.id} request={request} onOpen={onOpen} onOpenFocus={onOpenFocus} />)}
-        {errors}
-      </div>
-    )
-  }
-  return (
-    <div className="grid grid-cols-1 items-start gap-4 sm:grid-cols-2 xl:grid-cols-3">
-      {cardGridEntries(requests, unfolded).map((entry) => entry.kind === 'card'
-        ? <CardCell key={entry.key} request={entry.request} onOpen={onOpen} onOpenFocus={onOpenFocus} />
-        : (
-          <motion.div key={entry.key} layout="position" transition={GLIDE} className="col-span-full flex items-center gap-2.5 pt-2 first:pt-0">
-            <span className={cn('size-2 rounded-full', entry.group.dot)} />
-            <h2 className="text-sm font-semibold tracking-tight">{entry.group.label}</h2>
-            <span className="text-sm text-muted-foreground tabular-nums">{entry.count}</span>
-            <span className="h-px flex-1 bg-border/70" />
-            {entry.folds && (
-              <Button variant="ghost" size="sm" className="h-11 text-xs text-muted-foreground md:h-7" aria-expanded={entry.open} onClick={() => setUnfolded((current) => ({ ...current, [entry.group.id]: !entry.open }))}>
-                {entry.open ? 'Show fewer' : `Show all ${entry.count}`}<ChevronDownIcon className={cn('transition-transform', entry.open && 'rotate-180')} />
-              </Button>
-            )}
-          </motion.div>
-        ))}
-      {errors.length > 0 && <p key="heading-errors" className="col-span-full pt-2 text-sm font-semibold tracking-tight">Couldn't read</p>}
-      {errors}
-    </div>
-  )
-}
-
-// The List switches from stacked lines to the table at Tailwind's md breakpoint (768px); only one of them is built.
-const TABLE_QUERY = '(min-width: 768px)'
-
-/** A List line that glides when the order changes and glows once when its record changes. */
-function ListItem({ requestId, children }: { requestId: string; children: ReactNode }) {
-  const fresh = useFreshlyUpdated(requestId)
-  return <motion.li layout="position" transition={GLIDE} className={cn(fresh && 'just-updated')}>{children}</motion.li>
-}
-
-/** The table row version of ListItem, with TableRow's own look (components/ui/table.tsx). */
-function ListTableRow({ requestId, onClick, children }: { requestId: string; onClick: () => void; children: ReactNode }) {
-  const fresh = useFreshlyUpdated(requestId)
-  return (
-    <motion.tr layout="position" transition={GLIDE} data-slot="table-row" onClick={onClick}
-      className={cn('cursor-pointer border-b border-border/80 transition-colors hover:bg-surface', fresh && 'just-updated')}>
-      {children}
-    </motion.tr>
-  )
-}
-
-function ListView({ requests, sort, onSort, onOpen, onOpenFocus }: { requests: Request[]; sort: SortKey; onSort: (sort: SortKey) => void; onOpen: (request: Request) => void; onOpenFocus: (focusAreaId: string) => void }) {
-  const { team } = useWorkspace()
-  const wide = useMatchesMedia(TABLE_QUERY)
-  const sortHead = (label: string, value: SortKey) => (
-    <TableHead aria-sort={sort === value ? 'descending' : undefined}>
-      <Button variant="ghost" size="sm" className="-ml-3 h-8 text-[0.82rem] font-medium text-muted-foreground" onClick={() => onSort(value)}>{t(label)}<ArrowUpDownIcon className={sort === value ? '' : 'opacity-30'} /></Button>
-    </TableHead>
-  )
-  return (
-    <Req ids={['R4.2', 'R4.4', 'R2.1', 'R5.8', 'R11.1']}>
-      {/* Phones: stacked rows, request then status then next step. */}
-      {!wide && <ul className="divide-y rounded-xl border bg-card shadow-panel">
-        {requests.map((request) => (
-          <ListItem key={request.id} requestId={request.id}>
-            <button type="button" onClick={() => onOpen(request)} className="flex w-full flex-col gap-2 p-4 text-left focus-visible:outline-2 focus-visible:outline-ring">
-              <span className="flex w-full items-start gap-2.5">
-                <AgentIcon agentId={request.agentId} />
-                <span className={cn('min-w-0 flex-1 pt-0.5 text-[0.95rem] leading-snug font-medium', !request.title && 'text-muted-foreground')}>{titleOf(request)}</span>
-              </span>
-              <span className="flex flex-col items-start gap-1.5 pl-[38px]">
-                <FlipStatus state={request.state} />
-                <NextMove next={request.next} />
-              </span>
-            </button>
-          </ListItem>
-        ))}
-      </ul>}
-
-      {wide && <div className="overflow-hidden rounded-xl border bg-card shadow-panel">
-        <Table>
-          <TableHeader className="bg-surface/60">
-            <TableRow>
-              <TableHead className="w-10"><span className="sr-only">{t("Agent")}</span></TableHead>
-              <TableHead>{t("Request")}</TableHead>
-              {team && <TableHead>{t("Asked by")}</TableHead>}
-              {sortHead('Status', 'attention')}
-              <TableHead>{t("Next step")}</TableHead>
-              {sortHead('Progress', 'progress')}
-              {sortHead('Started', 'started')}
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {requests.map((request) => (
-              <ListTableRow key={request.id} requestId={request.id} onClick={() => onOpen(request)}>
-                <TableCell className="align-top"><AgentIcon agentId={request.agentId} /></TableCell>
-                <TableCell className="max-w-72 align-top whitespace-normal">
-                  <button type="button" onClick={(event) => { event.stopPropagation(); onOpen(request) }} className={cn('rounded-sm text-left leading-snug font-medium hover:underline focus-visible:outline-2 focus-visible:outline-ring', !request.title && 'text-muted-foreground')}>{titleOf(request)}</button>
-                  <div><FocusAreaChip focusAreaId={request.focusAreaId} onOpen={onOpenFocus} /></div>
-                </TableCell>
-                {team && <TableCell className="align-top text-sm">{request.askedBy}</TableCell>}
-                <TableCell className="align-top"><FlipStatus state={request.state} /></TableCell>
-                <TableCell className="max-w-64 align-top whitespace-normal"><NextMove next={request.next} /></TableCell>
-                <TableCell className="w-32 align-top"><ProgressMeter request={request} compact /></TableCell>
-                <TableCell className="align-top text-xs text-muted-foreground"><time dateTime={request.startedAtIso}>{displayTime(request.startedAt)}</time></TableCell>
-              </ListTableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </div>}
-    </Req>
   )
 }
 
@@ -484,8 +232,8 @@ function RequestReadErrorCard({ readError }: { readError: RequestReadError }) {
 }
 
 /**
- * My Work: the live inbox. With a focus area (or Other) selected, its header comes first and only the requests in it
- * show; requests not sorted yet ("Sorting…") show only under every request.
+ * My Work: the live inbox, a list of threads under their focus areas. With a focus area (or Other) selected, its
+ * header comes first and only the requests in it show; requests not sorted yet ("Sorting…") show only under every request.
  */
 export function MyWork({ focusAreaId, onOpen, onOpenFocus, onOpenRules }: { focusAreaId: string | null; onOpen: (request: Request) => void; onOpenFocus: (focusAreaId: string) => void; onOpenRules: () => void }) {
   useI18n()
@@ -497,17 +245,26 @@ export function MyWork({ focusAreaId, onOpen, onOpenFocus, onOpenRules }: { focu
     const resolveArea = createFocusAreaResolver(focusAreas)
     return allRequests.filter((request) => resolveArea(request.focusAreaId) === focusAreaId)
   }, [allRequests, focusAreas, focusAreaId])
-  // A request that could not be read has no placement to file it under, so its card shows only under every request.
+  // A request that could not be read has no placement to file it under, so its error shows only under every request.
   const requestReadErrors = focusAreaId ? [] : allReadErrors
   const focusChanges = useFocusChanges()
   const sample = sourceKind === 'sample'
   // How the person likes to see My Work is saved across visits (store/create-store.ts).
-  const { listView: view, filter, sort } = useStore(useShallow((state) => ({ listView: state.view.listView, filter: state.view.filter, sort: state.view.sort })))
-  const focusArtwork = useStore((state) => state.view.focusArtwork)
-  const { setListView: setView, setFilter, setSort } = useStore.getState()
+  const { listView, focusThreadView, savedFilter, savedArrangement } = useStore(useShallow((state) => ({ listView: state.view.listView, focusThreadView: state.view.focusThreadView, savedFilter: state.view.filter, savedArrangement: state.view.focusArrangement })))
+  const shownViews = WORK_LIST_VIEWS.filter((value) => (team || !VIEW[value].teamOnly) && !(focusAreaId && VIEW[value].ofFocuses))
+  const view = shownViews.includes(listView) ? listView : 'threads'
+  const { setListView: setView, setFilter, setFocusArrangement } = useStore.getState()
   const [storyOpen, setStoryOpen] = useState(false)
-  const matches = FILTERS.find((entry) => entry.value === filter)!.matches
-  const visible = useMemo(() => sortRequests(requests.filter(matches), sort), [requests, matches, sort])
+  const filter = savedFilter
+  const matches = FILTER_MATCHES[filter]
+  const visible = useMemo(() => sortThreads(requests.filter(matches)), [requests, matches])
+  // Under Open, what rests is hidden but still counted: a focus line keeps its Done count, and a focus's board its folded Done column.
+  const counted = filter === 'open' ? requests : visible
+  // The focus list has a line for every kept area, with or without requests, so it is never replaced by an empty state.
+  const listsFocuses = view === 'threads' && !focusAreaId && focusAreas.some((entry) => entry.status === 'kept' && !entry.mergedInto)
+  // Offered wherever the focus list shows: the headings are the owner's to make, so none yet is where they start.
+  const arrangeable = listsFocuses
+  const arrangement = arrangeable ? savedArrangement : 'priority'
 
   return (
     <div className="space-y-4 md:space-y-5">
@@ -519,63 +276,67 @@ export function MyWork({ focusAreaId, onOpen, onOpenFocus, onOpenRules }: { focu
         </Alert>
       )}
       <FocusChangeBar changes={focusChanges} />
-      {!focusAreaId && <FocusOverview areas={focusAreas} requests={allRequests} incomplete={allReadErrors.length > 0} onOpenArea={onOpenFocus} onOpenRequest={onOpen} artwork={focusArtwork} onArtworkChange={useStore.getState().setFocusArtwork} />}
       {/* Every request in the area, closed ones too: the combined progress counts each reviewed request (D1's rule). */}
       {area ? <FocusHeader key={area.id} area={area} requests={requests} changes={focusChanges} />
         : focusAreaId === OTHER_FOCUS_AREA_ID && <OtherHeader requests={requests} />}
-      {!focusAreaId && <h2 className="section-label">{t('All requests')}</h2>}
-      <Summary requests={requests.filter((request) => !request.closed)} onOpen={onOpen} onShowNeedsYou={() => setFilter('needs-you')} onShowWorking={() => setFilter('working')} />
-      <ChangeTicker onOpen={(requestId) => { const request = allRequests.find((entry) => entry.id === requestId); if (request) onOpen(request) }} />
 
       <div className="flex flex-wrap items-center gap-2 md:gap-3">
-        <Req ids={['R4.1', 'R4.2', 'R4.3', 'R9.2']}>
+        {/* Inside one focus the switch below is the choice; By agent and Team still cut that focus's requests for a team. */}
+        {shownViews.length > 1 && <Req ids={['R19.1', 'R19.25', 'R4.3', 'R9.2']}>
           <ToggleGroup type="single" variant="outline" size="sm" spacing={1} value={view} onValueChange={(next) => next && setView(next as View)} aria-label={t("View")}>
-            {VIEWS.filter((entry) => entry.value !== 'team' || team).map(({ value, label }) => (
+            {shownViews.map((value) => (
               <ToggleGroupItem key={value} value={value} className="relative h-11 px-3.5 data-[state=on]:bg-transparent data-[state=on]:hover:bg-transparent md:h-8">
                 {view === value && <ActivePill layoutId="view-toggle-active-pill" />}
-                <span className="relative">{t(label)}</span>
+                <span className="relative">{t(VIEW[value].label)}</span>
+              </ToggleGroupItem>
+            ))}
+          </ToggleGroup>
+        </Req>}
+        {/* Inside one focus its threads are rows or a board; in the list each opened focus has the same switch. */}
+        {focusAreaId && view === 'threads' && <FocusThreadViewSwitch />}
+        {arrangeable && (
+          <Req ids={['R19.19']}>
+            <ToggleGroup type="single" variant="outline" size="sm" spacing={1} value={arrangement} onValueChange={(next) => next && setFocusArrangement(next as FocusArrangement)} aria-label={t("Arrange by")}>
+              {FOCUS_ARRANGEMENTS.map((value) => (
+                <ToggleGroupItem key={value} value={value} className="relative h-11 px-3.5 data-[state=on]:bg-transparent data-[state=on]:hover:bg-transparent md:h-8">
+                  {arrangement === value && <ActivePill layoutId="arrangement-toggle-active-pill" />}
+                  <span className="relative">{t(ARRANGEMENT[value])}</span>
+                </ToggleGroupItem>
+              ))}
+            </ToggleGroup>
+          </Req>
+        )}
+        <div className="order-last flex items-center gap-3 md:ml-auto">
+          {!focusAreaId && <PlanButton focusAreaId={null} />}
+          {sample ? <RefreshButton run={SAMPLE_RUNS.progress} ids={['R14.12']} /> : (
+            <>
+              {/* When and where it last ran is said only while it is running or has failed. */}
+              {(refresh?.state === 'running' || refresh?.error) && <RefreshStatus refresh={refresh} run={lastRuns.progress} label="Last reviewed" ids={['R14.12']} />}
+              {sourceKind === 'local' && <ManualRefreshButton ids={['R14.12']} running={refresh?.state === 'running'} />}
+            </>
+          )}
+        </div>
+        {/* Phone: the filters wrap to a second row instead of widening the page past the screen. */}
+        <Req ids={['R19.21']}>
+          <ToggleGroup type="single" variant="outline" size="sm" spacing={1} value={filter} onValueChange={(next) => next && setFilter(next as Filter)} aria-label={t("Filter")} className="w-full min-w-0 md:w-auto md:flex-nowrap">
+            {WORK_FILTERS.map((value) => ({ value, ...FILTER[value] })).map(({ value, label, dot }) => (
+              <ToggleGroupItem key={value} value={value} className="h-11 gap-1.5 px-3 md:h-8">
+                {dot && <span className={cn('size-1.5 rounded-full', dot)} />}
+                {t(label)}
+                <span className="text-muted-foreground tabular-nums group-data-[state=on]/toggle:text-accent-foreground">{requests.filter(FILTER_MATCHES[value]).length}</span>
               </ToggleGroupItem>
             ))}
           </ToggleGroup>
         </Req>
-        {/* Live mode shows the worker's automatic refresh, or the last review before its first run. No cost. */}
-        {sample ? (
-          <div className="order-last w-full md:ml-auto md:w-auto">
-            <RefreshButton run={SAMPLE_RUNS.progress} ids={['R14.12']} />
-          </div>
-        ) : sourceKind === 'local' ? (
-          <div className="order-last w-full md:ml-auto md:w-auto">
-            <div className="flex items-center justify-end gap-3">
-              <RefreshStatus refresh={refresh} run={lastRuns.progress} label="Last reviewed" ids={['R14.12']} />
-              <ManualRefreshButton ids={['R14.12']} running={refresh?.state === 'running'} />
-            </div>
-          </div>
-        ) : (refresh || lastRuns.progress) && (
-          <div className="order-last w-full md:ml-auto md:w-auto">
-            <RefreshStatus refresh={refresh} run={lastRuns.progress} label="Last reviewed" ids={['R14.12']} />
-          </div>
-        )}
-        {/* Phone: the filters wrap to a second row instead of widening the page past the screen; the sort stays beside them. */}
-        <div className="flex w-full items-start gap-1 md:w-auto md:items-center">
-          <ToggleGroup type="single" variant="outline" size="sm" spacing={1} value={filter} onValueChange={(next) => next && setFilter(next as Filter)} aria-label={t("Filter")} className="min-w-0 flex-1 md:flex-none md:flex-nowrap">
-            {FILTERS.filter((entry) => entry.value !== 'closed' || filter === 'closed' || requests.some(entry.matches)).map(({ value, label, dot, matches: test }) => (
-              <ToggleGroupItem key={value} value={value} className="h-11 gap-1.5 px-3 md:h-8">
-                {dot && <span className={cn('size-1.5 rounded-full', dot)} />}
-                {t(label)}
-                <span className="text-muted-foreground tabular-nums group-data-[state=on]/toggle:text-accent-foreground">{requests.filter(test).length}</span>
-              </ToggleGroupItem>
-            ))}
-          </ToggleGroup>
-          {view !== 'agents' && view !== 'team' && (
-            <Select value={sort} onValueChange={(next) => setSort(next as SortKey)}>
-              <SelectTrigger aria-label={t("Sort")} className="h-11 border-transparent bg-transparent px-2.5 text-[0.82rem] text-muted-foreground shadow-none data-[size=default]:h-11 md:h-8 md:data-[size=default]:h-8 [&>svg:last-child]:hidden sm:[&>svg:last-child]:inline"><ArrowUpDownIcon className="size-4" /><span className="hidden sm:inline"><SelectValue /></span></SelectTrigger>
-              <SelectContent>{SORTS.map(({ value, label }) => <SelectItem key={value} value={value}>{t(label)}</SelectItem>)}</SelectContent>
-            </Select>
-          )}
-        </div>
       </div>
 
-      {requests.length === 0 && requestReadErrors.length === 0 ? (
+      {!focusAreaId && <PlanProposals focusAreaId={null} changes={focusChanges} />}
+
+      {view === 'cards' ? (
+        <Req ids={['R19.25']}>
+          <FocusOverview areas={focusAreas} requests={allRequests} shows={matches} incomplete={allReadErrors.length > 0} onOpenArea={onOpenFocus} onOpenRequest={onOpen} />
+        </Req>
+      ) : listsFocuses ? <ThreadList requests={counted} shows={matches} focusAreas={focusAreas} grouped arrangement={arrangement} showDone={filter === 'done'} onOpen={onOpen} onOpenFocus={onOpenFocus} /> : requests.length === 0 && requestReadErrors.length === 0 ? (
         <Req ids={['R12.1']}>
           <Empty className="border bg-card/60">
             <EmptyHeader>
@@ -585,7 +346,7 @@ export function MyWork({ focusAreaId, onOpen, onOpenFocus, onOpenRules }: { focu
             </EmptyHeader>
           </Empty>
         </Req>
-      ) : visible.length === 0 && requestReadErrors.length === 0 ? (
+      ) : (view === 'threads' && (!focusAreaId || focusThreadView === 'board') ? counted : visible).length === 0 && requestReadErrors.length === 0 ? (
         <Req ids={['R12.1']}>
           <Empty className="border bg-card/60">
             <EmptyHeader>
@@ -595,12 +356,10 @@ export function MyWork({ focusAreaId, onOpen, onOpenFocus, onOpenRules }: { focu
             </EmptyHeader>
           </Empty>
         </Req>
-      ) : view === 'cards' ? (
-        <CardsView requests={visible} grouped={sort === 'attention' && filter === 'all'} readErrors={requestReadErrors} onOpen={onOpen} onOpenFocus={onOpenFocus} />
-      ) : view === 'list' ? <ListView requests={visible} sort={sort} onSort={setSort} onOpen={onOpen} onOpenFocus={onOpenFocus} />
-        : view === 'agents' ? <ByAgentView requests={visible} onOpen={onOpen} />
-          : <TeamBoard requests={visible} onOpen={onOpen} />}
-      {view !== 'cards' && requestReadErrors.length > 0 && (
+      ) : view === 'agents' ? <ByAgentView requests={visible} onOpen={onOpen} />
+        : view === 'team' ? <TeamBoard requests={visible} onOpen={onOpen} />
+          : <ThreadList requests={counted} shows={matches} focusAreas={focusAreas} grouped={!focusAreaId} arrangement={arrangement} showDone={filter === 'done'} onOpen={onOpen} onOpenFocus={onOpenFocus} />}
+      {requestReadErrors.length > 0 && (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {requestReadErrors.map((readError) => <RequestReadErrorCard key={readError.requestId} readError={readError} />)}
         </div>
@@ -609,10 +368,12 @@ export function MyWork({ focusAreaId, onOpen, onOpenFocus, onOpenRules }: { focu
         <p className="text-xs text-muted-foreground">{interpolate(t(unlinkedWorkCount === 1 ? "{count} work record isn't linked to a request yet." : "{count} work records aren't linked to a request yet."), { count: unlinkedWorkCount })}</p>
       )}
 
-      {/* The recap and the build story are written by request-progress; with no story, both are hidden. */}
+      {/* Written by request-progress; with no story there is nothing to open. */}
       {buildStory && (
         <>
-          <TodayPanel story={buildStory} onOpenStory={() => setStoryOpen(true)} />
+          <Req ids={['R7.1', 'R7.2']}>
+            <Button variant="link" className="h-11 p-0 text-sm text-muted-foreground md:h-auto" onClick={() => setStoryOpen(true)}>{t("Read the build story")}</Button>
+          </Req>
           <StorySheet open={storyOpen} story={buildStory} requests={requests} onClose={() => setStoryOpen(false)} onOpenRules={() => { setStoryOpen(false); onOpenRules() }} />
         </>
       )}

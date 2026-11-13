@@ -63,7 +63,7 @@ export class WorkViewReadWorkerClient {
   private readonly openWorker: () => WorkViewReadWorkerHandle;
 
   constructor(
-    private readonly workerData: { databasePath: string; ledgerDir: string | null; pollIntervalMs: number },
+    private readonly workerData: { databasePath: string; ledgerDir: string | null; pollIntervalMs: number; transcriptRoots?: { claudeProjectsDir?: string; codexHome?: string } },
     options: { requestTimeoutMs?: number; terminateTimeoutMs?: number; createWorker?: () => WorkViewReadWorkerHandle } = {},
   ) {
     this.requestTimeoutMs = options.requestTimeoutMs ?? WORK_VIEW_READ_REQUEST_TIMEOUT_MS;

@@ -6,6 +6,7 @@ import { createHumanCopyInput, humanCopyFingerprint, validateHumanCopy } from '.
 import { isIP } from 'node:net';
 import { basename } from 'node:path';
 import { isSharedReviewValue } from './shared-review-value.mjs';
+import { RISK_LEVELS } from './risk-levels.mjs';
 
 const TABLES = { observation: 'observations', summary: 'session_summaries', prompt: 'user_prompts', 'work-state': 'work_state_entries' };
 const SOURCE_KINDS = { 'user-prompt': 'prompt', 'session-summary-request': 'summary', 'session-summary': 'summary', 'session-initial-request': 'session', 'work-state': 'work-state', observation: 'observation' };
@@ -130,6 +131,9 @@ export function isSharedProjectionValue(kind, key, value, deleted = false, write
     && ['shipped', 'in-progress', 'stalled', 'abandoned', 'unknown'].includes(value.state)
     && Number.isInteger(value.percent) && value.percent >= 0 && value.percent <= 100
     && ['summary', 'narrative', 'title'].every(key => optional(value[key], text => string(text, 12000)))
+    && optional(value.risk, risk => object(risk) && RISK_LEVELS.includes(risk.level) && optional(risk.reason, reason => string(reason, 4000)))
+    && ['nextStep', 'why'].every(key => optional(value[key], text => string(text, 4000)))
+    && optional(value.question, question => object(question) && string(question.text, 4000) && optional(question.background, items => list(items, item => object(item) && string(item.text, 4000) && optional(item.evidence, evidence), 100)))
     && ['startedAt', 'shippedAt', 'lastActivityAt', 'reviewedThrough', 'checkedAt', 'changedAt'].every(key => optional(value[key], date))
     && optional(value.milestones, milestones => list(milestones, item => object(item) && string(item.text, 4000) && optional(item.at, date) && optional(item.evidence, evidence), 100))
     && optional(value.preferences, preferences => list(preferences, preference, 100))
@@ -302,7 +306,7 @@ export function buildSharedProjectionUpdates(database, { ledger, records = {}, v
     add('group', id, portableWorkValue(database, { group: portableGroup, members, suggestions }, deviceId));
   }
   for (const [key, ignored] of Object.entries(ledger?.groups?.ignored ?? {})) add('ignored', key, portableWorkValue(database, ignored, deviceId));
-  for (const [id, progress] of Object.entries(ledger?.progress ?? {})) add('progress', id, portableWorkValue(database, pick(progress, ['groupId', 'state', 'percent', 'startedAt', 'shippedAt', 'lastActivityAt', 'summary', 'narrative', 'milestones', 'preferences', 'outcome', 'evidence', 'reviewedThrough', 'reviewedConversations', 'coercedFields', 'checkedAt', 'changedAt', 'readings', 'title']), deviceId));
+  for (const [id, progress] of Object.entries(ledger?.progress ?? {})) add('progress', id, portableWorkValue(database, pick(progress, ['groupId', 'state', 'percent', 'startedAt', 'shippedAt', 'lastActivityAt', 'summary', 'narrative', 'risk', 'nextStep', 'why', 'question', 'milestones', 'preferences', 'outcome', 'evidence', 'reviewedThrough', 'reviewedConversations', 'coercedFields', 'checkedAt', 'changedAt', 'readings', 'title']), deviceId));
   if (ledger?.story) add('story', 'current', portableWorkValue(database, pick(ledger.story, ['narrative', 'preferences', 'writtenAt', 'generatedAt', 'source']), deviceId));
   if (ledger?.refresh) {
     const fields = ['state', 'reason', 'agent', 'result', 'startedAt', 'finishedAt', 'checkedAt'];

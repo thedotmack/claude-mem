@@ -5,15 +5,21 @@
 // - an explicit `shipped` lifecycle kept apart from `done`;
 // - the LiveState, stage and next.who columns the wireframe needs.
 // One normalized status drives state, stage and whose move is next, so those fields agree by construction.
-import type { LiveState, Stage } from '../data.ts'
+import type { LiveState, NextActor, Stage } from '../data.ts'
+import type { QuestionNeed } from '../../../../services/work-view/question-needs.mjs'
+import type { TurnHolder, TurnReason, TurnState } from '../../../../services/work-view/turn-state.mjs'
+import type { WaitingFor } from '../../../../services/work-view/waiting-for.mjs'
 
 export const STALE_AFTER_MS = 6 * 60 * 60 * 1000
+/** A chat the agent left with the owner this long ago was abandoned, not left in an inbox: it reads as idle. */
+export const OWNER_TURN_STALE_AFTER_MS = 14 * 24 * 60 * 60 * 1000
 
 export type NormalizedStatus =
-  | 'needs-you' | 'needs-review' | 'blocked' | 'shipped' | 'done' | 'checked'
+  | 'needs-you' | 'needs-approval' | 'needs-review' | 'blocked' | 'shipped' | 'done' | 'checked'
   | 'closed' | 'quiet' | 'in-progress' | 'todo' | 'unknown'
 
-const NEEDS_YOU_VALUES = ['needs-you', 'needs-input', 'waiting-on-user', 'awaiting-approval', 'needs-approval']
+const NEEDS_YOU_VALUES = ['needs-you', 'needs-input', 'waiting-on-user']
+const NEEDS_APPROVAL_VALUES = ['needs-approval', 'awaiting-approval']
 const NEEDS_REVIEW_VALUES = ['needs-review', 'review', 'in-review', 'awaiting-review', 'ready-for-review']
 const COMPLETE_LIFECYCLE_VALUES = ['done', 'completed', 'complete']
 const SHIPPED_LIFECYCLE_VALUES = ['shipped', 'delivered']
@@ -22,6 +28,7 @@ const SHIPPED_LIFECYCLE_VALUES = ['shipped', 'delivered']
 export function normalizeRecordedStatus(value: unknown): string {
   const status = String(value ?? '').trim().toLowerCase().replace(/[_ ]/g, '-')
   if (NEEDS_YOU_VALUES.includes(status)) return 'needs-you'
+  if (NEEDS_APPROVAL_VALUES.includes(status)) return 'needs-approval'
   if (NEEDS_REVIEW_VALUES.includes(status)) return 'needs-review'
   return status
 }
@@ -34,6 +41,7 @@ export function statusFor(rawItems: StatusItem[], now: number): NormalizedStatus
   const items = rawItems.map((item) => item.judgedStatus ? { ...item, status: item.judgedStatus } : item)
   const states = items.map((item) => normalizeRecordedStatus(item.status))
   if (states.includes('needs-you')) return 'needs-you'
+  if (states.includes('needs-approval')) return 'needs-approval'
   if (states.includes('needs-review')) return 'needs-review'
   if (states.some((state) => ['blocked', 'failed'].includes(state))) return 'blocked'
   if (items.length && items.every((item) => item.kind === 'work-state' && ['done', 'completed'].includes(item.status))) return 'done'
@@ -47,6 +55,7 @@ export function statusFor(rawItems: StatusItem[], now: number): NormalizedStatus
 
 export const STATUS: Record<NormalizedStatus, { label: string; rank: number }> = {
   'needs-you': { label: 'Needs you', rank: 0 },
+  'needs-approval': { label: 'Needs your approval', rank: 0 },
   'needs-review': { label: 'Done, not checked', rank: 1 },
   blocked: { label: 'Blocked', rank: 1 },
   'in-progress': { label: 'In progress', rank: 2 },
@@ -68,10 +77,37 @@ export interface RequestStatusInput {
   progressState?: string | null
   /** The latest review's percent. 100 means the work is done, even while recorded items still say doing. */
   progressPercent?: number | null
+  /** What the current review's question asks of the owner. Null when it has none, or the owner has written since. */
+  question?: QuestionNeed | null
+  /** Who holds the next move in the request's latest conversation, from its transcript. Null when that cannot be told. */
+  turn?: TurnState | null
 }
 
-/** Lifecycle first (an explicit request_status / request_complete), then item statuses. */
-export function normalizeRequestStatus({ items, lifecycle, checked, progressState, progressPercent }: RequestStatusInput, now: number): NormalizedStatus {
+const QUESTION_STATUS: Record<QuestionNeed, NormalizedStatus> = { answer: 'needs-you', approval: 'needs-approval' }
+const TURN_STATUS: Record<TurnReason, NormalizedStatus> = { 'question-pending': 'needs-you', 'turn-ended': 'needs-review', 'owner-spoke': 'in-progress', 'tool-running': 'in-progress', archived: 'closed' }
+// What the turn's own summary says it waits for. Nothing owed is not the owner's move: the chat rests with the agent.
+const WAITING_STATUS: Record<WaitingFor, NormalizedStatus> = { answer: 'needs-you', approval: 'needs-approval', review: 'needs-review', nothing: 'quiet' }
+// An agent's turn with no record for six hours is a stopped session, not work in progress.
+// A closed chat stays closed however long ago it was archived.
+const TURN_COUNTS_FOR_MS: Record<TurnHolder, number> = { 'owner-turn': OWNER_TURN_STALE_AFTER_MS, 'agent-turn': STALE_AFTER_MS, closed: Infinity }
+// What the transcript may decide: only a request nothing recorded has given a status.
+const NOTHING_RECORDED: NormalizedStatus[] = ['unknown', 'quiet']
+
+/** Reported finished and waiting on a person's check: the statuses "Mark checked" applies to. */
+export const awaitsCheck = (status: NormalizedStatus): boolean => status === 'done' || status === 'needs-review'
+
+/** The status a turn state gives a request with nothing more explicit recorded; null when the turn is too old to count.
+ * An ended turn whose summary recorded what it waits for takes that; without one it is the owner's review. */
+export function turnStatus(turn: TurnState, now: number): NormalizedStatus | null {
+  if (turn.state === 'closed') return TURN_STATUS[turn.reason]
+  if (turn.atEpoch === null || now - turn.atEpoch > TURN_COUNTS_FOR_MS[turn.state]) return null
+  return turn.reason === 'turn-ended' && turn.waitingFor ? WAITING_STATUS[turn.waitingFor] : TURN_STATUS[turn.reason]
+}
+
+/** Lifecycle first (an explicit request_status / request_complete), then item statuses, then the transcript's turn
+ * when neither says anything, then the review's question. A check the owner saved rests the request, and so does a
+ * closed latest chat: neither is anybody's move, whatever was recorded before. */
+export function normalizeRequestStatus({ items, lifecycle, checked, progressState, progressPercent, question, turn }: RequestStatusInput, now: number): NormalizedStatus {
   let status = statusFor(items, now)
   const recordedStatus = lifecycle?.explicit ? normalizeRecordedStatus(lifecycle.status) : null
   const lifecycleStatus = !lifecycle?.explicit ? null
@@ -84,22 +120,29 @@ export function normalizeRequestStatus({ items, lifecycle, checked, progressStat
   if (progressState === 'shipped') status = 'shipped'
   // Reviewed as finished but not shipped: done, waiting on a person's check, never still "working" at 100%.
   else if (progressPercent === 100 && ['in-progress', 'todo', 'unknown', 'quiet'].includes(status)) status = 'needs-review'
-  if (checked && (status === 'done' || status === 'needs-review')) status = 'checked'
+  if (turn && NOTHING_RECORDED.includes(status)) status = turnStatus(turn, now) ?? status
+  if (checked && awaitsCheck(status)) status = 'checked'
+  // The review saw the agent stop on a question: the request waits on the owner whatever its items still say.
+  if (question && status !== 'shipped' && status !== 'closed') status = QUESTION_STATUS[question]
+  // Nobody can be owed a move in a chat that was closed. A ship or a saved check already says more than "closed".
+  if (turn?.state === 'closed' && status !== 'shipped' && status !== 'checked') status = 'closed'
   return status
 }
 
-export interface StatusPresentation { state: LiveState; stage: Stage; who: 'bot' | 'human' }
+export type StatusPresentation = { state: LiveState; stage: Stage } & NextActor
 
-/** The LiveState, stage and next.who columns of the status table. `recent` = updated in the last 6 hours. */
+/** The LiveState, stage, next.who and next.need columns of the status table. `recent` = updated in the last 6 hours.
+ * Checked, closed and shipped rest: no person is named and nothing is needed. */
 export function presentStatus(status: NormalizedStatus, recent: boolean): StatusPresentation {
   switch (status) {
-    case 'needs-you': return { state: 'your-move', stage: 'Building', who: 'human' }
-    case 'needs-review': return { state: 'needs-check', stage: 'Reviewing', who: 'human' }
-    case 'blocked': return { state: 'your-move', stage: 'Building', who: 'human' }
+    case 'needs-you': return { state: 'your-move', stage: 'Building', who: 'human', need: 'answer' }
+    case 'needs-approval': return { state: 'your-move', stage: 'Building', who: 'human', need: 'approval' }
+    case 'needs-review': return { state: 'needs-check', stage: 'Reviewing', who: 'human', need: 'review' }
+    case 'blocked': return { state: 'your-move', stage: 'Building', who: 'human', need: 'answer' }
     case 'shipped': return { state: 'shipped', stage: 'Shipped', who: 'bot' }
-    case 'done': return { state: 'needs-check', stage: 'Reviewing', who: 'human' }
-    case 'checked': return { state: 'your-move', stage: 'Reviewing', who: 'human' }
-    case 'closed': return { state: 'idle', stage: 'Building', who: 'bot' }
+    case 'done': return { state: 'needs-check', stage: 'Reviewing', who: 'human', need: 'review' }
+    case 'checked': return { state: 'checked', stage: 'Reviewing', who: 'bot' }
+    case 'closed': return { state: 'closed', stage: 'Building', who: 'bot' }
     case 'quiet': return { state: 'idle', stage: 'Building', who: 'bot' }
     case 'in-progress': return { state: 'working', stage: 'Building', who: 'bot' }
     case 'todo': return { state: 'working', stage: 'Planning', who: 'bot' }

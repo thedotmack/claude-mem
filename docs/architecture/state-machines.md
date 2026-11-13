@@ -43,6 +43,10 @@ what the program does at run time.
 | Dependency status and its wording | `DEPENDENCY_STATUS_LABELS` in `src/shared/dependency-health.ts` | `claude-mem status`, `claude-mem doctor` |
 | Which work-state statuses close an item | `isClosedWorkStateStatus` in `src/services/work-view/work-state-status.mjs` | SessionStart section, work-state tool replies, My Work, owner-goals readers, the write route |
 | Refresh run state | `WorkViewRefreshState` in `src/ui/my-work/src/live/work-view-api-types.ts` | every My Work screen that shows a run |
+| Whose move a conversation is, and why, or that its tool archived it (`closed`) | `TurnState` and `TURN_REASONS` in `src/services/work-view/turn-state.mjs` | the transcript reader, its one writer; the snapshot; My Work's status table (`TURN_STATUS`) |
+| Where a request stands on My Work, and which states rest in Done | `LiveState`, `DONE_STATES` and `isDone` in `src/ui/my-work/src/data.ts` | `presentStatus`, its one writer; the words (`STATE_LABEL`, `statusLabel`, `statusCounts` in `live/status-label.ts`); the filters (`WORK_FILTERS`, `FILTER_MATCHES`); the board columns; the search |
+| What a person owes a request, and what a finished turn waits for | `HUMAN_NEEDS` and `WAITING_FOR` in `src/services/work-view/waiting-for.mjs` | the summary prompt's wording, the summary parser, `session_summaries.waiting_for`, the snapshot's `turn.waitingFor`, My Work's status table (`WAITING_STATUS`) and board columns |
+| A focus icon's generation | `ICON_RUN_STATES` in `src/services/work-view/owner-runs.mjs`, taken from `STAGE_STATES` | the owner-run store, its one writer; the snapshot's `focusAreas[].iconRun`; My Work's `ICON_RUN_STATE` words |
 | Rule status, focus area status | `SavedRule['status']` in `my-rules.d.mts`, `FocusAreaStatus` in `my-focus.d.mts` | My Work wire types and UI model |
 
 My Work compiles on its own settings and cannot load every worker file. A

@@ -110,6 +110,44 @@ describe('compact work view transport', () => {
     expect(overview.model.requests[0].detailCounts?.workProduct).toBe(40);
   });
 
+  it('carries each focus icon as its version only, and stays under 300 KiB with an icon on every area', () => {
+    const snapshot = largeSnapshot(true);
+    const version = (index: number) => index.toString(16).padStart(12, '0');
+    (snapshot as any).focusAreas = Array.from({ length: 24 }, (_, index) => ({
+      focusAreaId: `fa_${index}`, name: `Area ${index}`, goal: 'One sentence.', status: 'kept', priorityRank: index, ownerRank: index, source: 'owner',
+      mergedInto: null, evidence: null, decidedBy: 'owner', savedAt: null, notes: null,
+      ...(index === 23 ? {} : { icon: version(index) }), ...(index === 0 ? { iconRun: { state: 'generating', error: null } } : {}),
+    }));
+    const overview = workViewOverview(snapshot);
+    expect(overview.model.focusAreas.map(area => area.icon)).toEqual([...Array.from({ length: 23 }, (_, index) => version(index)), undefined]);
+    expect(overview.model.focusAreas[0].iconRun).toEqual({ state: 'generating', error: null });
+    expect(overview.model.focusAreas[23]).not.toHaveProperty('icon');
+    expect(overview.model.focusAreas[1]).not.toHaveProperty('iconRun');
+    expect(expandWorkViewOverview(overview).focusAreas[1].icon).toBe(version(1));
+    expect(Buffer.byteLength(JSON.stringify(overview))).toBeLessThanOrEqual(300 * 1024);
+  });
+
+  it('carries one initiative per focus area with whether it is a guess, nothing per request, and stays under 300 KiB', () => {
+    const snapshot = largeSnapshot(true);
+    const longest = (index: number) => `Initiative ${index % 3} ${'n'.repeat(60)}`.slice(0, 60);
+    (snapshot as any).focusAreas = Array.from({ length: 24 }, (_, index) => ({
+      focusAreaId: `fa_${index}`, name: `Area ${index}`, goal: 'One sentence.', status: 'kept', priorityRank: index, ownerRank: index, source: 'owner',
+      mergedInto: null, evidence: null, decidedBy: 'owner', savedAt: null, notes: null,
+      ...(index === 23 ? { initiative: null } : { initiative: longest(index), folders: ['acme/one', 'acme/two', 'acme/three', 'acme/four'] }),
+      ...(index % 2 ? { initiativeGuess: true } : {}),
+    }));
+    const overview = workViewOverview(snapshot);
+    expect(overview.model.focusAreas.map(area => area.initiative)).toEqual([...Array.from({ length: 23 }, (_, index) => longest(index)), undefined]);
+    expect(overview.model.focusAreas[23]).not.toHaveProperty('initiative');
+    expect(overview.model.focusAreas[1].initiativeGuess).toBe(true);
+    expect(overview.model.focusAreas[2]).not.toHaveProperty('initiativeGuess');
+    // The folder names are the plan's input; the page never shows them.
+    expect(overview.model.focusAreas.some(area => 'folders' in area)).toBe(false);
+    expect(overview.model.requests.some(request => 'initiative' in request || 'project' in request || 'projects' in request)).toBe(false);
+    expect(expandWorkViewOverview(overview).focusAreas[1]).toMatchObject({ initiative: longest(1), initiativeGuess: true });
+    expect(Buffer.byteLength(JSON.stringify(overview))).toBeLessThanOrEqual(300 * 1024);
+  });
+
   it('stays under 300 KiB when every one of the 140 cards carries a full four-image preview', () => {
     const snapshot = largeSnapshot();
     // The longest label the contract allows (64 characters), on every ref.

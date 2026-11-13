@@ -2,6 +2,8 @@ import { uiMessage, renderUiMessage, type UiMessage } from '../../../ui-message'
 import { OTHER_FOCUS_AREA_ID, type FocusArea, type FocusChange, type Request } from '../data'
 import type { FocusChangeRecord } from '../store/store-types'
 import { focusAreaLabel, resolveFocusAreaId } from '../live/to-focus-model'
+import { INITIATIVE_WORDS } from '../live/initiative-words'
+import { initiativeChange, keptByOrder } from '../live/thread-groups'
 
 type MessageRecord = FocusChangeRecord & { message?: UiMessage }
 
@@ -22,7 +24,7 @@ function backTo(area: FocusArea): FocusChange[] | null {
 const STATUS_ACTION = { kept: 'keep', done: 'done', dismissed: 'dismiss' } as const
 
 /** What one change says in the saved note, and how to undo it, read from the areas as they were before it. */
-export function describeFocusChange(change: FocusChange, areas: FocusArea[], requests: Request[]): MessageRecord {
+export function describeFocusChange(change: FocusChange, areas: FocusArea[], requests: Request[], heading?: string): MessageRecord {
   const area = areas.find((entry) => entry.id === change.focusAreaId)
   const name = area?.name || uiMessage('the area')
   switch (change.action) {
@@ -31,6 +33,17 @@ export function describeFocusChange(change: FocusChange, areas: FocusArea[], req
     case 'done': return record({ message: uiMessage('Marked “{name}” done', { name }), undo: area ? backTo(area) : null })
     case 'rename': return record({ message: uiMessage('Renamed “{name}” to “{newName}”', { name, newName: change.name?.trim() ?? '' }), undo: area ? [{ action: 'rename', focusAreaId: area.id, name: area.name }] : null })
     case 'edit-goal': return record({ message: uiMessage('Changed the goal of “{name}”', { name }), undo: area?.goal ? [{ action: 'edit-goal', focusAreaId: area.id, goal: area.goal }] : null })
+    case 'edit-notes': return record({ message: uiMessage('Changed the notes on “{name}”', { name }), undo: area ? [{ action: 'edit-notes', focusAreaId: area.id, notes: area.notes ?? '' }] : null })
+    case 'set-initiative': {
+      const { summary, undo } = initiativeChange(change, areas, heading)
+      switch (summary.kind) {
+        case 'moved': return record({ message: uiMessage(INITIATIVE_WORDS.moved, { name: summary.name, initiative: summary.to }), undo })
+        case 'unfiled': return record({ message: uiMessage(INITIATIVE_WORDS.unfiled, { names: summary.names.join(', ') }), undo })
+        case 'renamed': return record({ message: uiMessage('Renamed “{name}” to “{newName}”', { name: summary.from, newName: summary.to }), undo })
+        case 'merged': return record({ message: uiMessage('Merged “{name}” into “{into}”', { name: summary.from, into: summary.to }), undo })
+        case 'filed': return record({ message: uiMessage(INITIATIVE_WORDS.filed, { count: summary.count, initiative: summary.to }), undo })
+      }
+    }
     case 'merge': {
       const into = areas.find((entry) => entry.id === change.intoFocusAreaId)?.name ?? uiMessage('another area')
       // Only restore-suggestion clears a merge; a kept or done area is then decided again as it was.
@@ -39,7 +52,13 @@ export function describeFocusChange(change: FocusChange, areas: FocusArea[], req
     }
     case 'reorder': {
       const before = areas.filter((entry) => entry.status === 'kept' && !entry.mergedInto).map((entry) => entry.id)
-      return record({ message: uiMessage('Changed the order of your focus areas'), undo: [{ action: 'reorder', focusAreaIds: before }] })
+      const back: FocusChange[] = before.length ? [{ action: 'reorder', focusAreaIds: before }] : []
+      // A suggestion listed in the order was kept by the same save: Undo hands it back first, then restores the order.
+      const kept = keptByOrder(change.focusAreaIds, areas)
+      if (kept.length === 0) return record({ message: uiMessage('Changed the order of your focus areas'), undo: back })
+      const restored = kept.map(backTo)
+      const undo = restored.every((steps) => steps !== null) ? [...restored.flat() as FocusChange[], ...back] : null
+      return record({ message: uiMessage('Kept “{name}” and placed it in your order', { name: kept.map((entry) => entry.name).join(', ') }), undo })
     }
     case 'move-request': {
       const request = requests.find((entry) => entry.id === change.requestId)

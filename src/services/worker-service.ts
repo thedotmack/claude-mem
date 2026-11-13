@@ -1172,6 +1172,8 @@ export class WorkerService implements WorkerRef {
         getSyncStatus: () => this.viewerSync.getSnapshot(),
         updateViewerActivity: (id, visible, sequence) => this.viewerActivity.update(id, visible, sequence),
         getLocalDeviceId: () => this.dbManager.getSessionStore().getLocalSyncDeviceId(),
+        // A stage's file is recorded like any deliverable, so the deliverables route serves it.
+        recordDeliverable: input => this.dbManager.getSessionStore().recordDeliverable(input),
         // My Rules saves as work-state rows, so a rule change syncs like any other write.
         appendWorkStateEntry: (entry) => {
           this.dbManager.getSessionStore().appendWorkStateEntry(entry);

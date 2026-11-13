@@ -35,6 +35,9 @@
     --color-agent-gemini: var(--agent-gemini);
     --color-agent-gemini-foreground: var(--agent-gemini-foreground);
     --color-agent-gemini-border: var(--agent-gemini-border);
+    --color-risk-low: var(--risk-low);
+    --color-risk-medium: var(--risk-medium);
+    --color-risk-high: var(--risk-high);
     --color-terminal: var(--terminal);
     --color-terminal-foreground: var(--terminal-foreground);
     --color-terminal-border: var(--terminal-border);
@@ -149,6 +152,10 @@
     --shipped: #eef6e8;
     --shipped-foreground: #477a30;
     --shipped-border: #cce2bc;
+    /* Risk is a solid dot, stronger than the soft state surfaces: how much could go wrong, not where the work stands. */
+    --risk-low: #2f9e44;
+    --risk-medium: #e8a013;
+    --risk-high: #d92d20;
     --goal: #e3f3ee;
     --goal-foreground: #1d7562;
     --goal-border: #b6dccf;
@@ -234,6 +241,9 @@
     --shipped: #1a2816;
     --shipped-foreground: #a9d590;
     --shipped-border: #33502a;
+    --risk-low: #51cf66;
+    --risk-medium: #fcc419;
+    --risk-high: #ff6b6b;
     --goal: #112822;
     --goal-foreground: #86d3bf;
     --goal-border: #22503f;

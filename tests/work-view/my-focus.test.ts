@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { reduceWorkState } from '../../src/services/work-view/data-source.mjs';
 import {
-  anchorConversationKeyFor, buildFocusAreas, focusAreaRowFields, MY_FOCUS_LIST, navWordIn, ownerGoalsAreaRows, placeRequests, placementRowFields, routerFocusRows,
+  anchorConversationKeyFor, buildFocusAreas, focusAreaRowFields, focusInitiativeRowFields, focusNotesRowFields, MY_FOCUS_LIST, navWordIn, ownerGoalsAreaRows, placeRequests, placementRowFields, routerFocusRows,
 } from '../../src/services/work-view/my-focus.mjs';
 
 const ANCHOR = JSON.stringify(['conversation', 'claude', 'session-1']);
@@ -23,6 +23,57 @@ function focus(rows: Row[]) {
 const areaById = (result: ReturnType<typeof focus>, id: string) => result.focusAreas.find(item => item.focusAreaId === id);
 
 describe('buildFocusAreas', () => {
+  it('keeps the owner\'s notes through every later system row, and clears them only on the owner\'s empty save', () => {
+    const notes = 'Why it matters: the board is how I steer every agent.';
+    const rows: Row[] = [
+      { fields: area('fa_viewer'), at: 1000 },
+      { fields: focusNotesRowFields('fa_viewer', `  ${notes}  `), at: 2000 },
+      // A refresh re-ranks the suggestion, and another device's older build re-saves the area without notes.
+      { fields: area('fa_viewer', { priorityRank: 2 }), at: 3000 },
+      { fields: area('fa_viewer', { status: 'kept', decidedBy: 'owner' }), at: 4000, device: 'other-device' },
+    ];
+    expect(areaById(focus(rows), 'fa_viewer')).toMatchObject({ notes, status: 'kept' });
+    expect(areaById(focus([...rows, { fields: focusNotesRowFields('fa_viewer', ''), at: 5000 }]), 'fa_viewer')!.notes).toBeNull();
+    expect(areaById(focus([{ fields: area('fa_viewer'), at: 1000 }]), 'fa_viewer')!.notes).toBeNull();
+    expect(() => focusNotesRowFields('fa_viewer', 'x'.repeat(2001))).toThrow(RangeError);
+    expect(() => focusNotesRowFields('other', 'x')).toThrow();
+  });
+
+  it('keeps the owner\'s initiative through every later system row, and clears it only on the owner\'s empty save', () => {
+    const rows: Row[] = [
+      { fields: area('fa_viewer'), at: 1000 },
+      { fields: focusInitiativeRowFields('fa_viewer', '  Kite maps  '), at: 2000 },
+      // A refresh re-ranks the suggestion, and another device's older build re-saves the area without an initiative.
+      { fields: area('fa_viewer', { priorityRank: 2 }), at: 3000 },
+      { fields: area('fa_viewer', { status: 'kept', decidedBy: 'owner' }), at: 4000, device: 'other-device' },
+    ];
+    expect(areaById(focus(rows), 'fa_viewer')).toMatchObject({ initiative: 'Kite maps', status: 'kept' });
+    expect(areaById(focus([...rows, { fields: focusInitiativeRowFields('fa_viewer', ' '), at: 5000 }]), 'fa_viewer')!.initiative).toBeNull();
+    expect(areaById(focus([{ fields: area('fa_viewer'), at: 1000 }]), 'fa_viewer')!.initiative).toBeNull();
+    const none = areaById(focus([...rows, { fields: focusInitiativeRowFields('fa_viewer', '', { none: true }), at: 5000 }]), 'fa_viewer')!;
+    expect(none).toMatchObject({ initiative: null, initiativeNone: true });
+    // A later name, or a plain clear, takes the none marker off.
+    expect(areaById(focus([...rows, { fields: focusInitiativeRowFields('fa_viewer', '', { none: true }), at: 5000 }, { fields: focusInitiativeRowFields('fa_viewer', 'Harbor'), at: 6000 }]), 'fa_viewer')).not.toHaveProperty('initiativeNone');
+    expect(areaById(focus([...rows, { fields: focusInitiativeRowFields('fa_viewer', '', { none: true }), at: 5000 }, { fields: focusInitiativeRowFields('fa_viewer', ''), at: 6000 }]), 'fa_viewer')).not.toHaveProperty('initiativeNone');
+    expect(() => focusInitiativeRowFields('fa_viewer', 'Harbor', { none: true })).toThrow();
+    expect(focusInitiativeRowFields('fa_viewer', 'x'.repeat(60)).initiative).toHaveLength(60);
+    expect(() => focusInitiativeRowFields('fa_viewer', 'x'.repeat(61))).toThrow(RangeError);
+    expect(() => focusInitiativeRowFields('other', 'x')).toThrow();
+  });
+
+  it('reads names that differ only by case as one initiative, spelled as it was first saved', () => {
+    const rows: Row[] = [
+      { fields: area('fa_a'), at: 1000 }, { fields: area('fa_b'), at: 1000 }, { fields: area('fa_c'), at: 1000 },
+      { fields: focusInitiativeRowFields('fa_a', 'Kite Maps'), at: 2000 },
+      { fields: focusInitiativeRowFields('fa_b', 'kite maps'), at: 3000 },
+      { fields: focusInitiativeRowFields('fa_c', 'Small bets'), at: 4000 },
+    ];
+    const names = (result: ReturnType<typeof focus>) => result.focusAreas.map(item => item.initiative);
+    expect(names(focus(rows))).toEqual(['Kite Maps', 'Kite Maps', 'Small bets']);
+    // The first spelling goes when its last area leaves; the one still standing is then the name.
+    expect(names(focus([...rows, { fields: focusInitiativeRowFields('fa_a', 'Small bets'), at: 5000 }]))).toEqual(['Small bets', 'kite maps', 'Small bets']);
+  });
+
   it('lets the latest row win and keeps the id through a rename', () => {
     const result = focus([
       { fields: area('fa_viewer'), at: 1000 },

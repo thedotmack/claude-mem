@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, it, expect } from 'bun:test';
 import { ModeManager } from '../../src/services/domain/ModeManager.js';
 
 import { parseAgentXml } from '../../src/sdk/parser.js';
+import { WAITING_FOR } from '../../src/services/work-view/waiting-for.mjs';
 
 // Load the real bundled `code` mode rather than mocking ModeManager. The
 // previous `mock.module(...)` replaced ModeManager process-globally and was
@@ -98,5 +99,36 @@ describe('parseAgentXml — summaries', () => {
   it('returns invalid for empty input', () => {
     expect(parseAgentXml('').valid).toBe(false);
     expect(parseAgentXml('   \n  ').valid).toBe(false);
+  });
+
+  describe('what the turn waits for', () => {
+    const waitingFor = (tag: string) => {
+      const result = parseAgentXml(`<summary><request>Fix the login</request>${tag}</summary>`);
+      return result.valid ? result.summary?.waiting_for : 'invalid';
+    };
+
+    it('reads each allowed word', () => {
+      for (const word of WAITING_FOR) expect(waitingFor(`<waiting_for>${word}</waiting_for>`)).toBe(word);
+    });
+
+    it('accepts surrounding whitespace and any letter case', () => {
+      expect(waitingFor('<waiting_for>\n  Approval \n</waiting_for>')).toBe('approval');
+      expect(waitingFor('<WAITING_FOR>NOTHING</WAITING_FOR>')).toBe('nothing');
+    });
+
+    it('is null when the tag is absent or empty, and the summary stays valid', () => {
+      expect(waitingFor('')).toBeNull();
+      expect(waitingFor('<waiting_for></waiting_for>')).toBeNull();
+    });
+
+    it('never guesses at an unknown value', () => {
+      for (const text of ['merge', 'review or nothing', 'answer.', '[Exactly one of these words: answer | review]', 'none']) {
+        expect(waitingFor(`<waiting_for>${text}</waiting_for>`)).toBeNull();
+      }
+    });
+
+    it('does not make a summary with no other field valid', () => {
+      expect(parseAgentXml('<summary><waiting_for>review</waiting_for></summary>').valid).toBe(false);
+    });
   });
 });

@@ -33,20 +33,20 @@ const ask = (fields: FocusAsk) => fields
 
 /** The my-focus list, as the worker sends it: kept areas in the owner's order, then suggestions, then one done. */
 export const SAMPLE_FOCUS_AREAS: FocusArea[] = [
-  area({ id: 'fa-viewer', name: 'Viewer', goal: 'Ship My Work LIVE as claude-mem 14.', status: 'kept', source: 'owner-goals', ownerRank: 1, priorityRank: 1, timesAsked: 4, latestAt: '10-18 22:11',
+  area({ id: 'fa-viewer', initiative: 'viewer-app', initiativeGuess: true, name: 'Viewer', goal: 'Ship My Work LIVE as claude-mem 14.', status: 'kept', source: 'owner-goals', ownerRank: 1, priorityRank: 1, timesAsked: 4, latestAt: '10-18 22:11',
     quotes: [
       { at: '10-18 22:11', quote: 'this is the most important thing right now, please get it shipped' },
       { at: '10-17 00:51', quote: 'release this tonight as the next full release' },
       { at: '10-16 09:39', quote: 'i love the card view, lets keep it + the list view too with sorting added' },
     ],
     asks: [ask({ id: 'a-live', title: 'A real live indicator on cards', timesAsked: 2, latestAt: '10-17 06:40', quotes: [{ at: '10-17 06:40', quote: 'i still cannot tell which cards are live right now' }] })] }),
-  area({ id: 'fa-sync', name: 'Cloud sync', goal: 'Make cloud sync dependable for everyone.', status: 'kept', source: 'owner-goals', ownerRank: 2, priorityRank: 5, timesAsked: 3, latestAt: '10-15 22:51',
+  area({ id: 'fa-sync', initiative: 'sync-service', initiativeGuess: true, name: 'Cloud sync', goal: 'Make cloud sync dependable for everyone.', status: 'kept', source: 'owner-goals', ownerRank: 2, priorityRank: 5, timesAsked: 3, latestAt: '10-15 22:51',
     quotes: [
       { at: '10-15 22:51', quote: 'use the real rollup data we already have, not a simulated forecast' },
       { at: '10-15 20:49', quote: 'what i need to know is whether sync is healthy for everyone' },
     ],
     asks: [ask({ id: 'a-panel', title: 'Cloud sync health panel from real data', timesAsked: 4, latestAt: '10-16 02:04', quotes: [{ at: '10-16 02:04', quote: 'show what this looks like at real scale' }] })] }),
-  area({ id: 'fa-search', name: 'Search', goal: 'Restore the three-step search and ship the quick mode.', status: 'kept', source: 'owner-goals', ownerRank: 3, priorityRank: 2, timesAsked: 3, latestAt: '10-18 22:09',
+  area({ id: 'fa-search', initiative: 'viewer-web', initiativeGuess: true, name: 'Search', goal: 'Restore the three-step search and ship the quick mode.', status: 'kept', source: 'owner-goals', ownerRank: 3, priorityRank: 2, timesAsked: 3, latestAt: '10-18 22:09',
     quotes: [{ at: '10-18 22:09', quote: 'why is the quick mode still not shipped?' }, { at: '10-13 12:21', quote: 'go ahead and restore the search, and rename the quick mode' }] }),
   area({ id: 'fa-behavior', name: 'Agent behavior', goal: 'Agents follow how you like to work, and rules stay easy to change.', status: 'kept', source: 'owner-goals', ownerRank: 4, priorityRank: 3, timesAsked: 4, latestAt: '10-18 22:06',
     quotes: [{ at: '10-18 22:06', quote: 'please stop writing rules that can never change' }],
@@ -54,11 +54,11 @@ export const SAMPLE_FOCUS_AREAS: FocusArea[] = [
   area({ id: 'fa-decks', name: 'Reports and decks', goal: 'Decks and reports that answer your real question.', status: 'suggested', source: 'owner-goals', priorityRank: 9, timesAsked: 4, latestAt: '10-17 09:40',
     quotes: [{ at: '10-17 07:36', quote: 'i care less about how many tests pass than what changed' }, { at: '10-15 13:45', quote: 'show me the decisions i actually have to make' }],
     asks: [ask({ id: 'a-decks', title: 'Slide decks: drop the upload, download and waiting', timesAsked: 5, latestAt: '10-17 09:40', quotes: [{ at: '10-17 09:40', quote: "remove the upload step ... and just have it make the deck and that's it" }, { at: '10-17 09:38', quote: "i've asked before" }] })] }),
-  area({ id: 'fa-team', name: 'Team workspaces', goal: 'A self-serve team plan and a page at the quality bar.', status: 'suggested', source: 'seed', priorityRank: 4,
+  area({ id: 'fa-team', initiative: 'sync-service', initiativeGuess: true, name: 'Team workspaces', goal: 'A self-serve team plan and a page at the quality bar.', status: 'suggested', source: 'seed', priorityRank: 4,
     evidence: 'Set up from how your requests were sorted before the areas existed.' }),
   area({ id: 'fa-growth', name: 'Growth', goal: 'Community updates, the homepage and a launch event.', status: 'suggested', source: 'clustering',
     evidence: 'Requests in Other read as steps of something larger.' }),
-  area({ id: 'fa-fixes', name: 'Plugin fixes', goal: 'Small plugin fixes you kept asking for again.', status: 'done', source: 'owner-goals', priorityRank: 8, timesAsked: 3, latestAt: '10-16 19:18',
+  area({ id: 'fa-fixes', initiative: 'viewer-app', initiativeGuess: true, name: 'Plugin fixes', goal: 'Small plugin fixes you kept asking for again.', status: 'done', source: 'owner-goals', priorityRank: 8, timesAsked: 3, latestAt: '10-16 19:18',
     quotes: [{ at: '10-16 19:18', quote: 'please fix it' }] }),
 ]
 

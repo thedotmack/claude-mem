@@ -63,10 +63,11 @@ export const createViewSlice = (environment: StoreEnvironment): SliceCreator<Vie
       workspace: { mode: 'home', team: false, connected: false },
       showSpec: false,
       dark: route.theme ?? environment.prefersDark,
-      listView: 'cards',
-      filter: 'all',
-      sort: 'attention',
-      focusArtwork: 'full',
+      listView: 'threads',
+      focusThreadView: 'threads',
+      filter: 'open',
+      focusArrangement: 'priority',
+      doneColumnOpen: false,
     },
 
     goToPage: (page) => navigate({ section: page, focusChoice: null }),
@@ -139,9 +140,10 @@ export const createViewSlice = (environment: StoreEnvironment): SliceCreator<Vie
     setShowSpec: (showSpec) => set((state) => { state.view.showSpec = showSpec }),
     setDark: (dark) => set((state) => { state.view.dark = dark }),
     setListView: (listView) => set((state) => { state.view.listView = listView }),
+    setFocusThreadView: (focusThreadView) => set((state) => { state.view.focusThreadView = focusThreadView }),
     setFilter: (filter) => set((state) => { state.view.filter = filter }),
-    setSort: (sort) => set((state) => { state.view.sort = sort }),
-    setFocusArtwork: (focusArtwork) => set((state) => { state.view.focusArtwork = focusArtwork }),
+    setFocusArrangement: (focusArrangement) => set((state) => { state.view.focusArrangement = focusArrangement }),
+    setDoneColumnOpen: (open) => set((state) => { state.view.doneColumnOpen = open }),
   }
 }
 

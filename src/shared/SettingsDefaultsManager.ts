@@ -458,6 +458,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_WORK_VIEW_API_MODEL: string;
   CLAUDE_MEM_CORPUS_AGENT: string;
   CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE: string;
+  CLAUDE_MEM_WORK_VIEW_AUTO_STAGE_FORMAT: string;
   // Automatic local DB snapshots (BackupManager). Opt-in via ENABLED.
   CLAUDE_MEM_BACKUP_ENABLED: string;
   CLAUDE_MEM_BACKUP_INTERVAL_HOURS: string;
@@ -790,6 +791,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_WORK_VIEW_API_MODEL: '', // Model for every My Work refresh step on the selected API provider; empty keeps the provider's configured model
     CLAUDE_MEM_CORPUS_AGENT: '', // Which agent answers knowledge-corpus prime/query/reprime: '' uses the Claude Agent SDK (the Claude subscription); 'api' answers over chat completions on the selected openrouter/openai-compatible provider and spends that provider's credit
     CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE: '', // Language for My Work's generated text (titles, reviews, story), such as 'Turkish'. No extra model call; empty uses the language the grouping step finds in the owner's asks, decided once per run (#5660)
+    CLAUDE_MEM_WORK_VIEW_AUTO_STAGE_FORMAT: '', // Opt-in: a stage format id (brief, one-pager, deck, technical, or one of your own in ~/.claude-mem/stage-formats/). After a refresh records a review that leaves a request waiting for your review, My Work makes that one stage for it, once per review, at most 3 per refresh. Empty = off: stages are made only when you click
     // Automatic local DB snapshots (BackupManager). Off by default; opt-in.
     CLAUDE_MEM_BACKUP_ENABLED: 'false',
     CLAUDE_MEM_BACKUP_INTERVAL_HOURS: '24',   // Snapshot cadence in hours

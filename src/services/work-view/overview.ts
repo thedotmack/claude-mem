@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { ViewerSyncStatus } from '../../shared/viewer-sync-status.js';
 import { toWorkModel } from '../../ui/my-work/src/live/to-work-model.js';
+import { withOwnerRuns } from '../../ui/my-work/src/live/owner-runs-model.js';
 import { isCardDeliverable } from '../../ui/my-work/src/lib/deliverables.js';
 import type { Request as WorkRequest } from '../../ui/my-work/src/data.js';
 import { SOLO_REQUESTER, type WorkViewOverview, type WorkViewOverviewRequest, type WorkViewRequestDetail } from '../../ui/my-work/src/live/work-view-overview.js';
@@ -31,16 +32,15 @@ const DETAIL_REVISION_HEX_LENGTH = 24;
  */
 function detailRevision(request: WorkRequest, raw: RawRequest | undefined): string {
   return createHash('sha256').update(JSON.stringify([request.contentFingerprint, request.conversations,
-    raw?.humanCopy, raw?.progress, raw?.activity, raw?.workstreams, raw?.workProduct])).digest('hex').slice(0, DETAIL_REVISION_HEX_LENGTH);
+    raw?.humanCopy, raw?.progress, raw?.activity, raw?.workstreams, raw?.workProduct, raw?.stages])).digest('hex').slice(0, DETAIL_REVISION_HEX_LENGTH);
 }
 
-/** Keep the exact fields the cards display; detail-only arrays never ride a routine event. */
+/** Keep the exact fields a thread's row displays; detail-only arrays never ride a routine event. */
 function compactRequest(request: WorkRequest, raw: RawRequest | undefined): WorkViewOverviewRequest {
   const products = request.workProduct.filter(isCardDeliverable);
   const { workstreams: _workstreams, granular: _granular, conversations: _conversations,
     prompts: _prompts, story: _story, evidence: _evidence, storyNarrative: _storyNarrative,
-    terminal: _terminal, followUps: _followUps, review: _review, canMoveFocus, askedBy, ...card } = request;
-  const terminal = request.title ? [] : request.terminal.slice(-4);
+    terminal: _terminal, followUps: _followUps, review: _review, stages: _stages, canMoveFocus, askedBy, question, ...card } = request;
   const { history, ...progress } = request.progress;
   // Optional flags default to false. Keep action versions, availability and
   // explanations verbatim while avoiding repeated no-op review metadata.
@@ -57,17 +57,20 @@ function compactRequest(request: WorkRequest, raw: RawRequest | undefined): Work
     // wire; readers restore the empty array for the complete UI model.
     progress: history?.length ? request.progress : progress,
     ...(review ? { review } : {}),
+    // The question rides the row; what helps answer it waits for the detail read, and the row is told only that there is some.
+    ...(question ? { question: { text: question.text, ...(question.background?.length ? { hasBackground: true as const } : {}) } } : {}),
     detailLoaded: false,
     detailRevision: detailRevision(request, raw),
     detailCounts: { workProduct: products.length },
-    ...(terminal.length ? { terminal } : {}),
     ...(request.followUps.length ? { followUps: request.followUps } : {}),
-    workProduct: products.slice(0, 3),
+    // A row shows a deliverable only as the thing to review; every other row's list waits for its detail read.
+    workProduct: request.next.who === 'human' && request.next.need === 'review' ? products.slice(0, 1) : [],
   };
 }
 
 export function workViewOverview(snapshot: WorkViewSnapshot, now = Date.now()): WorkViewOverview {
-  const model = toWorkModel(snapshot as unknown as ApiSnapshot, now);
+  // The overview carries which stages are ready and the plan's state; the stage list and the proposals are read on their own.
+  const model = withOwnerRuns(toWorkModel(snapshot as unknown as ApiSnapshot, now), snapshot as unknown as ApiSnapshot);
   const rawRequests = new Map((snapshot as unknown as ApiSnapshot).humanRequests.map(raw => [raw.id, raw]));
   return {
     version: 1,
@@ -85,7 +88,7 @@ export function workViewOverview(snapshot: WorkViewSnapshot, now = Date.now()): 
 }
 
 export function workViewRequestDetail(snapshot: WorkViewSnapshot, id: string, now = Date.now()): WorkViewRequestDetail | null {
-  const request = toWorkModel(snapshot as unknown as ApiSnapshot, now).requests.find(request => request.id === id);
+  const request = withOwnerRuns(toWorkModel(snapshot as unknown as ApiSnapshot, now), snapshot as unknown as ApiSnapshot).requests.find(request => request.id === id);
   return request ? { version: 1, revision: String(snapshot.revision), request: {
     ...request, detailLoaded: true,
     detailRevision: detailRevision(request, (snapshot as unknown as ApiSnapshot).humanRequests.find(raw => raw.id === id)),

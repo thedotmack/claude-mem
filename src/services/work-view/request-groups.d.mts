@@ -46,7 +46,7 @@ export interface FocusRequestRecord {
   /** How many conversations the request holds, and each one's opening ask. */
   conversations: number; conversationAsks: string[];
 }
-type FocusAreaRecord = { focusAreaId: string; name: string; goal: string | null; about: string | null; status: string };
+type FocusAreaRecord = { focusAreaId: string; name: string; goal: string | null; about: string | null; status: string; notes?: string };
 export interface FocusInput { areas: FocusAreaRecord[]; dismissed: FocusAreaRecord[]; requests: FocusRequestRecord[]; remaining: number }
 export interface OtherInput { areas: FocusAreaRecord[]; dismissed: FocusAreaRecord[]; other: FocusRequestRecord[]; due: boolean }
 export const GROUPING_BATCH: number;

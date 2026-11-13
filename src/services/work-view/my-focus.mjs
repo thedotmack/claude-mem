@@ -3,19 +3,24 @@
 // project, so they sync like any other work state (the same pattern as my-rules).
 //   "Focus area: <focusAreaId>"           one area; every row saves the whole area.
 //   "Placement: <anchorConversationKey>"  which area one request sits in.
+//   "Notes: <focusAreaId>"                the owner's notes on one area; only the owner writes this row.
+//   "Initiative: <focusAreaId>"           the initiative the owner filed one area under; only the owner writes this row.
 // A placement is keyed by the request's anchor conversation key (the input groupIdFor
 // hashes), never by the local g_ id. Area ids are never derived from names, so a
 // rename keeps the id. Rows are append-only and replay in write order.
 import { createHash, randomBytes } from 'node:crypto';
-import { MAX_WORK_STATE_FIELDS_JSON_CHARS } from './work-state-limits.mjs';
+import { MAX_FOCUS_NOTES_CHARS, MAX_WORK_STATE_FIELDS_JSON_CHARS } from './work-state-limits.mjs';
 import { reduceWorkState } from './work-state-reduce.mjs';
 import { navWordIn } from './nav-words.mjs';
+import { MAX_FOCUS_INITIATIVE_CHARS, initiativeKey } from './focus-initiative-names.mjs';
 
 export const MY_FOCUS_LIST = 'my-focus';
 /** The permanent bucket for requests that fit no area. Never an area id. */
 export const OTHER_FOCUS_AREA_ID = 'other';
 const FOCUS_AREA_TASK_PREFIX = 'Focus area: ';
 const PLACEMENT_TASK_PREFIX = 'Placement: ';
+const NOTES_TASK_PREFIX = 'Notes: ';
+const INITIATIVE_TASK_PREFIX = 'Initiative: ';
 const FOCUS_AREA_STATUSES = ['suggested', 'kept', 'dismissed', 'done'];
 const FOCUS_AREA_SOURCES = ['owner-goals', 'clustering', 'promotion', 'seed', 'owner'];
 /** What the focus step may propose, and the area source each becomes: a cluster of Other requests that are steps of
@@ -68,6 +73,29 @@ export function placementRowFields(placement) {
     focus_area_id: text(placement.focusAreaId), placed_by: placement.placedBy,
     confidence: rank(placement.confidence), basis: text(placement.basis) || null, evidence: text(placement.evidence) || null,
   }, 'placement');
+}
+
+/** The row that saves the owner's notes on one area: why it matters, context, anything. Its own row, so no area row a
+ * refresh or another device writes can carry an older copy of the notes over them. Empty notes clear them. */
+export function focusNotesRowFields(focusAreaId, notes) {
+  const id = text(focusAreaId);
+  if (!id || id === OTHER_FOCUS_AREA_ID) throw new Error(`Notes need a focus area id other than "${OTHER_FOCUS_AREA_ID}".`);
+  if (typeof notes !== 'string') throw new TypeError('Notes are text.');
+  if (notes.trim().length > MAX_FOCUS_NOTES_CHARS) throw new RangeError(`Notes are at most ${MAX_FOCUS_NOTES_CHARS} characters.`);
+  return { task: `${NOTES_TASK_PREFIX}${id}`, focus_area_id: id, notes: notes.trim() || null };
+}
+
+/** The row that files one area under an initiative, the heading the owner groups focus areas by. Its own row, like the
+ * notes: no area row a refresh writes can carry an older one over it. An empty name clears it, and the area goes back
+ * to the guess from its folders; with `none` the empty name is itself the owner's filing (under no heading), which
+ * no guess replaces. */
+export function focusInitiativeRowFields(focusAreaId, initiative, { none = false } = {}) {
+  const id = text(focusAreaId);
+  if (!id || id === OTHER_FOCUS_AREA_ID) throw new Error(`An initiative needs a focus area id other than "${OTHER_FOCUS_AREA_ID}".`);
+  if (typeof initiative !== 'string') throw new TypeError('An initiative is a name.');
+  if (initiative.trim().length > MAX_FOCUS_INITIATIVE_CHARS) throw new RangeError(`An initiative's name is at most ${MAX_FOCUS_INITIATIVE_CHARS} characters.`);
+  if (none && initiative.trim()) throw new Error('An area filed under no initiative carries no name.');
+  return { task: `${INITIATIVE_TASK_PREFIX}${id}`, focus_area_id: id, initiative: initiative.trim() || null, no_initiative: none ? true : null };
 }
 
 /** A retry key is a nonce plus a commitment to the focus route's normalized payload. Fixed tuple
@@ -185,7 +213,8 @@ export function buildFocusAreas(state, { localDeviceId = null } = {}) {
   if (typeof state.entryCount === 'number' && state.events.length !== state.entryCount) {
     throw new Error('My Focus needs every work-state row; the events were cut.');
   }
-  const areas = new Map(), placements = new Map();
+  const areas = new Map(), placements = new Map(), notes = new Map(), initiatives = new Map(), unfiled = new Set();
+  let written = 0;
   let otherPassHash = null;
   // state.events is newest first.
   for (const event of [...state.events].reverse()) {
@@ -218,8 +247,24 @@ export function buildFocusAreas(state, { localDeviceId = null } = {}) {
       // The device that wrote the latest row: a router basis is only comparable on the device that computed it.
       placement[placedBy].device = event.sourceOrder?.[1] ?? null;
       placements.set(anchor, placement);
+    } else if (event.task.startsWith(NOTES_TASK_PREFIX)) {
+      notes.set(text(event.fields.focus_area_id) || event.task.slice(NOTES_TASK_PREFIX.length), text(event.fields.notes) || null);
+    } else if (event.task.startsWith(INITIATIVE_TASK_PREFIX)) {
+      const focusAreaId = text(event.fields.focus_area_id) || event.task.slice(INITIATIVE_TASK_PREFIX.length);
+      const name = text(event.fields.initiative);
+      if (name) initiatives.set(focusAreaId, { name, written: written++ });
+      else initiatives.delete(focusAreaId);
+      if (!name && event.fields.no_initiative === true) unfiled.add(focusAreaId);
+      else unfiled.delete(focusAreaId);
     }
   }
+
+  // Names that differ only by case are one initiative, spelled as in the oldest assignment still standing.
+  const spelling = new Map();
+  for (const { name } of [...initiatives.values()].sort((a, b) => a.written - b.written)) {
+    if (!spelling.has(initiativeKey(name))) spelling.set(initiativeKey(name), name);
+  }
+  const initiativeOf = (focusAreaId) => initiatives.has(focusAreaId) ? spelling.get(initiativeKey(initiatives.get(focusAreaId).name)) : null;
 
   const focusAreas = [...areas].map(([focusAreaId, { fields, savedAt }]) => {
     if (!text(fields.name)) throw new Error(`Focus area ${focusAreaId} has no name.`);
@@ -229,7 +274,8 @@ export function buildFocusAreas(state, { localDeviceId = null } = {}) {
       focusAreaId, name: text(fields.name), goal: text(fields.goal) || null, about: text(fields.about) || null, status: fields.status,
       priorityRank: rank(fields.priority_rank), ownerRank: rank(fields.owner_rank), source: fields.source,
       mergedInto: text(fields.merged_into) || null, evidence: text(fields.evidence) || null,
-      decidedBy: fields.decided_by, savedAt,
+      decidedBy: fields.decided_by, savedAt, notes: notes.get(focusAreaId) ?? null, initiative: initiativeOf(focusAreaId),
+      ...(unfiled.has(focusAreaId) ? { initiativeNone: true } : {}),
     };
   })
     // The owner's order wins; areas they have not ordered follow by suggested priority.

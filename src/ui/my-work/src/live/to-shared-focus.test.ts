@@ -32,10 +32,17 @@ test('requests in an area merged into this one count as its own, as My Work show
 
 test('closed requests stay off the page but still count in the rollup, like the area header', async () => {
   const model = await sampleSource.loadWorkModel()
-  const closed = { ...model, requests: model.requests.map((request) => request.id === 'r4' ? { ...request, closed: true } : request) }
+  const closed = { ...model, requests: model.requests.map((request) => request.id === 'r4' ? { ...request, state: 'closed' as const, next: { who: 'bot' as const, text: '' } } : request) }
   const page = toSharedFocusPage(closed, 'fa-viewer', NOW)!
   assert.deepEqual(page.requests.map((request) => request.id), ['r1'])
   assert.equal(page.area.progress.total, 2)
+})
+
+test('a checked request is listed with a state the hosted page has words for', async () => {
+  const model = await sampleSource.loadWorkModel()
+  const checked = { ...model, requests: model.requests.map((request) => request.id === 'r4' ? { ...request, state: 'checked' as const, next: { who: 'bot' as const, text: '' } } : request) }
+  const page = toSharedFocusPage(checked, 'fa-viewer', NOW)!
+  assert.equal(page.requests.find((request) => request.id === 'r4')!.state, 'idle')
 })
 
 test("the owner's own words and private detail never leave", async () => {

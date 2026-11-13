@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 260" role="img" aria-label="Sample chart: write stalls per hour before and after the change">
+  <rect width="640" height="260" fill="#f6f1ea"/>
+  <text x="24" y="36" font-family="system-ui, sans-serif" font-size="16" fill="#3b342c">Write stalls per hour (sample)</text>
+  <g font-family="system-ui, sans-serif" font-size="12" fill="#6b6257">
+    <text x="24" y="232">before</text><text x="344" y="232">after</text>
+  </g>
+  <g fill="#c96f4a">
+    <rect x="24" y="96" width="40" height="120"/><rect x="72" y="76" width="40" height="140"/><rect x="120" y="110" width="40" height="106"/><rect x="168" y="64" width="40" height="152"/><rect x="216" y="90" width="40" height="126"/>
+  </g>
+  <g fill="#5f8f6a">
+    <rect x="344" y="204" width="40" height="12"/><rect x="392" y="208" width="40" height="8"/><rect x="440" y="206" width="40" height="10"/><rect x="488" y="210" width="40" height="6"/><rect x="536" y="208" width="40" height="8"/>
+  </g>
+  <line x1="24" y1="216" x2="616" y2="216" stroke="#3b342c" stroke-width="1"/>
+</svg>
