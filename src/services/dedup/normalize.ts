@@ -22,6 +22,21 @@ export function normalizeTitle(s: string | null | undefined): string {
   return /[\p{L}\p{N}]/u.test(normalized) ? normalized : '';
 }
 
+/**
+ * The indexed normal form is a candidate key, not proof that two technical
+ * titles identify the same fact. Keep C/C++/C#, paths, field names and version
+ * identifiers apart before a silent merge, while retaining the existing
+ * case, prose-hyphenation and surrounding-punctuation equivalence.
+ */
+export function exactTitleMatch(a: string | null | undefined, b: string | null | undefined): boolean {
+  const norm = normalizeTitle(a);
+  if (!norm || norm !== normalizeTitle(b)) return false;
+  const identifiers = (value: string | null | undefined): string[] =>
+    (value ?? '').normalize('NFC').toLowerCase()
+      .match(/(?<![\p{L}\p{N}\p{M}])(?:[\p{L}\p{N}\p{M}]+(?:[./_\\:@#=<>]+[\p{L}\p{N}\p{M}]+)+|[\p{L}\p{N}\p{M}]+[+#]+)/gu) ?? [];
+  return JSON.stringify(identifiers(a)) === JSON.stringify(identifiers(b));
+}
+
 /** Whitespace-only split + lowercase; preserves compound identifiers as single tokens. */
 export function tokenizeWs(s: string | null | undefined): string[] {
   return (s ?? '')

@@ -11,7 +11,8 @@
  */
 import { createHash } from 'crypto';
 import type { Database } from 'bun:sqlite';
-import { normalizeTitle, tokenizeWs } from '../dedup/normalize.js';
+import { exactTitleMatch, normalizeTitle, tokenizeWs } from '../dedup/normalize.js';
+import { streamRows } from './stream-rows.js';
 import { buildIdfFn, idf } from '../dedup/idf.js';
 import { classifyPair, type ClassifyThresholds } from '../dedup/nearDuplicate.js';
 import { logger } from '../../utils/logger.js';
@@ -63,17 +64,27 @@ export function computeTitleNormKey(
   return createHash('sha256').update(`${project}\x00${platform}\x00${agentScope}\x00${norm}`).digest('hex').slice(0, 32);
 }
 
-/** O(1) Tier-0 lookup: the existing canonical row for this (project, normalized-title), or null. */
+/** Indexed Tier-0 lookup, with a raw-title check before accepting a lossy normalized key. */
 export function findTier0Canonical(
   db: Database,
   project: string,
-  normKey: string | null
+  normKey: string | null,
+  title: string | null | undefined,
 ): { id: number; occurrence_count: number; created_at_epoch: number } | null {
   if (normKey === null) return null;
-  return (db.prepare(
-    'SELECT id, occurrence_count, created_at_epoch FROM observations ' +
-    'WHERE project = ? AND title_norm_key = ? ORDER BY created_at_epoch ASC, id ASC LIMIT 1'
-  ).get(project, normKey) as { id: number; occurrence_count: number; created_at_epoch: number } | undefined) ?? null;
+  const statement = db.prepare(
+    'SELECT id, title, occurrence_count, created_at_epoch FROM observations ' +
+    'WHERE project = ? AND title_norm_key = ? ORDER BY created_at_epoch ASC, id ASC'
+  );
+  try {
+    for (const value of streamRows(statement, project, normKey)) {
+      const row = value as { id: number; title: string | null; occurrence_count: number; created_at_epoch: number };
+      if (exactTitleMatch(title, row.title)) {
+        return { id: row.id, occurrence_count: row.occurrence_count, created_at_epoch: row.created_at_epoch };
+      }
+    }
+    return null;
+  } finally { statement.finalize(); }
 }
 
 /** Record one new document: +1 df for each UNIQUE title token, +1 project doc_count. */

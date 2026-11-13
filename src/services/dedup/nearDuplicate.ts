@@ -2,7 +2,7 @@
  * Near-duplicate tier decision for #3038.
  *
  * Two safe tiers, both deterministic:
- *   - Tier-0 "exact": titles equal after normalization → safe silent auto-merge.
+ *   - Tier-0 "exact": normalized titles and code identifiers match → silent auto-merge.
  *   - Tier-1 "candidate": IDF-weighted cosine >= threshold AND the IDF-veto does
  *     NOT fire → a near-duplicate CANDIDATE (persisted for review / future
  *     LLM adjudication), never a silent merge.
@@ -12,7 +12,7 @@
  * useless (false-positive dominated); IDF-cosine + veto separates true rewords
  * from distinct-but-similar titles that differ in a rare token.
  */
-import { normalizeTitle, tokenizeWs } from './normalize.js';
+import { exactTitleMatch, tokenizeWs } from './normalize.js';
 import { tfidfCosine } from './tfidfCosine.js';
 import { vetoFires } from './idfVeto.js';
 
@@ -56,8 +56,7 @@ export function classifyPair(
   // emoji-only titles all normalize to '' and must NOT collapse into each other
   // (that would silently auto-merge distinct observations — data loss). The Tier-1
   // fall-through is already safe for these (empty tokens → cosine 0 → 'none').
-  const normA = normalizeTitle(a);
-  if (normA !== '' && normA === normalizeTitle(b)) {
+  if (exactTitleMatch(a, b)) {
     return { tier: 'exact', method: 'exact', score: 1 };
   }
   const ta = tokenizeWs(a);
