@@ -102,3 +102,4 @@ export function deviceById(id: string): Device {
 }
 
 export type * from './store-types'
+export { WORK_LIST_VIEWS } from './store-types'

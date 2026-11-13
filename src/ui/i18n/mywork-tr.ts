@@ -287,6 +287,8 @@ export const myworkTr: Record<string, string> = {
   'Could not copy. Select the link and copy it.': 'Kopyalanamadı. Bağlantıyı seçip kopyalayın.',
   'Cards': 'Kartlar',
   'List': 'Liste',
+  'Board': 'Pano',
+  'Review': 'İnceleme',
   'By agent': 'Ajana göre',
   'All': 'Tümü',
   'Needs you': 'İlginizi bekliyor',

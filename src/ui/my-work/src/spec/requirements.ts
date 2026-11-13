@@ -152,6 +152,9 @@ export const REQUIREMENTS: Requirement[] = [
 
   // 18. Account (added 2026-11-05, append only): the cloud viewer is where viewer accounts land, so billing is reachable from it.
   { id: 'R18.1', section: '18', kind: 'ui', text: 'On the cloud viewer only, the bottom of the rail links "Account & billing" to cmem.ai/account. My Work served from this computer shows no such link.' },
+
+  // Board view (added 2026-11-13, append only): a third way to see the same requests, beside Cards and List.
+  { id: 'R4.7', section: '4', kind: 'ui', text: 'Board view: the requests Cards and List show, under the same focus area, filter and sort, in one column per state (Your move, Review, Working, Idle, Shipped). An empty column stays and says so. A closed request is on no column, and the Closed filter is not offered there. Nothing drags; a card opens its request.' },
 ]
 
 export const REQUIREMENTS_BY_ID = new Map(REQUIREMENTS.map((requirement) => [requirement.id, requirement]))

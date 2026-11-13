@@ -8,7 +8,7 @@ import { createFocusSlice } from './slices/focus-slice.ts'
 import { createRulesSlice } from './slices/rules-slice.ts'
 import { createViewSlice } from './slices/view-slice.ts'
 import { createWorkSlice } from './slices/work-slice.ts'
-import type { BoundStore, StoreEnvironment, ViewState } from './store-types.ts'
+import { WORK_LIST_VIEWS, type BoundStore, type StoreEnvironment, type ViewState } from './store-types.ts'
 
 enableMapSet()
 // The sample source edits its fixture objects in place (sample-source.ts), and those objects sit in the model.
@@ -23,7 +23,6 @@ const PREFERENCES_VERSION = 1
 // The theme is not saved: it follows the system preference (or `?theme=`), as it always has.
 type Preferences = Pick<ViewState, 'listView' | 'filter' | 'sort' | 'focusArtwork'>
 
-const LIST_VIEWS: readonly ViewState['listView'][] = ['cards', 'list', 'agents', 'team']
 const FILTERS: readonly ViewState['filter'][] = ['all', 'needs-you', 'working', 'shipped', 'closed']
 const SORTS: readonly ViewState['sort'][] = ['attention', 'started', 'progress']
 const FOCUS_ARTWORK: readonly ViewState['focusArtwork'][] = ['full', 'compact', 'off']
@@ -32,7 +31,7 @@ const FOCUS_ARTWORK: readonly ViewState['focusArtwork'][] = ['full', 'compact', 
 function validPreferences(saved: unknown): Partial<Preferences> {
   const value = (saved ?? {}) as Record<string, unknown>
   const preferences: Partial<Preferences> = {}
-  if (LIST_VIEWS.includes(value.listView as ViewState['listView'])) preferences.listView = value.listView as ViewState['listView']
+  if (WORK_LIST_VIEWS.includes(value.listView as ViewState['listView'])) preferences.listView = value.listView as ViewState['listView']
   if (FILTERS.includes(value.filter as ViewState['filter'])) preferences.filter = value.filter as ViewState['filter']
   if (SORTS.includes(value.sort as ViewState['sort'])) preferences.sort = value.sort as ViewState['sort']
   if (FOCUS_ARTWORK.includes(value.focusArtwork as ViewState['focusArtwork'])) preferences.focusArtwork = value.focusArtwork as ViewState['focusArtwork']

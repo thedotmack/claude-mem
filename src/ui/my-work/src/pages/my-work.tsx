@@ -20,26 +20,23 @@ import { FocusHeader, OtherHeader } from '@/components/focus-header'
 import { ChangeTicker } from '@/components/live-motion'
 import { RequestCard } from '@/components/request-card'
 import { SplitFlapText } from '@/components/split-flap'
+import { ThreadBoard } from '@/components/thread-board'
 import { SaveButton } from '@/components/save-button'
 import { useMatchesMedia } from '@/lib/use-media'
 import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
 import { needsYou, OTHER_FOCUS_AREA_ID, SAMPLE_RUNS, startedTimestamp, type Agent as WorkAgent, type LiveState, type Request } from '@/data'
-import { type WorkFilter, type WorkListView, type WorkSort, deviceById, useFreshlyUpdated, useStore, useWorkModel, useWorkspace } from '@/store'
+import { type WorkFilter, type WorkListView, type WorkSort, WORK_LIST_VIEWS, deviceById, useFreshlyUpdated, useStore, useWorkModel, useWorkspace } from '@/store'
 import { useShallow } from 'zustand/react/shallow'
 import type { BuildStory, RequestReadError } from '@/live/work-data-source'
 import { createFocusAreaResolver } from '@/live/to-focus-model'
+import { boardFilter } from '@/live/board-columns'
 import { cardGridEntries } from '@/live/card-groups'
 import { FocusOverview } from '@/components/focus-overview'
 import '@/components/focus-overview.css'
 
 type View = WorkListView
-const VIEWS: { value: View; label: string }[] = [
-  { value: 'cards', label: 'Cards' },
-  { value: 'list', label: 'List' },
-  { value: 'agents', label: 'By agent' },
-  { value: 'team', label: 'Team' },
-]
+const VIEW_LABEL: Record<View, string> = { cards: 'Cards', list: 'List', board: 'Board', agents: 'By agent', team: 'Team' }
 type Filter = WorkFilter
 type SortKey = WorkSort
 // Closed requests (every item dropped) show only under Closed, and that filter appears only when there are some (or it is selected).
@@ -502,7 +499,9 @@ export function MyWork({ focusAreaId, onOpen, onOpenFocus, onOpenRules }: { focu
   const focusChanges = useFocusChanges()
   const sample = sourceKind === 'sample'
   // How the person likes to see My Work is saved across visits (store/create-store.ts).
-  const { listView: view, filter, sort } = useStore(useShallow((state) => ({ listView: state.view.listView, filter: state.view.filter, sort: state.view.sort })))
+  const { listView: view, filter: savedFilter, sort } = useStore(useShallow((state) => ({ listView: state.view.listView, filter: state.view.filter, sort: state.view.sort })))
+  // The board has no Closed column, so a saved Closed filter shows everything there and comes back in Cards and List.
+  const filter = view === 'board' ? boardFilter(savedFilter) : savedFilter
   const focusArtwork = useStore((state) => state.view.focusArtwork)
   const { setListView: setView, setFilter, setSort } = useStore.getState()
   const [storyOpen, setStoryOpen] = useState(false)
@@ -530,10 +529,10 @@ export function MyWork({ focusAreaId, onOpen, onOpenFocus, onOpenRules }: { focu
       <div className="flex flex-wrap items-center gap-2 md:gap-3">
         <Req ids={['R4.1', 'R4.2', 'R4.3', 'R9.2']}>
           <ToggleGroup type="single" variant="outline" size="sm" spacing={1} value={view} onValueChange={(next) => next && setView(next as View)} aria-label={t("View")}>
-            {VIEWS.filter((entry) => entry.value !== 'team' || team).map(({ value, label }) => (
+            {WORK_LIST_VIEWS.filter((value) => value !== 'team' || team).map((value) => (
               <ToggleGroupItem key={value} value={value} className="relative h-11 px-3.5 data-[state=on]:bg-transparent data-[state=on]:hover:bg-transparent md:h-8">
                 {view === value && <ActivePill layoutId="view-toggle-active-pill" />}
-                <span className="relative">{t(label)}</span>
+                <span className="relative">{t(VIEW_LABEL[value])}</span>
               </ToggleGroupItem>
             ))}
           </ToggleGroup>
@@ -558,7 +557,7 @@ export function MyWork({ focusAreaId, onOpen, onOpenFocus, onOpenRules }: { focu
         {/* Phone: the filters wrap to a second row instead of widening the page past the screen; the sort stays beside them. */}
         <div className="flex w-full items-start gap-1 md:w-auto md:items-center">
           <ToggleGroup type="single" variant="outline" size="sm" spacing={1} value={filter} onValueChange={(next) => next && setFilter(next as Filter)} aria-label={t("Filter")} className="min-w-0 flex-1 md:flex-none md:flex-nowrap">
-            {FILTERS.filter((entry) => entry.value !== 'closed' || filter === 'closed' || requests.some(entry.matches)).map(({ value, label, dot, matches: test }) => (
+            {FILTERS.filter((entry) => entry.value !== 'closed' || (view !== 'board' && (filter === 'closed' || requests.some(entry.matches)))).map(({ value, label, dot, matches: test }) => (
               <ToggleGroupItem key={value} value={value} className="h-11 gap-1.5 px-3 md:h-8">
                 {dot && <span className={cn('size-1.5 rounded-full', dot)} />}
                 {t(label)}
@@ -598,6 +597,7 @@ export function MyWork({ focusAreaId, onOpen, onOpenFocus, onOpenRules }: { focu
       ) : view === 'cards' ? (
         <CardsView requests={visible} grouped={sort === 'attention' && filter === 'all'} readErrors={requestReadErrors} onOpen={onOpen} onOpenFocus={onOpenFocus} />
       ) : view === 'list' ? <ListView requests={visible} sort={sort} onSort={setSort} onOpen={onOpen} onOpenFocus={onOpenFocus} />
+        : view === 'board' ? <ThreadBoard requests={visible} onOpen={onOpen} onOpenFocus={onOpenFocus} />
         : view === 'agents' ? <ByAgentView requests={visible} onOpen={onOpen} />
           : <TeamBoard requests={visible} onOpen={onOpen} />}
       {view !== 'cards' && requestReadErrors.length > 0 && (

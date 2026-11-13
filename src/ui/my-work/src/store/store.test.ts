@@ -355,6 +355,16 @@ describe('display preferences', () => {
     assert.deepEqual([view.dark, view.listView, view.filter, view.sort, view.focusArtwork], [true, 'cards', 'all', 'attention', 'full'])
   })
 
+  it('remembers the board view, and reads a view this version does not know as Cards', () => {
+    const storage = memoryStorage()
+    testStore({ storage }).store.getState().setListView('board')
+    assert.equal(JSON.parse(storage.items.get('claude-mem:my-work:preferences')!).state.listView, 'board')
+    assert.equal(testStore({ storage }).store.getState().view.listView, 'board')
+    const unknown = memoryStorage({ 'claude-mem:my-work:preferences': JSON.stringify({ version: 1, state: { listView: 'kanban', filter: 'working' } }) })
+    const view = testStore({ storage: unknown }).store.getState().view
+    assert.deepEqual([view.listView, view.filter], ['cards', 'working'])
+  })
+
   it('keeps existing preferences when artwork density is absent and remembers turning artwork off', () => {
     const storage = memoryStorage({ 'claude-mem:my-work:preferences': JSON.stringify({ version: 1, state: { listView: 'list', filter: 'working', sort: 'started' } }) })
     const first = testStore({ storage }).store

@@ -287,6 +287,8 @@ export const myworkKo: Record<string, string> = {
   'Could not copy. Select the link and copy it.': '복사하지 못했습니다. 링크를 선택해 복사하세요.',
   'Cards': '카드',
   'List': '목록',
+  'Board': '보드',
+  'Review': '검토',
   'By agent': '에이전트별',
   'All': '전체',
   'Needs you': '확인 필요',

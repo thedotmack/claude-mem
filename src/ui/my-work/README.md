@@ -18,7 +18,7 @@ npm run coverage   # checks every UI requirement is on screen, writes COVERAGE.m
 
 | Screen | File | AI Elements used |
 | --- | --- | --- |
-| My Work: one-line summary, Cards, List, By agent, Team, then today's story | `src/pages/my-work.tsx` | Agent |
+| My Work: one-line summary, Cards, List, Board, By agent, Team, then today's story | `src/pages/my-work.tsx` | Agent |
 | Request card, including the terminal-to-human transform | `src/components/request-card.tsx` | Terminal, Shimmer |
 | Request page: next move first, layers collapsed | `src/components/request-detail.tsx` | Chain of Thought, Task, Queue |
 | My Goals | `src/pages/my-goals.tsx` | Inline Citation |

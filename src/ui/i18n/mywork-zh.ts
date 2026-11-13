@@ -302,6 +302,8 @@ export const myworkZh: Record<string, string> = {
   // My Work Page
   'Cards': '卡片',
   'List': '列表',
+  'Board': '看板',
+  'Review': '待审查',
   'By agent': '按智能体',
   'All': '全部',
   'Needs you': '需您处理',

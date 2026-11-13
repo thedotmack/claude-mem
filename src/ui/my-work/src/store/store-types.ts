@@ -61,7 +61,9 @@ export type Page = 'setup' | 'app'
 export type NavPage = 'work' | 'rules'
 /** What the main column shows: a page, or one of the focus views the rail opens. */
 export type Section = NavPage | 'suggested' | 'past-focus'
-export type WorkListView = 'cards' | 'list' | 'agents' | 'team'
+/** The view switch on My Work, in the order it shows them. The one definition: the saved-preference check and the labels take it from here. */
+export const WORK_LIST_VIEWS = ['cards', 'list', 'board', 'agents', 'team'] as const
+export type WorkListView = (typeof WORK_LIST_VIEWS)[number]
 export type WorkFilter = 'all' | 'needs-you' | 'working' | 'shipped' | 'closed'
 export type WorkSort = 'attention' | 'started' | 'progress'
 export type FocusArtwork = 'full' | 'compact' | 'off'
