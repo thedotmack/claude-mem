@@ -16,6 +16,7 @@ import { pipeline, type Transform } from 'node:stream';
 import * as zlib from 'node:zlib';
 import { logger } from '../../utils/logger.js';
 import { scanZstdFramesInFile } from '../transcripts/zstd-frames.js';
+import { streamRows } from '../sqlite/stream-rows.js';
 
 export type PromptAgentId = 'claude-code' | 'codex' | 'gemini-cli' | 'antigravity-cli' | 'opencode';
 
@@ -614,7 +615,7 @@ export function openCodeHistoryLayout(database: Database): { legacy: boolean; cu
 
 interface OpenCodePart { messageId: string; sessionId: string; role: string; createdAt: number; directory: string; parentId: string | null; data: string }
 
-function readOpenCodeParts(path: string, role: 'user' | 'assistant'): OpenCodePart[] {
+function* readOpenCodeMessages(path: string, role: 'user' | 'assistant'): Generator<OpenCodePart[]> {
   const database = new Database(path, { readonly: true });
   try {
     const layout = openCodeHistoryLayout(database);
@@ -661,12 +662,28 @@ function readOpenCodeParts(path: string, role: 'user' | 'assistant'): OpenCodePa
         WHERE m.type = 'assistant' AND json_extract(p.value, '$.type') IN ('text', 'tool')`);
     }
     // Tool outputs may be user-authored files; project only model input and its call time.
-    return database.prepare(`SELECT messageId, sessionId, role, createdAt, directory, parentId,
+    const statement = database.prepare(`SELECT messageId, sessionId, role, createdAt, directory, parentId,
         CASE WHEN partType = 'tool' THEN json_object(
           'type', 'tool', 'status', json_extract(data, '$.state.status'),
           'input', json_extract(data, '$.state.input'), 'startedAt', startedAt)
           ELSE data END AS data
-      FROM (${queries.join('\nUNION ALL\n')}) ORDER BY createdAt, messageId, storageOrder, ordinal`).all(...parameters) as OpenCodePart[];
+      FROM (${queries.join('\nUNION ALL\n')}) ORDER BY createdAt, messageId, storageOrder, ordinal`);
+    try {
+      // The query keeps each message's split and inline parts together. Retain
+      // only that message instead of materializing the entire native history.
+      let message: OpenCodePart[] = [];
+      for (const part of streamRows(statement, ...parameters) as Iterable<OpenCodePart>) {
+        if (message.length && message[0].messageId !== part.messageId) {
+          yield message;
+          message = [];
+        }
+        message.push(part);
+      }
+      if (message.length) yield message;
+    } finally {
+      // Bun can leave an iterate() cursor active after an early return.
+      statement.finalize();
+    }
   } finally {
     database.close();
   }
@@ -698,25 +715,28 @@ export function createOpenCodeReader(): AgentPromptReader {
       return { detected: database !== null, sources: presentSources([database]) };
     },
     async readPrompts(transcript, sink, sinceEpochMs) {
-      for (const { first, text } of groupOpenCodeMessages(readOpenCodeParts(transcript.path, 'user'), true)) {
-        sink.session(first.sessionId);
-        if (first.parentId || !text || first.createdAt < sinceEpochMs) continue;
-        sink.prompt({ agent: 'opencode', sessionId: first.sessionId, nativePromptId: first.messageId, at: first.createdAt, cwd: first.directory || null, text });
+      for (const parts of readOpenCodeMessages(transcript.path, 'user')) {
+        for (const { first, text } of groupOpenCodeMessages(parts, true)) {
+          sink.session(first.sessionId);
+          if (first.parentId || !text || first.createdAt < sinceEpochMs) continue;
+          sink.prompt({ agent: 'opencode', sessionId: first.sessionId, nativePromptId: first.messageId, at: first.createdAt, cwd: first.directory || null, text });
+        }
       }
     },
     async readAgentText(transcript, add) {
-      const parts = readOpenCodeParts(transcript.path, 'assistant');
-      for (const { first, text } of groupOpenCodeMessages(parts, false)) {
-        add(Math.floor(first.createdAt / 1000), text);
-      }
-      for (const part of parts) {
-        const data = parseLine(part.data);
-        if (data?.type !== 'tool' || !['running', 'completed', 'error'].includes(data.status)
-          || typeof data.startedAt !== 'number' || !Number.isFinite(data.startedAt) || data.startedAt < 0
-          || !data.input || typeof data.input !== 'object' || Array.isArray(data.input)) continue;
-        const raw = JSON.stringify(data.input);
-        add(Math.floor(data.startedAt / 1000), raw);
-        addJsonStringText(raw, text => add(Math.floor(data.startedAt / 1000), text));
+      for (const parts of readOpenCodeMessages(transcript.path, 'assistant')) {
+        for (const { first, text } of groupOpenCodeMessages(parts, false)) {
+          add(Math.floor(first.createdAt / 1000), text);
+        }
+        for (const part of parts) {
+          const data = parseLine(part.data);
+          if (data?.type !== 'tool' || !['running', 'completed', 'error'].includes(data.status)
+            || typeof data.startedAt !== 'number' || !Number.isFinite(data.startedAt) || data.startedAt < 0
+            || !data.input || typeof data.input !== 'object' || Array.isArray(data.input)) continue;
+          const raw = JSON.stringify(data.input);
+          add(Math.floor(data.startedAt / 1000), raw);
+          addJsonStringText(raw, text => add(Math.floor(data.startedAt / 1000), text));
+        }
       }
     },
   };
