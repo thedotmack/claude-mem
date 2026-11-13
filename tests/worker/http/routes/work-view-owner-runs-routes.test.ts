@@ -392,7 +392,8 @@ describe('POST /api/work-view/stage', () => {
 
     const overview = await (await fetch(`${origin}/api/work-view/overview`)).json() as any;
     const row = overview.model.requests[0];
-    expect(row.stages).toBeUndefined();
+    // Where a stage stands rides the overview, so the page shows it without reading the request again.
+    expect(row.stages).toEqual([{ formatId: 'brief', state: 'ready', href: stage.url, error: null, outdated: false }]);
     const detail = await (await fetch(`${origin}/api/work-view/requests/${encodeURIComponent(row.id)}`)).json() as any;
     expect(detail.request.stages).toEqual([{ formatId: 'brief', state: 'ready', href: stage.url, error: null, outdated: false }]);
     rmSync(stage.file, { force: true });

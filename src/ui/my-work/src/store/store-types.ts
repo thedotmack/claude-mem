@@ -32,6 +32,9 @@ export interface WorkState {
   /** The answer this page last sent each request, by request id, until its delivery went through: a failed one can be
    * copied. In memory only: the worker never stores an answer's text. */
   sentAnswers: Record<string, string>
+  /** What the owner has typed and not sent, by request id, for the question (`version`) it answers. The request page
+   * reads its detail again when the request changes, and the draft must outlive that. In memory only. */
+  answerDrafts: Record<string, { version: string; text: string }>
 }
 
 export interface WorkSlice {
@@ -59,7 +62,8 @@ export interface WorkSlice {
    * page should fall back to copying the answer and opening the chat.
    */
   answerRequest: (requestId: string, text: string) => Promise<OwnerRunStart>
-  /** Starts one stage of a request in one of `model.stageFormats`. The request's `stages` (detail) carry the result. */
+  draftAnswer: (requestId: string, version: string, text: string) => void
+  /** Starts one stage of a request in one of `model.stageFormats`. The request's `stages` carry the result. */
   generateStage: (requestId: string, formatId: string) => Promise<OwnerRunStart>
   /** Turns automatic stages on (a format id) or off (null). Off until the owner turns it on; saving it generates nothing. */
   setAutoStageFormat: (formatId: string | null) => Promise<void>

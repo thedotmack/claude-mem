@@ -76,6 +76,7 @@ export const createWorkSlice: SliceCreator<WorkSlice> = (set, get) => {
       // A sent answer is kept only until its delivery is known to have gone through, or its request is gone.
       for (const request of model.requests) if (request.answer?.state === 'delivered') delete state.work.sentAnswers[request.id]
       for (const id of Object.keys(state.work.sentAnswers)) if (!present.has(id)) delete state.work.sentAnswers[id]
+      for (const id of Object.keys(state.work.answerDrafts)) if (!present.has(id)) delete state.work.answerDrafts[id]
     })
     if (changedIds.size > 0) {
       clearTimeout(freshTimer)
@@ -145,7 +146,7 @@ export const createWorkSlice: SliceCreator<WorkSlice> = (set, get) => {
   }
 
   return {
-    work: { load: { state: 'loading' }, connection: null, freshlyUpdatedIds: new Set(), recentChanges: [], sourceKind: null, refreshError: null, focusPlan: null, sentAnswers: {} },
+    work: { load: { state: 'loading' }, connection: null, freshlyUpdatedIds: new Set(), recentChanges: [], sourceKind: null, refreshError: null, focusPlan: null, sentAnswers: {}, answerDrafts: {} },
 
     startWorkSource: (nextSource) => {
       const thisSession = ++session
@@ -208,9 +209,14 @@ export const createWorkSlice: SliceCreator<WorkSlice> = (set, get) => {
 
     answerRequest: async (requestId, text) => {
       const started = await startOwnerRun(`answer:${requestId}`, 'send the answer through', (to, token) => to.answerRequest?.(requestId, text, token))
-      if (started.outcome === 'started') set((state) => { state.work.sentAnswers[requestId] = text })
+      if (started.outcome === 'started') set((state) => { state.work.sentAnswers[requestId] = text; delete state.work.answerDrafts[requestId] })
       return started
     },
+
+    draftAnswer: (requestId, version, text) => set((state) => {
+      if (text) state.work.answerDrafts[requestId] = { version, text }
+      else delete state.work.answerDrafts[requestId]
+    }),
 
     generateStage: (requestId, formatId) => startOwnerRun(`stage:${requestId}:${formatId}`, 'make the stage on', (to, token) => to.generateStage?.(requestId, formatId, token)),
 

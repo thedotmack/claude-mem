@@ -586,6 +586,17 @@ describe('one-click owner runs', () => {
     assert.deepEqual(store.getState().work.sentAnswers, {})
   })
 
+  it('keeps what was typed for a question until it is sent, and never offers it to another question', async () => {
+    const { store } = await loaded({ answerRequest: async () => ({ outcome: 'started' }) })
+    store.getState().draftAnswer('r5', 'review-1', 'Keep the lin')
+    assert.deepEqual(store.getState().work.answerDrafts, { r5: { version: 'review-1', text: 'Keep the lin' } })
+    await store.getState().answerRequest('r5', 'Keep the linear forecast.')
+    assert.deepEqual(store.getState().work.answerDrafts, {})
+    store.getState().draftAnswer('r5', 'review-2', 'x')
+    store.getState().draftAnswer('r5', 'review-2', '')
+    assert.deepEqual(store.getState().work.answerDrafts, {})
+  })
+
   it('starts a stage and a plan through the source, and shows the model a saved automatic choice answered', async () => {
     const calls: unknown[] = []
     const { store } = await loaded({

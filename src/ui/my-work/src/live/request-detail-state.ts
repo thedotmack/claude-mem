@@ -19,7 +19,6 @@ export function mergeRequestDetail(summary: Request, detail: Request): Request {
     storyNarrative: detail.storyNarrative,
     evidence: detail.evidence,
     question: detail.question,
-    stages: detail.stages,
     detailLoaded: true,
   }
 }

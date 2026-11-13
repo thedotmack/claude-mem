@@ -112,7 +112,7 @@ export interface Request {
    * from. Detail only: the question and its background always come from one read.
    */
   question?: { need: QuestionNeed; text: string; version: string; background: string[] }
-  /** Its stages, newest first (owner-runs-model.ts). Detail only. */
+  /** Its stages, newest first (owner-runs-model.ts). They ride the overview, so the list moves as a stage is made. */
   stages?: RequestStage[]
   /** The answer the owner last sent it from My Work, and how its delivery went. Rides the overview, so it shows whether or not a question still stands. */
   answer?: { state: AnswerRunState; error?: string }

@@ -32,7 +32,11 @@ function CopyText({ text }: { text: string }) {
 /** The question, what the owner may need to know to answer it, and the box. A refusal keeps the answer in the box and copies it. */
 function AnswerBox({ request, question, delivering }: { request: Request; question: NonNullable<Request['question']>; delivering: boolean }) {
   const { t } = useI18n()
-  const [answer, setAnswer] = useState('')
+  // The draft lives in the store: the page reads the request's detail again whenever the request changes, and what
+  // was typed must outlive that. A draft written for another question is not this question's.
+  const draft = useStore((state) => state.work.answerDrafts[request.id])
+  const answer = draft?.version === question.version ? draft.text : ''
+  const setAnswer = (text: string) => useStore.getState().draftAnswer(request.id, question.version, text)
   const [sending, setSending] = useState(false)
   const [notice, setNotice] = useState<{ text: string; openChat?: true } | null>(null)
   const send = async () => {
@@ -42,7 +46,7 @@ function AnswerBox({ request, question, delivering }: { request: Request; questi
     setNotice(null)
     try {
       const started = await useStore.getState().answerRequest(request.id, text)
-      if (started.outcome !== 'refused') { setAnswer(''); return }
+      if (started.outcome !== 'refused') return
       const copied = await navigator.clipboard.writeText(text).then(() => true, () => false)
       setNotice({ text: `${started.reason} ${t(copied ? 'Answer copied. Paste it into the chat.' : 'Couldn’t copy your answer. Copy it, then open the chat.')}`, openChat: true })
     } catch (error) {

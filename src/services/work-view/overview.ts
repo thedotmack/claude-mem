@@ -28,11 +28,11 @@ const DETAIL_REVISION_HEX_LENGTH = 24;
  * when they change, but the drawer must still reload. Hashes the recorded
  * inputs because the model's labels change with the clock, and a revision that
  * moved between the overview and the detail read would fail as a stale read.
- * A question that stops standing (the owner wrote since) and a stage that changed state are new versions too.
+ * A question that stops standing (the owner wrote since) is a new version too.
  */
 function detailRevision(request: WorkRequest, raw: RawRequest | undefined): string {
   return createHash('sha256').update(JSON.stringify([request.contentFingerprint, request.conversations,
-    raw?.humanCopy, raw?.progress, raw?.activity, raw?.workstreams, raw?.workProduct, raw?.stages, request.question?.version])).digest('hex').slice(0, DETAIL_REVISION_HEX_LENGTH);
+    raw?.humanCopy, raw?.progress, raw?.activity, raw?.workstreams, raw?.workProduct, request.question?.version])).digest('hex').slice(0, DETAIL_REVISION_HEX_LENGTH);
 }
 
 /** Keep the exact fields the cards display; detail-only arrays never ride a routine event. */
@@ -40,7 +40,7 @@ function compactRequest(request: WorkRequest, raw: RawRequest | undefined): Work
   const products = request.workProduct.filter(isCardDeliverable);
   const { workstreams: _workstreams, granular: _granular, conversations: _conversations,
     prompts: _prompts, story: _story, evidence: _evidence, storyNarrative: _storyNarrative,
-    terminal: _terminal, followUps: _followUps, review: _review, question: _question, stages: _stages, canMoveFocus, askedBy, ...card } = request;
+    terminal: _terminal, followUps: _followUps, review: _review, question: _question, canMoveFocus, askedBy, ...card } = request;
   const terminal = request.title ? [] : request.terminal.slice(-4);
   const { history, ...progress } = request.progress;
   // Optional flags default to false. Keep action versions, availability and
