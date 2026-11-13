@@ -43,4 +43,17 @@ describe('displayTime', () => {
     expect(displayTime('Today 3:45 pm')).toBe('今天 3:45 下午');
     expect(displayTime('Nov 3')).toBe('11月3日');
   });
+
+  it('uses French dates and a 24-hour clock', () => {
+    setLocale('fr');
+    expect(displayTime('Today 3:45 pm')).toBe('Aujourd’hui 15:45');
+    expect(displayTime('Yesterday 9:05am')).toBe('Hier 09:05');
+    expect(displayTime('12:00 am')).toBe('00:00');
+    expect(displayTime('12:00 pm')).toBe('12:00');
+    expect(displayTime('Nov 3')).toBe('3 nov.');
+    const date = new Date(2026, 10, 3, 15, 45);
+    expect(displayTime(date.toISOString())).toBe(new Intl.DateTimeFormat('fr', {
+      dateStyle: 'medium', timeStyle: 'short',
+    }).format(date));
+  });
 });
