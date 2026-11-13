@@ -74,7 +74,7 @@ export function getObservationsByFilePath(
     WHERE f.path IN (${pathPlaceholders})
     ${projectClause}
     ${platformClause}
-    ORDER BY o.created_at_epoch DESC
+    ORDER BY o.created_at_epoch DESC, o.id DESC
     LIMIT ?
   `);
 
