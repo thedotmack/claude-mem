@@ -781,6 +781,9 @@ export class CodexAppServerClient {
       expectedChild = child;
       this.child = child;
 
+      // Pipe writes can fail asynchronously after writeMessage returns. The
+      // ChildProcess 'error' event does not handle its stdin stream's EPIPE.
+      child.stdin.on('error', error => this.onChildExit(child, error));
       child.stdout.setEncoding('utf8');
       child.stderr.setEncoding('utf8');
       child.stdout.on('data', chunk => this.onStdout(child, String(chunk)));
