@@ -3,6 +3,7 @@
 // A status the worker declares a type for is taken from that declaration, never retyped here.
 import type { FocusAreaStatus } from '../../../../services/work-view/my-focus.mjs'
 import type { SavedRule } from '../../../../services/work-view/my-rules.mjs'
+import type { TurnState } from '../../../../services/work-view/turn-state.mjs'
 
 /** One image ref, as src/shared/media-contract.ts MediaAttachmentRef defines it. Restated because My Work's tsconfig
  * (erasableSyntaxOnly) cannot load that file; src/services/work-view/overview.ts fails the root typecheck if they differ. */
@@ -150,6 +151,8 @@ export interface WorkViewHumanRequest {
   activity: WorkViewActivity[]
   agentIds: string[]
   conversationKeys: string[]
+  /** The conversation whose owner wrote last (request-projection.mjs latestConversationKey). Null when it has several and no recorded time says which; older workers leave it out. */
+  latestConversationKey?: string | null
   requestedBy: string | null
   startedAtEpoch: number | null
   completedAtEpoch: number | null
@@ -166,6 +169,8 @@ export interface WorkViewHumanRequest {
   focusAreaId?: string
   /** The judge thinks this conversation is part of another request; absent when there is nothing to ask. Older workers leave it out. */
   suggestion?: WorkViewRequestSuggestion
+  /** Who holds the next move in its latest conversation, read from the end of that transcript. Absent when it cannot be told; older workers leave it out. */
+  turn?: TurnState
 }
 
 export interface WorkViewAgent {

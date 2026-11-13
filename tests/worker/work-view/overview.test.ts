@@ -110,6 +110,28 @@ describe('compact work view transport', () => {
     expect(overview.model.requests[0].detailCounts?.workProduct).toBe(40);
   });
 
+  it('carries a chat only on a request whose id does not name it, and stays under 300 KiB with a chat and a turn on all 140', () => {
+    const session = (index: number) => `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`;
+    const key = (platform: string, index: number) => JSON.stringify(['conversation', platform, session(index)]);
+    const turn = { state: 'owner-turn', reason: 'turn-ended', atEpoch: Date.now() - 60_000 };
+    const snapshot = largeSnapshot(true);
+    // Every request has two chats and names the Codex one as the latest: the most a request can add to the wire.
+    snapshot.humanRequests = snapshot.humanRequests.map((request, index) => ({ ...request, turn,
+      conversationKeys: [key('claude', index), key('codex', index)], latestConversationKey: key('codex', index) }));
+    // A request named by its one conversation carries nothing: the page reads the chat from the id.
+    const single = snapshot.humanRequests[0] as any;
+    single.id = key('claude', 0); single.conversationKeys = [single.id]; single.latestConversationKey = single.id;
+    const overview = workViewOverview(snapshot);
+    expect(overview.model.requestReadErrors).toEqual([]);
+    expect(overview.model.requests[0]).not.toHaveProperty('chat');
+    expect(overview.model.requests.slice(1).map(request => request.chat)).toEqual(Array.from({ length: 139 }, (_, index) => ({ platform: 'codex', sessionId: session(index + 1) })));
+    // The turn itself stays off the wire: the card carries the state it decided.
+    expect(overview.model.requests.some(request => 'turn' in request || 'latestConversationKey' in request)).toBe(false);
+    expect(expandWorkViewOverview(overview).requests[1].chat).toEqual({ platform: 'codex', sessionId: session(1) });
+    expect(workViewRequestDetail(snapshot, snapshot.humanRequests[1].id)!.request.chat).toEqual({ platform: 'codex', sessionId: session(1) });
+    expect(Buffer.byteLength(JSON.stringify(overview))).toBeLessThanOrEqual(300 * 1024);
+  });
+
   it('stays under 300 KiB when every one of the 140 cards carries a full four-image preview', () => {
     const snapshot = largeSnapshot();
     // The longest label the contract allows (64 characters), on every ref.

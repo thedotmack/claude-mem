@@ -4,6 +4,9 @@
 //
 //   owner-turn: turn-ended (the agent finished or was interrupted) | question-pending (it asked through a tool)
 //   agent-turn: owner-spoke (a prompt it has not acted on yet)     | tool-running (a tool call or its result is last)
+//
+//   owner-turn <-> agent-turn as the transcript grows. Nothing is stored: each read says where the transcript is now.
+//   The one writer is the transcript reader (turn-state-reader.mjs).
 export const TURN_REASONS = ['turn-ended', 'question-pending', 'owner-spoke', 'tool-running'];
 
 const HOLDER = { 'turn-ended': 'owner-turn', 'question-pending': 'owner-turn', 'owner-spoke': 'agent-turn', 'tool-running': 'agent-turn' };

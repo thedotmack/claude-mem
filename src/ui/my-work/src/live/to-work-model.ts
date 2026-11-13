@@ -7,6 +7,7 @@ import { normalizeRequestStatus, presentStatus, STALE_AFTER_MS, type NormalizedS
 import type { MappedWorkModel, RequestReadError } from './work-data-source.ts'
 import type { OwnerRule, RuleQuote, RuleRecord } from '../data-rules.ts'
 import type { AutoRefresh, BuildStory } from './work-data-source.ts'
+import { chatIsImplied } from './chat-links.ts'
 import { measuredEstimate } from './measured-estimate.ts'
 import { repeatsOwnerWords } from './prompt-echo.ts'
 import { SOLO_REQUESTER } from './work-view-overview.ts'
@@ -112,6 +113,15 @@ function nextTextFor(status: NormalizedStatus, recordedNext: string) {
   return recordedNext
 }
 
+/** The request's latest conversation, as the worker names it: the chat its card opens. */
+function primaryChat(raw: WorkViewHumanRequest): Request['chat'] {
+  if (!raw.latestConversationKey) return undefined
+  const [, platform, sessionId] = parseRecordKey(raw.latestConversationKey)
+  if (!platform || !sessionId) return undefined
+  const chat = { platform, sessionId }
+  return chatIsImplied(raw.id, chat) ? undefined : chat
+}
+
 /** The review's milestones, oldest first, as build-story steps. Every milestone already happened. */
 function storySteps(progress: WorkViewProgress, now: number): Request['story'] {
   return [...(progress.milestones ?? [])]
@@ -144,13 +154,14 @@ function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: numb
   const review = reviewCounts || (recordedReview && recordedReview.percent < 100) ? recordedReview : null
   // With only asks, the latest ask is the request's last update.
   const statusItems = raw.items.length ? raw.items : [{ kind: 'prompt', status: '', lastUpdateEpoch: updatedAt }]
-  const status = normalizeRequestStatus({ items: statusItems, lifecycle: raw.lifecycle, checked: raw.review?.checked === true, progressState: reviewCounts ? review?.state : null, progressPercent: reviewCounts ? review?.percent : null }, now)
+  const status = normalizeRequestStatus({ items: statusItems, lifecycle: raw.lifecycle, checked: raw.review?.checked === true, progressState: reviewCounts ? review?.state : null, progressPercent: reviewCounts ? review?.percent : null, turn: raw.turn ?? null }, now)
   const shippedAt = review?.state === 'shipped' && review.shippedAt ? Date.parse(review.shippedAt) : NaN
   const completedEpoch = raw.completedAtEpoch ?? (Number.isFinite(shippedAt) ? shippedAt : null)
   const { state, stage, who } = presentStatus(status, now - updatedAt <= STALE_AFTER_MS)
   const recordedNext = (copyReady && cleanText(copy.next, 240))
     || cleanText(raw.items.find((item) => item.nextStep?.text)?.nextStep?.text, 140)
     || (raw.items.length || raw.activity.length || recordedReview ? NEXT_STEP_NOT_RECORDED : NO_WORK_YET)
+  const chat = primaryChat(raw)
   const agentId = agents.some((agent) => agent.id === raw.agentIds[0]) ? raw.agentIds[0] : UNRECORDED_AGENT.id
   const started = raw.startedAtEpoch
   const reviewedAt = review ? Date.parse(review.checkedAt ?? '') : NaN
@@ -206,6 +217,7 @@ function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: numb
     },
     estimate: measuredEstimate(readings, status === 'shipped'),
     next: { who, text: nextTextFor(status, recordedNext) },
+    ...(chat ? { chat } : {}),
     // No agent activity yet: the card shows the human's own asks instead.
     terminal: raw.activity.length
       ? raw.activity.slice(0, 4).reverse().map((activity) => cleanText(`${activity.kind} ${activity.title}${activity.detail ? `: ${activity.detail}` : ''}`, 160)).filter(Boolean)

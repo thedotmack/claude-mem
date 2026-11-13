@@ -3,7 +3,8 @@
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
 import { test } from 'node:test'
-import { assertConsistentRequest } from '../data.ts'
+import { assertConsistentRequest, needsYou } from '../data.ts'
+import { chatLinks, requestChat } from './chat-links.ts'
 import { toWorkModel } from './to-work-model.ts'
 import type { WorkViewHumanRequest, WorkViewSnapshot } from './work-view-api-types.ts'
 
@@ -244,6 +245,66 @@ test('a request with only asks maps cleanly: its asks show, no activity, and a f
   assert.equal(fresh.state, 'working')
   assert.deepEqual(fresh.prompts.map((prompt) => prompt.quote), ['Build the release cards', 'Keep the existing design.'])
   assert.equal(old.state, 'idle')
+})
+
+test('a chat whose agent finished its turn is the owner\'s move on its card, without any review or recorded status', () => {
+  const now = Date.parse('2026-10-22T12:00:00Z')
+  const quiet = { ...syntheticRequest(), updatedAtEpoch: now - 2 * 86400000 }
+  const withTurn = (id: string, turn: WorkViewHumanRequest['turn']) => ({ ...quiet, id, turn })
+  const model = toWorkModel(snapshotWith([
+    withTurn('ended', { state: 'owner-turn', reason: 'turn-ended', atEpoch: now - 86400000 }),
+    withTurn('asked', { state: 'owner-turn', reason: 'question-pending', atEpoch: now - 86400000 }),
+    withTurn('running', { state: 'agent-turn', reason: 'tool-running', atEpoch: now - 60000 }),
+    withTurn('abandoned', { state: 'owner-turn', reason: 'turn-ended', atEpoch: now - 20 * 86400000 }),
+    { ...quiet, id: 'no-transcript' },
+    { ...withTurn('shipped', { state: 'owner-turn', reason: 'turn-ended', atEpoch: now - 60000 }), lifecycle: { status: 'shipped', explicit: true, complete: true, atEpoch: now - 60000 }, completedAtEpoch: now - 60000 },
+  ]), now)
+  assert.deepEqual(model.requestReadErrors, [])
+  const row = (id: string) => model.requests.find((request) => request.id === id)!
+  for (const id of ['ended', 'asked']) assert.deepEqual([row(id).state, row(id).next.who, needsYou(row(id))], ['your-move', 'human', true])
+  assert.deepEqual([row('running').state, row('running').next.who], ['working', 'bot'])
+  assert.deepEqual([row('abandoned').state, row('no-transcript').state, row('shipped').state], ['idle', 'idle', 'shipped'])
+  assert.deepEqual(model.requests.filter(needsYou).map((request) => request.id), ['ended', 'asked'])
+})
+
+const chatOf = (raw: WorkViewHumanRequest) => toWorkModel(snapshotWith([raw]), Date.now()).requests[0].chat
+
+const CLAUDE_SESSION = '11111111-2222-4333-8444-555555555555'
+const CODEX_SESSION = '01a18a2e-1d34-7000-8000-000000000002'
+const claudeKey = JSON.stringify(['conversation', 'claude', CLAUDE_SESSION]), codexKey = JSON.stringify(['conversation', 'codex', CODEX_SESSION])
+
+test('the chat is the conversation the worker names as the latest, whatever its place among the keys', () => {
+  const raw = syntheticRequest()
+  raw.conversationKeys = [claudeKey, codexKey]
+  raw.latestConversationKey = claudeKey
+  assert.deepEqual(chatOf(raw), { platform: 'claude', sessionId: CLAUDE_SESSION })
+  assert.deepEqual(chatLinks(chatOf(raw)), { tool: 'Claude Code', openHref: `claude://resume?session=${CLAUDE_SESSION}`, resumeCommand: `claude --resume ${CLAUDE_SESSION}` })
+  raw.latestConversationKey = codexKey
+  assert.deepEqual(chatLinks(chatOf(raw)), { tool: 'Codex', openHref: `codex://threads/${CODEX_SESSION}`, resumeCommand: `codex resume ${CODEX_SESSION}` })
+})
+
+test('a request with several conversations and none named the latest has no chat: the page never picks one', () => {
+  const raw = syntheticRequest()
+  raw.conversationKeys = [claudeKey, codexKey]
+  raw.latestConversationKey = null
+  assert.equal(chatOf(raw), undefined)
+  delete raw.latestConversationKey
+  const request = toWorkModel(snapshotWith([raw]), Date.now()).requests[0]
+  assert.equal(request.chat, undefined)
+  assert.equal(requestChat(request), undefined)
+})
+
+test('a request named by its one conversation carries no chat of its own: the page reads it from the id', () => {
+  const raw = syntheticRequest()
+  raw.id = claudeKey
+  raw.conversationKeys = [raw.id]
+  raw.latestConversationKey = raw.id
+  const request = toWorkModel(snapshotWith([raw]), Date.now()).requests[0]
+  assert.equal(request.chat, undefined)
+  assert.equal(chatLinks(requestChat(request))?.openHref, `claude://resume?session=${CLAUDE_SESSION}`)
+  // An older worker names no latest conversation; the id still says which chat it is.
+  delete raw.latestConversationKey
+  assert.equal(chatLinks(requestChat(toWorkModel(snapshotWith([raw]), Date.now()).requests[0]))?.resumeCommand, `claude --resume ${CLAUDE_SESSION}`)
 })
 
 test('the build story recap is its first paragraph; no story hides it', () => {

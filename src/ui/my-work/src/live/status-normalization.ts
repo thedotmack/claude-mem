@@ -6,8 +6,11 @@
 // - the LiveState, stage and next.who columns the wireframe needs.
 // One normalized status drives state, stage and whose move is next, so those fields agree by construction.
 import type { LiveState, Stage } from '../data.ts'
+import type { TurnHolder, TurnReason, TurnState } from '../../../../services/work-view/turn-state.mjs'
 
 export const STALE_AFTER_MS = 6 * 60 * 60 * 1000
+/** A chat the agent left with the owner this long ago was abandoned, not left in an inbox: it reads as idle. */
+export const OWNER_TURN_STALE_AFTER_MS = 14 * 24 * 60 * 60 * 1000
 
 export type NormalizedStatus =
   | 'needs-you' | 'needs-review' | 'blocked' | 'shipped' | 'done' | 'checked'
@@ -68,10 +71,26 @@ export interface RequestStatusInput {
   progressState?: string | null
   /** The latest review's percent. 100 means the work is done, even while recorded items still say doing. */
   progressPercent?: number | null
+  /** Who holds the next move in the request's latest conversation, from its transcript. Null when that cannot be told. */
+  turn?: TurnState | null
 }
 
-/** Lifecycle first (an explicit request_status / request_complete), then item statuses. */
-export function normalizeRequestStatus({ items, lifecycle, checked, progressState, progressPercent }: RequestStatusInput, now: number): NormalizedStatus {
+// The agent stopped and the next move is the owner's, whether it asked through a tool or just ended its turn: the
+// transcript does not say the work is finished, so neither reads as done.
+const TURN_STATUS: Record<TurnReason, NormalizedStatus> = { 'question-pending': 'needs-you', 'turn-ended': 'needs-you', 'owner-spoke': 'in-progress', 'tool-running': 'in-progress' }
+// An agent's turn with no record for six hours is a stopped session, not work in progress.
+const TURN_COUNTS_FOR_MS: Record<TurnHolder, number> = { 'owner-turn': OWNER_TURN_STALE_AFTER_MS, 'agent-turn': STALE_AFTER_MS }
+// What the transcript may decide: only a request nothing recorded has given a status.
+const NOTHING_RECORDED: NormalizedStatus[] = ['unknown', 'quiet']
+
+/** The status a turn state gives a request with nothing more explicit recorded; null when the turn is too old to count. */
+export function turnStatus(turn: TurnState, now: number): NormalizedStatus | null {
+  return turn.atEpoch !== null && now - turn.atEpoch <= TURN_COUNTS_FOR_MS[turn.state] ? TURN_STATUS[turn.reason] : null
+}
+
+/** Lifecycle first (an explicit request_status / request_complete), then item statuses, then the transcript's turn
+ * when neither says anything. */
+export function normalizeRequestStatus({ items, lifecycle, checked, progressState, progressPercent, turn }: RequestStatusInput, now: number): NormalizedStatus {
   let status = statusFor(items, now)
   const recordedStatus = lifecycle?.explicit ? normalizeRecordedStatus(lifecycle.status) : null
   const lifecycleStatus = !lifecycle?.explicit ? null
@@ -84,6 +103,7 @@ export function normalizeRequestStatus({ items, lifecycle, checked, progressStat
   if (progressState === 'shipped') status = 'shipped'
   // Reviewed as finished but not shipped: done, waiting on a person's check, never still "working" at 100%.
   else if (progressPercent === 100 && ['in-progress', 'todo', 'unknown', 'quiet'].includes(status)) status = 'needs-review'
+  if (turn && NOTHING_RECORDED.includes(status)) status = turnStatus(turn, now) ?? status
   if (checked && (status === 'done' || status === 'needs-review')) status = 'checked'
   return status
 }

@@ -43,6 +43,7 @@ what the program does at run time.
 | Dependency status and its wording | `DEPENDENCY_STATUS_LABELS` in `src/shared/dependency-health.ts` | `claude-mem status`, `claude-mem doctor` |
 | Which work-state statuses close an item | `isClosedWorkStateStatus` in `src/services/work-view/work-state-status.mjs` | SessionStart section, work-state tool replies, My Work, owner-goals readers, the write route |
 | Refresh run state | `WorkViewRefreshState` in `src/ui/my-work/src/live/work-view-api-types.ts` | every My Work screen that shows a run |
+| Whose move a conversation is, and why | `TurnState` and `TURN_REASONS` in `src/services/work-view/turn-state.mjs` | the transcript reader, its one writer; the snapshot; My Work's status table (`TURN_STATUS`) |
 | Rule status, focus area status | `SavedRule['status']` in `my-rules.d.mts`, `FocusAreaStatus` in `my-focus.d.mts` | My Work wire types and UI model |
 
 My Work compiles on its own settings and cannot load every worker file. A

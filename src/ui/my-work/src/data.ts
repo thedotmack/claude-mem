@@ -99,6 +99,8 @@ export interface Request {
   stageNote?: string
   /** Every item was dropped. Hidden unless the filter is Closed. */
   closed?: boolean
+  /** The tool and session of its latest conversation, set only when the request's own id does not already name them (chat-links.ts requestChat). */
+  chat?: { platform: string; sessionId: string }
 }
 
 /** The permanent bucket for requests that fit no area. Never an area id (my-focus.mjs OTHER_FOCUS_AREA_ID). */
@@ -191,7 +193,7 @@ const emptyRequest = { activityWord: '', workstreams: [], granular: [], conversa
 export const SAMPLE_REQUESTS: Request[] = [
   {
     ...emptyRequest,
-    id: 'r1', title: 'Spec and wireframe the new work viewer', summary: 'Turn your prompts into a spec, then a React wireframe that traces every element back to it.',
+    id: 'r1', chat: { platform: 'claude', sessionId: '11111111-2222-4333-8444-555555555551' }, title: 'Spec and wireframe the new work viewer', summary: 'Turn your prompts into a spec, then a React wireframe that traces every element back to it.',
     focusAreaId: 'fa-viewer', askedBy: 'Alex', agentId: 'claude', startedAt: 'Oct 20, 1:16 pm', startedAtIso: '2026-10-20T13:16:00-07:00', runningFor: '42 min', stage: 'Building', state: 'working',
     progress: { percent: 70, readings: 3, reviewedAt: '1:50 pm', history: [30, 55, 70], coverage: { reviewed: 2, total: 2 } }, estimate: 'at this pace, about Oct 21',
     next: { who: 'bot', text: 'Finish the My Rules screens' }, activityWord: 'Editing',
@@ -229,7 +231,7 @@ export const SAMPLE_REQUESTS: Request[] = [
   },
   {
     ...emptyRequest,
-    id: 'r3', title: 'Move embeddings into their own table', summary: 'Stops write stalls by keeping vector indexes off the main content table.',
+    id: 'r3', chat: { platform: 'claude', sessionId: '11111111-2222-4333-8444-555555555553' }, title: 'Move embeddings into their own table', summary: 'Stops write stalls by keeping vector indexes off the main content table.',
     focusAreaId: 'fa-sync', askedBy: 'Alex', agentId: 'claude-sync', startedAt: 'Oct 17, 7:55 am', startedAtIso: '2026-10-17T07:55:00-07:00', runningFor: '3 days', stage: 'Reviewing', state: 'needs-check',
     progress: { percent: 100, readings: 4, reviewedAt: 'Oct 20, 9:10 am', history: [40, 70, 90, 100], coverage: { reviewed: 2, total: 2 } }, estimate: null,
     next: { who: 'human', text: 'Check the remap queue drained' },
@@ -242,7 +244,7 @@ export const SAMPLE_REQUESTS: Request[] = [
   },
   {
     ...emptyRequest,
-    id: 'r4', title: 'Live request monitor with cards and list', summary: 'The first live version of My Work, with sortable list.',
+    id: 'r4', chat: { platform: 'codex', sessionId: '01a18a2e-1d34-7000-8000-000000000004' }, title: 'Live request monitor with cards and list', summary: 'The first live version of My Work, with sortable list.',
     focusAreaId: 'fa-viewer', askedBy: 'Sam', agentId: 'codex', startedAt: 'Oct 16, 9:39 am', startedAtIso: '2026-10-16T09:39:00-07:00', runningFor: '2 days', stage: 'Shipped', state: 'shipped',
     progress: { percent: 100, readings: 5, reviewedAt: 'Oct 19', completedAt: 'Oct 18', history: [20, 45, 70, 90, 100], coverage: { reviewed: 3, total: 3 } }, estimate: null,
     next: { who: 'human', text: 'Write the release notes' },
