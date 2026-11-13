@@ -1,0 +1,21 @@
+# Realistic Aider config (sanitized — placeholder keys only, never real secrets).
+# Mirrors the official sample config shape: model + provider keys + read list
+# + comments + a Windows-style path entry.
+
+# Preferred model for this project
+model: openai/gpt-4o
+
+# Provider keys (placeholders — the installer must preserve them byte-for-byte
+# and never print them).
+openai-api-key: sk-PLACEHOLDER-00000000000000000000000000000000
+anthropic-api-key: sk-ant-PLACEHOLDER-00000000000000000000000000000000
+
+# Files Aider always loads (conventions pattern)
+read:
+  - CONVENTIONS.md
+  - docs/ARCHITECTURE.md
+  - C:\Users\alex\notes\style-guide.md
+
+# Keep edits tidy
+auto-commits: true
+dark-mode: true

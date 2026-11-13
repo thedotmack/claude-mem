@@ -499,6 +499,10 @@ export async function runUninstallCommand(): Promise<void> {
       const { uninstallKimiHooks } = await import('../../services/integrations/KimiHooksInstaller.js');
       return uninstallKimiHooks();
     }},
+    { label: 'Aider file-based context', fn: async () => {
+      const { uninstallAiderIntegration } = await import('../../services/integrations/AiderInstaller.js');
+      return uninstallAiderIntegration();
+    }},
     { label: 'Devin hooks + MCP', fn: async () => {
       const { uninstallDevinHooks } = await import('../../services/integrations/DevinHooksInstaller.js');
       return uninstallDevinHooks();

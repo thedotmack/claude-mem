@@ -439,6 +439,23 @@ export function makeIDETask(ideId: string, summary: InstallSummary, dshProfile?:
       };
     }
 
+    case 'aider': {
+      return {
+        title: 'Aider: installing file-based context',
+        task: async (message) => {
+          message('Loading Aider installer…');
+          const { installAiderIntegration } = await import('../../services/integrations/AiderInstaller.js');
+          message('Installing Aider context…');
+          const { result, output } = await bufferConsole(async () => installAiderIntegration());
+          if (result !== 0) {
+            recordFailure('Aider: file-based context installation failed', output);
+            return `Aider: file-based context installation failed ${styleText('red', 'FAIL')}`;
+          }
+          return `Aider: file-based context installed ${styleText('green', 'OK')}`;
+        },
+      };
+    }
+
     case 'devin': {
       return {
         title: 'Devin: installing hooks + MCP',

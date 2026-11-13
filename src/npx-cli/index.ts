@@ -74,6 +74,7 @@ ${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed p
   ${styleText('cyan', 'npx claude-mem memory ingest [--source <dir> | --all] [--dry-run] [--require-cwd]')}   Import Claude Code auto-memory notes as observations
   ${styleText('cyan', 'npx claude-mem antigravity-cli install|status|uninstall')}   Manage Antigravity CLI hooks + MCP config
   ${styleText('cyan', 'npx claude-mem kimi install|status|uninstall')}   Manage Kimi Code CLI hooks + MCP config
+  ${styleText('cyan', 'npx claude-mem aider install|status|uninstall|sync')}   Manage Aider file-based context
   ${styleText('cyan', 'npx claude-mem gemini install|status|uninstall')}   Manage Gemini CLI capture hooks
   ${styleText('cyan', 'npx claude-mem devin install|status|uninstall')}   Manage Devin CLI / Devin Desktop hooks + MCP
   ${styleText('cyan', 'npx claude-mem t3code status|uninstall [--settings <path>]')}   Inspect or disable T3 Code provider plugins
@@ -93,7 +94,7 @@ ${styleText('bold', 'Claude Code Hooks')}:
 
 ${styleText('bold', 'Agent IDs')} (for --ide):
   claude-code, cursor, grok-bot, opencode, openclaw, omp, hermes, pi, dsh,
-  windsurf, codex-cli, t3code (aliases: t3, t3-code), kimi, devin, copilot-cli, antigravity, goose,
+  windsurf, codex-cli, t3code (aliases: t3, t3-code), kimi, aider, devin, copilot-cli, antigravity, goose,
   roo-code, warp
 `);
 }
@@ -170,7 +171,7 @@ const HELP_AWARE_COMMANDS = new Set([
   '', 'install', 'update', 'upgrade', 'uninstall', 'remove', 'repair', 'prune', 'start', 'stop', 'restart',
   'adopt', 'cleanup',
   'memory', 'telemetry', 'project', 'backup', 'restore', 'server', 'worker', 'transcript',
-  'gemini', 'kimi', 'devin', 'antigravity-cli', 'pi',
+  'gemini', 'kimi', 'aider', 'devin', 'antigravity-cli', 'pi',
 ]);
 
 async function main(): Promise<void> {
@@ -313,6 +314,14 @@ async function main(): Promise<void> {
     case 'kimi': {
       const { handleKimiCommand } = await import('../services/integrations/KimiHooksInstaller.js');
       const exitCode = await handleKimiCommand(args[1]?.toLowerCase(), args.slice(2));
+      if (typeof exitCode === 'number') {
+        process.exit(exitCode);
+      }
+      break;
+    }
+    case 'aider': {
+      const { handleAiderCommand } = await import('../services/integrations/AiderInstaller.js');
+      const exitCode = await handleAiderCommand(args[1]?.toLowerCase(), args.slice(2));
       if (typeof exitCode === 'number') {
         process.exit(exitCode);
       }

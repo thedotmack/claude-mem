@@ -1,0 +1,3 @@
+# Single-file read entry (valid YAML scalar form).
+model: openai/gpt-4o
+read: CONVENTIONS.md

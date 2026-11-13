@@ -1,0 +1,6 @@
+# Malformed: two top-level read keys — the installer must refuse to write.
+model: openai/gpt-4o
+read:
+  - CONVENTIONS.md
+read:
+  - docs/OTHER.md

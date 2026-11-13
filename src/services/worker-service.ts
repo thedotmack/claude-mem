@@ -147,6 +147,9 @@ import {
   handleKimiCommand
 } from './integrations/KimiHooksInstaller.js';
 import {
+  handleAiderCommand
+} from './integrations/AiderInstaller.js';
+import {
   handleDevinCommand
 } from './integrations/DevinHooksInstaller.js';
 import {
@@ -1798,7 +1801,7 @@ function printWorkerAliasHelp(): never {
 function printWorkerServiceUsage(): void {
   console.error('Usage: worker-service <command>');
   console.error('Commands: start, stop, restart, status, hook <platform> <event>, worker <command>, server <command>,');
-  console.error('  adopt, project, transcript, generate, clean, cleanup, cursor, memory, kimi, devin, antigravity-cli,');
+  console.error('  adopt, project, transcript, generate, clean, cleanup, cursor, memory, kimi, aider, devin, antigravity-cli,');
   console.error('  --daemon, --version, --help');
 }
 
@@ -2310,6 +2313,13 @@ export async function main() {
       const kimiSubcommand = process.argv[3];
       const kimiResult = await handleKimiCommand(kimiSubcommand, process.argv.slice(4));
       process.exit(kimiResult);
+      break;
+    }
+
+    case 'aider': {
+      const aiderSubcommand = process.argv[3];
+      const aiderResult = await handleAiderCommand(aiderSubcommand, process.argv.slice(4));
+      process.exit(aiderResult);
       break;
     }
 
