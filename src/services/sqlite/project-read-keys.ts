@@ -91,13 +91,13 @@ function readProjectKeyPass(db: Database, requested: string[]): string[] {
       WHERE candidates.key COLLATE NOCASE NOT IN (${placeholders})
         AND NOT EXISTS (
         SELECT 1 FROM observations
-        WHERE project COLLATE NOCASE = candidates.key AND id NOT IN (
-          SELECT id FROM observations WHERE merged_into_project COLLATE NOCASE IN (${placeholders})
+        WHERE project COLLATE NOCASE = candidates.key AND rowid NOT IN (
+          SELECT rowid FROM observations WHERE merged_into_project COLLATE NOCASE IN (${placeholders})
         )
       ) AND NOT EXISTS (
         SELECT 1 FROM session_summaries
-        WHERE project COLLATE NOCASE = candidates.key AND id NOT IN (
-          SELECT id FROM session_summaries WHERE merged_into_project COLLATE NOCASE IN (${placeholders})
+        WHERE project COLLATE NOCASE = candidates.key AND rowid NOT IN (
+          SELECT rowid FROM session_summaries WHERE merged_into_project COLLATE NOCASE IN (${placeholders})
         )
       )`,
   ];
