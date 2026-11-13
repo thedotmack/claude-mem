@@ -5023,35 +5023,47 @@ export class SessionStore {
       }
     }
 
-    // `id` breaks created_at_epoch ties so a turn's rows (which share one epoch) render in the
-    // order they were written instead of whatever order the index scan returns them in.
-    const obsQuery = `
-      SELECT o.*
-      FROM observations o
-      LEFT JOIN sdk_sessions src ON src.memory_session_id = o.memory_session_id
-      WHERE o.created_at_epoch >= ? AND o.created_at_epoch <= ? ${observationScope.clause}
-      ORDER BY o.created_at_epoch ASC, o.id ASC
-    `;
+    // A sparse category can stretch the shared time window over thousands of
+    // rows in a dense one. Only depthBefore/depthAfter neighbors per category
+    // can survive the final merged depth selection; apply those limits before
+    // hydrating full bodies. Keep the entire anchor epoch group, which an
+    // epoch/session anchor deliberately returns even with zero depth.
+    const readCandidates = <T>(
+      select: string,
+      from: string,
+      alias: string,
+      scope: { clause: string; params: any[] }
+    ): T[] => this.db.prepare(`
+      SELECT * FROM (
+        SELECT ${select} FROM ${from}
+        WHERE ${alias}.created_at_epoch >= ? AND ${alias}.created_at_epoch < ? ${scope.clause}
+        ORDER BY ${alias}.created_at_epoch DESC, ${alias}.id DESC LIMIT ?
+      )
+      UNION ALL
+      SELECT ${select} FROM ${from}
+      WHERE ${alias}.created_at_epoch = ? ${scope.clause}
+      UNION ALL
+      SELECT * FROM (
+        SELECT ${select} FROM ${from}
+        WHERE ${alias}.created_at_epoch > ? AND ${alias}.created_at_epoch <= ? ${scope.clause}
+        ORDER BY ${alias}.created_at_epoch ASC, ${alias}.id ASC LIMIT ?
+      )
+      ORDER BY created_at_epoch ASC, id ASC
+    `).all(
+      startEpoch, anchorEpoch, ...scope.params, depthBefore,
+      anchorEpoch, ...scope.params,
+      anchorEpoch, endEpoch, ...scope.params, depthAfter,
+    ) as T[];
 
-    const sessQuery = `
-      SELECT ss.*
-      FROM session_summaries ss
-      LEFT JOIN sdk_sessions src ON src.memory_session_id = ss.memory_session_id
-      WHERE ss.created_at_epoch >= ? AND ss.created_at_epoch <= ? ${summaryScope.clause}
-      ORDER BY ss.created_at_epoch ASC, ss.id ASC
-    `;
-
-    const promptQuery = `
-      SELECT up.*, s.project, s.memory_session_id, COALESCE(NULLIF(s.platform_source, ''), '${DEFAULT_PLATFORM_SOURCE}') as platform_source
-      FROM user_prompts up
-      JOIN sdk_sessions s ON up.session_db_id = s.id
-      WHERE up.created_at_epoch >= ? AND up.created_at_epoch <= ? ${promptScope.clause}
-      ORDER BY up.created_at_epoch ASC, up.id ASC
-    `;
-
-    const observations = this.db.prepare(obsQuery).all(startEpoch, endEpoch, ...observationScope.params) as ObservationRecord[];
-    const sessions = this.db.prepare(sessQuery).all(startEpoch, endEpoch, ...summaryScope.params) as SessionSummaryRecord[];
-    const prompts = this.db.prepare(promptQuery).all(startEpoch, endEpoch, ...promptScope.params) as UserPromptRecord[];
+    const observations = readCandidates<ObservationRecord>('o.*',
+      'observations o LEFT JOIN sdk_sessions src ON src.memory_session_id = o.memory_session_id',
+      'o', observationScope);
+    const sessions = readCandidates<SessionSummaryRecord>('ss.*',
+      'session_summaries ss LEFT JOIN sdk_sessions src ON src.memory_session_id = ss.memory_session_id',
+      'ss', summaryScope);
+    const prompts = readCandidates<UserPromptRecord>(
+      `up.*, s.project, s.memory_session_id, COALESCE(NULLIF(s.platform_source, ''), '${DEFAULT_PLATFORM_SOURCE}') as platform_source`,
+      'user_prompts up JOIN sdk_sessions s ON up.session_db_id = s.id', 'up', promptScope);
 
     return {
       observations,
