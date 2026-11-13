@@ -142,6 +142,7 @@ export const REQUIREMENTS: Requirement[] = [
   { id: 'R16.5', section: '16', kind: 'ui', text: 'Each request shows its area chip: the area\'s name, Other, or "Sorting…" until a refresh places it.' },
   { id: 'R16.6', section: '16', kind: 'ui', text: 'Move to… on a request puts it in another area or Other; my move wins over any later automatic placement.' },
   { id: 'R16.7', section: '16', kind: 'ui', text: 'Past focus, linked from the bottom of the rail, holds areas marked done and what I asked for most, month by month.' },
+  { id: 'R16.8', section: '16', kind: 'ui', text: 'A focus area carries the owner’s notes on why it matters, in the area header: plain text, edited in place (2,000 characters), saved with Undo. An area with no notes shows only a quiet button to add them.' },
 
   // 17. Shared focus page (added 2026-10-29, append only): share a focus area as a page people and agents comment on.
   { id: 'R17.1', section: '17', kind: 'ui', text: 'Share a focus area as a page by link (cmem.ai/focus/…), from the area menu; the area shows that it is shared.' },

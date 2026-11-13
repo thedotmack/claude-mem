@@ -21,6 +21,7 @@ import { FocusArtwork } from './focus-artwork'
 import { formatPromptDay, formatPromptTime, promptDayKey, shipDayKey } from '@/lib/prompt-time'
 import { navWordIn } from '../../../../services/work-view/nav-words.mjs'
 import { AreaEditDialog, type AreaEdit, type FocusChanges } from './focus-changes'
+import { FocusNotes } from './focus-notes'
 import { SharedMark, ShareFocusDialog } from './share-focus'
 import { canShareArea } from '@/live/to-shared-focus'
 
@@ -235,6 +236,7 @@ export function FocusHeader({ area, requests, changes }: { area: FocusArea; requ
               <SharedMark focusAreaId={area.id} onOpen={() => setSharing(true)} />
             </div>
             {area.goal ? <p className="text-[0.95rem] leading-snug">{area.goal}</p> : <p className="text-sm text-muted-foreground italic">{t('Write one sentence saying what this area is for (Edit goal).')}</p>}
+            <FocusNotes key={area.id} area={area} changes={changes} />
             {/* The area's own evidence sits with its goal, so it can't be read as belonging to the asks below. */}
             {area.quotes.length > 0 ? <WhyItsHere quotes={area.quotes} /> : area.evidence && <p className="text-xs text-muted-foreground">{interpolate(t('Why it’s here: {evidence}'), { evidence: area.evidence })}</p>}
           </div>
