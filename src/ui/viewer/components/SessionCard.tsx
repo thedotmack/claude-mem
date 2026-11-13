@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { useI18n, interpolate } from '../../i18n';
 import { translateViewerError } from '../../i18n/errors';
 import { SessionCatalogEntry } from '../types';
@@ -15,6 +15,7 @@ interface SessionCardProps {
 export function SessionCard({ session, onOpen, onDelete }: SessionCardProps) {
   const { t, locale } = useI18n();
   const [menuOpen, setMenuOpen] = useState(false);
+  const menuTriggerRef = useRef<HTMLButtonElement>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const name = session.custom_title || session.project;
@@ -61,6 +62,7 @@ export function SessionCard({ session, onOpen, onDelete }: SessionCardProps) {
         <div className="session-card-actions">
           <span className="session-card-count">{memoriesLabel}</span>
           <button
+            ref={menuTriggerRef}
             className="session-card-menu-trigger"
             disabled={isDeleting}
             onClick={e => {
@@ -68,6 +70,7 @@ export function SessionCard({ session, onOpen, onDelete }: SessionCardProps) {
               setMenuOpen(prev => !prev);
             }}
             aria-label={t('Session actions')}
+            aria-expanded={menuOpen}
             title={t('Session actions')}
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
@@ -78,6 +81,7 @@ export function SessionCard({ session, onOpen, onDelete }: SessionCardProps) {
           </button>
           {menuOpen && (
             <SessionCardMenu
+              triggerRef={menuTriggerRef}
               onClose={() => setMenuOpen(false)}
               onOpen={onOpen}
               onDelete={handleDelete}
