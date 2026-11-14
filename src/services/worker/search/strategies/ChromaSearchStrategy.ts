@@ -112,6 +112,7 @@ export class ChromaSearchStrategy {
     const observationCache = new Map<number, ObservationSearchResult | undefined>();
     const sessionCache = new Map<number, SessionSummarySearchResult | undefined>();
     const promptCache = new Map<number, UserPromptSearchResult | undefined>();
+    const acceptsDate = this.recencyFilter(options.dateRange, options.ignoreDefaultRecencyWindow);
     let results: SearchResults = { observations: [], sessions: [], prompts: [] };
     let budgetReached = false;
     const sqlOptions = {
@@ -129,15 +130,14 @@ export class ChromaSearchStrategy {
     while (true) {
       const progress: ChromaQueryProgress = {};
       const chromaResults = await this.chromaSync.queryChroma(query, candidateLimit, whereFilter, progress, fallbackRowIds);
-      const recentItems = this.filterByRecency(chromaResults, options.dateRange, options.ignoreDefaultRecencyWindow);
-      const categorized = this.categorizeByDocType(recentItems, options);
+      const categorized = this.categorizeByDocType(chromaResults, options);
       results = {
         observations: this.hydrateCandidates(categorized.obsIds, observationCache, ids =>
-          this.sessionStore.getObservationsByIds(ids, { ...sqlOptions, type: options.obsType, concepts: options.concepts, files: options.files }), options.orderBy),
+          this.sessionStore.getObservationsByIds(ids, { ...sqlOptions, type: options.obsType, concepts: options.concepts, files: options.files }), options.orderBy, acceptsDate),
         sessions: this.hydrateCandidates(categorized.sessionIds, sessionCache, ids =>
-          this.sessionStore.getSessionSummariesByIds(ids, sqlOptions), options.orderBy),
+          this.sessionStore.getSessionSummariesByIds(ids, sqlOptions), options.orderBy, acceptsDate),
         prompts: this.hydrateCandidates(categorized.promptIds, promptCache, ids =>
-          this.sessionStore.getUserPromptsByIds(ids, sqlOptions), options.orderBy),
+          this.sessionStore.getUserPromptsByIds(ids, sqlOptions), options.orderBy, acceptsDate),
       };
       // Each requested category is paged independently. A full prompt page
       // cannot make a partial observation or summary page sufficient.
@@ -169,14 +169,17 @@ export class ChromaSearchStrategy {
     ids: number[],
     cache: Map<number, T | undefined>,
     hydrate: (ids: number[]) => T[],
-    orderBy: 'relevance' | 'date_desc' | 'date_asc'
+    orderBy: 'relevance' | 'date_desc' | 'date_asc',
+    acceptsDate: (row: T) => boolean
   ): T[] {
     const unseen = ids.filter(id => !cache.has(id));
     for (let offset = 0; offset < unseen.length; offset += 500) {
       const batch = unseen.slice(offset, offset + 500);
       // Cache rejected IDs too. Repeated prefixes must not repeat native work.
       for (const id of batch) cache.set(id, undefined);
-      for (const row of hydrate(batch)) cache.set(row.id, row);
+      // Sync can update SQLite before its Chroma metadata copy. Apply the
+      // date window to the current row, before counting or paging survivors.
+      for (const row of hydrate(batch)) if (acceptsDate(row)) cache.set(row.id, row);
     }
     const rows = ids.flatMap(id => {
       const row = cache.get(id);
@@ -211,10 +214,10 @@ export class ChromaSearchStrategy {
     return { $and: filters };
   }
 
-  private filterByRecency(chromaResults: {
-    ids: number[];
-    metadatas: ChromaMetadata[];
-  }, dateRange: DateRange | undefined, ignoreDefaultRecencyWindow: boolean): Array<{ id: number; meta: ChromaMetadata }> {
+  private recencyFilter(
+    dateRange: DateRange | undefined,
+    ignoreDefaultRecencyWindow: boolean
+  ): (row: { created_at_epoch: number }) => boolean {
     let startEpoch: number | undefined;
     let endEpoch: number | undefined;
 
@@ -229,18 +232,13 @@ export class ChromaSearchStrategy {
       startEpoch = Date.now() - this.defaultRecencyWindowMs;
     }
 
-    // ChromaSync deduplicates by (document type, SQLite id) and returns
-    // aligned arrays. IDs are table-local: an observation and a prompt can
-    // both be id 1, so keying metadata by the numeric id loses one category.
-    return chromaResults.ids
-      .map((id, index) => ({ id, meta: chromaResults.metadatas[index] }))
-      .filter(item => item.meta && item.meta.created_at_epoch != null
-        && (startEpoch === undefined || item.meta.created_at_epoch >= startEpoch)
-        && (endEpoch === undefined || item.meta.created_at_epoch <= endEpoch));
+    return row => row.created_at_epoch != null
+      && (startEpoch === undefined || row.created_at_epoch >= startEpoch)
+      && (endEpoch === undefined || row.created_at_epoch <= endEpoch);
   }
 
   private categorizeByDocType(
-    items: Array<{ id: number; meta: ChromaMetadata }>,
+    chromaResults: { ids: number[]; metadatas: ChromaMetadata[] },
     options: {
       searchObservations: boolean;
       searchSessions: boolean;
@@ -251,14 +249,17 @@ export class ChromaSearchStrategy {
     const sessionIds: number[] = [];
     const promptIds: number[] = [];
 
-    for (const item of items) {
-      const docType = item.meta?.doc_type;
+    // ChromaSync deduplicates by (document type, SQLite id) and returns
+    // aligned arrays. IDs are table-local: an observation and a prompt can
+    // both be id 1, so keying metadata by the numeric id loses one category.
+    for (const [index, id] of chromaResults.ids.entries()) {
+      const docType = chromaResults.metadatas[index]?.doc_type;
       if (docType === 'observation' && options.searchObservations) {
-        obsIds.push(item.id);
+        obsIds.push(id);
       } else if (docType === 'session_summary' && options.searchSessions) {
-        sessionIds.push(item.id);
+        sessionIds.push(id);
       } else if (docType === 'user_prompt' && options.searchPrompts) {
-        promptIds.push(item.id);
+        promptIds.push(id);
       }
     }
 

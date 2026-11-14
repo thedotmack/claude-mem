@@ -1043,19 +1043,19 @@ describe('SearchManager recency window wiring (#4770)', () => {
   });
 
   it('keeps every match when the window is disabled with 0 (hybridSemanticHydrate)', async () => {
-    const { manager } = makeManager(0);
+    const { manager, getObservationsByIds } = makeManager(0);
     const rows = await (manager as any).hybridSemanticHydrate(
       'memory', 'observation', undefined, undefined,
-      (ids: number[]) => ids.map(id => ({ id }))
+      getObservationsByIds
     );
     expect(keptIds(rows)).toEqual([101, 102]);
   });
 
   it('honors a custom window of 30 days (hybridSemanticHydrate)', async () => {
-    const { manager } = makeManager(30 * DAY_MS);
+    const { manager, getObservationsByIds } = makeManager(30 * DAY_MS);
     const rows = await (manager as any).hybridSemanticHydrate(
       'memory', 'observation', undefined, undefined,
-      (ids: number[]) => ids.map(id => ({ id }))
+      getObservationsByIds
     );
     expect(keptIds(rows)).toEqual([101]);
   });
