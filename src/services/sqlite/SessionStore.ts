@@ -4094,7 +4094,13 @@ export class SessionStore {
       WHERE COALESCE(NULLIF(platform_source, ''), ?) = ? AND content_session_id = ?`)
       .get(DEFAULT_PLATFORM_SOURCE, platformSource, prompt.contentSessionId) as { id: number } | null;
     let sessionDbId = session?.id;
-    if (sessionDbId !== undefined) {
+    const nativePromptId = `transcript:${prompt.nativePromptId}`;
+    // A replay already owns its native row. It must not claim a nearby hook
+    // row belonging to another turn; saveNativeUserPrompt below still checks
+    // the replay's full-text hash before reporting it as already imported.
+    const alreadyImported = sessionDbId !== undefined && this.db.prepare(`SELECT 1 FROM user_prompts
+      WHERE session_db_id = ? AND native_prompt_id = ?`).get(sessionDbId, nativePromptId);
+    if (sessionDbId !== undefined && !alreadyImported) {
       const texts = [text, ...(prompt.hookTextVariants ?? []).map(normalizeStoredPromptText).filter(Boolean)];
       const hookRows = this.db.prepare(`SELECT id, created_at_epoch FROM user_prompts
         WHERE session_db_id = ? AND native_prompt_id IS NULL
@@ -4107,7 +4113,7 @@ export class SessionStore {
         prompt.claimedHookRowIds.add(hookRow.id);
         return { reason: 'recorded-by-hook', hookRowId: hookRow.id };
       }
-    } else {
+    } else if (sessionDbId === undefined) {
       const at = new Date(prompt.createdAtEpoch).toISOString();
       const inserted = this.db.prepare(`INSERT INTO sdk_sessions
         (content_session_id, memory_session_id, project, platform_source, user_prompt, started_at, started_at_epoch, completed_at, completed_at_epoch, status)
@@ -4115,7 +4121,7 @@ export class SessionStore {
         .run(prompt.contentSessionId, prompt.project, platformSource, text, at, prompt.createdAtEpoch, at, prompt.createdAtEpoch);
       sessionDbId = Number(inserted.lastInsertRowid);
     }
-    const result = this.saveNativeUserPrompt(prompt.contentSessionId, sessionDbId, `transcript:${prompt.nativePromptId}`,
+    const result = this.saveNativeUserPrompt(prompt.contentSessionId, sessionDbId, nativePromptId,
       prompt.promptText, prompt.promptText, { createdAtEpoch: prompt.createdAtEpoch, reopenSession: false });
     return { reason: result.duplicate ? 'already-imported' : 'new' };
   }
