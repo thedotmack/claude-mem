@@ -22,6 +22,17 @@ type Dependencies = {
   now?: () => number;
 };
 
+/**
+ * The subprocess compares the deadline against `Date.now()`, while the
+ * parent's own expiry is measured with `performance.now()`. Derive it from
+ * the remaining budget at dispatch so a wall-clock step between the start of
+ * the search and the launch cannot hand the child more time than the parent
+ * still has (or kill it early on a forward step).
+ */
+export function childDeadline(expires: number, now: number, wallNow: number = Date.now()): number {
+  return wallNow + Math.max(1, expires - now);
+}
+
 /** One disposable, read-only process per query. No queue and no inline fallback.
  * The slot includes startup and remains held until the OS confirms process exit. */
 export class DeepSearchClient implements DeepSearchExecutor {
@@ -37,7 +48,6 @@ export class DeepSearchClient implements DeepSearchExecutor {
     if (this.active) return Promise.resolve(emptyDeepResult('busy'));
     if (!(this.dependencies.runtimeSupported ?? deepSearchRuntimeSupported)()) return Promise.resolve(emptyDeepResult('unsupported'));
     const budget = this.dependencies.deadlineMs ?? DEEP_SEARCH_DEADLINE_MS;
-    const deadline = Date.now() + budget;
     const now = this.dependencies.now ?? (() => performance.now());
     const expires = now() + budget;
     const id = ++this.nextId;
@@ -62,7 +72,7 @@ export class DeepSearchClient implements DeepSearchExecutor {
         if (job.done || now() >= expires) {
           this.stop(job, 'timeout'); cleanup(); return;
         }
-        const input = JSON.stringify({ version: 1, id, parentPid: process.pid, deadline,
+        const input = JSON.stringify({ version: 1, id, parentPid: process.pid, deadline: childDeadline(expires, now()),
           dbPath: this.dbPath, query, options: {
             project: options.project, projects: options.projects, platformSource: options.platformSource,
             dateRange: options.dateRange, orderBy: options.orderBy, limit: options.limit,
