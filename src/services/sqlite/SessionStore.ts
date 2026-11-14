@@ -17,7 +17,7 @@ import {
   LatestPromptResult
 } from '../../types/database.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from './types.js';
-import { computeObservationContentHash, computeObservationDetailsHash, hasStorableTitle, type ObservationDetails } from './observations/store.js';
+import { computeObservationContentHash, computeLegacyObservationContentHash, computeObservationDetailsHash, hasStorableTitle, type ObservationDetails } from './observations/store.js';
 import { parseFileList, replaceObservationFileIndex } from './observations/files.js';
 import { seedReinforcement, reinforceObservation } from '../reinforcement/persist.js';
 import {
@@ -4442,7 +4442,18 @@ export class SessionStore {
           continue;
         }
 
-        const legacyHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
+        let legacyHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
+        if (legacyHash.startsWith('tuple-')) {
+          const previousHash = computeLegacyObservationContentHash(memorySessionId, observation.title, observation.narrative);
+          // Old delimiter hashes are ambiguous: reuse one only when its actual
+          // fields agree. Include old structured variants whose base was deleted.
+          const previous = this.db.prepare(`SELECT id FROM observations
+            WHERE memory_session_id = ? AND content_hash IN (?, ?)
+              AND title IS ? AND COALESCE(narrative, '') = ? LIMIT 1`)
+            .get(memorySessionId, previousHash, computeObservationDetailsHash(previousHash, observation),
+              observation.title, observation.narrative ?? '');
+          if (previous) legacyHash = previousHash;
+        }
         const detailsHash = computeObservationDetailsHash(legacyHash, observation);
         let contentHash = legacyHash;
         // A variant keeps its identity even if the row occupying the legacy
