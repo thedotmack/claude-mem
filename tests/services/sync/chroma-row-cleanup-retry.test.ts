@@ -420,6 +420,50 @@ describe('post-delete Chroma cleanup retry (#5664)', () => {
     }
   });
 
+  for (const entry of ['backfill', 'recovery']) {
+    it(`continues ${entry} beyond a batch entirely reserved during its first delete`, async () => {
+      const rows = Array.from({ length: 102 }, (_, index) => ({ docType: 'observation', sqliteId: index + 1 }));
+      liveDocuments = rows.map(row => ({ id: `obs_${row.sqliteId}_narrative`, doc_type: row.docType, sqlite_id: row.sqliteId }));
+      seedStateFile({ [PENDING_DELETES_KEY]: rows });
+      const retryStarted = deferred();
+      const retryFinished = deferred();
+      const cleanupStarted = deferred();
+      const cleanupFinished = deferred();
+      beforeDelete = async ids => {
+        if (ids.includes('obs_1_narrative')) { retryStarted.resolve(); await retryFinished.promise; }
+      };
+      let backfill: Promise<void> | undefined;
+      if (entry === 'backfill') backfill = sweep();
+      else { ChromaSync.registerBackfillStore(makeStore()); recoverConnection(); }
+      await retryStarted.promise;
+      const chroma = new ChromaSync('claude-mem');
+      const cleanup = scheduleChromaRowCleanup({ deleteRowDocuments: async (docType, sqliteId) => {
+        cleanupStarted.resolve();
+        await cleanupFinished.promise;
+        return chroma.deleteRowDocuments(docType, sqliteId);
+      } }, rows.slice(0, 100).map(row => ({ kind: 'observation' as const, id: row.sqliteId })));
+      try {
+        retryFinished.resolve();
+        await backfill;
+        await cleanupStarted.promise;
+        // Even the first finished row now belongs to the queued reservation,
+        // so no checkpoint was cleared in batch one. Rows 101/102 still need
+        // this same drain: the queued cleanup does not own them.
+        expect(deleteCalls).toEqual([['obs_1_narrative'], ['obs_101_narrative'], ['obs_102_narrative']]);
+        ChromaSyncState.resetCacheForTests();
+        expect(ChromaSyncState.getPendingRowDeletes()).toEqual(rows.slice(0, 100));
+        cleanupFinished.resolve();
+        await cleanup;
+        expect(liveDocuments).toEqual([]);
+        expect(ChromaSyncState.getPendingRowDeletes()).toEqual([]);
+      } finally {
+        retryFinished.resolve();
+        cleanupFinished.resolve();
+        await Promise.all([backfill, cleanup]);
+      }
+    });
+  }
+
   it('drains a recorded cleanup on the next backfill sweep, then does not repeat it', async () => {
     liveDocuments = [{ id: 'obs_7_narrative', doc_type: 'observation', sqlite_id: 7 }];
     seedStateFile({ [PENDING_DELETES_KEY]: [{ docType: 'observation', sqliteId: 7 }] });

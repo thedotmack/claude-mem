@@ -554,13 +554,14 @@ export class ChromaSync {
       const sync = new ChromaSync('claude-mem');
       // One pass drains a bounded batch so a large outage backlog cannot stall
       // the backfill's writes. The next batch is only worth starting when the
-      // previous one cleared something: a still-failing provider would
-      // otherwise retry the same head forever, and shutdown must leave the rest
-      // recorded. Loop here, at the entry that owns the retry, rather than
+      // previous one cleared something or yielded rows to queued cleanups:
+      // those reservations are excluded from the next batch. A still-failing
+      // provider must not retry the same head forever, and shutdown must leave
+      // the rest recorded. Loop here, at the entry that owns the retry, rather than
       // leaving the remainder for "the next sweep", which can be days away.
       for (;;) {
-        const cleared = await sync.drainPendingRowDeletes(store);
-        if (cleared === 0 || shutdownBegan()) return;
+        const { cleared, reserved } = await sync.drainPendingRowDeletes(store);
+        if ((cleared === 0 && reserved === 0) || shutdownBegan()) return;
         if (ChromaSyncState.getPendingRowDeletes().length === 0) return;
       }
     };
@@ -1189,10 +1190,10 @@ export class ChromaSync {
    * the stale delete is dropped instead, since its own sync now owns them. A
    * cleanup that fails again stays recorded for the next attempt.
    */
-  private async drainPendingRowDeletes(store: SessionStore): Promise<number> {
+  private async drainPendingRowDeletes(store: SessionStore): Promise<{ cleared: number; reserved: number }> {
     const pending = ChromaSyncState.getPendingRowDeletes()
       .filter(row => !isQueuedChromaRowDelete(row));
-    if (pending.length === 0) return 0;
+    if (pending.length === 0) return { cleared: 0, reserved: 0 };
     const batch = pending.slice(0, MAX_PENDING_ROW_DELETE_RETRIES_PER_PASS);
     if (batch.length < pending.length) {
       logger.info('CHROMA_SYNC', 'Post-delete cleanup retry pass bounded; the rest continues in the next batch', {
@@ -1248,9 +1249,10 @@ export class ChromaSync {
         remaining: ChromaSyncState.getPendingRowDeletes().length
       });
     }
-    // Zero means only live reservations, failures or interrupted work remain.
-    // Another batch would retry the same head or block its queued successor.
-    return completed.length;
+    // Rows reserved during I/O also make progress: the next batch excludes
+    // them and can reach unreserved rows beyond this one. Only failure (or
+    // shutdown) without either kind of progress should stop the drain.
+    return { cleared: completed.length, reserved: batch.filter(isQueuedChromaRowDelete).length };
   }
 
   async syncObservation(
