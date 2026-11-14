@@ -16,7 +16,7 @@ Grok Build is xAI's coding CLI. It reads Claude Code plugins, so Claude-Mem alre
 | Memory at session start | Works through a project rules file you turn on with `claude-mem grok install`. |
 | Memory added to each prompt | Not available. Grok Build ignores what hooks print on `SessionStart` and `UserPromptSubmit`. |
 
-Tested on Grok Build 1.0.77 (Windows 11). The behavior below comes from Grok Build's own documentation for that version.
+Tested on Grok Build 1.0.77 (Windows 11). The behavior below comes from Grok Build's documentation: the public [hooks](https://docs.x.ai/build/features/hooks) and [project rules](https://docs.x.ai/build/features/project-rules) pages, plus the fuller user guide Grok Build 1.0.77 installs at `~/.grok/docs/user-guide/` (`10-hooks.md`, `12-project-rules.md`). The public hooks page says only that "for passive events, stdout is ignored". The installed guide names the events: only `PreToolUse`, `PostToolUse` and `PostToolUseFailure` can add context, and "every other event is passive".
 
 ## Why a rules file
 
@@ -31,6 +31,8 @@ Run this in the project folder, with the Claude-Mem worker running:
 ```bash
 claude-mem grok install
 ```
+
+(`npx claude-mem grok install` works too.)
 
 It:
 
@@ -56,8 +58,8 @@ Grok Build reads the file when a session **starts**. A refresh that lands during
 ## What is stored and sent
 
 - The file holds the same recalled notes Claude-Mem gives Claude Code at session start, for this project only. It stays on your machine.
-- Claude-Mem skips folders on your excluded-projects list and writes only into folders you ran `grok install` in.
-- The file says the notes are reference data, not instructions. Treat anything in memory the way you treat any other file in the project.
+- Claude-Mem skips folders on your excluded-projects list and writes only into folders you ran `grok install` in. If you exclude a project after installing, the next refresh replaces its notes with a short "excluded" line.
+- Grok Build loads rules files as **project instructions**, so the model gives recalled notes the same weight as instructions you wrote. The file's header calls them reference data, but a header can't stop a model from acting on text inside a note. Claude Code's session-start context carries the same risk. Only install in projects whose captured content you trust, and remember that notes can quote web pages, tool output and files you opened.
 - Don't commit the file. The install adds it to `.git/info/exclude` for you. If you exclude it through `.gitignore` instead, Grok Build skips it and your notes stop loading.
 
 ## If memory is unavailable

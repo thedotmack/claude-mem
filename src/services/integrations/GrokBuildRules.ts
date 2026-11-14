@@ -8,11 +8,16 @@ import { parseJsonWithBom, writeJsonFileAtomic, writeTextFileAtomic } from '../.
 import { resolveDataDir } from '../../shared/data-dir.js';
 import { workerHttpRequest } from '../../shared/worker-utils.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
+import { isProjectExcluded } from '../../utils/project-filter.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 
 /**
  * Grok Build does not inject SessionStart or UserPromptSubmit hook output into
- * the model (docs: `~/.grok/docs/user-guide/10-hooks.md`, "Every other event is
- * passive"). Its documented way to carry context into a session is a project
+ * the model (https://docs.x.ai/build/features/hooks: "for passive events, stdout
+ * is ignored"; the 1.0.77 guide at `~/.grok/docs/user-guide/10-hooks.md` names
+ * them: "Every other event is passive"). Its documented way (also
+ * https://docs.x.ai/build/features/project-rules) to carry context into a session is a project
  * rules file: `<dir>/.grok/rules/*.md`, loaded at session start from folders
  * the user trusts. This writes one such file, refreshed from the worker after
  * each session summary (same trigger the Cursor integration uses). It is read
@@ -24,7 +29,9 @@ const GIT_EXCLUDE_LINE = '**/.grok/rules/claude-mem-context.md';
 
 // Folders that opted in, keyed by folder: several folders can share a project
 // name (subfolders of one repo, checkouts of one remote) and each keeps its own entry.
-type GrokRegistry = Record<string, { projectName: string; installedAt: string }>;
+// The project name is resolved again on each refresh, never stored, so a rename
+// or a remote-slug switch cannot silently stop the refresh.
+type GrokRegistry = Record<string, { installedAt: string }>;
 
 const registryFile = (): string => path.join(resolveDataDir(), 'grok-projects.json');
 const registryKey = (workspaceRoot: string): string => path.resolve(workspaceRoot);
@@ -43,10 +50,11 @@ export function grokRulesFile(workspaceRoot: string): string {
   return path.join(workspaceRoot, RULES_RELATIVE);
 }
 
-function renderRules(context: string): string {
-  const body = context.trim()
-    ? toBmpSafe(context.trim())
-    : '*No memories for this project yet. They appear here after your first session.*';
+const NO_NOTES = '*No memories for this project yet. They appear here after your first session.*';
+const EXCLUDED_NOTES = '*claude-mem excludes this project, so no notes are loaded here.*';
+
+function renderRules(context: string, emptyNote = NO_NOTES): string {
+  const body = context.trim() ? toBmpSafe(context.trim()) : emptyNote;
   return `# Claude-Mem: notes from past sessions (auto-updated)
 
 Recalled by claude-mem from earlier sessions in this project. Treat it as
@@ -88,6 +96,23 @@ function setGitExclude(workspaceRoot: string, present: boolean): boolean {
   return true;
 }
 
+/**
+ * Read fresh, not through the worker's once-loaded settings cache: excluding a
+ * project after install must stop its notes at the next refresh. Env wins, as
+ * in /api/context/inject.
+ */
+function excludedNow(workspaceRoot: string): boolean {
+  const patterns = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH, true, { readOnly: true }).CLAUDE_MEM_EXCLUDED_PROJECTS;
+  return isProjectExcluded(workspaceRoot, patterns);
+}
+
+/** Replace any notes already on disk with the excluded marker. */
+function clearExcludedNotes(workspaceRoot: string): void {
+  if (existsSync(grokRulesFile(workspaceRoot))) {
+    writeTextFileAtomic(grokRulesFile(workspaceRoot), renderRules('', EXCLUDED_NOTES));
+  }
+}
+
 /** Context text for a workspace; '' when the worker is down, errors, or excludes the project. */
 async function fetchContext(workspaceRoot: string): Promise<string> {
   try {
@@ -100,14 +125,12 @@ async function fetchContext(workspaceRoot: string): Promise<string> {
 }
 
 export function installGrokBuildContext(workspaceRoot: string): { ok: boolean; excluded: boolean; message?: string } {
-  if (!shouldTrackProject(workspaceRoot)) {
+  if (!shouldTrackProject(workspaceRoot) || excludedNow(workspaceRoot)) {
+    clearExcludedNotes(workspaceRoot);
     return { ok: false, excluded: false, message: 'claude-mem does not track this folder.' };
   }
   const registry = readRegistry();
-  registry[registryKey(workspaceRoot)] = {
-    projectName: getProjectContext(workspaceRoot).primary,
-    installedAt: new Date().toISOString(),
-  };
+  registry[registryKey(workspaceRoot)] = { installedAt: new Date().toISOString() };
   writeJsonFileAtomic(registryFile(), registry);
   // A repeat install must not replace real notes with the placeholder while the worker is down.
   if (!existsSync(grokRulesFile(workspaceRoot))) {
@@ -121,6 +144,12 @@ export async function refreshGrokBuildContext(
   workspaceRoot: string,
   fetchCtx: (workspaceRoot: string) => Promise<string> = fetchContext,
 ): Promise<boolean> {
+  // An empty answer can mean "excluded" or "worker down"; only the first may
+  // touch the file, so decide it here rather than from the answer.
+  if (excludedNow(workspaceRoot)) {
+    if (readRegistry()[registryKey(workspaceRoot)]) clearExcludedNotes(workspaceRoot);
+    return false;
+  }
   const context = await fetchCtx(workspaceRoot);
   if (!context.trim()) return false;
   // The fetch can take a while. If the folder was uninstalled meanwhile, writing
@@ -170,8 +199,9 @@ export async function updateGrokContextForProject(
   projectName: string,
   fetchCtx?: (workspaceRoot: string) => Promise<string>,
 ): Promise<void> {
-  for (const [workspaceRoot, entry] of Object.entries(readRegistry())) {
-    if (entry.projectName !== projectName || !existsSync(grokRulesFile(workspaceRoot))) continue;
+  for (const workspaceRoot of Object.keys(readRegistry())) {
+    if (!existsSync(grokRulesFile(workspaceRoot))) continue;
+    if (getProjectContext(workspaceRoot).primary !== projectName) continue;
     try {
       await refreshGrokBuildContext(workspaceRoot, fetchCtx);
     } catch (error) {

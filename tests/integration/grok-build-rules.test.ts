@@ -183,6 +183,36 @@ describe('refresh', () => {
     expect(existsSync(path.join(workspace, '.grok'))).toBe(false);
   });
 
+  test('excluding the project after install clears its notes, and install refuses it', async () => {
+    installGrokBuildContext(workspace);
+    await refreshGrokBuildContext(workspace, async () => 'secret notes');
+    process.env.CLAUDE_MEM_EXCLUDED_PROJECTS = workspace;
+    try {
+      let fetched = false;
+      expect(await refreshGrokBuildContext(workspace, async () => { fetched = true; return 'secret notes'; })).toBe(false);
+      expect(fetched).toBe(false);
+      const text = readFileSync(grokRulesFile(workspace), 'utf-8');
+      expect(text).not.toContain('secret notes');
+      expect(text).toContain('excludes this project');
+      expect(installGrokBuildContext(workspace).ok).toBe(false);
+    } finally {
+      delete process.env.CLAUDE_MEM_EXCLUDED_PROJECTS;
+    }
+  });
+
+  test('matches folders by their current project name, not the one at install', async () => {
+    installGrokBuildContext(workspace);
+    const registry = path.join(process.env.CLAUDE_MEM_DATA_DIR!, 'grok-projects.json');
+    const entries = JSON.parse(readFileSync(registry, 'utf-8'));
+    for (const key of Object.keys(entries)) entries[key].projectName = 'old-name';
+    writeFileSync(registry, JSON.stringify(entries));
+
+    await updateGrokContextForProject('old-name', async () => 'stale match');
+    expect(readFileSync(grokRulesFile(workspace), 'utf-8')).not.toContain('stale match');
+    await updateGrokContextForProject(getProjectContext(workspace).primary, async () => 'current match');
+    expect(readFileSync(grokRulesFile(workspace), 'utf-8')).toContain('current match');
+  });
+
   test('stops refreshing once the user deletes the file', async () => {
     installGrokBuildContext(workspace);
     rmSync(grokRulesFile(workspace));
