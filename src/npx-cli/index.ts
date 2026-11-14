@@ -78,6 +78,7 @@ ${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed p
   ${styleText('cyan', 'npx claude-mem devin install|status|uninstall')}   Manage Devin CLI / Devin Desktop hooks + MCP
   ${styleText('cyan', 'npx claude-mem t3code status|uninstall [--settings <path>]')}   Inspect or disable T3 Code provider plugins
   ${styleText('cyan', 'npx claude-mem pi install|status|uninstall')}   Manage the native Pi extension
+  ${styleText('cyan', 'npx claude-mem grok install|status|uninstall')}   Load recalled memory into Grok Build sessions (current folder)
 
 ${styleText('bold', 'TeamBrain')} (one shared brain for your team; your own memory stays private):
   ${styleText('cyan', 'npx claude-mem teambrain start')}                Create a team on cmem.ai
@@ -170,7 +171,7 @@ const HELP_AWARE_COMMANDS = new Set([
   '', 'install', 'update', 'upgrade', 'uninstall', 'remove', 'repair', 'prune', 'start', 'stop', 'restart',
   'adopt', 'cleanup',
   'memory', 'telemetry', 'project', 'backup', 'restore', 'server', 'worker', 'transcript',
-  'gemini', 'kimi', 'devin', 'antigravity-cli', 'pi',
+  'gemini', 'kimi', 'devin', 'antigravity-cli', 'pi', 'grok',
 ]);
 
 async function main(): Promise<void> {
@@ -321,6 +322,11 @@ async function main(): Promise<void> {
     case 'devin': {
       const { handleDevinCommand } = await import('../services/integrations/DevinHooksInstaller.js');
       process.exit(await handleDevinCommand(args[1]?.toLowerCase(), args.slice(2)));
+    }
+
+    case 'grok': {
+      const { handleGrokCommand } = await import('../services/integrations/GrokBuildRules.js');
+      process.exit(await handleGrokCommand(args[1]?.toLowerCase(), args.slice(2)));
     }
 
     case 'worker': {

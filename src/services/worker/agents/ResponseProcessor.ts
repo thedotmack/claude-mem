@@ -14,6 +14,7 @@ import {
   previewOutput,
 } from '../../../sdk/output-classifier.js';
 import { updateCursorContextForProject } from '../../integrations/CursorHooksInstaller.js';
+import { updateGrokContextForProject } from '../../integrations/GrokBuildRules.js';
 import { notifyTelegram } from '../../integrations/TelegramNotifier.js';
 import { notifyNotion } from '../../integrations/NotionExporter.js';
 import { notifyGrokBotAwareness } from '../../integrations/GrokBotAwarenessPusher.js';
@@ -1617,5 +1618,8 @@ async function syncAndBroadcastSummary(
 
   updateCursorContextForProject(context.project).catch(error => {
     logger.warn('CURSOR', 'Context update failed (non-critical)', { project: context.project }, error as Error);
+  });
+  updateGrokContextForProject(context.project).catch(error => {
+    logger.warn('GROK_BUILD', 'Context update failed (non-critical)', { project: context.project }, error as Error);
   });
 }

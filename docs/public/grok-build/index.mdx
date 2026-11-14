@@ -1,0 +1,99 @@
+---
+title: "Grok Build Integration"
+description: "Start Grok Build sessions with recalled memory: capture through the Claude plugin, context through a project rules file"
+---
+
+# Grok Build Integration
+
+> **Your next Grok Build session starts where the last one left off.**
+
+Grok Build is xAI's coding CLI. It reads Claude Code plugins, so Claude-Mem already works there for capture and search. This page covers the one piece that needed its own setup: getting recalled notes into the model when a session starts.
+
+| What | Status on Grok Build |
+| --- | --- |
+| Capture of tool use and session summaries | Works through the Claude plugin. No extra setup. |
+| Search past sessions (`mem-search`, MCP tools) | Works through the plugin. |
+| Memory at session start | Works through a project rules file you turn on with `claude-mem grok install`. |
+| Memory added to each prompt | Not available. Grok Build ignores what hooks print on `SessionStart` and `UserPromptSubmit`. |
+
+Tested on Grok Build 1.0.77 (Windows 11). The behavior below comes from Grok Build's documentation: the public [hooks](https://docs.x.ai/build/features/hooks) and [project rules](https://docs.x.ai/build/features/project-rules) pages, plus the fuller user guide Grok Build 1.0.77 installs at `~/.grok/docs/user-guide/` (`10-hooks.md`, `12-project-rules.md`). The public hooks page says only that "for passive events, stdout is ignored". The installed guide names the events: only `PreToolUse`, `PostToolUse` and `PostToolUseFailure` can add context, and "every other event is passive".
+
+## Why a rules file
+
+Grok Build runs `SessionStart` and `UserPromptSubmit` hooks, but it never gives their output to the model. Its docs say only `PreToolUse`, `PostToolUse` and `PostToolUseFailure` can add context, and every other event is observe-only. Claude-Mem's session-start notes therefore never reach the model there.
+
+Grok Build does load Markdown files from `<project>/.grok/rules/` when a session starts. Claude-Mem writes one file there, `claude-mem-context.md`, and refreshes it after each session summary.
+
+## Set it up
+
+Run this in the project folder, with the Claude-Mem worker running:
+
+```bash
+claude-mem grok install
+```
+
+(`npx claude-mem grok install` works too.)
+
+It:
+
+- writes `.grok/rules/claude-mem-context.md`, filled from your existing notes for this project (or a short placeholder if there are none yet);
+- adds that one file to `.git/info/exclude`, so it stays out of `git status` and your `.gitignore` is untouched;
+- remembers the folder so the file is refreshed after each session summary.
+
+Then start Grok Build in the folder. Grok Build reads project rules only for trusted folders, so start it with `grok --trust` or accept the trust prompt.
+
+Check it:
+
+```bash
+claude-mem grok status
+grok inspect
+```
+
+`grok inspect` lists `claude-mem-context.md` under project instructions once the folder is trusted.
+
+<Note>
+Grok Build reads the file when a session **starts**. A refresh that lands during a session shows up in the next one, and a new session opened before the last summary is stored won't have those notes yet.
+</Note>
+
+## What is stored and sent
+
+- The file holds the same recalled notes Claude-Mem gives Claude Code at session start, for this project only. It stays on your machine.
+- Claude-Mem skips folders on your excluded-projects list and writes only into folders you ran `grok install` in. If you exclude a project after installing, the next refresh replaces its notes with a short "excluded" line.
+- Grok Build loads rules files as **project instructions**, so the model gives recalled notes the same weight as instructions you wrote. The file's header calls them reference data, but a header can't stop a model from acting on text inside a note. Claude Code's session-start context carries the same risk. Only install in projects whose captured content you trust, and remember that notes can quote web pages, tool output and files you opened.
+- Don't commit the file. The install adds it to `.git/info/exclude` for you. If you exclude it through `.gitignore` instead, Grok Build skips it and your notes stop loading.
+
+## If memory is unavailable
+
+Refreshing is best effort. If the worker is stopped or slow, Claude-Mem leaves the previous file as it was and does nothing else: no retry, no queue, nothing to replay later. Grok Build is never blocked, and the session starts with whatever the file already held.
+
+## Troubleshooting
+
+| Symptom | Fix |
+| --- | --- |
+| The model doesn't know your notes | Start a new session. Check `grok inspect` lists the file, and that the folder is trusted. |
+| The file isn't listed | You may have started Grok Build in a different folder than the one you installed in. Run `claude-mem grok status` there. |
+| `grok status` says refreshes are keyed to another project | The folder's project name changed (renamed folder, new remote, or a project environment). Run `claude-mem grok install` again. |
+| The file shows only a placeholder | The project has no notes yet. Finish a session and wait for its summary. |
+| The file shows in `git status` | It was created outside a git repo or without `git` on your path. Add `**/.grok/rules/claude-mem-context.md` to `.git/info/exclude`. |
+| Another project's notes appear | Each project folder gets its own file. Check the file's folder. |
+
+## Turn it off
+
+```bash
+claude-mem grok uninstall
+```
+
+This removes the rules file, the folder's refresh registration and the exclude line. If another folder in the same repository still has it installed, the exclude line stays until that folder is uninstalled too. Running it in a folder that never installed changes nothing. It leaves your other rules, your memory, and the plugin's capture hooks alone.
+
+## Limits
+
+- Memory reaches the model at session start only, not on every prompt.
+- Context is one session behind: it is rebuilt after a summary and read at the next start.
+- The setup is per folder. Install at the repository root and sessions started in its subfolders load the file too, because Grok Build reads rules from the repository root down to the folder it starts in.
+- Sessions captured from Grok Build are recorded under the `claude-code` source, the same as the plugin's other Claude-format hosts.
+
+## Next steps
+
+- [Search Tools](/usage/search-tools) — ask for details from past sessions
+- [Grok Bot Integration](/grok-bot) — a different product, with its own setup
+- [Configuration](/configuration) — settings and excluded projects
