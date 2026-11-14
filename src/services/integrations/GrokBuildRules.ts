@@ -29,9 +29,10 @@ const GIT_EXCLUDE_LINE = '**/.grok/rules/claude-mem-context.md';
 
 // Folders that opted in, keyed by folder: several folders can share a project
 // name (subfolders of one repo, checkouts of one remote) and each keeps its own entry.
-// The project name is resolved again on each refresh, never stored, so a rename
-// or a remote-slug switch cannot silently stop the refresh.
-type GrokRegistry = Record<string, { installedAt: string }>;
+// The worker matches on the stored name, so a summary never runs git for every
+// installed folder (a stalled checkout would block the worker). `grok status`,
+// run outside the worker, flags a folder whose name has since changed.
+type GrokRegistry = Record<string, { projectName?: string; installedAt: string }>;
 
 const registryFile = (): string => path.join(resolveDataDir(), 'grok-projects.json');
 const registryKey = (workspaceRoot: string): string => path.resolve(workspaceRoot);
@@ -130,7 +131,10 @@ export function installGrokBuildContext(workspaceRoot: string): { ok: boolean; e
     return { ok: false, excluded: false, message: 'claude-mem does not track this folder.' };
   }
   const registry = readRegistry();
-  registry[registryKey(workspaceRoot)] = { installedAt: new Date().toISOString() };
+  registry[registryKey(workspaceRoot)] = {
+    projectName: getProjectContext(workspaceRoot).primary,
+    installedAt: new Date().toISOString(),
+  };
   writeJsonFileAtomic(registryFile(), registry);
   // A repeat install must not replace real notes with the placeholder while the worker is down.
   if (!existsSync(grokRulesFile(workspaceRoot))) {
@@ -185,9 +189,15 @@ export function uninstallGrokBuildContext(workspaceRoot: string): void {
   if (!othersNeedIt) setGitExclude(workspaceRoot, false);
 }
 
-export function grokBuildContextStatus(workspaceRoot: string): { installed: boolean; registered: boolean; file: string } {
+export function grokBuildContextStatus(workspaceRoot: string): {
+  installed: boolean; registered: boolean; file: string; staleProject?: { stored: string | null; current: string };
+} {
   const file = grokRulesFile(workspaceRoot);
-  return { installed: existsSync(file), registered: Boolean(readRegistry()[registryKey(workspaceRoot)]), file };
+  const entry = readRegistry()[registryKey(workspaceRoot)];
+  const status = { installed: existsSync(file), registered: Boolean(entry), file };
+  if (!entry) return status;
+  const current = getProjectContext(workspaceRoot).primary;
+  return entry.projectName === current ? status : { ...status, staleProject: { stored: entry.projectName ?? null, current } };
 }
 
 /**
@@ -199,9 +209,8 @@ export async function updateGrokContextForProject(
   projectName: string,
   fetchCtx?: (workspaceRoot: string) => Promise<string>,
 ): Promise<void> {
-  for (const workspaceRoot of Object.keys(readRegistry())) {
-    if (!existsSync(grokRulesFile(workspaceRoot))) continue;
-    if (getProjectContext(workspaceRoot).primary !== projectName) continue;
+  for (const [workspaceRoot, entry] of Object.entries(readRegistry())) {
+    if (entry.projectName !== projectName || !existsSync(grokRulesFile(workspaceRoot))) continue;
     try {
       await refreshGrokBuildContext(workspaceRoot, fetchCtx);
     } catch (error) {
@@ -238,6 +247,9 @@ export async function handleGrokCommand(subcommand: string | undefined): Promise
     case 'status': {
       const s = grokBuildContextStatus(cwd);
       console.log(`${s.installed ? 'Installed' : 'Not installed'}: ${s.file}${s.registered ? ' (registered for refresh)' : ''}`);
+      if (s.staleProject) {
+        console.log(`Refreshes are keyed to project "${s.staleProject.stored ?? '(none)'}", but this folder is now "${s.staleProject.current}", so the file is no longer refreshed. Run: claude-mem grok install`);
+      }
       return 0;
     }
     default:

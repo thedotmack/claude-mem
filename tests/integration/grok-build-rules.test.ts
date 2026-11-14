@@ -200,16 +200,22 @@ describe('refresh', () => {
     }
   });
 
-  test('matches folders by their current project name, not the one at install', async () => {
+  test('a renamed project is flagged by status, and reinstalling resumes refresh', async () => {
     installGrokBuildContext(workspace);
     const registry = path.join(process.env.CLAUDE_MEM_DATA_DIR!, 'grok-projects.json');
     const entries = JSON.parse(readFileSync(registry, 'utf-8'));
     for (const key of Object.keys(entries)) entries[key].projectName = 'old-name';
     writeFileSync(registry, JSON.stringify(entries));
+    const current = getProjectContext(workspace).primary;
 
-    await updateGrokContextForProject('old-name', async () => 'stale match');
-    expect(readFileSync(grokRulesFile(workspace), 'utf-8')).not.toContain('stale match');
-    await updateGrokContextForProject(getProjectContext(workspace).primary, async () => 'current match');
+    expect(grokBuildContextStatus(workspace).staleProject).toEqual({ stored: 'old-name', current });
+    // The worker matches the stored name only: no git lookup per installed folder.
+    await updateGrokContextForProject(current, async () => 'not yet');
+    expect(readFileSync(grokRulesFile(workspace), 'utf-8')).not.toContain('not yet');
+
+    installGrokBuildContext(workspace);
+    expect(grokBuildContextStatus(workspace).staleProject).toBeUndefined();
+    await updateGrokContextForProject(current, async () => 'current match');
     expect(readFileSync(grokRulesFile(workspace), 'utf-8')).toContain('current match');
   });
 

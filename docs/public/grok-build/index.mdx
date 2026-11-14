@@ -72,6 +72,7 @@ Refreshing is best effort. If the worker is stopped or slow, Claude-Mem leaves t
 | --- | --- |
 | The model doesn't know your notes | Start a new session. Check `grok inspect` lists the file, and that the folder is trusted. |
 | The file isn't listed | You may have started Grok Build in a different folder than the one you installed in. Run `claude-mem grok status` there. |
+| `grok status` says refreshes are keyed to another project | The folder's project name changed (renamed folder, new remote, or a project environment). Run `claude-mem grok install` again. |
 | The file shows only a placeholder | The project has no notes yet. Finish a session and wait for its summary. |
 | The file shows in `git status` | It was created outside a git repo or without `git` on your path. Add `**/.grok/rules/claude-mem-context.md` to `.git/info/exclude`. |
 | Another project's notes appear | Each project folder gets its own file. Check the file's folder. |
