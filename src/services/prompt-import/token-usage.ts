@@ -65,7 +65,7 @@ export interface AgentTokenUsage {
   tokens: number;
   /** The agent's records reach back to the window start (older transcripts exist, or a record at or before it). */
   historyStartsBeforeWindow: boolean;
-  /** The earliest token record read (files changed inside the window). */
+  /** The earliest token record read, including older Gemini snapshots used to resolve copied responses. */
   firstRecordAt: string | null;
   /** The agent deletes transcripts sooner than the window lasts. */
   retentionShorterThanWindow: boolean;
@@ -214,7 +214,7 @@ const codexUsage: UsageReader = {
 
 const geminiCliUsage: UsageReader = {
   async read(sources, sinceEpochMs, usage, skip) {
-    const seenMessages = new Set<string>();
+    const messagesByIdentity = new Map<string, { at: number; tokens: number }>();
     for (const source of sources) {
       try {
         const { header, messages } = await readGeminiChat(source.path, { includeDiscardedMessages: true });
@@ -232,13 +232,14 @@ const geminiCliUsage: UsageReader = {
             ? ['native', message.id]
             : ['legacy', sessionKey, at, message.content ?? null, message.toolCalls ?? null];
           const key = createHash('sha256').update(JSON.stringify(identity)).digest('hex');
-          if (seenMessages.has(key)) continue;
-          seenMessages.add(key);
           const { total, input, output, thoughts, tool } = message.tokens;
-          tally(usage, at, typeof total === 'number' ? count(total) : count(input) + count(output) + count(thoughts) + count(tool), sinceEpochMs);
+          const tokens = typeof total === 'number' ? count(total) : count(input) + count(output) + count(thoughts) + count(tool);
+          const previous = messagesByIdentity.get(key);
+          messagesByIdentity.set(key, { at: Math.min(previous?.at ?? at, at), tokens: Math.max(previous?.tokens ?? 0, tokens) });
         }
       } catch (error) { skip(source, error); }
     }
+    for (const message of messagesByIdentity.values()) tally(usage, message.at, message.tokens, sinceEpochMs);
   },
 };
 
@@ -295,7 +296,10 @@ export async function scanTokenUsage(options: TokenUsageScanOptions): Promise<{ 
     const usage: UsageTally = { tokens: 0, firstRecordAt: null };
     let skippedSources = 0;
     if (usageReader) {
-      await usageReader.read(usageSources.filter(source => source.mtimeMs >= options.sinceEpochMs), options.sinceEpochMs, usage, (source, error) => {
+      // Gemini can copy an old native response into a newly modified transcript
+      // with a later timestamp. Its original snapshot must reach identity resolution.
+      const selectedSources = reader.id === 'gemini-cli' ? usageSources : usageSources.filter(source => source.mtimeMs >= options.sinceEpochMs);
+      await usageReader.read(selectedSources, options.sinceEpochMs, usage, (source, error) => {
         skippedSources++;
         logger.warn('IMPORT', 'Skipped an unreadable transcript while counting tokens', { path: source.path, reason: error instanceof Error ? error.message : String(error) });
       });
