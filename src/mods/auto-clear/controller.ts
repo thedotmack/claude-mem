@@ -104,6 +104,8 @@ export class AutoClearController {
   private ownClearPending = false;
   /** Bumped when a main-loop turn starts. */
   private turnsStarted = 0;
+  /** Turn completion retires tool-hook reads even when the person stopped the turn. */
+  private readGeneration = 0;
 
   constructor(private readonly host: AutoClearHost) {}
 
@@ -119,8 +121,9 @@ export class AutoClearController {
     if (!WORK_STATE_READ_TOOL.test(call.tool)) this.saved = false;
     if (this.phase !== 'idle') return null;
 
-    const percent = await this.thresholdCrossed();
-    if (percent === null || this.phase !== 'idle') return null;
+    const isCurrent = this.readGuard();
+    const percent = await this.thresholdCrossed(isCurrent);
+    if (percent === null || !isCurrent()) return null;
     this.phase = 'saving-in-turn';
     this.saved = false;
     this.host.note(`Context is at ${percent}% (auto-clear at ${this.threshold}%): Claude is saving the work state, then claude-mem clears and continues.`);
@@ -143,22 +146,27 @@ export class AutoClearController {
 
   async onTurnEnd(turn: TurnEnd): Promise<void> {
     if (turn.agentId) return;
+    this.readGeneration += 1;
+    const isCurrent = this.readGuard();
     switch (this.phase) {
       case 'idle': {
         // A stopped or failed turn starts nothing: Esc means the person wants the floor.
         if (turn.isAborted || turn.reason !== 'answer') return;
-        const percent = await this.thresholdCrossed();
-        if (percent === null || this.phase !== 'idle') return;
+        const percent = await this.thresholdCrossed(isCurrent);
+        if (percent === null || !isCurrent()) return;
         this.saved = false;
         this.host.note(`Context is at ${percent}% (auto-clear at ${this.threshold}%): asking Claude to save the work state, then claude-mem clears and continues.`);
         this.queueSavePrompt(percent);
         return;
       }
-      case 'saving-in-turn':
+      case 'saving-in-turn': {
         if (turn.isAborted || turn.reason !== 'answer') return this.giveUp('The turn was stopped before the work state was saved, so the conversation was not cleared.');
         if (this.saved) return this.clearAndContinue();
-        this.queueSavePrompt(await this.host.contextPercent() ?? this.threshold);
+        const percent = await this.host.contextPercent();
+        if (!isCurrent()) return;
+        this.queueSavePrompt(percent ?? this.threshold);
         return;
+      }
       case 'saving-in-prompt':
         if (turn.isAborted || turn.reason !== 'answer') return this.giveUp('The save was stopped, so the conversation was not cleared.');
         if (this.saved) return this.clearAndContinue();
@@ -186,13 +194,23 @@ export class AutoClearController {
     this.checkFreshStart = false;
   }
 
+  /** Async host reads belong to the conversation, turn and phase that requested them. */
+  private readGuard(): () => boolean {
+    const conversation = this.conversation;
+    const turn = this.turnsStarted;
+    const phase = this.phase;
+    const generation = this.readGeneration;
+    return () => this.conversation === conversation && this.turnsStarted === turn && this.phase === phase
+      && this.readGeneration === generation && !this.stopped && !this.pausedForConversation;
+  }
+
   /** The context use when this conversation should be cleared now, else null. */
-  private async thresholdCrossed(): Promise<number | null> {
-    if (this.stopped || this.pausedForConversation) return null;
+  private async thresholdCrossed(isCurrent: () => boolean): Promise<number | null> {
+    if (!isCurrent()) return null;
     const settings = await this.host.settings();
-    if (!settings.enabled) return null;
+    if (!isCurrent() || !settings.enabled) return null;
     const percent = await this.host.contextPercent();
-    if (percent === undefined) return null;
+    if (!isCurrent() || percent === undefined) return null;
     if (this.checkFreshStart) {
       this.checkFreshStart = false;
       if (percent >= settings.percent) {
@@ -205,7 +223,7 @@ export class AutoClearController {
       }
     }
     if (percent < settings.percent) return null;
-    if (!(await this.host.isInteractive())) return null;
+    if (!(await this.host.isInteractive()) || !isCurrent()) return null;
     this.threshold = settings.percent;
     return percent;
   }
