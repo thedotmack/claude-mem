@@ -6,18 +6,43 @@ import {
 } from "../src/index";
 
 describe("FORWARD_ORIGIN proxy helpers", () => {
-	it("treats empty, whitespace, and invalid values as unset", () => {
+	it("treats an empty or whitespace-only value as unset", () => {
 		expect(resolveForwardOrigin(undefined)).toBeNull();
 		expect(resolveForwardOrigin("")).toBeNull();
 		expect(resolveForwardOrigin("   ")).toBeNull();
-		expect(resolveForwardOrigin("not-a-url")).toBeNull();
-		expect(resolveForwardOrigin("ftp://hub.example")).toBeNull();
+	});
+
+	it("rejects a configured value it cannot use instead of falling back", () => {
+		expect(() => resolveForwardOrigin("not-a-url")).toThrow(/not a valid URL/);
+		expect(() => resolveForwardOrigin("ftp://hub.example")).toThrow(/https/);
+		expect(() => resolveForwardOrigin("http://sync.example")).toThrow(/https/);
 	});
 
 	it("normalizes a configured origin and strips trailing slashes or paths", () => {
 		expect(resolveForwardOrigin("https://sync.cmem.ai")).toBe("https://sync.cmem.ai");
 		expect(resolveForwardOrigin("https://sync.cmem.ai/")).toBe("https://sync.cmem.ai");
 		expect(resolveForwardOrigin(" https://sync.example:8080/v1 ")).toBe("https://sync.example:8080");
+	});
+
+	it("refuses a cleartext forward origin unless the host is loopback", () => {
+		expect(() => resolveForwardOrigin("http://sync.example")).toThrow(/https/);
+		expect(() => resolveForwardOrigin("http://sync.example:8080")).toThrow(/https/);
+		expect(resolveForwardOrigin("http://127.0.0.1:8788")).toBe("http://127.0.0.1:8788");
+		expect(resolveForwardOrigin("http://localhost:8788")).toBe("http://localhost:8788");
+		expect(resolveForwardOrigin("http://[::1]:8788")).toBe("http://[::1]:8788");
+	});
+
+	it("answers 500 when the forward origin is configured but unusable", async () => {
+		const { default: worker } = await import("../src/index");
+		const response = await worker.fetch(
+			new Request("https://hub.example/v1/sync/ops", { method: "POST" }),
+			{ FORWARD_ORIGIN: "http://sync.example" } as unknown as Env,
+			{} as ExecutionContext,
+		);
+		expect(response.status).toBe(500);
+		expect(await response.json()).toMatchObject({
+			error: expect.stringContaining("sync_hub_misconfigured"),
+		});
 	});
 
 	it("rewrites path and query onto the forward origin and preserves the incoming request", () => {

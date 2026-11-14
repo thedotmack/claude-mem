@@ -174,21 +174,29 @@ const STORE_RETRY_AFTER_SECONDS = "5";
  * When FORWARD_ORIGIN is a non-empty origin, every fetch — including
  * WebSocket upgrades — is proxied there unchanged. The Worker then touches
  * zero Durable Objects and zero KV. Empty / unset keeps the DO path.
+ *
+ * The target must be https://, matching `sync-api`'s `parseForwardOrigin`.
+ * Plain http:// is accepted only for a loopback host, where there is no wire
+ * to protect. A configured value that cannot be used is an error, not an
+ * unset one: the Worker copies the incoming headers — including the internal
+ * projector's Authorization — onto that request, so silently falling back to
+ * the Durable Object path would split a deployment without saying so.
  */
+const LOOPBACK_FORWARD_HOSTNAMES = new Set(["127.0.0.1", "localhost", "[::1]"]);
 export function resolveForwardOrigin(raw: string | undefined | null): string | null {
 	const origin = (raw ?? "").trim().replace(/\/+$/, "");
 	if (origin.length === 0) return null;
+	let parsed: URL;
 	try {
-		const parsed = new URL(origin);
-		if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
-		if (parsed.pathname !== "/" || parsed.search !== "" || parsed.hash !== "") {
-			// Accept a bare origin only; strip accidental path/query/hash.
-			return `${parsed.protocol}//${parsed.host}`;
-		}
-		return `${parsed.protocol}//${parsed.host}`;
+		parsed = new URL(origin);
 	} catch {
-		return null;
+		throw new Error("FORWARD_ORIGIN is not a valid URL");
 	}
+	const isLoopbackHttp = parsed.protocol === "http:" && LOOPBACK_FORWARD_HOSTNAMES.has(parsed.hostname);
+	if (parsed.protocol !== "https:" && !isLoopbackHttp) {
+		throw new Error("FORWARD_ORIGIN must use https:// (http:// only for loopback hosts)");
+	}
+	return `${parsed.protocol}//${parsed.host}`;
 }
 
 export function rewriteForwardUrl(request: Request, origin: string): URL {
@@ -1254,7 +1262,14 @@ async function handleRepairDrain(request: Request, env: Env): Promise<Response> 
 
 export default {
 	async fetch(request, env, _ctx): Promise<Response> {
-		const forwardOrigin = resolveForwardOrigin(env.FORWARD_ORIGIN);
+		let forwardOrigin: string | null;
+		try {
+			forwardOrigin = resolveForwardOrigin(env.FORWARD_ORIGIN);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			console.error("sync-hub forward mode is misconfigured:", message);
+			return errorResponse(500, `sync_hub_misconfigured: ${message}`);
+		}
 		if (forwardOrigin !== null) {
 			return fetch(buildForwardRequest(request, forwardOrigin));
 		}
