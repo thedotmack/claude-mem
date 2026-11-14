@@ -577,7 +577,13 @@ const tools: McpToolDefinition[] = [
     },
     handler: async (args: any) => {
       if (selectRuntime() === 'server') return mcpTextResult('save_memory requires worker runtime. To save a note in the selected server, use observation_add with content and optional projectId.', true);
-      return callWorker('/api/memory/save', { body: { ...args, project: args?.project || currentCheckout().primary } });
+      // Send the caller's checkout with the save: the worker route applies
+      // CLAUDE_MEM_EXCLUDED_PROJECTS only when the body carries cwd, the same
+      // gate an HTTP save with cwd gets (#6098). An explicit project names
+      // where the note lands; it does not replace the checkout the call was
+      // made from, so it cannot bypass the exclusion. work_state_write
+      // already sends its cwd the same way.
+      return callWorker('/api/memory/save', { body: { ...args, project: args?.project || currentCheckout().primary, cwd: getRequestCwd() } });
     },
   },
   {
