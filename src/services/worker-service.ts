@@ -24,6 +24,7 @@ import { DATA_DIR, DB_PATH, USER_SETTINGS_PATH, ensureDir, paths } from '../shar
 import { HookSpool, migrateLegacySessionEndReplay } from '../shared/hook-spool.js';
 import { HookSpoolDrainer, hookSpoolConsumedMarkers } from './worker/hook-spool-drain.js';
 import { pruneOldLogs } from './worker/log-retention.js';
+import { initializeDatabaseWithBusyRetry } from './worker/db-init-retry.js';
 import {
   PLUGIN_CACHE_PRUNE_FIRST_DELAY_MS,
   PLUGIN_CACHE_PRUNE_INTERVAL_MS,
@@ -1147,7 +1148,10 @@ export class WorkerService implements WorkerRef {
       }
 
       logger.info('WORKER', 'Initializing database manager...');
-      await this.dbManager.initialize();
+      // A replacement worker can boot while another connection is writing
+      // (#3603: SQLITE_BUSY_SNAPSHOT during a My Work refresh). That is
+      // transient, so retry it for a bounded time before settling on `failed`.
+      await initializeDatabaseWithBusyRetry(this.dbManager, { shouldStop: () => this.isShuttingDown });
       // Shutdown may have begun while initialization was pending.
       if (this.isShuttingDown) return;
 
