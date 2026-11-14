@@ -164,6 +164,16 @@ export const OPENAI_COMPAT_PRESETS: readonly OpenAICompatPreset[] = [
     hint: 'Key from uberllm.dev/dashboard/keys; vendor-prefixed model ids such as deepseek/deepseek-v4.1-flash or z-ai/glm-5.2, listed at api.uberllm.dev/v1/models.',
   },
   {
+    id: 'trustedrouter',
+    label: 'TrustedRouter (trustedrouter.com)',
+    baseUrl: 'https://api.trustedrouter.com/v1',
+    // TrustedRouter's routing model picks a provider per request. Ids are
+    // vendor-prefixed and passed verbatim.
+    defaultModel: 'trustedrouter/auto',
+    requiresApiKey: true,
+    hint: 'Key from trustedrouter.com; vendor-prefixed model ids such as trustedrouter/auto or deepseek/deepseek-v4-flash, listed at api.trustedrouter.com/v1/models.',
+  },
+  {
     id: 'deepseek',
     label: 'DeepSeek',
     baseUrl: 'https://api.deepseek.com/v1',

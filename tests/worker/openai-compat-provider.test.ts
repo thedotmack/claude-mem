@@ -104,6 +104,7 @@ describe('resolveOpenAICompatConfig', () => {
     ['popnow', 'https://api.popnow.ai/v1', 'deepseek/v4-flash/chat'],
     ['runcrate', 'https://api.runcrate.ai/v1', 'deepseek-ai/DeepSeek-V4.1-Flash'],
     ['standardcompute', 'https://api.stdcmpt.com/v1', 'deepseek/deepseek-v4-flash'],
+    ['trustedrouter', 'https://api.trustedrouter.com/v1', 'trustedrouter/auto'],
     ['uberllm', 'https://api.uberllm.dev/v1', 'deepseek/deepseek-v4.1-flash'],
   ])('resolves %s with its hosted endpoint and default model', (id, baseUrl, defaultModel) => {
     process.env.CLAUDE_MEM_OPENAI_COMPAT_PRESET = id;
