@@ -35,6 +35,8 @@ import {
   statSync,
 } from 'fs';
 import { basename, dirname, isAbsolute, join, relative } from 'path';
+import { unified } from 'unified';
+import remarkParse from 'remark-parse';
 import { CLAUDE_CONFIG_DIR } from '../../shared/paths.js';
 import { expandHome } from '../../shared/expand-home.js';
 import { cwdToDashed } from '../context/ObservationCompiler.js';
@@ -217,18 +219,24 @@ export function parseMemoryFrontmatter(raw: string): { frontmatter: MemoryFrontm
   return { frontmatter: fm, body };
 }
 
+const memoryMarkdown = unified().use(remarkParse);
+
 /** Derive a human title: frontmatter name → first H1 → first H2 → filename stem. */
 export function deriveTitle(fileName: string, frontmatter: MemoryFrontmatter, body: string): string {
   if (frontmatter.name && frontmatter.name.trim()) return frontmatter.name.trim();
-  for (const line of body.split('\n')) {
+  let firstH2: string | undefined;
+  // A shell comment or Markdown example inside a code block is not a note
+  // heading. Use the existing Markdown parser for block context, but retain
+  // the source spelling instead of reformatting valid headings.
+  for (const node of memoryMarkdown.parse(body).children) {
+    if (node.type !== 'heading' || node.position?.start.offset === undefined) continue;
+    const line = body.slice(node.position.start.offset, node.position.end.offset).split('\n', 1)[0];
     const h1 = line.match(/^#\s+(.+)/);
     if (h1) return h1[1].trim();
-  }
-  for (const line of body.split('\n')) {
     const h2 = line.match(/^##\s+(.+)/);
-    if (h2) return h2[1].trim();
+    if (h2 && firstH2 === undefined) firstH2 = h2[1].trim();
   }
-  return basename(fileName, MD_EXT);
+  return firstH2 ?? basename(fileName, MD_EXT);
 }
 
 // ───────────────────────────── enumeration ──────────────────────────────
