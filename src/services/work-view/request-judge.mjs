@@ -153,11 +153,13 @@ export function jevClient({ url, apiKey, model = null, fetchImpl = fetch }) {
       const body = JSON.stringify(model ? { model, state, questions } : { state, questions });
       const bytes = Buffer.byteLength(body, 'utf8');
       if (bytes > MAX_DECISION_BODY_BYTES) throw new Error(`Jev request is ${bytes} bytes; the decisions gateway takes at most ${MAX_DECISION_BODY_BYTES}. It is not trimmed: this conversation goes to the grouping agent instead.`);
-      let response;
+      let response, text;
       try {
         response = await fetchImpl(url, { method: 'POST', headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, body, signal: AbortSignal.timeout(DECISION_TIMEOUT_MS) });
+        // Headers do not complete the request. A broken or timed-out body is
+        // a transport failure too, not a permanently invalid work-state item.
+        text = await response.text();
       } catch (error) { throw new Error(`Jev request failed: ${error instanceof Error ? error.message : String(error)}`); }
-      const text = await response.text();
       let parsed = null;
       try { parsed = JSON.parse(text); } catch { /* A non-JSON body is reported below with its status. */ }
       if (!response.ok) {
