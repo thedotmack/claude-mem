@@ -107,6 +107,7 @@ endpoint or model you pinned yourself.
 | `obscurify-ai` | `https://obscurify.ai/v1` | yes |
 | `standardcompute` | `https://api.stdcmpt.com/v1` | yes |
 | `uberllm` | `https://api.uberllm.dev/v1` | yes |
+| `trustedrouter` | `https://api.trustedrouter.com/v1` | yes |
 | `deepseek` | `https://api.deepseek.com/v1` | yes |
 | `opencode-go` | `https://opencode.ai/zen/go/v1` | yes |
 | `opencode-zen` | `https://opencode.ai/zen/v1` | yes |
@@ -468,6 +469,25 @@ passed verbatim. The model list is public at
   "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "uberllm",
   "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<your UberLLM key>",
   "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "deepseek/deepseek-v4.1-flash"
+}
+```
+
+## TrustedRouter
+
+[TrustedRouter](https://trustedrouter.com) is an OpenAI-compatible gateway that
+routes requests across open and frontier model providers behind one key. Model
+ids are vendor-prefixed, such as `trustedrouter/auto` (the preset's default,
+which picks a provider per request) or `deepseek/deepseek-v4-flash`, and are
+passed verbatim. The model list is public at
+`https://api.trustedrouter.com/v1/models`, and setup notes are in
+[the TrustedRouter docs](https://trustedrouter.com/docs).
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openai-compatible",
+  "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "trustedrouter",
+  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<your TrustedRouter key>",
+  "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "trustedrouter/auto"
 }
 ```
 
