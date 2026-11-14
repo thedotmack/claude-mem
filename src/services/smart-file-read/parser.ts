@@ -201,7 +201,7 @@ const QUERIES: Record<string, string> = {
 (class_declaration name: (identifier) @name) @cls
 (record_declaration name: (identifier) @name) @cls
 (interface_declaration name: (identifier) @name) @iface
-(annotation_type_declaration name: (identifier) @name) @iface
+(annotation_type_declaration name: (identifier) @name body: (_) @signature_body) @iface @native_signature
 (annotation_type_element_declaration name: (identifier) @name) @method @native_signature
 (enum_declaration name: (identifier) @name) @enm
 (import_declaration) @imp

@@ -7,6 +7,37 @@ import { formatFoldedView, parseFile, unfoldSymbol } from '../../../src/services
 import { searchCodebase } from '../../../src/services/smart-file-read/search.js';
 
 describe('Java annotation declarations', () => {
+  for (const ending of ['\n', '\r\n']) {
+    test(`keeps the annotation declaration after array-valued meta-annotations (${JSON.stringify(ending)})`, () => {
+      const source = [
+        '@Target({',
+        '  ElementType.TYPE, ElementType.METHOD',
+        '})',
+        '@Retention(RetentionPolicy.RUNTIME)',
+        'public @interface Api {',
+        '  String value();',
+        '}',
+      ].join(ending);
+      const parsed = parseFile(source, 'Api.java');
+      expect(parsed.symbols[0]?.signature).toBe('@Target({ ElementType.TYPE, ElementType.METHOD }) @Retention(RetentionPolicy.RUNTIME) public @interface Api');
+      expect(formatFoldedView(parsed)).toContain('public @interface Api');
+      expect(parsed.symbols[0]?.signature).not.toContain('String value()');
+      expect(unfoldSymbol(source, 'Api.java', 'Api')).toContain(source);
+    }, 120000);
+  }
+
+  test('includes the full meta-annotated type header in native search results', async () => {
+    const source = '@Target({ElementType.TYPE})\npublic @interface Api {\n  String value();\n}';
+    const directory = mkdtempSync(join(tmpdir(), 'owned-java-annotation-header-'));
+    try {
+      writeFileSync(join(directory, 'Api.java'), source);
+      const result = await searchCodebase(directory, 'Api');
+      const api = result.matchingSymbols.find(symbol => symbol.symbolName === 'Api');
+      expect(api?.signature).toBe('@Target({ElementType.TYPE}) public @interface Api');
+      expect(unfoldSymbol(source, 'Api.java', api!.symbolName)).toContain(source);
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  }, 120000);
+
   test('retains a documented marker annotation as an interface', () => {
     const source = '/** Marks an owned API. */\npublic @interface Owned {}\nclass Adjacent {}';
     const parsed = parseFile(source, 'Owned.java');
