@@ -10,7 +10,7 @@
  *    already uses for its own pending rows (survives a restart);
  * 2. the next backfill sweep drains the record through the real
  *    `deleteRowDocuments`, then forgets it, so nothing is retried twice;
- * 3. a successful cleanup writes no record at all;
+ * 3. a successful cleanup leaves no pending record;
  * 4. a row that exists again (a restore or re-import reused its id) keeps its
  *    documents — the stale delete is dropped instead of orphaning live rows;
  * 5. a connection that comes back in the same worker process drains the record
@@ -20,11 +20,12 @@
  * tests fail on the commit before the fix instead of only failing to compile.
  */
 import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { Database } from 'bun:sqlite';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import * as realChromaMcpManager from '../../../src/services/sync/ChromaMcpManager.js';
-import type { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
+import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 
 const realChromaMcpManagerSnapshot = { ...realChromaMcpManager };
 
@@ -42,6 +43,7 @@ let deleteCalls: string[][] = [];
 let deleteAttempts = 0;
 // A chroma-mcp outage: mutations fail the way "connection in backoff" did.
 let failDeletes = false;
+let beforeDelete: ((ids: string[]) => Promise<void>) | null = null;
 // The listener ChromaSync registers for the manager's recovery edge.
 let recoveryListener: (() => void) | null = null;
 
@@ -70,6 +72,7 @@ mock.module('../../../src/services/sync/ChromaMcpManager.js', () => ({
           deleteAttempts += 1;
           if (failDeletes) throw new Error('chroma-mcp connection in backoff (10s remaining)');
           const ids = (args?.ids ?? []) as string[];
+          if (beforeDelete) await beforeDelete(ids);
           deleteCalls.push(ids);
           liveDocuments = liveDocuments.filter(doc => !ids.includes(doc.id));
           return {};
@@ -123,7 +126,7 @@ function makeStore(options: { existingRows?: Array<{ table: string; id: number }
           const table = /FROM (\w+)/.exec(query)?.[1] ?? '';
           return {
             get: (id: number) =>
-              existingRows.some(row => row.table === table && row.id === id) ? { found: 1 } : undefined,
+              existingRows.some(row => row.table === table && row.id === id) ? { found: 1 } : null,
           };
         }
         throw new Error(`unexpected query in the sweep stub: ${query}`);
@@ -156,6 +159,12 @@ async function eventually(predicate: () => boolean): Promise<void> {
   }
 }
 
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>(done => { resolve = done; });
+  return { promise, resolve };
+}
+
 beforeEach(() => {
   previousDataDir = process.env.CLAUDE_MEM_DATA_DIR;
   dataDir = mkdtempSync(join(tmpdir(), 'claude-mem-row-cleanup-retry-'));
@@ -165,6 +174,7 @@ beforeEach(() => {
   deleteCalls = [];
   deleteAttempts = 0;
   failDeletes = false;
+  beforeDelete = null;
   recoveryListener = null;
 });
 
@@ -176,6 +186,240 @@ afterEach(() => {
 });
 
 describe('post-delete Chroma cleanup retry (#5664)', () => {
+  for (const stage of ['before-start', 'during-io']) {
+    it(`recovers a committed session delete when the worker exits ${stage}`, async () => {
+      const databasePath = join(dataDir, 'memory.db');
+      const store = new SessionStore(new Database(databasePath));
+      try {
+        store.db.exec(`
+          INSERT INTO sdk_sessions (id, content_session_id, memory_session_id, project, platform_source,
+            started_at, started_at_epoch, status)
+            VALUES (1, 'deleted-content', 'deleted-memory', 'owned-delete', 'claude', '2026-11-14', 1, 'completed');
+          INSERT INTO observations (id, memory_session_id, project, type, title, created_at, created_at_epoch)
+            VALUES (7, 'deleted-memory', 'owned-delete', 'discovery', 'removed observation', '2026-11-14', 1);
+          INSERT INTO session_summaries (id, memory_session_id, project, request, created_at, created_at_epoch)
+            VALUES (4, 'deleted-memory', 'owned-delete', 'removed summary', '2026-11-14', 1);
+          INSERT INTO user_prompts (id, session_db_id, content_session_id, prompt_number, prompt_text, created_at, created_at_epoch)
+            VALUES (3, 1, 'deleted-content', 1, 'removed prompt', '2026-11-14', 1);
+        `);
+        liveDocuments = [
+          { id: 'obs_7_narrative', doc_type: 'observation', sqlite_id: 7 },
+          { id: 'summary_4_request', doc_type: 'session_summary', sqlite_id: 4 },
+          { id: 'prompt_3', doc_type: 'user_prompt', sqlite_id: 3 },
+        ];
+
+        // The actual DELETE route commits in another process, then that worker
+        // exits before its cleanup promise can finish (or even start).
+        const child = Bun.spawnSync([process.execPath, '-e', `
+          import { Database } from 'bun:sqlite';
+          import { SessionStore } from ${JSON.stringify(new URL('../../../src/services/sqlite/SessionStore.ts', import.meta.url).href)};
+          import { DataRoutes } from ${JSON.stringify(new URL('../../../src/services/worker/http/routes/DataRoutes.ts', import.meta.url).href)};
+          const store = new SessionStore(new Database(${JSON.stringify(databasePath)}));
+          const chroma = { deleteRowDocuments: async () => {
+            process.stdout.write('CLEANUP_STARTED\\n');
+            await new Promise(() => {});
+          }};
+          const routes = new DataRoutes({}, {
+            getSessionStore: () => store, getCloudSync: () => null, getChromaSync: () => chroma,
+          }, { getSession: () => undefined }, { broadcast() {} }, {}, Date.now());
+          const handlers = new Map();
+          routes.setupRoutes({ get() {}, post() {}, delete(path, handler) { handlers.set(path, handler); } });
+          let status = 200;
+          handlers.get('/api/sessions/:platformSource/:contentSessionId')({
+            params: { platformSource: 'claude', contentSessionId: 'deleted-content' },
+            query: {}, path: '/api/sessions', get: () => undefined,
+          }, { status(code) { status = code; return this; }, json(body) {
+            process.stdout.write('RESULT:' + JSON.stringify({ status, body }) + '\\n'); return this;
+          }});
+          ${stage === 'during-io' ? 'await new Promise(resolve => setTimeout(resolve, 0));' : ''}
+          process.exit(0);
+        `], { env: { ...process.env, CLAUDE_MEM_DATA_DIR: dataDir }, stdout: 'pipe', stderr: 'pipe', timeout: 10_000 });
+        expect(child.exitCode).toBe(0);
+        const output = child.stdout.toString();
+        const result = output.split('\n').find(line => line.startsWith('RESULT:'));
+        expect(result).toBeDefined();
+        expect(JSON.parse(result!.slice('RESULT:'.length))).toMatchObject({ status: 200, body: {
+          success: true, deletedCounts: { observations: 1, summaries: 1, prompts: 1, toolUses: 0 },
+        } });
+        expect(output.includes('CLEANUP_STARTED')).toBe(stage === 'during-io');
+        for (const table of ['sdk_sessions', 'observations', 'session_summaries', 'user_prompts']) {
+          expect((store.db.query(`SELECT count(*) AS n FROM ${table}`).get() as { n: number }).n).toBe(0);
+        }
+
+        ChromaSyncState.resetCacheForTests();
+        expect(ChromaSyncState.getPendingRowDeletes()).toEqual([
+          { docType: 'observation', sqliteId: 7 },
+          { docType: 'session_summary', sqliteId: 4 },
+          { docType: 'user_prompt', sqliteId: 3 },
+        ]);
+        await sweepWith(store);
+        expect(deleteCalls).toEqual([['obs_7_narrative'], ['summary_4_request'], ['prompt_3']]);
+        expect(liveDocuments).toEqual([]);
+        expect(ChromaSyncState.getPendingRowDeletes()).toEqual([]);
+        await sweepWith(store);
+        expect(deleteCalls).toHaveLength(3);
+      } finally { store.db.close(); }
+    }, 20_000);
+  }
+
+  for (const firstFails of [false, true]) {
+    it(`keeps a second reservation of the same row after the first ${firstFails ? 'fails' : 'succeeds'}`, async () => {
+      const firstStarted = deferred();
+      const firstFinished = deferred();
+      const secondStarted = deferred();
+      const secondFinished = deferred();
+      const first = scheduleChromaRowCleanup({ deleteRowDocuments: async () => {
+        firstStarted.resolve();
+        await firstFinished.promise;
+        if (firstFails) throw new Error('first cleanup refused');
+      } }, [{ kind: 'observation', id: 7 }]);
+      await firstStarted.promise;
+      const second = scheduleChromaRowCleanup({ deleteRowDocuments: async () => {
+        secondStarted.resolve();
+        await secondFinished.promise;
+      } }, [{ kind: 'observation', id: '7' }]);
+      try {
+        firstFinished.resolve();
+        await first;
+        await secondStarted.promise;
+        ChromaSyncState.resetCacheForTests();
+        expect(ChromaSyncState.getPendingRowDeletes()).toEqual([{ docType: 'observation', sqliteId: 7 }]);
+        secondFinished.resolve();
+        await second;
+        ChromaSyncState.resetCacheForTests();
+        expect(ChromaSyncState.getPendingRowDeletes()).toEqual([]);
+      } finally {
+        firstFinished.resolve();
+        secondFinished.resolve();
+        await Promise.all([first, second]);
+      }
+    });
+  }
+
+  for (const failedAttempt of [1, 2]) {
+    it(`keeps a mixed duplicate batch durable if the worker exits before re-recording failed attempt ${failedAttempt}`, () => {
+      const child = Bun.spawnSync([process.execPath, '-e', `
+        import { ChromaSyncState } from ${JSON.stringify(new URL('../../../src/services/sync/ChromaSyncState.ts', import.meta.url).href)};
+        import { scheduleChromaRowCleanup } from ${JSON.stringify(new URL('../../../src/services/sync/chroma-row-cleanup.ts', import.meta.url).href)};
+        const mark = ChromaSyncState.markPendingRowDeletes.bind(ChromaSyncState);
+        let marks = 0;
+        ChromaSyncState.markPendingRowDeletes = rows => {
+          // Stop at the checkpoint boundary after the mixed batch, before a
+          // second write can hide a cleared reservation from the next worker.
+          if (++marks === 2) process.exit(0);
+          mark(rows);
+        };
+        let attempts = 0;
+        await scheduleChromaRowCleanup({ deleteRowDocuments: async () => {
+          if (++attempts === ${failedAttempt}) throw new Error('cleanup refused');
+        } }, [{ kind: 'observation', id: 7 }, { kind: 'observation', id: '7' }]);
+        throw new Error('checkpoint boundary was not reached');
+      `], { env: { ...process.env, CLAUDE_MEM_DATA_DIR: dataDir }, stdout: 'pipe', stderr: 'pipe', timeout: 10_000 });
+      expect(child.exitCode).toBe(0);
+      ChromaSyncState.resetCacheForTests();
+      expect(ChromaSyncState.getPendingRowDeletes()).toEqual([{ docType: 'observation', sqliteId: 7 }]);
+    });
+  }
+
+  it('starts the startup retry after an in-flight cleanup finishes, including its failure', async () => {
+    liveDocuments = [{ id: 'obs_7_narrative', doc_type: 'observation', sqlite_id: 7 }];
+    const started = deferred();
+    const finish = deferred();
+    const cleanup = scheduleChromaRowCleanup({ deleteRowDocuments: async () => {
+      started.resolve();
+      await finish.promise;
+      throw new Error('live cleanup refused');
+    } }, [{ kind: 'observation', id: 7 }]);
+    await started.promise;
+    const backfill = sweep();
+    try {
+      await Bun.sleep(0);
+      expect(deleteAttempts).toBe(0);
+      finish.resolve();
+      await Promise.all([cleanup, backfill]);
+      expect(deleteCalls).toEqual([['obs_7_narrative']]);
+      ChromaSyncState.resetCacheForTests();
+      expect(ChromaSyncState.getPendingRowDeletes()).toEqual([]);
+    } finally {
+      finish.resolve();
+      await Promise.all([cleanup, backfill]);
+    }
+  });
+
+  it('does not clear a reservation made while a retry is awaiting Chroma', async () => {
+    liveDocuments = [{ id: 'obs_7_narrative', doc_type: 'observation', sqlite_id: 7 }];
+    seedStateFile({ [PENDING_DELETES_KEY]: [{ docType: 'observation', sqliteId: 7 }] });
+    const retryStarted = deferred();
+    const retryFinished = deferred();
+    const cleanupStarted = deferred();
+    const cleanupFinished = deferred();
+    beforeDelete = async () => { retryStarted.resolve(); await retryFinished.promise; };
+    const backfill = sweep();
+    await retryStarted.promise;
+    const cleanup = scheduleChromaRowCleanup({ deleteRowDocuments: async () => {
+      cleanupStarted.resolve();
+      await cleanupFinished.promise;
+      throw new Error('later cleanup refused');
+    } }, [{ kind: 'observation', id: 7 }]);
+    try {
+      retryFinished.resolve();
+      await backfill;
+      await cleanupStarted.promise;
+      ChromaSyncState.resetCacheForTests();
+      expect(ChromaSyncState.getPendingRowDeletes()).toEqual([{ docType: 'observation', sqliteId: 7 }]);
+      cleanupFinished.resolve();
+      await cleanup;
+      ChromaSyncState.resetCacheForTests();
+      expect(ChromaSyncState.getPendingRowDeletes()).toEqual([{ docType: 'observation', sqliteId: 7 }]);
+      beforeDelete = null;
+      await sweep();
+      expect(ChromaSyncState.getPendingRowDeletes()).toEqual([]);
+      expect(deleteCalls).toEqual([['obs_7_narrative']]);
+    } finally {
+      retryFinished.resolve();
+      cleanupFinished.resolve();
+      await Promise.all([backfill, cleanup]);
+    }
+  });
+
+  it('skips live reservations before applying the retry batch limit', async () => {
+    const rows = Array.from({ length: 102 }, (_, index) => ({ docType: 'observation', sqliteId: index + 1 }));
+    liveDocuments = rows.map(row => ({ id: `obs_${row.sqliteId}_narrative`, doc_type: row.docType, sqlite_id: row.sqliteId }));
+    seedStateFile({ [PENDING_DELETES_KEY]: rows });
+    const retryStarted = deferred();
+    const retryFinished = deferred();
+    const cleanupStarted = deferred();
+    const cleanupFinished = deferred();
+    beforeDelete = async ids => {
+      if (ids.includes('obs_1_narrative')) { retryStarted.resolve(); await retryFinished.promise; }
+    };
+    const backfill = sweep();
+    await retryStarted.promise;
+    const chroma = new ChromaSync('claude-mem');
+    const cleanup = scheduleChromaRowCleanup({ deleteRowDocuments: async (docType, sqliteId) => {
+      cleanupStarted.resolve();
+      await cleanupFinished.promise;
+      return chroma.deleteRowDocuments(docType, sqliteId);
+    } }, rows.slice(1, 101).map(row => ({ kind: 'observation' as const, id: row.sqliteId })));
+    try {
+      retryFinished.resolve();
+      await backfill;
+      await cleanupStarted.promise;
+      // One hundred queued rows must not hide a recoverable row behind them.
+      expect(deleteCalls).toEqual([['obs_1_narrative'], ['obs_102_narrative']]);
+      ChromaSyncState.resetCacheForTests();
+      expect(ChromaSyncState.getPendingRowDeletes()).toEqual(rows.slice(1, 101));
+      cleanupFinished.resolve();
+      await cleanup;
+      expect(liveDocuments).toEqual([]);
+      expect(ChromaSyncState.getPendingRowDeletes()).toEqual([]);
+    } finally {
+      retryFinished.resolve();
+      cleanupFinished.resolve();
+      await Promise.all([backfill, cleanup]);
+    }
+  });
+
   it('drains a recorded cleanup on the next backfill sweep, then does not repeat it', async () => {
     liveDocuments = [{ id: 'obs_7_narrative', doc_type: 'observation', sqlite_id: 7 }];
     seedStateFile({ [PENDING_DELETES_KEY]: [{ docType: 'observation', sqliteId: 7 }] });
@@ -215,15 +459,15 @@ describe('post-delete Chroma cleanup retry (#5664)', () => {
     expect(ChromaSyncState.getPendingRowDeletes()).toEqual([]);
   });
 
-  it('records nothing when the cleanup succeeds, and never retries it', async () => {
+  it('clears its reservation when the cleanup succeeds, and never retries it', async () => {
     liveDocuments = [{ id: 'prompt_3', doc_type: 'user_prompt', sqlite_id: 3 }];
 
     await scheduleChromaRowCleanup(new ChromaSync('claude-mem'), [{ kind: 'prompt', id: 3 }]);
 
     expect(deleteCalls).toEqual([['prompt_3']]);
     expect(ChromaSyncState.getPendingRowDeletes()).toEqual([]);
-    // A successful cleanup does not touch the checkpoint at all.
-    expect(existsSync(statePath())).toBe(false);
+    ChromaSyncState.resetCacheForTests();
+    expect(ChromaSyncState.getPendingRowDeletes()).toEqual([]);
 
     await sweep();
     expect(deleteCalls).toEqual([['prompt_3']]);
