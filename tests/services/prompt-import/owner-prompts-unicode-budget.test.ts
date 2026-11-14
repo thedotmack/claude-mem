@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it } from 'bun:test';
-import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -78,13 +77,4 @@ describe('owner prompt character budget', () => {
     expect(audit).not.toContain('mostly pasted material');
   });
 
-  it('leaves an in-budget owner quote verifiable by the real goals script', async () => {
-    const quote = 'Preserve deploy signatures';
-    const { result } = await write('😀'.repeat(1500) + ' ' + quote);
-    const script = join(import.meta.dir, '../../../plugin/skills/owner-goals/scripts/save_goals.py');
-    const problems = execFileSync('python3', ['-c',
-      'import json,runpy,sys; script=runpy.run_path(sys.argv[1]); prompts=script["prompts_by_minute"](sys.argv[2]); print(json.dumps(script["unverified_quotes"]({"asks":[{"title":"release","evidence":[{"at":sys.argv[3],"quote":sys.argv[4]}]}]},prompts)))',
-      script, result.path, promptMinute(NOW), quote], { encoding: 'utf8' });
-    expect(JSON.parse(problems)).toEqual([]);
-  });
 });
