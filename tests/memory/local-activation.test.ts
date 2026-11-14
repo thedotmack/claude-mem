@@ -118,7 +118,9 @@ describe('reversible local activation', () => {
       expect(apply.status).toBe(0);
       for(const index of included) expect(readFileSync(path.join(f.targets[index],'scripts/worker-service.cjs'),'utf8')).toContain('sourceFingerprint');
       for(let index=0;index<f.targets.length;index++) if(!(included as readonly number[]).includes(index)) expect(existsSync(f.targets[index])).toBe(false);
-      expect(readFileSync(instruction,'utf8')).toContain('use plugin notes');
+      // Claude Code gets this text from the MCP server or the CLAUDE.md -> MY-RULES.md import chain; a CLAUDE.md block would be a second copy.
+      if(platform==='claude') expect(readFileSync(instruction,'utf8')).toBe(originalInstruction);
+      else expect(readFileSync(instruction,'utf8')).toContain('use plugin notes');
       expect(existsSync(unusedInstruction)).toBe(false);
       const backupRoot=path.join(f.workspace,'.agent-jobs/progressive-mem-search');
       const backup=path.join(backupRoot,readdirSync(backupRoot)[0]);

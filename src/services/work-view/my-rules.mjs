@@ -163,8 +163,12 @@ function strength(rule, now) {
 const SET_BY_ORDER = { owner: 0, approved: 1 };
 const lowerFirst = (value) => value.charAt(0).toLowerCase() + value.slice(1);
 
-/** Rules the owner set or approved that are on, as the Markdown file Claude Code imports. */
-export function renderRulesFile(rules, now = Date.now()) {
+/**
+ * Rules the owner set or approved that are on, as the Markdown file Claude Code imports.
+ * `importLine` (the RULES-AND-TOOLS.md import) goes last, so the rules and how to use
+ * claude-mem's tools arrive together through the one line in the user's CLAUDE.md.
+ */
+export function renderRulesFile(rules, now = Date.now(), { importLine } = {}) {
   const loaded = rules.filter((rule) => rule.status === 'on' && (rule.setBy === 'owner' || rule.setBy === 'approved'));
   const scopes = new Map();
   for (const rule of loaded) {
@@ -179,5 +183,6 @@ export function renderRulesFile(rules, now = Date.now()) {
     scope.rules.sort((a, b) => SET_BY_ORDER[a.setBy] - SET_BY_ORDER[b.setBy] || strength(b, now) - strength(a, now));
     for (const rule of scope.rules) lines.push(rule.when ? `- When ${rule.when}: ${lowerFirst(rule.then)}` : `- ${rule.then}`);
   }
+  if (importLine) lines.push('', importLine);
   return { markdown: `${lines.join('\n')}\n`, approvedCount: loaded.length };
 }
