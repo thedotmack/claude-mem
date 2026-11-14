@@ -80,7 +80,7 @@ Refreshing is best effort. If the worker is stopped or slow, Claude-Mem leaves t
 claude-mem grok uninstall
 ```
 
-This removes the rules file, the folder's refresh registration and the exclude line. It leaves your other rules, your memory, and the plugin's capture hooks alone.
+This removes the rules file, the folder's refresh registration and the exclude line. If another folder in the same repository still has it installed, the exclude line stays until that folder is uninstalled too. Running it in a folder that never installed changes nothing. It leaves your other rules, your memory, and the plugin's capture hooks alone.
 
 ## Limits
 

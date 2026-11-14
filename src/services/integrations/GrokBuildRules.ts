@@ -4,15 +4,10 @@ import { execFileSync } from 'child_process';
 import { logger } from '../../utils/logger.js';
 import { toBmpSafe } from '../../utils/bmp-safe.js';
 import { getProjectContext } from '../../utils/project-name.js';
-import { writeTextFileAtomic } from '../../shared/atomic-json.js';
+import { parseJsonWithBom, writeJsonFileAtomic, writeTextFileAtomic } from '../../shared/atomic-json.js';
 import { resolveDataDir } from '../../shared/data-dir.js';
 import { workerHttpRequest } from '../../shared/worker-utils.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
-import {
-  readCursorRegistry,
-  registerCursorProject,
-  unregisterCursorProject,
-} from '../../utils/cursor-utils.js';
 
 /**
  * Grok Build does not inject SessionStart or UserPromptSubmit hook output into
@@ -27,8 +22,22 @@ const RULES_RELATIVE = path.join('.grok', 'rules', 'claude-mem-context.md');
 // Anchored to no directory, so it also matches when Grok runs below the repo root.
 const GIT_EXCLUDE_LINE = '**/.grok/rules/claude-mem-context.md';
 
-// Registry of workspaces that opted in. Same shape as the Cursor registry.
+// Folders that opted in, keyed by folder: several folders can share a project
+// name (subfolders of one repo, checkouts of one remote) and each keeps its own entry.
+type GrokRegistry = Record<string, { projectName: string; installedAt: string }>;
+
 const registryFile = (): string => path.join(resolveDataDir(), 'grok-projects.json');
+const registryKey = (workspaceRoot: string): string => path.resolve(workspaceRoot);
+
+function readRegistry(): GrokRegistry {
+  try {
+    const file = registryFile();
+    return existsSync(file) ? parseJsonWithBom<GrokRegistry>(readFileSync(file, 'utf-8')) : {};
+  } catch (error) {
+    logger.warn('GROK_BUILD', 'Could not read the Grok registry, treating it as empty', {}, error instanceof Error ? error : new Error(String(error)));
+    return {};
+  }
+}
 
 export function grokRulesFile(workspaceRoot: string): string {
   return path.join(workspaceRoot, RULES_RELATIVE);
@@ -94,8 +103,12 @@ export function installGrokBuildContext(workspaceRoot: string): { ok: boolean; e
   if (!shouldTrackProject(workspaceRoot)) {
     return { ok: false, excluded: false, message: 'claude-mem does not track this folder.' };
   }
-  const projectName = getProjectContext(workspaceRoot).primary;
-  registerCursorProject(registryFile(), projectName, workspaceRoot);
+  const registry = readRegistry();
+  registry[registryKey(workspaceRoot)] = {
+    projectName: getProjectContext(workspaceRoot).primary,
+    installedAt: new Date().toISOString(),
+  };
+  writeJsonFileAtomic(registryFile(), registry);
   // A repeat install must not replace real notes with the placeholder while the worker is down.
   if (!existsSync(grokRulesFile(workspaceRoot))) {
     writeTextFileAtomic(grokRulesFile(workspaceRoot), renderRules(''));
@@ -103,47 +116,69 @@ export function installGrokBuildContext(workspaceRoot: string): { ok: boolean; e
   return { ok: true, excluded: setGitExclude(workspaceRoot, true) };
 }
 
-/** Fill the file from existing memory right after install. Failure leaves the placeholder. */
+/** Fill the file from existing memory right after install. Failure leaves the file as it was. */
 export async function refreshGrokBuildContext(
   workspaceRoot: string,
   fetchCtx: (workspaceRoot: string) => Promise<string> = fetchContext,
 ): Promise<boolean> {
   const context = await fetchCtx(workspaceRoot);
   if (!context.trim()) return false;
+  // The fetch can take a while. If the folder was uninstalled meanwhile, writing
+  // now would bring the file (and the notes) back after the user removed them.
+  if (!readRegistry()[registryKey(workspaceRoot)] || !existsSync(grokRulesFile(workspaceRoot))) return false;
   writeTextFileAtomic(grokRulesFile(workspaceRoot), renderRules(context));
   return true;
 }
 
-/** Removes only this integration's file, registry entry and exclude line. */
+/**
+ * Removes this folder's file, registry entry and exclude line, and nothing else.
+ * A folder that never installed is left alone, and the exclude line stays while
+ * another installed folder in the same repo still relies on it.
+ */
 export function uninstallGrokBuildContext(workspaceRoot: string): void {
   const file = grokRulesFile(workspaceRoot);
+  const key = registryKey(workspaceRoot);
+  const registry = readRegistry();
+  if (!registry[key] && !existsSync(file)) return;
+
+  // Unregister first so a refresh already in flight sees it and does not rewrite the file.
+  delete registry[key];
+  writeJsonFileAtomic(registryFile(), registry);
   if (existsSync(file)) unlinkSync(file);
   // Tidy the folders install created, but never a folder that holds anything else.
   for (const dir of [path.dirname(file), path.dirname(path.dirname(file))]) {
     try { rmdirSync(dir); } catch { break; }
   }
-  unregisterCursorProject(registryFile(), getProjectContext(workspaceRoot).primary);
-  setGitExclude(workspaceRoot, false);
+
+  const exclude = gitExcludeFile(workspaceRoot);
+  const othersNeedIt = exclude !== null && Object.keys(registry).some(other =>
+    existsSync(grokRulesFile(other)) && gitExcludeFile(other) === exclude);
+  if (!othersNeedIt) setGitExclude(workspaceRoot, false);
 }
 
 export function grokBuildContextStatus(workspaceRoot: string): { installed: boolean; registered: boolean; file: string } {
   const file = grokRulesFile(workspaceRoot);
-  const registered = Boolean(readCursorRegistry(registryFile())[getProjectContext(workspaceRoot).primary]);
-  return { installed: existsSync(file), registered, file };
+  return { installed: existsSync(file), registered: Boolean(readRegistry()[registryKey(workspaceRoot)]), file };
 }
 
 /**
- * Worker hook, called after a session summary is stored. Only workspaces that
- * ran `claude-mem grok install` are touched, and nothing is retried or queued:
- * a failed refresh leaves the previous file in place until the next summary.
+ * Worker hook, called after a session summary is stored. Only folders that ran
+ * `claude-mem grok install` are touched, and nothing is retried or queued: a
+ * failed refresh leaves the previous file in place until the next summary.
  */
 export async function updateGrokContextForProject(
   projectName: string,
   fetchCtx?: (workspaceRoot: string) => Promise<string>,
 ): Promise<void> {
-  const entry = readCursorRegistry(registryFile())[projectName];
-  if (!entry || !existsSync(grokRulesFile(entry.workspacePath))) return;
-  await refreshGrokBuildContext(entry.workspacePath, fetchCtx);
+  for (const [workspaceRoot, entry] of Object.entries(readRegistry())) {
+    if (entry.projectName !== projectName || !existsSync(grokRulesFile(workspaceRoot))) continue;
+    try {
+      await refreshGrokBuildContext(workspaceRoot, fetchCtx);
+    } catch (error) {
+      // One folder failing must not stop the others.
+      logger.warn('GROK_BUILD', 'Context refresh failed', { workspaceRoot }, error instanceof Error ? error : new Error(String(error)));
+    }
+  }
 }
 
 export async function handleGrokCommand(subcommand: string | undefined): Promise<number> {
@@ -168,7 +203,7 @@ export async function handleGrokCommand(subcommand: string | undefined): Promise
     }
     case 'uninstall':
       uninstallGrokBuildContext(cwd);
-      console.log('Removed the claude-mem rules file, registry entry and exclude line for this folder.');
+      console.log('Removed the claude-mem rules file, registry entry and exclude line for this folder (if it was installed).');
       return 0;
     case 'status': {
       const s = grokBuildContextStatus(cwd);

@@ -3,6 +3,7 @@ import { execFileSync } from 'child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
+import { getProjectContext } from '../../src/utils/project-name.js';
 import {
   grokBuildContextStatus,
   grokRulesFile,
@@ -98,6 +99,32 @@ describe('uninstall', () => {
   test('is safe when nothing was installed', () => {
     expect(() => uninstallGrokBuildContext(workspace)).not.toThrow();
   });
+
+  test('keeps the exclude line while another folder in the repo still uses it', () => {
+    const sub = path.join(workspace, 'packages', 'app');
+    mkdirSync(sub, { recursive: true });
+    installGrokBuildContext(workspace);
+    installGrokBuildContext(sub);
+
+    uninstallGrokBuildContext(sub);
+    expect(readFileSync(excludeFile(), 'utf-8')).toContain(EXCLUDE_LINE);
+    expect(grokBuildContextStatus(workspace)).toMatchObject({ installed: true, registered: true });
+    expect(git('status', '--porcelain', '-uall')).not.toContain('claude-mem-context.md');
+
+    uninstallGrokBuildContext(workspace);
+    expect(readFileSync(excludeFile(), 'utf-8')).not.toContain(EXCLUDE_LINE);
+  });
+
+  test('a folder that never installed cannot remove another folder\'s protection or registration', () => {
+    const sub = path.join(workspace, 'packages', 'app');
+    mkdirSync(sub, { recursive: true });
+    installGrokBuildContext(workspace);
+
+    uninstallGrokBuildContext(sub);
+
+    expect(readFileSync(excludeFile(), 'utf-8')).toContain(EXCLUDE_LINE);
+    expect(grokBuildContextStatus(workspace)).toMatchObject({ installed: true, registered: true });
+  });
 });
 
 describe('refresh', () => {
@@ -116,7 +143,7 @@ describe('refresh', () => {
     const filesBefore = readdirSync(path.dirname(grokRulesFile(workspace)));
 
     expect(await refreshGrokBuildContext(workspace, async () => '   ')).toBe(false);
-    await expect(updateGrokContextForProject('my project', down)).rejects.toThrow('worker down');
+    await expect(updateGrokContextForProject('my project', down)).resolves.toBeUndefined();
 
     expect(readFileSync(grokRulesFile(workspace), 'utf-8')).toBe(before);
     expect(readdirSync(path.dirname(grokRulesFile(workspace)))).toEqual(filesBefore);
@@ -127,6 +154,33 @@ describe('refresh', () => {
     await updateGrokContextForProject('some-other-project', async () => { called = true; return 'x'; });
     expect(called).toBe(false);
     expect(existsSync(grokRulesFile(workspace))).toBe(false);
+  });
+
+  test('every installed folder of one project keeps its own registration and refresh', async () => {
+    const sub = path.join(workspace, 'packages', 'app');
+    mkdirSync(sub, { recursive: true });
+    installGrokBuildContext(workspace);
+    installGrokBuildContext(sub);
+    expect(grokBuildContextStatus(workspace).registered).toBe(true);
+    expect(grokBuildContextStatus(sub).registered).toBe(true);
+
+    const seen: string[] = [];
+    for (const dir of [workspace, sub]) {
+      await updateGrokContextForProject(getProjectContext(dir).primary, async (root) => { seen.push(root); return `notes for ${root}`; });
+    }
+    expect(seen).toContain(workspace);
+    expect(seen).toContain(sub);
+    expect(readFileSync(grokRulesFile(sub), 'utf-8')).toContain(`notes for ${sub}`);
+  });
+
+  test('a refresh in flight when the folder is uninstalled does not bring the file back', async () => {
+    installGrokBuildContext(workspace);
+    const written = await refreshGrokBuildContext(workspace, async () => {
+      uninstallGrokBuildContext(workspace);
+      return 'late notes';
+    });
+    expect(written).toBe(false);
+    expect(existsSync(path.join(workspace, '.grok'))).toBe(false);
   });
 
   test('stops refreshing once the user deletes the file', async () => {
