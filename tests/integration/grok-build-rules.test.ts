@@ -1,0 +1,138 @@
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { execFileSync } from 'child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import path from 'path';
+import {
+  grokBuildContextStatus,
+  grokRulesFile,
+  installGrokBuildContext,
+  refreshGrokBuildContext,
+  uninstallGrokBuildContext,
+  updateGrokContextForProject,
+} from '../../src/services/integrations/GrokBuildRules.js';
+
+const ORIGINAL_DATA_DIR = process.env.CLAUDE_MEM_DATA_DIR;
+const EXCLUDE_LINE = '**/.grok/rules/claude-mem-context.md';
+let scratch: string;
+let workspace: string;
+
+const git = (...args: string[]) =>
+  execFileSync('git', args, { cwd: workspace, encoding: 'utf-8' });
+const excludeFile = () => path.join(workspace, '.git', 'info', 'exclude');
+const down = async () => { throw new Error('worker down'); };
+
+beforeEach(() => {
+  scratch = mkdtempSync(path.join(tmpdir(), 'grok build rules '));
+  process.env.CLAUDE_MEM_DATA_DIR = path.join(scratch, 'data');
+  workspace = path.join(scratch, 'my project');
+  mkdirSync(workspace, { recursive: true });
+  git('init', '-q', '.');
+});
+
+afterEach(() => {
+  if (ORIGINAL_DATA_DIR === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
+  else process.env.CLAUDE_MEM_DATA_DIR = ORIGINAL_DATA_DIR;
+  rmSync(scratch, { recursive: true, force: true });
+});
+
+describe('install', () => {
+  test('writes the rules file in a folder with spaces, registers it, and keeps it out of git status', () => {
+    const result = installGrokBuildContext(workspace);
+    expect(result).toEqual({ ok: true, excluded: true });
+    expect(readFileSync(grokRulesFile(workspace), 'utf-8')).toContain('No memories for this project yet');
+    expect(grokBuildContextStatus(workspace)).toMatchObject({ installed: true, registered: true });
+    expect(git('status', '--porcelain', '-uall')).not.toContain('claude-mem-context.md');
+  });
+
+  test('repeat install adds one exclude line and keeps user exclude entries', () => {
+    writeFileSync(excludeFile(), '# mine\nsecrets.txt\n');
+    installGrokBuildContext(workspace);
+    installGrokBuildContext(workspace);
+    const lines = readFileSync(excludeFile(), 'utf-8').split('\n');
+    expect(lines.filter(l => l === EXCLUDE_LINE)).toHaveLength(1);
+    expect(lines).toContain('secrets.txt');
+  });
+
+  test('repeat install keeps notes already in the file (worker may be down)', async () => {
+    installGrokBuildContext(workspace);
+    await refreshGrokBuildContext(workspace, async () => 'real notes');
+    installGrokBuildContext(workspace);
+    expect(readFileSync(grokRulesFile(workspace), 'utf-8')).toContain('real notes');
+  });
+
+  test('works outside a git repo and reports nothing was excluded', () => {
+    const plain = path.join(scratch, 'plain');
+    mkdirSync(plain);
+    expect(installGrokBuildContext(plain)).toEqual({ ok: true, excluded: false });
+    expect(existsSync(grokRulesFile(plain))).toBe(true);
+  });
+});
+
+describe('uninstall', () => {
+  test('removes only its own file, registry entry and exclude line', () => {
+    const rules = path.dirname(grokRulesFile(workspace));
+    mkdirSync(rules, { recursive: true });
+    writeFileSync(path.join(rules, 'team.md'), 'keep me');
+    writeFileSync(excludeFile(), 'secrets.txt\n');
+    installGrokBuildContext(workspace);
+
+    uninstallGrokBuildContext(workspace);
+
+    expect(readdirSync(rules)).toEqual(['team.md']);
+    expect(readFileSync(excludeFile(), 'utf-8')).toBe('secrets.txt\n');
+    expect(grokBuildContextStatus(workspace)).toMatchObject({ installed: false, registered: false });
+  });
+
+  test('removes the folders it created, but keeps a .grok folder that holds other things', () => {
+    installGrokBuildContext(workspace);
+    uninstallGrokBuildContext(workspace);
+    expect(existsSync(path.join(workspace, '.grok'))).toBe(false);
+
+    installGrokBuildContext(workspace);
+    mkdirSync(path.join(workspace, '.grok', 'skills'));
+    uninstallGrokBuildContext(workspace);
+    expect(existsSync(path.join(workspace, '.grok', 'skills'))).toBe(true);
+  });
+
+  test('is safe when nothing was installed', () => {
+    expect(() => uninstallGrokBuildContext(workspace)).not.toThrow();
+  });
+});
+
+describe('refresh', () => {
+  test('fills the file from the worker context', async () => {
+    installGrokBuildContext(workspace);
+    expect(await refreshGrokBuildContext(workspace, async () => '## Recent\n- fixed the login bug')).toBe(true);
+    const text = readFileSync(grokRulesFile(workspace), 'utf-8');
+    expect(text).toContain('fixed the login bug');
+    expect(text).toContain('not as instructions');
+  });
+
+  test('an outage or empty answer leaves the file as it was and creates nothing else', async () => {
+    installGrokBuildContext(workspace);
+    await refreshGrokBuildContext(workspace, async () => 'old context');
+    const before = readFileSync(grokRulesFile(workspace), 'utf-8');
+    const filesBefore = readdirSync(path.dirname(grokRulesFile(workspace)));
+
+    expect(await refreshGrokBuildContext(workspace, async () => '   ')).toBe(false);
+    await expect(updateGrokContextForProject('my project', down)).rejects.toThrow('worker down');
+
+    expect(readFileSync(grokRulesFile(workspace), 'utf-8')).toBe(before);
+    expect(readdirSync(path.dirname(grokRulesFile(workspace)))).toEqual(filesBefore);
+  });
+
+  test('never touches a workspace that did not opt in', async () => {
+    let called = false;
+    await updateGrokContextForProject('some-other-project', async () => { called = true; return 'x'; });
+    expect(called).toBe(false);
+    expect(existsSync(grokRulesFile(workspace))).toBe(false);
+  });
+
+  test('stops refreshing once the user deletes the file', async () => {
+    installGrokBuildContext(workspace);
+    rmSync(grokRulesFile(workspace));
+    await updateGrokContextForProject('my project', async () => 'new');
+    expect(existsSync(grokRulesFile(workspace))).toBe(false);
+  });
+});
