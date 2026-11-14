@@ -220,9 +220,11 @@ export async function updateGrokContextForProject(
   }
 }
 
-export async function handleGrokCommand(subcommand: string | undefined): Promise<number> {
+export async function handleGrokCommand(subcommand: string | undefined, rest: string[] = []): Promise<number> {
   const cwd = process.cwd();
-  switch (subcommand) {
+  // `grok uninstall --help` must print usage, never run the uninstall.
+  const wantsHelp = [subcommand, ...rest].some(arg => arg === '--help' || arg === '-h');
+  switch (wantsHelp ? undefined : subcommand) {
     case 'install': {
       const result = installGrokBuildContext(cwd);
       if (!result.ok) {

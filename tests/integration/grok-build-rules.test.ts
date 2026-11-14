@@ -7,6 +7,7 @@ import { getProjectContext } from '../../src/utils/project-name.js';
 import {
   grokBuildContextStatus,
   grokRulesFile,
+  handleGrokCommand,
   installGrokBuildContext,
   refreshGrokBuildContext,
   uninstallGrokBuildContext,
@@ -94,6 +95,23 @@ describe('uninstall', () => {
     mkdirSync(path.join(workspace, '.grok', 'skills'));
     uninstallGrokBuildContext(workspace);
     expect(existsSync(path.join(workspace, '.grok', 'skills'))).toBe(true);
+  });
+
+  test('--help or -h after uninstall prints usage and removes nothing', async () => {
+    installGrokBuildContext(workspace);
+    const cwd = process.cwd();
+    const log = console.log;
+    console.log = () => {};
+    try {
+      process.chdir(workspace);
+      expect(await handleGrokCommand('uninstall', ['--help'])).toBe(0);
+      expect(await handleGrokCommand('uninstall', ['-h'])).toBe(0);
+    } finally {
+      process.chdir(cwd);
+      console.log = log;
+    }
+    expect(existsSync(grokRulesFile(workspace))).toBe(true);
+    expect(grokBuildContextStatus(workspace).registered).toBe(true);
   });
 
   test('is safe when nothing was installed', () => {

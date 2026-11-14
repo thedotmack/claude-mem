@@ -2294,7 +2294,7 @@ export async function main() {
     }
 
     case 'grok': {
-      process.exit(await handleGrokCommand(process.argv[3]));
+      process.exit(await handleGrokCommand(process.argv[3], process.argv.slice(4)));
       break;
     }
 

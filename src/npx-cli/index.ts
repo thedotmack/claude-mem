@@ -171,7 +171,7 @@ const HELP_AWARE_COMMANDS = new Set([
   '', 'install', 'update', 'upgrade', 'uninstall', 'remove', 'repair', 'prune', 'start', 'stop', 'restart',
   'adopt', 'cleanup',
   'memory', 'telemetry', 'project', 'backup', 'restore', 'server', 'worker', 'transcript',
-  'gemini', 'kimi', 'devin', 'antigravity-cli', 'pi',
+  'gemini', 'kimi', 'devin', 'antigravity-cli', 'pi', 'grok',
 ]);
 
 async function main(): Promise<void> {
@@ -326,7 +326,7 @@ async function main(): Promise<void> {
 
     case 'grok': {
       const { handleGrokCommand } = await import('../services/integrations/GrokBuildRules.js');
-      process.exit(await handleGrokCommand(args[1]?.toLowerCase()));
+      process.exit(await handleGrokCommand(args[1]?.toLowerCase(), args.slice(2)));
     }
 
     case 'worker': {
