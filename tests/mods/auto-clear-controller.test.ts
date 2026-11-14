@@ -49,6 +49,24 @@ const tool = (name: string, text = 'ok', extra: Partial<{ agentId: string; isErr
   tool: name, text, denied: false, isError: false, ...extra,
 });
 
+/** Hold one host response after it has sampled the old conversation. */
+function holdRead(host: AutoClearHost, method: 'settings' | 'contextPercent' | 'isInteractive') {
+  const read = host[method];
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  Object.assign(host, {
+    [method]: async () => {
+      const value = await read();
+      entered();
+      await gate;
+      return value;
+    },
+  });
+  return { started, release };
+}
+
 describe('auto-clear controller', () => {
   it('does nothing below the threshold', async () => {
     const { host, calls, notes, flush } = fakeHost({ percent: 32 });
@@ -273,6 +291,104 @@ describe('auto-clear controller', () => {
     controller.onConversationEnd(); // the person's /clear lands first
     await flush();
     expect(calls).toEqual([]);
+  });
+
+  for (const method of ['settings', 'contextPercent', 'isInteractive'] as const) {
+    for (const event of ['tool', 'turn'] as const) {
+      for (const transition of ['conversation end', 'turn start'] as const) {
+        it(`ignores an old ${event} ${method} response after ${transition}`, async () => {
+          const { host, calls, notes, state, flush } = fakeHost({ percent: 50 });
+          const controller = new AutoClearController(host);
+          const blocked = holdRead(host, method);
+          const pending = event === 'tool'
+            ? controller.onToolCallEnd(tool('Read'))
+            : controller.onTurnEnd(answered);
+          await blocked.started;
+          if (transition === 'conversation end') controller.onConversationEnd();
+          else controller.onTurnStart();
+          blocked.release();
+          const result = await pending;
+          if (event === 'tool') expect(result).toBeNull();
+          await flush();
+          expect(calls).toEqual([]);
+          expect(notes).toEqual([]);
+
+          // Dropping a stale response must not pause or disable the current turn.
+          state.percent = 10;
+          expect(await controller.onToolCallEnd(tool('Read'))).toBeNull();
+          state.percent = 40;
+          expect(await controller.onToolCallEnd(tool('Edit'))).toContain('work_state_write');
+          await controller.onToolCallEnd(tool(WRITE, SAVED));
+          await controller.onTurnEnd(answered);
+          await flush();
+          expect(calls).toEqual(['clear', 'user:continue']);
+        });
+      }
+    }
+
+    for (const ending of [{ isAborted: true, reason: 'aborted' }, { isAborted: false, reason: 'error' }]) {
+      it(`ignores an old tool ${method} response after the turn was ${ending.reason}`, async () => {
+        const { host, calls, notes, flush } = fakeHost({ percent: 50 });
+        const controller = new AutoClearController(host);
+        const blocked = holdRead(host, method);
+        const pending = controller.onToolCallEnd(tool('Read'));
+        await blocked.started;
+        await controller.onTurnEnd(ending);
+        blocked.release();
+        expect(await pending).toBeNull();
+        await flush();
+        expect(calls).toEqual([]);
+        expect(notes).toEqual([]);
+        controller.onTurnStart();
+        expect(await controller.onToolCallEnd(tool('Read'))).toContain('work_state_write');
+      });
+    }
+
+    it(`uses the turn-end reading after an old tool ${method} response`, async () => {
+      const { host, calls, flush } = fakeHost({ percent: 50 });
+      const controller = new AutoClearController(host);
+      const blocked = holdRead(host, method);
+      const pending = controller.onToolCallEnd(tool('Read'));
+      await blocked.started;
+      const ending = controller.onTurnEnd(answered);
+      blocked.release();
+      expect(await pending).toBeNull();
+      await ending;
+      await flush();
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toStartWith('prompt:This conversation now uses 50%');
+    });
+  }
+
+  it('drops the follow-up save prompt when its context read outlives the conversation', async () => {
+    const { host, calls, state, flush } = fakeHost({ percent: 40 });
+    const controller = new AutoClearController(host);
+    await controller.onToolCallEnd(tool('Bash')); // asks for a save, but no save follows
+    const blocked = holdRead(host, 'contextPercent');
+    const pending = controller.onTurnEnd(answered);
+    await blocked.started;
+    controller.onConversationEnd();
+    state.percent = 10;
+    blocked.release();
+    await pending;
+    await flush();
+    expect(calls).toEqual([]);
+    expect(await controller.onToolCallEnd(tool('Read'))).toBeNull();
+  });
+
+  it('keeps a pending main-turn reading when a subagent turn ends', async () => {
+    const { host, calls, flush } = fakeHost({ percent: 40 });
+    const controller = new AutoClearController(host);
+    const blocked = holdRead(host, 'contextPercent');
+    const pending = controller.onToolCallEnd(tool('Read'));
+    await blocked.started;
+    await controller.onTurnEnd({ ...answered, agentId: 'subagent' });
+    blocked.release();
+    expect(await pending).toContain('work_state_write');
+    await controller.onToolCallEnd(tool(WRITE, SAVED));
+    await controller.onTurnEnd(answered);
+    await flush();
+    expect(calls).toEqual(['clear', 'user:continue']);
   });
 
   it('drops a pending clear when the person clears or resumes first, so the new conversation is left alone', async () => {
