@@ -481,11 +481,14 @@ export class ChromaSync {
   private static corruptSegmentBatches = new Map<string, Set<string>>();
 
   /**
-   * In-flight collection drops, per collection. Deduplicates concurrent
-   * corrupt-segment drop requests so chroma_delete_collection is not invoked
-   * multiple times simultaneously (#6113).
+   * The drop currently running for a collection, if any (#6113).
+   * droppedCollections is only marked once the delete resolves, so parallel
+   * sweeps failing on the same corrupt segment all passed that check and each
+   * queued its own delete against chroma-mcp. Concurrent callers join this
+   * promise instead: one drop per collection at a time, and its outcome —
+   * success or rejection — is every joined caller's outcome.
    */
-  private static inFlightDrops = new Map<string, Promise<void>>();
+  private static inFlightCollectionDrops = new Map<string, Promise<void>>();
 
   /**
    * Collections dropped once already in this process. If the rebuilt
@@ -673,15 +676,7 @@ export class ChromaSync {
       return;
     }
 
-    let dropPromise = ChromaSync.inFlightDrops.get(this.collectionName);
-    if (!dropPromise) {
-      dropPromise = this.dropCorruptCollection(cause).finally(() => {
-        ChromaSync.inFlightDrops.delete(this.collectionName);
-      });
-      ChromaSync.inFlightDrops.set(this.collectionName, dropPromise);
-    }
-
-    await dropPromise;
+    await this.dropCorruptCollection(cause);
     throw new ChromaCorruptCollectionError(
       `Corrupt collection ${this.collectionName} dropped; rebuilding it from SQLite`,
       cause
@@ -710,8 +705,32 @@ export class ChromaSync {
    * delete that keeps failing cannot restart the backfill sweep forever.
    * chroma-mcp serves requests one at a time, so the rebuild's writes only
    * run after a slow delete has finished.
+   *
+   * A drop runs at most once per collection at a time (#6113): the backfill
+   * sweep writes projects in parallel, so many batches can confirm the same
+   * corrupt segment while the first delete is still in flight. Those callers
+   * join the in-flight drop here instead of queueing a delete each — on a
+   * large collection the queued deletes were what drove chroma-mcp to a
+   * 312 GB footprint. The entry is cleared as the drop settles, so a batch
+   * that fails later can still retry a delete that never landed.
    */
   private async dropCorruptCollection(cause: Error): Promise<void> {
+    const inFlight = ChromaSync.inFlightCollectionDrops.get(this.collectionName);
+    if (inFlight) {
+      await inFlight;
+      return;
+    }
+    let drop: Promise<void>;
+    drop = this.performCorruptCollectionDrop(cause).finally(() => {
+      if (ChromaSync.inFlightCollectionDrops.get(this.collectionName) === drop) {
+        ChromaSync.inFlightCollectionDrops.delete(this.collectionName);
+      }
+    });
+    ChromaSync.inFlightCollectionDrops.set(this.collectionName, drop);
+    await drop;
+  }
+
+  private async performCorruptCollectionDrop(cause: Error): Promise<void> {
     const chromaMcp = ChromaMcpManager.getInstance();
     let documentCount: number | null = null;
     try {

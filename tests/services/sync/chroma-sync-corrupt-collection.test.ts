@@ -35,7 +35,7 @@ const statics = ChromaSync as unknown as {
   backfillInProgress: boolean;
   collectionGeneration: number;
   corruptSegmentBatches: Map<string, Set<string>>;
-  inFlightDrops: Map<string, Promise<void>>;
+  inFlightCollectionDrops: Map<string, Promise<void>>;
   droppedCollections: Set<string>;
   failedDropAttempts: Map<string, number>;
   lastCollectionDrop: unknown;
@@ -81,7 +81,7 @@ beforeEach(() => {
   statics.backfillStore = null;
   statics.backfillInProgress = false;
   statics.corruptSegmentBatches.clear();
-  statics.inFlightDrops?.clear();
+  statics.inFlightCollectionDrops?.clear();
   statics.droppedCollections.clear();
   statics.failedDropAttempts.clear();
   statics.lastCollectionDrop = null;
@@ -249,13 +249,14 @@ describe('ChromaSync corrupt-collection handling (#3202)', () => {
     expect(calls('chroma_delete_collection')).toBe(1);
   });
 
-  it('deduplicates concurrent corrupt segment drops so delete runs at most once (#6113)', async () => {
+  it('runs only one drop when parallel sweeps confirm the same corrupt segment together (#6113)', async () => {
+    // The incident: ~19 parallel project backfills confirmed the same corrupt
+    // segment while the first delete was still in flight, and each queued its
+    // own delete against chroma-mcp. The delete here stays in flight until
+    // every writer has reached the drop path.
     let deleteStarted = false;
-    let finishDelete: () => void = () => {};
-    const deleteGate = new Promise<void>((resolve) => {
-      finishDelete = resolve;
-    });
-
+    let releaseDelete: () => void = () => {};
+    const deleteGate = new Promise<void>((resolve) => { releaseDelete = resolve; });
     installCallTool(async (tool) => {
       if (tool === 'chroma_add_documents') throw CORRUPT_SEGMENT_ERROR;
       if (tool === 'chroma_delete_collection') {
@@ -265,35 +266,105 @@ describe('ChromaSync corrupt-collection handling (#3202)', () => {
       }
       return {};
     });
+    const confirmer = new ChromaSync('claude-mem');
+    expect(await confirmer.addDocuments([makeDoc('d0')])).toBe(0);
 
-    const sync1 = new ChromaSync('claude-mem');
-    const sync2 = new ChromaSync('claude-mem');
+    const writers = Array.from({ length: 10 }, () => new ChromaSync('claude-mem'));
+    const writes = Promise.allSettled(writers.map((sync, i) => sync.addDocuments([makeDoc(`c${i + 1}`)])));
 
-    // Confirm batch 1 on sync1
-    await sync1.addDocuments([makeDoc('d0')]);
-
-    // Fire 10 concurrent writes that fail with corrupt segment while delete is in flight
-    const concurrentWrites = Promise.allSettled(
-      Array.from({ length: 10 }, (_, i) => sync2.addDocuments([makeDoc(`d${i + 1}`)]))
-    );
-
-    // Wait until delete is initiated
-    for (let i = 0; i < 50 && !deleteStarted; i++) {
+    for (let i = 0; i < 100 && !deleteStarted; i++) {
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
     expect(deleteStarted).toBe(true);
-    // At this point, delete is in flight; release it
-    finishDelete();
-
-    const results = await concurrentWrites;
-    // Exactly 1 drop call was executed
+    // Let every concurrent writer arrive at the drop path before releasing.
+    await new Promise((resolve) => setTimeout(resolve, 50));
     expect(calls('chroma_delete_collection')).toBe(1);
 
-    // Every concurrent write that reached the drop threw ChromaCorruptCollectionError
-    const corruptErrors = results.filter(
-      (r) => r.status === 'rejected' && r.reason instanceof ChromaCorruptCollectionError
-    );
-    expect(corruptErrors.length).toBe(10);
+    releaseDelete();
+    const results = await writes;
+
+    expect(calls('chroma_delete_collection')).toBe(1);
+    expect(calls('chroma_get_collection_count')).toBe(1);
+    for (const result of results) {
+      expect(result.status).toBe('rejected');
+      if (result.status === 'rejected') expect(result.reason).toBeInstanceOf(ChromaCorruptCollectionError);
+    }
+  });
+
+  it('shares a failed drop between concurrent callers and retries it on a later batch (#6113)', async () => {
+    let deleteAttempts = 0;
+    let releaseDelete: () => void = () => {};
+    const deleteGate = new Promise<void>((resolve) => { releaseDelete = resolve; });
+    installCallTool(async (tool) => {
+      if (tool === 'chroma_add_documents') throw CORRUPT_SEGMENT_ERROR;
+      if (tool === 'chroma_delete_collection') {
+        deleteAttempts += 1;
+        if (deleteAttempts === 1) {
+          await deleteGate;
+          throw new ChromaUnavailableError('chroma-mcp connection in backoff (8s remaining)');
+        }
+      }
+      return {};
+    });
+    const confirmer = new ChromaSync('claude-mem');
+    expect(await confirmer.addDocuments([makeDoc('d0')])).toBe(0);
+
+    const writers = Array.from({ length: 5 }, () => new ChromaSync('claude-mem'));
+    const writes = Promise.allSettled(writers.map((sync, i) => sync.addDocuments([makeDoc(`c${i + 1}`)])));
+    for (let i = 0; i < 100 && deleteAttempts < 1; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    // Let every concurrent writer join the in-flight drop before it fails.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(calls('chroma_delete_collection')).toBe(1);
+    releaseDelete();
+    const results = await writes;
+
+    // One shared attempt: one budget unit spent, the same rejection for all.
+    expect(calls('chroma_delete_collection')).toBe(1);
+    expect(statics.failedDropAttempts.get('cm__claude-mem')).toBe(1);
+    for (const result of results) {
+      expect(result.status).toBe('rejected');
+      if (result.status === 'rejected') expect((result.reason as Error).message).toContain('backoff');
+    }
+
+    // The in-flight entry settled and cleared: the next failing batch retries.
+    const late = new ChromaSync('claude-mem');
+    await expect(late.addDocuments([makeDoc('late')])).rejects.toBeInstanceOf(ChromaCorruptCollectionError);
+    expect(calls('chroma_delete_collection')).toBe(2);
+  });
+
+  it('drops two different collections independently when they fail together (#6113)', async () => {
+    let deletesStarted = 0;
+    let releaseDelete: () => void = () => {};
+    const deleteGate = new Promise<void>((resolve) => { releaseDelete = resolve; });
+    installCallTool(async (tool) => {
+      if (tool === 'chroma_add_documents') throw CORRUPT_SEGMENT_ERROR;
+      if (tool === 'chroma_delete_collection') {
+        deletesStarted += 1;
+        await deleteGate;
+        return {};
+      }
+      return {};
+    });
+    expect(await new ChromaSync('claude-mem').addDocuments([makeDoc('a0')])).toBe(0);
+    expect(await new ChromaSync('other-tenant').addDocuments([makeDoc('b0')])).toBe(0);
+
+    const writes = Promise.allSettled([
+      new ChromaSync('claude-mem').addDocuments([makeDoc('a1')]),
+      new ChromaSync('other-tenant').addDocuments([makeDoc('b1')]),
+    ]);
+    for (let i = 0; i < 100 && deletesStarted < 2; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    // The dedupe is per collection: neither drop waits for the other.
+    expect(calls('chroma_delete_collection')).toBe(2);
+    releaseDelete();
+    const results = await writes;
+    for (const result of results) {
+      expect(result.status).toBe('rejected');
+      if (result.status === 'rejected') expect(result.reason).toBeInstanceOf(ChromaCorruptCollectionError);
+    }
   });
 
   it('rebuilds even when chroma-mcp commits the delete but the call rejects', async () => {
