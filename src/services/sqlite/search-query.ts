@@ -10,7 +10,12 @@ export const UNSEGMENTED_SCRIPT = new RegExp(`[${UNSEGMENTED_SCRIPT_RANGES}]`, '
 const UNSEGMENTED_RUN = new RegExp(`[${UNSEGMENTED_SCRIPT_RANGES}]+|[^\\s${UNSEGMENTED_SCRIPT_RANGES}]+`, 'gu');
 export const MAX_SUBSTRING_TERMS = 500;
 export function substringTerms(query: string, limit = MAX_SUBSTRING_TERMS): string[] {
-  return [...new Set(query.match(UNSEGMENTED_RUN) ?? [])].slice(0, limit);
+  const terms = new Set<string>();
+  for (const match of query.matchAll(UNSEGMENTED_RUN)) {
+    terms.add(match[0]);
+    if (limit >= 0 && terms.size >= limit) break;
+  }
+  return [...terms].slice(0, limit);
 }
 
 export function buildSubstringClause(query: string, columns: string[]): { clause: string; params: string[] } {
