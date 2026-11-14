@@ -122,13 +122,13 @@ export class SearchManager {
   }
 
   /**
-   * Shared "Chroma semantic match -> date-window filter -> SQLite hydrate"
+   * Shared "Chroma semantic match -> SQLite hydrate -> date-window filter"
    * pipeline for the single-doc-type hybrid searches. Explicit ranges replace the
    * default 90-day window. Returns the hydrated rows
    * (empty when Chroma yields nothing recent); callers own their own FTS
    * fallback and formatting so per-caller behavior is preserved exactly.
    */
-  private async hybridSemanticHydrate<T extends { id: number }>(
+  private async hybridSemanticHydrate<T extends { id: number; created_at_epoch: number }>(
     query: string,
     docType: string,
     project: string | undefined,
@@ -161,21 +161,21 @@ export class SearchManager {
     while (true) {
       const progress: ChromaQueryProgress = {};
       const chromaResults = await this.queryChroma(query, candidateLimit, whereFilter, requiredResults ? progress : undefined, fallbackRowIds);
-      const recentIds = chromaResults.ids.filter((_id, idx) => {
-        const meta = chromaResults.metadatas[idx];
-        return meta && meta.created_at_epoch != null
-          && (startEpoch === undefined || meta.created_at_epoch >= startEpoch)
-          && (endEpoch === undefined || meta.created_at_epoch <= endEpoch);
-      });
+      const candidateIds = chromaResults.ids.filter((_id, index) => chromaResults.metadatas[index] != null);
       // Repeated ranked prefixes reuse successful and rejected native lookups.
       // Build results in the current Chroma order, including cached matches.
-      const newIds = recentIds.filter(id => !visited.has(id));
+      const newIds = candidateIds.filter(id => !visited.has(id));
       for (let offset = 0; offset < newIds.length; offset += 500) {
         const batch = newIds.slice(offset, offset + 500);
         for (const id of batch) visited.add(id);
-        for (const row of hydrate(batch, readKeys)) hydrated.set(row.id, row);
+        // The canonical date may have changed since the vector was indexed.
+        for (const row of hydrate(batch, readKeys)) {
+          if (row.created_at_epoch != null
+            && (startEpoch === undefined || row.created_at_epoch >= startEpoch)
+            && (endEpoch === undefined || row.created_at_epoch <= endEpoch)) hydrated.set(row.id, row);
+        }
       }
-      const rows = recentIds.flatMap(id => {
+      const rows = candidateIds.flatMap(id => {
         const row = hydrated.get(id);
         return row ? [row] : [];
       });
@@ -193,10 +193,11 @@ export class SearchManager {
   }
 
   private async searchChromaForTimeline(query: string, project?: string, platformSource?: string, projects?: string[]): Promise<ObservationSearchResult[]> {
-    return this.hybridSemanticHydrate(query, 'observation', project, platformSource, (ids, readKeys) =>
-      this.sessionStore.getObservationsByIds(ids, { orderBy: 'relevance', limit: 1, project, projects: readKeys, platformSource }),
+    const rows = await this.hybridSemanticHydrate(query, 'observation', project, platformSource, (ids, readKeys) =>
+      this.sessionStore.getObservationsByIds(ids, { orderBy: 'relevance', project, projects: readKeys, platformSource }),
       projects,
     );
+    return rows.slice(0, 1);
   }
 
   /**
@@ -1258,9 +1259,10 @@ export class SearchManager {
       logger.debug('SEARCH', 'Using hybrid semantic search for timeline query', {});
       try {
         results = await this.hybridSemanticHydrate(query, 'observation', project, platformSource, (ids, readKeys) =>
-          this.sessionStore.getObservationsByIds(ids, { orderBy: 'relevance', limit, project, projects: readKeys, platformSource }),
+          this.sessionStore.getObservationsByIds(ids, { orderBy: 'relevance', project, projects: readKeys, platformSource }),
           projects,
         );
+        results = results.slice(0, limit);
       } catch (chromaError) {
         const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
         logger.error('WORKER', 'Chroma search failed for timeline by query, falling back to FTS', {}, errorObject);

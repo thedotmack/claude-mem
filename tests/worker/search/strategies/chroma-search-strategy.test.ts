@@ -230,9 +230,8 @@ describe('ChromaSearchStrategy', () => {
     });
   });
 
-  // The implicit window date-less searches apply (#4770). filterByRecency is
-  // a pure function over the aligned {ids, metadatas} arrays Chroma returns,
-  // so these cases run fully offline against constructed arrays.
+  // The implicit window date-less searches apply (#4770), evaluated against
+  // hydrated row dates. These boundary cases run fully offline.
   describe('default recency window (#4770)', () => {
     const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -240,14 +239,10 @@ describe('ChromaSearchStrategy', () => {
 
     function makeResults(hits: Hit[]) {
       const now = Date.now();
-      return {
-        ids: hits.map(hit => hit.id),
-        metadatas: hits.map(hit => ({
-          sqlite_id: hit.id,
-          doc_type: hit.docType,
-          created_at_epoch: now - hit.ageDays * DAY_MS
-        }))
-      };
+      return hits.map(hit => ({
+        id: hit.id,
+        created_at_epoch: now - hit.ageDays * DAY_MS
+      }));
     }
 
     function strategyWithWindow(defaultRecencyWindowMs?: number): ChromaSearchStrategy {
@@ -264,7 +259,7 @@ describe('ChromaSearchStrategy', () => {
     }
 
     const survivingIds = (strategy: ChromaSearchStrategy, hits: Hit[], dateRange?: any, ignoreWindow?: boolean) => {
-      const kept = (strategy as any).filterByRecency(makeResults(hits), dateRange, ignoreWindow ?? false);
+      const kept = makeResults(hits).filter((strategy as any).recencyFilter(dateRange, ignoreWindow ?? false));
       return kept.map((item: { id: number }) => item.id);
     };
 
