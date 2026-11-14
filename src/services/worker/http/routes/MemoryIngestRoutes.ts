@@ -9,7 +9,7 @@ import {
   type MemoryIngestReport,
   type MemoryObservationToStore,
 } from '../../../memory/ingest.js';
-import { computeObservationContentHash } from '../../../sqlite/observations/store.js';
+import { computeObservationContentHash, computeLegacyObservationContentHash } from '../../../sqlite/observations/store.js';
 import { logger } from '../../../../utils/logger.js';
 import { logChromaWriteFailure } from '../../search/errors.js';
 import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
@@ -56,8 +56,11 @@ export class MemoryIngestRoutes extends BaseRouteHandler {
         // (whose Tier-0 merge would count it as a repeat).
         const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
         const existing = sessionStore.db
-          .prepare('SELECT id FROM observations WHERE memory_session_id = ? AND content_hash = ? LIMIT 1')
-          .get(memorySessionId, contentHash) as { id: number } | undefined;
+          .prepare(`SELECT id FROM observations WHERE memory_session_id = ? AND content_hash IN (?, ?)
+            AND title IS ? AND COALESCE(narrative, '') = ? LIMIT 1`)
+          .get(memorySessionId, contentHash,
+            computeLegacyObservationContentHash(memorySessionId, observation.title, observation.narrative),
+            observation.title, observation.narrative ?? '') as { id: number } | undefined;
         if (existing) return { id: existing.id, deduped: true };
 
         // Backdate to the file mtime. Native notes are already distilled:

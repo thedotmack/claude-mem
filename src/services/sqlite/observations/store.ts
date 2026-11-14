@@ -18,6 +18,20 @@ export function computeObservationContentHash(
   title: string | null,
   narrative: string | null
 ): string {
+  const fields = [memorySessionId || '', title || '', narrative || ''];
+  // Keep existing ordinary hashes. A delimiter cannot encode boundaries when
+  // the fields themselves contain it; JSON preserves those tuples exactly.
+  return fields.some(field => field.includes('\x00'))
+    ? 'tuple-' + createHash('sha256').update(JSON.stringify(fields)).digest('hex')
+    : computeLegacyObservationContentHash(memorySessionId, title, narrative);
+}
+
+/** Lookup-only compatibility for rows stored before null-containing tuples were escaped. */
+export function computeLegacyObservationContentHash(
+  memorySessionId: string,
+  title: string | null,
+  narrative: string | null
+): string {
   return createHash('sha256')
     .update([memorySessionId || '', title || '', narrative || ''].join('\x00'))
     .digest('hex')
