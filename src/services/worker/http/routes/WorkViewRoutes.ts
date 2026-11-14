@@ -20,6 +20,8 @@ import { FILE_CONTENT_TYPES } from '../../../work-view/work-product.mjs';
 import { isInsideDeliverablesDir } from '../../../../shared/deliverables.js';
 import { contentFingerprint, priorContentFingerprint, LocalReviewStore } from '../../../work-view/review-store.js';
 import { MY_RULES_LIST, renderRulesFile, ruleRowFields, type SavedRule } from '../../../work-view/my-rules.mjs';
+import { claudeCodeImportLine, homeRelativePath, RULES_AND_TOOLS_FILENAME } from '../../../../shared/claude-code-rules-import.js';
+import { ensureRulesAndToolsFile } from '../../../context/RulesAndToolsFile.js';
 import { focusAreaRowFields, MY_FOCUS_LIST, navWordIn, OTHER_FOCUS_AREA_ID, ownerGoalsAreaRows, placementRowFields, PROPOSAL_KINDS, readFocus, routerFocusRows, seedFocusRows, seedUndoRows, type FocusArea, type RouterFocusBody } from '../../../work-view/my-focus.mjs';
 import { MAX_WORK_STATE_FIELDS_JSON_CHARS } from '../../../work-view/work-state-limits.mjs';
 import { AGENT_LIFECYCLE_LIST, agentStopFields } from '../../../work-view/agent-lifecycle.mjs';
@@ -253,14 +255,10 @@ const usageBody = z.discriminatedUnion('event', [
   z.object({ event: z.literal('switched'), view: z.enum(WORK_VIEW_PAGES), previousView: z.enum(WORK_VIEW_PAGES) }).strict(),
 ]);
 
-/** A path as the owner reads it: `~/...` under the home folder, else absolute. */
-const homeRelative = (path: string) => path === homedir() || path.startsWith(`${homedir()}/`) ? `~${path.slice(homedir().length)}` : path;
-
 /** The line that makes Claude Code load the approved rules with the owner's user-level instructions.
  * It names the rules file the worker actually writes, so a custom data folder is still the one loaded. */
 export function myRulesImportLine(rulesFilePath: string): string {
-  // Claude Code ends @path at an unescaped space; quoting the path is not an import.
-  return `@${homeRelative(rulesFilePath).replaceAll(' ', '\\ ')}`;
+  return claudeCodeImportLine(rulesFilePath);
 }
 
 interface WorkStateWrite { project: string; listName: string; fields: Record<string, string | number | boolean | null> }
@@ -649,6 +647,9 @@ export class WorkViewRoutes extends BaseRouteHandler {
         this.scheduleRulesFileRebuild();
       }
     });
+    // A MY-RULES.md written by an older version lacks the RULES-AND-TOOLS.md import; bring it up to date
+    // once. Never creates the file: only someone who loaded My Rules in Claude Code has one.
+    if (existsSync(this.rulesFilePath)) this.scheduleRulesFileRebuild();
   }
 
   private stopRulesSync: () => void;
@@ -687,7 +688,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
     return this.inOwnerEditOrder(async () => {
       const view = await this.sourceReader.readRules(this.getLocalDeviceId());
       if (!view.source.connected) return false;
-      const markdown = renderRulesFile((view.rules ?? []) as SavedRule[]).markdown;
+      const markdown = this.renderRulesMarkdown((view.rules ?? []) as SavedRule[]);
       let current: string | null = null;
       try { current = readFileSync(this.rulesFilePath, 'utf8'); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
@@ -1258,18 +1259,30 @@ export class WorkViewRoutes extends BaseRouteHandler {
     try { instructions = readFileSync(this.claudeInstructionsPath, 'utf8'); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
     return {
-      path: homeRelative(this.rulesFilePath),
-      instructionsPath: homeRelative(this.claudeInstructionsPath),
+      path: homeRelativePath(this.rulesFilePath),
+      instructionsPath: homeRelativePath(this.claudeInstructionsPath),
       approvedCount: renderRulesFile(rules).approvedCount,
       loadedInClaudeCode: instructions.split('\n').some(line => line.trim() === myRulesImportLine(this.rulesFilePath)),
     };
   }
 
+  /** RULES-AND-TOOLS.md sits beside MY-RULES.md; MY-RULES.md imports it so Claude Code loads both through one line. */
+  private get rulesAndToolsPath(): string {
+    return join(dirname(this.rulesFilePath), RULES_AND_TOOLS_FILENAME);
+  }
+
+  private renderRulesMarkdown(rules: SavedRule[]): string {
+    return renderRulesFile(rules, Date.now(), { importLine: claudeCodeImportLine(this.rulesAndToolsPath) }).markdown;
+  }
+
   /** Rewrites MY-RULES.md through a temp file beside it, so a reader never sees half a file. */
   private writeRulesFile(rules: SavedRule[]): void {
     mkdirSync(dirname(this.rulesFilePath), { recursive: true });
+    // The import must never point at a missing file: Claude Code skips it without a word. SessionStart
+    // keeps its text current (mode, runtime, settings), so only a missing file is written here.
+    if (!existsSync(this.rulesAndToolsPath)) ensureRulesAndToolsFile(true, this.rulesAndToolsPath);
     const temp = join(dirname(this.rulesFilePath), `.MY-RULES.md.${process.pid}.tmp`);
-    writeFileSync(temp, renderRulesFile(rules).markdown, { mode: 0o644 });
+    writeFileSync(temp, this.renderRulesMarkdown(rules), { mode: 0o644 });
     renameSync(temp, this.rulesFilePath);
   }
 

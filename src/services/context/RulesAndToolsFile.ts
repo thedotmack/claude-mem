@@ -1,34 +1,28 @@
 import { existsSync, readFileSync } from 'fs';
-import { homedir } from 'os';
-import { join } from 'path';
 import { ModeManager } from '../domain/ModeManager.js';
-import { resolveDataDir } from '../../shared/data-dir.js';
 import { writeTextFileAtomic } from '../../shared/atomic-json.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { isWorkStateEnabled } from '../../shared/work-state-setting.js';
 import { mcpServerInstructions } from '../../shared/memory-instructions.js';
+import { homeRelativePath, rulesAndToolsFilePath } from '../../shared/claude-code-rules-import.js';
 import { logger } from '../../utils/logger.js';
 
 /**
- * How to read the startup timeline and use claude-mem's tools, kept in one file
- * instead of repeated at the top of every SessionStart message. The message
+ * How to read the startup timeline and use claude-mem's tools, kept in one file.
+ * Claude Code loads it through MY-RULES.md when My Rules is loaded there
+ * (shared/claude-code-rules-import.ts); otherwise the SessionStart message
  * carries one line pointing here (rulesAndToolsPointerLine).
  */
-export const RULES_AND_TOOLS_FILENAME = 'RULES-AND-TOOLS.md';
-
-export function rulesAndToolsFilePath(): string {
-  return join(resolveDataDir(), RULES_AND_TOOLS_FILENAME);
-}
+export {
+  RULES_AND_TOOLS_FILENAME,
+  rulesAndToolsFilePath,
+  rulesAndToolsPointerLine,
+} from '../../shared/claude-code-rules-import.js';
 
 /** The path as the reader should type it: `~/…` under the home directory. */
 export function rulesAndToolsDisplayPath(filePath: string = rulesAndToolsFilePath()): string {
-  const home = homedir();
-  return filePath.startsWith(`${home}/`) ? `~${filePath.slice(home.length)}` : filePath;
-}
-
-export function rulesAndToolsPointerLine(): string {
-  return `Access Claude-Mem Rules + Tools: ${rulesAndToolsDisplayPath()}`;
+  return homeRelativePath(filePath);
 }
 
 /**
@@ -68,8 +62,7 @@ export function renderRulesAndToolsFile(fetchByIdSupported: boolean): string {
  * rendered, so the line never points at a missing or stale file. A failed write
  * is logged and the render goes on: the timeline is still worth delivering.
  */
-export function ensureRulesAndToolsFile(fetchByIdSupported: boolean): void {
-  const filePath = rulesAndToolsFilePath();
+export function ensureRulesAndToolsFile(fetchByIdSupported: boolean, filePath: string = rulesAndToolsFilePath()): void {
   try {
     const text = renderRulesAndToolsFile(fetchByIdSupported);
     if (existsSync(filePath) && readFileSync(filePath, 'utf-8') === text) return;

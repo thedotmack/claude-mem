@@ -59,9 +59,12 @@ if (!/^\d+\.\d+\.\d+$/.test(version)) fail('Source plugin must have a release ve
 const home = homedir();
 const claudeConfig = option('--claude-config-dir') || process.env.CLAUDE_CONFIG_DIR || path.join(home, '.claude');
 const codexHome = option('--codex-dir') || process.env.CODEX_HOME || path.join(home, '.codex');
+// Claude Code gets the memory-use text from the MCP server, or once through
+// CLAUDE.md -> MY-RULES.md -> RULES-AND-TOOLS.md; a block in CLAUDE.md would be
+// a second copy. Codex's AGENTS.md has no imports, so it keeps the block.
 const targets = [
-  { root: path.join(claudeConfig, 'plugins/marketplaces/thedotmack/plugin'), instructions: path.join(claudeConfig, 'CLAUDE.md') },
-  { root: path.join(claudeConfig, `plugins/cache/thedotmack/claude-mem/${version}`), instructions: path.join(claudeConfig, 'CLAUDE.md') },
+  { root: path.join(claudeConfig, 'plugins/marketplaces/thedotmack/plugin'), instructions: null },
+  { root: path.join(claudeConfig, `plugins/cache/thedotmack/claude-mem/${version}`), instructions: null },
   { root: path.join(codexHome, `plugins/cache/claude-mem-local/claude-mem/${version}`), instructions: path.join(codexHome, 'AGENTS.md') },
 ].filter(target => existsSync(target.root));
 if (targets.length === 0) fail('No supported installed claude-mem plugin found for this version');
@@ -91,7 +94,7 @@ const instructionSource = readFileSync(path.resolve(source, '../src/shared/memor
 const instructions = instructionSource.match(/MEMORY_PLUGIN_INSTRUCTIONS = `([\s\S]*?)`;/)?.[1];
 if (!instructions) fail('Could not read the versioned memory instruction text');
 const block = `${start}\n${instructions}\n${end}`;
-for (const file of new Set(targets.map(target => target.instructions))) {
+for (const file of new Set(targets.map(target => target.instructions).filter(Boolean))) {
   const original = read(file)?.toString('utf8') || '';
   const begin = original.indexOf(start), finish = original.indexOf(end);
   if ((begin < 0) !== (finish < 0) || (begin >= 0 && finish < begin)) fail(`Incomplete instruction block: ${file}`);
