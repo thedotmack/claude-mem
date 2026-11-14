@@ -250,6 +250,7 @@ const QUERIES: Record<string, string> = {
 (init_declaration (type_constraints) @swift_constraints) @swift_header
 (deinit_declaration "deinit" @name body: (_) @signature_body) @method @native_signature
 (function_declaration name: (simple_identifier) @name body: (_) @signature_body) @func @native_signature
+(protocol_function_declaration name: (simple_identifier) @name) @method @native_signature
 (class_declaration name: (type_identifier) @name) @cls
 (class_declaration declaration_kind: "extension" name: (_) @name) @impl_def
 (protocol_declaration name: (type_identifier) @name) @iface
@@ -277,6 +278,7 @@ const QUERIES: Record<string, string> = {
 
   scala: `
 (function_definition name: (identifier) @name body: (_) @signature_body) @func @native_signature
+(function_declaration name: (identifier) @name) @method @native_signature
 (class_definition name: (identifier) @name) @cls
 (object_definition name: (identifier) @name) @cls
 (trait_definition name: (identifier) @name) @trait_def
