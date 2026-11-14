@@ -4442,17 +4442,25 @@ export class SessionStore {
           continue;
         }
 
-        let legacyHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
+        const legacyHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
         if (legacyHash.startsWith('tuple-')) {
           const previousHash = computeLegacyObservationContentHash(memorySessionId, observation.title, observation.narrative);
-          // Old delimiter hashes are ambiguous: reuse one only when its actual
-          // fields agree. Include old structured variants whose base was deleted.
-          const previous = this.db.prepare(`SELECT id FROM observations
+          const previousDetailsHash = computeObservationDetailsHash(previousHash, observation);
+          // Both old hashes are ambiguous. Reuse only a complete content match,
+          // never restore an old base hash that could select another variant.
+          const previous = (this.db.prepare(`SELECT id, type, subtitle, facts, concepts FROM observations
             WHERE memory_session_id = ? AND content_hash IN (?, ?)
-              AND title IS ? AND COALESCE(narrative, '') = ? LIMIT 1`)
-            .get(memorySessionId, previousHash, computeObservationDetailsHash(previousHash, observation),
-              observation.title, observation.narrative ?? '');
-          if (previous) legacyHash = previousHash;
+              AND title IS ? AND COALESCE(narrative, '') = ?
+            ORDER BY content_hash = ? DESC`)
+            .all(memorySessionId, previousHash, previousDetailsHash,
+              observation.title, observation.narrative ?? '', previousDetailsHash) as ExistingObservation[])
+            .find(row => computeObservationDetailsHash(previousHash, row) === previousDetailsHash);
+          if (previous) {
+            reinforceObservation(this.db, previous.id, reconfirmedOn);
+            observationIds.push(previous.id);
+            mergedIntoExisting.push(false);
+            continue;
+          }
         }
         const detailsHash = computeObservationDetailsHash(legacyHash, observation);
         let contentHash = legacyHash;

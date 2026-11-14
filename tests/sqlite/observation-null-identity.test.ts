@@ -105,4 +105,31 @@ describe('null characters in observation identity', () => {
       expect(store.db.query('SELECT COUNT(*) AS n FROM observations').get()).toEqual({ n: 1 });
     } finally { store.close(); }
   });
+
+  it('does not reuse a legacy variant with matching facts but different text', () => {
+    const store = new SessionStore(':memory:');
+    const session = store.createSDKSession('legacy-variant-collision', 'notes', 'synthetic');
+    store.updateMemorySessionId(session, 'memory');
+    const left = { type: 'discovery', title: 'prefix\0suffix', narrative: 'body', subtitle: null,
+      facts: ['first'], concepts: [], files_read: [], files_modified: [] };
+    const right = { ...left, title: 'prefix', narrative: 'suffix\0body', facts: ['second'] };
+    const requested = { ...left, facts: right.facts };
+    const options = { skipTitleDedup: true };
+    const save = (note: typeof left) => store.storeObservation('memory', 'notes', note, 0, 0, undefined, undefined, options);
+    try {
+      const first = save(left);
+      const second = save(right);
+      const legacy = oldHash('memory', left.title, left.narrative);
+      store.db.query('UPDATE observations SET content_hash=? WHERE id=?').run(legacy, first.id);
+      store.db.query('UPDATE observations SET content_hash=? WHERE id=?').run(computeObservationDetailsHash(legacy, right), second.id);
+      const actual = save(requested);
+      expect(actual.id).not.toBe(second.id);
+      expect(actual.id).not.toBe(first.id);
+      expect(store.getObservationById(actual.id)).toMatchObject({ title: left.title, narrative: left.narrative, facts: JSON.stringify(right.facts) });
+      expect(save(left).id).toBe(first.id);
+      expect(save(right).id).toBe(second.id);
+      expect(save(requested).id).toBe(actual.id);
+      expect(store.db.query('SELECT COUNT(*) AS n FROM observations').get()).toEqual({ n: 3 });
+    } finally { store.close(); }
+  });
 });
