@@ -250,6 +250,7 @@ const QUERIES: Record<string, string> = {
 (init_declaration (type_constraints) @swift_constraints) @swift_header
 (deinit_declaration "deinit" @name body: (_) @signature_body) @method @native_signature
 (function_declaration name: (simple_identifier) @name body: (_) @signature_body) @func @native_signature
+(protocol_function_declaration name: (simple_identifier) @name) @method @native_signature @method_requirement
 (class_declaration name: (type_identifier) @name) @cls
 (class_declaration declaration_kind: "extension" name: (_) @name) @impl_def
 (protocol_declaration name: (type_identifier) @name) @iface
@@ -277,6 +278,7 @@ const QUERIES: Record<string, string> = {
 
   scala: `
 (function_definition name: (identifier) @name body: (_) @signature_body) @func @native_signature
+(function_declaration name: (identifier) @name) @method @native_signature @method_requirement
 (class_definition name: (identifier) @name) @cls
 (object_definition name: (identifier) @name) @cls
 (trait_definition name: (identifier) @name) @trait_def
@@ -938,6 +940,10 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     // from error recovery leaves nothing to read and stays `anonymous`.
     let name = (nameCapture && captureText(lines, nameCapture)) || "anonymous";
     if (accessorKeyword) name = `${accessorKeyword} ${name}`;
+    // A protocol/trait and its extension/companion can share an owner name.
+    // Keep a new requirement independently addressable without shadowing an
+    // implementation that already unfolded through Owner.method.
+    if (match.captures.some(c => c.tag === "method_requirement")) name = `requirement ${name}`;
     if (kindCapture.tag === "ctor") {
       const parameters = match.captures.find(c => c.tag === "parameters");
       if (parameters) name += captureLines(lines, parameters).join(" ").replace(/\s+/g, " ").trim();
@@ -1652,13 +1658,16 @@ export function matchScore(text: string, queryParts: string[]): number {
 export function unfoldSymbol(content: string, filePath: string, symbolName: string): string | null {
   const file = parseFile(content, filePath);
 
-  const findSymbol = (symbols: CodeSymbol[], qualified: boolean, parent?: string, accessorAlias = false): CodeSymbol | null => {
+  const findSymbol = (symbols: CodeSymbol[], qualified: boolean, parent?: string, shortAlias = false): CodeSymbol | null => {
     for (const sym of symbols) {
-      const name = accessorAlias && (sym.kind === "getter" || sym.kind === "setter") ? sym.name.slice(4) : sym.name;
+      let name = sym.name;
+      if (shortAlias && (sym.kind === "getter" || sym.kind === "setter")) name = name.slice(4);
+      if (shortAlias && (file.language === "swift" || file.language === "scala")
+        && sym.kind === "method" && name.startsWith("requirement ")) name = name.slice("requirement ".length);
       const qualifiedName = qualifySymbolName(name, parent, file.language, sym.kind);
       if ((qualified ? qualifiedName : name) === symbolName) return sym;
       if (sym.children) {
-        const found = findSymbol(sym.children, qualified, qualifiedName, accessorAlias);
+        const found = findSymbol(sym.children, qualified, qualifiedName, shortAlias);
         if (found) return found;
       }
     }
@@ -1668,8 +1677,8 @@ export function unfoldSymbol(content: string, filePath: string, symbolName: stri
   // Go methods are named with their receiver (`Local.Reset`), so a bare method
   // name still unfolds the first method with that leaf, as in other languages.
   const symbol = findSymbol(file.symbols, true) ?? findSymbol(file.symbols, false)
-    // Preserve existing property-only lookups after trying the distinct
-    // accessor identities returned by outlines and search.
+    // Keep short accessor/requirement lookups after trying concrete methods
+    // and the distinct identities returned by outlines and search.
     ?? findSymbol(file.symbols, true, undefined, true) ?? findSymbol(file.symbols, false, undefined, true)
     ?? (file.language === "go"
       ? file.symbols.find(sym => sym.kind === "method" && sym.name.slice(sym.name.lastIndexOf(".") + 1) === symbolName) ?? null
