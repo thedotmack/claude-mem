@@ -7,6 +7,7 @@
 // against the API (it lands in the same postgres api_keys store readAuth checks).
 
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
+import http from 'node:http';
 import pg from 'pg';
 import { randomUUID } from 'crypto';
 import { Server } from '../../src/services/server/Server.js';
@@ -217,5 +218,26 @@ describe('POST /v1/keys + GET /v1/connect', () => {
     const body = await r.json() as { connectCommand: string; mcpUrl: string };
     expect(body.mcpUrl).toContain('/v1/mcp');
     expect(body.connectCommand).toContain('<YOUR_API_KEY>');
+  });
+
+  it('refuses a Host header it cannot advertise', async () => {
+    const response = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+      const req = http.request({
+        host: '127.0.0.1',
+        port,
+        path: '/v1/connect',
+        method: 'GET',
+        headers: { Authorization: `Bearer ${readKey}`, Host: 'evil.example with-space' },
+      }, (res) => {
+        let body = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk) => { body += chunk; });
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, body }));
+      });
+      req.on('error', reject);
+      req.end();
+    });
+    expect(response.status).toBe(400);
+    expect((JSON.parse(response.body) as { error: string }).error).toBe('InvalidHost');
   });
 });

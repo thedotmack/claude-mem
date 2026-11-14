@@ -41,6 +41,17 @@ export function parseHostWithoutPort(rawHost: string): string {
   return host;
 }
 
+// A Host header we are willing to advertise back to the caller. The connect
+// command is pasted into a shell, so the value must be a plain hostname, IPv4
+// literal, or bracketed IPv6 literal with an optional port — no whitespace,
+// quotes, userinfo, path, or query. Domains are still trusted here; the point
+// is to refuse values that cannot be a host at all.
+const ADVERTISED_HOST = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*|\[[0-9a-f:.]+\])(?::\d{1,5})?$/i;
+
+export function isValidAdvertisedHost(rawHost: string): boolean {
+  return ADVERTISED_HOST.test(rawHost.trim());
+}
+
 export function hasForwardedClientHeaders(req: Request): boolean {
   return Boolean(
     req.header('forwarded')
