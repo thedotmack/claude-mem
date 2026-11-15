@@ -47,4 +47,17 @@ describe('worker-service subcommands launched from a neutral directory', () => {
     const stdout = run.stdout.toString();
     expect(stdout).toContain('Project: Not installed (hooks.json has 0 user hooks)');
   }, 30_000);
+  it('aider status reads the caller\'s project .aider.conf.yml', () => {
+    const root = mkdtempSync(join(tmpdir(), 'cm-original-cwd-')); sandboxes.push(root);
+    const neutral = join(root, 'neutral'); const project = join(root, 'project'); const data = join(root, 'data');
+    mkdirSync(neutral); mkdirSync(project); mkdirSync(data);
+    writeFileSync(join(project, '.aider.conf.yml'), 'read:\n  - .claude-mem/aider-memory.md  # claude-mem (managed)\n');
+
+    const run = Bun.spawnSync([process.execPath, workerService, 'aider', 'status'], {
+      cwd: neutral,
+      env: { ...process.env, HOME: data, USERPROFILE: data, CLAUDE_MEM_HOOK_ORIGINAL_CWD: project, CLAUDE_MEM_DATA_DIR: data, CLAUDE_CONFIG_DIR: data, CLAUDE_MEM_TELEMETRY: '0' },
+      stdout: 'pipe', stderr: 'pipe',
+    });
+    expect(run.stdout.toString()).toContain('Aider context: installed');
+  }, 30_000);
 });

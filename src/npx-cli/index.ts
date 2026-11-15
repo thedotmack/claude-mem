@@ -74,6 +74,7 @@ ${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed p
   ${styleText('cyan', 'npx claude-mem memory ingest [--source <dir> | --all] [--dry-run] [--require-cwd]')}   Import Claude Code auto-memory notes as observations
   ${styleText('cyan', 'npx claude-mem antigravity-cli install|status|uninstall')}   Manage Antigravity CLI hooks + MCP config
   ${styleText('cyan', 'npx claude-mem kimi install|status|uninstall')}   Manage Kimi Code CLI hooks + MCP config
+  ${styleText('cyan', 'npx claude-mem aider install|status|uninstall|sync')}   Manage Aider file-based context
   ${styleText('cyan', 'npx claude-mem gemini install|status|uninstall')}   Manage Gemini CLI capture hooks
   ${styleText('cyan', 'npx claude-mem devin install|status|uninstall')}   Manage Devin CLI / Devin Desktop hooks + MCP
   ${styleText('cyan', 'npx claude-mem t3code status|uninstall [--settings <path>]')}   Inspect or disable T3 Code provider plugins
@@ -173,7 +174,7 @@ const HELP_AWARE_COMMANDS = new Set([
   'start', 'stop', 'restart', 'status', 'doctor', 'mcp', 'hook',
   'adopt', 'cleanup',
   'memory', 'telemetry', 'project', 'backup', 'restore', 'server', 'worker', 'transcript',
-  'gemini', 'kimi', 'devin', 'antigravity-cli', 'pi', 't3code', 't3-code', 't3', 'grok',
+  'gemini', 'kimi', 'aider', 'devin', 'antigravity-cli', 'pi', 't3code', 't3-code', 't3', 'grok',
 ]);
 
 async function main(): Promise<void> {
@@ -316,6 +317,14 @@ async function main(): Promise<void> {
     case 'kimi': {
       const { handleKimiCommand } = await import('../services/integrations/KimiHooksInstaller.js');
       const exitCode = await handleKimiCommand(args[1]?.toLowerCase(), args.slice(2));
+      if (typeof exitCode === 'number') {
+        process.exit(exitCode);
+      }
+      break;
+    }
+    case 'aider': {
+      const { handleAiderCommand } = await import('../services/integrations/AiderInstaller.js');
+      const exitCode = await handleAiderCommand(args[1]?.toLowerCase(), args.slice(2));
       if (typeof exitCode === 'number') {
         process.exit(exitCode);
       }

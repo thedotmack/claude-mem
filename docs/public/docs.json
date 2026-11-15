@@ -126,6 +126,7 @@
           "qoder-integration",
           "zed-integration",
           "screenpipe-integration",
+          "aider-integration",
           "eve-integration",
           "notion-export",
           "obsidian"
