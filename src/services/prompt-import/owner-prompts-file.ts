@@ -30,8 +30,15 @@ export function promptMinute(epochMs: number): string {
 function section(prompt: OwnerPrompt, trim: boolean): string {
   let text = stripMemoryTags(prompt.text).trim();
   if (trim && text.length > MAXIMUM_KEPT_PROMPT_CHARACTERS) {
-    const trimmed = text.length - MAXIMUM_KEPT_PROMPT_CHARACTERS;
-    text = `${text.slice(0, MAXIMUM_KEPT_PROMPT_CHARACTERS)}\n\n[... ${trimmed} more characters, mostly pasted material, trimmed]`;
+    // Python's exporter counts Unicode code points, not UTF-16 units. Count
+    // without allocating an array for an arbitrarily long pasted prompt.
+    let characters = 0, end = 0;
+    for (const character of text) {
+      if (characters < MAXIMUM_KEPT_PROMPT_CHARACTERS) end += character.length;
+      characters++;
+    }
+    const trimmed = characters - MAXIMUM_KEPT_PROMPT_CHARACTERS;
+    if (trimmed > 0) text = `${text.slice(0, end)}\n\n[... ${trimmed} more characters, mostly pasted material, trimmed]`;
   }
   const project = prompt.cwd ? basename(prompt.cwd) : prompt.project || '?';
   return `## ${promptMinute(prompt.at)} · ${TOOL_NAMES[prompt.agent] ?? prompt.agent} · ${project}\nsession \`${prompt.sessionId.slice(0, 8)}\`\n\n${text}\n`;

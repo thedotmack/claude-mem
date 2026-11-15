@@ -6,6 +6,8 @@ import { resolvePythonCommand } from '../../src/services/work-view/python.js';
 import { buildRules } from '../../src/services/work-view/my-rules.mjs';
 import { fakeOwnerGoalsWorker } from '../helpers/fake-owner-goals-worker.js';
 import { scratchDir } from '../helpers/scratch-dir.js';
+import { promptMinute, writeOwnerPromptsFile } from '../../src/services/prompt-import/owner-prompts-file.js';
+import type { OwnerPrompt } from '../../src/services/prompt-import/index.js';
 
 const SKILLS = join(import.meta.dir, '..', '..', 'plugin', 'skills');
 const python = await resolvePythonCommand();
@@ -49,6 +51,28 @@ describe('skill Python scripts', () => {
 });
 
 describe('save_goals.py', () => {
+  it('verifies an in-budget owner quote after supplementary characters in the generated export', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'save-goals-owner-budget-'));
+    try {
+      const now = Date.UTC(2026, 10, 14, 12);
+      const quote = 'Preserve deploy signatures';
+      const prompt: OwnerPrompt = {
+        agent: 'codex', sessionId: 'owner-session', nativePromptId: 'typed-1', at: now,
+        cwd: '/work/release', project: 'release', platformSource: 'codex', text: '😀'.repeat(1500) + ' ' + quote,
+      };
+      const exported = await writeOwnerPromptsFile({ folder: dir, now, sinceMinute: promptMinute(now),
+        scan: async () => ({ agents: [], ownerPrompts: [prompt], agentWritten: [],
+          ownerMemoryPromptIds: new Set<number>(), skippedSources: [] }),
+      });
+      const result = spawnPython(['-c',
+        'import json,runpy,sys; script=runpy.run_path(sys.argv[1]); prompts=script["prompts_by_minute"](sys.argv[2]); print(json.dumps(script["unverified_quotes"]({"asks":[{"title":"release","evidence":[{"at":sys.argv[3],"quote":sys.argv[4]}]}]},prompts)))',
+        join(SKILLS, 'owner-goals', 'scripts', 'save_goals.py'), exported.path, promptMinute(now), quote]);
+      expect(result.stderr.toString()).toBe('');
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout.toString())).toEqual([]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it('validates UTF-8 quotes and titles on every platform', () => {
     const dir = mkdtempSync(join(tmpdir(), 'save-goals-utf8-'));
     try {
