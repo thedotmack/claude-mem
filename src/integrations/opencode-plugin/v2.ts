@@ -28,7 +28,7 @@
  * summary, since V2's context has no V1 `client` to read messages back from.
  *
  * V2's `ctx` is structurally unknown to this package (it ships no dependency on
- * `@opencode-ai/plugin`, to stay bundle-safe), so the surface is typed locally
+ * `@opencode/plugin`, to stay bundle-safe), so the surface is typed locally
  * and read defensively: the plugin API is still beta and field shapes can move.
  */
 

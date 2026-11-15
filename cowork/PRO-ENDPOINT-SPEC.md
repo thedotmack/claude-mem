@@ -13,11 +13,56 @@ Client reference implementation: `scripts/cmem-hook.mjs` in the
 
 ## Auth
 
-Both endpoints reuse the existing `/api/mcp` bearer validation:
-`Authorization: Bearer <api key>`. Invalid/missing key → `401
-{"error":"invalid_token"}` (+ `WWW-Authenticate` per the OAuth work).
+Both endpoints reuse the existing `/api/mcp` bearer validation. A request is
+authorized if **either**:
+
+- (a) `Authorization: Bearer <api key>` — a valid Pro API key (unchanged
+  legacy path, kept for power users and CI), **or**
+- (b) `Authorization: Bearer <OAuth access token>` — a valid OAuth access
+  token whose granted scopes include `write:memory`, **for
+  `POST /api/hooks/ingest` only**.
+
+A valid OAuth token **without** `write:memory` is rejected on ingest with the
+same `401 {"error":"invalid_token"}` as an invalid key — do not leak which
+part failed. Read endpoints keep read semantics: `GET /api/hooks/context`
+requires `read:memory`; the `scope=status` auth/health probe accepts any
+valid credential (OAuth or API key) since it returns `200 {}` and no
+content. Invalid/missing bearer → `401 {"error":"invalid_token"}` (+
+`WWW-Authenticate` per the OAuth work).
+
 Clients also send `X-CMEM-Platform: cowork` — store it as `platformSource`
-on everything created from the request.
+on everything created from the request. Under OAuth the client must still
+send `platform` in each envelope and `X-CMEM-Platform` on the request; a
+missing platform records as `unknown`, never as another agent's label.
+
+### The `write:memory` scope
+
+- **Name:** `write:memory` — symmetric with `read:memory`, deliberately
+  ungranular for v1.
+- **Capability:** the app may submit hook envelopes to
+  `/api/hooks/ingest` (session-start, session-init, observation,
+  subagent-stop, summarize, session-end) on the user's behalf; the Pro
+  observer synthesizes these into memory server-side.
+- **Does NOT grant:** reading memory (that's `read:memory`), admin access,
+  or quota/spend controls (`spend:inference` is separate).
+- **Advertised** alongside `read:memory`, `offline_access`, and
+  `spend:inference` in the OAuth discovery metadata, dynamic client
+  registration, and the consent screen.
+
+Consent-screen copy (exact wording), next to `read:memory` ("This app can
+read your synced agent memory"):
+
+> **`write:memory` — "This app can save observations to your memory."**
+
+Subtext: "The app sends conversation fragments to Claude-Mem Pro, which
+turns them into searchable memories. You can see everything it wrote and
+disconnect it any time." No jargon ("ingest", "envelopes", "observer") on
+the consent screen.
+
+Abuse posture is unchanged: open dynamic client registration + per-app,
+per-user approval is the boundary, plus per-client rate limits, idempotent
+dedupe, 256 KB body caps, and the provenance audit trail that lets a user
+see exactly what each connected app wrote.
 
 ---
 
@@ -75,6 +120,15 @@ rate → `429`; client spools and retries later — both are safe to return.
 - `summarize` / `session-end` trigger the same summarize path as local Stop.
 - Dedupe batch replays: `(api_key, platform, session_id, tool_use_id)` unique
   for observations; other events are idempotent by `(session_id, event, ts)`.
+  Under OAuth there is no API key string, so the dedupe tuple becomes
+  `(oauth_user_sub, oauth_client_id, platform, session_id, tool_use_id)`,
+  and non-observation events stay idempotent by `(session_id, event, ts)`
+  within the same identity namespace.
+- Session namespacing is per (user, OAuth client, platform) under OAuth —
+  the analogue of the spec's "per platform+key" rule. Two different apps
+  must never collide on or see each other's `session_id` namespace.
+- Rate limits apply per OAuth client (mirror the ~120 req/min budget), not
+  per user — one chatty app shouldn't burn another's budget.
 
 ---
 
@@ -135,5 +189,11 @@ offer the tool.
 1. `/api/hooks/context` (read-only, low risk) → good injection immediately.
 2. `/api/hooks/ingest` wired into the existing worker queue → Cowork sessions
    start generating observations.
-3. Optional later: per-event ack ids + client-side exactly-once, WebSocket
+3. `write:memory` scope: advertise it (discovery, DCR, consent screen) and
+   accept OAuth tokens carrying it on ingest, with the OAuth identity
+   dedupe/namespacing above. This unblocks third-party OAuth writes — the
+   first is the already-built, already-spooled Muse hourly export, which
+   flushes its backlog over the existing OAuth connection with no key
+   juggling. API-key clients behave exactly as before.
+4. Optional later: per-event ack ids + client-side exactly-once, WebSocket
    push, and a `platformSource='cowork'` slice in the admin metrics strip.

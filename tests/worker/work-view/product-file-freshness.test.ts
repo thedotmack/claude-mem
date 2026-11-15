@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, setSystemTime, test } from 'bun:test';
 import { mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { removeTempDir } from '../../helpers/temp-dir.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
@@ -32,10 +33,10 @@ beforeEach(() => {
   source = new WorkStateSource({ databasePath, currentProject: 'repo' });
 });
 
-afterEach(() => {
+afterEach(async () => {
   source.close();
   store.close();
-  rmSync(directory, { recursive: true, force: true });
+  await removeTempDir(directory);
   setSystemTime();
 });
 

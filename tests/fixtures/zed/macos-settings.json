@@ -1,0 +1,28 @@
+{
+  "agent": {
+    "default_model": {
+      "model": "claude-sonnet-4-5",
+      "provider": "anthropic"
+    },
+    "tool_permissions": {
+      "default": "allow",
+      "edit_file": "confirm"
+    }
+  },
+  "auto_update": false,
+  "buffer_font_family": "JetBrains Mono",
+  "context_servers": {
+    "github": {
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-github"
+      ],
+      "command": "/opt/homebrew/bin/npx",
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "placeholder-token-from-keychain"
+      }
+    }
+  },
+  "theme": "Ayu Dark",
+  "vim_mode": true
+}

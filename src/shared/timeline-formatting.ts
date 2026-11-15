@@ -50,16 +50,43 @@ function safeFormat(format: () => string, fallback: () => string): string {
   }
 }
 
+const DATE_TIME_OPTIONS: Intl.DateTimeFormatOptions = {
+  month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true,
+};
+const TIME_OPTIONS: Intl.DateTimeFormatOptions = {
+  hour: 'numeric', minute: '2-digit', hour12: true,
+};
+const DATE_OPTIONS: Intl.DateTimeFormatOptions = {
+  month: 'short', day: 'numeric', year: 'numeric',
+};
+
+/**
+ * Reuse ICU formatters within one timeline render. Construct lazily so an
+ * empty timeline does no locale work, and never share them across requests:
+ * a later render must observe the current system time zone.
+ */
+export function createTimelineDateFormatters() {
+  const cached = (options: Intl.DateTimeFormatOptions, fallback: (date: Date) => string) => {
+    let formatter: Intl.DateTimeFormat | undefined;
+    return (dateInput: string | number): string => {
+      const date = new Date(dateInput);
+      return guardInvalid(date, d => safeFormat(
+        () => (formatter ??= new Intl.DateTimeFormat('en-US', options)).format(d),
+        () => fallback(d),
+      ));
+    };
+  };
+  return {
+    formatDate: cached(DATE_OPTIONS, isoDay),
+    formatTime: cached(TIME_OPTIONS, isoClock),
+    formatDateTime: cached(DATE_TIME_OPTIONS, d => `${isoDay(d)} ${isoClock(d)}`),
+  };
+}
+
 export function formatDateTime(dateInput: string | number): string {
   const date = new Date(dateInput);
   return safeFormat(
-    () => date.toLocaleString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      hour: 'numeric',
-      minute: '2-digit',
-      hour12: true
-    }),
+    () => date.toLocaleString('en-US', DATE_TIME_OPTIONS),
     () => guardInvalid(date, d => `${isoDay(d)} ${isoClock(d)}`)
   );
 }
@@ -67,11 +94,7 @@ export function formatDateTime(dateInput: string | number): string {
 export function formatTime(dateInput: string | number): string {
   const date = new Date(dateInput);
   return safeFormat(
-    () => date.toLocaleString('en-US', {
-      hour: 'numeric',
-      minute: '2-digit',
-      hour12: true
-    }),
+    () => date.toLocaleString('en-US', TIME_OPTIONS),
     () => guardInvalid(date, isoClock)
   );
 }
@@ -88,11 +111,7 @@ export function compactTime(time: string): string {
 export function formatDate(dateInput: string | number): string {
   const date = new Date(dateInput);
   return safeFormat(
-    () => date.toLocaleString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric'
-    }),
+    () => date.toLocaleString('en-US', DATE_OPTIONS),
     () => guardInvalid(date, isoDay)
   );
 }
@@ -197,6 +216,7 @@ export function groupByDate<T>(
   options: GroupByDateOptions = {}
 ): Map<string, T[]> {
   const { order = 'asc' } = options;
+  const { formatDate } = createTimelineDateFormatters();
   const itemsByDay = new Map<string, T[]>();
   for (const item of items) {
     const itemDate = getDate(item);

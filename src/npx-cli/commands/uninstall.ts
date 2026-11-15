@@ -479,6 +479,10 @@ export async function runUninstallCommand(): Promise<void> {
       const { uninstallWarpMcpIntegration } = await import('../../services/integrations/McpIntegrations.js');
       return uninstallWarpMcpIntegration();
     }},
+    { label: 'Zed MCP server', fn: async () => {
+      const { uninstallZedMcpIntegration } = await import('../../services/integrations/McpIntegrations.js');
+      return uninstallZedMcpIntegration();
+    }},
     { label: 'OpenCode plugin', fn: async () => {
       const { uninstallOpenCodePlugin } = await import('../../services/integrations/OpenCodeInstaller.js');
       return uninstallOpenCodePlugin();
@@ -494,6 +498,10 @@ export async function runUninstallCommand(): Promise<void> {
     { label: 'Antigravity CLI hooks + MCP', fn: async () => {
       const { uninstallAntigravityCliHooks } = await import('../../services/integrations/AntigravityCliHooksInstaller.js');
       return uninstallAntigravityCliHooks();
+    }},
+    { label: 'Gemini CLI hooks', fn: async () => {
+      const { uninstallGeminiHooks } = await import('../../services/integrations/GeminiHooksInstaller.js');
+      return uninstallGeminiHooks();
     }},
     { label: 'Kimi Code hooks + MCP', fn: async () => {
       const { uninstallKimiHooks } = await import('../../services/integrations/KimiHooksInstaller.js');

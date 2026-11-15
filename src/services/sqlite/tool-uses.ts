@@ -116,17 +116,17 @@ export interface ToolUseQueryFilters {
 }
 
 /**
- * UTF-8-safe byte truncation. Copied from the oversized-prompt guard in
- * `SessionRoutes.handleSessionInitByClaudeId` so both boundaries clip the same
- * way (never mid-codepoint).
+ * UTF-8-safe byte truncation. Match the oversized-prompt guard's semantics:
+ * retain only whole code points and report the original payload's byte size.
  */
 export function truncatePayload(value: string, maxBytes: number = MAX_TOOL_PAYLOAD_BYTES): string {
   const byteLength = Buffer.byteLength(value, 'utf8');
   if (byteLength <= maxBytes) return value;
 
-  const buf = Buffer.from(value, 'utf8');
-  let end = maxBytes;
-  while (end > 0 && (buf[end] & 0xc0) === 0x80) end--;
+  // Encode only the retained prefix. Buffer.write stops before a code point
+  // that cannot fit, without allocating a copy of the full tool response.
+  const buf = Buffer.allocUnsafe(maxBytes);
+  const end = buf.write(value, 'utf8');
   return `${buf.subarray(0, end).toString('utf8')}…[truncated: ${byteLength} bytes]`;
 }
 
@@ -141,7 +141,9 @@ export function computeToolUseContentHash(
   toolResponse: string | null | undefined
 ): string {
   return createHash('sha256')
-    .update([toolName || '', toolInput || '', toolResponse || ''].join('\x00'))
+    .update(toolName || '').update('\x00')
+    .update(toolInput || '').update('\x00')
+    .update(toolResponse || '')
     .digest('hex')
     .slice(0, 16);
 }

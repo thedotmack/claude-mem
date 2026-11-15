@@ -5,14 +5,14 @@ import { uiMessage, renderUiMessage, type UiMessage } from '../../../../ui-messa
 import type { MemoryResult } from '../setup-data'
 import { prefersReducedMotion } from '../format'
 
-const formatDay = (day: string) => new Date(`${day}T12:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+const formatDay = (day: string, locale: string) => new Date(`${day}T12:00:00Z`).toLocaleDateString(locale, { month: 'short', day: 'numeric', year: 'numeric' })
 
 /** `saved` is the text last written to memory, as observation `savedId`; an edit replaces that copy when the note loses focus. */
 interface KeptNote { record: MemoryResult; text: string; saved: string; savedId: number }
 
 function ResultCard({ record, note, onDiscard, onKeep, onEdit, onSave }: { record: MemoryResult; note?: KeptNote; onDiscard: () => void; onKeep?: () => void; onEdit?: (text: string) => void; onSave?: () => void }) {
-  const { t } = useI18n()
-  const source = `${record.project} · ${record.agent} · ${record.session} · ${formatDay(record.date)}`
+  const { t, locale } = useI18n()
+  const source = `${record.project} · ${record.agent} · ${record.session} · ${formatDay(record.date, locale === 'fr' ? locale : 'en-US')}`
   return (
     <article className="panel workspace-card" data-record-id={record.id}>
       <h2>{record.title}</h2>

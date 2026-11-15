@@ -26,6 +26,15 @@ export interface DeepSearchRequest {
   query: string;
   options: SearchOptions;
 }
+/**
+ * The parent sends a wall-clock deadline. The child reads the wall clock once,
+ * when the request arrives, and measures everything after that with the
+ * monotonic clock, so a wall-clock step while the child starts its guard or
+ * searches cannot expire it early or give it extra time.
+ */
+export function childExpired(deadline: number, receivedWallMs: number, receivedMonoMs: number, nowMonoMs: number): boolean {
+  return nowMonoMs - receivedMonoMs >= deadline - receivedWallMs;
+}
 export interface DeepSearchExecutor {
   search(query: string, options: SearchOptions): Promise<DeepSearchResult>;
 }

@@ -428,7 +428,8 @@ export class CodexAppServerClient {
   private startPromise: Promise<void> | null = null;
   private nextRequestId = 1;
   private pending = new Map<number, PendingRequest>();
-  private protocolBuffer = '';
+  private protocolFragments: string[] = [];
+  private protocolLineBytes = 0;
   private stderrTail = '';
   private privateRoot: string | null = null;
   private workspace: string | null = null;
@@ -765,7 +766,8 @@ export class CodexAppServerClient {
     this.workspace = runtime.workspace;
     this.codexPath = codexPath;
     this.binaryFingerprint = fingerprint;
-    this.protocolBuffer = '';
+    this.protocolFragments = [];
+    this.protocolLineBytes = 0;
     this.stderrTail = '';
 
     let expectedChild: ChildProcessWithoutNullStreams | undefined;
@@ -781,6 +783,9 @@ export class CodexAppServerClient {
       expectedChild = child;
       this.child = child;
 
+      // Pipe writes can fail asynchronously after writeMessage returns. The
+      // ChildProcess 'error' event does not handle its stdin stream's EPIPE.
+      child.stdin.on('error', error => this.onChildExit(child, error));
       child.stdout.setEncoding('utf8');
       child.stderr.setEncoding('utf8');
       child.stdout.on('data', chunk => this.onStdout(child, String(chunk)));
@@ -834,10 +839,11 @@ export class CodexAppServerClient {
     const id = this.nextRequestId++;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
+        pending.removeAbort?.();
         this.pending.delete(id);
         const error = new Error(`Codex app-server ${method} timed out after ${timeoutMs}ms`);
         reject(error);
-        this.invalidate(error);
+        this.invalidate(error, child);
       }, timeoutMs);
       const pending: PendingRequest = { resolve, reject, timer };
       if (signal) {
@@ -846,7 +852,7 @@ export class CodexAppServerClient {
           clearTimeout(timer);
           const error = new Error(`Codex app-server ${method} aborted`);
           reject(error);
-          this.invalidate(error);
+          this.invalidate(error, child);
         };
         if (signal.aborted) {
           onAbort();
@@ -875,16 +881,25 @@ export class CodexAppServerClient {
 
   private onStdout(child: ChildProcessWithoutNullStreams, chunk: string): void {
     if (this.child !== child) return;
-    this.protocolBuffer += chunk;
-    if (Buffer.byteLength(this.protocolBuffer) > MAX_PROTOCOL_LINE_BYTES) {
-      this.invalidate(new Error('Codex app-server protocol line exceeded safety limit'));
-      return;
-    }
+    let offset = 0;
+    while (offset < chunk.length) {
+      const newline = chunk.indexOf('\n', offset);
+      const fragment = chunk.slice(offset, newline === -1 ? chunk.length : newline);
+      this.protocolLineBytes += Buffer.byteLength(fragment);
+      if (this.protocolLineBytes > MAX_PROTOCOL_LINE_BYTES) {
+        this.invalidate(new Error('Codex app-server protocol line exceeded safety limit'));
+        return;
+      }
+      if (fragment) this.protocolFragments.push(fragment);
+      if (newline === -1) return;
 
-    let newline: number;
-    while ((newline = this.protocolBuffer.indexOf('\n')) !== -1) {
-      const line = this.protocolBuffer.slice(0, newline).trim();
-      this.protocolBuffer = this.protocolBuffer.slice(newline + 1);
+      // The cap belongs to one protocol line, not a stdout chunk containing
+      // several lines. Assemble each line once instead of rescanning its
+      // growing prefix for every bounded pipe read.
+      const line = this.protocolFragments.join('').trim();
+      this.protocolFragments = [];
+      this.protocolLineBytes = 0;
+      offset = newline + 1;
       if (!line) continue;
       let message: unknown;
       try {
@@ -894,6 +909,7 @@ export class CodexAppServerClient {
         return;
       }
       this.handleMessage(message);
+      if (this.child !== child) return;
     }
   }
 
@@ -1007,6 +1023,8 @@ export class CodexAppServerClient {
     if (child) logger.debug('SDK', 'Stopping persistent Codex app-server', { pid: child.pid }, error);
     this.child = null;
     this.startPromise = null;
+    this.protocolFragments = [];
+    this.protocolLineBytes = 0;
     let termination = Promise.resolve();
     if (child) {
       if (child.pid) {

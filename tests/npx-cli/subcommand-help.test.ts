@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { spawnSync } from 'child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -14,6 +14,9 @@ const cliEntry = join(packageRoot, 'dist', 'npx-cli', 'index.js');
 beforeAll(() => {
   mkdirSync(join(packageRoot, 'dist', 'npx-cli'), { recursive: true });
   copyFileSync(join(repoRoot, 'package.json'), join(packageRoot, 'package.json'));
+  const pluginScripts = join(packageRoot, 'plugin', 'scripts');
+  mkdirSync(pluginScripts, { recursive: true });
+  writeFileSync(join(pluginScripts, 'mcp-server.cjs'), "console.log('MCP fixture started');\n");
   const build = spawnSync(
     process.execPath,
     ['build', join(repoRoot, 'src', 'npx-cli', 'index.ts'), '--target', 'node', '--outfile', cliEntry],
@@ -36,10 +39,13 @@ function runCli(args: string[]) {
     USERPROFILE: home,
     // Devin keeps its config under %APPDATA% on Windows.
     APPDATA: join(home, 'AppData', 'Roaming'),
+    LOCALAPPDATA: join(home, 'AppData', 'Local'),
     CLAUDE_CONFIG_DIR: join(home, '.claude'),
+    CODEX_HOME: join(home, '.codex'),
     CLAUDE_MEM_DATA_DIR: join(home, '.claude-mem'),
-    // Nothing listens on port 1, so `backup run` cannot reach a running worker.
+    // A regression that runs a command cannot reach a configured worker.
     CLAUDE_MEM_WORKER_PORT: '1',
+    CLAUDE_MEM_WORKER_URL: 'http://127.0.0.1:1',
     // Bun's transpiler cache lands in ~/Library/Caches/bun on macOS; it is not CLI output.
     BUN_RUNTIME_TRANSPILER_CACHE_PATH: '0',
   };
@@ -47,6 +53,8 @@ function runCli(args: string[]) {
   delete env.CLAUDE_PLUGIN_ROOT;
   delete env.KIMI_CODE_HOME;
   delete env.PI_CODING_AGENT_DIR;
+  delete env.CLAUDE_MEM_T3CODE_SETTINGS_PATH;
+  delete env.T3CODE_HOME;
   try {
     const result = spawnSync(process.execPath, [cliEntry, ...args], {
       encoding: 'utf-8',
@@ -98,6 +106,12 @@ describe('npx CLI subcommand --help', () => {
     ['server', 'start'],
     ['worker', 'start'],
     ['transcript', 'watch'],
+    ['status'],
+    ['doctor'],
+    ['hook', 'cursor'],
+    ['t3code', 'uninstall'],
+    ['t3-code', 'status'],
+    ['t3', 'uninstall'],
   ].entries()) {
     const flag = index % 2 === 0 ? '--help' : '-h';
     it(`${command.join(' ')} ${flag} prints help and does not run the command`, () => {
@@ -107,4 +121,18 @@ describe('npx CLI subcommand --help', () => {
       expect(r.homeEntries).toEqual([]);
     });
   }
+
+  it('mcp --help prints help without launching the packaged stdio server', () => {
+    const r = runCli(['mcp', '--help']);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('Install Commands');
+    expect(r.stdout).not.toContain('MCP fixture started');
+    expect(r.homeEntries).toEqual([]);
+  });
+
+  it('mcp without a help flag still launches the packaged stdio server', () => {
+    const r = runCli(['mcp']);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('MCP fixture started');
+  });
 });

@@ -2,7 +2,7 @@ import { configureToolUseIndex, configureToolUseIndexAsync, searchToolUses, empt
 import { UNSEGMENTED_SCRIPT, MAX_SUBSTRING_TERMS, buildSubstringClause, buildFTSMatchQuery } from './search-query.js';
 import { Database, type Statement } from 'bun:sqlite';
 import { TableNameRow } from '../../types/database.js';
-import { DATA_DIR, DB_PATH, ensureDir } from '../../shared/paths.js';
+import { DATA_DIR, DB_PATH, ensurePrivateDir } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import { isDirectChild, normalizePath } from '../../shared/path-utils.js';
 import {
@@ -112,7 +112,7 @@ export class SessionSearch {
     if (dbPathOrDb instanceof Database) {
       this.db = dbPathOrDb;
     } else {
-      ensureDir(DATA_DIR);
+      ensurePrivateDir(DATA_DIR);
       this.db = new Database(dbPathOrDb);
     }
 

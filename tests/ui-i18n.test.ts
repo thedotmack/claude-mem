@@ -4,7 +4,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
-import { parseLocale, interpolate, placeholders } from '../src/ui/i18n/locale.ts';
+import { LOCALE_NAMES, parseLocale, interpolate, placeholders } from '../src/ui/i18n/locale.ts';
 import { viewerZh } from '../src/ui/i18n/viewer-zh.ts';
 import { myworkZh } from '../src/ui/i18n/mywork-zh.ts';
 import { setupZh } from '../src/ui/i18n/setup-zh.ts';
@@ -14,6 +14,10 @@ import { myworkKo } from '../src/ui/i18n/mywork-ko.ts';
 import { setupKo } from '../src/ui/i18n/setup-ko.ts';
 import { settingsKo } from '../src/ui/i18n/settings-ko.ts';
 import { myworkTr } from '../src/ui/i18n/mywork-tr.ts';
+import { viewerFr } from '../src/ui/i18n/viewer-fr.ts';
+import { myworkFr } from '../src/ui/i18n/mywork-fr.ts';
+import { setupFr } from '../src/ui/i18n/setup-fr.ts';
+import { settingsFr } from '../src/ui/i18n/settings-fr.ts';
 
 const UI_ROOT = fileURLToPath(new URL('../src/ui/', import.meta.url));
 
@@ -47,7 +51,9 @@ function wordsMissingFrom(catalog: Record<string, string>, folders: string[]): s
 describe('UI language catalogs', () => {
   it('keeps English as the default and accepts each supported locale', () => {
     assert.equal(parseLocale(null), 'en');
-    assert.equal(parseLocale('fr'), 'en');
+    assert.equal(parseLocale('fr'), 'fr');
+    assert.equal(LOCALE_NAMES.fr, 'Français');
+    assert.equal(parseLocale('fr-FR'), 'en');
     assert.equal(parseLocale('zh-CN'), 'zh-CN');
     assert.equal(parseLocale('ko'), 'ko');
     assert.equal(parseLocale('tr'), 'tr');
@@ -59,7 +65,11 @@ describe('UI language catalogs', () => {
     assert.equal(interpolate('{unknown}', {}), '{unknown}');
   });
 
-  for (const [name, catalog] of Object.entries({ viewerZh, myworkZh, setupZh, settingsZh, viewerKo, myworkKo, setupKo, settingsKo, myworkTr })) {
+  for (const [name, catalog] of Object.entries({
+    viewerZh, myworkZh, setupZh, settingsZh,
+    viewerKo, myworkKo, setupKo, settingsKo, myworkTr,
+    viewerFr, myworkFr, setupFr, settingsFr,
+  })) {
     it(`${name} has nonempty translations and preserves interpolation placeholders`, () => {
       assert.ok(Object.keys(catalog).length > 0);
       for (const [english, translated] of Object.entries(catalog)) {
@@ -71,11 +81,12 @@ describe('UI language catalogs', () => {
   }
 
   // Every literal t() call has a zh entry (below), so matching the zh keys covers the whole UI.
-  for (const [name, korean, chinese] of [
+  for (const [name, localized, chinese] of [
     ['viewerKo', viewerKo, viewerZh], ['myworkKo', myworkKo, myworkZh], ['setupKo', setupKo, setupZh], ['settingsKo', settingsKo, settingsZh],
+    ['viewerFr', viewerFr, viewerZh], ['myworkFr', myworkFr, myworkZh], ['setupFr', setupFr, setupZh], ['settingsFr', settingsFr, settingsZh],
   ] as const) {
     it(`${name} translates exactly the strings its Chinese catalog does`, () => {
-      assert.deepEqual(Object.keys(korean).sort(), Object.keys(chinese).sort());
+      assert.deepEqual(Object.keys(localized).sort(), Object.keys(chinese).sort());
     });
   }
 
@@ -94,7 +105,11 @@ describe('UI language catalogs', () => {
     assert.deepEqual(wordsMissingFrom(myworkTr, ['my-work/src/pages', 'my-work/src/components']), []);
   });
 
-  for (const catalogs of [[viewerZh, myworkZh, setupZh, settingsZh], [viewerKo, myworkKo, setupKo, settingsKo]]) {
+  for (const catalogs of [
+    [viewerZh, myworkZh, setupZh, settingsZh],
+    [viewerKo, myworkKo, setupKo, settingsKo],
+    [viewerFr, myworkFr, setupFr, settingsFr],
+  ]) {
     it('shared English phrases have the same translation across catalogs', () => {
       const seen = new Map<string, string>();
       for (const catalog of catalogs) {

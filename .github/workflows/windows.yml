@@ -6,6 +6,8 @@ on:
       - 'src/**'
       - 'tests/**'
       - 'plugin/scripts/**'
+      - 'plugin/skills/**'
+      - 'hermes/**'
       - 'scripts/**'
       - 'tests/scripts/**'
       - 'package.json'
@@ -38,13 +40,38 @@ jobs:
           node-version: '22'
 
       - name: Install Bun (worker runtime)
-        run: |
-          irm https://bun.sh/install.ps1 | iex
         shell: pwsh
+        run: |
+          # bun.sh/install.ps1 is not a versioned artifact, so pin the release it downloads with
+          # -Version instead of piping the script into iex and taking whatever "latest" is that day.
+          # The explicit check keeps the later steps' USERPROFILE path honest.
+          & ([scriptblock]::Create((irm https://bun.sh/install.ps1))) -Version 1.4.4
+          $bun = Join-Path $env:USERPROFILE '.bun\bin\bun.exe'
+          if (-not (Test-Path $bun)) { throw "Bun 1.4.4 was not installed to $bun" }
+          & $bun --version
 
       - run: npm install --no-audit --no-fund
 
       - run: npm run build
+
+      # The Linux lane runs both Python suites (ci.yml); Windows never did, which is how three POSIX
+      # path assumptions in the agent-cost-report skill and two in tests/hermes went unnoticed. The
+      # interpreter is pinned rather than taken from the image, and discovery matches Linux.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Python suites (agent-cost-report skill, Hermes provider)
+        shell: pwsh
+        run: |
+          # The cost-report package opens America/Los_Angeles through zoneinfo at import time, and
+          # Windows ships no IANA database, so the tzdata package has to provide it.
+          python -m pip install --disable-pip-version-check --quiet tzdata
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -B -m unittest discover -s plugin/skills/agent-cost-report/scripts/tests -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -B -m unittest discover -s tests/hermes -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Hook compatibility with Git Bash and Windows overrides
         shell: pwsh
@@ -202,9 +229,15 @@ jobs:
           node-version: '22'
 
       - name: Install Bun (worker runtime + test runner)
-        run: |
-          irm https://bun.sh/install.ps1 | iex
         shell: pwsh
+        run: |
+          # bun.sh/install.ps1 is not a versioned artifact, so pin the release it downloads with
+          # -Version instead of piping the script into iex and taking whatever "latest" is that day.
+          # The explicit check keeps the later steps' USERPROFILE path honest.
+          & ([scriptblock]::Create((irm https://bun.sh/install.ps1))) -Version 1.4.4
+          $bun = Join-Path $env:USERPROFILE '.bun\bin\bun.exe'
+          if (-not (Test-Path $bun)) { throw "Bun 1.4.4 was not installed to $bun" }
+          & $bun --version
 
       # Caching uv's downloads AND its managed Python keeps a cold chromadb
       # resolve off the critical path; without it this job pays ~10 minutes on

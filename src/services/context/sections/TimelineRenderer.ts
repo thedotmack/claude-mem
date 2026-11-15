@@ -5,29 +5,12 @@ import type {
   TimelineItem,
   SummaryTimelineItem,
 } from '../types.js';
-import { formatTime, formatDate, formatDateTime, extractFirstFile, parseJsonArray } from '../../../shared/timeline-formatting.js';
+import { createTimelineDateFormatters, extractFirstFile, groupByDate, parseJsonArray } from '../../../shared/timeline-formatting.js';
 import * as Agent from '../formatters/AgentFormatter.js';
 import * as Human from '../formatters/HumanFormatter.js';
 
 export function groupTimelineByDay(timeline: TimelineItem[]): Map<string, TimelineItem[]> {
-  const itemsByDay = new Map<string, TimelineItem[]>();
-
-  for (const item of timeline) {
-    const itemDate = item.type === 'observation' ? item.data.created_at : item.data.displayTime;
-    const day = formatDate(itemDate);
-    if (!itemsByDay.has(day)) {
-      itemsByDay.set(day, []);
-    }
-    itemsByDay.get(day)!.push(item);
-  }
-
-  const sortedEntries = Array.from(itemsByDay.entries()).sort((a, b) => {
-    const aDate = new Date(a[0]).getTime();
-    const bDate = new Date(b[0]).getTime();
-    return aDate - bDate;
-  });
-
-  return new Map(sortedEntries);
+  return groupByDate(timeline, item => item.type === 'observation' ? item.data.created_at : item.data.displayTime);
 }
 
 function getDetailField(obs: Observation, config: ContextConfig): string | null {
@@ -42,6 +25,7 @@ function renderDayTimelineAgent(
   dayItems: TimelineItem[],
   fullObservationIds: Set<Observation['id']>,
   config: ContextConfig,
+  { formatTime, formatDateTime }: ReturnType<typeof createTimelineDateFormatters>,
 ): string[] {
   const output: string[] = [];
 
@@ -81,8 +65,9 @@ export function renderAgentTimeline(
   config: ContextConfig
 ): string[] {
   const output: string[] = [];
+  const dates = createTimelineDateFormatters();
   for (const [day, dayItems] of groupTimelineByDay(timeline)) {
-    output.push(...renderDayTimelineAgent(day, dayItems, fullObservationIds, config));
+    output.push(...renderDayTimelineAgent(day, dayItems, fullObservationIds, config, dates));
   }
   return output;
 }
@@ -111,6 +96,7 @@ export function buildHumanTimelineEntries(
   cwd: string
 ): HumanTimelineEntry[] {
   const entries: HumanTimelineEntry[] = [];
+  const { formatTime, formatDateTime } = createTimelineDateFormatters();
   for (const [day, dayItems] of groupTimelineByDay(timeline)) {
     let lastTime = '';
     for (const item of dayItems) {

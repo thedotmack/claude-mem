@@ -49,14 +49,14 @@ The headline is dollars, to two decimals, labeled. The dollars come from Claude 
 
 Memory dig mechanics: the claude-mem `mem-search` skill (progressive recall).
 
-## Default scope (ALWAYS)
+## Default scope
 
 - Unless the user names a **specific session / range / project**, the window is the **last 7 full days in PT, not counting today**: `end` = the PT midnight that started today (exclusive), `start` = `end − 7 days`. The default window never contains a partial day (G3, Alex 2026-09-25).
 - Explicit windows: `--start YYYY-MM-DD --end YYYY-MM-DD` (PT calendar days, end exclusive). An explicit `--end` later than today marks the last day "partial, generated HH:MM PT".
 - One session: `--session <content_session_id>`. One project plus a period: `--project <name> --start … --end …` (worktrees of the project are included).
 - The report **Scope** strip shows the PT range, and Details list every session id in scope.
 
-## Progressive Mem Search (ALWAYS)
+## Progressive Mem Search
 
 Follow the claude-mem `mem-search` three layers. Keep spend light.
 
@@ -83,15 +83,15 @@ ADHD process bullets:
 
 In this skill the search pass is the **review step** (see Recipe step 4): the pipeline drafts categories and failure types from keywords (`label_source: keyword`); the orchestrator confirms or changes each line item's `category` and `failure_type` from its cited evidence IDs and applies the result with `review --apply`. Items left unreviewed keep the "draft label" mark and the footer counts them.
 
-## Work categories (ALWAYS)
+## Work categories
 
 `Feature` · `Bug fix` · `Incident` · `Maintenance` · `Investigation` · `Experiment`
 
-## Failure / waste types (ALWAYS)
+## Failure / waste types
 
 `Looping` · `Hedging` · `Wrong turn` · `Rework` · `Regression` · `Premature completion` · `Unauthorized action` · `Suboptimal path` · `Duplicate work` · `Blocked work` · `Missed requirement` · `Unnecessary escalation` · `Context re-read` · `Model thrash` · `Fan-out waste` · `Recovery after miss`
 
-**Rework lock (ALWAYS):** Rework lives **only** under `failure_type` — never as a work category. Keep category as the intended job type; set `failure_type: Rework` when rework occurred.
+**Rework lock:** Rework lives **only** under `failure_type` — never as a work category. Keep category as the intended job type; set `failure_type: Rework` when rework occurred.
 
 A line item can have a work category **and** a failure_type (e.g. Maintenance + Looping).
 
@@ -127,7 +127,7 @@ Unpriced models (not in the price list, or a negative "variable" price) are list
 
 A second pass over the same transcripts tags every user turn human / bot / unknown (relayed agent prompts are not the report owner's own words), finds frustration episodes, and runs the pattern detectors from the Frustration Arc study: invented human gates, broke working things, wrong or expensive model, over-engineering, did something not asked, fake output, false "done", wrong tool or contact, bad outbound (incidents × recipients, never dollars), memory or rule loss, jargon, unclear cause, plus tool errors and hedging (a caveat given when the answer was already available). Four summary tiles; everything else in Details. Explicit `STEER from <name>:`, `RESET from <name>:` and `CORRECTION from <name>:` labels are treated as automated relays for any name. A configured owner name also treats a third-person relay (`<name> asked`, `said`, `wants`, `greened`, or `approved`) as automated; with no owner name that check stays name-free. Every count is labeled `heuristic` until reviewed or classified. The optional classifier (`--classify`) is off by default, capped at $2.00 per run, uses only a regular inference `OPENROUTER_API_KEY`, and its spend is shown separately.
 
-## Money labeling (ALWAYS)
+## Money labeling
 
 | Label | Meaning |
 |-------|---------|
@@ -166,7 +166,7 @@ Each row in `line-items.csv` / `report.json.line_items`:
 | `behavior_counts` | Pattern hits in this session |
 | `recommended_action` / `confidence` / `date_pt` / `notes` | One lever; high/medium/low; PT day; one plain sentence |
 
-## Deliverables (ALWAYS)
+## Deliverables
 
 `acr.py` writes one directory containing:
 
@@ -187,18 +187,18 @@ Each row in `line-items.csv` / `report.json.line_items`:
 6. **Worth your attention** — at most three, computed
 7. **Details & evidence** (folded; open in the PDF) — wins, mistakes by day, behavior pattern table with the upper bound, rule effectiveness, spend and pricing, models, failure accounting, line items, devices, unmatched transcripts, unpriced models, label counts, the honesty rules, links to the CSV and JSON
 
-## Truthfulness ALWAYS rules
+## Truthfulness rules
 
 Positive truth rules only:
 
-1. Always label estimate vs measured (`cost_basis` = `estimated_usage` or `measured_provider`).
-2. Always say **measured spend unavailable** when unmatched — never "$0 spent" for unknown.
-3. Always use **completed outcomes** as the unit (cost per completed outcome).
-4. Always keep `risk_exposure` non-dollar unless real cash/remediation is at stake.
-5. Always invent human work-item titles; observation titles are evidence-only.
-6. Always progressive Mem Search; evidence IDs live in the appendix.
-7. Always put Rework under `failure_type` only.
-8. Always default scope to most recent sessions unless the user names another.
+1. Label estimate vs measured (`cost_basis` = `estimated_usage` or `measured_provider`).
+2. Say **measured spend unavailable** when unmatched — never "$0 spent" for unknown.
+3. Use **completed outcomes** as the unit (cost per completed outcome).
+4. Keep `risk_exposure` non-dollar unless real cash/remediation is at stake.
+5. Invent human work-item titles; observation titles are evidence-only.
+6. Progressive Mem Search; evidence IDs live in the appendix.
+7. Put Rework under `failure_type` only.
+8. Default scope to most recent sessions unless the user names another.
 
 Added by the rebuild, same spirit: the note-taker's cost is separate and never in the headline; keyword labels are drafts until reviewed; Grok Bot and Mac figures are "unavailable" or "extrapolated (low confidence)", never $0 and never guessed; the live database is only ever opened read-only (every run works on a snapshot).
 
