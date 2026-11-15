@@ -48,7 +48,7 @@ kilo run --pure --model YOUR_PROVIDER/YOUR_MODEL \
 
 In a later run, ask `claudemem_search` for `restore snapshots` with project `memory-practice`. Check that the returned index contains the saved ID and title. Then ask `claudemem_get_observations` for that selected ID with the same project and verify the exact text.
 
-The project is a query/write scope, not a multi-user authorization boundary. This trusted local MCP server can expose the worker owner's data. Only connect it to clients you trust. This guide makes no promise about explicit saves honoring capture exclusions; that discrepancy is tracked in [#6098](https://github.com/thedotmack/claude-mem/issues/6098).
+The project is a query/write scope, not a multi-user authorization boundary. This trusted local MCP server can expose the worker owner's data. Only connect it to clients you trust. Explicit MCP saves honor `CLAUDE_MEM_EXCLUDED_PROJECTS`: a `save_memory` call from an excluded checkout is skipped and answers "Not saved: this checkout is excluded by CLAUDE_MEM_EXCLUDED_PROJECTS." ([#6105](https://github.com/thedotmack/claude-mem/pull/6105), in the release after 15.18.5).
 
 A final assistant sentence is not proof of a successful operation. Inspect the actual tool result for saved receipts or errors. There is no automatic replay added by this connection. Retrying an explicit save manually is a new operation unless the existing worker deduplication recognizes it.
 

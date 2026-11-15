@@ -43,7 +43,7 @@ cline --data-dir "$CLINE_MEMORY_DATA" --cwd "$PWD" --auto-approve false \
 
 Review the tool call before approving it. In a later run, request `search` with query `restore` and project `memory-practice`, then `get_observations` with selected IDs and that same project. Inspect actual tool results rather than trusting a final assistant claim.
 
-Project arguments restrict the query; they are not a multi-user authorization boundary. This local MCP connection can access tools and data available to the worker owner. Do not expose it to untrusted users. Only approve the explicit memory operations you intend. This guide does not promise that project capture exclusions block explicit MCP saves; that behavior is being audited separately.
+Project arguments restrict the query; they are not a multi-user authorization boundary. This local MCP connection can access tools and data available to the worker owner. Do not expose it to untrusted users. Only approve the explicit memory operations you intend. Explicit MCP saves honor `CLAUDE_MEM_EXCLUDED_PROJECTS`: a `save_memory` call from an excluded checkout is skipped and answers "Not saved: this checkout is excluded by CLAUDE_MEM_EXCLUDED_PROJECTS." ([#6105](https://github.com/thedotmack/claude-mem/pull/6105), in the release after 15.18.5).
 
 ## Verification and disconnect
 
