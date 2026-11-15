@@ -418,13 +418,14 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       finally { steps.push({ step: name, agent, startedAt, finishedAt: new Date(now()).toISOString(), ...extra }); }
     };
     /**
-     * The owner's language for this run is named in every grouping, review, focus and story question. Those run as
-     * separate agents that each see only their own input (a review batch in "amend" mode sees only its later asks), so
-     * left to the skill's rule they could each pick a different language (#5660). It is decided once:
-     * CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE when set; otherwise the first grouping answer's "language" (the grouping
-     * question already reads the asks, so this costs no extra model call), recorded for runs with nothing to group;
-     * otherwise the language an earlier run recorded. With none, each step keeps the skill's own rule.
-     * The goals step keeps the skill's own language and kept-title rules, including across an initial mapping's batches.
+     * The owner's language for this run is named in every step's question: grouping, review, focus, story and goals.
+     * Those run as separate agents that each see only their own input (a review batch in "amend" mode sees only its
+     * later asks; a goals batch in an initial mapping sees only its slice of the prompts, and a goals-only run has no
+     * grouping at all), so left to the skill's rule they could each pick a different language (#5660, #6185). It is
+     * decided once: CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE when set; otherwise the first grouping answer's "language"
+     * (the grouping question already reads the asks, so this costs no extra model call), recorded for runs with
+     * nothing to group; otherwise the language an earlier run recorded. With none, each step keeps the skill's own
+     * rule. The rule keeps kept wording as it was, so naming the language never renames a kept title or rule.
      */
     const configuredLanguage = resolveTextLanguage(dataDir);
     let textLanguage = configuredLanguage ?? readDecidedTextLanguage(ledgerDir);
@@ -439,7 +440,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       writeFileSync(join(ledgerDir, DECIDED_LANGUAGE_FILE), JSON.stringify({ language: decided, decidedAt: new Date(now()).toISOString() }, null, 2), { mode: 0o600 });
     };
     const step = <T>(name: Step, question: string, save: (answer: any) => T | Promise<T>, answerSchema?: AnswerSchema): Promise<T> => {
-      const rule = name === 'goals' ? '' : languageRule();
+      const rule = languageRule();
       return timed(name, () => askAndSave(name, rule ? `${question}\n\n${rule}` : question, save, answerSchema));
     };
     /** Ask, save, and on a refusal (unreadable JSON or a validator's) ask once more with the answer and reason.
@@ -547,7 +548,10 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
                 'The next prompts, oldest first, are in ' + batchPath + '. Return only {"map": "<the map of this batch, with dated quotes>", "goals": <the complete cumulative owner-goals.json object>}. The worker checks every quote against the full window, keeps this batch map for audit and saves the final cumulative snapshot after all batches. If there have been no actionable goals at all so far, use "goals": null; do not invent an item just to fill a batch. Never replace a nonempty checked draft with null.',
                 focusAreasNote(focusPath),
               ].join('\n\n');
-              const available = Math.min(OWNER_GOALS_BATCH_BYTES, OWNER_GOALS_QUESTION_BYTES - Buffer.byteLength(expandedQuestion(question), 'utf8'));
+              // step() appends the run's language line to the question, so size the batch against the question
+              // as it will actually be asked: a batch packed to the budget must not push it past the ask limit.
+              const rule = languageRule();
+              const available = Math.min(OWNER_GOALS_BATCH_BYTES, OWNER_GOALS_QUESTION_BYTES - Buffer.byteLength(expandedQuestion(rule ? `${question}\n\n${rule}` : question), 'utf8'));
               const batch = nextOwnerGoalsBatch(exported.sections, processed, available);
               const contents = renderOwnerGoalsBatch(batch);
               writeFileSync(batchPath, contents, { mode: 0o600 });

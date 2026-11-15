@@ -135,6 +135,23 @@ describe('initial owner-goals batches', () => {
     } finally { fixture.close(); }
   }, 120_000);
 
+  it('a batched first map names the run language in every batch question and stays inside the question budget (#6185)', async () => {
+    const fixture = harness(prompts(5922));
+    writeFileSync(join(fixture.dataDir, 'settings.json'), JSON.stringify({ CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE: 'English' }));
+    const seen: string[] = [];
+    let calls = 0;
+    try {
+      expect(await run(fixture, async question => {
+        calls++;
+        expect(question).toContain("The owner's language for this run is English.");
+        expect(Buffer.byteLength(question)).toBeLessThanOrEqual(OWNER_GOALS_QUESTION_BYTES);
+        return answer(question, seen);
+      }, 'api')).toBe('goals mapped.');
+      expect(calls).toBeGreaterThan(1);
+      expect(seen).toEqual(Array.from({ length: 5922 }, (_, index) => String(index)));
+    } finally { fixture.close(); }
+  }, 120_000);
+
   it('round trips Unicode and escaped focus payloads through Python without changing their save commitment', async () => {
     const fixture = harness(prompts(300, 2800));
     const title = 'İstanbul "quoted" \\ 🚀';
