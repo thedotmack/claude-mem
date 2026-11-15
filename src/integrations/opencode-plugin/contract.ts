@@ -63,10 +63,15 @@ export const REAL_OPENCODE_EVENT_TYPES = [
 export type RealOpenCodeEventType = (typeof REAL_OPENCODE_EVENT_TYPES)[number];
 
 /**
- * The V2 bus event types the V2 adapter reacts to, as `@opencode/schema`
- * 2.0.22 names them. V2 events are `{ type, data, location }` envelopes, and
- * V2 has no `session.idle`: a finished turn is `session.execution.succeeded`,
- * and the last `session.text.ended` before it carries the reply.
+ * The V2 bus event types the V2 adapter reacts to, verified against the 2.0 GA
+ * schema and the real compaction flow (anomalyco/opencode v2.0.32:
+ * `packages/core/src/session/compaction.ts` publishes
+ * `SessionEvent.Compaction.Ended` on success). V2 events are
+ * `{ type, data, location }` envelopes, and V2 has no `session.idle`:
+ * a finished turn is `session.execution.succeeded`, a finished compaction is
+ * `session.compaction.ended`, and the last `session.text.ended` before it
+ * carries the reply. (The schema also defines an ephemeral `session.compacted`,
+ * but the compaction flow does not publish it as of 2.0.32.)
  */
 export const REAL_OPENCODE_V2_EVENT_TYPES = [
   "session.text.ended",

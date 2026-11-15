@@ -1,0 +1,16 @@
+{
+  // Zed settings are JSONC: comments and trailing commas are valid here.
+  "agent": {
+    "tool_permissions": {
+      "default": "confirm", // ask before running MCP tools
+    },
+  },
+  "theme": "One Dark",
+  "context_servers": {
+    // My notes server.
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/alex/notes"],
+    },
+  },
+}

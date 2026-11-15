@@ -195,6 +195,100 @@ describe('the API corpus agent answers on the selected provider', () => {
     });
   });
 
+  describe('Unicode evidence selection', () => {
+    const cases = [
+      { name: 'decomposed question against a composed title', question: 're\u0301sume\u0301', title: 'Résumé' },
+      { name: 'composed question against a decomposed title', question: 'résumé', title: 'Re\u0301sume\u0301' },
+      { name: 'Hindi vowel marks in stored facts', question: 'किताब', title: 'Older source', extra: { facts: ['किताब'] } },
+      { name: 'Bengali vowel marks in concepts', question: 'কিতাব', title: 'Older source', extra: { concepts: ['কিতাব'] } },
+      { name: 'Hebrew points in narrative', question: 'כָּתַב', title: 'Older source', extra: { narrative: 'כָּתַב' } },
+      { name: 'canonical file-path words', question: 'résumé', title: 'Older source', extra: { files_read: ['docs/re\u0301sume\u0301.md'] } },
+      { name: 'canonical project words', question: 'Café', title: 'Older source', extra: { project: 'Cafe\u0301' } },
+      { name: 'canonically reordered combining marks', question: 'a\u0327\u0301b', title: 'a\u0301\u0327b' },
+      { name: 'canonical Unicode prefixes', question: 're\u0301su', title: 'résumé' },
+      { name: 'existing decomposed Hangul syllables', question: '가', title: '가' },
+      { name: 'equivalent composed Hangul syllables', question: '가', title: '가' },
+      { name: 'existing decomposed Hangul prefixes', question: '가나', title: '가나다' },
+      { name: 'equivalent composed Hangul prefixes', question: '가나', title: '가나다' },
+      { name: 'existing ASCII prefixes', question: 'AUTH', title: 'Authentication' },
+      { name: 'existing identifier and number tokens', question: 'API_v2', title: 'API_v2 update' },
+    ];
+
+    for (const testCase of cases) {
+      it(`retains the matching observation for ${testCase.name}`, async () => {
+        await withSettings(OPENROUTER_SETTINGS, async (settingsPath) => {
+          const fetchMock = fakeFetch([chatAnswer('Answer from the selected evidence.')]);
+          restoreFetch = fetchMock.restore;
+          const { store } = createStore();
+          const agent = new ApiCorpusAgent(store, 'openrouter', settingsPath);
+          const corpus = createCorpus({ observations: [
+            createObservation(41, testCase.title, testCase.extra),
+            // If tokenization loses the match, the recency fallback spends
+            // the entire excerpt budget here and drops the older source.
+            createObservation(42, 'Unrelated recent note', { narrative: 'padding '.repeat(8000) }),
+          ] });
+          const original = JSON.stringify(corpus.observations);
+          await agent.prime(corpus);
+
+          const result = await agent.query(corpus, testCase.question);
+
+          expect(result.observations_matching).toBe(1);
+          expect(result.observations_sent).toBe(1);
+          expect(result.observations_truncated).toBe(0);
+          expect(fetchMock.calls).toHaveLength(1);
+          const prompt = String(fetchMock.calls[0].body.messages[1].content);
+          expect(prompt).toContain('(#41)');
+          expect(prompt).not.toContain('(#42)');
+          expect(prompt).toContain(testCase.title);
+          expect(prompt).toContain(`Question: ${testCase.question}`);
+          expect(JSON.stringify(corpus.observations)).toBe(original);
+        });
+      });
+    }
+
+    it('keeps differently accented words distinct', async () => {
+      await withSettings(OPENROUTER_SETTINGS, async (settingsPath) => {
+        const fetchMock = fakeFetch([chatAnswer('Continue the paused operation.')]);
+        restoreFetch = fetchMock.restore;
+        const { store } = createStore();
+        const agent = new ApiCorpusAgent(store, 'openrouter', settingsPath);
+        const corpus = createCorpus({ observations: [
+          createObservation(41, 'résumé'),
+          createObservation(42, 'resume'),
+        ] });
+        await agent.prime(corpus);
+
+        const result = await agent.query(corpus, 'resume');
+
+        expect(result.observations_matching).toBe(1);
+        const prompt = String(fetchMock.calls[0].body.messages[1].content);
+        expect(prompt).toContain('(#42)');
+        expect(prompt).not.toContain('(#41)');
+      });
+    });
+
+    it('does not turn different vowel marks into the same word', async () => {
+      await withSettings(OPENROUTER_SETTINGS, async (settingsPath) => {
+        const fetchMock = fakeFetch([chatAnswer('Selected the requested word.')]);
+        restoreFetch = fetchMock.restore;
+        const { store } = createStore();
+        const agent = new ApiCorpusAgent(store, 'openrouter', settingsPath);
+        const corpus = createCorpus({ observations: [
+          createObservation(41, 'किताब'),
+          createObservation(42, 'कातिब'),
+        ] });
+        await agent.prime(corpus);
+
+        const result = await agent.query(corpus, 'किताब');
+
+        expect(result.observations_matching).toBe(1);
+        const prompt = String(fetchMock.calls[0].body.messages[1].content);
+        expect(prompt).toContain('(#41)');
+        expect(prompt).not.toContain('(#42)');
+      });
+    });
+  });
+
   it('says so when only part of the matching observations fit the budget', async () => {
     await withSettings(OPENROUTER_SETTINGS, async (settingsPath) => {
       const fetchMock = fakeFetch([chatAnswer('Partial answer.')]);
