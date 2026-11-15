@@ -70,8 +70,19 @@ const SERVICE_FAILURE = /^Jev (?:answered (?!400\b)\d{3}\b|request failed: )/;
  * version a label judged: the item's latest entry, and for a task whose list has notes (sent as list_notes) the
  * list's latest state entry too, so a write to either asks again. */
 export function workStateItems(state) {
-  return state.lists.filter((list) => !isOwnerGoalsList(list.name) && !isMyRulesList(list.name) && !isMyFocusList(list.name) && !isAgentLifecycleList(list.name)).flatMap((list) => {
-    const stateEntryId = state.events.find((event) => event.listId === list.id && event.task === null)?.id ?? 0;
+  const lists = state.lists.filter((list) => !isOwnerGoalsList(list.name) && !isMyRulesList(list.name) && !isMyFocusList(list.name) && !isAgentLifecycleList(list.name));
+  if (!lists.length) return [];
+  // Events are newest first in canonical write order. Keep the first state
+  // event per list once, rather than searching the full history for each list.
+  const stateEntryIds = new Map();
+  const missingStateIds = new Set(lists.map((list) => list.id));
+  for (const event of state.events) {
+    if (event.task !== null || !missingStateIds.delete(event.listId)) continue;
+    stateEntryIds.set(event.listId, event.id);
+    if (!missingStateIds.size) break;
+  }
+  return lists.flatMap((list) => {
+    const stateEntryId = stateEntryIds.get(list.id) ?? 0;
     const listNotesSent = Object.keys(notesOf(list.fields)).length > 0;
     return [
       ...list.tasks.map((task) => ({ ...task, list, recordKind: 'task', labelKey: listNotesSent ? `${task.latestEntryId}:${stateEntryId}` : String(task.latestEntryId) })),

@@ -1,5 +1,8 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { readFileSync } from 'fs';
+import { join } from 'path';
+import { antigravityCliAdapter } from '../../../src/cli/adapters/antigravity-cli.js';
 import { ingestObservation, setIngestContext } from '../../../src/services/worker/http/shared.js';
 import { logger } from '../../../src/utils/logger.js';
 
@@ -85,6 +88,30 @@ describe('ingestObservation — CLAUDE_MEM_SKIP_BASH_PATTERNS', () => {
       toolInput: { script: 'pwd' },
       toolResponse: {},
     })).rejects.toThrow();
+  });
+
+  // Antigravity's agy names its shell tool `run_command`. This is the
+  // PostToolUse agy 1.4.9 sent for `ls -la`, through the agy adapter.
+  const agyLsLa = () => {
+    const fixture = JSON.parse(readFileSync(join(import.meta.dir, '../../fixtures/hosts/antigravity-cli-1.4.9-post-tool-use.json'), 'utf8'));
+    const input = antigravityCliAdapter.normalizeInput(fixture.runCommand);
+    return ingestObservation({
+      contentSessionId: input.sessionId!,
+      platformSource: 'antigravity-cli',
+      toolName: input.toolName!,
+      toolInput: input.toolInput,
+      toolResponse: input.toolResponse,
+    });
+  };
+
+  it('skips an Antigravity run_command that matches the pattern', async () => {
+    process.env.CLAUDE_MEM_SKIP_BASH_PATTERNS = '^(ls|cat|pwd)\\b';
+    expect(await agyLsLa()).toEqual({ ok: true, status: 'skipped', reason: 'bash_pattern_excluded' });
+  });
+
+  it('does not skip an Antigravity run_command that fails to match', async () => {
+    process.env.CLAUDE_MEM_SKIP_BASH_PATTERNS = '^(cat|pwd)\\b';
+    await expect(agyLsLa()).rejects.toThrow();
   });
 
   it('never applies the pattern to non-shell tools', async () => {

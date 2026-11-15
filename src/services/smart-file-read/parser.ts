@@ -108,6 +108,20 @@ const QUERIES: Record<string, string> = {
 (function_declaration name: (identifier) @name body: (_) @signature_body) @func @native_signature
 (ambient_declaration (function_signature name: (identifier) @name)) @ts_signature
 (generator_function_declaration name: (identifier) @name body: (_) @signature_body) @func @native_signature
+(export_statement "default" @name value: [
+  (arrow_function body: (_) @signature_body)
+  (function_expression body: (_) @signature_body)
+  (generator_function body: (_) @signature_body)
+  (parenthesized_expression [
+    (arrow_function body: (_) @signature_body)
+    (function_expression body: (_) @signature_body)
+    (generator_function body: (_) @signature_body)
+  ])
+]) @func @native_signature
+(export_statement "default" @name value: [
+  (class body: (_) @signature_body)
+  (parenthesized_expression (class body: (_) @signature_body))
+]) @cls @native_signature
 (lexical_declaration kind: ["const" "let"] @signature_prefix (variable_declarator name: (identifier) @name value: [(arrow_function body: (_) @signature_body) (function_expression body: (_) @signature_body) (generator_function body: (_) @signature_body)]) @signature_start) @const_func @native_signature
 (variable_declaration "var" @signature_prefix (variable_declarator name: (identifier) @name value: [(arrow_function body: (_) @signature_body) (function_expression body: (_) @signature_body) (generator_function body: (_) @signature_body)]) @signature_start) @const_func @native_signature
 (class_declaration name: (type_identifier) @name) @cls
@@ -133,6 +147,20 @@ const QUERIES: Record<string, string> = {
   js: `
 (function_declaration name: (identifier) @name body: (_) @signature_body) @func @native_signature
 (generator_function_declaration name: (identifier) @name body: (_) @signature_body) @func @native_signature
+(export_statement "default" @name value: [
+  (arrow_function body: (_) @signature_body)
+  (function_expression body: (_) @signature_body)
+  (generator_function body: (_) @signature_body)
+  (parenthesized_expression [
+    (arrow_function body: (_) @signature_body)
+    (function_expression body: (_) @signature_body)
+    (generator_function body: (_) @signature_body)
+  ])
+]) @func @native_signature
+(export_statement "default" @name value: [
+  (class body: (_) @signature_body)
+  (parenthesized_expression (class body: (_) @signature_body))
+]) @cls @native_signature
 (lexical_declaration kind: ["const" "let"] @signature_prefix (variable_declarator name: (identifier) @name value: [(arrow_function body: (_) @signature_body) (function_expression body: (_) @signature_body) (generator_function body: (_) @signature_body)]) @signature_start) @const_func @native_signature
 (variable_declaration "var" @signature_prefix (variable_declarator name: (identifier) @name value: [(arrow_function body: (_) @signature_body) (function_expression body: (_) @signature_body) (generator_function body: (_) @signature_body)]) @signature_start) @const_func @native_signature
 (class_declaration name: (identifier) @name) @cls
@@ -201,6 +229,8 @@ const QUERIES: Record<string, string> = {
 (class_declaration name: (identifier) @name) @cls
 (record_declaration name: (identifier) @name) @cls
 (interface_declaration name: (identifier) @name) @iface
+(annotation_type_declaration name: (identifier) @name body: (_) @signature_body) @iface @native_signature
+(annotation_type_element_declaration name: (identifier) @name) @method @native_signature
 (enum_declaration name: (identifier) @name) @enm
 (import_declaration) @imp
 `,
@@ -250,6 +280,7 @@ const QUERIES: Record<string, string> = {
 (init_declaration (type_constraints) @swift_constraints) @swift_header
 (deinit_declaration "deinit" @name body: (_) @signature_body) @method @native_signature
 (function_declaration name: (simple_identifier) @name body: (_) @signature_body) @func @native_signature
+(protocol_function_declaration name: (simple_identifier) @name) @method @native_signature @method_requirement
 (class_declaration name: (type_identifier) @name) @cls
 (class_declaration declaration_kind: "extension" name: (_) @name) @impl_def
 (protocol_declaration name: (type_identifier) @name) @iface
@@ -277,6 +308,7 @@ const QUERIES: Record<string, string> = {
 
   scala: `
 (function_definition name: (identifier) @name body: (_) @signature_body) @func @native_signature
+(function_declaration name: (identifier) @name) @method @native_signature @method_requirement
 (class_definition name: (identifier) @name) @cls
 (object_definition name: (identifier) @name) @cls
 (trait_definition name: (identifier) @name) @trait_def
@@ -736,21 +768,21 @@ function pythonDocstringText(lines: string[], captures: RawCapture[]): string | 
 }
 
 function isExported(
-  name: string, startRow: number, endRow: number,
-  exportRanges: Array<{ startRow: number; endRow: number }>,
+  name: string, range: RawCapture,
+  exportRanges: RawCapture[],
   lines: string[], language: string
 ): boolean {
   switch (language) {
     case "javascript":
     case "typescript":
     case "tsx":
-      return exportRanges.some(r => startRow >= r.startRow && endRow <= r.endRow);
+      return exportRanges.some(exportRange => rangeContains(exportRange, range));
     case "python":
       return !name.startsWith("_");
     case "go":
       return name.length > 0 && name[0] === name[0].toUpperCase() && name[0] !== name[0].toLowerCase();
     case "rust":
-      return lines[startRow]?.trimStart().startsWith("pub") ?? false;
+      return lines[range.startRow]?.trimStart().startsWith("pub") ?? false;
     default:
       return true;
   }
@@ -784,6 +816,51 @@ function rangeContains(outer: RawCapture, inner: RawCapture): boolean {
       || (inner.endRow === outer.endRow && inner.endCol <= outer.endCol));
 }
 
+type SymbolContainer = { sym: CodeSymbol; range: RawCapture };
+
+/** Search containers in their existing priority order without rescanning every
+ * sibling for each symbol. Starts are descending; each tree node records the
+ * latest end in its interval, so intervals that cannot enclose a range are
+ * skipped together. Equal starts keep the existing stable capture order. */
+function indexContainers(containers: SymbolContainer[]): (range: RawCapture, exclude?: CodeSymbol) => SymbolContainer | undefined {
+  let size = 1;
+  while (size < containers.length) size *= 2;
+  const latestEnd = new Array<RawCapture | undefined>(size * 2);
+  const endsBefore = (left: RawCapture, right: RawCapture) => left.endRow < right.endRow
+    || (left.endRow === right.endRow && left.endCol < right.endCol);
+  for (let index = 0; index < containers.length; index++) latestEnd[size + index] = containers[index].range;
+  for (let index = size - 1; index > 0; index--) {
+    const left = latestEnd[index * 2];
+    const right = latestEnd[index * 2 + 1];
+    latestEnd[index] = !left ? right : !right || endsBefore(right, left) ? left : right;
+  }
+
+  return (range, exclude) => {
+    // A container starting after the symbol cannot own it. Restrict the tree
+    // search to the suffix whose starts are at or before the symbol's start.
+    let low = 0;
+    let high = containers.length;
+    while (low < high) {
+      const middle = low + Math.floor((high - low) / 2);
+      const start = containers[middle].range;
+      if (start.startRow > range.startRow || (start.startRow === range.startRow && start.startCol > range.startCol)) low = middle + 1;
+      else high = middle;
+    }
+    const first = low;
+    const find = (node: number, begin: number, end: number): SymbolContainer | undefined => {
+      const latest = latestEnd[node];
+      if (end <= first || !latest || endsBefore(latest, range)) return undefined;
+      if (end - begin === 1) {
+        const container = containers[begin];
+        return container.sym !== exclude ? container : undefined;
+      }
+      const middle = begin + Math.floor((end - begin) / 2);
+      return find(node * 2, begin, middle) ?? find(node * 2 + 1, middle, end);
+    };
+    return find(1, 0, size);
+  };
+}
+
 function buildSymbols(matches: RawMatch[], lines: string[], language: string): { symbols: CodeSymbol[]; imports: string[] } {
   const symbols: CodeSymbol[] = [];
   const imports: string[] = [];
@@ -803,7 +880,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   const ranges = new Map<CodeSymbol, RawCapture>();
   const implementedTraits = new Map<CodeSymbol, string>();
   const aliasedTypes = new Map<CodeSymbol, RawCapture>();
-  const containers: Array<{ sym: CodeSymbol; range: RawCapture }> = [];
+  const containers: SymbolContainer[] = [];
 
   for (const match of matches) {
     const docstringBody = match.captures.find(c => c.tag === "python_docstring_body");
@@ -938,6 +1015,10 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     // from error recovery leaves nothing to read and stays `anonymous`.
     let name = (nameCapture && captureText(lines, nameCapture)) || "anonymous";
     if (accessorKeyword) name = `${accessorKeyword} ${name}`;
+    // A protocol/trait and its extension/companion can share an owner name.
+    // Keep a new requirement independently addressable without shadowing an
+    // implementation that already unfolded through Owner.method.
+    if (match.captures.some(c => c.tag === "method_requirement")) name = `requirement ${name}`;
     if (kindCapture.tag === "ctor") {
       const parameters = match.captures.find(c => c.tag === "parameters");
       if (parameters) name += captureLines(lines, parameters).join(" ").replace(/\s+/g, " ").trim();
@@ -1064,7 +1145,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       jsdoc: [docstring, comment].filter(Boolean).join("\n") || undefined,
       lineStart: decoratedRanges.get(`${startRow}:${kindCapture.startCol}`)?.startRow ?? startRow,
       lineEnd: endRow,
-      exported: isExported(nameCapture?.text || name, startRow, endRow, exportRanges, lines, language),
+      exported: isExported(nameCapture?.text || name, kindCapture, exportRanges, lines, language),
     };
 
     if (CONTAINER_KINDS.has(kind) || LANGUAGE_CONTAINER_KINDS[language]?.has(kind)) {
@@ -1147,6 +1228,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   // class's method is attached once instead of also appearing on every ancestor.
   containers.sort((a, b) => b.range.startRow - a.range.startRow
     || b.range.startCol - a.range.startCol);
+  const containing = indexContainers(containers);
   // A typeclass signature and its default implementation describe one method:
   // the default takes the signature's type and comment. An adjacent pair
   // unfolds as one range. When another declaration sits between them, retain
@@ -1155,7 +1237,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   // count as being between.
   for (const signature of haskellSignatures) {
     const signatureRange = ranges.get(signature)!;
-    const owner = containers.find(container => rangeContains(container.range, signatureRange));
+    const owner = containing(signatureRange);
     const implementation = symbols.find(candidate => candidate.kind === "function"
       && candidate.name === signature.name
       && haskellDefaults.some(capture => {
@@ -1163,7 +1245,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
         return capture.startRow === range.startRow && capture.startCol === range.startCol
           && capture.endRow === range.endRow && capture.endCol === range.endCol;
       })
-      && containers.find(container => container.sym !== candidate && rangeContains(container.range, ranges.get(candidate)!)) === owner);
+      && containing(ranges.get(candidate)!, candidate) === owner);
     if (implementation) {
       const implementationRange = ranges.get(implementation)!;
       implementation.signature = signature.signature;
@@ -1194,8 +1276,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   for (const sym of symbols) {
     if (duplicateAliases.has(sym)) continue;
     const range = ranges.get(sym)!;
-    const owner = containers.find(({ sym: candidate, range: parent }) => candidate !== sym
-      && rangeContains(parent, range));
+    const owner = containing(range, sym);
     // A Ruby `def` inside `class << self` defines a class method, so it is named
     // like `def self.x` — unless a class or module opened in that block is nearer.
     if (sym.kind === "function" && singletonScopes.some(scope => rangeContains(scope, range)
@@ -1652,13 +1733,16 @@ export function matchScore(text: string, queryParts: string[]): number {
 export function unfoldSymbol(content: string, filePath: string, symbolName: string): string | null {
   const file = parseFile(content, filePath);
 
-  const findSymbol = (symbols: CodeSymbol[], qualified: boolean, parent?: string, accessorAlias = false): CodeSymbol | null => {
+  const findSymbol = (symbols: CodeSymbol[], qualified: boolean, parent?: string, shortAlias = false): CodeSymbol | null => {
     for (const sym of symbols) {
-      const name = accessorAlias && (sym.kind === "getter" || sym.kind === "setter") ? sym.name.slice(4) : sym.name;
+      let name = sym.name;
+      if (shortAlias && (sym.kind === "getter" || sym.kind === "setter")) name = name.slice(4);
+      if (shortAlias && (file.language === "swift" || file.language === "scala")
+        && sym.kind === "method" && name.startsWith("requirement ")) name = name.slice("requirement ".length);
       const qualifiedName = qualifySymbolName(name, parent, file.language, sym.kind);
       if ((qualified ? qualifiedName : name) === symbolName) return sym;
       if (sym.children) {
-        const found = findSymbol(sym.children, qualified, qualifiedName, accessorAlias);
+        const found = findSymbol(sym.children, qualified, qualifiedName, shortAlias);
         if (found) return found;
       }
     }
@@ -1668,8 +1752,8 @@ export function unfoldSymbol(content: string, filePath: string, symbolName: stri
   // Go methods are named with their receiver (`Local.Reset`), so a bare method
   // name still unfolds the first method with that leaf, as in other languages.
   const symbol = findSymbol(file.symbols, true) ?? findSymbol(file.symbols, false)
-    // Preserve existing property-only lookups after trying the distinct
-    // accessor identities returned by outlines and search.
+    // Keep short accessor/requirement lookups after trying concrete methods
+    // and the distinct identities returned by outlines and search.
     ?? findSymbol(file.symbols, true, undefined, true) ?? findSymbol(file.symbols, false, undefined, true)
     ?? (file.language === "go"
       ? file.symbols.find(sym => sym.kind === "method" && sym.name.slice(sym.name.lastIndexOf(".") + 1) === symbolName) ?? null

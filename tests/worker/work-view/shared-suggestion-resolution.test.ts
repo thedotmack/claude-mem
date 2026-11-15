@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from 'bun:test';
-import { mkdtempSync, mkdirSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync } from 'node:fs';
+import { removeTempDir } from '../../helpers/temp-dir.js';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
@@ -14,13 +15,13 @@ import { decodeChanges } from '../../../src/services/sync/SyncClient.js';
 import { SharedLedgerAdapter } from '../../../src/services/work-view/shared-ledger-adapter.mjs';
 
 const cleanup: (() => unknown)[] = [];
-afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
+afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 const key = (id: string) => JSON.stringify(['conversation', 'claude', id]);
 const T = key('target'), C = key('candidate'), C2 = key('candidate-child'), U = key('unrelated');
 const targetId = groupIdFor(T), ownId = groupIdFor(C), unrelatedId = groupIdFor(U);
 function fixture(deviceId: string) {
   const directory = mkdtempSync(join(tmpdir(), 'suggestion-resolution-'));
-  cleanup.push(() => rmSync(directory, { recursive: true, force: true }));
+  cleanup.push(() => removeTempDir(directory));
   const path = join(directory, 'memory.db'), ledger = join(directory, 'work'); mkdirSync(ledger);
   const store = new SessionStore(path); store.setLocalSyncDeviceId(deviceId); cleanup.push(() => store.close());
   const sync = new SharedWorkSync(store.db, { databasePath: path, directory: ledger, deviceId, enabled: true, notify() {} }); cleanup.push(() => sync.close());

@@ -1,8 +1,9 @@
-# UI language: English, Simplified Chinese and Korean
+# UI languages
 
 The classic memory viewer (`/viewer`), My Work, first-run setup, and Observation
-TV support English, Simplified Chinese and Korean. Use the **Language** menu in the
-viewer header, My Work header, or setup header to select **简体中文** or **한국어**.
+TV support English, Simplified Chinese, Korean and French. Use the **Language**
+menu in the viewer header, My Work header, or setup header to select **简体中文**,
+**한국어**, or **Français**. My Work also supports **Türkçe**.
 
 English remains the default. The choice is saved in browser local storage and
 shared between pages on the same origin (including TV); it does not change
@@ -22,7 +23,7 @@ The display language does not change the language of generated memories. Configu
 
 - `src/ui/i18n/index.ts`: shared React subscription and translation lookup.
 - `src/ui/i18n/locale.ts`: locale normalization and safe placeholder interpolation.
-- `src/ui/i18n/*-zh.ts`, `*-ko.ts`: catalogs using the exact English source text as keys.
+- `src/ui/i18n/*-zh.ts`, `*-ko.ts`, `*-fr.ts`, `mywork-tr.ts`: catalogs using the exact English source text as keys.
 - `interpolate(t('Moved {title} to {area}'), { title, area })` substitutes once,
   preserving dollar signs and placeholder-like text inside user values.
 - Components subscribe with `useI18n()` so an already-open page updates on selection.

@@ -1,7 +1,7 @@
 import { emitContextInvalidation } from '../../shared/context-invalidation.js';
 import { Database, type SQLQueryBindings, type Statement } from 'bun:sqlite';
 import { createHash, randomUUID } from 'crypto';
-import { DATA_DIR, DB_PATH, ensureDir, OBSERVER_SESSIONS_PROJECT, USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { DATA_DIR, DB_PATH, ensurePrivateDir, OBSERVER_SESSIONS_PROJECT, USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import type { ProjectKeySource } from '../../utils/project-name.js';
 import { projectReadKeys, projectScopeSql, scopedProjects } from './project-read-keys.js';
@@ -17,7 +17,7 @@ import {
   LatestPromptResult
 } from '../../types/database.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from './types.js';
-import { computeObservationContentHash, computeObservationDetailsHash, hasStorableTitle, type ObservationDetails } from './observations/store.js';
+import { computeObservationContentHash, computeLegacyObservationContentHash, computeObservationDetailsHash, hasStorableTitle, type ObservationDetails } from './observations/store.js';
 import { parseFileList, replaceObservationFileIndex } from './observations/files.js';
 import { seedReinforcement, reinforceObservation } from '../reinforcement/persist.js';
 import {
@@ -256,7 +256,7 @@ export class SessionStore {
       this.db = dbPathOrDb;
     } else {
       if (dbPathOrDb !== ':memory:') {
-        ensureDir(DATA_DIR);
+        ensurePrivateDir(DATA_DIR);
       }
       this.db = new Database(dbPathOrDb);
     }
@@ -1112,10 +1112,11 @@ export class SessionStore {
       { table: 'session_summaries', kind: 'summary' },
       { table: 'user_prompts', kind: 'prompt' },
     ] as const;
+    // bun:sqlite returns null, not undefined, when no row matches.
     const exclusionTableExisted = this.db.prepare(`
       SELECT 1 AS present FROM sqlite_master
       WHERE type = 'table' AND name = 'sync_launch_exclusions'
-    `).get() !== undefined;
+    `).get() != null;
     this.db.run(SYNC_LAUNCH_EXCLUSIONS_DDL);
     this.widenSyncKindCheck('sync_launch_exclusions', SYNC_LAUNCH_EXCLUSIONS_DDL);
 
@@ -3217,18 +3218,14 @@ export class SessionStore {
 
     const projects: string[] = [];
     const seenProjects = new Set<string>();
-    const projectsBySource: Record<string, string[]> = Object.create(null);
+    const projectsBySource = new Map<string, Set<string>>();
 
     for (const row of rows) {
       const source = normalizePlatformSource(row.platform_source);
 
-      if (!projectsBySource[source]) {
-        projectsBySource[source] = [];
-      }
-
-      if (!projectsBySource[source].includes(row.project)) {
-        projectsBySource[source].push(row.project);
-      }
+      let sourceProjects = projectsBySource.get(source);
+      if (!sourceProjects) projectsBySource.set(source, sourceProjects = new Set());
+      sourceProjects.add(row.project);
 
       if (!seenProjects.has(row.project)) {
         seenProjects.add(row.project);
@@ -3236,13 +3233,13 @@ export class SessionStore {
       }
     }
 
-    const sources = sortPlatformSources(Object.keys(projectsBySource));
+    const sources = sortPlatformSources([...projectsBySource.keys()]);
 
     return {
       projects,
       sources,
       projectsBySource: Object.fromEntries(
-        sources.map(source => [source, projectsBySource[source] || []])
+        sources.map(source => [source, [...(projectsBySource.get(source) ?? [])]])
       )
     };
   }
@@ -3342,12 +3339,11 @@ export class SessionStore {
           s.started_at,
           s.started_at_epoch,
           s.user_prompt,
-          CASE WHEN sum.memory_session_id IS NOT NULL THEN 1 ELSE 0 END as has_summary
+          EXISTS (SELECT 1 FROM session_summaries sum
+            WHERE sum.memory_session_id = s.memory_session_id) as has_summary
         FROM sdk_sessions s
-        LEFT JOIN session_summaries sum ON s.memory_session_id = sum.memory_session_id
         WHERE s.project COLLATE NOCASE = ? AND s.memory_session_id IS NOT NULL
         ${platformClause}
-        GROUP BY s.memory_session_id
         ORDER BY s.started_at_epoch DESC
         LIMIT ?
       )
@@ -4094,7 +4090,13 @@ export class SessionStore {
       WHERE COALESCE(NULLIF(platform_source, ''), ?) = ? AND content_session_id = ?`)
       .get(DEFAULT_PLATFORM_SOURCE, platformSource, prompt.contentSessionId) as { id: number } | null;
     let sessionDbId = session?.id;
-    if (sessionDbId !== undefined) {
+    const nativePromptId = `transcript:${prompt.nativePromptId}`;
+    // A replay already owns its native row. It must not claim a nearby hook
+    // row belonging to another turn; saveNativeUserPrompt below still checks
+    // the replay's full-text hash before reporting it as already imported.
+    const alreadyImported = sessionDbId !== undefined && this.db.prepare(`SELECT 1 FROM user_prompts
+      WHERE session_db_id = ? AND native_prompt_id = ?`).get(sessionDbId, nativePromptId);
+    if (sessionDbId !== undefined && !alreadyImported) {
       const texts = [text, ...(prompt.hookTextVariants ?? []).map(normalizeStoredPromptText).filter(Boolean)];
       const hookRows = this.db.prepare(`SELECT id, created_at_epoch FROM user_prompts
         WHERE session_db_id = ? AND native_prompt_id IS NULL
@@ -4107,7 +4109,7 @@ export class SessionStore {
         prompt.claimedHookRowIds.add(hookRow.id);
         return { reason: 'recorded-by-hook', hookRowId: hookRow.id };
       }
-    } else {
+    } else if (sessionDbId === undefined) {
       const at = new Date(prompt.createdAtEpoch).toISOString();
       const inserted = this.db.prepare(`INSERT INTO sdk_sessions
         (content_session_id, memory_session_id, project, platform_source, user_prompt, started_at, started_at_epoch, completed_at, completed_at_epoch, status)
@@ -4115,7 +4117,7 @@ export class SessionStore {
         .run(prompt.contentSessionId, prompt.project, platformSource, text, at, prompt.createdAtEpoch, at, prompt.createdAtEpoch);
       sessionDbId = Number(inserted.lastInsertRowid);
     }
-    const result = this.saveNativeUserPrompt(prompt.contentSessionId, sessionDbId, `transcript:${prompt.nativePromptId}`,
+    const result = this.saveNativeUserPrompt(prompt.contentSessionId, sessionDbId, nativePromptId,
       prompt.promptText, prompt.promptText, { createdAtEpoch: prompt.createdAtEpoch, reopenSession: false });
     return { reason: result.duplicate ? 'already-imported' : 'new' };
   }
@@ -4443,6 +4445,25 @@ export class SessionStore {
         }
 
         const legacyHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
+        if (legacyHash.startsWith('tuple-')) {
+          const previousHash = computeLegacyObservationContentHash(memorySessionId, observation.title, observation.narrative);
+          const previousDetailsHash = computeObservationDetailsHash(previousHash, observation);
+          // Both old hashes are ambiguous. Reuse only a complete content match,
+          // never restore an old base hash that could select another variant.
+          const previous = (this.db.prepare(`SELECT id, type, subtitle, facts, concepts FROM observations
+            WHERE memory_session_id = ? AND content_hash IN (?, ?)
+              AND title IS ? AND COALESCE(narrative, '') = ?
+            ORDER BY content_hash = ? DESC`)
+            .all(memorySessionId, previousHash, previousDetailsHash,
+              observation.title, observation.narrative ?? '', previousDetailsHash) as ExistingObservation[])
+            .find(row => computeObservationDetailsHash(previousHash, row) === previousDetailsHash);
+          if (previous) {
+            reinforceObservation(this.db, previous.id, reconfirmedOn);
+            observationIds.push(previous.id);
+            mergedIntoExisting.push(false);
+            continue;
+          }
+        }
         const detailsHash = computeObservationDetailsHash(legacyHash, observation);
         let contentHash = legacyHash;
         // A variant keeps its identity even if the row occupying the legacy
@@ -4480,7 +4501,7 @@ export class SessionStore {
 
           // Authored note revisions may keep a title while changing their facts.
           // They still dedupe exact content, but must not collapse by title alone.
-          const canonical = options.skipTitleDedup ? null : findTier0Canonical(this.db, project, titleNormKey);
+          const canonical = options.skipTitleDedup ? null : findTier0Canonical(this.db, project, titleNormKey, observation.title);
           if (canonical) {
             this.db.prepare('UPDATE observations SET occurrence_count = occurrence_count + 1 WHERE id = ?').run(canonical.id);
             reinforceObservation(this.db, canonical.id, reconfirmedOn);
@@ -5023,35 +5044,47 @@ export class SessionStore {
       }
     }
 
-    // `id` breaks created_at_epoch ties so a turn's rows (which share one epoch) render in the
-    // order they were written instead of whatever order the index scan returns them in.
-    const obsQuery = `
-      SELECT o.*
-      FROM observations o
-      LEFT JOIN sdk_sessions src ON src.memory_session_id = o.memory_session_id
-      WHERE o.created_at_epoch >= ? AND o.created_at_epoch <= ? ${observationScope.clause}
-      ORDER BY o.created_at_epoch ASC, o.id ASC
-    `;
+    // A sparse category can stretch the shared time window over thousands of
+    // rows in a dense one. Only depthBefore/depthAfter neighbors per category
+    // can survive the final merged depth selection; apply those limits before
+    // hydrating full bodies. Keep the entire anchor epoch group, which an
+    // epoch/session anchor deliberately returns even with zero depth.
+    const readCandidates = <T>(
+      select: string,
+      from: string,
+      alias: string,
+      scope: { clause: string; params: any[] }
+    ): T[] => this.db.prepare(`
+      SELECT * FROM (
+        SELECT ${select} FROM ${from}
+        WHERE ${alias}.created_at_epoch >= ? AND ${alias}.created_at_epoch < ? ${scope.clause}
+        ORDER BY ${alias}.created_at_epoch DESC, ${alias}.id DESC LIMIT ?
+      )
+      UNION ALL
+      SELECT ${select} FROM ${from}
+      WHERE ${alias}.created_at_epoch = ? ${scope.clause}
+      UNION ALL
+      SELECT * FROM (
+        SELECT ${select} FROM ${from}
+        WHERE ${alias}.created_at_epoch > ? AND ${alias}.created_at_epoch <= ? ${scope.clause}
+        ORDER BY ${alias}.created_at_epoch ASC, ${alias}.id ASC LIMIT ?
+      )
+      ORDER BY created_at_epoch ASC, id ASC
+    `).all(
+      startEpoch, anchorEpoch, ...scope.params, depthBefore,
+      anchorEpoch, ...scope.params,
+      anchorEpoch, endEpoch, ...scope.params, depthAfter,
+    ) as T[];
 
-    const sessQuery = `
-      SELECT ss.*
-      FROM session_summaries ss
-      LEFT JOIN sdk_sessions src ON src.memory_session_id = ss.memory_session_id
-      WHERE ss.created_at_epoch >= ? AND ss.created_at_epoch <= ? ${summaryScope.clause}
-      ORDER BY ss.created_at_epoch ASC, ss.id ASC
-    `;
-
-    const promptQuery = `
-      SELECT up.*, s.project, s.memory_session_id, COALESCE(NULLIF(s.platform_source, ''), '${DEFAULT_PLATFORM_SOURCE}') as platform_source
-      FROM user_prompts up
-      JOIN sdk_sessions s ON up.session_db_id = s.id
-      WHERE up.created_at_epoch >= ? AND up.created_at_epoch <= ? ${promptScope.clause}
-      ORDER BY up.created_at_epoch ASC, up.id ASC
-    `;
-
-    const observations = this.db.prepare(obsQuery).all(startEpoch, endEpoch, ...observationScope.params) as ObservationRecord[];
-    const sessions = this.db.prepare(sessQuery).all(startEpoch, endEpoch, ...summaryScope.params) as SessionSummaryRecord[];
-    const prompts = this.db.prepare(promptQuery).all(startEpoch, endEpoch, ...promptScope.params) as UserPromptRecord[];
+    const observations = readCandidates<ObservationRecord>('o.*',
+      'observations o LEFT JOIN sdk_sessions src ON src.memory_session_id = o.memory_session_id',
+      'o', observationScope);
+    const sessions = readCandidates<SessionSummaryRecord>('ss.*',
+      'session_summaries ss LEFT JOIN sdk_sessions src ON src.memory_session_id = ss.memory_session_id',
+      'ss', summaryScope);
+    const prompts = readCandidates<UserPromptRecord>(
+      `up.*, s.project, s.memory_session_id, COALESCE(NULLIF(s.platform_source, ''), '${DEFAULT_PLATFORM_SOURCE}') as platform_source`,
+      'user_prompts up JOIN sdk_sessions s ON up.session_db_id = s.id', 'up', promptScope);
 
     return {
       observations,
@@ -5125,7 +5158,23 @@ export class SessionStore {
   }
 
   close(): void {
-    this.db.close();
+    // bun keeps a prepared statement — and with it the connection, its WAL index mapping and the
+    // database file — alive until the statement is finalized or collected, so a plain `db.close()`
+    // releases nothing while this store still holds its cache. Finalize the cached statements first,
+    // the way initializeOwnedDatabase does; then close strict, which Windows needs before the file
+    // or its directory can be renamed or removed.
+    for (const statement of this.statementCache.values()) statement.finalize();
+    this.statementCache.clear();
+    try {
+      this.db.close(true);
+    } catch (error) {
+      // Bun before 1.4 refuses a strict close ("database is locked") while any statement is still
+      // outstanding, and this store also prepares uncached statements (db.prepare / db.query).
+      // package.json allows those Bun versions, so fall back to the lazy close main always did
+      // and say so, instead of throwing out of every close().
+      logger.warn('DB', 'Strict close refused (statements outstanding on this Bun); falling back to lazy close', {}, error as Error);
+      this.db.close(false);
+    }
   }
 
   /**

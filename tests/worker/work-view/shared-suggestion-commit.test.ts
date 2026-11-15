@@ -1,5 +1,6 @@
 import { afterEach, expect, spyOn, test } from 'bun:test';
 import * as fs from 'node:fs';
+import { removeTempDir } from '../../helpers/temp-dir.js';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
@@ -10,14 +11,14 @@ import { groupIdFor } from '../../../src/services/work-view/request-groups.mjs';
 import { sharedRecordKey } from '../../../src/services/work-view/shared-records.mjs';
 
 const cleanup: Array<() => unknown> = [];
-afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
+afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 const conversation = (name: string) => JSON.stringify(['conversation', 'claude', name]);
 const target = conversation('target'), candidate = conversation('candidate');
 const targetId = groupIdFor(target), ownId = groupIdFor(candidate);
 
 function fixture() {
   const directory = fs.mkdtempSync(join(tmpdir(), 'suggestion-commit-'));
-  cleanup.push(() => fs.rmSync(directory, { recursive: true, force: true }));
+  cleanup.push(() => removeTempDir(directory));
   const ledger = join(directory, 'work'); fs.mkdirSync(ledger);
   const databasePath = join(directory, 'memory.db');
   const store = new SessionStore(databasePath); store.setLocalSyncDeviceId('origin'); cleanup.push(() => store.close());

@@ -19,7 +19,7 @@ claude-mem already injects recent observations into every new session, so the fr
 
 ## What to Capture
 
-Think hard about the full arc of this conversation before writing. The handoff must be useful to a Claude instance that has never seen this conversation.
+Before writing, review the full arc of this conversation. The handoff must be useful to a Claude instance that has never seen this conversation.
 
 ### Required Sections
 

@@ -72,6 +72,13 @@
         ]
       },
       {
+        "group": "Grok Build Integration",
+        "icon": "terminal",
+        "pages": [
+          "grok-build/index"
+        ]
+      },
+      {
         "group": "Antigravity CLI Integration",
         "icon": "terminal",
         "pages": [
@@ -113,9 +120,13 @@
           "hermes-integration",
           "kimi-integration",
           "omo-native-integration",
+          "cline",
           "devin-integration",
+          "kilo",
           "qoder-integration",
+          "zed-integration",
           "screenpipe-integration",
+          "aider-integration",
           "eve-integration",
           "notion-export",
           "obsidian"

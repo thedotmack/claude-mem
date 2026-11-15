@@ -43,9 +43,8 @@ export function isAgentScratchFolder(folder) {
   return TEMP_FOLDERS.some((temp) => absolute === temp || absolute.startsWith(`${temp}${sep}`));
 }
 
-const repoRootCache = new Map();
 /** The git checkout holding `path` (a `.git` folder or worktree file), or null. */
-export function repoRootOf(path) {
+export function repoRootOf(path, repoRootCache = new Map()) {
   const visited = [];
   let current = resolve(path), found = null;
   for (;;) {
@@ -88,29 +87,29 @@ export function pathsIn(toolInput, platform = process.platform) {
   return paths;
 }
 
-const checkoutForPath = (path) => {
+const checkoutForPath = (path, repoRootCache) => {
   // A path with trailing arguments ("/repo/file.ts -la") resolves through its nearest real folder.
   let current = path;
   while (current !== dirname(current) && !existsSync(current)) current = dirname(current);
-  return repoRootOf(current);
+  return repoRootOf(current, repoRootCache);
 };
 
 /** A session's folder is judged when it is outside any git repo, or when it
  * is a scratch folder that is gone. Any other folder that no longer exists
  * keeps its stored name (a deleted checkout is still that project). */
-export function folderNeedsProject(folder, storedProject) {
+export function folderNeedsProject(folder, storedProject, repoRootCache = new Map()) {
   if (!folder) return TEMP_PROJECT_NAMES.has(storedProject);
-  if (existsSync(folder)) return !repoRootOf(folder);
+  if (existsSync(folder)) return !repoRootOf(folder, repoRootCache);
   return isAgentScratchFolder(folder);
 }
 
 /** The project the repo touched most names; NO_PROJECT when no call touched one.
  * Worktrees of one repo count together, and the most-touched checkout names it,
  * by the same rules (path, git-remote or environment) that name a session started there. */
-export function projectFromToolPaths(toolInputs) {
+export function projectFromToolPaths(toolInputs, repoRootCache = new Map()) {
   const byRoot = new Map(), nameOf = new Map();
   for (const input of toolInputs) for (const path of pathsIn(input)) {
-    const checkout = checkoutForPath(path);
+    const checkout = checkoutForPath(path, repoRootCache);
     if (!checkout) continue;
     if (!nameOf.has(checkout)) nameOf.set(checkout, getProjectContext(checkout).primary);
     const project = nameOf.get(checkout);
@@ -138,6 +137,9 @@ const TOOL_SAMPLE = 400;
 /** sessionId → derived project, for the given sessions that need one. Stored rows are not changed. */
 export function deriveSessionProjects(database, sessions) {
   const result = new Map();
+  // Reuse ancestor lookups within this read, but discover git init, nested
+  // repositories and removed metadata when a later read derives a project.
+  const repoRootCache = new Map();
   const ids = [...new Set(sessions.map((session) => session.id).filter((id) => id != null))];
   if (!ids.length) return result;
   const folders = new Map();
@@ -156,7 +158,7 @@ export function deriveSessionProjects(database, sessions) {
       if (isAgentScratchFolder(row.cwd)) scratchProjects.add(row.project);
     }
   }
-  const needing = sessions.filter((session) => folders.has(session.id) && (folders.get(session.id) ? folderNeedsProject(folders.get(session.id), session.project) : folderNeedsProject(null, session.project) || scratchProjects.has(session.project)));
+  const needing = sessions.filter((session) => folders.has(session.id) && (folders.get(session.id) ? folderNeedsProject(folders.get(session.id), session.project, repoRootCache) : folderNeedsProject(null, session.project, repoRootCache) || scratchProjects.has(session.project)));
   if (!needing.length) return result;
   const needIds = [...new Set(needing.map((session) => session.id))];
   const heads = new Map();
@@ -169,7 +171,7 @@ export function deriveSessionProjects(database, sessions) {
     const cached = derivedCache.get(id);
     if (cached && cached.head === head) { result.set(id, cached.project); continue; }
     const calls = head ? safeAll(database, `SELECT substr(tool_input, 1, 4000) AS tool_input, cwd FROM tool_uses WHERE session_db_id = ? ORDER BY id DESC LIMIT ${TOOL_SAMPLE}`, [id]) ?? [] : [];
-    const project = projectFromToolPaths(calls.flatMap((call) => [call.tool_input, ...(call.cwd ? [JSON.stringify({ cwd: call.cwd })] : [])]));
+    const project = projectFromToolPaths(calls.flatMap((call) => [call.tool_input, ...(call.cwd ? [JSON.stringify({ cwd: call.cwd })] : [])]), repoRootCache);
     derivedCache.set(id, { head, project });
     result.set(id, project);
   }

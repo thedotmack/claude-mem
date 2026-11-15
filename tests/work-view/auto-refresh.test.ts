@@ -1099,10 +1099,52 @@ describe('incremental owner goals', () => {
     } finally { database.close(); rmSync(dir, { recursive: true, force: true }); }
   });
 
-  it('the goals question keeps the skill\'s own language rule even when CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE is set', async () => {
+  it('the goals question names the language CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE sets (#6185)', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-goals-language-'));
     try {
       writeFileSync(join(dir, 'settings.json'), JSON.stringify({ CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE: 'Turkish' }));
+      const database = fixtureDatabase();
+      saveGoals(database, new Date(NOW - 2 * DAY).toISOString());
+      writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations: {}, groups: {}, ignored: { [key('a')]: 'not a goal' } }));
+      const calls: Array<{ args: string[]; goals?: any }> = [];
+      const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: 0, ungrouped: 0, goalsStale: true, unplaced: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, spawnImpl: fakePython(calls), writeOwnerPrompts: fakeOwnerPrompts(3, []) });
+      await task.prepare!();
+      const prompts: string[] = [];
+      const ask = async (prompt: string) => {
+        prompts.push(prompt);
+        return readFileSync(/saved goals are in (.+?\.json)/.exec(prompt)![1], 'utf8');
+      };
+      expect(await task.run(ask, 'codex')).toBe('goals updated.');
+      expect(prompts).toHaveLength(1);
+      expect(prompts[0]).toContain("The owner's language for this run is Turkish.");
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('a goals-only run names the language an earlier run recorded (#6185)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-goals-recorded-language-'));
+    try {
+      // No setting: the only decided language is the one a previous run's grouping step recorded.
+      writeFileSync(join(dir, 'text-language.json'), JSON.stringify({ language: 'English', decidedAt: new Date(NOW - DAY).toISOString() }));
+      const database = fixtureDatabase();
+      saveGoals(database, new Date(NOW - 2 * DAY).toISOString());
+      writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations: {}, groups: {}, ignored: { [key('a')]: 'not a goal' } }));
+      const calls: Array<{ args: string[]; goals?: any }> = [];
+      const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: 0, ungrouped: 0, goalsStale: true, unplaced: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, spawnImpl: fakePython(calls), writeOwnerPrompts: fakeOwnerPrompts(3, []) });
+      await task.prepare!();
+      const prompts: string[] = [];
+      const ask = async (prompt: string) => {
+        prompts.push(prompt);
+        return readFileSync(/saved goals are in (.+?\.json)/.exec(prompt)![1], 'utf8');
+      };
+      expect(await task.run(ask, 'codex')).toBe('goals updated.');
+      expect(prompts).toHaveLength(1);
+      expect(prompts[0]).toContain("The owner's language for this run is English.");
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('a goals-only run with no language decided yet keeps the skill\'s own rule (#6185)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-goals-undecided-language-'));
+    try {
       const database = fixtureDatabase();
       saveGoals(database, new Date(NOW - 2 * DAY).toISOString());
       writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations: {}, groups: {}, ignored: { [key('a')]: 'not a goal' } }));

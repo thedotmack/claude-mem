@@ -200,7 +200,7 @@ Cursor uses hooks (`npx claude-mem hook cursor …`) and `platformSource=cursor`
 
 The Grok **Build** CLI marketplace (`xai-org/plugin-marketplace`) is a different catalog. This page is Grok Bot only.
 
-Grok Build loads the Claude plugin's `hooks/hooks.json` (this plugin's skills and `mcp-search` stay on that host). Runtime hooks there are exec form (`claude-mem` plus arguments, no shell command string). The claude-code adapter accepts Grok Build's camelCase payload (`toolName`, `toolInput`, `toolResult`, `lastAssistantMessage`, `userPrompt`), and the file-context matcher includes Grok Build's `read_file` tool, whose `target_file` is read as the file path. Grok Build does not inject SessionStart or UserPromptSubmit stdout into the model; capture still runs.
+Grok Build loads the Claude plugin's `hooks/hooks.json` (this plugin's skills and `mcp-search` stay on that host). Runtime hooks there are exec form (`claude-mem` plus arguments, no shell command string). The claude-code adapter accepts Grok Build's camelCase payload (`toolName`, `toolInput`, `toolResult`, `lastAssistantMessage`, `userPrompt`), and the file-context matcher includes Grok Build's `read_file` tool, whose `target_file` is read as the file path. Grok Build does not inject SessionStart or UserPromptSubmit stdout into the model; capture still runs. For memory at session start there, see [Grok Build Integration](/grok-build).
 
 ## Next steps
 
