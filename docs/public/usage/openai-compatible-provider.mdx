@@ -476,9 +476,10 @@ passed verbatim. The model list is public at
 
 [TrustedRouter](https://trustedrouter.com) is an OpenAI-compatible gateway that
 routes requests across open and frontier model providers behind one key. Model
-ids are vendor-prefixed, such as `trustedrouter/auto` (the preset's default,
-which picks a provider per request) or `deepseek/deepseek-v4-flash`, and are
-passed verbatim. The model list is public at
+ids are vendor-prefixed, such as `deepseek/deepseek-v4-flash` (the preset's
+default, a cheap fixed model suited to high-volume extraction), and are passed
+verbatim. `trustedrouter/auto` is opt-in: it picks a model per request and is
+priced per routed model, up to frontier rates. The model list is public at
 `https://api.trustedrouter.com/v1/models`, and setup notes are in
 [the TrustedRouter docs](https://trustedrouter.com/docs).
 
@@ -487,7 +488,7 @@ passed verbatim. The model list is public at
   "CLAUDE_MEM_PROVIDER": "openai-compatible",
   "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "trustedrouter",
   "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<your TrustedRouter key>",
-  "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "trustedrouter/auto"
+  "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "deepseek/deepseek-v4-flash"
 }
 ```
 

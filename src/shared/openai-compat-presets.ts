@@ -167,11 +167,13 @@ export const OPENAI_COMPAT_PRESETS: readonly OpenAICompatPreset[] = [
     id: 'trustedrouter',
     label: 'TrustedRouter (trustedrouter.com)',
     baseUrl: 'https://api.trustedrouter.com/v1',
-    // TrustedRouter's routing model picks a provider per request. Ids are
+    // A cheap, fast fixed model for the same reason as NVIDIA's default:
+    // extraction is high volume. trustedrouter/auto stays opt-in, since it
+    // routes each request to a model priced up to frontier rates. Ids are
     // vendor-prefixed and passed verbatim.
-    defaultModel: 'trustedrouter/auto',
+    defaultModel: 'deepseek/deepseek-v4-flash',
     requiresApiKey: true,
-    hint: 'Key from trustedrouter.com; vendor-prefixed model ids such as trustedrouter/auto or deepseek/deepseek-v4-flash, listed at api.trustedrouter.com/v1/models.',
+    hint: 'Key from trustedrouter.com; vendor-prefixed model ids such as deepseek/deepseek-v4-flash, or trustedrouter/auto to route per request (priced per routed model), listed at api.trustedrouter.com/v1/models.',
   },
   {
     id: 'deepseek',
