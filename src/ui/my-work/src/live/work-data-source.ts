@@ -6,6 +6,7 @@ import type { OwnerRule, RuleChange, RulesFile, RulesLearning, RuleScope } from 
 import type { ConnectionStatus } from './connection-status.ts'
 import type { ReviewResult, SaveReceipt } from './review-response.ts'
 import type { WorkViewRefreshState } from './work-view-api-types.ts'
+import type { ContinuablePlatform, ConversationContinuation, ConversationContinuationNotice, ConversationContinuationTarget } from '../../../../shared/conversation-continuation.ts'
 
 export type SourceKind = 'sample' | 'local' | 'cloud'
 
@@ -69,6 +70,20 @@ export interface SuggestionSaveResult { model: WorkModel; save?: SaveReceipt }
 /** What the pure mapper produces; the source adds the connection it measured. */
 export type MappedWorkModel = Omit<WorkModel, 'connection'>
 
+/**
+ * What the worker answers about one conversation (GET /api/work-view/conversations/continuation): whether it can be
+ * continued from here and where its turn would run, and the exchanges sent to it from My Work since the worker
+ * started, oldest first.
+ */
+export interface ConversationContinuationRead { target: ConversationContinuationTarget; exchanges: ConversationContinuation[] }
+
+/**
+ * What a row showing a continued conversation hears: a notice that an exchange started or ended (ids and state only),
+ * or 'live-updates-reconnected' when the live stream opened again, after which a notice may have been missed. Either
+ * way, a row it concerns reads its conversation again with loadConversationContinuation.
+ */
+export type ConversationContinuationEvent = ConversationContinuationNotice | 'live-updates-reconnected'
+
 export interface WorkDataSource {
   readonly sourceKind: SourceKind
   loadWorkModel(): Promise<WorkModel>
@@ -93,4 +108,22 @@ export interface WorkDataSource {
   loadRulesInClaudeCode(): Promise<WorkModel>
   /** Starts an on-demand refresh of goals and progress on this machine. `state` is `idle` when nothing was due. */
   refreshWork(): Promise<{ state: string }>
+
+  // Continuing a conversation from My Work. Only the page this computer's worker serves has these: the sample source
+  // and a cloud-served page cannot run a CLI on this computer, so they leave them out. Each call rejects with one plain
+  // sentence the row can show as it is.
+  /** Whether the conversation can be continued from here and where its turn would run, and what was sent to it from here. */
+  loadConversationContinuation?(platform: ContinuablePlatform, conversationSessionId: string): Promise<ConversationContinuationRead>
+  /**
+   * Sends the owner's message to the conversation as one turn, and answers with its running exchange without waiting
+   * for the reply. A refusal (such as a turn from here still running) rejects with the worker's own sentence.
+   */
+  continueConversation?(platform: ContinuablePlatform, conversationSessionId: string, ownerMessage: string): Promise<ConversationContinuation>
+  /** Asks the running turn to end, and answers with its exchange, which stays running until the CLI has exited. */
+  stopConversationContinuation?(platform: ContinuablePlatform, conversationSessionId: string): Promise<ConversationContinuation>
+  /**
+   * Hears every continuation notice, for any conversation, until the returned function is called. Notices come over the
+   * live stream, so they arrive while subscribeToLiveUpdates holds it open.
+   */
+  subscribeToConversationContinuations?(listener: (event: ConversationContinuationEvent) => void): () => void
 }

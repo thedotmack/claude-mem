@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { describe, it, type TestContext } from 'node:test'
 import { createLocalSource, type LocalSourceOptions } from './local-source.ts'
 import { sampleSource } from './sample-source.ts'
-import type { MappedWorkModel, WorkModel } from './work-data-source.ts'
+import type { ConversationContinuationEvent, MappedWorkModel, WorkModel } from './work-data-source.ts'
 import type { WorkViewOverview } from './work-view-overview.ts'
 import type { WorkViewSnapshot } from './work-view-api-types.ts'
 import { SaveRefusedError } from '../data.ts'
@@ -789,5 +789,184 @@ describe('a hidden cloud tab', () => {
       assert.equal(streams[0].closed, false)
       assert.equal(fetched.length, 5)
     } finally { stop(); clock.restore() }
+  })
+})
+
+describe('continuing a conversation from this computer', () => {
+  const SESSION = '0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d'
+  const CONTINUATION_MEMBERS = ['loadConversationContinuation', 'continueConversation', 'stopConversationContinuation', 'subscribeToConversationContinuations'] as const
+  const target = { canContinue: true, recordedFolder: '/work/example/worktree', runsInFolder: '/work/example', recordedFolderIsGone: true }
+  // Text that would read as a flag or a shell command if it were ever an argument. It travels in the JSON body, as typed.
+  const ownerMessage = '--resume other "; rm -rf ~'
+  const running = { exchangeId: 7, platform: 'claude', conversationSessionId: SESSION, state: 'running', ownerMessage, startedAtEpochMs: 1_000, ranInFolder: '/work/example' }
+  const notice = { exchangeId: 7, platform: 'claude', conversationSessionId: SESSION, state: 'replied' }
+  async function rejectionMessage(call: Promise<unknown>): Promise<string> {
+    try { await call } catch (error) { return error instanceof Error ? error.message : String(error) }
+    throw new Error('The call resolved; a rejection was expected.')
+  }
+
+  it('reads, sends and stops through the three conversation routes', async () => {
+    const calls: Array<{ url: string; init: RequestInit | undefined }> = []
+    const { local } = harness(async (url, init) => {
+      calls.push({ url: String(url), init })
+      if (init?.method !== 'POST') return json({ target, exchanges: [running] })
+      return json({ exchange: running }, String(url).endsWith('/continue') ? 202 : 200)
+    })
+    assert.deepEqual(await local.loadConversationContinuation!('claude', SESSION), { target, exchanges: [running] })
+    assert.deepEqual(await local.continueConversation!('claude', SESSION, ownerMessage), running)
+    assert.deepEqual(await local.stopConversationContinuation!('claude', SESSION), running)
+    assert.deepEqual(calls.map(({ url, init }) => ({ url, method: init?.method ?? 'GET', headers: init?.headers, body: init?.body === undefined ? undefined : JSON.parse(String(init.body)) })), [
+      { url: `/api/work-view/conversations/continuation?platform=claude&conversationSessionId=${SESSION}`, method: 'GET', headers: undefined, body: undefined },
+      { url: '/api/work-view/conversations/continue', method: 'POST', headers: { 'Content-Type': 'application/json' }, body: { platform: 'claude', conversationSessionId: SESSION, ownerMessage } },
+      { url: '/api/work-view/conversations/stop', method: 'POST', headers: { 'Content-Type': 'application/json' }, body: { platform: 'claude', conversationSessionId: SESSION } },
+    ])
+    assert.equal(calls[0].init?.cache, 'no-store')
+  })
+
+  it('rejects a refusal with the worker\'s own sentence', async () => {
+    const stillRunning = 'This conversation is still answering your last message from here. Wait for its reply, or stop it, before you send another.'
+    const nothingRunning = 'Nothing sent from here is running in this conversation.'
+    const answers = [json({ error: stillRunning }, 409), json({ error: nothingRunning }, 409)]
+    const { local } = harness(async () => answers.shift()!)
+    assert.equal(await rejectionMessage(local.continueConversation!('claude', SESSION, 'And the word before that?')), stillRunning)
+    assert.equal(await rejectionMessage(local.stopConversationContinuation!('claude', SESSION)), nothingRunning)
+  })
+
+  it('turns an HTML error page, a failed request check, a lost worker and an unreadable answer into plain sentences', async () => {
+    const answers: Array<() => Promise<Response>> = [
+      // Express's own page for a body over the worker's 5 MB JSON limit.
+      async () => new Response('<!DOCTYPE html><html><body><pre>PayloadTooLargeError: request entity too large</pre></body></html>', { status: 413, headers: { 'Content-Type': 'text/html' } }),
+      async () => json({ error: 'ValidationError', issues: [{ path: ['ownerMessage'], message: 'Too small: expected string to have >=1 characters', code: 'too_small' }] }, 400),
+      async () => { throw new TypeError('fetch failed') },
+      async () => json({ accepted: true }, 202),
+      async () => new Response('<html><body>Bad gateway</body></html>', { status: 502, headers: { 'Content-Type': 'text/html' } }),
+    ]
+    const { local } = harness(() => answers.shift()!())
+    const sentences = [
+      await rejectionMessage(local.continueConversation!('claude', SESSION, 'x'.repeat(6_000_000))),
+      await rejectionMessage(local.continueConversation!('claude', SESSION, ' ')),
+      await rejectionMessage(local.continueConversation!('claude', SESSION, 'Which word?')),
+      await rejectionMessage(local.continueConversation!('claude', SESSION, 'Which word?')),
+      await rejectionMessage(local.loadConversationContinuation!('claude', SESSION)),
+    ]
+    assert.deepEqual(sentences, [
+      'Could not send your message: it is too large for the worker to take.',
+      'Could not send your message: the worker could not read the request (ownerMessage: Too small: expected string to have >=1 characters).',
+      'Could not send your message: the worker could not be reached (fetch failed).',
+      'The worker answered 202, but this page cannot read its answer.',
+      'Could not read this conversation: the worker answered 502.',
+    ])
+    for (const sentence of sentences) assert.doesNotMatch(sentence, /</, 'no HTML reaches the row')
+  })
+
+  it('tells subscribers each notice with its four fields only, and skips a frame it cannot read', () => {
+    let fetches = 0
+    const { local, streams } = harness(async () => { fetches++; return json(overview()) })
+    const heard: ConversationContinuationEvent[] = []
+    const stopLive = local.subscribeToLiveUpdates(() => {}, () => {})
+    const unsubscribe = local.subscribeToConversationContinuations!((event) => { heard.push(event) })
+    const originalWarn = console.warn
+    const warnings: string[] = []
+    console.warn = (message: string) => { warnings.push(message) }
+    try {
+      streams[0].onopen?.()
+      streams[0].emit('conversation-continuation', { ...notice, ownerMessage: 'never on the stream' })
+      streams[0].emit('conversation-continuation', { ...notice, state: 'paused' })
+      streams[0].handlers.get('conversation-continuation')?.({ data: '<html>secret prompt</html>' })
+      assert.deepEqual(heard, [notice])
+      assert.equal(warnings.length, 2, 'each skipped frame is reported')
+      for (const warning of warnings) {
+        assert.match(warning, /conversation-continuation/)
+        assert.doesNotMatch(warning, /secret|paused/, 'a warning names the event type only')
+      }
+      unsubscribe()
+      streams[0].emit('conversation-continuation', notice)
+      assert.deepEqual(heard, [notice])
+      assert.equal(fetches, 0, 'a notice asks nothing of the worker: the row it concerns reads')
+    } finally { console.warn = originalWarn; stopLive() }
+  })
+
+  it('tells subscribers each time the live stream opens again, and sends or reads nothing itself', () => {
+    let fetches = 0
+    const { local, streams } = harness(async () => { fetches++; return json(overview()) })
+    const heard: ConversationContinuationEvent[] = []
+    const unsubscribe = local.subscribeToConversationContinuations!((event) => { heard.push(event) })
+    let stopLive = local.subscribeToLiveUpdates(() => {}, () => {})
+    try {
+      streams[0].onopen?.()
+      assert.deepEqual(heard, [], 'the first open has missed nothing: a row reads its conversation when it opens')
+      // The worker restarted: the browser reconnects the same stream by itself.
+      streams[0].onerror?.()
+      streams[0].onopen?.()
+      assert.deepEqual(heard, ['live-updates-reconnected'])
+      // The page stopped and started its live updates: a new stream, and notices sent in between are lost.
+      stopLive()
+      streams[0].onopen?.()
+      stopLive = local.subscribeToLiveUpdates(() => {}, () => {})
+      streams[1].onopen?.()
+      assert.deepEqual(heard, ['live-updates-reconnected', 'live-updates-reconnected'], 'a stopped stream tells nothing')
+      // An outage cannot send a message again or start a turn: the source made no request of its own.
+      assert.equal(fetches, 0)
+    } finally { unsubscribe(); stopLive() }
+  })
+
+  it('tells every subscriber a notice when one before it throws, and reports the throw as that listener\'s own error', (t) => {
+    const { local, streams } = harness(async () => json(overview()))
+    const consoleWarn = t.mock.method(console, 'warn', () => {})
+    const consoleError = t.mock.method(console, 'error', () => {})
+    const listenerError = new Error('the first row could not draw its reply')
+    const heardBySecondRow: ConversationContinuationEvent[] = []
+    const stopLive = local.subscribeToLiveUpdates(() => {}, () => {})
+    const unsubscribeFirstRow = local.subscribeToConversationContinuations!(() => { throw listenerError })
+    const unsubscribeSecondRow = local.subscribeToConversationContinuations!((event) => { heardBySecondRow.push(event) })
+    try {
+      streams[0].emit('conversation-continuation', notice)
+      // Missing this 'replied' notice would leave the second row on 'Working…' until the stream reopens.
+      assert.deepEqual(heardBySecondRow, [notice], 'the row after a throwing one still hears the notice')
+      assert.deepEqual(consoleWarn.mock.calls.map((call) => call.arguments), [], 'a readable frame is never reported as unreadable')
+      assert.equal(consoleError.mock.callCount(), 1)
+      const [message, reported] = consoleError.mock.calls[0].arguments
+      assert.match(String(message), /conversation-continuation listener threw/)
+      assert.equal(reported, listenerError, 'the listener\'s own error is reported, with its stack')
+      // A frame that really is unreadable is still skipped with its warning, and reaches no listener.
+      streams[0].handlers.get('conversation-continuation')?.({ data: '<html>secret prompt</html>' })
+      assert.deepEqual(consoleWarn.mock.calls.map((call) => call.arguments), [['[work-view] Ignoring a conversation-continuation frame that is not JSON']])
+      assert.deepEqual(heardBySecondRow, [notice])
+      assert.equal(consoleError.mock.callCount(), 1)
+    } finally { unsubscribeFirstRow(); unsubscribeSecondRow(); stopLive() }
+  })
+
+  it('tells every subscriber the stream reopened when one before it throws, and reports the throw as that listener\'s own error', (t) => {
+    const { local, streams } = harness(async () => json(overview()))
+    const consoleWarn = t.mock.method(console, 'warn', () => {})
+    const consoleError = t.mock.method(console, 'error', () => {})
+    const listenerError = new Error('the first row could not read its conversation again')
+    const heardBySecondRow: ConversationContinuationEvent[] = []
+    const stopLive = local.subscribeToLiveUpdates(() => {}, () => {})
+    const unsubscribeFirstRow = local.subscribeToConversationContinuations!(() => { throw listenerError })
+    const unsubscribeSecondRow = local.subscribeToConversationContinuations!((event) => { heardBySecondRow.push(event) })
+    try {
+      streams[0].onopen?.()
+      streams[0].onerror?.()
+      assert.doesNotThrow(() => streams[0].onopen?.(), 'a listener\'s throw does not escape the stream\'s open handler')
+      // A row that misses this, while it shows 'Working…', would stay that way until the stream reopens again.
+      assert.deepEqual(heardBySecondRow, ['live-updates-reconnected'], 'the row after a throwing one still hears the stream reopened')
+      assert.equal(consoleWarn.mock.callCount(), 0, 'nothing is reported as an unreadable frame')
+      assert.equal(consoleError.mock.callCount(), 1)
+      const [message, reported] = consoleError.mock.calls[0].arguments
+      assert.match(String(message), /conversation-continuation listener threw/)
+      assert.equal(reported, listenerError, 'the listener\'s own error is reported, with its stack')
+    } finally { unsubscribeFirstRow(); unsubscribeSecondRow(); stopLive() }
+  })
+
+  it('exists only on the page this computer\'s worker serves', () => {
+    const fetcher = async () => json(overview())
+    const onThisComputer = harness(fetcher).local
+    const cloudServed = harness(fetcher, 100, { hostname: 'work.cmem.ai' }).local
+    for (const member of CONTINUATION_MEMBERS) {
+      assert.equal(typeof onThisComputer[member], 'function', member)
+      assert.equal(member in cloudServed, false, `a cloud-served page has ${member}`)
+      assert.equal(member in sampleSource, false, `the sample source has ${member}`)
+    }
   })
 })
