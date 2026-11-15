@@ -107,6 +107,7 @@ endpoint or model you pinned yourself.
 | `obscurify-ai` | `https://obscurify.ai/v1` | yes |
 | `standardcompute` | `https://api.stdcmpt.com/v1` | yes |
 | `uberllm` | `https://api.uberllm.dev/v1` | yes |
+| `hopbase` | `https://api.hop-base.com/v1` | yes |
 | `trustedrouter` | `https://api.trustedrouter.com/v1` | yes |
 | `atmorouter` | `https://atmorouter.dev/v1` | yes |
 | `deepseek` | `https://api.deepseek.com/v1` | yes |
@@ -470,6 +471,24 @@ passed verbatim. The model list is public at
   "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "uberllm",
   "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<your UberLLM key>",
   "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "deepseek/deepseek-v4.1-flash"
+}
+```
+
+## HopBase
+
+[HopBase](https://hop-base.com) is a model API gateway that serves Claude, GPT,
+Gemini, DeepSeek, Qwen, GLM and other models through one OpenAI-compatible base
+URL. Model ids are passed verbatim, such as `deepseek-v4.1-flash` (the preset's
+default) or `claude-haiku-5-5`. `GET https://api.hop-base.com/v1/models`, called
+with your key, lists the ids that key can call; keys come from the HopBase
+console, and the [API docs](https://hop-base.com/en/docs) cover the endpoint.
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openai-compatible",
+  "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "hopbase",
+  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<your HopBase key>",
+  "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "deepseek-v4.1-flash"
 }
 ```
 

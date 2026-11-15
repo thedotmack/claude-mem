@@ -94,6 +94,7 @@ describe('resolveOpenAICompatConfig', () => {
     ['atlascloud', 'https://api.atlascloud.ai/v1', 'deepseek-ai/deepseek-v4-flash'],
     ['atmorouter', 'https://atmorouter.dev/v1', 'zai/glm-5.3-flash'],
     ['cheapaimodel', 'https://api.cheapaimodel.ai/v1', 'deepseek-v4-1-flash'],
+    ['hopbase', 'https://api.hop-base.com/v1', 'deepseek-v4.1-flash'],
     ['iflytek', 'https://maas-api.cn-huabei-1.xf-yun.com/v2', 'spark-x2.5'],
     ['minimax', 'https://api.minimax.io/v1', 'MiniMax-M3'],
     ['minimax-cn', 'https://api.minimaxi.com/v1', 'MiniMax-M3'],
