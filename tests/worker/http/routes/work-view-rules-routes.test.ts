@@ -8,6 +8,7 @@ import type { Server } from 'node:http';
 import { myRulesImportLine, WorkViewRoutes } from '../../../../src/services/worker/http/routes/WorkViewRoutes.js';
 import { ruleIdForPreference } from '../../../../src/services/work-view/my-rules.mjs';
 import { emitContextInvalidation } from '../../../../src/shared/context-invalidation.js';
+import { claudeCodeImportLine, rulesAndToolsLoadedByClaudeCode } from '../../../../src/shared/claude-code-rules-import.js';
 
 let directory: string;
 let source: Database;
@@ -215,6 +216,41 @@ describe('My Rules routes', () => {
     expect(myRulesImportLine(rulesFilePath)).toBe(`@${rulesFilePath.replaceAll(' ', '\\ ')}`);
     expect(instructions.split(myRulesImportLine(rulesFilePath)).length - 1).toBe(1);
     expect(existsSync(rulesFilePath)).toBe(true);
+  });
+
+  it('MY-RULES.md imports RULES-AND-TOOLS.md, so one CLAUDE.md line loads the rules and the tools', async () => {
+    const response = await fetch(`${origin}/api/work-view/rules/load-in-claude-code`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: origin }, body: '{}' });
+    expect(response.status).toBe(200);
+    const rulesAndToolsPath = join(directory, 'RULES-AND-TOOLS.md');
+    expect(readFileSync(rulesFilePath, 'utf8')).toEndWith(`\n\n${claudeCodeImportLine(rulesAndToolsPath)}\n`);
+    // The import never dangles: Claude Code skips a missing file without a word.
+    expect(readFileSync(rulesAndToolsPath, 'utf8')).toStartWith('# Claude-Mem Rules + Tools\n');
+    expect(rulesAndToolsLoadedByClaudeCode({ claudeInstructionsPath, myRulesPath: rulesFilePath, rulesAndToolsPath })).toBe(true);
+  });
+
+  it('brings an older MY-RULES.md up to date at startup, and creates none where there was none', async () => {
+    await saveRule({ action: 'approve', ruleId: SUGGESTED_ID });
+    writeFileSync(rulesFilePath, '# My Rules\n\n- written by an older version\n');
+    const restarted = new WorkViewRoutes({
+      databasePath: join(directory, 'source.db'), reviewPath: join(directory, 'review-restart.db'), pollIntervalMs: 20, humanCopy: null,
+      ledgerDir: join(directory, 'work-view'), homeProject: 'home', rulesFilePath, claudeInstructionsPath,
+    });
+    const elsewhere = join(directory, 'never-loaded', 'MY-RULES.md');
+    const untouched = new WorkViewRoutes({
+      databasePath: join(directory, 'source.db'), reviewPath: join(directory, 'review-untouched.db'), pollIntervalMs: 20, humanCopy: null,
+      ledgerDir: join(directory, 'work-view'), homeProject: 'home', rulesFilePath: elsewhere, claudeInstructionsPath,
+    });
+    try {
+      const importLine = claudeCodeImportLine(join(directory, 'RULES-AND-TOOLS.md'));
+      const deadline = Date.now() + 2000;
+      while (!readFileSync(rulesFilePath, 'utf8').includes(importLine) && Date.now() < deadline) await Bun.sleep(5);
+      expect(readFileSync(rulesFilePath, 'utf8')).toContain(`- ${PREFERENCE}`);
+      expect(readFileSync(rulesFilePath, 'utf8')).toContain(importLine);
+      expect(existsSync(elsewhere)).toBe(false);
+    } finally {
+      restarted.close();
+      untouched.close();
+    }
   });
 
   it('repairs an unescaped rules import through a directory containing spaces', async () => {
