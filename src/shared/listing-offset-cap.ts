@@ -9,6 +9,16 @@
  */
 export const MAX_LISTING_OFFSET = 10_000;
 
+/**
+ * The largest `limit` a listing or search route serves in one request, on both
+ * planes: the worker's SQLite feeds (DataRoutes) and its search routes
+ * (SearchRoutes). A request above it is clamped, not rejected: the caller asked
+ * for more than a page and gets a full page, while one request can no longer
+ * point SQLite at a whole table. The feeds enforce it today; the search routes
+ * did not, so `?limit=999999999` there scanned every row before slicing.
+ */
+export const MAX_LISTING_LIMIT = 100;
+
 /** The 400 message for an `offset` above MAX_LISTING_OFFSET. */
 export const LISTING_OFFSET_CAP_MESSAGE =
   `offset must be at most ${MAX_LISTING_OFFSET}; narrow the listing with filters to reach older rows`;
