@@ -23,11 +23,12 @@ type Dependencies = {
 };
 
 /**
- * The subprocess compares the deadline against `Date.now()`, while the
- * parent's own expiry is measured with `performance.now()`. Derive it from
- * the remaining budget at dispatch so a wall-clock step between the start of
- * the search and the launch cannot hand the child more time than the parent
- * still has (or kill it early on a forward step).
+ * The subprocess receives a wall-clock deadline (it converts it to monotonic
+ * time on receipt, see `childExpired`), while the parent's own expiry is
+ * measured with `performance.now()`. Derive it from the remaining budget at
+ * dispatch so a wall-clock step between the start of the search and the
+ * launch cannot hand the child more time than the parent still has (or kill
+ * it early on a forward step).
  */
 export function childDeadline(expires: number, now: number, wallNow: number = Date.now()): number {
   return wallNow + Math.max(1, expires - now);
