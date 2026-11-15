@@ -433,4 +433,25 @@ describe('server-owned sqlite storage boundary', () => {
       expect(memories.search(project.id, 'provenance-secret')).toHaveLength(0);
     });
   });
+
+  it('reads an unreadable payload as an empty object instead of failing the whole read', () => {
+    withDb(db => {
+      const project = new ProjectsRepository(db).create({ name: 'Corrupt payload' });
+      const events = new AgentEventsRepository(db);
+      const good = events.create({
+        projectId: project.id,
+        sourceType: 'hook',
+        eventType: 'tool_use',
+        payload: { tool: 'Bash' },
+        occurredAtEpoch: Date.now(),
+      });
+      // A row another process (or a half-written one) can leave behind: the
+      // read paths are on the server's request path, so one bad row must not
+      // throw out of getById/listByProject.
+      db.prepare('UPDATE agent_events SET payload = ? WHERE id = ?').run('{not json', good.id);
+
+      expect(events.getById(good.id)?.payload).toEqual({});
+      expect(events.listByProject(project.id).map(event => event.payload)).toEqual([{}]);
+    });
+  });
 });
