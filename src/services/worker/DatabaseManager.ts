@@ -37,7 +37,7 @@ export class DatabaseManager {
   private mediaReplicaResolver: MediaCloudReplicaResolver | null = null;
 
   private rawSearchEnabled = false;
-  private readonly rawSearchAbort = new AbortController();
+  private rawSearchAbort = new AbortController();
 
   async initializeToolUseSearch(): Promise<void> {
     await this.sessionSearch?.configureToolUseIndex(this.rawSearchEnabled, this.rawSearchAbort.signal);
@@ -140,7 +140,10 @@ export class DatabaseManager {
   }
 
   async close(): Promise<void> {
+    // Stop any index build in flight, then arm a fresh signal: a busy init
+    // retry (db-init-retry.ts) calls initialize() again on this manager.
     this.rawSearchAbort.abort();
+    this.rawSearchAbort = new AbortController();
     if (this.mediaCleanupTimer) clearInterval(this.mediaCleanupTimer);
     this.mediaCleanupTimer = null;
     this.mediaCloudSync?.stop();
