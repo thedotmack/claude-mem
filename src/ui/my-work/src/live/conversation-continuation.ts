@@ -148,8 +148,8 @@ function exchangeView(exchange: ConversationContinuation): ConversationExchangeV
  * random bits, so two ids share them about once in four billion pairs. Both tools' ids end in random bits: a Claude Code
  * id is a random UUID (version 4), and a Codex id is a time-ordered one (version 7), whose first eight characters are the
  * top bits of the millisecond it started, the same for every id started in the same 65.5 seconds. The title shows those
- * first eight (to-work-model.ts). In one real database on 15 Nov 2026, the last eight told apart all 705 Codex and all
- * 5,792 Claude Code session ids, while the 705 Codex ids had only 565 different first eights.
+ * first eight (to-work-model.ts). Checked on a real database: the last eight told every session id apart, while many
+ * Codex ids shared their first eight.
  */
 const SESSION_ID_END = /.{8}$/
 const sessionIdEndOf = (conversationSessionId: string) => conversationSessionId.match(SESSION_ID_END)?.[0] ?? conversationSessionId
