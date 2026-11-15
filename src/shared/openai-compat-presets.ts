@@ -164,6 +164,16 @@ export const OPENAI_COMPAT_PRESETS: readonly OpenAICompatPreset[] = [
     hint: 'Key from uberllm.dev/dashboard/keys; vendor-prefixed model ids such as deepseek/deepseek-v4.1-flash or z-ai/glm-5.2, listed at api.uberllm.dev/v1/models.',
   },
   {
+    id: 'hopbase',
+    label: 'HopBase (hop-base.com)',
+    baseUrl: 'https://api.hop-base.com/v1',
+    // A cheap, fast model for the same reason as NVIDIA's default: extraction
+    // is high volume. Ids are passed verbatim.
+    defaultModel: 'deepseek-v4.1-flash',
+    requiresApiKey: true,
+    hint: 'Key from the HopBase console; model ids such as deepseek-v4.1-flash or claude-haiku-5-5, as listed by GET api.hop-base.com/v1/models for your key.',
+  },
+  {
     id: 'deepseek',
     label: 'DeepSeek',
     baseUrl: 'https://api.deepseek.com/v1',
