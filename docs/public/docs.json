@@ -112,6 +112,7 @@
           "openclaw-integration",
           "hermes-integration",
           "kimi-integration",
+          "omo-native-integration",
           "cline",
           "devin-integration",
           "qoder-integration",

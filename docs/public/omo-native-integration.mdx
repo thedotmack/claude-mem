@@ -1,0 +1,58 @@
+---
+title: OmO Native
+description: Retrieve saved Claude-Mem observations in the standalone Oh My OpenAgent CLI over local MCP.
+---
+
+## What this connection does
+
+OmO Native can retrieve existing observations from a running local Claude-Mem worker. The configuration below exposes the read-only `search`, `timeline`, and `get_observations` tools. The scope is on-demand recall.
+
+Use the standalone `omo` command. The [OmO Native migration guide](https://github.com/code-yeongyu/oh-my-openagent/blob/dev/docs/guide/migrating-from-opencode.md) explains how to distinguish it from the OpenCode edition. For Claude-Mem's OpenCode plugin, see the [platform integration guide](/platform-integration).
+
+## Setup
+
+You need an existing Claude-Mem installation with a local worker, Node.js 24 or newer, and OmO Native with a configured model for interactive prompts. The local MCP connection uses the worker's existing settings. OmO may pass returned memory to the model provider selected for the session.
+
+1. Start your Claude-Mem worker normally. Locate the absolute path to `plugin/scripts/mcp-server.cjs` in that installation.
+2. Back up OmO's `~/.omo/agent/mcp.json`, if it exists. If you set `OMO_CODING_AGENT_DIR`, use the `mcp.json` in that directory.
+3. Add the `claude-mem` entry inside `mcpServers`. Keep existing server entries and settings. If a `claude-mem` entry already exists, review it before replacing it.
+4. Replace the example path, then start a new OmO session.
+
+```json
+{
+  "mcpServers": {
+    "claude-mem": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["/absolute/path/to/claude-mem/plugin/scripts/mcp-server.cjs"],
+      "env": {
+        "CLAUDE_MEM_RUNTIME": "worker",
+        "CLAUDE_MEM_WORKER_AUTOSTART": "false"
+      },
+      "includeTools": ["search", "timeline", "get_observations"],
+      "exposure": "direct",
+      "startupTimeoutMs": 10000
+    }
+  }
+}
+```
+
+For a worker started with a custom `CLAUDE_MEM_DATA_DIR` or `CLAUDE_MEM_WORKER_PORT`, pass the same values in the entry's `env`. Leave local API tokens in the worker's settings file. See [worker configuration](/configuration) for details.
+
+## Verify recall
+
+1. Choose a non-sensitive observation already saved in a test project. Note the project name and observation ID.
+2. In OmO, run `/mcp` and check that `claude-mem` connects. Ask OmO to use the Claude-Mem `get_observations` tool for that ID and project.
+3. Compare the tool result with the known observation. For discovery when you only know a topic, use `search` with the project name, then `timeline` and `get_observations` for selected matches.
+
+The local smoke test used Linux x86_64, OmO Native 5.1.69 (Senpi 2026.11.10-2), Claude-Mem 15.18.3, Node.js 24.22.1, and Bun 1.4.4. OmO's real MCP client returned a known observation from a separate local worker and test database. The same test checked a mismatched project, a stopped worker, and removal of the MCP entry. A loopback model fixture requested the tool and checked its response without a hosted provider account. The interactive TUI, Windows, and macOS were outside this test.
+
+## Troubleshoot and disconnect
+
+- **Server or tools missing.** Verify the MCP config directory, absolute script path, and `node` on the same PATH OmO uses. Check `/mcp` after restarting the session.
+- **Worker unavailable.** Verify the configured worker is running and the MCP entry uses its data directory and port. The entry leaves worker lifecycle management to your existing Claude-Mem setup.
+- **No matching observation.** Check the project name and numeric observation ID. Use a test project with a known saved record to distinguish an empty result from a connection problem.
+
+To disconnect, remove only `mcpServers.claude-mem` from OmO's config and restart OmO. The worker and its saved observations remain available to your other clients.
+
+References · [OmO Native documentation](https://omo.dev/docs) · [OmO Native configuration migration](https://github.com/code-yeongyu/oh-my-openagent/blob/dev/docs/guide/migrating-from-opencode.md) · [Claude-Mem memory search](/usage/search-tools)
