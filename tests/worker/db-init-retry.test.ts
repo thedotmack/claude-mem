@@ -11,6 +11,8 @@ import {
 import { DatabaseManager } from '../../src/services/worker/DatabaseManager.js';
 import { SessionSearch } from '../../src/services/sqlite/SessionSearch.js';
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
+import { HOOK_TIMEOUTS } from '../../src/shared/hook-constants.js';
+import { SQLITE_BUSY_TIMEOUT_MS } from '../../src/services/sqlite/connection.js';
 import { logger } from '../../src/utils/logger.js';
 
 function sqliteError(code: string, message = 'database is locked'): Error {
@@ -90,6 +92,14 @@ describe('isTransientSqliteBusy', () => {
       b.close();
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('DB_INIT_BUSY_RETRY_DELAYS_MS budget', () => {
+  it('settles inside the spawning hook\'s readiness wait even when every attempt uses its full busy wait', () => {
+    const attempts = DB_INIT_BUSY_RETRY_DELAYS_MS.length + 1;
+    const sleepMs = DB_INIT_BUSY_RETRY_DELAYS_MS.reduce((sum, delayMs) => sum + delayMs, 0);
+    expect(attempts * SQLITE_BUSY_TIMEOUT_MS + sleepMs).toBeLessThanOrEqual(HOOK_TIMEOUTS.READINESS_WAIT);
   });
 });
 

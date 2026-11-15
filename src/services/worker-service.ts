@@ -1149,8 +1149,8 @@ export class WorkerService implements WorkerRef {
 
       logger.info('WORKER', 'Initializing database manager...');
       // A replacement worker can boot while another connection is writing
-      // (#3603: SQLITE_BUSY_SNAPSHOT during a My Work refresh). That is
-      // transient, so retry it for a bounded time before settling on `failed`.
+      // (#3603). SQLITE_BUSY* here is transient, so retry it for a bounded
+      // time (db-init-retry.ts states the budget) before settling on `failed`.
       await initializeDatabaseWithBusyRetry(this.dbManager, { shouldStop: () => this.isShuttingDown });
       // Shutdown may have begun while initialization was pending.
       if (this.isShuttingDown) return;

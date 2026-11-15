@@ -2,11 +2,22 @@ import { logger } from '../../utils/logger.js';
 
 /**
  * Waits before each retry of a database init that failed with SQLITE_BUSY*.
- * Six attempts in all, about 31 s of waiting plus each attempt's own busy wait.
- * That is long enough for another connection to finish a write and short enough
- * that a lock that never goes away still ends in `failed`, where readers can see it.
+ *
+ * Why three retries at 1, 2 and 4 s: the hook that spawns a worker waits
+ * HOOK_TIMEOUTS.READINESS_WAIT (30 s on POSIX, doubled on Windows) for it to
+ * report ready (worker-spawner.ts, waitForReadiness). The retry must settle
+ * inside that wait, so the spawning hook sees either `ready` or `failed`, never
+ * a readiness timeout. The worst case is every attempt using its full
+ * SQLITE_BUSY_TIMEOUT_MS (5 s) busy wait: 4 attempts × 5 s + 7 s of sleep = 27 s,
+ * under 30 s. A test pins that sum. A SQLITE_BUSY_SNAPSHOT returns at once and
+ * the next attempt reads a fresh snapshot, so one retry usually clears it.
+ *
+ * The incident in #3603 (2026-11-11), a busy write from WorkViewRoutes'
+ * constructor, was fixed by #6041. This retry covers the earlier
+ * `dbManager.initialize()` phase (open, migrations, device identity writes),
+ * which can hit the same busy errors and still had no retry.
  */
-export const DB_INIT_BUSY_RETRY_DELAYS_MS: readonly number[] = [1_000, 2_000, 4_000, 8_000, 16_000];
+export const DB_INIT_BUSY_RETRY_DELAYS_MS: readonly number[] = [1_000, 2_000, 4_000];
 
 /**
  * True for SQLITE_BUSY and its extended codes (SQLITE_BUSY_SNAPSHOT,
