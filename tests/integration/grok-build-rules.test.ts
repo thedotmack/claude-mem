@@ -7,12 +7,12 @@ import { getProjectContext } from '../../src/utils/project-name.js';
 import {
   grokBuildContextStatus,
   grokRulesFile,
-  handleGrokCommand,
   installGrokBuildContext,
   refreshGrokBuildContext,
   uninstallGrokBuildContext,
   updateGrokContextForProject,
 } from '../../src/services/integrations/GrokBuildRules.js';
+import { handleGrokCommand } from '../../src/services/integrations/GrokBuildInstaller.js';
 
 const ORIGINAL_DATA_DIR = process.env.CLAUDE_MEM_DATA_DIR;
 const EXCLUDE_LINE = '**/.grok/rules/claude-mem-context.md';

@@ -327,7 +327,7 @@ async function main(): Promise<void> {
     }
 
     case 'grok': {
-      const { handleGrokCommand } = await import('../services/integrations/GrokBuildRules.js');
+      const { handleGrokCommand } = await import('../services/integrations/GrokBuildInstaller.js');
       process.exit(await handleGrokCommand(args[1]?.toLowerCase(), args.slice(2)));
     }
 

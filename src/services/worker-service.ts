@@ -143,7 +143,7 @@ import { ServerV1Routes } from '../server/routes/v1/ServerV1Routes.js';
 import {
   handleCursorCommand
 } from './integrations/CursorHooksInstaller.js';
-import { handleGrokCommand } from './integrations/GrokBuildRules.js';
+import { handleGrokCommand } from './integrations/GrokBuildInstaller.js';
 import {
   handleKimiCommand
 } from './integrations/KimiHooksInstaller.js';
