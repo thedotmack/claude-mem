@@ -72,6 +72,13 @@
         ]
       },
       {
+        "group": "Grok Build Integration",
+        "icon": "terminal",
+        "pages": [
+          "grok-build/index"
+        ]
+      },
+      {
         "group": "Antigravity CLI Integration",
         "icon": "terminal",
         "pages": [
