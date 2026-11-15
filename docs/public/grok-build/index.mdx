@@ -58,7 +58,7 @@ Grok Build reads the file when a session **starts**. A refresh that lands during
 ## What is stored and sent
 
 - The file holds the same recalled notes Claude-Mem gives Claude Code at session start, for this project only. It stays on your machine.
-- Claude-Mem skips folders on your excluded-projects list and writes only into folders you ran `grok install` in. If you exclude a project after installing, the next refresh replaces its notes with a short "excluded" line.
+- Claude-Mem skips folders on your excluded-projects list and writes only into folders you ran `grok install` in. If you exclude a project after installing, its notes are replaced with a short "excluded" line the next time any project finishes a session summary, so it doesn't wait on the excluded project itself. A Grok session that starts before that still loads the old notes. For an immediate effect, run `claude-mem grok uninstall` in that folder.
 - Grok Build loads rules files as **project instructions**, so the model gives recalled notes the same weight as instructions you wrote. The file's header calls them reference data, but a header can't stop a model from acting on text inside a note. Claude Code's session-start context carries the same risk. Only install in projects whose captured content you trust, and remember that notes can quote web pages, tool output and files you opened.
 - Don't commit the file. The install adds it to `.git/info/exclude` for you. If you exclude it through `.gitignore` instead, Grok Build skips it and your notes stop loading.
 

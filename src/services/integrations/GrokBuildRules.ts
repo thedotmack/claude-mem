@@ -109,8 +109,25 @@ function excludedNow(workspaceRoot: string): boolean {
 
 /** Replace any notes already on disk with the excluded marker. */
 function clearExcludedNotes(workspaceRoot: string): void {
-  if (existsSync(grokRulesFile(workspaceRoot))) {
-    writeTextFileAtomic(grokRulesFile(workspaceRoot), renderRules('', EXCLUDED_NOTES));
+  const file = grokRulesFile(workspaceRoot);
+  if (!existsSync(file)) return;
+  const cleared = renderRules('', EXCLUDED_NOTES);
+  if (readFileSync(file, 'utf-8') !== cleared) writeTextFileAtomic(file, cleared);
+}
+
+/**
+ * Replace the notes of every opted-in folder that is excluded now. An excluded
+ * project never produces a summary, so its own refresh cannot be the trigger:
+ * this runs on any project's summary instead. Reads settings and the registry
+ * only (no git, no worker call), so the cost is bounded by the number of folders.
+ */
+export function clearExcludedGrokNotes(): void {
+  for (const workspaceRoot of Object.keys(readRegistry())) {
+    try {
+      if (excludedNow(workspaceRoot)) clearExcludedNotes(workspaceRoot);
+    } catch (error) {
+      logger.warn('GROK_BUILD', 'Could not clear notes for an excluded folder', { workspaceRoot }, error instanceof Error ? error : new Error(String(error)));
+    }
   }
 }
 
@@ -209,6 +226,7 @@ export async function updateGrokContextForProject(
   projectName: string,
   fetchCtx?: (workspaceRoot: string) => Promise<string>,
 ): Promise<void> {
+  clearExcludedGrokNotes();
   for (const [workspaceRoot, entry] of Object.entries(readRegistry())) {
     if (entry.projectName !== projectName || !existsSync(grokRulesFile(workspaceRoot))) continue;
     try {

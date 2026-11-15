@@ -218,6 +218,30 @@ describe('refresh', () => {
     }
   });
 
+  test('a summary from any other project clears the notes of a folder excluded after install', async () => {
+    installGrokBuildContext(workspace);
+    await refreshGrokBuildContext(workspace, async () => 'secret notes');
+    process.env.CLAUDE_MEM_EXCLUDED_PROJECTS = workspace;
+    try {
+      const fetched: string[] = [];
+      await updateGrokContextForProject('some-other-project', async (root) => { fetched.push(root); return 'x'; });
+      const text = readFileSync(grokRulesFile(workspace), 'utf-8');
+      expect(text).not.toContain('secret notes');
+      expect(text).toContain('excludes this project');
+      expect(fetched).toEqual([]);
+      expect(grokBuildContextStatus(workspace).registered).toBe(true);
+    } finally {
+      delete process.env.CLAUDE_MEM_EXCLUDED_PROJECTS;
+    }
+  });
+
+  test('clearing leaves a folder that is not excluded alone', async () => {
+    installGrokBuildContext(workspace);
+    await refreshGrokBuildContext(workspace, async () => 'kept notes');
+    await updateGrokContextForProject('some-other-project', async () => 'x');
+    expect(readFileSync(grokRulesFile(workspace), 'utf-8')).toContain('kept notes');
+  });
+
   test('a renamed project is flagged by status, and reinstalling resumes refresh', async () => {
     installGrokBuildContext(workspace);
     const registry = path.join(process.env.CLAUDE_MEM_DATA_DIR!, 'grok-projects.json');
