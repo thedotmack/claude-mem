@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from 'bun:test';
 import { build } from 'esbuild';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { removeTempDir } from '../../helpers/temp-dir.js';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
@@ -12,10 +13,10 @@ import { publishSharedRecords } from '../../../src/services/work-view/shared-rec
 import { isSharedProjectionValue } from '../../../src/services/work-view/shared-projection.mjs';
 
 const disposals: Array<() => void> = [];
-afterEach(() => { for (const dispose of disposals.splice(0).reverse()) dispose(); });
+afterEach(async () => { for (const dispose of disposals.splice(0).reverse()) await dispose(); });
 function fixture() {
   const directory = mkdtempSync(join(tmpdir(), 'shared-work-runtime-'));
-  disposals.push(() => rmSync(directory, { recursive: true, force: true }));
+  disposals.push(() => removeTempDir(directory));
   const databasePath = join(directory, 'claude-mem.db'), ledger = join(directory, 'work-view');
   const store = new SessionStore(databasePath); mkdirSync(ledger);
   disposals.push(() => store.close());

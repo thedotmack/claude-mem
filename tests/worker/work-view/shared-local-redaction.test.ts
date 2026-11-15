@@ -1,5 +1,6 @@
 import { afterEach, expect, spyOn, test } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
+import { removeTempDir } from '../../helpers/temp-dir.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
@@ -11,12 +12,12 @@ import { SettingsDefaultsManager } from '../../../src/shared/SettingsDefaultsMan
 import { _resetRedactionConfigCache } from '../../../src/utils/redaction.js';
 
 const cleanup: Array<() => void> = [];
-afterEach(() => { for (const dispose of cleanup.splice(0).reverse()) dispose(); _resetRedactionConfigCache(); });
+afterEach(async () => { for (const dispose of cleanup.splice(0).reverse()) await dispose(); _resetRedactionConfigCache(); });
 const secret = 'AKIA' + 'ABCDEFGHIJKLMNOP';
 const marker = "<redacted type='aws_access_key'/>";
 function fixture() {
   const directory = mkdtempSync(join(tmpdir(), 'shared-local-redaction-'));
-  cleanup.push(() => rmSync(directory, { recursive: true, force: true }));
+  cleanup.push(() => removeTempDir(directory));
   const store = new SessionStore(join(directory, 'memory.db'));
   cleanup.push(() => store.close());
   const ledger = join(directory, 'work-view'); mkdirSync(ledger);

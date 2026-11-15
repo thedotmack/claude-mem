@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
+import { removeTempDir } from '../../helpers/temp-dir.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
@@ -28,9 +29,9 @@ beforeEach(() => {
   });
 });
 
-afterEach(() => {
+afterEach(async () => {
   unsubscribe(); routes.close(); store.close();
-  rmSync(directory, { recursive: true, force: true });
+  await removeTempDir(directory);
 });
 
 const background = () => (routes as any).backgroundSnapshot();
