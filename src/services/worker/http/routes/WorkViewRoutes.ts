@@ -648,8 +648,9 @@ export class WorkViewRoutes extends BaseRouteHandler {
       }
     });
     // A MY-RULES.md written by an older version lacks the RULES-AND-TOOLS.md import; bring it up to date
-    // once. Never creates the file: only someone who loaded My Rules in Claude Code has one.
-    if (existsSync(this.rulesFilePath)) this.scheduleRulesFileRebuild();
+    // once. Never creates the file: only someone who loaded My Rules in Claude Code has one. A file that
+    // already has the import costs no read of the saved rules.
+    if (this.rulesFileLacksRulesAndToolsImport()) this.scheduleRulesFileRebuild();
   }
 
   private stopRulesSync: () => void;
@@ -1269,6 +1270,20 @@ export class WorkViewRoutes extends BaseRouteHandler {
   /** RULES-AND-TOOLS.md sits beside MY-RULES.md; MY-RULES.md imports it so Claude Code loads both through one line. */
   private get rulesAndToolsPath(): string {
     return join(dirname(this.rulesFilePath), RULES_AND_TOOLS_FILENAME);
+  }
+
+  private rulesFileLacksRulesAndToolsImport(): boolean {
+    let markdown: string;
+    try { markdown = readFileSync(this.rulesFilePath, 'utf8'); }
+    catch (error) {
+      // An unreadable file must not stop the worker from starting; the next rule change rewrites it.
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        logger.warn('HTTP', 'Could not read MY-RULES.md to check its Rules + Tools import', { error: error instanceof Error ? error.message : String(error) });
+      }
+      return false;
+    }
+    const importLine = claudeCodeImportLine(this.rulesAndToolsPath);
+    return !markdown.split('\n').some(line => line.trim() === importLine);
   }
 
   private renderRulesMarkdown(rules: SavedRule[]): string {
