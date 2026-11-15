@@ -303,6 +303,11 @@ export class ConversationContinuationRunner {
     this.dependencies = dependencies;
   }
 
+  /** Whether this conversation can be continued from here, and where its turn would run. Runs no agent detection. */
+  target(platform: string, conversationSessionId: string): ConversationContinuationTarget {
+    return resolveConversationContinuationTarget(platform, conversationSessionId, this.dependencies);
+  }
+
   /** The exchanges sent to this conversation from My Work since the worker started, oldest first. */
   exchanges(platform: string, conversationSessionId: string): ConversationContinuation[] {
     return [...(this.conversations.get(conversationKeyFor(platform, conversationSessionId))?.exchanges ?? [])];

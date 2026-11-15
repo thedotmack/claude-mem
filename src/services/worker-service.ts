@@ -195,6 +195,8 @@ import { HistoryImport } from './setup/history-import.js';
 import { cmemProOrigin } from '../shared/cmem-gateway.js';
 import { Database as BunDatabase } from 'bun:sqlite';
 import { WorkViewRoutes } from './worker/http/routes/WorkViewRoutes.js';
+import { ConversationContinuationRunner } from './work-view/conversation-continuation-runner.js';
+import { detectUsableAgents } from './agent-runner/detect.js';
 import { SessionRoutes } from './worker/http/routes/SessionRoutes.js';
 import { DataRoutes } from './worker/http/routes/DataRoutes.js';
 import { MediaRoutes } from './worker/http/routes/MediaRoutes.js';
@@ -1189,6 +1191,15 @@ export class WorkerService implements WorkerRef {
           openDatabase: () => new BunDatabase(DB_PATH, { readonly: true, create: false }),
           origin: () => cmemProOrigin(),
           token: () => SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_CLOUD_SYNC_TOKEN?.trim() || null,
+        }),
+        // My Work's "continue this conversation": one turn per Send, run by the owner's own CLI. Memory only; it starts
+        // nothing by itself. Every open My Work window is told when an exchange ends, by its id and state only.
+        conversationContinuationRunner: new ConversationContinuationRunner({
+          recordedFolderForConversation: (platform, conversationSessionId) =>
+            this.dbManager.getSessionStore().getRecordedFolderForConversation(platform, conversationSessionId),
+          detectAgents: detectUsableAgents,
+          spawnImpl: spawn,
+          onChange: exchange => this.workViewRoutes?.publishConversationContinuation(exchange),
         }),
       });
       this.server.registerRoutes(this.workViewRoutes);

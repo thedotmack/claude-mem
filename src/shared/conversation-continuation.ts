@@ -51,6 +51,16 @@ export interface ConversationContinuation {
 }
 
 /**
+ * The `conversation-continuation` event on the worker's event stream (/api/work-view/events), sent when an exchange
+ * starts and when it ends: which exchange of which conversation, and its state, and nothing else. The stream checks no
+ * origin, and the worker's CORS lets a page on any http://localhost or http://127.0.0.1 port read it (local API token
+ * mode, which would stop that, is off by default). So the message, the reply, the failure text and the folder are only
+ * ever answered by the guarded read, GET /api/work-view/conversations/continuation, which the page asks when a notice
+ * for a conversation it shows arrives.
+ */
+export type ConversationContinuationNotice = Pick<ConversationContinuation, 'exchangeId' | 'platform' | 'conversationSessionId' | 'state'>;
+
+/**
  * Whether a conversation can be continued from here and where its turn would run. A refusal is one sentence the page
  * shows as it is. The fields the other branch lacks are typed `undefined`, so a reader may check any of them unnarrowed.
  */
