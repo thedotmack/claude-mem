@@ -221,23 +221,31 @@ describe('POST /v1/keys + GET /v1/connect', () => {
   });
 
   it('refuses a Host header it cannot advertise', async () => {
-    const response = await new Promise<{ status: number; body: string }>((resolve, reject) => {
-      const req = http.request({
-        host: '127.0.0.1',
-        port,
-        path: '/v1/connect',
-        method: 'GET',
-        headers: { Authorization: `Bearer ${readKey}`, Host: 'evil.example with-space' },
-      }, (res) => {
-        let body = '';
-        res.setEncoding('utf8');
-        res.on('data', (chunk) => { body += chunk; });
-        res.on('end', () => resolve({ status: res.statusCode ?? 0, body }));
+    // With CLAUDE_MEM_PUBLIC_URL set the Host header is never used, so clear it for this case.
+    const savedPublicUrl = process.env.CLAUDE_MEM_PUBLIC_URL;
+    delete process.env.CLAUDE_MEM_PUBLIC_URL;
+    try {
+      const response = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+        const req = http.request({
+          host: '127.0.0.1',
+          port,
+          path: '/v1/connect',
+          method: 'GET',
+          headers: { Authorization: `Bearer ${readKey}`, Host: 'evil.example with-space' },
+        }, (res) => {
+          let body = '';
+          res.setEncoding('utf8');
+          res.on('data', (chunk) => { body += chunk; });
+          res.on('end', () => resolve({ status: res.statusCode ?? 0, body }));
+        });
+        req.on('error', reject);
+        req.end();
       });
-      req.on('error', reject);
-      req.end();
-    });
-    expect(response.status).toBe(400);
-    expect((JSON.parse(response.body) as { error: string }).error).toBe('InvalidHost');
+      expect(response.status).toBe(400);
+      expect((JSON.parse(response.body) as { error: string }).error).toBe('InvalidHost');
+    } finally {
+      if (savedPublicUrl === undefined) delete process.env.CLAUDE_MEM_PUBLIC_URL;
+      else process.env.CLAUDE_MEM_PUBLIC_URL = savedPublicUrl;
+    }
   });
 });

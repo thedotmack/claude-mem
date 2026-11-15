@@ -71,11 +71,14 @@ const MCP_SERVER_VERSION =
 // The MCP link base: CLAUDE_MEM_PUBLIC_URL in prod (behind a proxy/LB), else
 // derived from the request host so the connect command points at this server.
 // The Host header is caller-supplied and this string is pasted into a shell,
-// so an unusable host is refused instead of being advertised back.
-function mcpConnectUrl(req: Request): string | null {
+// so a Host that is present but unusable is refused instead of being
+// advertised back. A request with no Host header at all (HTTP/1.0) still gets
+// `localhost`, as before.
+export function mcpConnectUrl(req: Pick<Request, 'protocol' | 'get'>): string | null {
   const configured = (process.env.CLAUDE_MEM_PUBLIC_URL ?? '').trim();
   if (configured) return `${configured.replace(/\/+$/, '')}/v1/mcp`;
-  const host = (req.get('host') ?? '').trim();
+  const hostHeader = req.get('host');
+  const host = hostHeader === undefined ? 'localhost' : hostHeader.trim();
   if (!isValidAdvertisedHost(host)) return null;
   return `${req.protocol}://${host}/v1/mcp`;
 }
