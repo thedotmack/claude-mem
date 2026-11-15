@@ -164,13 +164,15 @@ function parseInstallOptions(argv: string[]): InstallOptions {
   };
 }
 
-// Commands that change the install, a host's config, telemetry, the worker, the server or stored memory
-// and would otherwise ignore -h/--help, including after a verb (`kimi uninstall --help`)
+// Handle help before running commands that would otherwise ignore or reject it,
+// including after a verb (`kimi uninstall --help`). TeamBrain prints its own
+// help, and search accepts a free-form query that can contain either help flag.
 const HELP_AWARE_COMMANDS = new Set([
-  '', 'install', 'update', 'upgrade', 'uninstall', 'remove', 'repair', 'prune', 'start', 'stop', 'restart',
+  '', 'install', 'update', 'upgrade', 'uninstall', 'remove', 'repair', 'prune',
+  'start', 'stop', 'restart', 'status', 'doctor', 'mcp', 'hook',
   'adopt', 'cleanup',
   'memory', 'telemetry', 'project', 'backup', 'restore', 'server', 'worker', 'transcript',
-  'gemini', 'kimi', 'devin', 'antigravity-cli', 'pi',
+  'gemini', 'kimi', 'devin', 'antigravity-cli', 'pi', 't3code', 't3-code', 't3',
 ]);
 
 async function main(): Promise<void> {
