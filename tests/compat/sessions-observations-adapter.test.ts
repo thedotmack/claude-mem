@@ -305,6 +305,27 @@ describe('Phase 9 compat adapters', () => {
     ]);
   });
 
+  it('POST /api/sessions/observations labels the event with the real client adapter', async () => {
+    const post = (body: Record<string, unknown>) => authedFetch(projectScopedApiKey, '/api/sessions/observations', {
+      method: 'POST',
+      body: JSON.stringify({ tool_name: 'Read', ...body }),
+    });
+    const adapterOf = async (eventId: string) => ((await client.query(
+      'SELECT source_adapter FROM agent_events WHERE id = $1', [eventId],
+    )).rows[0] as { source_adapter: string }).source_adapter;
+
+    const cursor = await post({ contentSessionId: 'adapter-cursor', platformSource: 'Cursor' });
+    expect(cursor.status).toBe(200);
+    expect(await adapterOf((await cursor.json()).eventId)).toBe('cursor-compat');
+
+    const explicit = await post({ contentSessionId: 'adapter-explicit', platformSource: 'cowork', sourceAdapter: ' cowork-plugin ' });
+    expect(explicit.status).toBe(200);
+    expect(await adapterOf((await explicit.json()).eventId)).toBe('cowork-plugin');
+
+    const tooLong = await post({ contentSessionId: 'adapter-long', sourceAdapter: 'x'.repeat(65) });
+    expect(tooLong.status).toBe(400);
+  });
+
   it('POST /api/sessions/summarize ends server_session and enqueues summary job (legacy response shape)', async () => {
     // Seed an observation first so a server_session exists for this contentSessionId.
     await authedFetch(projectScopedApiKey, '/api/sessions/observations', {

@@ -74,6 +74,19 @@ describe('purpose-specific model responses', () => {
     expect(typed.content[0].text).toContain('#S7 — Already typed');
     expect(typed.content[0].text).not.toContain('#SS7');
   });
+  it('names the agent that made each record, and adds no tag without provenance', () => {
+    const index = formatMcpPayload('search', { observations: [
+      { id: 8, title: 'Auth redirect decision', project: 'p', platformSource: 'cursor' },
+      { id: 9, title: 'Local row', project: 'p', platform_source: 'codex' },
+      { id: 10, title: 'Before provenance', project: 'p', platformSource: null },
+    ] }).content[0].text;
+    expect(index).toContain('#8 — Auth redirect decision (p) [via cursor]');
+    expect(index).toContain('#9 — Local row (p) [via codex]');
+    expect(index).toContain('#10 — Before provenance (p)');
+    expect(index).not.toContain('#10 — Before provenance (p) [via');
+    const details = formatMcpPayload('observations', [{ id: 'uuid', projectId: 'p', title: 'Server note', content: 'Body', platformSource: 'cowork' }]).content[0].text;
+    expect(details).toContain('[via cowork]');
+  });
   it('renders requested indexes beyond twenty and provides compact dated server context', () => {
     const rows = Array.from({ length: 35 }, (_, i) => ({ id: i + 1, title: `Memory ${i + 1}`, narrative: 'PRIVATE_INDEX_BODY' }));
     const index = formatMcpPayload('search', { observations: rows }).content[0].text;

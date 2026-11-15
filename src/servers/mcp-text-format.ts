@@ -48,8 +48,13 @@ function rows(payload: unknown, key: string): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 function identity(row: Record<string, unknown>): string {
+  // Provenance: which agent made this record. Server rows are camelCase, local
+  // rows snake_case; rows from before provenance carry neither and get no tag.
+  const platform = row.platformSource ?? row.platform_source;
+  const via = typeof platform === 'string' && platform.trim() ? ` [via ${line(platform.trim(), '', 100)}]` : '';
   return `#${line(row.id, '?', 100)} — ${line(row.title ?? record(row.metadata).title, 'Memory', 180)}`
-    + (row.project || row.projectId ? ` (${line(row.project ?? row.projectId, '', 100)})` : '');
+    + (row.project || row.projectId ? ` (${line(row.project ?? row.projectId, '', 100)})` : '')
+    + via;
 }
 function recordedAt(row: Record<string, unknown>): string {
   // Older SQLite rows use seconds. Server createdAtEpoch is already in milliseconds.

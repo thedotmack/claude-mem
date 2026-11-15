@@ -64,6 +64,28 @@ per-user approval is the boundary, plus per-client rate limits, idempotent
 dedupe, 256 KB body caps, and the provenance audit trail that lets a user
 see exactly what each connected app wrote.
 
+### Provenance (required)
+
+Every ingested event MUST carry provenance answering *which agent made this*,
+so any agent reading memory can tell "this came from your Cursor session
+yesterday":
+
+| Field | Required | Meaning |
+|---|---|---|
+| `platform` (envelope) / `X-CMEM-Platform` (header) | **yes** | Agent family: `claude`, `codex`, `cursor`, `cowork`, `muse`, `chatgpt`, ... Lowercased, normalized server-side via `normalizePlatformSource`. Missing/empty MUST NOT silently default to `claude` — record as `unknown`. |
+| `payload.agent_id` | no | Specific agent instance id, when the client has one. |
+| `payload.agent_type` | no | Agent role/type, when the client has one. |
+| `payload.client_version` | no | Client build version, for debugging skew. |
+
+Server-side rules:
+- Normalize `platform` with the shared `normalizePlatformSource` (same as local).
+- Persist the normalized value on the event row (`platform_source`), the
+  session row, and the generated observation row (denormalized) — never only
+  inside the JSON payload.
+- `source_adapter` must reflect the actual client (`{platform}-compat` or a
+  client-provided value), never a hardcoded single value.
+- `received_at` is stamped by the server; the client's `ts` is `captured_at`.
+
 ---
 
 ## 1) POST /api/hooks/ingest

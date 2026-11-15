@@ -37,6 +37,7 @@ interface MemoryItemRow {
   id: string;
   project_id: string;
   server_session_id: string | null;
+  platform_source: string | null;
   legacy_observation_id: number | null;
   kind: MemoryItemKind;
   type: string;
@@ -69,6 +70,7 @@ function mapMemoryItemRow(row: MemoryItemRow): MemoryItem {
     id: row.id,
     projectId: row.project_id,
     serverSessionId: row.server_session_id,
+    platformSource: row.platform_source,
     legacyObservationId: row.legacy_observation_id,
     kind: row.kind,
     type: row.type,
@@ -152,18 +154,27 @@ export class MemoryItemsRepository {
     const item = CreateMemoryItemSchema.parse(sanitizeMemoryItemContent(input));
     const now = Date.now();
     const id = randomUUID();
+    // Provenance: an explicit platform wins; otherwise inherit the session's,
+    // so every item answers "which agent made this". No session leaves NULL.
+    let platformSource = item.platformSource ?? null;
+    if (!platformSource && item.serverSessionId) {
+      const session = this.db.prepare('SELECT platform_source FROM server_sessions WHERE id = ?')
+        .get(item.serverSessionId) as { platform_source: string | null } | null;
+      platformSource = session?.platform_source ?? null;
+    }
 
     this.db.prepare(`
       INSERT INTO memory_items (
-        id, project_id, server_session_id, legacy_observation_id, kind, type,
+        id, project_id, server_session_id, platform_source, legacy_observation_id, kind, type,
         title, subtitle, text, narrative, facts, concepts, files_read,
         files_modified, metadata, created_at_epoch, updated_at_epoch
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       item.projectId,
       item.serverSessionId ?? null,
+      platformSource,
       item.legacyObservationId ?? null,
       item.kind,
       item.type,
