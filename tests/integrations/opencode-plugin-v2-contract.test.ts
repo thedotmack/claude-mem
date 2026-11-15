@@ -1,11 +1,15 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { readFileSync } from "node:fs";
 import {
   setupV2,
   extractResultText,
   type OpenCodePluginContextV2,
   type V2BusEvent,
 } from "../../src/integrations/opencode-plugin/v2";
-import { REGISTERED_OPENCODE_V2_HOOKS } from "../../src/integrations/opencode-plugin/contract";
+import {
+  REGISTERED_OPENCODE_V2_HOOKS,
+  REAL_OPENCODE_V2_EVENT_TYPES,
+} from "../../src/integrations/opencode-plugin/contract";
 
 /**
  * OpenCode V2 plugin contract.
@@ -546,6 +550,25 @@ describe("OpenCode V2 event bus", () => {
     expect(injects()).toBe(2);
   });
 
+  it("reacts only to the event types in the V2 contract", () => {
+    const source = readFileSync("src/integrations/opencode-plugin/v2.ts", "utf8");
+    const handled = [...source.matchAll(/case "([a-z.]+)":/g)].map((match) => match[1]).sort();
+    expect(handled).toEqual([...REAL_OPENCODE_V2_EVENT_TYPES].sort());
+  });
+
+  it("pins the GA-verified V2 event names, so a renamed event fails loudly", () => {
+    // Verified against anomalyco/opencode v2.0.32: the compaction flow
+    // (`packages/core/src/session/compaction.ts`) publishes
+    // `SessionEvent.Compaction.Ended` ("session.compaction.ended") on success.
+    // The schema also defines an ephemeral `session.compacted`, but nothing
+    // publishes it — the adapter must listen for the event that fires.
+    expect(REAL_OPENCODE_V2_EVENT_TYPES).toContain("session.compaction.ended");
+    expect(REAL_OPENCODE_V2_EVENT_TYPES).toContain("session.execution.succeeded");
+    expect(REAL_OPENCODE_V2_EVENT_TYPES).toContain("session.text.ended");
+    expect(REAL_OPENCODE_V2_EVENT_TYPES).toContain("session.deleted");
+    expect(REAL_OPENCODE_V2_EVENT_TYPES).not.toContain("session.compacted");
+    expect(REAL_OPENCODE_V2_EVENT_TYPES).not.toContain("session.idle");
+  });
 });
 
 describe("OpenCode V2 setup failure", () => {

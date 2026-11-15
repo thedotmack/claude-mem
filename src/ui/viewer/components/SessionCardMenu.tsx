@@ -2,23 +2,28 @@ import React, { useEffect, useRef } from 'react';
 import { useI18n } from '../../i18n';
 
 interface SessionCardMenuProps {
+  triggerRef: React.RefObject<HTMLButtonElement | null>;
   onClose: () => void;
   onOpen: () => void;
   onDelete: () => void;
 }
 
-export function SessionCardMenu({ onClose, onOpen, onDelete }: SessionCardMenuProps) {
+export function SessionCardMenu({ triggerRef, onClose, onOpen, onDelete }: SessionCardMenuProps) {
   const { t } = useI18n();
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+      const target = event.target as Node;
+      // The trigger's click toggles the menu itself. Closing on its mousedown
+      // would make that subsequent click reopen the menu.
+      if (menuRef.current && !menuRef.current.contains(target) && !triggerRef.current?.contains(target)) {
         onClose();
       }
     };
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
+        if (menuRef.current?.contains(document.activeElement)) triggerRef.current?.focus();
         onClose();
       }
     };
@@ -28,7 +33,7 @@ export function SessionCardMenu({ onClose, onOpen, onDelete }: SessionCardMenuPr
       document.removeEventListener('mousedown', handleClickOutside);
       document.removeEventListener('keydown', handleKeyDown);
     };
-  }, [onClose]);
+  }, [onClose, triggerRef]);
 
   return (
     <div className="session-card-menu" ref={menuRef} onClick={e => e.stopPropagation()}>

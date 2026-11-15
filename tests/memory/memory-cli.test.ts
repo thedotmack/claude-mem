@@ -50,6 +50,22 @@ describe('memory ingest CLI', () => {
     expect(errors).toEqual([`memory ingest source not found: ${join(callerCheckout, 'notes')}`]);
   });
 
+  for (const flag of ['--source', '--cwd']) {
+    for (const args of [[flag], [`${flag}=`], [flag, '--dry-run'], ['--all', `${flag}=`]]) {
+      it(`rejects a missing path in ${args.join(' ')} before starting the worker`, async () => {
+        const errors = captureErrors();
+        const start = spyOn(workerUtils, 'ensureWorkerRunning').mockResolvedValue(false);
+        const request = spyOn(workerUtils, 'workerHttpRequest');
+        spies.push(start, request);
+
+        expect(await runMemoryCommand('ingest', args)).toBe(1);
+        expect(errors).toEqual([`${flag} requires a value`]);
+        expect(start).not.toHaveBeenCalled();
+        expect(request).not.toHaveBeenCalled();
+      });
+    }
+  }
+
   it('resolves a relative --cwd before deriving its memory dir', async () => {
     const errors = captureErrors();
 
