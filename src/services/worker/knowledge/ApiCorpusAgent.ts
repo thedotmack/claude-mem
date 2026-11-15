@@ -91,12 +91,22 @@ const STOP_WORDS = new Set([
   'used', 'using', 'get', 'got', 'make', 'made', 'was', 'were', 'been', 'being', 'am', 's',
 ]);
 
+/** Matching keys only: preserve marks within words and equate canonical spellings. */
+function words(text: string): string[] {
+  return text
+    .toLowerCase()
+    .normalize('NFC')
+    .split(/[^\p{L}\p{M}\p{N}_]+/u);
+}
+
+// Canonical composition can shorten a previously matching word (e.g. Hangul).
+// Apply the existing length thresholds to the same decomposed spelling.
+const wordLength = (word: string): number => word.normalize('NFD').length;
+
 /** The terms of a question: lowercased words, minus the ones that say nothing. */
 function questionTerms(question: string): string[] {
-  const terms = question
-    .toLowerCase()
-    .split(/[^\p{L}\p{N}_]+/u)
-    .filter(term => term.length >= 2 && !STOP_WORDS.has(term));
+  const terms = words(question)
+    .filter(term => wordLength(term) >= 2 && !STOP_WORDS.has(term));
   return [...new Set(terms)];
 }
 
@@ -126,7 +136,7 @@ const FIELD_WEIGHTS: Array<{ text: (observation: CorpusObservation) => string; w
 function scoreObservation(observation: CorpusObservation, terms: string[]): number {
   const weights = new Map<string, number>();
   for (const field of FIELD_WEIGHTS) {
-    for (const token of field.text(observation).toLowerCase().split(/[^\p{L}\p{N}_]+/u)) {
+    for (const token of words(field.text(observation))) {
       if (!token) continue;
       const current = weights.get(token);
       if (current === undefined || field.weight > current) weights.set(token, field.weight);
@@ -140,7 +150,7 @@ function scoreObservation(observation: CorpusObservation, terms: string[]): numb
       score += exact;
       continue;
     }
-    if (term.length < 3) continue;
+    if (wordLength(term) < 3) continue;
     for (const [token, weight] of weights) {
       if (token.startsWith(term)) {
         score += weight * 0.5;

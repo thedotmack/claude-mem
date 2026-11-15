@@ -273,6 +273,8 @@ export function projectMemoryContent(payload: unknown): { text: string; truncate
   if (typeof facts === "string") {
     try { facts = JSON.parse(facts); }
     catch { facts = [facts]; }
+    // Legacy list columns may hold one JSON-encoded string instead of an array.
+    if (typeof facts === "string") facts = [facts];
   }
   if (Array.isArray(facts)) {
     const strings = facts.filter((item): item is string => typeof item === "string");
@@ -290,6 +292,7 @@ export function projectMemoryContent(payload: unknown): { text: string; truncate
     let files = data[key];
     if (typeof files === "string") {
       try { files = JSON.parse(files); } catch { files = [files]; }
+      if (typeof files === "string") files = [files];
     }
     if (Array.isArray(files)) {
       const strings = files.filter((item): item is string => typeof item === "string");

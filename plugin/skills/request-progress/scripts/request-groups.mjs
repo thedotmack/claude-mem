@@ -3115,7 +3115,7 @@ function realpathOrSelf2(dir) {
 }
 function isWithin(child, parent) {
   const relative = path2.relative(parent, child);
-  return relative === "" || !relative.startsWith("..") && !path2.isAbsolute(relative);
+  return relative === "" || relative !== ".." && !relative.startsWith(`..${path2.sep}`) && !path2.isAbsolute(relative);
 }
 function markerWalkStops() {
   return [homedir7(), tmpdir(), CLAUDE_CONFIG_DIR].flatMap((dir) => {

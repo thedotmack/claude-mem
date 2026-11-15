@@ -4,6 +4,44 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [15.18.5] - 2026-11-15
+
+## Critical fixes
+
+- **The tree-sitter CLI installs on networks where its download script keeps failing** (#6110, thanks @rigel905, closes #6109). On some networks tree-sitter-cli's own `install.js` had its request reset every time, or exited 0 on a truncated file. The pinned SHA-256 check correctly refused the file, but nothing recovered after that, so `smart_search`, `smart_outline`, `smart_unfold` and the File Read Gate stayed off on every worker start, and `npx claude-mem repair` aborted. Now, when the script fails or leaves anything but the pinned executable, claude-mem fetches the same release asset directly, once, inside the same install time budget, and runs it only after it unpacks to the same pinned SHA-256. The script still runs first, so `HTTPS_PROXY` keeps working. A script that used up the whole budget gets no second attempt.
+- **A corrupt Chroma collection is dropped once, not once per parallel backfill** (#6115, thanks @mohitdixit02 and @0xABCD01, closes #6113). When the HNSW segment of a large collection was corrupt, every parallel per-project backfill that hit it passed the "drop only once" check before the first delete finished, and queued its own delete against chroma-mcp. In #6113 that ran 19 drops at once and pushed chroma-mcp to a 312 GB memory footprint, stalling a 32 GB Mac. Callers now join the one drop already running for that collection and share its outcome. A failed drop costs one attempt from the retry budget, not one per caller, and different collections still drop independently. The remaining asks from that report (a memory bound on chroma-mcp, stopping writes when a drop can't be confirmed, measuring footprint on macOS) are tracked in #3610.
+
+## Fixes
+
+- **`--help` prints help instead of running the command** (#6142, thanks @liuyinchu). `npx claude-mem mcp --help` used to start the stdio server, and `status`, `doctor` and `hook` entered their runtime paths; `t3code` and its aliases rejected the flag. `-h` and `--help` are now handled before dispatch for these commands. Plain `mcp` still starts the server.
+
+## Docs
+
+- **OmO Native recall guide** (#6087, thanks @mschoi0411). How to connect OmO Native to the local worker through the existing stdio MCP server: tool discovery, recall by project and observation ID, troubleshooting and disconnect.
+
+## [15.18.4] - 2026-11-15
+
+## Fixes
+
+- **Claude Code gets claude-mem's rules and tools once** (#6179). Before this, a Claude Code session got the same guidance from up to three places: the MCP server instructions, a memory block the local activation script wrote into `CLAUDE.md`, and a pointer line to `RULES-AND-TOOLS.md` (whose timeline legend was never actually loaded). Now there is one path. `MY-RULES.md`, which your `CLAUDE.md` already imports, ends with an import of `RULES-AND-TOOLS.md`, and Claude Code loads it from there.
+  - When that import chain is complete in Claude Code, the MCP server sends no instructions, and the SessionStart hook drops the `Access Claude-Mem Rules + Tools:` pointer line. The server only skips its instructions when the imported file holds exactly the text it would send.
+  - Other hosts, and Claude Code users who never set up My Rules, are unchanged.
+  - The worker adds the import to an existing `MY-RULES.md` once at startup, so current users get it without doing anything. It never creates the file. Writing `MY-RULES.md` also makes sure `RULES-AND-TOOLS.md` exists, so the import never points at a missing file.
+  - `scripts/activate-progressive-memory-local.mjs` no longer writes the memory block into Claude's `CLAUDE.md`. Codex `AGENTS.md` keeps it, because `AGENTS.md` has no imports.
+- **Worker listing endpoints stop at offset 10,000** (#6083, thanks @xunguangzlj-cloud). `/api/observations`, `/api/summaries`, `/api/prompts`, the session feeds and `/api/tool-uses` used to pass any offset straight into SQLite, where a deep offset makes the database scan and throw away every skipped row. They now answer 400 above 10,000 with the same message the jobs listing uses. The viewer feeds mark their last page instead, so the viewer shows "this list stops at the newest 10,000 items" rather than an error.
+- **Folders whose names start with two dots stay inside excluded directories** (#6062, thanks @Afloat16). A child folder named like `..cache` was mistaken for a parent-directory path, so it slipped past the exclusions for observer sessions, the plugin cache and the marketplace runtime, and a marker under Claude's config folder could become a project root.
+- **Cost report uses your name, not the maintainer's** (#6085, thanks @MaxWang007). The remaining name-based checks ("Blocked on <name>", relays, human-review detection) take the name from `--owner-name`, then `ACR_OWNER_NAME`, then `git config user.name`, and use name-free patterns when none is set. A first name alone also matches, and non-Latin names work.
+
+## Performance
+
+- **Faster project-filtered session lists in the viewer** (#6053, thanks @Afloat16). A new index on project, start time and id lets the viewer read one page of a long project history without sorting every session. Existing databases get the index on the next worker start.
+- **Lower peak memory during the near-duplicate sweep** (#6052, thanks @Afloat16). Pair counting now works one title at a time instead of holding every shared-title pair in memory. Results are the same.
+
+## Docs and examples
+
+- **Vercel Chat SDK example for explicit project memory** (#6084, thanks @Kirat0201). A local, bearer-authenticated chat can save a note, search its project and fetch an observation. No model and no automatic capture. It needs `CLAUDE_MEM_WORKER_URL` set, and the guide shows how to find your worker's port.
+- README logo mark updated (#6104).
+
 ## [15.18.3] - 2026-11-12
 
 ## Critical fixes

@@ -1,0 +1,70 @@
+---
+title: Kilo CLI
+description: Explicit memory save and project-scoped recall through Kilo's existing MCP support.
+---
+
+Kilo CLI can use Claude-Mem's stdio MCP server to save a note, find it and retrieve selected details in a later session. This connection does not automatically capture conversations or inject memories. The IDE extension was not tested.
+
+Tested on macOS with Kilo CLI 7.8.27 and Bun 1.4.4. Official references: [OpenAI-compatible providers](https://kilo.ai/docs/ai-providers/openai-compatible), [MCP configuration](https://kilo.ai/docs/automate/mcp/using-in-cli), and [permissions](https://kilo.ai/docs/customize/agent-permissions).
+
+## Connect in a dedicated practice workspace
+
+Start an isolated Claude-Mem worker first, or use your existing local worker if you intend to save notes into its database. Use its actual URL. The default port is `37700 + (uid % 100)` unless `CLAUDE_MEM_WORKER_PORT` overrides it. Kilo does not start or configure the worker in this example.
+
+Kilo reads project configuration from `kilo.json`. In a new practice directory, create this memory-only configuration, replacing the three absolute paths/URL values:
+
+```json
+{
+  "mcp": {
+    "claudemem": {
+      "type": "local",
+      "command": ["/absolute/path/to/bun", "/absolute/path/to/claude-mem/plugin/scripts/mcp-server.cjs"],
+      "environment": {
+        "CLAUDE_MEM_WORKER_URL": "http://127.0.0.1:YOUR_WORKER_PORT"
+      }
+    }
+  },
+  "permission": {
+    "*": "deny",
+    "claudemem_save_memory": "allow",
+    "claudemem_search": "allow",
+    "claudemem_get_observations": "allow"
+  }
+}
+```
+
+These rules deliberately allow only the three memory tools in this practice workspace. They are not a general coding-agent permission configuration. Do not overwrite an existing project's configuration: merge the named MCP entry and appropriate permission rules while preserving unrelated entries. Reapplying the same entry should replace it rather than append another server.
+
+Use the worker's `127.0.0.1` URL. For a worker with a separate data directory, also pass its `CLAUDE_MEM_DATA_DIR` in the MCP environment. Keep provider credentials outside shared project configuration. Configure your preferred model through Kilo's supported provider setup; normal model use may incur charges. The fixture below instead uses a deterministic local endpoint and requires no account.
+
+## Save, search and inspect
+
+From the practice directory, run Kilo with your configured model:
+
+```bash
+kilo run --pure --model YOUR_PROVIDER/YOUR_MODEL \
+  'Use claudemem_save_memory to save "Restore snapshots must contain required tables." with project "memory-practice". Return its observation ID.'
+```
+
+In a later run, ask `claudemem_search` for `restore snapshots` with project `memory-practice`. Check that the returned index contains the saved ID and title. Then ask `claudemem_get_observations` for that selected ID with the same project and verify the exact text.
+
+The project is a query/write scope, not a multi-user authorization boundary. This trusted local MCP server can expose the worker owner's data. Only connect it to clients you trust. This guide makes no promise about explicit saves honoring capture exclusions; that discrepancy is tracked in [#6098](https://github.com/thedotmack/claude-mem/issues/6098).
+
+A final assistant sentence is not proof of a successful operation. Inspect the actual tool result for saved receipts or errors. There is no automatic replay added by this connection. Retrying an explicit save manually is a new operation unless the existing worker deduplication recognizes it.
+
+## Repeatable verification
+
+From a Claude-Mem checkout with current bundles built and Kilo 7.8.27 installed:
+
+```bash
+KILO_BIN=/absolute/path/to/kilo BUN_BIN=/absolute/path/to/bun \
+  python3 tests/fixtures/kilo-smoke.py
+```
+
+The fixture uses temporary home/XDG directories, a synthetic project/database, a free worker port and a local model endpoint. It drives the actual CLI and packaged MCP server. It checks persisted save text, exact search ID/title, later-session details, a matching foreign project's exclusion, denied-tool behavior, stopped-worker errors and configuration preservation. No paid inference or private transcripts are used. Windows and Linux were not tested.
+
+## Disconnect and troubleshooting
+
+Remove only `mcp.claudemem` and its three `permission.claudemem_*` entries from the practice configuration, preserving unrelated settings. Restart the Kilo session. Saved worker memories remain. No Claude Code or Codex settings are modified.
+
+If MCP fails to connect, verify the executable paths and worker URL. If a tool is unavailable, check the server name and matching permission key. A denied tool should not return memory content. If the worker stops, memory calls should return an error rather than a successful save or recall.

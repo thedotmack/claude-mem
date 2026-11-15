@@ -287,6 +287,17 @@ export function localWorkValue(database, value, deviceId) {
 const emptyLedger = () => ({ groups: { version: 1, updatedAt: null, conversations: {}, groups: {}, ignored: {}, suggestions: {} }, progress: {}, story: null, refresh: null, agentWrittenPromptIds: new Set() });
 const sessionFields = ['project', 'platform_source', 'content_session_id', 'memory_session_id', 'user_prompt', 'custom_title', 'status', 'started_at_epoch', 'completed_at_epoch'];
 
+function groupRecords(rows, keyOf) {
+  const groups = new Map();
+  for (const row of rows ?? []) {
+    const key = keyOf(row);
+    const group = groups.get(key);
+    if (group) group.push(row);
+    else groups.set(key, [row]);
+  }
+  return groups;
+}
+
 /** Bounded, extracted facts: no raw tool input/response or local deliverable paths. */
 export function buildSharedProjectionUpdates(database, { ledger, records = {}, view = {}, deviceId, copyEntries = {} } = {}) {
   if (!deviceId) return [];
@@ -315,34 +326,51 @@ export function buildSharedProjectionUpdates(database, { ledger, records = {}, v
   }
 
   const sessions = new Map((records.sessions ?? []).map(row => [row.id, row]));
+  const sessionKeys = new Set([...sessions.values()].map(conversationKey));
+  const deliverablesByConversation = groupRecords(records.productDeliverables, conversationKey);
   // A copied deliverable carries its conversation even when no recent memory
   // happened to load the native session into this bounded projection.
-  for (const row of records.productDeliverables ?? []) {
-    const key = conversationKey(row);
-    if (key && ![...sessions.values()].some(session => conversationKey(session) === key)) sessions.set(`deliverable:${key}`, { ...row, id: `deliverable:${key}` });
+  for (const [key, rows] of deliverablesByConversation) {
+    if (key && !sessionKeys.has(key)) {
+      sessions.set(`deliverable:${key}`, { ...rows[0], id: `deliverable:${key}` });
+      sessionKeys.add(key);
+    }
   }
-  const work = (view.agents ?? []).flatMap(agent => agent.work ?? []);
+  // Build each relationship once. Scanning every record batch for each
+  // session makes publishing a large snapshot quadratic in its history.
+  const callsBySession = groupRecords(records.calls, row => row.session_db_id);
+  const promptsBySession = groupRecords(records.prompts, row => row.session_db_id);
+  const observationsByMemory = groupRecords(records.observations, row => row.memory_session_id);
+  const productCallsBySession = groupRecords(records.productCalls, row => row.session_db_id);
+  const productObservationsByMemory = groupRecords(records.productObservations, row => row.memory_session_id);
+  const workBySession = groupRecords((view.agents ?? []).flatMap(agent => agent.work ?? []), item => item.attribution?.sessionId);
+  const launchesByConversation = groupRecords(records.agentLaunches, conversationKey);
+  const activityByConversation = groupRecords(records.agentToolActivity, conversationKey);
   for (const session of sessions.values()) {
     const key = conversationKey(session);
     if (!key) continue;
-    const calls = (records.calls ?? []).filter(call => call.session_db_id === session.id);
-    const prompts = (records.prompts ?? []).filter(prompt => prompt.session_db_id === session.id);
+    const calls = callsBySession.get(session.id) ?? [];
+    const prompts = promptsBySession.get(session.id) ?? [];
+    const observations = observationsByMemory.get(session.memory_session_id) ?? [];
+    const productCalls = productCallsBySession.get(session.id) ?? [];
+    const productObservations = productObservationsByMemory.get(session.memory_session_id) ?? [];
+    const deliverables = deliverablesByConversation.get(key) ?? [];
+    const work = workBySession.get(session.id) ?? [];
     const ownsPrompt = prompts.some(prompt => stableEvidenceRef(database, 'prompt', prompt.id, deviceId)?.device === deviceId);
-    const ownsObservation = [...(records.observations ?? []), ...(records.productObservations ?? [])].some(row => row.memory_session_id === session.memory_session_id && stableEvidenceRef(database, 'observation', row.id, deviceId)?.device === deviceId);
-    const ownsProduct = (records.productCalls ?? []).some(call => call.session_db_id === session.id)
-      || (records.productDeliverables ?? []).some(row => conversationKey(row) === key);
+    const ownsObservation = [...observations, ...productObservations].some(row => stableEvidenceRef(database, 'observation', row.id, deviceId)?.device === deviceId);
+    const ownsProduct = productCalls.length > 0 || deliverables.length > 0;
     if (!calls.length && !ownsPrompt && !ownsObservation && !ownsProduct) continue; // A replica never re-owns imported facts.
-    const attributions = work.filter(item => item.attribution?.sessionId === session.id && item.attribution?.linkedEntryId != null).flatMap(item => {
+    const attributions = work.filter(item => item.attribution?.linkedEntryId != null).flatMap(item => {
       const attribution = item.attribution;
       const call = calls.find(candidate => candidate.id === attribution.toolUseId);
       const ref = stableEvidenceRef(database, 'work-state', attribution.linkedEntryId, deviceId);
       return call && ref?.device === deviceId ? [{ work: ref, agentId: call.agent_id ?? null, agentType: call.agent_type ?? null, promptNumber: call.prompt_number ?? null, atEpoch: call.created_at_epoch }] : [];
     });
     const productCandidates = [
-      ...(records.productCalls ?? []).filter(call => call.session_db_id === session.id).flatMap(productsFromToolUse),
-      ...(records.productObservations ?? []).filter(row => row.memory_session_id === session.memory_session_id && stableEvidenceRef(database, 'observation', row.id, deviceId)?.device === deviceId).flatMap(productsFromObservation),
-      ...(records.productDeliverables ?? []).filter(row => conversationKey(row) === key).flatMap(productsFromDeliverable),
-      ...work.filter(item => item.attribution?.sessionId === session.id).flatMap(item => item.workProduct ?? []),
+      ...productCalls.flatMap(productsFromToolUse),
+      ...productObservations.filter(row => stableEvidenceRef(database, 'observation', row.id, deviceId)?.device === deviceId).flatMap(productsFromObservation),
+      ...deliverables.flatMap(productsFromDeliverable),
+      ...work.flatMap(item => item.workProduct ?? []),
     ];
     const productsByIdentity = new Map();
     const copies = productCandidates.filter(product => product.deliverable && product.sourcePath);
@@ -357,8 +385,8 @@ export function buildSharedProjectionUpdates(database, { ledger, records = {}, v
       }
     }
     const products = [...productsByIdentity.values()];
-    const launches = (records.agentLaunches ?? []).filter(row => conversationKey(row) === key && typeof row.agent_id === 'string').map(row => ({ agent_id: row.agent_id, status: row.status ?? null, is_async: row.is_async ?? null, description: typeof row.description === 'string' ? row.description.slice(0, 160) : null, created_at_epoch: row.created_at_epoch ?? null }));
-    const activity = (records.agentToolActivity ?? []).filter(row => conversationKey(row) === key).map(row => ({ agent_id: row.agent_id, last_epoch: row.last_epoch }));
+    const launches = (launchesByConversation.get(key) ?? []).filter(row => typeof row.agent_id === 'string').map(row => ({ agent_id: row.agent_id, status: row.status ?? null, is_async: row.is_async ?? null, description: typeof row.description === 'string' ? row.description.slice(0, 160) : null, created_at_epoch: row.created_at_epoch ?? null }));
+    const activity = (activityByConversation.get(key) ?? []).map(row => ({ agent_id: row.agent_id, last_epoch: row.last_epoch }));
     const sessionValue = Object.fromEntries(sessionFields.map(field => [field, clean(session[field])]));
     sessionValue.project = sharedProjectKey(sessionValue.project);
     const rejectedOpening = prompts.some(prompt => ledger?.agentWrittenPromptIds?.has(prompt.id) && (prompt.prompt_number === 1 || prompt.prompt_text === session.user_prompt));

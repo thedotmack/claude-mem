@@ -128,7 +128,9 @@ Two routes turn "I have a server" into "Claude Code is recalling my cloud memory
 - **`GET /v1/connect`** (requires `memories:read`) returns the same command with a
   `<YOUR_API_KEY>` placeholder — a GET never mints. The `mcpUrl` is built from
   `CLAUDE_MEM_PUBLIC_URL` (recommended when behind a proxy or load balancer) or,
-  failing that, the request host.
+  failing that, the request host. If `CLAUDE_MEM_PUBLIC_URL` is unset and the
+  request's `Host` is not a valid host[:port], both routes answer
+  `400 InvalidHost` (and `POST /v1/keys` mints nothing); set `CLAUDE_MEM_PUBLIC_URL`.
 
 <Warning>
 **First-key bootstrap is the rough edge.** Minting a team's *very first* key still

@@ -15,6 +15,7 @@ const packageVersion = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DE
 import { logger } from '../utils/logger.js';
 import { spoolWorkStateMcpInstruction, spoolWorkStateMcpResult } from '../cli/work-state-telemetry.js';
 import { mcpServerInstructions } from '../shared/memory-instructions.js';
+import { claudeCodeAlreadyLoadsInstructions } from '../shared/claude-code-rules-import.js';
 
 console['log'] = (...args: any[]) => {
   logger.error('CONSOLE', 'Intercepted console output (MCP protocol protection)', undefined, { args });
@@ -577,7 +578,15 @@ const tools: McpToolDefinition[] = [
     },
     handler: async (args: any) => {
       if (selectRuntime() === 'server') return mcpTextResult('save_memory requires worker runtime. To save a note in the selected server, use observation_add with content and optional projectId.', true);
-      return callWorker('/api/memory/save', { body: { ...args, project: args?.project || currentCheckout().primary } });
+      // Send the checkout so the worker applies CLAUDE_MEM_EXCLUDED_PROJECTS to
+      // an explicit note exactly as it does to an HTTP save (#6098). The project
+      // stays the caller's or the active checkout's; the checkout only gates the
+      // exclusion check. On the HTTP transport the caller's workspace reaches
+      // this call through X-Claude-Mem-Cwd or roots/list; without either, the
+      // server's launch directory is used, which is also what names the project.
+      return callWorker('/api/memory/save', {
+        body: { ...args, project: args?.project || currentCheckout().primary, cwd: getRequestCwd() },
+      });
     },
   },
   {
@@ -1193,12 +1202,15 @@ function createMcpServer(getCwd?: CwdResolver): Server {
   // How to use these tools: the work-state rule and the memory-use guidance.
   // They are sent here, at initialize, so the SessionStart context can be the
   // memory timeline alone. Each part follows the setting that turns it off.
+  // Claude Code that already loads this exact text through CLAUDE.md
+  // (MY-RULES.md -> RULES-AND-TOOLS.md) gets none here: one copy, not two.
   const workStateRuleIncluded = workStateEnabled();
-  const instructions = mcpServerInstructions({
+  const toolInstructions = mcpServerInstructions({
     runtime: selectRuntime(),
     workStateEnabled: workStateRuleIncluded,
     memoryInstructionsEnabled: loadFromFileOnce().CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED !== 'false',
   });
+  const instructions = claudeCodeAlreadyLoadsInstructions(toolInstructions) ? '' : toolInstructions;
   const server = new Server(
     {
       name: 'claude-mem',

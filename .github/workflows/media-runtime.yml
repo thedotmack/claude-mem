@@ -66,7 +66,7 @@ jobs:
           node-version: '22'
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: '1.4.2'
+          bun-version: '1.4.4'
       - name: Install build dependencies
         run: npm install --no-audit --no-fund
       # Typecheck runs once in CI (ci.yml); it does not differ by OS.

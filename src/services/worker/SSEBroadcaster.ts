@@ -135,7 +135,10 @@ export class SSEBroadcaster {
     if (!res.destroyed) res.destroy();
   }
 
-  private sendToClient(res: Response, event: SSEEvent): void {
+  // Connection snapshots belong to one subscriber. Use the same bounded
+  // write path as broadcasts, so a closed or backpressured client is handled
+  // consistently and cannot redirect its snapshot to other viewers.
+  sendToClient(res: Response, event: SSEEvent): void {
     const data = `data: ${JSON.stringify(event)}\n\n`;
     this.writeFrame(res, data);
   }

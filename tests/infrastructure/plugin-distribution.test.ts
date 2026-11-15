@@ -136,15 +136,17 @@ describe('Plugin Distribution - Qoder', () => {
 
 describe('Plugin Distribution - Codex Marketplace', () => {
   it('re-injects Codex memory on every SessionStart source that starts a fresh context', () => {
-    // Codex emits startup, resume, clear and compact (SessionStartSource in
+    // Codex emits startup, resume, clear and compact, and since 0.165 fork for
+    // its attached thread forks (SessionStartSource in
     // codex-rs/hooks/src/events/session_start.rs). clear and compact both hand
     // the model an empty context, so the injection hook has to run for them or
-    // the session continues with no memory.
+    // the session continues with no memory; a fork starts a new thread that
+    // needs memory too.
     const codexHooks = readJson('plugin/hooks/codex-hooks.json');
     const matchers = codexHooks.hooks.SessionStart.map((entry: any) => entry.matcher);
 
     expect(matchers).toHaveLength(1);
-    for (const source of ['startup', 'resume', 'clear', 'compact']) {
+    for (const source of ['startup', 'resume', 'clear', 'compact', 'fork']) {
       expect(matchers[0].split('|')).toContain(source);
     }
   });

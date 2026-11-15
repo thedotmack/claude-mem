@@ -92,6 +92,7 @@ describe('resolveOpenAICompatConfig', () => {
     ['nvidia-nim', NIM_BASE, 'nvidia/nemotron-3.5-lightning-30b-a3b'],
     ['api-route', 'https://global.api-route.com/v1', ''],
     ['atlascloud', 'https://api.atlascloud.ai/v1', 'deepseek-ai/deepseek-v4-flash'],
+    ['atmorouter', 'https://atmorouter.dev/v1', 'zai/glm-5.3-flash'],
     ['cheapaimodel', 'https://api.cheapaimodel.ai/v1', 'deepseek-v4-1-flash'],
     ['hopbase', 'https://api.hop-base.com/v1', 'deepseek-v4.1-flash'],
     ['iflytek', 'https://maas-api.cn-huabei-1.xf-yun.com/v2', 'spark-x2.5'],
@@ -105,6 +106,7 @@ describe('resolveOpenAICompatConfig', () => {
     ['popnow', 'https://api.popnow.ai/v1', 'deepseek/v4-flash/chat'],
     ['runcrate', 'https://api.runcrate.ai/v1', 'deepseek-ai/DeepSeek-V4.1-Flash'],
     ['standardcompute', 'https://api.stdcmpt.com/v1', 'deepseek/deepseek-v4-flash'],
+    ['trustedrouter', 'https://api.trustedrouter.com/v1', 'deepseek/deepseek-v4-flash'],
     ['uberllm', 'https://api.uberllm.dev/v1', 'deepseek/deepseek-v4.1-flash'],
   ])('resolves %s with its hosted endpoint and default model', (id, baseUrl, defaultModel) => {
     process.env.CLAUDE_MEM_OPENAI_COMPAT_PRESET = id;

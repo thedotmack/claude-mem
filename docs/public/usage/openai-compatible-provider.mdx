@@ -108,6 +108,8 @@ endpoint or model you pinned yourself.
 | `standardcompute` | `https://api.stdcmpt.com/v1` | yes |
 | `uberllm` | `https://api.uberllm.dev/v1` | yes |
 | `hopbase` | `https://api.hop-base.com/v1` | yes |
+| `trustedrouter` | `https://api.trustedrouter.com/v1` | yes |
+| `atmorouter` | `https://atmorouter.dev/v1` | yes |
 | `deepseek` | `https://api.deepseek.com/v1` | yes |
 | `opencode-go` | `https://opencode.ai/zen/go/v1` | yes |
 | `opencode-zen` | `https://opencode.ai/zen/v1` | yes |
@@ -487,6 +489,45 @@ console, and the [API docs](https://hop-base.com/en/docs) cover the endpoint.
   "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "hopbase",
   "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<your HopBase key>",
   "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "deepseek-v4.1-flash"
+}
+```
+
+## TrustedRouter
+
+[TrustedRouter](https://trustedrouter.com) is an OpenAI-compatible gateway that
+routes requests across open and frontier model providers behind one key. Model
+ids are vendor-prefixed, such as `deepseek/deepseek-v4-flash` (the preset's
+default, a cheap fixed model suited to high-volume extraction), and are passed
+verbatim. `trustedrouter/auto` is opt-in: it picks a model per request and is
+priced per routed model, up to frontier rates. The model list is public at
+`https://api.trustedrouter.com/v1/models`, and setup notes are in
+[the TrustedRouter docs](https://trustedrouter.com/docs).
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openai-compatible",
+  "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "trustedrouter",
+  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<your TrustedRouter key>",
+  "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "deepseek/deepseek-v4-flash"
+}
+```
+
+## AtmoRouter
+
+[AtmoRouter](https://atmorouter.dev) is a usage-based gateway with an
+OpenAI-compatible Chat Completions endpoint, billed per token from a prepaid
+USD balance. Model ids carry a route prefix, such as `zai/glm-5.3-flash` (the
+preset's default) or `zai/glm-5.3`, and are passed verbatim. The model list is
+public at `https://atmorouter.dev/v1/models`, and keys (`ar-...`) come from
+Dashboard → API Keys in the [AtmoRouter dashboard](https://atmorouter.dev/dashboard).
+Setup notes are in [the AtmoRouter docs](https://atmorouter.dev/docs/quickstart).
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openai-compatible",
+  "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "atmorouter",
+  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<your AtmoRouter key>",
+  "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "zai/glm-5.3-flash"
 }
 ```
 

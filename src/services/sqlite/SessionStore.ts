@@ -3217,18 +3217,14 @@ export class SessionStore {
 
     const projects: string[] = [];
     const seenProjects = new Set<string>();
-    const projectsBySource: Record<string, string[]> = Object.create(null);
+    const projectsBySource = new Map<string, Set<string>>();
 
     for (const row of rows) {
       const source = normalizePlatformSource(row.platform_source);
 
-      if (!projectsBySource[source]) {
-        projectsBySource[source] = [];
-      }
-
-      if (!projectsBySource[source].includes(row.project)) {
-        projectsBySource[source].push(row.project);
-      }
+      let sourceProjects = projectsBySource.get(source);
+      if (!sourceProjects) projectsBySource.set(source, sourceProjects = new Set());
+      sourceProjects.add(row.project);
 
       if (!seenProjects.has(row.project)) {
         seenProjects.add(row.project);
@@ -3236,13 +3232,13 @@ export class SessionStore {
       }
     }
 
-    const sources = sortPlatformSources(Object.keys(projectsBySource));
+    const sources = sortPlatformSources([...projectsBySource.keys()]);
 
     return {
       projects,
       sources,
       projectsBySource: Object.fromEntries(
-        sources.map(source => [source, projectsBySource[source] || []])
+        sources.map(source => [source, [...(projectsBySource.get(source) ?? [])]])
       )
     };
   }
@@ -4480,7 +4476,7 @@ export class SessionStore {
 
           // Authored note revisions may keep a title while changing their facts.
           // They still dedupe exact content, but must not collapse by title alone.
-          const canonical = options.skipTitleDedup ? null : findTier0Canonical(this.db, project, titleNormKey);
+          const canonical = options.skipTitleDedup ? null : findTier0Canonical(this.db, project, titleNormKey, observation.title);
           if (canonical) {
             this.db.prepare('UPDATE observations SET occurrence_count = occurrence_count + 1 WHERE id = ?').run(canonical.id);
             reinforceObservation(this.db, canonical.id, reconfirmedOn);
@@ -5125,7 +5121,23 @@ export class SessionStore {
   }
 
   close(): void {
-    this.db.close();
+    // bun keeps a prepared statement — and with it the connection, its WAL index mapping and the
+    // database file — alive until the statement is finalized or collected, so a plain `db.close()`
+    // releases nothing while this store still holds its cache. Finalize the cached statements first,
+    // the way initializeOwnedDatabase does; then close strict, which Windows needs before the file
+    // or its directory can be renamed or removed.
+    for (const statement of this.statementCache.values()) statement.finalize();
+    this.statementCache.clear();
+    try {
+      this.db.close(true);
+    } catch (error) {
+      // Bun before 1.4 refuses a strict close ("database is locked") while any statement is still
+      // outstanding, and this store also prepares uncached statements (db.prepare / db.query).
+      // package.json allows those Bun versions, so fall back to the lazy close main always did
+      // and say so, instead of throwing out of every close().
+      logger.warn('DB', 'Strict close refused (statements outstanding on this Bun); falling back to lazy close', {}, error as Error);
+      this.db.close(false);
+    }
   }
 
   /**

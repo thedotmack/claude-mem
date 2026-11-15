@@ -1,7 +1,7 @@
 
 import { ChromaMcpManager } from './ChromaMcpManager.js';
 import { ChromaSyncState, ProjectWatermarks, type PendingRowDelete } from './ChromaSyncState.js';
-import { runOnChromaRowCleanupLane } from './chroma-row-cleanup.js';
+import { isQueuedChromaRowDelete, runOnChromaRowCleanupLane } from './chroma-row-cleanup.js';
 import { parseStringListField } from './string-list-field.js';
 import { ParsedObservation, ParsedSummary } from '../../sdk/parser.js';
 // cmem-sdk: keep SessionStore + parseFileList off the SDK's import graph.
@@ -481,6 +481,16 @@ export class ChromaSync {
   private static corruptSegmentBatches = new Map<string, Set<string>>();
 
   /**
+   * The drop currently running for a collection, if any (#6113).
+   * droppedCollections is only marked once the delete resolves, so parallel
+   * sweeps failing on the same corrupt segment all passed that check and each
+   * queued its own delete against chroma-mcp. Concurrent callers join this
+   * promise instead: one drop per collection at a time, and its outcome —
+   * success or rejection — is every joined caller's outcome.
+   */
+  private static inFlightCollectionDrops = new Map<string, Promise<void>>();
+
+  /**
    * Collections dropped once already in this process. If the rebuilt
    * collection fails the same way, Chroma itself is broken: report it rather
    * than drop and rebuild in a loop.
@@ -536,16 +546,15 @@ export class ChromaSync {
       ChromaSync.pendingDeleteDrainRequested = true;
       return;
     }
-    void ChromaSync.runPendingRowDeleteDrain(store, true);
+    void ChromaSync.runPendingRowDeleteDrain(store);
   }
 
   /**
-   * Run one drain pass, or join the one already running. A sweep enters with
-   * onCleanupLane=false because it is not competing with the delete routes; a
-   * connection recovery enters on the cleanup lane so a burst of scheduled
-   * cleanups cannot interleave with it.
+   * Run one drain pass, or join the one already running. Both startup sweeps
+   * and recovery use the cleanup lane: newly scheduled deletes must wait for
+   * this pass, so it cannot clear a later attempt's failure checkpoint.
    */
-  private static runPendingRowDeleteDrain(store: SessionStore, onCleanupLane: boolean): Promise<void> {
+  private static runPendingRowDeleteDrain(store: SessionStore): Promise<void> {
     const running = ChromaSync.pendingDeleteDrain;
     if (running) return running;
 
@@ -555,19 +564,20 @@ export class ChromaSync {
       const sync = new ChromaSync('claude-mem');
       // One pass drains a bounded batch so a large outage backlog cannot stall
       // the backfill's writes. The next batch is only worth starting when the
-      // previous one cleared something: a still-failing provider would
-      // otherwise retry the same head forever, and shutdown must leave the rest
-      // recorded. Loop here, at the entry that owns the retry, rather than
+      // previous one cleared something or yielded rows to queued cleanups:
+      // those reservations are excluded from the next batch. A still-failing
+      // provider must not retry the same head forever, and shutdown must leave
+      // the rest recorded. Loop here, at the entry that owns the retry, rather than
       // leaving the remainder for "the next sweep", which can be days away.
       for (;;) {
-        const cleared = await sync.drainPendingRowDeletes(store);
-        if (cleared === 0 || shutdownBegan()) return;
+        const { cleared, reserved } = await sync.drainPendingRowDeletes(store);
+        if ((cleared === 0 && reserved === 0) || shutdownBegan()) return;
         if (ChromaSyncState.getPendingRowDeletes().length === 0) return;
       }
     };
 
     let drain: Promise<void>;
-    drain = (onCleanupLane ? runOnChromaRowCleanupLane(pass) : pass())
+    drain = runOnChromaRowCleanupLane(pass)
       // A failed pass keeps every record and never rejects: the recovery call
       // is fire-and-forget, so an unhandled rejection would crash the worker.
       .catch((error: unknown) => {
@@ -695,8 +705,32 @@ export class ChromaSync {
    * delete that keeps failing cannot restart the backfill sweep forever.
    * chroma-mcp serves requests one at a time, so the rebuild's writes only
    * run after a slow delete has finished.
+   *
+   * A drop runs at most once per collection at a time (#6113): the backfill
+   * sweep writes projects in parallel, so many batches can confirm the same
+   * corrupt segment while the first delete is still in flight. Those callers
+   * join the in-flight drop here instead of queueing a delete each — on a
+   * large collection the queued deletes were what drove chroma-mcp to a
+   * 312 GB footprint. The entry is cleared as the drop settles, so a batch
+   * that fails later can still retry a delete that never landed.
    */
   private async dropCorruptCollection(cause: Error): Promise<void> {
+    const inFlight = ChromaSync.inFlightCollectionDrops.get(this.collectionName);
+    if (inFlight) {
+      await inFlight;
+      return;
+    }
+    let drop: Promise<void>;
+    drop = this.performCorruptCollectionDrop(cause).finally(() => {
+      if (ChromaSync.inFlightCollectionDrops.get(this.collectionName) === drop) {
+        ChromaSync.inFlightCollectionDrops.delete(this.collectionName);
+      }
+    });
+    ChromaSync.inFlightCollectionDrops.set(this.collectionName, drop);
+    await drop;
+  }
+
+  private async performCorruptCollectionDrop(cause: Error): Promise<void> {
     const chromaMcp = ChromaMcpManager.getInstance();
     let documentCount: number | null = null;
     try {
@@ -1178,7 +1212,7 @@ export class ChromaSync {
   }
 
   /**
-   * Retry the post-delete cleanups Chroma refused (#5664). They are recorded in
+   * Finish post-delete cleanups that failed or were interrupted. They are recorded in
    * the sync checkpoint by scheduleChromaRowCleanup, because the row is already
    * committed gone: the DELETE route answers 404 from then on and backfill only
    * walks rows that still exist, so this pass is the documents' only way out.
@@ -1190,9 +1224,10 @@ export class ChromaSync {
    * the stale delete is dropped instead, since its own sync now owns them. A
    * cleanup that fails again stays recorded for the next attempt.
    */
-  private async drainPendingRowDeletes(store: SessionStore): Promise<number> {
-    const pending = ChromaSyncState.getPendingRowDeletes();
-    if (pending.length === 0) return 0;
+  private async drainPendingRowDeletes(store: SessionStore): Promise<{ cleared: number; reserved: number }> {
+    const pending = ChromaSyncState.getPendingRowDeletes()
+      .filter(row => !isQueuedChromaRowDelete(row));
+    if (pending.length === 0) return { cleared: 0, reserved: 0 };
     const batch = pending.slice(0, MAX_PENDING_ROW_DELETE_RETRIES_PER_PASS);
     if (batch.length < pending.length) {
       logger.info('CHROMA_SYNC', 'Post-delete cleanup retry pass bounded; the rest continues in the next batch', {
@@ -1204,6 +1239,8 @@ export class ChromaSync {
     const finished: PendingRowDelete[] = [];
     let removedDocuments = 0;
     for (const row of batch) {
+      // A delete route can reserve another row while the previous I/O awaits.
+      if (isQueuedChromaRowDelete(row)) continue;
       if (shutdownBegan()) {
         logger.info('CHROMA_SYNC', 'Post-delete cleanup retry stopped: worker shutdown began', {
           remaining: pending.length - finished.length
@@ -1213,7 +1250,7 @@ export class ChromaSync {
       try {
         const table = DOC_TYPE_TABLE[row.docType];
         const rowIsBack = table
-          ? store.db.prepare(`SELECT 1 AS found FROM ${table} WHERE id = ? LIMIT 1`).get(row.sqliteId) !== undefined
+          ? store.db.prepare(`SELECT 1 AS found FROM ${table} WHERE id = ? LIMIT 1`).get(row.sqliteId) != null
           : false;
         if (rowIsBack) {
           // A restore or re-import reused the id, so its own sync owns these
@@ -1235,19 +1272,21 @@ export class ChromaSync {
       }
     }
 
-    // Clear only the rows this pass finished: a live delete can record a new
-    // failure while the retries above run.
-    if (finished.length > 0) {
-      ChromaSyncState.clearPendingRowDeletes(finished);
+    // New cleanup reservations can arrive while this pass awaits I/O. They
+    // run after it on the shared lane and must keep their durable checkpoint.
+    const completed = finished.filter(row => !isQueuedChromaRowDelete(row));
+    if (completed.length > 0) {
+      ChromaSyncState.clearPendingRowDeletes(completed);
       logger.info('CHROMA_SYNC', 'Post-delete Chroma cleanup retry finished', {
-        cleared: finished.length,
+        cleared: completed.length,
         removedDocuments,
         remaining: ChromaSyncState.getPendingRowDeletes().length
       });
     }
-    // Progress signal for the caller's loop: zero means the rest failed again
-    // or shutdown began, so another batch would retry the same head.
-    return finished.length;
+    // Rows reserved during I/O also make progress: the next batch excludes
+    // them and can reach unreserved rows beyond this one. Only failure (or
+    // shutdown) without either kind of progress should stop the drain.
+    return { cleared: completed.length, reserved: batch.filter(isQueuedChromaRowDelete).length };
   }
 
   async syncObservation(
@@ -2484,7 +2523,7 @@ export class ChromaSync {
           // its retry beside them; run it now that they are done.
           if (ChromaSync.pendingDeleteDrainRequested) {
             ChromaSync.pendingDeleteDrainRequested = false;
-            await ChromaSync.runPendingRowDeleteDrain(store, true);
+            await ChromaSync.runPendingRowDeleteDrain(store);
           }
           return completed;
         }
@@ -2542,13 +2581,13 @@ export class ChromaSync {
       logger.info('CHROMA_SYNC', 'Bootstrap complete — incremental backfills will use watermarks');
     }
 
-    // A delete committed while Chroma was unavailable recorded its cleanup for
-    // this sweep (#5664). Retry those before the writes below: the orphaned
+    // A committed delete records its cleanup before entering the cleanup lane.
+    // Finish those before the writes below: the orphaned
     // documents are not reachable any other way. A failure here never stops the
     // backfill — the records stay for the next sweep or recovery. This pass
     // also serves a recovery that asked for one before the sweep started.
     ChromaSync.pendingDeleteDrainRequested = false;
-    await ChromaSync.runPendingRowDeleteDrain(store, false);
+    await ChromaSync.runPendingRowDeleteDrain(store);
 
     // Process projects in chunks of BACKFILL_CONCURRENCY_LIMIT to bound
     // CPU/memory pressure from concurrent Chroma embedding operations.
