@@ -14,6 +14,7 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'fs';
+import { randomUUID } from 'crypto';
 import { join } from 'path';
 import { paths } from './paths.js';
 import { describeDuration, scrubErrorMessage } from './observer-health.js';
@@ -136,8 +137,8 @@ export function writeSyncHealth(state: SyncHealthState, filePath: string = defau
   try {
     const dir = join(filePath, '..');
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
-    const tmp = `${filePath}.${process.pid}.tmp`;
-    writeFileSync(tmp, JSON.stringify(state, null, 2), { encoding: 'utf-8', mode: 0o600 });
+    const tmp = `${filePath}.${randomUUID()}.tmp`;
+    writeFileSync(tmp, JSON.stringify(state, null, 2), { encoding: 'utf-8', mode: 0o600, flag: 'wx' });
     renameSync(tmp, filePath);
     // The sync banner rides inside the SessionStart block.
     emitContextInvalidation('all', 'sync-health');

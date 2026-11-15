@@ -121,8 +121,8 @@ export function writeSetupState(state: SetupStateFile, path: string = setupState
 
 function writeJsonAtomically(path: string, value: unknown): void {
   mkdirSync(dirname(path), { recursive: true });
-  const temp = `${path}.${process.pid}.tmp`;
-  writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+  const temp = `${path}.${randomUUID()}.tmp`;
+  writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
   renameSync(temp, path);
 }
 

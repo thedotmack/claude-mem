@@ -1,6 +1,6 @@
 import type express from 'express';
 import type { Request, Response, NextFunction } from 'express';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, extname, join } from 'node:path';
@@ -1296,8 +1296,8 @@ export class WorkViewRoutes extends BaseRouteHandler {
     // The import must never point at a missing file: Claude Code skips it without a word. SessionStart
     // keeps its text current (mode, runtime, settings), so only a missing file is written here.
     if (!existsSync(this.rulesAndToolsPath)) ensureRulesAndToolsFile(true, this.rulesAndToolsPath);
-    const temp = join(dirname(this.rulesFilePath), `.MY-RULES.md.${process.pid}.tmp`);
-    writeFileSync(temp, this.renderRulesMarkdown(rules), { mode: 0o644 });
+    const temp = join(dirname(this.rulesFilePath), `.MY-RULES.md.${randomUUID()}.tmp`);
+    writeFileSync(temp, this.renderRulesMarkdown(rules), { mode: 0o644, flag: 'wx' });
     renameSync(temp, this.rulesFilePath);
   }
 

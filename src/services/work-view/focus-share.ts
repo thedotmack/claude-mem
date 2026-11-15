@@ -7,7 +7,7 @@
  * Which areas are shared, and their links, live in focus-shares.json next to settings.json. A page that has not
  * changed since the last publish is not sent again.
  */
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
@@ -217,8 +217,8 @@ export class FocusShares {
 
   private write(registry: Registry): void {
     mkdirSync(dirname(this.options.registryPath), { recursive: true });
-    const temp = `${this.options.registryPath}.${process.pid}.tmp`;
-    writeFileSync(temp, `${JSON.stringify(registry, null, 2)}\n`, { mode: 0o600 });
+    const temp = `${this.options.registryPath}.${randomUUID()}.tmp`;
+    writeFileSync(temp, `${JSON.stringify(registry, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
     renameSync(temp, this.options.registryPath);
   }
 

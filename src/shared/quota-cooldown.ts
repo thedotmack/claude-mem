@@ -37,6 +37,7 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'fs';
+import { randomUUID } from 'crypto';
 import { dirname, join } from 'path';
 import { paths } from './paths.js';
 import { logger } from '../utils/logger.js';
@@ -174,8 +175,8 @@ function persistToDisk(filePath: string = defaultCooldownFilePath()): void {
       if (existsSync(filePath)) unlinkSync(filePath);
       return;
     }
-    const tmp = `${filePath}.${process.pid}.tmp`;
-    writeFileSync(tmp, JSON.stringify(rows, null, 2), 'utf-8');
+    const tmp = `${filePath}.${randomUUID()}.tmp`;
+    writeFileSync(tmp, JSON.stringify(rows, null, 2), { encoding: 'utf-8', flag: 'wx' });
     // Atomic swap, so a reader never sees a half-written ledger.
     renameSync(tmp, filePath);
   } catch (err) {

@@ -198,8 +198,8 @@ function updateSession(sessionId, patch) {
   try {
     mkdirSync(SESSION_DIR, { recursive: true });
     const file = sessionFile(sessionId);
-    const tmp = `${file}.${process.pid}.tmp`;
-    writeFileSync(tmp, JSON.stringify(state), { mode: 0o600 });
+    const tmp = `${file}.${randomUUID()}.tmp`;
+    writeFileSync(tmp, JSON.stringify(state), { mode: 0o600, flag: 'wx' });
     renameSync(tmp, file);
   } catch { /* best effort */ }
   return state;

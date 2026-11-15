@@ -12,6 +12,7 @@
  * file, so they do not probe again.
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'fs';
+import { randomUUID } from 'crypto';
 import { dirname, join } from 'path';
 import { resolveDataDir } from './paths.js';
 import { logger } from '../utils/logger.js';
@@ -55,8 +56,8 @@ export function noteCmemCapExhausted(now = Date.now()): void {
   const path = probePath();
   try {
     mkdirSync(dirname(path), { recursive: true });
-    const tmp = `${path}.${process.pid}.tmp`;
-    writeFileSync(tmp, JSON.stringify({ exhaustedAtMs: now } satisfies CapProbeFile));
+    const tmp = `${path}.${randomUUID()}.tmp`;
+    writeFileSync(tmp, JSON.stringify({ exhaustedAtMs: now } satisfies CapProbeFile), { flag: 'wx' });
     renameSync(tmp, path);
   } catch (error) {
     logger.warn('SESSION', 'cmem cap probe file could not be written', undefined, error instanceof Error ? error : new Error(String(error)));
