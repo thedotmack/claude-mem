@@ -21,6 +21,36 @@ export const TREE_SITTER_EXECUTABLE_SHA256: Readonly<Record<string, Readonly<Rec
   },
 };
 
+// The `<os>-<arch>` part of the release asset name tree-sitter-cli's install.js
+// picks, per `${process.platform}-${process.arch}`. Keep it in step with the
+// digest table above: a platform with a digest and no entry here cannot use
+// the direct download.
+const TREE_SITTER_RELEASE_ASSET_TARGET: Readonly<Record<string, string>> = {
+  "darwin-arm64": "macos-arm64",
+  "darwin-x64": "macos-x64",
+  "linux-arm": "linux-arm",
+  "linux-arm64": "linux-arm64",
+  "linux-ppc64": "linux-powerpc64",
+  "linux-x64": "linux-x64",
+  "win32-arm64": "windows-arm64",
+  "win32-ia32": "windows-x86",
+  "win32-x64": "windows-x64",
+};
+
+/**
+ * Where tree-sitter publishes the gzipped executable of a tree-sitter-cli
+ * version for this machine: the URL install.js downloads. Undefined for a
+ * platform install.js has no asset for.
+ */
+export function treeSitterReleaseAssetUrl(
+  version: string,
+  platform: NodeJS.Platform = process.platform,
+  arch: string = process.arch,
+): string | undefined {
+  const target = TREE_SITTER_RELEASE_ASSET_TARGET[`${platform}-${arch}`];
+  return target && `https://github.com/tree-sitter/tree-sitter/releases/download/v${version}/tree-sitter-${target}.gz`;
+}
+
 /** The pinned digest for a tree-sitter-cli version on this machine, if any. */
 export function pinnedTreeSitterExecutableSha256(
   version: string,
