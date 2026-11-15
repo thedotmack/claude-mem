@@ -144,7 +144,7 @@ export function ProgressMeter({ request, compact = false }: { request: Request; 
   const estimate = measuredEstimate(request)
   const translatedEstimate = estimate
     ? (estimate.startsWith('at this pace, about ')
-      ? interpolate(t('at this pace, about {date}'), { date: estimate.slice('at this pace, about '.length) })
+      ? interpolate(t('at this pace, about {date}'), { date: displayTime(estimate.slice('at this pace, about '.length)) })
       : t(estimate))
     : null
   return (
