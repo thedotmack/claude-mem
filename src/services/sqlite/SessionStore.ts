@@ -3217,18 +3217,14 @@ export class SessionStore {
 
     const projects: string[] = [];
     const seenProjects = new Set<string>();
-    const projectsBySource: Record<string, string[]> = Object.create(null);
+    const projectsBySource = new Map<string, Set<string>>();
 
     for (const row of rows) {
       const source = normalizePlatformSource(row.platform_source);
 
-      if (!projectsBySource[source]) {
-        projectsBySource[source] = [];
-      }
-
-      if (!projectsBySource[source].includes(row.project)) {
-        projectsBySource[source].push(row.project);
-      }
+      let sourceProjects = projectsBySource.get(source);
+      if (!sourceProjects) projectsBySource.set(source, sourceProjects = new Set());
+      sourceProjects.add(row.project);
 
       if (!seenProjects.has(row.project)) {
         seenProjects.add(row.project);
@@ -3236,13 +3232,13 @@ export class SessionStore {
       }
     }
 
-    const sources = sortPlatformSources(Object.keys(projectsBySource));
+    const sources = sortPlatformSources([...projectsBySource.keys()]);
 
     return {
       projects,
       sources,
       projectsBySource: Object.fromEntries(
-        sources.map(source => [source, projectsBySource[source] || []])
+        sources.map(source => [source, [...(projectsBySource.get(source) ?? [])]])
       )
     };
   }
