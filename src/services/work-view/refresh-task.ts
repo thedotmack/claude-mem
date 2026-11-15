@@ -485,13 +485,16 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
         const previousMap = saved.mapPath && existsSync(saved.mapPath) ? saved.mapPath : null;
         const focusPath = writeInput('focus-areas', savedAreas);
         // Reuse the real single-map question for the size decision, including the skill and files.
+        // step() appends the run's language line to the question, so size the single map against the
+        // question as it will actually be asked: a map packed to the budget must not push it past the ask limit.
         // A normal first map below this budget keeps the existing one-call path and no checkpoint.
         const initialQuestion = [
           inlineSkill(paths.ownerGoalsSkill), '---', readOnly,
           `Step 1 is done: the owner's prompts are in ${promptsPath}. Do step 2 yourself (no subagent). Instead of writing owner-map.md and owner-goals.json, reply with only one JSON object: {"map": "<the owner-map.md markdown>", "goals": <the owner-goals.json object>}. The worker saves it with step 3.`,
           focusAreasNote(focusPath),
         ].join('\n\n');
-        if (goalsCheckpoint || (!since && ownerPrompts > 0 && Buffer.byteLength(expandedQuestion(initialQuestion), 'utf8') > OWNER_GOALS_QUESTION_BYTES)) {
+        const initialRule = languageRule();
+        if (goalsCheckpoint || (!since && ownerPrompts > 0 && Buffer.byteLength(expandedQuestion(initialRule ? `${initialQuestion}\n\n${initialRule}` : initialQuestion), 'utf8') > OWNER_GOALS_QUESTION_BYTES)) {
           if (!exported.sections) throw batchFailure('The prompt export has no source identities for the checked owner-goals progress.');
           let progress: OwnerGoalsCheckpoint = goalsCheckpoint ?? {
             version: 1, deviceId: localDeviceId, baseGeneratedAt: saved.generatedAt || null, exportedAt,
