@@ -24,6 +24,7 @@ import {
 } from '../../services/ObservationEmbeddingService.js';
 import { PostgresObservationEmbeddingsRepository } from '../../../storage/postgres/observation-embeddings.js';
 import { PostgresProjectsRepository } from '../../../storage/postgres/projects.js';
+import { isValidAdvertisedHost } from '../../middleware/request-auth-helpers.js';
 import { logger } from '../../../utils/logger.js';
 import {
   SEMANTIC_CONTEXT_MAX_LIMIT,
@@ -69,10 +70,17 @@ const MCP_SERVER_VERSION =
 
 // The MCP link base: CLAUDE_MEM_PUBLIC_URL in prod (behind a proxy/LB), else
 // derived from the request host so the connect command points at this server.
-function mcpConnectUrl(req: Request): string {
-  const base = (process.env.CLAUDE_MEM_PUBLIC_URL ?? `${req.protocol}://${req.get('host') ?? 'localhost'}`)
-    .replace(/\/+$/, '');
-  return `${base}/v1/mcp`;
+// The Host header is caller-supplied and this string is pasted into a shell,
+// so a Host that is present but unusable is refused instead of being
+// advertised back. A request with no Host header at all (HTTP/1.0) still gets
+// `localhost`, as before.
+export function mcpConnectUrl(req: Pick<Request, 'protocol' | 'get'>): string | null {
+  const configured = (process.env.CLAUDE_MEM_PUBLIC_URL ?? '').trim();
+  if (configured) return `${configured.replace(/\/+$/, '')}/v1/mcp`;
+  const hostHeader = req.get('host');
+  const host = hostHeader === undefined ? 'localhost' : hostHeader.trim();
+  if (!isValidAdvertisedHost(host)) return null;
+  return `${req.protocol}://${host}/v1/mcp`;
 }
 function mcpConnectCommand(mcpUrl: string, key: string): string {
   return `claude mcp add --transport http claude-mem ${mcpUrl} --header "Authorization: Bearer ${key}"`;
@@ -246,6 +254,14 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       async (req, res, body) => {
         const teamId = this.requireTeamId(req, res);
         if (!teamId) return;
+        const mcpUrl = mcpConnectUrl(req);
+        if (mcpUrl === null) {
+          res.status(400).json({
+            error: 'InvalidHost',
+            message: 'The Host header is not a usable hostname. Set CLAUDE_MEM_PUBLIC_URL or send a valid Host header.',
+          });
+          return;
+        }
         const raw = `cm_${randomBytes(24).toString('hex')}`;
         const keyHash = await hashApiKeyAsync(raw);
         const keyPrefix = apiKeyPrefix(raw);
@@ -262,7 +278,6 @@ export class ServerV1PostgresRoutes implements RouteHandler {
           expiresAt,
         });
         void body.label; // reserved for when api_keys grows a label column
-        const mcpUrl = mcpConnectUrl(req);
         res.status(201).json({
           id: key.id,
           apiKey: raw, // shown ONCE — store it now
@@ -280,6 +295,13 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       const teamId = this.requireTeamId(req, res);
       if (!teamId) return;
       const mcpUrl = mcpConnectUrl(req);
+      if (mcpUrl === null) {
+        res.status(400).json({
+          error: 'InvalidHost',
+          message: 'The Host header is not a usable hostname. Set CLAUDE_MEM_PUBLIC_URL or send a valid Host header.',
+        });
+        return;
+      }
       res.status(200).json({
         mcpUrl,
         connectCommand: mcpConnectCommand(mcpUrl, '<YOUR_API_KEY>'),

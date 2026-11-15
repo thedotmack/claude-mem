@@ -69,7 +69,9 @@ default) means no rate limit, no quota, and no metering, so behavior is unchange
 
 - `GET /v1/connect` (read scope) returns the same command with a `<YOUR_API_KEY>`
   placeholder (a GET never mints). `mcpUrl` is built from `CLAUDE_MEM_PUBLIC_URL`
-  (recommended behind a proxy) or the request host.
+  (recommended behind a proxy) or the request host. If `CLAUDE_MEM_PUBLIC_URL` is
+  unset and the request's `Host` is not a valid host[:port], both routes answer
+  `400 InvalidHost` (and `POST /v1/keys` mints nothing); set `CLAUDE_MEM_PUBLIC_URL`.
 
 > Cold-start note: minting the team's *first* key still needs a session-gated path
 > (web dashboard). better-auth's `apiKey()` plugin exists but writes to a separate
