@@ -32,10 +32,10 @@ export function isLegacyClaudeMemHook(command: Command): boolean {
   return typeof command?.command === 'string' && LEGACY_COMMAND.test(command.command);
 }
 
-function countLegacyHooks(hooks: Hooks | undefined): number {
+function countHooks(hooks: Hooks | undefined, matches: (command: Command) => boolean): number {
   return Object.values(hooks ?? {}).reduce((total, rules) => total
     + (Array.isArray(rules) ? rules : []).reduce((count, rule) => count
-      + (Array.isArray(rule?.hooks) ? rule.hooks.filter(isLegacyClaudeMemHook).length : 0), 0), 0);
+      + (Array.isArray(rule?.hooks) ? rule.hooks.filter(matches).length : 0), 0), 0);
 }
 
 /** Gemini CLI runs hook commands through PowerShell on Windows, which runs a quoted path only after the `&` call operator. */
@@ -54,13 +54,18 @@ function isOwn(command: Command): boolean {
     && /^(?:& )?"[^"\n]+" "[^"\n]+[\\/]scripts[\\/]worker-service\.cjs" hook gemini (context|session-init|observation|summarize|session-end)$/.test(command.command);
 }
 
+/** A hook claude-mem wrote: this release's, or an older release's. */
+function isClaudeMemHook(command: Command): boolean {
+  return isOwn(command) || isLegacyClaudeMemHook(command);
+}
+
 export function removeGeminiHooks(hooks: Hooks): Hooks {
   const next: Hooks = {};
   for (const [event, rules] of Object.entries(hooks)) {
     if (!Array.isArray(rules)) throw new Error(`hooks.${event} must be an array`);
     const kept = rules.map(rule => {
       if (!Array.isArray(rule?.hooks)) throw new Error(`hooks.${event} contains an invalid rule`);
-      return { ...rule, hooks: rule.hooks.filter(command => !isOwn(command) && !isLegacyClaudeMemHook(command)) };
+      return { ...rule, hooks: rule.hooks.filter(command => !isClaudeMemHook(command)) };
     }).filter(rule => rule.hooks.length > 0);
     if (kept.length) next[event] = kept;
   }
@@ -104,7 +109,7 @@ export function manageGeminiHooks(
     if (action === 'status') {
       const installed = Object.keys(EVENTS).every(event => settings.hooks?.[event]?.some(rule => rule.hooks?.some(isOwn)));
       console.log(`Gemini CLI capture hooks: ${installed ? 'installed' : 'not installed'}`);
-      const legacy = countLegacyHooks(settings.hooks);
+      const legacy = countHooks(settings.hooks, isLegacyClaudeMemHook);
       if (legacy > 0) {
         console.log(`Found ${legacy} leftover claude-mem hook(s) from an older install in ${file}; they capture a second time. Run \`npx claude-mem gemini install\` or \`uninstall\` to remove them.`);
       }
@@ -121,7 +126,7 @@ export function manageGeminiHooks(
     if (existsSync(file) && !existsSync(`${file}.claude-mem.bak`)) {
       writeFileSync(`${file}.claude-mem.bak`, readFileSync(file), { mode: 0o600 });
     }
-    const removedLegacy = countLegacyHooks(settings.hooks);
+    const removedLegacy = countHooks(settings.hooks, isLegacyClaudeMemHook);
     writeJsonFileAtomic(file, { ...settings, hooks: cleaned });
     if (removedLegacy > 0) console.log(`Removed ${removedLegacy} leftover claude-mem hook(s) from an older install`);
     console.log(`Gemini CLI capture hooks ${action === 'install' ? 'installed' : 'removed'} in ${file}`);
@@ -130,6 +135,17 @@ export function manageGeminiHooks(
     console.error(`Gemini CLI hook setup failed: ${(error as Error).message}`);
     return 1;
   }
+}
+
+/**
+ * The `npx claude-mem uninstall` step. Uninstall runs it for everyone, including
+ * people who never ran `gemini install`, so settings.json is rewritten only when
+ * it holds a hook claude-mem wrote. Returns 1 without touching the file when it
+ * holds none, and otherwise what `gemini uninstall` returns.
+ */
+export function uninstallGeminiHooks(file = geminiSettingsPath()): number {
+  if (countHooks(readSettings(file).hooks, isClaudeMemHook) === 0) return 1;
+  return manageGeminiHooks('uninstall', file);
 }
 
 export async function handleGeminiCommand(action: string | undefined): Promise<number> {
