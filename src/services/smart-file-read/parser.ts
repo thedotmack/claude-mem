@@ -784,6 +784,51 @@ function rangeContains(outer: RawCapture, inner: RawCapture): boolean {
       || (inner.endRow === outer.endRow && inner.endCol <= outer.endCol));
 }
 
+type SymbolContainer = { sym: CodeSymbol; range: RawCapture };
+
+/** Search containers in their existing priority order without rescanning every
+ * sibling for each symbol. Starts are descending; each tree node records the
+ * latest end in its interval, so intervals that cannot enclose a range are
+ * skipped together. Equal starts keep the existing stable capture order. */
+function indexContainers(containers: SymbolContainer[]): (range: RawCapture, exclude?: CodeSymbol) => SymbolContainer | undefined {
+  let size = 1;
+  while (size < containers.length) size *= 2;
+  const latestEnd = new Array<RawCapture | undefined>(size * 2);
+  const endsBefore = (left: RawCapture, right: RawCapture) => left.endRow < right.endRow
+    || (left.endRow === right.endRow && left.endCol < right.endCol);
+  for (let index = 0; index < containers.length; index++) latestEnd[size + index] = containers[index].range;
+  for (let index = size - 1; index > 0; index--) {
+    const left = latestEnd[index * 2];
+    const right = latestEnd[index * 2 + 1];
+    latestEnd[index] = !left ? right : !right || endsBefore(right, left) ? left : right;
+  }
+
+  return (range, exclude) => {
+    // A container starting after the symbol cannot own it. Restrict the tree
+    // search to the suffix whose starts are at or before the symbol's start.
+    let low = 0;
+    let high = containers.length;
+    while (low < high) {
+      const middle = low + Math.floor((high - low) / 2);
+      const start = containers[middle].range;
+      if (start.startRow > range.startRow || (start.startRow === range.startRow && start.startCol > range.startCol)) low = middle + 1;
+      else high = middle;
+    }
+    const first = low;
+    const find = (node: number, begin: number, end: number): SymbolContainer | undefined => {
+      const latest = latestEnd[node];
+      if (end <= first || !latest || endsBefore(latest, range)) return undefined;
+      if (end - begin === 1) {
+        const container = containers[begin];
+        return container.sym !== exclude ? container : undefined;
+      }
+      const middle = begin + Math.floor((end - begin) / 2);
+      return find(node * 2, begin, middle) ?? find(node * 2 + 1, middle, end);
+    };
+    return find(1, 0, size);
+  };
+}
+
 function buildSymbols(matches: RawMatch[], lines: string[], language: string): { symbols: CodeSymbol[]; imports: string[] } {
   const symbols: CodeSymbol[] = [];
   const imports: string[] = [];
@@ -803,7 +848,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   const ranges = new Map<CodeSymbol, RawCapture>();
   const implementedTraits = new Map<CodeSymbol, string>();
   const aliasedTypes = new Map<CodeSymbol, RawCapture>();
-  const containers: Array<{ sym: CodeSymbol; range: RawCapture }> = [];
+  const containers: SymbolContainer[] = [];
 
   for (const match of matches) {
     const docstringBody = match.captures.find(c => c.tag === "python_docstring_body");
@@ -1147,6 +1192,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   // class's method is attached once instead of also appearing on every ancestor.
   containers.sort((a, b) => b.range.startRow - a.range.startRow
     || b.range.startCol - a.range.startCol);
+  const containing = indexContainers(containers);
   // A typeclass signature and its default implementation describe one method:
   // the default takes the signature's type and comment. An adjacent pair
   // unfolds as one range. When another declaration sits between them, retain
@@ -1155,7 +1201,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   // count as being between.
   for (const signature of haskellSignatures) {
     const signatureRange = ranges.get(signature)!;
-    const owner = containers.find(container => rangeContains(container.range, signatureRange));
+    const owner = containing(signatureRange);
     const implementation = symbols.find(candidate => candidate.kind === "function"
       && candidate.name === signature.name
       && haskellDefaults.some(capture => {
@@ -1163,7 +1209,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
         return capture.startRow === range.startRow && capture.startCol === range.startCol
           && capture.endRow === range.endRow && capture.endCol === range.endCol;
       })
-      && containers.find(container => container.sym !== candidate && rangeContains(container.range, ranges.get(candidate)!)) === owner);
+      && containing(ranges.get(candidate)!, candidate) === owner);
     if (implementation) {
       const implementationRange = ranges.get(implementation)!;
       implementation.signature = signature.signature;
@@ -1194,8 +1240,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   for (const sym of symbols) {
     if (duplicateAliases.has(sym)) continue;
     const range = ranges.get(sym)!;
-    const owner = containers.find(({ sym: candidate, range: parent }) => candidate !== sym
-      && rangeContains(parent, range));
+    const owner = containing(range, sym);
     // A Ruby `def` inside `class << self` defines a class method, so it is named
     // like `def self.x` — unless a class or module opened in that block is nearer.
     if (sym.kind === "function" && singletonScopes.some(scope => rangeContains(scope, range)
