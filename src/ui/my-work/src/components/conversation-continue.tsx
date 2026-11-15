@@ -39,7 +39,10 @@ function LabelsInOnePlace({ labels }: { labels: ButtonLabelInPlace[] }) {
   )
 }
 
-/** Why the last read of the conversation failed, and "Try again" beside it, which the sentence describes for a screen reader. */
+/**
+ * Why the last read of the conversation failed, and "Try again" beside it, which the sentence describes for a screen reader.
+ * While the read it asked for is on its way, the button says so in place of its label, and keeps its width.
+ */
 function ReadFailure({ view, onTryAgain }: { view: ConversationReadFailureView; onTryAgain: (pressedButton: HTMLButtonElement) => void }) {
   useI18n()
   const failureId = useId()
@@ -47,7 +50,9 @@ function ReadFailure({ view, onTryAgain }: { view: ConversationReadFailureView; 
     <div className="flex flex-wrap items-center gap-2">
       <p id={failureId} role="alert" className="break-words text-sm text-muted-foreground">{view.failureText}</p>
       <Button variant="outline" size="sm" className="h-11 md:h-8" aria-describedby={failureId}
-        onClick={(event) => onTryAgain(event.currentTarget)}>{t(view.tryAgainLabel)}</Button>
+        onClick={(event) => onTryAgain(event.currentTarget)}>
+        <LabelsInOnePlace labels={buttonLabelsKeepingTheirWidth(t(view.tryAgainLabel), t(view.tryingAgainLabel), view.isTryingAgain)} />
+      </Button>
     </div>
   )
 }
@@ -103,7 +108,10 @@ function ContinuableConversation({
 }) {
   useI18n()
   const [read, setRead] = useState<ConversationContinuationRead | null>(null)
+  /** Why the newest read that answered failed. Only a read's answer changes it: "Try again" leaves it on screen. */
   const [readFailure, setReadFailure] = useState<string | null>(null)
+  /** "Try again" was pressed, and no read has answered since (conversationReadFailureView). */
+  const [tryingAgain, setTryingAgain] = useState(false)
   const [typedMessage, setTypedMessage] = useState('')
   const [sending, setSending] = useState(false)
   /** Why the last Send or Stop did not happen, in the worker's words. */
@@ -154,8 +162,8 @@ function ContinuableConversation({
     const readConversation = () => {
       const thisRead = ++newestRead
       source.loadConversationContinuation(platform, conversationSessionId).then(
-        (answer) => { if (rowIsOpen && thisRead === newestRead) { setRead(answer); setReadFailure(null) } },
-        (error: unknown) => { if (rowIsOpen && thisRead === newestRead) setReadFailure(messageOf(error)) },
+        (answer) => { if (rowIsOpen && thisRead === newestRead) { setRead(answer); setReadFailure(null); setTryingAgain(false) } },
+        (error: unknown) => { if (rowIsOpen && thisRead === newestRead) { setReadFailure(messageOf(error)); setTryingAgain(false) } },
       )
     }
     readAgain.current = readConversation
@@ -166,16 +174,19 @@ function ContinuableConversation({
     return () => { rowIsOpen = false; readAgain.current = null; stopHearing() }
   }, [source, platform, conversationSessionId])
 
-  const readFailureView = conversationReadFailureView(readFailure)
-  /** Reads the conversation again after a failed read. Focus moves into this box first when the row has one, as after Send. */
+  const readFailureView = conversationReadFailureView(readFailure, tryingAgain)
+  /**
+   * Reads the conversation again after a failed read. The reason and the button stay until a read answers, and the button
+   * says it is trying again (conversationReadFailureView). A read that answers takes the button away, so focus moves into
+   * this box first when the row has one, as after Send.
+   */
   const tryReadingAgain = (pressedButton: HTMLButtonElement) => {
     if (read) {
       const focusTarget = focusAfterSendOrStop(document.activeElement === pressedButton, continuationView(read.target, read.exchanges, typedMessage))
       if (focusTarget === 'message-box') messageBox.current?.focus()
       if (focusTarget === 'conversation-box') conversationBox.current?.focus()
     }
-    // Its sentence goes until this read answers, and comes back if it fails too, so each try shows.
-    setReadFailure(null)
+    setTryingAgain(true)
     readAgain.current?.()
   }
   if (!read) return readFailureView ? <ReadFailure view={readFailureView} onTryAgain={tryReadingAgain} /> : null

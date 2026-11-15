@@ -167,6 +167,10 @@ export interface ConversationReadFailureView {
   failureText: string
   /** The button's words: the drawer's own "Try again". */
   tryAgainLabel: string
+  /** The button's words while the read it asked for is on its way. */
+  tryingAgainLabel: string
+  /** Whether the read "Try again" asked for is on its way, so the button shows tryingAgainLabel. */
+  isTryingAgain: boolean
 }
 
 /**
@@ -175,9 +179,16 @@ export interface ConversationReadFailureView {
  * answered left it, which may be out of date: the reply a notice told of stays unread, and Send stays as it was, until a
  * read answers. Nothing else reads again but the next notice, so without the button a row could stay that way. Null when
  * the last read answered.
+ *
+ * `readFailure` is why the newest read that answered failed, and `isTryingAgain` whether the read "Try again" asked for is
+ * still on its way. While it is, the reason and the button stay, and the button says it is trying again, so the way out
+ * stays on screen for as long as that read takes: when nothing has been read yet, they are all the row shows. The button
+ * can still be pressed then, so a read that never answers does not leave the row without one: only the newest read is
+ * shown. That read's answer replaces them: one that brought the conversation back shows it (null here), and one that
+ * failed shows its own reason, with "Try again" again.
  */
-export function conversationReadFailureView(readFailure: string | null): ConversationReadFailureView | null {
-  return readFailure === null ? null : { failureText: readFailure, tryAgainLabel: 'Try again' }
+export function conversationReadFailureView(readFailure: string | null, isTryingAgain: boolean): ConversationReadFailureView | null {
+  return readFailure === null ? null : { failureText: readFailure, tryAgainLabel: 'Try again', tryingAgainLabel: 'Trying again…', isTryingAgain }
 }
 
 // ---- What a row's controls are called, and where focus goes after Send or Stop

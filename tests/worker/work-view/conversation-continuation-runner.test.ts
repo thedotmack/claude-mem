@@ -1121,6 +1121,66 @@ describe('when the worker shuts down', () => {
     expect(await nextChange()).toMatchObject({ state: 'failed', failureText: 'You stopped this turn.' });
   });
 
+  it('waits until every turn and open it started has exited, once close has sent them their stop', async () => {
+    const { runner, calls, nextChange } = harnessIn(realFolder());
+    startedExchange(await runner.start('claude', CLAUDE_SESSION, 'Count slowly to 200, one number per line.'));
+    const opening = runner.openInApp('claude', CLAUDE_SESSION, FIRST_CLICK);
+    await afterPromiseJobs();
+    expect(calls).toHaveLength(2);
+    runner.close();
+    let everyCommandHasExited = false;
+    const waiting = runner.waitUntilEveryCommandHasExited().then(() => { everyCommandHasExited = true; });
+    await afterPromiseJobs();
+    expect(everyCommandHasExited).toBe(false);
+    calls[0].child.exit(0);
+    await nextChange();
+    await afterPromiseJobs();
+    // The open still runs.
+    expect(everyCommandHasExited).toBe(false);
+    calls[1].child.exit(null);
+    await opening;
+    await waiting;
+    expect(everyCommandHasExited).toBe(true);
+    // With nothing running, it answers at once.
+    await runner.waitUntilEveryCommandHasExited();
+  });
+
+  it('force-stops a command still running as the worker exits, saying so at ERROR with its conversation, and sends nothing again', async () => {
+    const { runner, calls, nextChange } = harnessIn(realFolder());
+    const turn = startedExchange(await runner.start('claude', CLAUDE_SESSION, 'Count slowly to 200, one number per line.'));
+    const errors = spyOn(logger, 'error');
+    try {
+      // Without the shutdown's first step before it: the force stop still sends the turn its stop and refuses anything new.
+      await runner.forceStopCommandsStillRunning();
+      expect(errors).toHaveBeenCalledWith('WORKER', expect.stringContaining('still running as the worker exits'), {
+        platform: 'claude', conversationSessionId: CLAUDE_SESSION, exchangeId: turn.exchangeId, type: 'conversation-turn', pid: calls[0].child.pid,
+      });
+    } finally {
+      errors.mockRestore();
+    }
+    expect(calls[0].stops).toEqual([stopSentToTheCommand('SIGINT')]);
+    expect(await runner.start('claude', CLAUDE_SESSION, 'next')).toEqual({ refusalText: SHUTTING_DOWN });
+    calls[0].child.exit(null);
+    expect(await nextChange()).toMatchObject({ exchangeId: turn.exchangeId, state: 'failed', failureText: STOPPED_BY_THE_WORKER });
+    expect(calls).toHaveLength(1);
+  });
+
+  it('force-stops nothing, and logs nothing, when every command has exited', async () => {
+    const { runner, calls, nextChange } = harnessIn(realFolder());
+    startedExchange(await runner.start('claude', CLAUDE_SESSION, 'Which word?'));
+    runner.close();
+    calls[0].child.exit(0, { stdout: claudeVerboseOutput({}) });
+    await nextChange();
+    const errors = spyOn(logger, 'error');
+    try {
+      await runner.forceStopCommandsStillRunning();
+      expect(errors).not.toHaveBeenCalled();
+    } finally {
+      errors.mockRestore();
+    }
+    expect(calls[0].stops).toEqual([stopSentToTheCommand('SIGINT')]);
+  });
+
   it('keeps each turn and open in the process registry while it runs, with the process group its stop goes to, so the shutdown cascade can stop it', async () => {
     const records = new Map<string, ManagedProcessInfo>();
     const processRegistry = {

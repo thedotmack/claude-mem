@@ -101,8 +101,9 @@ export interface CommandOptions {
   /**
    * Told the command's process id once it has started, with the process group a stop goes to: its own pid on macOS and
    * Linux when `signal` is given (see CommandOptions.signal), and undefined otherwise. Not told when it never started.
-   * The conversation runner keeps a command in the worker's process registry with them while it runs, so the worker's
-   * shutdown stops it and waits for it like every other process the worker starts.
+   * The conversation runner keeps a command with them while it runs, among its own running commands and in the worker's
+   * process registry like every other process the worker starts, so the worker's shutdown waits for it and force-stops
+   * it if it has not exited before the worker does.
    */
   onSpawn?: (started: { pid: number; processGroupId: number | undefined }) => void;
 }

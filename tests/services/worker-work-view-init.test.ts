@@ -148,4 +148,21 @@ describe('Work View startup ordering', () => {
     expect(worker.workViewRoutes).toBeNull();
     expect(await refresh.check()).toBe('closed');
   });
+
+  it("waits for My Work's turns and opens in the graceful shutdown, and force-stops any still running before it returns", async () => {
+    await worker.initializeBackground();
+    const runner = worker.conversationContinuationRunner;
+    expect(runner).toBeTruthy();
+    expect(worker.workViewRoutes.conversationContinuationRunner).toBe(runner);
+    const forceStop = spyOn(runner, 'forceStopCommandsStillRunning');
+    let commandsStoppedAsShutdownBegan: unknown;
+    spyOn(graceful, 'performGracefulShutdown').mockImplementation(async config => {
+      commandsStoppedAsShutdownBegan = config.commandsStoppedAsShutdownBegan;
+      // The graceful shutdown comes first: the force stop is the last step before the worker exits.
+      expect(forceStop).not.toHaveBeenCalled();
+    });
+    await worker.shutdown('stop');
+    expect(commandsStoppedAsShutdownBegan).toBe(runner);
+    expect(forceStop).toHaveBeenCalledTimes(1);
+  });
 });

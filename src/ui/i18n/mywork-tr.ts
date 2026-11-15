@@ -269,6 +269,7 @@ export const myworkTr: Record<string, string> = {
   'Runs in {folder}': '{folder} içinde çalışır',
   'Could not copy the command: {reason}': 'Komut kopyalanamadı: {reason}',
   'Copy it from here:': 'Buradan kopyalayın:',
+  'Trying again…': 'Tekrar deneniyor…',
   'This work changed while you were reading. Review the latest version before checking.': 'Siz okurken bu çalışma değişti. Kontrol edildi olarak işaretlemeden önce son sürümü inceleyin.',
   'Checked locally.': 'Yerel olarak kontrol edildi.',
   'Check undone. The result is ready to review.': 'Kontrol geri alındı. Sonuç yeniden incelenebilir.',

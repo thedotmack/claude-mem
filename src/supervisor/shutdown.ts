@@ -12,6 +12,16 @@ export interface ShutdownCascadeOptions {
   pidFilePath?: string;
 }
 
+/**
+ * How long the cascade gives the children it sent SIGTERM to before it force-kills what is left of them, and how long it
+ * then waits after SIGKILL before it reports what still runs. These are the windows the supervisor has had since it was
+ * added (#1370: "graceful shutdown cascade (SIGTERM → 5s wait → SIGKILL)"); no measurement behind them is recorded. The
+ * worker's last step before it exits (runShutdownSequence's forceStopCommandsStillRunning) reuses them through
+ * terminateThenForceKill, so it adds no window of its own.
+ */
+const GRACE_WINDOW_AFTER_SIGTERM_MS = 5000;
+const WAIT_AFTER_SIGKILL_MS = 1000;
+
 export async function runShutdownCascade(options: ShutdownCascadeOptions): Promise<void> {
   const currentPid = options.currentPid ?? process.pid;
   const pidFilePath = options.pidFilePath ?? PID_FILE;
@@ -20,6 +30,34 @@ export async function runShutdownCascade(options: ShutdownCascadeOptions): Promi
     .filter(record => record.pid !== currentPid)
     .sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt));
 
+  await terminateThenForceKill(childRecords, record => options.registry.unregister(record.id));
+
+  for (const record of childRecords) {
+    options.registry.unregister(record.id);
+  }
+  for (const record of allRecords.filter(record => record.pid === currentPid)) {
+    options.registry.unregister(record.id);
+  }
+
+  removeOwnedPidFile(pidFilePath, currentPid);
+
+  options.registry.pruneDeadEntries();
+}
+
+/**
+ * How the shutdown cascade stops child processes, for the ones `records` name, in their order: SIGTERM to each one still
+ * running (to its process group when it has one), up to GRACE_WINDOW_AFTER_SIGTERM_MS for all of them to exit, then
+ * SIGKILL to what is left of each, with the processes it had started, and up to WAIT_AFTER_SIGKILL_MS more. Each one the
+ * grace window ran out on is logged at WARN, and each still running after SIGKILL at ERROR.
+ *
+ * `onExitedBeforeItsSigterm` hears each record whose process had already exited when its turn for SIGTERM came. Answers
+ * the records that had to be force-killed: those still running, or with a process they started still running, when the
+ * grace window ran out.
+ */
+export async function terminateThenForceKill(
+  records: ManagedProcessRecord[],
+  onExitedBeforeItsSigterm: (record: ManagedProcessRecord) => void = () => {},
+): Promise<ManagedProcessRecord[]> {
   // Descendants snapshotted BEFORE the SIGTERM phase.
   //
   // The survivor scan below used to test `isPidAlive(record.pid)` — the ROOT
@@ -37,9 +75,9 @@ export async function runShutdownCascade(options: ShutdownCascadeOptions): Promi
   // its children with it.
   const rootTokenByRecord = new Map<string, string | null>();
 
-  for (const record of childRecords) {
+  for (const record of records) {
     if (!isPidAlive(record.pid)) {
-      options.registry.unregister(record.id);
+      onExitedBeforeItsSigterm(record);
       continue;
     }
 
@@ -69,12 +107,12 @@ export async function runShutdownCascade(options: ShutdownCascadeOptions): Promi
     }
   }
 
-  await waitForExit(childRecords, 5000);
+  await waitForExit(records, GRACE_WINDOW_AFTER_SIGTERM_MS);
 
   // A record survives if its root OR any of its snapshotted descendants is
   // still alive — a dead root with live descendants is precisely the orphan
   // case the force phase must handle.
-  const survivors = childRecords.filter(record =>
+  const survivors = records.filter(record =>
     isPidAlive(record.pid) ||
     (descendantsByRecord.get(record.id) ?? []).some(entry => isPidAlive(entry.pid))
   );
@@ -127,7 +165,7 @@ export async function runShutdownCascade(options: ShutdownCascadeOptions): Promi
     }
   }
 
-  await waitForExit(survivors, 1000);
+  await waitForExit(survivors, WAIT_AFTER_SIGKILL_MS);
   // The cascade's whole budget has run out. Only a root that is still the process recorded is reported: a reused PID is
   // another program's.
   const stillRunning = survivors.filter(record => isPidAlive(record.pid) && isSameProcess(record.pid, rootTokenByRecord.get(record.id) ?? null));
@@ -137,17 +175,7 @@ export async function runShutdownCascade(options: ShutdownCascadeOptions): Promi
       type: record.type,
     });
   }
-
-  for (const record of childRecords) {
-    options.registry.unregister(record.id);
-  }
-  for (const record of allRecords.filter(record => record.pid === currentPid)) {
-    options.registry.unregister(record.id);
-  }
-
-  removeOwnedPidFile(pidFilePath, currentPid);
-
-  options.registry.pruneDeadEntries();
+  return survivors;
 }
 
 /**

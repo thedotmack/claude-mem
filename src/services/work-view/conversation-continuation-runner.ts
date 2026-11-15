@@ -8,9 +8,10 @@
  * no exchange is written to disk. A failed run is recorded as failed and stops. Nothing here runs at construction, on a
  * timer, at worker start or on reconnect.
  *
- * Each command it starts is in the worker's process registry while it runs, like every other process the worker starts,
- * and the worker's shutdown stops it and waits for it (close says how), so a turn never outlives the worker that started
- * it while the next worker takes a turn in the same conversation.
+ * Each command it starts is in the worker's process registry while it runs, like every other process the worker starts.
+ * The worker's shutdown sends each its stop, waits for it to exit, and force-stops it if it has not before the worker
+ * exits (close says how), so a turn never outlives the worker that started it while the next worker takes a turn in the
+ * same conversation.
  *
  * The two commands, as the CLIs document them:
  *   - Claude Code 2.1.325: `claude --resume <session uuid> -p --output-format json`, the message on stdin.
@@ -38,7 +39,8 @@ import { dirname } from 'path';
 import { stripVTControlCharacters } from 'util';
 import { runCommand, type CommandOptions, type CommandResult, type UsableAgent, type UsableAgentId } from '../agent-runner/detect.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
-import type { ProcessRegistry } from '../../supervisor/process-registry.js';
+import type { ManagedProcessRecord, ProcessRegistry } from '../../supervisor/process-registry.js';
+import { terminateThenForceKill } from '../../supervisor/shutdown.js';
 import { logger } from '../../utils/logger.js';
 import {
   CONVERSATION_APP_NAMES,
@@ -162,6 +164,22 @@ const STOPPED_TURN_TEXTS: Record<TurnStopper, string> = {
 /** What the runner's commands are called in the worker's process registry (ManagedProcessInfo.type). */
 type RegisteredCommandType = 'conversation-turn' | 'conversation-open-in-app';
 
+/** The conversation a command runs for, and for a turn its exchange: what the log says about the command. */
+interface CommandRunsFor {
+  platform: string;
+  conversationSessionId: string;
+  exchangeId?: number;
+}
+
+/** A command the runner started that has not exited yet (runCommandKeptInRegistry). */
+interface RunningCommand {
+  /** The command as the process registry records it: its pid, and the process group its stop goes to. */
+  record: ManagedProcessRecord;
+  runsFor: CommandRunsFor;
+  /** Resolves once the command has exited. */
+  exited: Promise<void>;
+}
+
 /** What SessionStore.getRecordedFolderForConversation answers. */
 export interface RecordedConversationFolder {
   sessionIsRecorded: boolean;
@@ -190,8 +208,8 @@ export interface ConversationContinuationDependencies {
   operatingSystem?: () => NodeJS.Platform;
   /**
    * Where each command it starts is kept while it runs: the worker's process registry (getSupervisor().getRegistry()),
-   * whose shutdown cascade stops what is still running and waits for it (close). Without one, as in tests that need none,
-   * only close stops them.
+   * like every other process the worker starts, so the supervisor's shutdown cascade would stop one still running too.
+   * Without one, as in tests that need none, the runner still stops, waits for and force-stops its commands (close).
    */
   processRegistry?: Pick<ProcessRegistry, 'register' | 'unregister'>;
 }
@@ -429,6 +447,11 @@ export class ConversationContinuationRunner {
    * clicked that is still running.
    */
   private readonly openingsInApp = new Map<string, OpeningInApp>();
+  /**
+   * Every command this runner started that has not exited yet, turns and opens alike, by its registry id. At most one turn
+   * and one open per conversation, each started by the owner's click, so the owner's clicks bound it.
+   */
+  private readonly commandsRunning = new Map<string, RunningCommand>();
   private nextExchangeId = 1;
   /** Set by close, once the worker has begun to shut down: nothing starts after it. */
   private workerIsShuttingDown = false;
@@ -538,10 +561,11 @@ export class ConversationContinuationRunner {
    * A stopped turn's exchange ends like any other, saying the worker stopped it, and nothing sends it again: the worker
    * forgets it as it exits, and the turn stays in the conversation.
    *
-   * The shutdown waits for those commands to exit, inside its existing deadline: each is in the worker's process registry
-   * (processRegistry), and the supervisor's shutdown cascade, the last step of the graceful shutdown, sends SIGTERM to
-   * whatever is still running, then SIGKILL, and waits for each to exit before the worker gives up its PID file or starts
-   * its successor. So the next worker cannot take a turn in a conversation while this worker's turn still writes to it.
+   * Then the shutdown waits for those commands to exit (waitUntilEveryCommandHasExited), right after the worker's HTTP
+   * server closes and before its long steps, such as the session drain, inside its existing deadline. Whatever is still
+   * running when that deadline has run out, or when the graceful shutdown has ended otherwise, is force-stopped before the
+   * worker exits or starts its successor (forceStopCommandsStillRunning). So no turn outlives the worker, and the next
+   * worker cannot take a turn in a conversation while this worker's turn still writes to it.
    */
   close(): void {
     if (this.workerIsShuttingDown) return;
@@ -576,6 +600,45 @@ export class ConversationContinuationRunner {
         logger.info('WORKER', 'Conversation open in its app stopped: the worker is shutting down', { platform, conversationSessionId });
       }
     }
+  }
+
+  /**
+   * Resolves once every command this runner started has exited, each turn and each open. The worker's graceful shutdown
+   * waits for this after close has sent them their stop, before its long steps (performGracefulShutdown's
+   * commandsStoppedAsShutdownBegan), so a turn has all of the shutdown deadline to end on its stop. It has no bound of its
+   * own: that deadline bounds the wait, and forceStopCommandsStillRunning ends what it leaves running.
+   */
+  async waitUntilEveryCommandHasExited(): Promise<void> {
+    // After close nothing starts, so one pass is enough; the loop keeps the promise true without it.
+    while (this.commandsRunning.size > 0) {
+      await Promise.all([...this.commandsRunning.values()].map(command => command.exited));
+    }
+  }
+
+  /**
+   * The worker exits next: runShutdownSequence calls this once its graceful shutdown has finished, failed or run out of
+   * its deadline, before a restart starts the successor. A command of this runner still running now had not ended on its
+   * stop by then: the deadline ran out first, or the graceful shutdown failed before it waited. It would outlive the
+   * worker: runCommand starts it as a detached process group of its own (CommandOptions.signal), and a turn would go on
+   * writing to its conversation after the worker that started it is gone, while the next worker can take a turn in the
+   * same conversation.
+   *
+   * So each is stopped the way the supervisor's shutdown cascade stops a child, with the cascade's own grace windows
+   * (terminateThenForceKill): SIGTERM to its process group, then SIGKILL to what is left of it. Each is logged at ERROR
+   * first, with its conversation; the cascade's escalation logs each it had to SIGKILL, and each still running after that.
+   * Nothing is sent again: a turn stopped this way ends failed, saying the worker stopped it, and the worker forgets it.
+   */
+  async forceStopCommandsStillRunning(): Promise<void> {
+    // Already done by the shutdown's first step; again here so that nothing can start meanwhile, whatever happened before.
+    this.close();
+    const commandsStillRunning = [...this.commandsRunning.values()];
+    if (commandsStillRunning.length === 0) return;
+    for (const { record, runsFor } of commandsStillRunning) {
+      logger.error('WORKER', 'Conversation command still running as the worker exits: it had not ended on its stop by the end of the graceful shutdown, so it is force-stopped the way the shutdown cascade stops a child (SIGTERM, then SIGKILL)', {
+        ...runsFor, type: record.type, pid: record.pid,
+      });
+    }
+    await terminateThenForceKill(commandsStillRunning.map(command => command.record));
   }
 
   /**
@@ -671,7 +734,7 @@ export class ConversationContinuationRunner {
     const scriptArguments = ['-q', '/dev/null', agent.path, ...OPEN_IN_APP_ARGUMENTS[platform](conversationSessionId)];
     // Nothing is written to its stdin: runCommand gives a command no stdin when it has no input. The stop is SIGTERM to
     // script's process group: the open starts no turn, so unlike a turn's Stop (SIGINT) it leaves nothing unfinished.
-    const result = await this.runCommandKeptInRegistry('conversation-open-in-app', PSEUDO_TERMINAL_COMMAND, scriptArguments, {
+    const result = await this.runCommandKeptInRegistry('conversation-open-in-app', { platform, conversationSessionId }, PSEUDO_TERMINAL_COMMAND, scriptArguments, {
       cwd: runsInFolder, env: { ...this.childEnvironment(), TERM: 'dumb' }, signal: opening.stop.signal, killSignal: 'SIGTERM',
       // stopOpeningInApp and close read it as soon as their abort returns, so a stop that could not be sent never throws.
       onStopNotSent: error => { opening.stopNotSent = error; },
@@ -692,24 +755,41 @@ export class ConversationContinuationRunner {
   }
 
   /**
-   * runCommand, with the command kept in the worker's process registry (processRegistry) while it runs, as `commandType`
-   * and with the process group its stop goes to (CommandOptions.onSpawn), like every other process the worker starts. The
-   * worker's shutdown cascade then stops it and waits for it to exit, even when the stop close sent did not end it.
+   * runCommand, with the command kept, as `commandType` and with the process group its stop goes to
+   * (CommandOptions.onSpawn), among this runner's running commands and in the worker's process registry (processRegistry)
+   * while it runs, like every other process the worker starts. The worker's shutdown then waits for it to exit
+   * (waitUntilEveryCommandHasExited), and force-stops it if it has not (forceStopCommandsStillRunning).
    */
-  private async runCommandKeptInRegistry(commandType: RegisteredCommandType, command: string, args: string[], options: CommandOptions): Promise<CommandResult> {
+  private async runCommandKeptInRegistry(
+    commandType: RegisteredCommandType,
+    runsFor: CommandRunsFor,
+    command: string,
+    args: string[],
+    options: CommandOptions,
+  ): Promise<CommandResult> {
     const registry = this.dependencies.processRegistry;
-    const registered: Array<{ id: string; pid: number }> = [];
+    const started: ManagedProcessRecord[] = [];
+    let tellItExited!: () => void;
+    const exited = new Promise<void>(resolve => { tellItExited = resolve; });
     const result = await runCommand(this.dependencies.spawnImpl, command, args, {
       ...options,
       onSpawn: ({ pid, processGroupId }) => {
-        if (!registry) return;
-        const id = `${commandType}:${pid}`;
-        registry.register(id, { pid, type: commandType, startedAt: new Date().toISOString(), ...(processGroupId === undefined ? {} : { pgid: processGroupId }) });
-        registered.push({ id, pid });
+        const record: ManagedProcessRecord = {
+          id: `${commandType}:${pid}`, pid, type: commandType, startedAt: new Date().toISOString(),
+          ...(processGroupId === undefined ? {} : { pgid: processGroupId }),
+        };
+        const { id, ...processInfo } = record;
+        registry?.register(id, processInfo);
+        this.commandsRunning.set(id, { record, runsFor, exited });
+        started.push(record);
       },
     });
     // The command has exited: only its own record goes, even if its pid has been given to another process since.
-    for (const { id, pid } of registered) registry?.unregister(id, pid);
+    for (const { id, pid } of started) {
+      this.commandsRunning.delete(id);
+      registry?.unregister(id, pid);
+    }
+    tellItExited();
     return result;
   }
 
@@ -730,7 +810,8 @@ export class ConversationContinuationRunner {
     executablePath: string,
     runningTurnController: AbortController,
   ): Promise<void> {
-    const result = await this.runCommandKeptInRegistry('conversation-turn', executablePath, tool.argumentsFor(exchange.conversationSessionId), {
+    const { platform, conversationSessionId, exchangeId } = exchange;
+    const result = await this.runCommandKeptInRegistry('conversation-turn', { platform, conversationSessionId, exchangeId }, executablePath, tool.argumentsFor(conversationSessionId), {
       cwd: exchange.ranInFolder,
       env: this.childEnvironment(),
       input: exchange.ownerMessage,

@@ -200,20 +200,45 @@ describe('what a conversation row shows', () => {
 })
 
 describe('what a row shows when a read of its conversation failed', () => {
+  const unreachable = 'Could not read this conversation: the worker could not be reached (fetch failed).'
+  /** What the button lays out for a view (buttonLabelsKeepingTheirWidth, as the row draws it). */
+  const buttonLabelsOf = (view: NonNullable<ReturnType<typeof conversationReadFailureView>>) =>
+    buttonLabelsKeepingTheirWidth(view.tryAgainLabel, view.tryingAgainLabel, view.isTryingAgain)
+
   it('the reason, whole, and "Try again", for the first read and any later one alike', () => {
-    const unreachable = 'Could not read this conversation: the worker could not be reached (fetch failed).'
-    assert.deepEqual(conversationReadFailureView(unreachable), { failureText: unreachable, tryAgainLabel: 'Try again' })
-    assert.equal(conversationReadFailureView(LONG_TEXT)?.failureText.length, LONG_TEXT.length)
+    assert.deepEqual(conversationReadFailureView(unreachable, false), {
+      failureText: unreachable, tryAgainLabel: 'Try again', tryingAgainLabel: 'Trying again…', isTryingAgain: false,
+    })
+    assert.equal(conversationReadFailureView(LONG_TEXT, false)?.failureText.length, LONG_TEXT.length)
+  })
+
+  it('keeps the reason and its button on screen while "Try again" reads again, and the button says it is trying again', () => {
+    // As the row stands once "Try again" is pressed and before any read has answered: also when nothing was ever read, and
+    // the reason and the button are all the row shows. A read that never answers leaves them there, button and all.
+    const whileTryingAgain = conversationReadFailureView(unreachable, true)
+    assert.ok(whileTryingAgain)
+    assert.equal(whileTryingAgain.failureText, unreachable)
+    assert.equal(whileTryingAgain.isTryingAgain, true)
+    assert.deepEqual(buttonLabelsOf(whileTryingAgain), [{ text: 'Try again', isShown: false }, { text: 'Trying again…', isShown: true }])
+  })
+
+  it('shows the reason a new failed read gives in place of the old one, with "Try again" again', () => {
+    const anotherReason = 'The worker answered 500, but this page cannot read its answer.'
+    const afterTheNewReadFailed = conversationReadFailureView(anotherReason, false)
+    assert.ok(afterTheNewReadFailed)
+    assert.equal(afterTheNewReadFailed.failureText, anotherReason)
+    assert.deepEqual(buttonLabelsOf(afterTheNewReadFailed), [{ text: 'Try again', isShown: true }, { text: 'Trying again…', isShown: false }])
   })
 
   it('nothing once a read has answered', () => {
-    assert.equal(conversationReadFailureView(null), null)
+    assert.equal(conversationReadFailureView(null, false), null)
+    assert.equal(conversationReadFailureView(null, true), null)
   })
 
-  it('"Try again" in the words the drawer already has, in every language My Work speaks', () => {
-    const { tryAgainLabel } = conversationReadFailureView('The worker answered 500.')!
+  it('"Try again" in the words the drawer already has, and "Trying again…", in every language My Work speaks', () => {
+    const { tryAgainLabel, tryingAgainLabel } = conversationReadFailureView('The worker answered 500.', true)!
     for (const [language, catalog] of Object.entries({ zh: myworkZh, ko: myworkKo, tr: myworkTr, fr: myworkFr })) {
-      assert.ok(catalog[tryAgainLabel]?.trim(), `${language} has "${tryAgainLabel}"`)
+      for (const label of [tryAgainLabel, tryingAgainLabel]) assert.ok(catalog[label]?.trim(), `${language} has "${label}"`)
     }
   })
 })

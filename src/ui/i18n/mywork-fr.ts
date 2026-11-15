@@ -280,6 +280,7 @@ export const myworkFr: Record<string, string> = {
   'Runs in {folder}': 'S’exécute dans {folder}',
   'Could not copy the command: {reason}': 'Impossible de copier la commande : {reason}',
   'Copy it from here:': 'Copiez-la ici :',
+  'Trying again…': 'Nouvelle tentative…',
   'This work changed while you were reading. Review the latest version before checking.': 'Cette activité a changé pendant votre lecture. Consultez la dernière version avant de la vérifier.',
   'Checked locally.': 'Vérifié localement.',
   'Check undone. The result is ready to review.': 'Vérification annulée. Le résultat est prêt à être examiné.',

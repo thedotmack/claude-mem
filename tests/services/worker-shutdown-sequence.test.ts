@@ -18,6 +18,7 @@ interface Harness {
   counters: {
     beforeGraceful: number;
     graceful: number;
+    forceStop: number;
     waitForPortFree: number;
     removePidFile: number;
     spawnDaemon: number;
@@ -30,6 +31,7 @@ function makeHarness(overrides: {
   gracefulDeadlineMs?: number;
   beforeGracefulThrows?: boolean;
   graceful?: () => Promise<void>;
+  forceStop?: () => Promise<void>;
   portFree?: boolean;
   spawnResult?: number | undefined;
   spawnThrows?: boolean;
@@ -39,6 +41,7 @@ function makeHarness(overrides: {
   const counters = {
     beforeGraceful: 0,
     graceful: 0,
+    forceStop: 0,
     waitForPortFree: 0,
     removePidFile: 0,
     spawnDaemon: 0,
@@ -62,6 +65,11 @@ function makeHarness(overrides: {
       return overrides.graceful ? overrides.graceful() : Promise.resolve();
     },
     gracefulDeadlineMs: overrides.gracefulDeadlineMs ?? 1000,
+    forceStopCommandsStillRunning: () => {
+      counters.forceStop++;
+      calls.push('forceStopCommandsStillRunning');
+      return overrides.forceStop ? overrides.forceStop() : Promise.resolve();
+    },
     restartHandoff: {
       port: PORT,
       portFreeTimeoutMs: 1000,
@@ -99,6 +107,7 @@ describe('runShutdownSequence — re-entrancy guard', () => {
 
     expect(h.counters.graceful).toBe(1);
     expect(h.counters.beforeGraceful).toBe(1);
+    expect(h.counters.forceStop).toBe(1);
     expect(h.guard.shuttingDown).toBe(true);
   });
 
@@ -160,6 +169,63 @@ describe('runShutdownSequence — graceful-shutdown deadline', () => {
 
     await runShutdownSequence(h.options); // must not throw
 
+    expect(h.counters.spawnDaemon).toBe(1);
+  });
+});
+
+describe('runShutdownSequence — force-stopping the commands still running, before the worker exits', () => {
+  // The callers exit the process once the sequence returns (flushResponseThen, the supervisor's signal handler, the idle
+  // exit), and a restart spawns its successor in it: the force stop comes after the graceful shutdown and before both.
+  it('runs once the graceful shutdown has finished, and before the restart handoff', async () => {
+    const h = makeHarness({ reason: 'restart' });
+
+    await runShutdownSequence(h.options);
+
+    expect(h.counters.forceStop).toBe(1);
+    expect(h.calls).toEqual(['beforeGraceful', 'graceful', 'forceStopCommandsStillRunning', `waitForPortFree:${PORT}`, 'removePidFile', 'spawnDaemon']);
+  });
+
+  it('runs when the graceful shutdown runs out of its deadline, before the sequence returns', async () => {
+    const h = makeHarness({
+      reason: 'signal',
+      gracefulDeadlineMs: 50,
+      graceful: () => new Promise<void>(() => { /* hangs forever — unbounded session drain */ }),
+    });
+
+    await runShutdownSequence(h.options);
+
+    expect(h.calls).toEqual(['beforeGraceful', 'graceful', 'forceStopCommandsStillRunning']);
+  });
+
+  it('runs when the graceful shutdown fails', async () => {
+    const h = makeHarness({ reason: 'idle', graceful: () => Promise.reject(new Error('db close failed')) });
+
+    await runShutdownSequence(h.options);
+
+    expect(h.calls).toEqual(['beforeGraceful', 'graceful', 'forceStopCommandsStillRunning']);
+  });
+
+  it('returns only once the force stop has finished, since the process exits then', async () => {
+    let finishForceStop!: () => void;
+    const h = makeHarness({ reason: 'signal', forceStop: () => new Promise<void>(resolve => { finishForceStop = resolve; }) });
+    let returned = false;
+
+    const sequence = runShutdownSequence(h.options).then(() => { returned = true; });
+    await new Promise(resolve => setImmediate(resolve));
+    expect(h.counters.forceStop).toBe(1);
+    expect(returned).toBe(false);
+
+    finishForceStop();
+    await sequence;
+    expect(returned).toBe(true);
+  });
+
+  it('still hands off to the successor (and does not reject) when the force stop throws', async () => {
+    const h = makeHarness({ reason: 'restart', forceStop: () => Promise.reject(new Error('process table unreadable')) });
+
+    await runShutdownSequence(h.options); // must not throw
+
+    expect(h.counters.forceStop).toBe(1);
     expect(h.counters.spawnDaemon).toBe(1);
   });
 });

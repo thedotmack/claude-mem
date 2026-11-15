@@ -280,6 +280,7 @@ export const myworkZh: Record<string, string> = {
   'Runs in {folder}': '在 {folder} 中运行',
   'Could not copy the command: {reason}': '无法复制命令：{reason}',
   'Copy it from here:': '请从这里复制：',
+  'Trying again…': '正在重试…',
   'This work changed while you were reading. Review the latest version before checking.': '此工作在您阅读期间发生了变动。请在检查前先查看最新版本。',
   'Checked locally.': '已在本地检查。',
   'Check undone. The result is ready to review.': '已撤销检查。结果已就绪供审核。',

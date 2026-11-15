@@ -269,6 +269,7 @@ export const myworkKo: Record<string, string> = {
   'Runs in {folder}': '{folder}에서 실행',
   'Could not copy the command: {reason}': '명령을 복사하지 못했습니다: {reason}',
   'Copy it from here:': '여기에서 복사하세요:',
+  'Trying again…': '다시 시도하는 중…',
   'This work changed while you were reading. Review the latest version before checking.': '읽는 동안 이 작업이 바뀌었습니다. 확인하기 전에 최신 버전을 검토하세요.',
   'Checked locally.': '로컬에서 확인했습니다.',
   'Check undone. The result is ready to review.': '확인을 취소했습니다. 결과를 다시 검토할 수 있습니다.',

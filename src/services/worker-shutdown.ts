@@ -18,7 +18,10 @@
  *   2. Pre-shutdown bookkeeping (watcher/heartbeat/sentinel/telemetry).
  *   3. performGracefulShutdown under a hard deadline — it has no global
  *      deadline of its own and session drain has been observed at 35-40s.
- *   4. reason === 'restart' ONLY: spawn the successor worker as the dying
+ *   4. Force-stop the child commands that must not outlive the worker and
+ *      are still running (forceStopCommandsStillRunning), whether step 3
+ *      finished, failed or ran out of its deadline.
+ *   5. reason === 'restart' ONLY: spawn the successor worker as the dying
  *      worker's final act, AFTER the port is confirmed free. 'stop' and
  *      signal shutdowns stay kill-only.
  */
@@ -69,6 +72,13 @@ export interface ShutdownSequenceOptions {
   beforeGracefulShutdown: () => Promise<void>;
   performGracefulShutdown: () => Promise<void>;
   gracefulDeadlineMs: number;
+  /**
+   * The worker's last step before it exits, and before a restart's successor starts: once performGracefulShutdown has
+   * finished, failed or run out of its deadline, it force-stops each child command that must not outlive the worker and
+   * is still running (ConversationContinuationRunner.forceStopCommandsStillRunning, which says why). Its bound is the
+   * supervisor cascade's grace windows, which it reuses (terminateThenForceKill).
+   */
+  forceStopCommandsStillRunning: () => Promise<void>;
   restartHandoff: RestartHandoffDeps;
 }
 
@@ -130,6 +140,22 @@ export async function runShutdownSequence(options: ShutdownSequenceOptions): Pro
     }
   } finally {
     if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
+  }
+
+  // Every way out calls process.exit once this sequence returns (the shutdown routes through flushResponseThen, the
+  // signal handler, the idle exit), and a restart starts its successor below. A command still running then would outlive
+  // the worker: a detached CLI in a process group of its own, still writing to a conversation the successor may take a
+  // turn in. So it is force-stopped here, after the graceful shutdown however that ended, and before either. Like the
+  // steps above, a failure is logged and the sequence goes on.
+  try {
+    await options.forceStopCommandsStillRunning();
+  } catch (error: unknown) {
+    logger.error(
+      'SYSTEM',
+      'Force-stopping the commands still running before the worker exits failed — proceeding',
+      { reason: options.reason },
+      error instanceof Error ? error : new Error(String(error))
+    );
   }
 
   // Successor handoff — ONLY for restart; 'stop' and signal shutdowns stay

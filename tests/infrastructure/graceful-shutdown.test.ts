@@ -153,6 +153,51 @@ describe('GracefulShutdown', () => {
       ]);
     }, 15000);
 
+    it('waits for the commands stopped as the shutdown began right after the HTTP server closes, before the session drain and the other long steps', async () => {
+      const callOrder: string[] = [];
+      const mockServer = {
+        closeAllConnections: mock(() => { callOrder.push('closeAllConnections'); }),
+        close: mock((cb: (err?: Error) => void) => { callOrder.push('serverClose'); cb(); }),
+      } as unknown as http.Server;
+      let everyStoppedCommandExits!: () => void;
+      const everyStoppedCommandHasExited = new Promise<void>(resolve => { everyStoppedCommandExits = resolve; });
+      // The cascade's real stop would act on whatever other tests in this process registered with the supervisor.
+      const supervisorStop = spyOn(getSupervisor(), 'stop').mockImplementation(async () => { callOrder.push('supervisor.stop'); });
+      try {
+        const shuttingDown = performGracefulShutdown({
+          server: mockServer,
+          commandsStoppedAsShutdownBegan: {
+            waitUntilEveryCommandHasExited: async () => {
+              callOrder.push('waiting for the stopped commands');
+              await everyStoppedCommandHasExited;
+              callOrder.push('every stopped command has exited');
+            },
+          },
+          sessionManager: { shutdownAll: mock(async () => { callOrder.push('sessionManager.shutdownAll'); }) },
+          mcpClient: { close: mock(async () => { callOrder.push('mcpClient.close'); }) },
+          dbManager: { close: mock(async () => { callOrder.push('dbManager.close'); }) },
+        });
+        await new Promise(resolve => setImmediate(resolve));
+        // Nothing after the HTTP server's close runs while a stopped command still runs.
+        expect(callOrder).toEqual(['serverClose', 'closeAllConnections', 'waiting for the stopped commands']);
+
+        everyStoppedCommandExits();
+        await shuttingDown;
+        expect(callOrder).toEqual([
+          'serverClose',
+          'closeAllConnections',
+          'waiting for the stopped commands',
+          'every stopped command has exited',
+          'sessionManager.shutdownAll',
+          'mcpClient.close',
+          'dbManager.close',
+          'supervisor.stop',
+        ]);
+      } finally {
+        supervisorStop.mockRestore();
+      }
+    });
+
     it('should remove its OWN PID file during shutdown (owner guard)', async () => {
       const mockSessionManager: ShutdownableService = {
         shutdownAll: mock(async () => {})

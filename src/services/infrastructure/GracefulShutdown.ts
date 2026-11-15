@@ -19,8 +19,24 @@ export interface StoppableService {
   stop(): Promise<void>;
 }
 
+/**
+ * Child commands the worker sent their stop to as its shutdown began, such as My Work's turns and opens
+ * (ConversationContinuationRunner, stopped by WorkViewRoutes.close in WorkerService.shutdown's first step).
+ */
+export interface StoppedChildCommands {
+  /** Resolves once every one of them has exited. */
+  waitUntilEveryCommandHasExited(): Promise<void>;
+}
+
 export interface GracefulShutdownConfig {
   server: http.Server | null;
+  /**
+   * Waited for right after the HTTP server closes, before the session drain and the other long steps. A turn then has
+   * all of the graceful-shutdown deadline (runShutdownSequence) to end on the stop it was sent, which ends a Claude Code
+   * turn cleanly (SIGINT), before the supervisor's cascade below would send it SIGTERM. What has not exited when the
+   * deadline runs out is force-stopped before the worker exits (runShutdownSequence's forceStopCommandsStillRunning).
+   */
+  commandsStoppedAsShutdownBegan?: StoppedChildCommands;
   sessionManager: ShutdownableService;
   mcpClient?: CloseableClient;
   contextReader?: CloseableClient;
@@ -43,6 +59,13 @@ export async function performGracefulShutdown(config: GracefulShutdownConfig): P
   if (config.server) {
     await closeHttpServer(config.server);
     logger.info('SYSTEM', 'HTTP server closed');
+  }
+
+  if (config.commandsStoppedAsShutdownBegan) {
+    await cleanup('stopped commands', async () => {
+      await config.commandsStoppedAsShutdownBegan!.waitUntilEveryCommandHasExited();
+      logger.info('SYSTEM', 'Every command stopped as the shutdown began has exited');
+    });
   }
 
   await cleanup('sessions', () => config.sessionManager.shutdownAll());
