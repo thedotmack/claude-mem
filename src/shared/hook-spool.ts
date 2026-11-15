@@ -2,7 +2,7 @@ import { createHash, randomBytes } from 'crypto';
 import { existsSync, linkSync, mkdirSync, opendirSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { writeJsonFileAtomic } from './atomic-json.js';
-import { resolveDataDir } from './paths.js';
+import { ensurePrivateDir, resolveDataDir } from './paths.js';
 import { normalizePlatformSource } from './platform-source.js';
 import { logger } from '../utils/logger.js';
 import type { AgentRole, InstructionState, WorkStateOutcome } from './work-state-telemetry.js';
@@ -197,6 +197,12 @@ export function remoteHookSpoolReceivedKey(receipt: string): string {
 const ENTRY_FILENAME = /^[a-z_]+-[A-Za-z0-9_-]+\.json$/;
 const FILENAME_SAFE_TOOL_USE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const CORRUPT_DIRNAME = 'corrupt';
+/**
+ * Spool entries carry captured prompts, tool inputs and file paths, so a new entry is written
+ * readable by its owner only; the directory that holds them gets the same treatment.
+ */
+const SPOOL_ENTRY_MODE = 0o600;
+
 const EXPIRED_DIRNAME = 'expired';
 
 /**
@@ -376,7 +382,8 @@ export class HookSpool {
       }
     }
     const enqueuedAtEpochMs = this.existingEnqueuedAt(entryPath) ?? requestedAtEpochMs ?? monotonicNowEpochMs();
-    writeJsonFileAtomic(entryPath, { kind, payload: normalizedPayload, enqueuedAtEpochMs });
+    ensurePrivateDir(this.directory);
+    writeJsonFileAtomic(entryPath, { kind, payload: normalizedPayload, enqueuedAtEpochMs }, { mode: SPOOL_ENTRY_MODE });
     return entryPath;
   }
 
@@ -406,7 +413,8 @@ export class HookSpool {
     const receipt = remoteHookSpoolReceipt(entry);
     const receivedKey = remoteHookSpoolReceivedKey(receipt);
     if (!consumedMarkers.isConsumed(receipt) && !consumedMarkers.isConsumed(receivedKey)) {
-      writeJsonFileAtomic(join(this.directory, `${receipt}.json`), entry);
+      ensurePrivateDir(this.directory);
+      writeJsonFileAtomic(join(this.directory, `${receipt}.json`), entry, { mode: SPOOL_ENTRY_MODE });
       consumedMarkers.markConsumed(receivedKey, Date.now());
     }
     return receipt;
