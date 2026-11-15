@@ -86,9 +86,9 @@ export function ensureServerStorageSchema(db: Database): void {
       id TEXT PRIMARY KEY,
       project_id TEXT NOT NULL,
       server_session_id TEXT,
-      -- Provenance: which agent/platform produced this observation, denormalized
-      -- from server_sessions so search results carry it without a JOIN.
-      -- Backfilled by the migration below; NULL = created before provenance.
+      -- Provenance: which agent/platform produced this item, denormalized from
+      -- server_sessions so search results carry it without a JOIN.
+      -- NULL = no session to inherit from (or created before provenance).
       platform_source TEXT,
       legacy_observation_id INTEGER,
       kind TEXT NOT NULL CHECK(kind IN ('observation', 'summary', 'prompt', 'manual')),
@@ -171,21 +171,27 @@ export function ensureServerStorageSchema(db: Database): void {
     WHERE legacy_observation_id IS NOT NULL
   `);
   db.run('CREATE INDEX IF NOT EXISTS idx_memory_items_kind_type ON memory_items(kind, type)');
-  // Provenance backfill: existing databases predate the platform_source column
-  // on memory_items. Add it idempotently, then copy each item's platform from
-  // its session. Items with no session keep NULL (= created before provenance).
+  // Provenance: databases created before platform_source get the column, then
+  // every ensure copies each session item's platform from its session. The
+  // backfill runs on every ensure, not only right after the ALTER, so a run
+  // interrupted between the two still fills its NULLs next time.
   const memoryItemColumns = db.prepare('PRAGMA table_info(memory_items)').all() as Array<{ name: string }>;
-  if (!memoryItemColumns.some(col => col.name === 'platform_source')) {
+  if (!memoryItemColumns.some(column => column.name === 'platform_source')) {
     db.run('ALTER TABLE memory_items ADD COLUMN platform_source TEXT');
-    db.run(`
-      UPDATE memory_items
-      SET platform_source = (
-        SELECT platform_source FROM server_sessions
-        WHERE server_sessions.id = memory_items.server_session_id
-      )
-      WHERE server_session_id IS NOT NULL AND platform_source IS NULL
-    `);
   }
+  db.run(`
+    UPDATE memory_items
+    SET platform_source = (
+      SELECT platform_source FROM server_sessions
+      WHERE server_sessions.id = memory_items.server_session_id
+    )
+    WHERE server_session_id IS NOT NULL AND platform_source IS NULL
+      AND EXISTS (
+        SELECT 1 FROM server_sessions
+        WHERE server_sessions.id = memory_items.server_session_id
+          AND server_sessions.platform_source IS NOT NULL
+      )
+  `);
   db.run('CREATE INDEX IF NOT EXISTS idx_memory_items_platform_source ON memory_items(platform_source)');
   db.run(`
     CREATE VIRTUAL TABLE IF NOT EXISTS memory_items_fts USING fts5(

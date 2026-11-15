@@ -383,4 +383,54 @@ describe('server-owned sqlite storage boundary', () => {
       fs.unlinkSync(tmp);
     }
   });
+
+  it('fills platform_source NULLs left by an interrupted upgrade (column present, backfill not run)', () => {
+    withDb(db => {
+      ensureServerStorageSchema(db);
+      const project = new ProjectsRepository(db).create({ name: 'Interrupted' });
+      const session = new ServerSessionsRepository(db).create({ projectId: project.id, platformSource: 'cursor' });
+      // The ALTER landed but the process died before the UPDATE: the column
+      // exists and session items still hold NULL.
+      db.prepare(`INSERT INTO memory_items
+        (id, project_id, server_session_id, platform_source, kind, type, title, facts, concepts, files_read, files_modified, metadata, created_at_epoch, updated_at_epoch)
+        VALUES ('interrupted-1', ?, ?, NULL, 'observation', 'note', 'old', '[]', '[]', '[]', '[]', '{}', 1, 1)`)
+        .run(project.id, session.id);
+      db.prepare(`INSERT INTO memory_items
+        (id, project_id, server_session_id, platform_source, kind, type, title, facts, concepts, files_read, files_modified, metadata, created_at_epoch, updated_at_epoch)
+        VALUES ('sessionless-1', ?, NULL, NULL, 'manual', 'note', 'manual', '[]', '[]', '[]', '[]', '{}', 1, 1)`)
+        .run(project.id);
+
+      // A fresh ensure on the same connection object is skipped by the cache,
+      // so serialize and reload to mirror the next worker start.
+      const restarted = Database.deserialize(db.serialize());
+      try {
+        ensureServerStorageSchema(restarted);
+        const platformOf = (id: string) => (restarted.prepare('SELECT platform_source FROM memory_items WHERE id = ?')
+          .get(id) as { platform_source: string | null }).platform_source;
+        expect(platformOf('interrupted-1')).toBe('cursor');
+        expect(platformOf('sessionless-1')).toBeNull();
+      } finally {
+        restarted.close();
+      }
+    });
+  });
+
+  it('still strips <private> content from memory items that carry provenance', () => {
+    withDb(db => {
+      const project = new ProjectsRepository(db).create({ name: 'Private provenance' });
+      const session = new ServerSessionsRepository(db).create({ projectId: project.id, platformSource: 'codex' });
+      const memories = new MemoryItemsRepository(db);
+      const item = memories.create({
+        projectId: project.id,
+        serverSessionId: session.id,
+        kind: 'observation',
+        type: 'note',
+        title: 'Visible title',
+        narrative: 'public <private>provenance-secret</private> text',
+      });
+      expect(item.platformSource).toBe('codex');
+      expect(item.narrative).not.toContain('provenance-secret');
+      expect(memories.search(project.id, 'provenance-secret')).toHaveLength(0);
+    });
+  });
 });

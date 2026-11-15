@@ -35,6 +35,7 @@ export const CreateMemoryItemSchema = MemoryItemSchema.omit({
   updatedAtEpoch: true
 }).partial({
   serverSessionId: true,
+  platformSource: true,
   legacyObservationId: true,
   title: true,
   subtitle: true,
