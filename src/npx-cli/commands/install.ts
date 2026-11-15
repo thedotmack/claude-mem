@@ -676,7 +676,8 @@ export function makeIDETask(ideId: string, summary: InstallSummary, dshProfile?:
     case 'copilot-cli':
     case 'goose':
     case 'roo-code':
-    case 'warp': {
+    case 'warp':
+    case 'zed': {
       const allIDEs = detectInstalledIDEs();
       const ideInfo = allIDEs.find((i) => i.id === ideId);
       const ideLabel = ideInfo?.label ?? ideId;
@@ -1370,15 +1371,6 @@ export async function promptProvider(
   const initialProvider = (getSetting('CLAUDE_MEM_PROVIDER') as ProviderId) || 'claude';
   const persistedSettings = readPersistedInstallerSettings();
 
-  const persistClaudeProvider = (authMethod?: 'subscription' | 'api-key' | 'gateway') => {
-    const resolvedAuthMethod = authMethod ?? resolveClaudeAuthMethod();
-    const wrote = mergeSettings({
-      CLAUDE_MEM_PROVIDER: 'claude',
-      CLAUDE_MEM_CLAUDE_AUTH_METHOD: resolvedAuthMethod,
-    });
-    if (wrote) log.info('Saved Claude Agent SDK configuration to ~/.claude-mem/settings.json');
-  };
-
   const useSubscriptionAuth = () => {
     const wrote = mergeSettings(buildAnthropicMaxLocalSettings(persistedSettings));
     if (!wrote) {
@@ -1557,10 +1549,15 @@ export async function promptProvider(
     validate: (v?: string) => (!v || v.trim().length === 0) ? 'API key required' : undefined,
   });
 
+  // The owner chose this provider with --provider, so a cancel is a stop, never a request for the
+  // Anthropic plan. Nothing is written and nothing is substituted (#5675).
   if (p.isCancel(apiKeyResult)) {
-    log.warn(`API key prompt cancelled — falling back to Claude provider.`);
-    persistClaudeProvider();
-    return 'claude';
+    p.cancel(
+      `${providerLabel} setup cancelled: no API key was entered and your provider setting was not changed. `
+      + `Run \`npx claude-mem install --provider ${selectedProvider}\` to try again, `
+      + 'or `--provider claude` to use your Anthropic plan.',
+    );
+    process.exit(1);
   }
 
   const apiKey = String(apiKeyResult).trim();

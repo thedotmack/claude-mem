@@ -79,38 +79,40 @@ function* readTranscriptChunksBackward(
   const fd = openSync(transcriptPath, 'r');
   try {
     let end = fstatSync(fd).size;
-    let carry = Buffer.alloc(0); // the torn head of the line that begins before `end`
+    let carry: Buffer[] = []; // torn line fragments, newest first
+    let carryBytes = 0;
+    const completeLine = (head: Buffer): Buffer => carry.length
+      ? Buffer.concat([head, ...carry.reverse()], head.length + carryBytes)
+      : head;
 
     while (end > 0) {
       const start = Math.max(0, end - chunkBytes);
       const chunk = Buffer.alloc(end - start);
       const got = readFully(fd, chunk, start);
       const data = got === chunk.length ? chunk : chunk.subarray(0, got);
-      const joined = carry.length ? Buffer.concat([data, carry]) : data;
-
       if (start === 0) {
-        yield { text: joined.toString('utf-8'), byteLength: data.length, isFirstChunkOfFile: true };
+        yield { text: completeLine(data).toString('utf-8'), byteLength: data.length, isFirstChunkOfFile: true };
         return;
       }
 
-      const firstNewline = joined.indexOf(0x0a);
+      const firstNewline = data.indexOf(0x0a);
       if (firstNewline === -1) {
         // The whole chunk is the middle of one line - keep carrying it, but
         // still report the bytes read so budgets advance.
-        carry = joined;
+        carry.push(data);
+        carryBytes += data.length;
         yield { text: '', byteLength: data.length, isFirstChunkOfFile: false };
       } else {
-        carry = joined.subarray(0, firstNewline);
-        yield { text: joined.subarray(firstNewline + 1).toString('utf-8'), byteLength: data.length, isFirstChunkOfFile: false };
+        const text = completeLine(data.subarray(firstNewline + 1)).toString('utf-8');
+        carryBytes = firstNewline;
+        carry = firstNewline ? [data.subarray(0, firstNewline)] : [];
+        yield { text, byteLength: data.length, isFirstChunkOfFile: false };
       }
 
       end = start;
       chunkBytes = Math.min(chunkBytes * 4, maxChunk);
     }
 
-    if (carry.length) {
-      yield { text: carry.toString('utf-8'), byteLength: 0, isFirstChunkOfFile: true };
-    }
   } finally {
     closeSync(fd);
   }

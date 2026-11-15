@@ -1,0 +1,4 @@
+# Flow-style read list (valid YAML; the installer must merge into it).
+model: anthropic/claude-sonnet-4-5
+read: [CONVENTIONS.md, docs/ARCHITECTURE.md]
+auto-commits: false

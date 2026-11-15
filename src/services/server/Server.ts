@@ -412,12 +412,28 @@ export class Server {
     let pingTimer: ReturnType<typeof setInterval> | null = null;
 
     const socket = req.socket;
-    const cleanup = () => {
+    const stopUpdates = () => {
       finished = true;
       if (pingTimer !== null) { clearInterval(pingTimer); pingTimer = null; }
       if (unsubscribe !== null) { unsubscribe(); unsubscribe = null; }
+    };
+    const cleanup = () => {
+      stopUpdates();
       res.off('close', cleanup);
+      res.off('error', onError);
       socket.off('close', cleanup);
+    };
+    const onError = () => {
+      stopUpdates();
+      // Retain the error listener until close: already queued failed writes
+      // must not become unhandled errors while the transport is closing.
+      if (!res.destroyed) res.destroy();
+    };
+    const write = (frame: string): boolean => {
+      if (finished) return false;
+      if (res.destroyed || res.writableEnded) { stopUpdates(); return false; }
+      try { res.write(frame); return true; }
+      catch { onError(); return false; }
     };
 
     const send = (state: InitPhaseState) => {
@@ -429,10 +445,12 @@ export class Server {
         version: BUILT_IN_VERSION,
         pid: process.pid,
       };
-      res.write(`event: phase\ndata: ${JSON.stringify(payload)}\n\n`);
+      // A subscriber's failed transport cannot throw through the phase
+      // tracker and turn an otherwise healthy worker boot into a failure.
+      if (!write(`event: phase\ndata: ${JSON.stringify(payload)}\n\n`)) return;
       if (TERMINAL_INIT_PHASES.includes(state.phase)) {
-        cleanup();
-        res.end();
+        stopUpdates();
+        try { res.end(); } catch { onError(); }
       }
     };
 
@@ -440,6 +458,7 @@ export class Server {
     // (only the socket closes), so listen to both. req 'close' is avoided: on
     // Node it can fire as soon as a GET body is consumed.
     res.on('close', cleanup);
+    res.on('error', onError);
     socket.on('close', cleanup);
     if (source) unsubscribe = source.subscribeInitPhase(send);
     send(readPhase());
@@ -447,7 +466,7 @@ export class Server {
 
     pingTimer = setInterval(() => {
       if (finished) return;
-      res.write(': ping\n\n');
+      if (!write(': ping\n\n')) return;
       // Without a transition source, the ping tick is the only time the
       // derived phase can be re-read.
       if (!source) send(readPhase());

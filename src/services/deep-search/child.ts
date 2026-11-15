@@ -1,7 +1,7 @@
 import { Database } from 'bun:sqlite';
 import { startDeepSearchGuard } from './guard.js';
 import { emptyDeepResult, searchToolUses } from '../sqlite/tool-use-search.js';
-import { MAX_REPLY_BYTES, MAX_REQUEST_BYTES, type DeepSearchRequest } from './protocol.js';
+import { childExpired, MAX_REPLY_BYTES, MAX_REQUEST_BYTES, type DeepSearchRequest } from './protocol.js';
 
 async function main() {
   const chunks: Buffer[] = [];
@@ -12,6 +12,8 @@ async function main() {
     chunks.push(chunk);
   }
   const request: DeepSearchRequest = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  const receivedWallMs = Date.now();
+  const receivedMonoMs = performance.now();
   if (request.version !== 1 || !Number.isSafeInteger(request.id) || !Number.isSafeInteger(request.parentPid)
     || !Number.isFinite(request.deadline) || typeof request.query !== 'string' || typeof request.dbPath !== 'string') {
     throw new Error('Invalid request');
@@ -20,7 +22,7 @@ async function main() {
   let db: Database | undefined;
   let result;
   try {
-    if (Date.now() >= request.deadline) result = emptyDeepResult('timeout');
+    if (childExpired(request.deadline, receivedWallMs, receivedMonoMs, performance.now())) result = emptyDeepResult('timeout');
     else {
       db = new Database(request.dbPath, { readonly: true, create: false });
       db.run('PRAGMA query_only = ON; PRAGMA busy_timeout = 0;');

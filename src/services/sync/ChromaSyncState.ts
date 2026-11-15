@@ -9,7 +9,7 @@ export type DocKind = 'observations' | 'summaries' | 'prompts';
 type PendingIdsByKind = Partial<Record<DocKind, number[]>>;
 
 /**
- * One post-delete Chroma cleanup that failed and must be retried (#5664). The
+ * One unfinished post-delete Chroma cleanup (queued, in flight, or failed). The
  * SQLite row is already committed gone, so the Chroma doc_type and sqlite_id
  * are all a retry needs: the row's DELETE route answers 404 from now on, and
  * backfill only walks rows that still exist, so nothing else can reach the
@@ -57,8 +57,8 @@ function statePath(): string {
 
 let cache: Record<string, ProjectWatermarks> | null = null;
 /**
- * Failed post-delete cleanups, in the same file as the watermarks so they
- * survive the worker that gave up on them. Null until the file is read.
+ * Unfinished post-delete cleanups, in the same file as the watermarks so they
+ * survive the worker that scheduled them. Null until the file is read.
  */
 let pendingDeletesCache: PendingRowDelete[] | null = null;
 
@@ -267,7 +267,7 @@ export const ChromaSyncState = {
   },
 
   /**
-   * Post-delete cleanups Chroma refused, oldest first. They are retried by the
+   * Unfinished post-delete cleanups, oldest first. They are retried by the
    * next backfill sweep, the same pass that drains pending writes.
    */
   getPendingRowDeletes(): PendingRowDelete[] {
@@ -275,7 +275,7 @@ export const ChromaSyncState = {
     return (pendingDeletesCache ?? []).map(row => ({ ...row }));
   },
 
-  /** Record failed cleanups. One write per batch, not per row. */
+  /** Record unfinished cleanups. One write per batch, not per row. */
   markPendingRowDeletes(rows: ReadonlyArray<PendingRowDelete>): void {
     const added = normalizePendingRowDeletes(rows);
     if (added.length === 0) return;
@@ -293,8 +293,8 @@ export const ChromaSyncState = {
     if (merged.length === existing.length && !pendingDeletesPersistFailed) return;
 
     pendingDeletesCache = merged;
-    // The record must reach the disk before the caller proceeds: the process
-    // that just failed the cleanup is the one that may exit next, and `persist`
+    // The record must reach the disk before the caller proceeds: its worker
+    // may exit before the cleanup starts or finishes, and `persist`
     // silently defers behind its failure backoff. Keep the cleanup lane
     // non-throwing, but report a write that could not happen. A failed write
     // leaves the record in memory only, so a repeated mark of the same rows has

@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, expect, it } from 'bun:test';
-import { mkdirSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, rmSync, utimesSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { scanTokenUsage } from '../../../src/services/prompt-import/token-usage.js';
 
@@ -38,6 +38,16 @@ for (const withIds of [true, false]) {
     chat('session-resumed.jsonl', 'resumed', [response, message(withIds ? 'response-b' : undefined, 'next response', 200)]);
     expect(await tokens()).toBe(300);
   });
+
+  for (const completedFirst of [false, true]) {
+    it(`retains completed Gemini usage across ${withIds ? 'native' : 'legacy'} migration copies (${completedFirst ? 'JSON' : 'JSONL'} has the completed count)`, async () => {
+      const partial = message(withIds ? 'response-a' : undefined, 'original response', 100);
+      const completed = { ...partial, tokens: { total: 350 } };
+      chat('session-resumed.json', 'resumed', [completedFirst ? completed : partial]);
+      chat('session-resumed.jsonl', 'resumed', [completedFirst ? partial : completed]);
+      expect(await tokens()).toBe(350);
+    });
+  }
 }
 
 it('preserves the global identity of a native response copied with another session header', async () => {
@@ -45,6 +55,27 @@ it('preserves the global identity of a native response copied with another sessi
   chat('session-a.json', 'session-a', [response]);
   chat('session-b.json', 'session-b', [response]);
   expect(await tokens()).toBe(100);
+});
+
+it('keeps completed native usage in its original window when a copy has a later timestamp', async () => {
+  const response = { ...message('response-1', 'copied response'), timestamp: '2026-10-09T00:00:00.000Z' };
+  chat('session-a.json', 'session-a', [response]);
+  chat('session-b.jsonl', 'session-b', [{ ...response, timestamp: AT, tokens: { total: 350 } }]);
+  const result = await scanTokenUsage({ homeDirectory: home, sinceEpochMs: Date.parse(AT), agents: ['gemini-cli'] });
+  expect(result.agents[0]).toMatchObject({ tokens: 0, firstRecordAt: response.timestamp });
+});
+
+it('resolves copied native usage against original files last modified before the window', async () => {
+  const response = { ...message('response-old', 'copied response'), timestamp: '2026-10-09T00:00:00.000Z' };
+  chat('session-old.json', 'session-old', [response]);
+  const oldTime = Date.parse(response.timestamp) / 1000;
+  utimesSync(join(home, '.gemini/tmp/example/chats/session-old.json'), oldTime, oldTime);
+  chat('session-new.jsonl', 'session-new', [
+    { ...response, timestamp: AT, tokens: { total: 350 } },
+    message('response-new', 'new response', 200),
+  ]);
+  const result = await scanTokenUsage({ homeDirectory: home, sinceEpochMs: Date.parse(AT), agents: ['gemini-cli'] });
+  expect(result.agents[0]).toMatchObject({ tokens: 200, firstRecordAt: response.timestamp, historyStartsBeforeWindow: true });
 });
 
 it('keeps distinct native turns even when their content and timestamp match', async () => {

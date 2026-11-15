@@ -29,6 +29,31 @@ for (const filename of ['exports.js', 'exports.ts', 'exports.tsx']) {
   const named = parseFile('const café = 1; export function named() { return 3; }', filename);
   expect(named.symbols[0].signature).toBe('export function named()');
  }, 120000);
+
+ test(`does not mark adjacent local functions as exported in ${filename}`, () => {
+  const file = parseFile(
+    'function café() {} export function publicEntry() {} function after() {}',
+    filename,
+  );
+  expect(file.symbols.map(({ name, exported }) => [name, exported])).toEqual([
+    ['café', false], ['publicEntry', true], ['after', false],
+  ]);
+  expect(formatFoldedView(file)).toContain('publicEntry [exported]');
+  expect(formatFoldedView(file)).not.toContain('café [exported]');
+  expect(formatFoldedView(file)).not.toContain('after [exported]');
+ }, 120000);
+
+ test(`uses both column boundaries of a multiline export in ${filename}`, () => {
+  const file = parseFile([
+    'function before() {} export default function entry() {',
+    '  return 1;',
+    '} function after() {}',
+    'export { another } from "./other.js"; function local() {}',
+  ].join('\n'), filename);
+  expect(file.symbols.map(({ name, exported }) => [name, exported])).toEqual([
+    ['before', false], ['entry', true], ['after', false], ['local', false],
+  ]);
+ }, 120000);
 }
 
 for (const filename of ['decorated.js', 'decorated.ts', 'decorated.tsx']) {

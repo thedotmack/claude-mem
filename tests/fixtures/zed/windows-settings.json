@@ -1,0 +1,43 @@
+{
+  "agent": {
+    "default_model": {
+      "model": "claude-sonnet-4-5",
+      "provider": "zed.dev"
+    },
+    "profiles": {
+      "memory-only": {
+        "tools": {
+          "mcp:claude-mem:search": true
+        }
+      }
+    },
+    "tool_permissions": {
+      "default": "confirm",
+      "mcp:github:create_issue": "allow",
+      "mcp:github:delete_repository": "deny",
+      "read_file": "allow"
+    }
+  },
+  "buffer_font_size": 14,
+  "context_servers": {
+    "everything": {
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-everything"
+      ],
+      "command": "npx"
+    },
+    "filesystem": {
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "C:\\Users\\alex\\Documents"
+      ],
+      "command": "C:\\Program Files\\nodejs\\npx.cmd"
+    }
+  },
+  "terminal": {
+    "shell": "powershell"
+  },
+  "theme": "Solarized Dark"
+}

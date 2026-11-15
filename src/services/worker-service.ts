@@ -20,10 +20,11 @@ import { buildWorkerUrl, getWorkerPort, getWorkerHost, fetchWithTimeout, resolve
 import { InvalidWorkerUrlError, normalizeWorkerBaseUrl } from '../shared/worker-url.js';
 import { getCurrentWorkerPid, verifyRestartedWorker } from './restart-verify.js';
 import { runShutdownSequence, WORKER_GRACEFUL_SHUTDOWN_DEADLINE_BASE_MS, type WorkerShutdownReason } from './worker-shutdown.js';
-import { DATA_DIR, DB_PATH, USER_SETTINGS_PATH, ensureDir, paths } from '../shared/paths.js';
+import { DATA_DIR, DB_PATH, USER_SETTINGS_PATH, ensurePrivateDir, paths } from '../shared/paths.js';
 import { HookSpool, migrateLegacySessionEndReplay } from '../shared/hook-spool.js';
 import { HookSpoolDrainer, hookSpoolConsumedMarkers } from './worker/hook-spool-drain.js';
 import { pruneOldLogs } from './worker/log-retention.js';
+import { initializeDatabaseWithBusyRetry } from './worker/db-init-retry.js';
 import {
   PLUGIN_CACHE_PRUNE_FIRST_DELAY_MS,
   PLUGIN_CACHE_PRUNE_INTERVAL_MS,
@@ -96,7 +97,7 @@ const packageVersion = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DE
 export const WORKER_BOOT_FAILED_EXIT_CODE = 78;
 
 /** Subcommands that read or write the caller's project, so they run in its directory (#4628). */
-export const COMMANDS_THAT_ACT_ON_CALLER_PROJECT: ReadonlySet<string> = new Set(['generate', 'clean', 'adopt', 'memory', 'cursor']);
+export const COMMANDS_THAT_ACT_ON_CALLER_PROJECT: ReadonlySet<string> = new Set(['generate', 'clean', 'adopt', 'memory', 'cursor', 'grok', 'aider']);
 
 import {
   writePidFile,
@@ -143,9 +144,13 @@ import { ServerV1Routes } from '../server/routes/v1/ServerV1Routes.js';
 import {
   handleCursorCommand
 } from './integrations/CursorHooksInstaller.js';
+import { handleGrokCommand } from './integrations/GrokBuildInstaller.js';
 import {
   handleKimiCommand
 } from './integrations/KimiHooksInstaller.js';
+import {
+  handleAiderCommand
+} from './integrations/AiderInstaller.js';
 import {
   handleDevinCommand
 } from './integrations/DevinHooksInstaller.js';
@@ -279,7 +284,7 @@ const CLEAN_SHUTDOWN_SENTINEL_PATH = path.join(DATA_DIR, '.worker-clean-shutdown
 
 function writeCleanShutdownSentinel(): void {
   try {
-    ensureDir(DATA_DIR);
+    ensurePrivateDir(DATA_DIR);
     writeFileSync(CLEAN_SHUTDOWN_SENTINEL_PATH, new Date().toISOString());
   } catch (error: unknown) {
     // [ANTI-PATTERN IGNORED]: sentinel is best-effort crash-detection metadata; a failed write must not abort graceful shutdown. Logged at warn with path; worst case the next boot reports 'crash' instead of 'clean'.
@@ -1147,7 +1152,10 @@ export class WorkerService implements WorkerRef {
       }
 
       logger.info('WORKER', 'Initializing database manager...');
-      await this.dbManager.initialize();
+      // A replacement worker can boot while another connection is writing
+      // (#3603). SQLITE_BUSY* here is transient, so retry it for a bounded
+      // time (db-init-retry.ts states the budget) before settling on `failed`.
+      await initializeDatabaseWithBusyRetry(this.dbManager, { shouldStop: () => this.isShuttingDown });
       // Shutdown may have begun while initialization was pending.
       if (this.isShuttingDown) return;
 
@@ -1798,7 +1806,7 @@ function printWorkerAliasHelp(): never {
 function printWorkerServiceUsage(): void {
   console.error('Usage: worker-service <command>');
   console.error('Commands: start, stop, restart, status, hook <platform> <event>, worker <command>, server <command>,');
-  console.error('  adopt, project, transcript, generate, clean, cleanup, cursor, memory, kimi, devin, antigravity-cli,');
+  console.error('  adopt, project, transcript, generate, clean, cleanup, cursor, grok, memory, kimi, aider, devin, antigravity-cli,');
   console.error('  --daemon, --version, --help');
 }
 
@@ -1863,7 +1871,7 @@ function parseServerApiKeyOptions(args: string[]): Record<string, string> {
 }
 
 function openServerCommandDatabase(): Database {
-  ensureDir(DATA_DIR);
+  ensurePrivateDir(DATA_DIR);
   return openConfiguredSqliteDatabase(DB_PATH, { create: true, readwrite: true });
 }
 
@@ -2292,6 +2300,11 @@ export async function main() {
       break;
     }
 
+    case 'grok': {
+      process.exit(await handleGrokCommand(process.argv[3], process.argv.slice(4)));
+      break;
+    }
+
     case 'memory': {
       // Auto-memory ingest (sibling to transcript). Dry-run runs client-side;
       // the real store reaches the worker over HTTP from inside runMemoryCommand.
@@ -2310,6 +2323,13 @@ export async function main() {
       const kimiSubcommand = process.argv[3];
       const kimiResult = await handleKimiCommand(kimiSubcommand, process.argv.slice(4));
       process.exit(kimiResult);
+      break;
+    }
+
+    case 'aider': {
+      const aiderSubcommand = process.argv[3];
+      const aiderResult = await handleAiderCommand(aiderSubcommand, process.argv.slice(4));
+      process.exit(aiderResult);
       break;
     }
 
