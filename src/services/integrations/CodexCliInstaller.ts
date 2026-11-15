@@ -16,7 +16,7 @@ import { fileURLToPath } from 'url';
 import { logger } from '../../utils/logger.js';
 import { findContextBlockRange } from '../../utils/context-injection.js';
 import { readJsonFileWithBom, writeJsonFileAtomic, writeTextFileAtomic } from '../../shared/atomic-json.js';
-import { paths } from '../../shared/paths.js';
+import { expandHome, paths } from '../../shared/paths.js';
 import { RUNTIME_SKILLS } from '../../shared/runtime-skills.js';
 import { buildSpawnSyncInvocation, lookupWindowsCommandCandidates, type SpawnSyncInvocation } from '../../shared/spawn.js';
 import { currentLauncherHostEnvironment, resolveLauncherBinaryPath } from '../../launcher/install-launcher.js';
@@ -498,14 +498,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isCodexTranscriptWatch(watch: Record<string, unknown>): boolean {
   return watch.name === 'codex' || watch.schema === 'codex';
-}
-
-function expandHome(inputPath: string): string {
-  if (inputPath === '~') return homedir();
-  if (inputPath.startsWith('~/') || inputPath.startsWith('~\\')) {
-    return path.join(homedir(), inputPath.slice(2));
-  }
-  return inputPath;
 }
 
 function isLegacyCodexAgentsContext(context: Record<string, unknown>): boolean {
