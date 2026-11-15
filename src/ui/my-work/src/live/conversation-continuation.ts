@@ -6,11 +6,13 @@ import {
   CONVERSATION_CONTINUATION_STATES,
   CONVERSATION_SESSION_UUID_PATTERN,
   isContinuablePlatform,
+  resumeCommandFor,
   type ContinuablePlatform,
   type ConversationContinuation,
   type ConversationContinuationNotice,
   type ConversationContinuationState,
   type ConversationContinuationTarget,
+  type ConversationOpenedInApp,
 } from '../../../../shared/conversation-continuation.ts'
 import type { Request } from '../data.ts'
 import type { ConversationContinuationEvent, ConversationContinuationRead, ConversationContinuationSource, WorkDataSource } from './work-data-source.ts'
@@ -143,6 +145,7 @@ function exchangeView(exchange: ConversationContinuation): ConversationExchangeV
 
 /** The last eight characters of a session id. */
 const SESSION_ID_END = /.{8}$/
+const sessionIdEndOf = (conversationSessionId: string) => conversationSessionId.match(SESSION_ID_END)?.[0] ?? conversationSessionId
 
 /** What a row's message box, Send and Stop are called for a screen reader. */
 export interface ConversationControlNames { messageBox: ContinuationWords; sendButton: ContinuationWords; stopButton: ContinuationWords }
@@ -169,7 +172,7 @@ export function conversationControlNames(conversation: {
       stopButton: { english: 'Stop the turn in the {tool} conversation “{title}”', values: { tool, title } },
     }
   }
-  const sessionIdEnd = conversation.conversationSessionId.match(SESSION_ID_END)?.[0] ?? conversation.conversationSessionId
+  const sessionIdEnd = sessionIdEndOf(conversation.conversationSessionId)
   return {
     messageBox: { english: 'Continue this {tool} conversation (…{sessionIdEnd})', values: { tool, sessionIdEnd } },
     sendButton: { english: 'Send to the {tool} conversation “{title}” (…{sessionIdEnd})', values: { tool, title, sessionIdEnd } },
@@ -196,6 +199,89 @@ export function focusAfterSendOrStop(
   return view.composerIsShown ? 'message-box' : 'conversation-box'
 }
 
+// ---- Beside Send: open the conversation in its tool's own app, or copy the command that resumes it
+
+/** What a row offers beside Send, and the line under those buttons. */
+export interface ConversationAppActionsView {
+  /**
+   * "Open in {app}" and its button's name, when the worker says it can open the conversation in an app on this computer
+   * (the target's opensInAppNamed) and this page can ask it to.
+   */
+  openInApp: { label: ContinuationWords; buttonName: ContinuationWords } | null
+  copyResumeCommand: {
+    /** What the button copies: fixed words and the session id (resumeCommandFor). The folder is never part of it. */
+    command: string
+    buttonName: ContinuationWords
+    /** The button's name while it shows "Copied". */
+    copiedButtonName: ContinuationWords
+  }
+  /**
+   * Under the buttons while the recorded folder exists: where a turn sent from here runs, and so where to cd before the
+   * copied command. When the folder is gone, the notice above the box says where the turn runs instead.
+   */
+  runsInFolderNotice: ContinuationWords | null
+}
+
+/**
+ * What a conversation row offers beside Send: "Open in {app}" when the worker says it can open the conversation in an app
+ * on this computer (the target's opensInAppNamed: only a Claude Code conversation, and only on macOS) and the page can ask
+ * it to, and "Copy resume command" wherever the row shows Send. Null where the row shows no Send, because its
+ * conversation can't be continued from here. The buttons are named like Send and Stop (conversationControlNames): the
+ * words each shows, then the conversation it acts on, and the end of its session id when another row shows the same title.
+ */
+export function conversationAppActions(
+  conversation: Parameters<typeof conversationControlNames>[0] & { platform: ContinuablePlatform },
+  target: ConversationContinuationTarget,
+  sourceCanOpenInApp: boolean,
+): ConversationAppActionsView | null {
+  const command = resumeCommandFor(conversation.platform, conversation.conversationSessionId)
+  if (!target.canContinue || command === null) return null
+  const { toolName: tool, conversationTitle: title } = conversation
+  const sessionIdEnd = conversation.anotherConversationHasTheSameTitle ? sessionIdEndOf(conversation.conversationSessionId) : null
+  /** `english`, or, when another row shows the same title, `withSessionIdEnd` with the end of this session id. */
+  const named = (english: string, withSessionIdEnd: string, values: Record<string, string>): ContinuationWords =>
+    sessionIdEnd === null ? { english, values } : { english: withSessionIdEnd, values: { ...values, sessionIdEnd } }
+  const app = target.opensInAppNamed
+  return {
+    openInApp: app === null || !sourceCanOpenInApp ? null : {
+      label: { english: 'Open in {app}', values: { app } },
+      buttonName: named('Open in {app}: the {tool} conversation “{title}”', 'Open in {app}: the {tool} conversation “{title}” (…{sessionIdEnd})', { app, tool, title }),
+    },
+    copyResumeCommand: {
+      command,
+      buttonName: named('Copy resume command for the {tool} conversation “{title}”',
+        'Copy resume command for the {tool} conversation “{title}” (…{sessionIdEnd})', { tool, title }),
+      copiedButtonName: named('Copied the resume command for the {tool} conversation “{title}”',
+        'Copied the resume command for the {tool} conversation “{title}” (…{sessionIdEnd})', { tool, title }),
+    },
+    runsInFolderNotice: target.recordedFolderIsGone ? null : { english: 'Runs in {folder}', values: { folder: target.runsInFolder } },
+  }
+}
+
+/** One of a button's labels, and whether the button shows it now. */
+export interface ButtonLabelInPlace { text: string; isShown: boolean }
+
+/**
+ * What a button whose label changes while it works lays out: its label and its working label, both in one place, with only
+ * the one for now shown. The button is then as wide in both states as its wider label, so the buttons after it in the row
+ * never move when its label changes: "Opening…" is narrower than "Open in Claude", and "Sending…" wider than "Send".
+ */
+export function buttonLabelsKeepingTheirWidth(label: string, workingLabel: string, isWorking: boolean): ButtonLabelInPlace[] {
+  return [{ text: label, isShown: !isWorking }, { text: workingLabel, isShown: isWorking }]
+}
+
+/**
+ * What the row says when the clipboard did not take the resume command, as two lines above the command shown to copy by
+ * hand: why, then where to copy it from. The reason is the browser's, whole, and ends its line as it is: a reason often
+ * ends with its own full stop ("Write permission denied."), so nothing is put after it.
+ */
+export function resumeCommandCopyFailureWords(reason: string): { why: ContinuationWords; copyItFromHere: ContinuationWords } {
+  return {
+    why: { english: 'Could not copy the command: {reason}', values: { reason } },
+    copyItFromHere: { english: 'Copy it from here:', values: {} },
+  }
+}
+
 // ---- Reading the worker's answers
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -215,6 +301,7 @@ function isConversationContinuationTarget(value: unknown): value is Conversation
   if (!isRecord(value)) return false
   if (value.canContinue === true) {
     return typeof value.recordedFolder === 'string' && typeof value.runsInFolder === 'string' && typeof value.recordedFolderIsGone === 'boolean'
+      && (value.opensInAppNamed === null || typeof value.opensInAppNamed === 'string')
   }
   return value.canContinue === false && typeof value.refusalText === 'string'
     && (value.recordedFolder === null || typeof value.recordedFolder === 'string')
@@ -231,6 +318,12 @@ export function readConversationContinuationAnswer(body: unknown): ConversationC
 /** The exchange a continue or stop answers with, or null when the body carries none. */
 export function readConversationExchangeAnswer(body: unknown): ConversationContinuation | null {
   return isRecord(body) && isConversationContinuation(body.exchange) ? body.exchange : null
+}
+
+/** What the open-in-app route answers once the app opened the conversation: what the CLI printed. Null otherwise. */
+export function readOpenedInAppAnswer(body: unknown): ConversationOpenedInApp | null {
+  if (!isRecord(body) || !(body.printedText === null || typeof body.printedText === 'string')) return null
+  return { printedText: body.printedText }
 }
 
 /** The notice a `conversation-continuation` frame carries, with its four fields only, or null when it is not one. */

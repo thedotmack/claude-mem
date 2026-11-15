@@ -14,7 +14,7 @@ import type { ConversationContinuationEvent, MappedWorkModel, RuleSaveResult, Wo
 import { applySseFrame } from './parse-sse-frame.ts'
 import {
   conversationRouteFailureSentence, readConversationContinuationAnswer, readConversationContinuationNotice, readConversationExchangeAnswer,
-  unreachableWorkerSentence, unreadableAnswerSentence,
+  readOpenedInAppAnswer, unreachableWorkerSentence, unreadableAnswerSentence,
 } from './conversation-continuation.ts'
 import { SaveRefusedError } from '../data.ts'
 import type { Request as WorkRequest } from '../data.ts'
@@ -33,7 +33,18 @@ export interface LocalSourceOptions {
   activityOptions?: Omit<ViewerActivityOptions, 'fetchImpl' | 'enabled'>
   /** Whether the tab is on screen (default `document`). Only a cloud page reads it; see subscribeToLiveUpdates. */
   visibility?: PageVisibility
+  /** Where the browser says the page is being unloaded, with 'pagehide' (default `window`). See openConversationInApp. */
+  pageUnload?: PageUnload
 }
+
+/** What fires 'pagehide' as this page is unloaded: a reload, a closed tab, or a navigation away. */
+export interface PageUnload {
+  addEventListener(type: 'pagehide', listener: () => void): void
+  removeEventListener(type: 'pagehide', listener: () => void): void
+}
+
+/** This page's `window`; undefined outside a browser. */
+const browserWindow = () => (globalThis as { window?: PageUnload }).window
 
 /** Separate instances make the actual transport/race behavior testable without shared browser globals. */
 export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSource {
@@ -57,6 +68,8 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
   const WORK_VIEW_CONVERSATION_CONTINUATION_URL = '/api/work-view/conversations/continuation'
   const WORK_VIEW_CONTINUE_CONVERSATION_URL = '/api/work-view/conversations/continue'
   const WORK_VIEW_STOP_CONVERSATION_CONTINUATION_URL = '/api/work-view/conversations/stop'
+  const WORK_VIEW_OPEN_CONVERSATION_IN_APP_URL = '/api/work-view/conversations/open-in-app'
+  const WORK_VIEW_STOP_OPENING_CONVERSATION_IN_APP_URL = '/api/work-view/conversations/open-in-app/stop'
   const CONTENT_FINGERPRINT_PATTERN = /^[a-f0-9]{64}$/
   const CONNECTION_TICK_MS = 1000
   const SOURCE_KIND = isServedFromCloud(options.hostname ?? browserHostname() ?? 'localhost') ? 'cloud' : 'local'
@@ -68,6 +81,7 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
   // timed request. The page on this computer never reads visibility: its behaviour does not change.
   const visibility = SOURCE_KIND === 'cloud' ? options.visibility ?? browserVisibility() : undefined
   const pageHidden = () => visibility?.visibilityState === 'hidden'
+  const pageUnload = options.pageUnload ?? browserWindow()
 
   /** The evidence getConnectionStatus reads. Times are performance.now(); see connection-status.ts. */
   const connectionEvidence = {
@@ -308,7 +322,8 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
   const postToConversationRoute = (body: object): RequestInit => ({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
 
   // Only the page this computer's worker serves can continue a conversation: a cloud-served page has no CLI here.
-  const conversationContinuation: Pick<WorkDataSource, 'loadConversationContinuation' | 'continueConversation' | 'stopConversationContinuation' | 'subscribeToConversationContinuations'> = SOURCE_KIND !== 'local' ? {} : {
+  const conversationContinuation: Pick<WorkDataSource, 'loadConversationContinuation' | 'continueConversation' | 'stopConversationContinuation'
+    | 'subscribeToConversationContinuations' | 'openConversationInApp'> = SOURCE_KIND !== 'local' ? {} : {
     loadConversationContinuation: (platform, conversationSessionId) => callConversationRoute(
       `${WORK_VIEW_CONVERSATION_CONTINUATION_URL}?${new URLSearchParams({ platform, conversationSessionId })}`,
       { cache: 'no-store' }, 'read this conversation', readConversationContinuationAnswer),
@@ -321,6 +336,24 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
       const subscription = (event: ConversationContinuationEvent) => listener(event)
       conversationContinuationListeners.add(subscription)
       return () => { conversationContinuationListeners.delete(subscription) }
+    },
+    async openConversationInApp(platform, conversationSessionId) {
+      const conversation = { platform, conversationSessionId }
+      // The worker cannot see this request go away: Bun's node:http, which serves it, gives a POST whose page has gone no
+      // sign at all. So when the page is unloaded while the open still runs (a reload, a closed tab), the page asks the
+      // worker to stop the open's command. keepalive lets that request outlive the page.
+      const stopTheOpenAsThePageGoes = () => {
+        fetchImpl(WORK_VIEW_STOP_OPENING_CONVERSATION_IN_APP_URL, { ...postToConversationRoute(conversation), keepalive: true }).catch((error: unknown) => {
+          console.error('[work-view] Could not ask the worker to stop opening a conversation in its app as this page closed.', error)
+        })
+      }
+      pageUnload?.addEventListener('pagehide', stopTheOpenAsThePageGoes)
+      try {
+        return await callConversationRoute(WORK_VIEW_OPEN_CONVERSATION_IN_APP_URL, postToConversationRoute(conversation),
+          'open this conversation in its app', readOpenedInAppAnswer)
+      } finally {
+        pageUnload?.removeEventListener('pagehide', stopTheOpenAsThePageGoes)
+      }
     },
   }
 

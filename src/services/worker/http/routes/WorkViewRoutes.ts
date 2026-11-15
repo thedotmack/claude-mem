@@ -55,7 +55,9 @@ import { createSetupInstallerResumer } from '../../../setup/resume-installer.js'
 import { hasActiveSetupSession, hasProConfiguration, readSetupState, setupStatePath, writeSetupState, type SetupStateFile, type SetupStateView } from '../../../../shared/setup-state.js';
 import { SETUP_BRANCHES, SETUP_INSTALLER_STAGES, SETUP_MEMORY_BILLINGS } from '../../../../shared/setup-funnel.js';
 import { hasPendingInstallSetup, SETUP_INSTALL_STATUSES } from '../../../../shared/setup-install.js';
-import { CONTINUABLE_PLATFORMS, CONVERSATION_SESSION_UUID_PATTERN, type ConversationContinuation, type ConversationContinuationNotice } from '../../../../shared/conversation-continuation.js';
+import {
+  CONTINUABLE_PLATFORMS, CONVERSATION_SESSION_UUID_PATTERN, type ConversationContinuation, type ConversationContinuationNotice, type ConversationOpenedInApp,
+} from '../../../../shared/conversation-continuation.js';
 import type { ConversationContinuationRunner } from '../../../work-view/conversation-continuation-runner.js';
 
 // A request is ready for a human check once its explicit lifecycle reports it complete, shipped, or waiting for review.
@@ -894,6 +896,9 @@ export class WorkViewRoutes extends BaseRouteHandler {
     app.get('/api/work-view/conversations/continuation', workViewLoopbackOnly, requireWorkViewReadOrigin, this.wrapHandler(this.readConversationContinuation));
     app.post('/api/work-view/conversations/continue', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(continueConversationBody), this.wrapHandler(this.continueConversation));
     app.post('/api/work-view/conversations/stop', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(conversationRef), this.wrapHandler(this.stopConversationContinuation));
+    // Opens the owner's conversation in its tool's app on this computer's screen. It starts no turn, and keeps the same guards.
+    app.post('/api/work-view/conversations/open-in-app', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(conversationRef), this.wrapHandler(this.openConversationInApp));
+    app.post('/api/work-view/conversations/open-in-app/stop', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(conversationRef), this.wrapHandler(this.stopOpeningConversationInApp));
     app.post('/api/work-view/usage', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(usageBody), this.wrapHandler(this.recordUsage));
     // Shared focus pages: this worker signs the cmem.ai calls, so the sync credential never reaches the page.
     app.get('/api/work-view/focus/shares', workViewLoopbackOnly, requireWorkViewReadOrigin, this.wrapHandler(this.listFocusShares));
@@ -1745,6 +1750,38 @@ export class WorkViewRoutes extends BaseRouteHandler {
     if ('refusalText' in stopped) { res.status(409).json({ error: stopped.refusalText }); return; }
     res.setHeader('Cache-Control', 'no-store');
     res.json({ exchange: stopped.exchange });
+  };
+
+  /**
+   * Opens the conversation in its tool's own app: Claude Code's `claude --desktop --resume <session uuid>`. It starts no
+   * turn. Answers once the command has exited, with no deadline: 200 with what it printed when the app opened it, else
+   * 409 with the sentence saying why, which holds everything the command printed when it ran. While one open of a
+   * conversation runs, another is refused (409), and the stop route below ends it.
+   */
+  private openConversationInApp = async (req: Request, res: Response): Promise<void> => {
+    const runner = this.conversationContinuationRunner;
+    if (!runner) { res.status(503).json({ error: CONVERSATION_CONTINUATION_UNAVAILABLE }); return; }
+    const { platform, conversationSessionId } = req.body as z.infer<typeof conversationRef>;
+    const opened = await runner.openInApp(platform, conversationSessionId);
+    if ('refusalText' in opened) { res.status(409).json({ error: opened.refusalText }); return; }
+    const answer: ConversationOpenedInApp = { printedText: opened.printedText };
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(answer);
+  };
+
+  /**
+   * Stops the command opening a conversation in its app. The page asks for it as it is unloaded while its open still runs
+   * (a reload, a closed tab): the worker cannot see that page's request go away (stopOpeningInApp says why). 200 once the
+   * stop is sent, which the open's own answer then reports; 409 when nothing is opening the conversation.
+   */
+  private stopOpeningConversationInApp = (req: Request, res: Response): void => {
+    const runner = this.conversationContinuationRunner;
+    if (!runner) { res.status(503).json({ error: CONVERSATION_CONTINUATION_UNAVAILABLE }); return; }
+    const { platform, conversationSessionId } = req.body as z.infer<typeof conversationRef>;
+    const stopping = runner.stopOpeningInApp(platform, conversationSessionId);
+    if ('refusalText' in stopping) { res.status(409).json({ error: stopping.refusalText }); return; }
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({});
   };
 
   /** Adds the MY-RULES.md import to the user-level CLAUDE.md once. Never touches a project's CLAUDE.md or AGENTS.md. */

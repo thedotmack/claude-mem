@@ -3,7 +3,7 @@
 // what was sent, and local API token mode. Every CLI is a fake spawn, so nothing runs and nothing is spent. The lookup is
 // a real SessionStore (the one worker-service.ts wires in) and the folders are real, all under the repo's gitignored
 // .scratch/test-runs.
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'bun:test';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import type { spawn, SpawnOptions } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { mkdirSync, readFileSync, rmSync } from 'node:fs';
@@ -50,11 +50,20 @@ class FakeChild extends EventEmitter {
   stderr = new FakeStream();
   stdinText: string | null = null;
   stdin = Object.assign(new EventEmitter(), { end: (text: string) => { this.stdinText = text; } });
-  exit(exitCode: number, output: { stdout?: string } = {}): void {
+  private heardFirstStop!: (signal: string) => void;
+  /** The signal of the first stop sent to it (see hearStop). */
+  readonly firstStop = new Promise<string>(resolve => { this.heardFirstStop = resolve; });
+  /** Hears a stop: runCommand's signal to its process group (the process.kill stub below), or Node's `signal` option on Windows. */
+  hearStop(signal: string): void { this.heardFirstStop(signal); }
+  /** Exits with `exitCode`, or by a signal when it is null. */
+  exit(exitCode: number | null, output: { stdout?: string } = {}): void {
     if (output.stdout) this.stdout.emit('data', output.stdout);
     this.emit('close', exitCode);
   }
 }
+
+/** Each fake child by the process group it leads, so the process.kill stub can tell it about a stop. */
+const childrenByProcessGroup = new Map<number, FakeChild>();
 
 interface SpawnCall { command: string; args: string[]; options: SpawnOptions; child: FakeChild }
 
@@ -102,18 +111,30 @@ afterAll(async () => {
   await removeTempDir(fileFolder);
 });
 
-/** A runner over the real SessionStore lookup and a fake spawn, wired to the routes the way worker-service.ts wires it. */
-function runnerFor(routes: () => WorkViewRoutes) {
+/**
+ * A runner over the real SessionStore lookup and a fake spawn, wired to the routes the way worker-service.ts wires it, on
+ * macOS unless `operatingSystem` says otherwise: the one system the worker opens a conversation in its app on.
+ */
+function runnerFor(routes: () => WorkViewRoutes, operatingSystem: NodeJS.Platform = 'darwin') {
   const calls: SpawnCall[] = [];
   let detectCalls = 0;
   const unread: ConversationContinuation[] = [];
   const waiting: Array<(exchange: ConversationContinuation) => void> = [];
+  /** Who waits for the spawn at each index of `calls`. */
+  const spawnWaiters = new Map<number, Array<(call: SpawnCall) => void>>();
   const runner = new ConversationContinuationRunner({
     recordedFolderForConversation: (platform, conversationSessionId) => store.getRecordedFolderForConversation(platform, conversationSessionId),
     detectAgents: async () => { detectCalls += 1; return usableAgents(); },
     spawnImpl: ((command: string, args: string[], options: SpawnOptions) => {
       const call: SpawnCall = { command, args, options, child: new FakeChild() };
       calls.push(call);
+      childrenByProcessGroup.set(call.child.pid, call.child);
+      options.signal?.addEventListener('abort', () => {
+        call.child.hearStop(String(options.killSignal));
+        call.child.emit('error', Object.assign(new Error('The operation was aborted'), { name: 'AbortError', code: 'ABORT_ERR' }));
+      }, { once: true });
+      for (const waiter of spawnWaiters.get(calls.length - 1) ?? []) waiter(call);
+      spawnWaiters.delete(calls.length - 1);
       return call.child;
     }) as unknown as typeof spawn,
     onChange: exchange => {
@@ -121,6 +142,7 @@ function runnerFor(routes: () => WorkViewRoutes) {
       const waiter = waiting.shift();
       if (waiter) waiter(exchange); else unread.push(exchange);
     },
+    operatingSystem: () => operatingSystem,
   });
   return {
     runner,
@@ -128,6 +150,10 @@ function runnerFor(routes: () => WorkViewRoutes) {
     detectCalls: () => detectCalls,
     /** The next exchange the runner reports as ended. */
     nextEnded: () => unread.length > 0 ? Promise.resolve(unread.shift()!) : new Promise<ConversationContinuation>(resolve => waiting.push(resolve)),
+    /** The spawn at `index` of `calls`, once it has happened: an open in the app answers only after its command exits. */
+    spawnedCall: (index: number) => calls[index] ? Promise.resolve(calls[index]) : new Promise<SpawnCall>(resolve => {
+      spawnWaiters.set(index, [...(spawnWaiters.get(index) ?? []), resolve]);
+    }),
   };
 }
 
@@ -154,9 +180,11 @@ afterEach(async () => {
  * tests, so each refusal below is the routes' own guard; with `localApiToken`, on the worker's real Server, whose
  * middleware puts local API token mode ahead of every route.
  */
-async function startRoutes({ withRunner = true, localApiToken }: { withRunner?: boolean; localApiToken?: string } = {}): Promise<RoutesUnderTest> {
+async function startRoutes({ withRunner = true, localApiToken, operatingSystem }: {
+  withRunner?: boolean; localApiToken?: string; operatingSystem?: NodeJS.Platform;
+} = {}): Promise<RoutesUnderTest> {
   let routes!: WorkViewRoutes;
-  const turns = runnerFor(() => routes);
+  const turns = runnerFor(() => routes, operatingSystem);
   routes = new WorkViewRoutes({ ...isolatedRoutesOptions(), ...(withRunner ? { conversationContinuationRunner: turns.runner } : {}) });
   let port: number;
   let closeServer: () => Promise<void>;
@@ -190,6 +218,8 @@ const postJson = (origin: string, path: string, body: unknown, headers: Record<s
 });
 const sendMessage = (origin: string, body: unknown, headers?: Record<string, string>) => postJson(origin, '/api/work-view/conversations/continue', body, headers);
 const pressStop = (origin: string, body: unknown, headers?: Record<string, string>) => postJson(origin, '/api/work-view/conversations/stop', body, headers);
+const pressOpenInApp = (origin: string, body: unknown, headers?: Record<string, string>) => postJson(origin, '/api/work-view/conversations/open-in-app', body, headers);
+const pressStopOpening = (origin: string, body: unknown, headers?: Record<string, string>) => postJson(origin, '/api/work-view/conversations/open-in-app/stop', body, headers);
 const readConversation = (origin: string, platform: string, conversationSessionId: string, headers: Record<string, string> = {}) => fetch(
   `${origin}/api/work-view/conversations/continuation?platform=${encodeURIComponent(platform)}&conversationSessionId=${encodeURIComponent(conversationSessionId)}`,
   { headers },
@@ -242,8 +272,11 @@ describe('the guards on every conversation route', () => {
       expect((await readConversation(opened.origin, 'claude', CLAUDE_SESSION, headers)).status).toBe(403);
       expect((await sendMessage(opened.origin, { ...conversation, ownerMessage: 'Which word?' }, headers)).status).toBe(403);
       expect((await pressStop(opened.origin, conversation, headers)).status).toBe(403);
+      expect((await pressOpenInApp(opened.origin, conversation, headers)).status).toBe(403);
+      expect((await pressStopOpening(opened.origin, conversation, headers)).status).toBe(403);
     }
-    for (const path of ['/api/work-view/conversations/continue', '/api/work-view/conversations/stop']) {
+    for (const path of ['/api/work-view/conversations/continue', '/api/work-view/conversations/stop', '/api/work-view/conversations/open-in-app',
+      '/api/work-view/conversations/open-in-app/stop']) {
       const notJson = await fetch(`${opened.origin}${path}`, {
         method: 'POST', headers: { 'Content-Type': 'text/plain', Origin: opened.origin }, body: JSON.stringify({ ...conversation, ownerMessage: 'Which word?' }),
       });
@@ -287,6 +320,18 @@ describe('the request checks', () => {
     const stopWithoutUuid = await pressStop(opened.origin, { platform: 'claude', conversationSessionId: NON_UUID_CLAUDE_SESSION });
     expect(stopWithoutUuid.status).toBe(400);
     expect((await stopWithoutUuid.json()).error).toBe('ValidationError');
+    for (const body of [
+      { platform: 'claude', conversationSessionId: NON_UUID_CLAUDE_SESSION },
+      { platform: 'gemini', conversationSessionId: CLAUDE_SESSION },
+      { platform: 'claude', conversationSessionId: CLAUDE_SESSION, ownerMessage: 'Which word?' },
+    ]) {
+      const openWithoutConversation = await pressOpenInApp(opened.origin, body);
+      expect(openWithoutConversation.status).toBe(400);
+      expect((await openWithoutConversation.json()).error).toBe('ValidationError');
+      const stopOpeningWithoutConversation = await pressStopOpening(opened.origin, body);
+      expect(stopOpeningWithoutConversation.status).toBe(400);
+      expect((await stopOpeningWithoutConversation.json()).error).toBe('ValidationError');
+    }
     expect(opened.calls).toHaveLength(0);
     expect(opened.detectCalls()).toBe(0);
   });
@@ -313,6 +358,8 @@ describe('the request checks', () => {
       await readConversation(opened.origin, 'claude', CLAUDE_SESSION),
       await sendMessage(opened.origin, { ...conversation, ownerMessage: 'Which word?' }),
       await pressStop(opened.origin, conversation),
+      await pressOpenInApp(opened.origin, conversation),
+      await pressStopOpening(opened.origin, conversation),
     ]) {
       expect(response.status).toBe(503);
       expect(await response.json()).toEqual({ error: UNAVAILABLE });
@@ -429,10 +476,10 @@ describe('reading a conversation', () => {
       return response.json();
     };
     expect(await read('claude', CLAUDE_SESSION)).toEqual({
-      target: { canContinue: true, recordedFolder: folderPresent, runsInFolder: folderPresent, recordedFolderIsGone: false }, exchanges: [],
+      target: { canContinue: true, recordedFolder: folderPresent, runsInFolder: folderPresent, recordedFolderIsGone: false, opensInAppNamed: 'Claude' }, exchanges: [],
     });
     expect(await read('codex', CODEX_SESSION)).toEqual({
-      target: { canContinue: true, recordedFolder: deletedRecordedFolder, runsInFolder: fileFolder, recordedFolderIsGone: true }, exchanges: [],
+      target: { canContinue: true, recordedFolder: deletedRecordedFolder, runsInFolder: fileFolder, recordedFolderIsGone: true, opensInAppNamed: null }, exchanges: [],
     });
     const refusals: Array<[string, string, string]> = [
       ['claude', CLAUDE_SESSION_WITHOUT_FOLDER, 'No folder was recorded for this Claude Code conversation, so it can’t be continued from here.'],
@@ -464,6 +511,133 @@ describe('reading a conversation', () => {
       { exchangeId: second.exchangeId, state: 'replied', ownerMessage: 'Which word? Reply with only the word.', replyText: 'marmalade', ranInFolder: fileFolder },
     ]);
     expect(opened.calls.map(call => call.args)).toEqual([CODEX_ARGUMENTS, CODEX_ARGUMENTS]);
+  });
+});
+
+describe('opening a conversation in its app', () => {
+  const OPENED_LINE = `Opening session ${CLAUDE_SESSION} in Claude Desktop`;
+  const STILL_OPENING = 'Claude Code is still opening this conversation in the Claude app from an earlier click. Wait for it to finish, or reload the page you clicked it in to stop it.';
+  /** How the runner runs `claude --desktop --resume <id>`: under script, which gives it the terminal it needs. */
+  const openInAppCommand = (conversationSessionId: string) =>
+    ({ command: '/usr/bin/script', args: ['-q', '/dev/null', '/usr/local/bin/claude', '--desktop', '--resume', conversationSessionId] });
+
+  // runCommand stops a command on macOS and Linux by signalling its process group: this tells the fake child instead.
+  let restoreProcessKill = () => {};
+  beforeEach(() => {
+    const realProcessKill = process.kill.bind(process);
+    const processKill = spyOn(process, 'kill').mockImplementation(((pid: number, signal?: string | number) => {
+      const child = pid < 0 ? childrenByProcessGroup.get(-pid) : undefined;
+      if (!child) return realProcessKill(pid, signal);
+      child.hearStop(String(signal));
+      return true;
+    }) as typeof process.kill);
+    restoreProcessKill = () => processKill.mockRestore();
+  });
+  afterEach(() => {
+    restoreProcessKill();
+    childrenByProcessGroup.clear();
+  });
+
+  it('answers 200 with what `claude --desktop --resume` printed once it has exited 0, run in the folder its turn would run in, and starts no turn', async () => {
+    const opened = await startRoutes();
+    const answer = pressOpenInApp(opened.origin, { platform: 'claude', conversationSessionId: CLAUDE_SESSION });
+    const call = await opened.spawnedCall(0);
+    expect({ command: call.command, args: call.args }).toEqual(openInAppCommand(CLAUDE_SESSION));
+    expect(call.options.cwd).toBe(folderPresent);
+    expect(call.options.stdio).toEqual(['ignore', 'pipe', 'pipe']);
+    expect(call.child.stdinText).toBeNull();
+    call.child.exit(0, { stdout: `^D\b\b\u001b[0m${OPENED_LINE}\r\n\u001b[?25h` });
+    const response = await answer;
+    expect(response.status).toBe(200);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(await response.json()).toEqual({ printedText: OPENED_LINE });
+    expect((await (await readConversation(opened.origin, 'claude', CLAUDE_SESSION)).json()).exchanges).toEqual([]);
+    expect(opened.calls).toHaveLength(1);
+  });
+
+  it('answers 409 with one sentence and everything the CLI printed when the app did not open it', async () => {
+    const opened = await startRoutes();
+    const answer = pressOpenInApp(opened.origin, { platform: 'claude', conversationSessionId: CLAUDE_SESSION });
+    (await opened.spawnedCall(0)).child.exit(1, { stdout: 'Claude Desktop is not installed. Install it from https://claude.ai/download\n' });
+    const response = await answer;
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: 'Claude Code could not open this conversation in the Claude app. Claude Code exited with code 1.\n\nClaude Desktop is not installed. Install it from https://claude.ai/download',
+    });
+  });
+
+  it('refuses a second open of the same conversation while the first runs, with 409 and one sentence, and runs one command', async () => {
+    const opened = await startRoutes();
+    const conversation = { platform: 'claude', conversationSessionId: CLAUDE_SESSION };
+    const first = pressOpenInApp(opened.origin, conversation);
+    const call = await opened.spawnedCall(0);
+    // As from a second tab, or this one after the drawer was closed and opened again.
+    const second = await pressOpenInApp(opened.origin, conversation);
+    expect(second.status).toBe(409);
+    expect(await second.json()).toEqual({ error: STILL_OPENING });
+    expect(opened.calls).toHaveLength(1);
+    call.child.exit(0, { stdout: '^D\b\b' });
+    const firstAnswer = await first;
+    expect(firstAnswer.status).toBe(200);
+    expect(await firstAnswer.json()).toEqual({ printedText: null });
+  });
+
+  it("stops the open's command when the page that asked says it is going away, and opens the conversation again on the next click", async () => {
+    const opened = await startRoutes();
+    const conversation = { platform: 'claude', conversationSessionId: CLAUDE_SESSION };
+    const nothingOpening = await pressStopOpening(opened.origin, conversation);
+    expect(nothingOpening.status).toBe(409);
+    expect(await nothingOpening.json()).toEqual({ error: 'Nothing is opening this conversation in its app.' });
+
+    const abandoned = pressOpenInApp(opened.origin, conversation);
+    const call = await opened.spawnedCall(0);
+    // What the page sends from 'pagehide' while its open still runs (local-source.ts).
+    const stopping = await pressStopOpening(opened.origin, conversation);
+    expect(stopping.status).toBe(200);
+    expect(stopping.headers.get('cache-control')).toBe('no-store');
+    expect(await stopping.json()).toEqual({});
+    expect(await call.child.firstStop).toBe('SIGTERM');
+    call.child.exit(null);
+    const abandonedAnswer = await abandoned;
+    expect(abandonedAnswer.status).toBe(409);
+    expect(await abandonedAnswer.json()).toEqual({
+      error: 'Claude Code could not open this conversation in the Claude app: the page that asked went away, so it was stopped.',
+    });
+
+    const answer = pressOpenInApp(opened.origin, conversation);
+    (await opened.spawnedCall(1)).child.exit(0, { stdout: `^D\b\b${OPENED_LINE}\r\n` });
+    const response = await answer;
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ printedText: OPENED_LINE });
+    expect(opened.calls).toHaveLength(2);
+  });
+
+  it('on Windows and Linux, reads that no app opens the conversation here, and refuses an open with 409, running nothing', async () => {
+    for (const operatingSystem of ['win32', 'linux'] as const) {
+      const opened = await startRoutes({ operatingSystem });
+      const { target } = await (await readConversation(opened.origin, 'claude', CLAUDE_SESSION)).json();
+      expect(target).toEqual({ canContinue: true, recordedFolder: folderPresent, runsInFolder: folderPresent, recordedFolderIsGone: false, opensInAppNamed: null });
+      const response = await pressOpenInApp(opened.origin, { platform: 'claude', conversationSessionId: CLAUDE_SESSION });
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({ error: 'Claude Code opens a conversation in the Claude app from here only on macOS. Copy the resume command instead.' });
+      expect(opened.calls).toHaveLength(0);
+      expect(opened.detectCalls()).toBe(0);
+    }
+  });
+
+  it("refuses a Codex conversation, and one it can't continue, with 409 and its sentence, and runs nothing", async () => {
+    const opened = await startRoutes();
+    const refusals: Array<[string, string, string]> = [
+      ['codex', CODEX_SESSION, 'Codex has no documented way to open a conversation in its app. Copy the resume command instead.'],
+      ['claude', CLAUDE_SESSION_WITHOUT_FOLDER, 'No folder was recorded for this Claude Code conversation, so it can’t be continued from here.'],
+    ];
+    for (const [platform, conversationSessionId, sentence] of refusals) {
+      const response = await pressOpenInApp(opened.origin, { platform, conversationSessionId });
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({ error: sentence });
+    }
+    expect(opened.calls).toHaveLength(0);
+    expect(opened.detectCalls()).toBe(0);
   });
 });
 
@@ -528,5 +702,26 @@ describe('local API token mode (#5141)', () => {
     expect((await pressStop(opened.origin, conversation, withToken)).status).toBe(200);
     opened.calls[0].child.exit(0);
     await opened.nextEnded();
+  });
+
+  it('refuses an open in the app without the token with 401 and runs nothing; with the token it runs', async () => {
+    const TOKEN = 'conversation-open-in-app-routes-test-token';
+    const opened = await startRoutes({ localApiToken: TOKEN });
+    const conversation = { platform: 'claude', conversationSessionId: CLAUDE_SESSION };
+    expect((await pressOpenInApp(opened.origin, conversation)).status).toBe(401);
+    expect((await pressOpenInApp(opened.origin, conversation, { [LOCAL_API_TOKEN_HEADER]: 'not-the-token' })).status).toBe(401);
+    expect((await postJson(opened.origin, `/api/work-view/conversations/open-in-app?token=${TOKEN}`, conversation)).status).toBe(401);
+    expect((await pressStopOpening(opened.origin, conversation)).status).toBe(401);
+    expect(opened.calls).toHaveLength(0);
+    expect(opened.detectCalls()).toBe(0);
+
+    const answer = pressOpenInApp(opened.origin, conversation, { [LOCAL_API_TOKEN_HEADER]: TOKEN });
+    (await opened.spawnedCall(0)).child.exit(0);
+    expect((await answer).status).toBe(200);
+    expect(opened.calls).toHaveLength(1);
+    // With the token, a stop reaches the route, which answers that nothing is opening the conversation any more.
+    const stopWithToken = await pressStopOpening(opened.origin, conversation, { [LOCAL_API_TOKEN_HEADER]: TOKEN });
+    expect(stopWithToken.status).toBe(409);
+    expect(await stopWithToken.json()).toEqual({ error: 'Nothing is opening this conversation in its app.' });
   });
 });

@@ -9,10 +9,10 @@ import { myworkTr } from '../../../i18n/mywork-tr.ts'
 import { myworkZh } from '../../../i18n/mywork-zh.ts'
 import { SAMPLE_REQUESTS } from '../data.ts'
 import {
-  CONTINUATION_STATE_WORDS, canContinueConversations, continuationEventConcernsConversation, continuationView, conversationControlNames,
-  conversationRouteFailureSentence, focusAfterSendOrStop, isContinuableConversation, readConversationContinuationAnswer,
-  readConversationContinuationNotice, readConversationExchangeAnswer, unreachableWorkerSentence, unreadableAnswerSentence,
-  type ContinuationWords,
+  CONTINUATION_STATE_WORDS, canContinueConversations, continuationEventConcernsConversation, continuationView, conversationAppActions,
+  buttonLabelsKeepingTheirWidth, conversationControlNames, conversationRouteFailureSentence, focusAfterSendOrStop, isContinuableConversation,
+  readConversationContinuationAnswer, readConversationContinuationNotice, readConversationExchangeAnswer, readOpenedInAppAnswer,
+  resumeCommandCopyFailureWords, unreachableWorkerSentence, unreadableAnswerSentence, type ButtonLabelInPlace, type ContinuationWords,
 } from './conversation-continuation.ts'
 import { createLocalSource } from './local-source.ts'
 import { sampleSource } from './sample-source.ts'
@@ -26,8 +26,11 @@ const NO_FOLDER_RECORDED = 'No folder was recorded for this Claude Code conversa
 /** As long as the runner test's: a reply or a failure this size comes back whole. */
 const LONG_TEXT = 'x'.repeat(200_000)
 
-const runsInRecordedFolder: ConversationContinuationTarget = { canContinue: true, recordedFolder: RECORDED_FOLDER, runsInFolder: RECORDED_FOLDER, recordedFolderIsGone: false }
-const recordedFolderIsGone: ConversationContinuationTarget = { canContinue: true, recordedFolder: RECORDED_FOLDER, runsInFolder: NEAREST_FOLDER, recordedFolderIsGone: true }
+// As the worker on macOS answers for a Claude Code conversation: it can open one in the Claude app there.
+const runsInRecordedFolder: ConversationContinuationTarget = { canContinue: true, recordedFolder: RECORDED_FOLDER, runsInFolder: RECORDED_FOLDER, recordedFolderIsGone: false, opensInAppNamed: 'Claude' }
+const recordedFolderIsGone: ConversationContinuationTarget = { canContinue: true, recordedFolder: RECORDED_FOLDER, runsInFolder: NEAREST_FOLDER, recordedFolderIsGone: true, opensInAppNamed: 'Claude' }
+/** As the worker answers for a Codex conversation, or for any conversation on Windows or Linux: no app opens it there. */
+const opensInNoAppHere: ConversationContinuationTarget = { ...runsInRecordedFolder, opensInAppNamed: null }
 const cannotContinue: ConversationContinuationTarget = { canContinue: false, refusalText: NO_FOLDER_RECORDED, recordedFolder: null }
 
 function exchange(fields: Partial<ConversationContinuation> = {}): ConversationContinuation {
@@ -167,7 +170,7 @@ describe('what a conversation row shows', () => {
 
   it('passes a long message, reply, failure and folder on whole', () => {
     const longFolder = `/work/${LONG_TEXT}`
-    const view = continuationView({ canContinue: true, recordedFolder: `${longFolder}/gone`, runsInFolder: longFolder, recordedFolderIsGone: true },
+    const view = continuationView({ canContinue: true, recordedFolder: `${longFolder}/gone`, runsInFolder: longFolder, recordedFolderIsGone: true, opensInAppNamed: 'Claude' },
       [replied({ ownerMessage: LONG_TEXT, replyText: LONG_TEXT }), failed({ exchangeId: 2, failureText: LONG_TEXT })], '')
     assert.equal(view.exchanges[0].ownerMessage.length, LONG_TEXT.length)
     assert.equal(view.exchanges[0].replyText?.length, LONG_TEXT.length)
@@ -221,6 +224,141 @@ describe('what a row\'s message box, Send and Stop are called for a screen reade
   })
 })
 
+describe('what a row offers beside Send', () => {
+  const inEnglish = (words: ContinuationWords) => interpolate(words.english, words.values)
+  const claudeRow = { platform: 'claude' as const, conversationSessionId: SESSION, toolName: 'Claude Code', conversationTitle: 'Fix the login flow', anotherConversationHasTheSameTitle: false }
+  const codexRow = { ...claudeRow, platform: 'codex' as const, toolName: 'Codex', conversationTitle: 'Write the release notes' }
+
+  it('a Claude Code conversation: Open in Claude, the command that resumes it, and the folder its turn runs in', () => {
+    const actions = conversationAppActions(claudeRow, runsInRecordedFolder, true)
+    assert.deepEqual(actions, {
+      openInApp: {
+        label: { english: 'Open in {app}', values: { app: 'Claude' } },
+        buttonName: { english: 'Open in {app}: the {tool} conversation “{title}”', values: { app: 'Claude', tool: 'Claude Code', title: 'Fix the login flow' } },
+      },
+      copyResumeCommand: {
+        command: `claude --resume ${SESSION}`,
+        buttonName: { english: 'Copy resume command for the {tool} conversation “{title}”', values: { tool: 'Claude Code', title: 'Fix the login flow' } },
+        copiedButtonName: { english: 'Copied the resume command for the {tool} conversation “{title}”', values: { tool: 'Claude Code', title: 'Fix the login flow' } },
+      },
+      runsInFolderNotice: { english: 'Runs in {folder}', values: { folder: RECORDED_FOLDER } },
+    })
+    assert.equal(inEnglish(actions!.openInApp!.label), 'Open in Claude')
+    assert.equal(inEnglish(actions!.runsInFolderNotice!), `Runs in ${RECORDED_FOLDER}`)
+  })
+
+  it('a Codex conversation: the command that resumes it, and no Open, since Codex documents no way to open one in its app', () => {
+    const actions = conversationAppActions(codexRow, opensInNoAppHere, true)
+    assert.equal(actions?.openInApp, null)
+    assert.equal(actions?.copyResumeCommand.command, `codex resume ${SESSION}`)
+    assert.equal(inEnglish(actions!.copyResumeCommand.buttonName), 'Copy resume command for the Codex conversation “Write the release notes”')
+    assert.deepEqual(actions?.runsInFolderNotice, { english: 'Runs in {folder}', values: { folder: RECORDED_FOLDER } }, 'where to cd before the command')
+  })
+
+  it('no Open for a Claude Code conversation when the worker says no app opens it on this computer (Windows, Linux); the command still copies', () => {
+    const actions = conversationAppActions(claudeRow, opensInNoAppHere, true)
+    assert.equal(actions?.openInApp, null)
+    assert.equal(actions?.copyResumeCommand.command, `claude --resume ${SESSION}`)
+    assert.deepEqual(actions?.runsInFolderNotice, { english: 'Runs in {folder}', values: { folder: RECORDED_FOLDER } })
+  })
+
+  it('names the Open button after the app the worker says opens it', () => {
+    const actions = conversationAppActions(claudeRow, { ...runsInRecordedFolder, opensInAppNamed: 'Claude Desktop' }, true)
+    assert.equal(inEnglish(actions!.openInApp!.label), 'Open in Claude Desktop')
+  })
+
+  it('no Open when the page cannot ask the worker to open it; the command can still be copied', () => {
+    const actions = conversationAppActions(claudeRow, runsInRecordedFolder, false)
+    assert.equal(actions?.openInApp, null)
+    assert.equal(actions?.copyResumeCommand.command, `claude --resume ${SESSION}`)
+  })
+
+  it('a recorded folder that is gone: no folder line, since the notice above the box says where the turn runs', () => {
+    const actions = conversationAppActions(claudeRow, recordedFolderIsGone, true)
+    assert.equal(actions?.runsInFolderNotice, null)
+    assert.notEqual(actions?.openInApp, null)
+    assert.notEqual(continuationView(recordedFolderIsGone, [], '').folderGoneNotice, null)
+  })
+
+  it('nothing where the row shows no Send: a conversation that can\'t be continued from here', () => {
+    assert.equal(conversationAppActions(claudeRow, cannotContinue, true), null)
+    assert.equal(conversationAppActions(codexRow, cannotContinue, true), null)
+  })
+
+  it('copies fixed words and the session id only: never the folder, whatever it holds', () => {
+    const oddFolder = `/work/my "folder"; rm -rf ~ $(whoami)/${LONG_TEXT}`
+    const actions = conversationAppActions(claudeRow, { canContinue: true, recordedFolder: oddFolder, runsInFolder: oddFolder, recordedFolderIsGone: false, opensInAppNamed: 'Claude' }, true)
+    assert.deepEqual(actions?.copyResumeCommand.command.split(' '), ['claude', '--resume', SESSION])
+    assert.equal(String(actions?.runsInFolderNotice?.values.folder).length, oddFolder.length, 'the folder is shown whole, beside the command')
+  })
+
+  it('names each button for the conversation it acts on, with the end of its session id when another row shows the same title', () => {
+    const title = 'Conversation 01a1b3d0'
+    const first = conversationAppActions({ ...claudeRow, conversationTitle: title, conversationSessionId: '01a1b3d0-4e5f-7a6b-8c7d-9e0f1a2b3c4d', anotherConversationHasTheSameTitle: true }, runsInRecordedFolder, true)!
+    const second = conversationAppActions({ ...claudeRow, conversationTitle: title, conversationSessionId: '01a1b3d0-77aa-7bcd-8e2f-1a0b9c8d7e6f', anotherConversationHasTheSameTitle: true }, runsInRecordedFolder, true)!
+    assert.equal(inEnglish(first.openInApp!.buttonName), 'Open in Claude: the Claude Code conversation “Conversation 01a1b3d0” (…1a2b3c4d)')
+    assert.equal(inEnglish(first.copyResumeCommand.buttonName), 'Copy resume command for the Claude Code conversation “Conversation 01a1b3d0” (…1a2b3c4d)')
+    assert.equal(inEnglish(second.copyResumeCommand.copiedButtonName), 'Copied the resume command for the Claude Code conversation “Conversation 01a1b3d0” (…9c8d7e6f)')
+    for (const names of [(actions: typeof first) => actions.openInApp!.buttonName, (actions: typeof first) => actions.copyResumeCommand.buttonName, (actions: typeof first) => actions.copyResumeCommand.copiedButtonName]) {
+      assert.notEqual(inEnglish(names(first)), inEnglish(names(second)))
+    }
+  })
+
+  it('has Chinese, Korean and Turkish words for each, and each button\'s name holds the words it shows', () => {
+    for (const actions of [conversationAppActions(claudeRow, runsInRecordedFolder, true)!, conversationAppActions({ ...claudeRow, anotherConversationHasTheSameTitle: true }, runsInRecordedFolder, true)!]) {
+      const { openInApp, copyResumeCommand, runsInFolderNotice } = actions
+      // Someone who speaks to their computer says the words they see, so a name holds them (WCAG 2.5.3, label in name).
+      const buttons: Array<[label: string, name: ContinuationWords]> = [
+        [openInApp!.label.english, openInApp!.buttonName], ['Copy resume command', copyResumeCommand.buttonName], ['Copied', copyResumeCommand.copiedButtonName],
+      ]
+      for (const [label, name] of buttons) assert.ok(name.english.startsWith(`${label}`), name.english)
+      const words = [openInApp!.label.english, ...buttons.map(([label, name]) => [label, name.english]).flat(), runsInFolderNotice!.english,
+        'Opening…', 'Could not copy the command: {reason}', 'Copy it from here:']
+      for (const [locale, catalog] of Object.entries({ 'zh-CN': myworkZh, ko: myworkKo, tr: myworkTr })) {
+        for (const english of words) assert.ok(catalog[english]?.trim(), `${locale} has no words for ${english}`)
+        const lower = (text: string) => text.toLocaleLowerCase(locale)
+        for (const [label, name] of buttons) assert.ok(lower(catalog[name.english]).includes(lower(catalog[label])), `${locale}: ${catalog[name.english]}`)
+      }
+    }
+  })
+})
+
+describe('the buttons beside the message box keep their width while their label changes', () => {
+  // A button is as wide as the widest label it lays out, so the same labels laid out in every state keep its width, and the
+  // buttons after it in the row stay where they are.
+  const laidOut = (labels: ButtonLabelInPlace[]) => labels.map((label) => label.text)
+  const shown = (labels: ButtonLabelInPlace[]) => labels.filter((label) => label.isShown).map((label) => label.text)
+
+  for (const [label, workingLabel] of [['Open in Claude', 'Opening…'], ['Send', 'Sending…'], [myworkZh['Send'], myworkZh['Sending…']]] as const) {
+    it(`“${label}” lays out “${workingLabel}” in the same place in both states, and shows only the one for now`, () => {
+      const idle = buttonLabelsKeepingTheirWidth(label, workingLabel, false)
+      const working = buttonLabelsKeepingTheirWidth(label, workingLabel, true)
+      assert.deepEqual(laidOut(idle), laidOut(working))
+      assert.deepEqual([...laidOut(idle)].sort(), [label, workingLabel].sort())
+      assert.deepEqual(shown(idle), [label])
+      assert.deepEqual(shown(working), [workingLabel])
+    })
+  }
+})
+
+describe('what the row says when the clipboard does not take the command', () => {
+  const inLanguage = (catalog: Record<string, string> | null, words: ContinuationWords) => interpolate(catalog ? catalog[words.english] : words.english, words.values)
+  // Reasons browsers give, with and without a full stop of their own.
+  const reasons = ['Write permission denied.', 'Document is not focused.', "Cannot read properties of undefined (reading 'writeText')", 'NotAllowedError']
+
+  it('ends the first line with the browser\'s reason, whole, so a reason that has its own full stop never gets a second one', () => {
+    for (const [language, catalog] of [['en', null], ['zh-CN', myworkZh], ['ko', myworkKo], ['tr', myworkTr]] as const) {
+      for (const reason of reasons) {
+        const words = resumeCommandCopyFailureWords(reason)
+        const why = inLanguage(catalog, words.why)
+        assert.ok(why.endsWith(reason), `${language}: ${why}`)
+        assert.doesNotMatch(why, /[.。][)）]?[.。]/, `${language}: ${why}`)
+        assert.ok(inLanguage(catalog, words.copyItFromHere).trim(), `${language} has words for ${words.copyItFromHere.english}`)
+      }
+    }
+  })
+})
+
 describe('where focus goes after Send or Stop', () => {
   it('into the message box when the pressed button held focus: a pressed Send or Stop is disabled, and Stop goes away when its turn ends', () => {
     // Send pressed on a conversation with words typed, then Stop pressed on the turn it started.
@@ -253,6 +391,8 @@ describe('reading the worker\'s answers', () => {
       { target: runsInRecordedFolder },
       { target: runsInRecordedFolder, exchanges: {} },
       { target: { canContinue: true, recordedFolder: RECORDED_FOLDER }, exchanges: [] },
+      { target: { canContinue: true, recordedFolder: RECORDED_FOLDER, runsInFolder: RECORDED_FOLDER, recordedFolderIsGone: false }, exchanges: [] },
+      { target: { ...runsInRecordedFolder, opensInAppNamed: 42 }, exchanges: [] },
       { target: { canContinue: false, recordedFolder: null }, exchanges: [] },
       { target: runsInRecordedFolder, exchanges: [{ ...replied(), state: 'paused' }] },
       { target: runsInRecordedFolder, exchanges: [{ ...replied(), platform: 'gemini' }] },
@@ -265,6 +405,19 @@ describe('reading the worker\'s answers', () => {
     assert.equal(readConversationExchangeAnswer({}), null)
     assert.equal(readConversationExchangeAnswer({ exchange: { ...exchange(), exchangeId: '1' } }), null)
     assert.equal(readConversationExchangeAnswer(null), null)
+  })
+
+  it('reads what the CLI printed as it opened the conversation, from the answer an open in the app gives, and nothing else', () => {
+    const printedText = `Opening session ${SESSION} in Claude Desktop`
+    assert.deepEqual(readOpenedInAppAnswer({ printedText }), { printedText })
+    assert.deepEqual(readOpenedInAppAnswer({ printedText: null }), { printedText: null })
+    for (const body of [{}, { printedText: 42 }, null, [], 'opened', 200]) assert.equal(readOpenedInAppAnswer(body), null, JSON.stringify(body))
+  })
+
+  it('reads the guarded read\'s target with the app the worker says opens the conversation, or none', () => {
+    for (const target of [runsInRecordedFolder, opensInNoAppHere]) {
+      assert.deepEqual(readConversationContinuationAnswer({ target, exchanges: [] }), { target, exchanges: [] })
+    }
   })
 
   it('reads a notice as its four fields only, and refuses one that is not a notice', () => {

@@ -44,7 +44,18 @@ class FakeStream {
   emit(type: string, value: unknown) { this.handlers.get(type)?.({ data: JSON.stringify(value) }) }
   close() { this.closed = true; this.readyState = 2 }
 }
-function harness(fetcher: typeof fetch, bootstrapTimeoutMs = 100, page: Pick<LocalSourceOptions, 'hostname' | 'visibility'> = {}) {
+/** A page that can be unloaded: it fires 'pagehide' to its listeners, as `window` does on a reload or a closed tab. */
+function fakePageUnload() {
+  const listeners = new Set<() => void>()
+  return {
+    addEventListener: (_type: 'pagehide', listener: () => void) => { listeners.add(listener) },
+    removeEventListener: (_type: 'pagehide', listener: () => void) => { listeners.delete(listener) },
+    hide: () => { for (const listener of [...listeners]) listener() },
+    listenerCount: () => listeners.size,
+  }
+}
+
+function harness(fetcher: typeof fetch, bootstrapTimeoutMs = 100, page: Pick<LocalSourceOptions, 'hostname' | 'visibility' | 'pageUnload'> = {}) {
   const streams: FakeStream[] = []
   const urls: string[] = []
   const local = createLocalSource({ hostname: 'localhost', ...page, fetchImpl: fetcher, bootstrapTimeoutMs,
@@ -794,8 +805,8 @@ describe('a hidden cloud tab', () => {
 
 describe('continuing a conversation from this computer', () => {
   const SESSION = '0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d'
-  const CONTINUATION_MEMBERS = ['loadConversationContinuation', 'continueConversation', 'stopConversationContinuation', 'subscribeToConversationContinuations'] as const
-  const target = { canContinue: true, recordedFolder: '/work/example/worktree', runsInFolder: '/work/example', recordedFolderIsGone: true }
+  const CONTINUATION_MEMBERS = ['loadConversationContinuation', 'continueConversation', 'stopConversationContinuation', 'subscribeToConversationContinuations', 'openConversationInApp'] as const
+  const target = { canContinue: true, recordedFolder: '/work/example/worktree', runsInFolder: '/work/example', recordedFolderIsGone: true, opensInAppNamed: 'Claude' }
   // Text that would read as a flag or a shell command if it were ever an argument. It travels in the JSON body, as typed.
   const ownerMessage = '--resume other "; rm -rf ~'
   const running = { exchangeId: 7, platform: 'claude', conversationSessionId: SESSION, state: 'running', ownerMessage, startedAtEpochMs: 1_000, ranInFolder: '/work/example' }
@@ -821,6 +832,63 @@ describe('continuing a conversation from this computer', () => {
       { url: '/api/work-view/conversations/stop', method: 'POST', headers: { 'Content-Type': 'application/json' }, body: { platform: 'claude', conversationSessionId: SESSION } },
     ])
     assert.equal(calls[0].init?.cache, 'no-store')
+  })
+
+  it('opens a conversation in its app through the open-in-app route, and resolves with what the CLI printed as it opened it', async () => {
+    const calls: Array<{ url: string; init: RequestInit | undefined }> = []
+    const printedText = `Opening session ${SESSION} in Claude Desktop`
+    const answers = [json({ printedText }), json({ printedText: null })]
+    const { local } = harness(async (url, init) => { calls.push({ url: String(url), init }); return answers.shift()! })
+    assert.deepEqual(await local.openConversationInApp!('claude', SESSION), { printedText })
+    assert.deepEqual(await local.openConversationInApp!('claude', SESSION), { printedText: null })
+    const openCall = { url: '/api/work-view/conversations/open-in-app', method: 'POST', headers: { 'Content-Type': 'application/json' }, body: { platform: 'claude', conversationSessionId: SESSION } }
+    assert.deepEqual(calls.map(({ url, init }) => ({ url, method: init?.method, headers: init?.headers, body: JSON.parse(String(init?.body)) })), [openCall, openCall])
+  })
+
+  it('asks the worker to stop the open when the page is unloaded while the open still runs, and not before or after', async () => {
+    const pageUnload = fakePageUnload()
+    const opening = deferred<Response>()
+    const calls: Array<{ url: string; init: RequestInit | undefined }> = []
+    const { local } = harness(async (url, init) => {
+      calls.push({ url: String(url), init })
+      return String(url).endsWith('/open-in-app') ? opening.promise : json({})
+    }, 100, { pageUnload })
+    pageUnload.hide()
+    assert.equal(calls.length, 0, 'nothing to stop before an open')
+
+    const opened = local.openConversationInApp!('claude', SESSION)
+    // A reload or a closed tab while the worker's command still runs: the worker cannot see this request go away.
+    pageUnload.hide()
+    const body = { platform: 'claude', conversationSessionId: SESSION }
+    assert.deepEqual(calls.map(({ url, init }) => ({ url, method: init?.method, keepalive: init?.keepalive, headers: init?.headers, body: JSON.parse(String(init?.body)) })), [
+      { url: '/api/work-view/conversations/open-in-app', method: 'POST', keepalive: undefined, headers: { 'Content-Type': 'application/json' }, body },
+      { url: '/api/work-view/conversations/open-in-app/stop', method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json' }, body },
+    ])
+    const stopped = 'Claude Code could not open this conversation in the Claude app: the page that asked went away, so it was stopped.'
+    opening.resolve(json({ error: stopped }, 409))
+    assert.equal(await rejectionMessage(opened), stopped)
+    assert.equal(pageUnload.listenerCount(), 0)
+    pageUnload.hide()
+    assert.equal(calls.length, 2, 'nothing to stop once the open has ended')
+  })
+
+  it('rejects an open that did not happen with the worker\'s sentence, whole, and an answer it cannot read with a plain one', async () => {
+    const noDocumentedWay = 'Codex has no documented way to open a conversation in its app. Copy the resume command instead.'
+    // What the worker answers when Claude Code did not open the app: a sentence, then everything the CLI printed.
+    const didNotOpen = `Claude Code could not open this conversation in the Claude app. Claude Code exited with code 1.\n\n${'x'.repeat(200_000)}`
+    const answers = [json({ error: noDocumentedWay }, 409), json({ error: didNotOpen }, 409), json([]), json({ error: 'Continuing a conversation is unavailable on this worker.' }, 503)]
+    const { local } = harness(async () => answers.shift()!)
+    assert.equal(await rejectionMessage(local.openConversationInApp!('codex', SESSION)), noDocumentedWay)
+    const whole = await rejectionMessage(local.openConversationInApp!('claude', SESSION))
+    assert.equal(whole.length, didNotOpen.length)
+    assert.equal(whole, didNotOpen)
+    assert.equal(await rejectionMessage(local.openConversationInApp!('claude', SESSION)), 'The worker answered 200, but this page cannot read its answer.')
+    assert.equal(await rejectionMessage(local.openConversationInApp!('claude', SESSION)), 'Continuing a conversation is unavailable on this worker.')
+  })
+
+  it('rejects an open with a plain sentence when the worker cannot be reached', async () => {
+    const { local } = harness(async () => { throw new TypeError('fetch failed') })
+    assert.equal(await rejectionMessage(local.openConversationInApp!('claude', SESSION)), 'Could not open this conversation in its app: the worker could not be reached (fetch failed).')
   })
 
   it('rejects a refusal with the worker\'s own sentence', async () => {

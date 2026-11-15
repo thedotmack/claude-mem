@@ -20,21 +20,30 @@
  * No permission, model or sandbox option is passed: the turn runs in the mode the owner's own `claude -p --resume`
  * would start in, and no option that skips hooks or plugins is passed either.
  *
+ * On macOS it also opens a Claude Code conversation in the Claude desktop app, by the command Claude Code documents for
+ * it, which starts no turn: `claude --desktop --resume <session uuid>` (see OPEN_IN_APP_ARGUMENTS and
+ * PSEUDO_TERMINAL_COMMAND).
+ *
  * The argv shapes, the UUID guard, the stdin delivery and dropping CLAUDE_MEM_INTERNAL follow Miles Wiesenthal's
  * answer-delivery.ts in PR #6054.
  */
 import type { spawn } from 'child_process';
 import { statSync } from 'fs';
 import { dirname } from 'path';
+import { stripVTControlCharacters } from 'util';
 import { runCommand, type CommandResult, type UsableAgent, type UsableAgentId } from '../agent-runner/detect.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { logger } from '../../utils/logger.js';
 import {
+  CONVERSATION_APP_NAMES,
   CONVERSATION_SESSION_UUID_PATTERN,
   isContinuablePlatform,
+  opensInItsOwnApp,
   type ContinuablePlatform,
   type ConversationContinuation,
   type ConversationContinuationTarget,
+  type ConversationOpenedInApp,
+  type PlatformWithItsOwnApp,
 } from '../../shared/conversation-continuation.js';
 
 /** How a turn ended, as the exchange records it. */
@@ -71,6 +80,58 @@ const CONTINUATION_TOOLS: Record<ContinuablePlatform, ContinuationTool> = {
   },
 };
 
+/**
+ * The command that opens a conversation in its tool's own app (CONVERSATION_APP_NAMES), as the CLI documents it. Claude
+ * Code 2.1.325: `claude --desktop --resume <session uuid>`. `--desktop  Open in the Claude Desktop app instead of the
+ * terminal`, and `--resume <id>` picks the session (`claude --help`). "Claude Code prints `Opening session <session-id>
+ * in Claude Desktop`, the session opens in the app, and the command exits." It "doesn't move a session that is open in
+ * another terminal or still running in the background" (desktop docs, "Coming from the CLI?"). It starts no turn.
+ */
+const OPEN_IN_APP_ARGUMENTS: Record<PlatformWithItsOwnApp, (conversationSessionId: string) => string[]> = {
+  claude: conversationSessionId => ['--desktop', '--resume', conversationSessionId],
+};
+
+/**
+ * What the app is opened through: a pseudo-terminal. Claude Code 2.1.325 opens the desktop app only when its stdin and
+ * stdout are a terminal, which its docs do not say. Its --desktop handler (launchDesktopFromCli, read in the 2.1.325
+ * binary) refuses when stdout is not one ("--desktop opens the Claude Desktop app and can't run non-interactively
+ * (`--print`, `--sdk-url`, `--init-only`, or redirected output).") and then when stdin is not one ("--desktop doesn't take
+ * piped or redirected input yet. Run `claude --desktop` on its own, then type in the app."). The worker has no terminal,
+ * and runCommand reads what a command prints through pipes.
+ *
+ * So the command runs under macOS's /usr/bin/script: `script -q /dev/null <claude> --desktop --resume <session uuid>`.
+ * script gives the command a pseudo-terminal of its own, starts it with execvp (no shell), copies what it prints to
+ * script's stdout, and exits with its exit code. `-q` adds none of script's own lines, and /dev/null keeps no copy. The
+ * command gets TERM=dumb, the setting the real open was checked with on 15 Nov 2026. Claude Code still writes color and
+ * cursor codes to the terminal under it (printedThroughPseudoTerminal takes them out).
+ *
+ * Only macOS has this here, so only there does the worker open a conversation in its app (appThatOpensConversationsHere).
+ * Claude Desktop also runs on x64 Windows, which has no such program: run from the worker, Claude Code refuses every
+ * open there as non-interactive. Linux has no Claude Desktop.
+ */
+const PSEUDO_TERMINAL_COMMAND = '/usr/bin/script';
+
+/**
+ * The app the worker can open a conversation of this tool in on a computer running `operatingSystem`, or null: the
+ * tool's app (CONVERSATION_APP_NAMES) on macOS, which has the pseudo-terminal its CLI needs (PSEUDO_TERMINAL_COMMAND),
+ * and none anywhere else.
+ */
+function appThatOpensConversationsHere(platform: ContinuablePlatform, operatingSystem: NodeJS.Platform): string | null {
+  return operatingSystem === 'darwin' ? CONVERSATION_APP_NAMES[platform] : null;
+}
+
+/**
+ * What the command printed, from what script copied out of the pseudo-terminal. Three kinds of things in it are the
+ * terminal's, not the command's words, and are taken out: the echo of the end of input that script sends it when
+ * script's own stdin is empty ("^D" and two backspaces), "\r\n" for each line end, and terminal control sequences. Claude
+ * Code 2.1.325 writes those even under TERM=dumb: ESC[0m ESC[31m before a refusal, ESC[0m after it and ESC[?25h as it
+ * exits (real output in tests/fixtures/conversation-continuation/claude-desktop-refusal-through-script.json).
+ * stripVTControlCharacters (node:util) takes out every such sequence. Every character the command printed is kept.
+ */
+function printedThroughPseudoTerminal(terminalOutput: string): string {
+  return stripVTControlCharacters(terminalOutput.replace('^D\b\b', '').replaceAll('\r\n', '\n'));
+}
+
 const CONTINUABLE_TOOL_NAMES = Object.values(CONTINUATION_TOOLS).map(tool => tool.toolName).join(' and ');
 const STILL_RUNNING_REFUSAL = 'This conversation is still answering your last message from here. Wait for its reply, or stop it, before you send another.';
 const NOTHING_RUNNING_REFUSAL = 'Nothing sent from here is running in this conversation.';
@@ -95,10 +156,21 @@ export interface ConversationContinuationDependencies {
   environment?: () => NodeJS.ProcessEnv;
   /** Whether a path is an existing folder. Defaults to isExistingFolder below. */
   isExistingFolder?: (path: string) => boolean;
+  /**
+   * This computer's operating system, which decides whether the worker can open a conversation in its app
+   * (appThatOpensConversationsHere). Defaults to process.platform.
+   */
+  operatingSystem?: () => NodeJS.Platform;
 }
 
 /** A start or a stop: the exchange it concerns, or one sentence saying why it did not happen. */
 export type ConversationExchangeOrRefusal = { exchange: ConversationContinuation } | { refusalText: string };
+
+/**
+ * Opening a conversation in its app: it opened, with what the command printed as it did, or why it did not, followed by
+ * what the command printed when it ran.
+ */
+export type OpenedInAppOrRefusal = ({ opened: true } & ConversationOpenedInApp) | { refusalText: string };
 
 /**
  * Whether `path` is a folder that exists. "No such entry" and "a parent is not a folder" mean it is gone, and so does a
@@ -122,12 +194,13 @@ function isExistingFolder(path: string): boolean {
  * any folder, so the turn then runs in the nearest folder above it that still exists, and the target says so before
  * anything is sent.
  *
- * It runs no agent detection: the page asks this for every conversation row the owner opens.
+ * It runs no agent detection: the page asks this for every conversation row the owner opens. It also says which app, if
+ * any, the worker can open the conversation in on this computer (opensInAppNamed).
  */
 export function resolveConversationContinuationTarget(
   platform: string,
   conversationSessionId: string,
-  dependencies: Pick<ConversationContinuationDependencies, 'recordedFolderForConversation' | 'isExistingFolder'>,
+  dependencies: Pick<ConversationContinuationDependencies, 'recordedFolderForConversation' | 'isExistingFolder' | 'operatingSystem'>,
 ): ConversationContinuationTarget {
   if (!isContinuablePlatform(platform)) {
     return { canContinue: false, refusalText: `Only ${CONTINUABLE_TOOL_NAMES} conversations can be continued from here.`, recordedFolder: null };
@@ -145,10 +218,11 @@ export function resolveConversationContinuationTarget(
     return { canContinue: false, refusalText: `No folder was recorded for this ${toolName} conversation, so it can’t be continued from here.`, recordedFolder: null };
   }
   const folderExists = dependencies.isExistingFolder ?? isExistingFolder;
+  const opensInAppNamed = appThatOpensConversationsHere(platform, dependencies.operatingSystem?.() ?? process.platform);
   try {
-    if (folderExists(recordedFolder)) return { canContinue: true, recordedFolder, runsInFolder: recordedFolder, recordedFolderIsGone: false };
+    if (folderExists(recordedFolder)) return { canContinue: true, recordedFolder, runsInFolder: recordedFolder, recordedFolderIsGone: false, opensInAppNamed };
     for (let candidate = dirname(recordedFolder); ; candidate = dirname(candidate)) {
-      if (folderExists(candidate)) return { canContinue: true, recordedFolder, runsInFolder: candidate, recordedFolderIsGone: true };
+      if (folderExists(candidate)) return { canContinue: true, recordedFolder, runsInFolder: candidate, recordedFolderIsGone: true, opensInAppNamed };
       if (dirname(candidate) === candidate) break;
     }
   } catch (error) {
@@ -296,6 +370,11 @@ export class ConversationContinuationRunner {
   private readonly conversations = new Map<string, ConversationTurns>();
   /** Conversations whose start is still checking the CLI's install and login, so a second start cannot slip in meanwhile. */
   private readonly conversationKeysBeingStarted = new Set<string>();
+  /**
+   * Conversations being opened in their app now, from the CLI's install check until its command has exited (openInApp),
+   * each with what stops its command (stopOpeningInApp). One entry per open the owner clicked that is still running.
+   */
+  private readonly openingsInApp = new Map<string, AbortController>();
   private nextExchangeId = 1;
   private readonly dependencies: ConversationContinuationDependencies;
 
@@ -379,6 +458,106 @@ export class ConversationContinuationRunner {
     return { exchange: runningExchange };
   }
 
+  /**
+   * Opens the conversation in its tool's own app (OPEN_IN_APP_ARGUMENTS), from the folder its turn would run in, through
+   * the pseudo-terminal its CLI needs (PSEUDO_TERMINAL_COMMAND), and answers once the command has exited, with what it
+   * printed. It starts no turn, changes no exchange, and runs nothing later. Only the CLI's install is checked first:
+   * when the app is missing or the login cannot open it, the CLI's own words say so.
+   *
+   * It has no deadline. It ends when its command exits, or when stopOpeningInApp stops it because the page that asked is
+   * going away. One open per conversation runs at a time, so a click in another tab cannot start a second one beside a
+   * first that hangs.
+   */
+  async openInApp(platform: string, conversationSessionId: string): Promise<OpenedInAppOrRefusal> {
+    if (isContinuablePlatform(platform) && !opensInItsOwnApp(platform)) {
+      return { refusalText: `${CONTINUATION_TOOLS[platform].toolName} has no documented way to open a conversation in its app. Copy the resume command instead.` };
+    }
+    const target = resolveConversationContinuationTarget(platform, conversationSessionId, this.dependencies);
+    if (!target.canContinue) return { refusalText: target.refusalText };
+    // The target refused every tool this cannot continue, and the check above every tool without an app of its own.
+    const platformWithApp = platform as PlatformWithItsOwnApp;
+    const tool = CONTINUATION_TOOLS[platformWithApp];
+    const appName = CONVERSATION_APP_NAMES[platformWithApp];
+    if (target.opensInAppNamed === null) {
+      return { refusalText: `${tool.toolName} opens a conversation in the ${appName} app from here only on macOS. Copy the resume command instead.` };
+    }
+    const conversationKey = conversationKeyFor(platform, conversationSessionId);
+    // Checked and taken before the first await, so two clicks at once cannot both pass.
+    if (this.openingsInApp.has(conversationKey)) {
+      return {
+        refusalText: `${tool.toolName} is still opening this conversation in the ${appName} app from an earlier click. Wait for it to finish, or reload the page you clicked it in to stop it.`,
+      };
+    }
+    const opening = new AbortController();
+    this.openingsInApp.set(conversationKey, opening);
+    try {
+      return await this.runOpenInApp(platformWithApp, conversationSessionId, target.runsInFolder, opening.signal);
+    } finally {
+      this.openingsInApp.delete(conversationKey);
+    }
+  }
+
+  /**
+   * Stops the command opening this conversation in its app, which then answers that it was stopped. The page asks for this
+   * when it is unloaded while its open still runs (a reload, a closed tab), because the worker cannot see that page's
+   * request go away: Bun's node:http, which serves the worker, gives a POST whose client has left no event, no error and
+   * no failed write (Bun 1.3.9, checked with raw TCP clients on 15 Nov 2026; Node sees it at once). runCommand sends
+   * SIGTERM to script's process group, script ends, its pseudo-terminal closes, and the CLI behind it gets the hangup
+   * (SIGHUP) a closed terminal window gives it.
+   */
+  stopOpeningInApp(platform: string, conversationSessionId: string): { stopping: true } | { refusalText: string } {
+    const opening = this.openingsInApp.get(conversationKeyFor(platform, conversationSessionId));
+    if (!opening) return { refusalText: 'Nothing is opening this conversation in its app.' };
+    opening.abort();
+    logger.info('WORKER', 'Conversation open in its app stop requested: the page that asked is going away', { platform, conversationSessionId });
+    return { stopping: true };
+  }
+
+  private async runOpenInApp(
+    platform: PlatformWithItsOwnApp,
+    conversationSessionId: string,
+    runsInFolder: string,
+    stopRequested: AbortSignal,
+  ): Promise<OpenedInAppOrRefusal> {
+    const tool = CONTINUATION_TOOLS[platform];
+    const agent = (await this.dependencies.detectAgents()).find(candidate => candidate.id === tool.agentId);
+    if (!agent?.path) return { refusalText: `${tool.toolName} is not installed on this computer.` };
+    const didNotOpen = `${tool.toolName} could not open this conversation in the ${CONVERSATION_APP_NAMES[platform]} app`;
+    const stoppedSentence = `${didNotOpen}: the page that asked went away, so it was stopped.`;
+    if (stopRequested.aborted) {
+      logger.info('WORKER', 'Conversation open in its app not started: the page that asked went away while the CLI was checked', { platform, conversationSessionId });
+      return { refusalText: stoppedSentence };
+    }
+
+    const scriptArguments = ['-q', '/dev/null', agent.path, ...OPEN_IN_APP_ARGUMENTS[platform](conversationSessionId)];
+    // Nothing is written to its stdin: runCommand gives a command no stdin when it has no input. The stop is SIGTERM to
+    // script's process group: the open starts no turn, so unlike a turn's Stop (SIGINT) it leaves nothing unfinished.
+    const result = await runCommand(this.dependencies.spawnImpl, PSEUDO_TERMINAL_COMMAND, scriptArguments, {
+      cwd: runsInFolder, env: { ...this.childEnvironment(), TERM: 'dumb' }, signal: stopRequested, killSignal: 'SIGTERM',
+    });
+    // What the CLI printed on stdout and stderr arrives together on script's stdout; script's stderr holds script's own.
+    const printedText = wholeText(printedThroughPseudoTerminal(result.stdout), result.stderr);
+    logger.info('WORKER', 'Conversation open in its app ended', {
+      platform, conversationSessionId, ranInFolder: runsInFolder, exitCode: result.exitCode, spawnError: result.spawnError?.message,
+      stopRequested: stopRequested.aborted, printedText,
+    });
+    if (result.spawnError) return { refusalText: `${didNotOpen}: ${result.spawnError.message}` };
+    // An exit 0 opened it, even when a stop came after the command had finished.
+    if (result.exitCode === 0) return { opened: true, printedText: printedText === '' ? null : printedText };
+    if (stopRequested.aborted) return { refusalText: wholeText(stoppedSentence, printedText) };
+    return { refusalText: wholeText(`${didNotOpen}. ${exitedSentence(tool.toolName, result.exitCode)}`, printedText) };
+  }
+
+  /**
+   * The environment a CLI started from here gets: the worker's, cleaned. The worker's own Claude Code session variables
+   * and its "internal run" mark must not reach the owner's conversation: CLAUDE_MEM_INTERNAL=1 would keep claude-mem's
+   * hooks from capturing the turn.
+   */
+  private childEnvironment(): NodeJS.ProcessEnv {
+    const { CLAUDE_MEM_INTERNAL: _internalRunMark, ...childEnvironment } = sanitizeEnv(this.dependencies.environment?.() ?? process.env);
+    return childEnvironment;
+  }
+
   private async runTurn(
     conversation: ConversationTurns,
     exchange: ConversationContinuation,
@@ -386,12 +565,9 @@ export class ConversationContinuationRunner {
     executablePath: string,
     runningTurnController: AbortController,
   ): Promise<void> {
-    // The worker's own Claude Code session variables and its "internal run" mark must not reach the owner's
-    // conversation: CLAUDE_MEM_INTERNAL=1 would keep claude-mem's hooks from capturing the turn.
-    const { CLAUDE_MEM_INTERNAL: _internalRunMark, ...childEnvironment } = sanitizeEnv(this.dependencies.environment?.() ?? process.env);
     const result = await runCommand(this.dependencies.spawnImpl, executablePath, tool.argumentsFor(exchange.conversationSessionId), {
       cwd: exchange.ranInFolder,
-      env: childEnvironment,
+      env: this.childEnvironment(),
       input: exchange.ownerMessage,
       signal: runningTurnController.signal,
       // SIGINT ends the turn; SIGTERM would leave it unfinished (headless docs, "Stop a run with SIGTERM").

@@ -6,7 +6,9 @@ import type { OwnerRule, RuleChange, RulesFile, RulesLearning, RuleScope } from 
 import type { ConnectionStatus } from './connection-status.ts'
 import type { ReviewResult, SaveReceipt } from './review-response.ts'
 import type { WorkViewRefreshState } from './work-view-api-types.ts'
-import type { ContinuablePlatform, ConversationContinuation, ConversationContinuationNotice, ConversationContinuationTarget } from '../../../../shared/conversation-continuation.ts'
+import type {
+  ContinuablePlatform, ConversationContinuation, ConversationContinuationNotice, ConversationContinuationTarget, ConversationOpenedInApp,
+} from '../../../../shared/conversation-continuation.ts'
 
 export type SourceKind = 'sample' | 'local' | 'cloud'
 
@@ -126,6 +128,12 @@ export interface WorkDataSource {
    * live stream, so they arrive while subscribeToLiveUpdates holds it open.
    */
   subscribeToConversationContinuations?(listener: (event: ConversationContinuationEvent) => void): () => void
+  /**
+   * Opens the conversation in its tool's own app on this computer (the target's opensInAppNamed: Claude Code's, in the
+   * Claude desktop app, on macOS), and resolves once the worker's command has exited, with what it printed. It starts no
+   * turn. When the app did not open it, this rejects with the worker's sentence, which holds what the command printed.
+   */
+  openConversationInApp?(platform: ContinuablePlatform, conversationSessionId: string): Promise<ConversationOpenedInApp>
 }
 
 /** A source that can continue a conversation from this page: it has all four of the calls above. */

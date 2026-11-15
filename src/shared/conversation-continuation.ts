@@ -73,6 +73,13 @@ export type ConversationContinuationTarget =
     /** The recorded folder, or, when it is gone, the nearest folder above it that still exists. */
     runsInFolder: string;
     recordedFolderIsGone: boolean;
+    /**
+     * The app this computer's worker can open the conversation in, by name (CONVERSATION_APP_NAMES), or null when it
+     * can't open it in one here: Codex documents no way to, and the worker opens a Claude Code conversation in the
+     * Claude app on macOS only (ConversationContinuationRunner.openInApp says why). The page offers "Open in {app}" only
+     * when this names one.
+     */
+    opensInAppNamed: string | null;
   }
   | {
     canContinue: false;
@@ -81,7 +88,35 @@ export type ConversationContinuationTarget =
     recordedFolder: string | null;
     runsInFolder?: undefined;
     recordedFolderIsGone?: undefined;
+    opensInAppNamed?: undefined;
   };
+
+/**
+ * What POST /api/work-view/conversations/open-in-app answers once the conversation is open in its app: what the CLI
+ * printed as it opened it, without the terminal's control sequences, or null when it printed nothing. The page shows
+ * it under the row, so an open that printed something unexpected is never silent.
+ */
+export interface ConversationOpenedInApp {
+  printedText: string | null;
+}
+
+/**
+ * The app each tool opens one of its conversations in, by name, or null when the tool documents no way to. Claude Code
+ * opens one in the Claude desktop app with `claude --desktop --resume <session uuid>` (desktop docs, "Coming from the
+ * CLI?"; `--desktop` in `claude --help` 2.1.325), which the worker runs (ConversationContinuationRunner.openInApp).
+ * Codex documents no link and no flag for its app, so a Codex row offers the resume command only, and the worker refuses
+ * to open one. Whether this computer can open one is the worker's to say: the target's opensInAppNamed.
+ */
+export const CONVERSATION_APP_NAMES = { claude: 'Claude', codex: null } as const satisfies Record<ContinuablePlatform, string | null>;
+
+/** A tool that opens its conversations in its own app: one whose CONVERSATION_APP_NAMES entry is a name. */
+export type PlatformWithItsOwnApp = {
+  [Platform in ContinuablePlatform]: (typeof CONVERSATION_APP_NAMES)[Platform] extends string ? Platform : never;
+}[ContinuablePlatform];
+
+export function opensInItsOwnApp(platform: ContinuablePlatform): platform is PlatformWithItsOwnApp {
+  return CONVERSATION_APP_NAMES[platform] !== null;
+}
 
 const RESUME_COMMAND_WORDS: Record<ContinuablePlatform, string> = { claude: 'claude --resume', codex: 'codex resume' };
 
