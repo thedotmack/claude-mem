@@ -157,11 +157,13 @@ installer never writes these files for you.
 ## Troubleshooting
 
 - **Server never appears / no green dot:** check the key is
-  `context_servers`, not `mcpServers`; check the JSON parses
-  (`python3 -m json.tool ~/.config/zed/settings.json > /dev/null`);
-  restart Zed — context servers load at startup.
+  `context_servers`, not `mcpServers`; check Zed's own error for the
+  server in Settings → AI → MCP Servers, or run `zed: open log` from the
+  command palette; restart Zed — context servers load at startup. (Zed
+  settings are JSONC, so a strict JSON checker rejects a valid file that
+  has comments.)
 - **`save_memory` is not offered:** you are on the server runtime
-  (CMEM Pro hosted), where `save_memory` is hidden and `observation_add`
+  (`CLAUDE_MEM_RUNTIME=server`), where `save_memory` is hidden and `observation_add`
   is the write tool instead. On the default local worker runtime
   `save_memory` is advertised.
 - **Agent never calls the tools:** mention `claude-mem` by name in the
