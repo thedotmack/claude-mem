@@ -1397,4 +1397,63 @@ describe('ResponseProcessor', () => {
       expect(buildObservationPrompt(observation)).not.toContain(OBSERVATION_SCHEMA_REMINDER);
     });
   });
+
+  describe('folder CLAUDE.md mirror update (#6182)', () => {
+    const responseWithFile = '<observation><type>discovery</type><title>Read a file</title>'
+      + '<narrative>Looked at the source.</narrative>'
+      + '<files_read><file>src/example.ts</file></files_read></observation>';
+
+    async function waitForFolderUpdateCall(): Promise<void> {
+      for (let attempt = 0; attempt < 200 && mockUpdateFolderClaudeMdFiles.mock.calls.length === 0; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 5));
+      }
+      expect(mockUpdateFolderClaudeMdFiles).toHaveBeenCalled();
+    }
+
+    it('does not settle the response before the folder mirror update settles', async () => {
+      mockFolderClaudeMdEnabled = true;
+      let resolveUpdate: () => void = () => {};
+      let updateSettled = false;
+      mockUpdateFolderClaudeMdFiles = mock(() => new Promise<void>((resolve) => {
+        resolveUpdate = () => { updateSettled = true; resolve(); };
+      }));
+
+      let responseSettled = false;
+      const responsePromise = processAgentResponse(
+        responseWithFile, createMockSession(), mockDbManager, mockSessionManager, mockWorker, 100, null, 'TestAgent'
+      ).then(() => { responseSettled = true; });
+
+      await waitForFolderUpdateCall();
+      // Give a detached continuation every chance to settle the response.
+      await new Promise(resolve => setTimeout(resolve, 25));
+      expect(updateSettled).toBe(false);
+      expect(responseSettled).toBe(false);
+
+      resolveUpdate();
+      await responsePromise;
+      expect(updateSettled).toBe(true);
+      expect(responseSettled).toBe(true);
+    });
+
+    it('keeps a failed folder mirror update non-critical', async () => {
+      mockFolderClaudeMdEnabled = true;
+      mockUpdateFolderClaudeMdFiles = mock(() => Promise.reject(new Error('disk full')));
+
+      const result = await processAgentResponse(
+        responseWithFile, createMockSession(), mockDbManager, mockSessionManager, mockWorker, 100, null, 'TestAgent'
+      );
+      expect(result).not.toBeNull();
+
+      const warnCalls = (loggerSpies[2] as ReturnType<typeof spyOn>).mock.calls;
+      expect(warnCalls.some(call => call[0] === 'FOLDER_INDEX')).toBe(true);
+    });
+
+    it('does not run the folder mirror update when the setting is disabled', async () => {
+      mockFolderClaudeMdEnabled = false;
+      await processAgentResponse(
+        responseWithFile, createMockSession(), mockDbManager, mockSessionManager, mockWorker, 100, null, 'TestAgent'
+      );
+      expect(mockUpdateFolderClaudeMdFiles).not.toHaveBeenCalled();
+    });
+  });
 });

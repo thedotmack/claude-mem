@@ -1543,14 +1543,21 @@ async function syncAndBroadcastObservations(
     }
 
     if (allFilePaths.length > 0) {
-      updateFolderClaudeMdFiles(
-        allFilePaths,
-        context.project,
-        getWorkerPort(),
-        projectRoot
-      ).catch(error => {
+      // Await the mirror update (#6182): a response that reports success must
+      // not settle while the on-disk folder CLAUDE.md index still lags the
+      // observations it just stored, and a detached update is lost entirely
+      // when the worker exits mid-flight. The failure stays non-critical —
+      // it is logged, never thrown into the response path.
+      try {
+        await updateFolderClaudeMdFiles(
+          allFilePaths,
+          context.project,
+          getWorkerPort(),
+          projectRoot
+        );
+      } catch (error) {
         logger.warn('FOLDER_INDEX', 'CLAUDE.md update failed (non-critical)', { project: context.project }, error as Error);
-      });
+      }
     }
   }
 }
