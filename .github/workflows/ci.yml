@@ -58,6 +58,9 @@ jobs:
       - name: Build (includes bundle-size guardrails)
         run: npm run build
 
+      - name: Provider import CLI and real-worker smoke
+        run: python3 tests/fixtures/import-provider-smoke.py
+
       # The in-process server-runtime smoke test (tests/server/server-runtime-smoke.test.ts,
       # #2550) runs here with no Docker: it boots the server HTTP surface in
       # process, loads a mode, creates a key, makes an authed request, and
