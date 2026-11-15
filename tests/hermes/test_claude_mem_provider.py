@@ -12,6 +12,7 @@ import json
 import os
 import socket
 import shutil
+import stat
 import sys
 import tempfile
 import threading
@@ -26,6 +27,17 @@ REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 
 from hermes_session_driver import install_hermes_stub
+
+
+def remove_tree(path):
+    """shutil.rmtree, but able to remove the read-only files a git fixture leaves behind on Windows."""
+    def force_writable(function, target, _exc):
+        os.chmod(target, stat.S_IWRITE)
+        function(target)
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=force_writable)
+    else:
+        shutil.rmtree(path, onerror=force_writable)
 
 
 install_hermes_stub()
@@ -106,7 +118,7 @@ class ProviderTest(unittest.TestCase):
         self.fake = FakeClaudeMem()
         self.addCleanup(self.fake.close)
         self.cwd = tempfile.mkdtemp(prefix="hermes-project-")
-        self.addCleanup(shutil.rmtree, self.cwd)
+        self.addCleanup(remove_tree, self.cwd)
         self.client = client_module.ClaudeMemClient(client_module.Config(self.fake.base))
         self.provider = claude_mem.ClaudeMemMemoryProvider(client=self.client)
         self.provider.initialize("sess-1", platform="cli", hermes_home="/tmp/h", cwd=self.cwd)
@@ -357,7 +369,7 @@ class ProviderTest(unittest.TestCase):
 
     def test_runtime_cwd_wins_when_hermes_has_it(self):
         other = tempfile.mkdtemp(prefix="hermes-runtime-")
-        self.addCleanup(shutil.rmtree, other)
+        self.addCleanup(remove_tree, other)
         runtime = types.ModuleType("agent.runtime_cwd")
         runtime.resolve_agent_cwd = lambda: other
         sys.modules["agent.runtime_cwd"] = runtime
@@ -600,7 +612,7 @@ class RegisterTest(unittest.TestCase):
 class SettingsTest(unittest.TestCase):
     def write_settings(self, doc, bom=False):
         directory = tempfile.mkdtemp(prefix="claude_mem-data-")
-        self.addCleanup(shutil.rmtree, directory)
+        self.addCleanup(remove_tree, directory)
         with open(os.path.join(directory, "settings.json"), "w", encoding="utf-8-sig" if bom else "utf-8") as handle:
             json.dump(doc, handle)
         return directory
@@ -619,7 +631,11 @@ class SettingsTest(unittest.TestCase):
     def test_default_port_matches_the_shared_fallback(self):
         directory = self.write_settings({})
         config = client_module.Config.resolve({"CLAUDE_MEM_DATA_DIR": directory})
-        self.assertEqual(config.worker_base, "http://127.0.0.1:%d" % (37700 + os.getuid() % 100))
+        self.assertEqual(config.worker_base, "http://127.0.0.1:%s" % client_module.default_worker_port(directory))
+
+    def test_uid_offset_port_is_the_provider_rule_not_just_its_wiring(self):
+        with mock.patch.object(client_module.os, "getuid", lambda: 42, create=True):
+            self.assertEqual(client_module.default_worker_port(), "37742")
 
     def test_default_port_matches_shared_windows_path_hashes_without_uid(self):
         cases = [
@@ -644,7 +660,7 @@ class SettingsTest(unittest.TestCase):
 
     def test_a_missing_or_broken_settings_file_means_defaults(self):
         directory = tempfile.mkdtemp(prefix="claude_mem-data-")
-        self.addCleanup(shutil.rmtree, directory)
+        self.addCleanup(remove_tree, directory)
         with open(os.path.join(directory, "settings.json"), "w") as handle:
             handle.write("{not json")
         self.assertEqual(client_module.load_settings({"CLAUDE_MEM_DATA_DIR": directory}), {})
@@ -657,7 +673,7 @@ class CheckoutProjectTest(unittest.TestCase):
 
     def test_keys_match_the_claude_code_hooks_in_path_mode(self):
         root = tempfile.mkdtemp(prefix="hermes-keys-")
-        self.addCleanup(shutil.rmtree, root)
+        self.addCleanup(remove_tree, root)
         repo = os.path.join(root, "shop-api")
         os.makedirs(os.path.join(repo, "src"))
         self.git("init", "-q", repo)
@@ -680,7 +696,7 @@ class CheckoutProjectTest(unittest.TestCase):
         client_module.time = types.SimpleNamespace(monotonic=lambda: clock[0])
         try:
             root = tempfile.mkdtemp(prefix="hermes-ttl-")
-            self.addCleanup(shutil.rmtree, root)
+            self.addCleanup(remove_tree, root)
             repo = os.path.join(root, "nested")
             os.makedirs(os.path.join(repo, "sub"))
             self.git("init", "-q", repo)
