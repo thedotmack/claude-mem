@@ -24,6 +24,7 @@ import { isProjectExcluded } from '../../utils/project-filter.js';
 import { readStaleMarker } from '../../shared/oauth-token.js';
 import { clipUtf16 } from '../../shared/relayed-text.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
+import { withoutLoadedRulesPointer } from '../../shared/claude-code-rules-import.js';
 import { proTrialLine } from '../../shared/pro-promo.js';
 import { providersMappedBySource } from '../../shared/provider-by-source.js';
 import {
@@ -546,6 +547,8 @@ export const contextHandler: EventHandler = {
     let additionalContext: string;
     if (typeof contextResult === 'string') {
       additionalContext = contextResult.trim();
+      // Claude Code that loads RULES-AND-TOOLS.md through CLAUDE.md needs no pointer to it.
+      if (input.platform === 'claude-code') additionalContext = withoutLoadedRulesPointer(additionalContext);
     } else if (contextResult === undefined) {
       additionalContext = '';
     } else {
