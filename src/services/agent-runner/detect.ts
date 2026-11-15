@@ -34,7 +34,7 @@
  * worker lifetime and login: cached until `oauth_creds.json`'s refresh token or the auth type changes.
  */
 
-import { spawn } from 'child_process';
+import { spawn, type SpawnOptions } from 'child_process';
 import { createHash } from 'crypto';
 import { existsSync, readFileSync } from 'fs';
 import { homedir } from 'os';
@@ -57,11 +57,14 @@ export interface UsableAgent {
 }
 
 export interface CommandResult {
-  /** Exit code, or null when the process never started. */
+  /** Exit code, or null when the process never started or a signal ended it. */
   exitCode: number | null;
   stdout: string;
   stderr: string;
-  /** Set when the process could not be started (e.g. ENOENT). */
+  /**
+   * Set only when the process could not be started (e.g. ENOENT). A command stopped through `CommandOptions.signal`
+   * did start, so a stop never sets it: `exitCode` and the output tell how the command ended.
+   */
   spawnError?: Error;
 }
 
@@ -70,6 +73,30 @@ export interface CommandOptions {
   env?: NodeJS.ProcessEnv;
   /** Written to stdin, which is then closed; without it stdin is ignored. */
   input?: string;
+  /**
+   * Aborting it stops the command with `killSignal` (SIGTERM when none is given). The result still comes once the
+   * command has exited, with everything it printed.
+   *
+   * On macOS and Linux the command starts as the leader of a process group of its own, and the signal goes to that
+   * whole group, as Ctrl+C in a terminal does. The command found on PATH can be a launcher script that runs the real
+   * CLI as its child and passes no signal on: an agent wrapper written in bash that traps INT is one, because bash runs
+   * a trap only after its foreground child has exited, so a signal sent to the script alone never reaches the CLI.
+   *
+   * On Windows the signal goes to the command alone, through Node's own `signal` and `killSignal` options, as before.
+   * Windows has no process group a signal can be sent to, Node ends a Windows process forcefully whatever the signal,
+   * and a `.cmd` shim's program runs in a child of cmd.exe that this does not reach. Reaching that child would take
+   * `taskkill /T /F`, which also kills outright: unlike SIGINT, it leaves the CLI no way to end its turn. So on
+   * Windows a stop may not stop the program behind a shim.
+   */
+  signal?: AbortSignal;
+  killSignal?: NodeJS.Signals;
+}
+
+/** The spawn options that let `signal` stop the command (see CommandOptions.signal), and none without a signal. */
+function stopOptionsFor(options: CommandOptions): Pick<SpawnOptions, 'detached' | 'signal' | 'killSignal'> {
+  if (options.signal === undefined) return {};
+  if (process.platform !== 'win32') return { detached: true };
+  return { signal: options.signal, killSignal: options.killSignal };
 }
 
 /**
@@ -86,10 +113,12 @@ export function runCommand(first: typeof spawn | string, second: string | string
   const options = (typeof first === 'string' ? third : fourth) as CommandOptions;
   return new Promise<CommandResult>(resolve => {
     const invocation = commandInvocation(command, args);
+    const stopOptions = stopOptionsFor(options);
     const child = spawnImplementation(invocation.command, invocation.args, {
       windowsVerbatimArguments: invocation.windowsVerbatimArguments,
       cwd: options.cwd,
       env: options.env,
+      ...stopOptions,
       windowsHide: true,
       stdio: [options.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
     });
@@ -99,12 +128,34 @@ export function runCommand(first: typeof spawn | string, second: string | string
     let stderr = '';
     let spawnError: Error | undefined;
     let settled = false;
+    // macOS and Linux: aborting signals the command's whole process group, which `detached` made it the leader of.
+    const processGroupStopSignal = stopOptions.detached ? options.signal : undefined;
+    const stopProcessGroup = () => {
+      // A command that never started has no group to stop; its 'error' reports that it did not start.
+      if (child.pid === undefined) return;
+      try {
+        // A group's id is its leader's pid.
+        process.kill(-child.pid, options.killSignal ?? 'SIGTERM');
+      } catch (error) {
+        // ESRCH: every process in the group has exited already, so nothing is left to stop. Anything else is thrown
+        // and reported as an uncaught error (the worker logs it), and the command runs on until it ends by itself.
+        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+      }
+    };
     const settle = (result: CommandResult) => {
       if (settled) return;
       settled = true;
+      // Once the command has ended, a late abort must not signal a process group that may no longer be its own.
+      processGroupStopSignal?.removeEventListener('abort', stopProcessGroup);
       resolve(result);
     };
+    if (processGroupStopSignal?.aborted) stopProcessGroup();
+    else processGroupStopSignal?.addEventListener('abort', stopProcessGroup, { once: true });
     child.on('error', error => {
+      // Windows: Node's own abort (see CommandOptions.signal) stops a command that did start, and emits this
+      // AbortError at once, while the command may still be finishing. It is not a failure to start: the command's
+      // 'close' follows when it has exited, so wait for that.
+      if (error.name === 'AbortError' && options.signal?.aborted) return;
       spawnError = error;
       // A child that never started may not emit 'close' on every runtime.
       settle({ exitCode: null, stdout, stderr, spawnError });
