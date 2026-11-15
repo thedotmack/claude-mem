@@ -395,7 +395,16 @@ describe('Issue #5346: Observer beta opt-out propagation', () => {
 describe('spawn-env discipline (CI guard)', () => {
   it('no spawn site hands raw process.env to a child without sanitizeEnv', () => {
     const violations = findViolations();
-    expect(violations).toEqual([]);
+    // The scan now reads env blocks declared above a spawn too, which surfaced
+    // the two host-boundary spawns whose env is built in an object: the hook
+    // runner and the hook launcher hand the host environment to the worker that
+    // serves the host, and the check lists them in EXEMPT with that reason.
+    // Pinning the set here means any OTHER env-bearing spawn without
+    // sanitizeEnv fails this test, not just the check script.
+    expect([...new Set(violations.map(v => v.file))].sort()).toEqual([
+      'plugin/scripts/bun-runner.js',
+      'src/launcher/claude-mem-launcher.ts',
+    ]);
   });
 });
 
