@@ -151,8 +151,16 @@ with tempfile.TemporaryDirectory(prefix='provider import ') as directory:
         assert '2 new' in run().stdout
         saved = rows(); assert len(saved) == 2 and all(r[1] == PROJECT for r in saved)
         for r in saved:
-            metadata = json.loads(r[3]); assert metadata['platformSource'] == 'supermemory'
+            metadata = json.loads(r[3]); assert 'platformSource' not in metadata
             assert metadata['importSource']['record']['system']['createdAt'] == '2026-01-01T00:00:00Z'
+        # The host's memory lookup filters search to its own platform; imported notes
+        # must be found there, not hidden under a vendor platform.
+        from urllib.parse import urlencode
+        search = Request(f'http://127.0.0.1:{port}/api/search?' + urlencode({'query': 'violet lighthouse', 'project': PROJECT,
+                         'type': 'observations', 'format': 'json', 'platformSource': 'claude'}),
+                         headers={'x-claude-mem-token': 'synthetic-local-token'})
+        found = json.load(urlopen(search, timeout=10))
+        assert {r[0] for r in saved} <= {o['id'] for o in found.get('observations', [])}, found
         foreign = call('/api/memory/save', {'project': 'other', 'text': 'Foreign project lighthouse marker.'})['id']
         for i in range(25): call('/api/memory/save', {'project': PROJECT, 'text': f'Newer unrelated marker {i}'})
         assert '2 already imported' in run().stdout
@@ -188,7 +196,7 @@ with tempfile.TemporaryDirectory(prefix='provider import ') as directory:
         assert help_result.returncode == 0 and '--from mem0' in help_result.stdout
         print(json.dumps({'result':'passed', 'cli':'actual bundled Node CLI', 'worker':'actual bundled worker with fresh SQLite',
                           'source':'synthetic HTTP only', 'checks':['both providers','opaque pagination','dry run','exact replay after 25 newer records',
-                          'account isolation','literal project and scoped retrieval','raw provenance','document import',
+                          'account isolation','literal project and scoped retrieval','default-host search','raw provenance','document import',
                           'lost acknowledgement recovery','wrong owner','incomplete source','unready document',
                           'source auth failure redaction','source redirect refusal','destination auth refusal','excluded-project refusal','help'],
                           'observations':len(rows()),'vendor_requests':len(events)}))

@@ -62,9 +62,18 @@ describe('provider import contracts', () => {
     const source = { ...row(), memory: '  Original text\nSecond line. ', metadata: { project: 'other', platformSource: 'other', sourceFingerprint: 'malicious', when: 'original' } };
     const note = planImport([source], mem0).notes[0];
     expect(note.text).toBe(source.memory); expect(note.project).toBe(mem0.project);
-    expect(note.metadata.platformSource).toBe('mem0');
+    expect(note.metadata).not.toHaveProperty('platformSource');
     expect((note.metadata.importSource as any).record).toEqual(source);
     expect(note.metadata.sourceFingerprint).not.toBe('malicious');
+  });
+  test('imported notes land on the host platform, never the vendor name', () => {
+    // A vendor platformSource ('mem0') would hide every imported note from the
+    // host's memory search, which filters to the asking host's platform.
+    for (const [rows, options] of [[[row()], mem0], [[smRow()], supermemory]] as const) {
+      expect(planImport([...rows], options).notes[0].metadata).not.toHaveProperty('platformSource');
+      expect(planImport([...rows], { ...options, platformSource: 'codex' }).notes[0].metadata.platformSource).toBe('codex');
+    }
+    expect(() => validateImportOptions({ ...mem0, platformSource: ' ' })).toThrow('--platform');
   });
   test('fingerprints survive key ordering; isolate account, namespace and versions', () => {
     const fingerprint = (value: unknown, options = mem0) => planImport([value as any], options).notes[0].metadata.sourceFingerprint;

@@ -15,6 +15,11 @@ export interface ImportOptions {
   documents?: boolean;
   maxRecords?: number;
   timeoutMs?: number;
+  /**
+   * Host platform the imported notes belong to (`--platform`). Unset, they land on
+   * the default platform, so memory search on that host finds them.
+   */
+  platformSource?: string;
 }
 export interface ImportNote { text: string; title: string; project: string; metadata: Row }
 export interface ImportPlan { notes: ImportNote[]; scanned: number; skipped: number }
@@ -45,6 +50,7 @@ export function validateImportOptions(options: ImportOptions): void {
   if (options.provider === 'supermemory' && !/^[a-zA-Z0-9_:-]{1,100}$/.test(options.scope)) throw new Error('Invalid Supermemory namespace.');
   if (!Number.isSafeInteger(options.maxRecords ?? 10000) || (options.maxRecords ?? 10000) < 1 || (options.maxRecords ?? 10000) > 100000) throw new Error('--max-records must be between 1 and 100000.');
   if (!Number.isSafeInteger(options.timeoutMs ?? 15000) || (options.timeoutMs ?? 15000) < 1 || (options.timeoutMs ?? 15000) > 120000) throw new Error('--timeout-ms must be between 1 and 120000.');
+  if (options.platformSource !== undefined) required(options.platformSource, '--platform');
 }
 
 /** No response bodies or raw fetch errors reach diagnostics: either can contain credentials or source text. */
@@ -146,7 +152,10 @@ export function planImport(rows: Row[], options: ImportOptions, now = Date.now()
     const source = { provider: options.provider, account: options.account, scope: options.scope,
       kind: options.documents ? 'document' : 'memory', id, record: row };
     const revision = hash(source);
-    const metadata = { platformSource: options.provider, sourceFingerprint: `import:${options.provider}:${revision}`, importSource: source };
+    // Provenance lives in importSource and the fingerprint. platformSource picks the
+    // host whose memory search finds the note, so it is never the vendor.
+    const metadata: Row = { sourceFingerprint: `import:${options.provider}:${revision}`, importSource: source };
+    if (options.platformSource !== undefined) metadata.platformSource = options.platformSource;
     // The worker also deduplicates identical title/text within its manual session.
     // Include full revision identity so different accounts or metadata-only edits
     // cannot collapse and lose their provenance before fingerprint replay lookup.
@@ -175,13 +184,14 @@ export async function runImportCommand(args: string[]): Promise<void> {
   const { values } = parseArgs({ args, options: {
     from: { type: 'string' }, 'source-account': { type: 'string' }, user: { type: 'string' }, namespace: { type: 'string' },
     project: { type: 'string' }, documents: { type: 'boolean' }, 'dry-run': { type: 'boolean' },
-    'max-records': { type: 'string' }, 'timeout-ms': { type: 'string' },
+    'max-records': { type: 'string' }, 'timeout-ms': { type: 'string' }, platform: { type: 'string' },
   }, strict: true, allowPositionals: false });
   if (values.from === 'mem0' && values.namespace || values.from === 'supermemory' && values.user) throw new Error('Use --user for Mem0 or --namespace for Supermemory.');
   const options: ImportOptions = { provider: values.from as ImportProvider, account: values['source-account']!,
     scope: (values.from === 'mem0' ? values.user : values.namespace)!, project: values.project!, documents: values.documents,
     maxRecords: values['max-records'] === undefined ? undefined : Number(values['max-records']),
     timeoutMs: values['timeout-ms'] === undefined ? undefined : Number(values['timeout-ms']),
+    platformSource: values.platform,
   };
   validateImportOptions(options);
   const keyName = options.provider === 'mem0' ? 'MEM0_API_KEY' : 'SUPERMEMORY_API_KEY';
