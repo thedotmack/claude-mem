@@ -13,4 +13,5 @@ export interface SavedRule {
   replacedBy: string | null; replacedAt: string | null; savedAt: string | null;
 }
 export function ruleRowFields(rule: Omit<SavedRule, 'scopeId' | 'kind' | 'savedAt'>): Record<string, string | number | null>;
-export function renderRulesFile(rules: SavedRule[], now?: number): { markdown: string; approvedCount: number };
+/** `importLine` (an `@path` line) is appended after the rules, so Claude Code loads that file with them. */
+export function renderRulesFile(rules: SavedRule[], now?: number, options?: { importLine?: string }): { markdown: string; approvedCount: number };
