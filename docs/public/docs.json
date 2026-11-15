@@ -86,13 +86,6 @@
         ]
       },
       {
-        "group": "Kilo CLI Integration",
-        "icon": "terminal",
-        "pages": [
-          "kilo"
-        ]
-      },
-      {
         "group": "Best Practices",
         "icon": "lightbulb",
         "pages": [
@@ -119,6 +112,7 @@
           "openclaw-integration",
           "hermes-integration",
           "kimi-integration",
+          "kilo",
           "devin-integration",
           "qoder-integration",
           "screenpipe-integration",
