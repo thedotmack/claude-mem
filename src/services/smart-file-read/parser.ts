@@ -108,6 +108,20 @@ const QUERIES: Record<string, string> = {
 (function_declaration name: (identifier) @name body: (_) @signature_body) @func @native_signature
 (ambient_declaration (function_signature name: (identifier) @name)) @ts_signature
 (generator_function_declaration name: (identifier) @name body: (_) @signature_body) @func @native_signature
+(export_statement "default" @name value: [
+  (arrow_function body: (_) @signature_body)
+  (function_expression body: (_) @signature_body)
+  (generator_function body: (_) @signature_body)
+  (parenthesized_expression [
+    (arrow_function body: (_) @signature_body)
+    (function_expression body: (_) @signature_body)
+    (generator_function body: (_) @signature_body)
+  ])
+]) @func @native_signature
+(export_statement "default" @name value: [
+  (class body: (_) @signature_body)
+  (parenthesized_expression (class body: (_) @signature_body))
+]) @cls @native_signature
 (lexical_declaration kind: ["const" "let"] @signature_prefix (variable_declarator name: (identifier) @name value: [(arrow_function body: (_) @signature_body) (function_expression body: (_) @signature_body) (generator_function body: (_) @signature_body)]) @signature_start) @const_func @native_signature
 (variable_declaration "var" @signature_prefix (variable_declarator name: (identifier) @name value: [(arrow_function body: (_) @signature_body) (function_expression body: (_) @signature_body) (generator_function body: (_) @signature_body)]) @signature_start) @const_func @native_signature
 (class_declaration name: (type_identifier) @name) @cls
@@ -133,6 +147,20 @@ const QUERIES: Record<string, string> = {
   js: `
 (function_declaration name: (identifier) @name body: (_) @signature_body) @func @native_signature
 (generator_function_declaration name: (identifier) @name body: (_) @signature_body) @func @native_signature
+(export_statement "default" @name value: [
+  (arrow_function body: (_) @signature_body)
+  (function_expression body: (_) @signature_body)
+  (generator_function body: (_) @signature_body)
+  (parenthesized_expression [
+    (arrow_function body: (_) @signature_body)
+    (function_expression body: (_) @signature_body)
+    (generator_function body: (_) @signature_body)
+  ])
+]) @func @native_signature
+(export_statement "default" @name value: [
+  (class body: (_) @signature_body)
+  (parenthesized_expression (class body: (_) @signature_body))
+]) @cls @native_signature
 (lexical_declaration kind: ["const" "let"] @signature_prefix (variable_declarator name: (identifier) @name value: [(arrow_function body: (_) @signature_body) (function_expression body: (_) @signature_body) (generator_function body: (_) @signature_body)]) @signature_start) @const_func @native_signature
 (variable_declaration "var" @signature_prefix (variable_declarator name: (identifier) @name value: [(arrow_function body: (_) @signature_body) (function_expression body: (_) @signature_body) (generator_function body: (_) @signature_body)]) @signature_start) @const_func @native_signature
 (class_declaration name: (identifier) @name) @cls
