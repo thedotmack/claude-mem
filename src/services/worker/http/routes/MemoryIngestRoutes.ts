@@ -9,7 +9,7 @@ import {
   type MemoryIngestReport,
   type MemoryObservationToStore,
 } from '../../../memory/ingest.js';
-import { computeObservationContentHash } from '../../../sqlite/observations/store.js';
+import { computeObservationContentHash, computeObservationDetailsHash, type ObservationDetails } from '../../../sqlite/observations/store.js';
 import { logger } from '../../../../utils/logger.js';
 import { logChromaWriteFailure } from '../../search/errors.js';
 import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
@@ -51,13 +51,16 @@ export class MemoryIngestRoutes extends BaseRouteHandler {
           metadata: JSON.stringify(obs.metadata),
         };
 
-        // Re-running an import must not touch rows it already stored: an exact
-        // content_hash match is reported as deduped without calling the store
-        // (whose Tier-0 merge would count it as a repeat).
+        // Exact replays bypass the mutating store/index path. Match the same
+        // structured content as storage, including retained details variants.
         const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
-        const existing = sessionStore.db
-          .prepare('SELECT id FROM observations WHERE memory_session_id = ? AND content_hash = ? LIMIT 1')
-          .get(memorySessionId, contentHash) as { id: number } | undefined;
+        const detailsHash = computeObservationDetailsHash(contentHash, observation);
+        const existing = (sessionStore.db
+          .prepare(`SELECT id, type, subtitle, facts, concepts FROM observations
+            WHERE memory_session_id = ? AND content_hash IN (?, ?)
+            ORDER BY content_hash = ? DESC`)
+          .all(memorySessionId, contentHash, detailsHash, detailsHash) as Array<ObservationDetails & { id: number }>)
+          .find(row => computeObservationDetailsHash(contentHash, row) === detailsHash);
         if (existing) return { id: existing.id, deduped: true };
 
         // Backdate to the file mtime. Native notes are already distilled:
