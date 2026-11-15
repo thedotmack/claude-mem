@@ -64,8 +64,8 @@ re-read when it changes). The memory file itself is refreshed from the
 worker — `GET /api/context/inject`, the same endpoint Cursor's context
 refresh uses — so the decisions other agents saved for this project show
 up in Aider. The file lives under `.claude-mem/` in the project, next to
-nothing you own: it never collides with your files, and it is meant to
-stay local (see `.gitignore` below).
+nothing you own: it never collides with your files, and it stays local
+(see "Keep the memory file local" below).
 
 The merge is text-level: your other keys, comments, key order, and API
 keys are preserved byte-for-byte. A config whose `read:` region is
@@ -77,16 +77,12 @@ says why, instead of replacing it with an empty object.
 
 Prerequisites: Aider 0.86.x (`pip install aider-chat`), a model key or local model (Aider needs one to run), and claude-mem installed with the worker running (`npx claude-mem start`).
 
-Run the interactive installer and let it auto-detect Aider:
+Aider is set up per project, and only when you ask for it. The global
+`npx claude-mem install` does not offer or preselect it. Run this from the
+project root:
 
 ```bash
-npx claude-mem install
-```
-
-Or install only the Aider integration, from the project root:
-
-```bash
-npx claude-mem install --ide aider
+npx claude-mem aider install
 ```
 
 What the installer does:
@@ -102,15 +98,23 @@ What the installer does:
   best-effort refreshes it from the worker. If the worker is not
   running, install still succeeds — run `npx claude-mem aider sync`
   once it is.
+- Refuses to run when the project folder is your home directory: the
+  memory file would land in `~/.claude-mem/`, claude-mem's own data
+  directory.
 
 ### Keep the memory file local
 
-The memory file holds past-session context for this project. Add it to
-`.gitignore` so it is never committed:
+The memory file holds past-session context for this project. In a git
+repo, install adds this line to the repo's `.git/info/exclude`, so the
+file never shows in `git status` and a `git add -A` does not commit it.
+Your `.gitignore` is not touched:
 
 ```
-.claude-mem/
+**/.claude-mem/aider-memory.md
 ```
+
+Outside a git repo nothing is added; keep `.claude-mem/` out of whatever
+version control you use.
 
 ### Manual setup
 
@@ -134,7 +138,8 @@ Before a session, refresh the memory file from the worker:
 npx claude-mem aider sync
 ```
 
-This fetches `GET /api/context/inject?project=<name>&cwd=<project>` and
+This fetches `GET /api/context/inject?projects=<key>&projects=<key>…&cwd=<project>` (every
+project key the checkout reads, including a worktree's parent project) and
 writes the result into the managed `<claude-mem-context>` block of
 `.claude-mem/aider-memory.md`. Notes you write in that file outside the
 block are preserved. If the worker is unreachable, sync fails honestly
@@ -222,16 +227,20 @@ open maintainer question, not a hidden feature.
 
 ## Uninstall
 
+Run this from the project root:
+
 ```bash
-npx claude-mem uninstall
+npx claude-mem aider uninstall
 ```
 
-The global uninstall removes only the claude-mem entry from `read:` —
+It removes only the claude-mem entry from `read:` —
 the managed block, or the list entry carrying the
 `# claude-mem (managed)` comment. A `read:` entry you wrote yourself is
 left alone, as are all your other settings. Your memory file is left
-untouched (memory is never deleted as a side effect) — delete
-`.claude-mem/aider-memory.md` yourself if you no longer want it. Or
+untouched (memory is never deleted as a side effect), and so is its
+`.git/info/exclude` line, so the file stays out of git. Delete
+`.claude-mem/aider-memory.md` yourself if you no longer want it, then run
+`npx claude-mem aider uninstall` again to drop the exclude line. Or
 remove the entry by hand from `.aider.conf.yml`.
 
 ## Known limitations

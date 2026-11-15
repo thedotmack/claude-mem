@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { execFileSync } from 'child_process';
 import {
   chmodSync,
   existsSync,
@@ -13,6 +14,7 @@ import {
 import { tmpdir } from 'os';
 import path from 'path';
 import {
+  AIDER_GIT_EXCLUDE_LINE,
   AIDER_MANAGED_ENTRY_COMMENT,
   AIDER_MARKER_BEGIN,
   AIDER_MARKER_END,
@@ -28,6 +30,7 @@ import {
 } from '../../src/services/integrations/AiderInstaller.js';
 import { AIDER_MEMORY_RELATIVE_PATH } from '../../src/shared/aider-paths.js';
 import { getProjectContext } from '../../src/utils/project-name.js';
+import { detectInstalledIDEs } from '../../src/npx-cli/commands/ide-detection.js';
 
 // Aider has no YAML library in this repo and no MCP client or hooks, so the
 // installer merges `.aider.conf.yml` `read:` at the text level (Goose
@@ -590,5 +593,109 @@ describe('handleAiderCommand', () => {
       expect(await handleAiderCommand(undefined, [])).toBe(0);
     });
     expect(output.join('\n')).toContain('Usage: claude-mem aider');
+  });
+});
+
+describe('opt-in, per-project only', () => {
+  test('the global installer does not offer Aider: it is not in the detected agent list', () => {
+    // Aider is per-project (`npx claude-mem aider install`, run in the
+    // project). As a global agent it would be preselected when detected and
+    // write into whatever folder install or update happens to run in.
+    expect(detectInstalledIDEs().map((ide) => ide.id)).not.toContain('aider');
+  });
+
+  test('--help after a verb prints usage and changes nothing', async () => {
+    const project = makeProject();
+    const configPath = path.join(project, '.aider.conf.yml');
+    writeFileSync(configPath, 'model: openai/gpt-4o\n');
+    await captureConsoleAsync(async () => {
+      expect(await installAiderIntegration({ configPath }, async () => null)).toBe(0);
+    });
+    const installed = readFileSync(configPath, 'utf-8');
+    const output = await captureConsoleAsync(async () => {
+      expect(await handleAiderCommand('uninstall', ['--cwd', project, '--help'])).toBe(0);
+      expect(await handleAiderCommand('install', ['--cwd', project, '-h'])).toBe(0);
+    });
+    expect(output.join('\n')).toContain('Usage: claude-mem aider');
+    expect(readFileSync(configPath, 'utf-8')).toBe(installed);
+  });
+
+  test('refuses to install or sync when the project folder is the home directory', () => {
+    // os.homedir() is read once per process, so HOME is set in a child.
+    const home = makeProject();
+    const installer = path.resolve(import.meta.dir, '../../src/services/integrations/AiderInstaller.ts');
+    const script = `const m = await import(${JSON.stringify(installer)});
+const down = async () => { throw new Error('worker down'); };
+const install = await m.installAiderIntegration({ cwd: ${JSON.stringify(home)} }, down);
+const sync = await m.refreshAiderMemoryFile({ cwd: ${JSON.stringify(home)} }, down);
+console.log(JSON.stringify({ install, sync }));`;
+    const run = Bun.spawnSync([process.execPath, '-e', script], {
+      cwd: home,
+      env: { ...process.env, HOME: home, USERPROFILE: home, CLAUDE_MEM_DATA_DIR: path.join(home, 'data') },
+    });
+    const result = JSON.parse(run.stdout.toString().trim().split('\n').pop()!) as { install: number; sync: number };
+    expect(result).toEqual({ install: 1, sync: 1 });
+    expect(run.stderr.toString()).toContain('Refusing to set up Aider context in your home directory');
+    expect(existsSync(path.join(home, '.aider.conf.yml'))).toBe(false);
+    expect(existsSync(path.join(home, '.claude-mem'))).toBe(false);
+  }, 30_000);
+});
+
+describe('keeps the memory file out of git', () => {
+  const workerDown = async () => {
+    throw new Error('Worker is not running');
+  };
+
+  function makeRepo(): { project: string; configPath: string; excludeFile: string; git: (...args: string[]) => string } {
+    const project = makeProject();
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: project, encoding: 'utf-8' });
+    git('init', '-q', '.');
+    return {
+      project,
+      configPath: path.join(project, '.aider.conf.yml'),
+      excludeFile: path.join(project, '.git', 'info', 'exclude'),
+      git,
+    };
+  }
+
+  test('install adds one exclude line, keeps user lines, and git status does not list the memory file', async () => {
+    const { project, configPath, excludeFile, git } = makeRepo();
+    writeFileSync(excludeFile, '# mine\nsecrets.txt\n');
+    await captureConsoleAsync(async () => {
+      expect(await installAiderIntegration({ configPath }, workerDown)).toBe(0);
+      expect(await installAiderIntegration({ configPath }, workerDown)).toBe(0);
+    });
+    expect(existsSync(path.join(project, '.claude-mem', 'aider-memory.md'))).toBe(true);
+    expect(git('status', '--porcelain', '-uall')).not.toContain('aider-memory.md');
+    const lines = readFileSync(excludeFile, 'utf-8').split('\n');
+    expect(lines.filter((line) => line === AIDER_GIT_EXCLUDE_LINE)).toHaveLength(1);
+    expect(lines).toContain('secrets.txt');
+    expect(lines).toContain('# mine');
+  });
+
+  test('uninstall keeps the exclude line while the memory file exists, then removes only that line', async () => {
+    const { project, configPath, excludeFile, git } = makeRepo();
+    writeFileSync(excludeFile, 'secrets.txt\n');
+    await captureConsoleAsync(async () => {
+      expect(await installAiderIntegration({ configPath }, workerDown)).toBe(0);
+    });
+
+    captureConsole(() => expect(uninstallAiderIntegration({ configPath })).toBe(0));
+    // The recalled memory is still on disk, so it must stay out of git.
+    expect(readFileSync(excludeFile, 'utf-8')).toContain(AIDER_GIT_EXCLUDE_LINE);
+    expect(git('status', '--porcelain', '-uall')).not.toContain('aider-memory.md');
+
+    rmSync(path.join(project, '.claude-mem'), { recursive: true, force: true });
+    captureConsole(() => expect(uninstallAiderIntegration({ configPath })).toBe(0));
+    expect(readFileSync(excludeFile, 'utf-8')).toBe('secrets.txt\n');
+  });
+
+  test('outside a git repo install still succeeds and says nothing was excluded', async () => {
+    const project = makeProject();
+    const configPath = path.join(project, '.aider.conf.yml');
+    const output = await captureConsoleAsync(async () => {
+      expect(await installAiderIntegration({ configPath }, workerDown)).toBe(0);
+    });
+    expect(output.join('\n')).toContain('nothing was added to .git/info/exclude');
   });
 });

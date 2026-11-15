@@ -22,8 +22,10 @@
  * keys (`openai-api-key`, `anthropic-api-key`, `api-key`, `set-env`), so
  * console output names paths only.
  */
+import { execFileSync } from 'child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
-import { dirname, join } from 'path';
+import { homedir } from 'os';
+import { dirname, resolve } from 'path';
 import { stripUtf8Bom, writeTextFileAtomic } from '../../shared/atomic-json.js';
 import {
   AIDER_MEMORY_RELATIVE_PATH,
@@ -51,7 +53,14 @@ const AIDER_PLACEHOLDER_CONTEXT = [
   'Use `npx claude-mem search <query>` for manual memory queries.',
 ].join('\n');
 
-const USAGE = 'Usage: claude-mem aider <install|uninstall|status|sync> [--cwd <dir>]';
+const USAGE = 'Usage: claude-mem aider <install|uninstall|status|sync> [--cwd <dir>]   (acts on the project folder)';
+
+/**
+ * Keeps the memory file out of `git status` without touching the user's
+ * .gitignore. Anchored to no directory, so it also matches when the memory
+ * file sits below the repo root.
+ */
+export const AIDER_GIT_EXCLUDE_LINE = `**/${AIDER_MEMORY_RELATIVE_PATH}`;
 
 export interface AiderInstallOptions {
   cwd?: string;
@@ -74,6 +83,51 @@ function resolveAiderPaths(options: AiderInstallOptions = {}): AiderPaths {
     projectDir: aiderProjectDirForConfig(configPath, cwd),
     memoryFilePath: aiderMemoryFilePath(configPath, cwd),
   };
+}
+
+/**
+ * Refuse a project folder that is the home directory: the memory file would
+ * land in ~/.claude-mem/, claude-mem's own data directory, and a home
+ * ~/.aider.conf.yml entry would apply to every folder Aider runs in.
+ */
+function homeDirectoryRefusal(projectDir: string): string | null {
+  if (resolve(projectDir) !== resolve(homedir())) return null;
+  return `Refusing to set up Aider context in your home directory (${projectDir}): the memory file would land in ~/.claude-mem/, claude-mem's own data directory. Run this from a project folder instead.`;
+}
+
+/** Path of the repo's info/exclude for `dir`, or null outside a git repo (or without git). */
+function gitExcludeFile(dir: string): string | null {
+  try {
+    const rel = execFileSync('git', ['rev-parse', '--git-path', 'info/exclude'], {
+      cwd: dir,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
+      // Same bound as GrokBuildRules' git call: a stalled checkout must not hang install.
+      timeout: 5000,
+    }).trim();
+    return rel ? resolve(dir, rel) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Add or remove AIDER_GIT_EXCLUDE_LINE in the repo's info/exclude, leaving
+ * every other line alone. Returns false outside a git repo.
+ */
+function setAiderGitExclude(projectDir: string, present: boolean): boolean {
+  const file = gitExcludeFile(projectDir);
+  if (!file) return false;
+  const current = existsSync(file) ? readFileSync(file, 'utf-8') : '';
+  const lines = current.split(/\r?\n/);
+  if (present === lines.includes(AIDER_GIT_EXCLUDE_LINE)) return true;
+  const next = present
+    ? `${current}${current === '' || current.endsWith('\n') ? '' : '\n'}${AIDER_GIT_EXCLUDE_LINE}\n`
+    : lines.filter((line) => line !== AIDER_GIT_EXCLUDE_LINE).join('\n');
+  mkdirSync(dirname(file), { recursive: true });
+  writeTextFileAtomic(file, next);
+  return true;
 }
 
 function backupOnce(configPath: string): void {
@@ -492,6 +546,11 @@ export async function refreshAiderMemoryFile(
     fetchContextFromWorker(projects, cwd, options.noAutoStart ?? false),
 ): Promise<number> {
   const { projectDir, memoryFilePath } = resolveAiderPaths(options);
+  const refusal = homeDirectoryRefusal(projectDir);
+  if (refusal) {
+    console.error(refusal);
+    return 1;
+  }
   const { primary, allProjects } = getProjectContext(projectDir);
   let context: string | null;
   try {
@@ -518,7 +577,12 @@ export async function installAiderIntegration(
   fetchContext: AiderFetchContext = (projects, cwd) =>
     fetchContextFromWorker(projects, cwd, options.noAutoStart ?? false),
 ): Promise<number> {
-  const { configPath, memoryFilePath } = resolveAiderPaths(options);
+  const { configPath, projectDir, memoryFilePath } = resolveAiderPaths(options);
+  const refusal = homeDirectoryRefusal(projectDir);
+  if (refusal) {
+    console.error(refusal);
+    return 1;
+  }
   try {
     const changed = installAiderConfigFile(configPath, AIDER_MEMORY_RELATIVE_PATH);
     console.log(
@@ -530,6 +594,13 @@ export async function installAiderIntegration(
     console.error(`Failed to install Aider context: ${error instanceof Error ? error.message : String(error)}`);
     return 1;
   }
+
+  const excluded = setAiderGitExclude(projectDir, true);
+  console.log(
+    excluded
+      ? `  Added ${AIDER_GIT_EXCLUDE_LINE} to .git/info/exclude so the memory file stays out of git`
+      : '  Not a git repo (or git is missing): nothing was added to .git/info/exclude; keep .claude-mem/ out of version control yourself',
+  );
 
   try {
     if (!existsSync(memoryFilePath)) {
@@ -561,15 +632,27 @@ file with \`npx claude-mem aider sync\` before a session, and save notes
 with POST /api/memory/save (see docs).
 
 Next steps:
-  1. Add .claude-mem/ to .gitignore so the memory file stays local
-  2. Start claude-mem worker: npx claude-mem start
-  3. Run Aider from the project root: aider
+  1. Start claude-mem worker: npx claude-mem start
+  2. Run Aider from the project root: aider
 `);
   return 0;
 }
 
+/**
+ * Drop the exclude line once the memory file is gone. While the file is
+ * still there the line stays: removing it would put recalled memory into
+ * `git status`, one `git add -A` away from a public commit.
+ */
+function tidyAiderGitExclude(projectDir: string, memoryFilePath: string): void {
+  if (existsSync(memoryFilePath)) {
+    console.log('  Memory file left untouched and still excluded from git. Delete .claude-mem/aider-memory.md yourself if you no longer want it, then run uninstall again to drop the exclude line.');
+    return;
+  }
+  setAiderGitExclude(projectDir, false);
+}
+
 export function uninstallAiderIntegration(options: AiderInstallOptions = {}): number {
-  const { configPath } = resolveAiderPaths(options);
+  const { configPath, projectDir, memoryFilePath } = resolveAiderPaths(options);
   if (!existsSync(configPath)) {
     console.log('  No .aider.conf.yml found; nothing to uninstall');
     return 0;
@@ -583,12 +666,12 @@ export function uninstallAiderIntegration(options: AiderInstallOptions = {}): nu
   }
   if (updated === null) {
     console.log('  No claude-mem entry found in .aider.conf.yml');
-    return 0;
+  } else {
+    backupOnce(configPath);
+    writeTextFileAtomic(configPath, updated);
+    console.log(`  Removed claude-mem entry from ${configPath}`);
   }
-  backupOnce(configPath);
-  writeTextFileAtomic(configPath, updated);
-  console.log(`  Removed claude-mem entry from ${configPath}`);
-  console.log('  Memory file left untouched — delete .claude-mem/aider-memory.md yourself if you no longer want it.');
+  tidyAiderGitExclude(projectDir, memoryFilePath);
   return 0;
 }
 
@@ -608,6 +691,11 @@ export function checkAiderStatus(options: AiderInstallOptions = {}): number {
 
 export async function handleAiderCommand(subcommand: string | undefined, args: string[]): Promise<number> {
   const cwd = cliFlagValue(args, '--cwd') ?? undefined;
+  // `aider uninstall --help` through the launcher must print usage, never run the uninstall.
+  if ([subcommand, ...args].some((arg) => arg === '--help' || arg === '-h')) {
+    console.log(USAGE);
+    return 0;
+  }
   const noAutoStart = args.includes('--no-auto-start');
   const options: AiderInstallOptions = { ...(cwd ? { cwd } : {}), ...(noAutoStart ? { noAutoStart: true } : {}) };
   switch (subcommand) {

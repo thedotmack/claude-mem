@@ -100,12 +100,6 @@ export function detectInstalledIDEs(): IDEInfo[] {
       hint: 'hooks + MCP integration',
     },
     {
-      id: 'aider',
-      label: 'Aider',
-      detected: existsSync(join(home, '.aider.conf.yml')) || isCommandInPath('aider'),
-      hint: 'file-based context injection',
-    },
-    {
       id: 'devin',
       label: 'Devin CLI / Desktop',
       detected: existsSync(devinConfigPath()) || isCommandInPath('devin'),
