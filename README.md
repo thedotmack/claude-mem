@@ -127,7 +127,7 @@
 </p>
 
 <p align="center">
-  Claude-Mem runs a second agent beside it that takes notes while it works. The next session starts with a short index of what matters, and pulls in the details only when it needs them. Works with Claude Code, Codex, Cursor, OpenCode and 11 more agents. Copilot CLI, Goose, Roo Code and Warp can search your memory, but their sessions aren't recorded.
+  Claude-Mem runs a second agent beside it that takes notes while it works. The next session starts with a short index of what matters, and pulls in the details only when it needs them. Works with Claude Code, Codex, Cursor, OpenCode and 11 more agents. Copilot CLI, Goose, Roo Code, Warp and Zed can search your memory, but their sessions aren't recorded.
 </p>
 
 ---
@@ -140,7 +140,7 @@
 npx claude-mem install
 ```
 
-The installer finds the agents on your machine and asks which ones to set up. Then just start working: observations stream in from your first prompt, and your second session in a project opens with memory from the first. (Copilot CLI, Goose, Roo Code and Warp get memory search only, so their sessions don't add to it.)
+The installer finds the agents on your machine and asks which ones to set up. Then just start working: observations stream in from your first prompt, and your second session in a project opens with memory from the first. (Copilot CLI, Goose, Roo Code, Warp and Zed get memory search only, so their sessions don't add to it.)
 
 The installer sets everything up first, then asks you to sign in to claude-mem in your browser (email magic link, no card required to sign in). Choosing the **claude-mem observer** then starts its **30 Day Free Trial** on a checkout page that asks for a payment method; once it completes, the installer saves your memory key. With the observer, memory runs off-plan, so you get up to 100% more usage from your plan. When the free trial ends, memory automatically falls back to your Anthropic plan unless you subscribe. After sign-in you pick your memory provider: the claude-mem observer, your own OpenRouter or Gemini key, or your Anthropic plan.
 
