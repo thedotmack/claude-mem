@@ -20,9 +20,11 @@ import { CHANGED_WHILE_READING_MESSAGE, CHECK_UNDONE_MESSAGE, CHECKED_LOCALLY_ME
 import { PRODUCT_ICON } from '@/lib/product-icons'
 import { cn } from '@/lib/utils'
 import { AgentIcon, FocusAreaChip, NextMove, ProductLink, ProgressMeter, StateBadge } from './bits'
+import { ConversationContinue } from './conversation-continue'
 import { FocusChangeBar, useFocusChanges } from './focus-changes'
 import { OpenFollowUps } from './request-card'
 import { mergeRequestDetail, requestDetailKey } from '@/live/request-detail-state'
+import { requestDetailToShow, requestOnScreen } from '@/live/request-detail-state'
 import { ObsMediaStrip } from './observation-media/ObsMedia'
 import { requestImages } from './observation-media/request-images'
 
@@ -232,6 +234,10 @@ export function RequestDetail({ request, onClose, onOpenFocus }: { request: Requ
   const readDetail = useStore((state) => state.loadRequestDetail)
   const [retry, setRetry] = useState(0)
   const [detail, setDetail] = useState<{ key: string; request?: Request; error?: string } | null>(null)
+  // The last read that brought a detail back. A newer version's read starts empty, so this one stays on screen
+  // meanwhile (requestDetailToShow). It is recorded while rendering: React's way to keep a value from an earlier render.
+  const [lastReadWithDetail, setLastReadWithDetail] = useState<typeof detail>(null)
+  if (detail?.request && detail !== lastReadWithDetail) setLastReadWithDetail(detail)
   const key = request ? requestDetailKey(request) : ''
   const needsDetail = request?.detailLoaded === false
   const requestRef = useRef(request)
@@ -255,6 +261,12 @@ export function RequestDetail({ request, onClose, onOpenFocus }: { request: Requ
   if (!needsDetail) return <LoadedRequestDetail request={request} onClose={onClose} onOpenFocus={onOpenFocus} />
   const current = detail?.key === key ? detail : null
   if (current?.request) return <LoadedRequestDetail request={mergeRequestDetail(request, current.request)} onClose={onClose} onOpenFocus={onOpenFocus} />
+  // A newer version of the same request is loading, or failed to load: the detail read before it stays, so the drawer
+  // stays mounted as the owner left it. The same component in the same place, so React keeps it. Its review actions
+  // act on that older version, the one on screen (requestOnScreen).
+  const shown = requestDetailToShow(request.id, current, lastReadWithDetail)
+  if (shown) return <LoadedRequestDetail request={requestOnScreen(request, shown.request)} onClose={onClose} onOpenFocus={onOpenFocus}
+    newerVersionReadFailure={shown.newerVersionReadFailure === undefined ? undefined : { message: shown.newerVersionReadFailure, tryAgain: () => setRetry((value) => value + 1) }} />
   return (
     <Sheet open onOpenChange={(open) => { if (!open) onClose() }}>
       <SheetContent className="w-full gap-0 overflow-y-auto data-[side=right]:w-full data-[side=right]:sm:max-w-xl">
@@ -270,7 +282,8 @@ export function RequestDetail({ request, onClose, onOpenFocus }: { request: Requ
   )
 }
 
-function LoadedRequestDetail({ request, onClose, onOpenFocus }: { request: Request; onClose: () => void; onOpenFocus: (focusAreaId: string) => void }) {
+/** `newerVersionReadFailure`: the detail shown is an older version of this request, because reading the newer one failed. */
+function LoadedRequestDetail({ request, newerVersionReadFailure, onClose, onOpenFocus }: { request: Request; newerVersionReadFailure?: { message: string; tryAgain: () => void }; onClose: () => void; onOpenFocus: (focusAreaId: string) => void }) {
   useI18n()
   const title = request.title ?? request.resolvesTo?.title ?? 'Untitled request'
   const recent = request.granular.slice(0, RECENT_RECORDS)
@@ -289,6 +302,12 @@ function LoadedRequestDetail({ request, onClose, onOpenFocus }: { request: Reque
         </Req>
 
         <div className="space-y-6 p-5 md:p-6">
+          {newerVersionReadFailure && (
+            <div className="space-y-3">
+              <p role="alert" className="text-sm text-muted-foreground">{t(newerVersionReadFailure.message)}</p>
+              <Button variant="outline" onClick={newerVersionReadFailure.tryAgain}>{t('Try again')}</Button>
+            </div>
+          )}
           <CheckAction key={request.id} request={request} />
           <SuggestionAction key={`suggestion:${request.id}`} request={request} />
           <OpenFollowUps request={request} />
@@ -367,7 +386,12 @@ function LoadedRequestDetail({ request, onClose, onOpenFocus }: { request: Reque
               <div className="space-y-2.5 pb-2">
                 {request.conversations.length === 0 && request.prompts.length === 0 && <p className="text-sm text-muted-foreground">{t("One conversation so far.")}</p>}
                 {request.conversations.map((conversation, index) => (
-                  <p key={`${index}-${displayTime(conversation.at)}`} className="text-sm"><span className="text-muted-foreground">{conversation.tool} · {displayTime(conversation.at)}</span> — {conversation.title}</p>
+                  <div key={JSON.stringify([conversation.platform, conversation.conversationSessionId])} className="space-y-2">
+                    <p key={`${index}-${displayTime(conversation.at)}`} className="text-sm"><span className="text-muted-foreground">{conversation.tool} · {displayTime(conversation.at)}</span> — {conversation.title}</p>
+                    <ConversationContinue platform={conversation.platform} conversationSessionId={conversation.conversationSessionId} toolName={conversation.tool}
+                      conversationTitle={conversation.title}
+                      anotherConversationHasTheSameTitle={request.conversations.filter((other) => other.title === conversation.title).length > 1} />
+                  </div>
                 ))}
                 {request.prompts.map((prompt, index) => (
                   <blockquote key={`${index}-${displayTime(prompt.at)}`} className="border-l-2 pl-3 text-sm text-muted-foreground">“{prompt.quote}” <span className="text-[11px]">{displayTime(prompt.at)}</span></blockquote>

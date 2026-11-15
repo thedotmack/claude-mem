@@ -134,15 +134,15 @@ export function resolveConversationContinuationTarget(
   }
   const { toolName } = CONTINUATION_TOOLS[platform];
   if (!CONVERSATION_SESSION_UUID_PATTERN.test(conversationSessionId)) {
-    return { canContinue: false, refusalText: `This ${toolName} conversation has no resumable session id, so it can't be continued from here.`, recordedFolder: null };
+    return { canContinue: false, refusalText: `This ${toolName} conversation has no resumable session id, so it can’t be continued from here.`, recordedFolder: null };
   }
   const recorded = dependencies.recordedFolderForConversation(platform, conversationSessionId);
   if (!recorded.sessionIsRecorded) {
-    return { canContinue: false, refusalText: `This ${toolName} conversation is not recorded on this computer, so it can't be continued from here.`, recordedFolder: null };
+    return { canContinue: false, refusalText: `This ${toolName} conversation is not recorded on this computer, so it can’t be continued from here.`, recordedFolder: null };
   }
   const recordedFolder = recorded.recordedFolder;
   if (!recordedFolder) {
-    return { canContinue: false, refusalText: `No folder was recorded for this ${toolName} conversation, so it can't be continued from here.`, recordedFolder: null };
+    return { canContinue: false, refusalText: `No folder was recorded for this ${toolName} conversation, so it can’t be continued from here.`, recordedFolder: null };
   }
   const folderExists = dependencies.isExistingFolder ?? isExistingFolder;
   try {
@@ -153,9 +153,9 @@ export function resolveConversationContinuationTarget(
     }
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    return { canContinue: false, refusalText: `The folder this ${toolName} conversation ran in could not be checked (${reason}), so it can't be continued from here.`, recordedFolder };
+    return { canContinue: false, refusalText: `The folder this ${toolName} conversation ran in could not be checked (${reason}), so it can’t be continued from here.`, recordedFolder };
   }
-  return { canContinue: false, refusalText: `Neither the folder this ${toolName} conversation ran in nor any folder above it exists on this computer, so it can't be continued from here.`, recordedFolder };
+  return { canContinue: false, refusalText: `Neither the folder this ${toolName} conversation ran in nor any folder above it exists on this computer, so it can’t be continued from here.`, recordedFolder };
 }
 
 export interface ClaudeTurnResult {

@@ -15,6 +15,35 @@ import { setupKo } from '../src/ui/i18n/setup-ko.ts';
 import { settingsKo } from '../src/ui/i18n/settings-ko.ts';
 import { myworkTr } from '../src/ui/i18n/mywork-tr.ts';
 
+const UI_ROOT = fileURLToPath(new URL('../src/ui/', import.meta.url));
+
+/** Every literal t('…') call in the .ts and .tsx files under `directory` (tests left out), with the file it is in. */
+function literalTranslationKeys(directory: string): { path: string; key: string }[] {
+  const found: { path: string; key: string }[] = [];
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) { found.push(...literalTranslationKeys(path)); continue; }
+    if (!/\.tsx?$/.test(path) || path.includes('.test.')) continue;
+    const source = ts.createSourceFile(path, readFileSync(path, 'utf8'), ts.ScriptTarget.Latest, true);
+    function visit(node: ts.Node) {
+      if (ts.isCallExpression(node) && node.expression.getText(source) === 't'
+        && node.arguments.length && ts.isStringLiteral(node.arguments[0])) {
+        found.push({ path, key: node.arguments[0].text });
+      }
+      ts.forEachChild(node, visit);
+    }
+    visit(source);
+  }
+  return found;
+}
+
+/** The literal t() calls under these folders of src/ui whose words `catalog` lacks, as "file: words". */
+function wordsMissingFrom(catalog: Record<string, string>, folders: string[]): string[] {
+  return folders.flatMap(folder => literalTranslationKeys(join(UI_ROOT, folder)))
+    .filter(({ key }) => !(key in catalog) && key !== 'GitHub')
+    .map(({ path, key }) => `${path}: ${key}`);
+}
+
 describe('UI language catalogs', () => {
   it('keeps English as the default and accepts each supported locale', () => {
     assert.equal(parseLocale(null), 'en');
@@ -55,29 +84,14 @@ describe('UI language catalogs', () => {
   });
 
   it('every literal t() call has a catalog entry', () => {
-    const catalog = { ...viewerZh, ...myworkZh, ...setupZh, ...settingsZh };
-    const missing: string[] = [];
-    function scan(directory: string) {
-      for (const entry of readdirSync(directory, { withFileTypes: true })) {
-        const path = join(directory, entry.name);
-        if (entry.isDirectory()) { scan(path); continue; }
-        if (!/\.tsx?$/.test(path) || path.includes('.test.')) continue;
-        const source = ts.createSourceFile(path, readFileSync(path, 'utf8'), ts.ScriptTarget.Latest, true);
-        function visit(node: ts.Node) {
-          if (ts.isCallExpression(node) && node.expression.getText(source) === 't'
-            && node.arguments.length && ts.isStringLiteral(node.arguments[0])) {
-            const key = node.arguments[0].text;
-            if (!(key in catalog) && key !== 'GitHub') missing.push(`${path}: ${key}`);
-          }
-          ts.forEachChild(node, visit);
-        }
-        visit(source);
-      }
-    }
-    const root = fileURLToPath(new URL('../src/ui/', import.meta.url));
-    scan(join(root, 'viewer'));
-    scan(join(root, 'my-work/src'));
-    assert.deepEqual(missing, []);
+    assert.deepEqual(wordsMissingFrom({ ...viewerZh, ...myworkZh, ...setupZh, ...settingsZh }, ['viewer', 'my-work/src']), []);
+  });
+
+  // Turkish reads the My Work catalog alone (core.ts), so words that only the setup or viewer catalogs carry, such as
+  // 'Try again', show in English to a Turkish reader while the check above passes. My Work's setup flow has no Turkish
+  // catalog, so only its pages and components are checked here.
+  it('the Turkish catalog has the words of every literal t() call in My Work’s pages and components', () => {
+    assert.deepEqual(wordsMissingFrom(myworkTr, ['my-work/src/pages', 'my-work/src/components']), []);
   });
 
   for (const catalogs of [[viewerZh, myworkZh, setupZh, settingsZh], [viewerKo, myworkKo, setupKo, settingsKo]]) {

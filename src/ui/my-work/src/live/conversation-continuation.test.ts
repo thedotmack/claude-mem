@@ -3,19 +3,26 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { CONVERSATION_CONTINUATION_STATES, type ConversationContinuation, type ConversationContinuationTarget } from '../../../../shared/conversation-continuation.ts'
+import { interpolate } from '../../../i18n/locale.ts'
+import { myworkKo } from '../../../i18n/mywork-ko.ts'
+import { myworkTr } from '../../../i18n/mywork-tr.ts'
+import { myworkZh } from '../../../i18n/mywork-zh.ts'
 import { SAMPLE_REQUESTS } from '../data.ts'
 import {
-  CONTINUATION_STATE_WORDS, continuationEventConcernsConversation, continuationView, conversationRouteFailureSentence,
-  isContinuableConversation, readConversationContinuationAnswer, readConversationContinuationNotice, readConversationExchangeAnswer,
-  unreachableWorkerSentence, unreadableAnswerSentence,
+  CONTINUATION_STATE_WORDS, canContinueConversations, continuationEventConcernsConversation, continuationView, conversationControlNames,
+  conversationRouteFailureSentence, focusAfterSendOrStop, isContinuableConversation, readConversationContinuationAnswer,
+  readConversationContinuationNotice, readConversationExchangeAnswer, unreachableWorkerSentence, unreadableAnswerSentence,
+  type ContinuationWords,
 } from './conversation-continuation.ts'
+import { createLocalSource } from './local-source.ts'
+import { sampleSource } from './sample-source.ts'
 
 const SESSION = '0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d'
 const OTHER_SESSION = '9f8e7d6c-5b4a-4c3d-8e2f-1a0b9c8d7e6f'
 const RECORDED_FOLDER = '/work/example/worktree'
 const NEAREST_FOLDER = '/work/example'
 const STILL_RUNNING = 'This conversation is still answering your last message from here. Wait for its reply, or stop it, before you send another.'
-const NO_FOLDER_RECORDED = 'No folder was recorded for this Claude Code conversation, so it can\'t be continued from here.'
+const NO_FOLDER_RECORDED = 'No folder was recorded for this Claude Code conversation, so it can’t be continued from here.'
 /** As long as the runner test's: a reply or a failure this size comes back whole. */
 const LONG_TEXT = 'x'.repeat(200_000)
 
@@ -28,6 +35,23 @@ function exchange(fields: Partial<ConversationContinuation> = {}): ConversationC
 }
 const replied = (fields: Partial<ConversationContinuation> = {}) => exchange({ state: 'replied', endedAtEpochMs: 2_000, replyText: 'marmalade', deniedToolCallCount: 0, ...fields })
 const failed = (fields: Partial<ConversationContinuation> = {}) => exchange({ state: 'failed', endedAtEpochMs: 2_000, failureText: 'You stopped this turn.', ...fields })
+
+describe('which sources can continue a conversation', () => {
+  const fetchNothing = (() => Promise.reject(new Error('No call is made here.'))) as typeof fetch
+
+  it('the page this computer\'s worker serves', () => {
+    assert.equal(canContinueConversations(createLocalSource({ hostname: 'localhost', fetchImpl: fetchNothing })), true)
+  })
+
+  it('not sample data, a cloud-served page, or a source without one of the four calls', () => {
+    assert.equal(canContinueConversations(sampleSource), false)
+    assert.equal(canContinueConversations(createLocalSource({ hostname: 'work.cmem.ai', fetchImpl: fetchNothing })), false)
+    const local = createLocalSource({ hostname: 'localhost', fetchImpl: fetchNothing })
+    for (const call of ['loadConversationContinuation', 'continueConversation', 'stopConversationContinuation', 'subscribeToConversationContinuations'] as const) {
+      assert.equal(canContinueConversations({ ...local, [call]: undefined }), false, `without ${call}`)
+    }
+  })
+})
 
 describe('which conversation rows can offer to continue', () => {
   it('a Claude Code or Codex conversation with a UUID session id', () => {
@@ -149,6 +173,70 @@ describe('what a conversation row shows', () => {
     assert.equal(view.exchanges[0].replyText?.length, LONG_TEXT.length)
     assert.equal(view.exchanges[1].failureText?.length, LONG_TEXT.length)
     assert.equal(String(view.folderGoneNotice?.values.folder).length, longFolder.length)
+  })
+})
+
+describe('what a row\'s message box, Send and Stop are called for a screen reader', () => {
+  const inEnglish = (words: ContinuationWords) => interpolate(words.english, words.values)
+  const namesFor = (fields: Partial<Parameters<typeof conversationControlNames>[0]> = {}) => conversationControlNames({
+    toolName: 'Claude Code', conversationTitle: 'Fix the login flow', conversationSessionId: SESSION, anotherConversationHasTheSameTitle: false, ...fields,
+  })
+
+  it('names the conversation each Send and Stop acts on, so a request with several does not read "Send, Send, Send"', () => {
+    const first = namesFor()
+    const second = namesFor({ conversationTitle: 'Write the release notes', conversationSessionId: OTHER_SESSION })
+    assert.equal(inEnglish(first.sendButton), 'Send to the Claude Code conversation “Fix the login flow”')
+    assert.equal(inEnglish(first.stopButton), 'Stop the turn in the Claude Code conversation “Fix the login flow”')
+    assert.notEqual(inEnglish(first.sendButton), inEnglish(second.sendButton))
+    assert.notEqual(inEnglish(first.stopButton), inEnglish(second.stopButton))
+    // The box keeps the label it had: the tool only.
+    assert.equal(inEnglish(first.messageBox), 'Continue this Claude Code conversation')
+  })
+
+  it('adds the end of each session id when another row shows the same title', () => {
+    // Codex session ids are time-ordered: conversations started within a minute share the title made from their start.
+    const title = 'Conversation 01a1b3d0'
+    const first = namesFor({ toolName: 'Codex', conversationTitle: title, conversationSessionId: '01a1b3d0-4e5f-7a6b-8c7d-9e0f1a2b3c4d', anotherConversationHasTheSameTitle: true })
+    const second = namesFor({ toolName: 'Codex', conversationTitle: title, conversationSessionId: '01a1b3d0-77aa-7bcd-8e2f-1a0b9c8d7e6f', anotherConversationHasTheSameTitle: true })
+    assert.equal(inEnglish(first.messageBox), 'Continue this Codex conversation (…1a2b3c4d)')
+    assert.equal(inEnglish(first.sendButton), 'Send to the Codex conversation “Conversation 01a1b3d0” (…1a2b3c4d)')
+    assert.equal(inEnglish(second.stopButton), 'Stop the turn in the Codex conversation “Conversation 01a1b3d0” (…9c8d7e6f)')
+    for (const control of ['messageBox', 'sendButton', 'stopButton'] as const) {
+      assert.notEqual(inEnglish(first[control]), inEnglish(second[control]), control)
+    }
+  })
+
+  it('has Chinese, Korean and Turkish words for every name, and each button\'s name holds the word it shows', () => {
+    for (const names of [namesFor(), namesFor({ anotherConversationHasTheSameTitle: true })]) {
+      // Someone who speaks to their computer says the word they see, so a name holds it (WCAG 2.5.3, label in name).
+      assert.ok(names.sendButton.english.startsWith('Send '))
+      assert.ok(names.stopButton.english.startsWith('Stop '))
+      for (const [locale, catalog] of Object.entries({ 'zh-CN': myworkZh, ko: myworkKo, tr: myworkTr })) {
+        for (const words of Object.values(names)) assert.ok(catalog[words.english]?.trim(), `${locale} has no words for ${words.english}`)
+        const lower = (text: string) => text.toLocaleLowerCase(locale)
+        assert.ok(lower(catalog[names.sendButton.english]).includes(lower(catalog['Send'])), `${locale}: ${catalog[names.sendButton.english]}`)
+        assert.ok(lower(catalog[names.stopButton.english]).includes(lower(catalog['Stop'])), `${locale}: ${catalog[names.stopButton.english]}`)
+      }
+    }
+  })
+})
+
+describe('where focus goes after Send or Stop', () => {
+  it('into the message box when the pressed button held focus: a pressed Send or Stop is disabled, and Stop goes away when its turn ends', () => {
+    // Send pressed on a conversation with words typed, then Stop pressed on the turn it started.
+    assert.equal(focusAfterSendOrStop(true, continuationView(runsInRecordedFolder, [], 'Which word?')), 'message-box')
+    assert.equal(focusAfterSendOrStop(true, continuationView(runsInRecordedFolder, [exchange()], '')), 'message-box')
+  })
+
+  it('to the conversation\'s box when it has no message box: a turn is stopped after its conversation could no longer be continued', () => {
+    const view = continuationView(cannotContinue, [exchange()], '')
+    assert.equal(view.stopIsShown, true)
+    assert.equal(focusAfterSendOrStop(true, view), 'conversation-box')
+  })
+
+  it('nowhere when the pressed button did not hold focus, as in a browser that does not focus a clicked button', () => {
+    assert.equal(focusAfterSendOrStop(false, continuationView(runsInRecordedFolder, [exchange()], '')), null)
+    assert.equal(focusAfterSendOrStop(false, continuationView(cannotContinue, [exchange()], '')), null)
   })
 })
 

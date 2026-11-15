@@ -127,3 +127,7 @@ export interface WorkDataSource {
    */
   subscribeToConversationContinuations?(listener: (event: ConversationContinuationEvent) => void): () => void
 }
+
+/** A source that can continue a conversation from this page: it has all four of the calls above. */
+export type ConversationContinuationSource = WorkDataSource
+  & Required<Pick<WorkDataSource, 'loadConversationContinuation' | 'continueConversation' | 'stopConversationContinuation' | 'subscribeToConversationContinuations'>>

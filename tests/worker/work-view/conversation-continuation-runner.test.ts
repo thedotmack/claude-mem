@@ -238,10 +238,10 @@ describe('where a continued turn runs', () => {
       expect(await runner.start(platform, conversationSessionId, 'Which word?')).toEqual({ refusalText: target.refusalText! });
     }
     expect(sentences).toEqual([
-      "No folder was recorded for this Claude Code conversation, so it can't be continued from here.",
-      "This Claude Code conversation has no resumable session id, so it can't be continued from here.",
+      'No folder was recorded for this Claude Code conversation, so it can’t be continued from here.',
+      'This Claude Code conversation has no resumable session id, so it can’t be continued from here.',
       'Only Claude Code and Codex conversations can be continued from here.',
-      "This Codex conversation is not recorded on this computer, so it can't be continued from here.",
+      'This Codex conversation is not recorded on this computer, so it can’t be continued from here.',
     ]);
     expect(calls).toHaveLength(0);
     expect(detectCalls()).toBe(0);
@@ -257,9 +257,24 @@ describe('where a continued turn runs', () => {
     expect(target).toEqual({
       canContinue: false,
       recordedFolder: '/work/locked/app',
-      refusalText: "The folder this Claude Code conversation ran in could not be checked (EACCES: permission denied, stat '/work/locked/app'), so it can't be continued from here.",
+      refusalText: "The folder this Claude Code conversation ran in could not be checked (EACCES: permission denied, stat '/work/locked/app'), so it can’t be continued from here.",
     });
     expect(await runner.start('claude', CLAUDE_SESSION, 'Which word?')).toEqual({ refusalText: target.refusalText! });
+    expect(calls).toHaveLength(0);
+  });
+
+  it('refuses a conversation when neither its folder nor any folder above it exists, and runs nothing', async () => {
+    const { runner, dependencies, calls } = harness(
+      { isExistingFolder: () => false },
+      { [`codex:${CODEX_SESSION}`]: { sessionIsRecorded: true, recordedFolder: '/work/gone/app' } },
+    );
+    const target = resolveConversationContinuationTarget('codex', CODEX_SESSION, dependencies);
+    expect(target).toEqual({
+      canContinue: false,
+      recordedFolder: '/work/gone/app',
+      refusalText: 'Neither the folder this Codex conversation ran in nor any folder above it exists on this computer, so it can’t be continued from here.',
+    });
+    expect(await runner.start('codex', CODEX_SESSION, 'Which word?')).toEqual({ refusalText: target.refusalText! });
     expect(calls).toHaveLength(0);
   });
 });

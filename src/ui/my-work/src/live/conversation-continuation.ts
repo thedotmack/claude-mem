@@ -13,7 +13,16 @@ import {
   type ConversationContinuationTarget,
 } from '../../../../shared/conversation-continuation.ts'
 import type { Request } from '../data.ts'
-import type { ConversationContinuationEvent, ConversationContinuationRead } from './work-data-source.ts'
+import type { ConversationContinuationEvent, ConversationContinuationRead, ConversationContinuationSource, WorkDataSource } from './work-data-source.ts'
+
+/**
+ * Whether a source can continue a conversation from this page. Only the page this computer's worker serves has the
+ * calls (local-source.ts); the sample source and a cloud-served page leave them out, so their rows show nothing for it.
+ */
+export function canContinueConversations(source: WorkDataSource): source is ConversationContinuationSource {
+  return Boolean(source.loadConversationContinuation && source.continueConversation && source.stopConversationContinuation
+    && source.subscribeToConversationContinuations)
+}
 
 /** Which conversation a row is: the platform and session id its conversation key records. */
 type ConversationIdentity = Pick<Request['conversations'][number], 'platform' | 'conversationSessionId'>
@@ -128,6 +137,63 @@ function exchangeView(exchange: ConversationContinuation): ConversationExchangeV
     failureText: exchange.state === 'failed' && exchange.failureText ? exchange.failureText : null,
     notices,
   }
+}
+
+// ---- What a row's controls are called, and where focus goes after Send or Stop
+
+/** The last eight characters of a session id. */
+const SESSION_ID_END = /.{8}$/
+
+/** What a row's message box, Send and Stop are called for a screen reader. */
+export interface ConversationControlNames { messageBox: ContinuationWords; sendButton: ContinuationWords; stopButton: ContinuationWords }
+
+/**
+ * What a row's message box, Send and Stop are called for a screen reader. A request can list several conversations, each
+ * with its own Send and Stop, so their names say which conversation they act on: its tool and title, as its line shows
+ * them. Each name starts with the word its button shows, "Send" or "Stop", which stays as it is. Codex session ids are
+ * time-ordered, so conversations started within a minute share their first characters and the title made from them:
+ * when another row shows the same title, each name adds the last eight characters of this session id. The box's label
+ * names the tool only, as before.
+ */
+export function conversationControlNames(conversation: {
+  toolName: string
+  conversationTitle: string
+  conversationSessionId: string
+  anotherConversationHasTheSameTitle: boolean
+}): ConversationControlNames {
+  const { toolName: tool, conversationTitle: title } = conversation
+  if (!conversation.anotherConversationHasTheSameTitle) {
+    return {
+      messageBox: { english: 'Continue this {tool} conversation', values: { tool } },
+      sendButton: { english: 'Send to the {tool} conversation “{title}”', values: { tool, title } },
+      stopButton: { english: 'Stop the turn in the {tool} conversation “{title}”', values: { tool, title } },
+    }
+  }
+  const sessionIdEnd = conversation.conversationSessionId.match(SESSION_ID_END)?.[0] ?? conversation.conversationSessionId
+  return {
+    messageBox: { english: 'Continue this {tool} conversation (…{sessionIdEnd})', values: { tool, sessionIdEnd } },
+    sendButton: { english: 'Send to the {tool} conversation “{title}” (…{sessionIdEnd})', values: { tool, title, sessionIdEnd } },
+    stopButton: { english: 'Stop the turn in the {tool} conversation “{title}” (…{sessionIdEnd})', values: { tool, title, sessionIdEnd } },
+  }
+}
+
+/** Where focus goes in a conversation's box: its message box, or the box itself. */
+export type ConversationFocusTarget = 'message-box' | 'conversation-box'
+
+/**
+ * Where keyboard focus goes once Send or Stop is pressed, so the owner keeps their place in that conversation's box. A
+ * pressed Send is disabled while its message goes out and while its turn runs; a pressed Stop is disabled until its turn
+ * ends, and then it goes away. A pressed button that held focus would drop it to the page, so focus moves to the message
+ * box, which stays. A turn sent earlier can still be stopped after its conversation could no longer be continued, and
+ * then there is no message box: focus moves to the conversation's box itself. Null when the pressed button did not hold
+ * focus, as in a browser that does not focus a clicked button: nothing was lost, so nothing moves.
+ */
+export function focusAfterSendOrStop(
+  pressedButtonHadFocus: boolean,
+  view: Pick<ConversationContinuationView, 'composerIsShown'>,
+): ConversationFocusTarget | null {
+  if (!pressedButtonHadFocus) return null
+  return view.composerIsShown ? 'message-box' : 'conversation-box'
 }
 
 // ---- Reading the worker's answers

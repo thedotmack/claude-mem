@@ -377,8 +377,8 @@ describe('a Send', () => {
   it("refuses a conversation it can't continue with 409 and the target's sentence, and starts nothing", async () => {
     const opened = await startRoutes();
     const refusals: Array<[string, string, string]> = [
-      ['claude', CLAUDE_SESSION_WITHOUT_FOLDER, "No folder was recorded for this Claude Code conversation, so it can't be continued from here."],
-      ['codex', CODEX_SESSION_NOT_RECORDED, "This Codex conversation is not recorded on this computer, so it can't be continued from here."],
+      ['claude', CLAUDE_SESSION_WITHOUT_FOLDER, 'No folder was recorded for this Claude Code conversation, so it can’t be continued from here.'],
+      ['codex', CODEX_SESSION_NOT_RECORDED, 'This Codex conversation is not recorded on this computer, so it can’t be continued from here.'],
     ];
     for (const [platform, conversationSessionId, sentence] of refusals) {
       const response = await sendMessage(opened.origin, { platform, conversationSessionId, ownerMessage: 'Which word?' });
@@ -435,9 +435,9 @@ describe('reading a conversation', () => {
       target: { canContinue: true, recordedFolder: deletedRecordedFolder, runsInFolder: fileFolder, recordedFolderIsGone: true }, exchanges: [],
     });
     const refusals: Array<[string, string, string]> = [
-      ['claude', CLAUDE_SESSION_WITHOUT_FOLDER, "No folder was recorded for this Claude Code conversation, so it can't be continued from here."],
-      ['claude', NON_UUID_CLAUDE_SESSION, "This Claude Code conversation has no resumable session id, so it can't be continued from here."],
-      ['codex', CODEX_SESSION_NOT_RECORDED, "This Codex conversation is not recorded on this computer, so it can't be continued from here."],
+      ['claude', CLAUDE_SESSION_WITHOUT_FOLDER, 'No folder was recorded for this Claude Code conversation, so it can’t be continued from here.'],
+      ['claude', NON_UUID_CLAUDE_SESSION, 'This Claude Code conversation has no resumable session id, so it can’t be continued from here.'],
+      ['codex', CODEX_SESSION_NOT_RECORDED, 'This Codex conversation is not recorded on this computer, so it can’t be continued from here.'],
     ];
     for (const [platform, conversationSessionId, refusalText] of refusals) {
       expect(await read(platform, conversationSessionId)).toEqual({ target: { canContinue: false, refusalText, recordedFolder: null }, exchanges: [] });

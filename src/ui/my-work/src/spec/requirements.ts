@@ -25,6 +25,7 @@ export const REQUIREMENTS: Requirement[] = [
   { id: 'R2.5', section: '2', kind: 'ui', text: 'One request survives /clear, tool switches and days: it groups every conversation that served it.' },
   { id: 'R2.6', section: '2', kind: 'ui', text: 'Human titles: no jargon, short, not 1:1 with granular records.' },
   { id: 'R2.7', section: '2', kind: 'process', text: 'Title generation cost is visible.', wireframe: 'Owner dropped generation-cost display on Oct 20, 2026: the spend is tiny next to the value. Not shown in the GUI.' },
+  { id: 'R2.8', section: '2', kind: 'ui', text: 'A conversation behind a request can be continued from the request page: the owner\'s message is sent to that same conversation and its reply is shown there.' },
 
   // 3. Layers and progressive disclosure
   { id: 'R3.1', section: '3', kind: 'retired', text: 'Retired 2026-10-27 (My Focus): the layer order is now focus areas (with Other), then requests, then request detail, then granular records. Replaced by R16.1 and R16.2.' },
