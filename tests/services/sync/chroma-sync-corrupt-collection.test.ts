@@ -81,7 +81,7 @@ beforeEach(() => {
   statics.backfillStore = null;
   statics.backfillInProgress = false;
   statics.corruptSegmentBatches.clear();
-  statics.inFlightCollectionDrops?.clear();
+  statics.inFlightCollectionDrops.clear();
   statics.droppedCollections.clear();
   statics.failedDropAttempts.clear();
   statics.lastCollectionDrop = null;
