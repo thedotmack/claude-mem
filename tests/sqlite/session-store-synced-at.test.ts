@@ -261,6 +261,27 @@ describe('SessionStore SyncHub launch baseline', () => {
     }
   });
 
+  it('rebuilds the exclusion ledger when v48 is recorded but its table is missing', () => {
+    const db = new Database(':memory:');
+    try {
+      new SessionStore(db);
+      seedRows(db);
+      const appliedAt = (db.prepare(`
+        SELECT applied_at FROM schema_versions WHERE version = 47
+      `).get() as { applied_at: string }).applied_at;
+      const boundaryMs = Date.parse(appliedAt);
+      for (const table of SYNCED_TABLES) db.run(`UPDATE ${table} SET synced_at = ${boundaryMs}`);
+
+      // v48 stays recorded, so only the table-presence check can trigger the repair.
+      db.run('DROP TABLE sync_launch_exclusions');
+      new SessionStore(db);
+
+      expect(rowCount(db, 'sync_launch_exclusions')).toBe(3);
+    } finally {
+      db.close();
+    }
+  });
+
   it('runs once and cannot clear post-boundary queues after restarts or lower-version migration repair', () => {
     const db = new Database(':memory:');
     try {

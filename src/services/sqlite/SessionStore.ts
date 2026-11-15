@@ -1112,10 +1112,11 @@ export class SessionStore {
       { table: 'session_summaries', kind: 'summary' },
       { table: 'user_prompts', kind: 'prompt' },
     ] as const;
+    // bun:sqlite returns null, not undefined, when no row matches.
     const exclusionTableExisted = this.db.prepare(`
       SELECT 1 AS present FROM sqlite_master
       WHERE type = 'table' AND name = 'sync_launch_exclusions'
-    `).get() !== undefined;
+    `).get() != null;
     this.db.run(SYNC_LAUNCH_EXCLUSIONS_DDL);
     this.widenSyncKindCheck('sync_launch_exclusions', SYNC_LAUNCH_EXCLUSIONS_DDL);
 
