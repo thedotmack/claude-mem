@@ -93,10 +93,11 @@ describe('SearchOrchestrator Chroma zero fallback', () => {
   });
 
   it('keeps non-empty Chroma matches final', async () => {
+    const recentObservation = { ...observation, created_at_epoch: Date.now() };
     const queryChroma = mock(() => Promise.resolve({
       ids: [21],
       distances: [0.1],
-      metadatas: [{ sqlite_id: 21, doc_type: 'observation', created_at_epoch: Date.now() }],
+      metadatas: [{ sqlite_id: 21, doc_type: 'observation', created_at_epoch: recentObservation.created_at_epoch }],
     }));
     const searchObservations = mock(() => [observation]);
     const orchestrator = new SearchOrchestrator(
@@ -106,7 +107,7 @@ describe('SearchOrchestrator Chroma zero fallback', () => {
         searchUserPrompts: mock(() => []),
       } as any,
       {
-        getObservationsByIds: mock(() => [observation]),
+        getObservationsByIds: mock(() => [recentObservation]),
         getSessionSummariesByIds: mock(() => []),
         getUserPromptsByIds: mock(() => []),
         getProjectReadKeys: (projects: string[]) => projects,
@@ -124,7 +125,7 @@ describe('SearchOrchestrator Chroma zero fallback', () => {
     expect(searchObservations).not.toHaveBeenCalled();
     expect(result.usedChroma).toBe(true);
     expect(result.strategy).toBe('chroma');
-    expect(result.results.observations).toEqual([observation]);
+    expect(result.results.observations).toEqual([recentObservation]);
   });
 });
 
