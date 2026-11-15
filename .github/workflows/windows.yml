@@ -38,9 +38,15 @@ jobs:
           node-version: '22'
 
       - name: Install Bun (worker runtime)
-        run: |
-          irm https://bun.sh/install.ps1 | iex
         shell: pwsh
+        run: |
+          # bun.sh/install.ps1 is not a versioned artifact, so pin the release it downloads with
+          # -Version instead of piping the script into iex and taking whatever "latest" is that day.
+          # The explicit check keeps the later steps' USERPROFILE path honest.
+          & ([scriptblock]::Create((irm https://bun.sh/install.ps1))) -Version 1.4.4
+          $bun = Join-Path $env:USERPROFILE '.bun\bin\bun.exe'
+          if (-not (Test-Path $bun)) { throw "Bun 1.4.4 was not installed to $bun" }
+          & $bun --version
 
       - run: npm install --no-audit --no-fund
 
@@ -202,9 +208,15 @@ jobs:
           node-version: '22'
 
       - name: Install Bun (worker runtime + test runner)
-        run: |
-          irm https://bun.sh/install.ps1 | iex
         shell: pwsh
+        run: |
+          # bun.sh/install.ps1 is not a versioned artifact, so pin the release it downloads with
+          # -Version instead of piping the script into iex and taking whatever "latest" is that day.
+          # The explicit check keeps the later steps' USERPROFILE path honest.
+          & ([scriptblock]::Create((irm https://bun.sh/install.ps1))) -Version 1.4.4
+          $bun = Join-Path $env:USERPROFILE '.bun\bin\bun.exe'
+          if (-not (Test-Path $bun)) { throw "Bun 1.4.4 was not installed to $bun" }
+          & $bun --version
 
       # Caching uv's downloads AND its managed Python keeps a cold chromadb
       # resolve off the critical path; without it this job pays ~10 minutes on
