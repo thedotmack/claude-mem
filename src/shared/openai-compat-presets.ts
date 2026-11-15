@@ -176,6 +176,16 @@ export const OPENAI_COMPAT_PRESETS: readonly OpenAICompatPreset[] = [
     hint: 'Key from trustedrouter.com; vendor-prefixed model ids such as deepseek/deepseek-v4-flash, or trustedrouter/auto to route per request (priced per routed model), listed at api.trustedrouter.com/v1/models.',
   },
   {
+    id: 'atmorouter',
+    label: 'AtmoRouter (atmorouter.dev)',
+    baseUrl: 'https://atmorouter.dev/v1',
+    // A cheap, fast model for the same reason as NVIDIA's default: extraction
+    // is high volume. Ids carry a route prefix and are passed verbatim.
+    defaultModel: 'zai/glm-5.3-flash',
+    requiresApiKey: true,
+    hint: 'Key (ar-...) from Dashboard > API Keys at atmorouter.dev; route-prefixed model ids such as zai/glm-5.3-flash or zai/glm-5.3, listed at atmorouter.dev/v1/models.',
+  },
+  {
     id: 'deepseek',
     label: 'DeepSeek',
     baseUrl: 'https://api.deepseek.com/v1',

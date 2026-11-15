@@ -237,7 +237,7 @@ const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((async (input: an
 }) as typeof fetch);
 const exit = spyOn(process, 'exit').mockImplementation((code?: string | number | null): never => { throw new Error('EXIT_' + code); });
 
-const { runInstallCommand } = await import('../../src/npx-cli/commands/install.js');
+const { runInstallCommand, promptProvider } = await import('../../src/npx-cli/commands/install.js');
 
 beforeEach(async () => {
   await stopFixtureWorker();
@@ -818,6 +818,29 @@ describe('install with --provider claude (interactive TTY)', () => {
       expect(settings).toMatchObject({ CLAUDE_MEM_PROVIDER: 'claude', CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'subscription' });
     }
   });
+});
+
+// #5675 site 3: the owner chose a personal key with --provider. Cancelling the key prompt is a stop,
+// never a request for the Anthropic plan.
+describe('install with --provider gemini|openrouter and no key (interactive TTY)', () => {
+  for (const [provider, label] of [['gemini', 'Gemini'], ['openrouter', 'OpenRouter']] as const) {
+    it(`cancelling the ${label} key prompt stops the install and writes no provider`, async () => {
+      const before = readFileSync(settingsPath, 'utf8');
+      passwordAnswer = prompts.CANCEL_SYMBOL;
+      await expect(promptProvider({ provider, providerSource: 'flag' }, null, '0.0.0-test'))
+        .rejects.toThrow('EXIT_1');
+      expect(lines.join('\n')).toContain(`${label} setup cancelled`);
+      expect(questions).toEqual([`Paste your ${label} API key:`]);
+      expect(readFileSync(settingsPath, 'utf8')).toBe(before);
+      expect(readSettings().CLAUDE_MEM_PROVIDER).toBeUndefined();
+      expect(lines.join('\n')).not.toContain('falling back to Claude');
+    });
+
+    it(`a pasted ${label} key still saves the chosen provider`, async () => {
+      await promptProvider({ provider, providerSource: 'flag' }, null, '0.0.0-test');
+      expect(readSettings().CLAUDE_MEM_PROVIDER).toBe(provider);
+    });
+  }
 });
 
 }

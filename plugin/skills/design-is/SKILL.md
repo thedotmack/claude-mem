@@ -36,7 +36,7 @@ Audit each principle in this exact order. Each gets a score 0–3 and ≥1 piece
 
 Use subagents for *evidence gathering* (reading components, measuring contrast, counting elements, inspecting tokens, screenshotting via agent-browser). Keep *scoring and verdict synthesis* with the orchestrator. Reject subagent reports that score without citing evidence and redeploy.
 
-### Subagent Reporting Contract (MANDATORY)
+### Subagent Reporting Contract
 
 Each evidence subagent response must include:
 1. Sources consulted — exact file paths and line ranges, or screenshot regions
@@ -56,7 +56,7 @@ All artifacts go in `DESIGN-IS-<YYYY-MM-DD>/` at repo root (or the project the u
 
 ## Phases
 
-### Phase 0: Scope Lock (ALWAYS FIRST)
+### Phase 0: Scope Lock (runs first)
 
 Ask the user (or infer from the request) and write `00-scope.md`:
 - What is being audited? (live URL, repo path, Figma frame, component name)

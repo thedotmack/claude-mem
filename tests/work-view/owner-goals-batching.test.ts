@@ -135,6 +135,107 @@ describe('initial owner-goals batches', () => {
     } finally { fixture.close(); }
   }, 120_000);
 
+  it('a batched first map names the run language in every batch question and stays inside the question budget (#6185)', async () => {
+    const fixture = harness(prompts(5922));
+    writeFileSync(join(fixture.dataDir, 'settings.json'), JSON.stringify({ CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE: 'English' }));
+    const seen: string[] = [];
+    let calls = 0;
+    try {
+      expect(await run(fixture, async question => {
+        calls++;
+        expect(question).toContain("The owner's language for this run is English.");
+        expect(Buffer.byteLength(question)).toBeLessThanOrEqual(OWNER_GOALS_QUESTION_BYTES);
+        return answer(question, seen);
+      }, 'api')).toBe('goals mapped.');
+      expect(calls).toBeGreaterThan(1);
+      expect(seen).toEqual(Array.from({ length: 5922 }, (_, index) => String(index)));
+    } finally { fixture.close(); }
+  }, 120_000);
+
+  it('batches a first map whose question only passes the budget without the language line (#6185)', async () => {
+    // Calibrate the window so the single-map question sits 10 bytes under the budget on its own:
+    // only the language line step() appends can push it over, so the size decision must count that line.
+    // A probe run over a small window measures the fixed overhead (skill, instructions, expansion
+    // framing); whole prompts then fill the window and the last prompt's padding tunes it exactly.
+    const scanOf = (source: OwnerPrompt[]) => async () => ({ agents: [], ownerPrompts: source, agentWritten: [], ownerMemoryPromptIds: new Set<number>(), skippedSources: [] });
+    const probeSource = prompts(10, 2800);
+    const probe = harness(probeSource);
+    let probeBytes = 0;
+    try {
+      expect(await run(probe, async question => {
+        probeBytes = Buffer.byteLength(question);
+        return answer(question, [], true);
+      }, 'api')).toBe('goals mapped.');
+    } finally { probe.close(); }
+    const scratch = mkdtempSync(join(tmpdir(), 'owner-goals-calibration-'));
+    try {
+      const probeFile = await writeOwnerPromptsFile({ folder: join(scratch, 'probe'), now: NOW, scan: scanOf(probeSource) });
+      const overhead = probeBytes - Buffer.byteLength(readFileSync(probeFile.path, 'utf8'));
+      const target = OWNER_GOALS_QUESTION_BYTES - 10 - overhead;
+      const pool = prompts(1200, 500);
+      const exported = await writeOwnerPromptsFile({ folder: join(scratch, 'pool'), now: NOW, scan: scanOf(pool) });
+      const title = readFileSync(exported.path, 'utf8').split('\n')[0].slice(2);
+      const fileBytes = (count: number) => Buffer.byteLength(`# ${title}\n\n${count} prompts, oldest first.\n\n`)
+        + exported.sections!.slice(0, count).reduce((sum, section) => sum + Buffer.byteLength(section.markdown, 'utf8'), 0)
+        + 6 * Math.max(0, count - 1);
+      let count = 0;
+      while (fileBytes(count + 2) <= target) count++;
+      const residual = target - fileBytes(count + 1);
+      expect(residual).toBeGreaterThanOrEqual(0);
+      const last = pool[count];
+      const source = pool.slice(0, count).concat({ ...last, text: last.text + 'x'.repeat(residual) });
+      const check = await writeOwnerPromptsFile({ folder: join(scratch, 'check'), now: NOW, scan: scanOf(source) });
+      expect(Buffer.byteLength(readFileSync(check.path, 'utf8'))).toBe(target);
+      const fixture = harness(source);
+      writeFileSync(join(fixture.dataDir, 'settings.json'), JSON.stringify({ CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE: 'English' }));
+      const seen: string[] = [];
+      let calls = 0;
+      try {
+        expect(await run(fixture, async question => {
+          calls++;
+          expect(question).toContain("The owner's language for this run is English.");
+          expect(Buffer.byteLength(question)).toBeLessThanOrEqual(OWNER_GOALS_QUESTION_BYTES);
+          return answer(question, seen);
+        }, 'api')).toBe('goals mapped.');
+        expect(calls).toBeGreaterThan(1);
+        expect(seen).toEqual(source.map((_, index) => String(index)));
+        expect(existsSync(checkpointFile(fixture.ledgerDir))).toBe(false);
+      } finally { fixture.close(); }
+    } finally { rmSync(scratch, { recursive: true, force: true }); }
+  }, 120_000);
+
+  it('sizes later batches against the question budget when a large checked draft leaves less than a batch of room (#6185)', async () => {
+    const source: OwnerPrompt[] = [];
+    const add = (count: number, padding: number) => {
+      for (let i = 0; i < count; i++) {
+        const index = source.length;
+        source.push({ agent: 'codex', sessionId: 'owner-session', nativePromptId: String(index), at: NOW - 30_000,
+          cwd: '/work/releases', project: 'releases', platformSource: 'codex',
+          text: 'TURN: ' + index + '\nPlease keep releases and monitoring reliable. ' + 'x'.repeat(padding) });
+      }
+    };
+    add(180, 2800);
+    add(1500, 60);
+    const fixture = harness(source);
+    writeFileSync(join(fixture.dataDir, 'settings.json'), JSON.stringify({ CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE: 'English' }));
+    const seen: string[] = [];
+    let calls = 0;
+    try {
+      expect(await run(fixture, async question => {
+        calls++;
+        expect(question).toContain("The owner's language for this run is English.");
+        expect(Buffer.byteLength(question)).toBeLessThanOrEqual(OWNER_GOALS_QUESTION_BYTES);
+        const value = JSON.parse(answer(question, seen));
+        // The first checked draft is large enough that the question budget, not the batch
+        // budget, sizes every later batch; its language-line allowance is then load-bearing.
+        if (calls === 1) value.goals.human_summary = 'large checked aggregate '.repeat(17_000);
+        return JSON.stringify(value);
+      }, 'api')).toBe('goals mapped.');
+      expect(calls).toBeGreaterThan(2);
+      expect(seen).toEqual(source.map((_, index) => String(index)));
+    } finally { fixture.close(); }
+  }, 120_000);
+
   it('round trips Unicode and escaped focus payloads through Python without changing their save commitment', async () => {
     const fixture = harness(prompts(300, 2800));
     const title = 'İstanbul "quoted" \\ 🚀';
