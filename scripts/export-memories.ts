@@ -7,6 +7,7 @@ import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager.j
 import { resolveDataDir } from '../src/shared/paths.js';
 import { writeJsonFileAtomic } from '../src/shared/atomic-json.js';
 import { formatHostForUrl } from '../src/shared/worker-url.js';
+import { MAX_LISTING_LIMIT, MAX_LISTING_OFFSET } from '../src/shared/listing-offset-cap.js';
 import type {
   ObservationRecord,
   SdkSessionRecord,
@@ -16,6 +17,69 @@ import type {
 } from './types/export.js';
 
 const WORKER_FETCH_TIMEOUT_MS = 30_000;
+
+/** The page size `/api/search` serves and the deepest offset it accepts. */
+const SEARCH_PAGE_LIMIT = MAX_LISTING_LIMIT;
+const SEARCH_MAX_OFFSET = MAX_LISTING_OFFSET;
+
+interface SearchPagePayload {
+  observations?: ObservationRecord[];
+  sessions?: SessionSummaryRecord[];
+  prompts?: Array<UserPromptRecord & { id?: number; memory_session_id?: string | null }>;
+}
+
+interface CollectedSearchRows {
+  observations: ObservationRecord[];
+  summaries: SessionSummaryRecord[];
+  prompts: Array<UserPromptRecord & { id?: number; memory_session_id?: string | null }>;
+  truncated: boolean;
+}
+
+/**
+ * Walk `/api/search` in bounded pages. The route clamps `limit` to
+ * MAX_LISTING_LIMIT and rejects an offset past MAX_LISTING_OFFSET, so a single
+ * request can no longer stand in for the whole history. A page that fills any
+ * category may still have older rows behind it; a page that fills none is the
+ * last page. Reaching the ceiling is reported rather than passed off as a
+ * complete export.
+ */
+async function collectSearchRows(baseUrl: string, params: URLSearchParams): Promise<CollectedSearchRows> {
+  const observations: ObservationRecord[] = [];
+  const summaries: SessionSummaryRecord[] = [];
+  const prompts: Array<UserPromptRecord & { id?: number; memory_session_id?: string | null }> = [];
+  let offset = 0;
+  let truncated = false;
+
+  for (;;) {
+    const pageParams = new URLSearchParams(params);
+    pageParams.set('limit', String(SEARCH_PAGE_LIMIT));
+    if (offset > 0) pageParams.set('offset', String(offset));
+
+    const page = await withWorkerResponse(`${baseUrl}/api/search?${pageParams.toString()}`, async response => {
+      if (!response.ok) throw new Error(`Failed to search: ${response.status} ${response.statusText}`);
+      return await response.json() as SearchPagePayload;
+    });
+
+    const pageObservations = page.observations ?? [];
+    const pageSummaries = page.sessions ?? [];
+    const pagePrompts = page.prompts ?? [];
+    observations.push(...pageObservations);
+    summaries.push(...pageSummaries);
+    prompts.push(...pagePrompts);
+
+    const windowFull = pageObservations.length === SEARCH_PAGE_LIMIT
+      || pageSummaries.length === SEARCH_PAGE_LIMIT
+      || pagePrompts.length === SEARCH_PAGE_LIMIT;
+    if (!windowFull) break;
+    if (offset + SEARCH_PAGE_LIMIT > SEARCH_MAX_OFFSET) {
+      truncated = true;
+      break;
+    }
+    offset += SEARCH_PAGE_LIMIT;
+  }
+
+  return { observations, summaries, prompts, truncated };
+}
 
 function standardStreamDescriptor(outputFile: string): number | undefined {
   let current = resolve(outputFile);
@@ -102,7 +166,6 @@ export async function exportMemories(query: string, outputFile: string, project?
   const params = new URLSearchParams({
     query,
     format: 'json',
-    limit: '999999',
     // Exports include saved history, independent of interactive search recency.
     // The explicit range also permits the documented empty-query full export.
     dateStart: '1970-01-01T00:00:00.000Z'
@@ -110,14 +173,10 @@ export async function exportMemories(query: string, outputFile: string, project?
   if (project) params.set('project', project);
 
   progress('📡 Fetching all memories via hybrid search...');
-  const searchData = await withWorkerResponse(`${baseUrl}/api/search?${params.toString()}`, async response => {
-    if (!response.ok) throw new Error(`Failed to search: ${response.status} ${response.statusText}`);
-    return response.json();
-  });
-
-  const observations: ObservationRecord[] = searchData.observations || [];
-  const summaries: SessionSummaryRecord[] = searchData.sessions || [];
-  const prompts: Array<UserPromptRecord & { id?: number; memory_session_id?: string | null }> = searchData.prompts || [];
+  const { observations, summaries, prompts, truncated } = await collectSearchRows(baseUrl, params);
+  if (truncated) {
+    progress(`⚠️  Stopped at the ${SEARCH_MAX_OFFSET} row search ceiling; narrow the export with --project or a query to reach older memories.`);
+  }
 
   progress(`✅ Found ${observations.length} observations`);
   progress(`✅ Found ${summaries.length} session summaries`);
@@ -168,7 +227,8 @@ export async function exportMemories(query: string, outputFile: string, project?
     observations,
     sessions,
     summaries,
-    prompts
+    prompts,
+    ...(truncated ? { searchTruncated: true } : {})
   };
 
   // Write stdio through its open descriptor: Bun can back it with a socket,
