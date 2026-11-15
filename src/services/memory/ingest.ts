@@ -190,23 +190,30 @@ export function parseMemoryFrontmatter(raw: string): { frontmatter: MemoryFrontm
 
   const fm: MemoryFrontmatter = {};
   let inMetadata = false;
+  let metadataIndent: number | undefined;
   for (let i = 1; i < close; i++) {
     const line = lines[i];
-    if (!line.trim()) continue;
-    const indented = /^\s+/.test(line);
+    const trimmed = line.trimStart();
+    // YAML comments do not end a mapping or establish its child indentation.
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const indent = line.length - trimmed.length;
     const colon = line.indexOf(':');
     if (colon === -1) continue;
     const key = line.slice(0, colon).trim();
     const value = line.slice(colon + 1).trim();
 
-    if (!indented) {
+    if (indent === 0) {
       inMetadata = key === 'metadata';
+      metadataIndent = undefined;
       if (key === 'name') fm.name = unquote(value);
       else if (key === 'description') fm.description = unquote(value);
       continue;
     }
-    // Indented: a child of `metadata:`.
+    // Only direct children belong to this note's metadata. Unknown fields may
+    // contain nested objects or literal examples with the same key names.
     if (inMetadata) {
+      metadataIndent ??= indent;
+      if (indent !== metadataIndent) continue;
       if (key === 'type') fm.type = unquote(value);
       else if (key === 'originSessionId') fm.originSessionId = unquote(value);
       else if (key === 'node_type') fm.nodeType = unquote(value);
