@@ -57,6 +57,46 @@ describeOnMacOsAndLinux('a stop through runCommand, with real processes', () => 
     expect(result.stdout).toBe('ready\nthe CLI got SIGINT\n');
   });
 
+  it('tells onStopNotSent at once, throws nothing, when the stop cannot be sent, and the command runs on: its result comes when it ends', async () => {
+    const stop = new AbortController();
+    // kill(2)'s answer when no process in the group may be signalled, as Node's process.kill throws it.
+    const notPermitted = Object.assign(new Error('kill EPERM'), { code: 'EPERM', errno: -1, syscall: 'kill' });
+    const stopsNotSent: Error[] = [];
+    /** What onStopNotSent had heard each time abort() returned. */
+    const stopsNotSentWhenTheAbortReturned: Error[][] = [];
+    let commandProcessGroup: number | undefined;
+    const realProcessKill = process.kill.bind(process);
+    const processKill = spyOn(process, 'kill').mockImplementation(((pid: number, signal?: string | number) => {
+      if (commandProcessGroup !== undefined && pid === -commandProcessGroup) throw notPermitted;
+      return realProcessKill(pid, signal);
+    }) as typeof process.kill);
+    try {
+      const result = await runCommand(
+        ((command: string, args: string[], options: SpawnOptions) => {
+          const child = spawn(command, args, options);
+          commandProcessGroup = child.pid;
+          child.stdout?.on('data', (chunk: unknown) => {
+            if (!String(chunk).includes('ready')) return;
+            stop.abort();
+            stopsNotSentWhenTheAbortReturned.push([...stopsNotSent]);
+            // The failed stop left the CLI running, mid-turn: a stop that does reach it ends it, and that is how it ends.
+            realProcessKill(-child.pid!, 'SIGINT');
+          });
+          return child;
+        }) as unknown as typeof spawn,
+        process.execPath,
+        [STAND_IN_CLI, String(STAND_IN_TURN_LENGTH_MS)],
+        { signal: stop.signal, killSignal: 'SIGINT', onStopNotSent: error => { stopsNotSent.push(error); } },
+      );
+      expect(stopsNotSentWhenTheAbortReturned).toEqual([[notPermitted]]);
+      expect(stopsNotSent).toEqual([notPermitted]);
+      expect(result.spawnError).toBeUndefined();
+      expect(result).toMatchObject({ exitCode: 130, stdout: 'ready\nthe CLI got SIGINT\n' });
+    } finally {
+      processKill.mockRestore();
+    }
+  });
+
   it('sends nothing when the stop comes after the command has ended', async () => {
     const stop = new AbortController();
     const result = await runCommand(spawn, process.execPath, [STAND_IN_CLI, '0'], { signal: stop.signal, killSignal: 'SIGINT' });

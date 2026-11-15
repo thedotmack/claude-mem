@@ -48,7 +48,10 @@ function runnerWithStandIn(overrides: Partial<ConversationContinuationDependenci
   const changes: ConversationContinuation[] = [];
   const runner = new ConversationContinuationRunner({
     recordedFolderForConversation: () => ({ sessionIsRecorded: true, recordedFolder: folder }),
-    detectAgents: async () => [{ id: 'claude-code', path: STAND_IN, authenticated: true, reason: 'test login' }],
+    // Only Claude Code is found, and it is the stand-in.
+    detectAgent: async agentId => agentId === 'claude-code'
+      ? { id: agentId, path: STAND_IN, authenticated: true, reason: 'test login' }
+      : { id: agentId, path: null, authenticated: false, reason: 'not installed: only Claude Code is in this test' },
     spawnImpl: spawn,
     onChange: exchange => { changes.push(exchange); },
     environment: () => ({ ...WORKER_ENVIRONMENT }),

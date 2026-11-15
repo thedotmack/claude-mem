@@ -13,7 +13,7 @@ import express from 'express';
 import { listenOnEphemeralPort } from '../../../helpers/ephemeral-port.js';
 import { scratchDir } from '../../../helpers/scratch-dir.js';
 import { removeTempDir } from '../../../helpers/temp-dir.js';
-import type { UsableAgent } from '../../../../src/services/agent-runner/detect.js';
+import type { UsableAgent, UsableAgentId } from '../../../../src/services/agent-runner/detect.js';
 import { Server } from '../../../../src/services/server/Server.js';
 import { SessionStore } from '../../../../src/services/sqlite/SessionStore.js';
 import { ConversationContinuationRunner } from '../../../../src/services/work-view/conversation-continuation-runner.js';
@@ -67,11 +67,12 @@ const childrenByProcessGroup = new Map<number, FakeChild>();
 
 interface SpawnCall { command: string; args: string[]; options: SpawnOptions; child: FakeChild }
 
-const usableAgents = (): UsableAgent[] => [
-  { id: 'claude-code', path: '/usr/local/bin/claude', authenticated: true, reason: 'test login' },
-  { id: 'codex', path: '/usr/local/bin/codex', authenticated: true, reason: 'test login' },
-  { id: 'gemini', path: null, authenticated: false, reason: 'not installed' },
-];
+/** What detection answers about each CLI on the test's computer: Claude Code and Codex installed and logged in. */
+const usableAgent = (agentId: UsableAgentId): UsableAgent => ({
+  'claude-code': { id: 'claude-code', path: '/usr/local/bin/claude', authenticated: true, reason: 'test login' },
+  codex: { id: 'codex', path: '/usr/local/bin/codex', authenticated: true, reason: 'test login' },
+  gemini: { id: 'gemini', path: null, authenticated: false, reason: 'not installed' },
+} satisfies Record<UsableAgentId, UsableAgent>)[agentId];
 
 /** Claude Code's `--output-format json` output with `"verbose": true` (the owner's setting), its reply set to `replyText`. */
 function claudeOutput(replyText: string): string {
@@ -124,7 +125,7 @@ function runnerFor(routes: () => WorkViewRoutes, operatingSystem: NodeJS.Platfor
   const spawnWaiters = new Map<number, Array<(call: SpawnCall) => void>>();
   const runner = new ConversationContinuationRunner({
     recordedFolderForConversation: (platform, conversationSessionId) => store.getRecordedFolderForConversation(platform, conversationSessionId),
-    detectAgents: async () => { detectCalls += 1; return usableAgents(); },
+    detectAgent: async agentId => { detectCalls += 1; return usableAgent(agentId); },
     spawnImpl: ((command: string, args: string[], options: SpawnOptions) => {
       const call: SpawnCall = { command, args, options, child: new FakeChild() };
       calls.push(call);
@@ -463,6 +464,35 @@ describe('a Send', () => {
     } finally {
       window.close();
     }
+  });
+
+  // A stop goes wrong this way only in the process-group signal macOS and Linux get (CommandOptions.signal in detect.ts).
+  (process.platform === 'win32' ? it.skip : it)('answers a Stop that could not be sent with 409 and the sentence saying so, and the turn runs on', async () => {
+    const opened = await startRoutes();
+    const conversation = { platform: 'claude', conversationSessionId: CLAUDE_SESSION };
+    expect((await sendMessage(opened.origin, { ...conversation, ownerMessage: 'Count slowly to 200, one number per line.' })).status).toBe(202);
+    const turnProcessGroup = opened.calls[0].child.pid;
+    const realProcessKill = process.kill.bind(process);
+    // kill(2)'s answer when no process in the group may be signalled, as Node's process.kill throws it.
+    const notPermitted = Object.assign(new Error('kill EPERM'), { code: 'EPERM', errno: -1, syscall: 'kill' });
+    const processKill = spyOn(process, 'kill').mockImplementation(((pid: number, signal?: string | number) => {
+      if (pid === -turnProcessGroup) throw notPermitted;
+      return realProcessKill(pid, signal);
+    }) as typeof process.kill);
+    let stopped: Response;
+    try {
+      stopped = await pressStop(opened.origin, conversation);
+    } finally {
+      processKill.mockRestore();
+    }
+    expect(stopped.status).toBe(409);
+    expect(await stopped.json()).toEqual({ error: 'The stop did not reach Claude Code (kill EPERM), so this turn is still running.' });
+    const read = async () => (await (await readConversation(opened.origin, 'claude', CLAUDE_SESSION)).json() as { exchanges: ConversationContinuation[] }).exchanges;
+    expect((await read()).map(exchange => exchange.state)).toEqual(['running']);
+    // The turn then finishes by itself: its reply stands, as a turn no stop reached.
+    opened.calls[0].child.exit(0, { stdout: claudeOutput('1\n2\n3') });
+    expect(await opened.nextEnded()).toMatchObject({ state: 'replied', replyText: '1\n2\n3' });
+    expect((await read()).map(({ state, replyText }) => ({ state, replyText }))).toEqual([{ state: 'replied', replyText: '1\n2\n3' }]);
   });
 });
 

@@ -815,6 +815,18 @@ describe('continuing a conversation from this computer', () => {
     try { await call } catch (error) { return error instanceof Error ? error.message : String(error) }
     throw new Error('The call resolved; a rejection was expected.')
   }
+  /**
+   * Records each console.warn and console.error call's arguments, in order, and prints none, until restore(). By hand, so
+   * a test runs the same under `node --test` and under bun, whose node:test has no mock.
+   */
+  function recordingConsole() {
+    const { warn: originalWarn, error: originalError } = console
+    const warnings: unknown[][] = []
+    const errors: unknown[][] = []
+    console.warn = (...args: unknown[]) => { warnings.push(args) }
+    console.error = (...args: unknown[]) => { errors.push(args) }
+    return { warnings, errors, restore: () => { console.warn = originalWarn; console.error = originalError } }
+  }
 
   it('reads, sends and stops through the three conversation routes', async () => {
     const calls: Array<{ url: string; init: RequestInit | undefined }> = []
@@ -978,10 +990,9 @@ describe('continuing a conversation from this computer', () => {
     } finally { unsubscribe(); stopLive() }
   })
 
-  it('tells every subscriber a notice when one before it throws, and reports the throw as that listener\'s own error', (t) => {
+  it('tells every subscriber a notice when one before it throws, and reports the throw as that listener\'s own error', () => {
     const { local, streams } = harness(async () => json(overview()))
-    const consoleWarn = t.mock.method(console, 'warn', () => {})
-    const consoleError = t.mock.method(console, 'error', () => {})
+    const consoleOutput = recordingConsole()
     const listenerError = new Error('the first row could not draw its reply')
     const heardBySecondRow: ConversationContinuationEvent[] = []
     const stopLive = local.subscribeToLiveUpdates(() => {}, () => {})
@@ -991,23 +1002,22 @@ describe('continuing a conversation from this computer', () => {
       streams[0].emit('conversation-continuation', notice)
       // Missing this 'replied' notice would leave the second row on 'Working…' until the stream reopens.
       assert.deepEqual(heardBySecondRow, [notice], 'the row after a throwing one still hears the notice')
-      assert.deepEqual(consoleWarn.mock.calls.map((call) => call.arguments), [], 'a readable frame is never reported as unreadable')
-      assert.equal(consoleError.mock.callCount(), 1)
-      const [message, reported] = consoleError.mock.calls[0].arguments
+      assert.deepEqual(consoleOutput.warnings, [], 'a readable frame is never reported as unreadable')
+      assert.equal(consoleOutput.errors.length, 1)
+      const [message, reported] = consoleOutput.errors[0]
       assert.match(String(message), /conversation-continuation listener threw/)
       assert.equal(reported, listenerError, 'the listener\'s own error is reported, with its stack')
       // A frame that really is unreadable is still skipped with its warning, and reaches no listener.
       streams[0].handlers.get('conversation-continuation')?.({ data: '<html>secret prompt</html>' })
-      assert.deepEqual(consoleWarn.mock.calls.map((call) => call.arguments), [['[work-view] Ignoring a conversation-continuation frame that is not JSON']])
+      assert.deepEqual(consoleOutput.warnings, [['[work-view] Ignoring a conversation-continuation frame that is not JSON']])
       assert.deepEqual(heardBySecondRow, [notice])
-      assert.equal(consoleError.mock.callCount(), 1)
-    } finally { unsubscribeFirstRow(); unsubscribeSecondRow(); stopLive() }
+      assert.equal(consoleOutput.errors.length, 1)
+    } finally { consoleOutput.restore(); unsubscribeFirstRow(); unsubscribeSecondRow(); stopLive() }
   })
 
-  it('tells every subscriber the stream reopened when one before it throws, and reports the throw as that listener\'s own error', (t) => {
+  it('tells every subscriber the stream reopened when one before it throws, and reports the throw as that listener\'s own error', () => {
     const { local, streams } = harness(async () => json(overview()))
-    const consoleWarn = t.mock.method(console, 'warn', () => {})
-    const consoleError = t.mock.method(console, 'error', () => {})
+    const consoleOutput = recordingConsole()
     const listenerError = new Error('the first row could not read its conversation again')
     const heardBySecondRow: ConversationContinuationEvent[] = []
     const stopLive = local.subscribeToLiveUpdates(() => {}, () => {})
@@ -1019,12 +1029,12 @@ describe('continuing a conversation from this computer', () => {
       assert.doesNotThrow(() => streams[0].onopen?.(), 'a listener\'s throw does not escape the stream\'s open handler')
       // A row that misses this, while it shows 'Working…', would stay that way until the stream reopens again.
       assert.deepEqual(heardBySecondRow, ['live-updates-reconnected'], 'the row after a throwing one still hears the stream reopened')
-      assert.equal(consoleWarn.mock.callCount(), 0, 'nothing is reported as an unreadable frame')
-      assert.equal(consoleError.mock.callCount(), 1)
-      const [message, reported] = consoleError.mock.calls[0].arguments
+      assert.deepEqual(consoleOutput.warnings, [], 'nothing is reported as an unreadable frame')
+      assert.equal(consoleOutput.errors.length, 1)
+      const [message, reported] = consoleOutput.errors[0]
       assert.match(String(message), /conversation-continuation listener threw/)
       assert.equal(reported, listenerError, 'the listener\'s own error is reported, with its stack')
-    } finally { unsubscribeFirstRow(); unsubscribeSecondRow(); stopLive() }
+    } finally { consoleOutput.restore(); unsubscribeFirstRow(); unsubscribeSecondRow(); stopLive() }
   })
 
   it('exists only on the page this computer\'s worker serves', () => {

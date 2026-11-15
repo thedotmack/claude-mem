@@ -198,12 +198,12 @@ describe('what a row\'s message box, Send and Stop are called for a screen reade
 
   it('adds the end of each session id when another row shows the same title', () => {
     // Codex session ids are time-ordered: conversations started within a minute share the title made from their start.
-    const title = 'Conversation 01a1b3d0'
-    const first = namesFor({ toolName: 'Codex', conversationTitle: title, conversationSessionId: '01a1b3d0-4e5f-7a6b-8c7d-9e0f1a2b3c4d', anotherConversationHasTheSameTitle: true })
-    const second = namesFor({ toolName: 'Codex', conversationTitle: title, conversationSessionId: '01a1b3d0-77aa-7bcd-8e2f-1a0b9c8d7e6f', anotherConversationHasTheSameTitle: true })
+    const title = 'Conversation abcd0123'
+    const first = namesFor({ toolName: 'Codex', conversationTitle: title, conversationSessionId: 'abcd0123-4e5f-7a6b-8c7d-9e0f1a2b3c4d', anotherConversationHasTheSameTitle: true })
+    const second = namesFor({ toolName: 'Codex', conversationTitle: title, conversationSessionId: 'abcd0123-77aa-7bcd-8e2f-1a0b9c8d7e6f', anotherConversationHasTheSameTitle: true })
     assert.equal(inEnglish(first.messageBox), 'Continue this Codex conversation (…1a2b3c4d)')
-    assert.equal(inEnglish(first.sendButton), 'Send to the Codex conversation “Conversation 01a1b3d0” (…1a2b3c4d)')
-    assert.equal(inEnglish(second.stopButton), 'Stop the turn in the Codex conversation “Conversation 01a1b3d0” (…9c8d7e6f)')
+    assert.equal(inEnglish(first.sendButton), 'Send to the Codex conversation “Conversation abcd0123” (…1a2b3c4d)')
+    assert.equal(inEnglish(second.stopButton), 'Stop the turn in the Codex conversation “Conversation abcd0123” (…9c8d7e6f)')
     for (const control of ['messageBox', 'sendButton', 'stopButton'] as const) {
       assert.notEqual(inEnglish(first[control]), inEnglish(second[control]), control)
     }
@@ -293,12 +293,12 @@ describe('what a row offers beside Send', () => {
   })
 
   it('names each button for the conversation it acts on, with the end of its session id when another row shows the same title', () => {
-    const title = 'Conversation 01a1b3d0'
-    const first = conversationAppActions({ ...claudeRow, conversationTitle: title, conversationSessionId: '01a1b3d0-4e5f-7a6b-8c7d-9e0f1a2b3c4d', anotherConversationHasTheSameTitle: true }, runsInRecordedFolder, true)!
-    const second = conversationAppActions({ ...claudeRow, conversationTitle: title, conversationSessionId: '01a1b3d0-77aa-7bcd-8e2f-1a0b9c8d7e6f', anotherConversationHasTheSameTitle: true }, runsInRecordedFolder, true)!
-    assert.equal(inEnglish(first.openInApp!.buttonName), 'Open in Claude: the Claude Code conversation “Conversation 01a1b3d0” (…1a2b3c4d)')
-    assert.equal(inEnglish(first.copyResumeCommand.buttonName), 'Copy resume command for the Claude Code conversation “Conversation 01a1b3d0” (…1a2b3c4d)')
-    assert.equal(inEnglish(second.copyResumeCommand.copiedButtonName), 'Copied the resume command for the Claude Code conversation “Conversation 01a1b3d0” (…9c8d7e6f)')
+    const title = 'Conversation abcd0123'
+    const first = conversationAppActions({ ...claudeRow, conversationTitle: title, conversationSessionId: 'abcd0123-4e5f-7a6b-8c7d-9e0f1a2b3c4d', anotherConversationHasTheSameTitle: true }, runsInRecordedFolder, true)!
+    const second = conversationAppActions({ ...claudeRow, conversationTitle: title, conversationSessionId: 'abcd0123-77aa-7bcd-8e2f-1a0b9c8d7e6f', anotherConversationHasTheSameTitle: true }, runsInRecordedFolder, true)!
+    assert.equal(inEnglish(first.openInApp!.buttonName), 'Open in Claude: the Claude Code conversation “Conversation abcd0123” (…1a2b3c4d)')
+    assert.equal(inEnglish(first.copyResumeCommand.buttonName), 'Copy resume command for the Claude Code conversation “Conversation abcd0123” (…1a2b3c4d)')
+    assert.equal(inEnglish(second.copyResumeCommand.copiedButtonName), 'Copied the resume command for the Claude Code conversation “Conversation abcd0123” (…9c8d7e6f)')
     for (const names of [(actions: typeof first) => actions.openInApp!.buttonName, (actions: typeof first) => actions.copyResumeCommand.buttonName, (actions: typeof first) => actions.copyResumeCommand.copiedButtonName]) {
       assert.notEqual(inEnglish(names(first)), inEnglish(names(second)))
     }

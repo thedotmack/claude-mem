@@ -136,6 +136,9 @@ export interface WorkDataSource {
   openConversationInApp?(platform: ContinuablePlatform, conversationSessionId: string): Promise<ConversationOpenedInApp>
 }
 
-/** A source that can continue a conversation from this page: it has all four of the calls above. */
+/**
+ * A source that can continue a conversation from this page: it has the four calls above that continuing needs. The fifth,
+ * openConversationInApp, stays optional: a row offers "Open in" only when its source has it.
+ */
 export type ConversationContinuationSource = WorkDataSource
   & Required<Pick<WorkDataSource, 'loadConversationContinuation' | 'continueConversation' | 'stopConversationContinuation' | 'subscribeToConversationContinuations'>>

@@ -90,6 +90,14 @@ export interface CommandOptions {
    */
   signal?: AbortSignal;
   killSignal?: NodeJS.Signals;
+  /**
+   * Told at once, with the error, when the stop could not be sent to the command's process group on macOS and Linux:
+   * during the abort, or before runCommand returns when `signal` was aborted already. "No such process" is not such an
+   * error: the command has exited, so nothing was left to stop. After it, the command runs on until it ends by itself,
+   * and its result comes as usual. Without it, the error is thrown during the abort, which reaches no caller: the
+   * runtime reports it as an uncaught exception.
+   */
+  onStopNotSent?: (error: Error) => void;
 }
 
 /** The spawn options that let `signal` stop the command (see CommandOptions.signal), and none without a signal. */
@@ -137,9 +145,11 @@ export function runCommand(first: typeof spawn | string, second: string | string
         // A group's id is its leader's pid.
         process.kill(-child.pid, options.killSignal ?? 'SIGTERM');
       } catch (error) {
-        // ESRCH: every process in the group has exited already, so nothing is left to stop. Anything else is thrown
-        // and reported as an uncaught error (the worker logs it), and the command runs on until it ends by itself.
-        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+        // ESRCH: every process in the group has exited already, so nothing is left to stop.
+        if ((error as NodeJS.ErrnoException).code === 'ESRCH') return;
+        // Anything else: the stop was not sent, and the command runs on until it ends by itself (onStopNotSent).
+        if (!options.onStopNotSent) throw error;
+        options.onStopNotSent(error as Error);
       }
     };
     const settle = (result: CommandResult) => {
@@ -427,4 +437,23 @@ export async function detectUsableAgents(
     runCheck('codex', detectCodex, dependencies),
     runCheck('gemini', detectGemini, dependencies),
   ]);
+}
+
+/** Each agent's own check, by id: what detectUsableAgent runs. */
+const AGENT_CHECKS: Record<UsableAgentId, (dependencies: AgentDetectionDependencies) => Promise<UsableAgent>> = {
+  'claude-code': detectClaudeCode,
+  codex: detectCodex,
+  gemini: detectGemini,
+};
+
+/**
+ * Report one agent as detectUsableAgents reports it: whether it is installed (`path`) and logged in (`authenticated`).
+ * Only that agent's own check runs, so no other CLI is started; with a Google login, Gemini's check starts the Gemini
+ * CLI headless (see the header). Never throws.
+ */
+export async function detectUsableAgent(
+  id: UsableAgentId,
+  overrides: Partial<AgentDetectionDependencies> = {},
+): Promise<UsableAgent> {
+  return runCheck(id, AGENT_CHECKS[id], { ...defaultDependencies, ...overrides });
 }

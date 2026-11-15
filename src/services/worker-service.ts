@@ -201,7 +201,7 @@ import { cmemProOrigin } from '../shared/cmem-gateway.js';
 import { Database as BunDatabase } from 'bun:sqlite';
 import { WorkViewRoutes } from './worker/http/routes/WorkViewRoutes.js';
 import { ConversationContinuationRunner } from './work-view/conversation-continuation-runner.js';
-import { detectUsableAgents } from './agent-runner/detect.js';
+import { detectUsableAgent } from './agent-runner/detect.js';
 import { SessionRoutes } from './worker/http/routes/SessionRoutes.js';
 import { DataRoutes } from './worker/http/routes/DataRoutes.js';
 import { MediaRoutes } from './worker/http/routes/MediaRoutes.js';
@@ -1205,7 +1205,8 @@ export class WorkerService implements WorkerRef {
         conversationContinuationRunner: new ConversationContinuationRunner({
           recordedFolderForConversation: (platform, conversationSessionId) =>
             this.dbManager.getSessionStore().getRecordedFolderForConversation(platform, conversationSessionId),
-          detectAgents: detectUsableAgents,
+          // Checks only the conversation's own CLI: checking Gemini too could start the Gemini CLI on every Send and Open.
+          detectAgent: agentId => detectUsableAgent(agentId),
           spawnImpl: spawn,
           onChange: exchange => this.workViewRoutes?.publishConversationContinuation(exchange),
         }),

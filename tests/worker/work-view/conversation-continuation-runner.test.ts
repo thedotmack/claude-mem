@@ -8,7 +8,7 @@ import { join } from 'path';
 import type { spawn, SpawnOptions } from 'child_process';
 import { scratchDir } from '../../helpers/scratch-dir.js';
 import { removeTempDir } from '../../helpers/temp-dir.js';
-import type { UsableAgent } from '../../../src/services/agent-runner/detect.js';
+import type { UsableAgent, UsableAgentId } from '../../../src/services/agent-runner/detect.js';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import {
   ConversationContinuationRunner,
@@ -18,7 +18,9 @@ import {
   type ConversationExchangeOrRefusal,
   type RecordedConversationFolder,
 } from '../../../src/services/work-view/conversation-continuation-runner.js';
-import { CONVERSATION_APP_NAMES, opensInItsOwnApp, resumeCommandFor, type ConversationContinuation } from '../../../src/shared/conversation-continuation.js';
+import {
+  CONVERSATION_APP_NAMES, opensInItsOwnApp, resumeCommandFor, type ContinuablePlatform, type ConversationContinuation,
+} from '../../../src/shared/conversation-continuation.js';
 import { logger } from '../../../src/utils/logger.js';
 
 const FIXTURES = join(import.meta.dir, '..', '..', 'fixtures', 'conversation-continuation');
@@ -51,7 +53,11 @@ class FakeChild extends EventEmitter {
 /** How a stop reached a command: runCommand's own signal to its process group, or Node's `signal` option. */
 type StopDelivery = { via: 'its process group' | "Node's signal option"; signal: unknown };
 
-interface SpawnCall { command: string; args: string[]; options: SpawnOptions; child: FakeChild; stops: StopDelivery[] }
+interface SpawnCall {
+  command: string; args: string[]; options: SpawnOptions; child: FakeChild; stops: StopDelivery[];
+  /** Set by a test to make a stop sent to this command's process group fail with it, as kill(2) can. */
+  stopCannotBeSent?: Error;
+}
 
 /** Each spawn call by the process group its fake child leads, for the process.kill stub. */
 const callsByProcessGroup = new Map<number, SpawnCall>();
@@ -85,6 +91,7 @@ beforeEach(() => {
   const processKill = spyOn(process, 'kill').mockImplementation(((pid: number, signal?: string | number) => {
     const call = pid < 0 ? callsByProcessGroup.get(-pid) : undefined;
     if (!call) return realProcessKill(pid, signal);
+    if (call.stopCannotBeSent) throw call.stopCannotBeSent;
     call.stops.push({ via: 'its process group', signal });
     return true;
   }) as typeof process.kill);
@@ -97,11 +104,16 @@ const CLAUDE_SESSION = '0f8e2a4c-1b3d-4e5f-8a9b-0c1d2e3f4a5b';
 const CODEX_SESSION = '019a2b3c-4d5e-7f60-8a1b-2c3d4e5f6a7b';
 const WORKER_ENVIRONMENT = { PATH: '/usr/bin:/bin', HOME: '/home/tester', CLAUDE_MEM_INTERNAL: '1', CLAUDECODE: '1' };
 
-const usableAgents = (): UsableAgent[] => [
-  { id: 'claude-code', path: CLAUDE_PATH, authenticated: true, reason: 'test login' },
-  { id: 'codex', path: CODEX_PATH, authenticated: true, reason: 'test login' },
-  { id: 'gemini', path: null, authenticated: false, reason: 'not installed' },
-];
+/** What detection answers about each CLI on the test's computer: Claude Code and Codex installed and logged in. */
+const usableAgent = (agentId: UsableAgentId): UsableAgent => ({
+  'claude-code': { id: 'claude-code', path: CLAUDE_PATH, authenticated: true, reason: 'test login' },
+  codex: { id: 'codex', path: CODEX_PATH, authenticated: true, reason: 'test login' },
+  gemini: { id: 'gemini', path: null, authenticated: false, reason: 'not installed' },
+} satisfies Record<UsableAgentId, UsableAgent>)[agentId];
+/** kill(2)'s answer when no process in the group may be signalled, as Node's process.kill throws it. */
+const stopNotPermitted = () => Object.assign(new Error('kill EPERM'), { code: 'EPERM', errno: -1, syscall: 'kill' });
+/** A stop that can't be sent goes wrong only in the process-group signal macOS and Linux get (CommandOptions.signal). */
+const itOnMacOsAndLinux = process.platform === 'win32' ? it.skip : it;
 
 const verboseArray = (): unknown[] => JSON.parse(readFileSync(join(FIXTURES, 'claude-result-verbose-array.json'), 'utf8'));
 /** Claude Code's `--output-format json` output with `"verbose": true`, its result element changed by `result`. */
@@ -132,11 +144,11 @@ function harness(overrides: Partial<ConversationContinuationDependencies> = {}, 
   const changes: ConversationContinuation[] = [];
   const unread: ConversationContinuation[] = [];
   const waiting: Array<(exchange: ConversationContinuation) => void> = [];
-  let detectCalls = 0;
+  const detectedAgentIds: UsableAgentId[] = [];
   const dependencies: ConversationContinuationDependencies = {
     recordedFolderForConversation: (platform, conversationSessionId) =>
       recordedFolders[`${platform}:${conversationSessionId}`] ?? { sessionIsRecorded: false, recordedFolder: null },
-    detectAgents: async () => { detectCalls += 1; return usableAgents(); },
+    detectAgent: async agentId => { detectedAgentIds.push(agentId); return usableAgent(agentId); },
     spawnImpl: fakeSpawn(calls),
     onChange: exchange => {
       changes.push(exchange);
@@ -153,7 +165,9 @@ function harness(overrides: Partial<ConversationContinuationDependencies> = {}, 
     dependencies,
     calls,
     changes,
-    detectCalls: () => detectCalls,
+    detectCalls: () => detectedAgentIds.length,
+    /** Which CLI each detection asked about, in order. */
+    detectedAgentIds: () => [...detectedAgentIds],
     /** The next exchange the runner reports as ended. */
     nextChange: () => unread.length > 0 ? Promise.resolve(unread.shift()!) : new Promise<ConversationContinuation>(resolve => waiting.push(resolve)),
   };
@@ -436,12 +450,12 @@ describe('one turn per conversation, Stop, and nothing later', () => {
   });
 
   it('refuses a second send while the first is still checking the CLI login', async () => {
-    let finishDetection!: (agents: UsableAgent[]) => void;
-    const detection = new Promise<UsableAgent[]>(resolve => { finishDetection = resolve; });
-    const { runner, calls } = harnessIn(realFolder(), { detectAgents: () => detection });
+    let finishDetection!: (agent: UsableAgent) => void;
+    const detection = new Promise<UsableAgent>(resolve => { finishDetection = resolve; });
+    const { runner, calls } = harnessIn(realFolder(), { detectAgent: () => detection });
     const firstStart = runner.start('claude', CLAUDE_SESSION, 'first');
     expect(await runner.start('claude', CLAUDE_SESSION, 'second')).toHaveProperty('refusalText');
-    finishDetection(usableAgents());
+    finishDetection(usableAgent('claude-code'));
     startedExchange(await firstStart);
     expect(calls).toHaveLength(1);
     expect(calls[0].child.stdinText).toBe('first');
@@ -512,26 +526,71 @@ describe('one turn per conversation, Stop, and nothing later', () => {
     expect(runner.stop('claude', CLAUDE_SESSION)).toHaveProperty('refusalText');
   });
 
-  it('refuses a CLI that is not installed or not logged in before anything runs', async () => {
-    let detection = 0;
-    const { runner, calls } = harnessIn(realFolder(), {
-      detectAgents: async () => {
-        detection += 1;
-        if (detection > 2) return usableAgents();
-        return [
-          { id: 'claude-code', path: null, authenticated: false, reason: 'not installed: Claude executable not found.' },
-          { id: 'codex', path: CODEX_PATH, authenticated: false, reason: '`codex login status` exited 1: Not logged in' },
-          { id: 'gemini', path: null, authenticated: false, reason: 'not installed' },
-        ];
-      },
-    });
-    expect(await runner.start('claude', CLAUDE_SESSION, 'Which word?')).toEqual({ refusalText: 'Claude Code is not installed on this computer.' });
+  it('refuses a CLI its check found no path to, or found not logged in, in what the check found, before anything runs', async () => {
+    const detectionAnswers: UsableAgent[] = [
+      { id: 'claude-code', path: null, authenticated: false, reason: 'not installed: Claude executable not found.' },
+      // The check itself failed. That says nothing about whether Claude Code is installed, so neither may the refusal.
+      { id: 'claude-code', path: null, authenticated: false, reason: 'check failed: the login keychain could not be read' },
+      { id: 'codex', path: CODEX_PATH, authenticated: false, reason: '`codex login status` exited 1: Not logged in' },
+    ];
+    const { runner, calls } = harnessIn(realFolder(), { detectAgent: async agentId => detectionAnswers.shift() ?? usableAgent(agentId) });
+    expect(await runner.start('claude', CLAUDE_SESSION, 'Which word?'))
+      .toEqual({ refusalText: 'Claude Code can’t take this turn on this computer (not installed: Claude executable not found.).' });
+    expect(await runner.start('claude', CLAUDE_SESSION, 'Which word?'))
+      .toEqual({ refusalText: 'Claude Code can’t take this turn on this computer (check failed: the login keychain could not be read).' });
     expect(await runner.start('codex', CODEX_SESSION, 'Which word?'))
       .toEqual({ refusalText: 'Codex is not logged in on this computer (`codex login status` exited 1: Not logged in).' });
     expect(calls).toHaveLength(0);
     // A refusal leaves the conversation free: the next send runs once the CLI is there.
     startedExchange(await runner.start('claude', CLAUDE_SESSION, 'Which word?'));
     expect(calls).toHaveLength(1);
+  });
+
+  it("checks only the conversation's own CLI, once for each Send and each Open", async () => {
+    const { runner, calls, detectedAgentIds, nextChange } = harnessIn(realFolder());
+    startedExchange(await runner.start('codex', CODEX_SESSION, 'Which word?'));
+    calls[0].child.exit(0, { stdout: 'marmalade\n' });
+    await nextChange();
+    expect(detectedAgentIds()).toEqual(['codex']);
+    startedExchange(await runner.start('claude', CLAUDE_SESSION, 'Which word?'));
+    calls[1].child.exit(0, { stdout: claudeVerboseOutput({}) });
+    await nextChange();
+    const opening = runner.openInApp('claude', CLAUDE_SESSION);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    calls[2].child.exit(0);
+    await opening;
+    // Never Gemini, whose check with a Google login starts the Gemini CLI headless (detect.ts).
+    expect(detectedAgentIds()).toEqual(['codex', 'claude-code', 'claude-code']);
+  });
+
+  itOnMacOsAndLinux('says so, with the error, when a Stop could not be sent, and the turn runs on; its end is then its own, not a stop', async () => {
+    const endings: Array<[ContinuablePlatform, string, string, (child: FakeChild) => void, string]> = [
+      ['claude', CLAUDE_SESSION, 'Claude Code', child => child.exit(1, { stderr: 'API Error: 529 Overloaded\n' }), 'Claude Code exited with code 1.\n\nAPI Error: 529 Overloaded'],
+      ['codex', CODEX_SESSION, 'Codex', child => child.exit(1, { stderr: 'stream disconnected before completion\n' }), 'Codex exited with code 1.\n\nstream disconnected before completion'],
+    ];
+    for (const [platform, conversationSessionId, toolName, endByItself, ownEnding] of endings) {
+      const { runner, calls, changes, nextChange } = harnessIn(realFolder());
+      const running = startedExchange(await runner.start(platform, conversationSessionId, 'Count slowly to 200, one number per line.'));
+      calls[0].stopCannotBeSent = stopNotPermitted();
+      const stopNotSent = { refusalText: `The stop did not reach ${toolName} (kill EPERM), so this turn is still running.` };
+      expect(runner.stop(platform, conversationSessionId)).toEqual(stopNotSent);
+      expect(calls[0].stops).toEqual([]);
+      // Still running: the exchange as it was, no end reported, no second turn. Pressing Stop again answers the same.
+      expect(runner.exchanges(platform, conversationSessionId)).toEqual([running]);
+      expect(changes).toHaveLength(0);
+      expect(await runner.start(platform, conversationSessionId, 'next')).toEqual({
+        refusalText: 'This conversation is still answering your last message from here. Wait for its reply, or stop it, before you send another.',
+      });
+      expect(runner.stop(platform, conversationSessionId)).toEqual(stopNotSent);
+      expect(calls).toHaveLength(1);
+      // The stop never reached the CLI, so a failure it then has is its own, not "You stopped this turn."
+      endByItself(calls[0].child);
+      expect(await nextChange()).toMatchObject({ exchangeId: running.exchangeId, state: 'failed', failureText: ownEnding });
+      // Once it has ended, the next turn starts, with a stop of its own.
+      startedExchange(await runner.start(platform, conversationSessionId, 'next'));
+      expect(runner.stop(platform, conversationSessionId)).toHaveProperty('exchange');
+      expect(calls[1].stops).toEqual([stopSentToTheCommand('SIGINT')]);
+    }
   });
 
   it('refuses an empty message', async () => {
@@ -847,11 +906,11 @@ describe('opening a conversation in its app', () => {
   });
 
   it("starts nothing when the page that asked goes away while the CLI's install is checked", async () => {
-    let finishDetection!: (agents: UsableAgent[]) => void;
-    const { runner, calls } = harnessIn(realFolder(), { detectAgents: () => new Promise<UsableAgent[]>(resolve => { finishDetection = resolve; }) });
+    let finishDetection!: (agent: UsableAgent) => void;
+    const { runner, calls } = harnessIn(realFolder(), { detectAgent: () => new Promise<UsableAgent>(resolve => { finishDetection = resolve; }) });
     const opening = runner.openInApp('claude', CLAUDE_SESSION);
     expect(runner.stopOpeningInApp('claude', CLAUDE_SESSION)).toEqual({ stopping: true });
-    finishDetection(usableAgents());
+    finishDetection(usableAgent('claude-code'));
     expect(await opening).toEqual({ refusalText: STOPPED });
     expect(calls).toHaveLength(0);
   });
@@ -883,18 +942,18 @@ describe('opening a conversation in its app', () => {
     expect(detectCalls()).toBe(0);
   });
 
-  it('refuses a CLI that is not installed, and runs one that is not logged in, so its own words say what is missing', async () => {
-    let detection = 0;
-    const { runner, calls } = harnessIn(realFolder(), {
-      detectAgents: async () => {
-        detection += 1;
-        const claude: UsableAgent = detection === 1
-          ? { id: 'claude-code', path: null, authenticated: false, reason: 'not installed: Claude executable not found.' }
-          : { id: 'claude-code', path: CLAUDE_PATH, authenticated: false, reason: 'Not logged in' };
-        return [claude, ...usableAgents().filter(agent => agent.id !== 'claude-code')];
-      },
-    });
-    expect(await runner.openInApp('claude', CLAUDE_SESSION)).toEqual({ refusalText: 'Claude Code is not installed on this computer.' });
+  it('refuses a CLI its check found no path to, in what the check found, and runs one that is not logged in, so its own words say what is missing', async () => {
+    const detectionAnswers: UsableAgent[] = [
+      { id: 'claude-code', path: null, authenticated: false, reason: 'not installed: Claude executable not found.' },
+      // The check itself failed. That says nothing about whether Claude Code is installed, so neither may the refusal.
+      { id: 'claude-code', path: null, authenticated: false, reason: 'check failed: the login keychain could not be read' },
+      { id: 'claude-code', path: CLAUDE_PATH, authenticated: false, reason: 'Not logged in' },
+    ];
+    const { runner, calls } = harnessIn(realFolder(), { detectAgent: async () => detectionAnswers.shift()! });
+    expect(await runner.openInApp('claude', CLAUDE_SESSION))
+      .toEqual({ refusalText: 'Claude Code could not open this conversation in the Claude app (not installed: Claude executable not found.).' });
+    expect(await runner.openInApp('claude', CLAUDE_SESSION))
+      .toEqual({ refusalText: 'Claude Code could not open this conversation in the Claude app (check failed: the login keychain could not be read).' });
     expect(calls).toHaveLength(0);
     const opening = runner.openInApp('claude', CLAUDE_SESSION);
     await afterPromiseJobs();

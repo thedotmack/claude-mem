@@ -24,8 +24,8 @@
  * it, which starts no turn: `claude --desktop --resume <session uuid>` (see OPEN_IN_APP_ARGUMENTS and
  * PSEUDO_TERMINAL_COMMAND).
  *
- * The argv shapes, the UUID guard, the stdin delivery and dropping CLAUDE_MEM_INTERNAL follow Miles Wiesenthal's
- * answer-delivery.ts in PR #6054.
+ * The argv shapes, the UUID guard, the stdin delivery and dropping CLAUDE_MEM_INTERNAL follow answer-delivery.ts in
+ * PR #6054.
  */
 import type { spawn } from 'child_process';
 import { statSync } from 'fs';
@@ -57,7 +57,7 @@ interface ContinuationTool {
   /** Reads a command that started and exited with no Stop pressed. */
   readOutcome: (result: CommandResult, toolName: string) => TurnOutcome;
   /**
-   * Reads a command the owner pressed Stop on, once it has exited. The turn may have finished before the stop reached
+   * Reads a command the owner's Stop was sent to, once it has exited. The turn may have finished before the stop reached
    * it, and then its reply stands. Otherwise the exchange says it was stopped and shows what the turn printed.
    */
   readStoppedOutcome: (result: CommandResult, toolName: string) => TurnOutcome;
@@ -74,6 +74,11 @@ const CONTINUATION_TOOLS: Record<ContinuablePlatform, ContinuationTool> = {
   codex: {
     agentId: 'codex',
     toolName: 'Codex',
+    // --skip-git-repo-check is not a permission or sandbox bypass: `codex exec resume --help` (0.167.0) says only "Allow
+    // running Codex outside a Git repository", and its bypass is a different flag, never passed. Without it, Codex
+    // refuses to run outside a Git repository, which would break every conversation whose recorded folder is gone: its
+    // turn runs in the nearest folder above that still exists, which is usually not a repository, and the page names
+    // that folder before the owner sends. Approval and sandbox still come from the owner's ~/.codex/config.toml.
     argumentsFor: conversationSessionId => ['exec', 'resume', conversationSessionId, '-', '--skip-git-repo-check'],
     readOutcome: readCodexOutcome,
     readStoppedOutcome: readStoppedCodexOutcome,
@@ -147,8 +152,11 @@ export interface RecordedConversationFolder {
 export interface ConversationContinuationDependencies {
   /** The conversation's session row on this computer: SessionStore.getRecordedFolderForConversation. */
   recordedFolderForConversation: (platform: string, conversationSessionId: string) => RecordedConversationFolder;
-  /** Is the CLI installed and logged in? Asked only when a turn starts, because it runs the CLIs' own status commands. */
-  detectAgents: () => Promise<UsableAgent[]>;
+  /**
+   * Is this CLI installed and logged in? Asked only when a turn starts or an open is clicked, and only about the
+   * conversation's own CLI, because it runs that CLI's own status commands: detect.ts's detectUsableAgent.
+   */
+  detectAgent: (agentId: UsableAgentId) => Promise<UsableAgent>;
   spawnImpl: typeof spawn;
   /** Told about each exchange once, when it ends. The running exchange is the one `start` answers with. */
   onChange: (exchange: ConversationContinuation) => void;
@@ -346,17 +354,22 @@ function readStoppedCodexOutcome(result: CommandResult, toolName: string): TurnO
   return { state: 'failed', failureText: wholeText(STOPPED_BY_OWNER_TEXT, result.stderr, result.stdout) };
 }
 
-function turnOutcome(tool: ContinuationTool, result: CommandResult, stopRequested: boolean): TurnOutcome {
+function turnOutcome(tool: ContinuationTool, result: CommandResult, stopWasSent: boolean): TurnOutcome {
   // Only a command that never started sets spawnError; a stopped one reports how it ended like any other.
   if (result.spawnError) return { state: 'failed', failureText: `${tool.toolName} could not start: ${result.spawnError.message}` };
-  return stopRequested ? tool.readStoppedOutcome(result, tool.toolName) : tool.readOutcome(result, tool.toolName);
+  return stopWasSent ? tool.readStoppedOutcome(result, tool.toolName) : tool.readOutcome(result, tool.toolName);
 }
 
 interface ConversationTurns {
   /** Every exchange sent to the conversation from My Work since the worker started, oldest first. */
   exchanges: ConversationContinuation[];
-  /** Present while one of them is running: Stop aborts it. */
+  /** Present while one of them is running: Stop aborts it, which sends the CLI the stop (runCommand's CommandOptions.signal). */
   runningTurnController?: AbortController;
+  /**
+   * Why the stop could not be sent to the running turn's CLI, when it could not (runCommand's onStopNotSent): the turn
+   * runs on, Stop answers with this, and the turn's end is read as its own, not as a stop.
+   */
+  runningTurnStopNotSent?: Error;
 }
 
 const conversationKeyFor = (platform: string, conversationSessionId: string) => `${platform}:${conversationSessionId}`;
@@ -411,13 +424,15 @@ export class ConversationContinuationRunner {
     const tool = CONTINUATION_TOOLS[continuablePlatform];
 
     this.conversationKeysBeingStarted.add(conversationKey);
-    let agent: UsableAgent | undefined;
+    let agent: UsableAgent;
     try {
-      agent = (await this.dependencies.detectAgents()).find(candidate => candidate.id === tool.agentId);
+      agent = await this.dependencies.detectAgent(tool.agentId);
     } finally {
       this.conversationKeysBeingStarted.delete(conversationKey);
     }
-    if (!agent?.path) return { refusalText: `${tool.toolName} is not installed on this computer.` };
+    // Each refusal says what the check found, in its own words (UsableAgent.reason). A CLI with no path was not found, or
+    // its check failed ("check failed: …"), which says nothing about whether it is installed.
+    if (!agent.path) return { refusalText: `${tool.toolName} can’t take this turn on this computer (${agent.reason}).` };
     if (!agent.authenticated) return { refusalText: `${tool.toolName} is not logged in on this computer (${agent.reason}).` };
 
     const exchange: ConversationContinuation = {
@@ -448,12 +463,24 @@ export class ConversationContinuationRunner {
    * script (see runCommand). The exchange stays `running` until the command has exited, so no second turn can start
    * while the first is still writing. Then it ends by how the command ended: with its reply when the turn had finished
    * before the stop reached it, otherwise `failed` with "You stopped this turn." and what the turn had printed.
+   *
+   * A stop that could not be sent is refused with the error, and the exchange runs on; its end is then read as the turn's
+   * own. A turn has one stop to send (runCommand's `signal` aborts once), so pressing Stop again answers the same.
    */
   stop(platform: string, conversationSessionId: string): ConversationExchangeOrRefusal {
     const conversation = this.conversations.get(conversationKeyFor(platform, conversationSessionId));
     const runningExchange = conversation?.exchanges.find(exchange => exchange.state === 'running');
     if (!conversation?.runningTurnController || !runningExchange) return { refusalText: NOTHING_RUNNING_REFUSAL };
+    // runCommand sends the stop during abort(), and tells runTurn's onStopNotSent before abort() returns when it could not.
     conversation.runningTurnController.abort();
+    const stopNotSent = conversation.runningTurnStopNotSent;
+    if (stopNotSent) {
+      logger.error('WORKER', 'Conversation continuation stop could not be sent: the turn runs on', {
+        platform, conversationSessionId, exchangeId: runningExchange.exchangeId,
+      }, stopNotSent);
+      const { toolName } = CONTINUATION_TOOLS[runningExchange.platform];
+      return { refusalText: `The stop did not reach ${toolName} (${stopNotSent.message}), so this turn is still running.` };
+    }
     logger.info('WORKER', 'Conversation continuation stop requested', { platform, conversationSessionId, exchangeId: runningExchange.exchangeId });
     return { exchange: runningExchange };
   }
@@ -520,9 +547,10 @@ export class ConversationContinuationRunner {
     stopRequested: AbortSignal,
   ): Promise<OpenedInAppOrRefusal> {
     const tool = CONTINUATION_TOOLS[platform];
-    const agent = (await this.dependencies.detectAgents()).find(candidate => candidate.id === tool.agentId);
-    if (!agent?.path) return { refusalText: `${tool.toolName} is not installed on this computer.` };
     const didNotOpen = `${tool.toolName} could not open this conversation in the ${CONVERSATION_APP_NAMES[platform]} app`;
+    const agent = await this.dependencies.detectAgent(tool.agentId);
+    // What the check found, in its own words, as for a turn (start). A login it could not confirm is left to the CLI.
+    if (!agent.path) return { refusalText: `${didNotOpen} (${agent.reason}).` };
     const stoppedSentence = `${didNotOpen}: the page that asked went away, so it was stopped.`;
     if (stopRequested.aborted) {
       logger.info('WORKER', 'Conversation open in its app not started: the page that asked went away while the CLI was checked', { platform, conversationSessionId });
@@ -572,14 +600,19 @@ export class ConversationContinuationRunner {
       signal: runningTurnController.signal,
       // SIGINT ends the turn; SIGTERM would leave it unfinished (headless docs, "Stop a run with SIGTERM").
       killSignal: 'SIGINT',
+      // stop() reads it as soon as its abort returns.
+      onStopNotSent: error => { conversation.runningTurnStopNotSent = error; },
     });
+    // A stop counts once it was sent: a turn that a pressed Stop never reached ended by itself.
+    const stopWasSent = runningTurnController.signal.aborted && conversation.runningTurnStopNotSent === undefined;
     const ended: ConversationContinuation = {
       ...exchange,
-      ...turnOutcome(tool, result, runningTurnController.signal.aborted),
+      ...turnOutcome(tool, result, stopWasSent),
       endedAtEpochMs: Date.now(),
     };
     conversation.exchanges = conversation.exchanges.map(candidate => candidate.exchangeId === ended.exchangeId ? ended : candidate);
     delete conversation.runningTurnController;
+    delete conversation.runningTurnStopNotSent;
     logger.info('WORKER', 'Conversation continuation ended', {
       platform: ended.platform, conversationSessionId: ended.conversationSessionId, exchangeId: ended.exchangeId, state: ended.state,
     });
