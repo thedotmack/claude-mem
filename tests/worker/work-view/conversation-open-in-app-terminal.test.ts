@@ -18,6 +18,9 @@ import type { ConversationContinuation } from '../../../src/shared/conversation-
 
 const STAND_IN = join(import.meta.dir, '..', '..', 'fixtures', 'conversation-continuation', 'desktop-cli-that-needs-a-terminal.sh');
 const CLAUDE_SESSION = '0f8e2a4c-1b3d-4e5f-8a9b-0c1d2e3f4a5b';
+/** Ids the page makes for clicks on "Open in Claude" (crypto.randomUUID): one per click. */
+const FIRST_CLICK = '1b2c3d4e-5f60-4a7b-8c9d-0e1f2a3b4c5d';
+const SECOND_CLICK = '2c3d4e5f-6071-4b8c-9dae-1f2a3b4c5d6e';
 const DID_NOT_OPEN = 'Claude Code could not open this conversation in the Claude app.';
 const STILL_OPENING = 'Claude Code is still opening this conversation in the Claude app from an earlier click. Wait for it to finish, or reload the page you clicked it in to stop it.';
 /** The worker's own terminal settings on the owner's computer, which the runner replaces with TERM=dumb. */
@@ -96,14 +99,16 @@ describeOnMacOs('opening a conversation in its app through a pseudo-terminal, wi
     const { runner } = runnerWithStandIn({
       environment: () => ({ ...WORKER_ENVIRONMENT, ...(hangs ? { STAND_IN_DESKTOP_HANGS_WRITING_ITS_PID_TO: pidFile } : {}) }),
     });
-    const opening = runner.openInApp('claude', CLAUDE_SESSION);
+    const opening = runner.openInApp('claude', CLAUDE_SESSION, FIRST_CLICK);
     const standInPid = await pidWrittenTo(pidFile);
     hangingStandInPids.push(standInPid);
     expect(isRunning(standInPid)).toBe(true);
-    // A click from another tab while it hangs starts no second script and CLI.
-    expect(await runner.openInApp('claude', CLAUDE_SESSION)).toEqual({ refusalText: STILL_OPENING });
+    // A click from another tab while it hangs starts no second script and CLI, and its stop leaves this open running.
+    expect(await runner.openInApp('claude', CLAUDE_SESSION, SECOND_CLICK)).toEqual({ refusalText: STILL_OPENING });
+    expect(runner.stopOpeningInApp('claude', CLAUDE_SESSION, SECOND_CLICK)).toHaveProperty('refusalText');
+    expect(isRunning(standInPid)).toBe(true);
 
-    expect(runner.stopOpeningInApp('claude', CLAUDE_SESSION)).toEqual({ stopping: true });
+    expect(runner.stopOpeningInApp('claude', CLAUDE_SESSION, FIRST_CLICK)).toEqual({ stopping: true });
     expect(await opening).toEqual({
       refusalText: 'Claude Code could not open this conversation in the Claude app: the page that asked went away, so it was stopped.',
     });

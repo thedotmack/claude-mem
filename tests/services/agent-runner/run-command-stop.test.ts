@@ -97,6 +97,28 @@ describeOnMacOsAndLinux('a stop through runCommand, with real processes', () => 
     }
   });
 
+  it('tells onSpawn the started pid and its process group, which a stop reaches', async () => {
+    const stop = new AbortController();
+    const started: Array<{ pid: number; processGroupId: number | undefined }> = [];
+    let childPid: number | undefined;
+    const result = await runCommand(
+      ((command: string, args: string[], options: SpawnOptions) => {
+        const child = spawn(command, args, options);
+        childPid = child.pid;
+        child.stdout?.on('data', (chunk: unknown) => {
+          if (String(chunk).includes('ready')) stop.abort();
+        });
+        return child;
+      }) as unknown as typeof spawn,
+      process.execPath,
+      [STAND_IN_CLI, String(STAND_IN_TURN_LENGTH_MS)],
+      { signal: stop.signal, killSignal: 'SIGINT', onSpawn: spawned => { started.push(spawned); } },
+    );
+    // The command leads a process group of its own: its id is the command's pid.
+    expect(started).toEqual([{ pid: childPid!, processGroupId: childPid! }]);
+    expect(result).toMatchObject({ exitCode: 130, stdout: 'ready\nthe CLI got SIGINT\n' });
+  });
+
   it('sends nothing when the stop comes after the command has ended', async () => {
     const stop = new AbortController();
     const result = await runCommand(spawn, process.execPath, [STAND_IN_CLI, '0'], { signal: stop.signal, killSignal: 'SIGINT' });
@@ -121,5 +143,17 @@ describe('a command run without a signal', () => {
     const result = await runCommand(recordingSpawn, process.execPath, ['-e', 'process.stdout.write("ok")'], { cwd: FIXTURES });
     expect(result).toMatchObject({ exitCode: 0, stdout: 'ok' });
     expect(Object.keys(spawnOptionsSeen[0]).sort()).toEqual(['cwd', 'env', 'stdio', 'windowsHide', 'windowsVerbatimArguments']);
+  });
+
+  it('tells onSpawn its pid and no process group, and does not tell onSpawn about a command that never started', async () => {
+    const started: Array<{ pid: number; processGroupId: number | undefined }> = [];
+    const ran = await runCommand(process.execPath, ['-e', 'process.stdout.write("ok")'], { onSpawn: spawned => { started.push(spawned); } });
+    expect(ran).toMatchObject({ exitCode: 0, stdout: 'ok' });
+    expect(started).toHaveLength(1);
+    expect(started[0].processGroupId).toBeUndefined();
+    expect(started[0].pid).toBeGreaterThan(0);
+    const notStarted = await runCommand(join(FIXTURES, 'no-such-cli'), [], { onSpawn: spawned => { started.push(spawned); } });
+    expect(notStarted.spawnError).toBeDefined();
+    expect(started).toHaveLength(1);
   });
 });

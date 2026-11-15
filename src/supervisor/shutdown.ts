@@ -80,6 +80,11 @@ export async function runShutdownCascade(options: ShutdownCascadeOptions): Promi
   );
 
   for (const record of survivors) {
+    // The grace window above ran out with it, or a process it started, still running: said at WARN, as reapSession says it.
+    logger.warn('SYSTEM', 'Child process still running when the shutdown grace window after SIGTERM ran out; force-killing what is left of it', {
+      pid: record.pid,
+      type: record.type,
+    });
     // Only tree-kill from a root that is still the process we recorded. When
     // the PID has been reused, the replacement is an unrelated process and
     // signalProcess would take its whole subtree down; the identity-validated
@@ -123,6 +128,15 @@ export async function runShutdownCascade(options: ShutdownCascadeOptions): Promi
   }
 
   await waitForExit(survivors, 1000);
+  // The cascade's whole budget has run out. Only a root that is still the process recorded is reported: a reused PID is
+  // another program's.
+  const stillRunning = survivors.filter(record => isPidAlive(record.pid) && isSameProcess(record.pid, rootTokenByRecord.get(record.id) ?? null));
+  for (const record of stillRunning) {
+    logger.error('SYSTEM', 'Child process still running after SIGKILL at the end of the shutdown cascade: the worker exits without it', {
+      pid: record.pid,
+      type: record.type,
+    });
+  }
 
   for (const record of childRecords) {
     options.registry.unregister(record.id);

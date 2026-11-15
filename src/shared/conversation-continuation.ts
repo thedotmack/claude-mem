@@ -92,6 +92,15 @@ export type ConversationContinuationTarget =
   };
 
 /**
+ * Which click an open in its app belongs to: a random UUID the page makes for each click on "Open in {app}"
+ * (crypto.randomUUID, so lowercase version 4), sent with the open and with the stop the page asks for as it goes away.
+ * The worker stops an open only for the click that started it, so the stop from another tab's click, refused while this
+ * open ran, or a late stop from an earlier click, never stops the open running now. The page makes the id because the
+ * open answers only once its command has exited, too late to carry an id the worker made.
+ */
+export const OPEN_IN_APP_CLICK_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+/**
  * What POST /api/work-view/conversations/open-in-app answers once the conversation is open in its app: what the CLI
  * printed as it opened it, without the terminal's control sequences, or null when it printed nothing. The page shows
  * it under the row, so an open that printed something unexpected is never silent.

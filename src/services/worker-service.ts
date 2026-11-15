@@ -1209,6 +1209,9 @@ export class WorkerService implements WorkerRef {
           detectAgent: agentId => detectUsableAgent(agentId),
           spawnImpl: spawn,
           onChange: exchange => this.workViewRoutes?.publishConversationContinuation(exchange),
+          // Its turns and opens stay in the supervisor's registry while they run. shutdown() stops them first
+          // (workViewRoutes.close), and the supervisor's cascade waits for them before this worker's PID file goes.
+          processRegistry: getSupervisor().getRegistry(),
         }),
       });
       this.server.registerRoutes(this.workViewRoutes);

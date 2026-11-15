@@ -56,7 +56,8 @@ import { hasActiveSetupSession, hasProConfiguration, readSetupState, setupStateP
 import { SETUP_BRANCHES, SETUP_INSTALLER_STAGES, SETUP_MEMORY_BILLINGS } from '../../../../shared/setup-funnel.js';
 import { hasPendingInstallSetup, SETUP_INSTALL_STATUSES } from '../../../../shared/setup-install.js';
 import {
-  CONTINUABLE_PLATFORMS, CONVERSATION_SESSION_UUID_PATTERN, type ConversationContinuation, type ConversationContinuationNotice, type ConversationOpenedInApp,
+  CONTINUABLE_PLATFORMS, CONVERSATION_SESSION_UUID_PATTERN, OPEN_IN_APP_CLICK_ID_PATTERN, type ConversationContinuation, type ConversationContinuationNotice,
+  type ConversationOpenedInApp,
 } from '../../../../shared/conversation-continuation.js';
 import type { ConversationContinuationRunner } from '../../../work-view/conversation-continuation-runner.js';
 
@@ -248,6 +249,8 @@ const conversationRef = z.object({
 // No .max() on the message: its bound is the worker's 5 MB JSON body limit (express.json in createMiddleware,
 // middleware.ts), which is under Claude Code's own 10 MB stdin cap (headless docs, "Pipe data through Claude").
 const continueConversationBody = conversationRef.extend({ ownerMessage: z.string().trim().min(1) }).strict();
+// An open in its app and its stop name the click they belong to: the id the page made for it (OPEN_IN_APP_CLICK_ID_PATTERN).
+const openInAppClickBody = conversationRef.extend({ openInAppClickId: z.string().regex(OPEN_IN_APP_CLICK_ID_PATTERN) }).strict();
 // The read's query. Only a tool this cannot continue is refused here. Any other id is answered with its target, whose
 // sentence says why it can't be continued, such as an id that is not a UUID. No .max() on the id: it is only matched
 // against the UUID pattern before any lookup, and the URL carrying it is bounded by the HTTP server's header limit.
@@ -897,8 +900,8 @@ export class WorkViewRoutes extends BaseRouteHandler {
     app.post('/api/work-view/conversations/continue', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(continueConversationBody), this.wrapHandler(this.continueConversation));
     app.post('/api/work-view/conversations/stop', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(conversationRef), this.wrapHandler(this.stopConversationContinuation));
     // Opens the owner's conversation in its tool's app on this computer's screen. It starts no turn, and keeps the same guards.
-    app.post('/api/work-view/conversations/open-in-app', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(conversationRef), this.wrapHandler(this.openConversationInApp));
-    app.post('/api/work-view/conversations/open-in-app/stop', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(conversationRef), this.wrapHandler(this.stopOpeningConversationInApp));
+    app.post('/api/work-view/conversations/open-in-app', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(openInAppClickBody), this.wrapHandler(this.openConversationInApp));
+    app.post('/api/work-view/conversations/open-in-app/stop', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(openInAppClickBody), this.wrapHandler(this.stopOpeningConversationInApp));
     app.post('/api/work-view/usage', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(usageBody), this.wrapHandler(this.recordUsage));
     // Shared focus pages: this worker signs the cmem.ai calls, so the sync credential never reaches the page.
     app.get('/api/work-view/focus/shares', workViewLoopbackOnly, requireWorkViewReadOrigin, this.wrapHandler(this.listFocusShares));
@@ -1756,13 +1759,13 @@ export class WorkViewRoutes extends BaseRouteHandler {
    * Opens the conversation in its tool's own app: Claude Code's `claude --desktop --resume <session uuid>`. It starts no
    * turn. Answers once the command has exited, with no deadline: 200 with what it printed when the app opened it, else
    * 409 with the sentence saying why, which holds everything the command printed when it ran. While one open of a
-   * conversation runs, another is refused (409), and the stop route below ends it.
+   * conversation runs, another is refused (409), and the stop route below ends it when it names this open's click.
    */
   private openConversationInApp = async (req: Request, res: Response): Promise<void> => {
     const runner = this.conversationContinuationRunner;
     if (!runner) { res.status(503).json({ error: CONVERSATION_CONTINUATION_UNAVAILABLE }); return; }
-    const { platform, conversationSessionId } = req.body as z.infer<typeof conversationRef>;
-    const opened = await runner.openInApp(platform, conversationSessionId);
+    const { platform, conversationSessionId, openInAppClickId } = req.body as z.infer<typeof openInAppClickBody>;
+    const opened = await runner.openInApp(platform, conversationSessionId, openInAppClickId);
     if ('refusalText' in opened) { res.status(409).json({ error: opened.refusalText }); return; }
     const answer: ConversationOpenedInApp = { printedText: opened.printedText };
     res.setHeader('Cache-Control', 'no-store');
@@ -1770,15 +1773,16 @@ export class WorkViewRoutes extends BaseRouteHandler {
   };
 
   /**
-   * Stops the command opening a conversation in its app. The page asks for it as it is unloaded while its open still runs
-   * (a reload, a closed tab): the worker cannot see that page's request go away (stopOpeningInApp says why). 200 once the
-   * stop is sent, which the open's own answer then reports; 409 when nothing is opening the conversation.
+   * Stops the command opening a conversation in its app for the click the body names. The page asks for it as it is
+   * unloaded while its open still runs (a reload, a closed tab): the worker cannot see that page's request go away
+   * (stopOpeningInApp says why). 200 once the stop is sent, which the open's own answer then reports; 409 with a sentence
+   * when no open of that click is running, or when the stop could not be sent.
    */
   private stopOpeningConversationInApp = (req: Request, res: Response): void => {
     const runner = this.conversationContinuationRunner;
     if (!runner) { res.status(503).json({ error: CONVERSATION_CONTINUATION_UNAVAILABLE }); return; }
-    const { platform, conversationSessionId } = req.body as z.infer<typeof conversationRef>;
-    const stopping = runner.stopOpeningInApp(platform, conversationSessionId);
+    const { platform, conversationSessionId, openInAppClickId } = req.body as z.infer<typeof openInAppClickBody>;
+    const stopping = runner.stopOpeningInApp(platform, conversationSessionId, openInAppClickId);
     if ('refusalText' in stopping) { res.status(409).json({ error: stopping.refusalText }); return; }
     res.setHeader('Cache-Control', 'no-store');
     res.json({});
@@ -1985,6 +1989,8 @@ export class WorkViewRoutes extends BaseRouteHandler {
 
   close(): void {
     this.closed = true;
+    // Stops every turn and open started from My Work, and refuses new ones (ConversationContinuationRunner.close).
+    this.conversationContinuationRunner?.close();
     this.unsubscribeSetupScan?.();
     this.unsubscribeHistoryImport?.();
     this.stopRulesSync();

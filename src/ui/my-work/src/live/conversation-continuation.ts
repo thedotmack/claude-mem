@@ -70,9 +70,25 @@ function deniedToolCallWords(deniedToolCallCount: number): ContinuationWords {
   }
 }
 
+/**
+ * The exchange a row sent a Stop for, while its turn ends: its id and the moment it started, which together name one
+ * exchange of one worker's life. The id alone does not: each worker counts its exchanges from 1, so after a worker restart
+ * the first exchange sent has the id of the first exchange sent before it. That later one started after the new worker
+ * did, so after every exchange the worker before it started (only a clock set back across the restart to that very
+ * millisecond could give it the same start).
+ */
+export type ExchangeAStopWasSentFor = Pick<ConversationContinuation, 'exchangeId' | 'startedAtEpochMs'>
+
 /** One exchange as its row shows it. */
 export interface ConversationExchangeView {
   exchangeId: number
+  /** When the worker started it: with exchangeId, which exchange of which worker's life it is (ExchangeAStopWasSentFor). */
+  startedAtEpochMs: number
+  /**
+   * Whether the row sent a Stop for this exchange, so its Stop waits for the turn to end: a second Stop would change
+   * nothing. Never for an exchange of another worker's life that has the same id.
+   */
+  stopWasSent: boolean
   ownerMessage: string
   state: ConversationContinuationState
   /** CONTINUATION_STATE_WORDS for its state. */
@@ -103,12 +119,13 @@ export interface ConversationContinuationView {
 
 /**
  * What a conversation row shows. Every text is passed on whole: nothing here shortens the owner's message, a reply,
- * a failure or the folder.
+ * a failure or the folder. `exchangeAStopWasSentFor` is the exchange the row last sent a Stop for, if any.
  */
 export function continuationView(
   target: ConversationContinuationTarget,
   exchanges: ConversationContinuation[],
   typedMessage: string,
+  exchangeAStopWasSentFor: ExchangeAStopWasSentFor | null = null,
 ): ConversationContinuationView {
   const aTurnIsRunning = exchanges.some((exchange) => exchange.state === 'running')
   return {
@@ -120,11 +137,11 @@ export function continuationView(
     // The worker trims the message and refuses one with no words, so Send waits for words.
     sendIsEnabled: target.canContinue && !aTurnIsRunning && typedMessage.trim() !== '',
     stopIsShown: aTurnIsRunning,
-    exchanges: exchanges.map(exchangeView),
+    exchanges: exchanges.map((exchange) => exchangeView(exchange, exchangeAStopWasSentFor)),
   }
 }
 
-function exchangeView(exchange: ConversationContinuation): ConversationExchangeView {
+function exchangeView(exchange: ConversationContinuation, exchangeAStopWasSentFor: ExchangeAStopWasSentFor | null): ConversationExchangeView {
   const replyText = exchange.state === 'replied' && exchange.replyText?.trim() ? exchange.replyText : null
   const deniedToolCallCount = exchange.deniedToolCallCount ?? 0
   const notices: ContinuationWords[] = []
@@ -132,6 +149,9 @@ function exchangeView(exchange: ConversationContinuation): ConversationExchangeV
   if (deniedToolCallCount > 0) notices.push(deniedToolCallWords(deniedToolCallCount))
   return {
     exchangeId: exchange.exchangeId,
+    startedAtEpochMs: exchange.startedAtEpochMs,
+    stopWasSent: exchangeAStopWasSentFor !== null && exchangeAStopWasSentFor.exchangeId === exchange.exchangeId
+      && exchangeAStopWasSentFor.startedAtEpochMs === exchange.startedAtEpochMs,
     ownerMessage: exchange.ownerMessage,
     state: exchange.state,
     stateWords: CONTINUATION_STATE_WORDS[exchange.state],
@@ -139,6 +159,25 @@ function exchangeView(exchange: ConversationContinuation): ConversationExchangeV
     failureText: exchange.state === 'failed' && exchange.failureText ? exchange.failureText : null,
     notices,
   }
+}
+
+/** A failed read of the conversation, as its row shows it: why, whole, and the button that reads it again. */
+export interface ConversationReadFailureView {
+  /** The worker's sentence, or why the worker could not be reached, as it is. */
+  failureText: string
+  /** The button's words: the drawer's own "Try again". */
+  tryAgainLabel: string
+}
+
+/**
+ * What a row shows when its last read of the conversation failed: why, with "Try again" beside it, which reads it again.
+ * The first read too, when nothing has been read yet. A later read that failed leaves the row as the last read that
+ * answered left it, which may be out of date: the reply a notice told of stays unread, and Send stays as it was, until a
+ * read answers. Nothing else reads again but the next notice, so without the button a row could stay that way. Null when
+ * the last read answered.
+ */
+export function conversationReadFailureView(readFailure: string | null): ConversationReadFailureView | null {
+  return readFailure === null ? null : { failureText: readFailure, tryAgainLabel: 'Try again' }
 }
 
 // ---- What a row's controls are called, and where focus goes after Send or Stop

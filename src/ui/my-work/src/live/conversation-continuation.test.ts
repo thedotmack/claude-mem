@@ -8,9 +8,10 @@ import { myworkKo } from '../../../i18n/mywork-ko.ts'
 import { myworkTr } from '../../../i18n/mywork-tr.ts'
 import { myworkZh } from '../../../i18n/mywork-zh.ts'
 import { SAMPLE_REQUESTS } from '../data.ts'
+import { myworkFr } from '../../../i18n/mywork-fr.ts'
 import {
   CONTINUATION_STATE_WORDS, canContinueConversations, continuationEventConcernsConversation, continuationView, conversationAppActions,
-  buttonLabelsKeepingTheirWidth, conversationControlNames, conversationRouteFailureSentence, focusAfterSendOrStop, isContinuableConversation,
+  conversationReadFailureView, buttonLabelsKeepingTheirWidth, conversationControlNames, conversationRouteFailureSentence, focusAfterSendOrStop, isContinuableConversation,
   readConversationContinuationAnswer, readConversationContinuationNotice, readConversationExchangeAnswer, readOpenedInAppAnswer,
   resumeCommandCopyFailureWords, unreachableWorkerSentence, unreadableAnswerSentence, type ButtonLabelInPlace, type ContinuationWords,
 } from './conversation-continuation.ts'
@@ -118,7 +119,23 @@ describe('what a conversation row shows', () => {
     const view = continuationView(runsInRecordedFolder, [exchange()], 'And the word before that?')
     assert.equal(view.sendIsEnabled, false)
     assert.equal(view.stopIsShown, true)
-    assert.deepEqual(view.exchanges, [{ exchangeId: 1, ownerMessage: 'Which word? Reply with only the word.', state: 'running', stateWords: 'Working…', replyText: null, failureText: null, notices: [] }])
+    assert.deepEqual(view.exchanges, [{
+      exchangeId: 1, startedAtEpochMs: 1_000, stopWasSent: false, ownerMessage: 'Which word? Reply with only the word.', state: 'running', stateWords: 'Working…',
+      replyText: null, failureText: null, notices: [],
+    }])
+  })
+
+  it('a Stop sent for a running turn waits for that turn to end, and the first turn after a worker restart, with the same id, never inherits it', () => {
+    const stopSentFor = { exchangeId: 1, startedAtEpochMs: 1_000 }
+    assert.equal(continuationView(runsInRecordedFolder, [exchange()], '', stopSentFor).exchanges[0].stopWasSent, true)
+    assert.equal(continuationView(runsInRecordedFolder, [exchange()], '', null).exchanges[0].stopWasSent, false, 'no Stop sent')
+    assert.equal(continuationView(runsInRecordedFolder, [exchange()], '').exchanges[0].stopWasSent, false, 'no Stop sent')
+    // The worker restarted: it counts exchanges from 1 again, and its first one started after it did.
+    const firstAfterRestart = exchange({ startedAtEpochMs: 9_000 })
+    assert.equal(continuationView(runsInRecordedFolder, [firstAfterRestart], '', stopSentFor).exchanges[0].stopWasSent, false)
+    // Another exchange of the same worker's life, after the stopped one ended.
+    const views = continuationView(runsInRecordedFolder, [failed(), exchange({ exchangeId: 2, startedAtEpochMs: 3_000 })], '', stopSentFor).exchanges
+    assert.deepEqual(views.map((view) => view.stopWasSent), [true, false])
   })
 
   it('a running turn can still be stopped when its conversation can no longer be continued', () => {
@@ -152,7 +169,10 @@ describe('what a conversation row shows', () => {
     const view = continuationView(runsInRecordedFolder, [failed()], 'Count again')
     assert.equal(view.sendIsEnabled, true)
     assert.equal(view.stopIsShown, false)
-    assert.deepEqual(view.exchanges[0], { exchangeId: 1, ownerMessage: 'Which word? Reply with only the word.', state: 'failed', stateWords: 'Did not finish', replyText: null, failureText: 'You stopped this turn.', notices: [] })
+    assert.deepEqual(view.exchanges[0], {
+      exchangeId: 1, startedAtEpochMs: 1_000, stopWasSent: false, ownerMessage: 'Which word? Reply with only the word.', state: 'failed', stateWords: 'Did not finish',
+      replyText: null, failureText: 'You stopped this turn.', notices: [],
+    })
   })
 
   it('a back-and-forth keeps the worker\'s order, and each exchange keeps its own message and reply', () => {
@@ -176,6 +196,25 @@ describe('what a conversation row shows', () => {
     assert.equal(view.exchanges[0].replyText?.length, LONG_TEXT.length)
     assert.equal(view.exchanges[1].failureText?.length, LONG_TEXT.length)
     assert.equal(String(view.folderGoneNotice?.values.folder).length, longFolder.length)
+  })
+})
+
+describe('what a row shows when a read of its conversation failed', () => {
+  it('the reason, whole, and "Try again", for the first read and any later one alike', () => {
+    const unreachable = 'Could not read this conversation: the worker could not be reached (fetch failed).'
+    assert.deepEqual(conversationReadFailureView(unreachable), { failureText: unreachable, tryAgainLabel: 'Try again' })
+    assert.equal(conversationReadFailureView(LONG_TEXT)?.failureText.length, LONG_TEXT.length)
+  })
+
+  it('nothing once a read has answered', () => {
+    assert.equal(conversationReadFailureView(null), null)
+  })
+
+  it('"Try again" in the words the drawer already has, in every language My Work speaks', () => {
+    const { tryAgainLabel } = conversationReadFailureView('The worker answered 500.')!
+    for (const [language, catalog] of Object.entries({ zh: myworkZh, ko: myworkKo, tr: myworkTr, fr: myworkFr })) {
+      assert.ok(catalog[tryAgainLabel]?.trim(), `${language} has "${tryAgainLabel}"`)
+    }
   })
 })
 

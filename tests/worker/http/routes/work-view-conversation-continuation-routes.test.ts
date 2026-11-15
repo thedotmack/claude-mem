@@ -4,9 +4,9 @@
 // a real SessionStore (the one worker-service.ts wires in) and the folders are real, all under the repo's gitignored
 // .scratch/test-runs.
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, spyOn } from 'bun:test';
-import type { spawn, SpawnOptions } from 'node:child_process';
+import { spawn as spawnRealProcess, type spawn, type SpawnOptions } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import type { Server as HttpServer } from 'node:http';
 import { join } from 'node:path';
 import express from 'express';
@@ -20,6 +20,8 @@ import { ConversationContinuationRunner } from '../../../../src/services/work-vi
 import { WorkViewRoutes, workViewLoopbackOnly } from '../../../../src/services/worker/http/routes/WorkViewRoutes.js';
 import type { ConversationContinuation, ConversationContinuationNotice } from '../../../../src/shared/conversation-continuation.js';
 import { LOCAL_API_TOKEN_HEADER } from '../../../../src/shared/local-api-token.js';
+import { createProcessRegistry } from '../../../../src/supervisor/process-registry.js';
+import { runShutdownCascade } from '../../../../src/supervisor/shutdown.js';
 
 const FIXTURES = join(import.meta.dir, '..', '..', '..', 'fixtures', 'conversation-continuation');
 
@@ -32,6 +34,10 @@ const CLAUDE_ARGUMENTS = ['--resume', CLAUDE_SESSION, '-p', '--output-format', '
 const CODEX_ARGUMENTS = ['exec', 'resume', CODEX_SESSION, '-', '--skip-git-repo-check'];
 const STILL_RUNNING_REFUSAL = 'This conversation is still answering your last message from here. Wait for its reply, or stop it, before you send another.';
 const UNAVAILABLE = 'Continuing a conversation is unavailable on this worker.';
+/** Ids the page makes for clicks on "Open in Claude" (crypto.randomUUID): one per click. */
+const FIRST_CLICK = '1b2c3d4e-5f60-4a7b-8c9d-0e1f2a3b4c5d';
+const SECOND_CLICK = '2c3d4e5f-6071-4b8c-9dae-1f2a3b4c5d6e';
+const NOTHING_OPENING_FOR_THAT_CLICK = 'Nothing that click started is still opening this conversation in its app.';
 
 class FakeStream extends EventEmitter {
   setEncoding(): this { return this; }
@@ -53,8 +59,12 @@ class FakeChild extends EventEmitter {
   private heardFirstStop!: (signal: string) => void;
   /** The signal of the first stop sent to it (see hearStop). */
   readonly firstStop = new Promise<string>(resolve => { this.heardFirstStop = resolve; });
+  /** The signal of every stop sent to it, in order. */
+  readonly stopsHeard: string[] = [];
+  /** Set by a test to make a stop sent to its process group fail with it, as kill(2) can (the process.kill stub below). */
+  stopCannotBeSent?: Error;
   /** Hears a stop: runCommand's signal to its process group (the process.kill stub below), or Node's `signal` option on Windows. */
-  hearStop(signal: string): void { this.heardFirstStop(signal); }
+  hearStop(signal: string): void { this.stopsHeard.push(signal); this.heardFirstStop(signal); }
   /** Exits with `exitCode`, or by a signal when it is null. */
   exit(exitCode: number | null, output: { stdout?: string } = {}): void {
     if (output.stdout) this.stdout.emit('data', output.stdout);
@@ -322,9 +332,9 @@ describe('the request checks', () => {
     expect(stopWithoutUuid.status).toBe(400);
     expect((await stopWithoutUuid.json()).error).toBe('ValidationError');
     for (const body of [
-      { platform: 'claude', conversationSessionId: NON_UUID_CLAUDE_SESSION },
-      { platform: 'gemini', conversationSessionId: CLAUDE_SESSION },
-      { platform: 'claude', conversationSessionId: CLAUDE_SESSION, ownerMessage: 'Which word?' },
+      { platform: 'claude', conversationSessionId: NON_UUID_CLAUDE_SESSION, openInAppClickId: FIRST_CLICK },
+      { platform: 'gemini', conversationSessionId: CLAUDE_SESSION, openInAppClickId: FIRST_CLICK },
+      { platform: 'claude', conversationSessionId: CLAUDE_SESSION, openInAppClickId: FIRST_CLICK, ownerMessage: 'Which word?' },
     ]) {
       const openWithoutConversation = await pressOpenInApp(opened.origin, body);
       expect(openWithoutConversation.status).toBe(400);
@@ -332,6 +342,33 @@ describe('the request checks', () => {
       const stopOpeningWithoutConversation = await pressStopOpening(opened.origin, body);
       expect(stopOpeningWithoutConversation.status).toBe(400);
       expect((await stopOpeningWithoutConversation.json()).error).toBe('ValidationError');
+    }
+    expect(opened.calls).toHaveLength(0);
+    expect(opened.detectCalls()).toBe(0);
+  });
+
+  it("answers an open in the app, and its stop, that names no click, or a click id that is not the page's random UUID, with validateBody 400s, and runs nothing", async () => {
+    const opened = await startRoutes();
+    const conversation = { platform: 'claude', conversationSessionId: CLAUDE_SESSION };
+    const clickIdsRefused: unknown[] = [
+      undefined,
+      '',
+      FIRST_CLICK.toUpperCase(),
+      // A UUID, but not one crypto.randomUUID makes (version 1).
+      '1b2c3d4e-5f60-1a7b-8c9d-0e1f2a3b4c5d',
+      `${FIRST_CLICK} `,
+      'the-same-click',
+      42,
+    ];
+    for (const openInAppClickId of clickIdsRefused) {
+      const body = openInAppClickId === undefined ? conversation : { ...conversation, openInAppClickId };
+      for (const press of [pressOpenInApp, pressStopOpening]) {
+        const response = await press(opened.origin, body);
+        expect(response.status).toBe(400);
+        const answer = await response.json() as { error: string; issues: Array<{ path: unknown[] }> };
+        expect(answer.error).toBe('ValidationError');
+        expect(answer.issues.some(issue => issue.path[0] === 'openInAppClickId')).toBe(true);
+      }
     }
     expect(opened.calls).toHaveLength(0);
     expect(opened.detectCalls()).toBe(0);
@@ -359,8 +396,8 @@ describe('the request checks', () => {
       await readConversation(opened.origin, 'claude', CLAUDE_SESSION),
       await sendMessage(opened.origin, { ...conversation, ownerMessage: 'Which word?' }),
       await pressStop(opened.origin, conversation),
-      await pressOpenInApp(opened.origin, conversation),
-      await pressStopOpening(opened.origin, conversation),
+      await pressOpenInApp(opened.origin, { ...conversation, openInAppClickId: FIRST_CLICK }),
+      await pressStopOpening(opened.origin, { ...conversation, openInAppClickId: FIRST_CLICK }),
     ]) {
       expect(response.status).toBe(503);
       expect(await response.json()).toEqual({ error: UNAVAILABLE });
@@ -558,6 +595,7 @@ describe('opening a conversation in its app', () => {
     const processKill = spyOn(process, 'kill').mockImplementation(((pid: number, signal?: string | number) => {
       const child = pid < 0 ? childrenByProcessGroup.get(-pid) : undefined;
       if (!child) return realProcessKill(pid, signal);
+      if (child.stopCannotBeSent) throw child.stopCannotBeSent;
       child.hearStop(String(signal));
       return true;
     }) as typeof process.kill);
@@ -570,7 +608,7 @@ describe('opening a conversation in its app', () => {
 
   it('answers 200 with what `claude --desktop --resume` printed once it has exited 0, run in the folder its turn would run in, and starts no turn', async () => {
     const opened = await startRoutes();
-    const answer = pressOpenInApp(opened.origin, { platform: 'claude', conversationSessionId: CLAUDE_SESSION });
+    const answer = pressOpenInApp(opened.origin, { platform: 'claude', conversationSessionId: CLAUDE_SESSION, openInAppClickId: FIRST_CLICK });
     const call = await opened.spawnedCall(0);
     expect({ command: call.command, args: call.args }).toEqual(openInAppCommand(CLAUDE_SESSION));
     expect(call.options.cwd).toBe(folderPresent);
@@ -587,7 +625,7 @@ describe('opening a conversation in its app', () => {
 
   it('answers 409 with one sentence and everything the CLI printed when the app did not open it', async () => {
     const opened = await startRoutes();
-    const answer = pressOpenInApp(opened.origin, { platform: 'claude', conversationSessionId: CLAUDE_SESSION });
+    const answer = pressOpenInApp(opened.origin, { platform: 'claude', conversationSessionId: CLAUDE_SESSION, openInAppClickId: FIRST_CLICK });
     (await opened.spawnedCall(0)).child.exit(1, { stdout: 'Claude Desktop is not installed. Install it from https://claude.ai/download\n' });
     const response = await answer;
     expect(response.status).toBe(409);
@@ -599,10 +637,10 @@ describe('opening a conversation in its app', () => {
   it('refuses a second open of the same conversation while the first runs, with 409 and one sentence, and runs one command', async () => {
     const opened = await startRoutes();
     const conversation = { platform: 'claude', conversationSessionId: CLAUDE_SESSION };
-    const first = pressOpenInApp(opened.origin, conversation);
+    const first = pressOpenInApp(opened.origin, { ...conversation, openInAppClickId: FIRST_CLICK });
     const call = await opened.spawnedCall(0);
     // As from a second tab, or this one after the drawer was closed and opened again.
-    const second = await pressOpenInApp(opened.origin, conversation);
+    const second = await pressOpenInApp(opened.origin, { ...conversation, openInAppClickId: SECOND_CLICK });
     expect(second.status).toBe(409);
     expect(await second.json()).toEqual({ error: STILL_OPENING });
     expect(opened.calls).toHaveLength(1);
@@ -615,14 +653,14 @@ describe('opening a conversation in its app', () => {
   it("stops the open's command when the page that asked says it is going away, and opens the conversation again on the next click", async () => {
     const opened = await startRoutes();
     const conversation = { platform: 'claude', conversationSessionId: CLAUDE_SESSION };
-    const nothingOpening = await pressStopOpening(opened.origin, conversation);
+    const nothingOpening = await pressStopOpening(opened.origin, { ...conversation, openInAppClickId: FIRST_CLICK });
     expect(nothingOpening.status).toBe(409);
-    expect(await nothingOpening.json()).toEqual({ error: 'Nothing is opening this conversation in its app.' });
+    expect(await nothingOpening.json()).toEqual({ error: NOTHING_OPENING_FOR_THAT_CLICK });
 
-    const abandoned = pressOpenInApp(opened.origin, conversation);
+    const abandoned = pressOpenInApp(opened.origin, { ...conversation, openInAppClickId: FIRST_CLICK });
     const call = await opened.spawnedCall(0);
-    // What the page sends from 'pagehide' while its open still runs (local-source.ts).
-    const stopping = await pressStopOpening(opened.origin, conversation);
+    // What the page sends from 'pagehide' while its open still runs (local-source.ts): the same click's id.
+    const stopping = await pressStopOpening(opened.origin, { ...conversation, openInAppClickId: FIRST_CLICK });
     expect(stopping.status).toBe(200);
     expect(stopping.headers.get('cache-control')).toBe('no-store');
     expect(await stopping.json()).toEqual({});
@@ -634,7 +672,7 @@ describe('opening a conversation in its app', () => {
       error: 'Claude Code could not open this conversation in the Claude app: the page that asked went away, so it was stopped.',
     });
 
-    const answer = pressOpenInApp(opened.origin, conversation);
+    const answer = pressOpenInApp(opened.origin, { ...conversation, openInAppClickId: SECOND_CLICK });
     (await opened.spawnedCall(1)).child.exit(0, { stdout: `^D\b\b${OPENED_LINE}\r\n` });
     const response = await answer;
     expect(response.status).toBe(200);
@@ -642,12 +680,61 @@ describe('opening a conversation in its app', () => {
     expect(opened.calls).toHaveLength(2);
   });
 
+  it("refuses with 409 and one sentence the stop for another click, from another tab or late from an earlier click, and the open runs on", async () => {
+    const opened = await startRoutes();
+    const conversation = { platform: 'claude', conversationSessionId: CLAUDE_SESSION };
+    const fromTabA = pressOpenInApp(opened.origin, { ...conversation, openInAppClickId: FIRST_CLICK });
+    const call = await opened.spawnedCall(0);
+    // Tab B's click is refused while tab A's open runs, and tab B closes before its refusal comes: it sends its own stop.
+    expect((await pressOpenInApp(opened.origin, { ...conversation, openInAppClickId: SECOND_CLICK })).status).toBe(409);
+    const stopFromTabB = await pressStopOpening(opened.origin, { ...conversation, openInAppClickId: SECOND_CLICK });
+    expect(stopFromTabB.status).toBe(409);
+    expect(await stopFromTabB.json()).toEqual({ error: NOTHING_OPENING_FOR_THAT_CLICK });
+    expect(call.child.stopsHeard).toEqual([]);
+    call.child.exit(0, { stdout: `^D\b\b${OPENED_LINE}\r\n` });
+    const answerToTabA = await fromTabA;
+    expect(answerToTabA.status).toBe(200);
+    expect(await answerToTabA.json()).toEqual({ printedText: OPENED_LINE });
+
+    // A newer click opens it again, and the stop tab A's page sent as it went away comes late.
+    const newer = pressOpenInApp(opened.origin, { ...conversation, openInAppClickId: SECOND_CLICK });
+    const newerCall = await opened.spawnedCall(1);
+    const lateStop = await pressStopOpening(opened.origin, { ...conversation, openInAppClickId: FIRST_CLICK });
+    expect(lateStop.status).toBe(409);
+    expect(await lateStop.json()).toEqual({ error: NOTHING_OPENING_FOR_THAT_CLICK });
+    expect(newerCall.child.stopsHeard).toEqual([]);
+    newerCall.child.exit(0);
+    expect((await newer).status).toBe(200);
+    expect(opened.calls).toHaveLength(2);
+  });
+
+  // A stop goes wrong only in the process-group signal macOS and Linux get (CommandOptions.signal in detect.ts).
+  (process.platform === 'win32' ? it.skip : it)('answers a stop it could not send with 409 and the error in one sentence, not 200, and the open runs on', async () => {
+    const opened = await startRoutes();
+    const clickedOpen = { platform: 'claude', conversationSessionId: CLAUDE_SESSION, openInAppClickId: FIRST_CLICK };
+    const answer = pressOpenInApp(opened.origin, clickedOpen);
+    const call = await opened.spawnedCall(0);
+    // kill(2)'s answer when no process in the group may be signalled, as Node's process.kill throws it.
+    call.child.stopCannotBeSent = Object.assign(new Error('kill EPERM'), { code: 'EPERM', errno: -1, syscall: 'kill' });
+    const stopping = await pressStopOpening(opened.origin, clickedOpen);
+    expect(stopping.status).toBe(409);
+    expect(await stopping.json()).toEqual({
+      error: 'The stop did not reach Claude Code (kill EPERM), so it is still opening this conversation in the Claude app.',
+    });
+    expect(call.child.stopsHeard).toEqual([]);
+    // Its end is its own: it opened the conversation.
+    call.child.exit(0, { stdout: `^D\b\b${OPENED_LINE}\r\n` });
+    const response = await answer;
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ printedText: OPENED_LINE });
+  });
+
   it('on Windows and Linux, reads that no app opens the conversation here, and refuses an open with 409, running nothing', async () => {
     for (const operatingSystem of ['win32', 'linux'] as const) {
       const opened = await startRoutes({ operatingSystem });
       const { target } = await (await readConversation(opened.origin, 'claude', CLAUDE_SESSION)).json();
       expect(target).toEqual({ canContinue: true, recordedFolder: folderPresent, runsInFolder: folderPresent, recordedFolderIsGone: false, opensInAppNamed: null });
-      const response = await pressOpenInApp(opened.origin, { platform: 'claude', conversationSessionId: CLAUDE_SESSION });
+      const response = await pressOpenInApp(opened.origin, { platform: 'claude', conversationSessionId: CLAUDE_SESSION, openInAppClickId: FIRST_CLICK });
       expect(response.status).toBe(409);
       expect(await response.json()).toEqual({ error: 'Claude Code opens a conversation in the Claude app from here only on macOS. Copy the resume command instead.' });
       expect(opened.calls).toHaveLength(0);
@@ -662,7 +749,7 @@ describe('opening a conversation in its app', () => {
       ['claude', CLAUDE_SESSION_WITHOUT_FOLDER, 'No folder was recorded for this Claude Code conversation, so it can’t be continued from here.'],
     ];
     for (const [platform, conversationSessionId, sentence] of refusals) {
-      const response = await pressOpenInApp(opened.origin, { platform, conversationSessionId });
+      const response = await pressOpenInApp(opened.origin, { platform, conversationSessionId, openInAppClickId: FIRST_CLICK });
       expect(response.status).toBe(409);
       expect(await response.json()).toEqual({ error: sentence });
     }
@@ -737,21 +824,99 @@ describe('local API token mode (#5141)', () => {
   it('refuses an open in the app without the token with 401 and runs nothing; with the token it runs', async () => {
     const TOKEN = 'conversation-open-in-app-routes-test-token';
     const opened = await startRoutes({ localApiToken: TOKEN });
-    const conversation = { platform: 'claude', conversationSessionId: CLAUDE_SESSION };
-    expect((await pressOpenInApp(opened.origin, conversation)).status).toBe(401);
-    expect((await pressOpenInApp(opened.origin, conversation, { [LOCAL_API_TOKEN_HEADER]: 'not-the-token' })).status).toBe(401);
-    expect((await postJson(opened.origin, `/api/work-view/conversations/open-in-app?token=${TOKEN}`, conversation)).status).toBe(401);
-    expect((await pressStopOpening(opened.origin, conversation)).status).toBe(401);
+    const clickedOpen = { platform: 'claude', conversationSessionId: CLAUDE_SESSION, openInAppClickId: FIRST_CLICK };
+    expect((await pressOpenInApp(opened.origin, clickedOpen)).status).toBe(401);
+    expect((await pressOpenInApp(opened.origin, clickedOpen, { [LOCAL_API_TOKEN_HEADER]: 'not-the-token' })).status).toBe(401);
+    expect((await postJson(opened.origin, `/api/work-view/conversations/open-in-app?token=${TOKEN}`, clickedOpen)).status).toBe(401);
+    expect((await pressStopOpening(opened.origin, clickedOpen)).status).toBe(401);
     expect(opened.calls).toHaveLength(0);
     expect(opened.detectCalls()).toBe(0);
 
-    const answer = pressOpenInApp(opened.origin, conversation, { [LOCAL_API_TOKEN_HEADER]: TOKEN });
+    const answer = pressOpenInApp(opened.origin, clickedOpen, { [LOCAL_API_TOKEN_HEADER]: TOKEN });
     (await opened.spawnedCall(0)).child.exit(0);
     expect((await answer).status).toBe(200);
     expect(opened.calls).toHaveLength(1);
-    // With the token, a stop reaches the route, which answers that nothing is opening the conversation any more.
-    const stopWithToken = await pressStopOpening(opened.origin, conversation, { [LOCAL_API_TOKEN_HEADER]: TOKEN });
+    // With the token, a stop reaches the route, which answers that nothing that click started is opening the conversation any more.
+    const stopWithToken = await pressStopOpening(opened.origin, clickedOpen, { [LOCAL_API_TOKEN_HEADER]: TOKEN });
     expect(stopWithToken.status).toBe(409);
-    expect(await stopWithToken.json()).toEqual({ error: 'Nothing is opening this conversation in its app.' });
+    expect(await stopWithToken.json()).toEqual({ error: NOTHING_OPENING_FOR_THAT_CLICK });
+  });
+});
+
+describe('when the worker shuts down, with a real turn running', () => {
+  const STAND_IN_TURN = join(FIXTURES, 'cli-turn-that-ends-a-moment-after-its-stop.sh');
+
+  /** Whether a process is still running. EPERM would mean it runs as someone else, so it runs. */
+  function isRunning(pid: number): boolean {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === 'EPERM';
+    }
+  }
+
+  /** The pid the stand-in wrote to `pidFile`, once it has. Bun's per-test timeout ends the wait if it never does. */
+  async function pidWrittenTo(pidFile: string): Promise<number> {
+    for (;;) {
+      const written = existsSync(pidFile) ? readFileSync(pidFile, 'utf8').trim() : '';
+      if (written !== '') return Number(written);
+      await Bun.sleep(10);
+    }
+  }
+
+  /** Stand-ins started by a test, ended after it in case it failed before the shutdown did. */
+  const standInPids: number[] = [];
+  afterEach(() => {
+    for (const pid of standInPids.splice(0)) if (isRunning(pid)) process.kill(pid, 'SIGKILL');
+  });
+
+  // On Windows a stop goes to the command alone and there is no sh (CommandOptions.signal in detect.ts).
+  (process.platform === 'win32' ? it.skip : it)('stops the turn and waits for its CLI to exit before the shutdown finishes, and sends it nowhere again', async () => {
+    const folder = join(fileFolder, `shutdown-${++testFolderCount}`);
+    mkdirSync(folder);
+    const pidFile = join(folder, 'stand-in-turn.pid');
+    // The supervisor's registry, as worker-service.ts passes it (getSupervisor().getRegistry()), in this test's folder.
+    const registry = createProcessRegistry(join(folder, 'supervisor.json'));
+    let spawns = 0;
+    let reportEnded!: (exchange: ConversationContinuation) => void;
+    const ended = new Promise<ConversationContinuation>(resolve => { reportEnded = resolve; });
+    let routes!: WorkViewRoutes;
+    const runner = new ConversationContinuationRunner({
+      recordedFolderForConversation: (platform, conversationSessionId) => store.getRecordedFolderForConversation(platform, conversationSessionId),
+      detectAgent: async agentId => ({ id: agentId, path: STAND_IN_TURN, authenticated: true, reason: 'test login' }),
+      spawnImpl: ((command: string, args: string[], options: SpawnOptions) => {
+        spawns += 1;
+        return spawnRealProcess(command, args, options);
+      }) as unknown as typeof spawn,
+      onChange: exchange => { routes.publishConversationContinuation(exchange); reportEnded(exchange); },
+      environment: () => ({ PATH: process.env.PATH, HOME: process.env.HOME, STAND_IN_TURN_WRITES_ITS_PID_TO: pidFile }),
+      processRegistry: registry,
+    });
+    routes = new WorkViewRoutes({ ...isolatedRoutesOptions(), conversationContinuationRunner: runner });
+
+    const started = await runner.start('claude', CLAUDE_SESSION, 'Count slowly to 200, one number per line.');
+    expect(started).toHaveProperty('exchange');
+    const standInPid = await pidWrittenTo(pidFile);
+    standInPids.push(standInPid);
+    expect(isRunning(standInPid)).toBe(true);
+
+    // WorkerService.shutdown: workViewRoutes.close() first, then the graceful shutdown, whose last step is the supervisor's
+    // cascade. The worker gives up its PID file, and on a restart starts its successor, only after that.
+    routes.close();
+    await runShutdownCascade({ registry, currentPid: process.pid, pidFilePath: join(folder, 'worker.pid') });
+    // The stand-in ends a moment after its stop, so a shutdown that did not wait for it would be done while it still ran.
+    expect(isRunning(standInPid)).toBe(false);
+    expect(registry.getAll()).toEqual([]);
+    const stopped = await ended;
+    expect(stopped.state).toBe('failed');
+    // Then whatever the stand-in's shell printed, kept whole: "Terminated: 15" when the cascade's SIGTERM cut a nap short.
+    expect(stopped.failureText).toStartWith('The worker shut down, so it stopped this turn.');
+
+    // Nothing sends it again, and nothing new starts.
+    expect(await runner.start('claude', CLAUDE_SESSION, 'Count slowly to 200, one number per line.')).toEqual({
+      refusalText: 'The worker is shutting down, so this message was not sent. Send it again once My Work reconnects.',
+    });
+    expect(spawns).toBe(1);
   });
 });

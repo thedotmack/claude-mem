@@ -12,7 +12,8 @@ import { Textarea } from '@/components/ui/textarea'
 import { interpolate, t, useI18n } from '@/lib/i18n'
 import {
   buttonLabelsKeepingTheirWidth, continuationEventConcernsConversation, continuationView, conversationAppActions, conversationControlNames,
-  focusAfterSendOrStop, isContinuableConversation, resumeCommandCopyFailureWords, type ButtonLabelInPlace, type ContinuationWords,
+  conversationReadFailureView, focusAfterSendOrStop, isContinuableConversation, resumeCommandCopyFailureWords, type ButtonLabelInPlace,
+  type ContinuationWords, type ConversationReadFailureView, type ExchangeAStopWasSentFor,
 } from '@/live/conversation-continuation'
 import type { ConversationContinuationRead, ConversationContinuationSource } from '@/live/work-data-source'
 import { Req } from '@/spec/req'
@@ -35,6 +36,19 @@ function LabelsInOnePlace({ labels }: { labels: ButtonLabelInPlace[] }) {
         <span key={index} className={label.isShown ? 'col-start-1 row-start-1' : 'invisible col-start-1 row-start-1'}>{label.text}</span>
       ))}
     </span>
+  )
+}
+
+/** Why the last read of the conversation failed, and "Try again" beside it, which the sentence describes for a screen reader. */
+function ReadFailure({ view, onTryAgain }: { view: ConversationReadFailureView; onTryAgain: (pressedButton: HTMLButtonElement) => void }) {
+  useI18n()
+  const failureId = useId()
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <p id={failureId} role="alert" className="break-words text-sm text-muted-foreground">{view.failureText}</p>
+      <Button variant="outline" size="sm" className="h-11 md:h-8" aria-describedby={failureId}
+        onClick={(event) => onTryAgain(event.currentTarget)}>{t(view.tryAgainLabel)}</Button>
+    </div>
   )
 }
 
@@ -94,8 +108,12 @@ function ContinuableConversation({
   const [sending, setSending] = useState(false)
   /** Why the last Send or Stop did not happen, in the worker's words. */
   const [actionFailure, setActionFailure] = useState<string | null>(null)
-  /** The running exchange a Stop was sent for. Its button waits for the turn to end: a second Stop would change nothing. */
-  const [stopSentForExchangeId, setStopSentForExchangeId] = useState<number | null>(null)
+  /**
+   * The running exchange a Stop was sent for, as one exchange of one worker's life (ExchangeAStopWasSentFor). Its button
+   * waits for the turn to end: a second Stop would change nothing. A worker restart counts exchanges from 1 again, and the
+   * first one it starts is never taken for this one.
+   */
+  const [exchangeAStopWasSentFor, setExchangeAStopWasSentFor] = useState<ExchangeAStopWasSentFor | null>(null)
   /** Reads the conversation again. Null once the row is closed. */
   const readAgain = useRef<(() => void) | null>(null)
   /** Where focus goes after Send or Stop (focusAfterSendOrStop): the message box, or this whole box when there is none. */
@@ -148,8 +166,20 @@ function ContinuableConversation({
     return () => { rowIsOpen = false; readAgain.current = null; stopHearing() }
   }, [source, platform, conversationSessionId])
 
-  if (!read) return readFailure ? <p role="alert" className="break-words text-sm text-muted-foreground">{readFailure}</p> : null
-  const view = continuationView(read.target, read.exchanges, typedMessage)
+  const readFailureView = conversationReadFailureView(readFailure)
+  /** Reads the conversation again after a failed read. Focus moves into this box first when the row has one, as after Send. */
+  const tryReadingAgain = (pressedButton: HTMLButtonElement) => {
+    if (read) {
+      const focusTarget = focusAfterSendOrStop(document.activeElement === pressedButton, continuationView(read.target, read.exchanges, typedMessage))
+      if (focusTarget === 'message-box') messageBox.current?.focus()
+      if (focusTarget === 'conversation-box') conversationBox.current?.focus()
+    }
+    // Its sentence goes until this read answers, and comes back if it fails too, so each try shows.
+    setReadFailure(null)
+    readAgain.current?.()
+  }
+  if (!read) return readFailureView ? <ReadFailure view={readFailureView} onTryAgain={tryReadingAgain} /> : null
+  const view = continuationView(read.target, read.exchanges, typedMessage, exchangeAStopWasSentFor)
   const appActions = conversationAppActions({ platform, conversationSessionId, toolName, conversationTitle, anotherConversationHasTheSameTitle },
     read.target, source.openConversationInApp !== undefined)
   const copyFailureWords = resumeCommandCopyFailure === null ? null : resumeCommandCopyFailureWords(resumeCommandCopyFailure)
@@ -208,15 +238,15 @@ function ContinuableConversation({
     }
   }
 
-  const stop = async (exchangeId: number, pressedButton: HTMLButtonElement) => {
+  const stop = async (exchange: ExchangeAStopWasSentFor, pressedButton: HTMLButtonElement) => {
     keepFocusInConversation(pressedButton)
-    setStopSentForExchangeId(exchangeId)
+    setExchangeAStopWasSentFor({ exchangeId: exchange.exchangeId, startedAtEpochMs: exchange.startedAtEpochMs })
     setActionFailure(null)
     try {
       // The exchange stays running until the CLI has exited; the notice that it ended reads this row again.
       await source.stopConversationContinuation(platform, conversationSessionId)
     } catch (error) {
-      setStopSentForExchangeId(null)
+      setExchangeAStopWasSentFor(null)
       setActionFailure(messageOf(error))
     }
   }
@@ -233,8 +263,8 @@ function ContinuableConversation({
                 <div className="flex flex-wrap items-center gap-2">
                   <Shimmer as="span" className="text-xs">{t(exchange.stateWords)}</Shimmer>
                   {view.stopIsShown && (
-                    <Button variant="outline" size="sm" className="h-11 md:h-8" aria-label={stopButtonName} disabled={stopSentForExchangeId === exchange.exchangeId}
-                      onClick={(event) => void stop(exchange.exchangeId, event.currentTarget)}>{t('Stop')}</Button>
+                    <Button variant="outline" size="sm" className="h-11 md:h-8" aria-label={stopButtonName} disabled={exchange.stopWasSent}
+                      onClick={(event) => void stop(exchange, event.currentTarget)}>{t('Stop')}</Button>
                   )}
                 </div>
               ) : <p className="text-xs text-muted-foreground">{t(exchange.stateWords)}</p>}
@@ -303,7 +333,7 @@ function ContinuableConversation({
         </>
       )}
       {actionFailure && <p role="alert" className="break-words text-sm font-medium">{actionFailure}</p>}
-      {readFailure && <p role="alert" className="break-words text-sm text-muted-foreground">{readFailure}</p>}
+      {readFailureView && <ReadFailure view={readFailureView} onTryAgain={tryReadingAgain} />}
     </div>
   )
 }

@@ -338,18 +338,20 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
       return () => { conversationContinuationListeners.delete(subscription) }
     },
     async openConversationInApp(platform, conversationSessionId) {
-      const conversation = { platform, conversationSessionId }
+      // This click's own id (OPEN_IN_APP_CLICK_ID_PATTERN), sent with the open and with its stop, so the worker stops only
+      // the open this click started: not one another tab's click started, and not a newer one.
+      const clickedOpen = { platform, conversationSessionId, openInAppClickId: crypto.randomUUID() }
       // The worker cannot see this request go away: Bun's node:http, which serves it, gives a POST whose page has gone no
       // sign at all. So when the page is unloaded while the open still runs (a reload, a closed tab), the page asks the
       // worker to stop the open's command. keepalive lets that request outlive the page.
       const stopTheOpenAsThePageGoes = () => {
-        fetchImpl(WORK_VIEW_STOP_OPENING_CONVERSATION_IN_APP_URL, { ...postToConversationRoute(conversation), keepalive: true }).catch((error: unknown) => {
+        fetchImpl(WORK_VIEW_STOP_OPENING_CONVERSATION_IN_APP_URL, { ...postToConversationRoute(clickedOpen), keepalive: true }).catch((error: unknown) => {
           console.error('[work-view] Could not ask the worker to stop opening a conversation in its app as this page closed.', error)
         })
       }
       pageUnload?.addEventListener('pagehide', stopTheOpenAsThePageGoes)
       try {
-        return await callConversationRoute(WORK_VIEW_OPEN_CONVERSATION_IN_APP_URL, postToConversationRoute(conversation),
+        return await callConversationRoute(WORK_VIEW_OPEN_CONVERSATION_IN_APP_URL, postToConversationRoute(clickedOpen),
           'open this conversation in its app', readOpenedInAppAnswer)
       } finally {
         pageUnload?.removeEventListener('pagehide', stopTheOpenAsThePageGoes)

@@ -7,6 +7,7 @@ import type { ConversationContinuationEvent, MappedWorkModel, WorkModel } from '
 import type { WorkViewOverview } from './work-view-overview.ts'
 import type { WorkViewSnapshot } from './work-view-api-types.ts'
 import { SaveRefusedError } from '../data.ts'
+import { OPEN_IN_APP_CLICK_ID_PATTERN } from '../../../../shared/conversation-continuation.ts'
 
 const SAMPLE = await sampleSource.loadWorkModel()
 const FIRST = 'a'.repeat(64)
@@ -805,6 +806,7 @@ describe('a hidden cloud tab', () => {
 
 describe('continuing a conversation from this computer', () => {
   const SESSION = '0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d'
+  const OTHER_SESSION = '9f8e7d6c-5b4a-4c3d-8e2f-1a0b9c8d7e6f'
   const CONTINUATION_MEMBERS = ['loadConversationContinuation', 'continueConversation', 'stopConversationContinuation', 'subscribeToConversationContinuations', 'openConversationInApp'] as const
   const target = { canContinue: true, recordedFolder: '/work/example/worktree', runsInFolder: '/work/example', recordedFolderIsGone: true, opensInAppNamed: 'Claude' }
   // Text that would read as a flag or a shell command if it were ever an argument. It travels in the JSON body, as typed.
@@ -846,15 +848,42 @@ describe('continuing a conversation from this computer', () => {
     assert.equal(calls[0].init?.cache, 'no-store')
   })
 
-  it('opens a conversation in its app through the open-in-app route, and resolves with what the CLI printed as it opened it', async () => {
+  it('opens a conversation in its app through the open-in-app route, naming each click by an id of its own, and resolves with what the CLI printed as it opened it', async () => {
     const calls: Array<{ url: string; init: RequestInit | undefined }> = []
     const printedText = `Opening session ${SESSION} in Claude Desktop`
     const answers = [json({ printedText }), json({ printedText: null })]
     const { local } = harness(async (url, init) => { calls.push({ url: String(url), init }); return answers.shift()! })
     assert.deepEqual(await local.openConversationInApp!('claude', SESSION), { printedText })
     assert.deepEqual(await local.openConversationInApp!('claude', SESSION), { printedText: null })
-    const openCall = { url: '/api/work-view/conversations/open-in-app', method: 'POST', headers: { 'Content-Type': 'application/json' }, body: { platform: 'claude', conversationSessionId: SESSION } }
-    assert.deepEqual(calls.map(({ url, init }) => ({ url, method: init?.method, headers: init?.headers, body: JSON.parse(String(init?.body)) })), [openCall, openCall])
+    const bodies = calls.map(({ init }) => JSON.parse(String(init?.body)) as { openInAppClickId: string })
+    const clickIds = bodies.map((body) => body.openInAppClickId)
+    for (const clickId of clickIds) assert.match(clickId, OPEN_IN_APP_CLICK_ID_PATTERN)
+    assert.notEqual(clickIds[0], clickIds[1], 'each click has its own id')
+    assert.deepEqual(calls.map(({ url, init }) => ({ url, method: init?.method, headers: init?.headers, body: JSON.parse(String(init?.body)) })), clickIds.map((openInAppClickId) => ({
+      url: '/api/work-view/conversations/open-in-app', method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: { platform: 'claude', conversationSessionId: SESSION, openInAppClickId },
+    })))
+  })
+
+  it('names in each stop it sends as the page goes away the click whose open is still running', async () => {
+    const pageUnload = fakePageUnload()
+    const openings = [deferred<Response>(), deferred<Response>()]
+    const calls: Array<{ url: string; body: { conversationSessionId: string; openInAppClickId: string } }> = []
+    const { local } = harness(async (url, init) => {
+      calls.push({ url: String(url), body: JSON.parse(String(init?.body)) })
+      return String(url).endsWith('/open-in-app') ? openings[calls.filter((call) => call.url.endsWith('/open-in-app')).length - 1].promise : json({})
+    }, 100, { pageUnload })
+    // Two rows of the page, each opening its own conversation in its app.
+    const firstOpen = local.openConversationInApp!('claude', SESSION)
+    const secondOpen = local.openConversationInApp!('claude', OTHER_SESSION)
+    pageUnload.hide()
+    const opens = calls.filter((call) => call.url.endsWith('/open-in-app'))
+    const stops = calls.filter((call) => call.url.endsWith('/open-in-app/stop'))
+    assert.equal(stops.length, 2)
+    assert.deepEqual(stops.map((stop) => stop.body), opens.map((open) => open.body))
+    assert.notEqual(opens[0].body.openInAppClickId, opens[1].body.openInAppClickId)
+    for (const opening of openings) opening.resolve(json({ printedText: null }))
+    await Promise.all([firstOpen, secondOpen])
   })
 
   it('asks the worker to stop the open when the page is unloaded while the open still runs, and not before or after', async () => {
@@ -871,7 +900,9 @@ describe('continuing a conversation from this computer', () => {
     const opened = local.openConversationInApp!('claude', SESSION)
     // A reload or a closed tab while the worker's command still runs: the worker cannot see this request go away.
     pageUnload.hide()
-    const body = { platform: 'claude', conversationSessionId: SESSION }
+    // The stop names the same click as the open it stops.
+    const body = { platform: 'claude', conversationSessionId: SESSION, openInAppClickId: (JSON.parse(String(calls[0].init?.body)) as { openInAppClickId: string }).openInAppClickId }
+    assert.match(body.openInAppClickId, OPEN_IN_APP_CLICK_ID_PATTERN)
     assert.deepEqual(calls.map(({ url, init }) => ({ url, method: init?.method, keepalive: init?.keepalive, headers: init?.headers, body: JSON.parse(String(init?.body)) })), [
       { url: '/api/work-view/conversations/open-in-app', method: 'POST', keepalive: undefined, headers: { 'Content-Type': 'application/json' }, body },
       { url: '/api/work-view/conversations/open-in-app/stop', method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json' }, body },

@@ -5,8 +5,12 @@
  * the page to show.
  *
  * The owner clicked, so a start is the one run that click starts. Nothing queues, nothing is sent a second time and
- * nothing is written to disk. A failed run is recorded as failed and stops. Nothing here runs at construction, on a
+ * no exchange is written to disk. A failed run is recorded as failed and stops. Nothing here runs at construction, on a
  * timer, at worker start or on reconnect.
+ *
+ * Each command it starts is in the worker's process registry while it runs, like every other process the worker starts,
+ * and the worker's shutdown stops it and waits for it (close says how), so a turn never outlives the worker that started
+ * it while the next worker takes a turn in the same conversation.
  *
  * The two commands, as the CLIs document them:
  *   - Claude Code 2.1.325: `claude --resume <session uuid> -p --output-format json`, the message on stdin.
@@ -28,11 +32,13 @@
  * PR #6054.
  */
 import type { spawn } from 'child_process';
+import { randomUUID } from 'crypto';
 import { statSync } from 'fs';
 import { dirname } from 'path';
 import { stripVTControlCharacters } from 'util';
-import { runCommand, type CommandResult, type UsableAgent, type UsableAgentId } from '../agent-runner/detect.js';
+import { runCommand, type CommandOptions, type CommandResult, type UsableAgent, type UsableAgentId } from '../agent-runner/detect.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
+import type { ProcessRegistry } from '../../supervisor/process-registry.js';
 import { logger } from '../../utils/logger.js';
 import {
   CONVERSATION_APP_NAMES,
@@ -57,10 +63,11 @@ interface ContinuationTool {
   /** Reads a command that started and exited with no Stop pressed. */
   readOutcome: (result: CommandResult, toolName: string) => TurnOutcome;
   /**
-   * Reads a command the owner's Stop was sent to, once it has exited. The turn may have finished before the stop reached
-   * it, and then its reply stands. Otherwise the exchange says it was stopped and shows what the turn printed.
+   * Reads a command a stop was sent to, once it has exited. The turn may have finished before the stop reached it, and
+   * then its reply stands. Otherwise the exchange says it was stopped (`stoppedText`, which says who stopped it) and shows
+   * what the turn printed.
    */
-  readStoppedOutcome: (result: CommandResult, toolName: string) => TurnOutcome;
+  readStoppedOutcome: (result: CommandResult, toolName: string, stoppedText: string) => TurnOutcome;
 }
 
 const CONTINUATION_TOOLS: Record<ContinuablePlatform, ContinuationTool> = {
@@ -141,7 +148,19 @@ const CONTINUABLE_TOOL_NAMES = Object.values(CONTINUATION_TOOLS).map(tool => too
 const STILL_RUNNING_REFUSAL = 'This conversation is still answering your last message from here. Wait for its reply, or stop it, before you send another.';
 const NOTHING_RUNNING_REFUSAL = 'Nothing sent from here is running in this conversation.';
 const EMPTY_MESSAGE_REFUSAL = 'There is no message to send.';
-const STOPPED_BY_OWNER_TEXT = 'You stopped this turn.';
+const SHUTTING_DOWN_REFUSAL = 'The worker is shutting down, so this message was not sent. Send it again once My Work reconnects.';
+const NOTHING_OPENING_FOR_THAT_CLICK_REFUSAL = 'Nothing that click started is still opening this conversation in its app.';
+
+/** Who stopped a turn: the owner, with Stop, or the worker, as it shut down (close). */
+type TurnStopper = 'owner' | 'worker-shutdown';
+/** What a stopped turn's exchange says first, by who stopped it. */
+const STOPPED_TURN_TEXTS: Record<TurnStopper, string> = {
+  owner: 'You stopped this turn.',
+  'worker-shutdown': 'The worker shut down, so it stopped this turn.',
+};
+
+/** What the runner's commands are called in the worker's process registry (ManagedProcessInfo.type). */
+type RegisteredCommandType = 'conversation-turn' | 'conversation-open-in-app';
 
 /** What SessionStore.getRecordedFolderForConversation answers. */
 export interface RecordedConversationFolder {
@@ -169,6 +188,12 @@ export interface ConversationContinuationDependencies {
    * (appThatOpensConversationsHere). Defaults to process.platform.
    */
   operatingSystem?: () => NodeJS.Platform;
+  /**
+   * Where each command it starts is kept while it runs: the worker's process registry (getSupervisor().getRegistry()),
+   * whose shutdown cascade stops what is still running and waits for it (close). Without one, as in tests that need none,
+   * only close stops them.
+   */
+  processRegistry?: Pick<ProcessRegistry, 'register' | 'unregister'>;
 }
 
 /** A start or a stop: the exchange it concerns, or one sentence saying why it did not happen. */
@@ -338,10 +363,10 @@ function readCodexOutcome(result: CommandResult, toolName: string): TurnOutcome 
  * had written. Stopped while a tool ran, it printed nothing in one run, and in another a result with no `result` and an
  * `errors` list. Each exited 0, so only the result tells them apart.
  */
-function readStoppedClaudeOutcome(result: CommandResult): TurnOutcome {
+function readStoppedClaudeOutcome(result: CommandResult, _toolName: string, stoppedText: string): TurnOutcome {
   const turn = readClaudeResult(result.stdout);
   if (turn && !turn.isError) return { state: 'replied', replyText: turn.replyText, deniedToolCallCount: turn.deniedToolCallCount };
-  return { state: 'failed', failureText: wholeText(STOPPED_BY_OWNER_TEXT, readClaudeUnfinishedTurnWords(result.stdout) ?? result.stdout, result.stderr) };
+  return { state: 'failed', failureText: wholeText(stoppedText, readClaudeUnfinishedTurnWords(result.stdout) ?? result.stdout, result.stderr) };
 }
 
 /**
@@ -349,15 +374,16 @@ function readStoppedClaudeOutcome(result: CommandResult): TurnOutcome {
  * prints "turn interrupted" in its progress on stderr and exits 1, and the owner's wrapper around it exits with
  * Codex's code. Exit code 0 means the turn finished and printed its final message.
  */
-function readStoppedCodexOutcome(result: CommandResult, toolName: string): TurnOutcome {
+function readStoppedCodexOutcome(result: CommandResult, toolName: string, stoppedText: string): TurnOutcome {
   if (result.exitCode === 0) return readCodexOutcome(result, toolName);
-  return { state: 'failed', failureText: wholeText(STOPPED_BY_OWNER_TEXT, result.stderr, result.stdout) };
+  return { state: 'failed', failureText: wholeText(stoppedText, result.stderr, result.stdout) };
 }
 
-function turnOutcome(tool: ContinuationTool, result: CommandResult, stopWasSent: boolean): TurnOutcome {
+/** `stoppedBy` is who stopped the turn when a stop was sent to it, and null when none was. */
+function turnOutcome(tool: ContinuationTool, result: CommandResult, stoppedBy: TurnStopper | null): TurnOutcome {
   // Only a command that never started sets spawnError; a stopped one reports how it ended like any other.
   if (result.spawnError) return { state: 'failed', failureText: `${tool.toolName} could not start: ${result.spawnError.message}` };
-  return stopWasSent ? tool.readStoppedOutcome(result, tool.toolName) : tool.readOutcome(result, tool.toolName);
+  return stoppedBy === null ? tool.readOutcome(result, tool.toolName) : tool.readStoppedOutcome(result, tool.toolName, STOPPED_TURN_TEXTS[stoppedBy]);
 }
 
 interface ConversationTurns {
@@ -370,6 +396,20 @@ interface ConversationTurns {
    * runs on, Stop answers with this, and the turn's end is read as its own, not as a stop.
    */
   runningTurnStopNotSent?: Error;
+  /** Who sent the running turn its stop: the owner with Stop, unless the worker did as it shut down (close). */
+  runningTurnStoppedBy?: TurnStopper;
+}
+
+/** One open in its app that is running: the conversation, the click that started it, and what stops its command. */
+interface OpeningInApp {
+  platform: PlatformWithItsOwnApp;
+  conversationSessionId: string;
+  /** The page's id for the click (OPEN_IN_APP_CLICK_ID_PATTERN): only a stop that names it stops this open. */
+  openInAppClickId: string;
+  /** Aborting it stops the command: SIGTERM to script's process group (runOpenInApp). */
+  stop: AbortController;
+  /** Why the stop could not be sent, when it could not (runCommand's onStopNotSent): the command then runs on. */
+  stopNotSent?: Error;
 }
 
 const conversationKeyFor = (platform: string, conversationSessionId: string) => `${platform}:${conversationSessionId}`;
@@ -385,10 +425,13 @@ export class ConversationContinuationRunner {
   private readonly conversationKeysBeingStarted = new Set<string>();
   /**
    * Conversations being opened in their app now, from the CLI's install check until its command has exited (openInApp),
-   * each with what stops its command (stopOpeningInApp). One entry per open the owner clicked that is still running.
+   * each with the click that started it and what stops its command (stopOpeningInApp). One entry per open the owner
+   * clicked that is still running.
    */
-  private readonly openingsInApp = new Map<string, AbortController>();
+  private readonly openingsInApp = new Map<string, OpeningInApp>();
   private nextExchangeId = 1;
+  /** Set by close, once the worker has begun to shut down: nothing starts after it. */
+  private workerIsShuttingDown = false;
   private readonly dependencies: ConversationContinuationDependencies;
 
   constructor(dependencies: ConversationContinuationDependencies) {
@@ -410,6 +453,7 @@ export class ConversationContinuationRunner {
    * for the turn to end; `onChange` hears it again when it ends. A refusal starts nothing.
    */
   async start(platform: string, conversationSessionId: string, ownerMessage: string): Promise<ConversationExchangeOrRefusal> {
+    if (this.workerIsShuttingDown) return { refusalText: SHUTTING_DOWN_REFUSAL };
     const conversationKey = conversationKeyFor(platform, conversationSessionId);
     // One turn per conversation at a time. Claude Code's sessions docs ("Branch a session"): when two `claude -p` runs
     // resume the same session at once, both write to one transcript, and messages from one of them can be missing.
@@ -430,6 +474,8 @@ export class ConversationContinuationRunner {
     } finally {
       this.conversationKeysBeingStarted.delete(conversationKey);
     }
+    // The worker began to shut down while the CLI was checked (close): nothing starts now.
+    if (this.workerIsShuttingDown) return { refusalText: SHUTTING_DOWN_REFUSAL };
     // Each refusal says what the check found, in its own words (UsableAgent.reason). A CLI with no path was not found, or
     // its check failed ("check failed: …"), which says nothing about whether it is installed.
     if (!agent.path) return { refusalText: `${tool.toolName} can’t take this turn on this computer (${agent.reason}).` };
@@ -486,16 +532,66 @@ export class ConversationContinuationRunner {
   }
 
   /**
+   * The worker is shutting down: WorkViewRoutes.close, the first step of WorkerService.shutdown, calls this. From now on
+   * nothing starts: a Send or an Open is refused, also one still checking its CLI. Each running turn is sent the stop
+   * Stop sends (SIGINT to its CLI's process group, which ends a turn cleanly), and each open in an app its stop, at once.
+   * A stopped turn's exchange ends like any other, saying the worker stopped it, and nothing sends it again: the worker
+   * forgets it as it exits, and the turn stays in the conversation.
+   *
+   * The shutdown waits for those commands to exit, inside its existing deadline: each is in the worker's process registry
+   * (processRegistry), and the supervisor's shutdown cascade, the last step of the graceful shutdown, sends SIGTERM to
+   * whatever is still running, then SIGKILL, and waits for each to exit before the worker gives up its PID file or starts
+   * its successor. So the next worker cannot take a turn in a conversation while this worker's turn still writes to it.
+   */
+  close(): void {
+    if (this.workerIsShuttingDown) return;
+    this.workerIsShuttingDown = true;
+    for (const conversation of this.conversations.values()) {
+      const runningExchange = conversation.exchanges.find(exchange => exchange.state === 'running');
+      const controller = conversation.runningTurnController;
+      if (!controller || !runningExchange) continue;
+      const { platform, conversationSessionId, exchangeId } = runningExchange;
+      // A turn the owner's Stop reached already is ending, and its exchange says the owner stopped it.
+      if (!controller.signal.aborted) {
+        conversation.runningTurnStoppedBy = 'worker-shutdown';
+        controller.abort();
+      }
+      const stopNotSent = conversation.runningTurnStopNotSent;
+      if (stopNotSent) {
+        logger.error('WORKER', 'Conversation continuation stop could not be sent as the worker shuts down: the turn runs on until the shutdown cascade ends its process', {
+          platform, conversationSessionId, exchangeId,
+        }, stopNotSent);
+      } else {
+        logger.info('WORKER', 'Conversation continuation stopped: the worker is shutting down', { platform, conversationSessionId, exchangeId });
+      }
+    }
+    for (const opening of this.openingsInApp.values()) {
+      const { platform, conversationSessionId } = opening;
+      opening.stop.abort();
+      if (opening.stopNotSent) {
+        logger.error('WORKER', 'Conversation open in its app stop could not be sent as the worker shuts down: its command runs on until the shutdown cascade ends it', {
+          platform, conversationSessionId,
+        }, opening.stopNotSent);
+      } else {
+        logger.info('WORKER', 'Conversation open in its app stopped: the worker is shutting down', { platform, conversationSessionId });
+      }
+    }
+  }
+
+  /**
    * Opens the conversation in its tool's own app (OPEN_IN_APP_ARGUMENTS), from the folder its turn would run in, through
    * the pseudo-terminal its CLI needs (PSEUDO_TERMINAL_COMMAND), and answers once the command has exited, with what it
    * printed. It starts no turn, changes no exchange, and runs nothing later. Only the CLI's install is checked first:
    * when the app is missing or the login cannot open it, the CLI's own words say so.
    *
    * It has no deadline. It ends when its command exits, or when stopOpeningInApp stops it because the page that asked is
-   * going away. One open per conversation runs at a time, so a click in another tab cannot start a second one beside a
-   * first that hangs.
+   * going away, or when close stops it as the worker shuts down. One open per conversation runs at a time, so a click in
+   * another tab cannot start a second one beside a first that hangs.
+   *
+   * `openInAppClickId` is the page's id for the click (OPEN_IN_APP_CLICK_ID_PATTERN), which its stop must name. A caller
+   * that will never stop the open can leave it out, and gets an id no stop can name.
    */
-  async openInApp(platform: string, conversationSessionId: string): Promise<OpenedInAppOrRefusal> {
+  async openInApp(platform: string, conversationSessionId: string, openInAppClickId: string = randomUUID()): Promise<OpenedInAppOrRefusal> {
     if (isContinuablePlatform(platform) && !opensInItsOwnApp(platform)) {
       return { refusalText: `${CONTINUATION_TOOLS[platform].toolName} has no documented way to open a conversation in its app. Copy the resume command instead.` };
     }
@@ -508,6 +604,7 @@ export class ConversationContinuationRunner {
     if (target.opensInAppNamed === null) {
       return { refusalText: `${tool.toolName} opens a conversation in the ${appName} app from here only on macOS. Copy the resume command instead.` };
     }
+    if (this.workerIsShuttingDown) return { refusalText: `${tool.toolName} did not open this conversation in the ${appName} app: the worker is shutting down.` };
     const conversationKey = conversationKeyFor(platform, conversationSessionId);
     // Checked and taken before the first await, so two clicks at once cannot both pass.
     if (this.openingsInApp.has(conversationKey)) {
@@ -515,65 +612,105 @@ export class ConversationContinuationRunner {
         refusalText: `${tool.toolName} is still opening this conversation in the ${appName} app from an earlier click. Wait for it to finish, or reload the page you clicked it in to stop it.`,
       };
     }
-    const opening = new AbortController();
+    const opening: OpeningInApp = { platform: platformWithApp, conversationSessionId, openInAppClickId, stop: new AbortController() };
     this.openingsInApp.set(conversationKey, opening);
     try {
-      return await this.runOpenInApp(platformWithApp, conversationSessionId, target.runsInFolder, opening.signal);
+      return await this.runOpenInApp(opening, target.runsInFolder);
     } finally {
       this.openingsInApp.delete(conversationKey);
     }
   }
 
   /**
-   * Stops the command opening this conversation in its app, which then answers that it was stopped. The page asks for this
-   * when it is unloaded while its open still runs (a reload, a closed tab), because the worker cannot see that page's
-   * request go away: Bun's node:http, which serves the worker, gives a POST whose client has left no event, no error and
-   * no failed write (Bun 1.3.9, checked with raw TCP clients on 15 Nov 2026; Node sees it at once). runCommand sends
-   * SIGTERM to script's process group, script ends, its pseudo-terminal closes, and the CLI behind it gets the hangup
-   * (SIGHUP) a closed terminal window gives it.
+   * Stops the command opening this conversation in its app for the click `openInAppClickId` names, which then answers that
+   * it was stopped. The page asks for this when it is unloaded while its open still runs (a reload, a closed tab), because
+   * the worker cannot see that page's request go away: Bun's node:http, which serves the worker, gives a POST whose client
+   * has left no event, no error and no failed write (Bun 1.3.9, checked with raw TCP clients on 15 Nov 2026; Node sees it
+   * at once). runCommand sends SIGTERM to script's process group, script ends, its pseudo-terminal closes, and the CLI
+   * behind it gets the hangup (SIGHUP) a closed terminal window gives it.
+   *
+   * Only the click that started the open stops it. A tab whose click was refused because this open ran also asks to stop
+   * as it goes away, and a stop from an earlier click can arrive late: neither names this open's click, so each is refused
+   * and this open runs on. A stop that could not be sent is refused with the error, and the open runs on; its end is then
+   * its command's own. An open has one stop to send (runCommand's `signal` aborts once), so asking again answers the same.
    */
-  stopOpeningInApp(platform: string, conversationSessionId: string): { stopping: true } | { refusalText: string } {
+  stopOpeningInApp(platform: string, conversationSessionId: string, openInAppClickId: string): { stopping: true } | { refusalText: string } {
     const opening = this.openingsInApp.get(conversationKeyFor(platform, conversationSessionId));
-    if (!opening) return { refusalText: 'Nothing is opening this conversation in its app.' };
-    opening.abort();
+    if (!opening || opening.openInAppClickId !== openInAppClickId) return { refusalText: NOTHING_OPENING_FOR_THAT_CLICK_REFUSAL };
+    // runCommand sends the stop during abort(), and tells runOpenInApp's onStopNotSent before abort() returns when it could not.
+    opening.stop.abort();
+    if (opening.stopNotSent) {
+      logger.error('WORKER', 'Conversation open in its app stop could not be sent: its command runs on', { platform, conversationSessionId }, opening.stopNotSent);
+      const { toolName } = CONTINUATION_TOOLS[opening.platform];
+      return {
+        refusalText: `The stop did not reach ${toolName} (${opening.stopNotSent.message}), so it is still opening this conversation in the ${CONVERSATION_APP_NAMES[opening.platform]} app.`,
+      };
+    }
     logger.info('WORKER', 'Conversation open in its app stop requested: the page that asked is going away', { platform, conversationSessionId });
     return { stopping: true };
   }
 
-  private async runOpenInApp(
-    platform: PlatformWithItsOwnApp,
-    conversationSessionId: string,
-    runsInFolder: string,
-    stopRequested: AbortSignal,
-  ): Promise<OpenedInAppOrRefusal> {
+  private async runOpenInApp(opening: OpeningInApp, runsInFolder: string): Promise<OpenedInAppOrRefusal> {
+    const { platform, conversationSessionId } = opening;
     const tool = CONTINUATION_TOOLS[platform];
     const didNotOpen = `${tool.toolName} could not open this conversation in the ${CONVERSATION_APP_NAMES[platform]} app`;
     const agent = await this.dependencies.detectAgent(tool.agentId);
     // What the check found, in its own words, as for a turn (start). A login it could not confirm is left to the CLI.
     if (!agent.path) return { refusalText: `${didNotOpen} (${agent.reason}).` };
-    const stoppedSentence = `${didNotOpen}: the page that asked went away, so it was stopped.`;
-    if (stopRequested.aborted) {
-      logger.info('WORKER', 'Conversation open in its app not started: the page that asked went away while the CLI was checked', { platform, conversationSessionId });
-      return { refusalText: stoppedSentence };
+    // Read once a stop has come: close sends it as the worker shuts down, and the page as it goes away.
+    const stoppedSentence = () => this.workerIsShuttingDown
+      ? `${didNotOpen}: the worker is shutting down, so it was stopped.`
+      : `${didNotOpen}: the page that asked went away, so it was stopped.`;
+    if (opening.stop.signal.aborted) {
+      logger.info('WORKER', 'Conversation open in its app not started: a stop came while the CLI was checked', {
+        platform, conversationSessionId, workerIsShuttingDown: this.workerIsShuttingDown,
+      });
+      return { refusalText: stoppedSentence() };
     }
 
     const scriptArguments = ['-q', '/dev/null', agent.path, ...OPEN_IN_APP_ARGUMENTS[platform](conversationSessionId)];
     // Nothing is written to its stdin: runCommand gives a command no stdin when it has no input. The stop is SIGTERM to
     // script's process group: the open starts no turn, so unlike a turn's Stop (SIGINT) it leaves nothing unfinished.
-    const result = await runCommand(this.dependencies.spawnImpl, PSEUDO_TERMINAL_COMMAND, scriptArguments, {
-      cwd: runsInFolder, env: { ...this.childEnvironment(), TERM: 'dumb' }, signal: stopRequested, killSignal: 'SIGTERM',
+    const result = await this.runCommandKeptInRegistry('conversation-open-in-app', PSEUDO_TERMINAL_COMMAND, scriptArguments, {
+      cwd: runsInFolder, env: { ...this.childEnvironment(), TERM: 'dumb' }, signal: opening.stop.signal, killSignal: 'SIGTERM',
+      // stopOpeningInApp and close read it as soon as their abort returns, so a stop that could not be sent never throws.
+      onStopNotSent: error => { opening.stopNotSent = error; },
     });
+    // A stop counts once it was sent: an open that a stop never reached ended by itself.
+    const stopWasSent = opening.stop.signal.aborted && opening.stopNotSent === undefined;
     // What the CLI printed on stdout and stderr arrives together on script's stdout; script's stderr holds script's own.
     const printedText = wholeText(printedThroughPseudoTerminal(result.stdout), result.stderr);
     logger.info('WORKER', 'Conversation open in its app ended', {
       platform, conversationSessionId, ranInFolder: runsInFolder, exitCode: result.exitCode, spawnError: result.spawnError?.message,
-      stopRequested: stopRequested.aborted, printedText,
+      stopWasSent, printedText,
     });
     if (result.spawnError) return { refusalText: `${didNotOpen}: ${result.spawnError.message}` };
     // An exit 0 opened it, even when a stop came after the command had finished.
     if (result.exitCode === 0) return { opened: true, printedText: printedText === '' ? null : printedText };
-    if (stopRequested.aborted) return { refusalText: wholeText(stoppedSentence, printedText) };
+    if (stopWasSent) return { refusalText: wholeText(stoppedSentence(), printedText) };
     return { refusalText: wholeText(`${didNotOpen}. ${exitedSentence(tool.toolName, result.exitCode)}`, printedText) };
+  }
+
+  /**
+   * runCommand, with the command kept in the worker's process registry (processRegistry) while it runs, as `commandType`
+   * and with the process group its stop goes to (CommandOptions.onSpawn), like every other process the worker starts. The
+   * worker's shutdown cascade then stops it and waits for it to exit, even when the stop close sent did not end it.
+   */
+  private async runCommandKeptInRegistry(commandType: RegisteredCommandType, command: string, args: string[], options: CommandOptions): Promise<CommandResult> {
+    const registry = this.dependencies.processRegistry;
+    const registered: Array<{ id: string; pid: number }> = [];
+    const result = await runCommand(this.dependencies.spawnImpl, command, args, {
+      ...options,
+      onSpawn: ({ pid, processGroupId }) => {
+        if (!registry) return;
+        const id = `${commandType}:${pid}`;
+        registry.register(id, { pid, type: commandType, startedAt: new Date().toISOString(), ...(processGroupId === undefined ? {} : { pgid: processGroupId }) });
+        registered.push({ id, pid });
+      },
+    });
+    // The command has exited: only its own record goes, even if its pid has been given to another process since.
+    for (const { id, pid } of registered) registry?.unregister(id, pid);
+    return result;
   }
 
   /**
@@ -593,26 +730,27 @@ export class ConversationContinuationRunner {
     executablePath: string,
     runningTurnController: AbortController,
   ): Promise<void> {
-    const result = await runCommand(this.dependencies.spawnImpl, executablePath, tool.argumentsFor(exchange.conversationSessionId), {
+    const result = await this.runCommandKeptInRegistry('conversation-turn', executablePath, tool.argumentsFor(exchange.conversationSessionId), {
       cwd: exchange.ranInFolder,
       env: this.childEnvironment(),
       input: exchange.ownerMessage,
       signal: runningTurnController.signal,
       // SIGINT ends the turn; SIGTERM would leave it unfinished (headless docs, "Stop a run with SIGTERM").
       killSignal: 'SIGINT',
-      // stop() reads it as soon as its abort returns.
+      // stop() and close() read it as soon as their abort returns.
       onStopNotSent: error => { conversation.runningTurnStopNotSent = error; },
     });
-    // A stop counts once it was sent: a turn that a pressed Stop never reached ended by itself.
+    // A stop counts once it was sent: a turn that a stop never reached ended by itself.
     const stopWasSent = runningTurnController.signal.aborted && conversation.runningTurnStopNotSent === undefined;
     const ended: ConversationContinuation = {
       ...exchange,
-      ...turnOutcome(tool, result, stopWasSent),
+      ...turnOutcome(tool, result, stopWasSent ? conversation.runningTurnStoppedBy ?? 'owner' : null),
       endedAtEpochMs: Date.now(),
     };
     conversation.exchanges = conversation.exchanges.map(candidate => candidate.exchangeId === ended.exchangeId ? ended : candidate);
     delete conversation.runningTurnController;
     delete conversation.runningTurnStopNotSent;
+    delete conversation.runningTurnStoppedBy;
     logger.info('WORKER', 'Conversation continuation ended', {
       platform: ended.platform, conversationSessionId: ended.conversationSessionId, exchangeId: ended.exchangeId, state: ended.state,
     });

@@ -10,6 +10,7 @@ import { scratchDir } from '../../helpers/scratch-dir.js';
 import { removeTempDir } from '../../helpers/temp-dir.js';
 import type { UsableAgent, UsableAgentId } from '../../../src/services/agent-runner/detect.js';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
+import type { ManagedProcessInfo } from '../../../src/supervisor/process-registry.js';
 import {
   ConversationContinuationRunner,
   readClaudeResult,
@@ -102,6 +103,9 @@ const CLAUDE_PATH = '/usr/local/bin/claude';
 const CODEX_PATH = '/usr/local/bin/codex';
 const CLAUDE_SESSION = '0f8e2a4c-1b3d-4e5f-8a9b-0c1d2e3f4a5b';
 const CODEX_SESSION = '019a2b3c-4d5e-7f60-8a1b-2c3d4e5f6a7b';
+/** Ids the page makes for clicks on "Open in Claude" (crypto.randomUUID): one per click. */
+const FIRST_CLICK = '1b2c3d4e-5f60-4a7b-8c9d-0e1f2a3b4c5d';
+const SECOND_CLICK = '2c3d4e5f-6071-4b8c-9dae-1f2a3b4c5d6e';
 const WORKER_ENVIRONMENT = { PATH: '/usr/bin:/bin', HOME: '/home/tester', CLAUDE_MEM_INTERNAL: '1', CLAUDECODE: '1' };
 
 /** What detection answers about each CLI on the test's computer: Claude Code and Codex installed and logged in. */
@@ -697,7 +701,7 @@ describe('opening a conversation in its app', () => {
   const DID_NOT_OPEN = 'Claude Code could not open this conversation in the Claude app.';
   const STILL_OPENING = 'Claude Code is still opening this conversation in the Claude app from an earlier click. Wait for it to finish, or reload the page you clicked it in to stop it.';
   const STOPPED = 'Claude Code could not open this conversation in the Claude app: the page that asked went away, so it was stopped.';
-  const NOTHING_OPENING = 'Nothing is opening this conversation in its app.';
+  const NOTHING_OPENING = 'Nothing that click started is still opening this conversation in its app.';
   const ONLY_ON_MACOS = 'Claude Code opens a conversation in the Claude app from here only on macOS. Copy the resume command instead.';
   /** The open checks the CLI's install first, in promise jobs, and spawns once they have run: this waits for them. */
   const afterPromiseJobs = () => new Promise<void>(resolve => setImmediate(resolve));
@@ -883,22 +887,22 @@ describe('opening a conversation in its app', () => {
 
   it('stops the command when the page that asked goes away, and then the conversation can be opened again', async () => {
     const { runner, calls } = harnessIn(realFolder());
-    expect(runner.stopOpeningInApp('claude', CLAUDE_SESSION)).toEqual({ refusalText: NOTHING_OPENING });
-    const opening = runner.openInApp('claude', CLAUDE_SESSION);
+    expect(runner.stopOpeningInApp('claude', CLAUDE_SESSION, FIRST_CLICK)).toEqual({ refusalText: NOTHING_OPENING });
+    const opening = runner.openInApp('claude', CLAUDE_SESSION, FIRST_CLICK);
     await afterPromiseJobs();
     expect(calls).toHaveLength(1);
     expect(calls[0].stops).toEqual([]);
-    expect(runner.stopOpeningInApp('claude', CLAUDE_SESSION)).toEqual({ stopping: true });
+    expect(runner.stopOpeningInApp('claude', CLAUDE_SESSION, FIRST_CLICK)).toEqual({ stopping: true });
     // SIGTERM to script's process group: the open starts no turn, so nothing is left unfinished.
     expect(calls[0].stops).toEqual([stopSentToTheCommand('SIGTERM')]);
     // Still running until it has exited: a click meanwhile is refused.
-    expect(await runner.openInApp('claude', CLAUDE_SESSION)).toEqual({ refusalText: STILL_OPENING });
+    expect(await runner.openInApp('claude', CLAUDE_SESSION, SECOND_CLICK)).toEqual({ refusalText: STILL_OPENING });
     // script ends by the signal, which ends the CLI behind its terminal (the real-process test shows it).
     calls[0].child.exit(null, { stdout: '^D\b\b' });
     expect(await opening).toEqual({ refusalText: STOPPED });
-    expect(runner.stopOpeningInApp('claude', CLAUDE_SESSION)).toEqual({ refusalText: NOTHING_OPENING });
+    expect(runner.stopOpeningInApp('claude', CLAUDE_SESSION, FIRST_CLICK)).toEqual({ refusalText: NOTHING_OPENING });
 
-    const again = runner.openInApp('claude', CLAUDE_SESSION);
+    const again = runner.openInApp('claude', CLAUDE_SESSION, SECOND_CLICK);
     await afterPromiseJobs();
     expect(calls).toHaveLength(2);
     calls[1].child.exit(0, { stdout: throughTerminal(`${OPENED_LINE}\n`) });
@@ -908,11 +912,69 @@ describe('opening a conversation in its app', () => {
   it("starts nothing when the page that asked goes away while the CLI's install is checked", async () => {
     let finishDetection!: (agent: UsableAgent) => void;
     const { runner, calls } = harnessIn(realFolder(), { detectAgent: () => new Promise<UsableAgent>(resolve => { finishDetection = resolve; }) });
-    const opening = runner.openInApp('claude', CLAUDE_SESSION);
-    expect(runner.stopOpeningInApp('claude', CLAUDE_SESSION)).toEqual({ stopping: true });
+    const opening = runner.openInApp('claude', CLAUDE_SESSION, FIRST_CLICK);
+    expect(runner.stopOpeningInApp('claude', CLAUDE_SESSION, FIRST_CLICK)).toEqual({ stopping: true });
     finishDetection(usableAgent('claude-code'));
     expect(await opening).toEqual({ refusalText: STOPPED });
     expect(calls).toHaveLength(0);
+  });
+
+  it("does not stop an open for the stop another tab's click asks for: refused while this open ran, that tab closed before its refusal came", async () => {
+    const { runner, calls } = harnessIn(realFolder());
+    const openedFromTabA = runner.openInApp('claude', CLAUDE_SESSION, FIRST_CLICK);
+    await afterPromiseJobs();
+    expect(calls).toHaveLength(1);
+    expect(await runner.openInApp('claude', CLAUDE_SESSION, SECOND_CLICK)).toEqual({ refusalText: STILL_OPENING });
+    // Tab B's page asks to stop its own click's open as it goes away (local-source.ts).
+    expect(runner.stopOpeningInApp('claude', CLAUDE_SESSION, SECOND_CLICK)).toEqual({ refusalText: NOTHING_OPENING });
+    expect(calls[0].stops).toEqual([]);
+    calls[0].child.exit(0, { stdout: throughTerminal(`${OPENED_LINE}\n`) });
+    expect(await openedFromTabA).toEqual({ opened: true, printedText: OPENED_LINE });
+    expect(calls).toHaveLength(1);
+  });
+
+  it('does not stop a newer open for a stop from an earlier click that arrives late, and stops it for its own click', async () => {
+    const { runner, calls } = harnessIn(realFolder());
+    const earlier = runner.openInApp('claude', CLAUDE_SESSION, FIRST_CLICK);
+    await afterPromiseJobs();
+    calls[0].child.exit(0, { stdout: throughTerminal(`${OPENED_LINE}\n`) });
+    expect(await earlier).toEqual({ opened: true, printedText: OPENED_LINE });
+    const newer = runner.openInApp('claude', CLAUDE_SESSION, SECOND_CLICK);
+    await afterPromiseJobs();
+    expect(calls).toHaveLength(2);
+    // The page of the earlier click went away as that open ended, and its stop comes now.
+    expect(runner.stopOpeningInApp('claude', CLAUDE_SESSION, FIRST_CLICK)).toEqual({ refusalText: NOTHING_OPENING });
+    expect(calls[1].stops).toEqual([]);
+    expect(runner.stopOpeningInApp('claude', CLAUDE_SESSION, SECOND_CLICK)).toEqual({ stopping: true });
+    expect(calls[1].stops).toEqual([stopSentToTheCommand('SIGTERM')]);
+    calls[1].child.exit(null);
+    expect(await newer).toEqual({ refusalText: STOPPED });
+  });
+
+  itOnMacOsAndLinux('says so, with the error, when the stop for an open could not be sent, throws nothing, and the open runs on; its end is then its own', async () => {
+    const loggedError = spyOn(logger, 'error');
+    try {
+      const { runner, calls } = harnessIn(realFolder());
+      const opening = runner.openInApp('claude', CLAUDE_SESSION, FIRST_CLICK);
+      await afterPromiseJobs();
+      calls[0].stopCannotBeSent = stopNotPermitted();
+      const stopNotSent = { refusalText: 'The stop did not reach Claude Code (kill EPERM), so it is still opening this conversation in the Claude app.' };
+      expect(runner.stopOpeningInApp('claude', CLAUDE_SESSION, FIRST_CLICK)).toEqual(stopNotSent);
+      expect(calls[0].stops).toEqual([]);
+      const logged = loggedError.mock.calls.filter(([, message]) => message === 'Conversation open in its app stop could not be sent: its command runs on');
+      expect(logged).toHaveLength(1);
+      expect(logged[0][2]).toEqual({ platform: 'claude', conversationSessionId: CLAUDE_SESSION });
+      expect(logged[0][3]).toBe(calls[0].stopCannotBeSent);
+      // Asking again answers the same, and a click meanwhile is still refused: the open is still running.
+      expect(runner.stopOpeningInApp('claude', CLAUDE_SESSION, FIRST_CLICK)).toEqual(stopNotSent);
+      expect(await runner.openInApp('claude', CLAUDE_SESSION, SECOND_CLICK)).toEqual({ refusalText: STILL_OPENING });
+      // The stop never reached it, so its end is its own: here it opened the conversation.
+      calls[0].child.exit(0, { stdout: throughTerminal(`${OPENED_LINE}\n`) });
+      expect(await opening).toEqual({ opened: true, printedText: OPENED_LINE });
+      expect(calls).toHaveLength(1);
+    } finally {
+      loggedError.mockRestore();
+    }
   });
 
   it('refuses a Codex conversation without checking the CLI or running anything: Codex documents no way to open one in its app', async () => {
@@ -992,5 +1054,96 @@ describe('opening a conversation in its app', () => {
     expect(await nextChange()).toMatchObject({ exchangeId: running.exchangeId, state: 'failed' });
     await runEverythingThatWouldHappenLater();
     expect(calls).toHaveLength(3);
+  });
+});
+
+describe('when the worker shuts down', () => {
+  const SHUTTING_DOWN = 'The worker is shutting down, so this message was not sent. Send it again once My Work reconnects.';
+  const STOPPED_BY_THE_WORKER = 'The worker shut down, so it stopped this turn.';
+  const NOT_OPENED_WHILE_SHUTTING_DOWN = 'Claude Code did not open this conversation in the Claude app: the worker is shutting down.';
+  const OPEN_STOPPED_BY_THE_WORKER = 'Claude Code could not open this conversation in the Claude app: the worker is shutting down, so it was stopped.';
+  const afterPromiseJobs = () => new Promise<void>(resolve => setImmediate(resolve));
+
+  it("sends each running turn Stop's own stop and each open its stop, refuses anything new, and runs nothing again", async () => {
+    useFakeClock();
+    const { runner, calls, nextChange } = harnessIn(realFolder());
+    const claudeTurn = startedExchange(await runner.start('claude', CLAUDE_SESSION, 'Count slowly to 200, one number per line.'));
+    const codexTurn = startedExchange(await runner.start('codex', CODEX_SESSION, 'Count slowly to 200, one number per line.'));
+    const opening = runner.openInApp('claude', CLAUDE_SESSION, FIRST_CLICK);
+    await afterPromiseJobs();
+    expect(calls).toHaveLength(3);
+
+    // What WorkViewRoutes.close does, the first step of WorkerService.shutdown.
+    runner.close();
+    expect(calls[0].stops).toEqual([stopSentToTheCommand('SIGINT')]);
+    expect(calls[1].stops).toEqual([stopSentToTheCommand('SIGINT')]);
+    expect(calls[2].stops).toEqual([stopSentToTheCommand('SIGTERM')]);
+    // Nothing new starts, in a conversation with a turn running or in one without.
+    expect(await runner.start('claude', CLAUDE_SESSION, 'next')).toEqual({ refusalText: SHUTTING_DOWN });
+    expect(await runner.start('codex', '019a2b3c-4d5e-7f60-8a1b-2c3d4e5f6a7c', 'next')).toEqual({ refusalText: SHUTTING_DOWN });
+    expect(await runner.openInApp('claude', CLAUDE_SESSION, SECOND_CLICK)).toEqual({ refusalText: NOT_OPENED_WHILE_SHUTTING_DOWN });
+    expect(calls).toHaveLength(3);
+
+    // Each ends by how its command ended, saying the worker stopped it. As Claude Code did when stopped while one of its
+    // tools ran (real run): it printed nothing and exited 0.
+    calls[0].child.exit(0);
+    expect(await nextChange()).toMatchObject({ exchangeId: claudeTurn.exchangeId, state: 'failed', failureText: STOPPED_BY_THE_WORKER });
+    calls[1].child.exit(1, { stderr: 'turn interrupted\n' });
+    expect(await nextChange()).toMatchObject({ exchangeId: codexTurn.exchangeId, state: 'failed', failureText: `${STOPPED_BY_THE_WORKER}\n\nturn interrupted` });
+    calls[2].child.exit(null);
+    expect(await opening).toEqual({ refusalText: OPEN_STOPPED_BY_THE_WORKER });
+    await runEverythingThatWouldHappenLater();
+    expect(calls).toHaveLength(3);
+  });
+
+  it('starts nothing for a Send or an Open whose CLI check was still running when the worker began to shut down', async () => {
+    const detections: Array<() => void> = [];
+    const { runner, calls } = harnessIn(realFolder(), {
+      detectAgent: agentId => new Promise<UsableAgent>(resolve => { detections.push(() => resolve(usableAgent(agentId))); }),
+    });
+    const starting = runner.start('claude', CLAUDE_SESSION, 'Which word?');
+    const opening = runner.openInApp('claude', CLAUDE_SESSION, FIRST_CLICK);
+    runner.close();
+    for (const finishDetection of detections) finishDetection();
+    expect(await starting).toEqual({ refusalText: SHUTTING_DOWN });
+    expect(await opening).toEqual({ refusalText: OPEN_STOPPED_BY_THE_WORKER });
+    expect(calls).toHaveLength(0);
+    expect(runner.exchanges('claude', CLAUDE_SESSION)).toEqual([]);
+  });
+
+  it("sends no second stop to a turn the owner's Stop reached, which still says the owner stopped it", async () => {
+    const { runner, calls, nextChange } = harnessIn(realFolder());
+    startedExchange(await runner.start('claude', CLAUDE_SESSION, 'Count slowly to 200, one number per line.'));
+    expect(runner.stop('claude', CLAUDE_SESSION)).toHaveProperty('exchange');
+    runner.close();
+    expect(calls[0].stops).toEqual([stopSentToTheCommand('SIGINT')]);
+    calls[0].child.exit(0);
+    expect(await nextChange()).toMatchObject({ state: 'failed', failureText: 'You stopped this turn.' });
+  });
+
+  it('keeps each turn and open in the process registry while it runs, with the process group its stop goes to, so the shutdown cascade can stop it', async () => {
+    const records = new Map<string, ManagedProcessInfo>();
+    const processRegistry = {
+      register: (id: string, processInfo: ManagedProcessInfo) => { records.set(id, processInfo); },
+      unregister: (id: string, expectedPid?: number) => { if (records.get(id)?.pid === expectedPid) records.delete(id); },
+    };
+    const { runner, calls, nextChange } = harnessIn(realFolder(), { processRegistry });
+    startedExchange(await runner.start('claude', CLAUDE_SESSION, 'Which word?'));
+    const opening = runner.openInApp('claude', CLAUDE_SESSION, FIRST_CLICK);
+    await afterPromiseJobs();
+    // runCommand makes a stoppable command lead a process group of its own on macOS and Linux (CommandOptions.signal).
+    const recordOf = (call: SpawnCall, type: string) => ({
+      pid: call.child.pid, type, startedAt: expect.any(String), ...(process.platform === 'win32' ? {} : { pgid: call.child.pid }),
+    });
+    expect([...records.entries()]).toEqual([
+      [`conversation-turn:${calls[0].child.pid}`, recordOf(calls[0], 'conversation-turn')],
+      [`conversation-open-in-app:${calls[1].child.pid}`, recordOf(calls[1], 'conversation-open-in-app')],
+    ]);
+    calls[0].child.exit(0, { stdout: claudeVerboseOutput({}) });
+    await nextChange();
+    expect([...records.keys()]).toEqual([`conversation-open-in-app:${calls[1].child.pid}`]);
+    calls[1].child.exit(0);
+    await opening;
+    expect(records.size).toBe(0);
   });
 });

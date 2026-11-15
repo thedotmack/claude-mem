@@ -98,6 +98,13 @@ export interface CommandOptions {
    * runtime reports it as an uncaught exception.
    */
   onStopNotSent?: (error: Error) => void;
+  /**
+   * Told the command's process id once it has started, with the process group a stop goes to: its own pid on macOS and
+   * Linux when `signal` is given (see CommandOptions.signal), and undefined otherwise. Not told when it never started.
+   * The conversation runner keeps a command in the worker's process registry with them while it runs, so the worker's
+   * shutdown stops it and waits for it like every other process the worker starts.
+   */
+  onSpawn?: (started: { pid: number; processGroupId: number | undefined }) => void;
 }
 
 /** The spawn options that let `signal` stop the command (see CommandOptions.signal), and none without a signal. */
@@ -130,6 +137,8 @@ export function runCommand(first: typeof spawn | string, second: string | string
       windowsHide: true,
       stdio: [options.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
     });
+    // A group's id is its leader's pid, and `detached` made the command one (stopOptionsFor).
+    if (child.pid !== undefined) options.onSpawn?.({ pid: child.pid, processGroupId: stopOptions.detached ? child.pid : undefined });
     child.stdout?.setEncoding('utf8');
     child.stderr?.setEncoding('utf8');
     let stdout = '';
