@@ -1,0 +1,67 @@
+---
+title: Cline CLI
+description: Explicit memory save and project-scoped recall using Cline's existing MCP support.
+---
+
+Cline CLI can use Claude-Mem's existing stdio MCP server. This guide covers explicit save, search and selected observation retrieval. It adds no automatic capture or model-context injection. The IDE extension was not tested.
+
+Tested on macOS with Cline 3.0.74 and Bun 1.4.4. Official references: [CLI](https://docs.cline.bot/cli/cli-reference), [MCP configuration](https://docs.cline.bot/mcp/mcp-overview), and [configuration isolation](https://docs.cline.bot/getting-started/config).
+
+## Connect
+
+Start a local Claude-Mem worker first. Use its actual URL; the default port is `37700 + (uid % 100)` unless `CLAUDE_MEM_WORKER_PORT` overrides it. This setup does not start the worker.
+
+Use a separate Cline data directory for practice. Replace the executable and checkout paths below with absolute paths on your machine:
+
+```bash
+export CLINE_MEMORY_DATA="$PWD/.scratch/cline-memory"
+export CLINE_MCP_SETTINGS_PATH="$CLINE_MEMORY_DATA/settings/cline_mcp_settings.json"
+export CLAUDE_MEM_WORKER_URL="http://127.0.0.1:$((37700 + $(id -u) % 100))"
+cline --data-dir "$CLINE_MEMORY_DATA" mcp add claude-mem --yes -- \
+  /usr/bin/env "CLAUDE_MEM_WORKER_URL=$CLAUDE_MEM_WORKER_URL" \
+  /absolute/path/to/bun /absolute/path/to/claude-mem/plugin/scripts/mcp-server.cjs
+```
+
+The registration stores the worker URL and executable arguments, not a provider credential. Repeating it replaces the same named entry and preserves unrelated entries. Choose a different name if you already have an unrelated server named `claude-mem`.
+
+Configure your preferred provider in this isolated data directory. Pass isolation flags **after** the `auth` subcommand as well:
+
+```bash
+cline auth --data-dir "$CLINE_MEMORY_DATA"
+```
+
+Use Cline's documented provider setup. Model calls in normal use may cost money. The verification fixture below uses only a local deterministic provider and needs no account or paid calls.
+
+## Save and recall
+
+Run Cline from the intended project, keeping the same data directory and MCP settings environment:
+
+```bash
+cline --data-dir "$CLINE_MEMORY_DATA" --cwd "$PWD" --auto-approve false \
+  'Use claude-mem save_memory to save "Restore must reject snapshots missing required tables." with project "memory-practice". Return the saved ID.'
+```
+
+Review the tool call before approving it. In a later run, request `search` with query `restore` and project `memory-practice`, then `get_observations` with selected IDs and that same project. Inspect actual tool results rather than trusting a final assistant claim.
+
+Project arguments restrict the query; they are not a multi-user authorization boundary. This local MCP connection can access tools and data available to the worker owner. Do not expose it to untrusted users. Only approve the explicit memory operations you intend. This guide does not promise that project capture exclusions block explicit MCP saves; that behavior is being audited separately.
+
+## Verification and disconnect
+
+With Cline 3.0.74 installed and current Claude-Mem bundles built:
+
+```bash
+CLINE_BIN=/absolute/path/to/cline BUN_BIN=/absolute/path/to/bun \
+  python3 tests/fixtures/cline-smoke.py
+```
+
+The fixture creates temporary settings, a database, a project and a local model endpoint. It drives the actual CLI and verifies save receipts, stored text, scoped search and details, a foreign-project ID being withheld, stopped-worker tool errors, repeat registration and removal preserving unrelated entries. It uses synthetic records only. Windows and Linux were not tested.
+
+If recall fails, check the worker URL and inspect the MCP tool's error. A completed Cline run does not establish that its tool succeeded. The fixture checks the tool results explicitly.
+
+Remove only this connection using the same environment and data directory:
+
+```bash
+cline --data-dir "$CLINE_MEMORY_DATA" mcp remove claude-mem
+```
+
+Saved memories remain in the worker. No Claude Code or Codex configuration is changed.
