@@ -363,13 +363,16 @@ function reviewList(value, max, label, options) {
 }
 
 /** On the retry, a preference missing its words or the owner's quote is dropped: neither can be shortened into being,
- * and the review's state and summary are saved without it. */
+ * and the review's state and summary are saved without it. Each drop is named in `droppedPreferences`, apart from the
+ * trimmed fields. */
 function quotedPreferences(list, options) {
   if (!options.coerce || !Array.isArray(list)) return list;
   const said = (value) => typeof value === 'string' && value.trim() !== '';
-  const kept = list.filter((preference) => said(preference?.preference) && said(preference?.quote));
-  if (kept.length < list.length) options.coercedFields.add('preferences');
-  return kept;
+  return list.filter((preference, index) => {
+    if (said(preference?.preference) && said(preference?.quote)) return true;
+    options.droppedPreferences.add(`preferences[${index}]`);
+    return false;
+  });
 }
 
 // Models sometimes answer one citation as a plain string instead of a list (Oct 25: a review's
@@ -409,7 +412,7 @@ export function validateOutcome(outcome, options = {}) {
 /** Progress reviews are agent assessments; keep them bounded and dated. */
 export function validateProgress(entry, knownGroups, options = {}) {
   if (!entry || typeof entry !== 'object') throw new TypeError('Progress must be an object.');
-  options = { coerce: false, coercedFields: new Set(), ...options };
+  options = { coerce: false, coercedFields: new Set(), droppedPreferences: new Set(), ...options };
   const text = (value, max, label, optional = false) => reviewText(value, max, label, { ...options, optional });
   if (!knownGroups[entry.groupId]) throw new TypeError(`Unknown group ${entry.groupId}.`);
   const basis = entry.reviewBasis;
@@ -1098,15 +1101,16 @@ export function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now
   }
   if (command === 'record-progress') {
     const ledger = readLedger(dir);
-    const coercedFields = new Set();
-    const reviewed = validateProgress(readInput(args[0] ?? '-'), ledger.groups.groups, { coerce: coerceProgress, coercedFields });
+    const coercedFields = new Set(), droppedPreferences = new Set();
+    const reviewed = validateProgress(readInput(args[0] ?? '-'), ledger.groups.groups, { coerce: coerceProgress, coercedFields, droppedPreferences });
     const checkedAt = iso(now);
     const previous = ledger.progress[reviewed.groupId];
     // The story is retold only from reviews whose facts moved; reworded prose and review timestamps are not news.
     const unchanged = previous && JSON.stringify(storyFacts(previous)) === JSON.stringify(storyFacts(reviewed));
     const entry = { ...reviewed, checkedAt, changedAt: unchanged ? previous.changedAt ?? previous.checkedAt : checkedAt, readings: appendReading(ledger.progress[reviewed.groupId], { at: checkedAt, percent: reviewed.percent }) };
     writeJsonAtomic(join(dir, 'progress', `${entry.groupId}.json`), entry);
-    return print({ recorded: entry.groupId, state: entry.state, percent: entry.percent, readings: entry.readings.length, ...(coercedFields.size ? { coercedFields: [...coercedFields] } : {}) });
+    return print({ recorded: entry.groupId, state: entry.state, percent: entry.percent, readings: entry.readings.length, ...(coercedFields.size ? { coercedFields: [...coercedFields] } : {}),
+      ...(droppedPreferences.size ? { droppedPreferences: [...droppedPreferences] } : {}) });
   }
   if (command === 'story-input') {
     const { groups, progress, story } = readLedger(dir);

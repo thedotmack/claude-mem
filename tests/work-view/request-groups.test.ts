@@ -142,10 +142,12 @@ describe('overall requests and progress reviews', () => {
   const quoted = { kind: 'directive', preference: 'Short replies.', quote: 'keep it short', at: null };
   const preferences = [quoted, { kind: 'directive', preference: 'Tests first.', quote: '', at: null }, { kind: 'directive', preference: 'Small commits.', at: null }, { kind: 'directive', preference: ' ', quote: 'something', at: null }];
   expect(() => validateProgress({ ...base, preferences }, groups)).toThrow('preferences[1].quote must be 1–300 characters.');
-  const coercedFields = new Set<string>();
-  const review = validateProgress({ ...base, preferences }, groups, { coerce: true, coercedFields }) as any;
+  const coercedFields = new Set<string>(), droppedPreferences = new Set<string>();
+  const review = validateProgress({ ...base, preferences }, groups, { coerce: true, coercedFields, droppedPreferences }) as any;
   expect(review.preferences).toEqual([quoted]);
-  expect([...coercedFields]).toEqual(['preferences']);
+  // A drop is not a trim: nothing was shortened.
+  expect([...droppedPreferences]).toEqual(['preferences[1]', 'preferences[2]', 'preferences[3]']);
+  expect([...coercedFields]).toEqual([]);
   });
 
   it('every length the skill asks for is the target a refusal names', () => {

@@ -427,6 +427,18 @@ describe('refresh task', () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
+  it('a retry still carrying a preference without a quote saves the review without it and says so', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-unquoted-'));
+    try {
+      const review = (show: any) => ({ groupId: show.groupId, state: 'in-progress', percent: 40, summary: 'Cards are being built.', reviewBasis: show.reviewBasis,
+        preferences: [{ kind: 'directive', preference: 'Short replies.', quote: 'keep it short', at: null }, { kind: 'directive', preference: 'Tests first.', quote: '', at: null }] });
+      const summary = await runRefreshWithReviewAnswers(dir, show => review(show));
+      expect(summary).toBe('1 new conversations grouped, 1 requests reviewed (1 preferences without a quote or text dropped after retry), 1 requests placed, story written.');
+      const [saved] = Object.values(readLedger(dir).progress) as any[];
+      expect(saved.preferences.map((preference: any) => preference.preference)).toEqual(['Short replies.']);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it('a retry still missing reviewBasis fails the run naming the group and saves no review', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-basis-'));
     try {
@@ -827,32 +839,60 @@ describe('grouping repair', () => {
 });
 
 describe('focus proposal repair', () => {
+  /** Requests a–d, one conversation each, and a refresh whose focus step answers with `focusAnswer`. */
+  function refreshWithFocusAnswers(dir: string, database: Database, focusAnswer: (prompt: string) => string) {
+    for (const [index, session] of ['b', 'c', 'd'].entries()) {
+      database.prepare('INSERT INTO sdk_sessions VALUES (?, ?, ?, ?, ?, ?, ?)').run(index + 2, 'claude', session, `m${index + 2}`, 'repo/tree', `Build feature ${session}`, NOW - 2 * DAY);
+      database.prepare('INSERT INTO user_prompts (session_db_id, prompt_number, prompt_text, created_at_epoch) VALUES (?, ?, ?, ?)').run(index + 2, 1, `Build feature ${session}`, NOW - 2 * DAY);
+    }
+    const decisions = join(dir, 'decisions.json');
+    writeFileSync(decisions, JSON.stringify({ groups: ['a', 'b', 'c', 'd'].map(session => ({ title: `Request ${session}`, conversations: [key(session)] })) }));
+    runCli(['apply', decisions], { dir, database, now: NOW, print: () => {} });
+    const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: 4, ungrouped: 0, goalsStale: false, unplaced: 4, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, saveFocus: focusWriter(database).save });
+    return task.run(async (prompt: string) => {
+      if (prompt.includes('Do only section 2')) return reviewAll(prompt);
+      if (prompt.includes('Do only section 3')) return focusAnswer(prompt);
+      return JSON.stringify({ narrative: 'Started.', preferences: [] });
+    }, 'api');
+  }
+  const proposal = (kind: string, anchors: string[], name: string) => ({ kind, name, goal: 'The release looks finished.', about: 'Fixes.', anchors, sameAs: null, evidence: 'Steps of the release.' });
+
   it('a retry that still proposes an area the check refuses saves the placements and the other proposals without it', async () => {
     const dir = scratchDir('auto-refresh-focus-proposal-repair');
     const database = fixtureDatabase();
     try {
-      for (const [index, session] of ['b', 'c', 'd'].entries()) {
-        database.prepare('INSERT INTO sdk_sessions VALUES (?, ?, ?, ?, ?, ?, ?)').run(index + 2, 'claude', session, `m${index + 2}`, 'repo/tree', `Build feature ${session}`, NOW - 2 * DAY);
-        database.prepare('INSERT INTO user_prompts (session_db_id, prompt_number, prompt_text, created_at_epoch) VALUES (?, ?, ?, ?)').run(index + 2, 1, `Build feature ${session}`, NOW - 2 * DAY);
-      }
-      const decisions = join(dir, 'decisions.json');
-      writeFileSync(decisions, JSON.stringify({ groups: ['a', 'b', 'c', 'd'].map(session => ({ title: `Request ${session}`, conversations: [key(session)] })) }));
-      runCli(['apply', decisions], { dir, database, now: NOW, print: () => {} });
-      const proposal = (anchors: string[], name: string) => ({ kind: 'new', name, goal: 'The release looks finished.', about: 'Fixes.', anchors, sameAs: null, evidence: 'Steps of the release.' });
       let otherAnswers = 0;
-      const ask = async (prompt: string) => {
-        if (prompt.includes('Do only section 2')) return reviewAll(prompt);
-        // Twice the same answer: a "new" area holding one request beside a sound one.
-        if (isOtherPass(prompt)) { otherAnswers++; return JSON.stringify({ placements: [], proposals: [proposal([key('b')], 'Alone'), proposal([key('c'), key('d')], 'Polish')] }); }
-        if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
-        return JSON.stringify({ narrative: 'Started.', preferences: [] });
-      };
-      const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: 4, ungrouped: 0, goalsStale: false, unplaced: 4, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, saveFocus: focusWriter(database).save });
-      expect(await task.run(ask, 'api')).toBe('4 requests reviewed, 4 requests placed, 1 focus areas suggested, 1 refused focus area proposals dropped after retry, story written.');
+      // Twice the same answer: a "new" area holding one request beside a sound one.
+      const result = await refreshWithFocusAnswers(dir, database, prompt => {
+        if (!isOtherPass(prompt)) return everyRequestInOther(prompt);
+        otherAnswers++;
+        return JSON.stringify({ placements: [], proposals: [proposal('new', [key('b')], 'Alone'), proposal('new', [key('c'), key('d')], 'Polish')] });
+      });
+      expect(result).toBe('4 requests reviewed, 4 requests placed, 1 focus areas suggested, 1 refused focus area proposals dropped after retry, story written.');
       expect(otherAnswers).toBe(2);
       const names = readFocus(database, { localDeviceId: '' }).focusAreas.map(area => area.name);
       expect(names).toContain('Polish');
       expect(names).not.toContain('Alone');
+    } finally { database.close(); rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('a retry that still proposes a name the worker refuses (a nav label) saves the placements without it', async () => {
+    const dir = scratchDir('auto-refresh-focus-nav-repair');
+    const database = fixtureDatabase();
+    try {
+      let placeAnswers = 0;
+      // record-focus's check accepts the name; the worker's write refuses it, since "Other" is a nav label.
+      const result = await refreshWithFocusAnswers(dir, database, prompt => {
+        if (isOtherPass(prompt)) return everyRequestInOther(prompt);
+        placeAnswers++;
+        const placed = JSON.parse(everyRequestInOther(prompt));
+        return JSON.stringify({ ...placed, proposals: [proposal('promote', [key('a')], 'Other things')] });
+      });
+      expect(result).toBe('4 requests reviewed, 4 requests placed, 1 refused focus area proposals dropped after retry, story written.');
+      expect(placeAnswers).toBe(2);
+      const focus = readFocus(database, { localDeviceId: '' });
+      expect(focus.focusAreas.map(area => area.name)).not.toContain('Other things');
+      expect(['a', 'b', 'c', 'd'].map(session => focus.focusAreaIdByAnchor.get(key(session)))).toEqual(['other', 'other', 'other', 'other']);
     } finally { database.close(); rmSync(dir, { recursive: true, force: true }); }
   });
 });

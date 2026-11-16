@@ -23,7 +23,7 @@ import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/Set
 import { logger } from '../../utils/logger.js';
 import { FOCUS_BATCH, readGoals, readLedger, runCli, validateFocusAnswer, validateGroupingAnswer, type FocusInput, type LedgerDatabase, type RefreshNeeds } from './request-groups.mjs';
 import { FOCUS_AUTO_PLACE_THRESHOLD, judgeFocusBatch, placesAlone, type FocusJudge, type FocusJudgement } from './focus-judge.mjs';
-import { isWithdrawnArea, ownerGoalsAreaRows, ownerGoalsSaveKey, PROPOSAL_KINDS, readFocusAreas, type FocusArea, type RouterFocusBody } from './my-focus.mjs';
+import { isWithdrawnArea, ownerGoalsAreaRows, ownerGoalsSaveKey, PROPOSAL_KINDS, readFocusAreas, routerFocusRows, type FocusArea, type RouterFocusBody } from './my-focus.mjs';
 import { NAV_LABELS } from './nav-words.mjs';
 import { routeUndecided, type RequestJudge } from './request-judge.mjs';
 import { RUNTIME_SKILLS } from '../../shared/runtime-skills.js';
@@ -398,14 +398,19 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       return output as { placed: number; proposed: number };
     };
     let droppedProposals = 0;
-    /** For the focus step's retry: the answer without each proposal record-focus's check refuses. A proposal is a
-     * suggestion the owner still decides, so a bad one no longer fails the placements beside it. Refused placements are
-     * left for record-focus to refuse. */
-    const withoutRefusedProposals = (answer: any, input: Parameters<typeof validateFocusAnswer>[1], options: { other?: boolean } = {}) => {
+    /** For the focus step's retry: the answer without each proposal that record-focus's check or the worker's write
+     * refuses. A proposal is a suggestion the owner still decides, so a bad one no longer fails the placements beside it.
+     * Refused placements are left for record-focus to refuse. */
+    const withoutRefusedProposals = (answer: any, input: Parameters<typeof validateFocusAnswer>[1], flags: { other?: boolean } = {}) => {
       const ledger = readLedger(ledgerDir);
+      const database = openDatabase();
+      let focusAreas: FocusArea[];
+      try { focusAreas = readFocusAreas(database, { localDeviceId }); } finally { database.close(); }
+      // The worker's pure preflight (WorkViewRoutes.recordRouterFocus) after record-focus's check, as the goals step reuses
+      // ownerGoalsAreaRows: a name reusing a nav label, or a row too long to save, fails only there. Nothing is written.
       const accepted = (candidate: any) => {
-        try { validateFocusAnswer(candidate, input, ledger, options); return true; }
-        catch (error) { if (error instanceof TypeError) return false; throw error; }
+        try { routerFocusRows(validateFocusAnswer(candidate, input, ledger, flags), focusAreas); return true; }
+        catch (error) { if (error instanceof TypeError || error instanceof RangeError) return false; throw error; }
       };
       if (!Array.isArray(answer?.proposals) || !accepted({ ...answer, proposals: [] })) return answer;
       const proposals = answer.proposals.reduce((kept: unknown[], proposal: unknown) => accepted({ ...answer, proposals: [...kept, proposal] }) ? [...kept, proposal] : kept, []);
@@ -718,7 +723,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
 
       const due: Array<{ groupId: string }> = cli(['pending', '--days', '14', '--limit', '1000000']).groups;
       let reviewed = 0;
-      const coercedReviewFields = new Set<string>();
+      const coercedReviewFields = new Set<string>(), droppedPreferences = new Set<string>();
       /** One batch of reviews. Like step(), but a refusal re-asks only for the groups that were refused. */
       const reviewBatch = async (groups: Array<{ groupId: string }>, rule: string) => {
         let shows = groups.map(group => cli(['show', group.groupId]));
@@ -744,6 +749,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
               // still exceeds a review cap on its one retry, bound generated fields and save the partial review.
               const saved = cli(['record-progress'], review, { coerceProgress: attempt > 0 && retryGroupIds.has(String(review.groupId)) });
               for (const field of saved?.coercedFields ?? []) coercedReviewFields.add(`${review.groupId}:${field}`);
+              for (const label of saved?.droppedPreferences ?? []) droppedPreferences.add(`${review.groupId}:${label}`);
               recorded.add(String(review.groupId)); reviewed++;
             }
             catch (error) { rejectedReviews.push(review); refusals.push(`${review.groupId}: ${error instanceof Error ? error.message : String(error)}`); }
@@ -769,7 +775,9 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       await Promise.all(Array.from({ length: Math.min(reviewConcurrency(dataDir), batches.length) }, lane));
       const failed = outcomes.filter(outcome => outcome.status === 'rejected');
       if (failed.length) throw (failed[0] as PromiseRejectedResult).reason;
-      if (reviewed) done.push(`${reviewed} requests reviewed${coercedReviewFields.size ? ` (${coercedReviewFields.size} oversized fields trimmed after retry)` : ''}`);
+      const reviewRepairs = [...(coercedReviewFields.size ? [`${coercedReviewFields.size} oversized fields trimmed after retry`] : []),
+        ...(droppedPreferences.size ? [`${droppedPreferences.size} preferences without a quote or text dropped after retry`] : [])];
+      if (reviewed) done.push(`${reviewed} requests reviewed${reviewRepairs.length ? ` (${reviewRepairs.join(', ')})` : ''}`);
 
       // Focus: place the requests not placed yet (changed since, or whose area is gone) in batches, each saved before the
       // next is read, then propose areas from Other when the router-placed Other requests changed since the last pass.
