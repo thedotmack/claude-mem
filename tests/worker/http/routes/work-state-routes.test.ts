@@ -3,7 +3,7 @@
 // reads every key the checkout reads. These are what the work_state_write and
 // work_state_read MCP tools call with the session's cwd.
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import type { Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
@@ -46,7 +46,7 @@ beforeEach(async () => {
     getSessionStore: () => store,
     getCloudSync: () => ({ notify: () => { cloudSyncNotifyCalls++; } }),
   };
-  new WorkStateRoutes(dbManager as any).setupRoutes(app);
+  new WorkStateRoutes(dbManager as any, join(checkout, 'write-guard.json')).setupRoutes(app);
   ModeManager.getInstance().loadMode('code');
   new SearchRoutes({ getSessionStore: () => store } as any).setupRoutes(app);
   await new Promise<void>((resolve, reject) => {
@@ -89,6 +89,194 @@ function write(body: Record<string, unknown>): Promise<Response> {
 function read(query: Record<string, string>): Promise<Response> {
   return fetch(`http://127.0.0.1:${port}/api/work-state?${new URLSearchParams(query)}`);
 }
+
+function guard(script: string): void {
+  const path = join(checkout, 'check.cjs');
+  writeFileSync(path, script);
+  writeFileSync(join(checkout, 'write-guard.json'), JSON.stringify({
+    version: 1,
+    scopes: [{ project, list: 'guarded' }],
+    command: [process.execPath, path],
+  }));
+}
+
+describe('native work-state write guard', () => {
+  it('refuses ordinary completion without proof and leaves the existing owner and task open', async () => {
+    guard(`
+      const input = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
+      console.log(JSON.stringify({
+        allowed: !input.closing || input.proposed.evidence === 'passed',
+        reason: 'Repair owner: builder. Supply current evidence and an independent review.',
+      }));
+    `);
+    await write({ cwd: checkout, list: 'guarded', fields: { task: 'finish', status: 'doing', owner: 'builder' } });
+    const refused = await write({ cwd: checkout, list: 'guarded', fields: { task: 'finish', status: 'done' } });
+    expect(refused.status).toBe(409);
+    expect(await refused.text()).toContain('Repair owner: builder');
+    expect(store.getWorkStateEntries([project], 'guarded').map(entry => entry.fields))
+      .toEqual([{ task: 'finish', status: 'doing', owner: 'builder' }]);
+    expect(cloudSyncNotifyCalls).toBe(1);
+    expect(await (await read({ cwd: checkout, list: 'guarded' })).text()).toContain('[doing] finish');
+
+    await write({ cwd: checkout, list: 'guarded', fields: { task: 'finish', evidence: 'passed' } });
+    const accepted = await write({ cwd: checkout, list: 'guarded', fields: { task: 'finish', status: 'done' } });
+    expect(accepted.status).toBe(200);
+    expect(await accepted.text()).toStartWith('Saved to ');
+    expect(await (await read({ cwd: checkout, list: 'guarded', includeClosed: 'true' })).text()).toContain('[done] finish');
+  });
+
+  it('checks closures without a task and every native closing spelling', async () => {
+    guard('console.log(JSON.stringify({ allowed: false, reason: "Missing required proof." }));');
+    for (const status of ['done', 'DONE', 'dropped', 'DROPPED']) {
+      for (const task of [undefined, 'finish']) {
+        const refused = await write({ cwd: checkout, list: 'guarded', fields: { ...(task ? { task } : {}), status } });
+        expect(refused.status).toBe(409);
+      }
+    }
+    expect(store.getWorkStateEntries([project], 'guarded')).toEqual([]);
+  });
+
+  it('keeps other lists and other projects outside the configured scope', async () => {
+    guard('throw new Error("This command must not run for unrelated work.");');
+    const otherCheckout = join(checkout, 'other-project');
+    mkdirSync(otherCheckout);
+    for (const [cwd, list] of [[checkout, 'unguarded'], [otherCheckout, 'guarded']]) {
+      expect((await write({ cwd, list, fields: { task: 'finish', status: 'done' } })).status).toBe(200);
+    }
+    expect(store.getWorkStateEntries([project], 'guarded')).toEqual([]);
+  });
+
+  for (const configured of [false, true]) {
+    it(`does not read acceptance history for an ${configured ? 'unmatched' : 'unconfigured'} write`, async () => {
+      if (configured) guard('process.exit(1);');
+      const original = store.appendWorkStateEntry.bind(store);
+      const reads = spyOn(store, 'getWorkStateEntries');
+      let readsBeforeAppend = -1;
+      const append = spyOn(store, 'appendWorkStateEntry').mockImplementation(entry => {
+        readsBeforeAppend = reads.mock.calls.length;
+        return original(entry);
+      });
+      try {
+        expect((await write({ cwd: checkout, list: 'ordinary', fields: { task: 'finish', status: 'done' } })).status).toBe(200);
+        expect(readsBeforeAppend).toBe(0);
+      } finally {
+        append.mockRestore();
+        reads.mockRestore();
+      }
+    });
+  }
+
+  it('does not let request fields replace the trusted guard configuration', async () => {
+    guard('console.log(JSON.stringify({ allowed: false, reason: "Missing required proof." }));');
+    const refused = await write({
+      cwd: checkout, list: 'guarded', command: [process.execPath, '-e', 'console.log("{}")'],
+      fields: { task: 'finish', status: 'done', guard: false, evidence: 'claimed', acceptance_receipt: null },
+    });
+    expect(refused.status).toBe(409);
+    expect(store.getWorkStateEntries([project], 'guarded')).toEqual([]);
+  });
+
+  it('retains protection when the same checkout gains a configured project alias', async () => {
+    guard('console.log(JSON.stringify({ allowed: false, reason: "Missing required proof." }));');
+    store.appendWorkStateEntry({ project, listName: 'guarded', fields: { task: 'finish', status: 'doing' } });
+    process.env.CLAUDE_MEM_PROJECT_ENVIRONMENTS = JSON.stringify([{ name: 'configured-project', patterns: [checkout] }]);
+    expect(getProjectContext(checkout).allProjects).toContain(project);
+    expect((await write({ cwd: checkout, list: 'guarded', fields: { task: 'finish', status: 'done' } })).status).toBe(409);
+    expect(store.getWorkStateEntries(getProjectContext(checkout).allProjects, 'guarded')).toHaveLength(1);
+  });
+
+  it('fails closed for crashed, malformed, empty and oversized command output without exposing it', async () => {
+    for (const script of [
+      'console.log(JSON.stringify({ allowed: true })); process.stderr.write("private diagnostic"); process.exit(1);',
+      'process.stdout.write("private diagnostic");',
+      '',
+      'console.log(JSON.stringify({ allowed: "true" }));',
+      'console.log(JSON.stringify({ allowed: false }));',
+      'process.stdout.write("private diagnostic".repeat(2000));',
+    ]) {
+      guard(script);
+      const refused = await write({ cwd: checkout, list: 'guarded', fields: { task: 'finish', status: 'done' } });
+      expect(refused.status).toBe(409);
+      expect(await refused.text()).not.toContain('private diagnostic');
+    }
+    expect(store.getWorkStateEntries([project], 'guarded')).toEqual([]);
+  });
+
+  it('bounds a check that does not finish, even after it prints an approval', async () => {
+    guard('console.log(JSON.stringify({ allowed: true })); setInterval(() => {}, 1000);');
+    const refused = await write({ cwd: checkout, list: 'guarded', fields: { task: 'finish', status: 'done' } });
+    expect(refused.status).toBe(409);
+    expect(store.getWorkStateEntries([project], 'guarded')).toEqual([]);
+  });
+
+  it('does not approve when the child exits before accepting its complete input', async () => {
+    guard('console.log(JSON.stringify({ allowed: true })); process.exit(0);');
+    store.appendWorkStateEntry({ project, listName: 'guarded', fields: { task: 'finish', status: 'doing', note: 'x'.repeat(1_048_576) } });
+    const refused = await write({ cwd: checkout, list: 'guarded', fields: { task: 'finish', status: 'done' } });
+    expect(refused.status).toBe(409);
+    expect(store.getWorkStateEntries([project], 'guarded')).toHaveLength(1);
+  });
+
+  it.skipIf(process.platform === 'win32')('does not silently disable a configured check when its symlink target disappears', async () => {
+    symlinkSync(join(checkout, 'missing-config.json'), join(checkout, 'write-guard.json'));
+    expect((await write({ cwd: checkout, list: 'guarded', fields: { task: 'finish', status: 'done' } })).status).toBe(409);
+    expect(store.getWorkStateEntries([project], 'guarded')).toEqual([]);
+  });
+
+  it('checks configured project names with the same ASCII case folding as storage', async () => {
+    const command = join(checkout, 'deny.cjs');
+    writeFileSync(command, 'console.log(JSON.stringify({ allowed: false, reason: "Missing proof." }));');
+    writeFileSync(join(checkout, 'write-guard.json'), JSON.stringify({
+      version: 1, scopes: [{ project: project.toUpperCase(), list: 'guarded' }], command: [process.execPath, command],
+    }));
+    expect((await write({ cwd: checkout, list: 'guarded', fields: { task: 'finish', status: 'done' } })).status).toBe(409);
+    expect(store.getWorkStateEntries([project], 'guarded')).toEqual([]);
+  });
+
+  for (const sameTask of [true, false]) {
+    it(`does ${sameTask ? 'refuse' : 'not refuse'} approval after a concurrent ${sameTask ? 'same-task' : 'unrelated-task'} write`, async () => {
+      const ready = join(checkout, 'ready');
+      const release = join(checkout, 'release');
+      guard(`
+        (async () => {
+          const fs = require('node:fs');
+          const input = JSON.parse(fs.readFileSync(0, 'utf8'));
+          if (input.closing) {
+            fs.writeFileSync(${JSON.stringify(ready)}, 'ready');
+            while (!fs.existsSync(${JSON.stringify(release)})) await new Promise(resolve => setTimeout(resolve, 5));
+          }
+          console.log(JSON.stringify({ allowed: true }));
+        })();
+      `);
+      store.appendWorkStateEntry({ project, listName: 'guarded', fields: { task: 'finish', status: 'doing' } });
+      const pending = write({ cwd: checkout, list: 'guarded', fields: { task: 'finish', status: 'done' } });
+      const deadline = Date.now() + 1_000;
+      while (!existsSync(ready) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 5));
+      expect(existsSync(ready)).toBe(true);
+      store.appendWorkStateEntry({ project, listName: 'guarded', fields: { task: sameTask ? 'finish' : 'other', note: 'Changed during validation.' } });
+      writeFileSync(release, 'continue');
+      const response = await pending;
+      expect(response.status).toBe(sameTask ? 409 : 200);
+      if (sameTask) expect(await response.text()).toContain('changed during its write check');
+    });
+  }
+
+  it('fails closed if the configured executable is missing', async () => {
+    writeFileSync(join(checkout, 'write-guard.json'), JSON.stringify({
+      version: 1, scopes: [{ project, list: 'guarded' }], command: [join(checkout, 'missing')],
+    }));
+    expect((await write({ cwd: checkout, list: 'guarded', fields: { task: 'finish', status: 'done' } })).status).toBe(409);
+    expect(store.getWorkStateEntries([project], 'guarded')).toEqual([]);
+  });
+
+  it('refuses writes when an installed guard configuration is unreadable as a valid contract', async () => {
+    for (const value of ['not JSON', '{}', '{"version":1,"scopes":[],"command":["relative-command"]}']) {
+      writeFileSync(join(checkout, 'write-guard.json'), value);
+      expect((await write({ cwd: checkout, list: 'guarded', fields: { task: 'finish', status: 'done' } })).status).toBe(409);
+    }
+    expect(store.getWorkStateEntries([project], 'guarded')).toEqual([]);
+  });
+});
 
 describe('complete work-state export', () => {
   it('exports every ordered patch and closure beyond the MCP text limit without widening the project or list', async () => {
