@@ -711,7 +711,7 @@ The executable path must be absolute. Arguments follow it in the array. The work
 - `fields`: the requested patch.
 - `current` and `proposed`: the task's folded fields before and after that patch, or the list's own fields for a write without a task.
 - `closing` and `currentClosing`: whether the proposed and current statuses close work, using the worker's shared status definition.
-- `lastClosed`: the last folded snapshot in which this task or list state was closed, or `null` if it never closed. A validator can use this to prevent reuse of retired acceptance evidence after reopening.
+- `history`: all stored patches for this task, or for the list's own state when no task is supplied, in storage order. Each entry has `fields` and a server-derived `closing` flag for the folded status at that point. No sibling task rows are included. A validator can use the complete history to preserve earlier review decisions and prevent reuse of acceptance evidence from any prior closure, not just the most recent one.
 
 The check runs for every write in a matched list, not just a closing write. This lets a validator refuse removal of required evidence as well as premature completion. It must be read-only: do not call the same write endpoint from the command.
 

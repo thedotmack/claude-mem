@@ -28,7 +28,7 @@ export interface WorkStateWriteContext {
   proposed: WorkStateFields;
   closing: boolean;
   currentClosing: boolean;
-  lastClosed: WorkStateFields | null;
+  history: { fields: WorkStateFields; closing: boolean }[];
 }
 
 export interface WorkStateWriteCheck {

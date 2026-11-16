@@ -129,25 +129,25 @@ export class WorkStateRoutes extends BaseRouteHandler {
       const select = (folded: ReturnType<typeof foldWorkStateList>): WorkStateFields =>
         task ? folded.tasks.get(task)?.fields ?? {} : folded.state;
       let status: WorkStateFields[string] | undefined;
-      let lastClosedIndex = -1;
-      entries.forEach((entry, index) => {
-        if ((entry.fields.task == null ? '' : String(entry.fields.task)) !== task) return;
-        if (Object.hasOwn(entry.fields, 'status')) status = entry.fields.status;
-        if (isClosedWorkStateStatus(status)) lastClosedIndex = index;
-      });
+      const history = entries
+        .filter(entry => (entry.fields.task == null ? '' : String(entry.fields.task)) === task)
+        .map(entry => {
+          if (Object.hasOwn(entry.fields, 'status')) status = entry.fields.status;
+          return { fields: entry.fields, closing: isClosedWorkStateStatus(status) };
+        });
       return {
         current: select(foldWorkStateList(entries)),
-        lastClosed: lastClosedIndex < 0 ? null : select(foldWorkStateList(entries.slice(0, lastClosedIndex + 1))),
+        history,
       };
     };
     const scope = { project: checkout.primary, projects: checkout.allProjects, list };
     let snapshot: ReturnType<typeof currentSnapshot> | undefined;
     const check = await checkWorkStateWrite(this.writeGuardPath, scope, () => {
       snapshot = currentSnapshot();
-      const { current, lastClosed } = snapshot;
+      const { current, history } = snapshot;
       const proposed = { ...current, ...fields };
       return {
-        ...scope, fields, current, proposed, lastClosed,
+        ...scope, fields, current, proposed, history,
         closing: isClosedWorkStateStatus(proposed.status),
         currentClosing: isClosedWorkStateStatus(current.status),
       };

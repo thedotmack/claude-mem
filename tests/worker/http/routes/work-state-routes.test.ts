@@ -166,6 +166,27 @@ describe('native work-state write guard', () => {
     });
   }
 
+  it('supplies the complete task history and server-derived closing flags without sibling task rows', async () => {
+    for (const status of ['doing', 'done', 'doing', 'dropped', 'doing']) {
+      store.appendWorkStateEntry({ project, listName: 'guarded', fields: { task: 'finish', status } });
+      store.appendWorkStateEntry({ project, listName: 'guarded', fields: { task: 'sibling', status } });
+    }
+    guard(`
+      let input = '';
+      process.stdin.on('data', chunk => input += chunk);
+      process.stdin.on('end', () => {
+        const { history } = JSON.parse(input);
+        const allowed = history.length === 5 && history.every(entry => entry.fields.task === 'finish')
+          && JSON.stringify(history.map(entry => entry.closing)) === '[false,true,false,true,false]';
+        console.log(JSON.stringify({ allowed, ...(allowed ? {} : { reason: 'Wrong task history.' }) }));
+      });
+    `);
+    expect((await write({
+      cwd: checkout, list: 'guarded', history: [],
+      fields: { task: 'finish', status: 'done', history: 'fake client history' },
+    })).status).toBe(200);
+  });
+
   it('does not let request fields replace the trusted guard configuration', async () => {
     guard('console.log(JSON.stringify({ allowed: false, reason: "Missing required proof." }));');
     const refused = await write({
