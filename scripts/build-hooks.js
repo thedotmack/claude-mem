@@ -523,7 +523,7 @@ async function buildHooks() {
         // Native decoder must remain external and be installed for each host.
         // https://sharp.pixelplumbing.com/install/#bundlers
         'sharp': packageJson.dependencies.sharp,
-        'zod': '^4.4.3',
+        'zod': '^4.6.6',
         // better-auth stays external in the bundles below (~3.7MB), so the
         // worker's /api/auth/* routes (Pro sign-in) resolve it from
         // plugin/node_modules at request time — the same pattern as sharp.
@@ -607,7 +607,10 @@ async function buildHooks() {
         // onnxruntime-common, which onnxruntime-node already installs, so it
         // downloads nothing. Remove it once transformers.js stops requiring
         // onnxruntime-web under Node.
-        'onnxruntime-web': `npm:onnxruntime-common@${onnxruntimeNode}`
+        'onnxruntime-web': `npm:onnxruntime-common@${onnxruntimeNode}`,
+        // onnxruntime-node 1.23.2 asks for adm-zip ^0.5.16, which stays on the
+        // 0.5 line and its High advisories (#6211); 0.6.1 fixes them all.
+        'adm-zip': '^0.6.1'
       },
       trustedDependencies: [
         'tree-sitter-cli'
