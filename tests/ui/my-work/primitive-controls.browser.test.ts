@@ -32,7 +32,7 @@ const DESKTOP_MOUSE_FLAGS = ['--blink-settings=primaryHoverType=2,availableHover
  * Phase 1 fix round: a caller's own hover: class beats the primitive's hover look (the Team button keeps its tint); a
  * disabled switch inside a Label is dimmed once; an errored field says so and links its message; the toggle check sits
  * above a caller's highlight; a select row's highlight has a ≥3:1 mark; a popper select does not animate under
- * reduced motion.
+ * reduced motion. PR 6210 review: Command's search field shows the same focus look as an Input.
  */
 (chromeExecutablePath ? it : it.skip)('control primitives own touch size, hit areas, cursors, disabled, busy and focus', async () => {
   // Compile the application's real stylesheet and candidates; hand-written fixture CSS could hide a regression.
@@ -52,6 +52,7 @@ const DESKTOP_MOUSE_FLAGS = ['--blink-settings=primaryHoverType=2,availableHover
     import { Badge, BadgeMore, badgeVariants } from './src/ui/my-work/src/components/ui/badge';
     import { toggleVariants } from './src/ui/my-work/src/components/ui/toggle';
     import { Card, CardContent, CardFooter } from './src/ui/my-work/src/components/ui/card';
+    import { Command, CommandInput } from './src/ui/my-work/src/components/ui/command';
     import { FieldCount, FieldHelperText, Input } from './src/ui/my-work/src/components/ui/input';
     import { Textarea } from './src/ui/my-work/src/components/ui/textarea';
     import { Label } from './src/ui/my-work/src/components/ui/label';
@@ -119,6 +120,9 @@ const DESKTOP_MOUSE_FLAGS = ['--blink-settings=primaryHoverType=2,availableHover
           <div style={{ width: 320 }}><Input data-test="input-readonly" readOnly value="~/.claude-mem/MY-RULES.md" /></div>
           <div style={{ width: 320 }}><Input data-test="input-disabled" disabled /><FieldHelperText data-test="error" tone="error">A repo name has no spaces.</FieldHelperText></div>
           <div data-test="errored-field" style={{ width: 320 }}><Input data-test="input-error" aria-describedby="hint" error="A repo name has no spaces." /></div>
+          {/* The search field of Move to…'s list (Popover + Command, G15). No rows: cmdk scrolls its chosen row into view,
+              which would scroll this page. */}
+          <div style={{ width: 320 }}><Command label="Move to"><CommandInput data-test="command-input" placeholder="Move to…" /></Command></div>
         </Row>
         <Row>
           {/* App.tsx TeamSwitch with Team on: the caller's own hover tint must win over the primitive's hover look. */}
@@ -270,9 +274,11 @@ const DESKTOP_MOUSE_FLAGS = ['--blink-settings=primaryHoverType=2,availableHover
     };
     window.focusOn = (name) => element(name).focus();
     window.activeName = () => document.activeElement?.dataset.test ?? document.activeElement?.getAttribute('role');
-    window.inputFocusEdge = async () => {
-      await Promise.all(element('input').getAnimations().filter((animation) => animation instanceof CSSTransition).map((animation) => animation.finished));
-      return style('input').borderTopColor;
+    // A field's focus look: an Input draws it on itself, Command's search field on the InputGroup around it.
+    window.fieldLook = async (name) => {
+      const box = element(name).closest('[data-slot=input-group]') ?? element(name);
+      await Promise.all(box.getAnimations().filter((animation) => animation instanceof CSSTransition).map((animation) => animation.finished));
+      return { focusVisible: element(name).matches(':focus-visible'), edge: getComputedStyle(box).borderTopColor, boxShadow: getComputedStyle(box).boxShadow };
     };
     window.switchFocusRing = () => style('switch-off', '::before').boxShadow;
     window.toggleRoles = () => [element('toggle-chosen').getAttribute('role'), element('toggle-other').getAttribute('role')];
@@ -412,7 +418,18 @@ const DESKTOP_MOUSE_FLAGS = ['--blink-settings=primaryHoverType=2,availableHover
     };
     // Input keeps its orange focus edge (D b12 K245/248).
     await page.evaluate('window.focusOn("input")');
-    expect(await page.evaluate('window.inputFocusEdge()')).toBe(rgb('#e15c02'));
+    const inputFocused = await page.evaluate('window.fieldLook("input")');
+    expect(inputFocused.edge).toBe(rgb('#e15c02'));
+    // Command's search field shows that look too, on its group: the same edge and the same 3px ring (it showed none).
+    const ringOf = (boxShadow: string) => boxShadow.match(/(?:[a-z]+\([^)]*\)|#[0-9a-f]+) 0px 0px 0px 3px/)?.[0] ?? null;
+    const inputRing = ringOf(inputFocused.boxShadow);
+    expect(inputRing).not.toBeNull();
+    const commandAtRest = await page.evaluate('window.fieldLook("command-input")');
+    expect({ edge: commandAtRest.edge, ring: ringOf(commandAtRest.boxShadow) }).toEqual({ edge: lightEdge, ring: null });
+    await page.evaluate('window.focusOn("command-input")');
+    const commandFocused = await page.evaluate('window.fieldLook("command-input")');
+    expect({ focusVisible: commandFocused.focusVisible, edge: commandFocused.edge, ring: ringOf(commandFocused.boxShadow) })
+      .toEqual({ focusVisible: true, edge: inputFocused.edge, ring: inputRing });
     // Switch keeps its focus ring, now on the track (D b19 K389).
     await page.evaluate('window.focusOn("switch-off")');
     await page.settle();
