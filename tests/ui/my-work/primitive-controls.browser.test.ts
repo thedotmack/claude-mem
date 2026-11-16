@@ -10,6 +10,17 @@ import {
 failOnCiWithoutChrome('CI requires Chrome for the My Work primitive size, cursor and focus regressions.');
 
 /**
+ * Tells Chrome it has a mouse, so the desktop half of this test runs on the desktop it describes on every platform.
+ * Headless Chrome on Linux finds no pointing device: it reports `(hover: none)` and `(pointer: none)`, and a CDP mouse
+ * move then gives a button `:hover` without the hover looks index.css keeps inside `@media (hover: hover)` (CI on PR
+ * 6210; Chrome 157 and Chromium 156 on Linux, 2026-11-16). Chrome on macOS reports a mouse already. The values are
+ * Blink's hover type "hover" (2) and pointer type "fine" (4), the setting Playwright 1.66 passes to every headless
+ * Chromium it launches. Turning touch emulation off puts Chrome's own values back, so the hover checks run before the
+ * touch part.
+ */
+const DESKTOP_MOUSE_FLAGS = ['--blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4'];
+
+/**
  * Phase 1 claims about My Work's control primitives, measured in a real browser on the app's real stylesheet:
  * - touch size (plan rule 6): on a coarse pointer, and at phone width, every Button, SelectTrigger, ToggleGroupItem,
  *   Switch, Input and Textarea renders at least 44px tall (icon buttons and toggles 44px wide too);
@@ -225,6 +236,11 @@ failOnCiWithoutChrome('CI requires Chrome for the My Work primitive size, cursor
       await Promise.all(element(name).getAnimations().filter((animation) => animation instanceof CSSTransition).map((animation) => animation.finished));
       return style(name).backgroundColor;
     };
+    // With the look, whether Chrome has a pointer that can hover and whether it is over the button, so a look that did
+    // not change says which of the three it was. The page has no doctype, and in quirks mode a bare :hover matches only
+    // links, so the check names an attribute too.
+    window.hoverLook = async (name) => ({ hoverCapablePointer: matchMedia('(hover: hover)').matches, hovered: element(name).matches('[data-test]:hover'),
+      background: await window.backgroundOf(name) });
     window.focusState = async () => {
       // Controls ease their colours (transition-all), so read the focus look once its transitions have finished.
       await Promise.all(document.activeElement.getAnimations().filter((animation) => animation instanceof CSSTransition).map((animation) => animation.finished));
@@ -284,7 +300,8 @@ failOnCiWithoutChrome('CI requires Chrome for the My Work primitive size, cursor
   let page: DevToolsPage | undefined;
   const rgb = (hex: string) => `rgb(${[1, 3, 5].map((offset) => parseInt(hex.slice(offset, offset + 2), 16)).join(', ')})`;
   try {
-    chrome = launchChrome(server.url.href, { profilePrefix: 'claude-mem-primitives-', remoteDebugging: true, extraFlags: UNTHROTTLED_TIMER_FLAGS });
+    chrome = launchChrome(server.url.href, { profilePrefix: 'claude-mem-primitives-', remoteDebugging: true,
+      extraFlags: [...UNTHROTTLED_TIMER_FLAGS, ...DESKTOP_MOUSE_FLAGS] });
     // Chrome starts and runs this fixture in 0.65–0.94s here (3 runs, 2026-11-16); 15s is about 16× that, for a cold
     // Chrome on a shared CI runner.
     await withTimeout(ready, 15_000, 'Primitive fixture did not start');
@@ -345,9 +362,11 @@ failOnCiWithoutChrome('CI requires Chrome for the My Work primitive size, cursor
     };
     const plainAtRest = await page.evaluate('window.backgroundOf("secondary-plain")');
     await hover('team-on');
-    expect(await page.evaluate('window.backgroundOf("team-on")')).toBe(rgb('#fdebdd'));
+    expect(await page.evaluate('window.hoverLook("team-on")')).toEqual({ hoverCapablePointer: true, hovered: true, background: rgb('#fdebdd') });
     await hover('secondary-plain');
-    expect(await page.evaluate('window.backgroundOf("secondary-plain")')).not.toBe(plainAtRest);
+    const plainHovered = await page.evaluate('window.hoverLook("secondary-plain")');
+    expect({ hoverCapablePointer: plainHovered.hoverCapablePointer, hovered: plainHovered.hovered, lookChanged: plainHovered.background !== plainAtRest })
+      .toEqual({ hoverCapablePointer: true, hovered: true, lookChanged: true });
     // A caller's active: class wins over the primitive's pressed look in the same way.
     {
       const { x, y } = await page.evaluate('window.middleOf("press-override")');

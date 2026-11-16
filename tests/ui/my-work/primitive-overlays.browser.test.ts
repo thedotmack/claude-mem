@@ -55,6 +55,18 @@ const FIXTURE_SOURCE = `
   const reportFixtureError = (message) => fetch('/fixture-error', { method: 'POST', body: String(message) });
   window.addEventListener('error', (event) => reportFixtureError(event.error?.stack ?? event.message));
   window.addEventListener('unhandledrejection', (event) => reportFixtureError(event.reason?.stack ?? event.reason));
+  // What a test tap delivers (tap() below): each pointer, touch, mouse and click event, its target and its time after
+  // the tap began, so a tap that toggles nothing can say what arrived. Passive and capturing: it only watches.
+  window.tapLog = { startedAt: 0, clicks: 0, events: [] };
+  window.startTapLog = () => { window.tapLog = { startedAt: performance.now(), clicks: 0, events: [] }; };
+  for (const type of ['pointerdown', 'pointerup', 'pointercancel', 'touchstart', 'touchend', 'touchcancel', 'mousedown', 'mouseup', 'click']) {
+    document.addEventListener(type, (event) => {
+      const log = window.tapLog;
+      if (type === 'click') log.clicks += 1;
+      const target = event.target instanceof Element ? (event.target.id || event.target.getAttribute('data-slot') || event.target.tagName.toLowerCase()) : String(event.target);
+      log.events.push(type + (event.pointerType ? '(' + event.pointerType + ')' : '') + ' on ' + target + ' +' + Math.round(performance.now() - log.startedAt) + 'ms');
+    }, { capture: true, passive: true });
+  }
   const STATES = ['your-move', 'needs-check', 'working', 'idle', 'shipped'];
   const finishedRequest = { state: 'shipped', estimate: null, progress: { percent: 100, readings: 2, reviewedAt: '3:25 pm', completedAt: 'Nov 14 at 9:54 pm', history: [80, 100] } };
   const unreviewedRequest = { state: 'idle', estimate: null, progress: { percent: null, readings: 0, reviewedAt: '—', history: [] } };
@@ -202,15 +214,45 @@ async function heightOf(selector: string): Promise<number> {
 }
 
 /**
- * A real touch tap. 50ms of contact is a tap, far under Chrome's long-press threshold (about 500ms on Android), and
- * the 100ms wait after it covers the click Chrome sends once the touch ends: 66–126ms after the gesture starts here
- * (12 taps over 3 runs, 2026-11-16), inside the 50ms contact plus this wait; settle() then adds four frames.
+ * How long a tap may take to send its click. Chrome sent it 4–55ms after the touchStart, 6 taps each in Chrome 158 on
+ * macOS, Chrome 157 on Linux (amd64 under Rosetta) and Chromium 156 on Linux (2026-11-16); 2s is over 35× the slowest,
+ * for a loaded CI runner.
  */
-async function tap(selector: string) {
-  const { x, y } = await page!.evaluate(`(() => { const box = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return { x: box.left + box.width / 2, y: box.top + box.height / 2 }; })()`);
-  await page!.send('Input.synthesizeTapGesture', { x, y, duration: 50, tapCount: 1, gestureSourceType: 'touch' });
-  await page!.evaluate('new Promise(resolve => setTimeout(resolve, 100))');
-  await page!.settle();
+const TAP_CLICK_LIMIT_MS = 2000;
+/** Polls for that click every 10ms, about the time a tap takes to send it, so the wait ends soon after it arrives. */
+const TAP_POLL_MS = 10;
+
+/**
+ * A real touch tap at the middle of `selector`: one finger down and up (Input.dispatchTouchEvent, as Puppeteer and
+ * Playwright tap). With touch emulation on, Chrome turns the pair into what a phone sends: pointer and touch events,
+ * then mousedown, mouseup and a click. Not Input.synthesizeTapGesture: headless Chrome on Linux delivers that gesture's
+ * pointer and touch events but never its click (Chrome 157 and Chromium 156, 2026-11-16: no click within 1.5s of any
+ * of 16 taps, touch emulation on or off), so on CI a tap toggled nothing (PR 6210); Chrome on macOS sends it.
+ * Resolves once the click has arrived, with what the tap delivered; a tap that sends no click fails, saying what it did
+ * deliver.
+ */
+async function tap(selector: string): Promise<string> {
+  const { x, y } = await page!.evaluate(`(() => { window.startTapLog(); const box = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return { x: box.left + box.width / 2, y: box.top + box.height / 2 }; })()`);
+  await page!.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] });
+  await page!.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  const deadline = Date.now() + TAP_CLICK_LIMIT_MS;
+  for (;;) {
+    const { clicks, events } = await page!.evaluate('window.tapLog');
+    const delivered = `a tap on ${selector} delivered: ${events.join(', ') || 'no events'}`;
+    if (clicks > 0) return delivered;
+    if (Date.now() > deadline) throw new Error(`No click within ${TAP_CLICK_LIMIT_MS}ms: ${delivered}`);
+    await Bun.sleep(TAP_POLL_MS);
+  }
+}
+
+/** Taps `selector`, then waits for `expression` to hold (waitFor); a failure also says what the tap delivered. */
+async function tapThenWaitFor(selector: string, expression: string, label: string) {
+  const delivered = await tap(selector);
+  try {
+    await waitFor(expression, label);
+  } catch (error) {
+    throw new Error(`${(error as Error).message}; ${delivered}`);
+  }
 }
 
 /** A real left click at the middle of `selector`. */
@@ -645,16 +687,15 @@ describeWithChrome('My Work overlay and status primitives in Chrome', () => {
     await press('Escape');
     await waitFor(`!document.querySelector('[data-slot=dialog-content]')`, 'the dialog to close');
 
+    // Each tap waits for its click, then for the tooltip or card to open (a frame after the click) or to finish its
+    // 100–150ms exit. Closed means the trigger says so too: a tooltip that a tap closed and opened again is gone for
+    // the frame before it shows.
     await page!.evaluate(`document.getElementById('tooltip-span-trigger').scrollIntoView({ block: 'center' })`);
-    await tap('#tooltip-span-trigger');
-    expect(await page!.evaluate(`document.querySelector('[data-slot=tooltip-content]')?.textContent ?? null`)).toContain('Agent identity');
-    await tap('#tooltip-span-trigger');
-    expect(await page!.evaluate(`!!document.querySelector('[data-slot=tooltip-content]')`)).toBe(false);
+    await tapThenWaitFor('#tooltip-span-trigger', `document.querySelector('[data-slot=tooltip-content]')?.textContent?.includes('Agent identity')`, 'a tap to open the tooltip');
+    await tapThenWaitFor('#tooltip-span-trigger', `document.getElementById('tooltip-span-trigger').dataset.state === 'closed' && !document.querySelector('[data-slot=tooltip-content]')`, 'a second tap to close the tooltip');
 
     await page!.evaluate(`document.getElementById('hover-card-span-trigger').scrollIntoView({ block: 'center' })`);
-    await tap('#hover-card-span-trigger');
-    expect(await page!.evaluate(`document.querySelector('[data-slot=hover-card-content]')?.textContent ?? null`)).toBe('Quoted on Nov 14');
-    await tap('#hover-card-span-trigger');
-    expect(await page!.evaluate(`!!document.querySelector('[data-slot=hover-card-content]')`)).toBe(false);
+    await tapThenWaitFor('#hover-card-span-trigger', `document.querySelector('[data-slot=hover-card-content]')?.textContent === 'Quoted on Nov 14'`, 'a tap to open the hover card');
+    await tapThenWaitFor('#hover-card-span-trigger', `document.getElementById('hover-card-span-trigger').dataset.state === 'closed' && !document.querySelector('[data-slot=hover-card-content]')`, 'a second tap to close the hover card');
   });
 });
