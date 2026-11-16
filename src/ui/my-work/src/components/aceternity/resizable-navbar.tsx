@@ -5,6 +5,7 @@ import {
   AnimatePresence,
   useScroll,
   useMotionValueEvent,
+  useReducedMotion,
 } from "motion/react";
 
 import React, { useRef, useState } from "react";
@@ -83,6 +84,9 @@ export const Navbar = ({ children, className }: NavbarProps) => {
 };
 
 export const NavBody = ({ children, className, visible }: NavBodyProps) => {
+  // Local fix (plan rule 8): under reduced motion the bar becomes the pill and back at once, here in the component and
+  // not only through the app's MotionConfig (which stops the move but not the width spring or the shadow).
+  const reduceMotion = useReducedMotion();
   return (
     <motion.div
       animate={{
@@ -93,7 +97,7 @@ export const NavBody = ({ children, className, visible }: NavBodyProps) => {
         width: visible ? "40%" : "100%",
         y: visible ? 20 : 0,
       }}
-      transition={{
+      transition={reduceMotion ? { duration: 0 } : {
         type: "spring",
         stiffness: 200,
         damping: 50,
@@ -103,8 +107,10 @@ export const NavBody = ({ children, className, visible }: NavBodyProps) => {
         minWidth: "min(800px, calc(100% - 2rem))",
       }}
       className={cn(
-        "relative z-[60] mx-auto hidden w-full max-w-7xl flex-row items-center justify-between self-start rounded-full bg-transparent px-4 py-2 lg:flex dark:bg-transparent",
-        visible && "bg-white/80 dark:bg-neutral-950/80",
+        // Local fix: theme tokens. The kit's `dark:bg-neutral-950/80` outranked the caller's `bg-card/95` in dark
+        // mode (a `dark:` class is not merged away by a plain one), so the floating pill turned a cool near-black.
+        "relative z-[60] mx-auto hidden w-full max-w-7xl flex-row items-center justify-between self-start rounded-full bg-transparent px-4 py-2 lg:flex",
+        visible && "bg-card/80",
         className,
       )}
     >

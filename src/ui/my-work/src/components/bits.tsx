@@ -1,53 +1,162 @@
-import { displayTime } from '@/lib/display-time'
-import { useEffect, useState, type ReactNode } from 'react'
+import { clockTime, displayTime } from '@/lib/display-time'
+import { useState, type KeyboardEvent, type ReactNode } from 'react'
 import { motion, useReducedMotion } from 'motion/react'
-import { BotIcon, CheckIcon, CloudAlertIcon, CloudCheckIcon, CloudIcon, CloudOffIcon, CornerLeftUpIcon, MessageSquareIcon, RefreshCwIcon, StarIcon, UserIcon } from 'lucide-react'
+import { BotIcon, CheckIcon, CloudAlertIcon, CloudIcon, CornerLeftUpIcon, ExternalLinkIcon, HistoryIcon, LaptopIcon, MessageSquareIcon, RefreshCwIcon, Share2Icon, StarIcon, UserIcon } from 'lucide-react'
 import { interpolate, useI18n } from '@/lib/i18n'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/hover-card'
+import { Collapsible, CollapsibleContent, CollapsibleFoldTrigger } from '@/components/ui/collapsible'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Progress } from '@/components/ui/progress'
 import { Spinner } from '@/components/ui/spinner'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { useGitHubStarCount } from '@/lib/use-github-star-count'
+import { tabStopAfter, tabStops } from '@/lib/tab-order'
 import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
-import { isSampleHref, measuredEstimate, RefreshNotStartedError, SAMPLE_DEVICES, OTHER_FOCUS_AREA_ID, type Device, type LiveState, type Request, type Run, type SkillRun } from '@/data'
+import { isSampleHref, measuredEstimate, RefreshNotStartedError, SAMPLE_DEVICES, OTHER_FOCUS_AREA_ID, type AgentTool, type Device, type LiveState, type Request, type Run, type SkillRun } from '@/data'
 import { agentById, deviceById, useConnection, useStore, useWorkModel, useWorkspace } from '@/store'
 import type { AutoRefresh } from '@/live/work-data-source'
 import { focusAreaLabel, resolveFocusAreaId } from '@/live/to-focus-model'
 import { presentSharedState } from '@/live/shared-state-presentation'
-import { NEXT_STEP_NOT_RECORDED } from '@/live/to-work-model'
+import { isServedFromCloud } from '@/live/served-from'
+import { LIVE_CHIP_PROBLEM_SOURCE, liveChipProblem, type LiveChipProblem } from '@/live/live-chip'
+import type { ConnectionTone } from '@/live/connection-status'
+import type { StarCountRead } from '@/live/github-star-count'
+import { NEXT_STEP_NOT_RECORDED, RECORDED_SESSION_ROLE, SUBAGENT_ROLE_PREFIX, THIS_COMPUTER, UNRECORDED_AGENT } from '@/live/to-work-model'
 import { AgentMark } from './brand'
+
+/**
+ * How a selected item shows besides its fill (c-bits-active-pill): an edge ≥3:1 against the page (rule 7; the fill
+ * alone told selected from not by 1.53–1.9:1), and in the rail an orange bar at its left edge as well. `fill` is for a
+ * control that draws its own ≥3:1 chosen edge already (the View switch's toggle items, D b22). The bar is the accent
+ * text colour, ≥4.8:1 on the accent fill in both themes.
+ */
+const ACTIVE_PILL_LOOK = {
+  fill: 'bg-accent',
+  outline: 'border border-control-edge bg-accent',
+  rail: 'border border-control-edge bg-accent before:absolute before:inset-y-1.5 before:left-0 before:w-[3px] before:rounded-full before:bg-accent-foreground',
+} as const
+
+/**
+ * The slide between choices. The review measured a 0.3 bounce over 0.6 s, long for a switch the owner flips many times
+ * an hour (c-bits-active-pill F spring-physics); 0.25 s with no bounce is the subtle transition of the UI UX Pro Max
+ * design system for this product (Motion 2/10, 200–250 ms; the review's skill-output/design-system-from-first-run.md).
+ */
+const ACTIVE_PILL_SLIDE = { type: 'spring', bounce: 0, duration: 0.25 } as const
 
 /**
  * The sliding highlight behind the active choice in a nav or toggle group (the `layoutId` pattern from aceternity/tabs).
  * Render it inside the active item only; the item needs `relative` and its content `relative` to sit above it.
- * Each group passes its own `layoutId` so pills never jump between groups.
+ * Each group passes its own `layoutId` so pills never jump between groups. Under reduced motion it moves at once,
+ * here in the component and not only through the app's MotionConfig (plan rule 8).
  */
-export function ActivePill({ layoutId, className }: { layoutId: string; className?: string }) {
-  return <motion.span layoutId={layoutId} transition={{ type: 'spring', bounce: 0.3, duration: 0.6 }} className={cn('absolute inset-0 rounded-[inherit] bg-accent', className)} />
+export function ActivePill({ layoutId, className, look = 'fill' }: { layoutId: string; className?: string; look?: keyof typeof ACTIVE_PILL_LOOK }) {
+  const reduceMotion = useReducedMotion()
+  return <motion.span layoutId={layoutId} transition={reduceMotion ? { duration: 0 } : ACTIVE_PILL_SLIDE} className={cn('absolute inset-0 rounded-[inherit]', ACTIVE_PILL_LOOK[look], className)} />
 }
 
+/** How many requests in a rail entry need the person, as words in a quiet pill (c-shell-focus-nav: was an orange dot). */
+export function NeedsYouPill({ count, className }: { count: number; className?: string }) {
+  const { t } = useI18n()
+  if (count === 0) return null
+  return (
+    <span className={cn('inline-flex shrink-0 items-center gap-1 rounded-full border border-control-edge px-1.5 py-px text-xs font-normal whitespace-nowrap text-attention-foreground tabular', className)}>
+      <span aria-hidden="true" className="size-1.5 rounded-full bg-attention-foreground" />
+      {interpolate(t(count === 1 ? '{count} needs you' : '{count} need you'), { count })}
+    </span>
+  )
+}
 
-/** Agent mark, plus the machine it ran on (§13: remote agents are already synced, say where the work happened). */
-export function AgentIcon({ agentId, withDevice = false }: { agentId: string; withDevice?: boolean }) {
+/** Puts a node where a translated sentence has its `{slot}`, so a time or a command can sit inside the sentence. */
+function sentenceWith(sentence: string, slot: string, node: ReactNode): ReactNode {
+  const [before, after = ''] = sentence.split(`{${slot}}`)
+  return <>{before}{node}{after}</>
+}
+
+/**
+ * A recorded time in the reader's clock (G9, plan rule 9): short, with the full stamp on hover, keyboard focus and tap
+ * (G10). Times were printed as raw UTC stamps (c-bits-live-indicator, c-bits-device-freshness).
+ */
+export function LocalTime({ iso, className }: { iso: string; className?: string }) {
+  const time = clockTime(iso)
+  if (!time) throw new Error(`LocalTime needs an ISO time, got ${JSON.stringify(iso)}`)
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild><time dateTime={iso} className={cn('tabular', className)}>{time.short}</time></TooltipTrigger>
+      <TooltipContent>{time.full}</TooltipContent>
+    </Tooltip>
+  )
+}
+
+/** "This computer" is the mapper's English name for the machine the page runs on; any other machine keeps its own name. */
+function deviceName(device: Device, t: (text: string) => string): string {
+  return device.id === THIS_COMPUTER.id ? t(THIS_COMPUTER.name) : device.name
+}
+
+/**
+ * The tool's own name, printed beside its mark where there is room (c-bits-agent-icon M, c-shell-brand M): nearly every
+ * card carries the same mark, and on a phone the name was in a tooltip only. An agent on a platform we have no mark
+ * for shows its own name instead.
+ */
+const AGENT_TOOL_NAME: Record<AgentTool, string | null> = {
+  claude: 'Claude Code',
+  codex: 'Codex',
+  gemini: 'Gemini',
+  other: null,
+}
+
+/**
+ * An agent's role in the reader's language: the mapper's own English words (live/to-work-model.ts toAgent) go through
+ * the catalog; a session title or folder name is the agent's and stays as written.
+ */
+function agentRoleWords(role: string, t: (text: string) => string): string {
+  if (role.startsWith(SUBAGENT_ROLE_PREFIX)) return interpolate(t('Subagent · {role}'), { role: agentRoleWords(role.slice(SUBAGENT_ROLE_PREFIX.length), t) })
+  return role === RECORDED_SESSION_ROLE ? t(RECORDED_SESSION_ROLE) : role
+}
+
+/**
+ * Agent mark with its name, plus the machine it ran on (§13: remote agents are already synced, say where the work
+ * happened). The tile edge is the ≥3:1 control edge (was 1.34–1.66:1), dashed for "Agent not recorded" so it never
+ * reads as a known agent. `showName={false}` keeps the mark alone where a row has no room (the List).
+ */
+export function AgentIcon({ agentId, withDevice = false, showName = true }: { agentId: string; withDevice?: boolean; showName?: boolean }) {
   const { t } = useI18n()
   const agent = agentById(agentId)
   const device = deviceById(agent.deviceId)
-  const onText = interpolate(t('on {name}'), { name: device.name })
+  const unrecorded = agent.id === UNRECORDED_AGENT.id
+  const name = unrecorded ? t(UNRECORDED_AGENT.name) : AGENT_TOOL_NAME[agent.tool] ?? agent.name
+  const where = deviceName(device, t)
+  // The agent's own name (often a worktree id) and its role only when they add something to the tool's name.
+  const details = unrecorded ? [] : [...(agent.name !== name ? [agent.name] : []), agentRoleWords(agent.role, t)]
+  const identity = [name, ...details, interpolate(t('on {name}'), { name: where })].join(' · ')
   return (
     <Req ids={['R5.1', 'R10.4']}>
       <Tooltip>
         <TooltipTrigger asChild>
           <span className="inline-flex min-w-0 items-center gap-1.5">
-            {/* role="img" names the mark: the trigger around it is a Tab stop now (G10), and a stop needs a name. */}
-            <span role="img" className="flex size-7 shrink-0 items-center justify-center rounded-lg border bg-card" aria-label={`${agent.name}, ${agent.role}, ${onText}`}>
+            {/* role="img" names the mark with everything known (G10: the trigger is a Tab stop); the words beside it
+                repeat part of that, so readers skip them. */}
+            <span role="img" aria-label={identity} className={cn('flex size-7 shrink-0 items-center justify-center rounded-lg border border-control-edge bg-card', unrecorded && 'border-dashed')}>
               <AgentMark tool={agent.tool} className="size-4" />
             </span>
-            {withDevice && <Req ids={['R13.4']}><span className="truncate text-xs text-muted-foreground">{agent.name} · {agent.role} · {device.name}</span></Req>}
+            {withDevice ? (
+              <Req ids={['R13.4']}>
+                {/* A worktree id is one long word: it wraps instead of running out of the drawer (B #17 F). */}
+                <span aria-hidden="true" className="min-w-0 text-xs text-muted-foreground [overflow-wrap:anywhere]">
+                  <span className={unrecorded ? undefined : 'font-medium text-foreground/85'}>{name}</span>
+                  {details.map((detail, index) => <span key={index}> · <span className={index === 0 && agent.name !== name ? 'font-mono' : undefined}>{detail}</span></span>)}
+                  {' · '}<LaptopIcon aria-hidden="true" className="inline size-3.5 align-[-2px]" /> {where}
+                </span>
+              </Req>
+            ) : showName && (
+              // 9rem holds "Agent not recorded" and every tool name; a longer agent name ends in an ellipsis (the full
+              // identity is in the tooltip), so the focus area link beside it keeps its room on a card.
+              <span aria-hidden="true" className={cn('max-w-[9rem] truncate text-xs', unrecorded ? 'text-muted-foreground' : 'text-foreground/80')}>{name}</span>
+            )}
           </span>
         </TooltipTrigger>
-        <TooltipContent>{agent.name} · {agent.role} · {onText}</TooltipContent>
+        <TooltipContent>{identity}</TooltipContent>
       </Tooltip>
     </Req>
   )
@@ -259,133 +368,286 @@ export function ProductLink({ href, children, className }: { href?: string; chil
 }
 
 /**
- * Live connection indicator (§6). Sample mode demonstrates the placement. A live source shows the feed's measured
- * health (getConnectionStatus): it reads "Live updates" only while SSE messages keep arriving, never from an HTTP read.
+ * The header's controls share one look (c-shell-resizable-navbar): an outlined button with the ≥3:1 control edge
+ * (was 1.34:1), 34px tall on the 17px desktop root, the mockup's 32px look, and 44px on touch through the Button's own
+ * touch rule; quiet text, so nothing in the bar outshines the page.
+ */
+const HEADER_CONTROL_CLASS_NAME = 'h-8 gap-1.5 px-2.5 text-xs font-normal text-muted-foreground'
+
+/**
+ * The chip's words for each problem it can name, short enough for a phone's header, and whether it asks for attention
+ * (a problem never reads positive).
+ */
+const LIVE_CHIP_WORDS: Record<LiveChipProblem, { words: string; tone: Exclude<ConnectionTone, 'positive'> }> = {
+  'feed-unavailable': { words: 'Can’t read work', tone: 'warning' },
+  'feed-stale': { words: 'Not up to date', tone: 'warning' },
+  'feed-reconnecting': { words: 'Reconnecting', tone: 'warning' },
+  'feed-connecting': { words: 'Connecting', tone: 'neutral' },
+  'sharing-refused': { words: 'Sharing problem', tone: 'warning' },
+  'cloud-behind': { words: 'Cloud behind', tone: 'warning' },
+}
+
+/** One row of a header popover: a mark, what it is about, and its state (with a time) at the right. */
+function StatusRow({ mark, title, tone = 'neutral', children }: { mark: ReactNode; title: string; tone?: ConnectionTone; children: ReactNode }) {
+  return (
+    <div className="flex items-start gap-2">
+      <span aria-hidden="true" className="flex h-4 w-4 shrink-0 items-center justify-center text-muted-foreground">{mark}</span>
+      <dt className="font-medium">{title}</dt>
+      <dd className={cn('ml-auto min-w-0 text-right', tone === 'warning' ? 'text-attention-foreground' : 'text-muted-foreground')}>{children}</dd>
+    </div>
+  )
+}
+
+const STATUS_DOT_CLASS_NAME = 'size-2 rounded-full'
+
+/**
+ * A header panel opens with focus on the panel itself, not on its first time stamp: the stamp's tooltip opened over the
+ * panel and the first Escape closed only that tooltip (seen on real data). Tab moves into the panel from there and
+ * Escape closes it. Radix sends this event to the panel, which it makes focusable (tabindex -1), as in ui/sheet.tsx.
+ */
+function focusPanelOnOpen(event: Event) {
+  event.preventDefault()
+  if (event.target instanceof HTMLElement) event.target.focus({ preventScroll: true })
+}
+
+/**
+ * Tab leaves a header panel as if the panel sat right after its button. The panel is drawn at the end of the page (a
+ * portal), so Tab past its last control used to fall to the page body while the panel closed (WCAG 2.4.3). Now Tab
+ * from the last control, or from the panel itself when it has none, goes to the stop after the button, and the panel
+ * closes because focus left it (Radix). Shift+Tab from the first control, or from the panel, goes back to the button,
+ * and the panel stays open. Radix points the open panel's button at the panel (`aria-controls`), so the panel's
+ * `onKeyDown` is all it needs.
+ */
+function tabOutOfPanel(event: KeyboardEvent<HTMLDivElement>) {
+  if (event.key !== 'Tab' || event.altKey || event.ctrlKey || event.metaKey) return
+  const panel = event.currentTarget
+  const trigger = panel.id ? document.querySelector<HTMLElement>(`[aria-controls="${CSS.escape(panel.id)}"]`) : null
+  if (!trigger) return
+  const stops = tabStops(panel)
+  const from = document.activeElement
+  const leaving = event.shiftKey
+    ? from === panel || from === stops[0]
+    : from === panel ? stops.length === 0 : from === stops.at(-1)
+  if (!leaving) return
+  // Nothing after the button: the browser's own Tab leaves the page, as it would from the button.
+  const next = event.shiftKey ? trigger : tabStopAfter(trigger, panel)
+  if (!next) return
+  event.preventDefault()
+  next.focus()
+}
+
+/**
+ * Live connection chip (§6, c-bits-live-indicator). One chip: "Live" when all is well, otherwise the one problem that
+ * most needs the person (live/live-chip.ts keeps the order). It opens a popover on click, tap or Enter (G10) with three
+ * plain rows, this computer, the cloud copy and sharing, times in the reader's clock, and the full sentences folded
+ * under Details. Sample mode demonstrates the placement. The feed reads "Live" only while SSE messages keep arriving
+ * (getConnectionStatus), never from an HTTP read. Nothing moves: a pinging dot on every page was one of the many
+ * moving things rule 8 counts.
  */
 export function LiveIndicator() {
   const { t } = useI18n()
   const { mode } = useWorkspace()
   const { sourceKind, sharedState } = useWorkModel()
-  const shared = sourceKind === 'sample' ? null : presentSharedState(sharedState)
   const connection = useConnection()
   const demonstration = sourceKind === 'sample'
-  const live = demonstration || connection.isLive
+  const shared = demonstration ? null : presentSharedState(sharedState)
+  const problem = demonstration ? null : liveChipProblem(connection, shared)
+  const chip = problem ? LIVE_CHIP_WORDS[problem] : null
+  const source = problem ? LIVE_CHIP_PROBLEM_SOURCE[problem] : null
+  const sync = connection.sync
+  // What a screen reader hears when the chip changes: its words, then the name of the state behind them. A status
+  // region reads its whole text again whenever any of it changes, and the sentences behind a state carry numbers that
+  // change on every poll ("Changes remaining: 1234."), so they stay in the popover's Details: a change is heard once.
+  const problemLabel = source === 'feed' ? t(connection.label)
+    : source === 'sharing' && shared ? t(shared.label)
+      : source === 'cloud' && sync ? t(sync.label) : null
+  const announcement = chip ? [t(chip.words), problemLabel].filter(Boolean).join('. ') : t('Live')
+  const servedFromCloud = isServedFromCloud(window.location.hostname)
   return (
     <Req ids={['R6.1', 'R6.4', 'R8.1']}>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <span tabIndex={0} data-connection-state={demonstration ? 'demonstration' : connection.state} className="inline-flex h-8 items-center gap-1.5 px-1 text-xs text-muted-foreground">
-            <span className="relative flex size-2">
-              {live && <span className="absolute inline-flex size-full rounded-full bg-shipped-foreground/40 motion-safe:animate-ping" />}
-              <span className={cn('relative inline-flex size-2 rounded-full', live ? 'bg-shipped-foreground' : connection.tone === 'warning' ? 'bg-attention-foreground' : 'bg-idle-foreground')} />
-            </span>
-            {/* Keep transport and cloud freshness distinct on phones as well as wider screens. */}
-            <span className="sr-only sm:not-sr-only">{demonstration ? t('Live') : t(connection.label)}</span>
-            {!demonstration && connection.sync && (
-              <span role="status" aria-label={`${connection.sync.label}. ${connection.sync.detail}`} data-sync-state={connection.sync.state} className={cn('inline-flex items-center border-l pl-2', connection.sync.tone === 'warning' ? 'text-attention-foreground' : 'text-muted-foreground')}>
-                {connection.sync.tone === 'warning' ? <CloudAlertIcon aria-hidden="true" className="size-4 shrink-0 sm:hidden" />
-                  : connection.sync.isCurrent ? <CloudCheckIcon aria-hidden="true" className="size-4 shrink-0 sm:hidden" />
-                    : <CloudIcon aria-hidden="true" className="size-4 shrink-0 sm:hidden" />}
-                <span className="sr-only sm:not-sr-only">{connection.sync.label}</span>
-              </span>
-            )}
-            {shared && <span role="status" aria-label={`${shared.label}. ${shared.detail}`} data-shared-state={shared.state} className={cn('inline-flex items-center border-l pl-2', shared.attention && 'text-attention-foreground')}>
-              {shared.attention ? <CloudAlertIcon aria-hidden="true" className="size-4 sm:hidden" /> : shared.state === 'disabled' ? <CloudOffIcon aria-hidden="true" className="size-4 sm:hidden" /> : <CloudIcon aria-hidden="true" className="size-4 sm:hidden" />}
-              <span className="sr-only sm:not-sr-only">{shared.label}</span>
-            </span>}
-          </span>
-        </TooltipTrigger>
-        <TooltipContent className="max-w-72">
-          {demonstration
-            ? mode === 'home' ? t('Streams from the local worker, localhost:37777 (demonstration)') : t('Checks cmem.ai for new sync changes every few seconds (demonstration)')
-            : <>{t(connection.detail)} {connection.tooltip} {connection.sync?.detail} {shared?.detail}</>}
-        </TooltipContent>
-      </Tooltip>
+      <Popover>
+        <PopoverTrigger asChild>
+          <Button variant="outline" size="sm" data-connection-state={demonstration ? 'demonstration' : connection.state} data-live-chip={problem ?? 'live'}
+            className={cn(HEADER_CONTROL_CLASS_NAME, 'min-w-0', chip?.tone === 'warning' && 'text-attention-foreground')}>
+            {source === 'cloud' ? <CloudAlertIcon aria-hidden="true" />
+              : <span aria-hidden="true" className={cn(STATUS_DOT_CLASS_NAME, 'shrink-0', !chip ? 'bg-shipped-foreground' : chip.tone === 'warning' ? 'bg-attention-foreground' : 'bg-idle-foreground')} />}
+            {/* A feed that is live beside a cloud or sharing problem says so where there is room. */}
+            {chip && source !== 'feed' && <span className="hidden sm:inline">{t('Live')} ·</span>}
+            {/* Long translations end in an ellipsis on a phone rather than widening the page; the popover has them whole.
+                9rem (144px on a phone): at 390px the bar has 164.8px for these words once the logo, its gaps, this chip's
+                dot and padding, the machines and the menu are placed (measured on real data, 2026-11-16), so the page
+                title keeps about 20px. From 640px up there is room for every language's words. */}
+            <span className="max-w-[9rem] truncate sm:max-w-none">{chip ? t(chip.words) : t('Live')}</span>
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent align="end" onOpenAutoFocus={focusPanelOnOpen} onKeyDown={tabOutOfPanel} className="w-80 gap-3">
+          <p className="text-sm font-medium">{t('Connection')}</p>
+          {demonstration ? (
+            <p className="text-xs text-muted-foreground">{mode === 'home' ? t('Streams from the local worker, localhost:37777 (demonstration)') : t('Checks cmem.ai for new sync changes every few seconds (demonstration)')}</p>
+          ) : (
+            <>
+              <dl className="grid gap-2.5 text-xs">
+                <StatusRow title={servedFromCloud ? t('Cloud feed') : t('This computer')} tone={connection.tone}
+                  mark={<span className={cn(STATUS_DOT_CLASS_NAME, connection.isLive ? 'bg-shipped-foreground' : connection.tone === 'warning' ? 'bg-attention-foreground' : 'bg-idle-foreground')} />}>
+                  {t(connection.label)}
+                  {connection.lastSuccessfulCheckAt && <> · {sentenceWith(t('checked {time}'), 'time', <LocalTime iso={connection.lastSuccessfulCheckAt} />)}</>}
+                </StatusRow>
+                {sync && <StatusRow title={t('Cloud copy')} tone={sync.tone} mark={sync.tone === 'warning' ? <CloudAlertIcon className="size-4" /> : <CloudIcon className="size-4" />}>{t(sync.label)}</StatusRow>}
+                {shared && <StatusRow title={t('My Work sharing')} tone={shared.attention ? 'warning' : 'neutral'} mark={<Share2Icon className="size-4" />}>{t(shared.label)}</StatusRow>}
+              </dl>
+              <Collapsible>
+                <CollapsibleFoldTrigger className="text-xs">{t('Details')}</CollapsibleFoldTrigger>
+                <CollapsibleContent className="space-y-1.5 pt-2 text-xs text-muted-foreground">
+                  <p>{t(connection.detail)}</p>
+                  {connection.activityCheckedAt && <p>{sentenceWith(t('Activity last inspected {time}'), 'time', <LocalTime iso={connection.activityCheckedAt} />)}</p>}
+                  {connection.clockSkew && <p>{t('Source and browser clocks differ; freshness uses received heartbeats.')}</p>}
+                  {/* English for now: the worker's message plus sentences from src/ui/viewer/utils/sync-presentation.ts.
+                      They go through t() once that file's change in the classic viewer's worktree reaches main. */}
+                  {sync && <p>{sync.detail}</p>}
+                  {shared && <p>{t(shared.detail)}</p>}
+                </CollapsibleContent>
+              </Collapsible>
+              <p className="text-xs text-muted-foreground">{t('Connection status does not indicate an agent is running.')}</p>
+            </>
+          )}
+        </PopoverContent>
+      </Popover>
+      {/* The chip's words are read out when they change (Keep: role="status" on the changing text). */}
+      <span role="status" className="sr-only" data-sync-state={demonstration ? undefined : sync?.state}>{announcement}</span>
     </Req>
   )
 }
 
-/** Which machines are reporting and how fresh each one is (§13.6). This computer's freshness is the live feed's. */
-export function DeviceFreshness() {
+/** Where the cloud-sync docs explain adding a machine (docs/public/cloud-sync.mdx, "Requirements and setup"). */
+const CLOUD_SYNC_GUIDE_URL = 'https://docs.claude-mem.ai/cloud-sync'
+/** The command those docs give for connecting a machine to cloud sync. */
+const CONNECT_MACHINE_COMMAND = 'npx claude-mem install'
+
+/**
+ * Which machines are reporting and how fresh each one is (§13.6, c-bits-device-freshness). This computer's freshness
+ * is the live feed's. Opens on click, tap or Enter (G10; it was a button that did nothing, its card hover-only). Each
+ * machine has a dot, a word and a time in the reader's clock; the Live sentence is not repeated here.
+ */
+export function DeviceFreshness({ className }: { className?: string }) {
   const { t } = useI18n()
   const { sourceKind, devices } = useWorkModel()
   const connection = useConnection()
-  const reportingNow = (device: Device) => sourceKind === 'sample' || device.syncedMinutesAgo !== 0 ? device.online : connection.isLive
+  const sample = sourceKind === 'sample'
+  const reportingNow = (device: Device) => sample || device.syncedMinutesAgo !== 0 ? device.online : connection.isLive
+  const countWord = devices.length === 1 ? t('machine') : t('machines')
   return (
     <Req ids={['R13.8', 'R13.2']}>
-      <HoverCard openDelay={100}>
-        <HoverCardTrigger asChild>
-          <Button variant="ghost" size="sm" className="px-2 text-xs text-muted-foreground">{devices.length}<span className="hidden sm:inline">{devices.length === 1 ? t('machine') : t('machines')}</span><span className="sr-only sm:hidden">{devices.length === 1 ? t('machine') : t('machines')}</span></Button>
-        </HoverCardTrigger>
-        <HoverCardContent className="w-64 space-y-2">
-          <p className="text-xs font-medium">{t('Machines reporting into this view')}</p>
-          {devices.map((device) => (
-            <div key={device.id} className="flex items-center justify-between text-xs">
-              <span className="flex items-center gap-2">
-                <span className={cn('size-1.5 rounded-full', reportingNow(device) ? 'bg-shipped-foreground' : 'bg-idle-foreground')} />
-                {device.name}
-              </span>
-              <span className="text-muted-foreground">{device.syncedMinutesAgo !== 0 ? interpolate(t('synced {minutes} min ago'), { minutes: device.syncedMinutesAgo }) : sourceKind === 'sample' ? t('this machine') : t(connection.label)}</span>
-            </div>
-          ))}
-          {sourceKind !== 'sample' && <p className="text-xs text-muted-foreground">{connection.tooltip}</p>}
-        </HoverCardContent>
-      </HoverCard>
+      <Popover>
+        <PopoverTrigger asChild>
+          <Button variant="outline" size="sm" className={cn(HEADER_CONTROL_CLASS_NAME, className)}>
+            <LaptopIcon aria-hidden="true" />
+            <span className="tabular">{devices.length}</span>
+            {/* A phone and the floating pill show the icon and the number; the word is still read out. */}
+            <span className="max-sm:sr-only [.header-pill_&]:sr-only">{countWord}</span>
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent align="end" onOpenAutoFocus={focusPanelOnOpen} onKeyDown={tabOutOfPanel} className="w-80 gap-3">
+          <p className="text-sm font-medium">{t('Machines reporting into this view')}</p>
+          <dl className="grid gap-2.5 text-xs">
+            {devices.map((device) => (
+              <StatusRow key={device.id} title={deviceName(device, t)} mark={<span className={cn(STATUS_DOT_CLASS_NAME, reportingNow(device) ? 'bg-shipped-foreground' : 'bg-idle-foreground')} />}>
+                {device.syncedMinutesAgo !== 0 ? interpolate(t('synced {minutes} min ago'), { minutes: device.syncedMinutesAgo })
+                  : sample ? t('this machine')
+                    : <>{t(connection.label)}{connection.lastSuccessfulCheckAt && <> · {sentenceWith(t('checked {time}'), 'time', <LocalTime iso={connection.lastSuccessfulCheckAt} />)}</>}</>}
+              </StatusRow>
+            ))}
+          </dl>
+          {devices.length === 1 && (
+            <p className="border-t pt-3 text-xs text-muted-foreground">
+              {sentenceWith(t('To see another machine’s work here, run {command} on it and choose CMEM Pro.'), 'command', <code className="font-mono text-foreground">{CONNECT_MACHINE_COMMAND}</code>)}{' '}
+              <a href={CLOUD_SYNC_GUIDE_URL} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-foreground underline underline-offset-4 hover:decoration-2">
+                {t('Cloud sync guide')}<ExternalLinkIcon aria-hidden="true" className="size-3" />
+              </a>
+            </p>
+          )}
+        </PopoverContent>
+      </Popover>
     </Req>
   )
 }
 
-const CLAUDE_MEM_REPO_URL = 'https://github.com/thedotmack/claude-mem'
-const CLAUDE_MEM_REPO_API_URL = 'https://api.github.com/repos/thedotmack/claude-mem'
+export const CLAUDE_MEM_REPO_URL = 'https://github.com/thedotmack/claude-mem'
 
-/** The repo's GitHub star count, read once from the public API. Shows no number until a real one arrives. */
-export function GitHubStars() {
+/**
+ * The star count in a box that keeps its width before and after it loads (c-bits-github-stars M: the button grew and
+ * pushed the header when the number arrived). Seven characters fits the longest compact form our languages write
+ * ("117,4 k" in French). A quiet bar stands in while GitHub is asked (at most GITHUB_STARS_TIMEOUT_MS), then the
+ * number, or a dash with its reason read out when GitHub gave none (live/github-star-count.ts).
+ */
+export function StarCount({ read, className }: { read: StarCountRead; className?: string }) {
   const { t, locale } = useI18n()
-  const [stargazerCount, setStargazerCount] = useState<number | null>(null)
-  useEffect(() => {
-    let cancelled = false
-    fetch(CLAUDE_MEM_REPO_API_URL)
-      .then((response) => {
-        if (!response.ok) throw new Error(`GitHub repo read failed: HTTP ${response.status}`)
-        return response.json() as Promise<{ stargazers_count: number }>
-      })
-      .then((repo) => { if (!cancelled) setStargazerCount(repo.stargazers_count) })
-      .catch((error: unknown) => console.warn('[my-work] GitHub star count unavailable:', error))
-    return () => { cancelled = true }
-  }, [])
   return (
-    <Button asChild variant="outline" size="sm" className="h-7 gap-1.5 px-2 text-xs">
+    <span data-star-count={read.state} className={cn('inline-flex w-[7ch] shrink-0 items-center justify-end mono-number', className)}>
+      {read.state === 'reading' ? <span aria-hidden="true" className="h-1.5 w-full rounded-full bg-foreground/10" />
+        : read.state === 'read' ? new Intl.NumberFormat(locale, { notation: 'compact', maximumFractionDigits: 1 }).format(read.count)
+          : <><span aria-hidden="true">—</span><span className="sr-only">{t('Star count unavailable')}</span></>}
+    </span>
+  )
+}
+
+/** The repo's GitHub star button. My Work's header keeps it in its "…" menu (G6); the component stays for other layouts. */
+export function GitHubStars() {
+  const { t } = useI18n()
+  // On the bar the count is always in sight, so it is asked for at once.
+  const stars = useGitHubStarCount()
+  return (
+    <Button asChild variant="outline" size="sm" className={cn(HEADER_CONTROL_CLASS_NAME, 'text-foreground')}>
       <a href={CLAUDE_MEM_REPO_URL} target="_blank" rel="noreferrer" aria-label={t('Star claude-mem on GitHub')}>
         <StarIcon className="size-3.5" />
         <span className="hidden sm:inline">{t('Star')}</span>
-        {stargazerCount !== null && <span className="tabular-nums">{new Intl.NumberFormat(locale, { notation: 'compact', maximumFractionDigits: 1 }).format(stargazerCount)}</span>}
+        <StarCount read={stars} />
       </a>
     </Button>
   )
 }
 
 /** Opens the My Work feedback form on GitHub (.github/ISSUE_TEMPLATE/my-work-feedback.yml). */
-const MY_WORK_FEEDBACK_URL = `${CLAUDE_MEM_REPO_URL}/issues/new?template=my-work-feedback.yml`
+export const MY_WORK_FEEDBACK_URL = 'https://github.com/thedotmack/claude-mem/issues/new?template=my-work-feedback.yml'
 
+/**
+ * Feedback, which leaves the app for GitHub, so it carries an external-link mark and keeps its word on a phone
+ * (c-bits-feedback-link). My Work's header keeps it in its "…" menu (G6); the component stays for other layouts.
+ */
 export function FeedbackLink() {
   const { t } = useI18n()
   return (
-    <Button asChild variant="outline" size="sm" className="h-7 gap-1.5 px-2 text-xs">
+    <Button asChild variant="outline" size="sm" className={cn(HEADER_CONTROL_CLASS_NAME, 'text-foreground')}>
       <a href={MY_WORK_FEEDBACK_URL} target="_blank" rel="noreferrer" aria-label={t('Send feedback about My Work on GitHub')}>
         <MessageSquareIcon className="size-3.5" />
-        <span className="hidden sm:inline">{t('Feedback')}</span>
+        <span>{t('Feedback')}</span>
+        <ExternalLinkIcon aria-hidden="true" className="size-3" />
       </a>
     </Button>
   )
 }
 
-/** The previous memory viewer, still served by the worker at /viewer. */
-export function ClassicViewerLink() {
+/** The previous memory viewer, still served by the worker. */
+export const CLASSIC_VIEWER_PATH = '/viewer'
+
+/**
+ * The classic viewer: the door to the memory feed, an outlined button with an icon (c-bits-classic-viewer-link; it was
+ * a 17px text link). From 768px up it sits in the bar; on a phone it is a row in the "…" menu (header-menu.tsx). What it
+ * opens is in a tooltip, which shows on keyboard focus as well as hover (G10; it was a native title, hover only).
+ */
+export function ClassicViewerLink({ className }: { className?: string }) {
   const { t } = useI18n()
   return (
-    <a href="/viewer" className="hidden text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline md:inline" title={t('Open the previous memory viewer')}>
-      {t('Classic viewer')}
-    </a>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button asChild variant="outline" size="sm" className={cn(HEADER_CONTROL_CLASS_NAME, 'hidden text-foreground md:inline-flex', className)}>
+          <a href={CLASSIC_VIEWER_PATH}>
+            <HistoryIcon aria-hidden="true" />
+            {t('Classic viewer')}
+          </a>
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{t('Open the previous memory viewer')}</TooltipContent>
+    </Tooltip>
   )
 }
 

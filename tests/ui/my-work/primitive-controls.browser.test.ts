@@ -30,7 +30,12 @@ failOnCiWithoutChrome('CI requires Chrome for the My Work primitive size, cursor
   const { compile } = appRequire('@tailwindcss/node');
   const { Scanner } = appRequire('@tailwindcss/oxide');
   const css = await compile(readFileSync(resolve(app, 'src/index.css'), 'utf8'), { base: app, onDependency() {} });
-  const scanner = new Scanner({ sources: [{ base: resolve(app, 'src'), pattern: '**/*.{ts,tsx}', negated: false }] });
+  // The fixture's own caller classes too (the Team button's `hover:bg-accent`): a caller class no app file happens to
+  // use would otherwise not be compiled, and the test would measure a class that does not exist.
+  const scanner = new Scanner({ sources: [
+    { base: resolve(app, 'src'), pattern: '**/*.{ts,tsx}', negated: false },
+    { base: import.meta.dir, pattern: 'primitive-controls.browser.test.ts', negated: false },
+  ] });
   // Plus the one class only this fixture uses (a caller's own pressed look); no app file has an active: background yet.
   const styles = css.build([...scanner.scan(), 'active:bg-accent']);
   const bundle = compileBrowserFixture(`

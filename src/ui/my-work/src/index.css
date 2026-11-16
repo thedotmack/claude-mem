@@ -309,6 +309,19 @@
   html.dark {
     color-scheme: dark;
     }
+  /*
+   * A focused control never sits under the sticky header or the phone's bottom bar (c-shell-resizable-navbar,
+   * c-shell-notch F focus-not-obscured; WCAG 2.4.11): scrolling something into view (focus, the home anchors) keeps
+   * this much room. The header's floating pill ends 76px down at the 16px root (3.5rem tall, 20px lower), 79.5px at
+   * 17px, so 5.5rem leaves 8–12px; the pinned bottom bar is 69px tall (60px items, 8px padding, 1px edge), so 5rem plus
+   * the safe area leaves 11px. Only while the My Work shell is on the page: the install funnel keeps its own layout.
+   */
+  html:has([data-slot="work-shell"]) {
+    scroll-padding-top: 5.5rem;
+    @media (width < 48rem) {
+      scroll-padding-bottom: calc(5rem + env(safe-area-inset-bottom));
+    }
+    }
   body {
     @apply bg-background text-foreground antialiased;
     background-image:

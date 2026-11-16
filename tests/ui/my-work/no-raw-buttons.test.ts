@@ -10,8 +10,9 @@ import ts from 'typescript';
  *
  * The ceiling is the count on 2026-11-15 at the start of Phase 1 (44 tags in 10 files). Each later phase lowers it
  * as its pages move onto Button; Phase 8 sets it to 0. Never raise it.
+ * Phase 2 (2026-11-16): the focus rail's rows and chips moved onto Button (focus-nav.tsx, 5 tags): 39 in 9 files.
  */
-const RAW_BUTTON_CEILING = 44;
+const RAW_BUTTON_CEILING = 39;
 
 const MY_WORK_SOURCE = resolve(import.meta.dir, '../../../src/ui/my-work/src');
 const SCANNED_FOLDERS = ['pages', 'components'];

@@ -2,6 +2,8 @@
 // (`work`, `view`, `rules`) and its actions at the top level, after MemeDeck's lib/store.
 import type { FocusChange, Request } from '../data.ts'
 import type { OwnerRule, RuleChange } from '../data-rules.ts'
+import type { ThemeChoice } from '../lib/theme.ts'
+import type { HomeAnchor } from './home-anchor.ts'
 import type { ConnectionStatus } from '../live/connection-status.ts'
 import type { ReviewResult } from '../live/review-response.ts'
 import type { RuleDecision, SavedRuleDecision } from '../live/rule-actions.ts'
@@ -85,10 +87,24 @@ export interface ViewState {
   /** The area My Work is filtered to (an area id or Other); null shows every request. */
   focusChoice: string | null
   openRequest: OpenRequest | null
+  /** The place on the home page the address names (`/#all-requests`), or null. Only with section work and no area. */
+  homeAnchor: HomeAnchor | null
+  /**
+   * The person's last ask to go to a home anchor; each new ask (a new `sequence`) scrolls there once (App.tsx), and an
+   * ask for `focus-areas` shows every area on the board. Cleared when they leave home or go to its top, so a board
+   * drawn later never acts on an old ask.
+   */
+  homeAnchorRequest: { anchor: HomeAnchor; sequence: number } | null
   /** Sample mode's place and TeamBrain switches. Outside sample mode the place comes from the source. */
   workspace: Workspace
   showSpec: boolean
-  dark: boolean
+  /** Decision G8: the person's own choice, saved with the display preferences. */
+  theme: ThemeChoice
+  /**
+   * `?theme=` in the address this visit opened with: it wins over `theme` for this visit only and is never saved (G8),
+   * until the person picks a theme in the menu. The screens show `themeChoiceInUse(view)` (slices/view-slice.ts).
+   */
+  themeForThisVisit: ThemeChoice | null
   listView: WorkListView
   filter: WorkFilter
   sort: WorkSort
@@ -100,6 +116,8 @@ export interface ViewSlice {
   view: ViewState
   goToPage: (page: NavPage) => void
   goToFocus: (focusAreaId: string) => void
+  /** The home page, scrolled to `anchor` (and its address `/#anchor`), or to its top when null. */
+  goToHome: (anchor: HomeAnchor | null) => void
   selectFocus: (selection: FocusSelection) => void
   openRequestDrawer: (request: Request) => void
   closeRequestDrawer: () => void
@@ -112,7 +130,8 @@ export interface ViewSlice {
   reportOpen: () => void
   setWorkspace: (change: Partial<Workspace>) => void
   setShowSpec: (showSpec: boolean) => void
-  setDark: (dark: boolean) => void
+  /** Saves the choice; the address's `?theme=` stops overriding it for the rest of the visit. */
+  setTheme: (theme: ThemeChoice) => void
   setListView: (listView: WorkListView) => void
   setFilter: (filter: WorkFilter) => void
   setSort: (sort: WorkSort) => void
@@ -178,7 +197,6 @@ export type BoundStore = WorkSlice & ViewSlice & RulesSlice & FocusSlice
 export interface StoreEnvironment {
   href: () => string
   writeUrl: (url: URL, replace: boolean) => void
-  prefersDark: boolean
   storage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> | null
   /** Usage counts describe real local work only; the sample fixtures are not usage. */
   reportsUsage: boolean

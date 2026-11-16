@@ -7,6 +7,27 @@ const WORDS: Partial<Record<Locale, Record<string, string>>> = {
   fr: { Today: 'Aujourd’hui', Yesterday: 'Hier' },
 }
 
+/**
+ * A recorded instant (an ISO time) in the reader's own clock (G9, plan rule 9): short, "6:09 pm" today or "Nov 15,
+ * 6:09 pm" on another day, with the full stamp for its tooltip. Twelve-hour, except French, which reads a 24-hour clock
+ * as displayTime does. Null when the value is not an ISO time, so a caller never prints a raw stamp as a time.
+ */
+export function clockTime(iso: string, now: number = Date.now()): { short: string; full: string } | null {
+  const at = Date.parse(iso)
+  if (!/^\d{4}-\d{2}-\d{2}T/.test(iso) || !Number.isFinite(at)) return null
+  const locale = getLocale()
+  const date = new Date(at)
+  const sameDay = new Date(now).toDateString() === date.toDateString()
+  const short = new Intl.DateTimeFormat(locale, {
+    ...(sameDay ? {} : { month: 'short', day: 'numeric' }), hour: 'numeric', minute: '2-digit', hour12: locale !== 'fr',
+  }).format(date)
+  return {
+    // English writes the half of the day in lower case, as the rest of My Work does ("3:45 pm").
+    short: locale === 'en' ? short.replace(/\s?(AM|PM)$/, (_, half: string) => ` ${half.toLowerCase()}`) : short,
+    full: new Intl.DateTimeFormat(locale, { dateStyle: 'full', timeStyle: 'long' }).format(date),
+  }
+}
+
 /** Localize recorded display dates without changing model timestamps or their sort keys. */
 export function displayTime(value: string): string {
   const locale = getLocale()

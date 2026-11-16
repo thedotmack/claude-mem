@@ -178,7 +178,9 @@ export function RequestCard({ request, onOpen, onOpenFocus }: { request: Request
               <span className={cn('truncate text-xs text-muted-foreground', !team && 'sr-only')}>{interpolate(t('asked by {askedBy}'), { askedBy: request.askedBy })}</span>
             </Req>
           </div>
-          <div className="flex items-center gap-1.5">
+          {/* The status never gives way: squeezed, its badge wrapped one word over three lines once the agent's name
+              joined the left side (c-bits-agent-icon). The left side shrinks instead; its texts end in an ellipsis. */}
+          <div className="flex shrink-0 items-center gap-1.5">
             {/* A status change cross-fades the badge, so the move is seen, not just the result. */}
             <span key={request.state} className="motion-safe:animate-in motion-safe:fade-in motion-safe:zoom-in-95 motion-safe:duration-500"><StateBadge state={request.state} /></span>
             {request.media && <MediaCountBadge media={{ version: 1, attachments: request.media.preview }} count={request.media.count} />}

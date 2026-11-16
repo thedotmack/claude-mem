@@ -13,8 +13,18 @@ import { SOLO_REQUESTER } from './work-view-overview.ts'
 import type { WorkViewAgent, WorkViewBuildStory, WorkViewGoalItem, WorkViewGoalList, WorkViewHumanRequest, WorkViewProgress, WorkViewRefresh, WorkViewRule, WorkViewSnapshot, WorkViewWorkProduct } from './work-view-api-types.ts'
 
 export const THIS_COMPUTER: Device = { id: 'this-computer', name: 'This computer', syncedMinutesAgo: 0, online: true }
-/** Stands in when a request names no agent the snapshot knows: the card then names the machine (§13.2). */
-const UNRECORDED_AGENT: Agent = { id: 'agent-not-recorded', tool: 'other', name: 'Agent not recorded', role: 'Recorded work', deviceId: THIS_COMPUTER.id }
+/**
+ * Stands in when a request names no agent the snapshot knows: the card then names the machine (§13.2). The UI words
+ * its name in the reader's language and draws its tile dashed (components/bits.tsx AgentIcon).
+ */
+export const UNRECORDED_AGENT: Agent = { id: 'agent-not-recorded', tool: 'other', name: 'Agent not recorded', role: 'Recorded work', deviceId: THIS_COMPUTER.id }
+/**
+ * The mapper's English words in an agent's role (toAgent): the role of a session with no title and no project folder,
+ * and what goes before a subagent's role. The UI words both in the reader's language (components/bits.tsx
+ * agentRoleWords); a session title or folder name is the agent's own and stays as written.
+ */
+export const RECORDED_SESSION_ROLE = 'Recorded session'
+export const SUBAGENT_ROLE_PREFIX = 'Subagent · '
 /**
  * The English filler written in place of a next step when none is recorded, here and by older workers. Its one
  * definition: the UI (components/bits.tsx) and the shared page (to-shared-focus.ts) import it, and the UI treats it as
@@ -98,13 +108,13 @@ function parseRecordKey(key: string): string[] {
 
 export function toAgent(agent: WorkViewAgent): Agent {
   const tool = KNOWN_TOOLS.includes(agent.platformSource as AgentTool) ? agent.platformSource as AgentTool : 'other'
-  const mapped: Agent = { id: agent.id, tool, name: agent.label, role: agent.sessionTitle ?? lastPathSegment(agent.project) ?? 'Recorded session', deviceId: THIS_COMPUTER.id }
+  const mapped: Agent = { id: agent.id, tool, name: agent.label, role: agent.sessionTitle ?? lastPathSegment(agent.project) ?? RECORDED_SESSION_ROLE, deviceId: THIS_COMPUTER.id }
   if (!agent.isSubagent) return mapped
   const finished = agent.presence?.status === 'finished'
   const finishedAt = finished && agent.presence?.finishedAt ? Date.parse(agent.presence.finishedAt) : NaN
   return {
     ...mapped,
-    role: `Subagent · ${mapped.role}`,
+    role: `${SUBAGENT_ROLE_PREFIX}${mapped.role}`,
     status: finished ? 'finished' : agent.presence?.status === 'recent' ? 'working' : 'quiet',
     ...(Number.isFinite(finishedAt) ? { finishedAt: formatDateTime(finishedAt) } : {}),
     canMarkFinished: agent.canMarkFinished === true,

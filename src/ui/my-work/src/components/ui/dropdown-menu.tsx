@@ -112,7 +112,11 @@ function DropdownMenuGroup({
   )
 }
 
-/** `hint`: one short line saying what the action does ("moves to Past focus"), at the row's right end (D b9 M 193). */
+/**
+ * `hint`: one short line saying what the action does ("moves to Past focus"), at the row's right end (D b9 M 193).
+ * With `asChild` (a link row) the row is its one child, so a hint goes inside that child instead: a second child
+ * would break the slot, which is why an item without a hint passes its children alone.
+ */
 function DropdownMenuItem({
   className,
   inset,
@@ -125,6 +129,8 @@ function DropdownMenuItem({
   variant?: "default" | "destructive"
   hint?: React.ReactNode
 }) {
+  const hasHint = hint !== undefined && hint !== null
+  if (hasHint && props.asChild) throw new Error("DropdownMenuItem: put the hint inside the asChild element")
   return (
     <DropdownMenuPrimitive.Item
       data-slot="dropdown-menu-item"
@@ -137,12 +143,14 @@ function DropdownMenuItem({
       )}
       {...props}
     >
-      {children}
-      {hint !== undefined && hint !== null && (
-        <span data-slot="dropdown-menu-item-hint" className="ml-auto pl-4 text-xs text-muted-foreground">
-          {hint}
-        </span>
-      )}
+      {hasHint ? (
+        <>
+          {children}
+          <span data-slot="dropdown-menu-item-hint" className="ml-auto pl-4 text-xs text-muted-foreground">
+            {hint}
+          </span>
+        </>
+      ) : children}
     </DropdownMenuPrimitive.Item>
   )
 }

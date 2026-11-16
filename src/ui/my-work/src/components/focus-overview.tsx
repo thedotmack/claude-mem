@@ -8,18 +8,29 @@ import { FocusArtwork } from './focus-artwork'
 import type { FocusArtwork as ArtworkDensity } from '@/store/store-types'
 
 /** The same saved areas in setup and My Work. Reading this view never starts inference. */
-export function FocusOverview({ areas, requests, loading = false, workLoading = false, incomplete = false, emptyMessage, discovering = false, onOpenArea, onOpenRequest, artwork = 'full', onArtworkChange }: {
+export function FocusOverview({ areas, requests, loading = false, workLoading = false, incomplete = false, emptyMessage, discovering = false, onOpenArea, onOpenRequest, artwork = 'full', onArtworkChange, anchorId, expandAllOn = 0 }: {
   areas: readonly FocusArea[]; requests: readonly Request[]; loading?: boolean; discovering?: boolean
   workLoading?: boolean; incomplete?: boolean; emptyMessage?: string
   onOpenArea?: (id: string) => void; onOpenRequest?: (request: Request) => void
   /** Display density only. The setup screen has no store, so it shows full artwork without the control. */
   artwork?: ArtworkDensity; onArtworkChange?: (artwork: ArtworkDensity) => void
+  /** The board's address on the page (My Work: `focus-areas`); setup passes none. */
+  anchorId?: string
+  /** Each new value shows every area (a link to `/#focus-areas`); 0 leaves the choice to the person. */
+  expandAllOn?: number
 }) {
   const { t } = useI18n()
   const id = useId()
   const [expanded, setExpanded] = useState<string | null>(null)
   const [showSuggestions, setShowSuggestions] = useState(false)
-  const [showAll, setShowAll] = useState(false)
+  const [showAll, setShowAll] = useState(expandAllOn > 0)
+  // A later link to the whole board opens it again after the person folded it back (set while rendering: React's way
+  // to follow a prop without an extra paint).
+  const [expandedFor, setExpandedFor] = useState(expandAllOn)
+  if (expandAllOn !== expandedFor) {
+    setExpandedFor(expandAllOn)
+    if (expandAllOn > 0) setShowAll(true)
+  }
   const [query, setQuery] = useState('')
   const overview = useMemo(() => focusOverview(areas, requests), [areas, requests])
   // Suggestions stay visible after setup. Opening one reaches its existing Keep / Dismiss controls.
@@ -31,7 +42,7 @@ export function FocusOverview({ areas, requests, loading = false, workLoading = 
   const otherCount = overview.other.filter((request) => !request.closed).length
   const sortingCount = overview.sorting.filter((request) => !request.closed).length
   return (
-    <section className="focus-overview" aria-labelledby={`${id}-heading`} aria-busy={loading}>
+    <section id={anchorId} className="focus-overview" aria-labelledby={`${id}-heading`} aria-busy={loading}>
       <header className="focus-overview-heading">
         <div><p className="section-label">{t(discovering ? 'Found in your conversations' : 'The bigger picture')}</p>
           <h2 id={`${id}-heading`}>{t('Your focus areas')}</h2>

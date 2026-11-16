@@ -8,7 +8,7 @@ import { sampleSource } from '@/live/sample-source'
 import { isServedFromCloud } from '@/live/served-from'
 import { sendHostedUsage, sendUsageReport } from '@/live/usage'
 import type { WorkDataSource, WorkModel } from '@/live/work-data-source'
-import { createBoundStore } from './create-store'
+import { createBoundStore, PREFERENCES_STORAGE_KEY } from './create-store'
 import { createSelectors } from './create-selectors'
 import type { StoreEnvironment, Workspace } from './store-types'
 
@@ -24,7 +24,7 @@ function browserStorage(): StoreEnvironment['storage'] {
   let storage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>
   try {
     storage = window.localStorage
-    storage.getItem('claude-mem:my-work:preferences')
+    storage.getItem(PREFERENCES_STORAGE_KEY)
   } catch {
     const visit = new Map<string, string>()
     storage = { getItem: (key) => visit.get(key) ?? null, setItem: (key, value) => { visit.set(key, value) }, removeItem: (key) => { visit.delete(key) } }
@@ -39,7 +39,6 @@ function browserStorage(): StoreEnvironment['storage'] {
 const useStoreBase = createBoundStore({
   href: () => window.location.href,
   writeUrl: (url, replace) => replace ? window.history.replaceState(null, '', url) : window.history.pushState(null, '', url),
-  prefersDark: window.matchMedia('(prefers-color-scheme: dark)').matches,
   storage: browserStorage(),
   // Sample fixtures are not usage. The hosted viewer uses the same local source
   // (the cloud worker) but its worker sets DO_NOT_TRACK, so its counts go to

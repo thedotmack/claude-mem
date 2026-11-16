@@ -26,6 +26,7 @@ import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
 import { needsYou, OTHER_FOCUS_AREA_ID, SAMPLE_RUNS, startedTimestamp, type Agent as WorkAgent, type LiveState, type Request } from '@/data'
 import { type WorkFilter, type WorkListView, type WorkSort, deviceById, useFreshlyUpdated, useStore, useWorkModel, useWorkspace } from '@/store'
+import type { HomeAnchor } from '@/store/home-anchor'
 import { useShallow } from 'zustand/react/shallow'
 import type { BuildStory, RequestReadError } from '@/live/work-data-source'
 import { createFocusAreaResolver } from '@/live/to-focus-model'
@@ -304,7 +305,7 @@ function ListView({ requests, sort, onSort, onOpen, onOpenFocus }: { requests: R
           <ListItem key={request.id} requestId={request.id}>
             <button type="button" onClick={() => onOpen(request)} className="flex w-full flex-col gap-2 p-4 text-left focus-visible:outline-2 focus-visible:outline-ring">
               <span className="flex w-full items-start gap-2.5">
-                <AgentIcon agentId={request.agentId} />
+                <AgentIcon agentId={request.agentId} showName={false} />
                 <span className={cn('min-w-0 flex-1 pt-0.5 text-[0.95rem] leading-snug font-medium', !request.title && 'text-muted-foreground')}>{titleOf(request)}</span>
               </span>
               <span className="flex flex-col items-start gap-1.5 pl-[38px]">
@@ -332,7 +333,7 @@ function ListView({ requests, sort, onSort, onOpen, onOpenFocus }: { requests: R
           <TableBody>
             {requests.map((request) => (
               <ListTableRow key={request.id} requestId={request.id} onClick={() => onOpen(request)}>
-                <TableCell className="align-top"><AgentIcon agentId={request.agentId} /></TableCell>
+                <TableCell className="align-top"><AgentIcon agentId={request.agentId} showName={false} /></TableCell>
                 <TableCell className="max-w-72 align-top whitespace-normal">
                   <button type="button" onClick={(event) => { event.stopPropagation(); onOpen(request) }} className={cn('rounded-sm text-left leading-snug font-medium hover:underline focus-visible:outline-2 focus-visible:outline-ring', !request.title && 'text-muted-foreground')}>{titleOf(request)}</button>
                   <div><FocusAreaChip focusAreaId={request.focusAreaId} onOpen={onOpenFocus} /></div>
@@ -505,6 +506,7 @@ export function MyWork({ focusAreaId, onOpen, onOpenFocus, onOpenRules }: { focu
   // How the person likes to see My Work is saved across visits (store/create-store.ts).
   const { listView: view, filter, sort } = useStore(useShallow((state) => ({ listView: state.view.listView, filter: state.view.filter, sort: state.view.sort })))
   const focusArtwork = useStore((state) => state.view.focusArtwork)
+  const homeAnchorRequest = useStore((state) => state.view.homeAnchorRequest)
   const { setListView: setView, setFilter, setSort } = useStore.getState()
   const [storyOpen, setStoryOpen] = useState(false)
   const matches = FILTERS.find((entry) => entry.value === filter)!.matches
@@ -520,11 +522,13 @@ export function MyWork({ focusAreaId, onOpen, onOpenFocus, onOpenRules }: { focu
         </Alert>
       )}
       <FocusChangeBar changes={focusChanges} />
-      {!focusAreaId && <FocusOverview areas={focusAreas} requests={allRequests} incomplete={allReadErrors.length > 0} onOpenArea={onOpenFocus} onOpenRequest={onOpen} artwork={focusArtwork} onArtworkChange={useStore.getState().setFocusArtwork} />}
+      {/* `/#focus-areas` (the rail's and chip row's "All N", the bottom bar's Focus) opens this board with every area shown. */}
+      {!focusAreaId && <FocusOverview anchorId={'focus-areas' satisfies HomeAnchor} expandAllOn={homeAnchorRequest?.anchor === 'focus-areas' ? homeAnchorRequest.sequence : 0} areas={focusAreas} requests={allRequests} incomplete={allReadErrors.length > 0} onOpenArea={onOpenFocus} onOpenRequest={onOpen} artwork={focusArtwork} onArtworkChange={useStore.getState().setFocusArtwork} />}
       {/* Every request in the area, closed ones too: the combined progress counts each reviewed request (D1's rule). */}
       {area ? <FocusHeader key={area.id} area={area} requests={requests} changes={focusChanges} />
         : focusAreaId === OTHER_FOCUS_AREA_ID && <OtherHeader requests={requests} />}
-      {!focusAreaId && <h2 className="section-label">{t('All requests')}</h2>}
+      {/* `/#all-requests`: the rail's and the bottom bar's My Work land here (page-02 deep-linking). */}
+      {!focusAreaId && <h2 id={'all-requests' satisfies HomeAnchor} className="section-label">{t('All requests')}</h2>}
       <Summary requests={requests.filter((request) => !request.closed)} onOpen={onOpen} onShowNeedsYou={() => setFilter('needs-you')} onShowWorking={() => setFilter('working')} />
       <ChangeTicker onOpen={(requestId) => { const request = allRequests.find((entry) => entry.id === requestId); if (request) onOpen(request) }} />
 

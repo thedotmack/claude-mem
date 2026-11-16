@@ -4,11 +4,16 @@ import { enableMapSet, setAutoFreeze } from 'immer'
 import { create, type StateCreator } from 'zustand'
 import { createJSONStorage, devtools, persist } from 'zustand/middleware'
 import { immer } from 'zustand/middleware/immer'
+import { isThemeChoice } from '../lib/theme.ts'
 import { createFocusSlice } from './slices/focus-slice.ts'
 import { createRulesSlice } from './slices/rules-slice.ts'
 import { createViewSlice } from './slices/view-slice.ts'
 import { createWorkSlice } from './slices/work-slice.ts'
+import { PREFERENCES_STORAGE_KEY, PREFERENCES_VERSION } from './preferences.ts'
 import type { BoundStore, StoreEnvironment, ViewState } from './store-types.ts'
+
+/** The pre-paint script in index.html (lib/theme-pre-paint.ts) reads the saved theme from here (`state.theme`). */
+export { PREFERENCES_STORAGE_KEY }
 
 enableMapSet()
 // The sample source edits its fixture objects in place (sample-source.ts), and those objects sit in the model.
@@ -18,10 +23,9 @@ setAutoFreeze(false)
 type Mutators = [['zustand/persist', unknown], ['zustand/devtools', never], ['zustand/immer', never]]
 export type SliceCreator<Slice> = StateCreator<BoundStore, Mutators, [], Slice>
 
-/** Bump when a persisted field changes meaning; older saved preferences are then dropped. */
-const PREFERENCES_VERSION = 1
-// The theme is not saved: it follows the system preference (or `?theme=`), as it always has.
-type Preferences = Pick<ViewState, 'listView' | 'filter' | 'sort' | 'focusArtwork'>
+// The theme is saved since 16.0.0 (G8): before that it always followed the system preference or `?theme=`. Only the
+// person's own choice is saved; `?theme=` lasts the visit (view.themeForThisVisit, never saved).
+type Preferences = Pick<ViewState, 'listView' | 'filter' | 'sort' | 'focusArtwork' | 'theme'>
 
 const LIST_VIEWS: readonly ViewState['listView'][] = ['cards', 'list', 'agents', 'team']
 const FILTERS: readonly ViewState['filter'][] = ['all', 'needs-you', 'working', 'shipped', 'closed']
@@ -36,6 +40,7 @@ function validPreferences(saved: unknown): Partial<Preferences> {
   if (FILTERS.includes(value.filter as ViewState['filter'])) preferences.filter = value.filter as ViewState['filter']
   if (SORTS.includes(value.sort as ViewState['sort'])) preferences.sort = value.sort as ViewState['sort']
   if (FOCUS_ARTWORK.includes(value.focusArtwork as ViewState['focusArtwork'])) preferences.focusArtwork = value.focusArtwork as ViewState['focusArtwork']
+  if (isThemeChoice(value.theme)) preferences.theme = value.theme
   return preferences
 }
 
@@ -53,11 +58,11 @@ export function createBoundStore(environment: StoreEnvironment) {
         { name: 'claude-mem-my-work' },
       ),
       {
-        name: 'claude-mem:my-work:preferences',
+        name: PREFERENCES_STORAGE_KEY,
         version: PREFERENCES_VERSION,
         ...(environment.storage ? { storage: createJSONStorage(() => environment.storage!) } : {}),
         // Only how the person likes to see My Work is saved. Server records stay in memory.
-        partialize: ({ view: { listView, filter, sort, focusArtwork } }): Preferences => ({ listView, filter, sort, focusArtwork }),
+        partialize: ({ view: { listView, filter, sort, focusArtwork, theme } }): Preferences => ({ listView, filter, sort, focusArtwork, theme }),
         merge: (saved, current) => {
           const view = { ...current.view, ...validPreferences(saved) }
           // The team view needs the team switch, which is not saved.
