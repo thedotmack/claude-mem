@@ -11,7 +11,7 @@ input.on('line', line => {
   } else if (value.type === 'user') {
     const summary = String(value.message.content).includes('MODE SWITCH: PROGRESS SUMMARY');
     const text = summary
-      ? '<summary><request>Owned SDK model attribution</request></summary>'
+      ? '<summary><request>Owned SDK model attribution</request><investigated>Read the owned file</investigated></summary>'
       : '<observation><type>discovery</type><title>Owned SDK model attribution</title></observation>';
     emit({ type: 'system', subtype: 'init', session_id: 'owned-sdk-memory', uuid: '00000000-0000-4000-8000-000000000001',
       model: 'claude-haiku-4-5-20251001', cwd: process.cwd(), tools: [], mcp_servers: [], permissionMode: 'dontAsk',

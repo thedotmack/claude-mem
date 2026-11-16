@@ -118,8 +118,10 @@ export const SKIP_SUMMARY_TAG = /<skip_summary(?:\s+reason\s*=\s*(?:"([^"]*)"|'(
  * Comments cannot nest: a later opener starts a new candidate instead of
  * pairing its terminator with a bare opener in an earlier observation.
  */
+const XML_LITERAL_PATTERN = /<!\[CDATA\[[\s\S]*?\]\]>|<!--(?:(?!<!--)[\s\S])*?-->/g;
+
 export function maskXmlLiteralMarkup(text: string): string {
-  return text.replace(/<!\[CDATA\[[\s\S]*?\]\]>|<!--(?:(?!<!--)[\s\S])*?-->/g,
+  return text.replace(XML_LITERAL_PATTERN,
     literal => literal.replace(/[<>]/g, ' '));
 }
 
@@ -127,6 +129,36 @@ export function maskXmlLiteralMarkup(text: string): string {
 function originalElementBody(text: string, match: RegExpExecArray): string {
   const start = match.index + match[0].indexOf('>') + 1;
   return text.slice(start, start + match[1].length);
+}
+
+/**
+ * Read character data for storage eligibility without changing parsed values.
+ * Work on the original XML: after entity decoding, an escaped comment example
+ * is indistinguishable from an actual comment. CDATA is literal text (including
+ * any comment/entity examples inside it); only real comments are ignored.
+ * Match fields with the same literal masking and first-block rules as parsing.
+ */
+export function summaryFieldsHaveText(
+  raw: string,
+  fields: readonly (keyof Omit<ParsedSummary, 'skipped' | 'skip_reason'>)[],
+): boolean {
+  raw = stripCodeFences(raw);
+  const block = SUMMARY_BLOCK.exec(maskXmlLiteralMarkup(raw));
+  if (!block) return false;
+  const body = originalElementBody(raw, block);
+  const markup = maskXmlLiteralMarkup(body);
+  return fields.some(field => {
+    const match = new RegExp(elementPattern(field), 'i').exec(markup);
+    if (!match) return false;
+    const value = originalElementBody(body, match);
+    let cursor = 0;
+    for (const literal of value.matchAll(XML_LITERAL_PATTERN)) {
+      if (decodeXmlReferences(value.slice(cursor, literal.index)).trim()) return true;
+      if (literal[0].startsWith('<![CDATA[') && literal[0].slice(9, -3).trim()) return true;
+      cursor = literal.index + literal[0].length;
+    }
+    return decodeXmlReferences(value.slice(cursor)).trim().length > 0;
+  });
 }
 
 export function parseAgentXml(raw: string, correlationId?: string | number): ParseResult {
