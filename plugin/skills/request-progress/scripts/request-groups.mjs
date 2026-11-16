@@ -3368,7 +3368,7 @@ function isAgentScratchFolder(folder) {
   const absolute = resolve3(folder);
   return TEMP_FOLDERS.some((temp) => absolute === temp || absolute.startsWith(`${temp}${sep2}`));
 }
-function repoRootOf(path4) {
+function repoRootOf(path4, repoRootCache = /* @__PURE__ */ new Map()) {
   const visited = [];
   let current = resolve3(path4), found = null;
   for (; ; ) {
@@ -3412,15 +3412,15 @@ function pathsIn(toolInput, platform = process.platform) {
   }
   return paths2;
 }
-function folderNeedsProject(folder, storedProject) {
+function folderNeedsProject(folder, storedProject, repoRootCache = /* @__PURE__ */ new Map()) {
   if (!folder) return TEMP_PROJECT_NAMES.has(storedProject);
-  if (existsSync11(folder)) return !repoRootOf(folder);
+  if (existsSync11(folder)) return !repoRootOf(folder, repoRootCache);
   return isAgentScratchFolder(folder);
 }
-function projectFromToolPaths(toolInputs) {
+function projectFromToolPaths(toolInputs, repoRootCache = /* @__PURE__ */ new Map()) {
   const byRoot = /* @__PURE__ */ new Map(), nameOf = /* @__PURE__ */ new Map();
   for (const input of toolInputs) for (const path4 of pathsIn(input)) {
-    const checkout = checkoutForPath(path4);
+    const checkout = checkoutForPath(path4, repoRootCache);
     if (!checkout) continue;
     if (!nameOf.has(checkout)) nameOf.set(checkout, getProjectContext(checkout).primary);
     const project = nameOf.get(checkout);
@@ -3445,6 +3445,7 @@ function safeAll(database, sql, params) {
 }
 function deriveSessionProjects(database, sessions) {
   const result = /* @__PURE__ */ new Map();
+  const repoRootCache = /* @__PURE__ */ new Map();
   const ids = [...new Set(sessions.map((session) => session.id).filter((id) => id != null))];
   if (!ids.length) return result;
   const folders = /* @__PURE__ */ new Map();
@@ -3462,7 +3463,7 @@ function deriveSessionProjects(database, sessions) {
       if (isAgentScratchFolder(row.cwd)) scratchProjects.add(row.project);
     }
   }
-  const needing = sessions.filter((session) => folders.has(session.id) && (folders.get(session.id) ? folderNeedsProject(folders.get(session.id), session.project) : folderNeedsProject(null, session.project) || scratchProjects.has(session.project)));
+  const needing = sessions.filter((session) => folders.has(session.id) && (folders.get(session.id) ? folderNeedsProject(folders.get(session.id), session.project, repoRootCache) : folderNeedsProject(null, session.project, repoRootCache) || scratchProjects.has(session.project)));
   if (!needing.length) return result;
   const needIds = [...new Set(needing.map((session) => session.id))];
   const heads = /* @__PURE__ */ new Map();
@@ -3478,7 +3479,7 @@ function deriveSessionProjects(database, sessions) {
       continue;
     }
     const calls = head ? safeAll(database, `SELECT substr(tool_input, 1, 4000) AS tool_input, cwd FROM tool_uses WHERE session_db_id = ? ORDER BY id DESC LIMIT ${TOOL_SAMPLE}`, [id]) ?? [] : [];
-    const project = projectFromToolPaths(calls.flatMap((call) => [call.tool_input, ...call.cwd ? [JSON.stringify({ cwd: call.cwd })] : []]));
+    const project = projectFromToolPaths(calls.flatMap((call) => [call.tool_input, ...call.cwd ? [JSON.stringify({ cwd: call.cwd })] : []]), repoRootCache);
     derivedCache.set(id, { head, project });
     result.set(id, project);
   }
@@ -3489,7 +3490,7 @@ function withDerivedProjects(database, sessions) {
   if (!derived.size) return sessions;
   return sessions.map((session) => derived.has(session.id) ? { ...session, project: derived.get(session.id), storedProject: session.project } : session);
 }
-var NO_PROJECT, realpathOrSelf3, TEMP_FOLDERS, HOME, TEMP_PROJECT_NAMES, CODEX_SCRATCH, repoRootCache, PATH_START, AGENT_HOMES, isAgentHome, isAbsoluteOn, checkoutForPath, derivedCache, TOOL_SAMPLE;
+var NO_PROJECT, realpathOrSelf3, TEMP_FOLDERS, HOME, TEMP_PROJECT_NAMES, CODEX_SCRATCH, PATH_START, AGENT_HOMES, isAgentHome, isAbsoluteOn, checkoutForPath, derivedCache, TOOL_SAMPLE;
 var init_session_project = __esm({
   "src/services/work-view/session-project.mjs"() {
     "use strict";
@@ -3506,15 +3507,14 @@ var init_session_project = __esm({
     HOME = homedir8();
     TEMP_PROJECT_NAMES = new Set(TEMP_FOLDERS.map((folder) => basename6(folder)).filter((name) => name && name !== "tmp"));
     CODEX_SCRATCH = /[/\\]Documents[/\\]Codex[/\\]\d{4}-\d{2}-\d{2}(?:[/\\]|$)/;
-    repoRootCache = /* @__PURE__ */ new Map();
     PATH_START = /(?:^|[\s"'`=:(])((?:~[/\\]|\/|[A-Za-z]:[/\\])[^\n\r"'`;|&<>()]*)/g;
     AGENT_HOMES = [".claude", ".codex", ".gemini", ".claude-mem", ".cursor"].map((name) => join9(HOME, name));
     isAgentHome = (path4) => AGENT_HOMES.some((home) => path4 === home || path4.startsWith(`${home}/`) || path4.startsWith(`${home}\\`));
     isAbsoluteOn = (path4, platform) => path4.startsWith("/") && !path4.startsWith("//") || platform === "win32" && /^[A-Za-z]:[/\\]/.test(path4);
-    checkoutForPath = (path4) => {
+    checkoutForPath = (path4, repoRootCache) => {
       let current = path4;
       while (current !== dirname5(current) && !existsSync11(current)) current = dirname5(current);
-      return repoRootOf(current);
+      return repoRootOf(current, repoRootCache);
     };
     derivedCache = /* @__PURE__ */ new Map();
     TOOL_SAMPLE = 400;
@@ -4679,13 +4679,13 @@ function jevClient({ url, apiKey, model = null, fetchImpl = fetch }) {
       const body = JSON.stringify(model ? { model, state, questions } : { state, questions });
       const bytes2 = Buffer.byteLength(body, "utf8");
       if (bytes2 > MAX_DECISION_BODY_BYTES) throw new Error(`Jev request is ${bytes2} bytes; the decisions gateway takes at most ${MAX_DECISION_BODY_BYTES}. It is not trimmed: this conversation goes to the grouping agent instead.`);
-      let response;
+      let response, text5;
       try {
         response = await fetchImpl(url, { method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }, body, signal: AbortSignal.timeout(DECISION_TIMEOUT_MS) });
+        text5 = await response.text();
       } catch (error) {
         throw new Error(`Jev request failed: ${error instanceof Error ? error.message : String(error)}`);
       }
-      const text5 = await response.text();
       let parsed = null;
       try {
         parsed = JSON.parse(text5);
@@ -5412,9 +5412,8 @@ function openingAsks(database, ledger, conversationKeys) {
   }
   return asks;
 }
-function requestRecord(ledger, groupId, asks) {
+function requestRecord(ledger, groupId, asks, conversations) {
   const group = ledger.groups.groups[groupId], review = ledger.progress[groupId];
-  const conversations = groupConversations(ledger, groupId);
   return {
     anchor: group.anchor,
     groupId,
@@ -5428,17 +5427,39 @@ function requestRecord(ledger, groupId, asks) {
     conversationAsks: conversations.map((key) => requestText(asks.get(key) ?? null, FOCUS_ASK_CHARS)).filter(Boolean)
   };
 }
-function focusBasis(ledger, groupId) {
+function basisForConversations(ledger, groupId, conversations) {
   const group = ledger.groups.groups[groupId];
-  return createHash5("sha256").update(JSON.stringify({ title: group.title, firstAsk: group.anchorAsk?.text ?? null, conversations: groupConversations(ledger, groupId) })).digest("hex").slice(0, 16);
+  return createHash5("sha256").update(JSON.stringify({ title: group.title, firstAsk: group.anchorAsk?.text ?? null, conversations })).digest("hex").slice(0, 16);
 }
-function focusDue(ledger, focus, localDeviceId2) {
+function focusRequestIndex(ledger) {
+  let byGroup;
+  const bases = /* @__PURE__ */ new Map();
+  const conversations = (groupId) => {
+    if (!byGroup) {
+      byGroup = /* @__PURE__ */ new Map();
+      for (const [key, id] of Object.entries(ledger.groups.conversations)) {
+        if (!byGroup.has(id)) byGroup.set(id, []);
+        byGroup.get(id).push(key);
+      }
+      for (const keys of byGroup.values()) keys.sort();
+    }
+    return byGroup.get(groupId) ?? [];
+  };
+  return {
+    conversations,
+    basis: (groupId) => {
+      if (!bases.has(groupId)) bases.set(groupId, basisForConversations(ledger, groupId, conversations(groupId)));
+      return bases.get(groupId);
+    }
+  };
+}
+function focusDue(ledger, focus, localDeviceId2, requests) {
   return Object.keys(ledger.groups.groups).filter((groupId) => {
     const placement = focus.placementsByAnchor.get(ledger.groups.groups[groupId].anchor);
     if (placement?.owner && focus.resolveFocusAreaId(placement.owner.focusAreaId)) return false;
     const router = placement?.router;
     if (!router || !focus.resolveFocusAreaId(router.focusAreaId)) return true;
-    return router.device === localDeviceId2 && router.basis != null && router.basis !== focusBasis(ledger, groupId);
+    return router.device === localDeviceId2 && router.basis != null && router.basis !== requests.basis(groupId);
   });
 }
 function routerOther(ledger, focus, queued) {
@@ -5450,21 +5471,23 @@ function routerOther(ledger, focus, queued) {
   });
 }
 function focusInput(ledger, focus, localDeviceId2, database, { limit = FOCUS_BATCH } = {}) {
-  const due = focusDue(ledger, focus, localDeviceId2);
+  const requests = focusRequestIndex(ledger);
+  const due = focusDue(ledger, focus, localDeviceId2, requests);
   return {
     areas: focus.focusAreas.filter(isPlaceableArea).map(focusAreaRecord),
     dismissed: focus.focusAreas.filter(isOwnerDismissedArea).map(focusAreaRecord),
-    requests: records(database, ledger, due.slice(0, limit)),
+    requests: records(database, ledger, due.slice(0, limit), requests),
     remaining: Math.max(0, due.length - limit)
   };
 }
 function otherInput(ledger, focus, localDeviceId2, database) {
-  const other = routerOther(ledger, focus, new Set(focusDue(ledger, focus, localDeviceId2)));
-  const hash2 = otherPassHash(ledger, other);
+  const requests = focusRequestIndex(ledger);
+  const other = routerOther(ledger, focus, new Set(focusDue(ledger, focus, localDeviceId2, requests)));
+  const hash2 = otherPassHash(ledger, other, requests);
   return {
     areas: focus.focusAreas.filter(isPlaceableArea).map(focusAreaRecord),
     dismissed: focus.focusAreas.filter(isOwnerDismissedArea).map(focusAreaRecord),
-    other: records(database, ledger, other),
+    other: records(database, ledger, other, requests),
     due: hash2 !== null && hash2 !== focus.otherPassHash
   };
 }
@@ -5472,6 +5495,7 @@ function validateFocusAnswer(answer, input, ledger, { other = false } = {}) {
   if (!Array.isArray(answer?.placements)) throw new TypeError("The answer needs a placements array.");
   if (!Array.isArray(answer?.proposals)) throw new TypeError("The answer needs a proposals array (empty when there is nothing to propose).");
   const listed = new Map((other ? input.other : input.requests).map((request) => [request.anchor, request]));
+  const requestIndex = focusRequestIndex(ledger);
   const areaIds = new Set(input.areas.map((area) => area.focusAreaId));
   const dismissed = new Map(input.dismissed.map((area) => [area.focusAreaId, area]));
   const placed = /* @__PURE__ */ new Map();
@@ -5506,7 +5530,7 @@ function validateFocusAnswer(answer, input, ledger, { other = false } = {}) {
       if (!listed.has(anchor)) throw new TypeError(`${label} holds ${anchor}, which ${other ? "is not a listed Other request" : "was not asked about"}.`);
       if (held.has(anchor)) throw new TypeError(`${label} holds ${anchor}, which another proposal already holds.`);
       held.add(anchor);
-      return { anchorConversationKey: anchor, basis: focusBasis(ledger, listed.get(anchor).groupId) };
+      return { anchorConversationKey: anchor, basis: requestIndex.basis(listed.get(anchor).groupId) };
     });
     return {
       kind: proposal.kind,
@@ -5522,11 +5546,11 @@ function validateFocusAnswer(answer, input, ledger, { other = false } = {}) {
     placements: [...placed].filter(([anchor]) => !held.has(anchor)).map(([anchor, { focusAreaId, evidence: evidence2 }]) => ({
       anchorConversationKey: anchor,
       focusAreaId,
-      basis: focusBasis(ledger, listed.get(anchor).groupId),
+      basis: requestIndex.basis(listed.get(anchor).groupId),
       evidence: evidence2
     })),
     proposals,
-    ...other ? { otherPassHash: otherPassHash(ledger, [...listed.keys()].filter((anchor) => !held.has(anchor)).map((anchor) => listed.get(anchor).groupId)) } : {}
+    ...other ? { otherPassHash: otherPassHash(ledger, [...listed.keys()].filter((anchor) => !held.has(anchor)).map((anchor) => listed.get(anchor).groupId), requestIndex) } : {}
   };
 }
 function refreshNeeds({ dir = LEDGER_DIR, database, now = Date.now(), days = 14, localDeviceId: localDeviceId2 }) {
@@ -5537,8 +5561,9 @@ function refreshNeeds({ dir = LEDGER_DIR, database, now = Date.now(), days = 14,
   const generated = Date.parse(goals.generatedAt ?? "");
   const goalsStale = !Number.isFinite(generated) || now - generated > GOALS_STALE_MS;
   const focus = readFocus(database, { localDeviceId: localDeviceId2 });
-  const queued = focusDue(ledger, focus, localDeviceId2);
-  const otherHash = otherPassHash(ledger, routerOther(ledger, focus, new Set(queued)));
+  const requests = focusRequestIndex(ledger);
+  const queued = focusDue(ledger, focus, localDeviceId2, requests);
+  const otherHash = otherPassHash(ledger, routerOther(ledger, focus, new Set(queued)), requests);
   const otherChanged = otherHash !== null && otherHash !== focus.otherPassHash;
   return { due: due.length, ungrouped, goalsStale, unplaced: queued.length, otherChanged, needed: Boolean(due.length || ungrouped || goalsStale || queued.length || otherChanged) };
 }
@@ -5727,7 +5752,7 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
   if (command2 === "refresh-needs") return print2(refreshNeeds({ dir, database: db(), now, days: option(args, "days", 14), localDeviceId: localDeviceId2 }));
   throw new TypeError("Usage: request-groups.mjs candidates|grouping-input|judge|apply|pending|show|record-progress|story-input|record-story|focus-input|record-focus|refresh-needs (see file header).");
 }
-var DATA_DIR2, LEDGER_DIR, AGENT_WRITTEN_PROMPTS_FILE, DAY_MS2, GOALS_STALE_MS, MAX_CONVERSATIONS_PER_LINKING_LIST, PROGRESS_STATES, PREFERENCE_KINDS, USAGE_LEVELS, VALUE_LEVELS, LINK_KINDS, MAX_READINGS, iso3, groupIdFor, emptyGroups, isIsoOrNull, textTarget, evidenceList, STORY_NARRATIVE_MAX, STORY_NARRATIVE_TARGET, STORY_RECAP_BUDGET, STORY_CHAPTER_MIN_BUDGET, STORY_CHARS_PER_WORD, STORY_REFUSAL_PARTS, FOCUS_ASK_CHARS, CONVERSATIONS_PER_QUERY, groupConversations, records, otherPassHash, focusAreaRecord, AREA_NAME_MAX, AREA_SENTENCE_MAX, requireDeviceId, GROUPING_BATCH, FOCUS_BATCH, CLOSED_STATES;
+var DATA_DIR2, LEDGER_DIR, AGENT_WRITTEN_PROMPTS_FILE, DAY_MS2, GOALS_STALE_MS, MAX_CONVERSATIONS_PER_LINKING_LIST, PROGRESS_STATES, PREFERENCE_KINDS, USAGE_LEVELS, VALUE_LEVELS, LINK_KINDS, MAX_READINGS, iso3, groupIdFor, emptyGroups, isIsoOrNull, textTarget, evidenceList, STORY_NARRATIVE_MAX, STORY_NARRATIVE_TARGET, STORY_RECAP_BUDGET, STORY_CHAPTER_MIN_BUDGET, STORY_CHARS_PER_WORD, STORY_REFUSAL_PARTS, FOCUS_ASK_CHARS, CONVERSATIONS_PER_QUERY, records, otherPassHash, focusAreaRecord, AREA_NAME_MAX, AREA_SENTENCE_MAX, requireDeviceId, GROUPING_BATCH, FOCUS_BATCH, CLOSED_STATES;
 var init_request_groups = __esm({
   "src/services/work-view/request-groups.mjs"() {
     "use strict";
@@ -5764,12 +5789,11 @@ var init_request_groups = __esm({
     STORY_REFUSAL_PARTS = 6;
     FOCUS_ASK_CHARS = 400;
     CONVERSATIONS_PER_QUERY = 400;
-    groupConversations = (ledger, groupId) => Object.entries(ledger.groups.conversations).filter(([, id]) => id === groupId).map(([key]) => key).sort();
-    records = (database, ledger, groupIds) => {
-      const asks = openingAsks(database, ledger, groupIds.flatMap((groupId) => groupConversations(ledger, groupId)));
-      return groupIds.map((groupId) => requestRecord(ledger, groupId, asks));
+    records = (database, ledger, groupIds, requests) => {
+      const asks = openingAsks(database, ledger, groupIds.flatMap(requests.conversations));
+      return groupIds.map((groupId) => requestRecord(ledger, groupId, asks, requests.conversations(groupId)));
     };
-    otherPassHash = (ledger, groupIds) => groupIds.length ? createHash5("sha256").update(JSON.stringify(groupIds.map((groupId) => [ledger.groups.groups[groupId].anchor, focusBasis(ledger, groupId)]).sort())).digest("hex").slice(0, 16) : null;
+    otherPassHash = (ledger, groupIds, requests) => groupIds.length ? createHash5("sha256").update(JSON.stringify(groupIds.map((groupId) => [ledger.groups.groups[groupId].anchor, requests.basis(groupId)]).sort())).digest("hex").slice(0, 16) : null;
     focusAreaRecord = (area) => ({ focusAreaId: area.focusAreaId, name: area.name, goal: area.goal, about: area.about, status: area.status });
     AREA_NAME_MAX = 80;
     AREA_SENTENCE_MAX = 300;
@@ -6070,8 +6094,17 @@ var TODO_REPLACEMENTS = /* @__PURE__ */ new Set(["finished", "abandoned"]);
 var NOT_NOTES = /* @__PURE__ */ new Set(["task", "status"]);
 var notesOf = (fields) => Object.fromEntries(Object.entries(fields).filter(([key, value]) => !NOT_NOTES.has(key) && value !== null));
 function workStateItems(state) {
-  return state.lists.filter((list2) => !isOwnerGoalsList(list2.name) && !isMyRulesList(list2.name) && !isMyFocusList(list2.name) && !isAgentLifecycleList(list2.name)).flatMap((list2) => {
-    const stateEntryId = state.events.find((event) => event.listId === list2.id && event.task === null)?.id ?? 0;
+  const lists = state.lists.filter((list2) => !isOwnerGoalsList(list2.name) && !isMyRulesList(list2.name) && !isMyFocusList(list2.name) && !isAgentLifecycleList(list2.name));
+  if (!lists.length) return [];
+  const stateEntryIds = /* @__PURE__ */ new Map();
+  const missingStateIds = new Set(lists.map((list2) => list2.id));
+  for (const event of state.events) {
+    if (event.task !== null || !missingStateIds.delete(event.listId)) continue;
+    stateEntryIds.set(event.listId, event.id);
+    if (!missingStateIds.size) break;
+  }
+  return lists.flatMap((list2) => {
+    const stateEntryId = stateEntryIds.get(list2.id) ?? 0;
     const listNotesSent = Object.keys(notesOf(list2.fields)).length > 0;
     return [
       ...list2.tasks.map((task) => ({ ...task, list: list2, recordKind: "task", labelKey: listNotesSent ? `${task.latestEntryId}:${stateEntryId}` : String(task.latestEntryId) })),
@@ -6992,6 +7025,16 @@ function localWorkValue(database, value, deviceId) {
 }
 var emptyLedger = () => ({ groups: { version: 1, updatedAt: null, conversations: {}, groups: {}, ignored: {}, suggestions: {} }, progress: {}, story: null, refresh: null, agentWrittenPromptIds: /* @__PURE__ */ new Set() });
 var sessionFields = ["project", "platform_source", "content_session_id", "memory_session_id", "user_prompt", "custom_title", "status", "started_at_epoch", "completed_at_epoch"];
+function groupRecords(rows, keyOf) {
+  const groups = /* @__PURE__ */ new Map();
+  for (const row of rows ?? []) {
+    const key = keyOf(row);
+    const group = groups.get(key);
+    if (group) group.push(row);
+    else groups.set(key, [row]);
+  }
+  return groups;
+}
 function buildSharedProjectionUpdates(database, { ledger, records: records2 = {}, view = {}, deviceId, copyEntries = {} } = {}) {
   if (!deviceId) return [];
   decorateSharedView(view, { database, deviceId, records: records2 });
@@ -7017,31 +7060,47 @@ function buildSharedProjectionUpdates(database, { ledger, records: records2 = {}
     if (ref && ref.device === deviceId) add("exclusion", JSON.stringify(ref), { ref, conversation: conversationKey(prompt), opening: prompt?.prompt_number === 1 || Boolean(prompt && prompt.prompt_text === prompt.user_prompt) });
   }
   const sessions = new Map((records2.sessions ?? []).map((row) => [row.id, row]));
-  for (const row of records2.productDeliverables ?? []) {
-    const key = conversationKey(row);
-    if (key && ![...sessions.values()].some((session) => conversationKey(session) === key)) sessions.set(`deliverable:${key}`, { ...row, id: `deliverable:${key}` });
+  const sessionKeys = new Set([...sessions.values()].map(conversationKey));
+  const deliverablesByConversation = groupRecords(records2.productDeliverables, conversationKey);
+  for (const [key, rows] of deliverablesByConversation) {
+    if (key && !sessionKeys.has(key)) {
+      sessions.set(`deliverable:${key}`, { ...rows[0], id: `deliverable:${key}` });
+      sessionKeys.add(key);
+    }
   }
-  const work = (view.agents ?? []).flatMap((agent) => agent.work ?? []);
+  const callsBySession = groupRecords(records2.calls, (row) => row.session_db_id);
+  const promptsBySession = groupRecords(records2.prompts, (row) => row.session_db_id);
+  const observationsByMemory = groupRecords(records2.observations, (row) => row.memory_session_id);
+  const productCallsBySession = groupRecords(records2.productCalls, (row) => row.session_db_id);
+  const productObservationsByMemory = groupRecords(records2.productObservations, (row) => row.memory_session_id);
+  const workBySession = groupRecords((view.agents ?? []).flatMap((agent) => agent.work ?? []), (item) => item.attribution?.sessionId);
+  const launchesByConversation = groupRecords(records2.agentLaunches, conversationKey);
+  const activityByConversation = groupRecords(records2.agentToolActivity, conversationKey);
   for (const session of sessions.values()) {
     const key = conversationKey(session);
     if (!key) continue;
-    const calls = (records2.calls ?? []).filter((call) => call.session_db_id === session.id);
-    const prompts = (records2.prompts ?? []).filter((prompt) => prompt.session_db_id === session.id);
+    const calls = callsBySession.get(session.id) ?? [];
+    const prompts = promptsBySession.get(session.id) ?? [];
+    const observations = observationsByMemory.get(session.memory_session_id) ?? [];
+    const productCalls = productCallsBySession.get(session.id) ?? [];
+    const productObservations = productObservationsByMemory.get(session.memory_session_id) ?? [];
+    const deliverables = deliverablesByConversation.get(key) ?? [];
+    const work = workBySession.get(session.id) ?? [];
     const ownsPrompt = prompts.some((prompt) => stableEvidenceRef(database, "prompt", prompt.id, deviceId)?.device === deviceId);
-    const ownsObservation = [...records2.observations ?? [], ...records2.productObservations ?? []].some((row) => row.memory_session_id === session.memory_session_id && stableEvidenceRef(database, "observation", row.id, deviceId)?.device === deviceId);
-    const ownsProduct = (records2.productCalls ?? []).some((call) => call.session_db_id === session.id) || (records2.productDeliverables ?? []).some((row) => conversationKey(row) === key);
+    const ownsObservation = [...observations, ...productObservations].some((row) => stableEvidenceRef(database, "observation", row.id, deviceId)?.device === deviceId);
+    const ownsProduct = productCalls.length > 0 || deliverables.length > 0;
     if (!calls.length && !ownsPrompt && !ownsObservation && !ownsProduct) continue;
-    const attributions = work.filter((item) => item.attribution?.sessionId === session.id && item.attribution?.linkedEntryId != null).flatMap((item) => {
+    const attributions = work.filter((item) => item.attribution?.linkedEntryId != null).flatMap((item) => {
       const attribution = item.attribution;
       const call = calls.find((candidate) => candidate.id === attribution.toolUseId);
       const ref = stableEvidenceRef(database, "work-state", attribution.linkedEntryId, deviceId);
       return call && ref?.device === deviceId ? [{ work: ref, agentId: call.agent_id ?? null, agentType: call.agent_type ?? null, promptNumber: call.prompt_number ?? null, atEpoch: call.created_at_epoch }] : [];
     });
     const productCandidates = [
-      ...(records2.productCalls ?? []).filter((call) => call.session_db_id === session.id).flatMap(productsFromToolUse),
-      ...(records2.productObservations ?? []).filter((row) => row.memory_session_id === session.memory_session_id && stableEvidenceRef(database, "observation", row.id, deviceId)?.device === deviceId).flatMap(productsFromObservation),
-      ...(records2.productDeliverables ?? []).filter((row) => conversationKey(row) === key).flatMap(productsFromDeliverable),
-      ...work.filter((item) => item.attribution?.sessionId === session.id).flatMap((item) => item.workProduct ?? [])
+      ...productCalls.flatMap(productsFromToolUse),
+      ...productObservations.filter((row) => stableEvidenceRef(database, "observation", row.id, deviceId)?.device === deviceId).flatMap(productsFromObservation),
+      ...deliverables.flatMap(productsFromDeliverable),
+      ...work.flatMap((item) => item.workProduct ?? [])
     ];
     const productsByIdentity = /* @__PURE__ */ new Map();
     const copies = productCandidates.filter((product) => product.deliverable && product.sourcePath);
@@ -7061,8 +7120,8 @@ function buildSharedProjectionUpdates(database, { ledger, records: records2 = {}
       }
     }
     const products = [...productsByIdentity.values()];
-    const launches = (records2.agentLaunches ?? []).filter((row) => conversationKey(row) === key && typeof row.agent_id === "string").map((row) => ({ agent_id: row.agent_id, status: row.status ?? null, is_async: row.is_async ?? null, description: typeof row.description === "string" ? row.description.slice(0, 160) : null, created_at_epoch: row.created_at_epoch ?? null }));
-    const activity = (records2.agentToolActivity ?? []).filter((row) => conversationKey(row) === key).map((row) => ({ agent_id: row.agent_id, last_epoch: row.last_epoch }));
+    const launches = (launchesByConversation.get(key) ?? []).filter((row) => typeof row.agent_id === "string").map((row) => ({ agent_id: row.agent_id, status: row.status ?? null, is_async: row.is_async ?? null, description: typeof row.description === "string" ? row.description.slice(0, 160) : null, created_at_epoch: row.created_at_epoch ?? null }));
+    const activity = (activityByConversation.get(key) ?? []).map((row) => ({ agent_id: row.agent_id, last_epoch: row.last_epoch }));
     const sessionValue = Object.fromEntries(sessionFields.map((field) => [field, clean2(session[field])]));
     sessionValue.project = sharedProjectKey(sessionValue.project);
     const rejectedOpening = prompts.some((prompt) => ledger?.agentWrittenPromptIds?.has(prompt.id) && (prompt.prompt_number === 1 || prompt.prompt_text === session.user_prompt));
