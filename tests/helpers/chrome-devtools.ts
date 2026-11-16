@@ -32,12 +32,14 @@ const esbuildBinary = createRequire(import.meta.url).resolve(
 /**
  * Bundles TSX fixture source (resolved from the repository root) into one
  * browser IIFE. The one-shot compiler exits before Chrome starts, so no shared
- * esbuild service handle stays alive while the browser runs.
+ * esbuild service handle stays alive while the browser runs. A fixture that
+ * mounts a whole page passes `extraEsbuildArguments` for the page's own asset
+ * imports (for example `--loader:.webp=empty`).
  */
-export function compileBrowserFixture(fixtureSource: string): string {
+export function compileBrowserFixture(fixtureSource: string, extraEsbuildArguments: readonly string[] = []): string {
   return execFileSync(esbuildBinary, [
     '--bundle', '--loader=tsx', '--platform=browser', '--format=iife',
-    '--define:process.env.NODE_ENV="production"', '--log-level=error',
+    '--define:process.env.NODE_ENV="production"', '--log-level=error', ...extraEsbuildArguments,
   ], { cwd: REPOSITORY_ROOT, input: fixtureSource, encoding: 'utf8', timeout: 20000, maxBuffer: 8 * 1024 * 1024 });
 }
 

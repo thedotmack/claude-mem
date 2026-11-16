@@ -16,7 +16,7 @@ import {
   conversationRouteFailureSentence, readConversationContinuationAnswer, readConversationContinuationNotice, readConversationExchangeAnswer,
   readOpenedInAppAnswer, unreachableWorkerSentence, unreadableAnswerSentence,
 } from './conversation-continuation.ts'
-import { SaveRefusedError } from '../data.ts'
+import { RefreshNotStartedError, SaveRefusedError } from '../data.ts'
 import type { Request as WorkRequest } from '../data.ts'
 import type { WorkViewSnapshot, WorkViewSource } from './work-view-api-types.ts'
 import { expandWorkViewOverview, type WorkViewOverview, type WorkViewOverviewModel, type WorkViewRequestDetail } from './work-view-overview.ts'
@@ -497,9 +497,9 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
     async refreshWork() {
       const response = await fetchImpl(WORK_VIEW_REFRESH_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
       if (!response.ok) {
-        let reason = `the worker answered ${response.status}`
-        try { const body = await response.json() as { error?: unknown }; if (typeof body.error === 'string') reason = body.error } catch { /* Keep the status as the reason. */ }
-        throw new Error(`Refresh could not start: ${reason}`)
+        let workerReason: string | null = null
+        try { const body = await response.json() as { error?: unknown }; if (typeof body.error === 'string') workerReason = body.error } catch { /* Keep the status as the reason. */ }
+        throw new RefreshNotStartedError(response.status, workerReason)
       }
       return await response.json() as { state: string }
     },

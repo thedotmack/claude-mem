@@ -161,12 +161,13 @@ function StorySheet({ open, story, requests, onClose, onOpenRules }: { open: boo
   const scrollRef = useRef<HTMLDivElement>(null)
   return (
     <Sheet open={open} onOpenChange={(next) => { if (!next) onClose() }}>
-      <SheetContent ref={scrollRef} className="overflow-y-auto data-[side=right]:w-full data-[side=right]:sm:max-w-lg">
-        <SheetHeader>
+      {/* The one sheet width and the scrolling come from SheetContent (D b17 M 355); this panel adds only its spacing. */}
+      <SheetContent ref={scrollRef}>
+        <SheetHeader className="pr-14">
           <SheetTitle>{t("Build story")}</SheetTitle>
           <SheetDescription>{interpolate(t('From request-progress, reviewed from memory{writtenAt}.'), { writtenAt: story.writtenAt ? `, ${interpolate(t('written {date}'), { date: displayTime(story.writtenAt) })}` : '' })}</SheetDescription>
         </SheetHeader>
-        <TracingBeam scrollContainer={scrollRef} className="pr-4 pb-6 pl-10">
+        <TracingBeam scrollContainer={scrollRef} className="mt-4 pr-4 pb-6 pl-10">
         <div className="space-y-6">
           <Req ids={['R7.1']}>
             <p className="text-sm">{interpolate(t(shipped === 1 ? '{shipped} request shipped and {waiting} waiting on you.' : '{shipped} requests shipped and {waiting} waiting on you.'), { shipped: shipped, waiting: waiting })}</p>
@@ -568,7 +569,8 @@ export function MyWork({ focusAreaId, onOpen, onOpenFocus, onOpenRules }: { focu
           </ToggleGroup>
           {view !== 'agents' && view !== 'team' && (
             <Select value={sort} onValueChange={(next) => setSort(next as SortKey)}>
-              <SelectTrigger aria-label={t("Sort")} className="h-11 border-transparent bg-transparent px-2.5 text-[0.82rem] text-muted-foreground shadow-none data-[size=default]:h-11 md:h-8 md:data-[size=default]:h-8 [&>svg:last-child]:hidden sm:[&>svg:last-child]:inline"><ArrowUpDownIcon className="size-4" /><span className="hidden sm:inline"><SelectValue /></span></SelectTrigger>
+              {/* The primitive's ≥3:1 control edge stays (G12; a transparent edge here measured 1.0:1). */}
+              <SelectTrigger aria-label={t("Sort")} className="h-11 bg-transparent px-2.5 text-[0.82rem] text-muted-foreground shadow-none data-[size=default]:h-11 md:h-8 md:data-[size=default]:h-8 [&>svg:last-child]:hidden sm:[&>svg:last-child]:inline"><ArrowUpDownIcon className="size-4" /><span className="hidden sm:inline"><SelectValue /></span></SelectTrigger>
               <SelectContent>{SORTS.map(({ value, label }) => <SelectItem key={value} value={value}>{t(label)}</SelectItem>)}</SelectContent>
             </Select>
           )}

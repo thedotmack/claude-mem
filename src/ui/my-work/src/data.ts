@@ -296,6 +296,21 @@ export class SaveRefusedError extends Error {
   constructor(message: string, model: WorkModel) { super(message); this.name = 'SaveRefusedError'; this.model = model }
 }
 
+/**
+ * The worker did not start a refresh. `workerReason` is the worker's own words when its answer carried any, else
+ * null; the screen words the rest in the person's language (ManualRefreshButton). The message stays English for logs.
+ */
+export class RefreshNotStartedError extends Error {
+  readonly status: number
+  readonly workerReason: string | null
+  constructor(status: number, workerReason: string | null) {
+    super(`Refresh could not start: ${workerReason ?? `the worker answered ${status}`}`)
+    this.name = 'RefreshNotStartedError'
+    this.status = status
+    this.workerReason = workerReason
+  }
+}
+
 /** The ship estimate only from measured pace: two or more readings, the latest moving forward (decision 3). */
 export function measuredEstimate(request: Request): string | null {
   const history = request.progress.history ?? []

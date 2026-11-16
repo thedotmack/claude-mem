@@ -269,9 +269,9 @@ export function RequestDetail({ request, onClose, onOpenFocus }: { request: Requ
     newerVersionReadFailure={shown.newerVersionReadFailure === undefined ? undefined : { message: shown.newerVersionReadFailure, tryAgain: () => setRetry((value) => value + 1) }} />
   return (
     <Sheet open onOpenChange={(open) => { if (!open) onClose() }}>
-      <SheetContent className="w-full gap-0 overflow-y-auto data-[side=right]:w-full data-[side=right]:sm:max-w-xl">
-        <SheetHeader className="gap-3 border-b p-5 md:p-6">
-          <SheetTitle className="pr-8 text-xl leading-snug">{request.title ?? request.resolvesTo?.title ?? t('Untitled request')}</SheetTitle>
+      <SheetContent>
+        <SheetHeader className="gap-3 border-b p-5 pr-14 md:p-6 md:pr-14">
+          <SheetTitle className="text-xl leading-snug">{request.title ?? request.resolvesTo?.title ?? t('Untitled request')}</SheetTitle>
           <SheetDescription>{request.summary ?? request.resolvesTo?.summary ?? t('Request details')}</SheetDescription>
         </SheetHeader>
         <div className="space-y-3 p-5 md:p-6" aria-live="polite">
@@ -291,13 +291,22 @@ function LoadedRequestDetail({ request, newerVersionReadFailure, onClose, onOpen
   const images = requestImages(request)
   return (
     <Sheet open onOpenChange={(open) => { if (!open) onClose() }}>
-      <SheetContent onEscapeKeyDown={keepDrawerOpenForGallery} className="w-full gap-0 overflow-y-auto data-[side=right]:w-full data-[side=right]:sm:max-w-xl">
+      <SheetContent onEscapeKeyDown={keepDrawerOpenForGallery}>
         <Req ids={['R3.6', 'R3.2']}>
-          <SheetHeader className="gap-3 border-b p-5 md:p-6">
-            <div className="flex min-w-0 flex-wrap items-center gap-2 pr-10"><StateBadge state={request.state} /><AgentIcon agentId={request.agentId} withDevice /></div>
-            <SheetTitle className="text-xl leading-snug">{title}</SheetTitle>
-            <SheetDescription className="line-clamp-2">{request.summary ?? request.resolvesTo?.summary}</SheetDescription>
-            <NextMove next={request.next} className="text-[0.95rem]" />
+          {/* From md up the whole header stays put while the panel scrolls (D b17 M 352). On a phone only the title bar
+              and the close button stay; the state, summary and next step scroll with the rest, because the whole
+              header pinned took a large share of a 390×844 screen. `contents` there lets the title bar stick to the
+              panel itself, the scroll container; `shrink-0` keeps a long title whole inside it (a flex item with a
+              min-height would otherwise shrink to that height). */}
+          <SheetHeader className="max-md:contents md:gap-3 md:border-b md:p-6">
+            <div className="flex min-w-0 flex-wrap items-center gap-2 pr-10 max-md:pt-5 max-md:pr-14 max-md:pl-5"><StateBadge state={request.state} /><AgentIcon agentId={request.agentId} withDevice /></div>
+            <div data-slot="request-title-bar" className="max-md:sticky max-md:top-0 max-md:z-10 max-md:flex max-md:min-h-15 max-md:shrink-0 max-md:items-center max-md:bg-card max-md:py-2 max-md:pr-14 max-md:pl-5">
+              <SheetTitle className="text-xl leading-snug">{title}</SheetTitle>
+            </div>
+            <div className="space-y-3 max-md:border-b max-md:px-5 max-md:pt-1 max-md:pb-5">
+              <SheetDescription className="line-clamp-2">{request.summary ?? request.resolvesTo?.summary}</SheetDescription>
+              <NextMove next={request.next} className="text-[0.95rem]" />
+            </div>
           </SheetHeader>
         </Req>
 
