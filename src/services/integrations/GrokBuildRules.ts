@@ -11,6 +11,7 @@ import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { isProjectExcluded } from '../../utils/project-filter.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { publishContextRefresh } from './context-refresh.js';
 
 /**
  * Grok Build does not inject SessionStart or UserPromptSubmit hook output into
@@ -171,13 +172,17 @@ export async function refreshGrokBuildContext(
     if (readRegistry()[registryKey(workspaceRoot)]) clearExcludedNotes(workspaceRoot);
     return false;
   }
-  const context = await fetchCtx(workspaceRoot);
-  if (!context.trim()) return false;
-  // The fetch can take a while. If the folder was uninstalled meanwhile, writing
-  // now would bring the file (and the notes) back after the user removed them.
-  if (!readRegistry()[registryKey(workspaceRoot)] || !existsSync(grokRulesFile(workspaceRoot))) return false;
-  writeTextFileAtomic(grokRulesFile(workspaceRoot), renderRules(context));
-  return true;
+  return publishContextRefresh(
+    grokRulesFile(workspaceRoot),
+    () => fetchCtx(workspaceRoot),
+    (context) => {
+      // The fetch can take a while. If the folder was uninstalled meanwhile, writing
+      // now would bring the file (and the notes) back after the user removed them.
+      if (!readRegistry()[registryKey(workspaceRoot)] || !existsSync(grokRulesFile(workspaceRoot))) return false;
+      writeTextFileAtomic(grokRulesFile(workspaceRoot), renderRules(context));
+      return true;
+    },
+  );
 }
 
 /**
