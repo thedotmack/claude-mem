@@ -355,26 +355,36 @@ function parseBoundedTimeout(
 function readSettingsBackedTimeout(
   settingName: keyof SettingsDefaults,
   defaultValue: number,
-  bounds: { min: number; max: number }
+  bounds: { min: number; max: number },
+  options: { readOnly?: boolean } = {}
 ): number {
+  // A read-only caller must not write the data folder, and the warning below
+  // goes to the log file there, so it gets an invalid value as an error instead.
+  const refuseReadOnly = (source: string) => {
+    if (options.readOnly) {
+      throw new Error(`${settingName} ${source} must be a whole number of milliseconds from ${bounds.min} to ${bounds.max}.`);
+    }
+  };
   const envVal = process.env[settingName];
   if (envVal !== undefined) {
     const parsed = parseBoundedTimeout(envVal, bounds);
     if (parsed !== null) {
       return parsed;
     }
+    refuseReadOnly('in the environment');
     logger.warn('SYSTEM', `Invalid ${settingName}, using default`, {
       value: envVal, min: bounds.min, max: bounds.max
     });
     return defaultValue;
   }
 
-  const settingsValue = getWorkerSettings()[settingName];
+  const settingsValue = getWorkerSettings(options)[settingName];
   const parsed = parseBoundedTimeout(settingsValue, bounds);
   if (parsed !== null) {
     return parsed;
   }
 
+  refuseReadOnly('in settings.json');
   logger.warn('SYSTEM', `Invalid ${settingName} in settings.json, using default`, {
     value: settingsValue, min: bounds.min, max: bounds.max
   });
@@ -412,17 +422,24 @@ export function getViewerBaseUrl(port: number | string): string {
   return viewerBaseUrl(port, getWorkerSettings().CLAUDE_MEM_PUBLIC_URL);
 }
 
-export function getWorkerApiRequestTimeoutMs(): number {
-  if (cachedApiRequestTimeoutMs !== null) {
+/**
+ * The deadline for one worker API request (CLAUDE_MEM_API_TIMEOUT_MS). With
+ * `readOnly`, as for the other worker lookups, it seeds no settings.json and runs
+ * no settings migration; an invalid value is then an error, not a logged warning.
+ */
+export function getWorkerApiRequestTimeoutMs(options: { readOnly?: boolean } = {}): number {
+  if (!options.readOnly && cachedApiRequestTimeoutMs !== null) {
     return cachedApiRequestTimeoutMs;
   }
 
-  cachedApiRequestTimeoutMs = readSettingsBackedTimeout(
+  const timeoutMs = readSettingsBackedTimeout(
     'CLAUDE_MEM_API_TIMEOUT_MS',
     getTimeout(HOOK_TIMEOUTS.API_REQUEST),
-    API_REQUEST_TIMEOUT_BOUNDS
+    API_REQUEST_TIMEOUT_BOUNDS,
+    options
   );
-  return cachedApiRequestTimeoutMs;
+  if (!options.readOnly) cachedApiRequestTimeoutMs = timeoutMs;
+  return timeoutMs;
 }
 
 /**

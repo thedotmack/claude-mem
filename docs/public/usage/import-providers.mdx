@@ -28,7 +28,13 @@ npx claude-mem import --from mem0 --source-account personal-mem0 --user my-user-
 ```
 
 The command fetches every page for that Mem0 user, skips expired or superseded
-memories, then saves the remaining memories into `imported-memory`.
+memories, then saves the remaining memories into `imported-memory`. A memory
+with an `expiration_date` is imported through the whole of that day in UTC, the
+way Mem0 shows it, and skipped from the next day. An expiration date Mem0
+cannot read counts as none, as it does in Mem0, so that memory is imported as
+never expiring; the run says how many such memories it found. If you use Mem0's
+Synthesis, its pattern memories arrive as ordinary memories; their source
+record keeps `synthesized: true`.
 
 ## Supermemory
 
@@ -50,10 +56,33 @@ binary. A document that is still processing, has failed, or has no text stops
 the import before any writes. Documents and extracted memories are separate
 choices; importing both can create overlapping information.
 
+A document's identity is the provider, your account label, the namespace, the
+kind (document), the document ID and its published text. A later `--documents`
+run imports a document again only when that text changed. Edits to a
+document's title or metadata alone count as already imported, for two reasons:
+
+- Supermemory changes a listed document by itself. It keeps the memory count,
+  the memory-generation status and the processing timestamps up to date, and it
+  can extract the title itself. It lists no revision number for a document, so
+  there is no field that changes only when you edit one.
+- An observation is the text. Saving the same text again because a title or a
+  tag changed would only duplicate the memory. The first import keeps the title
+  and metadata it saw, in the stored source record.
+
+Documents imported with 15.19.0 are found again: for each document the command
+also sends the fingerprint 15.19.0 saved for it, so an unchanged document counts
+as already imported. That fingerprint covered the whole listed document, so a
+document whose Supermemory processing fields changed since the 15.19.0 import
+does not match it and is imported once more; later runs count it as already
+imported. Finding an unchanged 15.19.0 document needs a worker from this
+release; an older worker imports it once more.
+
 ## Preview and verify
 
 Add `--dry-run` to either command to fetch and validate the selected source
-without writing to Claude-Mem. It prints counts, not memory text or keys.
+without writing to Claude-Mem. It prints counts, not memory text or keys. Every
+run prints the source's own total after the first page, before it reads the
+rest.
 
 After an import, search for a phrase from one of your memories in the viewer,
 or use `npx claude-mem search "a phrase you imported"`. Imported memories are
@@ -71,25 +100,57 @@ fingerprint check, so records already saved are counted as existing. There is
 no background job and no automatic write retry. If a response was lost after
 a save, the next explicit run checks the same fingerprint.
 
-Source edits create new observations rather than modifying earlier imports.
+Two stops are not fixed by running again, and the command says so instead of
+offering a rerun:
+
+- The folder you run the command from matches `CLAUDE_MEM_EXCLUDED_PROJECTS`,
+  so the worker refuses every save. Run it from a folder that is not excluded;
+  the memories still go to `--project`.
+- The worker refuses a save as too large (HTTP 413), although every save from
+  this command stays within the worker's 5 MiB request limit. The worker, or
+  something in front of it, accepts less. Check that the worker runs the same
+  claude-mem version as the command.
+
+Source edits create new observations rather than modifying earlier imports. For
+memories that is any change to the source record; for documents, a change to
+the published text.
 Source deletion and expiration are not synchronized after import. Future Mem0
 expiration dates are preserved as metadata, not scheduled deletion rules.
 This is a one-way import, not ongoing synchronization or a graph migration.
 
 ## Limits and troubleshooting
 
-- The default limit is 10,000 source records. Set `--max-records` up to 100,000
-  for a larger scope. Total source responses are limited to 100 MiB.
-- Requests have a 15-second deadline; `--timeout-ms` accepts up to 120,000.
-  A request failure stops the run with a nonzero exit code.
-- Source pages are collected and validated before any writes. Duplicate IDs,
-  changing totals, incomplete pages and repeated cursors stop the run. Keep
-  the source quiet during an import; the APIs do not provide a snapshot lock.
-- A single text record is limited to 100,000 characters. Oversized records
-  must be split at the source. Text is never silently truncated by this command.
+- Pages use each vendor's maximum page size, 200 records for Mem0 and 100 for
+  Supermemory. The size is fixed, because every page is read anyway. One page
+  can be as large as Node can parse as one string (about 512 MiB).
+- There is no record limit unless you set one: `--max-records <n>` refuses a
+  source with more than `n` records before anything is written.
+- Source pages are collected and validated in memory before any writes. A
+  source that does not fit stops with an out-of-memory error, still before any
+  write. The limit is Node's heap, not your computer's memory: by default Node
+  caps its JavaScript heap at a few GiB even on a computer with more memory, and
+  `NODE_OPTIONS=--max-old-space-size=<MiB>` raises it. Duplicate IDs,
+  changing totals, incomplete pages, more records than the source's total and
+  repeated cursors stop the run. Keep the source quiet during an import; the
+  APIs do not provide a snapshot lock.
+- Each record must fit one cloud sync record, at most 256,000 bytes. The text
+  counts twice, because the original source record is kept as provenance,
+  beside the source metadata. That is about 126,000 characters of English
+  text, or about 42,000 of Chinese or Japanese. A larger record would be saved
+  on this computer but could never sync to cmem.ai or your other devices, so
+  the command refuses it before any write, whether or not you use cloud sync,
+  as 15.19.0's 100,000-character limit did. Split such a record at the source.
+  Text is never silently truncated by this command.
+- `--timeout-ms` sets the deadline, in milliseconds, for each source request and
+  each save to the worker. Without it, a source request may take 60 seconds,
+  the default of both vendors' own JavaScript clients, and a save uses the
+  worker API deadline, `CLAUDE_MEM_API_TIMEOUT_MS` (30 seconds by default, 45
+  on Windows). A request failure stops the run with a nonzero exit code.
 - The destination uses the existing worker URL and local authentication
-  settings. No provider key is sent to the worker. The Postgres server's
-  `/v1` API and hosted CMEM Pro MCP endpoint are not import destinations here.
+  settings, read without changing them: the command writes no settings or other
+  file in the claude-mem data folder; only the worker writes there. No provider
+  key is sent to the worker. The Postgres server's `/v1` API and hosted CMEM
+  Pro MCP endpoint are not import destinations here.
 - Existing worker indexing, cloud sync and export settings still apply to
   imported observations. This command performs no model calls.
 - No configuration is installed. To disconnect, remove the source key from
@@ -100,6 +161,8 @@ This is a one-way import, not ongoing synchronization or a graph migration.
 
 Run the contract tests with `bun test tests/npx-cli/import-memory.test.ts`.
 After `npm run build`, run `python3 tests/fixtures/import-provider-smoke.py`.
+CI also runs it on the packed npm package by setting
+`CLAUDE_MEM_IMPORT_TEST_PACKAGE` to the installed package folder.
 The smoke test uses synthetic provider responses, the actual bundled CLI and
 a disposable bundled worker with fresh SQLite. It never accesses a real
 provider account or runs a model. Successful fixture tests do not establish
