@@ -362,6 +362,16 @@ function reviewList(value, max, label, options) {
   return list.filter((_, index) => newestIndexes.has(index));
 }
 
+/** On the retry, a preference missing its words or the owner's quote is dropped: neither can be shortened into being,
+ * and the review's state and summary are saved without it. */
+function quotedPreferences(list, options) {
+  if (!options.coerce || !Array.isArray(list)) return list;
+  const said = (value) => typeof value === 'string' && value.trim() !== '';
+  const kept = list.filter((preference) => said(preference?.preference) && said(preference?.quote));
+  if (kept.length < list.length) options.coercedFields.add('preferences');
+  return kept;
+}
+
 // Models sometimes answer one citation as a plain string instead of a list (Oct 25: a review's
 // `evidence: "obs 101"` threw `.map is not a function` and failed the whole refresh run).
 const evidenceList = (value, limit = 8) => (Array.isArray(value) ? value : typeof value === 'string' && value.trim() ? [value] : []).map(String).slice(0, limit);
@@ -411,7 +421,7 @@ export function validateProgress(entry, knownGroups, options = {}) {
   for (const field of ['startedAt', 'shippedAt', 'lastActivityAt']) if (!isIsoOrNull(entry[field] ?? null)) throw new TypeError(`${field} must be an ISO date or null.`);
   if (entry.state === 'shipped' && (entry.percent !== 100 || !entry.shippedAt)) throw new TypeError('A shipped request needs percent 100 and shippedAt.');
   if (entry.state !== 'shipped' && entry.shippedAt) throw new TypeError('Only a shipped request has shippedAt.');
-  const milestones = reviewList(entry.milestones, 12, 'milestones', options), preferences = reviewList(entry.preferences, 10, 'preferences', options);
+  const milestones = reviewList(entry.milestones, 12, 'milestones', options), preferences = reviewList(quotedPreferences(entry.preferences, options), 10, 'preferences', options);
   return {
     groupId: entry.groupId, state: entry.state, percent: entry.percent,
     startedAt: entry.startedAt ?? null, shippedAt: entry.shippedAt ?? null, lastActivityAt: entry.lastActivityAt ?? null,
@@ -943,10 +953,14 @@ export function groupingInput(ledger, database, { sinceEpoch, limit = GROUPING_B
 
 /** The grouping agent decides exactly the conversations it was sent: each
  * one joins an open request (listed after that request's anchor), starts a new
- * one, or is ignored. Nothing already decided may move. */
-export function validateGroupingAnswer(answer, input) {
+ * one, or is ignored. Nothing already decided may move.
+ * With `coerce` (the refresh's one retry, as in validateProgress), what this check and `apply` would refuse is cut
+ * from the answer instead, and each changed group or ignore entry is named in `coercedFields`. */
+export function validateGroupingAnswer(answer, input, options = {}) {
+  options = { coerce: false, coercedFields: new Set(), ...options };
   const asked = new Set(input.conversations.map((conversation) => conversation.conversationKey));
   const anchors = new Set(input.openRequests.map((request) => request.anchor));
+  if (options.coerce) answer = coerceGroupingAnswer(answer, asked, anchors, options);
   const decided = new Set();
   for (const [index, group] of (Array.isArray(answer?.groups) ? answer.groups : []).entries()) {
     for (const [position, key] of (Array.isArray(group?.conversations) ? group.conversations : []).entries()) {
@@ -962,6 +976,36 @@ export function validateGroupingAnswer(answer, input) {
   const missing = [...asked].filter((key) => !decided.has(key));
   if (missing.length) throw new TypeError(`Decide every conversation asked about; missing ${missing.join(', ')}.`);
   return answer;
+}
+
+/** A grouping answer without its unsupported parts. A key outside the batch goes (an open request's anchor may only
+ * come first); a link keeps only its group's conversations and goes below two; a group is cut into the parts its links
+ * connect, so a conversation no link ties to the anchor starts its own request under the same title, and a part
+ * holding no asked conversation (an anchor left alone) goes; an ignore reason over 200 characters is shortened.
+ * Nothing is joined without a link, and no asked conversation is dropped. */
+function coerceGroupingAnswer(answer, asked, anchors, options) {
+  const groups = (Array.isArray(answer?.groups) ? answer.groups : []).flatMap((group, index) => {
+    if (!Array.isArray(group?.conversations)) return [group];
+    const members = group.conversations.filter((key, position) => asked.has(key) || (position === 0 && anchors.has(key)));
+    const links = (Array.isArray(group.links) ? group.links : [])
+      .map((link) => ({ ...link, conversations: (Array.isArray(link?.conversations) ? link.conversations : []).filter((key) => members.includes(key)) }))
+      .filter((link) => link.conversations.length >= 2);
+    // The same union of linked conversations applyGroupDecisions checks against the anchor.
+    const parent = new Map(members.map((key) => [key, key]));
+    const find = (key) => { while (parent.get(key) !== key) key = parent.get(key); return key; };
+    for (const link of links) for (const key of link.conversations.slice(1)) parent.set(find(key), find(link.conversations[0]));
+    const parts = new Map();
+    for (const key of members) parts.set(find(key), [...(parts.get(find(key)) ?? []), key]);
+    if (parts.size === 1 && JSON.stringify([members, links]) === JSON.stringify([group.conversations, group.links ?? []])) return [group];
+    options.coercedFields.add(`groups[${index}]`);
+    return [...parts.values()].filter((part) => part.some((key) => asked.has(key)))
+      .map((part) => ({ ...group, conversations: part, links: links.filter((link) => link.conversations.every((key) => part.includes(key))) }));
+  });
+  const ignored = (Array.isArray(answer?.ignored) ? answer.ignored : []).flatMap((entry, index) => {
+    if (!asked.has(entry?.conversation)) { options.coercedFields.add(`ignored[${index}]`); return []; }
+    return typeof entry.reason === 'string' && entry.reason.length > 200 ? [{ ...entry, reason: reviewText(entry.reason, 200, `ignored[${index}].reason`, options) }] : [entry];
+  });
+  return { ...answer, groups, ignored };
 }
 
 /** `apply` without the file: the decisions merged into `stored`, with every touched conversation's

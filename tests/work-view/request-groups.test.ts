@@ -136,6 +136,18 @@ describe('overall requests and progress reviews', () => {
   expect(coerce({ milestones: undated }).review.milestones.map((milestone: any) => milestone.text)).toEqual(undated.slice(1).map(milestone => milestone.text));
   });
 
+  it('a preference without its words or the owner\'s quote on the retry is dropped, and the review is saved without it', () => {
+  const groups = { g_000000000001: { title: 'Cards' } };
+  const base = { groupId: 'g_000000000001', state: 'in-progress', percent: 50, summary: 'Under way.', reviewBasis: { checkedThrough: '2026-10-04T00:00:00Z', conversations: [key('a')] } };
+  const quoted = { kind: 'directive', preference: 'Short replies.', quote: 'keep it short', at: null };
+  const preferences = [quoted, { kind: 'directive', preference: 'Tests first.', quote: '', at: null }, { kind: 'directive', preference: 'Small commits.', at: null }, { kind: 'directive', preference: ' ', quote: 'something', at: null }];
+  expect(() => validateProgress({ ...base, preferences }, groups)).toThrow('preferences[1].quote must be 1–300 characters.');
+  const coercedFields = new Set<string>();
+  const review = validateProgress({ ...base, preferences }, groups, { coerce: true, coercedFields }) as any;
+  expect(review.preferences).toEqual([quoted]);
+  expect([...coercedFields]).toEqual(['preferences']);
+  });
+
   it('every length the skill asks for is the target a refusal names', () => {
   const skill = readFileSync(join(import.meta.dir, '../../plugin/skills/request-progress/SKILL.md'), 'utf8');
   // The story keeps its own target (STORY_NARRATIVE_TARGET), which its refusal names.

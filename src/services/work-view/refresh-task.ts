@@ -397,6 +397,21 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       } finally { database.close(); }
       return output as { placed: number; proposed: number };
     };
+    let droppedProposals = 0;
+    /** For the focus step's retry: the answer without each proposal record-focus's check refuses. A proposal is a
+     * suggestion the owner still decides, so a bad one no longer fails the placements beside it. Refused placements are
+     * left for record-focus to refuse. */
+    const withoutRefusedProposals = (answer: any, input: Parameters<typeof validateFocusAnswer>[1], options: { other?: boolean } = {}) => {
+      const ledger = readLedger(ledgerDir);
+      const accepted = (candidate: any) => {
+        try { validateFocusAnswer(candidate, input, ledger, options); return true; }
+        catch (error) { if (error instanceof TypeError) return false; throw error; }
+      };
+      if (!Array.isArray(answer?.proposals) || !accepted({ ...answer, proposals: [] })) return answer;
+      const proposals = answer.proposals.reduce((kept: unknown[], proposal: unknown) => accepted({ ...answer, proposals: [...kept, proposal] }) ? [...kept, proposal] : kept, []);
+      droppedProposals += answer.proposals.length - proposals.length;
+      return { ...answer, proposals };
+    };
     let python: ReturnType<typeof resolvePythonCommand> | undefined;
     /** Resolve once per refresh, and never retry the script with another interpreter. The goals step re-asks the model
      * after a refusal, which save_goals.py gives before it writes anything (exit 1); a failure after it started writing
@@ -439,18 +454,19 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       textLanguage = decided;
       writeFileSync(join(ledgerDir, DECIDED_LANGUAGE_FILE), JSON.stringify({ language: decided, decidedAt: new Date(now()).toISOString() }, null, 2), { mode: 0o600 });
     };
-    const step = <T>(name: Step, question: string, save: (answer: any) => T | Promise<T>, answerSchema?: AnswerSchema): Promise<T> => {
+    const step = <T>(name: Step, question: string, save: (answer: any, retry: boolean) => T | Promise<T>, answerSchema?: AnswerSchema): Promise<T> => {
       const rule = languageRule();
       return timed(name, () => askAndSave(name, rule ? `${question}\n\n${rule}` : question, save, answerSchema));
     };
     /** Ask, save, and on a refusal (unreadable JSON or a validator's) ask once more with the answer and reason.
-     * A step refused twice fails with its last raw answer kept in failed-answers/ for diagnosis. */
-    const askAndSave = async <T>(name: Step, question: string, save: (answer: any) => T | Promise<T>, answerSchema?: AnswerSchema): Promise<T> => {
+     * A step refused twice fails with its last raw answer kept in failed-answers/ for diagnosis. `retry` tells the save
+     * it holds that second answer. */
+    const askAndSave = async <T>(name: Step, question: string, save: (answer: any, retry: boolean) => T | Promise<T>, answerSchema?: AnswerSchema): Promise<T> => {
       let refusal: string | null = null;
       let answer = '';
       for (let attempt = 0; attempt < 2; attempt++) {
         answer = await ask(refusal ? `${question}\n\nYour previous answer was refused: ${refusal}\nRejected answer:\n${answer}\n\nFix it and answer again.` : question, stepModels[name], answerSchema);
-        try { return await save(parseAgentJson(answer)); }
+        try { return await save(parseAgentJson(answer), attempt > 0); }
         catch (error) {
           // A save that failed after it started writing is not the answer's fault, and asking again would write twice.
           if ((error as { retryable?: boolean })?.retryable === false) throw error;
@@ -678,7 +694,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       // Only conversations the ledger has not decided, one project root per question, each beside
       // that root's open requests. Every batch is saved before the next is read, so a later batch
       // sees the requests an earlier one started.
-      let grouped = 0;
+      let grouped = 0, repairedDecisions = 0;
       for (let input = cli(['grouping-input', '--days', '14']); input.conversations.length; input = cli(['grouping-input', '--days', '14'])) {
         await step('grouping', [
           requestProgress, '---', readOnly,
@@ -686,15 +702,19 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
           // answered {"groups": [], "ignored": []} without reading it (Oct 23, twice in a row).
           `Do only section 1 (grouping) for this one batch of new conversations, the \`grouping-input\` output (also saved in ${writeInput('grouping-input', input)}):\n\n\`\`\`json\n${JSON.stringify(input, null, 2)}\n\`\`\``,
           `Decide each of these ${input.conversations.length} conversations exactly once, in "groups" or "ignored": ${input.conversations.map((conversation: { conversationKey: string }) => conversation.conversationKey).join(', ')}. Reply with only the decisions JSON that \`apply\` takes ({"groups": [...], "ignored": [...]}), deciding every conversation in the batch and nothing else, plus "language": the human language most of the owner's asks are written in, as an English name such as "English", ignoring code, file paths, URLs and product names.`,
-        ].join('\n\n'), answer => {
+        ].join('\n\n'), (answer, retry) => {
           const { language, ...decisions } = answer ?? {};
-          const saved = cli(['apply'], validateGroupingAnswer(decisions, input));
+          // The first answer is held strictly, so the model can link its join itself. A retry that still names keys outside
+          // the batch or joins without links saves the parts its links support, instead of failing the whole run.
+          const repaired = new Set<string>();
+          const saved = cli(['apply'], validateGroupingAnswer(decisions, input, { coerce: retry, coercedFields: repaired }));
+          repairedDecisions += repaired.size;
           noteGroupingLanguage(language);
           return saved;
         }, GROUPING_ANSWER_SCHEMA);
         grouped += input.conversations.length;
       }
-      if (grouped) done.push(`${grouped} new conversations grouped`);
+      if (grouped) done.push(`${grouped} new conversations grouped${repairedDecisions ? ` (${repairedDecisions} decisions repaired after retry)` : ''}`);
 
       const due: Array<{ groupId: string }> = cli(['pending', '--days', '14', '--limit', '1000000']).groups;
       let reviewed = 0;
@@ -801,7 +821,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
           const saved = await step('focus', sorting([
             `Do only section 3, steps 1–2 (place each request in a focus area, promoting one that holds several separate asks) for this batch, the \`focus-input\` output (also saved in ${writeInput('focus-input', input)}):\n\n\`\`\`json\n${JSON.stringify(input, null, 2)}\n\`\`\``,
             `Place each of these ${anchors.length} requests exactly once, by its "anchor": ${anchors.join(', ')}. Reply with only the JSON that \`record-focus\` takes ({"placements": [...], "proposals": [...]}).`,
-          ].join('\n\n')), answer => recordFocus(['--limit', String(FOCUS_BATCH)], answer), FOCUS_ANSWER_SCHEMA);
+          ].join('\n\n')), (answer, retry) => recordFocus(['--limit', String(FOCUS_BATCH)], retry ? withoutRefusedProposals(answer, input) : answer), FOCUS_ANSWER_SCHEMA);
           placed += saved.placed; proposed += saved.proposed;
         }
         if (judged.size) {
@@ -813,10 +833,11 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
         if (other.due) {
           const saved = await step('focus', sorting(
             `Do only section 3, step 3 (propose focus areas from Other) for the \`focus-input --other\` output (also saved in ${writeInput('focus-input-other', other)}):\n\n\`\`\`json\n${JSON.stringify(other, null, 2)}\n\`\`\`\n\nPlace nothing ("placements": []). Reply with only the JSON that \`record-focus --other\` takes ({"placements": [], "proposals": [...]}), proposing nothing when nothing qualifies.`,
-          ), answer => recordFocus(['--other'], answer), FOCUS_ANSWER_SCHEMA);
+          ), (answer, retry) => recordFocus(['--other'], retry ? withoutRefusedProposals(answer, other, { other: true }) : answer), FOCUS_ANSWER_SCHEMA);
           proposed += saved.proposed;
         }
-        if (placed || proposed) done.push([...(placed ? [`${placed} requests placed`] : []), ...(proposed ? [`${proposed} focus areas suggested`] : [])].join(', '));
+        if (placed || proposed || droppedProposals) done.push([...(placed ? [`${placed} requests placed`] : []), ...(proposed ? [`${proposed} focus areas suggested`] : []),
+          ...(droppedProposals ? [`${droppedProposals} refused focus area proposals dropped after retry`] : [])].join(', '));
       } catch (error) { focusError = error; }
 
       // Only reviews whose facts (state, percent, dates, milestones, preferences, outcome) moved since the last story; none means the story still holds.
