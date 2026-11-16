@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import ts from 'typescript';
+import ts from 'typescript-compiler-api';
 import postcss from 'postcss';
 import { unified } from 'unified';
 import remarkParse from 'remark-parse';

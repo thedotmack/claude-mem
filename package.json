@@ -109,9 +109,9 @@
     "cursor:setup": "bun plugin/scripts/worker-service.cjs cursor setup",
     "lint:hook-io": "node scripts/check-hook-io-discipline.cjs",
     "lint:spawn-env": "node scripts/check-spawn-env-discipline.cjs",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p src/ui/viewer/tsconfig.json",
-    "typecheck:root": "tsc --noEmit",
-    "typecheck:viewer": "tsc --noEmit -p src/ui/viewer/tsconfig.json",
+    "typecheck": "npm run typecheck:root && npm run typecheck:viewer",
+    "typecheck:root": "node node_modules/typescript/bin/tsc --noEmit",
+    "typecheck:viewer": "node node_modules/typescript/bin/tsc --noEmit -p src/ui/viewer/tsconfig.json",
     "test": "bun scripts/test-lanes.ts fast",
     "test:integration": "bun scripts/test-lanes.ts integration",
     "test:all": "bun scripts/test-lanes.ts all",
@@ -154,6 +154,7 @@
     "onnxruntime-node": "1.23.2",
     "onnxruntime-web": "npm:onnxruntime-common@1.23.2"
   },
+  "//typescript-note": "TypeScript 7 runs the typechecks. The typescript-compiler-api alias keeps the TypeScript 6 JavaScript parser API for comment stripping and AST-based tests. Typecheck scripts invoke TypeScript 7 directly because both packages declare a tsc binary.",
   "devDependencies": {
     "@huggingface/transformers": "^4.2.0",
     "@anthropic-ai/claude-agent-sdk": "^0.3.172",
@@ -208,6 +209,7 @@
     "tree-sitter-swift": "^0.7.1",
     "tree-sitter-typescript": "^0.23.2",
     "typescript": "^7.0.2",
+    "typescript-compiler-api": "npm:typescript@^6.0.3",
     "unified": "^11.0.5",
     "unist-util-visit": "^5.1.0",
     "typebox": "1.1.24"

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import ts from 'typescript';
+import ts from 'typescript-compiler-api';
 import { LOCALE_NAMES, parseLocale, interpolate, placeholders } from '../src/ui/i18n/locale.ts';
 import { viewerZh } from '../src/ui/i18n/viewer-zh.ts';
 import { myworkZh } from '../src/ui/i18n/mywork-zh.ts';
