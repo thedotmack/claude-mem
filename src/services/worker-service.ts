@@ -1785,7 +1785,12 @@ export class WorkerService implements WorkerRef {
 }
 
 export async function ensureWorkerStarted(port: number): Promise<WorkerStartResult> {
-  return ensureWorkerStartedShared(port, __filename);
+  // Spawn the script the resolver oracle picks, not this bundle's own path:
+  // `start` invoked from the marketplace clone (a leftover pre-12.4.7
+  // `alias claude-mem=` points straight at its worker-service.cjs) would
+  // otherwise root the daemon there, where plugin/ has no node_modules.
+  // `restart` and the restart handoff already resolve this way (#6228).
+  return ensureWorkerStartedShared(port, resolveWorkerScriptPath() ?? __filename);
 }
 
 export type ParsedWorkerCommand = {
