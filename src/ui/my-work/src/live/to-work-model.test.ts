@@ -40,6 +40,17 @@ for (const url of SNAPSHOT_FILES) {
     }
   })
 
+  test(`${name}: every conversation row names the platform and session id of its conversation key`, () => {
+    let rows = 0
+    for (const request of model.requests) {
+      const keys = rawById.get(request.id)!.conversationKeys.map((key) => JSON.parse(key) as string[])
+      assert.deepEqual(request.conversations.map(({ platform, conversationSessionId }) => ({ platform, conversationSessionId })),
+        keys.map(([, platform, conversationSessionId]) => ({ platform, conversationSessionId })))
+      rows += keys.length
+    }
+    assert.ok(rows > 0, 'the real data has conversation rows')
+  })
+
   test(`${name}: titles come from generated records or human copy, never raw prompts`, () => {
     for (const request of model.requests) {
       const raw = rawById.get(request.id)!
@@ -142,6 +153,18 @@ test('looks up conversation titles by platform and content-session identity', ()
   }))
   const [request] = toWorkModel(snapshotWith([raw], { agents }), Date.now()).requests
   assert.deepEqual(request.conversations.map(item => item.title), ['claude session', 'codex session'])
+})
+
+test('each conversation row carries the platform and session id its key records, for Claude Code and for Codex', () => {
+  const raw = syntheticRequest()
+  const claudeSessionId = '0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d'
+  const codexSessionId = '9f8e7d6c-5b4a-4c3d-8e2f-1a0b9c8d7e6f'
+  raw.conversationKeys = [JSON.stringify(['conversation', 'claude', claudeSessionId]), JSON.stringify(['conversation', 'codex', codexSessionId])]
+  const [request] = toWorkModel(snapshotWith([raw]), Date.now()).requests
+  assert.deepEqual(request.conversations.map(({ tool, platform, conversationSessionId }) => ({ tool, platform, conversationSessionId })), [
+    { tool: 'Claude Code', platform: 'claude', conversationSessionId: claudeSessionId },
+    { tool: 'Codex', platform: 'codex', conversationSessionId: codexSessionId },
+  ])
 })
 
 test('maps shared decision versions and keeps an origin-only file visible without a link', () => {

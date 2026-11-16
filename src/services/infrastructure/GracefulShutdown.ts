@@ -19,8 +19,26 @@ export interface StoppableService {
   stop(): Promise<void>;
 }
 
+/**
+ * Child commands the worker sent their stop to as its shutdown began, such as My Work's turns and opens
+ * (ConversationContinuationRunner, stopped by WorkViewRoutes.close in WorkerService.shutdown's first step).
+ */
+export interface StoppedChildCommands {
+  /** Resolves once every one of them has exited. */
+  waitUntilEveryCommandHasExited(): Promise<void>;
+}
+
 export interface GracefulShutdownConfig {
   server: http.Server | null;
+  /**
+   * Waited for from the moment the HTTP server closes, alongside the session drain and the other steps, which do not
+   * wait for it, and before the supervisor's cascade, the last step, which would send a command still running SIGTERM. A
+   * turn then has all of the graceful-shutdown deadline (runShutdownSequence) to end on the stop it was sent, which ends
+   * a Claude Code turn cleanly (SIGINT), and a command that ignores its stop holds up nothing but the cascade. What has
+   * not exited when the deadline runs out is force-stopped, and the cascade run, before the worker exits
+   * (runShutdownSequence).
+   */
+  commandsStoppedAsShutdownBegan?: StoppedChildCommands;
   sessionManager: ShutdownableService;
   mcpClient?: CloseableClient;
   contextReader?: CloseableClient;
@@ -44,6 +62,14 @@ export async function performGracefulShutdown(config: GracefulShutdownConfig): P
     await closeHttpServer(config.server);
     logger.info('SYSTEM', 'HTTP server closed');
   }
+
+  // Not awaited here: the commands end on their stop while the steps below run (commandsStoppedAsShutdownBegan).
+  const stoppedCommandsHaveExited = config.commandsStoppedAsShutdownBegan
+    ? cleanup('stopped commands', async () => {
+      await config.commandsStoppedAsShutdownBegan!.waitUntilEveryCommandHasExited();
+      logger.info('SYSTEM', 'Every command stopped as the shutdown began has exited');
+    })
+    : Promise.resolve();
 
   await cleanup('sessions', () => config.sessionManager.shutdownAll());
 
@@ -70,6 +96,8 @@ export async function performGracefulShutdown(config: GracefulShutdownConfig): P
     await cleanup('database', () => config.dbManager!.close());
   }
 
+  // The cascade sends every child still registered SIGTERM, a stopped turn too, which SIGTERM would cut short.
+  await stoppedCommandsHaveExited;
   await cleanup('supervisor', () => getSupervisor().stop());
 
   if (errors.length === 1) throw errors[0];

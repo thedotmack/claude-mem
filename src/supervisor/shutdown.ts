@@ -1,6 +1,14 @@
 import { existsSync, readFileSync, rmSync } from 'fs';
 import { logger } from '../utils/logger.js';
-import { captureProcessStartToken, isSameProcess, isPidAlive, waitForExit, type ManagedProcessRecord, type ProcessRegistry } from './process-registry.js';
+import {
+  captureProcessStartToken,
+  isSameProcess,
+  isPidAlive,
+  processGroupHasProcessesThatHaveNotExited,
+  waitForExit,
+  type ManagedProcessRecord,
+  type ProcessRegistry,
+} from './process-registry.js';
 import { paths } from '../shared/paths.js';
 import { killProcessTree, collectDescendantIdentities } from '../shared/kill-process-tree.js';
 
@@ -12,6 +20,16 @@ export interface ShutdownCascadeOptions {
   pidFilePath?: string;
 }
 
+/**
+ * How long the cascade gives the children it sent SIGTERM to before it force-kills what is left of them, and how long it
+ * then waits after SIGKILL before it reports what still runs. These are the windows the supervisor has had since it was
+ * added (#1370: "graceful shutdown cascade (SIGTERM → 5s wait → SIGKILL)"); no measurement behind them is recorded. The
+ * worker's last step before it exits (runShutdownSequence's forceStopCommandsStillRunning) reuses them through
+ * terminateThenForceKill and terminateThenForceKillProcessGroups, so it adds no window of its own.
+ */
+const GRACE_WINDOW_AFTER_SIGTERM_MS = 5000;
+const WAIT_AFTER_SIGKILL_MS = 1000;
+
 export async function runShutdownCascade(options: ShutdownCascadeOptions): Promise<void> {
   const currentPid = options.currentPid ?? process.pid;
   const pidFilePath = options.pidFilePath ?? PID_FILE;
@@ -20,6 +38,34 @@ export async function runShutdownCascade(options: ShutdownCascadeOptions): Promi
     .filter(record => record.pid !== currentPid)
     .sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt));
 
+  await terminateThenForceKill(childRecords, record => options.registry.unregister(record.id));
+
+  for (const record of childRecords) {
+    options.registry.unregister(record.id);
+  }
+  for (const record of allRecords.filter(record => record.pid === currentPid)) {
+    options.registry.unregister(record.id);
+  }
+
+  removeOwnedPidFile(pidFilePath, currentPid);
+
+  options.registry.pruneDeadEntries();
+}
+
+/**
+ * How the shutdown cascade stops child processes, for the ones `records` name, in their order: SIGTERM to each one still
+ * running (to its process group when it has one), up to GRACE_WINDOW_AFTER_SIGTERM_MS for all of them to exit, then
+ * SIGKILL to what is left of each, with the processes it had started, and up to WAIT_AFTER_SIGKILL_MS more. Each one the
+ * grace window ran out on is logged at WARN, and each still running after SIGKILL at ERROR.
+ *
+ * `onExitedBeforeItsSigterm` hears each record whose process had already exited when its turn for SIGTERM came. Answers
+ * the records that had to be force-killed: those still running, or with a process they started still running, when the
+ * grace window ran out.
+ */
+export async function terminateThenForceKill(
+  records: ManagedProcessRecord[],
+  onExitedBeforeItsSigterm: (record: ManagedProcessRecord) => void = () => {},
+): Promise<ManagedProcessRecord[]> {
   // Descendants snapshotted BEFORE the SIGTERM phase.
   //
   // The survivor scan below used to test `isPidAlive(record.pid)` — the ROOT
@@ -37,9 +83,9 @@ export async function runShutdownCascade(options: ShutdownCascadeOptions): Promi
   // its children with it.
   const rootTokenByRecord = new Map<string, string | null>();
 
-  for (const record of childRecords) {
+  for (const record of records) {
     if (!isPidAlive(record.pid)) {
-      options.registry.unregister(record.id);
+      onExitedBeforeItsSigterm(record);
       continue;
     }
 
@@ -69,17 +115,22 @@ export async function runShutdownCascade(options: ShutdownCascadeOptions): Promi
     }
   }
 
-  await waitForExit(childRecords, 5000);
+  await waitForExit(records, GRACE_WINDOW_AFTER_SIGTERM_MS);
 
   // A record survives if its root OR any of its snapshotted descendants is
   // still alive — a dead root with live descendants is precisely the orphan
   // case the force phase must handle.
-  const survivors = childRecords.filter(record =>
+  const survivors = records.filter(record =>
     isPidAlive(record.pid) ||
     (descendantsByRecord.get(record.id) ?? []).some(entry => isPidAlive(entry.pid))
   );
 
   for (const record of survivors) {
+    // The grace window above ran out with it, or a process it started, still running: said at WARN, as reapSession says it.
+    logger.warn('SYSTEM', 'Child process still running when the shutdown grace window after SIGTERM ran out; force-killing what is left of it', {
+      pid: record.pid,
+      type: record.type,
+    });
     // Only tree-kill from a root that is still the process we recorded. When
     // the PID has been reused, the replacement is an unrelated process and
     // signalProcess would take its whole subtree down; the identity-validated
@@ -122,18 +173,80 @@ export async function runShutdownCascade(options: ShutdownCascadeOptions): Promi
     }
   }
 
-  await waitForExit(survivors, 1000);
-
-  for (const record of childRecords) {
-    options.registry.unregister(record.id);
+  await waitForExit(survivors, WAIT_AFTER_SIGKILL_MS);
+  // The cascade's whole budget has run out. Only a root that is still the process recorded is reported: a reused PID is
+  // another program's.
+  const stillRunning = survivors.filter(record => isPidAlive(record.pid) && isSameProcess(record.pid, rootTokenByRecord.get(record.id) ?? null));
+  for (const record of stillRunning) {
+    logger.error('SYSTEM', 'Child process still running after SIGKILL at the end of the shutdown cascade: the worker exits without it', {
+      pid: record.pid,
+      type: record.type,
+    });
   }
-  for (const record of allRecords.filter(record => record.pid === currentPid)) {
-    options.registry.unregister(record.id);
+  return survivors;
+}
+
+/** A child that leads a process group of its own, which its caller has watched since the child was started. */
+export type ProcessGroupRecord = ManagedProcessRecord & { pgid: number };
+
+/**
+ * terminateThenForceKill for children that lead a process group of their own and that their caller has watched since
+ * it started them, until every process in the group had exited: runCommand's commands with a stop signal
+ * (agent-runner/detect.ts), the conversation runner's turns and opens. It goes by the group, not by its leader. The
+ * leader can be a launcher found on PATH that exits first, on the same signal, while the CLI it started runs on in the
+ * group, and terminateThenForceKill skips a record whose own pid has exited without signalling its group. A group with
+ * processes left in it is still the group the child led (processGroupHasProcessesThatHaveNotExited).
+ *
+ * The cascade's own steps and windows: SIGTERM to each group that still has processes that have not exited, up to
+ * GRACE_WINDOW_AFTER_SIGTERM_MS for all of them to exit, then SIGKILL to each that has not, and up to
+ * WAIT_AFTER_SIGKILL_MS more. A process that has exited but that its parent never collects (a zombie) counts as exited:
+ * no signal can end it. Each group the grace window ran out on is logged at WARN, and each with processes left after
+ * SIGKILL at ERROR. Answers the records whose group still had processes once the grace window ran out.
+ */
+export async function terminateThenForceKillProcessGroups(records: ProcessGroupRecord[]): Promise<ProcessGroupRecord[]> {
+  const groupIsRunning = (record: ProcessGroupRecord) => processGroupHasProcessesThatHaveNotExited(record.pgid);
+  const recordsWhoseGroupIsRunning = async (candidates: ProcessGroupRecord[]) => {
+    const isRunning = await Promise.all(candidates.map(groupIsRunning));
+    return candidates.filter((_, index) => isRunning[index]);
+  };
+  const running = await recordsWhoseGroupIsRunning(records);
+  for (const record of running) signalProcessGroup(record, 'SIGTERM');
+
+  await waitForExit(running, GRACE_WINDOW_AFTER_SIGTERM_MS, groupIsRunning);
+
+  const survivors = await recordsWhoseGroupIsRunning(running);
+  for (const record of survivors) {
+    logger.warn('SYSTEM', 'Child process group still has processes when the shutdown grace window after SIGTERM ran out; force-killing them', {
+      pid: record.pid,
+      pgid: record.pgid,
+      type: record.type,
+    });
+    signalProcessGroup(record, 'SIGKILL');
   }
 
-  removeOwnedPidFile(pidFilePath, currentPid);
+  await waitForExit(survivors, WAIT_AFTER_SIGKILL_MS, groupIsRunning);
+  for (const record of await recordsWhoseGroupIsRunning(survivors)) {
+    logger.error('SYSTEM', 'Child process group still has processes after SIGKILL at the end of the shutdown cascade: the worker exits without them', {
+      pid: record.pid,
+      pgid: record.pgid,
+      type: record.type,
+    });
+  }
+  return survivors;
+}
 
-  options.registry.pruneDeadEntries();
+/** `signal` to every process in the record's group. ESRCH: the group has emptied, so nothing was left to signal. */
+function signalProcessGroup(record: ProcessGroupRecord, signal: 'SIGTERM' | 'SIGKILL'): void {
+  try {
+    process.kill(-record.pgid, signal);
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return;
+    logger.warn('SYSTEM', `Failed to send ${signal} to a child process group`, {
+      pid: record.pid,
+      pgid: record.pgid,
+      type: record.type,
+    }, error instanceof Error ? error : new Error(String(error)));
+  }
 }
 
 /**

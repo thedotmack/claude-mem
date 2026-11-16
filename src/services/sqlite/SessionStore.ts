@@ -3972,6 +3972,17 @@ export class SessionStore {
   }
 
   /**
+   * Whether this computer recorded the conversation a work-view conversation key names, and the checkout it was
+   * launched in (null when none was recorded). Served by the unique index ux_sdk_sessions_platform_content.
+   */
+  getRecordedFolderForConversation(platformSource: string, contentSessionId: string): { sessionIsRecorded: boolean; recordedFolder: string | null } {
+    const row = this.db.prepare('SELECT cwd FROM sdk_sessions WHERE platform_source = ? AND content_session_id = ?')
+      .get(platformSource, contentSessionId) as { cwd: string | null } | null | undefined;
+    if (!row) return { sessionIsRecorded: false, recordedFolder: null };
+    return { sessionIsRecorded: true, recordedFolder: row.cwd ?? null };
+  }
+
+  /**
    * Custom-title mutation op (plan Phase 3 task 2). sdk_sessions rows do not
    * sync, so there is no sync_rev to bump and no synced_at to null — the
    * title travels ONLY as a set_title mutation op. Per the SyncApply REV
