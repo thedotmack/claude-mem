@@ -6,7 +6,7 @@ import { spawn, type ChildProcess, type SpawnOptions } from 'child_process';
 import { join } from 'path';
 import { runCommand, type CommandOptions } from '../../../src/services/agent-runner/detect.js';
 import { scratchDir } from '../../helpers/scratch-dir.js';
-import { isRunning, pidWrittenTo } from '../../helpers/stand-in-process.js';
+import { isRunning, nonCollectingParentAndZombieWrittenTo, pidWrittenTo, stateAndProcessGroupOf } from '../../helpers/stand-in-process.js';
 import { removeTempDir } from '../../helpers/temp-dir.js';
 
 const FIXTURES = join(import.meta.dir, '..', '..', 'fixtures', 'conversation-continuation');
@@ -14,6 +14,7 @@ const LAUNCHER_THAT_HOLDS_SIGINT = join(FIXTURES, 'launcher-that-holds-sigint.sh
 const STAND_IN_CLI = join(FIXTURES, 'cli-that-ends-its-turn-on-sigint.mjs');
 const LAUNCHER_THAT_EXITS_BEFORE_ITS_CLI = join(FIXTURES, 'launcher-that-exits-before-its-cli.mjs');
 const CLI_TURN_THAT_ENDS_A_MOMENT_AFTER_ITS_STOP = join(FIXTURES, 'cli-turn-that-ends-a-moment-after-its-stop.sh');
+const TURN_THAT_LEAVES_ONLY_A_ZOMBIE_IN_ITS_GROUP = join(FIXTURES, 'turn-that-leaves-only-a-zombie-in-its-group.pl');
 /**
  * How long the stand-in CLI's turn lasts when no stop reaches it. The tests stop it the moment it prints "ready", and a
  * stop that reaches it ends it within a few milliseconds (measured on macOS with Bun 1.3.9 and Node 24), so the two
@@ -215,6 +216,41 @@ describeOnMacOsAndLinux('a command whose launcher exits before the CLI it starte
     // The launcher exited 0 by itself, before the stop.
     expect(result.exitCode).toBe(0);
     expect(command.processesLeft).toEqual([{ processGroupId: command.launcher().pid!, exitCode: 0 }]);
+  });
+});
+
+describeOnMacOsAndLinux('a command that leaves its process group holding only a zombie, with real processes', () => {
+  const folders: string[] = [];
+  /** The parents that never collect their zombie: ended after each test, so that the zombie is collected. */
+  const nonCollectingParents: number[] = [];
+  afterEach(async () => {
+    for (const pid of nonCollectingParents.splice(0)) if (isRunning(pid)) process.kill(pid, 'SIGKILL');
+    for (const folder of folders.splice(0)) await removeTempDir(folder);
+  });
+
+  it('comes back as the command exits: a process that has exited and that its parent never collects is not left running', async () => {
+    const folder = scratchDir('run-command-zombie');
+    folders.push(folder);
+    const pidsFile = join(folder, 'pids.txt');
+    const processesLeft: Array<Parameters<NonNullable<CommandOptions['onProcessesLeftInItsGroup']>>[0]> = [];
+    let processGroupId: number | undefined;
+    const result = await runCommand(TURN_THAT_LEAVES_ONLY_A_ZOMBIE_IN_ITS_GROUP, [], {
+      env: { PATH: process.env.PATH, STAND_IN_TURN_WRITES_ITS_PIDS_TO: pidsFile },
+      input: 'Which word? Reply with only the word.',
+      signal: new AbortController().signal,
+      killSignal: 'SIGINT',
+      onSpawn: started => { processGroupId = started.processGroupId; },
+      onProcessesLeftInItsGroup: left => { processesLeft.push(left); },
+    });
+    const { nonCollectingParent, zombie } = nonCollectingParentAndZombieWrittenTo(pidsFile);
+    nonCollectingParents.push(nonCollectingParent);
+    expect(result).toMatchObject({ exitCode: 0, stderr: '' });
+    expect(JSON.parse(result.stdout)).toMatchObject({ type: 'result', result: 'marmalade' });
+    // As the result came, the zombie was still in the command's group, which kill(2) still finds (Linux counts the zombie
+    // as a process it may signal, macOS answers EPERM), and nothing else was.
+    expect(stateAndProcessGroupOf(zombie)).toEqual({ state: 'Z', processGroupId: processGroupId! });
+    expect(isRunning(-processGroupId!)).toBe(true);
+    expect(processesLeft).toEqual([]);
   });
 });
 

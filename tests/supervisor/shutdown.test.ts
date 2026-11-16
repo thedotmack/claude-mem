@@ -6,7 +6,7 @@ import path from 'path';
 import { createProcessRegistry } from '../../src/supervisor/process-registry.js';
 import { removeOwnedPidFile, runShutdownCascade, terminateThenForceKillProcessGroups, type ProcessGroupRecord } from '../../src/supervisor/shutdown.js';
 import { scratchDir } from '../helpers/scratch-dir.js';
-import { isRunning, pidWrittenTo } from '../helpers/stand-in-process.js';
+import { isRunning, nonCollectingParentAndZombieWrittenTo, pidWrittenTo, stateAndProcessGroupOf } from '../helpers/stand-in-process.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
 
 function makeTempDir(): string {
@@ -210,10 +210,14 @@ describe('removeOwnedPidFile (owner guard, Phase 5)', () => {
 (process.platform === 'win32' ? describe.skip : describe)('terminateThenForceKillProcessGroups, with real processes', () => {
   const FIXTURES = path.join(import.meta.dir, '..', 'fixtures', 'conversation-continuation');
   const LAUNCHER_THAT_EXITS_BEFORE_ITS_CLI = path.join(FIXTURES, 'launcher-that-exits-before-its-cli.mjs');
+  const TURN_THAT_LEAVES_ONLY_A_ZOMBIE_IN_ITS_GROUP = path.join(FIXTURES, 'turn-that-leaves-only-a-zombie-in-its-group.pl');
   const folders: string[] = [];
   const processGroups: number[] = [];
+  /** The parents that never collect their zombie: ended after each test, so that the zombie is collected. */
+  const nonCollectingParents: number[] = [];
   afterEach(async () => {
     for (const processGroup of processGroups.splice(0)) if (isRunning(-processGroup)) process.kill(-processGroup, 'SIGKILL');
+    for (const pid of nonCollectingParents.splice(0)) if (isRunning(pid)) process.kill(pid, 'SIGKILL');
     for (const folder of folders.splice(0)) await removeTempDir(folder);
   });
 
@@ -276,6 +280,37 @@ describe('removeOwnedPidFile (owner guard, Phase 5)', () => {
       processKill.mockRestore();
     }
     // Only the question whether any process is left in it (signal 0).
+    expect(signalsSent).toEqual([0]);
+  });
+
+  it('signals no group left holding only a zombie, which no signal ends, and answers no record', async () => {
+    const folder = scratchDir('process-group-with-only-a-zombie');
+    folders.push(folder);
+    const pidsFile = path.join(folder, 'pids.txt');
+    // Not among processGroups: once the leader has exited, nothing is left in its group that a signal could end, and on
+    // macOS kill(2) answers a SIGKILL to the group with EPERM. The leader exits by itself, or fails, on every path.
+    const leader = spawn(TURN_THAT_LEAVES_ONLY_A_ZOMBIE_IN_ITS_GROUP, [], {
+      detached: true, stdio: 'ignore', env: { PATH: process.env.PATH, STAND_IN_TURN_WRITES_ITS_PIDS_TO: pidsFile },
+    });
+    expect(await new Promise<number | null>(resolve => leader.once('exit', code => resolve(code)))).toBe(0);
+    const { nonCollectingParent, zombie } = nonCollectingParentAndZombieWrittenTo(pidsFile);
+    nonCollectingParents.push(nonCollectingParent);
+    const record: ProcessGroupRecord = { id: `conversation-turn:${leader.pid}`, pid: leader.pid!, pgid: leader.pid!, type: 'conversation-turn', startedAt: new Date().toISOString() };
+    // kill(2) still finds the group, which holds the zombie and nothing else.
+    expect(isRunning(-record.pgid)).toBe(true);
+    expect(stateAndProcessGroupOf(zombie)).toEqual({ state: 'Z', processGroupId: record.pgid });
+    const signalsSent: Array<string | number | undefined> = [];
+    const realProcessKill = process.kill.bind(process);
+    const processKill = spyOn(process, 'kill').mockImplementation(((pid: number, signal?: string | number) => {
+      if (pid === -record.pgid) signalsSent.push(signal);
+      return realProcessKill(pid, signal);
+    }) as typeof process.kill);
+    try {
+      expect(await terminateThenForceKillProcessGroups([record])).toEqual([]);
+    } finally {
+      processKill.mockRestore();
+    }
+    // Only the question whether any process is left in it (signal 0): no SIGTERM, so no grace window waited out, and no SIGKILL.
     expect(signalsSent).toEqual([0]);
   });
 });

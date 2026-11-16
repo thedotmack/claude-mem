@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import express from 'express';
 import { listenOnEphemeralPort } from '../../../helpers/ephemeral-port.js';
 import { scratchDir } from '../../../helpers/scratch-dir.js';
-import { isRunning, pidWrittenTo } from '../../../helpers/stand-in-process.js';
+import { isRunning, nonCollectingParentAndZombieWrittenTo, pidWrittenTo, stateAndProcessGroupOf } from '../../../helpers/stand-in-process.js';
 import { removeTempDir } from '../../../helpers/temp-dir.js';
 import type { UsableAgent, UsableAgentId } from '../../../../src/services/agent-runner/detect.js';
 import {
@@ -1154,5 +1154,68 @@ describe('when the worker shuts down, with a real turn running', () => {
     expect(turn.runner.stop('claude', CLAUDE_SESSION)).toHaveProperty('exchange');
     expect(await turn.nextEnded()).toMatchObject({ state: 'failed', failureText: 'You stopped this turn.' });
     expect(turn.spawned).toHaveLength(2);
+  });
+});
+
+describe('a real turn whose command leaves its process group holding only a zombie', () => {
+  const TURN_THAT_LEAVES_ONLY_A_ZOMBIE_IN_ITS_GROUP = join(FIXTURES, 'turn-that-leaves-only-a-zombie-in-its-group.pl');
+  // On Windows a command has no process group of its own (CommandOptions.signal in detect.ts).
+  const itOnMacOsAndLinux = process.platform === 'win32' ? it.skip : it;
+  /** The parents that never collect their zombie: ended after each test, so that the zombie is collected. */
+  const nonCollectingParents: number[] = [];
+  afterEach(() => {
+    for (const pid of nonCollectingParents.splice(0)) if (isRunning(pid)) process.kill(pid, 'SIGKILL');
+  });
+
+  itOnMacOsAndLinux('ends each turn with its reply as its command exits, though the zombie stays, so the next Send starts a turn', async () => {
+    const folder = join(fileFolder, `zombie-${++testFolderCount}`);
+    mkdirSync(folder);
+    /** The file each turn's command writes its pids to, one per turn, in order. */
+    const pidsFiles: string[] = [];
+    /** Each turn's command, by its pid: the id of the process group it leads (CommandOptions.signal in detect.ts). */
+    const commandPids: number[] = [];
+    const unread: ConversationContinuation[] = [];
+    const waiting: Array<(exchange: ConversationContinuation) => void> = [];
+    /** The next exchange the runner reports as ended. */
+    const nextEnded = () => unread.length > 0 ? Promise.resolve(unread.shift()!) : new Promise<ConversationContinuation>(resolve => waiting.push(resolve));
+    let routes!: WorkViewRoutes;
+    const runner = new ConversationContinuationRunner({
+      recordedFolderForConversation: (platform, conversationSessionId) => store.getRecordedFolderForConversation(platform, conversationSessionId),
+      detectAgent: async agentId => ({ id: agentId, path: TURN_THAT_LEAVES_ONLY_A_ZOMBIE_IN_ITS_GROUP, authenticated: true, reason: 'test login' }),
+      spawnImpl: ((command: string, args: string[], options: SpawnOptions) => {
+        const child = spawnRealProcess(command, args, options);
+        commandPids.push(child.pid!);
+        return child;
+      }) as unknown as typeof spawn,
+      onChange: exchange => {
+        routes.publishConversationContinuation(exchange);
+        const waiter = waiting.shift();
+        if (waiter) waiter(exchange); else unread.push(exchange);
+      },
+      environment: () => {
+        const pidsFile = join(folder, `turn-${pidsFiles.length + 1}.pids`);
+        pidsFiles.push(pidsFile);
+        return { PATH: process.env.PATH, HOME: process.env.HOME, STAND_IN_TURN_WRITES_ITS_PIDS_TO: pidsFile };
+      },
+    });
+    routes = new WorkViewRoutes({ ...isolatedRoutesOptions(), conversationContinuationRunner: runner });
+    try {
+      for (const ownerMessage of ['Which word? Reply with only the word.', 'And again?']) {
+        expect(await runner.start('claude', CLAUDE_SESSION, ownerMessage)).toHaveProperty('exchange');
+        expect(await nextEnded()).toMatchObject({ state: 'replied', replyText: 'marmalade', ownerMessage });
+        const { nonCollectingParent, zombie } = nonCollectingParentAndZombieWrittenTo(pidsFiles.at(-1)!);
+        nonCollectingParents.push(nonCollectingParent);
+        // The exchange ended with the zombie still in the turn's process group, which kill(2) still finds.
+        const turnProcessGroup = commandPids.at(-1)!;
+        expect(stateAndProcessGroupOf(zombie)).toEqual({ state: 'Z', processGroupId: turnProcessGroup });
+        expect(isRunning(-turnProcessGroup)).toBe(true);
+      }
+      expect(runner.exchanges('claude', CLAUDE_SESSION).map(({ state, replyText }) => ({ state, replyText }))).toEqual([
+        { state: 'replied', replyText: 'marmalade' },
+        { state: 'replied', replyText: 'marmalade' },
+      ]);
+    } finally {
+      routes.close();
+    }
   });
 });

@@ -9,8 +9,8 @@
  * timer, at worker start or on reconnect.
  *
  * Each command it starts is in the worker's process registry while it runs, like every other process the worker starts.
- * A command runs until no process is left in its process group: a launcher found on PATH can exit before the CLI it
- * started (runCommand's CommandOptions.signal). The worker's shutdown sends each its stop, waits for it to exit, and
+ * A command runs until every process in its process group has exited: a launcher found on PATH can exit before the CLI
+ * it started (runCommand's CommandOptions.signal). The worker's shutdown sends each its stop, waits for it to exit, and
  * force-stops what is left of its group if it has not before the worker exits (close says how), so a turn never
  * outlives the worker that started it while the next worker takes a turn in the same conversation.
  *
@@ -771,8 +771,9 @@ export class ConversationContinuationRunner {
   /**
    * runCommand, with the command kept, as `commandType` and with the process group its stop goes to
    * (CommandOptions.onSpawn), among this runner's running commands and in the worker's process registry (processRegistry)
-   * while it runs, like every other process the worker starts. On macOS and Linux it runs until no process is left in its
-   * group (CommandOptions.signal), so a CLI still at work behind a launcher that has exited keeps its turn running. The
+   * while it runs, like every other process the worker starts. On macOS and Linux it runs until every process in its
+   * group has exited (CommandOptions.signal), so a CLI still at work behind a launcher that has exited keeps its turn
+   * running, and a CLI that has exited but that its new parent never collects (a zombie) does not. The
    * worker's shutdown then waits for it to exit (waitUntilEveryCommandHasExited), and force-stops it if it has not
    * (forceStopCommandsStillRunning).
    */

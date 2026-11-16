@@ -44,7 +44,7 @@ import { readClaudeOAuthToken, type OAuthTokenResult } from '../../shared/oauth-
 import { hasAnthropicApiKey, hasAnthropicAuthToken, hasConfiguredClaudeOAuthToken } from '../../shared/EnvManager.js';
 
 import { commandInvocation, resolveVoltaShim, selectWindowsCommandCandidate, windowsWhereExecutablePath } from '../../shared/spawn.js';
-import { PROCESS_EXIT_POLL_INTERVAL_MS, processGroupHasProcesses } from '../../supervisor/process-registry.js';
+import { PROCESS_EXIT_POLL_INTERVAL_MS, processGroupHasProcessesThatHaveNotExited } from '../../supervisor/process-registry.js';
 
 export type UsableAgentId = 'claude-code' | 'codex' | 'gemini';
 
@@ -83,11 +83,13 @@ export interface CommandOptions {
    * CLI as its child and passes no signal on: an agent wrapper written in bash that traps INT is one, because bash runs
    * a trap only after its foreground child has exited, so a signal sent to the script alone never reaches the CLI.
    *
-   * There the command has exited only once no process is left in its group. A launcher can exit before the CLI it
-   * started: one with no SIGINT handler (a Node script, by Node's default) dies on the stop at once, while the CLI it ran,
-   * sent the same stop, goes on writing out its turn. Its 'close' then comes when the CLI's output closes, or at once
-   * when the CLI does not write to the command's own stdout and stderr. So the result comes once the group is empty
-   * (onProcessesLeftInItsGroup), and until then aborting still sends `killSignal` to what is left of it.
+   * There the command has exited only once every process in its group has exited too. A launcher can exit before the CLI
+   * it started: one with no SIGINT handler (a Node script, by Node's default) dies on the stop at once, while the CLI it
+   * ran, sent the same stop, goes on writing out its turn. Its 'close' then comes when the CLI's output closes, or at once
+   * when the CLI does not write to the command's own stdout and stderr. So the result comes once no process that has not
+   * exited is left in the group (onProcessesLeftInItsGroup), and until then aborting still sends `killSignal` to what is
+   * left of it. A process that has exited but that its parent never collects (a zombie) counts as exited: a container's
+   * PID 1 that does not reap can adopt the CLI and leave it so for good (processGroupHasProcessesThatHaveNotExited).
    *
    * On Windows the signal goes to the command alone, through Node's own `signal` and `killSignal` options, as before.
    * Windows has no process group a signal can be sent to, Node ends a Windows process forcefully whatever the signal,
@@ -115,9 +117,9 @@ export interface CommandOptions {
   onSpawn?: (started: { pid: number; processGroupId: number | undefined }) => void;
   /**
    * Told once, on macOS and Linux when `signal` is given, when everything the command wrote has been read and the
-   * command has exited, but processes are still left in its process group (see CommandOptions.signal): the processes
-   * it started, such as the CLI behind a launcher that has exited. The result comes once none is left, and a stop sent
-   * meanwhile still reaches them.
+   * command has exited, but processes that have not exited are still left in its process group (see
+   * CommandOptions.signal): the processes it started, such as the CLI behind a launcher that has exited. The result comes
+   * once none is left, and a stop sent meanwhile still reaches them.
    */
   onProcessesLeftInItsGroup?: (left: { processGroupId: number; exitCode: number | null }) => void;
 }
@@ -183,6 +185,17 @@ export function runCommand(first: typeof spawn | string, second: string | string
       processGroupStopSignal?.removeEventListener('abort', stopProcessGroup);
       resolve(result);
     };
+    // macOS and Linux: the processes it started may still be at work in its group (CommandOptions.signal). It ends once
+    // every process in its group has exited, looked for again at the supervisor's interval for its own waits on processes
+    // to exit.
+    const settleOnceEveryProcessInItsGroupHasExited = async (processGroupId: number, result: CommandResult) => {
+      if (await processGroupHasProcessesThatHaveNotExited(processGroupId)) {
+        options.onProcessesLeftInItsGroup?.({ processGroupId, exitCode: result.exitCode });
+        do await new Promise(resolveAfterTheInterval => setTimeout(resolveAfterTheInterval, PROCESS_EXIT_POLL_INTERVAL_MS));
+        while (await processGroupHasProcessesThatHaveNotExited(processGroupId));
+      }
+      settle(result);
+    };
     if (processGroupStopSignal?.aborted) stopProcessGroup();
     else processGroupStopSignal?.addEventListener('abort', stopProcessGroup, { once: true });
     child.on('error', error => {
@@ -202,20 +215,13 @@ export function runCommand(first: typeof spawn | string, second: string | string
     });
     child.on('close', code => {
       const result: CommandResult = { exitCode: code, stdout, stderr, spawnError };
-      // It has exited now when it has no process group of its own (no signal, or Windows), or none is left in its group.
-      if (processGroupStopSignal === undefined || child.pid === undefined || !processGroupHasProcesses(child.pid)) {
+      // It has exited now when it has no process group of its own (no signal, or Windows).
+      if (processGroupStopSignal === undefined || child.pid === undefined) {
         settle(result);
         return;
       }
-      // macOS and Linux: processes it started are still running in its group (CommandOptions.signal). It ends once none
-      // is left, looked for again at the supervisor's interval for its own waits on processes to exit.
-      const processGroupId = child.pid;
-      options.onProcessesLeftInItsGroup?.({ processGroupId, exitCode: code });
-      const settleOnceTheGroupIsEmpty = () => {
-        if (processGroupHasProcesses(processGroupId)) setTimeout(settleOnceTheGroupIsEmpty, PROCESS_EXIT_POLL_INTERVAL_MS);
-        else settle(result);
-      };
-      setTimeout(settleOnceTheGroupIsEmpty, PROCESS_EXIT_POLL_INTERVAL_MS);
+      // A group's id is its leader's pid.
+      void settleOnceEveryProcessInItsGroupHasExited(child.pid, result);
     });
     if (options.input !== undefined) {
       child.stdin?.on('error', () => { /* The exit code reports a command that stopped reading. */ });
