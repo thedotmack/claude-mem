@@ -1,11 +1,15 @@
-import React, { useState } from 'react';
+import React, { useLayoutEffect, useRef, useState } from 'react';
 import { useI18n, interpolate } from '../../i18n';
 import { Observation } from '../types';
-import { formatDate } from '../utils/formatters';
-import { DeleteButton } from './DeleteButton';
 import { ObservationMediaSection } from './ObservationMedia';
 import type { DeletableItemType } from '../utils/feed-deletion';
 import { parseStoredStringList } from '../utils/stored-string-list';
+import { useFeedItemDelete, type FeedItemDeletion } from '../hooks/useFeedItemDelete';
+import { DELETE_ITEM_LABELS, DeleteConfirmation } from './DeleteButton';
+import { MenuButton, MenuItem, MenuSeparator } from './MenuButton';
+import { CopyMenuItem } from './CopyButton';
+import { ShortTime } from './ShortTime';
+import { FileIcon, TrashIcon } from './icons';
 
 export type ObservationViewMode = 'summary' | 'facts' | 'narrative';
 interface ObservationCardProps {
@@ -13,6 +17,11 @@ interface ObservationCardProps {
   onDeleted: (itemType: DeletableItemType, id: number) => void;
   viewMode?: ObservationViewMode;
   onViewModeChange?: (mode: ObservationViewMode) => void;
+  /** The list's record of this card's delete, so it outlives the card; a card on its own keeps its own. */
+  deletion?: FeedItemDeletion;
+  /** Whether the one-line summary is opened in full; the list keeps it so it survives the row being recycled. */
+  subtitleOpen?: boolean;
+  onSubtitleOpenChange?: (open: boolean) => void;
 }
 
 function stripProjectRoot(storedPath: string): string {
@@ -36,7 +45,47 @@ function stripProjectRoot(storedPath: string): string {
   return parts.length > 3 ? parts.slice(-3).join('/') : filePath;
 }
 
-export function ObservationCard({ observation, onDeleted, viewMode, onViewModeChange }: ObservationCardProps) {
+/** The plain text of an observation, for Copy text. */
+function observationText(observation: Observation): string {
+  return [observation.title, observation.subtitle, observation.narrative].filter(Boolean).join('\n\n');
+}
+
+/**
+ * The one line under the title (F15). When the line is cut, "Show more" opens the whole
+ * text in place, so nothing is lost to the fold; Copy text in "…" has it too.
+ */
+function Subtitle({ text, open: controlledOpen, onOpenChange }: { text: string; open?: boolean; onOpenChange?: (open: boolean) => void }) {
+  const { t } = useI18n();
+  const lineRef = useRef<HTMLSpanElement>(null);
+  const [localOpen, setLocalOpen] = useState(false);
+  const open = controlledOpen ?? localOpen;
+  const setOpen = (next: boolean) => {
+    if (controlledOpen === undefined) setLocalOpen(next);
+    onOpenChange?.(next);
+  };
+  const [cut, setCut] = useState(false);
+  // Measured after every render: the card's width changes with the window and the list's re-renders.
+  useLayoutEffect(() => {
+    const line = lineRef.current;
+    if (!line || open) return;
+    const isCut = line.scrollWidth > line.clientWidth + 1;
+    if (isCut !== cut) setCut(isCut);
+  });
+  return (
+    <div className={`card-subtitle${open ? ' card-subtitle--open' : ''}`}>
+      <span ref={lineRef} className="card-subtitle-text">{text}</span>
+      {(cut || open) && (
+        <button type="button" className="link-button card-subtitle-more" aria-expanded={open} onClick={() => setOpen(!open)}>
+          {open ? t('Show less') : t('Show more')}
+        </button>
+      )}
+    </div>
+  );
+}
+
+export function ObservationCard({
+  observation, onDeleted, viewMode, onViewModeChange, deletion: listDeletion, subtitleOpen, onSubtitleOpenChange,
+}: ObservationCardProps) {
   const { t } = useI18n();
   const [localViewMode, setLocalViewMode] = useState<ObservationViewMode>('summary');
   const mode = viewMode ?? localViewMode;
@@ -46,7 +95,9 @@ export function ObservationCard({ observation, onDeleted, viewMode, onViewModeCh
     if (viewMode === undefined) setLocalViewMode(next);
     onViewModeChange?.(next);
   };
-  const date = formatDate(observation.created_at_epoch);
+  const ownDeletion = useFeedItemDelete('observation', observation.id, onDeleted);
+  const deletion = listDeletion ?? ownDeletion;
+  const cardRef = useRef<HTMLElement>(null);
 
   const facts = parseStoredStringList(observation.facts);
   const concepts = parseStoredStringList(observation.concepts);
@@ -54,76 +105,53 @@ export function ObservationCard({ observation, onDeleted, viewMode, onViewModeCh
   const filesModified = parseStoredStringList(observation.files_modified).map(stripProjectRoot);
 
   const hasFactsContent = facts.length > 0 || concepts.length > 0 || filesRead.length > 0 || filesModified.length > 0;
+  const source = observation.platform_source || 'claude';
 
   return (
-    <div className="card">
-      {/* Header with toggle buttons in top right */}
-      <div className="card-header">
-        <div className="card-header-left">
-          <span className={`card-type type-${observation.type}`}>
-            {t(observation.type)}
+    <article ref={cardRef} className={`card observation-card kind-${observation.type}`}>
+      <div className="card-line">
+        <span className={`card-kind type-${observation.type}`}>{t(observation.type)}</span>
+        <span className={`card-source source-${source}`}>{source}</span>
+        <span className="card-project">{observation.project}</span>
+        {observation.merged_into_project && (
+          <span className="card-merged-badge" title={interpolate(t('Merged into {project}'), { project: observation.merged_into_project })}>
+            {interpolate(t('merged → {project}'), { project: observation.merged_into_project })}
           </span>
-          <span className={`card-source source-${observation.platform_source || 'claude'}`}>
-            {observation.platform_source || 'claude'}
-          </span>
-          <span className="card-project">{observation.project}</span>
-          {observation.merged_into_project && (
-            <span className="card-merged-badge" title={interpolate(t('Merged into {project}'), { project: observation.merged_into_project })}>
-              {interpolate(t('merged → {project}'), { project: observation.merged_into_project })}
-            </span>
-          )}
-        </div>
-        <div className="view-mode-toggles">
-          {hasFactsContent && (
-            <button
-              className={`view-mode-toggle ${showFacts ? 'active' : ''}`}
-              aria-pressed={showFacts}
-              onClick={() => {
-                setMode(showFacts ? 'summary' : 'facts');
-              }}
-            >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <polyline points="9 11 12 14 22 4"></polyline>
-                <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path>
-              </svg>
-              <span>{t('facts')}</span>
-            </button>
-          )}
-          {observation.narrative && (
-            <button
-              className={`view-mode-toggle ${showNarrative ? 'active' : ''}`}
-              aria-pressed={showNarrative}
-              onClick={() => {
-                setMode(showNarrative ? 'summary' : 'narrative');
-              }}
-            >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-                <polyline points="14 2 14 8 20 8"></polyline>
-                <line x1="16" y1="13" x2="8" y2="13"></line>
-                <line x1="16" y1="17" x2="8" y2="17"></line>
-              </svg>
-              <span>{t('narrative')}</span>
-            </button>
-          )}
-          <DeleteButton itemType="observation" id={observation.id} onDeleted={onDeleted} />
-        </div>
+        )}
+        <ShortTime epoch={observation.created_at_epoch} className="card-time" />
       </div>
 
-      {/* Title */}
       <h3 className="card-title">{observation.title || t('Untitled')}</h3>
 
-      {/* Content based on toggle state */}
       <div className="view-mode-content">
         {!showFacts && !showNarrative && observation.subtitle && (
-          <div className="card-subtitle">{observation.subtitle}</div>
+          <Subtitle text={observation.subtitle} open={subtitleOpen} onOpenChange={onSubtitleOpenChange} />
         )}
-        {showFacts && facts.length > 0 && (
-          <ul className="facts-list">
-            {facts.map((fact: string, i: number) => (
-              <li key={i}>{fact}</li>
-            ))}
-          </ul>
+        {showFacts && (
+          <div className="facts-panel">
+            {facts.length > 0 && (
+              <ul className="facts-list">
+                {facts.map((fact: string, i: number) => (
+                  <li key={i}>{fact}</li>
+                ))}
+              </ul>
+            )}
+            {concepts.length > 0 && (
+              <div className="concept-chips">
+                {concepts.map((concept: string, i: number) => <span key={i} className="concept-chip">{concept}</span>)}
+              </div>
+            )}
+            {filesRead.length > 0 && (
+              <p className="meta-files">
+                <FileIcon size={14} /><span className="file-label">{t('read:')}</span> {filesRead.join(', ')}
+              </p>
+            )}
+            {filesModified.length > 0 && (
+              <p className="meta-files">
+                <FileIcon size={14} /><span className="file-label">{t('modified:')}</span> {filesModified.join(', ')}
+              </p>
+            )}
+          </div>
         )}
         {showNarrative && observation.narrative && (
           <div className="narrative">
@@ -137,36 +165,46 @@ export function ObservationCard({ observation, onDeleted, viewMode, onViewModeCh
         <ObservationMediaSection observationId={observation.id} media={observation.media} />
       )}
 
-      {/* Metadata footer - id, date, and conditionally concepts/files when facts toggle is on */}
-      <div className="card-meta">
-        <span className="meta-date">#{observation.id} • {date}</span>
-        {showFacts && (concepts.length > 0 || filesRead.length > 0 || filesModified.length > 0) && (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
-            {concepts.map((concept: string, i: number) => (
-              <span key={i} style={{
-                padding: '2px 8px',
-                background: 'var(--color-type-badge-bg)',
-                color: 'var(--color-type-badge-text)',
-                borderRadius: '3px',
-                fontWeight: '500',
-                fontSize: '10px'
-              }}>
-                {concept}
-              </span>
-            ))}
-            {filesRead.length > 0 && (
-              <span className="meta-files">
-                <span className="file-label">{t('read:')}</span> {filesRead.join(', ')}
-              </span>
-            )}
-            {filesModified.length > 0 && (
-              <span className="meta-files">
-                <span className="file-label">{t('modified:')}</span> {filesModified.join(', ')}
-              </span>
-            )}
-          </div>
+      <div className="card-footer">
+        <span className="meta-date card-id">#{observation.id}</span>
+        {hasFactsContent && (
+          <button
+            type="button"
+            className={`view-mode-toggle${showFacts ? ' active' : ''}`}
+            aria-pressed={showFacts}
+            onClick={() => setMode(showFacts ? 'summary' : 'facts')}
+          >
+            {t('Facts')}{facts.length > 0 && <span className="view-mode-count">{facts.length}</span>}
+          </button>
         )}
+        {observation.narrative && (
+          <button
+            type="button"
+            className={`view-mode-toggle${showNarrative ? ' active' : ''}`}
+            aria-pressed={showNarrative}
+            onClick={() => setMode(showNarrative ? 'summary' : 'narrative')}
+          >
+            {t('Narrative')}
+          </button>
+        )}
+        <span className="card-footer-spacer" />
+        <MenuButton label={t('Observation actions')} triggerClassName="card-menu-trigger" menuClassName="card-menu">
+          {close => (
+            <>
+              <CopyMenuItem label={interpolate(t('Copy id #{id}'), { id: observation.id })} text={() => String(observation.id)} />
+              <CopyMenuItem label={t('Copy text')} text={() => observationText(observation)} />
+              <MenuSeparator />
+              <MenuItem danger icon={<TrashIcon />} onSelect={() => { close(false); deletion.ask(); }}>
+                {interpolate(t('Delete {item}…'), { item: t(DELETE_ITEM_LABELS.observation) })}
+              </MenuItem>
+            </>
+          )}
+        </MenuButton>
       </div>
-    </div>
+      {deletion.stage !== 'idle' && (
+        <DeleteConfirmation itemType="observation" deletion={deletion}
+          returnFocus={() => cardRef.current?.querySelector<HTMLElement>('.card-menu-trigger')?.focus()} />
+      )}
+    </article>
   );
 }

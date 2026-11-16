@@ -5,6 +5,7 @@ import { SessionCatalogEntry } from '../types';
 import { SessionCard } from './SessionCard';
 import { catalogEntryRef, sessionKey, type SessionRef } from '../utils/sessions';
 import { UI } from '../constants/ui';
+import { formatCount } from '../utils/formatters';
 
 interface SessionListProps {
   header: React.ReactNode;
@@ -82,7 +83,7 @@ export function SessionList({ header, sessions, isLoading, hasMore, loadError, c
           <div ref={loadMoreRef} style={{ height: '20px', margin: '10px 0' }} />
         )}
         {!hasMore && !isLoading && offsetCapReachedAt !== null && sessions.length > 0 && (
-          <div className="session-list-empty">{interpolate(t('This list stops at the newest {count} items. Filter by project to see older ones.'), { count: offsetCapReachedAt.toLocaleString() })}</div>
+          <div className="session-list-empty">{interpolate(t('This list stops at the newest {count} items. Filter by project to see older ones.'), { count: formatCount(offsetCapReachedAt) })}</div>
         )}
       </div>
     </main>

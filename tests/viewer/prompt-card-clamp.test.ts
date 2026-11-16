@@ -31,33 +31,45 @@ const SHORT_TEXT = 'two short lines\nof plain prompt text';
 
 // #4757: a long prompt renders verbatim into an unbounded card that pushes the
 // rest of the Timeline off screen. Long prompts must ship with a line clamp
-// and a "Show more" disclosure; short prompts must stay untouched.
+// and a "Show all <n> characters" disclosure; short prompts must stay untouched.
 describe('prompt card clamp (#4757)', () => {
-  it('renders a long prompt clamped, with a collapsed Show more disclosure', () => {
+  it('renders a long prompt clamped, with a collapsed "Show all <n> characters" disclosure', () => {
     const html = renderToStaticMarkup(React.createElement(PromptCard, { prompt: makePrompt(LONG_TEXT) }));
     expect(html).toContain('card-content-clamped');
     expect(html).toContain('aria-expanded="false"');
-    expect(html).toContain('Show more');
+    expect(html).toContain(`Show all ${LONG_TEXT.length.toLocaleString('en')} characters`);
   });
 
-  it('clamps a prompt over 8 lines even when it is under 600 characters', () => {
-    const manyShortLines = Array.from({ length: 9 }, (_, i) => `line ${i + 1}`).join('\n');
-    expect(manyShortLines.length).toBeLessThan(600);
-    const html = renderToStaticMarkup(React.createElement(PromptCard, { prompt: makePrompt(manyShortLines) }));
+  it('clamps a prompt over 3 lines even when it is under 225 characters', () => {
+    const fourShortLines = Array.from({ length: 4 }, (_, i) => `line ${i + 1}`).join('\n');
+    expect(fourShortLines.length).toBeLessThan(225);
+    const html = renderToStaticMarkup(React.createElement(PromptCard, { prompt: makePrompt(fourShortLines) }));
     expect(html).toContain('card-content-clamped');
   });
 
-  it('clamps a single-line prompt over 600 characters', () => {
-    const oneLongLine = 'x'.repeat(601);
-    const html = renderToStaticMarkup(React.createElement(PromptCard, { prompt: makePrompt(oneLongLine) }));
+  it('leaves a 3-line prompt under 225 characters unclamped', () => {
+    const threeShortLines = Array.from({ length: 3 }, (_, i) => `line ${i + 1}`).join('\n');
+    const html = renderToStaticMarkup(React.createElement(PromptCard, { prompt: makePrompt(threeShortLines) }));
+    expect(html).not.toContain('card-content-clamped');
+  });
+
+  it('clamps a single-line prompt over 225 characters', () => {
+    const html = renderToStaticMarkup(React.createElement(PromptCard, { prompt: makePrompt('x'.repeat(226)) }));
     expect(html).toContain('card-content-clamped');
+    expect(renderToStaticMarkup(React.createElement(PromptCard, { prompt: makePrompt('x'.repeat(225)) }))).not.toContain('card-content-clamped');
+  });
+
+  it('draws a short one-line prompt as a single row', () => {
+    const html = renderToStaticMarkup(React.createElement(PromptCard, { prompt: makePrompt('continue') }));
+    expect(html).toContain('prompt-card--line');
+    expect(html).toContain('prompt-row');
   });
 
   it('leaves a short prompt unclamped with no disclosure', () => {
     const html = renderToStaticMarkup(React.createElement(PromptCard, { prompt: makePrompt(SHORT_TEXT) }));
     expect(html).not.toContain('card-content-clamped');
     expect(html).not.toContain('aria-expanded');
-    expect(html).not.toContain('Show more');
+    expect(html).not.toContain('Show all');
   });
 
   it('bounds the clamped prompt content with a line clamp in the stylesheet', () => {

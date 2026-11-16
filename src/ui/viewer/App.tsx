@@ -1,7 +1,10 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef, useLayoutEffect } from 'react';
-import { useI18n } from '../i18n';
+import { useI18n, interpolate } from '../i18n';
 import { Header } from './components/Header';
-import { Feed } from './components/Feed';
+import { Feed, type FeedEmptyHint } from './components/Feed';
+import { CategoryFilter } from './components/CategoryFilter';
+import { ErrorBoundary } from './components/ErrorBoundary';
+import { SearchIcon, TerminalIcon } from './components/icons';
 import { ViewTabs, type ViewTab } from './components/ViewTabs';
 import { SessionList } from './components/SessionList';
 import { SessionDetailPage } from './components/SessionDetailPage';
@@ -13,8 +16,12 @@ import { useSettings } from './hooks/useSettings';
 import { PageRejectedError, usePagination } from './hooks/usePagination';
 import { useSessionCatalog } from './hooks/useSessionCatalog';
 import { useTheme } from './hooks/useTheme';
+import { useFeedDeletes } from './hooks/useFeedItemDelete';
 import { Observation, Summary, UserPrompt, FeedItemType } from './types';
 import { buildFeedItems, mergeAndDeduplicateByProject } from './utils/data';
+import { categoryOf, countByCategory, type Category } from './utils/category';
+import { matchesSearch } from './utils/feed-display';
+import { formatCount } from './utils/formatters';
 import { removeLoadedRow } from './utils/feed-deletion';
 import {
   catalogEntryRef,
@@ -64,6 +71,11 @@ export function App() {
   const [feedLoadError, setFeedLoadError] = useState<string | null>(null);
   // The last feed error the server gave as a refusal (4xx): retrying repeats it.
   const rejectedFeedErrorRef = useRef<string | null>(null);
+  // A failed "load older" stays on screen until a load succeeds or the reader
+  // retries; a later successful refresh of the newest rows does not answer it (B2).
+  const loadMoreErrorRef = useRef<string | null>(null);
+  const [timelineKinds, setTimelineKinds] = useState<Set<Category>>(() => new Set());
+  const [timelineQuery, setTimelineQuery] = useState('');
   const [showLatestRefresh, setShowLatestRefresh] = useState(false);
   const [feedRefreshNotice, setFeedRefreshNotice] = useState<string | null>(null);
   const handledDeletionsRef = useRef(new Set<string>());
@@ -118,6 +130,8 @@ export function App() {
   } = useSettings();
   const { preference, setThemePreference } = useTheme();
   const pagination = usePagination(feedScope.project, feedScope.session);
+  // Held here, above the views, so a delete's refusal is still on its card after the reader leaves and comes back.
+  const feedDeletes = useFeedDeletes(removeDeletedItem);
 
   useEffect(() => {
     disposedRef.current = false;
@@ -226,7 +240,7 @@ export function App() {
         }
       }));
       if (current()) {
-        setFeedLoadError(previous => errors.length ? `Could not refresh saved memories. ${errors.join(' ')}` : failedResyncRef.current.size ? previous : null);
+        setFeedLoadError(previous => errors.length ? `Could not refresh saved memories. ${errors.join(' ')}` : failedResyncRef.current.size ? previous : loadMoreErrorRef.current);
         setShowLatestRefresh(failedResyncRef.current.size > 0);
         if (latest && !errors.length) setFeedRefreshNotice('Showing the newest memories. Load more to browse older history.');
         resyncInterruptionsRef.current = 0;
@@ -291,6 +305,21 @@ export function App() {
     [allObservations, allSummaries, allPrompts]
   );
 
+  const timelineCounts = useMemo(() => countByCategory(feedItems), [feedItems]);
+  const timelineFiltered = timelineKinds.size > 0 || timelineQuery.trim() !== '';
+  const timelineItems = useMemo(() => {
+    if (!timelineFiltered) return feedItems;
+    return feedItems.filter(item => (timelineKinds.size === 0 || timelineKinds.has(categoryOf(item))) && matchesSearch(item, timelineQuery));
+  }, [feedItems, timelineKinds, timelineQuery, timelineFiltered]);
+  const toggleTimelineKind = useCallback((kind: Category) => {
+    setTimelineKinds(previous => {
+      const next = new Set(previous);
+      if (next.has(kind)) next.delete(kind); else next.add(kind);
+      return next;
+    });
+  }, []);
+  const clearTimelineFilters = useCallback(() => { setTimelineKinds(new Set()); setTimelineQuery(''); }, []);
+
   const visibleSessions = useMemo(() => {
     return catalog.sessions
       .filter(session => !currentFilter || rowInProject(session, currentFilter))
@@ -319,7 +348,10 @@ export function App() {
     const requestFeedVersion = feedVersion;
     const contentGeneration = contentGenerationRef.current;
     const deletionVersion = deletionVersionRef.current;
-    const isCurrentVisit = () => activeFeedScopeRef.current.version === requestFeedVersion && contentGenerationRef.current === contentGeneration;
+    // Rows from a page that started before the view changed or memory changed are stale.
+    const isCurrentVisit = () => activeFeedScopeRef.current.version === requestFeedVersion
+      && contentGenerationRef.current === contentGeneration;
+    loadMoreErrorRef.current = null;
     setFeedLoadError(null);
     const retainPageRows = <T extends SessionScopedRow & { id: number }>(rows: T[], itemType: FeedItemType): T[] => {
       return rows.filter(row => {
@@ -360,9 +392,15 @@ export function App() {
       ]);
     } catch (error) {
       console.error('Failed to load more data:', error);
+      // A page in flight when memory changes is not lost: queueDataRefresh
+      // invalidates it (it resolves empty, so it never lands here) and, once the
+      // refresh is in, the end of the list asks for it again. A failure that does
+      // land here belongs to the current visit and shows in the list with Retry;
+      // loadMoreErrorRef keeps it there through later refreshes (B2).
       if (isCurrentVisit()) {
         const message = error instanceof Error ? error.message : 'Failed to load more data';
         if (error instanceof PageRejectedError) rejectedFeedErrorRef.current = message;
+        loadMoreErrorRef.current = message;
         setFeedLoadError(message);
       }
     }
@@ -478,7 +516,16 @@ export function App() {
             : route.view === 'sessions'
               ? t('Open a session to revisit what happened and what was learned.')
               : t('Review the context captured during this session.')}</p>
-          {showLatestRefresh && <button type="button" onClick={() => {
+        </div>
+        <ViewTabs
+          active={activeTab}
+          onSelect={tab => navigate(tab === 'sessions' ? sessionsHash() : '')}
+        />
+      </div>
+      {/* Below the heading row, so its arrival never moves the tabs. */}
+      {(showLatestRefresh || feedRefreshNotice) && (
+        <div className="memory-page-notices">
+          {showLatestRefresh && <button type="button" className="btn-primary" onClick={() => {
             resyncPausedRef.current = false;
             resyncInterruptionsRef.current = 0;
             refreshLatestRef.current = true;
@@ -486,13 +533,47 @@ export function App() {
           }}>{t('Refresh latest memories')}</button>}
           {feedRefreshNotice && <p role="status">{t(feedRefreshNotice)}</p>}
         </div>
-        <ViewTabs
-          active={activeTab}
-          onSelect={tab => navigate(tab === 'sessions' ? sessionsHash() : '')}
+      )}
+    </>
+  );
+  const timelineHeader = (
+    <>
+      {tabs}
+      <div className="timeline-filters">
+        <CategoryFilter
+          categoryCounts={timelineCounts}
+          activeCategories={timelineKinds}
+          onToggle={toggleTimelineKind}
+          onClear={() => setTimelineKinds(new Set())}
+          filteredCount={timelineItems.length}
+          totalCount={feedItems.length}
+          totalIsPartial={hasMore}
         />
+        <div className="timeline-search">
+          <SearchIcon size={16} />
+          <input
+            type="search"
+            value={timelineQuery}
+            onChange={event => setTimelineQuery(event.target.value)}
+            placeholder={t('Find in loaded memories')}
+            aria-label={t('Find in loaded memories')}
+          />
+        </div>
+        {timelineQuery.trim() && (
+          <p className="timeline-search-note" role="status">
+            {interpolate(t('{count} of the {total} loaded memories match. Older memories are not searched until they load.'), {
+              count: formatCount(timelineItems.length), total: formatCount(feedItems.length),
+            })}
+          </p>
+        )}
       </div>
     </>
   );
+  const timelineEmptyHint: FeedEmptyHint | undefined = timelineFiltered
+    ? { actions: [{ label: t('Clear filters'), onClick: clearTimelineFilters }] }
+    : currentFilter
+      ? { detail: interpolate(t('Project filter: {project}'), { project: currentFilter }), actions: [{ label: t('Show all projects'), onClick: () => setCurrentFilter('') }] }
+      : undefined;
 
   let content: React.ReactNode;
   if (route.view === 'sessions') {
@@ -526,24 +607,29 @@ export function App() {
         offsetCapReachedAt={feedOffsetCapReachedAt}
         onLoadMore={handleLoadMore}
         onDeleted={removeDeletedItem}
+        deletes={feedDeletes}
         onBack={() => navigate(sessionsHash())}
       />
     );
   } else {
     content = (
       <Feed
-        header={tabs}
-        items={feedItems}
+        header={timelineHeader}
+        items={timelineItems}
         onLoadMore={handleLoadMore}
         onDeleted={removeDeletedItem}
+        deletes={feedDeletes}
         isLoading={isLoading}
         hasMore={hasMore}
         loadError={feedLoadError ? t(feedLoadError) : null}
         canRetry={feedCanRetry}
         offsetCapReachedAt={feedOffsetCapReachedAt}
+        emptyHint={timelineEmptyHint}
+        autoLoad={!timelineFiltered}
       />
     );
   }
+  const contentKey = route.view === 'session' ? `session|${sessionKey(route.session)}` : route.view;
 
   return (
     <>
@@ -563,12 +649,15 @@ export function App() {
           setWelcomeDismissed(false);
         }}
         showTeamBrainLink={settingsLoaded && !settings.CLAUDE_MEM_TEAMBRAIN_URL?.trim()}
+        onOpenLogs={() => setLogsModalOpen(true)}
       />
 
-      {content}
+      <ErrorBoundary resetKey={contentKey}>
+        {content}
+      </ErrorBoundary>
 
       {!welcomeDismissed && (
-        <WelcomeCard onDismiss={() => setWelcomeDismissed(true)} />
+        <WelcomeCard onDismiss={() => setWelcomeDismissed(true)} onOpenSettings={() => setContextPreviewOpen(true)} />
       )}
 
       <ContextSettingsModal
@@ -584,16 +673,14 @@ export function App() {
       />
 
       <button
+        type="button"
         className="console-toggle-btn"
         onClick={toggleLogsModal}
         title={t('Open memory logs')}
         aria-label={logsModalOpen ? t('Close memory logs') : t('Open memory logs')}
         aria-expanded={logsModalOpen}
       >
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <polyline points="4 17 10 11 4 5"></polyline>
-          <line x1="12" y1="19" x2="20" y2="19"></line>
-        </svg>
+        <TerminalIcon size={20} />
       </button>
 
       <LogsDrawer

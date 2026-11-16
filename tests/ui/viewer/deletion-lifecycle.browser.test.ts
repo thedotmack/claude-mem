@@ -129,7 +129,9 @@ for(const scenario of ['item','recreated-visible','recreated-session','late-dele
         if(url.pathname==='/result'){finish(await request.json());return new Response('received')}
         return Response.json({});
       }});
-      chrome=launchChrome(server.url.href,{profilePrefix:'cm-viewer-deletion-',extraFlags:UNTHROTTLED_TIMER_FLAGS});
+      // Tall enough that every loaded row is drawn: the checks read the page text, and the
+      // list recycles rows outside the window once it passes 50 (FEED_WINDOW_THRESHOLD).
+      chrome=launchChrome(server.url.href,{profilePrefix:'cm-viewer-deletion-',extraFlags:[...UNTHROTTLED_TIMER_FLAGS,'--window-size=1280,12000']});
       // Chrome's cold start gets its own window; the page's phases start at /ready.
       await withTimeout(ready,30000,'Viewer did not become ready');
       const received=await withTimeout(result,25000,'Browser page timed out');

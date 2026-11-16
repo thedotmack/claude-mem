@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { translateSettingsStatus, translateViewerError } from '../../src/ui/i18n/errors';
 import { viewerZh } from '../../src/ui/i18n/viewer-zh';
 import { settingsZh } from '../../src/ui/i18n/settings-zh';
-import { describeDeleteFailure } from '../../src/ui/viewer/utils/feed-deletion';
+import { DELETE_STOPPED, describeDeleteFailure, describeDeleteTimeout } from '../../src/ui/viewer/utils/feed-deletion';
 import { describeSessionDeleteFailure } from '../../src/ui/viewer/utils/sessions';
 import { usePagination } from '../../src/ui/viewer/hooks/usePagination';
 import { Feed } from '../../src/ui/viewer/components/Feed';
@@ -54,6 +54,8 @@ describe('render-time viewer errors', () => {
       ...[describeDeleteFailure, describeSessionDeleteFailure].flatMap(describeFailure =>
         [404, 409, 503, 500].map(status => describeFailure(status))),
       'Not deleted: the claude-mem worker could not be reached.',
+      DELETE_STOPPED,
+      describeDeleteTimeout(10),
     ]) {
       assert.equal(translateViewerError(stored, english), stored);
       assert.notEqual(translateViewerError(stored, chinese), stored);

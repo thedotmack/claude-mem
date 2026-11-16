@@ -26,19 +26,51 @@ export function describeDeleteFailure(status: number): string {
 }
 
 /**
+ * How long a card waits for the worker to answer a delete. The worker answers at once:
+ * one SQLite statement, with a cloud delete only queued (DataRoutes.deleteSyncedContent);
+ * 30 page reads of the owner's live worker took 1-210 ms (2026-11-16). No answer in 10 s
+ * means it is stuck, and 10 s is what the viewer gives every page read from the worker
+ * (PAGINATION_REQUEST_TIMEOUT_MS).
+ */
+export const DELETE_REQUEST_TIMEOUT_MS = 10_000;
+
+/** The reader pressed Cancel or Escape while the delete was on its way. Its outcome is unknown. */
+export const DELETE_STOPPED = 'Stopped waiting for the delete. If the worker finishes it anyway, this memory leaves the list.';
+
+/** The worker did not answer in time. Its outcome is unknown. */
+export function describeDeleteTimeout(seconds: number): string {
+  return `No answer from the worker in ${seconds} seconds, so the viewer stopped waiting. If the delete finishes anyway, this memory leaves the list.`;
+}
+
+/**
  * Delete one memory through the worker's sync-safe endpoint (tombstone and row
- * delete in one transaction). Rejects with a user-facing message.
+ * delete in one transaction). Rejects with a user-facing message: refused, not
+ * reached, no answer within `timeoutMs`, or stopped through `signal`.
  */
 export async function deleteFeedItem(
   itemType: DeletableItemType,
   id: number,
   fetchImpl: typeof fetch = fetch,
+  { signal, timeoutMs = DELETE_REQUEST_TIMEOUT_MS }: { signal?: AbortSignal; timeoutMs?: number } = {},
 ): Promise<void> {
-  const response = await fetchImpl(`${DELETE_ENDPOINTS[itemType]}/${id}`, { method: 'DELETE' }).catch(() => {
-    throw new Error('Not deleted: the claude-mem worker could not be reached.');
-  });
-  if (!response.ok) {
-    throw new Error(describeDeleteFailure(response.status));
+  if (signal?.aborted) throw new Error(DELETE_STOPPED);
+  const request = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; request.abort(); }, timeoutMs);
+  const stop = () => request.abort();
+  signal?.addEventListener('abort', stop, { once: true });
+  try {
+    const response = await fetchImpl(`${DELETE_ENDPOINTS[itemType]}/${id}`, { method: 'DELETE', signal: request.signal }).catch(() => {
+      if (timedOut) throw new Error(describeDeleteTimeout(timeoutMs / 1000));
+      if (signal?.aborted) throw new Error(DELETE_STOPPED);
+      throw new Error('Not deleted: the claude-mem worker could not be reached.');
+    });
+    if (!response.ok) {
+      throw new Error(describeDeleteFailure(response.status));
+    }
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', stop);
   }
 }
 
