@@ -13,12 +13,15 @@ import * as realWorkerUtils from '../../src/shared/worker-utils.js';
 const realLoggerSnapshot = { ...realLogger };
 const realWorkerUtilsSnapshot = { ...realWorkerUtils };
 
+const loggerWarnCalls: unknown[][] = [];
+const loggerErrorCalls: unknown[][] = [];
+
 mock.module('../../src/utils/logger.js', () => ({
   logger: {
     info: () => {},
     debug: () => {},
-    warn: () => {},
-    error: () => {},
+    warn: (...args: unknown[]) => { loggerWarnCalls.push(args); },
+    error: (...args: unknown[]) => { loggerErrorCalls.push(args); },
     formatTool: (toolName: string, toolInput?: any) => toolInput ? `${toolName}(...)` : toolName,
   },
 }));
@@ -856,5 +859,103 @@ describe('observation count setting in updateFolderClaudeMdFiles (#5507)', () =>
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(String(fetchMock.mock.calls[0][0])).toContain('&limit=7&');
+  });
+});
+
+describe('updateFolderClaudeMdFiles failure visibility and retry (#6182 follow-up)', () => {
+  const goodResponse = () => Promise.resolve({
+    ok: true,
+    json: () => Promise.resolve({ content: [{ text: '| #123 | 4:30 PM | 🔵 | Test observation | ~100 |' }] }),
+  } as Response);
+
+  const errorLogsFor = (folderPath: string) =>
+    loggerErrorCalls.filter(args => (args[2] as { folderPath?: string })?.folderPath === folderPath);
+  const retryLogsFor = (folderPath: string) =>
+    loggerWarnCalls.filter(args => String(args[1]).includes('Retrying CLAUDE.md update') && (args[2] as { folderPath?: string })?.folderPath === folderPath);
+
+  beforeEach(() => {
+    loggerWarnCalls.length = 0;
+    loggerErrorCalls.length = 0;
+  });
+
+  it('logs a per-folder failure with the folder path and still updates the other folders', async () => {
+    const folderA = join(tempDir, 'retry-json-a');
+    const folderB = join(tempDir, 'retry-json-b');
+    mkdirSync(folderA, { recursive: true });
+    mkdirSync(folderB, { recursive: true });
+
+    global.fetch = mock((url: string) => {
+      if (String(url).includes(encodeURIComponent(folderA))) {
+        return Promise.resolve({ ok: true, json: () => Promise.reject(new Error('Unexpected token')) } as Response);
+      }
+      return goodResponse();
+    });
+
+    await expect(updateFolderClaudeMdFiles(
+      [join(folderA, 'a.ts'), join(folderB, 'b.ts')],
+      'retry-json-project',
+      37777
+    )).resolves.toBeUndefined();
+
+    expect(existsSync(join(folderB, 'CLAUDE.md'))).toBe(true);
+    expect(existsSync(join(folderA, 'CLAUDE.md'))).toBe(false);
+    const failures = errorLogsFor(folderA);
+    expect(failures.length).toBe(1);
+    expect(String(failures[0][1])).toContain('Failed to update');
+    expect((failures[0][2] as { errorMessage?: string }).errorMessage).toContain('Unexpected token');
+  });
+
+  it('retries a failed folder on the next observation for it and clears the mark on success', async () => {
+    const folderA = join(tempDir, 'retry-flow-a');
+    mkdirSync(folderA, { recursive: true });
+
+    let failA = true;
+    global.fetch = mock((url: string) => {
+      if (failA && String(url).includes(encodeURIComponent(folderA))) {
+        return Promise.resolve({ ok: true, json: () => Promise.reject(new Error('Unexpected token')) } as Response);
+      }
+      return goodResponse();
+    });
+
+    // First observation: the update fails and the folder is remembered.
+    await updateFolderClaudeMdFiles([join(folderA, 'a.ts')], 'retry-flow-project', 37777);
+    expect(existsSync(join(folderA, 'CLAUDE.md'))).toBe(false);
+    expect(retryLogsFor(folderA).length).toBe(0);
+
+    // Next observation for the folder: the retry is logged as a retry and succeeds.
+    failA = false;
+    await updateFolderClaudeMdFiles([join(folderA, 'a.ts')], 'retry-flow-project', 37777);
+    expect(retryLogsFor(folderA).length).toBe(1);
+    expect(existsSync(join(folderA, 'CLAUDE.md'))).toBe(true);
+
+    // A later observation no longer logs a retry: the success cleared the mark.
+    loggerWarnCalls.length = 0;
+    await updateFolderClaudeMdFiles([join(folderA, 'a.ts')], 'retry-flow-project', 37777);
+    expect(retryLogsFor(folderA).length).toBe(0);
+  });
+
+  it('logs and remembers a folder whose write fails, without blocking other folders', async () => {
+    const folderA = join(tempDir, 'retry-write-a');
+    const folderB = join(tempDir, 'retry-write-b');
+    // A directory where the CLAUDE.md file belongs: the read inside the write throws.
+    mkdirSync(join(folderA, 'CLAUDE.md'), { recursive: true });
+    mkdirSync(folderB, { recursive: true });
+
+    global.fetch = mock(() => goodResponse());
+
+    await expect(updateFolderClaudeMdFiles(
+      [join(folderA, 'a.ts'), join(folderB, 'b.ts')],
+      'retry-write-project',
+      37777
+    )).resolves.toBeUndefined();
+
+    expect(existsSync(join(folderB, 'CLAUDE.md'))).toBe(true);
+    expect(errorLogsFor(folderA).length).toBe(1);
+
+    // Remove the blockage: the next observation for the folder retries and writes.
+    rmSync(join(folderA, 'CLAUDE.md'), { recursive: true, force: true });
+    await updateFolderClaudeMdFiles([join(folderA, 'a.ts')], 'retry-write-project', 37777);
+    expect(retryLogsFor(folderA).length).toBe(1);
+    expect(readFileSync(join(folderA, 'CLAUDE.md'), 'utf-8')).toContain('Recent Activity');
   });
 });
