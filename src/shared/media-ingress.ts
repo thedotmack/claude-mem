@@ -15,6 +15,7 @@ import {
   type UnknownRecord,
 } from './native-image-shapes.js';
 import { stripTags } from '../utils/tag-stripping.js';
+import { WORKER_JSON_BODY_LIMIT_BYTES } from './worker-http-limits.js';
 
 export interface MediaCandidate {
   pointer: string;
@@ -344,7 +345,8 @@ export function scanMediaFields(toolInput: unknown, toolResponse: unknown, stage
   };
 }
 
-export const LOCAL_EVENT_MAX_BYTES = 5 * 1024 * 1024;
+/** The worker's JSON body limit, the largest request it parses; boundObservationDispatch keeps an event under it. */
+export const LOCAL_EVENT_MAX_BYTES = WORKER_JSON_BODY_LIMIT_BYTES;
 const OVERSIZE_STRING_BYTES = 64 * 1024;
 const OVERSIZE_STRING_KEPT_CHARS = 16 * 1024;
 const OVERSIZE_FIELD_KEPT_CHARS = 32 * 1024;
@@ -391,8 +393,8 @@ function stripMemoryTagsBeforeClip(value: unknown): unknown {
 
 /**
  * Pre-dispatch bound: keep useful text when image bodies would push the event
- * past the unchanged 5mb JSON cap. Image-free events under the cap are
- * returned with identical content.
+ * past the worker's JSON body limit (LOCAL_EVENT_MAX_BYTES). Image-free events
+ * under the cap are returned with identical content.
  */
 export function boundObservationDispatch<T extends { tool_input?: unknown; tool_response?: unknown }>(body: T): T {
   const dispatchScan = scanMediaFields(body.tool_input, body.tool_response, 'dispatch');

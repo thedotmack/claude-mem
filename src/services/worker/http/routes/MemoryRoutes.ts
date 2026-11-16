@@ -10,6 +10,7 @@ import { isProjectExcluded } from '../../../../utils/project-filter.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
+import type { MemorySaveRefusalReason } from '../../../../shared/memory-save-refusal.js';
 
 const saveMemorySchema = z.object({
   text: z.string().trim().min(1),
@@ -45,7 +46,7 @@ export class MemoryRoutes extends BaseRouteHandler {
       const excluded = process.env.CLAUDE_MEM_EXCLUDED_PROJECTS
         ?? SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_EXCLUDED_PROJECTS;
       if (isProjectExcluded(checkout, excluded)) {
-        res.json({ success: false, skipped: true, reason: 'project_excluded' });
+        res.json({ success: false, skipped: true, reason: 'project_excluded' satisfies MemorySaveRefusalReason });
         return;
       }
       const named = input.project?.trim() || (typeof input.metadata?.project === 'string' && input.metadata.project.trim());
