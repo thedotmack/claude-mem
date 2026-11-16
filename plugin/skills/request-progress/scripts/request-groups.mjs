@@ -2282,6 +2282,13 @@ var init_media_contract = __esm({
   }
 });
 
+// src/shared/cloud-sync-limits.ts
+var init_cloud_sync_limits = __esm({
+  "src/shared/cloud-sync-limits.ts"() {
+    "use strict";
+  }
+});
+
 // src/services/sync/CanonicalContent.ts
 import { createHash as createHash2, randomUUID } from "crypto";
 function jsonError(message) {
@@ -2353,6 +2360,7 @@ var init_CanonicalContent = __esm({
     init_logger();
     init_diagnostic_redaction();
     init_media_contract();
+    init_cloud_sync_limits();
     CANONICAL_DECIMAL = /^(?:0|[1-9][0-9]*)$/;
     UINT64_MAX = 18446744073709551615n;
   }
