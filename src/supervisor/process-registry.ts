@@ -68,15 +68,39 @@ export function isPidAlive(pid: number): boolean {
   }
 }
 
-// Poll until every record's pid is gone or the timeout elapses. Shared by the
+/**
+ * Whether any process is left in the process group `processGroupId` (kill(2) with signal 0 to the group). EPERM means
+ * processes are left that this process may not signal. While any process is left in a group, the system gives its id to
+ * no new process or group (POSIX), so a group a caller has watched since it was made is still that group.
+ */
+export function processGroupHasProcesses(processGroupId: number): boolean {
+  try {
+    process.kill(-processGroupId, 0);
+    return true;
+  } catch (error: unknown) {
+    return (error as NodeJS.ErrnoException).code !== 'ESRCH';
+  }
+}
+
+/**
+ * How often waitForExit, and the waits like it, look again for the processes they wait on. 100 ms has been the
+ * supervisor's interval since it was added (#1370); no measurement behind it is recorded.
+ */
+export const PROCESS_EXIT_POLL_INTERVAL_MS = 100;
+
+// Poll until no record is running or the timeout elapses: by default a record runs while its pid is alive. Shared by the
 // reapSession wait phase and shutdown.ts's SIGTERM grace period.
-export async function waitForExit(records: ManagedProcessRecord[], timeoutMs: number): Promise<void> {
+export async function waitForExit(
+  records: ManagedProcessRecord[],
+  timeoutMs: number,
+  isRunning: (record: ManagedProcessRecord) => boolean = record => isPidAlive(record.pid),
+): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (records.every(record => !isPidAlive(record.pid))) {
+    if (!records.some(isRunning)) {
       return;
     }
-    await new Promise(resolve => setTimeout(resolve, 100));
+    await new Promise(resolve => setTimeout(resolve, PROCESS_EXIT_POLL_INTERVAL_MS));
   }
 }
 
@@ -465,7 +489,7 @@ export class ProcessRegistry {
       while (Date.now() < sigkillDeadline) {
         const remaining = survivors.filter(r => isPidAlive(r.pid));
         if (remaining.length === 0) break;
-        await new Promise(resolve => setTimeout(resolve, 100));
+        await new Promise(resolve => setTimeout(resolve, PROCESS_EXIT_POLL_INTERVAL_MS));
       }
     }
 

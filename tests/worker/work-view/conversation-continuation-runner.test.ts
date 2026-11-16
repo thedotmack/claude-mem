@@ -36,17 +36,24 @@ class FakeStream extends EventEmitter {
  */
 let nextFakePid = 10_000_000;
 
-/** A child process as runCommand sees one. The test decides when it exits. */
+/**
+ * A child process as runCommand sees one, alone in the process group it leads. The test decides when it exits, unless
+ * it is told to exit on a signal (exitsOnItsGroupGetting).
+ */
 class FakeChild extends EventEmitter {
   readonly pid = nextFakePid++;
   stdout = new FakeStream();
   stderr = new FakeStream();
   stdinText: string | null = null;
   stdin = Object.assign(new EventEmitter(), { end: (text: string) => { this.stdinText = text; } });
+  hasExited = false;
+  /** Set by a test: it exits, ended by the signal, when its process group gets this signal. */
+  exitsOnItsGroupGetting?: string;
   /** Prints, then exits, the way a real process does. */
   exit(exitCode: number | null, output: { stdout?: string; stderr?: string } = {}): void {
     if (output.stdout) this.stdout.emit('data', output.stdout);
     if (output.stderr) this.stderr.emit('data', output.stderr);
+    this.hasExited = true;
     this.emit('close', exitCode);
   }
 }
@@ -86,14 +93,21 @@ function fakeSpawn(calls: SpawnCall[]): typeof spawn {
 const stopSentToTheCommand = (signal: string): StopDelivery =>
   ({ via: process.platform === 'win32' ? "Node's signal option" : 'its process group', signal });
 
+/** kill(2)'s answer when no process is left in the group, as Node's process.kill throws it. */
+const noProcessLeft = () => Object.assign(new Error('kill ESRCH'), { code: 'ESRCH', errno: -3, syscall: 'kill' });
+
 let restoreProcessKill = () => {};
 beforeEach(() => {
   const realProcessKill = process.kill.bind(process);
   const processKill = spyOn(process, 'kill').mockImplementation(((pid: number, signal?: string | number) => {
     const call = pid < 0 ? callsByProcessGroup.get(-pid) : undefined;
     if (!call) return realProcessKill(pid, signal);
+    // Signal 0 asks whether any process is left in the group, which runCommand does once the command has exited.
+    if (call.child.hasExited) throw noProcessLeft();
+    if (signal === 0) return true;
     if (call.stopCannotBeSent) throw call.stopCannotBeSent;
     call.stops.push({ via: 'its process group', signal });
+    if (call.child.exitsOnItsGroupGetting === signal) call.child.exit(null);
     return true;
   }) as typeof process.kill);
   restoreProcessKill = () => processKill.mockRestore();
@@ -1148,6 +1162,8 @@ describe('when the worker shuts down', () => {
   it('force-stops a command still running as the worker exits, saying so at ERROR with its conversation, and sends nothing again', async () => {
     const { runner, calls, nextChange } = harnessIn(realFolder());
     const turn = startedExchange(await runner.start('claude', CLAUDE_SESSION, 'Count slowly to 200, one number per line.'));
+    // As a CLI that ignores its stop and is ended by the SIGTERM the shutdown cascade sends first.
+    calls[0].child.exitsOnItsGroupGetting = 'SIGTERM';
     const errors = spyOn(logger, 'error');
     try {
       // Without the shutdown's first step before it: the force stop still sends the turn its stop and refuses anything new.
@@ -1158,9 +1174,15 @@ describe('when the worker shuts down', () => {
     } finally {
       errors.mockRestore();
     }
-    expect(calls[0].stops).toEqual([stopSentToTheCommand('SIGINT')]);
+    // macOS and Linux: then SIGTERM to its process group. Windows: SIGTERM by taskkill to the command and the processes it
+    // started (terminateThenForceKill), which no fake process hears, so the test ends it.
+    if (process.platform === 'win32') {
+      expect(calls[0].stops).toEqual([stopSentToTheCommand('SIGINT')]);
+      calls[0].child.exit(null);
+    } else {
+      expect(calls[0].stops).toEqual([stopSentToTheCommand('SIGINT'), { via: 'its process group', signal: 'SIGTERM' }]);
+    }
     expect(await runner.start('claude', CLAUDE_SESSION, 'next')).toEqual({ refusalText: SHUTTING_DOWN });
-    calls[0].child.exit(null);
     expect(await nextChange()).toMatchObject({ exchangeId: turn.exchangeId, state: 'failed', failureText: STOPPED_BY_THE_WORKER });
     expect(calls).toHaveLength(1);
   });

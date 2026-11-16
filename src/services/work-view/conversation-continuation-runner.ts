@@ -9,9 +9,10 @@
  * timer, at worker start or on reconnect.
  *
  * Each command it starts is in the worker's process registry while it runs, like every other process the worker starts.
- * The worker's shutdown sends each its stop, waits for it to exit, and force-stops it if it has not before the worker
- * exits (close says how), so a turn never outlives the worker that started it while the next worker takes a turn in the
- * same conversation.
+ * A command runs until no process is left in its process group: a launcher found on PATH can exit before the CLI it
+ * started (runCommand's CommandOptions.signal). The worker's shutdown sends each its stop, waits for it to exit, and
+ * force-stops what is left of its group if it has not before the worker exits (close says how), so a turn never
+ * outlives the worker that started it while the next worker takes a turn in the same conversation.
  *
  * The two commands, as the CLIs document them:
  *   - Claude Code 2.1.325: `claude --resume <session uuid> -p --output-format json`, the message on stdin.
@@ -40,7 +41,7 @@ import { stripVTControlCharacters } from 'util';
 import { runCommand, type CommandOptions, type CommandResult, type UsableAgent, type UsableAgentId } from '../agent-runner/detect.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import type { ManagedProcessRecord, ProcessRegistry } from '../../supervisor/process-registry.js';
-import { terminateThenForceKill } from '../../supervisor/shutdown.js';
+import { terminateThenForceKill, terminateThenForceKillProcessGroups, type ProcessGroupRecord } from '../../supervisor/shutdown.js';
 import { logger } from '../../utils/logger.js';
 import {
   CONVERSATION_APP_NAMES,
@@ -176,9 +177,12 @@ interface RunningCommand {
   /** The command as the process registry records it: its pid, and the process group its stop goes to. */
   record: ManagedProcessRecord;
   runsFor: CommandRunsFor;
-  /** Resolves once the command has exited. */
+  /** Resolves once the command has exited, and on macOS and Linux every process left in its process group too. */
   exited: Promise<void>;
 }
+
+/** On macOS and Linux a command run with a stop leads a process group of its own (runCommand's CommandOptions.signal). */
+const leadsAProcessGroup = (record: ManagedProcessRecord): record is ProcessGroupRecord => typeof record.pgid === 'number';
 
 /** What SessionStore.getRecordedFolderForConversation answers. */
 export interface RecordedConversationFolder {
@@ -529,9 +533,10 @@ export class ConversationContinuationRunner {
   /**
    * Asks the running turn to end: SIGINT, which ends a Claude Code turn cleanly (headless docs, "Stop a run with
    * SIGTERM"), sent on macOS and Linux to the CLI's whole process group, so it also reaches a CLI behind a launcher
-   * script (see runCommand). The exchange stays `running` until the command has exited, so no second turn can start
-   * while the first is still writing. Then it ends by how the command ended: with its reply when the turn had finished
-   * before the stop reached it, otherwise `failed` with "You stopped this turn." and what the turn had printed.
+   * script (see runCommand). The exchange stays `running` until the command has exited, with every process left in its
+   * process group, so no second turn can start while the first is still writing. Then it ends by how the command ended:
+   * with its reply when the turn had finished before the stop reached it, otherwise `failed` with "You stopped this
+   * turn." and what the turn had printed.
    *
    * A stop that could not be sent is refused with the error, and the exchange runs on; its end is then read as the turn's
    * own. A turn has one stop to send (runCommand's `signal` aborts once), so pressing Stop again answers the same.
@@ -561,11 +566,12 @@ export class ConversationContinuationRunner {
    * A stopped turn's exchange ends like any other, saying the worker stopped it, and nothing sends it again: the worker
    * forgets it as it exits, and the turn stays in the conversation.
    *
-   * Then the shutdown waits for those commands to exit (waitUntilEveryCommandHasExited), right after the worker's HTTP
-   * server closes and before its long steps, such as the session drain, inside its existing deadline. Whatever is still
-   * running when that deadline has run out, or when the graceful shutdown has ended otherwise, is force-stopped before the
-   * worker exits or starts its successor (forceStopCommandsStillRunning). So no turn outlives the worker, and the next
-   * worker cannot take a turn in a conversation while this worker's turn still writes to it.
+   * Then the shutdown waits for those commands to exit (waitUntilEveryCommandHasExited) while its other steps, such as
+   * the session drain, run, and before the supervisor's cascade, whose SIGTERM would cut short a turn still ending on its
+   * SIGINT, inside its existing deadline. Whatever is still running when that deadline has run out, or when the graceful
+   * shutdown has ended otherwise, is force-stopped before the worker exits or starts its successor
+   * (forceStopCommandsStillRunning). So no turn outlives the worker, and the next worker cannot take a turn in a
+   * conversation while this worker's turn still writes to it.
    */
   close(): void {
     if (this.workerIsShuttingDown) return;
@@ -603,10 +609,11 @@ export class ConversationContinuationRunner {
   }
 
   /**
-   * Resolves once every command this runner started has exited, each turn and each open. The worker's graceful shutdown
-   * waits for this after close has sent them their stop, before its long steps (performGracefulShutdown's
-   * commandsStoppedAsShutdownBegan), so a turn has all of the shutdown deadline to end on its stop. It has no bound of its
-   * own: that deadline bounds the wait, and forceStopCommandsStillRunning ends what it leaves running.
+   * Resolves once every command this runner started has exited, each turn and each open, with every process left in its
+   * process group. The worker's graceful shutdown waits for this after close has sent them their stop, alongside its other
+   * steps and before the supervisor's cascade (performGracefulShutdown's commandsStoppedAsShutdownBegan), so a turn has
+   * all of the shutdown deadline to end on its stop. It has no bound of its own: that deadline bounds the wait, and
+   * forceStopCommandsStillRunning ends what it leaves running.
    */
   async waitUntilEveryCommandHasExited(): Promise<void> {
     // After close nothing starts, so one pass is enough; the loop keeps the promise true without it.
@@ -623,10 +630,13 @@ export class ConversationContinuationRunner {
    * writing to its conversation after the worker that started it is gone, while the next worker can take a turn in the
    * same conversation.
    *
-   * So each is stopped the way the supervisor's shutdown cascade stops a child, with the cascade's own grace windows
-   * (terminateThenForceKill): SIGTERM to its process group, then SIGKILL to what is left of it. Each is logged at ERROR
-   * first, with its conversation; the cascade's escalation logs each it had to SIGKILL, and each still running after that.
-   * Nothing is sent again: a turn stopped this way ends failed, saying the worker stopped it, and the worker forgets it.
+   * So each is stopped the way the supervisor's shutdown cascade stops a child, with the cascade's own grace windows:
+   * SIGTERM, then SIGKILL to what is left. On macOS and Linux that goes to its whole process group, whether or not the
+   * command itself is still running (terminateThenForceKillProcessGroups): its launcher may have exited on its stop
+   * already while the CLI it started runs on in the group. On Windows, where a command has no process group, it goes to
+   * the command with the processes it started (terminateThenForceKill). Each is logged at ERROR first, with its
+   * conversation; the escalation logs each it had to SIGKILL, and each still running after that. Nothing is sent again: a
+   * turn stopped this way ends failed, saying the worker stopped it, and the worker forgets it.
    */
   async forceStopCommandsStillRunning(): Promise<void> {
     // Already done by the shutdown's first step; again here so that nothing can start meanwhile, whatever happened before.
@@ -638,7 +648,11 @@ export class ConversationContinuationRunner {
         ...runsFor, type: record.type, pid: record.pid,
       });
     }
-    await terminateThenForceKill(commandsStillRunning.map(command => command.record));
+    const records = commandsStillRunning.map(command => command.record);
+    await Promise.all([
+      terminateThenForceKillProcessGroups(records.filter(leadsAProcessGroup)),
+      terminateThenForceKill(records.filter(record => !leadsAProcessGroup(record))),
+    ]);
   }
 
   /**
@@ -757,8 +771,10 @@ export class ConversationContinuationRunner {
   /**
    * runCommand, with the command kept, as `commandType` and with the process group its stop goes to
    * (CommandOptions.onSpawn), among this runner's running commands and in the worker's process registry (processRegistry)
-   * while it runs, like every other process the worker starts. The worker's shutdown then waits for it to exit
-   * (waitUntilEveryCommandHasExited), and force-stops it if it has not (forceStopCommandsStillRunning).
+   * while it runs, like every other process the worker starts. On macOS and Linux it runs until no process is left in its
+   * group (CommandOptions.signal), so a CLI still at work behind a launcher that has exited keeps its turn running. The
+   * worker's shutdown then waits for it to exit (waitUntilEveryCommandHasExited), and force-stops it if it has not
+   * (forceStopCommandsStillRunning).
    */
   private async runCommandKeptInRegistry(
     commandType: RegisteredCommandType,
@@ -782,6 +798,11 @@ export class ConversationContinuationRunner {
         registry?.register(id, processInfo);
         this.commandsRunning.set(id, { record, runsFor, exited });
         started.push(record);
+      },
+      onProcessesLeftInItsGroup: ({ processGroupId, exitCode }) => {
+        logger.info('WORKER', 'Conversation command exited, but processes it started still run in its process group: it ends once they have exited', {
+          ...runsFor, type: commandType, processGroupId, exitCode,
+        });
       },
     });
     // The command has exited: only its own record goes, even if its pid has been given to another process since.

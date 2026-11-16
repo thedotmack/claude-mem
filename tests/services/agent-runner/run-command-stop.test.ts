@@ -1,14 +1,19 @@
 // runCommand's stop (CommandOptions.signal), with real processes: a launcher script that holds SIGINT, as an agent
 // wrapper installed ahead of the real CLI on PATH can, and a stand-in CLI behind it. The stop tests run on macOS and
 // Linux only: on Windows a stop goes to the command alone (see CommandOptions.signal in detect.ts).
-import { describe, expect, it, spyOn } from 'bun:test';
-import { spawn, type SpawnOptions } from 'child_process';
+import { afterEach, describe, expect, it, spyOn } from 'bun:test';
+import { spawn, type ChildProcess, type SpawnOptions } from 'child_process';
 import { join } from 'path';
-import { runCommand } from '../../../src/services/agent-runner/detect.js';
+import { runCommand, type CommandOptions } from '../../../src/services/agent-runner/detect.js';
+import { scratchDir } from '../../helpers/scratch-dir.js';
+import { isRunning, pidWrittenTo } from '../../helpers/stand-in-process.js';
+import { removeTempDir } from '../../helpers/temp-dir.js';
 
 const FIXTURES = join(import.meta.dir, '..', '..', 'fixtures', 'conversation-continuation');
 const LAUNCHER_THAT_HOLDS_SIGINT = join(FIXTURES, 'launcher-that-holds-sigint.sh');
 const STAND_IN_CLI = join(FIXTURES, 'cli-that-ends-its-turn-on-sigint.mjs');
+const LAUNCHER_THAT_EXITS_BEFORE_ITS_CLI = join(FIXTURES, 'launcher-that-exits-before-its-cli.mjs');
+const CLI_TURN_THAT_ENDS_A_MOMENT_AFTER_ITS_STOP = join(FIXTURES, 'cli-turn-that-ends-a-moment-after-its-stop.sh');
 /**
  * How long the stand-in CLI's turn lasts when no stop reaches it. The tests stop it the moment it prints "ready", and a
  * stop that reaches it ends it within a few milliseconds (measured on macOS with Bun 1.3.9 and Node 24), so the two
@@ -66,8 +71,12 @@ describeOnMacOsAndLinux('a stop through runCommand, with real processes', () => 
     const stopsNotSentWhenTheAbortReturned: Error[][] = [];
     let commandProcessGroup: number | undefined;
     const realProcessKill = process.kill.bind(process);
+    // As kill(2) answers for a group none of whose processes may be signalled: EPERM while any is left, ESRCH once none is.
     const processKill = spyOn(process, 'kill').mockImplementation(((pid: number, signal?: string | number) => {
-      if (commandProcessGroup !== undefined && pid === -commandProcessGroup) throw notPermitted;
+      if (commandProcessGroup !== undefined && pid === -commandProcessGroup) {
+        realProcessKill(pid, 0);
+        throw notPermitted;
+      }
       return realProcessKill(pid, signal);
     }) as typeof process.kill);
     try {
@@ -130,6 +139,82 @@ describeOnMacOsAndLinux('a stop through runCommand, with real processes', () => 
     } finally {
       processKill.mockRestore();
     }
+  });
+});
+
+describeOnMacOsAndLinux('a command whose launcher exits before the CLI it started, with real processes', () => {
+  const folders: string[] = [];
+  /** Process groups the tests started, ended after each test in case it failed before they had. */
+  const processGroups: number[] = [];
+  afterEach(async () => {
+    for (const processGroup of processGroups.splice(0)) if (isRunning(-processGroup)) process.kill(-processGroup, 'SIGKILL');
+    for (const folder of folders.splice(0)) await removeTempDir(folder);
+  });
+
+  /**
+   * runCommand running the launcher in front of the CLI that ends its turn a moment after its stop (six 50 ms naps), with
+   * the CLI's output going to a file of its own, so the CLI does not hold the command's stdout and stderr, and with
+   * `launcherSettings` added to the launcher's environment.
+   */
+  function launcherInFrontOfACli(stop: AbortController, launcherSettings: Record<string, string>) {
+    const folder = scratchDir('run-command-launcher');
+    folders.push(folder);
+    const pidFile = join(folder, 'cli.pid');
+    const processesLeft: Array<Parameters<NonNullable<CommandOptions['onProcessesLeftInItsGroup']>>[0]> = [];
+    let launcher!: ChildProcess;
+    let launcherClosed!: Promise<void>;
+    const result = runCommand(
+      ((command: string, args: string[], options: SpawnOptions) => {
+        launcher = spawn(command, args, options);
+        processGroups.push(launcher.pid!);
+        // Heard before runCommand's own 'close' listener, and answered once everything that one does has run.
+        launcherClosed = new Promise<void>(resolve => launcher.once('close', () => setImmediate(resolve)));
+        return launcher;
+      }) as unknown as typeof spawn,
+      LAUNCHER_THAT_EXITS_BEFORE_ITS_CLI,
+      [],
+      {
+        env: {
+          PATH: process.env.PATH, STAND_IN_LAUNCHER_RUNS: CLI_TURN_THAT_ENDS_A_MOMENT_AFTER_ITS_STOP, STAND_IN_TURN_WRITES_ITS_PID_TO: pidFile,
+          STAND_IN_LAUNCHER_SENDS_CLI_OUTPUT_TO: join(folder, 'cli-output.log'), ...launcherSettings,
+        },
+        signal: stop.signal, killSignal: 'SIGINT', onProcessesLeftInItsGroup: left => { processesLeft.push(left); },
+      },
+    );
+    return { result, launcher: () => launcher, launcherClosed: () => launcherClosed, cliPid: () => pidWrittenTo(pidFile), processesLeft };
+  }
+
+  it('comes back only once the CLI has ended its turn when the launcher died on the stop at once, and says processes were left', async () => {
+    const stop = new AbortController();
+    const command = launcherInFrontOfACli(stop, {});
+    const cliPid = await command.cliPid();
+    stop.abort();
+    const result = await command.result;
+    // The launcher's 'close' came as it died; the CLI was still ending its turn, in the launcher's process group.
+    expect(isRunning(cliPid)).toBe(false);
+    expect(isRunning(-command.launcher().pid!)).toBe(false);
+    // The launcher was ended by the stop's signal.
+    expect(result).toMatchObject({ exitCode: null, stdout: '', stderr: '' });
+    expect(command.processesLeft).toEqual([{ processGroupId: command.launcher().pid!, exitCode: null }]);
+  });
+
+  it('still sends a stop to the CLI that a launcher left running when it exited by itself, and comes back once the CLI has ended', async () => {
+    const stop = new AbortController();
+    const command = launcherInFrontOfACli(stop, { STAND_IN_LAUNCHER_EXITS_AT_ONCE: '1' });
+    let cameBack = false;
+    void command.result.then(() => { cameBack = true; });
+    const cliPid = await command.cliPid();
+    await command.launcherClosed();
+    expect(cameBack).toBe(false);
+    expect(isRunning(cliPid)).toBe(true);
+
+    stop.abort();
+    const result = await command.result;
+    expect(isRunning(cliPid)).toBe(false);
+    expect(isRunning(-command.launcher().pid!)).toBe(false);
+    // The launcher exited 0 by itself, before the stop.
+    expect(result.exitCode).toBe(0);
+    expect(command.processesLeft).toEqual([{ processGroupId: command.launcher().pid!, exitCode: 0 }]);
   });
 });
 

@@ -153,7 +153,7 @@ describe('GracefulShutdown', () => {
       ]);
     }, 15000);
 
-    it('waits for the commands stopped as the shutdown began right after the HTTP server closes, before the session drain and the other long steps', async () => {
+    it("runs the session drain and the other steps while the commands stopped as the shutdown began are still ending, and the supervisor's cascade only once they have exited", async () => {
       const callOrder: string[] = [];
       const mockServer = {
         closeAllConnections: mock(() => { callOrder.push('closeAllConnections'); }),
@@ -175,24 +175,24 @@ describe('GracefulShutdown', () => {
           },
           sessionManager: { shutdownAll: mock(async () => { callOrder.push('sessionManager.shutdownAll'); }) },
           mcpClient: { close: mock(async () => { callOrder.push('mcpClient.close'); }) },
+          chromaMcpManager: { stop: mock(async () => { callOrder.push('chromaMcpManager.stop'); }) },
           dbManager: { close: mock(async () => { callOrder.push('dbManager.close'); }) },
         });
         await new Promise(resolve => setImmediate(resolve));
-        // Nothing after the HTTP server's close runs while a stopped command still runs.
-        expect(callOrder).toEqual(['serverClose', 'closeAllConnections', 'waiting for the stopped commands']);
-
-        everyStoppedCommandExits();
-        await shuttingDown;
+        // A stopped command still runs: every step but the supervisor's cascade, whose SIGTERM would cut it short, has run.
         expect(callOrder).toEqual([
           'serverClose',
           'closeAllConnections',
           'waiting for the stopped commands',
-          'every stopped command has exited',
           'sessionManager.shutdownAll',
           'mcpClient.close',
+          'chromaMcpManager.stop',
           'dbManager.close',
-          'supervisor.stop',
         ]);
+
+        everyStoppedCommandExits();
+        await shuttingDown;
+        expect(callOrder.slice(-2)).toEqual(['every stopped command has exited', 'supervisor.stop']);
       } finally {
         supervisorStop.mockRestore();
       }

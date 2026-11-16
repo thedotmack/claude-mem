@@ -1185,8 +1185,9 @@ export class WorkerService implements WorkerRef {
         spawnImpl: spawn,
         onChange: exchange => this.workViewRoutes?.publishConversationContinuation(exchange),
         // Its turns and opens stay in the supervisor's registry while they run, like every process the worker starts.
-        // shutdown() sends them their stop first (workViewRoutes.close), waits for them before the long steps of the
-        // graceful shutdown, and force-stops any still running before the worker exits or starts its successor.
+        // shutdown() sends them their stop first (workViewRoutes.close), waits for them alongside the graceful shutdown's
+        // other steps and before its cascade, and force-stops what is left of any still running before the worker exits
+        // or starts its successor.
         processRegistry: getSupervisor().getRegistry(),
       });
       this.workViewRoutes = new WorkViewRoutes({
@@ -1706,7 +1707,8 @@ export class WorkerService implements WorkerRef {
       },
       performGracefulShutdown: () => performGracefulShutdown({
         server: this.server.getHttpServer(),
-        // workViewRoutes.close above sent them their stop: they end before the session drain and the other long steps.
+        // workViewRoutes.close above sent them their stop: they end on it while the session drain and the other steps run,
+        // and before the supervisor's cascade.
         commandsStoppedAsShutdownBegan: this.conversationContinuationRunner ?? undefined,
         sessionManager: this.sessionManager,
         mcpClient: this.mcpClient,
@@ -1717,6 +1719,8 @@ export class WorkerService implements WorkerRef {
       gracefulDeadlineMs: getPlatformTimeout(WORKER_GRACEFUL_SHUTDOWN_DEADLINE_BASE_MS),
       // No turn or open My Work started may outlive this worker, however the graceful shutdown ended.
       forceStopCommandsStillRunning: async () => { await this.conversationContinuationRunner?.forceStopCommandsStillRunning(); },
+      // Nor any other child in the supervisor's registry, when the graceful shutdown did not get to finish its cascade.
+      stopEveryRegisteredChildProcess: () => getSupervisor().stop(),
       restartHandoff: {
         port: getWorkerPort(),
         portFreeTimeoutMs: getPlatformTimeout(5000),

@@ -4,22 +4,25 @@
 // a real SessionStore (the one worker-service.ts wires in) and the folders are real, all under the repo's gitignored
 // .scratch/test-runs.
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, spyOn } from 'bun:test';
-import { spawn as spawnRealProcess, type spawn, type SpawnOptions } from 'node:child_process';
+import { spawn as spawnRealProcess, type ChildProcess, type spawn, type SpawnOptions } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync } from 'node:fs';
 import type { Server as HttpServer } from 'node:http';
 import { join } from 'node:path';
 import express from 'express';
 import { listenOnEphemeralPort } from '../../../helpers/ephemeral-port.js';
 import { scratchDir } from '../../../helpers/scratch-dir.js';
+import { isRunning, pidWrittenTo } from '../../../helpers/stand-in-process.js';
 import { removeTempDir } from '../../../helpers/temp-dir.js';
 import type { UsableAgent, UsableAgentId } from '../../../../src/services/agent-runner/detect.js';
-import { performGracefulShutdown, type ShutdownableService } from '../../../../src/services/infrastructure/GracefulShutdown.js';
+import {
+  performGracefulShutdown, type CloseableDatabase, type ShutdownableService, type StoppableService,
+} from '../../../../src/services/infrastructure/GracefulShutdown.js';
 import { Server } from '../../../../src/services/server/Server.js';
 import { SessionStore } from '../../../../src/services/sqlite/SessionStore.js';
 import { ConversationContinuationRunner } from '../../../../src/services/work-view/conversation-continuation-runner.js';
 import { WorkViewRoutes, workViewLoopbackOnly } from '../../../../src/services/worker/http/routes/WorkViewRoutes.js';
-import { runShutdownSequence, WORKER_GRACEFUL_SHUTDOWN_DEADLINE_BASE_MS, type ShutdownSequenceOptions } from '../../../../src/services/worker-shutdown.js';
+import { runShutdownSequence, WORKER_GRACEFUL_SHUTDOWN_DEADLINE_BASE_MS } from '../../../../src/services/worker-shutdown.js';
 import type { ConversationContinuation, ConversationContinuationNotice } from '../../../../src/shared/conversation-continuation.js';
 import { LOCAL_API_TOKEN_HEADER } from '../../../../src/shared/local-api-token.js';
 import { getSupervisor } from '../../../../src/supervisor/index.js';
@@ -68,9 +71,11 @@ class FakeChild extends EventEmitter {
   stopCannotBeSent?: Error;
   /** Hears a stop: runCommand's signal to its process group (the process.kill stub below), or Node's `signal` option on Windows. */
   hearStop(signal: string): void { this.stopsHeard.push(signal); this.heardFirstStop(signal); }
+  hasExited = false;
   /** Exits with `exitCode`, or by a signal when it is null. */
   exit(exitCode: number | null, output: { stdout?: string } = {}): void {
     if (output.stdout) this.stdout.emit('data', output.stdout);
+    this.hasExited = true;
     this.emit('close', exitCode);
   }
 }
@@ -598,6 +603,10 @@ describe('opening a conversation in its app', () => {
     const processKill = spyOn(process, 'kill').mockImplementation(((pid: number, signal?: string | number) => {
       const child = pid < 0 ? childrenByProcessGroup.get(-pid) : undefined;
       if (!child) return realProcessKill(pid, signal);
+      // Signal 0 asks whether any process is left in the group, which runCommand does once the command has exited. The
+      // fake child is alone in its group: once it has exited, kill(2) answers ESRCH, as Node's process.kill throws it.
+      if (child.hasExited) throw Object.assign(new Error('kill ESRCH'), { code: 'ESRCH', errno: -3, syscall: 'kill' });
+      if (signal === 0) return true;
       if (child.stopCannotBeSent) throw child.stopCannotBeSent;
       child.hearStop(String(signal));
       return true;
@@ -849,97 +858,150 @@ describe('local API token mode (#5141)', () => {
 describe('when the worker shuts down, with a real turn running', () => {
   const STAND_IN_TURN = join(FIXTURES, 'cli-turn-that-ends-a-moment-after-its-stop.sh');
   const STAND_IN_TURN_THAT_IGNORES_ITS_STOP = join(FIXTURES, 'cli-turn-that-ignores-its-stop.sh');
+  const STAND_IN_TURN_THAT_IGNORES_SIGINT = join(FIXTURES, 'cli-turn-that-ignores-sigint.sh');
+  const LAUNCHER_THAT_EXITS_BEFORE_ITS_CLI = join(FIXTURES, 'launcher-that-exits-before-its-cli.mjs');
   const STOPPED_BY_THE_WORKER = 'The worker shut down, so it stopped this turn.';
   const SHUTTING_DOWN = 'The worker is shutting down, so this message was not sent. Send it again once My Work reconnects.';
+  // On Windows a stop goes to the command alone and there is no sh (CommandOptions.signal in detect.ts).
+  const itOnMacOsAndLinux = process.platform === 'win32' ? it.skip : it;
 
-  /** Whether a process is still running (a negative pid: any process of that group). EPERM means it runs as someone else. */
-  function isRunning(pid: number): boolean {
-    try {
-      process.kill(pid, 0);
-      return true;
-    } catch (error) {
-      return (error as NodeJS.ErrnoException).code === 'EPERM';
-    }
-  }
-
-  /** The pid the stand-in wrote to `pidFile`, once it has. Bun's per-test timeout ends the wait if it never does. */
-  async function pidWrittenTo(pidFile: string): Promise<number> {
-    for (;;) {
-      const written = existsSync(pidFile) ? readFileSync(pidFile, 'utf8').trim() : '';
-      if (written !== '') return Number(written);
-      await Bun.sleep(10);
-    }
-  }
-
-  /** Stand-ins started by a test, ended after it in case it failed before the shutdown did. */
-  const standInPids: number[] = [];
+  /**
+   * The process groups the tests started: each command the runner starts leads one (CommandOptions.signal in detect.ts),
+   * with everything it started in it. Ended after each test in case it failed before the shutdown did.
+   */
+  const processGroupsStarted: number[] = [];
   afterEach(() => {
-    // Each stand-in leads a process group of its own, with its naps in it (CommandOptions.signal in detect.ts).
-    for (const pid of standInPids.splice(0)) if (isRunning(-pid)) process.kill(-pid, 'SIGKILL');
+    for (const processGroup of processGroupsStarted.splice(0)) if (isRunning(-processGroup)) process.kill(-processGroup, 'SIGKILL');
   });
 
   /**
-   * A runner wired as worker-service.ts wires it, over the real SessionStore lookup, whose CLI is the real process
-   * `standIn`, inside routes, with its own copy of the supervisor's registry. Starts one turn, and answers once the
-   * stand-in has written its pid.
+   * A runner wired as worker-service.ts wires it, over the real SessionStore lookup, whose CLI is the real process `cli`,
+   * inside routes, with its own copy of the supervisor's registry. With `launcherInFront`, the command the runner starts
+   * is the launcher that exits before the CLI it starts (launcher-that-exits-before-its-cli.mjs), running `cli`; with
+   * `cliOutputGoesElsewhere`, the CLI writes to a file, not to the output the launcher was started with. Starts one turn,
+   * and answers once the CLI has written its pid.
    */
-  async function realTurnRunning(standIn: string) {
+  async function realTurnRunning(cli: string, launcherInFront?: { cliOutputGoesElsewhere: boolean }) {
     const folder = join(fileFolder, `shutdown-${++testFolderCount}`);
     mkdirSync(folder);
     const pidFile = join(folder, 'stand-in-turn.pid');
     // The supervisor's registry, as worker-service.ts passes it (getSupervisor().getRegistry()), in this test's folder.
     const registry = createProcessRegistry(join(folder, 'supervisor.json'));
-    let spawns = 0;
-    let reportEnded!: (exchange: ConversationContinuation) => void;
-    const ended = new Promise<ConversationContinuation>(resolve => { reportEnded = resolve; });
+    /** Each command the runner started, and its 'close', heard once everything runCommand does on it has run. */
+    const spawned: Array<{ child: ChildProcess; closed: Promise<void> }> = [];
+    const unread: ConversationContinuation[] = [];
+    const waiting: Array<(exchange: ConversationContinuation) => void> = [];
     let routes!: WorkViewRoutes;
     const runner = new ConversationContinuationRunner({
       recordedFolderForConversation: (platform, conversationSessionId) => store.getRecordedFolderForConversation(platform, conversationSessionId),
-      detectAgent: async agentId => ({ id: agentId, path: standIn, authenticated: true, reason: 'test login' }),
+      detectAgent: async agentId => ({ id: agentId, path: launcherInFront ? LAUNCHER_THAT_EXITS_BEFORE_ITS_CLI : cli, authenticated: true, reason: 'test login' }),
       spawnImpl: ((command: string, args: string[], options: SpawnOptions) => {
-        spawns += 1;
-        return spawnRealProcess(command, args, options);
+        const child = spawnRealProcess(command, args, options);
+        processGroupsStarted.push(child.pid!);
+        // Heard before runCommand's own 'close' listener, and settled once everything that one does has run.
+        spawned.push({ child, closed: new Promise<void>(resolve => child.once('close', () => setImmediate(resolve))) });
+        return child;
       }) as unknown as typeof spawn,
-      onChange: exchange => { routes.publishConversationContinuation(exchange); reportEnded(exchange); },
-      environment: () => ({ PATH: process.env.PATH, HOME: process.env.HOME, STAND_IN_TURN_WRITES_ITS_PID_TO: pidFile }),
+      onChange: exchange => {
+        routes.publishConversationContinuation(exchange);
+        const waiter = waiting.shift();
+        if (waiter) waiter(exchange); else unread.push(exchange);
+      },
+      environment: () => ({
+        PATH: process.env.PATH, HOME: process.env.HOME, STAND_IN_TURN_WRITES_ITS_PID_TO: pidFile,
+        ...(launcherInFront ? { STAND_IN_LAUNCHER_RUNS: cli } : {}),
+        ...(launcherInFront?.cliOutputGoesElsewhere ? { STAND_IN_LAUNCHER_SENDS_CLI_OUTPUT_TO: join(folder, 'cli-output.log') } : {}),
+      }),
       processRegistry: registry,
     });
     routes = new WorkViewRoutes({ ...isolatedRoutesOptions(), conversationContinuationRunner: runner });
 
     expect(await runner.start('claude', CLAUDE_SESSION, 'Count slowly to 200, one number per line.')).toHaveProperty('exchange');
     const standInPid = await pidWrittenTo(pidFile);
-    standInPids.push(standInPid);
     expect(isRunning(standInPid)).toBe(true);
-    return { folder, registry, runner, routes, ended, standInPid, spawns: () => spawns };
+    return {
+      folder, pidFile, registry, runner, routes, standInPid, spawned,
+      /** The next exchange the runner reports as ended. */
+      nextEnded: () => unread.length > 0 ? Promise.resolve(unread.shift()!) : new Promise<ConversationContinuation>(resolve => waiting.push(resolve)),
+    };
+  }
+  type RealTurn = Awaited<ReturnType<typeof realTurnRunning>>;
+
+  /**
+   * The supervisor's shutdown cascade over `turn`'s copy of the registry, for the two places the worker calls
+   * getSupervisor().stop(): the graceful shutdown's last step (each test puts this in place of the real one, which would
+   * stop what other tests in this process registered with it) and runShutdownSequence's stopEveryRegisteredChildProcess.
+   * As Supervisor.stop does, a call while a cascade runs waits for that one, and spawnDaemon is refused while one runs
+   * (Supervisor.assertCanSpawn).
+   */
+  function supervisorFor(turn: RealTurn, onCascadeBegins: () => void) {
+    let cascadeRunning: Promise<void> | null = null;
+    const stop = (): Promise<void> => {
+      if (cascadeRunning) return cascadeRunning;
+      onCascadeBegins();
+      cascadeRunning = runShutdownCascade({ registry: turn.registry, currentPid: process.pid, pidFilePath: join(turn.folder, 'worker.pid') })
+        .finally(() => { cascadeRunning = null; });
+      return cascadeRunning;
+    };
+    return { stop, isRunningItsCascade: () => cascadeRunning !== null };
   }
 
   /**
    * runShutdownSequence as WorkerService.shutdown runs it, for `turn`: its first step closes the routes, which sends the
-   * turn its stop; then the real performGracefulShutdown, with no HTTP server and `sessionManager`, under
-   * `gracefulDeadlineMs`; then the runner's force stop. A signal's shutdown, which starts no successor.
+   * turn its stop; then the real performGracefulShutdown, with no HTTP server, the given session drain, Chroma and
+   * database steps, and the supervisor's cascade (supervisorFor, in place of getSupervisor().stop while it runs), under
+   * `gracefulDeadlineMs`; then the runner's force stop, and the cascade again when the graceful shutdown did not finish.
+   * A signal's shutdown starts no successor; a restart's spawns one, refused while the cascade runs, as spawnDaemon is.
    */
-  function workerShutdown(
-    turn: Awaited<ReturnType<typeof realTurnRunning>>,
-    { sessionManager, gracefulDeadlineMs }: { sessionManager: ShutdownableService; gracefulDeadlineMs: number },
-  ): ShutdownSequenceOptions {
+  async function runWorkerShutdown(turn: RealTurn, {
+    reason = 'signal', gracefulDeadlineMs, sessionManager, chromaMcpManager, dbManager, successor = [], onSupervisorCascadeBegins = () => {},
+  }: {
+    reason?: 'signal' | 'restart';
+    gracefulDeadlineMs: number;
+    sessionManager: ShutdownableService;
+    chromaMcpManager?: StoppableService;
+    dbManager?: CloseableDatabase;
+    /** What became of the successor a restart spawns. */
+    successor?: string[];
+    /** Told as each run of the supervisor's cascade begins. */
+    onSupervisorCascadeBegins?: () => void;
+  }): Promise<void> {
+    const supervisor = supervisorFor(turn, onSupervisorCascadeBegins);
+    const supervisorStop = spyOn(getSupervisor(), 'stop').mockImplementation(supervisor.stop);
     let shuttingDown = false;
     const noSuccessor = () => { throw new Error('A shutdown on a signal starts no successor.'); };
-    return {
-      reason: 'signal',
-      isShuttingDown: () => shuttingDown,
-      markShuttingDown: () => { shuttingDown = true; },
-      beforeGracefulShutdown: async () => { turn.routes.close(); },
-      performGracefulShutdown: () => performGracefulShutdown({ server: null, commandsStoppedAsShutdownBegan: turn.runner, sessionManager }),
-      gracefulDeadlineMs,
-      forceStopCommandsStillRunning: () => turn.runner.forceStopCommandsStillRunning(),
-      restartHandoff: {
-        port: 0, portFreeTimeoutMs: 0, resolveSuccessorScript: noSuccessor, waitForPortFree: noSuccessor, removePidFile: noSuccessor, spawnDaemon: noSuccessor,
-      },
-    };
+    try {
+      await runShutdownSequence({
+        reason,
+        isShuttingDown: () => shuttingDown,
+        markShuttingDown: () => { shuttingDown = true; },
+        beforeGracefulShutdown: async () => { turn.routes.close(); },
+        performGracefulShutdown: () => performGracefulShutdown({
+          server: null, commandsStoppedAsShutdownBegan: turn.runner, sessionManager, chromaMcpManager, dbManager,
+        }),
+        gracefulDeadlineMs,
+        forceStopCommandsStillRunning: () => turn.runner.forceStopCommandsStillRunning(),
+        stopEveryRegisteredChildProcess: supervisor.stop,
+        restartHandoff: reason === 'restart' ? {
+          port: 0, portFreeTimeoutMs: 0, resolveSuccessorScript: () => 'worker-service.cjs', waitForPortFree: async () => true, removePidFile: () => {},
+          spawnDaemon: () => {
+            if (supervisor.isRunningItsCascade()) {
+              successor.push('refused: the supervisor is shutting down');
+              return undefined;
+            }
+            successor.push('spawned');
+            return 1;
+          },
+        } : {
+          port: 0, portFreeTimeoutMs: 0, resolveSuccessorScript: noSuccessor, waitForPortFree: noSuccessor, removePidFile: noSuccessor, spawnDaemon: noSuccessor,
+        },
+      });
+    } finally {
+      supervisorStop.mockRestore();
+    }
   }
 
-  // On Windows a stop goes to the command alone and there is no sh (CommandOptions.signal in detect.ts).
-  (process.platform === 'win32' ? it.skip : it)('stops the turn and waits for its CLI to exit before the shutdown finishes, and sends it nowhere again', async () => {
+  itOnMacOsAndLinux('stops the turn and waits for its CLI to exit before the shutdown finishes, and sends it nowhere again', async () => {
     const turn = await realTurnRunning(STAND_IN_TURN);
 
     // The supervisor's cascade, the graceful shutdown's last step, stops whatever is still in the registry and waits for
@@ -949,65 +1011,148 @@ describe('when the worker shuts down, with a real turn running', () => {
     // The stand-in ends a moment after its stop, so a shutdown that did not wait for it would be done while it still ran.
     expect(isRunning(turn.standInPid)).toBe(false);
     expect(turn.registry.getAll()).toEqual([]);
-    const stopped = await turn.ended;
+    const stopped = await turn.nextEnded();
     expect(stopped.state).toBe('failed');
     // Then whatever the stand-in's shell printed, kept whole: "Terminated: 15" when the cascade's SIGTERM cut a nap short.
     expect(stopped.failureText).toStartWith(STOPPED_BY_THE_WORKER);
 
     // Nothing sends it again, and nothing new starts.
     expect(await turn.runner.start('claude', CLAUDE_SESSION, 'Count slowly to 200, one number per line.')).toEqual({ refusalText: SHUTTING_DOWN });
-    expect(turn.spawns()).toBe(1);
+    expect(turn.spawned).toHaveLength(1);
   });
 
-  (process.platform === 'win32' ? it.skip : it)('lets the turn end on its stop before the session drain and the other long steps begin', async () => {
+  itOnMacOsAndLinux("starts the session drain and the other steps at once while the turn ends on its stop, and the supervisor's cascade only once it has", async () => {
     const turn = await realTurnRunning(STAND_IN_TURN);
+    const steps: string[] = [];
     let standInRanWhenTheSessionDrainBegan: boolean | undefined;
-    // Nothing reaches the supervisor's real cascade, which would stop what other tests in this process registered with it.
-    const supervisorStop = spyOn(getSupervisor(), 'stop').mockResolvedValue(undefined);
-    try {
-      await runShutdownSequence(workerShutdown(turn, {
-        sessionManager: { shutdownAll: async () => { standInRanWhenTheSessionDrainBegan = isRunning(turn.standInPid); } },
-        gracefulDeadlineMs: WORKER_GRACEFUL_SHUTDOWN_DEADLINE_BASE_MS,
-      }));
-    } finally {
-      supervisorStop.mockRestore();
-    }
-    // The stand-in ends a moment after its stop: the session drain began only once it had.
-    expect(standInRanWhenTheSessionDrainBegan).toBe(false);
+    let standInRanWhenTheCascadeBegan: boolean | undefined;
+    await runWorkerShutdown(turn, {
+      gracefulDeadlineMs: WORKER_GRACEFUL_SHUTDOWN_DEADLINE_BASE_MS,
+      sessionManager: { shutdownAll: async () => { standInRanWhenTheSessionDrainBegan = isRunning(turn.standInPid); steps.push('session drain'); } },
+      chromaMcpManager: { stop: async () => { steps.push('Chroma stop'); } },
+      dbManager: { close: async () => { steps.push('database close'); } },
+      onSupervisorCascadeBegins: () => { standInRanWhenTheCascadeBegan = isRunning(turn.standInPid); steps.push('supervisor cascade'); },
+    });
+    // The stand-in ends a moment after its stop. The session drain, Chroma and the database did not wait for it; the
+    // supervisor's cascade, whose SIGTERM would cut a turn short, did. It ran once: the graceful shutdown finished.
+    expect(standInRanWhenTheSessionDrainBegan).toBe(true);
+    expect(standInRanWhenTheCascadeBegan).toBe(false);
+    expect(steps).toEqual(['session drain', 'Chroma stop', 'database close', 'supervisor cascade']);
     expect(isRunning(-turn.standInPid)).toBe(false);
-    const stopped = await turn.ended;
+    const stopped = await turn.nextEnded();
     expect(stopped.state).toBe('failed');
     expect(stopped.failureText).toStartWith(STOPPED_BY_THE_WORKER);
-    expect(turn.spawns()).toBe(1);
+    expect(turn.spawned).toHaveLength(1);
   });
 
   /**
-   * The stand-in ignores SIGTERM too, so the shutdown cascade's escalation runs whole before the shutdown returns: its
-   * 5 s grace window after SIGTERM, then up to 1 s after SIGKILL (terminateThenForceKill). 15 s leaves room for a slow
-   * machine on top of the 6 s; bun's default of 5 s would end the test inside that grace window.
+   * The stand-in ignores SIGTERM too, so the force stop's escalation runs whole before the shutdown returns: the cascade's
+   * 5 s grace window after SIGTERM, then up to 1 s after SIGKILL (terminateThenForceKillProcessGroups). 15 s leaves room
+   * for a slow machine on top of the 6 s; bun's default of 5 s would end the test inside that grace window.
    */
   const ESCALATION_RUNS_WHOLE_TIMEOUT_MS = 15_000;
 
-  (process.platform === 'win32' ? it.skip : it)('ends a turn whose CLI ignores its stop before the worker exits, even when the graceful shutdown runs out of its deadline', async () => {
+  itOnMacOsAndLinux('ends a turn whose CLI ignores its stop before the worker exits, even when the graceful shutdown runs out of its deadline', async () => {
     const turn = await realTurnRunning(STAND_IN_TURN_THAT_IGNORES_ITS_STOP);
     // As a session drain that lasts longer than the deadline, as one has been seen to. The deadline is short only so the
     // test is: the turn outlasts any deadline.
-    await runShutdownSequence(workerShutdown(turn, {
-      sessionManager: { shutdownAll: () => new Promise<void>(() => {}) },
-      gracefulDeadlineMs: 300,
-    }));
+    await runWorkerShutdown(turn, { sessionManager: { shutdownAll: () => new Promise<void>(() => {}) }, gracefulDeadlineMs: 300 });
 
     // runShutdownSequence has returned, so the worker would call process.exit now: the turn's CLI, and the naps in its
     // process group, are gone by then.
     expect(isRunning(turn.standInPid)).toBe(false);
     expect(isRunning(-turn.standInPid)).toBe(false);
-    const stopped = await turn.ended;
+    const stopped = await turn.nextEnded();
     expect(stopped.state).toBe('failed');
     expect(stopped.failureText).toStartWith(STOPPED_BY_THE_WORKER);
     expect(turn.registry.getAll()).toEqual([]);
 
     // Nothing sends it again, and nothing new starts.
     expect(await turn.runner.start('claude', CLAUDE_SESSION, 'Count slowly to 200, one number per line.')).toEqual({ refusalText: SHUTTING_DOWN });
-    expect(turn.spawns()).toBe(1);
+    expect(turn.spawned).toHaveLength(1);
   }, ESCALATION_RUNS_WHOLE_TIMEOUT_MS);
+
+  itOnMacOsAndLinux("runs every other step at once beside a turn that ignores its stop, and the supervisor's cascade before the worker exits, so a restart starts its successor", async () => {
+    const turn = await realTurnRunning(STAND_IN_TURN_THAT_IGNORES_SIGINT);
+    // Another child of the worker's in its registry, as chroma-mcp or an observer is, which takes a moment to stop on the
+    // cascade's SIGTERM. It leads a process group of its own, as the cascade's record of it says.
+    const childPidFile = join(turn.folder, 'registered-child.pid');
+    const registeredChild = spawnRealProcess(STAND_IN_TURN, [], {
+      detached: true, stdio: 'ignore', env: { PATH: process.env.PATH, STAND_IN_TURN_WRITES_ITS_PID_TO: childPidFile },
+    });
+    processGroupsStarted.push(registeredChild.pid!);
+    await pidWrittenTo(childPidFile);
+    turn.registry.register(`registered-child:${registeredChild.pid}`, {
+      pid: registeredChild.pid!, type: 'registered-child', startedAt: new Date().toISOString(), pgid: registeredChild.pid!,
+    });
+    const steps: string[] = [];
+    const successor: string[] = [];
+    let turnRanWhenTheSessionDrainBegan: boolean | undefined;
+    await runWorkerShutdown(turn, {
+      reason: 'restart',
+      // Short only so the test is: the turn outlasts any deadline.
+      gracefulDeadlineMs: 300,
+      sessionManager: { shutdownAll: async () => { turnRanWhenTheSessionDrainBegan = isRunning(turn.standInPid); steps.push('session drain'); } },
+      chromaMcpManager: { stop: async () => { steps.push('Chroma stop'); } },
+      dbManager: { close: async () => { steps.push('database close'); } },
+      successor,
+    });
+
+    // runShutdownSequence has returned: the worker exits now, once it has started its successor. Every step had run, the
+    // session drain without waiting for the turn, and nothing it started is left running.
+    expect(turnRanWhenTheSessionDrainBegan).toBe(true);
+    expect(steps).toEqual(['session drain', 'Chroma stop', 'database close']);
+    expect(isRunning(turn.standInPid)).toBe(false);
+    expect(isRunning(-registeredChild.pid!)).toBe(false);
+    expect(turn.registry.getAll()).toEqual([]);
+    expect(successor).toEqual(['spawned']);
+    const stopped = await turn.nextEnded();
+    expect(stopped.state).toBe('failed');
+    expect(stopped.failureText).toStartWith(STOPPED_BY_THE_WORKER);
+  });
+
+  for (const [whereTheCliWrites, cliOutputGoesElsewhere] of [
+    ['to the output the launcher was started with', false],
+    ['to a file of its own', true],
+  ] as const) {
+    itOnMacOsAndLinux(`ends a turn whose CLI outlives its launcher on the stop before the worker exits, when the CLI writes ${whereTheCliWrites}`, async () => {
+      // The launcher dies on the stop at once; the CLI behind it, in the launcher's process group, ignores it.
+      const turn = await realTurnRunning(STAND_IN_TURN_THAT_IGNORES_SIGINT, { cliOutputGoesElsewhere });
+      const launcherPid = turn.spawned[0].child.pid!;
+      await runWorkerShutdown(turn, { sessionManager: { shutdownAll: async () => {} }, gracefulDeadlineMs: 300 });
+
+      // runShutdownSequence has returned, so the worker would call process.exit now: the CLI and its process group are
+      // gone by then.
+      expect(isRunning(launcherPid)).toBe(false);
+      expect(isRunning(turn.standInPid)).toBe(false);
+      expect(isRunning(-launcherPid)).toBe(false);
+      expect(turn.registry.getAll()).toEqual([]);
+      const stopped = await turn.nextEnded();
+      expect(stopped.state).toBe('failed');
+      expect(stopped.failureText).toStartWith(STOPPED_BY_THE_WORKER);
+      expect(await turn.runner.start('claude', CLAUDE_SESSION, 'Count slowly to 200, one number per line.')).toEqual({ refusalText: SHUTTING_DOWN });
+      expect(turn.spawned).toHaveLength(1);
+    });
+  }
+
+  itOnMacOsAndLinux("refuses a second Send while a stopped turn's CLI still ends its turn behind a launcher that died on the stop", async () => {
+    const turn = await realTurnRunning(STAND_IN_TURN, { cliOutputGoesElsewhere: true });
+    expect(turn.runner.stop('claude', CLAUDE_SESSION)).toHaveProperty('exchange');
+    // The launcher died on the stop at once, and its 'close' came at once too, since the CLI's output does not reach the
+    // launcher's. The CLI ends its turn six 50 ms naps after its stop, so it is still writing.
+    await turn.spawned[0].closed;
+    expect(isRunning(turn.standInPid)).toBe(true);
+    expect(await turn.runner.start('claude', CLAUDE_SESSION, 'And now?')).toEqual({ refusalText: STILL_RUNNING_REFUSAL });
+
+    const stopped = await turn.nextEnded();
+    expect(stopped).toMatchObject({ state: 'failed', failureText: 'You stopped this turn.' });
+    expect(isRunning(turn.standInPid)).toBe(false);
+    // Once the CLI has ended, the conversation takes the next Send.
+    rmSync(turn.pidFile);
+    expect(await turn.runner.start('claude', CLAUDE_SESSION, 'And now?')).toHaveProperty('exchange');
+    await pidWrittenTo(turn.pidFile);
+    expect(turn.runner.stop('claude', CLAUDE_SESSION)).toHaveProperty('exchange');
+    expect(await turn.nextEnded()).toMatchObject({ state: 'failed', failureText: 'You stopped this turn.' });
+    expect(turn.spawned).toHaveLength(2);
+  });
 });

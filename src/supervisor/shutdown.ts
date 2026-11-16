@@ -1,6 +1,14 @@
 import { existsSync, readFileSync, rmSync } from 'fs';
 import { logger } from '../utils/logger.js';
-import { captureProcessStartToken, isSameProcess, isPidAlive, waitForExit, type ManagedProcessRecord, type ProcessRegistry } from './process-registry.js';
+import {
+  captureProcessStartToken,
+  isSameProcess,
+  isPidAlive,
+  processGroupHasProcesses,
+  waitForExit,
+  type ManagedProcessRecord,
+  type ProcessRegistry,
+} from './process-registry.js';
 import { paths } from '../shared/paths.js';
 import { killProcessTree, collectDescendantIdentities } from '../shared/kill-process-tree.js';
 
@@ -17,7 +25,7 @@ export interface ShutdownCascadeOptions {
  * then waits after SIGKILL before it reports what still runs. These are the windows the supervisor has had since it was
  * added (#1370: "graceful shutdown cascade (SIGTERM → 5s wait → SIGKILL)"); no measurement behind them is recorded. The
  * worker's last step before it exits (runShutdownSequence's forceStopCommandsStillRunning) reuses them through
- * terminateThenForceKill, so it adds no window of its own.
+ * terminateThenForceKill and terminateThenForceKillProcessGroups, so it adds no window of its own.
  */
 const GRACE_WINDOW_AFTER_SIGTERM_MS = 5000;
 const WAIT_AFTER_SIGKILL_MS = 1000;
@@ -176,6 +184,64 @@ export async function terminateThenForceKill(
     });
   }
   return survivors;
+}
+
+/** A child that leads a process group of its own, which its caller has watched since the child was started. */
+export type ProcessGroupRecord = ManagedProcessRecord & { pgid: number };
+
+/**
+ * terminateThenForceKill for children that lead a process group of their own and that their caller has watched since
+ * it started them, until no process was left in the group: runCommand's commands with a stop signal
+ * (agent-runner/detect.ts), the conversation runner's turns and opens. It goes by the group, not by its leader. The
+ * leader can be a launcher found on PATH that exits first, on the same signal, while the CLI it started runs on in the
+ * group, and terminateThenForceKill skips a record whose own pid has exited without signalling its group. A group that
+ * still has processes is still the group the child led (processGroupHasProcesses).
+ *
+ * The cascade's own steps and windows: SIGTERM to each group that still has processes, up to
+ * GRACE_WINDOW_AFTER_SIGTERM_MS for all of them to empty, then SIGKILL to each that has not, and up to
+ * WAIT_AFTER_SIGKILL_MS more. Each group the grace window ran out on is logged at WARN, and each with processes left
+ * after SIGKILL at ERROR. Answers the records whose group still had processes once the grace window ran out.
+ */
+export async function terminateThenForceKillProcessGroups(records: ProcessGroupRecord[]): Promise<ProcessGroupRecord[]> {
+  const groupIsRunning = (record: ManagedProcessRecord) => typeof record.pgid === 'number' && processGroupHasProcesses(record.pgid);
+  const running = records.filter(groupIsRunning);
+  for (const record of running) signalProcessGroup(record, 'SIGTERM');
+
+  await waitForExit(running, GRACE_WINDOW_AFTER_SIGTERM_MS, groupIsRunning);
+
+  const survivors = running.filter(groupIsRunning);
+  for (const record of survivors) {
+    logger.warn('SYSTEM', 'Child process group still has processes when the shutdown grace window after SIGTERM ran out; force-killing them', {
+      pid: record.pid,
+      pgid: record.pgid,
+      type: record.type,
+    });
+    signalProcessGroup(record, 'SIGKILL');
+  }
+
+  await waitForExit(survivors, WAIT_AFTER_SIGKILL_MS, groupIsRunning);
+  for (const record of survivors.filter(groupIsRunning)) {
+    logger.error('SYSTEM', 'Child process group still has processes after SIGKILL at the end of the shutdown cascade: the worker exits without them', {
+      pid: record.pid,
+      pgid: record.pgid,
+      type: record.type,
+    });
+  }
+  return survivors;
+}
+
+/** `signal` to every process in the record's group. ESRCH: the group has emptied, so nothing was left to signal. */
+function signalProcessGroup(record: ProcessGroupRecord, signal: 'SIGTERM' | 'SIGKILL'): void {
+  try {
+    process.kill(-record.pgid, signal);
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return;
+    logger.warn('SYSTEM', `Failed to send ${signal} to a child process group`, {
+      pid: record.pid,
+      pgid: record.pgid,
+      type: record.type,
+    }, error instanceof Error ? error : new Error(String(error)));
+  }
 }
 
 /**
