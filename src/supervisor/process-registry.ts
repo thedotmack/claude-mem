@@ -11,7 +11,7 @@ import { ensureDir, OBSERVER_SESSIONS_DIR, paths } from '../shared/paths.js';
 // here so every existing caller keeps its import path.
 import { captureProcessName, captureProcessStartToken, isSameProcess, isSameProcessName, isSameProcessStartToken, normalizeProcessName } from '../shared/process-identity.js';
 export { captureProcessName, captureProcessStartToken, isSameProcess, isSameProcessName, isSameProcessStartToken, normalizeProcessName };
-import { collectProcessGroupMembers, killProcessTree } from '../shared/kill-process-tree.js';
+import { collectProcessGroupMembers, killProcessTree, type ProcessGroupMember } from '../shared/kill-process-tree.js';
 
 const REAP_SESSION_SIGTERM_TIMEOUT_MS = 5_000;
 const REAP_SESSION_SIGKILL_TIMEOUT_MS = 1_000;
@@ -85,17 +85,33 @@ export function isPidAlive(pid: number): boolean {
  * macOS, about 25 ms with 710 processes, and a /proc scan on Linux, about 4 to 6 ms with 600 (measured under Bun and
  * Node). Its callers look again every PROCESS_EXIT_POLL_INTERVAL_MS while processes are left in a group they watch.
  *
+ * A read that lists only processes that have exited is read once more before it is believed. On Linux the table is read
+ * as a list of process ids and then one process at a time, so a process can start a child after the list was taken and
+ * exit before its own line is read: that read shows the parent as exited and does not list the child, which may still be
+ * running. Every process the first read listed had exited before the second read began, and a process that has exited
+ * starts nothing, so a second read that lists no process the first did not, and none that has not exited, means none is
+ * left. A second read that lists nothing at all is not believed either: the next look asks kill(2) again.
+ *
  * While any process is left in a group, a zombie too, the system gives its id to no new process or group (POSIX), so a
  * group a caller has watched since it was made is still that group.
+ *
+ * `readGroupMembers` reads the table; tests pass their own reads in its place.
  */
-export async function processGroupHasProcessesThatHaveNotExited(processGroupId: number): Promise<boolean> {
+export async function processGroupHasProcessesThatHaveNotExited(
+  processGroupId: number,
+  readGroupMembers: (processGroupId: number) => Promise<ProcessGroupMember[]> = collectProcessGroupMembers,
+): Promise<boolean> {
   try {
     process.kill(-processGroupId, 0);
   } catch (error: unknown) {
     if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
   }
-  const members = await collectProcessGroupMembers(processGroupId);
-  return members.length === 0 || members.some(member => !member.hasExited);
+  const members = await readGroupMembers(processGroupId);
+  if (members.length === 0 || members.some(member => !member.hasExited)) return true;
+  const idsOfMembersThatHadExited = new Set(members.map(member => member.pid));
+  const membersReadAgain = await readGroupMembers(processGroupId);
+  return membersReadAgain.length === 0
+    || membersReadAgain.some(member => !member.hasExited || !idsOfMembersThatHadExited.has(member.pid));
 }
 
 /**
