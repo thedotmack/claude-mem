@@ -2,18 +2,24 @@
 // conversation takes the message as one turn, and its reply shows here. One self-contained, layout-free block under a
 // conversation's line, so any list of conversations can mount it (the request drawer's "Where this came from" does).
 // Beside Send, the conversation can be opened in its tool's own app, or the command that resumes it copied.
+// How it is laid out, top to bottom: where a turn runs (the folder, which is what tells one conversation from the next on
+// real data, where titles and times are mostly not recorded); the exchanges sent from here, as a chat; one box that holds
+// the message and Send; and the two other ways in, quiet, under it.
 // What it shows is decided by continuationView and conversationAppActions (live/conversation-continuation.ts). The
 // worker's record is the state: each open row reads it, and reads it again on every notice about its conversation, so
 // nothing here is stored.
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { CheckIcon, CircleSlashIcon, ExternalLinkIcon, FolderIcon, FolderXIcon, SquareIcon, TerminalIcon } from 'lucide-react'
 import { Shimmer } from '@/components/ai-elements/shimmer'
+import { AgentMark } from '@/components/brand'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { interpolate, t, useI18n } from '@/lib/i18n'
+import { cn } from '@/lib/utils'
 import {
   buttonLabelsKeepingTheirWidth, continuationEventConcernsConversation, continuationView, conversationAppActions, conversationControlNames,
-  conversationReadFailureView, focusAfterSendOrStop, isContinuableConversation, resumeCommandCopyFailureWords, type ButtonLabelInPlace,
-  type ContinuationWords, type ConversationReadFailureView, type ExchangeAStopWasSentFor,
+  conversationReadFailureView, focusAfterSendOrStop, folderPathForDisplay, isContinuableConversation, resumeCommandCopyFailureWords,
+  sentenceAroundFolder, type ButtonLabelInPlace, type ContinuationWords, type ConversationReadFailureView, type ExchangeAStopWasSentFor,
 } from '@/live/conversation-continuation'
 import type { ConversationContinuationRead, ConversationContinuationSource } from '@/live/work-data-source'
 import { Req } from '@/spec/req'
@@ -36,6 +42,59 @@ function LabelsInOnePlace({ labels }: { labels: ButtonLabelInPlace[] }) {
         <span key={index} className={label.isShown ? 'col-start-1 row-start-1' : 'invisible col-start-1 row-start-1'}>{label.text}</span>
       ))}
     </span>
+  )
+}
+
+/**
+ * The keys that send from the message box, as the Send button shows them: Command and Enter on a Mac, Ctrl and Enter
+ * elsewhere. Both always work; this only picks which to show.
+ */
+const SEND_KEYS_HINT = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘↵' : 'Ctrl ↵'
+
+/** The two quiet buttons under the message box: smaller than Send, and tall enough for a finger on a phone. */
+const QUIET_ACTION = 'h-11 text-muted-foreground md:h-7'
+
+/** One quiet line saying a conversation can't be continued from here, and why when the worker said. */
+function CannotContinueLine({ children }: { children: ReactNode }) {
+  return (
+    <p className="flex items-start gap-1.5 break-words text-xs text-muted-foreground">
+      <CircleSlashIcon aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" /><span className="min-w-0">{children}</span>
+    </p>
+  )
+}
+
+/**
+ * A folder path on one line. When the line is too narrow for it, the parent folders give way and the folder's own name
+ * stays (folderPathForDisplay). The whole path is always its text, for a screen reader and for hover, and a click or
+ * Enter shows it whole on as many lines as it needs.
+ */
+function FolderPath({ folder }: { folder: string }) {
+  const [wholePathIsShown, setWholePathIsShown] = useState(false)
+  const { parentWithSeparator, folderName } = folderPathForDisplay(folder)
+  return (
+    // Named with the path as it is: read from its two parts, a screen reader would put a space where they meet.
+    <button type="button" title={folder} aria-label={folder} aria-expanded={wholePathIsShown} onClick={() => setWholePathIsShown((isShown) => !isShown)}
+      className={cn('min-w-0 rounded-sm text-left font-mono text-[0.7rem] outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50',
+        wholePathIsShown ? 'break-all' : 'flex max-w-full')}>
+      {wholePathIsShown ? folder : <><span className="truncate">{parentWithSeparator}</span><span className="max-w-full shrink-0 truncate text-foreground/85">{folderName}</span></>}
+    </button>
+  )
+}
+
+/**
+ * Where a turn sent from this row runs, as one quiet line above the message box: the catalog's sentence, with its folder
+ * drawn as a path (FolderPath). When the recorded folder is gone the sentence says so, before anything is sent.
+ */
+function WhereItRuns({ id, words, folderIsGone = false }: { id: string; words: ContinuationWords; folderIsGone?: boolean }) {
+  const sentence = sentenceAroundFolder(t(words.english), words)
+  const Icon = folderIsGone ? FolderXIcon : FolderIcon
+  return (
+    // The sentence's words keep their own spaces (a language may put none between the folder and the word after it), and
+    // the folder takes what is left of the line. The sentence for a folder that is gone is longer, so its line may wrap.
+    <p id={id} className={cn('flex min-w-0 items-baseline text-xs whitespace-pre-wrap text-muted-foreground', folderIsGone && 'flex-wrap')}>
+      <Icon aria-hidden="true" className="mr-1.5 size-3.5 shrink-0 self-center" />
+      {sentence ? <><span className={folderIsGone ? undefined : 'shrink-0'}>{sentence.wordsBefore}</span><FolderPath folder={sentence.folder} /><span className="shrink-0">{sentence.wordsAfter}</span></> : inPageLanguage(words)}
+    </p>
   )
 }
 
@@ -79,7 +138,7 @@ export function ConversationContinue({ platform, conversationSessionId, toolName
   if (!source) return null
   const conversation = { platform, conversationSessionId }
   if (!isContinuableConversation(conversation)) {
-    return <Req ids={['R2.8']}><p className="text-sm text-muted-foreground">{t('This conversation can’t be continued from here.')}</p></Req>
+    return <Req ids={['R2.8']}><CannotContinueLine>{t('This conversation can’t be continued from here.')}</CannotContinueLine></Req>
   }
   const names = conversationControlNames({ toolName, conversationTitle, conversationSessionId, anotherConversationHasTheSameTitle })
   return (
@@ -129,7 +188,7 @@ function ContinuableConversation({
   const conversationBox = useRef<HTMLDivElement>(null)
   /** Ties the folder-gone notice to the message box, so a screen reader says it when the box is focused. */
   const folderGoneNoticeId = useId()
-  /** The folder line under the buttons, tied to the message box the same way. */
+  /** The folder line while the folder exists, tied to the message box the same way. */
   const runsInFolderNoticeId = useId()
   /** The worker is still opening this conversation in its tool's app. */
   const [openingInApp, setOpeningInApp] = useState(false)
@@ -264,70 +323,93 @@ function ContinuableConversation({
 
   return (
     // Focusable from script only when there is no message box, so a pressed Stop can leave focus here.
-    <div ref={conversationBox} tabIndex={view.composerIsShown ? undefined : -1} className="space-y-2">
+    <div ref={conversationBox} tabIndex={view.composerIsShown ? undefined : -1} className="space-y-2 rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-ring/50">
+      {/* First, as the conversation line's second line: where a turn sent from here runs. It is what tells one conversation from the next. */}
+      {view.folderGoneNotice && <WhereItRuns id={folderGoneNoticeId} words={view.folderGoneNotice} folderIsGone />}
+      {appActions?.runsInFolderNotice && <WhereItRuns id={runsInFolderNoticeId} words={appActions.runsInFolderNotice} />}
       {view.exchanges.length > 0 && (
-        <div className="space-y-2" aria-live="polite">
+        // Read like a chat: what the owner sent on the right, what the conversation answered on the left under its tool's name.
+        <div className="space-y-3 py-1" aria-live="polite">
           {view.exchanges.map((exchange) => (
-            <div key={exchange.exchangeId} className="space-y-1 border-l-2 pl-3 text-sm">
-              <p className="whitespace-pre-wrap break-words text-muted-foreground">{exchange.ownerMessage}</p>
-              {exchange.state === 'running' ? (
-                <div className="flex flex-wrap items-center gap-2">
-                  <Shimmer as="span" className="text-xs">{t(exchange.stateWords)}</Shimmer>
-                  {view.stopIsShown && (
-                    <Button variant="outline" size="sm" className="h-11 md:h-8" aria-label={stopButtonName} disabled={exchange.stopWasSent}
-                      onClick={(event) => void stop(exchange, event.currentTarget)}>{t('Stop')}</Button>
+            <div key={exchange.exchangeId} className="space-y-2 text-sm">
+              <p className="ml-auto w-fit max-w-[85%] rounded-2xl rounded-br-md bg-secondary px-3.5 py-2 whitespace-pre-wrap break-words text-secondary-foreground">{exchange.ownerMessage}</p>
+              <div className="space-y-1.5">
+                <div className="flex min-h-8 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+                  <AgentMark tool={platform} className="size-3.5" />
+                  <span className="font-medium text-foreground">{toolName}</span>
+                  {exchange.state === 'running'
+                    ? <Shimmer as="span">{t(exchange.stateWords)}</Shimmer>
+                    : <span className={exchange.state === 'failed' ? 'text-destructive' : undefined}>{t(exchange.stateWords)}</span>}
+                  {exchange.state === 'running' && view.stopIsShown && (
+                    <Button variant="outline" size="sm" className="ml-auto h-11 md:h-8" aria-label={stopButtonName} disabled={exchange.stopWasSent}
+                      onClick={(event) => void stop(exchange, event.currentTarget)}><SquareIcon aria-hidden="true" className="fill-current" />{t('Stop')}</Button>
                   )}
                 </div>
-              ) : <p className="text-xs text-muted-foreground">{t(exchange.stateWords)}</p>}
-              {exchange.replyText !== null && <p className="whitespace-pre-wrap break-words">{exchange.replyText}</p>}
-              {exchange.failureText !== null && <p className="whitespace-pre-wrap break-words">{exchange.failureText}</p>}
-              {exchange.notices.map((notice) => <p key={notice.english} className="text-xs text-muted-foreground">{inPageLanguage(notice)}</p>)}
+                {exchange.replyText !== null && <p className="whitespace-pre-wrap break-words">{exchange.replyText}</p>}
+                {exchange.failureText !== null && (
+                  <p className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 font-mono text-xs whitespace-pre-wrap break-words">{exchange.failureText}</p>
+                )}
+                {exchange.notices.map((notice) => <p key={notice.english} className="text-xs text-muted-foreground">{inPageLanguage(notice)}</p>)}
+              </div>
             </div>
           ))}
         </div>
       )}
-      {view.refusalText !== null && <p className="break-words text-sm text-muted-foreground">{view.refusalText}</p>}
+      {view.refusalText !== null && <CannotContinueLine>{view.refusalText}</CannotContinueLine>}
       {view.composerIsShown && (
         <>
-          {view.folderGoneNotice && <p id={folderGoneNoticeId} className="break-words text-xs text-muted-foreground">{inPageLanguage(view.folderGoneNotice)}</p>}
-          <Textarea
-            ref={messageBox}
-            aria-label={boxLabel}
-            aria-describedby={view.folderGoneNotice ? folderGoneNoticeId : appActions?.runsInFolderNotice ? runsInFolderNoticeId : undefined}
-            placeholder={boxLabel}
-            value={typedMessage}
-            rows={2}
-            // Read-only while Send is in flight: a successful Send clears the box, which would lose words typed meanwhile.
-            readOnly={sending}
-            onChange={(event) => setTypedMessage(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.nativeEvent.isComposing) {
-                event.preventDefault()
-                void send()
-              }
-            }}
-          />
-          <div className="flex flex-wrap items-center gap-2">
-            <Button variant="outline" size="sm" className="h-11 md:h-8" aria-label={sendButtonName} disabled={!view.sendIsEnabled || sending}
+          {/* The message box and Send are one box, with Send in the page's main color, so it reads as a place to type and send. */}
+          <div
+            className="flex cursor-text items-end gap-2 rounded-xl border border-input bg-card p-1.5 shadow-[inset_0_1px_2px_rgb(74_46_20/0.05)] transition-colors focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50 dark:bg-input/30"
+            // A click on the box's own edge, outside the words and the button, still lands in the message box.
+            onClick={(event) => { if (event.target === event.currentTarget) messageBox.current?.focus() }}>
+            <Textarea
+              ref={messageBox}
+              aria-label={boxLabel}
+              aria-describedby={view.folderGoneNotice ? folderGoneNoticeId : appActions?.runsInFolderNotice ? runsInFolderNoticeId : undefined}
+              placeholder={boxLabel}
+              value={typedMessage}
+              // One line until words need more: the box grows with what is typed (field-sizing-content), so a request that
+              // lists many conversations stays short. A browser without field-sizing shows two lines.
+              rows={2}
+              className="min-h-0 flex-1 resize-none self-center border-0 bg-transparent px-2 py-1.5 shadow-none focus-visible:ring-0 dark:bg-transparent"
+              // Read-only while Send is in flight: a successful Send clears the box, which would lose words typed meanwhile.
+              readOnly={sending}
+              onChange={(event) => setTypedMessage(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.nativeEvent.isComposing) {
+                  event.preventDefault()
+                  void send()
+                }
+              }}
+            />
+            {/* In the page's main color once there are words to send. Until then it is quiet, so a long list of conversations is not a column of orange. */}
+            <Button variant={view.sendIsEnabled || sending ? 'default' : 'outline'} size="sm" className="h-11 md:h-8" aria-label={sendButtonName} aria-keyshortcuts="Meta+Enter Control+Enter" disabled={!view.sendIsEnabled || sending}
               onClick={(event) => void send(event.currentTarget)}>
               <LabelsInOnePlace labels={buttonLabelsKeepingTheirWidth(t('Send'), t('Sending…'), sending)} />
+              {/* The keys that send from the box, shown where a keyboard is likely. Enter alone starts a new line: a Send starts a real turn. */}
+              <kbd aria-hidden="true" className="hidden font-sans text-[0.7rem] opacity-75 md:inline">{SEND_KEYS_HINT}</kbd>
             </Button>
+          </div>
+          {/* Under the box, quietly: the two other ways into this conversation. */}
+          <div className="flex flex-wrap items-center justify-end gap-x-1">
             {appActions?.openInApp && (
               // aria-disabled, not disabled, while it opens: a disabled button drops focus to the page, so the owner keeps their place.
-              <Button variant="ghost" size="sm" className="h-11 md:h-8" aria-label={inPageLanguage(appActions.openInApp.buttonName)} aria-disabled={openingInApp}
+              <Button variant="ghost" size="xs" className={QUIET_ACTION} aria-label={inPageLanguage(appActions.openInApp.buttonName)} aria-disabled={openingInApp}
                 onClick={() => void openInApp()}>
+                <ExternalLinkIcon aria-hidden="true" />
                 <LabelsInOnePlace labels={buttonLabelsKeepingTheirWidth(inPageLanguage(appActions.openInApp.label), t('Opening…'), openingInApp)} />
               </Button>
             )}
             {appActions && (
-              <Button ref={copyButton} variant="ghost" size="sm" className="h-11 md:h-8"
+              <Button ref={copyButton} variant="ghost" size="xs" className={QUIET_ACTION}
                 aria-label={inPageLanguage(resumeCommandCopied ? appActions.copyResumeCommand.copiedButtonName : appActions.copyResumeCommand.buttonName)}
-                onClick={() => void copyResumeCommand(appActions.copyResumeCommand.command)}>{resumeCommandCopied ? t('Copied') : t('Copy resume command')}</Button>
+                onClick={() => void copyResumeCommand(appActions.copyResumeCommand.command)}>
+                {resumeCommandCopied ? <CheckIcon aria-hidden="true" /> : <TerminalIcon aria-hidden="true" />}
+                {resumeCommandCopied ? t('Copied') : t('Copy resume command')}
+              </Button>
             )}
           </div>
-          {appActions?.runsInFolderNotice && (
-            <p id={runsInFolderNoticeId} className="break-words text-xs text-muted-foreground">{inPageLanguage(appActions.runsInFolderNotice)}</p>
-          )}
           {openedInAppPrintedText !== null && (
             <p role="status" className="whitespace-pre-wrap break-words text-xs text-muted-foreground">{openedInAppPrintedText}</p>
           )}

@@ -386,7 +386,7 @@ function LoadedRequestDetail({ request, newerVersionReadFailure, onClose, onOpen
               <div className="space-y-2.5 pb-2">
                 {request.conversations.length === 0 && request.prompts.length === 0 && <p className="text-sm text-muted-foreground">{t("One conversation so far.")}</p>}
                 {request.conversations.map((conversation, index) => (
-                  <div key={JSON.stringify([conversation.platform, conversation.conversationSessionId])} className="space-y-2">
+                  <div key={JSON.stringify([conversation.platform, conversation.conversationSessionId])} className="space-y-1">
                     <p key={`${index}-${displayTime(conversation.at)}`} className="text-sm"><span className="text-muted-foreground">{conversation.tool} · {displayTime(conversation.at)}</span> — {conversation.title}</p>
                     <ConversationContinue platform={conversation.platform} conversationSessionId={conversation.conversationSessionId} toolName={conversation.tool}
                       conversationTitle={conversation.title}

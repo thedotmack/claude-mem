@@ -11,8 +11,8 @@ import { SAMPLE_REQUESTS } from '../data.ts'
 import { myworkFr } from '../../../i18n/mywork-fr.ts'
 import {
   CONTINUATION_STATE_WORDS, canContinueConversations, continuationEventConcernsConversation, continuationView, conversationAppActions,
-  conversationReadFailureView, buttonLabelsKeepingTheirWidth, conversationControlNames, conversationRouteFailureSentence, focusAfterSendOrStop, isContinuableConversation,
-  readConversationContinuationAnswer, readConversationContinuationNotice, readConversationExchangeAnswer, readOpenedInAppAnswer,
+  conversationReadFailureView, buttonLabelsKeepingTheirWidth, conversationControlNames, conversationRouteFailureSentence, focusAfterSendOrStop, folderPathForDisplay, isContinuableConversation,
+  sentenceAroundFolder, readConversationContinuationAnswer, readConversationContinuationNotice, readConversationExchangeAnswer, readOpenedInAppAnswer,
   resumeCommandCopyFailureWords, unreachableWorkerSentence, unreadableAnswerSentence, type ButtonLabelInPlace, type ContinuationWords,
 } from './conversation-continuation.ts'
 import { createLocalSource } from './local-source.ts'
@@ -384,6 +384,49 @@ describe('what a row offers beside Send', () => {
         for (const [label, name] of buttons) assert.ok(lower(catalog[name.english]).includes(lower(catalog[label])), `${locale}: ${catalog[name.english]}`)
       }
     }
+  })
+})
+
+describe('a folder as its row lays it out', () => {
+  it('the folder\'s own name stands apart from its parents, and the two parts joined are the path', () => {
+    assert.deepEqual(folderPathForDisplay(RECORDED_FOLDER), { parentWithSeparator: '/work/example/', folderName: 'worktree' })
+    for (const folder of [RECORDED_FOLDER, '/work/example/', '/', '', 'worktree', 'C:\\work\\example', 'C:\\work\\example\\', '/a//b', LONG_TEXT]) {
+      const { parentWithSeparator, folderName } = folderPathForDisplay(folder)
+      assert.equal(parentWithSeparator + folderName, folder, `nothing is taken out of ${folder.slice(0, 40)}`)
+    }
+  })
+
+  it('a path that ends in a separator keeps it on its name, a Windows path splits at its backslash, and a bare name is all name', () => {
+    assert.deepEqual(folderPathForDisplay('/work/example/'), { parentWithSeparator: '/work/', folderName: 'example/' })
+    assert.deepEqual(folderPathForDisplay('C:\\work\\example'), { parentWithSeparator: 'C:\\work\\', folderName: 'example' })
+    assert.deepEqual(folderPathForDisplay('/'), { parentWithSeparator: '', folderName: '/' })
+    assert.deepEqual(folderPathForDisplay('worktree'), { parentWithSeparator: '', folderName: 'worktree' })
+  })
+
+  it('a sentence that names a folder is split where the folder goes, in every language', () => {
+    const runsIn: ContinuationWords = { english: 'Runs in {folder}', values: { folder: RECORDED_FOLDER } }
+    assert.deepEqual(sentenceAroundFolder(runsIn.english, runsIn), { wordsBefore: 'Runs in ', folder: RECORDED_FOLDER, wordsAfter: '' })
+    const folderGone: ContinuationWords = { english: 'Its folder is gone, so this turn will run in {folder}.', values: { folder: NEAREST_FOLDER } }
+    assert.deepEqual(sentenceAroundFolder(folderGone.english, folderGone), { wordsBefore: 'Its folder is gone, so this turn will run in ', folder: NEAREST_FOLDER, wordsAfter: '.' })
+    for (const words of [runsIn, folderGone]) {
+      for (const catalog of [myworkZh, myworkKo, myworkTr, myworkFr]) {
+        const translated = (catalog as Record<string, string>)[words.english]
+        const sentence = sentenceAroundFolder(translated, words)
+        assert.ok(sentence, `${translated} has a place for the folder`)
+        // The three parts joined are the sentence the row showed before: the folder whole, and every word kept.
+        assert.equal(sentence.wordsBefore + sentence.folder + sentence.wordsAfter, interpolate(translated, words.values))
+      }
+    }
+  })
+
+  it('a folder with braces or a dollar in its name is shown as it is', () => {
+    const words: ContinuationWords = { english: 'Runs in {folder}', values: { folder: '/work/{folder}/$&' } }
+    assert.deepEqual(sentenceAroundFolder(words.english, words), { wordsBefore: 'Runs in ', folder: '/work/{folder}/$&', wordsAfter: '' })
+  })
+
+  it('a sentence with no place for a folder, or words that carry none, is shown as it is', () => {
+    assert.equal(sentenceAroundFolder('Runs here', { english: 'Runs here', values: { folder: RECORDED_FOLDER } }), null)
+    assert.equal(sentenceAroundFolder('Runs in {folder}', { english: 'Runs in {folder}', values: {} }), null)
   })
 })
 

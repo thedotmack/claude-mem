@@ -258,7 +258,7 @@ export function focusAfterSendOrStop(
 
 // ---- Beside Send: open the conversation in its tool's own app, or copy the command that resumes it
 
-/** What a row offers beside Send, and the line under those buttons. */
+/** What a row offers beside Send, as two quiet buttons under the message box, and the folder line above the box. */
 export interface ConversationAppActionsView {
   /**
    * "Open in {app}" and its button's name, when the worker says it can open the conversation in an app on this computer
@@ -273,8 +273,9 @@ export interface ConversationAppActionsView {
     copiedButtonName: ContinuationWords
   }
   /**
-   * Under the buttons while the recorded folder exists: where a turn sent from here runs, and so where to cd before the
-   * copied command. When the folder is gone, the notice above the box says where the turn runs instead.
+   * Above the box, as the conversation line's second line, while the recorded folder exists: where a turn sent from here
+   * runs, and so where to cd before the copied command. When the folder is gone, the notice in the same place says where
+   * the turn runs instead.
    */
   runsInFolderNotice: ContinuationWords | null
 }
@@ -312,6 +313,43 @@ export function conversationAppActions(
         'Copied the resume command for the {tool} conversation “{title}” (…{sessionIdEnd})', { tool, title }),
     },
     runsInFolderNotice: target.recordedFolderIsGone ? null : { english: 'Runs in {folder}', values: { folder: target.runsInFolder } },
+  }
+}
+
+/** A folder path as its row lays it out: everything up to and including the last separator, then the folder's own name. */
+export interface FolderPathForDisplay { parentWithSeparator: string; folderName: string }
+
+/**
+ * A folder path in two parts, so a row can keep the folder's own name on screen when the path is wider than its line:
+ * the name is the part that tells conversations apart (a worktree or project name), and the parent is the part that
+ * gives way. The two parts joined are the path, character for character, so nothing is taken out of it. A path that
+ * ends in a separator keeps it on its name ("/work/example/" is "/work/" and "example/"), and a path with no separator
+ * before its name, such as "/", is all name.
+ */
+export function folderPathForDisplay(folder: string): FolderPathForDisplay {
+  // The last separator before the path's last character: one that ends the path belongs to the name. lastIndexOf reads a
+  // negative start as 0, so a path of one character is looked at apart.
+  const nameStartsAt = folder.length < 2 ? 0 : Math.max(folder.lastIndexOf('/', folder.length - 2), folder.lastIndexOf('\\', folder.length - 2)) + 1
+  return { parentWithSeparator: folder.slice(0, nameStartsAt), folderName: folder.slice(nameStartsAt) }
+}
+
+/** A sentence that names a folder, as its row lays it out: the words before the folder, the folder, the words after it. */
+export interface SentenceAroundFolder { wordsBefore: string; folder: string; wordsAfter: string }
+
+/**
+ * A sentence with a {folder} in it, split where the folder goes, so the row can draw the folder as a path
+ * (folderPathForDisplay) inside the sentence in any language: the folder comes last in English and first in Korean.
+ * `sentenceInPageLanguage` is the catalog's sentence with its {folder} still in it. Null when the sentence has no
+ * {folder}, or its words carry no folder: the row then shows the sentence as it is.
+ */
+export function sentenceAroundFolder(sentenceInPageLanguage: string, words: ContinuationWords): SentenceAroundFolder | null {
+  const folder = words.values.folder
+  const folderGoesAt = sentenceInPageLanguage.indexOf('{folder}')
+  if (typeof folder !== 'string' || folderGoesAt === -1) return null
+  return {
+    wordsBefore: sentenceInPageLanguage.slice(0, folderGoesAt),
+    folder,
+    wordsAfter: sentenceInPageLanguage.slice(folderGoesAt + '{folder}'.length),
   }
 }
 
