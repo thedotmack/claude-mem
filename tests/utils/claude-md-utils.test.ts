@@ -958,4 +958,44 @@ describe('updateFolderClaudeMdFiles failure visibility and retry (#6182 follow-u
     expect(retryLogsFor(folderA).length).toBe(1);
     expect(readFileSync(join(folderA, 'CLAUDE.md'), 'utf-8')).toContain('Recent Activity');
   });
+
+  it('caps the remembered failures per project, dropping the oldest marks first', async () => {
+    const project = 'retry-cap-project';
+    const folderCount = 102;
+    const folders: string[] = [];
+    for (let i = 0; i < folderCount; i++) {
+      const folder = join(tempDir, `retry-cap-${i}`);
+      mkdirSync(folder, { recursive: true });
+      folders.push(folder);
+    }
+
+    // Every folder's update fails, so every folder gets marked.
+    global.fetch = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.reject(new Error('Unexpected token')),
+    } as Response));
+    await updateFolderClaudeMdFiles(
+      folders.map(folder => join(folder, 'f.ts')),
+      project,
+      37777
+    );
+    for (const folder of folders) {
+      expect(errorLogsFor(folder).length).toBe(1);
+    }
+
+    // The cap keeps the newest 100 marks: the two oldest folders were
+    // dropped, so touching them again runs the update without a retry log,
+    // while the newest folder is still remembered and logged as a retry.
+    global.fetch = mock(() => goodResponse());
+    loggerWarnCalls.length = 0;
+    await updateFolderClaudeMdFiles(
+      [join(folders[0], 'f.ts'), join(folders[folderCount - 1], 'f.ts')],
+      project,
+      37777
+    );
+    expect(retryLogsFor(folders[0]).length).toBe(0);
+    expect(retryLogsFor(folders[folderCount - 1]).length).toBe(1);
+    expect(existsSync(join(folders[0], 'CLAUDE.md'))).toBe(true);
+    expect(existsSync(join(folders[folderCount - 1], 'CLAUDE.md'))).toBe(true);
+  });
 });

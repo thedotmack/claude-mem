@@ -251,7 +251,11 @@ function isExcludedFolder(folderPath: string, excludePaths: string[]): boolean {
 // next observation that touches the folder runs the update again through the
 // normal path, and a successful write removes the entry. The set exists so a
 // failure is visible state, not only a log line, and so the retry is logged
-// as a retry.
+// as a retry. The set is capped per project: a folder that is never touched
+// again would otherwise stay marked for the worker's lifetime. Dropping the
+// oldest mark loses only its retry log line — a later observation for that
+// folder still runs the update through the normal path.
+const MAX_FAILED_FOLDER_CLAUDE_MD_UPDATES_PER_PROJECT = 100;
 const failedFolderClaudeMdUpdates = new Map<string, Set<string>>();
 
 function markFolderClaudeMdUpdateFailed(project: string, folderPath: string): void {
@@ -261,6 +265,11 @@ function markFolderClaudeMdUpdateFailed(project: string, folderPath: string): vo
     failedFolderClaudeMdUpdates.set(project, folders);
   }
   folders.add(folderPath);
+  while (folders.size > MAX_FAILED_FOLDER_CLAUDE_MD_UPDATES_PER_PROJECT) {
+    const oldest = folders.values().next().value;
+    if (oldest === undefined) break;
+    folders.delete(oldest);
+  }
 }
 
 function clearFolderClaudeMdUpdateFailure(project: string, folderPath: string): void {
