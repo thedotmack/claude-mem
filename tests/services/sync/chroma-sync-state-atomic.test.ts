@@ -70,23 +70,29 @@ describe('ChromaSyncState atomic persistence', () => {
     mkdirSync(join(statePath(dataDir), 'blocker'), { recursive: true });
 
     expect(() => ChromaSyncState.bump(project, 'observations', 5)).not.toThrow();
+    // Flush while the path is still blocked: the write fails and starts the
+    // backoff, and the change stays in memory for a later flush to retry.
+    ChromaSyncState.flush();
     expect(ChromaSyncState.get(project).observations).toBe(5);
     expect(readdirSync(dataDir).filter(name => name.endsWith('.tmp'))).toEqual([]);
 
     rmSync(statePath(dataDir), { recursive: true });
     ChromaSyncState.bump(project, 'summaries', 1);
+    // Still inside the backoff: a flush must not write yet.
+    ChromaSyncState.flush();
     expect(existsSync(statePath(dataDir))).toBe(false);
 
     setSystemTime(new Date(Date.now() + 10_000));
     try {
-      ChromaSyncState.bump(project, 'summaries', 2);
+      // After the backoff, an explicit flush writes the accumulated state.
+      ChromaSyncState.flush();
     } finally {
       setSystemTime();
     }
 
     const written = JSON.parse(readFileSync(statePath(dataDir), 'utf8'));
     expect(written[project].observations).toBe(5);
-    expect(written[project].summaries).toBe(2);
+    expect(written[project].summaries).toBe(1);
   });
 
   it('throws when the rebuild flags cannot be written', () => {
