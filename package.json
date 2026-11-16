@@ -207,7 +207,7 @@
     "tree-sitter-scss": "^1.0.0",
     "tree-sitter-swift": "^0.7.1",
     "tree-sitter-typescript": "^0.23.2",
-    "typescript": "^6.0.3",
+    "typescript": "^7.0.2",
     "unified": "^11.0.5",
     "unist-util-visit": "^5.1.0",
     "typebox": "1.1.24"
