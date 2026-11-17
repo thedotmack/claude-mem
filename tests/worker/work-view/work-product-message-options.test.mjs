@@ -6,6 +6,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gitProductsFromCommand } from '../../../src/services/work-view/work-product.mjs';
 
+// The fixture runs each command in real bash to create the commit. `&>>` needs bash 4+;
+// macOS ships bash 3.2, which rejects it as a syntax error before git runs.
+function bashParses(command) {
+  try {
+    execFileSync('bash', ['-n', '-c', command], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+const bashSupportsAppendBoth = process.platform !== 'win32' && bashParses('true &>>/dev/null');
+
 const cases = [
   ['long separate single quotes', "--message 'fix: preserve long message'", 'fix: preserve long message'],
   ['long equals single quotes', "--message='fix: preserve equals message'", 'fix: preserve equals message'],
@@ -27,7 +39,9 @@ const cases = [
 ];
 
 for (const [name, argument, subject, followup = ' && '] of cases) {
-  test(name + ' retains a quiet commit in My Work', { skip: process.platform === 'win32' }, () => {
+  const skip = process.platform === 'win32'
+    || (argument.includes('&>>') && !bashSupportsAppendBoth && 'local bash is older than 4 and cannot run &>>');
+  test(name + ' retains a quiet commit in My Work', { skip }, () => {
     const cwd = mkdtempSync(join(tmpdir(), 'cmem-message-options-'));
     const env = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' };
     const git = (...args) => execFileSync('git', args, { cwd, env, encoding: 'utf8' }).trim();
