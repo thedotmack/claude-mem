@@ -148,7 +148,8 @@ function drawnText(node: unknown): string {
 /**
  * The card's hooks under a stand-in for Claude Code: `next` at SessionStart
  * plays the command hooks, so `writeSlot` is what the context hook does with
- * the file the card named.
+ * the file the card named, and `hookRowsKept` is Claude Code keeping the last
+ * row of that start's hooks once the SessionStart hooks have returned.
  */
 function cardInSession(options: {
   entrypoint?: string;
@@ -158,14 +159,17 @@ function cardInSession(options: {
   placeResult?: () => unknown;
 } = {}) {
   const hooks = new Map<string, Hook>();
+  const matchers = new Map<string, unknown>();
   registerSessionStartCard(((event: string, ...rest: unknown[]) => {
     hooks.set(event, rest.at(-1) as Hook);
+    if (rest.length > 1) matchers.set(event, rest[0]);
     return { catch() {} };
   }) as unknown as On);
 
   const files = new Map<string, string>();
   const record = { placedRowIds: [] as string[], logs: [] as string[], invalidations: 0, eventsSentOn: [] as any[], hookEnvCalls: 0 };
   let clockMs = 1_000;
+  let keptRowCount = 0;
   const $ = {
     plugin: { name: 'claude-mem' },
     env: { get: async (name: string) => (name === 'CLAUDE_CODE_ENTRYPOINT' ? options.entrypoint ?? 'cli' : undefined) },
@@ -201,6 +205,7 @@ function cardInSession(options: {
   return {
     record,
     files,
+    matchers,
     /** A SessionStart of `source`; `writeSlot` is the banner the context hook writes, or null when it writes none. */
     async classicSessionStart(source: string, writeSlot: string | null, sessionId: unknown = 'session-1') {
       const event = { session_id: sessionId, source, hook_event_name: 'SessionStart' };
@@ -213,11 +218,21 @@ function cardInSession(options: {
       expect(result).toEqual({ additionalContext: ['context'] });
       return event;
     },
-    async sessionStart() {
-      return hooks.get('session.start')!($, { surface: 'terminal', isInteractive: true }, async () => ({ cwd: '/work' }));
+    /** Claude Code keeps the combined-context row of the latest start's hooks; the hook relays the kept row unchanged. */
+    async hookRowsKept() {
+      keptRowCount += 1;
+      const keptRow = { message: { type: 'attachment', name: 'hook_additional_context', content: [] }, uuid: `row-${keptRowCount}` };
+      const relayed = await hooks.get('session.append')!(
+        $,
+        { ...keptRow, door: 'hook-context', origin: { kind: 'hook', event: 'SessionStart' } },
+        async appended => ({ message: appended.message, uuid: appended.uuid }),
+      );
+      expect(relayed).toEqual(keptRow);
     },
-    async render(id: string, plugin = 'claude-mem') {
-      return hooks.get('ui.render')!($, { surface: 'terminal', props: { id, plugin } }, async () => 'not this card');
+    /** A drawing of a placed row; `isFullscreen` is what the surface's viewport says, left out where it says nothing. */
+    async render(id: string, plugin = 'claude-mem', where: { surface?: string; isFullscreen?: boolean } = {}) {
+      const viewport = where.isFullscreen === undefined ? undefined : { isFullscreen: where.isFullscreen };
+      return hooks.get('ui.render')!($, { surface: where.surface ?? 'terminal', viewport, props: { id, plugin } }, async () => 'not this card');
     },
     advanceClock(ms: number) { clockMs += ms; },
   };
@@ -233,6 +248,7 @@ describe('session-start card: the hooks', () => {
   });
 
   const slot = (text: string) => JSON.stringify({ text });
+  const reason = 'claude-mem: the session-start card is not shown: ';
 
   it('names a file for the banner only where the card can draw, and passes every other start on untouched', async () => {
     const here = cardInSession();
@@ -246,9 +262,11 @@ describe('session-start card: the hooks', () => {
       ['the Desktop app', cardInSession({ entrypoint: 'claude-desktop' }), 'startup'],
       ['a Claude Code older than the card needs', cardInSession({ version: { version: '2.1.325' } }), 'startup'],
       ['a session id that cannot name a file', cardInSession(), 'startup', '../../etc/passwd'],
+      ['a compaction before any drawing said the layout', cardInSession(), 'compact'],
     ];
     for (const [name, session, source, sessionId] of untouched) {
       const sent = await session.classicSessionStart(source, slot('banner'), sessionId ?? 'session-1');
+      await session.hookRowsKept();
       expect([name, session.record.eventsSentOn]).toEqual([name, [sent]]);
       expect(session.record.eventsSentOn[0]).toBe(sent);
       expect([name, session.record.placedRowIds, session.record.logs]).toEqual([name, [], []]);
@@ -256,7 +274,6 @@ describe('session-start card: the hooks', () => {
   });
 
   it('says why, in one line, when it cannot name a file, and passes the start on untouched so the hook sends the whole banner', async () => {
-    const reason = 'claude-mem: the session-start card is not shown: ';
     const failures: Array<[string, ReturnType<typeof cardInSession>, string]> = [
       ['the version call fails', cardInSession({ version: 'throws' }), `${reason}$.session.version is not a function`],
       ['the hook-environment call fails', cardInSession({ hookEnv: 'throws' }), `${reason}EACCES: could not make the plugin data folder`],
@@ -266,6 +283,9 @@ describe('session-start card: the hooks', () => {
       const sent = await session.classicSessionStart('startup', slot('banner'));
       expect([name, session.record.eventsSentOn]).toEqual([name, [sent]]);
       expect(session.record.eventsSentOn[0]).toBe(sent);
+      // The line waits for the start's hook rows, like the card: said any earlier, it keeps them off the main screen.
+      expect([name, session.record.logs]).toEqual([name, []]);
+      await session.hookRowsKept();
       expect([name, session.record.placedRowIds, session.record.logs]).toEqual([name, [], [line]]);
     }
   });
@@ -286,10 +306,19 @@ describe('session-start card: the hooks', () => {
     expect(firstBuildWithIt.record.hookEnvCalls).toBe(1);
   });
 
-  it('draws the banner the context hook wrote, in a frame, once the screen is up', async () => {
+  it('waits for the combined-context row of the SessionStart hooks, the last row Claude Code keeps for them', () => {
+    expect(cardInSession().matchers.get('session.append')).toEqual({
+      door: 'hook-context',
+      origin: { kind: 'hook', event: 'SessionStart' },
+      message: { name: 'hook_additional_context' },
+    });
+  });
+
+  it('places the card once Claude Code has kept the start\'s last hook row, and draws the banner in a frame', async () => {
     const session = cardInSession();
-    await session.sessionStart();
     await session.classicSessionStart('startup', slot(`${colors.dim}Access Claude-Mem Rules + Tools${colors.reset}\n\n  ${colors.cyan}#12${colors.reset}  newest row`));
+    expect(session.record.placedRowIds).toEqual([]);
+    await session.hookRowsKept();
     expect(session.record.placedRowIds).toEqual(['session-start-1000']);
     expect(session.record.logs).toEqual([]);
 
@@ -305,30 +334,37 @@ describe('session-start card: the hooks', () => {
     expect(cyanRun.props).toMatchObject({ color: 'cyan' });
   });
 
+  it('places a start\'s card once, and nothing for a start a later one overtook', async () => {
+    const session = cardInSession();
+    await session.classicSessionStart('startup', slot('banner'));
+    await session.hookRowsKept();
+    await session.hookRowsKept();
+    expect(session.record.placedRowIds).toEqual(['session-start-1000']);
+
+    // A start whose rows never came is not the next start's to show: a resume names no file.
+    const overtaken = cardInSession();
+    await overtaken.classicSessionStart('startup', slot('banner'));
+    await overtaken.classicSessionStart('resume', null);
+    await overtaken.hookRowsKept();
+    expect([overtaken.record.placedRowIds, overtaken.record.logs]).toEqual([[], []]);
+  });
+
   it('leaves every other placed row to whoever placed it', async () => {
     const session = cardInSession();
-    await session.sessionStart();
     expect(await session.render('session-start-1000')).toBe('not this card');
     await session.classicSessionStart('startup', slot('banner'));
+    await session.hookRowsKept();
     expect(await session.render('session-start-1000', 'another-plugin')).toBe('not this card');
     expect(await session.render('some-other-row')).toBe('not this card');
   });
 
-  it('waits for the screen when the SessionStart hooks finish before it is up', async () => {
-    const session = cardInSession();
-    await session.classicSessionStart('startup', slot('banner'));
-    expect(session.record.placedRowIds).toEqual([]);
-    await session.sessionStart();
-    expect(session.record.placedRowIds).toEqual(['session-start-1000']);
-    expect(drawnText(await session.render('session-start-1000'))).toBe('claude-membanner');
-  });
-
   it('draws a new card after /clear and stops drawing the old one', async () => {
     const session = cardInSession();
-    await session.sessionStart();
     await session.classicSessionStart('startup', slot('first banner'));
+    await session.hookRowsKept();
     session.advanceClock(5_000);
     await session.classicSessionStart('clear', slot('second banner'), 'session-2');
+    await session.hookRowsKept();
     expect(session.record.eventsSentOn[1][SESSION_START_CARD_FILE_KEY]).toBe('/data/claude-mem/session-start-card/session-2.6000.json');
     expect(session.record.placedRowIds).toEqual(['session-start-1000', 'session-start-6000']);
     expect(await session.render('session-start-1000')).toBe('not this card');
@@ -339,31 +375,72 @@ describe('session-start card: the hooks', () => {
 
   it('draws nothing and says nothing when the context hook wrote no file: it sent its own message', async () => {
     const session = cardInSession();
-    await session.sessionStart();
     await session.classicSessionStart('startup', null);
+    await session.hookRowsKept();
     expect(session.record.placedRowIds).toEqual([]);
     expect(session.record.logs).toEqual([]);
   });
 
-  it('says so, once, when the banner cannot be shown', async () => {
-    const notPlaced = cardInSession({ placeResult: () => ({ isPlaced: false, reason: 'no conversation to place a row in' }) });
-    await notPlaced.sessionStart();
-    await notPlaced.classicSessionStart('startup', slot('banner'));
-    expect(notPlaced.record.logs).toEqual(['claude-mem: the session-start card is not shown: no conversation to place a row in']);
+  it('says so, once, when the banner cannot be shown, and keeps drawing the card before it', async () => {
+    let placeAnswer: unknown = { isPlaced: true, requestId: 'r0' };
+    const session = cardInSession({ placeResult: () => placeAnswer });
+    await session.classicSessionStart('startup', slot('first banner'));
+    await session.hookRowsKept();
+    placeAnswer = { isPlaced: false, reason: 'no conversation to place a row in' };
+    session.advanceClock(5_000);
+    await session.classicSessionStart('clear', slot('second banner'), 'session-2');
+    await session.hookRowsKept();
+    expect(session.record.logs).toEqual([`${reason}no conversation to place a row in`]);
+    expect(drawnText(await session.render('session-start-1000'))).toBe('claude-memfirst banner');
 
     const unreadable = cardInSession();
-    await unreadable.sessionStart();
     await unreadable.classicSessionStart('startup', '{"text":');
+    expect(unreadable.record.logs).toEqual([]);
+    await unreadable.hookRowsKept();
     expect(unreadable.record.placedRowIds).toEqual([]);
-    expect(unreadable.record.logs).toEqual([
-      'claude-mem: the session-start card is not shown: /data/claude-mem/session-start-card/session-1.1000.json holds no banner',
-    ]);
+    expect(unreadable.record.logs).toEqual([`${reason}/data/claude-mem/session-start-card/session-1.1000.json holds no banner`]);
   });
 
   it('counts a row that stands with no screen drawing it yet as placed', async () => {
     const session = cardInSession({ placeResult: () => ({ isPlaced: false, requestId: 'r1', reason: 'no attached surface draws placed rows yet' }) });
-    await session.sessionStart();
     await session.classicSessionStart('startup', slot('banner'));
+    await session.hookRowsKept();
     expect(session.record.logs).toEqual([]);
+  });
+
+  it('gives a compaction a card, placed at once, only once a terminal drawing said fullscreen', async () => {
+    const mainScreen = cardInSession();
+    await mainScreen.render('any-row', 'another-plugin', { isFullscreen: false });
+    const sentOnMainScreen = await mainScreen.classicSessionStart('compact', slot('banner'));
+    expect(mainScreen.record.eventsSentOn[0]).toBe(sentOnMainScreen);
+
+    const otherSurface = cardInSession();
+    await otherSurface.render('any-row', 'another-plugin', { surface: 'desktop', isFullscreen: true });
+    const sentOnOtherSurface = await otherSurface.classicSessionStart('compact', slot('banner'));
+    expect(otherSurface.record.eventsSentOn[0]).toBe(sentOnOtherSurface);
+
+    // Any plugin's row drawn on the fullscreen terminal says so, the card's own included.
+    const fullscreen = cardInSession();
+    await fullscreen.render('any-row', 'another-plugin', { isFullscreen: true });
+    await fullscreen.classicSessionStart('compact', slot('compacted banner'));
+    expect(fullscreen.record.eventsSentOn[0][SESSION_START_CARD_FILE_KEY]).toBe('/data/claude-mem/session-start-card/session-1.1000.json');
+    // No row comes after a compaction's hook rows, so the card does not wait for one.
+    expect(fullscreen.record.placedRowIds).toEqual(['session-start-1000']);
+    expect(drawnText(await fullscreen.render('session-start-1000', 'claude-mem', { isFullscreen: true }))).toBe('claude-memcompacted banner');
+    await fullscreen.hookRowsKept();
+    expect([fullscreen.record.placedRowIds, fullscreen.record.logs]).toEqual([['session-start-1000'], []]);
+
+    // A later drawing on the main screen sends compactions back to the whole message.
+    await fullscreen.render('session-start-1000', 'claude-mem', { isFullscreen: false });
+    fullscreen.advanceClock(5_000);
+    await fullscreen.classicSessionStart('compact', slot('banner'));
+    expect(Object.keys(fullscreen.record.eventsSentOn[1]).includes(SESSION_START_CARD_FILE_KEY)).toBe(false);
+  });
+
+  it('says at once why a compaction on the fullscreen layout has no card', async () => {
+    const session = cardInSession({ placeResult: () => ({ isPlaced: false, reason: 'a plugin holds at most 500 placed rows' }) });
+    await session.render('any-row', 'another-plugin', { isFullscreen: true });
+    await session.classicSessionStart('compact', slot('banner'));
+    expect(session.record.logs).toEqual([`${reason}a plugin holds at most 500 placed rows`]);
   });
 });

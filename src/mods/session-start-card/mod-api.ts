@@ -53,6 +53,11 @@ export interface ClassicSessionStartEvent {
 /** `ui.render` for a row some plugin placed with `$.ui.place`. */
 export interface PlacedRenderEvent {
   surface: string;
+  /**
+   * What the surface draws into. On the terminal `isFullscreen` is always
+   * there: true on the fullscreen layout, false on the main screen.
+   */
+  viewport?: { isFullscreen?: boolean };
   props: { id: string; plugin: string };
   [key: string]: unknown;
 }
@@ -65,8 +70,20 @@ export interface Registration<E, R> {
   catch(handler: Hook<E, R>): void;
 }
 
+/**
+ * Selects, among the rows on their way into the conversation, the one row that
+ * holds the combined context of a session start's hooks: the last row Claude
+ * Code keeps for them.
+ */
+export interface SessionStartHooksContextRowMatcher {
+  door: 'hook-context';
+  origin: { kind: 'hook'; event: 'SessionStart' };
+  message: { name: 'hook_additional_context' };
+}
+
 export interface On {
   (event: 'classic.SessionStart', hook: Hook<ClassicSessionStartEvent, unknown>): Registration<ClassicSessionStartEvent, unknown>;
-  (event: 'session.start', matcher: { isInteractive: true }, hook: Hook<unknown, unknown>): Registration<unknown, unknown>;
+  /** `session.append`: one row on its way into the conversation. `next(e)` resolves once the row is kept; a hook relays what it resolves to. */
+  (event: 'session.append', matcher: SessionStartHooksContextRowMatcher, hook: Hook<unknown, unknown>): Registration<unknown, unknown>;
   (event: 'ui.render', matcher: { component: 'Placed' }, hook: Hook<PlacedRenderEvent, RenderNode>): Registration<PlacedRenderEvent, RenderNode>;
 }

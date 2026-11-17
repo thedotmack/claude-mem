@@ -47,6 +47,8 @@ let proFallbackAt = '';
 let openRouterBaseUrl = '';
 let staleReason: string | null = null;
 let workerContext = 'context from worker';
+/** What the worker gives the model, when it differs from the terminal render (the `colors=true` request); null when the same. */
+let workerModelContext: string | null = null;
 const outageNoticeRequests: Array<string | undefined> = [];
 let setupState: SetupStateFile = { ...realSetupState.INITIAL_SETUP_STATE };
 
@@ -87,7 +89,8 @@ mock.module('../../../src/shared/worker-utils.js', () => ({
       if (projectCatalog === 'reject') throw new Error('catalog unavailable');
       return { projects: projectCatalog };
     }
-    return workerContext;
+    const isTerminalRender = typeof args[0] === 'string' && args[0].includes('colors=true');
+    return workerModelContext !== null && !isTerminalRender ? workerModelContext : workerContext;
   },
   getWorkerPort: () => 37777,
   isWorkerFallback: () => workerUnreachable,
@@ -113,6 +116,7 @@ beforeEach(() => {
   openRouterBaseUrl = '';
   staleReason = null;
   workerContext = 'context from worker';
+  workerModelContext = null;
   setupState = { ...realSetupStateSnapshot.INITIAL_SETUP_STATE };
 });
 
@@ -680,6 +684,16 @@ describe('contextHandler SessionStart path', () => {
         expect(outage.systemMessage).toBe('claude-mem worker unreachable for 3 consecutive hooks');
         expect(existsSync(slotFileOf('card-worker-down'))).toBe(false);
       } finally { workerUnreachable = false; }
+    });
+
+    it('writes no file and sends the whole banner when the model gets no context: Claude Code then keeps no row the card waits for', async () => {
+      const whole = await start('card-off');
+      workerModelContext = '';
+      const slotFile = slotFileOf('card-no-model-context');
+      const result = await start('card-no-model-context', slotFile);
+      expect(result.hookSpecificOutput?.additionalContext).toBe('');
+      expect(result.systemMessage).toBe(whole.systemMessage!);
+      expect(existsSync(slotFile)).toBe(false);
     });
 
     it('leaves a session without the card exactly as it was', async () => {

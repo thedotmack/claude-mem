@@ -9,6 +9,7 @@ import { expect, mock, test } from 'claude-code/testing'
 const PLUGIN = 'hooks-module-engine-test'
 const SLOT_FILE_KEY = 'claude_mem_session_start_card_file'
 const BANNER = '\x1b[2mAccess Claude-Mem Rules + Tools\x1b[0m\n\n  \x1b[36m#12\x1b[0m  \x1b[1mnewest row\x1b[0m'
+const NOT_SHOWN = 'claude-mem: the session-start card is not shown: '
 
 function stubs(on: any, options: { entrypoint?: string; version?: string; hookEnv?: () => unknown; banner?: string | null; placed?: () => unknown } = {}) {
   const clock = mock.clock(on, { now: 1_000 })
@@ -37,6 +38,19 @@ function stubs(on: any, options: { entrypoint?: string; version?: string; hookEn
 const startup = { session_id: 'session-1', source: 'startup', hook_event_name: 'SessionStart', cwd: '/work', transcript_path: '/work/t.jsonl' }
 const terminalSession = { surface: 'terminal', isInteractive: true, cwd: '/work' }
 const cardRow = (id: string) => ({ plugin: PLUGIN, surface: 'terminal', component: 'Placed', props: { id, plugin: PLUGIN } }) as const
+const onLayout = (isFullscreen: boolean) => ({ viewport: { columns: 120, rows: 40, isFullscreen } })
+
+let keptRowCount = 0
+/** A row of a session start's hooks, as Claude Code keeps it after the SessionStart hooks returned. */
+function hookRowKept($: any, options: { name?: string; event?: string } = {}) {
+  keptRowCount += 1
+  return $.session.append({
+    message: { type: 'attachment', name: options.name ?? 'hook_additional_context', content: [{ type: 'text', text: 'the timeline' }] },
+    door: 'hook-context',
+    origin: { kind: 'hook', event: options.event ?? 'SessionStart' },
+    uuid: `hook-row-${keptRowCount}`,
+  })
+}
 
 test('a terminal session start names a file for the banner, and the card draws what the hook wrote there', async ($, on) => {
   const { record } = stubs(on)
@@ -46,6 +60,7 @@ test('a terminal session start names a file for the banner, and the card draws w
   expect(record.sentOn.length).toBe(1)
   expect(record.sentOn[0][SLOT_FILE_KEY]).toBe('/data/claude-mem/session-start-card/session-1.1000.json')
   expect(record.sentOn[0].source).toBe('startup')
+  await hookRowKept($)
   expect(record.placedRowIds).toEqual(['session-start-1000'])
   expect(record.notes).toEqual([])
 
@@ -57,25 +72,40 @@ test('a terminal session start names a file for the banner, and the card draws w
   await ui.unmount()
 })
 
-test('the SessionStart hooks finishing before the screen is up: the card is placed once it is', async ($, on) => {
+test('the card waits for the last row of the SessionStart hooks, and no other row places it', async ($, on) => {
   const { record } = stubs(on)
+  const session = mock.session(on)
   await $.classic.SessionStart(startup)
-  expect(record.sentOn[0][SLOT_FILE_KEY]).toBe('/data/claude-mem/session-start-card/session-1.1000.json')
   expect(record.placedRowIds).toEqual([])
 
-  await $.session.start(terminalSession)
+  // A hook's own message, and another event's combined context, are not the row the card waits for.
+  await hookRowKept($, { name: 'hook_system_message' })
+  await hookRowKept($, { event: 'UserPromptSubmit' })
+  expect(record.placedRowIds).toEqual([])
+
+  await hookRowKept($)
   expect(record.placedRowIds).toEqual(['session-start-1000'])
-  const ui = await $.ui.mount(cardRow('session-start-1000'))
-  expect((await ui.find({ type: 'Text', text: /^newest row$/ }))?.text).toBe('newest row')
-  await ui.unmount()
+  // A later row of the same kind places nothing more.
+  await hookRowKept($)
+  expect(record.placedRowIds).toEqual(['session-start-1000'])
+  expect(record.notes).toEqual([])
+  // Every row is kept as it came, once: the card relays what it waits on.
+  expect(session.appended().map(row => [row.door, row.message.name])).toEqual([
+    ['hook-context', 'hook_system_message'],
+    ['hook-context', 'hook_additional_context'],
+    ['hook-context', 'hook_additional_context'],
+    ['hook-context', 'hook_additional_context'],
+  ])
 })
 
 test('after /clear the new start gets its own file and its own card', async ($, on) => {
   const { clock, record } = stubs(on)
   await $.session.start(terminalSession)
   await $.classic.SessionStart(startup)
+  await hookRowKept($)
   await clock.advance(5_000)
   await $.classic.SessionStart({ ...startup, session_id: 'session-2', source: 'clear' })
+  await hookRowKept($)
 
   expect(record.sentOn[1][SLOT_FILE_KEY]).toBe('/data/claude-mem/session-start-card/session-2.6000.json')
   expect(record.placedRowIds).toEqual(['session-start-1000', 'session-start-6000'])
@@ -84,10 +114,35 @@ test('after /clear the new start gets its own file and its own card', async ($, 
   await ui.unmount()
 })
 
+test('a compaction passes through untouched until a drawing says the terminal is fullscreen, and then gets its card at once', async ($, on) => {
+  const { clock, record } = stubs(on)
+  await $.classic.SessionStart(startup)
+  await hookRowKept($)
+
+  const mainScreen = await $.ui.mount({ ...cardRow('session-start-1000'), ...onLayout(false) })
+  await mainScreen.unmount()
+  await clock.advance(5_000)
+  await $.classic.SessionStart({ ...startup, source: 'compact' })
+  expect(Object.keys(record.sentOn[1]).includes(SLOT_FILE_KEY)).toBe(false)
+
+  const fullscreen = await $.ui.mount({ ...cardRow('session-start-1000'), ...onLayout(true) })
+  await fullscreen.unmount()
+  await clock.advance(5_000)
+  await $.classic.SessionStart({ ...startup, source: 'compact' })
+  expect(record.sentOn[2][SLOT_FILE_KEY]).toBe('/data/claude-mem/session-start-card/session-1.11000.json')
+  // No row comes after a compaction's hook rows, so its card does not wait for one.
+  expect(record.placedRowIds).toEqual(['session-start-1000', 'session-start-11000'])
+  const ui = await $.ui.mount({ ...cardRow('session-start-11000'), ...onLayout(true) })
+  expect((await ui.find({ type: 'Text', text: /^newest row$/ }))?.text).toBe('newest row')
+  await ui.unmount()
+  expect(record.notes).toEqual([])
+})
+
 test('a -p run gets the event untouched and no card', async ($, on) => {
   const { record } = stubs(on, { entrypoint: 'sdk-cli' })
   await $.session.start({ surface: null, isInteractive: false, cwd: '/work' })
   await $.classic.SessionStart(startup)
+  await hookRowKept($)
   expect(Object.keys(record.sentOn[0]).includes(SLOT_FILE_KEY)).toBe(false)
   expect(record.placedRowIds).toEqual([])
   expect(record.notes).toEqual([])
@@ -97,6 +152,7 @@ test('a resumed terminal session gets the event untouched and no card', async ($
   const { record } = stubs(on)
   await $.session.start(terminalSession)
   await $.classic.SessionStart({ ...startup, source: 'resume' })
+  await hookRowKept($)
   expect(Object.keys(record.sentOn[0]).includes(SLOT_FILE_KEY)).toBe(false)
   expect(record.placedRowIds).toEqual([])
 })
@@ -105,19 +161,22 @@ test('a Claude Code older than the card needs gets the event untouched and no ca
   const { record } = stubs(on, { version: '2.1.325' })
   await $.session.start(terminalSession)
   await $.classic.SessionStart(startup)
+  await hookRowKept($)
   expect(Object.keys(record.sentOn[0]).includes(SLOT_FILE_KEY)).toBe(false)
   expect(record.placedRowIds).toEqual([])
 })
 
-test('a data folder Claude Code cannot make is reported in one line, and the event goes on untouched', async ($, on) => {
+test('a data folder Claude Code cannot make is reported in one line, after the hook rows, and the event goes on untouched', async ($, on) => {
   const { record } = stubs(on, { hookEnv: () => ({ deny: 'cannot make the data folder' }) })
   await $.session.start(terminalSession)
   await $.classic.SessionStart(startup)
   expect(record.sentOn.length).toBe(1)
   expect(Object.keys(record.sentOn[0]).includes(SLOT_FILE_KEY)).toBe(false)
+  expect(record.notes).toEqual([])
+  await hookRowKept($)
   expect(record.placedRowIds).toEqual([])
   expect(record.notes.length).toBe(1)
-  expect(record.notes[0].startsWith('claude-mem: the session-start card is not shown: ')).toBe(true)
+  expect(record.notes[0].startsWith(NOT_SHOWN)).toBe(true)
   expect(record.notes[0].includes('cannot make the data folder')).toBe(true)
 })
 
@@ -125,6 +184,7 @@ test('no file from the context hook (it sent its own message): nothing is placed
   const { record } = stubs(on, { banner: null })
   await $.session.start(terminalSession)
   await $.classic.SessionStart(startup)
+  await hookRowKept($)
   expect(typeof record.sentOn[0][SLOT_FILE_KEY]).toBe('string')
   expect(record.placedRowIds).toEqual([])
   expect(record.notes).toEqual([])
@@ -134,5 +194,6 @@ test('a card that cannot be placed is reported to the person in one line', async
   const { record } = stubs(on, { placed: () => ({ isPlaced: false, reason: 'no conversation to place a row in' }) })
   await $.session.start(terminalSession)
   await $.classic.SessionStart(startup)
-  expect(record.notes).toEqual(['claude-mem: the session-start card is not shown: no conversation to place a row in'])
+  await hookRowKept($)
+  expect(record.notes).toEqual([`${NOT_SHOWN}no conversation to place a row in`])
 })

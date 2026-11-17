@@ -43,6 +43,28 @@ export function isSessionStartCardSource(source: unknown): boolean {
   return (SESSION_START_CARD_SOURCES as readonly unknown[]).includes(source);
 }
 
+/** The SessionStart source of a compaction. */
+export const COMPACT_SOURCE: (typeof SESSION_START_CARD_SOURCES)[number] = 'compact';
+
+/** `e.surface` of a drawing on the terminal. */
+export const TERMINAL_SURFACE = 'terminal';
+
+/**
+ * Whether a session start of `source` gets a card, given the terminal layout
+ * the session's drawings have shown so far (null before the first).
+ *
+ * A compaction's hook rows come in with the compacted conversation, and no
+ * row comes after them that the card could wait for, so its card is placed
+ * while the compaction runs. The fullscreen layout keeps that row; the main
+ * screen ends it when the compaction lands (both seen on Claude Code 2.1.326).
+ * So a compaction gets a card only once a drawing has said the session is
+ * fullscreen; otherwise the hook sends its whole message, as without the card.
+ */
+export function drawsSessionStartCard(source: unknown, isFullscreen: boolean | null): boolean {
+  if (!isSessionStartCardSource(source)) return false;
+  return source !== COMPACT_SOURCE || isFullscreen === true;
+}
+
 /** A stretch of one line drawn in one style. */
 export interface StyledRun {
   text: string;

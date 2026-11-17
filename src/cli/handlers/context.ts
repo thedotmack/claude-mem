@@ -640,7 +640,11 @@ export const contextHandler: EventHandler = {
     const notice = userNotice(workerOutageNotice);
     // Claude Code's session-start card named a file: once the banner is in it
     // the card draws it, and the hook message is the closing line alone.
-    const cardDrawsBanner = showsBanner && input.sessionStartCardFile !== undefined
+    // The card is placed when Claude Code keeps the row that holds the hooks'
+    // context (src/mods/session-start-card/register.ts), and Claude Code makes
+    // that row only for context that is not empty: without any, the file stays
+    // unwritten and the whole banner goes in the hook message.
+    const cardDrawsBanner = showsBanner && additionalContext !== '' && input.sessionStartCardFile !== undefined
       && writeSessionStartCardSlot(input.sessionStartCardFile, input.sessionId, sessionStartCardText(displayContent, bannerHeader));
     const systemMessage = cardDrawsBanner
       ? composeSessionStartCardSystemMessage(displayContent, viewerUrl, notice)

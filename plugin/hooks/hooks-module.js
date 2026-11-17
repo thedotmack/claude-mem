@@ -417,6 +417,12 @@ function supportsSessionStartCard(version) {
 function isSessionStartCardSource(source) {
   return SESSION_START_CARD_SOURCES.includes(source);
 }
+var COMPACT_SOURCE = "compact";
+var TERMINAL_SURFACE = "terminal";
+function drawsSessionStartCard(source, isFullscreen) {
+  if (!isSessionStartCardSource(source)) return false;
+  return source !== COMPACT_SOURCE || isFullscreen === true;
+}
 var SGR_COLOR_NAMES = {
   "31": "red",
   "32": "green",
@@ -482,10 +488,12 @@ function cardNotShownLine(error) {
 }
 function registerSessionStartCard(on) {
   let card = null;
-  let isSessionStarted = false;
-  let placeCardOnceSessionStarts = null;
+  let isFullscreen = null;
+  let waitingForHookRows = null;
   on("classic.SessionStart", async ($, e, next) => {
-    if (!isSessionStartCardSource(e.source) || !isFileNameSafeSessionId(e.session_id)) return next(e);
+    waitingForHookRows = null;
+    if (!drawsSessionStartCard(e.source, isFullscreen) || !isFileNameSafeSessionId(e.session_id)) return next(e);
+    let addition = null;
     let slotPath = null;
     let startedAtEpochMs = 0;
     try {
@@ -499,42 +507,72 @@ function registerSessionStartCard(on) {
         }
       }
     } catch (error) {
-      $.ui.log(cardNotShownLine(error));
+      addition = { notShownLine: cardNotShownLine(error) };
     }
-    if (slotPath === null) return next(e);
-    const slotFile = slotPath;
-    const result = await next({ ...e, [SESSION_START_CARD_FILE_KEY]: slotFile });
-    try {
-      if (!await $.fs.exists(slotFile)) return result;
-      const lines = sessionStartCardLines(await $.fs.read(slotFile));
-      if (!lines) throw new Error(`${slotFile} holds no banner`);
-      const rowId = `session-start-${startedAtEpochMs}`;
-      card = { rowId, lines };
-      const placeCard = async () => {
-        try {
-          const placed = await $.ui.place({ id: rowId });
-          if (!placed.isPlaced && placed.requestId === void 0) throw new Error(placed.reason);
-          $.ui.invalidate("ui.render");
-        } catch (error) {
-          $.ui.log(cardNotShownLine(error));
+    let result;
+    if (slotPath === null) {
+      result = await next(e);
+    } else {
+      const slotFile = slotPath;
+      result = await next({ ...e, [SESSION_START_CARD_FILE_KEY]: slotFile });
+      try {
+        if (await $.fs.exists(slotFile)) {
+          const lines = sessionStartCardLines(await $.fs.read(slotFile));
+          if (!lines) throw new Error(`${slotFile} holds no banner`);
+          addition = { card: { rowId: `session-start-${startedAtEpochMs}`, lines } };
         }
-      };
-      if (isSessionStarted) await placeCard();
-      else placeCardOnceSessionStarts = placeCard;
+      } catch (error) {
+        addition = { notShownLine: cardNotShownLine(error) };
+      }
+    }
+    if (addition === null) return result;
+    if (e.source !== COMPACT_SOURCE) {
+      waitingForHookRows = addition;
+      return result;
+    }
+    if ("notShownLine" in addition) {
+      $.ui.log(addition.notShownLine);
+      return result;
+    }
+    const cardBeforeThisCompaction = card;
+    card = addition.card;
+    try {
+      const placed = await $.ui.place({ id: addition.card.rowId });
+      if (!placed.isPlaced && placed.requestId === void 0) throw new Error(placed.reason);
+      $.ui.invalidate("ui.render");
     } catch (error) {
+      card = cardBeforeThisCompaction;
       $.ui.log(cardNotShownLine(error));
     }
     return result;
   }).catch(async ($, e, next) => next(e));
-  on("session.start", { isInteractive: true }, async ($, e, next) => {
-    const result = await next(e);
-    isSessionStarted = true;
-    const placeCard = placeCardOnceSessionStarts;
-    placeCardOnceSessionStarts = null;
-    if (placeCard) await placeCard();
-    return result;
-  });
+  on(
+    "session.append",
+    { door: "hook-context", origin: { kind: "hook", event: "SessionStart" }, message: { name: "hook_additional_context" } },
+    async ($, e, next) => {
+      const keptRow = await next(e);
+      const addition = waitingForHookRows;
+      waitingForHookRows = null;
+      if (addition === null) return keptRow;
+      if ("notShownLine" in addition) {
+        $.ui.log(addition.notShownLine);
+        return keptRow;
+      }
+      const cardBeforeThisStart = card;
+      card = addition.card;
+      try {
+        const placed = await $.ui.place({ id: addition.card.rowId });
+        if (!placed.isPlaced && placed.requestId === void 0) throw new Error(placed.reason);
+        $.ui.invalidate("ui.render");
+      } catch (error) {
+        card = cardBeforeThisStart;
+        $.ui.log(cardNotShownLine(error));
+      }
+      return keptRow;
+    }
+  );
   on("ui.render", { component: "Placed" }, async ($, e, next) => {
+    if (e.surface === TERMINAL_SURFACE && typeof e.viewport?.isFullscreen === "boolean") isFullscreen = e.viewport.isFullscreen;
     if (!card || e.props.plugin !== $.plugin.name || e.props.id !== card.rowId) return next(e);
     const { Box, Text } = $.ui.resolve(e);
     return h(
