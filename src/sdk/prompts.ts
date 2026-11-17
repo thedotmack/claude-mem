@@ -505,6 +505,7 @@ ${getPrompt(mode, 'summary_format_instruction')}
 </summary>
 
 REMINDER: Your response MUST use <summary> as the root tag, NOT <observation>.
+Include known progress in at least one of <investigated>, <learned>, <completed>, or <notes>. Neither <request> nor <next_steps>, alone or together, counts as progress. Do not invent progress to fill fields; notes-only summaries are accepted.
 If there is genuinely nothing to summarize, reply with exactly <skip_summary reason="nothing durable" /> instead of an empty response or prose.
 ${getPrompt(mode, 'summary_footer')}`;
 }

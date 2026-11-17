@@ -8,7 +8,7 @@ import { join } from 'path';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import { HookSpoolRoutes } from '../../src/services/worker/http/routes/HookSpoolRoutes.js';
 import { createMiddleware } from '../../src/services/worker/http/middleware.js';
-import { setIngestContext } from '../../src/services/worker/http/shared.js';
+import { setIngestContext, requireIngestContext } from '../../src/services/worker/http/shared.js';
 import { LIVE_OBSERVER_MAX_AGE_MS } from '../../src/shared/observer-work-policy.js';
 import { hookSpoolConsumedMarkers } from '../../src/services/worker/hook-spool-drain.js';
 import { DELIVERABLE_ERRORS_PER_EVENT, HookSpool, HOOK_SPOOL_RETRY_WINDOW_MS, remoteHookSpoolReceipt, remoteHookSpoolReceivedKey, type HookSpoolEntry } from '../../src/shared/hook-spool.js';
@@ -90,6 +90,23 @@ describe('remote hook spool receipts', () => {
     expect((await send({ ...entry, enqueuedAtEpochMs: Date.now() - LIVE_OBSERVER_MAX_AGE_MS })).status).toBe(202);
     expect(queueObservation).not.toHaveBeenCalled();
     expect(startGenerator).not.toHaveBeenCalled();
+    expect(spool.entries()).toEqual([]);
+  });
+
+  it('deduplicates a summary delivery across concurrent retries and a database reopen', async () => {
+    const sid = store.createSDKSession('remote-summary', 'fixture-project', 'request');
+    store.saveUserPrompt('remote-summary', 1, 'request', sid);
+    const summary: HookSpoolEntry = { kind: 'summarize', enqueuedAtEpochMs: Date.now(),
+      payload: { contentSessionId: 'remote-summary', platformSource: 'claude', lastAssistantMessage: 'done' } };
+    const queue = requireIngestContext().sessionManager.queueSummarize;
+    expect((await Promise.all([send(summary), send(summary), send(summary)])).map(r => r.status)).toEqual([202, 202, 202]);
+    expect(queue).toHaveBeenCalledTimes(1);
+    expect(startGenerator).toHaveBeenCalledTimes(1);
+    store.close();
+    store = new SessionStore(join(directory, 'worker.db'));
+    expect((await send(summary)).status).toBe(202);
+    expect(queue).toHaveBeenCalledTimes(1);
+    expect(startGenerator).toHaveBeenCalledTimes(1);
     expect(spool.entries()).toEqual([]);
   });
 
