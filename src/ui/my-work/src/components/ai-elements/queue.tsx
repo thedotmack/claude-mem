@@ -47,6 +47,10 @@ export type QueueItemIndicatorProps = ComponentProps<"span"> & {
   completed?: boolean;
 };
 
+/**
+ * The round mark keeps its size beside long text (c-ai-queue F: `size-2.5` with no `shrink-0` was squeezed to 5×11px
+ * in 3 of 5 record rows).
+ */
 export const QueueItemIndicator = ({
   completed = false,
   className,
@@ -54,7 +58,7 @@ export const QueueItemIndicator = ({
 }: QueueItemIndicatorProps) => (
   <span
     className={cn(
-      "mt-0.5 inline-block size-2.5 rounded-full border",
+      "mt-0.5 inline-block size-2.5 shrink-0 rounded-full border",
       completed
         ? "border-muted-foreground/20 bg-muted-foreground/10"
         : "border-muted-foreground/50",
@@ -68,6 +72,7 @@ export type QueueItemContentProps = ComponentProps<"span"> & {
   completed?: boolean;
 };
 
+/** The text wraps, whole: the one-line clamp cut records off with no way to read the rest (c-ai-queue F, D b15 F308). */
 export const QueueItemContent = ({
   completed = false,
   className,
@@ -75,7 +80,7 @@ export const QueueItemContent = ({
 }: QueueItemContentProps) => (
   <span
     className={cn(
-      "line-clamp-1 grow break-words",
+      "min-w-0 grow break-words",
       completed
         ? "text-muted-foreground/50 line-through"
         : "text-muted-foreground",
@@ -181,13 +186,19 @@ export const QueueItemFile = ({
 
 export type QueueListProps = ComponentProps<typeof ScrollArea>;
 
+/**
+ * The list scrolls inside the ScrollArea primitive once it is taller than its cap (D b15): boxed, with a visible thumb,
+ * a Tab stop and the caller's `overflowCaption` under it; a list that fits stays plain. The cap is a max-h-* class on
+ * the area itself (the viewport inherits it): 10rem by default, the vendor's height, which a caller replaces through
+ * `className` (`max-h-none` for no cap).
+ */
 export const QueueList = ({
   children,
   className,
   ...props
 }: QueueListProps) => (
-  <ScrollArea className={cn("mt-2 -mb-1", className)} {...props}>
-    <div className="max-h-40 pr-4">
+  <ScrollArea className={cn("mt-2 -mb-1 max-h-40", className)} {...props}>
+    <div className="pr-4">
       <ul>{children}</ul>
     </div>
   </ScrollArea>

@@ -34,12 +34,23 @@ function detailRevision(request: WorkRequest, raw: RawRequest | undefined): stri
     raw?.humanCopy, raw?.progress, raw?.activity, raw?.workstreams, raw?.workProduct])).digest('hex').slice(0, DETAIL_REVISION_HEX_LENGTH);
 }
 
+/**
+ * The suggestion as a card carries it: everything the card and its actions use, without the judge's score. Only the
+ * drawer words the score (as a percent), and it reads it from the request detail; the 140-request overview budget
+ * protects the live transport, and one number per suggestion took it over (2 bytes, Phase 5 quality review).
+ */
+function cardSuggestion(suggestion: WorkRequest['suggestion']): WorkRequest['suggestion'] {
+  if (!suggestion) return undefined;
+  const { confidence: _confidence, ...onTheCard } = suggestion;
+  return onTheCard;
+}
+
 /** Keep the exact fields the cards display; detail-only arrays never ride a routine event. */
 function compactRequest(request: WorkRequest, raw: RawRequest | undefined): WorkViewOverviewRequest {
   const products = request.workProduct.filter(isCardDeliverable);
   const { workstreams: _workstreams, granular: _granular, conversations: _conversations,
     prompts: _prompts, story: _story, evidence: _evidence, storyNarrative: _storyNarrative,
-    terminal: _terminal, followUps: _followUps, review: _review, canMoveFocus, askedBy, ...card } = request;
+    terminal: _terminal, followUps: _followUps, review: _review, suggestion, canMoveFocus, askedBy, ...card } = request;
   const terminal = request.title ? [] : request.terminal.slice(-4);
   const { history, ...progress } = request.progress;
   // Optional flags default to false. Keep action versions, availability and
@@ -57,6 +68,7 @@ function compactRequest(request: WorkRequest, raw: RawRequest | undefined): Work
     // wire; readers restore the empty array for the complete UI model.
     progress: history?.length ? request.progress : progress,
     ...(review ? { review } : {}),
+    ...(suggestion ? { suggestion: cardSuggestion(suggestion) } : {}),
     detailLoaded: false,
     detailRevision: detailRevision(request, raw),
     detailCounts: { workProduct: products.length },

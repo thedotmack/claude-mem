@@ -15,7 +15,13 @@ export interface MinedGoalItem {
   quotes: Quote[]
 }
 
-const SORTING_LABEL = 'Sorting…'
+/**
+ * The words for a request that has no live area yet (no placement, or one in an area that is gone, dismissed or caught
+ * in a merge loop), until the next refresh places it: the area chip (components/bits.tsx FocusAreaChip) and every
+ * message that names where a request is (components/focus-change-message.ts) take them from here, in the reader's
+ * language. It read "Sorting…" here while the chip said "Not sorted yet" for the same case (Phase 5 review L7).
+ */
+export const NOT_SORTED_YET_LABEL = 'Not sorted yet'
 const OTHER_LABEL = 'Other'
 
 /** The owner's order first; areas they have not ordered follow by suggested priority, then by name. */
@@ -34,7 +40,7 @@ export const isPlaceableFocusArea = (area: FocusArea) => (area.status === 'kept'
 
 /**
  * The live area an id lands in, following merges (my-focus.mjs buildFocusAreas `resolve`). 'other' stays Other.
- * Null when the id is unknown, dismissed, or caught in a merge loop: the request then reads "Sorting…" until the
+ * Null when the id is unknown, dismissed, or caught in a merge loop: the request then reads "Not sorted yet" until the
  * next refresh places it, never a guessed area.
  */
 export function createFocusAreaResolver(areas: readonly FocusArea[]): (focusAreaId: string | null | undefined) => string | null {
@@ -77,11 +83,11 @@ export type SuggestionDecision = (typeof SUGGESTION_DECISIONS)[number]
  * with Undo back to the old name or goal. */
 export const suggestionEditDecision = (change: FocusChange): Extract<SuggestionDecision, 'merged'> | null => change.action === 'merge' ? 'merged' : null
 
-/** What an area chip reads: the area's name, "Other", or "Sorting…" when the request has no placement yet. */
+/** What an area chip reads: the area's name, "Other", or "Not sorted yet" when the request has no placement yet. */
 export function focusAreaLabel(focusAreaId: string | undefined, areas: readonly FocusArea[]): string {
   const placed = resolveFocusAreaId(focusAreaId, areas)
   if (placed === OTHER_FOCUS_AREA_ID) return OTHER_LABEL
-  return areas.find((area) => area.id === placed)?.name ?? SORTING_LABEL
+  return areas.find((area) => area.id === placed)?.name ?? NOT_SORTED_YET_LABEL
 }
 
 const toAsk = (item: MinedGoalItem): FocusAsk => ({ id: item.id, title: item.title, timesAsked: item.timesAsked, latestAt: item.latestAt, quotes: item.quotes })

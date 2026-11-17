@@ -1,8 +1,8 @@
 import { clockTime, displayTime } from '@/lib/display-time'
 import { sentenceWith } from '@/lib/sentence-with'
-import { useState, type KeyboardEvent, type ReactNode } from 'react'
+import { useState, type HTMLAttributes, type KeyboardEvent, type ReactNode, type Ref } from 'react'
 import { motion, useReducedMotion } from 'motion/react'
-import { BotIcon, CheckIcon, ClockIcon, CloudAlertIcon, CloudIcon, CornerLeftUpIcon, ExternalLinkIcon, HistoryIcon, LaptopIcon, MessageSquareIcon, RefreshCwIcon, Share2Icon, StarIcon, UserIcon } from 'lucide-react'
+import { BotIcon, CheckIcon, CircleDashedIcon, ClockIcon, CloudAlertIcon, CloudIcon, ExternalLinkIcon, FocusIcon, HistoryIcon, LaptopIcon, MessageSquareIcon, RefreshCwIcon, Share2Icon, StarIcon, UserIcon } from 'lucide-react'
 import { interpolate, useI18n } from '@/lib/i18n'
 import { Alert, AlertAction, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
@@ -22,7 +22,7 @@ import type { AutoRefresh } from '@/live/work-data-source'
 import { pageStartsRefresh, refreshRecordKey, shownRefreshLine, type RefreshLineState, type RefreshPressAnswer } from '@/live/refresh-line'
 import { ESTIMATE_PREFIX } from '@/live/measured-estimate'
 import { isRefreshStartRefusal, isWaitingForAgentReason } from '../../../../shared/work-view-refresh-reasons.ts'
-import { focusAreaLabel, resolveFocusAreaId } from '@/live/to-focus-model'
+import { NOT_SORTED_YET_LABEL, focusAreaLabel, resolveFocusAreaId } from '@/live/to-focus-model'
 import { presentSharedState } from '@/live/shared-state-presentation'
 import { isServedFromCloud } from '@/live/served-from'
 import { LIVE_CHIP_PROBLEM_SOURCE, liveChipProblem, type LiveChipProblem } from '@/live/live-chip'
@@ -226,8 +226,17 @@ export function StateBadge({ state, children }: { state: LiveState; children?: R
 }
 
 /**
- * The focus area a request sits in: the area's name, "Other", or "Sorting…" before the next refresh places it.
- * A quiet link, not a colored pill: color is reserved for state. Opens My Work on that area.
+ * The focus area a request sits in: the area's name or "Other", as a quiet link that opens My Work on that area
+ * (c-bits-focus-area-chip). It reads as a link at rest and on touch, underlined, not only on hover, with the hand
+ * cursor and a clearer hover. Its mark is the focus frame, the app's word for an area (the corner arrow meant nothing a
+ * person would guess). Not placed yet is not the same claim as Other: "Not sorted yet" in upright words with a dashed
+ * ring and no link look, until the next refresh places it (it read "Sorting…", italic at 80%, like a broken label).
+ * Color is reserved for state, so neither is coloured. 44px on touch through the Button's own rule: its 24px desktop
+ * minimum applies only where that rule does not (a plain min-h utility comes after touch-target-size in the stylesheet
+ * and beat its 44px, V3). The unplaced words are the focus model's one definition (NOT_SORTED_YET_LABEL). They wrap in a
+ * narrow row instead of being cut (plan rule 5: a cut must say what it hides, and these three words hide nothing), and
+ * they keep the placed link's heights through the same touch rule, so the header does not change height when the next
+ * refresh places the request.
  */
 export function FocusAreaChip({ focusAreaId, onOpen }: { focusAreaId?: string; onOpen?: (focusAreaId: string) => void }) {
   const { t } = useI18n()
@@ -237,13 +246,16 @@ export function FocusAreaChip({ focusAreaId, onOpen }: { focusAreaId?: string; o
   return (
     <Req ids={['R16.5']}>
       {placed ? (
-        <button type="button" onClick={(event) => { event.stopPropagation(); onOpen?.(placed) }} className="inline-flex min-h-11 max-w-full items-center gap-1.5 self-start text-left text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline md:min-h-6">
-          <CornerLeftUpIcon className="size-3.5 shrink-0" />
+        <Button variant="bare" data-focus-area="placed" onClick={(event) => { event.stopPropagation(); onOpen?.(placed) }}
+          className="max-w-full gap-1.5 self-start text-xs text-muted-foreground underline decoration-control-edge underline-offset-4 md:not-pointer-coarse:min-h-6 hover-enabled:text-foreground hover-enabled:decoration-current">
+          <FocusIcon aria-hidden="true" className="size-3.5 shrink-0" />
           <span className="truncate">{placed === OTHER_FOCUS_AREA_ID ? t('Other') : label}</span>
-        </button>
+        </Button>
       ) : (
-        // Not placed yet is not the same claim as Other: the next refresh places it.
-        <span className="inline-flex min-h-6 items-center gap-1.5 self-start text-xs text-muted-foreground/80 italic">{t(label)}</span>
+        <span data-focus-area="not-sorted" className="inline-flex min-w-0 items-center gap-1.5 self-start text-xs text-muted-foreground touch-target-size md:not-pointer-coarse:min-h-6">
+          <CircleDashedIcon aria-hidden="true" className="size-3.5 shrink-0" />
+          <span className="min-w-0 break-words">{t(NOT_SORTED_YET_LABEL)}</span>
+        </span>
       )}
     </Req>
   )
@@ -392,16 +404,27 @@ export function ProgressMeter({ request, compact = false }: { request: Request; 
   )
 }
 
-/** A work-product link. Fixture links have nothing behind them, so they say so instead of looking real (§12). */
-/** No href: a recorded item with nothing to open (a commit whose remote is not GitHub). */
-export function ProductLink({ href, children, className }: { href?: string; children: ReactNode; className?: string }) {
+/**
+ * A work-product link (c-bits-product-link). A real link opens a new tab and says so to a screen reader (F: nothing
+ * showed that). Fixture links have nothing behind them, so they say so instead of looking real (§12). No href: a
+ * recorded item with nothing to open (a commit whose remote is not GitHub), drawn as plain text; the drawer's list
+ * offers Copy beside it (deliverable-list.tsx). Other props, such as a tooltip trigger's handlers and its ref, reach
+ * the element drawn, so a caller can give a chip its full name on focus.
+ */
+export function ProductLink({ href, children, className, ref, ...props }: { href?: string; children: ReactNode; className?: string; ref?: Ref<HTMLElement> } & Omit<HTMLAttributes<HTMLElement>, 'children' | 'className'>) {
   const { t } = useI18n()
-  if (href === undefined) return <span className={className}>{children}</span>
-  if (!isSampleHref(href)) return <a href={href} target="_blank" rel="noreferrer" className={className}>{children}</a>
+  if (href === undefined) return <span ref={ref} className={className} {...props}>{children}</span>
+  if (!isSampleHref(href)) {
+    return (
+      <a ref={ref as Ref<HTMLAnchorElement>} href={href} target="_blank" rel="noreferrer" className={className} {...props}>
+        {children}<span className="sr-only"> {t('(opens in a new tab)')}</span>
+      </a>
+    )
+  }
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span tabIndex={0} className={cn('cursor-help', className)}>
+        <span ref={ref} tabIndex={0} className={cn('cursor-help', className)} {...props}>
           {children}
           <span className="ml-2 shrink-0 rounded border border-dashed px-1.5 text-[10px] text-muted-foreground">{t('sample')}</span>
         </span>
@@ -770,16 +793,17 @@ function RefreshTime({ display, iso }: { display: string; iso?: string }) {
 /**
  * A failure in plain words, then its raw cause folded under Details in monospace (G17), so no internal id, database
  * message or browser error is the visible text. Nothing to fold when there is no cause. The Details row is the shared
- * fold row as it is (G5): 44px on touch by its own rule, so no size is set here.
+ * fold row as it is (G5): 44px on touch by its own rule, so no size is set here. The cause keeps its own line breaks,
+ * as a CLI printed them (a turn that did not finish).
  */
-function FailureDetails({ cause }: { cause: string | null }) {
+export function FailureDetails({ cause }: { cause: string | null | undefined }) {
   const { t } = useI18n()
   if (!cause) return null
   return (
     <Collapsible>
       <CollapsibleFoldTrigger className="mt-1.5 w-auto text-xs">{t('Details')}</CollapsibleFoldTrigger>
       <CollapsibleContent>
-        <p className="mt-2 rounded-md bg-card px-3 py-2 font-mono text-xs break-words text-foreground/80">{cause}</p>
+        <p className="mt-2 rounded-md bg-card px-3 py-2 font-mono text-xs whitespace-pre-wrap break-words text-foreground/80">{cause}</p>
       </CollapsibleContent>
     </Collapsible>
   )

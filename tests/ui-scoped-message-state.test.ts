@@ -176,6 +176,27 @@ test('a stale log failure cannot overwrite a newer response after switching lang
   } finally { globalThis.fetch = originalFetch; }
 });
 
+test('setup Copy URL words a copy as a copy (Copying…, Copied, Not copied), never as a save, in the reader’s language', async () => {
+  const ui = await fixture('../src/ui/my-work/src/setup/screens/finish-setup-screen.tsx', 'FinishSetupScreen');
+  const props = { branch: 'go', tools: [{ id: 'tool', name: 'Other', mark: 'terminal', kind: 'mcp', guide: { href: '#', label: 'Guide' } }], selected: ['tool'], history: null, importStatus: 'none', importResult: null };
+  const connection = find(ui.render(props), e => e.type?.name === 'Connection');
+  const copyUrl = find(ui.render(connection.props, connection.type), e => e.type?.name === 'CopyUrl');
+  // The SaveButton's words for its three states other than rest: the screen gives its own, so its defaults
+  // ("Saving…", "Saved", "Not saved") never show or speak there.
+  const words = () => {
+    const button = find(ui.render(copyUrl.props, copyUrl.type), e => typeof e.props?.onClick === 'function').props;
+    return [button.savingLabel, button.savedLabel, button.notSavedLabel];
+  };
+  try {
+    assert.deepEqual(words(), ['Copying…', 'Copied', 'Not copied']);
+    ui.language('zh-CN');
+    assert.deepEqual(words(), [setupZh['Copying…'], setupZh['Copied'], setupZh['Not copied']]);
+    for (const word of words()) assert.ok(word && !/Copying|Copied|copied/.test(word), `${word} is Chinese`);
+  } finally {
+    ui.language('en');
+  }
+});
+
 for (const copied of [true, false]) {
   test(`setup clipboard ${copied ? 'success' : 'failure'} status switches languages`, async () => {
     const ui = await fixture('../src/ui/my-work/src/setup/screens/finish-setup-screen.tsx', 'FinishSetupScreen');

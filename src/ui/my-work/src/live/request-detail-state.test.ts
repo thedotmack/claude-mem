@@ -16,6 +16,22 @@ it('combines current card status with complete detail rather than replacing it w
   assert.notEqual(requestDetailKey(summary), requestDetailKey({ ...summary, detailRevision: 'next' }))
 })
 
+it('keeps the detail’s confidence for the suggestion the card still shows, and never brings back one the card no longer has', async () => {
+  const request = (await sampleSource.loadWorkModel()).requests[0]
+  const suggestion = { conversationKey: '["conversation","claude","session-1"]', requestId: 'g_000000000001', requestTitle: 'Related request',
+    evidence: 'The same release', confidence: 0.74, expectedSuggestionHash: 'suggestion-hash', sharedConflict: false }
+  const { confidence: _confidence, ...onTheCard } = suggestion
+  const detail: Request = { ...request, suggestion }
+  // The overview leaves the score out of its cards (src/services/work-view/overview.ts compactRequest).
+  const summary: Request = { ...request, detailLoaded: false, suggestion: onTheCard }
+  assert.deepEqual(mergeRequestDetail(summary, detail).suggestion, suggestion)
+  // Answered: the newer card has none, and the older detail still on screen does not bring it back.
+  assert.equal(mergeRequestDetail({ ...summary, suggestion: undefined }, detail).suggestion, undefined)
+  // A different suggestion keeps its own words and borrows no score.
+  const another = { ...onTheCard, requestId: 'g_000000000002' }
+  assert.deepEqual(mergeRequestDetail({ ...summary, suggestion: another }, detail).suggestion, another)
+})
+
 /** One version of a request's detail, as a read brings it back. */
 const version = (request: Request, detailRevision: string): Request => ({ ...request, detailRevision })
 const loading = (request: Request): RequestDetailRead => ({ key: requestDetailKey(request) })

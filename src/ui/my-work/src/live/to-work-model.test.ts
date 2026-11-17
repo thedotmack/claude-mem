@@ -4,8 +4,12 @@ import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import { assertConsistentRequest } from '../data.ts'
-import { NEXT_STEP_NOT_RECORDED, NO_WORK_YET, nextStepShown, toWorkModel } from './to-work-model.ts'
+import { NEXT_STEP_NOT_RECORDED, NO_WORK_YET, UNNAMED_TOOL, conversationToolWords, nextStepShown, toWorkModel } from './to-work-model.ts'
 import type { WorkViewHumanRequest, WorkViewSnapshot } from './work-view-api-types.ts'
+import { myworkFr } from '../../../i18n/mywork-fr.ts'
+import { myworkKo } from '../../../i18n/mywork-ko.ts'
+import { myworkTr } from '../../../i18n/mywork-tr.ts'
+import { myworkZh } from '../../../i18n/mywork-zh.ts'
 
 const appRoot = new URL('../../', import.meta.url)
 const SNAPSHOT_FILES = ['test-fixtures/work-view-snapshot.trimmed.json', '.scratch/work-view-sample.json']
@@ -43,7 +47,7 @@ for (const url of SNAPSHOT_FILES) {
       assert.deepEqual(request.progress.history, readings.map((reading) => reading.percent))
       assert.equal(request.progress.percent, request.state === 'shipped' ? 100 : raw.progress?.percent ?? null, 'percent only from a review, or 100 for an explicit ship')
       assert.equal(request.askedBy, raw.requestedBy ?? 'You')
-      if (!raw.focusAreaId) assert.equal(request.focusAreaId, undefined, 'a request reads "Sorting…" until the focus step places it')
+      if (!raw.focusAreaId) assert.equal(request.focusAreaId, undefined, 'a request reads "Not sorted yet" until the focus step places it')
     }
   })
 
@@ -177,6 +181,19 @@ test('looks up conversation titles by platform and content-session identity', ()
   assert.deepEqual(request.conversations.map(item => item.title), ['claude session', 'codex session'])
 })
 
+test('a conversation with no recorded title carries none (null), never English words in its place (fix round R2, rule 4)', () => {
+  const raw = syntheticRequest()
+  const untitledSessionId = '0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d'
+  raw.conversationKeys = [JSON.stringify(['conversation', 'claude', untitledSessionId]), JSON.stringify(['conversation', 'codex', 'titled-id'])]
+  // The first session has no title; the second has its own. A session with an empty title counts as untitled.
+  const agents = [
+    { id: 'a', label: 'Claude Code', platformSource: 'claude', sessionTitle: '', project: 'repo', contentSessionId: untitledSessionId },
+    { id: 'b', label: 'Codex', platformSource: 'codex', sessionTitle: 'Fix the login flow', project: 'repo', contentSessionId: 'titled-id' },
+  ]
+  const [request] = toWorkModel(snapshotWith([raw], { agents }), Date.now()).requests
+  assert.deepEqual(request.conversations.map((item) => item.title), [null, 'Fix the login flow'])
+})
+
 test('each conversation row carries the platform and session id its key records, for Claude Code and for Codex', () => {
   const raw = syntheticRequest()
   const claudeSessionId = '0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d'
@@ -201,6 +218,8 @@ test('maps shared decision versions and keeps an origin-only file visible withou
   assert.deepEqual(mapped.review, { mode: 'shared', hash: 'review-hash', available: true, version: 2, conflict: true, legacy: undefined, pending: true, message: 'Choose the current review.' })
   assert.equal(mapped.suggestion?.expectedSuggestionHash, 'suggestion-hash')
   assert.equal(mapped.suggestion?.sharedConflict, true)
+  // The judge's check score rides along, so the drawer can say it as a percent (c-request-detail-suggestion-action).
+  assert.equal(mapped.suggestion?.confidence, 0.8)
   assert.equal(mapped.workProduct[0].availability, 'origin-only')
   assert.equal(mapped.workProduct[0].href, undefined)
   assert.equal(mapped.workProduct[1].href, 'https://github.com/example/repo/pull/1')
@@ -222,6 +241,40 @@ test('a reviewed request shows the review percent, its readings, the measured ET
   const single = toWorkModel(snapshotWith([{ ...raw, progress: { ...raw.progress, readings: [raw.progress.readings[1]] } }]), Date.parse('2026-10-22T12:00:00Z')).requests[0]
   assert.equal(single.estimate, null, 'one reading has no pace')
   assert.equal(single.progress.readings, 1)
+})
+
+test('a build story step carries when it happened as a value: null when the review recorded no time, never English, and no time posing as a description', () => {
+  const raw = { ...syntheticRequest(), progress: {
+    state: 'in-progress' as const, percent: 60, summary: 'Under way.', narrative: '', checkedAt: '2026-10-21T12:00:00Z',
+    milestones: [{ at: '2026-10-21T09:00:00Z', text: 'Spacing fixed' }, { at: null, text: 'Cards built' }], readings: [],
+  } }
+  const [request] = toWorkModel(snapshotWith([raw]), Date.parse('2026-10-22T12:00:00Z')).requests
+  assert.deepEqual(request.story.map((step) => step.label), ['Cards built', 'Spacing fixed'])
+  assert.equal(request.story[0].at, null, 'a step with no recorded time says so as a value; the drawer words it')
+  assert.equal(typeof request.story[1].at, 'string')
+  for (const step of request.story) assert.equal(step.description, undefined, 'a recorded time is never written as a description')
+})
+
+test('a conversation from a platform with no name of its own is the catalog word "Agent", which the screens word in the reader’s language', () => {
+  const raw = syntheticRequest()
+  raw.conversationKeys = [JSON.stringify(['conversation', 'opencode', 'session-id'])]
+  const [request] = toWorkModel(snapshotWith([raw]), Date.now()).requests
+  assert.equal(request.conversations[0].tool, UNNAMED_TOOL)
+  const reader = { [UNNAMED_TOOL]: 'Ajan' }
+  const translate = (english: string) => reader[english as keyof typeof reader] ?? english
+  assert.equal(conversationToolWords(request.conversations[0].tool, translate), 'Ajan')
+  for (const catalog of [myworkZh, myworkKo, myworkTr, myworkFr]) assert.ok(catalog[UNNAMED_TOOL]?.trim(), 'every My Work catalog words it')
+  // A tool's own name is a name: it is never looked up.
+  assert.equal(conversationToolWords('Claude Code', () => 'translated'), 'Claude Code')
+})
+
+test('the terminal lines of a request with no title always start with what they are, so the card never reads one as a command (V10)', () => {
+  const raw = syntheticRequest()
+  raw.title = ''
+  raw.activity = [{ id: 'a', kind: 'work-state', title: '$ npm test', detail: 'passed', atEpoch: Date.UTC(2026, 9, 21), url: '/api/work-view/evidence/work-state/1' }]
+  const [request] = toWorkModel(snapshotWith([raw]), Date.now()).requests
+  assert.deepEqual(request.terminal, ['work-state $ npm test: passed'])
+  for (const line of request.terminal) assert.equal(line.trimStart().startsWith('$'), false)
 })
 
 test('a review newer than its items wins: shipped ships, and 100% is done, never an error card', () => {

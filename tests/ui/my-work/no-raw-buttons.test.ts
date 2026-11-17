@@ -20,8 +20,11 @@ import ts from 'typescript';
  * Phases 3 and 7 merged (2026-11-16): 15 in 6 files.
  * Phase 4 (2026-11-16): the List's phone rows and table titles, By agent's request rows and the Team cards
  * (pages/my-work.tsx, its last 4 tags) moved onto Button: 11 in 5 files.
+ * Phase 5 (2026-11-16): the request card's title and terminal buttons, the focus area link, and the image strip and
+ * viewer (9 tags) moved onto Button, and the reply card's folder path left raw buttons too: 5 in 2 files.
+ * Phases 4 and 5 merged (2026-11-17): 1 in 1 file (components/share-focus.tsx).
  */
-const RAW_BUTTON_CEILING = 11;
+const RAW_BUTTON_CEILING = 1;
 
 const MY_WORK_SOURCE = resolve(import.meta.dir, '../../../src/ui/my-work/src');
 const SCANNED_FOLDERS = ['pages', 'components'];

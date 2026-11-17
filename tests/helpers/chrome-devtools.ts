@@ -44,6 +44,18 @@ export function compileBrowserFixture(fixtureSource: string, extraEsbuildArgumen
 }
 
 export const FIXTURE_PAGE_HTML = '<div id="root"></div><script src="/fixture.js"></script>';
+
+/**
+ * My Work's font files for a fixture page that loads the app's compiled stylesheet. Its @font-face rules ask for
+ * `./files/<face>-<subset>-wght-<style>.woff2`, from each package index.css imports: Geist for the text and Geist Mono
+ * for the terminal lines; the file name says which. Null for any other path, so the server can answer it.
+ */
+export function myWorkFontResponse(path: string): Response | null {
+  const font = /^\/files\/((geist-mono|geist)-[a-z0-9-]+\.woff2)$/.exec(path);
+  if (!font) return null;
+  const file = join(REPOSITORY_ROOT, 'src/ui/my-work/node_modules/@fontsource-variable', font[2], 'files', font[1]);
+  return new Response(Bun.file(file), { headers: { 'Content-Type': 'font/woff2' } });
+}
 export const htmlResponse = (html: string) => new Response(html, { headers: { 'Content-Type': 'text/html' } });
 export const scriptResponse = (script: string) => new Response(script, { headers: { 'Content-Type': 'application/javascript' } });
 

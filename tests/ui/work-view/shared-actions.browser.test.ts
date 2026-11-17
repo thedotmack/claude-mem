@@ -38,19 +38,30 @@ failOnCiWithoutChrome('CI requires Chrome or Chromium for the shared action regr
           return load.state === 'loaded' ? <TooltipProvider><RequestDetail request={load.model.requests[0]} onClose={() => {}} onOpenFocus={() => {}} /></TooltipProvider> : null;
         }
         createRoot(document.getElementById('root')).render(<Fixture />);
+        // Deliverables is one of the drawer's folds (page-05): opened, it lists the files.
+        await until(() => [...document.querySelectorAll('[data-slot="collapsible-fold-trigger"]')].some(row => row.textContent.startsWith('Deliverables')));
+        [...document.querySelectorAll('[data-slot="collapsible-fold-trigger"]')].find(row => row.textContent.startsWith('Deliverables')).click();
         await until(() => document.body.textContent.includes('origin-report.pdf'));
         const file = [...document.querySelectorAll('span')].find(node => node.textContent === 'origin-report.pdf');
         const originHasNoLink = !file.closest('a');
         const publicLink = [...document.querySelectorAll('a')].find(node => node.textContent.includes('Published PR'))?.getAttribute('href');
         const originalComputerShown = document.body.textContent.includes('check the original computer');
-        const findButton = label => [...document.querySelectorAll('button')].find(button => button.textContent === label);
-        const conflictsActionable = !findButton('Mark checked').disabled && !findButton('Keep unchecked').disabled && !findButton('Join').disabled;
+        // A save button lays every state's label in one place and shows one (aceternity/stateful-button.tsx): read that one.
+        const shownLabel = button => button.querySelector('[data-stateful-label]:not(.invisible)')?.textContent ?? button.textContent;
+        const findButton = label => [...document.querySelectorAll('button')].find(button => shownLabel(button) === label);
+        // A button that waits keeps focus and says so with aria-disabled (G16), not native disabled: either one means it waits.
+        const waits = button => button.disabled || button.getAttribute('aria-disabled') === 'true';
+        const conflictsActionable = !waits(findButton('Mark checked')) && !waits(findButton('Keep unchecked')) && !waits(findButton('Join that request'));
         const conflictGuidanceShown = document.body.textContent.includes('Read this suggestion, then choose again to resolve them.');
         findButton('Mark checked').click();
         await until(() => document.body.textContent.includes('waiting to sync to your other viewers'));
-        findButton('Not this').click();
+        findButton('Keep separate').click();
         await until(() => document.body.textContent.includes('Your decision was saved here, but grouping decisions still conflict. Read this suggestion and choose again. The saved decision is waiting to sync.'));
         const suggestionConflictReceiptExplained = !document.body.textContent.includes('Kept these requests separate.');
+        // Joining asks once more (the worker cannot undo a join): the question shows only after "Join that request".
+        const joinAskedFirst = findButton('Join').closest('[hidden]') !== null;
+        findButton('Join that request').click();
+        await until(() => findButton('Join').closest('[hidden]') === null);
         findButton('Join').click();
         await until(() => document.body.textContent.includes('Joined the request. Saved here; waiting to sync to your other viewers.'));
         const pendingLocalCopyExplained = document.body.textContent.includes("This viewer's local work copy is still updating.");
@@ -62,7 +73,7 @@ failOnCiWithoutChrome('CI requires Chrome or Chromium for the shared action regr
         await until(() => document.body.textContent.includes('Your review decision was saved here, but your viewers still have conflicting decisions. Read this version and choose again. The saved decision is waiting to sync.'));
         const reviewConflictReceiptExplained = !document.body.textContent.includes('Checked for this shared version.');
         stop();
-        await report({ originHasNoLink, publicLink, originalComputerShown, conflictsActionable, conflictGuidanceShown, reviewArgs, suggestionCalls, suggestionConflictReceiptExplained, reviewConflictReceiptExplained, pendingLocalCopyExplained, falseSyncClaim, lateReceiptExplained });
+        await report({ originHasNoLink, publicLink, originalComputerShown, conflictsActionable, conflictGuidanceShown, reviewArgs, suggestionCalls, suggestionConflictReceiptExplained, joinAskedFirst, reviewConflictReceiptExplained, pendingLocalCopyExplained, falseSyncClaim, lateReceiptExplained });
       } catch (error) { await report({ error: String(error) }); }
     })();
   `);
@@ -85,7 +96,7 @@ failOnCiWithoutChrome('CI requires Chrome or Chromium for the shared action regr
         [{ conversationKey: 'conversation-read', requestId: 'group-read', requestTitle: 'Related request', evidence: 'Same feature', expectedSuggestionHash: 'suggestion-read', sharedConflict: true }, 'not-this'],
         [{ conversationKey: 'conversation-read', requestId: 'group-read', requestTitle: 'Related request', evidence: 'Same feature', expectedSuggestionHash: 'suggestion-read', sharedConflict: true }, 'join'],
       ],
-      suggestionConflictReceiptExplained: true, reviewConflictReceiptExplained: true, pendingLocalCopyExplained: true,
+      suggestionConflictReceiptExplained: true, joinAskedFirst: true, reviewConflictReceiptExplained: true, pendingLocalCopyExplained: true,
       falseSyncClaim: false, lateReceiptExplained: true,
     });
   } finally { await chrome?.close(); server.stop(true); }

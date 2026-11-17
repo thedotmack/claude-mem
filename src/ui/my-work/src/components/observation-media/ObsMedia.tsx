@@ -16,6 +16,13 @@
 //   - The open image is tracked by id, so a live update that shrinks the
 //     list closes the gallery instead of crashing it; thumbnail and full-image
 //     load failures are kept apart, and a failed image offers "Try again".
+//   - 16.0.0 (c-obs-media): every word goes through the reader's language; the
+//     strip says in words how many images the agent has not read, with a line
+//     saying what the corner ring means; the viewer opens with the image's
+//     state and whether the agent read it ("Saved. The agent has not read
+//     this image.", "Deleted. …") and folds the recipe, encoder, sizes and
+//     file name under "Technical details"; Close, Previous and Next are 44px;
+//     every button is the app's Button (G14).
 //   MediaCountBadge  — image count on a rail card (no network).
 //   ObsMediaStrip    — selected-observation face: bounded thumbnail strip
 //                      (THUMBNAIL_LIMIT, then "+N"), per-image state and
@@ -31,23 +38,28 @@
 // ============================================================
 import { createContext, useCallback, useContext, useEffect, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ChevronLeft, ChevronRight, Image as ImageIcon, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Eye, EyeOff, Image as ImageIcon, X } from 'lucide-react';
 
 import { workerMediaSource } from './worker-media-source';
 import { setTimeoutThenWaitUntilCloudPageVisible } from '@/live/served-from';
+import { Button } from '@/components/ui/button';
+import { Collapsible, CollapsibleContent, CollapsibleFoldTrigger } from '@/components/ui/collapsible';
+import { interpolate, useI18n } from '@/lib/i18n';
 import {
   altText,
   displayState,
   formatBytes,
   galleryKeyAction,
   inspectionCopy,
+  inspectionLead,
   provenanceDetails,
-  STATE_COPY,
+  STATE_WORDS,
   THUMBNAIL_LIMIT,
   trapFocusIndex,
   type MediaDisplayState,
   type ProvenanceDetails,
   type ServerMediaState,
+  type Translate,
   type VMedia,
   type VMediaRef,
 } from './media';
@@ -122,11 +134,17 @@ export function watchMediaStatus(
   };
 }
 
+/** How many images, in words: "1 image", "8 images". */
+function imageCount(count: number, t: Translate): string {
+  return interpolate(count === 1 ? t('{count} image') : t('{count} images'), { count });
+}
+
 /** `count`: the request's distinct images when `media` is only its card preview. */
 export function MediaCountBadge({ media, count }: { media?: VMedia; count?: number }) {
+  const { t } = useI18n();
   const total = count ?? media?.attachments.length ?? 0;
   if (!media || total === 0) return null;
-  const label = `${total} image${total === 1 ? '' : 's'}${media.overflow ? ' (more on the source event)' : ''}`;
+  const label = media.overflow ? interpolate(t('{images} (more on the source event)'), { images: imageCount(total, t) }) : imageCount(total, t);
   return (
     <span className="obs-media-count" role="img" aria-label={label} title={label}>
       <ImageIcon size={11} strokeWidth={2} aria-hidden />
@@ -164,6 +182,7 @@ const NO_REFS: VMediaRef[] = [];
  * `onMore` (the drawer, which lists every image) instead of opening the gallery.
  */
 export function ObsMediaStrip({ media, title, total, onMore }: { media?: VMedia; title: string; total?: number; onMore?: () => void }) {
+  const { t } = useI18n();
   const source = useContext(MediaSourceContext);
   const refs = media?.attachments ?? NO_REFS;
   const statuses = useMediaStates(refs);
@@ -229,53 +248,61 @@ export function ObsMediaStrip({ media, title, total, onMore }: { media?: VMedia;
   };
 
   return (
-    <div className="obs-media" aria-label={`${count} attached image${count === 1 ? '' : 's'}`} role="group">
+    <div className="obs-media" aria-label={count === 1 ? t('1 attached image') : interpolate(t('{count} attached images'), { count })} role="group">
       <div className="obs-media-head">
         <span>
-          {count} image{count === 1 ? '' : 's'}
-          {media?.overflow ? ' · more on the source event' : ''}
+          {imageCount(count, t)}
+          {media?.overflow ? ` · ${t('more on the source event')}` : ''}
         </span>
-        {uninspected > 0 && <span className="obs-media-tag">{uninspected} not inspected</span>}
+        {/* How many the agent has not read, in words (c-obs-media M: it was a corner dot whose meaning was a hover title). */}
+        {uninspected > 0 && <span className="obs-media-tag"><EyeOff size={13} strokeWidth={2} aria-hidden />{interpolate(t('{count} not read by the agent'), { count: uninspected })}</span>}
       </div>
       <div className="obs-media-strip">
         {visible.map((ref, index) => {
           const state = thumbnailStateOf(ref);
           return (
-            <button
+            <Button
               key={ref.id}
-              type="button"
-              className="obs-media-thumb"
+              variant="bare"
+              className="obs-media-thumb justify-center"
               data-state={state}
               onClick={(event) => open(index, event.currentTarget)}
-              aria-label={`Open image ${index + 1} of ${count} (${ref.label}): ${STATE_COPY[state]}, ${inspectionCopy(ref.inspection).toLowerCase()}`}
+              aria-label={interpolate(t('Open image {current} of {total} ({label}): {state}, {inspection}'), { current: index + 1, total: count, label: ref.label, state: STATE_WORDS[state](t), inspection: inspectionCopy(ref.inspection, t) })}
             >
               {state === 'ready' ? (
                 <img
                   key={loadAttempt}
                   src={source.thumbnailUrl(ref.id)}
-                  alt={altText(ref, index, refs.length, title)}
+                  alt={altText(ref, index, refs.length, title, t)}
+                  // The thumbnail's box (index.css .obs-media-thumb), so its room is known before the bytes arrive.
+                  width={88}
+                  height={64}
                   loading="lazy"
                   decoding="async"
                   onError={() => markThumbnailBroken(ref.id)}
                 />
               ) : (
-                <span className="obs-media-state">{STATE_COPY[state]}</span>
+                <span className="obs-media-state">{STATE_WORDS[state](t)}</span>
               )}
-              {ref.inspection === 'uninspected' && <span className="obs-media-dot" aria-hidden title="Not inspected" />}
-            </button>
+              {ref.inspection === 'uninspected' && <span className="obs-media-dot" aria-hidden />}
+            </Button>
           );
         })}
         {hidden > 0 && (!partial || onMore) && (
-          <button
-            type="button"
-            className="obs-media-more"
+          <Button
+            variant="bare"
+            className="obs-media-more justify-center"
             onClick={(event) => (partial ? onMore?.() : open(THUMBNAIL_LIMIT, event.currentTarget))}
-            aria-label={`Show ${hidden} more image${hidden === 1 ? '' : 's'}`}
+            aria-label={hidden === 1 ? t('Show 1 more image') : interpolate(t('Show {count} more images'), { count: hidden })}
           >
-            +{hidden}
-          </button>
+            {interpolate(t('+{count} more'), { count: hidden })}
+          </Button>
         )}
       </div>
+      {/* What the corner ring means, said once under the strip (c-obs-media M: a legend for the corner mark). */}
+      {visible.some((ref) => ref.inspection === 'uninspected') && (
+        <p className="obs-media-legend"><span className="obs-media-dot" aria-hidden />{t('A ring in the corner marks an image the agent has not read.')}</p>
+      )}
       {openIndex >= 0 && portalRoot && createPortal(
         <MediaGallery
           refs={refs}
@@ -293,6 +320,17 @@ export function ObsMediaStrip({ media, title, total, onMore }: { media?: VMedia;
     </div>
   );
 }
+
+/** What the viewer says in place of an image it cannot show, one sentence per state. */
+const GALLERY_STATE_WORDS: Record<MediaDisplayState, (t: Translate) => string> = {
+  checking: (t) => t('Checking…'),
+  pending: (t) => t('Processing… The image is still being converted or downloaded.'),
+  ready: (t) => t('Ready'),
+  deleted: (t) => t('Deleted. This image was deleted.'),
+  rejected: (t) => t('Rejected. The image could not be stored: unsupported, out of bounds, or the conversion failed.'),
+  failed: (t) => t('Could not load. The image could not be loaded or verified.'),
+  unavailable: (t) => t('Unavailable. The image’s status could not be read.'),
+};
 
 function MediaGallery({
   refs,
@@ -316,9 +354,10 @@ function MediaGallery({
   onIndex: (index: number) => void;
   onClose: () => void;
 }) {
+  const { t } = useI18n();
   const source = useContext(MediaSourceContext);
   const dialogRef = useRef<HTMLDivElement | null>(null);
-  const closeRef = useRef<HTMLButtonElement | null>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
   const headingId = useId();
   const detailsId = useId();
   const ref = refs[index];
@@ -364,6 +403,7 @@ function MediaGallery({
   };
 
   const shownDetails = details?.id === ref.id ? details : null;
+  const viewer = shownDetails?.value?.viewer;
   return (
     <div className="obs-media-gallerybackdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <div
@@ -376,27 +416,25 @@ function MediaGallery({
         onKeyDown={onKeyDown}
       >
         <header className="obs-media-galleryhead">
-          <h2 id={headingId}>
-            Image {index + 1} of {refs.length} · <span>{ref.label}</span>
-          </h2>
-          <button ref={closeRef} type="button" className="obs-media-galleryclose" onClick={onClose} aria-label="Close image viewer (Escape)">
-            <X size={16} strokeWidth={2} aria-hidden />
-          </button>
+          <h2 id={headingId}>{interpolate(t('Image {current} of {total}'), { current: index + 1, total: refs.length })}</h2>
+          <Button ref={closeRef} variant="bare" className="obs-media-galleryclose" onClick={onClose} aria-label={t('Close image viewer (Escape)')}>
+            <X size={18} strokeWidth={2} aria-hidden />
+          </Button>
         </header>
         <div className="obs-media-galleryframe" data-state={state}>
           {refs.length > 1 && (
-            <button type="button" className="obs-media-gallerynav is-prev" onClick={() => onIndex((index - 1 + refs.length) % refs.length)} aria-label="Previous image">
-              <ChevronLeft size={18} strokeWidth={2} aria-hidden />
-            </button>
+            <Button variant="bare" className="obs-media-gallerynav is-prev" onClick={() => onIndex((index - 1 + refs.length) % refs.length)} aria-label={t('Previous image')}>
+              <ChevronLeft size={20} strokeWidth={2} aria-hidden />
+            </Button>
           )}
           {state === 'ready' ? (
-            <img key={`${ref.id}:${loadAttempt}`} src={source.imageUrl(ref.id)} alt={altText(ref, index, refs.length, title)} onError={() => onBroken(ref.id)} />
+            <img key={`${ref.id}:${loadAttempt}`} src={source.imageUrl(ref.id)} alt={altText(ref, index, refs.length, title, t)} onError={() => onBroken(ref.id)} />
           ) : (
             <div className="obs-media-gallerystate">
-              <p role="status">{STATE_COPY[state]}{state === 'pending' ? ' — the image is still being converted or downloaded.' : state === 'deleted' ? ' — this image was deleted.' : state === 'rejected' ? ' — the image could not be stored (unsupported, out of bounds, or conversion failed).' : state === 'failed' ? ' — the image could not be loaded or verified.' : state === 'unavailable' ? ' — image status could not be resolved.' : ''}</p>
+              <p role="status">{GALLERY_STATE_WORDS[state](t)}</p>
               {state === 'failed' && (
-                <button
-                  type="button"
+                <Button
+                  variant="bare"
                   className="obs-media-galleryretry"
                   onClick={() => {
                     // This button unmounts once the failure clears; keep focus inside the dialog.
@@ -404,35 +442,47 @@ function MediaGallery({
                     onRetry(ref.id);
                   }}
                 >
-                  Try again
-                </button>
+                  {t('Try again')}
+                </Button>
               )}
             </div>
           )}
           {refs.length > 1 && (
-            <button type="button" className="obs-media-gallerynav is-next" onClick={() => onIndex((index + 1) % refs.length)} aria-label="Next image">
-              <ChevronRight size={18} strokeWidth={2} aria-hidden />
-            </button>
+            <Button variant="bare" className="obs-media-gallerynav is-next" onClick={() => onIndex((index + 1) % refs.length)} aria-label={t('Next image')}>
+              <ChevronRight size={20} strokeWidth={2} aria-hidden />
+            </Button>
           )}
         </div>
-        <dl className="obs-media-gallerydetails" id={detailsId}>
-          <div><dt>State</dt><dd>{STATE_COPY[state]}</dd></div>
-          <div><dt>Inspection</dt><dd>{inspectionCopy(ref.inspection)}</dd></div>
-          {shownDetails?.value && (
-            <>
-              <div><dt>Recipe</dt><dd>{shownDetails.value.recipe}</dd></div>
-              <div><dt>Encoder</dt><dd>{shownDetails.value.encoder}</dd></div>
-              {shownDetails.value.viewer && (
-                <div><dt>Retained</dt><dd>{shownDetails.value.viewer.width}×{shownDetails.value.viewer.height} WebP · {formatBytes(shownDetails.value.viewer.byteLength)}</dd></div>
+        {/* The one fact the owner may care about comes first, in words; the developer's facts fold below (c-obs-media M). */}
+        <p className="obs-media-lead" id={detailsId}>
+          {ref.inspection === 'uninspected' ? <EyeOff size={16} strokeWidth={2} aria-hidden /> : <Eye size={16} strokeWidth={2} aria-hidden />}
+          <span>{inspectionLead(state, ref.inspection, t)}</span>
+          {viewer && <span className="obs-media-size">{viewer.width} × {viewer.height} · {formatBytes(viewer.byteLength)}</span>}
+        </p>
+        <Collapsible>
+          <CollapsibleFoldTrigger>{t('Technical details')}</CollapsibleFoldTrigger>
+          <CollapsibleContent>
+            <dl className="obs-media-gallerydetails">
+              <div><dt>{t('State')}</dt><dd>{STATE_WORDS[state](t)}</dd></div>
+              <div><dt>{t('Agent')}</dt><dd>{inspectionCopy(ref.inspection, t)}</dd></div>
+              <div><dt>{t('Name')}</dt><dd>{ref.label}</dd></div>
+              {shownDetails?.value && (
+                <>
+                  <div><dt>{t('Recipe')}</dt><dd>{shownDetails.value.recipe}</dd></div>
+                  <div><dt>{t('Encoder')}</dt><dd>{shownDetails.value.encoder}</dd></div>
+                  {shownDetails.value.viewer && (
+                    <div><dt>{t('Kept size')}</dt><dd>{shownDetails.value.viewer.width}×{shownDetails.value.viewer.height} WebP · {formatBytes(shownDetails.value.viewer.byteLength)}</dd></div>
+                  )}
+                  {shownDetails.value.llm && (
+                    <div><dt>{t('Size the agent reads')}</dt><dd>{shownDetails.value.llm.width}×{shownDetails.value.llm.height} WebP · {formatBytes(shownDetails.value.llm.byteLength)}</dd></div>
+                  )}
+                </>
               )}
-              {shownDetails.value.llm && (
-                <div><dt>Model-size variant</dt><dd>{shownDetails.value.llm.width}×{shownDetails.value.llm.height} WebP · {formatBytes(shownDetails.value.llm.byteLength)}</dd></div>
-              )}
-            </>
-          )}
-          {shownDetails?.failed && <div><dt>Details</dt><dd>Unavailable</dd></div>}
-        </dl>
-        <p className="obs-media-galleryhint" aria-hidden>Esc to close · ← → to browse</p>
+              {shownDetails?.failed && <div><dt>{t('Details')}</dt><dd>{t('Unavailable')}</dd></div>}
+            </dl>
+          </CollapsibleContent>
+        </Collapsible>
+        <p className="obs-media-galleryhint" aria-hidden>{t('Esc closes · ← → browse')}</p>
       </div>
     </div>
   );

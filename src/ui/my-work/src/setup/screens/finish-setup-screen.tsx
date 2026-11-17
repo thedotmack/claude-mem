@@ -9,7 +9,8 @@ import { PageHeading, ToolMark } from './shared'
 function CopyUrl({ toolName }: { toolName: string }) {
   const { t } = useI18n()
   const [status, setStatus] = useState<'' | 'URL copied.' | 'Select and copy the URL above.'>('')
-  // Resolves false when the copy failed, so the button shows no check; the status line says what to do.
+  // Resolves false when the copy failed, so the button shows no check; the status line says what to do. The button says
+  // what happens, a copy: Copying…, Copied, Not copied; nothing on this screen says Saving or Saved (nothing is saved).
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(CMEM_MCP_URL)
@@ -24,7 +25,8 @@ function CopyUrl({ toolName }: { toolName: string }) {
     <>
       <div className="connection-copy">
         <code>{CMEM_MCP_URL}</code>
-        <SaveButton type="button" className="secondary" onClick={copy} aria-label={interpolate(t('Copy CMEM URL for {toolName}'), { toolName })}><CopyIcon aria-hidden="true" />{t('Copy URL')}</SaveButton>
+        <SaveButton type="button" className="secondary" onClick={copy} aria-label={interpolate(t('Copy CMEM URL for {toolName}'), { toolName })}
+          icon={<CopyIcon aria-hidden="true" />} savingLabel={t('Copying…')} savedLabel={t('Copied')} notSavedLabel={t('Not copied')}>{t('Copy URL')}</SaveButton>
       </div>
       <p className="connection-status" role="status" aria-live="polite">{t(status)}</p>
     </>

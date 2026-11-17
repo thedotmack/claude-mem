@@ -18,6 +18,11 @@ failOnCiWithoutChrome('CI requires Chrome or Chromium for the lazy request detai
     window.React = React;
     window.addEventListener('error', event => fetch('/result', { method: 'POST', body: JSON.stringify({ error: event.message }) }));
     let phase = 'initial';
+    // The full detail's one deliverable, as the folded Deliverables row counts it (page-05: the fold shows its count by kind
+    // while closed); the compact summary has none.
+    const deliverablesCount = () => [...document.querySelectorAll('[data-slot="collapsible-fold-trigger"]')]
+      .find(row => row.textContent.startsWith('Deliverables'))?.querySelector('[data-slot="fold-trigger-count"]')?.textContent ?? null;
+    const hasDetail = () => deliverablesCount() === '1 doc';
     async function until(test) {
       const end = Date.now() + 7000;
       while (!test()) {
@@ -46,20 +51,25 @@ failOnCiWithoutChrome('CI requires Chrome or Chromium for the lazy request detai
         }
         createRoot(document.getElementById('root')).render(<Fixture />);
         await until(() => document.body.textContent.includes('Loading request detail'));
-        const didWait = !document.body.textContent.includes('COMPLETE_DETAIL');
+        const didWait = !hasDetail();
         document.querySelector('[data-slot="sheet-close"]').click();
         phase = 'first-close';
         await until(() => aborted === 1);
         setRequest(compact);
         phase = 'reopened-error';
+        // Plain words first (G17); the raw cause is folded under Details, and shows whole once it is opened.
+        await until(() => document.body.textContent.includes('Could not load this request’s details.'));
+        const causeFolded = !document.body.textContent.includes('Temporary detail failure');
+        [...document.querySelectorAll('button')].find(button => button.textContent === 'Details').click();
+        phase = 'details-opened';
         await until(() => document.body.textContent.includes('Temporary detail failure'));
         [...document.querySelectorAll('button')].find(button => button.textContent === 'Try again').click();
         phase = 'retried-detail';
-        await until(() => document.body.textContent.includes('COMPLETE_DETAIL'));
+        await until(hasDetail);
         setRequest({ ...compact, title: 'RENAMED_CURRENT_REQUEST' });
         phase = 'renamed';
         await until(() => document.body.textContent.includes('RENAMED_CURRENT_REQUEST'));
-        const keptDetail = document.body.textContent.includes('COMPLETE_DETAIL');
+        const keptDetail = hasDetail();
         const stableCalls = calls;
         setRequest({ ...compact, detailRevision: 'b'.repeat(64), contentFingerprint: 'b'.repeat(64) });
         phase = 'next-version';
@@ -68,12 +78,12 @@ failOnCiWithoutChrome('CI requires Chrome or Chromium for the lazy request detai
         // The fourth load never answers, so nothing else changes the drawer before it is closed. React draws what that
         // load's start set (the empty read of the next version) in its next scheduler task, well within this wait.
         await new Promise(resolve => setTimeout(resolve, 50));
-        const keptPreviousDetailWhileNextVersionLoads = document.body.textContent.includes('COMPLETE_DETAIL')
+        const keptPreviousDetailWhileNextVersionLoads = hasDetail()
           && !document.body.textContent.includes('Loading request detail');
         document.querySelector('[data-slot="sheet-close"]').click();
         await until(() => aborted === 2);
         stop();
-        await fetch('/result', { method: 'POST', body: JSON.stringify({ didWait, aborted, keptDetail, stableCalls, keptPreviousDetailWhileNextVersionLoads }) });
+        await fetch('/result', { method: 'POST', body: JSON.stringify({ didWait, aborted, causeFolded, keptDetail, stableCalls, keptPreviousDetailWhileNextVersionLoads }) });
       } catch (error) {
         await fetch('/result', { method: 'POST', body: JSON.stringify({ error: String(error) }) });
       }
@@ -92,7 +102,7 @@ failOnCiWithoutChrome('CI requires Chrome or Chromium for the lazy request detai
   try {
     chrome = launchChrome(server.url.href, { profilePrefix: 'claude-mem-lazy-detail-', extraFlags: UNTHROTTLED_TIMER_FLAGS });
     expect(await withTimeout(result, 30000, 'Lazy detail browser did not report')).toEqual({
-      didWait: true, aborted: 2, keptDetail: true, stableCalls: 3, keptPreviousDetailWhileNextVersionLoads: true,
+      didWait: true, aborted: 2, causeFolded: true, keptDetail: true, stableCalls: 3, keptPreviousDetailWhileNextVersionLoads: true,
     });
   } finally {
     await chrome?.close();

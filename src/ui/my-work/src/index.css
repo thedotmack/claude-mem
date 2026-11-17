@@ -2,6 +2,9 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/geist";
+/* The agent's own lines on an untitled card (c-ai-terminal F: the terminal fell back to ui-monospace). The browser
+   fetches the face only when a terminal draws text in it. */
+@import "@fontsource-variable/geist-mono";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -24,6 +27,8 @@
 @theme inline {
     --font-heading: var(--font-sans);
     --font-sans: 'Geist Variable', sans-serif;
+    /* `font-terminal`: Geist Mono for the terminal lines (components/ai-elements/terminal.tsx), the system mono after it. */
+    --font-terminal: 'Geist Mono Variable', ui-monospace, SFMono-Regular, Menlo, monospace;
     --color-working: var(--working);
     --color-working-foreground: var(--working-foreground);
     --color-working-border: var(--working-border);
@@ -476,18 +481,24 @@
   flex: none;
 }
 .obs-media { display: flex; flex-direction: column; gap: 6px; max-width: 700px; }
+/* 16.0.0 (c-obs-media): the count reads at 13px (11px before); "N not read by the agent" is a neutral chip with its
+   eye mark and the ≥3:1 control edge, since colour is kept for state (it was an orange tint). */
 .obs-media-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--muted-foreground);
 }
 .obs-media-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   padding: 1px 8px;
   border-radius: 999px;
-  background: var(--accent);
+  border: 1px solid var(--control-edge);
   color: var(--foreground);
   font-weight: 500;
 }
@@ -505,7 +516,8 @@
   overflow: hidden;
   cursor: pointer;
   font-family: inherit;
-  font-size: 10.5px;
+  /* 12px: the tile's words ("+4 more", "Processing…") were 10.5px. */
+  font-size: 12px;
   font-weight: 600;
 }
 .obs-media-thumb:focus-visible,
@@ -517,16 +529,28 @@
 .obs-media-thumb[data-state="failed"],
 .obs-media-thumb[data-state="unavailable"] { border-style: dashed; }
 .obs-media-state { display: flex; align-items: center; justify-content: center; height: 100%; padding: 4px; text-align: center; }
+/* The corner mark of an image the agent has not read: a hollow ring (the legend under the strip says so), the text
+   colour on a card-coloured disc, so it shows on any picture. */
 .obs-media-dot {
   position: absolute;
   top: 5px;
   right: 5px;
-  width: 7px;
-  height: 7px;
+  width: 11px;
+  height: 11px;
   border-radius: 50%;
-  background: color-mix(in srgb, var(--muted-foreground) 70%, var(--card));
-  box-shadow: 0 0 0 2px var(--card);
+  border: 2px solid var(--foreground);
+  background: var(--card);
+  box-shadow: 0 0 0 1.5px var(--card);
 }
+.obs-media-legend {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 12.75px;
+  color: var(--muted-foreground);
+}
+.obs-media-legend .obs-media-dot { position: static; flex: none; }
 .obs-media-gallerybackdrop {
   position: fixed;
   inset: 0;
@@ -553,13 +577,14 @@
 .obs-media-galleryhead { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .obs-media-galleryhead h2 { margin: 0; font-size: 13px; font-weight: 600; }
 .obs-media-galleryhead h2 span { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 500; color: var(--muted-foreground); }
+/* Close, Previous and Next take 44×44px (c-obs-media M; they were 32×32, under the touch target). */
 .obs-media-galleryclose,
 .obs-media-gallerynav {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
+  width: 44px;
+  height: 44px;
   border-radius: 999px;
   border: 1px solid var(--border);
   background: var(--card);
@@ -606,6 +631,10 @@
 .obs-media-gallerydetails dt { color: color-mix(in srgb, var(--muted-foreground) 70%, var(--card)); flex: none; }
 .obs-media-gallerydetails dd { margin: 0; color: var(--foreground); overflow-wrap: anywhere; }
 .obs-media-galleryhint { margin: 0; font-size: 11px; color: color-mix(in srgb, var(--muted-foreground) 70%, var(--card)); }
+/* The viewer's first line: whether the agent has read the image, with its size at the right in monospace. */
+.obs-media-lead { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0; font-size: 14px; }
+.obs-media-lead svg { flex: none; color: var(--muted-foreground); }
+.obs-media-size { margin-left: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.75px; font-variant-numeric: tabular-nums; color: var(--muted-foreground); }
 @media (max-width: 640px) {
   .obs-media-gallerybackdrop { padding: 16px; align-items: stretch; }
   .obs-media-gallery { max-height: none; height: 100%; }

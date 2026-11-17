@@ -75,6 +75,21 @@ describe('route answers', () => {
     expect(gallery.provenanceDetails({ recipe: 'screenshot-v1' })).toBeNull();
   });
 
+  it('the image viewer’s first line follows the image’s state, in the state’s own word, and says "Saved." only for a saved image', () => {
+    expect(gallery.inspectionLead('ready', 'uninspected')).toBe('Saved. The agent has not read this image.');
+    expect(gallery.inspectionLead('ready', 'inspected')).toBe('Saved. The agent has read this image.');
+    expect(gallery.inspectionLead('deleted', 'uninspected')).toBe('Deleted. The agent has not read this image.');
+    expect(gallery.inspectionLead('failed', 'inspected')).toBe('Could not load. The agent has read this image.');
+    // A state word that ends in "…" ends the sentence with a full stop instead.
+    expect(gallery.inspectionLead('pending', 'uninspected')).toBe('Processing. The agent has not read this image.');
+    for (const state of Object.keys(gallery.STATE_WORDS)) {
+      const lead: string = gallery.inspectionLead(state, 'uninspected');
+      // The one word table for states (STATE_WORDS) says which state; nothing that is not saved leads with "Saved.".
+      expect(lead.startsWith(gallery.STATE_COPY[state].replace(/…$/, ''))).toBe(true);
+      if (state !== 'ready') expect(lead.startsWith('Saved.')).toBe(false);
+    }
+  });
+
   it('keeps PR #265 keyboard rules: Esc closes, arrows wrap, Home/End jump, Tab is trapped', () => {
     expect(gallery.galleryKeyAction('Escape', 0, 3)).toEqual({ type: 'close' });
     expect(gallery.galleryKeyAction('ArrowRight', 2, 3)).toEqual({ type: 'go', index: 0 });
@@ -193,28 +208,33 @@ describe('server-rendered gallery', () => {
     expect(gallery.renderBadge({})).toBe('');
   });
 
-  it('shows four thumbnails, then "+N", with every image labelled and checking until status answers', () => {
+  it('shows four thumbnails, then "+N more", with every image labelled and checking until status answers', () => {
     const html = gallery.renderStrip({ media: { version: 1, attachments: refs(6, 'uninspected') }, title: 'Fix the parser' });
-    expect(html.match(/class="obs-media-thumb"/g)).toHaveLength(4);
-    expect(html).toContain('>+2</button>');
+    // The thumbnails are the app's Button (G14), so their class list starts with the Button's own classes.
+    expect(html.match(/class="[^"]*\bobs-media-thumb\b[^"]*"/g)).toHaveLength(4);
+    expect(html).toContain('>+2 more</button>');
     expect(html).toContain('6 images');
-    expect(html).toContain('6 not inspected');
-    expect(html).toContain('Open image 1 of 6 (event1_image1): Checking…');
+    // How many the agent has not read, in words, and what the corner ring means (c-obs-media).
+    expect(html).toContain('6 not read by the agent');
+    expect(html).toContain('A ring in the corner marks an image the agent has not read.');
+    expect(html).toContain('Open image 1 of 6 (event1_image1): Checking…, not read by the agent');
     // No pixels before readiness is known, and never a storage or file path.
     expect(html).not.toContain('<img');
-    for (const forbidden of ['/Users/', 'file://', 'http://', 'https://', 'source_pointer']) expect(html).not.toContain(forbidden);
+    // The eye mark is an inline SVG, whose namespace is the one http:// address the markup may hold.
+    const withoutSvgNamespace = html.replaceAll('xmlns="http://www.w3.org/2000/svg"', '');
+    for (const forbidden of ['/Users/', 'file://', 'http://', 'https://', 'source_pointer']) expect(withoutSvgNamespace).not.toContain(forbidden);
   });
 
   it('a card preview counts the request’s images and sends "+N" to the drawer', () => {
     const preview = { version: 1, attachments: refs(4) };
     const card = gallery.renderStrip({ media: preview, total: 9, title: 'Card', onMore: () => {} });
     expect(card).toContain('9 images');
-    expect(card).toContain('>+5</button>');
+    expect(card).toContain('>+5 more</button>');
     expect(card).toContain('Open image 1 of 9');
     // A preview does not claim how many of the request's images were inspected.
     expect(gallery.renderStrip({ media: { version: 1, attachments: refs(4, 'uninspected') }, total: 9, title: 'Card', onMore: () => {} })).not.toContain('obs-media-tag');
     // Without somewhere to send it, "+N" is not offered.
-    expect(gallery.renderStrip({ media: preview, total: 9, title: 'Card' })).not.toContain('>+5<');
+    expect(gallery.renderStrip({ media: preview, total: 9, title: 'Card' })).not.toContain('+5 more');
     expect(gallery.renderBadge({ media: preview, count: 9 })).toContain('aria-label="9 images"');
     expect(gallery.renderBadge({ media: { version: 1, attachments: refs(1), overflow: true } })).toContain('1 image (more on the source event)');
   });
