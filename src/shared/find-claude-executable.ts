@@ -75,10 +75,13 @@ interface CachedResolution {
 }
 
 let cachedResolution: CachedResolution | null = null;
+/** Concurrent cache misses for the same setting share one set of CLI probes. */
+const pendingResolutions = new Map<string, Promise<string>>();
 
 /** Test hook: clear the resolution cache between cases. */
 export function resetClaudeExecutableCache(): void {
   cachedResolution = null;
+  pendingResolutions.clear();
 }
 
 /**
@@ -436,16 +439,30 @@ export async function findClaudeExecutable(logComponent: Component = 'SDK'): Pro
   }
   cachedResolution = null;
 
+  const pending = pendingResolutions.get(configuredSetting);
+  if (pending) return pending;
+  const resolution = resolveClaudeExecutable(configuredSetting, logComponent);
+  pendingResolutions.set(configuredSetting, resolution);
+  try {
+    return await resolution;
+  } finally {
+    // Do not retain a failed resolution: installing/updating the CLI must
+    // take effect on the next call. A cache reset may have started a new one.
+    if (pendingResolutions.get(configuredSetting) === resolution) pendingResolutions.delete(configuredSetting);
+  }
+}
+
+async function resolveClaudeExecutable(configuredSetting: string, logComponent: Component): Promise<string> {
   // --- 1. Explicit configured path ----------------------------------------
-  if (settings.CLAUDE_CODE_PATH) {
+  if (configuredSetting) {
     // A user who types `~/.local/bin/claude` in settings.json expects the shell
     // convention, but nothing here runs through a shell — existsSync and
     // posix_spawn take the string verbatim, so a literal `~` fails with ENOENT.
     // Expand it defensively at read time so both the existence check and every
     // probe spawn see a real absolute path (SettingsRoutes also normalizes on
     // write; this covers files edited by hand).
-    const configuredPath = expandTilde(settings.CLAUDE_CODE_PATH, _internals.homedir());
-    const describedPath = describeConfiguredPath(settings.CLAUDE_CODE_PATH, configuredPath);
+    const configuredPath = expandTilde(configuredSetting, _internals.homedir());
+    const describedPath = describeConfiguredPath(configuredSetting, configuredPath);
     if (!_internals.existsSync(configuredPath)) {
       throw new Error(
         `CLAUDE_CODE_PATH is set to ${describedPath} but the file does not exist.`

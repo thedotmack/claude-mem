@@ -382,6 +382,27 @@ describe('findClaudeExecutable explicit CLAUDE_CODE_PATH', () => {
 });
 
 describe('findClaudeExecutable caching', () => {
+  it('shares discovery and capability probes for concurrent cold-cache calls', async () => {
+    installFakes();
+    whichOutput = '/a/claude\n';
+    fakeClis.set('/a/claude', { version: '2.1.176', supportsDontAsk: true });
+    const paths = await Promise.all(Array.from({ length: 8 }, () => findClaudeExecutable('SDK')));
+    expect(paths).toEqual(Array(8).fill('/a/claude'));
+    expect(probeCalls).toHaveLength(1);
+  });
+
+  it('keeps in-flight resolutions separate when the configured path changes', async () => {
+    installFakes({ settingsPath: '/custom/claude' });
+    fakeClis.set('/custom/claude', { version: '2.1.150', supportsDontAsk: true });
+    fakeClis.set('/other/claude', { version: '2.1.151', supportsDontAsk: true });
+    const first = findClaudeExecutable('SDK');
+    installFakes({ settingsPath: '/other/claude' });
+    const second = findClaudeExecutable('SDK');
+    const repeated = findClaudeExecutable('SDK');
+    expect(await Promise.all([first, second, repeated])).toEqual(['/custom/claude', '/other/claude', '/other/claude']);
+    expect(probeCalls.map(call => call.path)).toEqual(['/custom/claude', '/other/claude']);
+  });
+
   it('caches a successful resolution and skips re-probing', async () => {
     installFakes();
     whichOutput = '/a/claude\n';

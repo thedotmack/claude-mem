@@ -53,7 +53,7 @@ const fixture = String.raw`
   } }));
   const envModule = await import('./src/shared/EnvManager.ts');
   mock.module('./src/shared/EnvManager.ts', () => ({ ...envModule, buildIsolatedEnvWithFreshOAuth: async () => ({ PATH: process.env.PATH }) }));
-  const { _internals, resetClaudeExecutableCache } = await import('./src/shared/find-claude-executable.ts');
+  const { _internals, findClaudeExecutable, resetClaudeExecutableCache } = await import('./src/shared/find-claude-executable.ts');
   _internals.loadSettings = () => ({ CLAUDE_CODE_PATH: cliPath });
   const { KnowledgeAgent } = await import('./src/services/worker/knowledge/KnowledgeAgent.ts');
   const { CorpusStore } = await import('./src/services/worker/knowledge/CorpusStore.ts');
@@ -107,6 +107,35 @@ const fixture = String.raw`
       outcomes.push({ scenario, status: response.status, body, probes, sdkCalls,
         diskSession: store.read('fixture').session_id });
     }
+
+    // Concurrent observers use the same resolver before waiting for an SDK
+    // slot. Count actual CLI children, while health still releases the probe.
+    resetClaudeExecutableCache();
+    for (const name of ['started', 'released', 'probes.jsonl']) rmSync(join(directory, name), { force: true });
+    writeFileSync(cliPath, ${JSON.stringify(cliProgram)}, { mode: 0o755 });
+    writeFileSync(join(directory, 'mode'), 'capable');
+    const parallel = Promise.all(Array.from({ length: 8 }, () => findClaudeExecutable('SDK')));
+    const deadline = Date.now() + 5000;
+    while (!existsSync(join(directory, 'started')) && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    if (!existsSync(join(directory, 'started'))) throw new Error('Concurrent CLI probe did not start');
+    await fetch(origin + '/health');
+    const paths = await parallel;
+    const readProbes = () => readFileSync(join(directory, 'probes.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
+    outcomes.push({ scenario: 'concurrent', paths, probes: readProbes() });
+
+    // A shared failure is not a negative cache: updating the same executable
+    // must let the next request retry without a worker restart.
+    resetClaudeExecutableCache();
+    rmSync(join(directory, 'probes.jsonl'), { force: true });
+    writeFileSync(join(directory, 'mode'), 'incompatible');
+    const failed = await Promise.allSettled(Array.from({ length: 4 }, () => findClaudeExecutable('SDK')));
+    const failureProbes = readProbes();
+    writeFileSync(join(directory, 'mode'), 'capable');
+    const recovered = await findClaudeExecutable('SDK');
+    outcomes.push({ scenario: 'concurrent-failure', errors: failed.map(result => result.status === 'rejected' ? String(result.reason) : null),
+      failureProbes, paths: [recovered], probes: readProbes() });
   } finally {
     await new Promise(resolve => server.close(resolve));
   }
@@ -120,6 +149,9 @@ interface Outcome {
   probes: Array<{ args: string[]; healthServedDuringProbe?: boolean }>;
   sdkCalls: Array<{ path: string; permissionMode: string; tools: string[]; allowedTools: string[] }>;
   diskSession: string | null;
+  paths?: string[];
+  errors?: Array<string | null>;
+  failureProbes?: Array<{ args: string[] }>;
 }
 
 // POSIX executable fixtures exercise real child processes; Windows discovery
@@ -179,5 +211,23 @@ describe.skipIf(process.platform === 'win32')('knowledge CLI probes and concurre
     expect(result.status).toBe(500);
     expect(result.sdkCalls).toEqual([]);
     expect(result.body.error).toContain('ENOENT');
+  });
+
+  it('shares one native capability process across concurrent observer resolutions', () => {
+    const result = outcome('concurrent');
+    expect(result.paths).toHaveLength(8);
+    expect(new Set(result.paths).size).toBe(1);
+    expect(result.probes).toHaveLength(1);
+    expect(result.probes[0].args).toEqual(['--permission-mode', 'dontAsk', '--version']);
+    expect(result.probes[0].healthServedDuringProbe).toBe(true);
+  });
+
+  it('shares a native failure but retries the same path after the executable is updated', () => {
+    const result = outcome('concurrent-failure');
+    expect(result.errors).toHaveLength(4);
+    expect(result.errors!.every(error => error?.includes('too old'))).toBe(true);
+    expect(result.failureProbes!.map(probe => probe.args)).toEqual([['--permission-mode', 'dontAsk', '--version'], ['--version']]);
+    expect(result.paths![0].endsWith('claude with spaces')).toBe(true);
+    expect(result.probes).toHaveLength(3);
   });
 });
