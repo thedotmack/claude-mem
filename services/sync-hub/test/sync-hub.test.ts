@@ -45,6 +45,10 @@ import {
 	tombstoneOp,
 } from "./content-v2-helpers";
 
+// These assertions exercise projection outcomes over real workerd/Miniflare HTTP.
+// Keep scheduling headroom; the timeout-specific cases below retain 5ms/10ms.
+const PROJECTION_HTTP_TEST_TIMEOUT_MS = 2_000;
+
 function hub(name: string) {
 	return env.SYNC_HUB.getByName(name);
 }
@@ -552,7 +556,7 @@ describe("projection checkpoint, lease fencing, and launch log retention", () =>
 		const startedAt = 10_000;
 		const result = await drainProjection(projectionEnv(mode), userId, pushed.head_seq, {
 			now: () => startedAt,
-			fetchTimeoutMs: 100,
+			fetchTimeoutMs: PROJECTION_HTTP_TEST_TIMEOUT_MS,
 			...(mode === "network" ? {
 				fetchImpl: async () => { throw new Error("simulated network disconnect"); },
 			} : {}),
@@ -616,7 +620,7 @@ describe("projection checkpoint, lease fencing, and launch log retention", () =>
 		// At expiry the successor safely replays from the unchanged checkpoint.
 		const replay = await drainProjection(projectionEnv("success"), userId, pushed.head_seq, {
 			now: () => startedAt + PROJECTION_LEASE_MS,
-			fetchTimeoutMs: 100,
+			fetchTimeoutMs: PROJECTION_HTTP_TEST_TIMEOUT_MS,
 		});
 		expect(replay).toEqual({ ok: true, projectedSeq: pushed.head_seq });
 		expect((await stub.getProjectionState()).projected_seq).toBe(pushed.head_seq);
@@ -630,7 +634,7 @@ describe("projection checkpoint, lease fencing, and launch log retention", () =>
 			const startedAt = 20_000;
 			const result = await drainProjection(projectionEnv(mode), userId, pushed.head_seq, {
 				now: () => startedAt,
-				fetchTimeoutMs: 100,
+				fetchTimeoutMs: PROJECTION_HTTP_TEST_TIMEOUT_MS,
 			});
 			if (mode === "success") expect(result).toEqual({ ok: true, projectedSeq: pushed.head_seq });
 			else expect(result).toMatchObject({ ok: false, httpStatus: 409, retryable: false });
@@ -689,7 +693,7 @@ describe("projection checkpoint, lease fencing, and launch log retention", () =>
 		} as unknown as Env;
 		const result = await drainProjection(ambiguousEnv, userId, pushed.head_seq, {
 			now: () => startedAt,
-			fetchTimeoutMs: 100,
+			fetchTimeoutMs: PROJECTION_HTTP_TEST_TIMEOUT_MS,
 			fetchImpl: async (_input, init) => {
 				const request = JSON.parse(String(init?.body)) as { epoch: string; through_seq: string };
 				return Response.json({
@@ -750,7 +754,7 @@ describe("projection checkpoint, lease fencing, and launch log retention", () =>
 		} as unknown as Env;
 
 		const result = await drainProjection(budgetEnv, userId, pushed.head_seq, {
-			fetchTimeoutMs: 100,
+			fetchTimeoutMs: PROJECTION_HTTP_TEST_TIMEOUT_MS,
 		});
 		expect(result).toEqual({ ok: true, projectedSeq: pushed.head_seq });
 		expect(counts).toEqual({
@@ -788,7 +792,7 @@ describe("projection lease after a drain stops", () => {
 		const client = new AbortController();
 
 		const result = await drainProjection(hookedEnv(stub, { afterCheckpoint: () => client.abort() }), userId, pushed.head_seq, {
-			fetchTimeoutMs: 100,
+			fetchTimeoutMs: PROJECTION_HTTP_TEST_TIMEOUT_MS,
 			clientSignal: client.signal,
 		});
 
@@ -803,7 +807,7 @@ describe("projection lease after a drain stops", () => {
 		const pushed = ok(await stub.pushOps("dev-a", [await observationOp("1")]));
 
 		const result = await drainProjection(projectionEnv("success"), userId, pushed.head_seq, {
-			fetchTimeoutMs: 100,
+			fetchTimeoutMs: PROJECTION_HTTP_TEST_TIMEOUT_MS,
 			clientSignal: AbortSignal.abort(),
 		});
 
@@ -836,7 +840,7 @@ describe("projection lease after a drain stops", () => {
 
 		const result = await drainProjection(projectionEnv("success"), userId, pushed.head_seq, {
 			now: () => 31_000,
-			fetchTimeoutMs: 100,
+			fetchTimeoutMs: PROJECTION_HTTP_TEST_TIMEOUT_MS,
 		});
 
 		expect(result).toMatchObject({ ok: false, error: "projection_busy", retryAfterSeconds: 60 });
