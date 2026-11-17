@@ -119,6 +119,8 @@ export const SKIP_SUMMARY_TAG = /<skip_summary(?:\s+reason\s*=\s*(?:"([^"]*)"|'(
  * pairing its terminator with a bare opener in an earlier observation.
  */
 const XML_LITERAL_PATTERN = /<!\[CDATA\[[\s\S]*?\]\]>|<!--(?:(?!<!--)[\s\S])*?-->/g;
+/** Element start, end and self-closing tags; escaped `&lt;br/&gt;` is not a tag. */
+const XML_ELEMENT_TAG_PATTERN = /<\/?[A-Za-z_][\w-]*\b[^>]*>/g;
 
 export function maskXmlLiteralMarkup(text: string): string {
   return text.replace(XML_LITERAL_PATTERN,
@@ -151,13 +153,17 @@ export function summaryFieldsHaveText(
     const match = new RegExp(elementPattern(field), 'i').exec(markup);
     if (!match) return false;
     const value = originalElementBody(body, match);
+    // Markup alone (`<br/>`, `<p></p>`) is not character data. Tags are removed
+    // only outside CDATA, so a literal `<![CDATA[<br/>]]>` example still counts.
+    const segmentHasText = (segment: string) =>
+      decodeXmlReferences(segment.replace(XML_ELEMENT_TAG_PATTERN, '')).trim().length > 0;
     let cursor = 0;
     for (const literal of value.matchAll(XML_LITERAL_PATTERN)) {
-      if (decodeXmlReferences(value.slice(cursor, literal.index)).trim()) return true;
+      if (segmentHasText(value.slice(cursor, literal.index))) return true;
       if (literal[0].startsWith('<![CDATA[') && literal[0].slice(9, -3).trim()) return true;
       cursor = literal.index + literal[0].length;
     }
-    return decodeXmlReferences(value.slice(cursor)).trim().length > 0;
+    return segmentHasText(value.slice(cursor));
   });
 }
 
@@ -403,7 +409,7 @@ function extractTypeField(content: string): string | null {
     return stray ? stray[1] : null;
   }
 
-  const value = decodeXmlReferences(originalElementBody(content, match).replace(/<\/?[A-Za-z_][\w-]*\b[^>]*>/g, '')).trim();
+  const value = decodeXmlReferences(originalElementBody(content, match).replace(XML_ELEMENT_TAG_PATTERN, '')).trim();
   return value === '' ? null : value;
 }
 

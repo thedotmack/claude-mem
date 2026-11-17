@@ -75,6 +75,10 @@ describe('generated summaries need progress content before storage', () => {
     ['whitespace CDATA', '<completed><![CDATA[ \t\n ]]></completed>'],
     ['comment only', '<investigated><!-- not progress --></investigated>'],
     ['comments mixed with empty literals', '<request>Private request text</request><next_steps>Private future plan</next_steps><learned><!-- hidden --><![CDATA[ ]]>&#32;</learned>'],
+    ['markup-only notes', '<request>Private request text</request><notes><br/></notes>'],
+    ['an empty paragraph element', '<notes><p></p></notes>'],
+    ['a self-closing element in completed', '<completed><x/></completed>'],
+    ['markup around a comment', '<investigated><p><!-- hidden --></p> <br /></investigated>'],
   ]) {
     it(`ends ${name} without storing, announcing success, or requesting a retry`, async () => {
       await claimSummary();
@@ -119,6 +123,8 @@ describe('generated summaries need progress content before storage', () => {
     ['notes', '<!-- hidden -->Actual progress', '<!-- hidden -->Actual progress'],
     ['notes', '<![CDATA[&#32;]]>', '<![CDATA[&#32;]]>'],
     ['notes', '&lt;![CDATA[]]&gt;', '<![CDATA[]]>'],
+    ['notes', '&lt;br/&gt;', '<br/>'],
+    ['notes', '<![CDATA[<br/>]]>', '<![CDATA[<br/>]]>'],
   ]) {
     it(`retains sparse ${field} content: ${expected}`, async () => {
       await claimSummary();
