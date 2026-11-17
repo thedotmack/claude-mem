@@ -15,11 +15,12 @@ const realWorkerUtilsSnapshot = { ...realWorkerUtils };
 
 const loggerWarnCalls: unknown[][] = [];
 const loggerErrorCalls: unknown[][] = [];
+const loggerDebugCalls: unknown[][] = [];
 
 mock.module('../../src/utils/logger.js', () => ({
   logger: {
     info: () => {},
-    debug: () => {},
+    debug: (...args: unknown[]) => { loggerDebugCalls.push(args); },
     warn: (...args: unknown[]) => { loggerWarnCalls.push(args); },
     error: (...args: unknown[]) => { loggerErrorCalls.push(args); },
     formatTool: (toolName: string, toolInput?: any) => toolInput ? `${toolName}(...)` : toolName,
@@ -500,6 +501,35 @@ describe('updateFolderClaudeMdFiles', () => {
     for (const folder of folders) {
       expect(existsSync(join(folder, 'CLAUDE.md'))).toBe(true);
     }
+  });
+
+  it('keeps the pool writing the other folders when one folder fails', async () => {
+    const folders = Array.from({ length: 10 }, (_, i) => join(tempDir, `pool-fail-${i}`));
+    for (const folder of folders) mkdirSync(folder, { recursive: true });
+    const failing = folders[0];
+
+    global.fetch = mock(async (url: string) => {
+      await new Promise(resolve => setTimeout(resolve, 5));
+      if (String(url).includes(encodeURIComponent(failing))) {
+        return { ok: true, json: () => Promise.reject(new Error('Unexpected token')) } as Response;
+      }
+      return {
+        ok: true,
+        json: () => Promise.resolve({ content: [{ text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |' }] })
+      } as Response;
+    });
+    loggerDebugCalls.length = 0;
+
+    await expect(updateFolderClaudeMdFiles(folders.map(folder => join(folder, 'file.ts')), 'pool-fail-project'))
+      .resolves.toBeUndefined();
+
+    expect(existsSync(join(failing, 'CLAUDE.md'))).toBe(false);
+    for (const folder of folders.slice(1)) {
+      expect(existsSync(join(folder, 'CLAUDE.md'))).toBe(true);
+    }
+    const finished = loggerDebugCalls.filter(args => args[1] === 'Finished CLAUDE.md updates');
+    expect(finished.length).toBe(1);
+    expect((finished[0][2] as { folderCount?: number }).folderCount).toBe(10);
   });
 
   it('should handle API errors gracefully (404 response)', async () => {
