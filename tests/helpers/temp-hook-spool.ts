@@ -33,9 +33,9 @@ export function useTempHookSpoolDataDir(): { dataDir: string; restore: () => voi
   };
 }
 
-export function spooledEntries(kind?: HookSpoolKind): HookSpoolEntry[] {
+export async function spooledEntries(kind?: HookSpoolKind): Promise<HookSpoolEntry[]> {
   // Compatibility name for handler assertions: inference is captured live;
   // only metadata events are read from the durable spool.
-  const entries = [...new HookSpool().entries(), ...liveEntries].sort((a, b) => a.enqueuedAtEpochMs - b.enqueuedAtEpochMs);
+  const entries = [...await new HookSpool().entries(), ...liveEntries].sort((a, b) => a.enqueuedAtEpochMs - b.enqueuedAtEpochMs);
   return kind ? entries.filter(entry => entry.kind === kind) : entries;
 }

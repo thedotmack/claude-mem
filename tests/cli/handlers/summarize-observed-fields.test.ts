@@ -112,10 +112,10 @@ afterAll(() => {
   mock.module('../../../src/shared/worker-utils.js', () => realWorkerUtilsSnapshot);
 });
 
-function postedBody(): any {
+async function postedBody(): Promise<any> {
   expect(awaitedWorkerCallLog).toHaveLength(0);
   expect(nudgeLog).toEqual([]);
-  const entries = spooledEntries('summarize');
+  const entries = (await spooledEntries('summarize'));
   expect(entries).toHaveLength(1);
   return entries[0].payload;
 }
@@ -131,7 +131,7 @@ describe('summarizeHandler — observed model + billing in the spooled summarize
     });
 
     expect(result.continue).toBe(true);
-    const body = postedBody();
+    const body = (await postedBody());
     expect(body.observedModel).toBe('claude-test-model');
     expect(typeof body.observedBilling).toBe('string');
     expect(body.observedBilling).toBe('max');
@@ -148,7 +148,7 @@ describe('summarizeHandler — observed model + billing in the spooled summarize
       transcriptPath: '/tmp/cursor.jsonl',
     });
 
-    const body = postedBody();
+    const body = (await postedBody());
     expect(body.observedModel).toBe('claude-test-model');
     expect(body.observedBilling).toBeUndefined();
     expect(billingDetectCallCount).toBe(0);
@@ -165,7 +165,7 @@ describe('summarizeHandler — observed model + billing in the spooled summarize
       lastAssistantMessage: 'Codex answer',
     });
 
-    const body = postedBody();
+    const body = (await postedBody());
     expect(body.lastAssistantMessage).toBe('Codex answer');
     expect(body.observedModel).toBe('claude-test-model');
     expect(modelExtractCallCount).toBe(1);
@@ -181,7 +181,7 @@ describe('summarizeHandler — observed model + billing in the spooled summarize
       lastAssistantMessage: '',
     });
 
-    const body = postedBody();
+    const body = (await postedBody());
     expect(body.lastAssistantMessage).toBe('A normal assistant turn.');
     expect(body.observedModel).toBe('claude-test-model');
     expect(modelExtractCallCount).toBe(1);
@@ -197,7 +197,7 @@ describe('summarizeHandler — observed model + billing in the spooled summarize
       lastAssistantMessage: '  \n\t ',
     });
 
-    const body = postedBody();
+    const body = (await postedBody());
     expect(body.lastAssistantMessage).toBe('A normal assistant turn.');
     expect(modelExtractCallCount).toBe(1);
   });
@@ -211,7 +211,7 @@ describe('summarizeHandler — observed model + billing in the spooled summarize
       lastAssistantMessage: 'Codex answer',
     });
 
-    const body = postedBody();
+    const body = (await postedBody());
     expect(body.observedModel).toBeUndefined();
     expect(body.observedBilling).toBeUndefined();
     expect(modelExtractCallCount).toBe(0);
