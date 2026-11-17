@@ -6,7 +6,7 @@ icon: feather
 
 Connect Hermes One to Claude-Mem's MCP tools to find earlier project decisions and explicitly save a note for another chat.
 
-This guide covers the community [Hermes One / Hermes Desktop](https://github.com/fathah/hermes-desktop), the target of [integration issue #5940](https://github.com/thedotmack/claude-mem/issues/5940). It does not establish compatibility with the separate Nous Desktop product.
+This guide covers the community Hermes One / Hermes Desktop app. It does not establish compatibility with the separate Nous Desktop product.
 
 ## Verified scope
 
@@ -155,10 +155,3 @@ npx claude-mem hermes uninstall
 It removes only the entry it wrote, using its receipt, and keeps other settings and all memories. For a manual setup, restore only the `mcp_servers.claude-mem` entry you changed, or remove it if this setup created it. Restore the previous `memory.provider` only if you changed it and it has not since been intentionally changed again. Keep all other settings and entries. Restart the backend and verify the removed connection no longer advertises its tools.
 
 Do not delete Desktop profiles, native memory files, Claude-Mem databases or saved observations. A manual setup has no installer ownership receipt, so `hermes uninstall` does not own it; roll it back by hand. Manual rollback matched the disposable configuration snapshot, and all four saved test records remained readable afterward. 
-
-## Official references
-
-- [Pinned Desktop backend and chat routing](https://github.com/fathah/hermes-desktop/blob/8fe1828e6a82aabb1e5b85ebe29b4690756a216c/src/main/hermes.ts)
-- [Pinned Agent MCP transport and supported per-server cwd](https://github.com/NousResearch/hermes-agent/blob/3b421578588243f920886e6fe79a6faa87ea026e/tools/mcp_tool_transport.py)
-- [Pinned Agent profile and checkout configuration](https://github.com/NousResearch/hermes-agent/blob/3b421578588243f920886e6fe79a6faa87ea026e/website/docs/user-guide/profiles.md)
-- [Pinned Agent OAuth command options](https://github.com/NousResearch/hermes-agent/blob/3b421578588243f920886e6fe79a6faa87ea026e/hermes_cli/subcommands/auth.py)
