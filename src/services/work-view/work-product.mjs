@@ -152,7 +152,8 @@ function commitSubjects(command) {
     // Only options before this command's unquoted separator belong to it.
     // Keep the remainder available for a heredoc body, but never borrow a
     // later tag (or another command)'s message as the commit's subject.
-    const argumentEnd = invocation.match(/^(?:[^"'\\;&|\n]|\\[\s\S]|"(?:[^"\\]|\\[\s\S])*"|'[^']*')*/)[0].length;
+    // Consume redirection operators first: their & or | does not end a command.
+    const argumentEnd = invocation.match(/^(?:>[&|]|<&|&>>?|[^"'\\;&|\n]|\\[\s\S]|"(?:[^"\\]|\\[\s\S])*"|'[^']*')*/)[0].length;
     const matchArgument = pattern => {
       const match = invocation.match(pattern);
       return match && match.index < argumentEnd ? match : null;

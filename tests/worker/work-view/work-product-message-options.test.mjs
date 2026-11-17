@@ -17,6 +17,11 @@ const cases = [
   ['short option control', "-m 'fix: preserve short message'", 'fix: preserve short message'],
   ['clustered option control', "-qm 'fix: preserve clustered message'", 'fix: preserve clustered message'],
   ['long literal shell separators', "--message='fix: preserve ; and && and |'", 'fix: preserve ; and && and |'],
+  ['duplicated output descriptor', "2>&1 -m 'fix: descriptor redirection'", 'fix: descriptor redirection'],
+  ['duplicated input descriptor', "3<&0 --message='fix: input descriptor'", 'fix: input descriptor'],
+  ['combined output redirection', "&>/dev/null --message 'fix: combined redirect'", 'fix: combined redirect'],
+  ['combined append redirection', "&>>message-output.log --message 'fix: append redirect'", 'fix: append redirect'],
+  ['clobber output redirection', ">|/dev/null --message 'fix: clobber redirect'", 'fix: clobber redirect'],
   ['heredoc before long tag message', "-F - <<'EOF'\nfix: commit before release tag\nEOF", 'fix: commit before release tag', "\ngit tag -a v1 --message 'Release tag'\n"],
   ['heredoc before substituted tag message', "-F - <<'EOF'\nfix: commit before substituted tag\nEOF", 'fix: commit before substituted tag', '\ngit tag -a v1 --message="$(cat <<\'TAG\'\nRelease tag\nTAG\n)"\n'],
 ];
