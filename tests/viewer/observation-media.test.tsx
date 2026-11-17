@@ -64,7 +64,10 @@ describe('thumbnail strip', () => {
     expect(html).toContain('Downloading…');
     expect(html).not.toContain('Failed');
     expect(html).toContain('Loading…');
-    expect(html.match(/not inspected/g)).toHaveLength(3);
+    // One line under the strip replaces the tag on each picture: the kind and how many were only stored.
+    expect(html).not.toContain('not inspected');
+    expect(html).toContain(' · screenshots');
+    expect(html).toContain(' · 5 stored only');
     for (const forbidden of FORBIDDEN) expect(html).not.toContain(forbidden);
   });
 

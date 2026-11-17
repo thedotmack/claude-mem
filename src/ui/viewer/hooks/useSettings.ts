@@ -1,18 +1,36 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useI18n } from '../../i18n';
-import { translateSettingsStatus } from '../../i18n/errors';
 import { Settings } from '../types';
 import { DEFAULT_SETTINGS } from '../constants/settings';
 import { API_ENDPOINTS } from '../constants/api';
-import { TIMING } from '../constants/timing';
 import { describeSaveFailure } from '../utils/save-error';
+
+/**
+ * How the last save ended, as the Settings dialog shows it. One writer: saveSettings() and submitSettings() below,
+ * through `setSaveStatus`; the dialog words it through SAVE_OUTCOME_WORDS (ContextSettingsModal.tsx), a Record over it.
+ *
+ *   none ──the worker accepts a save──> saved
+ *   none ──the worker refuses it, or cannot be reached──> failed
+ *   saved | failed ──the next Save starts──> none
+ *
+ * It was read from a ✓ or ✗ inside the translated status text, so a translation without the glyph would have
+ * dropped "Saved at …" and "Could not save settings.".
+ */
+export const SAVE_OUTCOMES = ['none', 'saved', 'failed'] as const;
+export type SaveOutcome = (typeof SAVE_OUTCOMES)[number];
+
+export interface SaveStatus {
+  outcome: SaveOutcome;
+  /** Why the save failed, as the worker or the network said it (shown under Details); null unless `failed`. */
+  reason: string | null;
+}
+
+export const NO_SAVE_STATUS: SaveStatus = { outcome: 'none', reason: null };
 
 export interface SubmitSettingsDependencies {
   fetchImpl: typeof fetch;
   setSettings: (settings: Settings) => void;
-  setSaveStatus: (status: string) => void;
+  setSaveStatus: (status: SaveStatus) => void;
   setIsSaving: (isSaving: boolean) => void;
-  setStatusTimeout?: (callback: () => void, delay: number) => void;
 }
 
 /**
@@ -40,7 +58,7 @@ export async function submitSettings(
   });
 
   if (!response.ok) {
-    deps.setSaveStatus(await describeSaveFailure(response));
+    deps.setSaveStatus({ outcome: 'failed', reason: await describeSaveFailure(response) });
     deps.setIsSaving(false);
     return;
   }
@@ -49,13 +67,9 @@ export async function submitSettings(
 
   if (result.success) {
     deps.setSettings(newSettings);
-    deps.setSaveStatus('✓ Saved');
-    (deps.setStatusTimeout ?? setTimeout)(
-      () => deps.setSaveStatus(''),
-      TIMING.SAVE_STATUS_DISPLAY_DURATION_MS,
-    );
+    deps.setSaveStatus({ outcome: 'saved', reason: null });
   } else {
-    deps.setSaveStatus(`✗ Error: ${result.error}`);
+    deps.setSaveStatus({ outcome: 'failed', reason: `✗ Error: ${result.error}` });
   }
 }
 
@@ -65,29 +79,31 @@ export async function saveSettings(
   loaded?: Settings,
 ): Promise<void> {
   deps.setIsSaving(true);
-  deps.setSaveStatus('Saving...');
+  // A new save starts from no outcome, so "Saved at …" and "Could not save settings." always describe this one.
+  deps.setSaveStatus(NO_SAVE_STATUS);
 
   try {
     await submitSettings(newSettings, deps, loaded);
   } catch (error) {
     console.error('Failed to save settings:', error);
-    deps.setSaveStatus(`✗ Error: ${error instanceof Error ? error.message : 'Network error'}`);
+    deps.setSaveStatus({ outcome: 'failed', reason: `✗ Error: ${error instanceof Error ? error.message : 'Network error'}` });
   }
 
   deps.setIsSaving(false);
 }
 
 export function useSettings() {
-  const { t } = useI18n();
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   // `settings` holds DEFAULT_SETTINGS until the first GET succeeds. A save
   // before then would post those defaults over settings.json (provider,
   // worker port, blank API keys), so the modal keeps Save off until loaded.
   const [isLoaded, setIsLoaded] = useState(false);
+  // Why the first GET failed, as the network or the worker said it ("HTTP 500"): the dialog says it could not load
+  // the settings in plain words and folds this under Details (G17).
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [isSaving, setIsSaving] = useState(false);
-  const [saveStatus, setSaveStatus] = useState('');
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>(NO_SAVE_STATUS);
 
   useEffect(() => {
     let active = true;
@@ -106,7 +122,7 @@ export function useSettings() {
       .catch(error => {
         console.error('Failed to load settings:', error);
         if (!active) return;
-        setLoadError(`Could not load settings: ${error instanceof Error ? error.message : String(error)}`);
+        setLoadError(error instanceof Error ? error.message : String(error));
       });
     return () => { active = false; };
   }, [loadAttempt]);
@@ -120,7 +136,7 @@ export function useSettings() {
   return {
     settings,
     isLoaded,
-    loadError: loadError === null ? null : translateSettingsStatus(loadError, t),
+    loadError,
     reload,
     saveSettings: (newSettings: Settings) => saveSettings(newSettings, {
       fetchImpl: fetch.bind(globalThis) as typeof fetch,
@@ -129,6 +145,6 @@ export function useSettings() {
       setIsSaving,
     }, settings),
     isSaving,
-    saveStatus: translateSettingsStatus(saveStatus, t),
+    saveStatus,
   };
 }
