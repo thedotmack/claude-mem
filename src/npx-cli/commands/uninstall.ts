@@ -96,14 +96,44 @@ function removeFromInstalledPlugins(): void {
   }
 }
 
-export function stripLegacyClaudeMemAlias(home: string = homedir()): void {
-  const candidateFiles = [
+const LEGACY_ALIAS_LINE_REGEX = /^\s*alias\s+claude-mem\s*=/;
+
+function legacyAliasCandidateFiles(home: string): string[] {
+  return [
     join(home, '.bashrc'),
     join(home, '.zshrc'),
     join(home, 'Documents', 'PowerShell', 'Microsoft.PowerShell_profile.ps1'),
   ];
+}
 
-  const aliasLineRegex = /^\s*alias\s+claude-mem\s*=/;
+/**
+ * The shell rc files still carrying a pre-12.4.7 `alias claude-mem=` line
+ * (#6228). The alias beats PATH, so it shadows the on-PATH launcher and runs
+ * the marketplace clone's CLI — and, through `start`, its worker — no matter
+ * what is installed. Read-only: `doctor` reports these files, while
+ * `install`/`update` strip them through stripLegacyClaudeMemAlias below.
+ * Unreadable files are skipped; the strip path reports its own read errors.
+ */
+export function findLegacyClaudeMemAlias(home: string = homedir()): string[] {
+  const found: string[] = [];
+  for (const filePath of legacyAliasCandidateFiles(home)) {
+    if (!existsSync(filePath)) continue;
+    try {
+      const hasAlias = readFileSync(filePath, 'utf-8')
+        .split('\n')
+        .some((line) => LEGACY_ALIAS_LINE_REGEX.test(line));
+      if (hasAlias) found.push(filePath);
+    } catch {
+      continue;
+    }
+  }
+  return found;
+}
+
+export function stripLegacyClaudeMemAlias(home: string = homedir()): void {
+  const candidateFiles = legacyAliasCandidateFiles(home);
+
+  const aliasLineRegex = LEGACY_ALIAS_LINE_REGEX;
 
   for (const filePath of candidateFiles) {
     if (!existsSync(filePath)) continue;

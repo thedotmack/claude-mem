@@ -47,6 +47,7 @@ import { findCodexExecutablePath, isCodexOnPath } from '../install/tool-path.js'
 import { getCredential } from '../../shared/EnvManager.js';
 import { buildKeyPool } from '../../shared/api-key-pool.js';
 import { resolveOpenAICompatPreset } from '../../shared/openai-compat-presets.js';
+import { findLegacyClaudeMemAlias } from './uninstall.js';
 import { treeSitterCliBinaryPath } from '../../services/smart-file-read/tree-sitter-cli-provision.js';
 import { checkTreeSitterCliLoadable, resolveTreeSitterBinPathFor, TREE_SITTER_CLI_PATH_WORKAROUND } from '../../services/smart-file-read/tree-sitter-bin-path.js';
 import { resolveDataDir } from '../../shared/paths.js';
@@ -354,6 +355,25 @@ async function probeChromaCensus(): Promise<CheckResult> {
 }
 
 const MISSING_DEPENDENCIES_SHOWN = 5;
+
+/**
+ * The "Legacy shell alias" row: a pre-12.4.7 `alias claude-mem=` in a shell rc
+ * beats PATH, so it shadows the launcher and roots the CLI in the marketplace
+ * clone (#6228). Doctor only reports it — `install`/`update` strip it.
+ * Exported for tests.
+ */
+export function legacyAliasCheck(aliasFiles: string[]): CheckResult {
+  const name = 'Legacy shell alias';
+  if (aliasFiles.length === 0) {
+    return { name, status: 'ok', detail: 'none', required: false };
+  }
+  return {
+    name,
+    status: 'warn',
+    detail: `alias claude-mem= in ${aliasFiles.join(', ')} shadows the launcher — run \`npx claude-mem install\` to remove it, then open a new shell`,
+    required: false,
+  };
+}
 
 /** The "Plugin installed" row: root, version and dependency completeness. Exported for tests. */
 export function pluginRootCheck(resolution: PluginRootResolution | null): CheckResult {
@@ -1112,6 +1132,9 @@ export async function runDoctorCommand(): Promise<void> {
   const pluginRoot = resolvePluginRoot();
   const installed = pluginRoot !== null;
   checks.push(pluginRootCheck(pluginRoot));
+
+  // 3a. A leftover pre-12.4.7 shell alias shadows the launcher (#6228).
+  checks.push(legacyAliasCheck(findLegacyClaudeMemAlias()));
 
   // 3b. tree-sitter CLI at that root: smart_search and smart_outline shell out
   // to it, and installs suppress the script that downloads it (#2910).

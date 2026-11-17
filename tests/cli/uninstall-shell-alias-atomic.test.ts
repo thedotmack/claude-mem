@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
-import { stripLegacyClaudeMemAlias } from '../../src/npx-cli/commands/uninstall.js';
+import { findLegacyClaudeMemAlias, stripLegacyClaudeMemAlias } from '../../src/npx-cli/commands/uninstall.js';
 
 // The shell rc a user already has open in an editor is not a file an uninstall
 // may truncate. The alias strip read the whole file and wrote the whole file
@@ -57,5 +57,49 @@ describe('uninstall strips the legacy shell alias atomically', () => {
 
     const after = statSync(bashrc);
     expect(after.ino).not.toBe(before.ino);
+  });
+});
+
+// Detection is what `doctor` reports and what `install`/`update` act on
+// (#6228): the same alias line, found read-only, in the same candidate files.
+describe('findLegacyClaudeMemAlias', () => {
+  let home: string;
+
+  beforeEach(() => {
+    home = mkdtempSync(path.join(tmpdir(), 'find-alias-'));
+  });
+
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  const aliasLine = 'alias claude-mem=\'bun "~/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs"\'';
+
+  it('returns nothing when no rc file exists', () => {
+    expect(findLegacyClaudeMemAlias(home)).toEqual([]);
+  });
+
+  it('returns nothing for other aliases or a commented-out claude-mem alias', () => {
+    writeFileSync(path.join(home, '.bashrc'), ['alias gs="git status"', `# ${aliasLine}`, ''].join('\n'), 'utf-8');
+    expect(findLegacyClaudeMemAlias(home)).toEqual([]);
+  });
+
+  it('names each rc file carrying the alias, indented lines included', () => {
+    const bashrc = path.join(home, '.bashrc');
+    const zshrc = path.join(home, '.zshrc');
+    writeFileSync(bashrc, [aliasLine, ''].join('\n'), 'utf-8');
+    writeFileSync(zshrc, ['export EDITOR=vim', `  ${aliasLine}`, ''].join('\n'), 'utf-8');
+
+    expect(findLegacyClaudeMemAlias(home)).toEqual([bashrc, zshrc]);
+  });
+
+  it('leaves the files it reads untouched', () => {
+    const bashrc = path.join(home, '.bashrc');
+    const content = [aliasLine, ''].join('\n');
+    writeFileSync(bashrc, content, 'utf-8');
+
+    findLegacyClaudeMemAlias(home);
+
+    expect(readFileSync(bashrc, 'utf-8')).toBe(content);
   });
 });

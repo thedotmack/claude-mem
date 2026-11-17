@@ -7,6 +7,7 @@ import {
   autoUpdateCheck,
   bunRuntimeCheck,
   hookLauncherCheck,
+  legacyAliasCheck,
   observerProviderCheck,
   probeChromaDiagnostics,
   probeWorkerDependencies,
@@ -239,6 +240,21 @@ describe('npx doctor Bun runtime', () => {
     expect(bunRuntimeCheck('v1.4.1', 'darwin')).toMatchObject({ status: 'ok', detail: 'v1.4.1' });
     expect(bunRuntimeCheck('1.4.0', 'linux').status).toBe('ok');
     expect(bunRuntimeCheck(null, 'darwin').status).toBe('fail');
+  });
+});
+
+describe('npx doctor legacy shell alias', () => {
+  it('is ok when no shell rc carries the alias', () => {
+    expect(legacyAliasCheck([])).toMatchObject({ name: 'Legacy shell alias', status: 'ok', required: false });
+  });
+
+  it('warns, names the files, and points at the command that strips the alias', () => {
+    const result = legacyAliasCheck(['/home/u/.bashrc', '/home/u/.zshrc']);
+    expect(result.status).toBe('warn');
+    expect(result.required).toBe(false);
+    expect(result.detail).toContain('/home/u/.bashrc');
+    expect(result.detail).toContain('/home/u/.zshrc');
+    expect(result.detail).toContain('npx claude-mem install');
   });
 });
 

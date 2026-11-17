@@ -177,6 +177,7 @@ import { holdSpawnLock, SPAWN_LOCK_STALE_MS } from '../../shared/worker-spawn-ga
 import { readOwnedWorkerPidInfo, type PidInfo } from '../../supervisor/process-registry.js';
 import { isWorkerAutostartDisabled } from '../../shared/worker-autostart.js';
 import { isInstallRunByAutoUpdate } from '../../shared/auto-update-install-run.js';
+import { stripLegacyClaudeMemAlias } from './uninstall.js';
 import { detectInstalledIDEs } from './ide-detection.js';
 import { initialIDESelection } from './ide-detection.js';
 import { canonicalIntegrationId } from '../../shared/integration-id.js';
@@ -3290,6 +3291,13 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   // which captures nothing and tells no one, so say it here.
   const claudeCodeTooOldWarning = claudeCodeVersionTooOldWarning(detectClaudeCodeVersion());
   if (claudeCodeTooOldWarning) log.warn(claudeCodeTooOldWarning);
+
+  // A pre-12.4.7 `alias claude-mem=` in the shell rc beats PATH, so it shadows
+  // the launcher and roots the CLI — and, through `start`, the worker — in
+  // the marketplace clone (#6228). Uninstall already strips it; install and
+  // update are the commands a user carrying the alias actually runs, so strip
+  // it here too. The strip prints one line per file it rewrites.
+  stripLegacyClaudeMemAlias();
 
   const setupComplete = savedSetup.status === 'complete';
   const browserSetup = deferSetup || resumeSetup || options.setup === 'browser' || shouldUseBrowserSetup({
