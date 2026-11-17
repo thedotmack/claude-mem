@@ -381,6 +381,18 @@ describe('session-start card: the hooks', () => {
     expect(session.record.logs).toEqual([]);
   });
 
+  it('keeps drawing the card before it when a compaction sends no banner: the kept history shows it like any earlier row', async () => {
+    const session = cardInSession();
+    await session.render('any-row', 'another-plugin', { isFullscreen: true });
+    await session.classicSessionStart('startup', slot('first banner'));
+    await session.hookRowsKept();
+    // The worker did not answer in time, or the terminal output was turned off: the context hook wrote no file.
+    session.advanceClock(5_000);
+    await session.classicSessionStart('compact', null);
+    expect([session.record.placedRowIds, session.record.logs, session.record.invalidations]).toEqual([['session-start-1000'], [], 1]);
+    expect(drawnText(await session.render('session-start-1000', 'claude-mem', { isFullscreen: true }))).toBe('claude-memfirst banner');
+  });
+
   it('says so, once, when the banner cannot be shown, and keeps drawing the card before it', async () => {
     let placeAnswer: unknown = { isPlaced: true, requestId: 'r0' };
     const session = cardInSession({ placeResult: () => placeAnswer });
