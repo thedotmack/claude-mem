@@ -197,6 +197,53 @@ describe('HookSpool', () => {
     }
     expect(loggerSpies[3]).not.toHaveBeenCalled();
   });
+
+  it('warns once per file, without an error log, when a locked corrupt file cannot be quarantined', async () => {
+    const spool = new HookSpool();
+    mkdirSync(spool.directory, { recursive: true });
+    const lockedPath = join(spool.directory, 'mystery-kind.json');
+    writeFileSync(lockedPath, JSON.stringify({ kind: 'mystery', payload: { contentSessionId: 's' }, enqueuedAtEpochMs: 1 }));
+    const realRenameSync = fs.renameSync;
+    let locked = true;
+    const renameSpy = spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (locked) throw Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' });
+      return realRenameSync(from, to);
+    });
+
+    try {
+      for (let pass = 0; pass < 3; pass++) {
+        expect(await spool.drain(() => true)).toEqual({ drained: 0, retained: 0, quarantined: 0, expired: 0 });
+      }
+      expect(existsSync(lockedPath)).toBe(true);
+      expect(loggerSpies[3]).not.toHaveBeenCalled();
+      const lockedWarnings = loggerSpies[2].mock.calls.filter(call => String(call[1]).includes('is locked'));
+      expect(lockedWarnings).toHaveLength(1);
+      expect(lockedWarnings[0][2]).toMatchObject({ file: 'mystery-kind.json', reason: 'unknown kind "mystery"' });
+
+      locked = false;
+      expect(await spool.drain(() => true)).toEqual({ drained: 0, retained: 0, quarantined: 1, expired: 0 });
+      expect(readdirSync(spool.corruptDirectory)).toEqual(['mystery-kind.json']);
+    } finally {
+      renameSpy.mockRestore();
+    }
+  });
+
+  it('still reports a quarantine failure that is not a lock with an error log', async () => {
+    const spool = new HookSpool();
+    mkdirSync(spool.directory, { recursive: true });
+    writeFileSync(join(spool.directory, 'mystery-kind.json'), JSON.stringify({ kind: 'mystery', payload: { contentSessionId: 's' }, enqueuedAtEpochMs: 1 }));
+    const renameSpy = spyOn(fs, 'renameSync').mockImplementation(() => {
+      throw Object.assign(new Error('EROFS: read-only file system, rename'), { code: 'EROFS' });
+    });
+
+    try {
+      await spool.drain(() => true);
+    } finally {
+      renameSpy.mockRestore();
+    }
+    expect(loggerSpies[3]).toHaveBeenCalledTimes(1);
+    expect(loggerSpies[3].mock.calls[0][1]).toBe('Corrupt hook spool entry could not be quarantined; leaving it in place');
+  });
 });
 
 describe('migrateLegacySessionEndReplay', () => {

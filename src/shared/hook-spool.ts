@@ -206,6 +206,15 @@ const SPOOL_ENTRY_MODE = 0o600;
 const EXPIRED_DIRNAME = 'expired';
 
 /**
+ * Windows refuses a rename while another process holds the file open
+ * (antivirus, an indexer, a second worker). The next drain retries it.
+ */
+const TRANSIENT_RENAME_CODES = ['EPERM', 'EBUSY', 'EACCES'];
+
+/** Corrupt entries whose transient quarantine failure was already logged by this process. */
+const reportedTransientQuarantineFailures = new Set<string>();
+
+/**
  * A retained entry (session never became known, ingest keeps failing) older
  * than this stops being retried: it is moved to `expired/` with an error log,
  * never silently deleted.
@@ -664,6 +673,7 @@ export class HookSpool {
     try {
       mkdirSync(this.corruptDirectory, { recursive: true });
       renameSync(source, join(this.corruptDirectory, filename));
+      reportedTransientQuarantineFailures.delete(source);
       logger.error('HOOK', 'Quarantined corrupt hook spool entry', {
         file: filename,
         reason,
@@ -672,7 +682,21 @@ export class HookSpool {
       return true;
     } catch (error) {
       // ENOENT: a concurrent drain (another worker process) already moved it.
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+      const code = (error as NodeJS.ErrnoException).code ?? '';
+      if (code === 'ENOENT') {
+        reportedTransientQuarantineFailures.delete(source);
+        return false;
+      }
+      if (TRANSIENT_RENAME_CODES.includes(code)) {
+        if (!reportedTransientQuarantineFailures.has(source)) {
+          reportedTransientQuarantineFailures.add(source);
+          logger.warn('HOOK', 'Corrupt hook spool entry is locked; leaving it in place and retrying on a later drain', {
+            file: filename,
+            reason,
+          }, error instanceof Error ? error : new Error(String(error)));
+        }
+        return false;
+      }
       logger.error('HOOK', 'Corrupt hook spool entry could not be quarantined; leaving it in place', {
         file: filename,
         reason,
