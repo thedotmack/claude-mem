@@ -64,6 +64,22 @@ test('does not establish an identity when settings cannot be persisted', () => {
   expect(db.query("SELECT name FROM sqlite_master WHERE name='local_work_view_identity'").get()).toBeNull();
 });
 
+test('keeps the pinned identity when settings.json is not valid JSON, without overwriting it', () => {
+  const { db, path } = fixture();
+  const id = ensureLocalDeviceIdentity(db, path);
+  writeFileSync(path, '{ "CLAUDE_MEM_MODEL": ');
+  expect(ensureLocalDeviceIdentity(db, path)).toBe(id);
+  expect(readFileSync(path, 'utf8')).toBe('{ "CLAUDE_MEM_MODEL": ');
+});
+
+test('names settings.json when an unreadable file blocks the first identity', () => {
+  const { db, path } = fixture();
+  writeFileSync(path, '{ "CLAUDE_MEM_MODEL": ');
+  expect(() => ensureLocalDeviceIdentity(db, path)).toThrow(`Could not save the local device identity to ${path}`);
+  expect(readFileSync(path, 'utf8')).toBe('{ "CLAUDE_MEM_MODEL": ');
+  expect(db.query("SELECT name FROM sqlite_master WHERE name='local_work_view_identity'").get()).toBeNull();
+});
+
 test('concurrent pre-sync processes acquire one identity through the database lock', async () => {
   const { db, dir, path } = fixture();
   const moduleUrl = new URL('../../../src/services/sync/local-device-identity.ts', import.meta.url).href;
