@@ -205,6 +205,7 @@ export function restoreMemoryProvider(text: string, provider: string, receipt: P
 export interface McpServerEntry {
   command: string;
   args: string[];
+  cwd?: string;
   env?: Record<string, string>;
 }
 
@@ -236,6 +237,7 @@ function entryLines(name: string, entry: McpServerEntry, indent: number): string
   // JSON strings are valid YAML double-quoted scalars, whatever the path holds.
   const lines = [pad + name + ':', inner + 'command: ' + JSON.stringify(entry.command), inner + 'args:'];
   for (const arg of entry.args) lines.push(inner + '  - ' + JSON.stringify(arg));
+  if (entry.cwd !== undefined) lines.push(inner + 'cwd: ' + JSON.stringify(entry.cwd));
   if (entry.env && Object.keys(entry.env).length > 0) {
     lines.push(inner + 'env:');
     for (const [key, value] of Object.entries(entry.env)) lines.push(inner + '  ' + key + ': ' + JSON.stringify(value));

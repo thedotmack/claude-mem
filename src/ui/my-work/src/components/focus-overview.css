@@ -27,7 +27,8 @@
 .dark .focus-artwork { background: #463d36; }
 .focus-overview-heading { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: end; gap: 1rem; margin-bottom: 1.25rem; }
 .focus-artwork-control { display: inline-flex; align-items: center; gap: .5rem; color: var(--muted-foreground); font-size: .75rem; }
-.focus-artwork-control select { min-height: 44px; padding-inline: .5rem; background: var(--card); color: var(--foreground); border: 1px solid var(--border); border-radius: 7px; }
+/* Native controls carry the ≥3:1 control edge (G12): --border measured 1.53:1 dark and 1.14:1 light on the page. */
+.focus-artwork-control select { min-height: 44px; padding-inline: .5rem; background: var(--card); color: var(--foreground); border: 1px solid var(--control-edge); border-radius: 7px; }
 .focus-area-body { display: flex; flex-direction: column; align-items: start; min-width: 0; padding: 1.15rem; }
 .focus-area-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem; margin-top: auto; padding-top: .75rem; }
 .focus-area-evidence > * + * { margin-top: .75rem; }
@@ -68,7 +69,7 @@
 .cmem-setup .focus-reveal-continue { position: sticky; bottom: 1rem; justify-content: flex-end; pointer-events: none; }
 .focus-reveal-continue button { pointer-events: auto; box-shadow: 0 3px 12px #30236b24; }
 .focus-area-search { display: block; margin-bottom: 1rem; max-width: 24rem; }
-.focus-area-search input { width: 100%; min-height: 44px; padding: .6rem .8rem; border: 1px solid var(--border); border-radius: 8px; background: var(--card); color: var(--foreground); font-size: .85rem; }
+.focus-area-search input { width: 100%; min-height: 44px; padding: .6rem .8rem; border: 1px solid var(--control-edge); border-radius: 8px; background: var(--card); color: var(--foreground); font-size: .85rem; }
 .focus-area-search input:focus-visible, .focus-artwork-control select:focus-visible, .focus-overview-footer button:focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
 @media (max-width: 480px) {
   .focus-header-intro { grid-template-columns: 80px minmax(0, 1fr); gap: .75rem; }

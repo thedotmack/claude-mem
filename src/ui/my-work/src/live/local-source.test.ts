@@ -6,7 +6,7 @@ import { sampleSource } from './sample-source.ts'
 import type { ConversationContinuationEvent, MappedWorkModel, WorkModel } from './work-data-source.ts'
 import type { WorkViewOverview } from './work-view-overview.ts'
 import type { WorkViewSnapshot } from './work-view-api-types.ts'
-import { SaveRefusedError } from '../data.ts'
+import { RefreshNotStartedError, SaveRefusedError } from '../data.ts'
 import { OPEN_IN_APP_CLICK_ID_PATTERN } from '../../../../shared/conversation-continuation.ts'
 
 const SAMPLE = await sampleSource.loadWorkModel()
@@ -1077,5 +1077,26 @@ describe('continuing a conversation from this computer', () => {
       assert.equal(member in cloudServed, false, `a cloud-served page has ${member}`)
       assert.equal(member in sampleSource, false, `the sample source has ${member}`)
     }
+  })
+})
+
+describe('manual refresh', () => {
+  it('a refresh the worker refuses throws its status and its own reason, for the screen to word in the reader\'s language', async () => {
+    const withReason = harness(async () => json({ error: 'database is locked' }, 409)).local
+    await assert.rejects(withReason.refreshWork(), (error: unknown) => {
+      assert.ok(error instanceof RefreshNotStartedError)
+      assert.equal(error.status, 409)
+      assert.equal(error.workerReason, 'database is locked')
+      assert.equal(error.message, 'Refresh could not start: database is locked')
+      return true
+    })
+    const withoutReason = harness(async () => new Response('not json', { status: 503 })).local
+    await assert.rejects(withoutReason.refreshWork(), (error: unknown) => {
+      assert.ok(error instanceof RefreshNotStartedError)
+      assert.equal(error.status, 503)
+      assert.equal(error.workerReason, null)
+      assert.equal(error.message, 'Refresh could not start: the worker answered 503')
+      return true
+    })
   })
 })

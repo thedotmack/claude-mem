@@ -9,7 +9,8 @@ choose. You do not need to export a file or ask a model to rewrite your notes.
 
 ## Before you begin
 
-Use a claude-mem version that includes `npx claude-mem import`, and start your local worker with `npx claude-mem start`.
+Use a claude-mem version that includes `npx claude-mem import`. Before writing
+memories, start your local worker with `npx claude-mem start`.
 Use a source API key that can read the user or namespace you select.
 The command reads one source scope at a time; it never discovers and imports
 every account automatically. No source data is changed or deleted.
@@ -80,9 +81,10 @@ release; an older worker imports it once more.
 ## Preview and verify
 
 Add `--dry-run` to either command to fetch and validate the selected source
-without writing to Claude-Mem. It prints counts, not memory text or keys. Every
-run prints the source's own total after the first page, before it reads the
-rest.
+without writing to Claude-Mem. A preview does not need a running worker and
+does not check the worker connection or authentication. It prints counts,
+not memory text or keys. Every run prints the source's own total after the
+first page, before it reads the rest.
 
 After an import, search for a phrase from one of your memories in the viewer,
 or use `npx claude-mem search "a phrase you imported"`. Imported memories are

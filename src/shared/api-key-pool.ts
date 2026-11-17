@@ -47,7 +47,7 @@
  * within an install (so a window survives a restart) and useless outside it.
  */
 
-import { createHash, randomBytes } from 'crypto';
+import { createHash, randomBytes, randomUUID } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { paths } from './paths.js';
@@ -308,9 +308,19 @@ function persist(): void {
   try {
     mkdirSync(dirname(filePath), { recursive: true });
     // Write-then-rename so a concurrent reader never sees a half-written file.
-    const tmp = `${filePath}.${process.pid}.tmp`;
-    writeFileSync(tmp, JSON.stringify(payload, null, 2), { mode: 0o600 });
-    renameSync(tmp, filePath);
+    // Random name + exclusive create (see #5145): a predictable temp name can
+    // be pre-planted as a symlink, and the write would then land on the link's
+    // target while the rename only replaced the link.
+    const tmp = `${filePath}.${randomUUID()}.tmp`;
+    try {
+      writeFileSync(tmp, JSON.stringify(payload, null, 2), { mode: 0o600, flag: 'wx' });
+      renameSync(tmp, filePath);
+    } catch (error) {
+      // A failed write or rename (Windows EPERM/EBUSY while the target is held)
+      // would otherwise leave this randomly named temp behind on every attempt.
+      try { unlinkSync(tmp); } catch { /* the temp may not exist */ }
+      throw error;
+    }
   } catch (err) {
     // Losing the window costs one extra doomed request after a restart. It is
     // not worth failing an observation over.

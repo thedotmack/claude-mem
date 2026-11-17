@@ -20,7 +20,7 @@ import { expandHome, paths } from '../../shared/paths.js';
 import { RUNTIME_SKILLS } from '../../shared/runtime-skills.js';
 import { buildSpawnSyncInvocation, lookupWindowsCommandCandidates, type SpawnSyncInvocation } from '../../shared/spawn.js';
 import { currentLauncherHostEnvironment, resolveLauncherBinaryPath } from '../../launcher/install-launcher.js';
-import { readTomlBooleanInTable, stripTomlComment, tomlKeyPath, tomlStructuralLines, tomlTableKey } from '../../shared/codex-toml.js';
+import { findTomlAssignmentInTable, readTomlBooleanInTable, stripTomlComment, tomlStructuralLines, tomlTableKey } from '../../shared/codex-toml.js';
 import { registerCodexUserHooks, removeCodexUserHooks, type CodexUserHooksResult } from './codex-user-hooks.js';
 
 const CODEX_DIR = path.resolve(process.env.CODEX_HOME || path.join(homedir(), '.codex'));
@@ -238,6 +238,13 @@ export function setTomlBooleanInTable(content: string, header: string, key: stri
   const booleanLine = `${key} = ${enabled ? 'true' : 'false'}`;
   const lines = content.split('\n');
   const structuralLines = tomlStructuralLines(lines);
+  const assignment = findTomlAssignmentInTable(structuralLines, header, key);
+  if (assignment) {
+    // Preserve a dotted key's parent path; appending a second table would
+    // redefine the same key and make an otherwise valid config unreadable.
+    lines[assignment.index] = `${lines[assignment.index].slice(0, assignment.keyEnd)}= ${enabled ? 'true' : 'false'}`;
+    return lines.join('\n');
+  }
   const tableKey = tomlTableKey(header);
   const headerIndex = structuralLines.findIndex((line) => tableKey !== null && tomlTableKey(line) === tableKey);
 
@@ -246,23 +253,7 @@ export function setTomlBooleanInTable(content: string, header: string, key: stri
     return `${trimmed}${trimmed ? '\n\n' : ''}${header}\n${booleanLine}\n`;
   }
 
-  let sectionEnd = headerIndex + 1;
-  while (sectionEnd < lines.length && !/^\s*\[/.test(structuralLines[sectionEnd])) {
-    sectionEnd += 1;
-  }
-
-  const keyIndex = structuralLines.findIndex((line, index) => {
-    if (index <= headerIndex || index >= sectionEnd) return false;
-    const parsed = tomlKeyPath(line);
-    return parsed?.keys.length === 1 && parsed.keys[0] === key && parsed.rest.startsWith('=');
-  });
-
-  if (keyIndex === -1) {
-    lines.splice(headerIndex + 1, 0, booleanLine);
-  } else {
-    lines[keyIndex] = booleanLine;
-  }
-
+  lines.splice(headerIndex + 1, 0, booleanLine);
   return lines.join('\n');
 }
 

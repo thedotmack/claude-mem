@@ -1,38 +1,43 @@
-import { useEffect, useState } from 'react'
-import { CheckIcon } from 'lucide-react'
-import { AgentMark } from '@/components/brand'
+import { useState } from 'react'
+import { ArrowRightIcon, CheckIcon } from 'lucide-react'
 import { DottedGlowBackground } from '@/components/aceternity/dotted-glow-background'
+import { Collapsible, CollapsibleContent, CollapsibleFoldTrigger } from '@/components/ui/collapsible'
 import { interpolate, useI18n } from '@/lib/i18n'
-import { agentToolFor, type SetupScanPhase, type SetupScanView } from '../setup-data'
+import { uploadTooLarge, type SetupFailure, type SetupScanPhase, type SetupScanView } from '../setup-data'
 import { scanAgentStatus } from '../setup-scan-status'
-import { useMatchesMedia } from '@/lib/use-media'
-import { PageHeading } from './shared'
-import { INTENT_MAX_UPLOAD_BYTES } from '../../../../../shared/setup-funnel.ts'
+import { PageHeading, SETUP_WAITING_LINE_ID, SetupActions, SetupButton, SetupError, ToolMark, type SetupBack } from './shared'
 
-/** PROTO savings.js status phrases, one per scan phase. */
-const STATUS: Record<SetupScanPhase, string> = {
+/** PROTO savings.js status phrases, one per scan phase. A stopped scan says what happened in its own alert instead. */
+const STATUS: Record<SetupScanPhase, string | null> = {
   idle: 'Finding your recent work.',
   reading: 'Finding your recent work.',
   checking: 'Finding the context behind your work.',
   saving: 'Preparing your overview.',
   'awaiting-consent': 'Choose the tools to include.',
   uploading: 'Discovering your work, rules and focus…',
-  done: 'Preparing your overview.',
-  failed: 'Setup stopped. Try again when you are ready.',
+  done: 'Your scan is done. Continue to see what it found.',
+  failed: null,
 }
 
-/** Step 1: each detected agent ticks in and its prompt count climbs while the worker reads the last 30 days. */
-export function ScanScreen({ scan, onImproveProductChange, onConfirmUpload, onUploadTooLarge, consentError, consentSending, preferenceError, onRetry, retrying, retryError }: {
+/**
+ * Step 1: each detected agent ticks in and its prompt count climbs while the worker reads the last 30 days. When the
+ * scan finishes the page moves on to the Reveal by itself, as it always has; Back waits while the scan runs. The done
+ * state, with its Continue, shows only when the person comes Back from the Reveal to look at the scan again.
+ */
+export function ScanScreen({ scan, back, onImproveProductChange, onConfirmUpload, consentError, consentSending, preferenceError, onRetry, retrying, retryError, onSkip, onContinue }: {
   scan: SetupScanView
+  back?: SetupBack | null
   onImproveProductChange: (improveProduct: boolean) => void
   onConfirmUpload: (upload: boolean, agents?: string[]) => void
-  onUploadTooLarge?: () => void
-  consentError?: string | null
+  consentError?: SetupFailure | null
   consentSending?: boolean
-  preferenceError: string | null
+  preferenceError: SetupFailure | null
   onRetry: () => void
   retrying: boolean
-  retryError: string | null
+  retryError: SetupFailure | null
+  /** "Skip the scan" after it stopped: setup goes on without it, and nothing is sent. */
+  onSkip?: () => void
+  onContinue?: () => void
 }) {
   const { t } = useI18n()
   const detected = scan.agents.filter((agent) => agent.detected)
@@ -41,77 +46,98 @@ export function ScanScreen({ scan, onImproveProductChange, onConfirmUpload, onUp
   const uploadable = scan.agents.filter((agent) => agent.prompts > 0)
   const selected = uploadable.filter((agent) => !unticked.includes(agent.id))
   const chosen = selected.map((agent) => agent.id)
-  // The worker refuses an upload over the cap before it sends anything, so say it here, while the person can still untick a tool.
-  const tooLarge = scan.phase === 'awaiting-consent' && selected.reduce((sum, agent) => sum + agent.uploadBytes, 0) > INTENT_MAX_UPLOAD_BYTES
-  useEffect(() => { if (tooLarge) onUploadTooLarge?.() }, [tooLarge, onUploadTooLarge])
-  const reducedMotion = useMatchesMedia('(prefers-reduced-motion: reduce)')
+  const asking = scan.phase === 'awaiting-consent'
+  const tooLarge = asking && uploadTooLarge(selected)
+  const stopped = scan.phase === 'failed'
+  const count = (prompts: number) => interpolate(t('{count} messages'), { count: prompts.toLocaleString('en-US') })
+  const status = STATUS[scan.phase]
+  // While the scan runs the row has nothing to press forward (the page moves on by itself), so its only line is
+  // Back's reason, which the bottom row words (BACK_WAIT_WORDS).
+  const waiting = asking && chosen.length === 0 ? t('Tick at least one tool to turn on Discover.')
+    : tooLarge ? t('Too much for one upload. Untick a tool or skip the scan.') : undefined
+  const discoverWaits = chosen.length === 0 || tooLarge
   return (
     <section aria-labelledby="scan-title">
-      <PageHeading id="scan-title" title={scan.phase === 'awaiting-consent' ? t('Pick up where you left off.') : t('Finding your recent work.')} lead={detected.map((agent) => agent.label).join(' · ') || undefined} />
+      <PageHeading id="scan-title" title={asking ? t('Pick up where you left off.') : t('Finding your recent work.')} lead={detected.map((agent) => agent.label).join(' · ') || undefined} />
       <div className="panel is-memory scan-panel">
-        {/* Texture behind the panel's content; reduced motion holds the dots still (speedScale 0). */}
-        <DottedGlowBackground className="scan-dots" gap={16} radius={1.5} color="rgba(75, 70, 200, 0.5)" glowColor="rgba(91, 87, 230, 0.9)" opacity={0.5} speedScale={reducedMotion ? 0 : 1} />
-        <ul className="scan-agents" aria-label={t('Agents found on this computer')}>
-          {detected.map((agent) => {
-            const status = scanAgentStatus(agent)
-            return (
-              <li key={agent.id} className={status.note ? 'cannot-run' : undefined}>
-                <span className="check" aria-hidden="true"><CheckIcon strokeWidth={3} /></span>
-                <AgentMark tool={agentToolFor(agent.id)} className="mark" />
-                <span>{agent.label} <span className="detected">({t(status.label)})</span></span>
-                <span className="count">{interpolate(t('{count} messages'), { count: agent.prompts.toLocaleString('en-US') })}</span>
-                {status.note && <span className="scan-agent-note">{t(status.note)}</span>}
-              </li>
-            )
-          })}
-        </ul>
+        {/* Texture only (C1): still and faint, drawn once (speedScale 0), hidden from screen readers. */}
+        <DottedGlowBackground className="scan-dots" gap={16} radius={1.2} color="rgba(75, 70, 200, 0.5)" glowColor="rgba(91, 87, 230, 0.9)" opacity={0.28} speedScale={0} />
+        {/* While the scan asks about the upload, the tick list below names each tool with its count, so this list folds away. */}
+        {detected.length > 0 && !asking && (
+          <ul className="scan-agents" aria-label={t('Agents found on this computer')}>
+            {detected.map((agent) => {
+              const agentStatus = scanAgentStatus(agent)
+              return (
+                <li key={agent.id} className={agentStatus.note ? 'cannot-run' : undefined}>
+                  <span className="check" aria-hidden="true"><CheckIcon strokeWidth={3} /></span>
+                  <ToolMark id={agent.id} name={agent.label} />
+                  <span className="scan-agent-name">{agent.label} <span className="detected">({t(agentStatus.label)})</span></span>
+                  <span className="count tabular">{count(agent.prompts)}</span>
+                  {agentStatus.note && <span className="scan-agent-note">{t(agentStatus.note)}</span>}
+                </li>
+              )
+            })}
+          </ul>
+        )}
         <div className="scan-meter">
           <progress max={100} value={scan.percent} aria-label={t('Scan progress')}>{scan.percent}%</progress>
-          <span className="scan-percent" aria-hidden="true">{scan.percent}%</span>
+          <span className="scan-percent tabular" aria-hidden="true">{scan.percent}%</span>
         </div>
-        <label className="scan-improve-product">
-          <input type="checkbox" checked={scan.improveProduct} disabled={scan.phase === 'uploading'} onChange={(event) => onImproveProductChange(event.target.checked)} />
-          <span>{t('Share anonymous usage statistics to help improve your Claude-mem experience')}</span>
-        </label>
-        {scan.phase === 'awaiting-consent' && (
+        {status && <p className="scan-status" role="status" aria-live="polite">{t(status)}</p>}
+        {stopped && (retryError
+          ? <SetupError title={t('Couldn’t start the scan again.')} failure={retryError} />
+          : <SetupError title={scan.errorKind || scan.percent === 0 ? t('The scan couldn’t start.') : t('The scan stopped.')}
+            // A page that could not reach the worker says so; any other stop says the conversations are safe.
+            check={scan.errorKind === 'unreachable' ? undefined : t('Your conversations are still on this computer. Try again, or skip the scan and continue setup.')}
+            failure={scan.error ? { kind: scan.errorKind ?? 'refused', detail: scan.error } : null} />)}
+        {asking && (
           <div className="scan-consent" role="group" aria-label={t('Discover your work')}>
-            <p>
-              {t('Claude-Mem scans your transcripts to automatically discover your existing work, your preferences, and what you’re focused on.')}
-            </p>
-            <p className="scan-consent-notice">
-              {t('Selected messages are sent to cmem.ai and an AI provider.')}
-            </p>
-            <details className="scan-consent-details">
-              <summary>{t('What gets uploaded?')}</summary>
-              <p>{t('The full text of your messages from the last 30 days in the selected tools, with session IDs, project names, folder paths and timestamps.')}</p>
-            </details>
+            <p>{t('Claude-Mem scans your transcripts to automatically discover your existing work, your preferences, and what you’re focused on.')}</p>
+            <p className="scan-consent-notice">{t('Selected messages are sent to cmem.ai and an AI provider.')}</p>
+            <Collapsible className="scan-consent-details">
+              <CollapsibleFoldTrigger>{t('What gets uploaded?')}</CollapsibleFoldTrigger>
+              <CollapsibleContent forceMount><p>{t('The full text of your messages from the last 30 days in the selected tools, with session IDs, project names, folder paths and timestamps.')}</p></CollapsibleContent>
+            </Collapsible>
             <ul className="scan-consent-agents" aria-label={t('Tools to upload')}>
               {uploadable.map((agent) => (
                 <li key={agent.id}>
                   <label>
                     <input type="checkbox" checked={!unticked.includes(agent.id)}
                       onChange={(event) => setUnticked(event.target.checked ? unticked.filter((id) => id !== agent.id) : [...unticked, agent.id])} />
-                    <span>{agent.label} ({interpolate(t('{count} messages'), { count: agent.prompts.toLocaleString('en-US') })})</span>
+                    <span>{agent.label} ({count(agent.prompts)})</span>
                   </label>
                 </li>
               ))}
             </ul>
-            <div className="scan-consent-actions">
-              <button type="button" className="primary" disabled={chosen.length === 0 || tooLarge || consentSending} onClick={() => onConfirmUpload(true, chosen)}>{t('Discover My Work, Rules & Focus')}</button>
-              <button type="button" className="scan-consent-skip" disabled={consentSending} onClick={() => onConfirmUpload(false)}>{t('Skip this step')}</button>
-            </div>
-            {tooLarge && <p className="scan-error" role="alert">{t('Too much for one upload. Untick a tool or skip.')}</p>}
             {consentSending && <p className="scan-status" role="status">{t('Sending your choice…')}</p>}
-            {consentError && <p className="scan-error" role="alert">{consentError}</p>}
+            {consentError && <SetupError title={t('Couldn’t send your choice.')} check={t('If you chose to upload, your prompts may already have been uploaded. Reload this page to check.')} failure={consentError} />}
           </div>
         )}
-        <p className="scan-status" role="status" aria-live="polite">{t(STATUS[scan.phase])}</p>
-        {preferenceError && <p className="scan-error" role="alert">{preferenceError}</p>}
-        {scan.error && <p className="scan-error" role="alert">{scan.error}</p>}
-        {retryError && <p className="scan-error" role="alert">{retryError}</p>}
-        {scan.phase === 'failed' && <button type="button" className="scan-retry" onClick={onRetry} disabled={retrying}>{retrying ? t('Starting again…') : t('Try again')}</button>}
+        {preferenceError && <SetupError title={t('Couldn’t save this choice.')} failure={preferenceError} />}
+        {/* The choice can change while the scan can still use it, as before Phase 8. A finished scan shows only on the way
+            Back from the Reveal, and there the choice is read-only: a change would send POST /api/setup/scan/preferences
+            after the scan finished, which this page never did. */}
+        <label className="scan-improve-product">
+          <input type="checkbox" checked={scan.improveProduct} disabled={scan.phase === 'uploading' || scan.phase === 'done'} onChange={(event) => onImproveProductChange(event.target.checked)} />
+          <span>
+            <strong>{t('Share anonymous usage statistics to help improve your Claude-mem experience')}</strong>
+            <small>{scan.phase === 'done' ? t('The scan is done, and this choice was saved with it.') : t('Sent to cmem.ai only if you choose to upload. Unticking it does not stop the scan.')}</small>
+          </span>
+        </label>
       </div>
+      <SetupActions back={back} waiting={waiting}>
+        {stopped && <>
+          {/* Dimmed while "Try again" is starting the scan: skipping then would leave a new scan running behind a
+              Reveal that says it was skipped, with an upload question nobody can answer. */}
+          {onSkip && <SetupButton look="outline" aria-disabled={retrying || undefined} onClick={onSkip}>{t('Skip the scan')}</SetupButton>}
+          <SetupButton busy={retrying} busyLabel={t('Starting again…')} onClick={onRetry}>{t('Try again')}</SetupButton>
+        </>}
+        {asking && <>
+          <SetupButton look="outline" aria-disabled={consentSending || undefined} onClick={() => onConfirmUpload(false)}>{t('Skip the scan')}</SetupButton>
+          <SetupButton aria-disabled={discoverWaits || consentSending || undefined} aria-describedby={discoverWaits ? SETUP_WAITING_LINE_ID : undefined} onClick={() => onConfirmUpload(true, chosen)}>{t('Discover My Work, Rules & Focus')}</SetupButton>
+        </>}
+        {scan.phase === 'done' && onContinue && <SetupButton onClick={onContinue}>{t('Continue')} <ArrowRightIcon aria-hidden="true" /></SetupButton>}
+      </SetupActions>
     </section>
   )
 }
-

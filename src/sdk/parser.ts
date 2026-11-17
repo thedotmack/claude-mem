@@ -118,8 +118,12 @@ export const SKIP_SUMMARY_TAG = /<skip_summary(?:\s+reason\s*=\s*(?:"([^"]*)"|'(
  * Comments cannot nest: a later opener starts a new candidate instead of
  * pairing its terminator with a bare opener in an earlier observation.
  */
+const XML_LITERAL_PATTERN = /<!\[CDATA\[[\s\S]*?\]\]>|<!--(?:(?!<!--)[\s\S])*?-->/g;
+/** Element start, end and self-closing tags; escaped `&lt;br/&gt;` is not a tag. */
+const XML_ELEMENT_TAG_PATTERN = /<\/?[A-Za-z_][\w-]*\b[^>]*>/g;
+
 export function maskXmlLiteralMarkup(text: string): string {
-  return text.replace(/<!\[CDATA\[[\s\S]*?\]\]>|<!--(?:(?!<!--)[\s\S])*?-->/g,
+  return text.replace(XML_LITERAL_PATTERN,
     literal => literal.replace(/[<>]/g, ' '));
 }
 
@@ -127,6 +131,40 @@ export function maskXmlLiteralMarkup(text: string): string {
 function originalElementBody(text: string, match: RegExpExecArray): string {
   const start = match.index + match[0].indexOf('>') + 1;
   return text.slice(start, start + match[1].length);
+}
+
+/**
+ * Read character data for storage eligibility without changing parsed values.
+ * Work on the original XML: after entity decoding, an escaped comment example
+ * is indistinguishable from an actual comment. CDATA is literal text (including
+ * any comment/entity examples inside it); only real comments are ignored.
+ * Match fields with the same literal masking and first-block rules as parsing.
+ */
+export function summaryFieldsHaveText(
+  raw: string,
+  fields: readonly (keyof Omit<ParsedSummary, 'skipped' | 'skip_reason'>)[],
+): boolean {
+  raw = stripCodeFences(raw);
+  const block = SUMMARY_BLOCK.exec(maskXmlLiteralMarkup(raw));
+  if (!block) return false;
+  const body = originalElementBody(raw, block);
+  const markup = maskXmlLiteralMarkup(body);
+  return fields.some(field => {
+    const match = new RegExp(elementPattern(field), 'i').exec(markup);
+    if (!match) return false;
+    const value = originalElementBody(body, match);
+    // Markup alone (`<br/>`, `<p></p>`) is not character data. Tags are removed
+    // only outside CDATA, so a literal `<![CDATA[<br/>]]>` example still counts.
+    const segmentHasText = (segment: string) =>
+      decodeXmlReferences(segment.replace(XML_ELEMENT_TAG_PATTERN, '')).trim().length > 0;
+    let cursor = 0;
+    for (const literal of value.matchAll(XML_LITERAL_PATTERN)) {
+      if (segmentHasText(value.slice(cursor, literal.index))) return true;
+      if (literal[0].startsWith('<![CDATA[') && literal[0].slice(9, -3).trim()) return true;
+      cursor = literal.index + literal[0].length;
+    }
+    return segmentHasText(value.slice(cursor));
+  });
 }
 
 export function parseAgentXml(raw: string, correlationId?: string | number): ParseResult {
@@ -371,7 +409,7 @@ function extractTypeField(content: string): string | null {
     return stray ? stray[1] : null;
   }
 
-  const value = decodeXmlReferences(originalElementBody(content, match).replace(/<\/?[A-Za-z_][\w-]*\b[^>]*>/g, '')).trim();
+  const value = decodeXmlReferences(originalElementBody(content, match).replace(XML_ELEMENT_TAG_PATTERN, '')).trim();
   return value === '' ? null : value;
 }
 

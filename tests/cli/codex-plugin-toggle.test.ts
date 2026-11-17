@@ -54,8 +54,12 @@ describe('Codex plugin toggle', () => {
     expect(isPluginDisabledInCodexConfig()).toBe(true);
   });
 
-  it('answers every Codex hook with a no-op, without reading the payload, when the plugin is off', async () => {
-    writeConfig('[plugins."claude-mem@claude-mem-local"]\nenabled = false\n');
+  it.each([
+    '[plugins."claude-mem@claude-mem-local"]\nenabled = false\n',
+    'plugins."claude-mem@claude-mem-local".enabled = false\n',
+    '[plugins]\n"claude-mem@claude-mem-local".enabled = false\n',
+  ])('answers every Codex hook with a no-op, without reading the payload, when the plugin is off: %s', async content => {
+    writeConfig(content);
 
     // No stdin is provided: reaching the capture pipeline would hang on it.
     for (const event of ['context', 'session-init', 'file-context', 'observation', 'summarize', 'post-compact', 'subagent-context']) {

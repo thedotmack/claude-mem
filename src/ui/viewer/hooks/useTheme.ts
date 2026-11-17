@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 
-export type ThemePreference = 'system' | 'light' | 'dark';
+/** The theme choices, in the order the "…" menu offers them. The one definition of a theme preference. */
+export const THEME_PREFERENCES = ['system', 'light', 'dark'] as const;
+export type ThemePreference = (typeof THEME_PREFERENCES)[number];
 export type ResolvedTheme = 'light' | 'dark';
 
 const STORAGE_KEY = 'claude-mem-theme';
@@ -13,9 +15,8 @@ function getSystemTheme(): ResolvedTheme {
 function getStoredPreference(): ThemePreference {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored === 'system' || stored === 'light' || stored === 'dark') {
-      return stored;
-    }
+    const known = THEME_PREFERENCES.find(preference => preference === stored);
+    if (known) return known;
   } catch (e: unknown) {
     console.warn('Failed to read theme preference from localStorage:', e instanceof Error ? e.message : String(e));
   }

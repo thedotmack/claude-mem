@@ -9,16 +9,16 @@ import { paths } from '../../../src/shared/paths';
 import {
   UNTHROTTLED_TIMER_FLAGS, chromeExecutablePath, failOnCiWithoutChrome, type DevToolsPage, type OwnedChrome,
 } from '../../helpers/chrome-devtools';
-import { compileSettingsFixture, connectLoadedSettings, launchSettingsFixture, settingsFixtureHtml } from './settings-fixture';
+import { compileSettingsFixture, connectLoadedSettings, launchSettingsFixture, settingsFixtureHtml, showSection } from './settings-fixture';
 
 failOnCiWithoutChrome('CI requires Chrome or Chromium for the native settings-save regression tests.');
 
 // The stored counts differ from the defaults, so a clear the form ignored
 // cannot pass for a clear that fell back to the default.
 const COUNT_FIELDS = [
-  { label: 'Observations', key: 'CLAUDE_MEM_CONTEXT_OBSERVATIONS', stored: '75' },
-  { label: 'Sessions', key: 'CLAUDE_MEM_CONTEXT_SESSION_COUNT', stored: '20' },
-  { label: 'Count', key: 'CLAUDE_MEM_CONTEXT_FULL_COUNT', stored: '3' },
+  { label: 'Observations', key: 'CLAUDE_MEM_CONTEXT_OBSERVATIONS', stored: '75', section: 'Loading' },
+  { label: 'Sessions', key: 'CLAUDE_MEM_CONTEXT_SESSION_COUNT', stored: '20', section: 'Loading' },
+  { label: 'Count', key: 'CLAUDE_MEM_CONTEXT_FULL_COUNT', stored: '3', section: 'Display' },
 ] as const;
 
 (chromeExecutablePath ? it : it.skip)('saves the shipped default when a count field is cleared', async () => {
@@ -69,7 +69,10 @@ const COUNT_FIELDS = [
       if (Date.now() > loadDeadline) throw new Error('Settings did not load: ' + JSON.stringify(await shown()));
       await Bun.sleep(10);
     }
-    for (const { label } of COUNT_FIELDS) {
+    for (const { label, section } of COUNT_FIELDS) {
+      // One section shows at a time; a field in a hidden section cannot take focus.
+      await evaluate(showSection(section));
+      await settle();
       await evaluate(`${input(label)}.focus()`);
       // DOM select() does not reliably select a number input's text, so use
       // the browser's own editing command, as a user's select-all would.

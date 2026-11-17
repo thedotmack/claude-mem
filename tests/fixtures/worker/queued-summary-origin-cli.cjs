@@ -9,9 +9,13 @@ input.on('line', line => {
     emit({ type: 'control_response', response: { subtype: 'success', request_id: value.request_id,
       response: { commands: [], models: [], output_style: 'default', available_output_styles: ['default'] } } });
   } else if (value.type === 'user') {
+    const countArg = process.argv.indexOf('--owned-summary-count');
+    if (countArg !== -1) require('node:fs').appendFileSync(process.argv[countArg + 1], 'request\n');
     const summary = String(value.message.content).includes('MODE SWITCH: PROGRESS SUMMARY');
     const text = summary
-      ? '<summary><request>Owned summary</request></summary>'
+      ? (process.argv.includes('--owned-summary-content') && !String(value.message.content).includes('Fresh summary')
+        ? '<summary><request>Owned summary</request></summary>'
+        : '<summary><request>Owned summary</request><completed>Completed the owned task</completed></summary>')
       : '<observation><type>discovery</type><title>Owned summary</title></observation>';
     emit({ type: 'system', subtype: 'init', session_id: 'owned-sdk-memory', uuid: '00000000-0000-4000-8000-000000000001',
       model: 'claude-haiku-4-5-20251001', cwd: process.cwd(), tools: [], mcp_servers: [], permissionMode: 'dontAsk',

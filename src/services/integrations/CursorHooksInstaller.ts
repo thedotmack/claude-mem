@@ -8,6 +8,7 @@ import { parseJsonWithBom, writeJsonFileAtomic, writeTextFileAtomic } from '../.
 import { getProjectContext } from '../../utils/project-name.js';
 import { workerHttpRequest } from '../../shared/worker-utils.js';
 import { DATA_DIR } from '../../shared/paths.js';
+import { publishContextRefresh } from './context-refresh.js';
 import {
   readCursorRegistry as readCursorRegistryFromFile,
   registerCursorProject as registerCursorProjectInFile,
@@ -47,17 +48,20 @@ export async function updateCursorContextForProject(projectName: string): Promis
   if (!entry) return; 
 
   try {
-    const response = await workerHttpRequest(
-      `/api/context/inject?project=${encodeURIComponent(projectName)}`
+    const written = await publishContextRefresh(
+      path.join(entry.workspacePath, '.cursor', 'rules', 'claude-mem-context.mdc'),
+      async () => {
+        const response = await workerHttpRequest(
+          `/api/context/inject?project=${encodeURIComponent(projectName)}`
+        );
+        return response.ok ? await response.text() : '';
+      },
+      (context) => {
+        writeContextFile(entry.workspacePath, context);
+        return true;
+      },
     );
-
-    if (!response.ok) return;
-
-    const context = await response.text();
-    if (!context || !context.trim()) return;
-
-    writeContextFile(entry.workspacePath, context);
-    logger.debug('CURSOR', 'Updated context file', { projectName, workspacePath: entry.workspacePath });
+    if (written) logger.debug('CURSOR', 'Updated context file', { projectName, workspacePath: entry.workspacePath });
   } catch (error) {
     if (error instanceof Error) {
       logger.error('WORKER', 'Failed to update context file', { projectName }, error);
