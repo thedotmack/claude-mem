@@ -5,14 +5,14 @@ import { join } from 'path';
 import { askApiTarget, resolveApiTarget, type ApiTarget } from '../../../src/services/agent-runner/api-agent.js';
 import { resetReasoningFieldRejectionsForTesting } from '../../../src/services/worker/reasoning-budget.js';
 
-interface FetchCall { url: string; headers: Record<string, string>; body: Record<string, unknown> }
+interface FetchCall { url: string; headers: Record<string, string>; body: Record<string, unknown>; timeout: unknown }
 
 /** Replace global fetch with a recorder that answers with the given replies in order. */
 function fakeFetch(replies: Array<{ status?: number; body?: unknown; text?: string }>): { calls: FetchCall[] } {
   const calls: FetchCall[] = [];
   const original = globalThis.fetch;
   globalThis.fetch = (async (input: any, init: any = {}) => {
-    calls.push({ url: String(input), headers: init.headers ?? {}, body: JSON.parse(String(init.body ?? '{}')) });
+    calls.push({ url: String(input), headers: init.headers ?? {}, body: JSON.parse(String(init.body ?? '{}')), timeout: init.timeout });
     const reply = replies[Math.min(calls.length - 1, replies.length - 1)];
     const status = reply.status ?? 200;
     const text = reply.text ?? JSON.stringify(reply.body ?? { choices: [{ message: { content: 'answer' } }] });
@@ -58,6 +58,13 @@ describe('the API agent talks to the selected provider', () => {
     await expect(askApiTarget(target(), 'the question')).rejects.toThrow(/finish reason: length/);
     expect(calls.length).toBe(1);
     expect(calls[0].body.max_tokens).toBe(16_000);
+  });
+
+  it('turns off Bun\'s fetch idle timeout, so a long silent answer runs to the request deadline', async () => {
+    // A non-streamed answer sends no byte until it is done; Bun's 5-minute idle timeout fired first (#6222).
+    const { calls } = fakeFetch([{ body: { choices: [{ message: { content: 'a' } }] } }]);
+    await askApiTarget(target(), 'the question');
+    expect(calls[0].timeout).toBe(false);
   });
 
   it('uses the step\'s model over the provider\'s own', async () => {

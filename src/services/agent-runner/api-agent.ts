@@ -186,6 +186,9 @@ export async function askApiTarget(target: ApiTarget, prompt: string, options: A
   const send = async () => fetch(target.url, {
     method: 'POST',
     signal,
+    // Bun's fetch fails a request after 5 minutes without a byte (BUN_CONFIG_HTTP_IDLE_TIMEOUT), and a
+    // non-streamed answer sends nothing until it is done. Off, so the signal above is the only limit.
+    timeout: false,
     headers,
     body: JSON.stringify({
       model,
