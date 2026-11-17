@@ -282,6 +282,25 @@ describe('hosted setup scan control', () => {
     expect(buttons.map(match => match[1])).toEqual(['secondary', 'primary']);
   });
 
+  it('dims Discover with the reason when the selected tools are over the upload cap, and keeps Skip the scan on', () => {
+    const app = fixture();
+    const agent = (id: string, uploadBytes: number) => ({ id, label: id, detected: true, prompts: 3, canRunSetup: null, cannotRunReason: null, uploadBytes });
+    const button = (html: string, label: string) => {
+      const found = html.match(new RegExp(`<button[^>]*>${label}</button>`))?.[0];
+      if (!found) throw new Error(`The ${label} button is missing`);
+      return found;
+    };
+    const halfCap = 1024 * 1024;
+    const fits = app.renderScan(scan({ phase: 'awaiting-consent', agents: [agent('codex', halfCap), agent('claude-code', halfCap)] }));
+    expect(fits).not.toContain('Too much for one upload');
+    expect(button(fits, 'Discover My Work, Rules &amp; Focus')).not.toContain('aria-disabled="true"');
+    const over = app.renderScan(scan({ phase: 'awaiting-consent', agents: [agent('codex', halfCap), agent('claude-code', halfCap + 1)] }));
+    expect(over).toContain('id="setup-waiting-line" class="setup-waiting">Too much for one upload. Untick a tool or skip the scan.');
+    expect(button(over, 'Discover My Work, Rules &amp; Focus')).toContain('aria-disabled="true"');
+    expect(button(over, 'Discover My Work, Rules &amp; Focus')).toContain('aria-describedby="setup-waiting-line"');
+    expect(button(over, 'Skip the scan')).not.toContain('aria-disabled="true"');
+  });
+
   it('shows the skipped-step message only when the person actually skipped', () => {
     const app = fixture();
     const agents = [{ id: 'codex', label: 'Codex', detected: true, prompts: 3, canRunSetup: null, cannotRunReason: null }];

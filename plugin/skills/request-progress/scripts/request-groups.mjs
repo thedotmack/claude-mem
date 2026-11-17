@@ -260,7 +260,7 @@ function writeBufferAtomic(filepath, payload, options = {}) {
   }
   let fd;
   try {
-    fd = mode !== void 0 ? openSync(tmpPath, "w", mode) : openSync(tmpPath, "w");
+    fd = mode !== void 0 ? openSync(tmpPath, "wx", mode) : openSync(tmpPath, "wx");
     if (mode !== void 0 && !IS_WINDOWS_PLATFORM) fchmodSync(fd, mode);
     let written = 0;
     while (written < payload.length) {
@@ -1169,9 +1169,9 @@ var init_SettingsDefaultsManager = __esm({
         CLAUDE_MEM_WORK_STATE_ENABLED: "true",
         // 'false' = no work-state section at SessionStart and no work_state_* MCP tools, for hosts that track work their own way
         CLAUDE_MEM_AUTO_CLEAR_ENABLED: "false",
-        // Claude Code mod (plugin/hooks/auto-clear.js): at CLAUDE_MEM_AUTO_CLEAR_PERCENT of the context window, Claude saves its work state, then /clear runs and "continue" is sent. Off unless set to 'true'. Needs work state on
-        CLAUDE_MEM_AUTO_CLEAR_PERCENT: "33",
-        // Context window use (1-95) that starts the auto-clear
+        // Claude Code mod (plugin/hooks/auto-clear.js): at CLAUDE_MEM_AUTO_CLEAR_PERCENT of the context window, Claude saves its work state, then /clear runs and a continuation prompt built from that save is sent ("continue" when the save left its blanks out). Off unless set to 'true'. Needs work state on
+        CLAUDE_MEM_AUTO_CLEAR_PERCENT: "40",
+        // Context window use (1-95) that starts the auto-clear. 40: the maintainer's choice (raised from 33 on 2026-11-17); src/mods/auto-clear/settings.ts keeps the same value
         CLAUDE_MEM_FILE_READ_GATE_ENABLED: "true",
         // 'false' = never block a full-file Read; the file's observation timeline is still added as context
         CLAUDE_MEM_LINE_ANCHORS_ENABLED: "false",
@@ -1373,6 +1373,8 @@ var init_SettingsDefaultsManager = __esm({
         // Model for every My Work refresh step on the selected API provider; empty keeps the provider's configured model
         CLAUDE_MEM_CORPUS_AGENT: "",
         // Which agent answers knowledge-corpus prime/query/reprime: '' uses the Claude Agent SDK (the Claude subscription); 'api' answers over chat completions on the selected openrouter/openai-compatible provider and spends that provider's credit
+        CLAUDE_MEM_API_AGENT_EXTRA_BODY: "",
+        // JSON object merged into every api agent request (My Work refresh, corpus), e.g. {"chat_template_kwargs":{"enable_thinking":false}} for vLLM (#6223). Parsed like CLAUDE_MEM_OPENROUTER_EXTRA_BODY; never sets reasoning or response_format. File/env only
         CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE: "",
         // Language for My Work's generated text (titles, reviews, story), such as 'Turkish'. No extra model call; empty uses the language the grouping step finds in the owner's asks, decided once per run (#5660)
         // Automatic local DB snapshots (BackupManager). Off by default; opt-in.
@@ -1536,6 +1538,7 @@ var init_SettingsDefaultsManager = __esm({
         return result;
       }
       static loadFromFile(settingsPath, applyEnvOverrides = true, options = {}) {
+        const warn = options.warn ?? console.warn;
         try {
           const defaults = this.defaultsForSettingsPath(settingsPath);
           if (!existsSync7(settingsPath)) {
@@ -1543,9 +1546,9 @@ var init_SettingsDefaultsManager = __esm({
               try {
                 writeJsonFileAtomic(settingsPath, defaults, { mode: 384 });
                 for (const raised of CHANGED_SHIPPED_DEFAULTS) markRaisedDefaultDone(settingsPath, raised);
-                console.warn("[SETTINGS] Created settings file with defaults:", settingsPath);
+                warn("[SETTINGS] Created settings file with defaults:", settingsPath);
               } catch (error) {
-                console.warn("[SETTINGS] Failed to create settings file, using in-memory defaults:", settingsPath, error instanceof Error ? error.message : String(error));
+                warn("[SETTINGS] Failed to create settings file, using in-memory defaults:", settingsPath, error instanceof Error ? error.message : String(error));
               }
             }
             return this.finalizeSettings(defaults, applyEnvOverrides);
@@ -1560,9 +1563,9 @@ var init_SettingsDefaultsManager = __esm({
             if (!hasPeerRootKeys && !options.readOnly) {
               try {
                 writeJsonFileAtomic(settingsPath, flatSettings, { mode: 384 });
-                console.warn("[SETTINGS] Migrated settings file from nested to flat schema:", settingsPath);
+                warn("[SETTINGS] Migrated settings file from nested to flat schema:", settingsPath);
               } catch (error) {
-                console.warn("[SETTINGS] Failed to auto-migrate settings file:", settingsPath, error instanceof Error ? error.message : String(error));
+                warn("[SETTINGS] Failed to auto-migrate settings file:", settingsPath, error instanceof Error ? error.message : String(error));
               }
             }
           }
@@ -1578,9 +1581,9 @@ var init_SettingsDefaultsManager = __esm({
                   hasPeerRootKeys ? { ...writableRoot, env: flatSettings } : flatSettings,
                   { mode: 384 }
                 );
-                console.warn("[SETTINGS] Migrated Telegram trigger types off the legacy default:", settingsPath);
+                warn("[SETTINGS] Migrated Telegram trigger types off the legacy default:", settingsPath);
               } catch (error) {
-                console.warn("[SETTINGS] Failed to migrate Telegram trigger types:", settingsPath, error instanceof Error ? error.message : String(error));
+                warn("[SETTINGS] Failed to migrate Telegram trigger types:", settingsPath, error instanceof Error ? error.message : String(error));
               }
             }
           }
@@ -1597,12 +1600,12 @@ var init_SettingsDefaultsManager = __esm({
                   hasPeerRootKeys ? { ...writableRoot, env: flatSettings } : flatSettings,
                   { mode: 384 }
                 );
-                console.warn(
+                warn(
                   `[SETTINGS] Migrated Claude model off the pinned ${pinnedModel} to ${this.DEFAULTS.CLAUDE_MEM_MODEL}:`,
                   settingsPath
                 );
               } catch (error) {
-                console.warn("[SETTINGS] Failed to migrate the pinned Claude model:", settingsPath, error instanceof Error ? error.message : String(error));
+                warn("[SETTINGS] Failed to migrate the pinned Claude model:", settingsPath, error instanceof Error ? error.message : String(error));
               }
             }
           }
@@ -1619,12 +1622,12 @@ var init_SettingsDefaultsManager = __esm({
                   hasPeerRootKeys ? { ...writableRoot, env: flatSettings } : flatSettings,
                   { mode: 384 }
                 );
-                console.warn(
+                warn(
                   `[SETTINGS] Migrated OpenRouter model off the retired default ${retiredModel} to ${this.DEFAULTS.CLAUDE_MEM_OPENROUTER_MODEL}:`,
                   settingsPath
                 );
               } catch (error) {
-                console.warn("[SETTINGS] Failed to migrate the retired OpenRouter model:", settingsPath, error instanceof Error ? error.message : String(error));
+                warn("[SETTINGS] Failed to migrate the retired OpenRouter model:", settingsPath, error instanceof Error ? error.message : String(error));
               }
             }
           }
@@ -1641,9 +1644,9 @@ var init_SettingsDefaultsManager = __esm({
                   hasPeerRootKeys ? { ...writableRoot, env: flatSettings } : flatSettings,
                   { mode: 384 }
                 );
-                console.warn("[SETTINGS] Migrated cloud sync hub URL to", rewrittenHubUrl, "from a retired hub host:", settingsPath);
+                warn("[SETTINGS] Migrated cloud sync hub URL to", rewrittenHubUrl, "from a retired hub host:", settingsPath);
               } catch (error) {
-                console.warn("[SETTINGS] Failed to migrate cloud sync hub URL:", settingsPath, error instanceof Error ? error.message : String(error));
+                warn("[SETTINGS] Failed to migrate cloud sync hub URL:", settingsPath, error instanceof Error ? error.message : String(error));
               }
             }
           }
@@ -1667,7 +1670,7 @@ var init_SettingsDefaultsManager = __esm({
                   { mode: 384 }
                 );
                 markRaisedDefaultDone(settingsPath, raised);
-                console.warn(
+                warn(
                   `[SETTINGS] Migrated ${raised.key} off the old ${raised.legacy}${raised.unit} default to ${this.DEFAULTS[raised.key]}${raised.unit}:`,
                   settingsPath
                 );
@@ -1676,7 +1679,7 @@ var init_SettingsDefaultsManager = __esm({
                 const reported = `${raised.key}\0${settingsPath}`;
                 if (!raisedDefaultFailuresReported.has(reported)) {
                   raisedDefaultFailuresReported.add(reported);
-                  console.warn(
+                  warn(
                     raised.applyOnlyWhenSaved ? `[SETTINGS] Failed to migrate ${raised.key}; keeping the saved ${raised.legacy} (reported once per process):` : `[SETTINGS] Failed to migrate ${raised.key}; using the new default in memory (reported once per process):`,
                     settingsPath,
                     error instanceof Error ? error.message : String(error)
@@ -1693,7 +1696,7 @@ var init_SettingsDefaultsManager = __esm({
           }
           return this.finalizeSettings(result, applyEnvOverrides);
         } catch (error) {
-          console.warn("[SETTINGS] Failed to load settings, using defaults:", settingsPath, error instanceof Error ? error.message : String(error));
+          warn("[SETTINGS] Failed to load settings, using defaults:", settingsPath, error instanceof Error ? error.message : String(error));
           const defaults = this.defaultsForSettingsPath(settingsPath);
           return this.finalizeSettings(defaults, applyEnvOverrides);
         }
@@ -2439,13 +2442,18 @@ function outputText(call, response) {
   return typeof call.tool_response === "string" ? call.tool_response : "";
 }
 function commitSubjects(command2) {
-  const starts = [...command2.matchAll(gitPattern(String.raw`commit\b`, "g"))].map((match) => match.index);
+  const starts = [...command2.matchAll(gitPattern(String.raw`commit\b`, "g"))].map((match) => match.index + match[0].length);
   return starts.map((start, index) => {
     const invocation = command2.slice(start, starts[index + 1]);
-    const substituted = invocation.match(/\s-[a-zA-Z]*m\s+"\$\(\s*cat\s+<<-?\s*['"]?\w+['"]?[^\n]*\n([^\n]*)/);
+    const argumentEnd = invocation.match(/^(?:>[&|]|<&|&>>?|[^"'\\;&|\n]|\\[\s\S]|"(?:[^"\\]|\\[\s\S])*"|'[^']*')*/)[0].length;
+    const matchArgument = (pattern) => {
+      const match = invocation.match(pattern);
+      return match && match.index < argumentEnd ? match : null;
+    };
+    const substituted = matchArgument(/\s(?:-[a-zA-Z]*m\s+|--message(?:=|\s+))"\$\(\s*cat\s+<<-?\s*['"]?\w+['"]?[^\n]*\n([^\n]*)/);
     if (substituted) return short(substituted[1]);
-    const inline = invocation.match(/\s-[a-zA-Z]*m\s+(?:"((?:[^"\\]|\\.)*)"|'([^']*)')/);
-    const heredoc = invocation.match(/\s-F\s+-\s*<<-?\s*['"]?\w+['"]?\n([^\n]*)/);
+    const inline = matchArgument(/\s(?:-[a-zA-Z]*m\s+|--message(?:=|\s+))(?:"((?:[^"\\]|\\.)*)"|'([^']*)')/);
+    const heredoc = matchArgument(/\s-F\s+-\s*<<-?\s*['"]?\w+['"]?\n([^\n]*)/);
     const text5 = inline ? inline[1]?.replace(BASH_DOUBLE_QUOTE_ESCAPE, "$1") ?? inline[2] : heredoc?.[1];
     return short(text5?.split("\n")[0]);
   });
@@ -2726,11 +2734,17 @@ function mergeProducts(lists, limit = 60) {
     const repos = product.sha ? repoByHead.get(product.sha) : null;
     return product.repo ?? pushedAfter(product) ?? (repos?.size === 1 ? [...repos][0] : null);
   };
-  for (const product of products) if (product.kind === "commit" && repoOf(product) && sourceKey(product)) repoBySource.set(sourceKey(product), repoOf(product));
+  for (const product of products) if (product.kind === "commit") {
+    const source = sourceKey(product), repo = repoOf(product);
+    if (!source || !repo) continue;
+    if (!repoBySource.has(source)) repoBySource.set(source, /* @__PURE__ */ new Set());
+    repoBySource.get(source).add(repo);
+  }
   const unique = /* @__PURE__ */ new Map();
   for (const product of products.sort((a, b) => (b.atEpoch ?? 0) - (a.atEpoch ?? 0))) {
     const isGit = product.kind === "commit" || product.kind === "branch";
-    const repo = isGit && !product.repo ? repoOf(product) ?? (product.kind === "commit" ? repoBySource.get(sourceKey(product)) : null) : null;
+    const sourceRepos = repoBySource.get(sourceKey(product));
+    const repo = isGit && !product.repo ? repoOf(product) ?? (product.kind === "commit" && sourceRepos?.size === 1 ? [...sourceRepos][0] : null) : null;
     const resolved = repo || isGit && product.repo ? { ...product, ...repo ? { repo } : {}, url: gitUrl({ ...product, repo: repo ?? product.repo }) } : product;
     const key = productKey(resolved);
     if (!unique.has(key)) unique.set(key, resolved);
@@ -4938,7 +4952,7 @@ function queryInChunks(database, values2, sqlFor, parametersFor = (chunk) => chu
   }
   return rows;
 }
-function readCandidates(database, { sinceEpoch = 0, conversationKeys = null, fullAsks = false, excludedPromptIds = null }) {
+function readCandidates(database, { sinceEpoch = 0, conversationKeys = null, fullAsks = false, recentAsks = false, excludedPromptIds = null }) {
   const columns = "SELECT id, platform_source, content_session_id, project, user_prompt, started_at_epoch FROM sdk_sessions";
   const pairs = conversationKeys?.map((key) => JSON.parse(key).slice(1));
   const stored = pairs ? queryInChunks(database, pairs, (chunk) => `${columns} WHERE (platform_source, content_session_id) IN (VALUES ${chunk.map(() => "(?, ?)").join(",")})`, (chunk) => chunk.flat(), 250) : database.prepare(`${columns} WHERE started_at_epoch >= ?
@@ -4983,7 +4997,7 @@ function readCandidates(database, { sinceEpoch = 0, conversationKeys = null, ful
       startedAtEpoch: original.atEpoch ?? session.started_at_epoch,
       lastActivityEpoch: Math.max(lastPrompt, observationsBySession.get(session.id)?.last_epoch ?? 0, lastToolUseBySession.get(session.id) ?? 0, session.started_at_epoch ?? 0),
       firstAsk: requestText(original.text, 600),
-      asks: fullAsks ? asks : asks.slice(0, 10),
+      asks: fullAsks ? asks : recentAsks ? asks.slice(-10) : asks.slice(0, 10),
       askCount: asks.length,
       original,
       workLists: [],
@@ -5215,6 +5229,15 @@ function reviewList(value, max, label, options) {
   const newestIndexes = new Set(list2.map((_, index) => index).sort((a, b) => times[a] - times[b] || a - b).slice(-max));
   return list2.filter((_, index) => newestIndexes.has(index));
 }
+function quotedPreferences(list2, options) {
+  if (!options.coerce || !Array.isArray(list2)) return list2;
+  const said = (value) => typeof value === "string" && value.trim() !== "";
+  return list2.filter((preference2, index) => {
+    if (said(preference2?.preference) && said(preference2?.quote)) return true;
+    options.droppedPreferences.add(`preferences[${index}]`);
+    return false;
+  });
+}
 function validateOutcome(outcome2, options = {}) {
   if (outcome2 == null) return null;
   if (typeof outcome2 !== "object" || Array.isArray(outcome2)) throw new TypeError("outcome must be an object.");
@@ -5250,7 +5273,7 @@ function validateOutcome(outcome2, options = {}) {
 }
 function validateProgress(entry, knownGroups, options = {}) {
   if (!entry || typeof entry !== "object") throw new TypeError("Progress must be an object.");
-  options = { coerce: false, coercedFields: /* @__PURE__ */ new Set(), ...options };
+  options = { coerce: false, coercedFields: /* @__PURE__ */ new Set(), droppedPreferences: /* @__PURE__ */ new Set(), ...options };
   const text5 = (value, max, label, optional2 = false) => reviewText(value, max, label, { ...options, optional: optional2 });
   if (!knownGroups[entry.groupId]) throw new TypeError(`Unknown group ${entry.groupId}.`);
   const basis = entry.reviewBasis;
@@ -5262,7 +5285,7 @@ function validateProgress(entry, knownGroups, options = {}) {
   for (const field of ["startedAt", "shippedAt", "lastActivityAt"]) if (!isIsoOrNull(entry[field] ?? null)) throw new TypeError(`${field} must be an ISO date or null.`);
   if (entry.state === "shipped" && (entry.percent !== 100 || !entry.shippedAt)) throw new TypeError("A shipped request needs percent 100 and shippedAt.");
   if (entry.state !== "shipped" && entry.shippedAt) throw new TypeError("Only a shipped request has shippedAt.");
-  const milestones = reviewList(entry.milestones, 12, "milestones", options), preferences = reviewList(entry.preferences, 10, "preferences", options);
+  const milestones = reviewList(entry.milestones, 12, "milestones", options), preferences = reviewList(quotedPreferences(entry.preferences, options), 10, "preferences", options);
   return {
     groupId: entry.groupId,
     state: entry.state,
@@ -5364,6 +5387,25 @@ function validateStory(story) {
       supportCount: Number.isInteger(preference2.supportCount) && preference2.supportCount > 0 ? preference2.supportCount : 1,
       quotes: (preference2.quotes ?? []).slice(0, 3).map((quote2, quoteIndex) => ({ quote: boundedQuote(quote2.quote, 300, `preferences[${index}].quotes[${quoteIndex}]`), at: isIsoOrNull(quote2.at ?? null) ? quote2.at ?? null : null }))
     }))
+  };
+}
+function storyInput(groups, reviews, story) {
+  const update = Number.isFinite(Date.parse(story?.writtenAt ?? ""));
+  const previousNarrativeChars = story?.narrative?.length ?? 0;
+  return {
+    groups,
+    update,
+    narrativeTarget: STORY_NARRATIVE_TARGET,
+    narrativeLimit: STORY_NARRATIVE_MAX,
+    previousNarrativeChars,
+    roomChars: Math.max(0, STORY_NARRATIVE_TARGET - previousNarrativeChars),
+    condenseChars: Math.max(0, previousNarrativeChars - STORY_NARRATIVE_TARGET),
+    previousParts: update ? storyParts(story.narrative) : [],
+    mergeOldestChapters: update ? storyChaptersToMerge(story.narrative) : 0,
+    reviews,
+    // Rules owner-goals put in the story are its own (record-story carries them over): shown here, the story model
+    // would echo them back without their source and when, leaving copies a later owner-goals save cannot replace.
+    previousStory: story && { ...story, preferences: (story.preferences ?? []).filter((preference2) => preference2?.source !== OWNER_GOALS_LIST) }
   };
 }
 function readLedger(dir = LEDGER_DIR) {
@@ -5606,7 +5648,7 @@ function readConversationProjects(database, conversationKeys) {
   return new Map(withDerivedProjects(database, sessions).map((session) => [conversationKey(session), session.project]));
 }
 function groupingInput(ledger, database, { sinceEpoch, limit = GROUPING_BATCH, skip = null }) {
-  const candidates = readCandidates(database, { sinceEpoch, excludedPromptIds: ledger.agentWrittenPromptIds });
+  const candidates = readCandidates(database, { sinceEpoch, recentAsks: true, excludedPromptIds: ledger.agentWrittenPromptIds });
   const decided = (key) => Boolean(ledger.groups.conversations[key] || ledger.groups.ignored?.[key] || skip?.has(key));
   const fresh = candidates.filter((candidate) => !decided(candidate.conversationKey));
   if (!fresh.length) return { root: null, conversations: [], openRequests: [], proposedLinks: [], remaining: 0 };
@@ -5620,7 +5662,7 @@ function groupingInput(ledger, database, { sinceEpoch, limit = GROUPING_BATCH, s
   const groupRoot = (group) => rootIsStored(group) ? upgradedGroupRoot(group.projectRoot, projectRoot(anchorProjects.get(group.anchor))) : projectRoot(anchorProjects.get(group.anchor)) ?? group.projectRoot ?? null;
   const openRequests = Object.entries(ledger.groups.groups).filter(([groupId, group]) => groupRoot(group) === root && !CLOSED_STATES.has(ledger.progress[groupId]?.state)).map(([groupId, group]) => {
     const members = Object.entries(ledger.groups.conversations).filter(([, id]) => id === groupId).map(([key]) => byKey.get(key)).filter(Boolean);
-    const asks = members.flatMap((member) => member.asks).sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+    const asks = members.flatMap((member) => member.asks).sort((a, b) => Date.parse(b.at) - Date.parse(a.at) || b.promptId - a.promptId);
     return {
       groupId,
       title: group.title,
@@ -5706,36 +5748,31 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
   }
   if (command2 === "record-progress") {
     const ledger = readLedger(dir);
-    const coercedFields = /* @__PURE__ */ new Set();
-    const reviewed = validateProgress(readInput(args[0] ?? "-"), ledger.groups.groups, { coerce: coerceProgress, coercedFields });
+    const coercedFields = /* @__PURE__ */ new Set(), droppedPreferences = /* @__PURE__ */ new Set();
+    const reviewed = validateProgress(readInput(args[0] ?? "-"), ledger.groups.groups, { coerce: coerceProgress, coercedFields, droppedPreferences });
     const checkedAt = iso3(now);
     const previous = ledger.progress[reviewed.groupId];
     const unchanged = previous && JSON.stringify(storyFacts(previous)) === JSON.stringify(storyFacts(reviewed));
     const entry = { ...reviewed, checkedAt, changedAt: unchanged ? previous.changedAt ?? previous.checkedAt : checkedAt, readings: appendReading(ledger.progress[reviewed.groupId], { at: checkedAt, percent: reviewed.percent }) };
     writeJsonAtomic(join11(dir, "progress", `${entry.groupId}.json`), entry);
-    return print2({ recorded: entry.groupId, state: entry.state, percent: entry.percent, readings: entry.readings.length, ...coercedFields.size ? { coercedFields: [...coercedFields] } : {} });
+    return print2({
+      recorded: entry.groupId,
+      state: entry.state,
+      percent: entry.percent,
+      readings: entry.readings.length,
+      ...coercedFields.size ? { coercedFields: [...coercedFields] } : {},
+      ...droppedPreferences.size ? { droppedPreferences: [...droppedPreferences] } : {}
+    });
   }
   if (command2 === "story-input") {
     const { groups, progress, story } = readLedger(dir);
     const reviews = Object.values(progress).sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)));
     const writtenAt = Date.parse(story?.writtenAt ?? "");
-    const update = Number.isFinite(writtenAt);
-    const previousNarrativeChars = story?.narrative?.length ?? 0;
-    return print2({
-      groups: Object.keys(groups.groups).length,
-      update,
-      narrativeTarget: STORY_NARRATIVE_TARGET,
-      narrativeLimit: STORY_NARRATIVE_MAX,
-      previousNarrativeChars,
-      roomChars: Math.max(0, STORY_NARRATIVE_TARGET - previousNarrativeChars),
-      condenseChars: Math.max(0, previousNarrativeChars - STORY_NARRATIVE_TARGET),
-      previousParts: update ? storyParts(story.narrative) : [],
-      mergeOldestChapters: update ? storyChaptersToMerge(story.narrative) : 0,
-      reviews: update ? reviews.filter((review) => Date.parse(review.changedAt ?? review.checkedAt) > writtenAt) : reviews,
-      // Rules owner-goals put in the story are its own (record-story carries them over): shown here, the story model
-      // would echo them back without their source and when, leaving copies a later owner-goals save cannot replace.
-      previousStory: story && { ...story, preferences: (story.preferences ?? []).filter((preference2) => preference2?.source !== OWNER_GOALS_LIST) }
-    });
+    return print2(storyInput(
+      Object.keys(groups.groups).length,
+      Number.isFinite(writtenAt) ? reviews.filter((review) => Date.parse(review.changedAt ?? review.checkedAt) > writtenAt) : reviews,
+      story
+    ));
   }
   if (command2 === "record-story") {
     const validated = validateStory(readInput(args[0] ?? "-"));
@@ -5902,7 +5939,7 @@ import { existsSync as existsSync13 } from "node:fs";
 init_request_groups();
 import { readFileSync as readFileSync10, readdirSync as readdirSync2, mkdirSync as mkdirSync4, renameSync as renameSync3, writeFileSync as writeFileSync3, unlinkSync as unlinkSync2, statSync as statSync7 } from "node:fs";
 import { join as join12 } from "node:path";
-import { createHash as createHash8 } from "node:crypto";
+import { createHash as createHash8, randomUUID as randomUUID3 } from "node:crypto";
 
 // src/services/work-view/agent-view.mjs
 init_request_projection();
@@ -7736,10 +7773,10 @@ function load(path4) {
 }
 function rawWrite(path4, value) {
   mkdirSync4(join12(path4, ".."), { recursive: true });
-  const temp = `${path4}.${process.pid}.shared.tmp`;
+  const temp = `${path4}.${randomUUID3()}.shared.tmp`;
   try {
     writeFileSync3(temp, `${JSON.stringify(value, null, 2)}
-`, { mode: 384 });
+`, { mode: 384, flag: "wx" });
     renameSync3(temp, path4);
   } finally {
     try {
@@ -8166,7 +8203,7 @@ init_SettingsDefaultsManager();
 init_settings_document();
 init_shared_records();
 init_logger();
-import { randomUUID as randomUUID3 } from "node:crypto";
+import { randomUUID as randomUUID4 } from "node:crypto";
 function validIdentity(value) {
   if (!value.trim() || Buffer.byteLength(value, "utf8") > 128 || value.includes("\0")) {
     throw new Error("Local device identity is invalid");
@@ -8190,7 +8227,7 @@ function ensureLocalDeviceIdentity(db, settingsPath, configuredId = "") {
       if (!/no such (table|column)/i.test(String(error.message))) throw error;
     }
     if (identities.size > 1) throw new Error("Local device identity conflicts with saved work; reconnect or restore the original identity before writing");
-    const deviceId = [...identities][0] ?? randomUUID3();
+    const deviceId = [...identities][0] ?? randomUUID4();
     if (settingsId !== deviceId) {
       const result = updateSettingsDocument(settingsPath, { CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: deviceId }, SettingsDefaultsManager.getAllDefaults());
       if (result.status === "refused") {

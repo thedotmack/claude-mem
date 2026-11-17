@@ -1,4 +1,5 @@
 """Real bundled Node CLI + disposable bundled worker; vendor HTTP is synthetic."""
+from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import hashlib
 import json
@@ -150,7 +151,9 @@ with tempfile.TemporaryDirectory(prefix='provider import ') as directory:
         return json.load(urlopen(request, timeout=5))
 
     def rows():
-        with sqlite3.connect(root/'claude-mem.db') as db:
+        # The connection context manager only handles transactions. Close the reader
+        # now so SQLite cannot remove its WAL sidecars later during the final scan.
+        with closing(sqlite3.connect(root/'claude-mem.db')) as db:
             return db.execute('SELECT id, project, narrative, metadata FROM observations ORDER BY id').fetchall()
 
     def save_document_as_15_19_0():

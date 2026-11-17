@@ -187,7 +187,7 @@ export function createSampleSetupSource(newInstall: boolean, holdScanAtPercent: 
     const timer = setInterval(() => {
       const share = Math.min(holdScanAtPercent === null ? 1 : holdScanAtPercent / 100, (Date.now() - started) / SCAN_MS)
       const agents = AGENTS.filter((agent) => share >= agent.detectAt).map((agent) => ({
-        id: agent.id, label: agent.label, detected: true, canRunSetup: true, cannotRunReason: null,
+        id: agent.id, label: agent.label, detected: true, canRunSetup: true, cannotRunReason: null, uploadBytes: 0,
         prompts: Math.round(agent.prompts * Math.min(1, (share - agent.detectAt) / (0.9 - agent.detectAt))),
       }))
       if (stopAt === 'failed' && share * 100 >= SAMPLE_FAIL_AT_PERCENT) {

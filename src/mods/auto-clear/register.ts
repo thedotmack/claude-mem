@@ -15,7 +15,7 @@
  * all of claude-mem. scripts/code-mode-refused-events.js lists the events and
  * the build fails if the hooks module bundle hooks one.
  */
-import { AutoClearController, type AutoClearHost, type ToolCallEnd } from './controller.js';
+import { AutoClearController, WORK_STATE_WRITE_TOOL, type AutoClearHost, type ToolCallEnd } from './controller.js';
 import type { ApiContentBlock, On, SessionAppendEvent } from './mod-api.js';
 import {
   AUTO_CLEAR_DEFAULT_PERCENT,
@@ -43,9 +43,11 @@ function resultText(content: unknown): string {
 function toolCallEnd(e: SessionAppendEvent): ToolCallEnd {
   let isError = false;
   let text = '';
+  let toolUseId: string | undefined;
   for (const block of e.message.content) {
     if (block.type !== 'tool_result') continue;
     if (block.is_error === true) isError = true;
+    if (toolUseId === undefined && typeof block.tool_use_id === 'string') toolUseId = block.tool_use_id;
     text += resultText(block.content);
   }
   return {
@@ -53,6 +55,7 @@ function toolCallEnd(e: SessionAppendEvent): ToolCallEnd {
     agentId: e.agentId,
     isError,
     text,
+    toolUseId,
   };
 }
 
@@ -143,6 +146,26 @@ export function registerAutoClear(on: On): void {
       if (note) await $.session.append({ message: { type: 'user', content: [{ type: 'text', text: note }] } });
     } catch {
       // Auto-clear never gets in the way of a tool result being kept.
+    }
+    return stored;
+  }).catch(async ($, e, next) => next(e));
+
+  // A tool-result row names only its tool, so the save's own arguments (the
+  // continuation prompt's blanks) are read off the model's response row, which
+  // carries the work_state_write tool_use block.
+  on('session.append', { door: 'response' }, async ($, e, next) => {
+    // The row is stored first and kept as it is: this only reads its tool_use blocks.
+    const stored = await next(e);
+    if (!controller) return stored;
+    try {
+      for (const block of stored.message.content) {
+        if (block.type === 'tool_use' && typeof block.id === 'string' && typeof block.name === 'string' && WORK_STATE_WRITE_TOOL.test(block.name)) {
+          controller.onWorkStateWriteCall({ agentId: e.agentId, toolUseId: block.id, input: block.input });
+        }
+      }
+    } catch (error) {
+      // The row is already kept; say why the continuation prompt may fall back to "continue".
+      $.ui.log(`claude-mem auto-clear could not read a work_state_write call off the model's response, so the continuation prompt may fall back to "continue": ${error instanceof Error ? error.message : String(error)}`);
     }
     return stored;
   }).catch(async ($, e, next) => next(e));

@@ -65,7 +65,20 @@ function readIfPresent(filePath: string): string | null {
 /** Claude Code loads `@~/…` and `@/absolute/…` alike, so either spelling counts as the import. A `\`-separated line loads nothing, so it never counts. */
 export function hasImportLine(text: string | null, importedPath: string): boolean {
   const accepted = new Set([claudeCodeImportLine(importedPath), `@${forwardSlashPath(importedPath).replaceAll(' ', '\\ ')}`]);
-  return text !== null && text.split('\n').some(candidate => accepted.has(candidate.trim()));
+  if (text === null) return false;
+  // Claude Code does not evaluate imports in fenced code examples. Only a
+  // matching marker at least as long, with no trailing text, closes a fence.
+  let fence: string | null = null;
+  for (const candidate of text.split(/\r\n?|\n/)) {
+    const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(candidate);
+    if (fence) {
+      if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length && !marker[2].trim()) fence = null;
+      continue;
+    }
+    if (marker && !(marker[1][0] === '`' && marker[2].includes('`'))) { fence = marker[1]; continue; }
+    if (accepted.has(candidate.trim())) return true;
+  }
+  return false;
 }
 
 export interface RulesImportPaths {

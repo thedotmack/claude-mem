@@ -132,6 +132,13 @@ describe('DataRoutes import platform scoping', () => {
         promptsRejected: 0,
       },
       rejected: { sessions: [], summaries: [], observations: [], prompts: [] },
+      sessionIdentities: {
+        memorySessionIds: [['claude-memory', 'claude-memory'], ['cursor-memory', 'cursor-memory']],
+        contentSessionIds: [[contentSessionId, [
+          { id: store.findSessionDbIdByContentSessionId(contentSessionId, 'claude'), platformSource: 'claude' },
+          { id: store.findSessionDbIdByContentSessionId(contentSessionId, 'cursor'), platformSource: 'cursor' },
+        ]]],
+      },
     });
 
     const rows = store.db.prepare(`

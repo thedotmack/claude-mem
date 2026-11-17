@@ -4,7 +4,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { CmemMark } from '@/components/brand'
 import { LOCALES, LOCALE_NAMES, useI18n, type Locale } from '@/lib/i18n'
-import { EMPTY_SETUP_DATA, connectionFailureAbove, localSetupSource, setupToolsForInstall, toSetupFailure, type SetupData, type SetupFailure, type SetupSource } from './setup-data'
+import { EMPTY_SETUP_DATA, connectionFailureAbove, localSetupSource, setupToolsForInstall, toSetupFailure, uploadTooLarge, type SetupData, type SetupFailure, type SetupSource } from './setup-data'
 import { backWaitsFor, choiceLocked, guardStep, hydrateSetupChoice, initialFlowState, nextAfterSavings, previousStep, scanMovesOn, type SetupFlowState, type SetupStep } from './setup-flow'
 import type { SampleFailure, SampleScanStop } from './setup-sample'
 import { CheckoutScreen } from './screens/checkout-screen'
@@ -171,6 +171,10 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
   useEffect(() => {
     if (source?.kind === 'local') telemetry.view(step, { branch: flow.branch, branch_confirmed: branchConfirmed, importComplete: flow.importStatus === 'complete' })
   }, [source, step, flow.branch, branchConfirmed, flow.importStatus, telemetry])
+  // After the view effect, so the error counts against the consent step. It reads every tool the step offers, all
+  // ticked as it opens, which is when the consent step first shows its over-the-cap warning (scan-screen.tsx).
+  const consentOverCap = data.scan.phase === 'awaiting-consent' && uploadTooLarge(data.scan.agents)
+  useEffect(() => { if (consentOverCap) telemetry.error('upload_too_large') }, [consentOverCap, telemetry])
   const availableTools = useMemo(() => setupToolsForInstall(data.install), [data.install])
   const tools = useMemo(() => availableTools.filter((tool) => flow.branch === 'go' || tool.kind === 'local'), [availableTools, flow.branch])
   const pickedTools = useMemo(() => tools.filter((tool) => flow.finishTools.includes(tool.id)), [tools, flow.finishTools])

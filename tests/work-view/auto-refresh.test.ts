@@ -8,11 +8,12 @@ import { join } from 'node:path';
 import { AutoRefreshWorker, refreshIntervalMs } from '../../src/services/work-view/auto-refresh-worker.mjs';
 import { buildRefreshTask, decidedTextLanguage, FOCUS_ANSWER_SCHEMA, GROUPING_ANSWER_SCHEMA, resolveRefreshAgents, resolveStepModels, reviewConcurrency, STEP_MODEL_SETTINGS, STEP_MODELS } from '../../src/services/work-view/refresh-task.js';
 import { logger } from '../../src/utils/logger.js';
-import { readLedger, runCli } from '../../src/services/work-view/request-groups.mjs';
+import { groupIdFor, readLedger, runCli } from '../../src/services/work-view/request-groups.mjs';
 import { scratchDir } from '../helpers/scratch-dir.js';
 import { everyRequestInOther, focusInputFrom, focusWriter, isOtherPass } from '../helpers/fake-focus-writer.js';
 import { FOCUS_BATCH } from '../../src/services/work-view/request-groups.mjs';
 import { readFocus } from '../../src/services/work-view/data-source.mjs';
+import { OWNER_GOALS_QUESTION_BYTES } from '../../src/services/work-view/owner-goals-batches.js';
 import { registerSharedFileWriter } from '../../src/services/work-view/shared-file-hooks.mjs';
 
 const DAY = 86400000, NOW = 100 * DAY;
@@ -427,6 +428,18 @@ describe('refresh task', () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
+  it('a retry still carrying a preference without a quote saves the review without it and says so', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-unquoted-'));
+    try {
+      const review = (show: any) => ({ groupId: show.groupId, state: 'in-progress', percent: 40, summary: 'Cards are being built.', reviewBasis: show.reviewBasis,
+        preferences: [{ kind: 'directive', preference: 'Short replies.', quote: 'keep it short', at: null }, { kind: 'directive', preference: 'Tests first.', quote: '', at: null }] });
+      const summary = await runRefreshWithReviewAnswers(dir, show => review(show));
+      expect(summary).toBe('1 new conversations grouped, 1 requests reviewed (1 preferences without a quote or text dropped after retry), 1 requests placed, story written.');
+      const [saved] = Object.values(readLedger(dir).progress) as any[];
+      expect(saved.preferences.map((preference: any) => preference.preference)).toEqual(['Short replies.']);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it('a retry still missing reviewBasis fails the run naming the group and saves no review', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-basis-'));
     try {
@@ -748,6 +761,231 @@ describe('story repair', () => {
   });
 });
 
+describe('story in parts (#6226)', () => {
+  /** A database holding only `count` sessions, one per request the story tests seed. */
+  function storyDatabase(count: number) {
+    const db = new Database(':memory:');
+    db.exec(`CREATE TABLE sdk_sessions (id INTEGER PRIMARY KEY, platform_source TEXT, content_session_id TEXT, memory_session_id TEXT, project TEXT, user_prompt TEXT, started_at_epoch INTEGER);
+      CREATE TABLE user_prompts (id INTEGER PRIMARY KEY, session_db_id INTEGER, prompt_number INTEGER, prompt_text TEXT, created_at_epoch INTEGER);
+      CREATE TABLE tool_uses (id INTEGER PRIMARY KEY, session_db_id INTEGER, tool_name TEXT, tool_input TEXT, created_at_epoch INTEGER);
+      CREATE TABLE observations (id INTEGER PRIMARY KEY, memory_session_id TEXT, type TEXT, title TEXT, subtitle TEXT, created_at_epoch INTEGER);
+      CREATE TABLE work_state_entries (id INTEGER PRIMARY KEY, project TEXT, list_name TEXT, fields TEXT, created_at_epoch INTEGER);`);
+    for (let index = 0; index < count; index++) {
+      db.prepare('INSERT INTO sdk_sessions VALUES (?, ?, ?, ?, ?, ?, ?)').run(index + 1, 'claude', `s${index}`, `m${index + 1}`, 'repo/tree', `Build feature ${index}`, NOW - 3 * DAY);
+      db.prepare('INSERT INTO user_prompts (session_db_id, prompt_number, prompt_text, created_at_epoch) VALUES (?, ?, ?, ?)').run(index + 1, 1, `Build feature ${index}`, NOW - 3 * DAY);
+    }
+    return db;
+  }
+
+  /** A review at the validators' bounds, about 21 KB stored: a few hundred of them outgrow any model's window. */
+  const bigReview = (show: any) => ({
+    groupId: show.groupId, state: 'in-progress', percent: 40,
+    summary: 'S'.repeat(280),
+    narrative: 'N'.repeat(1200),
+    startedAt: new Date(NOW - 10 * DAY).toISOString(), shippedAt: null, lastActivityAt: new Date(NOW - DAY).toISOString(),
+    milestones: Array.from({ length: 12 }, (_, i) => ({ at: null, text: `M${i} ` + 'm'.repeat(190), evidence: [] })),
+    preferences: Array.from({ length: 10 }, (_, i) => ({ kind: 'directive', preference: `P${i} ` + 'p'.repeat(190), quote: 'q'.repeat(300), at: null })),
+    outcome: { landed: null, usage: null, value: null, regressions: [], changes: Array.from({ length: 12 }, (_, i) => ({ what: 'w'.repeat(200), why: 'y'.repeat(400), at: null, evidence: [] })) },
+    evidence: [],
+    reviewBasis: show.reviewBasis,
+  });
+
+  /** `count` one-conversation requests, each with a large review recorded at NOW, so every one has moved. */
+  function seedMovedReviews(database: Database, dir: string, count: number): string[] {
+    const sessions = Array.from({ length: count }, (_, index) => `s${index}`);
+    const decisions = join(dir, 'decisions.json');
+    writeFileSync(decisions, JSON.stringify({ groups: sessions.map(session => ({ title: `Request ${session}`, conversations: [key(session)] })) }));
+    runCli(['apply', decisions], { dir, database, now: NOW, print: () => {} });
+    const groupIds = Object.keys(readLedger(dir).groups.groups);
+    for (const groupId of groupIds) {
+      let show: any;
+      runCli(['show', groupId], { dir, database, now: NOW, print: value => { show = value; } });
+      const reviewPath = join(dir, `review-${groupId}.json`);
+      writeFileSync(reviewPath, JSON.stringify(bigReview(show)));
+      runCli(['record-progress', reviewPath], { dir, database, now: NOW, print: () => {} });
+    }
+    return groupIds;
+  }
+
+  /** A fake agent for the seeded refreshes: focus places everything in Other, and the story step records
+   * each question's input and answers with a numbered narrative, carrying the preferences it was given. */
+  function storyAskRecorder() {
+    const asks: Array<{ bytes: number; input: any }> = [];
+    const ask = async (prompt: string) => {
+      if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
+      if (prompt.includes('Do only section 4')) {
+        const file = /output is in (.+?\.json)/.exec(prompt)![1];
+        const input = JSON.parse(prompt.split(`--- ${file} ---\n`)[1]);
+        asks.push({ bytes: Buffer.byteLength(prompt, 'utf8'), input });
+        const carried = (input.previousStory?.preferences ?? []).map((preference: any) => ({ preference: preference.preference, kind: preference.kind, supportCount: preference.supportCount, quotes: preference.quotes ?? [] }));
+        if (!carried.length) carried.push({ preference: 'Keep parts small.', kind: 'directive', supportCount: 1, quotes: [] });
+        return JSON.stringify({ narrative: `Narrative from part ${asks.length}.`, preferences: carried });
+      }
+      throw new Error(`Unexpected prompt: ${prompt.slice(-200)}`);
+    };
+    return { asks, ask };
+  }
+
+  const storyTask = (database: Database, dir: string, unplaced: number, clock: () => number = () => NOW) => buildRefreshTask({ localDeviceId: () => '', needs: { due: 0, ungrouped: 0, goalsStale: false, unplaced, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: clock, saveFocus: focusWriter(database).save });
+
+  it('writes the story in parts when every moved review in one question would exceed the budget', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-story-parts-'));
+    const database = storyDatabase(60);
+    try {
+      const groupIds = seedMovedReviews(database, dir, 60);
+      const { asks, ask } = storyAskRecorder();
+      const task = storyTask(database, dir, 60);
+      expect(await task.run(ask, 'api')).toBe('60 requests placed, story written in 3 parts.');
+      // Every question, as the api agent receives it with the input inlined, fits the budget.
+      expect(asks).toHaveLength(3);
+      for (const entry of asks) expect(entry.bytes).toBeLessThanOrEqual(OWNER_GOALS_QUESTION_BYTES);
+      // Every moved review reached the story step exactly once.
+      const seen = asks.flatMap(entry => entry.input.reviews.map((review: any) => review.groupId));
+      expect(seen).toHaveLength(60);
+      expect([...seen].sort()).toEqual([...groupIds].sort());
+      // The first part writes; each later part updates the story the part before returned.
+      expect(asks[0].input.update).toBe(false);
+      expect(asks[1].input.update).toBe(true);
+      expect(asks[1].input.previousStory.narrative).toBe('Narrative from part 1.');
+      expect(asks[2].input.previousStory.narrative).toBe('Narrative from part 2.');
+      expect(task.steps.filter(timing => timing.step === 'story')).toHaveLength(3);
+      // Only the last part is recorded, with the preferences the first part returned still in it.
+      const story = readLedger(dir).story;
+      expect(story.narrative).toBe('Narrative from part 3.');
+      expect(story.preferences.map((preference: any) => preference.preference)).toEqual(['Keep parts small.']);
+    } finally { database.close(); rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('updates a stored story in parts, the first part starting from the stored story', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-story-parts-update-'));
+    const database = storyDatabase(50);
+    try {
+      const groupIds = seedMovedReviews(database, dir, 50);
+      writeFileSync(join(dir, 'story.json'), JSON.stringify({ narrative: 'The story so far.', preferences: [{ preference: 'Stored preference.', kind: 'directive', supportCount: 1, quotes: [] }], writtenAt: new Date(NOW - DAY).toISOString() }));
+      const { asks, ask } = storyAskRecorder();
+      const task = storyTask(database, dir, 50);
+      expect(await task.run(ask, 'api')).toBe('50 requests placed, story updated in 2 parts.');
+      expect(asks).toHaveLength(2);
+      for (const entry of asks) expect(entry.bytes).toBeLessThanOrEqual(OWNER_GOALS_QUESTION_BYTES);
+      const seen = asks.flatMap(entry => entry.input.reviews.map((review: any) => review.groupId));
+      expect(seen).toHaveLength(50);
+      expect([...seen].sort()).toEqual([...groupIds].sort());
+      expect(asks[0].input.update).toBe(true);
+      expect(asks[0].input.previousStory.narrative).toBe('The story so far.');
+      expect(asks[0].input.previousStory.preferences.map((preference: any) => preference.preference)).toEqual(['Stored preference.']);
+      expect(asks[1].input.previousStory.narrative).toBe('Narrative from part 1.');
+      const story = readLedger(dir).story;
+      expect(story.narrative).toBe('Narrative from part 2.');
+      expect(story.preferences.map((preference: any) => preference.preference)).toEqual(['Stored preference.']);
+    } finally { database.close(); rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('records the story as of its read, so a review that moves while a later part is written is told next time', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-story-parts-moved-'));
+    const database = storyDatabase(50);
+    try {
+      const groupIds = seedMovedReviews(database, dir, 50);
+      const LATER = NOW + 60_000;
+      let clock = NOW;
+      const movedWhileWriting = groupIds[0];
+      const { asks, ask } = storyAskRecorder();
+      const task = storyTask(database, dir, 50, () => clock);
+      expect(await task.run(async prompt => {
+        if (prompt.includes('Do only section 4') && asks.length === 1) {
+          // Part 2 is being written: time passes and one review's facts move.
+          clock = LATER;
+          let show: any;
+          runCli(['show', movedWhileWriting], { dir, database, now: LATER, print: value => { show = value; } });
+          const reviewPath = join(dir, 'moved-review.json');
+          writeFileSync(reviewPath, JSON.stringify({ ...bigReview(show), percent: 80 }));
+          runCli(['record-progress', reviewPath], { dir, database, now: LATER, print: () => {} });
+        }
+        return ask(prompt);
+      }, 'api')).toBe('50 requests placed, story written in 2 parts.');
+      // The story is stamped with the time story-input was read, not the time the last part finished.
+      expect(readLedger(dir).story.writtenAt).toBe(new Date(NOW).toISOString());
+      let next: any;
+      runCli(['story-input'], { dir, database, now: LATER, print: value => { next = value; } });
+      expect(next.reviews.map((review: any) => review.groupId)).toEqual([movedWhileWriting]);
+    } finally { database.close(); rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('a later part that fails leaves the stored story untouched, and the next refresh tells every moved review again', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-story-parts-failed-'));
+    const database = storyDatabase(50);
+    try {
+      const groupIds = seedMovedReviews(database, dir, 50);
+      writeFileSync(join(dir, 'story.json'), JSON.stringify({ narrative: 'The story so far.', preferences: [{ preference: 'Stored preference.', kind: 'directive', supportCount: 1, quotes: [] }], writtenAt: new Date(NOW - DAY).toISOString() }));
+      const before = readFileSync(join(dir, 'story.json'), 'utf8');
+      let storyAsks = 0;
+      const error = await storyTask(database, dir, 50).run(async prompt => {
+        if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
+        if (prompt.includes('Do only section 4')) {
+          storyAsks++;
+          // Part 1 answers well; part 2 answers without a narrative, on its first try and on its retry.
+          return JSON.stringify(storyAsks === 1 ? { narrative: 'Part 1 only.', preferences: [] } : { preferences: [] });
+        }
+        throw new Error(`Unexpected prompt: ${prompt.slice(-200)}`);
+      }, 'api').then(() => null, failure => failure as Error);
+      expect(error).not.toBeNull();
+      expect(storyAsks).toBe(3);
+      // Neither the narrative nor writtenAt moved: part 1's answer was never recorded.
+      expect(readFileSync(join(dir, 'story.json'), 'utf8')).toBe(before);
+      const { asks, ask } = storyAskRecorder();
+      expect(await storyTask(database, dir, 0).run(ask, 'api')).toContain('story updated in 2 parts.');
+      const seen = asks.flatMap(entry => entry.input.reviews.map((review: any) => review.groupId));
+      expect([...seen].sort()).toEqual([...groupIds].sort());
+      expect(asks[0].input.previousStory.narrative).toBe('The story so far.');
+      expect(readLedger(dir).story.narrative).toBe('Narrative from part 2.');
+    } finally { database.close(); rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('a few moved reviews still go in one question, as before', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-story-one-part-'));
+    const database = storyDatabase(4);
+    try {
+      seedMovedReviews(database, dir, 4);
+      const { asks, ask } = storyAskRecorder();
+      const task = storyTask(database, dir, 4);
+      expect(await task.run(ask, 'api')).toBe('4 requests placed, story written.');
+      expect(asks).toHaveLength(1);
+      expect(asks[0].input.reviews).toHaveLength(4);
+      expect(task.steps.filter(timing => timing.step === 'story')).toHaveLength(1);
+    } finally { database.close(); rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('one review too large for any part fails the story step and records nothing', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-story-oversized-'));
+    const database = fixtureDatabase();
+    try {
+      const decisions = join(dir, 'decisions.json');
+      writeFileSync(decisions, JSON.stringify({ groups: [{ title: 'Release cards', conversations: [key('a')] }] }));
+      runCli(['apply', decisions], { dir, database, now: NOW, print: () => {} });
+      const [groupId] = Object.keys(readLedger(dir).groups.groups);
+      // A stored review past the whole question budget (written directly: record-progress bounds its
+      // fields, so no recorded review can grow this large today).
+      mkdirSync(join(dir, 'progress'), { recursive: true });
+      writeFileSync(join(dir, 'progress', `${groupId}.json`), JSON.stringify({
+        groupId, state: 'in-progress', percent: 40, summary: 'Huge.', narrative: 'x'.repeat(OWNER_GOALS_QUESTION_BYTES + 1024),
+        milestones: [], preferences: [], outcome: null, evidence: [],
+        startedAt: new Date(NOW - 10 * DAY).toISOString(), checkedAt: new Date(NOW).toISOString(), changedAt: new Date(NOW).toISOString(),
+        reviewedThrough: new Date(NOW).toISOString(), reviewedConversations: [key('a')], readings: [{ at: new Date(NOW).toISOString(), percent: 40 }],
+      }));
+      let storyAsked = 0;
+      const task = storyTask(database, dir, 1);
+      const error = await task.run(async prompt => {
+        if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
+        if (prompt.includes('Do only section 4')) { storyAsked++; return JSON.stringify({ narrative: 'Never saved.', preferences: [] }); }
+        throw new Error(`Unexpected prompt: ${prompt.slice(-200)}`);
+      }, 'api').then(() => null, failure => failure as Error & { answerRefused?: boolean });
+      expect(error?.message).toContain('One moved review and the story question around it exceed the input budget');
+      expect(error?.answerRefused).toBe(true);
+      expect(storyAsked).toBe(0);
+      expect(readLedger(dir).story).toBeNull();
+    } finally { database.close(); rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
 describe('review repair', () => {
   it.each(['narrative', 'summary'])('returns the rejected review so an oversized %s can be corrected without repeating accepted groups', async (field) => {
     const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-review-repair-'));
@@ -783,6 +1021,104 @@ describe('review repair', () => {
       expect(progress[rejectedReview.groupId][field]).toBe('Evidence preserved in a shorter review.');
       expect(progress[rejectedReview.groupId].evidence).toEqual(['observation 42']);
       expect(progress[acceptedId].readings).toHaveLength(1);
+    } finally { database.close(); rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe('grouping repair', () => {
+  it('a retry that still joins without linking the anchor saves the linked parts and leaves the open request as it was', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-grouping-repair-'));
+    const database = fixtureDatabase();
+    try {
+      for (const [index, session] of ['b', 'c', 'd'].entries()) {
+        database.prepare('INSERT INTO sdk_sessions VALUES (?, ?, ?, ?, ?, ?, ?)').run(index + 2, 'claude', session, `m${index + 2}`, 'repo/tree', `Fix the card layout, part ${session}`, NOW - 2 * DAY);
+        database.prepare('INSERT INTO user_prompts (session_db_id, prompt_number, prompt_text, created_at_epoch) VALUES (?, ?, ?, ?)').run(index + 2, 1, `Fix the card layout, part ${session}`, NOW - 2 * DAY);
+      }
+      const decisions = join(dir, 'decisions.json');
+      writeFileSync(decisions, JSON.stringify({ groups: [{ title: 'Release cards', conversations: [key('a')] }] }));
+      runCli(['apply', decisions], { dir, database, now: NOW - DAY, print: () => {} });
+      const openRequest = readLedger(dir).groups.groups[groupIdFor(key('a'))];
+      // The shape a local OpenAI-compatible model answered twice: its links leave out the open request's anchor,
+      // and one link names a single conversation.
+      const answer = JSON.stringify({ language: 'English', groups: [
+        { title: 'Card layout', conversations: [key('a'), key('b'), key('c')], links: [{ kind: 'agent-judgment', conversations: [key('b'), key('c')], evidence: 'Both fix the card layout.' }] },
+        { title: 'Card colors', conversations: [key('d')], links: [{ kind: 'agent-judgment', conversations: [key('d')], evidence: 'Colors.' }] },
+      ], ignored: [] });
+      const groupingPrompts: string[] = [];
+      const ask = async (prompt: string) => {
+        if (!prompt.includes('Do only section 1')) return defaultAnswer(prompt);
+        groupingPrompts.push(prompt);
+        return answer;
+      };
+      const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: 1, ungrouped: 3, goalsStale: false, unplaced: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, saveFocus: focusWriter(database).save });
+      expect(await task.run(ask, 'api')).toBe('3 new conversations grouped (2 decisions repaired after retry), 3 requests reviewed, 3 requests placed, story written.');
+      // The first answer is still refused, so the model gets its chance to link the anchor itself.
+      expect(groupingPrompts).toHaveLength(2);
+      expect(groupingPrompts[1]).toContain(`Your previous answer was refused: groups[0] joins ${key('b')}, ${key('c')} without evidence linking it to the anchor.`);
+      const { groups } = readLedger(dir);
+      expect(groups.conversations).toEqual({ [key('a')]: groupIdFor(key('a')), [key('b')]: groupIdFor(key('b')), [key('c')]: groupIdFor(key('b')), [key('d')]: groupIdFor(key('d')) });
+      expect(groups.groups[groupIdFor(key('a'))]).toEqual(openRequest);
+      expect(groups.groups[groupIdFor(key('b'))]).toMatchObject({ title: 'Card layout', anchor: key('b'), links: [{ kind: 'agent-judgment', conversations: [key('b'), key('c')], evidence: 'Both fix the card layout.' }] });
+      expect(groups.groups[groupIdFor(key('d'))]).toMatchObject({ title: 'Card colors', anchor: key('d'), links: [] });
+    } finally { database.close(); rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe('focus proposal repair', () => {
+  /** Requests a–d, one conversation each, and a refresh whose focus step answers with `focusAnswer`. */
+  function refreshWithFocusAnswers(dir: string, database: Database, focusAnswer: (prompt: string) => string) {
+    for (const [index, session] of ['b', 'c', 'd'].entries()) {
+      database.prepare('INSERT INTO sdk_sessions VALUES (?, ?, ?, ?, ?, ?, ?)').run(index + 2, 'claude', session, `m${index + 2}`, 'repo/tree', `Build feature ${session}`, NOW - 2 * DAY);
+      database.prepare('INSERT INTO user_prompts (session_db_id, prompt_number, prompt_text, created_at_epoch) VALUES (?, ?, ?, ?)').run(index + 2, 1, `Build feature ${session}`, NOW - 2 * DAY);
+    }
+    const decisions = join(dir, 'decisions.json');
+    writeFileSync(decisions, JSON.stringify({ groups: ['a', 'b', 'c', 'd'].map(session => ({ title: `Request ${session}`, conversations: [key(session)] })) }));
+    runCli(['apply', decisions], { dir, database, now: NOW, print: () => {} });
+    const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: 4, ungrouped: 0, goalsStale: false, unplaced: 4, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, saveFocus: focusWriter(database).save });
+    return task.run(async (prompt: string) => {
+      if (prompt.includes('Do only section 2')) return reviewAll(prompt);
+      if (prompt.includes('Do only section 3')) return focusAnswer(prompt);
+      return JSON.stringify({ narrative: 'Started.', preferences: [] });
+    }, 'api');
+  }
+  const proposal = (kind: string, anchors: string[], name: string) => ({ kind, name, goal: 'The release looks finished.', about: 'Fixes.', anchors, sameAs: null, evidence: 'Steps of the release.' });
+
+  it('a retry that still proposes an area the check refuses saves the placements and the other proposals without it', async () => {
+    const dir = scratchDir('auto-refresh-focus-proposal-repair');
+    const database = fixtureDatabase();
+    try {
+      let otherAnswers = 0;
+      // Twice the same answer: a "new" area holding one request beside a sound one.
+      const result = await refreshWithFocusAnswers(dir, database, prompt => {
+        if (!isOtherPass(prompt)) return everyRequestInOther(prompt);
+        otherAnswers++;
+        return JSON.stringify({ placements: [], proposals: [proposal('new', [key('b')], 'Alone'), proposal('new', [key('c'), key('d')], 'Polish')] });
+      });
+      expect(result).toBe('4 requests reviewed, 4 requests placed, 1 focus areas suggested, 1 refused focus area proposals dropped after retry, story written.');
+      expect(otherAnswers).toBe(2);
+      const names = readFocus(database, { localDeviceId: '' }).focusAreas.map(area => area.name);
+      expect(names).toContain('Polish');
+      expect(names).not.toContain('Alone');
+    } finally { database.close(); rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('a retry that still proposes a name the worker refuses (a nav label) saves the placements without it', async () => {
+    const dir = scratchDir('auto-refresh-focus-nav-repair');
+    const database = fixtureDatabase();
+    try {
+      let placeAnswers = 0;
+      // record-focus's check accepts the name; the worker's write refuses it, since "Other" is a nav label.
+      const result = await refreshWithFocusAnswers(dir, database, prompt => {
+        if (isOtherPass(prompt)) return everyRequestInOther(prompt);
+        placeAnswers++;
+        const placed = JSON.parse(everyRequestInOther(prompt));
+        return JSON.stringify({ ...placed, proposals: [proposal('promote', [key('a')], 'Other things')] });
+      });
+      expect(result).toBe('4 requests reviewed, 4 requests placed, 1 refused focus area proposals dropped after retry, story written.');
+      expect(placeAnswers).toBe(2);
+      const focus = readFocus(database, { localDeviceId: '' });
+      expect(focus.focusAreas.map(area => area.name)).not.toContain('Other things');
+      expect(['a', 'b', 'c', 'd'].map(session => focus.focusAreaIdByAnchor.get(key(session)))).toEqual(['other', 'other', 'other', 'other']);
     } finally { database.close(); rmSync(dir, { recursive: true, force: true }); }
   });
 });

@@ -247,7 +247,7 @@ describe('setup tool marks', () => {
     ['claude-code', 'Claude Code'], ['claude-ai', 'Claude.ai'], ['codex', 'Codex'], ['codex-cli', 'Codex CLI'], ['chatgpt', 'ChatGPT'],
     ['gemini-cli', 'Gemini CLI'], ['antigravity-cli', 'Antigravity CLI'], ['antigravity', 'Antigravity'], ['opencode', 'OpenCode'],
     ['openclaw', 'OpenClaw'], ['windsurf', 'Windsurf'], ['t3code', 'T3 Code'], ['kimi', 'Kimi Code'], ['devin', 'Devin CLI / Desktop'],
-    ['cursor', 'Cursor'], ['grok-bot', 'Grok Bot'], ['copilot-cli', 'Copilot CLI'], ['omp', 'OMP'], ['hermes', 'Hermes Agent'], ['pi', 'Pi'],
+    ['cursor', 'Cursor'], ['grok-bot', 'Grok Bot'], ['copilot-cli', 'Copilot CLI'], ['copilot-vscode', 'Copilot in VS Code'], ['omp', 'OMP'], ['hermes', 'Hermes Agent'], ['pi', 'Pi'],
     ['dsh', 'DeepSeek Harness'], ['goose', 'Goose'], ['roo-code', 'Roo Code'], ['warp', 'Warp'], ['zed', 'Zed'],
   ];
   const SAME_TOOL = [['codex', 'codex-cli'], ['antigravity', 'antigravity-cli']];

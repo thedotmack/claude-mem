@@ -80,20 +80,29 @@ export function tomlTableKey(line: string): string | null {
   return parsed && !parsed.rest ? JSON.stringify(parsed.keys) : null;
 }
 
-/** Read the same semantic table/key names that the managed writer updates. */
-export function readTomlBooleanInTable(content: string, header: string, key: string): boolean | undefined {
+/** Locate a key by its absolute path, including assignments in parent tables. */
+export function findTomlAssignmentInTable(lines: string[], header: string, key: string): { index: number; keyEnd: number; value: string } | null {
   const tableKey = tomlTableKey(header);
-  let inTable = false;
-  for (const line of tomlStructuralLines(content.split('\n'))) {
+  if (tableKey === null) return null;
+  const wantedPath = JSON.stringify([...JSON.parse(tableKey), key]);
+  let tablePath: string[] | null = [];
+  for (const [index, line] of lines.entries()) {
     if (/^\s*\[/.test(line)) {
-      inTable = tableKey !== null && tomlTableKey(line) === tableKey;
+      const currentTable = tomlTableKey(line);
+      tablePath = currentTable === null ? null : JSON.parse(currentTable);
       continue;
     }
-    if (!inTable) continue;
+    if (tablePath === null) continue;
     const parsed = tomlKeyPath(line);
-    if (parsed?.keys.length !== 1 || parsed.keys[0] !== key) continue;
-    const value = /^=\s*(true|false)\s*$/.exec(parsed.rest);
-    if (value) return value[1] === 'true';
+    // Dotted assignments may start at the root or within a parent table.
+    if (!parsed?.rest.startsWith('=') || JSON.stringify([...tablePath, ...parsed.keys]) !== wantedPath) continue;
+    return { index, keyEnd: line.length - parsed.rest.length, value: parsed.rest.slice(1).trim() };
   }
-  return undefined;
+  return null;
+}
+
+/** Read the same semantic table/key names that the managed writer updates. */
+export function readTomlBooleanInTable(content: string, header: string, key: string): boolean | undefined {
+  const assignment = findTomlAssignmentInTable(tomlStructuralLines(content.split('\n')), header, key);
+  return assignment?.value === 'true' ? true : assignment?.value === 'false' ? false : undefined;
 }
