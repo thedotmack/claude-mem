@@ -3,9 +3,10 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { CODE_MODE_REFUSED_EVENTS, refusedEventsHooked } from '../../scripts/code-mode-refused-events.js';
 
-const bundle = readFileSync(join(import.meta.dir, '..', '..', 'plugin', 'hooks', 'auto-clear.js'), 'utf-8');
+// claude-mem's one hooks module: auto-clear and the session-start card ship in it.
+const bundle = readFileSync(join(import.meta.dir, '..', '..', 'plugin', 'hooks', 'hooks-module.js'), 'utf-8');
 
-describe('auto-clear bundle', () => {
+describe('hooks module bundle', () => {
   it('registers no event that makes Claude Code refuse Code Mode', () => {
     expect(refusedEventsHooked(bundle)).toEqual([]);
     for (const event of CODE_MODE_REFUSED_EVENTS) {
@@ -16,6 +17,10 @@ describe('auto-clear bundle', () => {
   it('watches tool results at session.append, the event that replaced tool.call', () => {
     expect(bundle).toMatch(/\bon\(\s*"session\.append"\s*,\s*\{\s*door:\s*"tool-result"\s*\}/);
     expect(bundle).toContain('$.session.append(');
+  });
+
+  it('reads the save\'s own arguments off the model\'s response row, also at session.append', () => {
+    expect(bundle).toMatch(/\bon\(\s*"session\.append"\s*,\s*\{\s*door:\s*"response"\s*\}/);
   });
 
   it('finds a refused event whichever quote style registers it, and leaves other events alone', () => {

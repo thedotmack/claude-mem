@@ -3359,7 +3359,11 @@ export class SessionStore {
   }
 
   getRecentSessionsWithStatus(project: string, limit: number = 3, platformSource?: string): RecentSessionStatusRow[] {
-    const params: any[] = [project];
+    // Adoption retains the session's original project. Use the same complete
+    // merge chains as search, without promoting a partially adopted source.
+    const readKeys = this.getProjectReadKeys([project]);
+    const scope = projectScopeSql('s', readKeys.length ? readKeys : [project], { includeMerged: false });
+    const params: any[] = [...scope.params];
     let platformClause = '';
     if (platformSource) {
       platformClause = `AND COALESCE(NULLIF(s.platform_source, ''), '${DEFAULT_PLATFORM_SOURCE}') = ?`;
@@ -3378,7 +3382,7 @@ export class SessionStore {
           EXISTS (SELECT 1 FROM session_summaries sum
             WHERE sum.memory_session_id = s.memory_session_id) as has_summary
         FROM sdk_sessions s
-        WHERE s.project COLLATE NOCASE = ? AND s.memory_session_id IS NOT NULL
+        WHERE ${scope.sql} AND s.memory_session_id IS NOT NULL
         ${platformClause}
         ORDER BY s.started_at_epoch DESC
         LIMIT ?

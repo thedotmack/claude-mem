@@ -339,7 +339,7 @@ export class SessionRoutes extends BaseRouteHandler {
           }
 
           try {
-            const resolvedPath = findClaudeExecutable('SDK');
+            const resolvedPath = await findClaudeExecutable('SDK');
             // A spawn failure recorded the executable it could not launch (a
             // .cmd/.bat shim passes discovery but not the SDK's spawn). While
             // discovery still resolves that same, unchanged file, a start would

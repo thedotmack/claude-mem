@@ -246,6 +246,39 @@ function isExcludedFolder(folderPath: string, excludePaths: string[]): boolean {
   return false;
 }
 
+// Folders whose CLAUDE.md mirror update failed and has not succeeded since,
+// keyed by project. In-memory only — nothing is persisted or replayed: the
+// next observation that touches the folder runs the update again through the
+// normal path, and a successful write removes the entry. The set exists so a
+// failure is visible state, not only a log line, and so the retry is logged
+// as a retry. The set is capped per project: a folder that is never touched
+// again would otherwise stay marked for the worker's lifetime. Dropping the
+// oldest mark loses only its retry log line — a later observation for that
+// folder still runs the update through the normal path.
+const MAX_FAILED_FOLDER_CLAUDE_MD_UPDATES_PER_PROJECT = 100;
+const failedFolderClaudeMdUpdates = new Map<string, Set<string>>();
+
+function markFolderClaudeMdUpdateFailed(project: string, folderPath: string): void {
+  let folders = failedFolderClaudeMdUpdates.get(project);
+  if (!folders) {
+    folders = new Set<string>();
+    failedFolderClaudeMdUpdates.set(project, folders);
+  }
+  folders.add(folderPath);
+  while (folders.size > MAX_FAILED_FOLDER_CLAUDE_MD_UPDATES_PER_PROJECT) {
+    const oldest = folders.values().next().value;
+    if (oldest === undefined) break;
+    folders.delete(oldest);
+  }
+}
+
+function clearFolderClaudeMdUpdateFailure(project: string, folderPath: string): void {
+  const folders = failedFolderClaudeMdUpdates.get(project);
+  if (!folders) return;
+  folders.delete(folderPath);
+  if (folders.size === 0) failedFolderClaudeMdUpdates.delete(project);
+}
+
 export async function updateFolderClaudeMdFiles(
   filePaths: string[],
   project: string,
@@ -342,6 +375,10 @@ export async function updateFolderClaudeMdFiles(
   });
 
   for (const folderPath of folderPaths) {
+    if (failedFolderClaudeMdUpdates.get(project)?.has(folderPath)) {
+      logger.warn('FOLDER_INDEX', 'Retrying CLAUDE.md update for folder whose previous update failed', { folderPath, project });
+    }
+
     let response: Response;
     try {
       response = await workerHttpRequest(
@@ -355,42 +392,62 @@ export async function updateFolderClaudeMdFiles(
         errorMessage: message,
         errorStack: stack
       });
+      markFolderClaudeMdUpdateFailed(project, folderPath);
       continue;
     }
 
     if (!response.ok) {
       logger.error('FOLDER_INDEX', 'Failed to fetch timeline', { folderPath, status: response.status });
+      markFolderClaudeMdUpdateFailed(project, folderPath);
       continue;
     }
 
-    const result = await response.json() as { content?: Array<{ text?: string }> };
-    if (!result.content?.[0]?.text) {
-      logger.debug('FOLDER_INDEX', 'No content for folder', { folderPath });
+    // Parsing and writing are per-folder steps: a failure here (bad payload,
+    // unwritable folder) must not reject the whole update and skip the
+    // remaining folders. Log it with the folder, remember the folder, and
+    // let the next observation for it retry through the normal path.
+    try {
+      const result = await response.json() as { content?: Array<{ text?: string }> };
+      if (!result.content?.[0]?.text) {
+        logger.debug('FOLDER_INDEX', 'No content for folder', { folderPath });
+        continue;
+      }
+
+      const formatted = formatTimelineForClaudeMd(result.content[0].text);
+
+      const claudeMdPath = path.join(folderPath, targetFilename);
+      const hasNoActivity = formatted.includes('*No recent activity*');
+      const isEmptyOrSkeleton = formatted.trim() === '' || hasNoActivity;
+      const fileExists = existsSync(claudeMdPath);
+
+      // #2400 — when the generated content is empty/skeleton AND the folder
+      // matches the user's deny-list, never inject (skip even if the file exists,
+      // so we don't pollute non-content dirs with empty skeletons).
+      if (isEmptyOrSkeleton && matchesAnyGlob(folderPath, skeletonDenylistPatterns)) {
+        logger.debug('FOLDER_INDEX', 'Skipping skeleton CLAUDE.md in deny-listed folder', { folderPath, targetFilename });
+        continue;
+      }
+
+      if (isEmptyOrSkeleton && !fileExists) {
+        logger.debug('FOLDER_INDEX', 'Skipping empty context file creation', { folderPath, targetFilename });
+        continue;
+      }
+
+      writeClaudeMdToFolder(folderPath, formatted, targetFilename);
+      clearFolderClaudeMdUpdateFailure(project, folderPath);
+
+      logger.debug('FOLDER_INDEX', 'Updated context file', { folderPath, targetFilename });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      const stack = error instanceof Error ? error.stack : undefined;
+      logger.error('FOLDER_INDEX', `Failed to update ${targetFilename}; will retry on the next observation for this folder`, {
+        folderPath,
+        project,
+        errorMessage: message,
+        errorStack: stack
+      });
+      markFolderClaudeMdUpdateFailed(project, folderPath);
       continue;
     }
-
-    const formatted = formatTimelineForClaudeMd(result.content[0].text);
-
-    const claudeMdPath = path.join(folderPath, targetFilename);
-    const hasNoActivity = formatted.includes('*No recent activity*');
-    const isEmptyOrSkeleton = formatted.trim() === '' || hasNoActivity;
-    const fileExists = existsSync(claudeMdPath);
-
-    // #2400 — when the generated content is empty/skeleton AND the folder
-    // matches the user's deny-list, never inject (skip even if the file exists,
-    // so we don't pollute non-content dirs with empty skeletons).
-    if (isEmptyOrSkeleton && matchesAnyGlob(folderPath, skeletonDenylistPatterns)) {
-      logger.debug('FOLDER_INDEX', 'Skipping skeleton CLAUDE.md in deny-listed folder', { folderPath, targetFilename });
-      continue;
-    }
-
-    if (isEmptyOrSkeleton && !fileExists) {
-      logger.debug('FOLDER_INDEX', 'Skipping empty context file creation', { folderPath, targetFilename });
-      continue;
-    }
-
-    writeClaudeMdToFolder(folderPath, formatted, targetFilename);
-
-    logger.debug('FOLDER_INDEX', 'Updated context file', { folderPath, targetFilename });
   }
 }

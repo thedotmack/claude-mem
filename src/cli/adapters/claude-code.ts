@@ -2,6 +2,7 @@ import type { PlatformAdapter, NormalizedHookInput, HookResult } from '../types.
 import { AdapterRejectedInput, isValidCwd } from './errors.js';
 import { resolveHookProjectPath } from '../../utils/project-name.js';
 import { withPersistedOutputTail } from './claude-code-persisted-output.js';
+import { SESSION_START_CARD_FILE_KEY } from '../../shared/session-start-card-slot.js';
 
 const MAX_AGENT_FIELD_LEN = 128;
 const pickAgentField = (v: unknown): string | undefined =>
@@ -82,6 +83,7 @@ export const claudeCodeAdapter: PlatformAdapter = {
       sessionSource: source === 'startup' || source === 'resume' || source === 'clear' || source === 'compact'
         ? source
         : undefined,
+      sessionStartCardFile: firstFilledString(r[SESSION_START_CARD_FILE_KEY]),
       prompt: firstFilledString(r.prompt, r.userPrompt),
       submittedPrompt: normalizeSubmittedPrompt(r),
       toolName,

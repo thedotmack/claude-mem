@@ -103,6 +103,11 @@ function words(text: string): string[] {
 // Apply the existing length thresholds to the same decomposed spelling.
 const wordLength = (word: string): number => word.normalize('NFD').length;
 
+// Chinese and Japanese words need not be separated by spaces. Permit a
+// literal substring for Han/kana terms with at least two letters. Marks stay
+// attached but don't count as letters; script extensions include kana ー.
+const HAN_OR_KANA_TERM = /^(?:(?=\p{L})[\p{scx=Han}\p{scx=Hiragana}\p{scx=Katakana}]\p{M}*){2,}$/u;
+
 /** The terms of a question: lowercased words, minus the ones that say nothing. */
 function questionTerms(question: string): string[] {
   const terms = words(question)
@@ -129,9 +134,9 @@ const FIELD_WEIGHTS: Array<{ text: (observation: CorpusObservation) => string; w
 /**
  * How well an observation answers a question. Whole-word matches score the
  * field's weight; a question word that is the start of an observation word
- * ("auth" in "authentication") scores half of it. No network, no model: the
- * selection is the same on every run, so the same question sends the same
- * evidence.
+ * ("auth" in "authentication") scores half of it. For multi-letter Han/kana
+ * terms that half weight also applies within an unsegmented word. No network,
+ * no model: the same question sends the same evidence.
  */
 function scoreObservation(observation: CorpusObservation, terms: string[]): number {
   const weights = new Map<string, number>();
@@ -150,9 +155,10 @@ function scoreObservation(observation: CorpusObservation, terms: string[]): numb
       score += exact;
       continue;
     }
-    if (wordLength(term) < 3) continue;
+    const allowSubstring = HAN_OR_KANA_TERM.test(term);
+    if (!allowSubstring && wordLength(term) < 3) continue;
     for (const [token, weight] of weights) {
-      if (token.startsWith(term)) {
+      if (allowSubstring ? token.includes(term) : token.startsWith(term)) {
         score += weight * 0.5;
         break;
       }

@@ -1,19 +1,21 @@
-🌐 Bu otomatik bir çevirisidir. Topluluk düzeltmeleri memnuniyetle karşılanır!
-
 <h1 align="center">
   <br>
   <a href="https://github.com/thedotmack/claude-mem">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/claude-mem-logo-for-dark-mode.webp">
-      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/claude-mem-logo-for-light-mode.webp">
-      <img src="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/claude-mem-logo-for-light-mode.webp" alt="Claude-Mem" width="400">
+      <source media="(prefers-color-scheme: dark)" srcset="../public/claude-mem-logo-for-dark-mode.webp">
+      <source media="(prefers-color-scheme: light)" srcset="../public/claude-mem-logo-for-light-mode.webp">
+      <img src="../public/claude-mem-logo-for-light-mode.webp" alt="Claude-Mem" width="400">
     </picture>
   </a>
-  <br>
-  <a href="https://vercel.com/open-source-program">
-    <img alt="Vercel OSS Program" src="https://vercel.com/oss/program-badge-2026.svg" />
-  </a>
 </h1>
+
+<p align="center">
+  <img alt="Vercel OSS Program" src="https://vercel.com/oss/program-badge-2026.svg" height="24" />
+  &nbsp;&nbsp;&nbsp;
+  <img alt="Greptile" src="../public/greptile-wordmark-green.svg" height="24" />
+  &nbsp;&nbsp;&nbsp;
+  <img alt="SerpApi" src="../public/serpapi-logo-with-wordmark-gradient.svg" height="24" />
+</p>
 
 <p align="center">
   <a href="README.zh.md">🇨🇳 中文</a> •
@@ -50,17 +52,17 @@
   <a href="README.no.md">🇳🇴 Norsk</a>
 </p>
 
-<h4 align="center"><a href="https://claude.com/claude-code" target="_blank">Claude Code</a> için geliştirilmiş kalıcı bellek sıkıştırma sistemi.</h4>
+<h4 align="center">Kodlama ajanınız oturumlar arasında her şeyi unutur. Claude-Mem onun yerine hatırlar.</h4>
 
 <p align="center">
   <a href="../../LICENSE">
-    <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License">
+    <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="Lisans">
   </a>
   <a href="../../package.json">
-    <img src="https://img.shields.io/badge/version-13.4.0-green.svg" alt="Version">
+    <img src="https://img.shields.io/badge/version-15.19.0-green.svg" alt="Sürüm">
   </a>
   <a href="../../package.json">
-    <img src="https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen.svg" alt="Node">
+    <img src="https://img.shields.io/badge/node-%5E20.19%20%7C%7C%20%3E%3D22.12-brightgreen.svg" alt="Node">
   </a>
   <a href="https://github.com/thedotmack/awesome-claude-code">
     <img src="https://awesome.re/mentioned-badge.svg" alt="Mentioned in Awesome Claude Code">
@@ -68,13 +70,9 @@
 </p>
 
 <p align="center">
-  <a href="https://trendshift.io/repositories/15496" target="_blank">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/trendshift-badge-dark.svg">
-      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/trendshift-badge.svg">
-      <img src="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/trendshift-badge.svg" alt="thedotmack/claude-mem | Trendshift" width="250" height="55"/>
-    </picture>
-  </a>
+ <a href="https://www.star-history.com/thedotmack/claude-mem">
+  <picture><source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/badge?repo=thedotmack/claude-mem&type=rank&theme=dark" /><source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/badge?repo=thedotmack/claude-mem&type=rank" /><img alt="Star History sıralaması" src="https://api.star-history.com/badge?repo=thedotmack/claude-mem&type=rank" /></picture> <picture><source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/badge?repo=thedotmack/claude-mem&type=trending&theme=dark" /><source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/badge?repo=thedotmack/claude-mem&type=trending" /><img alt="GitHub’da günün öne çıkan deposu" src="https://api.star-history.com/badge?repo=thedotmack/claude-mem&type=trending" /></picture>
+ </a>
 </p>
 
 <br>
@@ -86,7 +84,7 @@
         <picture>
           <img
             src="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/cm-preview.gif"
-            alt="Claude-Mem Preview"
+            alt="Claude-Mem önizlemesi"
             width="500"
           >
         </picture>
@@ -115,42 +113,42 @@
 </table>
 
 <p align="center">
-  <a href="#quick-start">Hızlı Başlangıç</a> •
-  <a href="#how-it-works">Nasıl Çalışır</a> •
-  <a href="#mcp-search-tools">Arama Araçları</a> •
-  <a href="#documentation">Dokümantasyon</a> •
-  <a href="#configuration">Yapılandırma</a> •
-  <a href="#troubleshooting">Sorun Giderme</a> •
-  <a href="#license">Lisans</a>
+  <a href="#hızlı-başlangıç">Hızlı başlangıç</a> •
+  <a href="#nasıl-çalışır">Nasıl çalışır?</a> •
+  <a href="#mcp-arama-araçları">Arama araçları</a> •
+  <a href="#belgeler">Belgeler</a> •
+  <a href="#yapılandırma">Yapılandırma</a> •
+  <a href="#sorun-giderme">Sorun giderme</a> •
+  <a href="#lisans">Lisans</a>
 </p>
 
 <p align="center">
-  Claude-Mem, araç kullanım gözlemlerini otomatik olarak yakalayarak, anlamsal özetler oluşturarak ve bunları gelecekteki oturumlarda kullanılabilir hale getirerek bağlamı oturumlar arası sorunsuzca korur. Bu, Claude'un oturumlar sona erse veya yeniden bağlansa bile projeler hakkındaki bilgi sürekliliğini korumasını sağlar.
+  Ajanınız her yeni oturuma sıfırdan başlar. Aynı dosyaları yeniden okur, aynı soruları yeniden sorar ve birlikte düzelttiğiniz hataları tekrar yapar.
+</p>
+
+<p align="center">
+  Claude-Mem, ajanınızın yanında çalışıp yaptıklarını not alan ikinci bir ajan kullanır. Sonraki oturum, önemli bilgilerin kısa bir diziniyle başlar; ayrıntılar yalnızca gerektiğinde getirilir. Claude Code, Codex, Cursor, OpenCode ve 11 ajan daha desteklenir. Copilot CLI, Goose, Roo Code, Warp ve Zed belleğinizde arama yapabilir, ancak bu ajanların oturumları kaydedilmez.
 </p>
 
 ---
 
-## Quick Start
+## Hızlı başlangıç
 
-Tek bir komutla kurun:
+**Bir yapay zekâ ajanı olarak kullanıcı adına kurulum mu yapıyorsunuz?** Kullanıcı hazırsa kendi bilgisayarında `npx claude-mem install --setup browser` komutunu çalıştırın ve açık bırakın. Komut yerel çalışma ortamını hazırlar, ardından kurulum sayfasını tarayıcıda açar. Sayfa açılmazsa ekrana yazdırılan URL'yi kullanıcıya iletin. Ajanlar, entegrasyonlar, beceriler, model, kullanım analitiği ve isteğe bağlı e-posta adresiyle ilgili tüm seçimleri kullanıcı bu sayfada yapar; terminaldeki soruları aktarmanız gerekmez. Kullanıcı hazır değilse `npx claude-mem install --setup defer` komutunu çalıştırın. Bu komut çalışma ortamını hazırlar ve kurulumu kullanıcının ilk ziyaretine kadar bekletir; sonraki oturumda bağlantı gösterilir. Kullanıcı adına seçim yapmayın.
 
 ```bash
 npx claude-mem install
 ```
 
-Ya da OpenCode için kurun:
+Kurulum aracı bilgisayarınızdaki ajanları bulur ve hangilerini yapılandırmak istediğinizi sorar. Ardından çalışmaya başlayabilirsiniz: gözlemler ilk isteminizden itibaren kaydedilir ve projedeki ikinci oturumunuz ilk oturumun belleğiyle açılır. Copilot CLI, Goose, Roo Code, Warp ve Zed yalnızca bellek aramasını destekler; bu ajanların oturumları belleğe eklenmez.
 
-```bash
-npx claude-mem install --ide opencode
-```
+Kurulum aracı önce gerekli bileşenleri hazırlar, ardından tarayıcıda Claude-Mem hesabınıza giriş yapmanızı ister. Giriş, e-postanıza gönderilen bağlantıyla yapılır ve kart gerektirmez. Sonrasında **claude-mem observer** seçeneğini seçerseniz ödeme yöntemi isteyen bir ödeme sayfasında **30 günlük ücretsiz deneme** başlatılır. Bu işlem tamamlandığında kurulum aracı bellek anahtarınızı kaydeder. Bu gözlemciyle bellek işlemleri planınızın kotasından düşmez; böylece planınızdan %100'e kadar daha fazla kullanım elde edebilirsiniz. Ücretsiz deneme bittiğinde abone olmazsanız bellek işlemleri otomatik olarak Anthropic planınıza döner. Giriş yaptıktan sonra bellek sağlayıcınızı seçersiniz: claude-mem observer, kendi OpenRouter veya Gemini anahtarınız ya da Anthropic planınız.
 
-Ya da Antigravity CLI için kurun ([kurulum kılavuzu](https://docs.claude-mem.ai/antigravity-cli/setup)):
+Giriş adımını atlamak için `--provider` seçeneğiyle bir sağlayıcı belirtin, `CLAUDE_MEM_ONLINE_OPTIN=false` ayarını kullanın veya kurulumu CI ortamında ya da etkileşimsiz bir kabukta çalıştırın. Bu durumlarda kurulum, hesap işlemi gerektirmeden tamamlanır.
 
-```bash
-npx claude-mem install --ide antigravity
-```
+Belleğiniz bilgisayarınızdaki `~/.claude-mem` dizininde saklanır. Bulut eşitlemesi yalnızca siz etkinleştirirseniz çalışır. Anonim kullanım analitiği varsayılan olarak açıktır; kapatmak için `npx claude-mem telemetry disable` komutunu kullanın ([toplanan veriler](https://docs.claude-mem.ai/telemetry)).
 
-Ya da Claude Code içindeki plugin pazaryerinden kurun:
+Claude Code içindeki eklenti pazarından da kurabilirsiniz:
 
 ```bash
 /plugin marketplace add thedotmack/claude-mem
@@ -158,259 +156,330 @@ Ya da Claude Code içindeki plugin pazaryerinden kurun:
 /plugin install claude-mem
 ```
 
-Claude Code'u yeniden başlatın. Önceki oturumlardaki bağlam otomatik olarak yeni oturumlarda görünecektir.
+Claude Code'u yeniden başlatın. Önceki oturumların bağlamı yeni oturumlarda otomatik olarak kullanılabilir olur.
 
-> **Not:** Claude-Mem npm'de de yayımlanmıştır, ancak `npm install -g claude-mem` yalnızca **SDK/kütüphaneyi** kurar — plugin hook'larını kaydetmez veya worker servisini kurmaz. Her zaman `npx claude-mem install` veya yukarıdaki `/plugin` komutlarıyla kurun.
+> **Not:** Claude-Mem npm'de de yayımlanır, ancak `npm install -g claude-mem` yalnızca **SDK/kütüphaneyi** kurar. Eklentinin olay kancalarını (hook) kaydetmez ve arka plan hizmetini (worker) kurmaz. Kurulum için her zaman `npx claude-mem install` veya yukarıdaki `/plugin` komutlarını kullanın.
 
-### 🦞 OpenClaw Gateway
+### Diğer ajanlar
 
-Claude-mem'i tek bir komutla [OpenClaw](https://openclaw.ai) gateway'lerine kalıcı bellek eklentisi olarak kurun:
+`npx claude-mem install` desteklenen tüm ajanları kapsar. Belirli bir ajanı doğrudan yapılandırmak için `--ide` seçeneğini kullanın.
+
+**OpenCode** (OpenCode 2 dahil, 1.3.4 ve üzeri). Kurulumdan sonra OpenCode'u yeniden başlatın.
+
+```bash
+npx claude-mem install --ide opencode
+```
+
+**T3 Code** (Codex ve Claude Code sağlayıcıları). Kurulum aracı T3 Code'da etkin sağlayıcıları bulur, yerel Claude-Mem eklentilerini bu sağlayıcıların yapılandırılmış ana dizinlerine kaydeder ve T3 tarafından yönetilen Codex'i destekler. T3 Code'u yeniden başlatın, istendiğinde sağlayıcının olay kancalarına güven izni verin ve yeni bir sohbet başlatın. Özel sunucu ayarları, durum bilgisi ve kaldırma işlemleri için [T3 Code entegrasyon kılavuzuna](https://docs.claude-mem.ai/t3code-integration) bakın.
+
+```bash
+npx claude-mem install --ide t3code
+```
+
+**Antigravity CLI** ([kurulum kılavuzu](https://docs.claude-mem.ai/antigravity-cli/setup)):
+
+```bash
+npx claude-mem install --ide antigravity
+```
+
+**OMP (Oh My Pi):**
+
+```bash
+npx claude-mem install --ide omp
+```
+
+**Pi ve DeepSeek Harness**, arka plan hizmetini kullanır. Kayıt, bellekten bilgi getirme ve sorun giderme için [yerel entegrasyon kurulumuna](../native-harness-integrations.md) bakın.
+
+```bash
+npx claude-mem install --ide pi
+npx claude-mem install --ide dsh --dsh-profile tui
+```
+
+**Grok Bot:** Aşağıdaki [Grok Bot](#grok-bot) bölümüne bakın.
+
+```bash
+npx claude-mem install --ide grok-bot
+```
+
+`--ide` seçeneğinin tüm değerlerini `npx claude-mem --help` komutuyla görebilirsiniz.
+
+#### Grok Bot
+
+Grok Bot'un olay kancaları olmadığı için sohbet günlüğü dosyaları izlenir. Varsayılan sağlayıcı, barındırılan bellek hizmeti CMEM Pro'dur. Yerel gözlemciyi kullanmak için `--provider host` seçeneğini açıkça belirtin. Bu eklentinin kurulması Cursor'ı kurmaz.
+
+**İsteğe bağlı farkındalık notları:** Önemli gözlemler (`decision`, `bugfix`, `security_alert`, `sensitive`), botun `memory/log/YYYY-MM.md` dosyasına tarihli `- YYYY-MM-DD [awareness] …` satırları olarak eklenir. Grok Bot bu günlüğü zaten diskten yeniden okur. Bu işlem `profile.md` dosyasına, kullanıcı belleğine veya proje belleğine yazmaz. Etkinleştirmek için `CLAUDE_MEM_GROK_BOT_AWARENESS_ENABLED=true` ayarını kullanın ve `CLAUDE_MEM_GROK_BOT_AWARENESS_AGENT_IDS` değerine ajanlarınızın UUID'lerini girin (varsayılan olarak boştur).
+
+#### 🦞 OpenClaw Gateway
+
+Claude-Mem'i tek komutla [OpenClaw](https://openclaw.ai) ağ geçitlerine kalıcı bellek eklentisi olarak kurun:
 
 ```bash
 curl -fsSL https://install.cmem.ai/openclaw.sh | bash
 ```
 
-Kurulum programı bağımlılıkları, plugin kurulumunu, AI sağlayıcı yapılandırmasını, worker başlatmayı ve Telegram, Discord, Slack ve daha fazlasına isteğe bağlı gerçek zamanlı gözlem akışlarını yönetir. Detaylar için [OpenClaw Entegrasyon Kılavuzu](https://docs.claude-mem.ai/openclaw-integration) bölümüne bakın.
+Kurulum aracı bağımlılıkları, eklenti kurulumunu, yapay zekâ sağlayıcısının yapılandırmasını ve arka plan hizmetinin başlatılmasını yönetir. İsterseniz Telegram, Discord, Slack ve diğer platformlara gerçek zamanlı gözlem akışları da gönderir. Ayrıntılar için [OpenClaw entegrasyon kılavuzuna](https://docs.claude-mem.ai/openclaw-integration) bakın.
 
-**Temel Özellikler:**
+## Neler sunar?
 
-- 🧠 **Kalıcı Bellek** - Bağlam oturumlar arası hayatta kalır
-- 📊 **Aşamalı Açıklama** - Token maliyeti görünürlüğü ile katmanlı bellek erişimi
-- 🔍 **Beceri Tabanlı Arama** - mem-search becerisi ile proje geçmişinizi sorgulayın
-- 🖥️ **Web Görüntüleyici Arayüzü** - Başlangıçta yazdırılan worker URL'sinde gerçek zamanlı bellek akışı
-- 💻 **Claude Desktop Becerisi** - Claude Desktop konuşmalarından bellek araması yapın
-- 🔒 **Gizlilik Kontrolü** - Hassas içeriği depolamadan hariç tutmak için `<private>` etiketlerini kullanın
-- ⚙️ **Bağlam Yapılandırması** - Hangi bağlamın enjekte edileceği üzerinde detaylı kontrol
-- 🤖 **Otomatik Çalışma** - Manuel müdahale gerektirmez
-- 🔗 **Alıntılar** - Worker API üzerinden ID'lerle geçmiş gözlemlere referans verin veya tümünü web görüntüleyicide görüntüleyin
+- 🧠 **Sonraki oturum kaldığınız yerden başlar.** Her oturum, geçmiş gözlemlerin kısa bir diziniyle açılır. Katmanlı yapı sayesinde ajan yalnızca gerektiğinde ayrıntıları açar. Başlık bölümünde her katmanın token maliyeti gösterilebilir.
+- 🔍 **Üzerinde çalıştığınız konuları bulun.** mem-search becerisi proje geçmişinizi üç adımda arar: dizin, zaman çizelgesi ve ayrıntılar. Böylece ajan yalnızca açtığı bilgiler için token harcar.
+- 🖥️ **Çalışmaları canlı izleyin ve takip edin.** Çalışmalarım (My Work), başlangıçta ekrana yazdırılan arka plan hizmeti URL'sinde canlı istekleri, ilerlemeyi, size devredilen işleri ve kayıtlı inceleme kuyruğunu gösterir. [Kullanım kılavuzu](https://docs.claude-mem.ai/usage/my-work). Bellek, oturumlar ve ayarlar `/viewer` adresindedir.
+- 👥 **İsterseniz ekibinizle paylaşın.** TeamBrain, Çalışmalarım'ın yanında sunulan isteğe bağlı bir ortak çalışma alanıdır. Ekip iş listelerini, kimin ne yaptığını ve bağlantılı bulguları gösterir. Herkes ne paylaşacağını kendisi seçer; kişisel istekler ve inceleme notları ayrı tutulur. [Ekip oluşturun](https://cmem.ai/teambrain/start).
+- 💻 **Claude Desktop'tan arama yapın.** Claude Desktop konuşmalarınızdan belleğinizde arama yapabilirsiniz.
+- 🔒 **Hassas bilgileri kaydın dışında tutun.** `<private>` etiketleri arasına aldığınız içerikler saklanmaz.
+- 🖼️ **Ekran görüntüleri varsayılan olarak saklanır.** Araçların aldığı ekran görüntülerinin dönüştürülmüş kopyaları `~/.claude-mem/media-v1/` altında tutulur ve Çalışmalarım'da gösterilir. Görüntüler yalnızca bulut eşitlemesi açıksa cmem.ai'a yüklenir; gözlemci modele ise yalnızca görüntü işleme ayrıca etkinleştirilmişse gönderilir. Saklamayı Ayarlar'daki “Keep images” (Görüntüleri sakla) seçeneğiyle kapatabilirsiniz ([ayrıntılar](https://docs.claude-mem.ai/configuration#screenshots-and-images)).
+- ⚙️ **Oturuma hangi bağlamın ekleneceğini seçin.** Yeni oturumun başlangıcında kullanılacak bilgileri ayrıntılı ayarlarla belirleyin.
+- 🤖 **Ek işlem gerektirmez.** Kurulumdan sonra kendiliğinden çalışır.
+- 🔗 **Geçmiş çalışmalara atıfta bulunun.** Her gözlemin bir kimliği vardır. Bu kimlikle arka plan hizmetinin API'si üzerinden gözleme atıfta bulunabilir veya gözlemi web görüntüleyicisinde açabilirsiniz.
 
 ---
 
-## Documentation
+## Belgeler
 
-📚 **[Tam Dokümantasyonu Görüntüle](https://docs.claude-mem.ai/)** - Resmi web sitesinde göz atın
+📚 **[Tüm belgeler](https://docs.claude-mem.ai/)** — Resmî web sitesindeki belgelere göz atın.
 
 ### Başlarken
 
-- **[Kurulum Kılavuzu](https://docs.claude-mem.ai/installation)** - Hızlı başlangıç ve gelişmiş kurulum
-- **[Kullanım Kılavuzu](https://docs.claude-mem.ai/usage/getting-started)** - Claude-Mem otomatik olarak nasıl çalışır
-- **[Arama Araçları](https://docs.claude-mem.ai/usage/search-tools)** - Doğal dil ile proje geçmişinizi sorgulayın
+- **[Kurulum kılavuzu](https://docs.claude-mem.ai/installation)** — Hızlı başlangıç ve gelişmiş kurulum
+- **[Kullanım kılavuzu](https://docs.claude-mem.ai/usage/getting-started)** — Claude-Mem'in otomatik çalışma biçimi
+- **[Arama araçları](https://docs.claude-mem.ai/usage/search-tools)** — Doğal dille proje geçmişinde arama
+- **[Bulut eşitlemesi](https://docs.claude-mem.ai/cloud-sync)** — Belleğinizi cmem.ai'a yedekleyin; ayrı bir arka plan programı gerekmez, hizmet her yazma işleminde eşitleme yapar.
 
-### En İyi Uygulamalar
+### En iyi uygulamalar
 
-- **[Bağlam Mühendisliği](https://docs.claude-mem.ai/context-engineering)** - AI ajan bağlam optimizasyon ilkeleri
-- **[Aşamalı Açıklama](https://docs.claude-mem.ai/progressive-disclosure)** - Claude-Mem'in bağlam hazırlama stratejisinin ardındaki felsefe
+- **[Bağlam mühendisliği](https://docs.claude-mem.ai/context-engineering)** — Yapay zekâ ajanlarında bağlamı verimli kullanma ilkeleri
+- **[Bilgiyi aşamalı sunma](https://docs.claude-mem.ai/progressive-disclosure)** — Claude-Mem'in oturum başlangıcına bağlam hazırlama yaklaşımı
 
 ### Mimari
 
-- **[Genel Bakış](https://docs.claude-mem.ai/architecture/overview)** - Sistem bileşenleri ve veri akışı
-- **[Mimari Evrimi](https://docs.claude-mem.ai/architecture-evolution)** - v3'ten v5'e yolculuk
-- **[Hooks Mimarisi](https://docs.claude-mem.ai/hooks-architecture)** - Claude-Mem yaşam döngüsü hook'larını nasıl kullanır
-- **[Hooks Referansı](https://docs.claude-mem.ai/architecture/hooks)** - 7 hook betiği açıklandı
-- **[Worker Servisi](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API ve Bun yönetimi
-- **[Veritabanı](https://docs.claude-mem.ai/architecture/database)** - SQLite şeması ve FTS5 arama
-- **[Arama Mimarisi](https://docs.claude-mem.ai/architecture/search-architecture)** - Chroma vektör veritabanı ile hibrit arama
+- **[Genel bakış](https://docs.claude-mem.ai/architecture/overview)** — Sistem bileşenleri ve veri akışı
+- **[Mimarinin gelişimi](https://docs.claude-mem.ai/architecture-evolution)** — v3'ten v5'e geçiş
+- **[Olay kancalarının mimarisi](https://docs.claude-mem.ai/hooks-architecture)** — Claude-Mem'in yaşam döngüsü kancalarını kullanma biçimi
+- **[Olay kancaları başvuru kılavuzu](https://docs.claude-mem.ai/architecture/hooks)** — Tüm kanca tanımlarının açıklamaları
+- **[Arka plan hizmeti](https://docs.claude-mem.ai/architecture/worker-service)** — HTTP API'si ve Bun ile yönetim
+- **[Veritabanı](https://docs.claude-mem.ai/architecture/database)** — SQLite şeması ve FTS5 araması
+- **[Arama mimarisi](https://docs.claude-mem.ai/architecture/search-architecture)** — Chroma vektör veritabanıyla hibrit arama
 
-### Yapılandırma ve Geliştirme
+### Yapılandırma ve geliştirme
 
-- **[Yapılandırma](https://docs.claude-mem.ai/configuration)** - Ortam değişkenleri ve ayarlar
-- **[Geliştirme](https://docs.claude-mem.ai/development)** - Derleme, test etme, katkıda bulunma
-- **[Sorun Giderme](https://docs.claude-mem.ai/troubleshooting)** - Yaygın sorunlar ve çözümler
-
----
-
-## How It Works
-
-**Temel Bileşenler:**
-
-1. **5 Yaşam Döngüsü Hook'u** - SessionStart, UserPromptSubmit, PostToolUse, Stop, SessionEnd (6 hook betiği)
-2. **Akıllı Kurulum** - Önbelleğe alınmış bağımlılık kontrolcüsü (ön-hook betiği, yaşam döngüsü hook'u değil)
-3. **Worker Servisi** - Web görüntüleyici arayüzü ve arama uç noktaları ile yerel HTTP API, Bun tarafından yönetilir
-4. **SQLite Veritabanı** - Oturumları, gözlemleri, özetleri saklar
-5. **mem-search Becerisi** - Aşamalı açıklama ile doğal dil sorguları
-6. **Chroma Vektör Veritabanı** - Akıllı bağlam erişimi için hibrit anlamsal + anahtar kelime arama
-
-Detaylar için [Mimari Genel Bakış](https://docs.claude-mem.ai/architecture/overview) bölümüne bakın.
+- **[Yapılandırma](https://docs.claude-mem.ai/configuration)** — Ortam değişkenleri ve ayarlar
+- **[Geliştirme](https://docs.claude-mem.ai/development)** — Derleme, test ve katkı süreci
+- **[Sorun giderme](https://docs.claude-mem.ai/troubleshooting)** — Yaygın sorunlar ve çözümleri
 
 ---
 
-## MCP Search Tools
+## Nasıl çalışır?
 
-Claude-Mem, token açısından verimli bir **3 katmanlı iş akışı düzeni**ni takip eden **4 MCP aracı** aracılığıyla akıllı bellek araması sağlar:
+1. **Ajanınız çalışır.** Ajanın olay kancaları, her araç çağrısını (okuma, düzenleme ve komut çalıştırma işlemlerini) küçük bir yerel arka plan hizmetine iletir.
+2. **Gözlemci not alır.** İkinci bir ajan bu etkinlikleri kısa gözlemlere dönüştürür ve oturum bittiğinde bir özet yazar.
+3. **Sonraki oturum bu bilgilerle başlar.** Ajanınız, yeni oturumun başında projeyle ilgili gözlemlerin kısa bir dizinini alır. Ayrıntıları yalnızca gerektiğinde getirir.
 
-**3 Katmanlı İş Akışı:**
+Bellek bilgileri projedeki ikinci oturumunuzdan itibaren bağlama eklenir. Bunun yerine tüm depoyu önceden tanıtmak isterseniz `/learn-codebase` komutunu çalıştırın (tipik bir depoda yaklaşık 5 dakika sürer; isteğe bağlıdır).
 
-1. **`search`** - ID'lerle kompakt bir indeks alın (~50-100 token/sonuç)
-2. **`timeline`** - İlgi çekici sonuçların çevresindeki kronolojik bağlamı alın
-3. **`get_observations`** - Yalnızca filtrelenmiş ID'ler için tam detayları getirin (~500-1.000 token/sonuç)
+Ayrıntılar için [mimariye genel bakışa](https://docs.claude-mem.ai/architecture/overview) bakın.
 
-**Nasıl Çalışır:**
-- Claude, belleğinizi aramak için MCP araçlarını kullanır
-- Sonuçların bir indeksini almak için `search` ile başlayın
-- Belirli gözlemlerin çevresinde neler olduğunu görmek için `timeline` kullanın
-- İlgili ID'ler için tam detayları getirmek üzere `get_observations` kullanın
-- Detayları getirmeden önce filtreleme yaparak **~10 kat token tasarrufu** sağlanır
+### Bileşenler nasıl bir araya gelir?
 
-**Mevcut MCP Araçları:**
+Katkıda bulunacaklar için ana bileşenler ve konumları:
 
-1. **`search`** - Tam metin sorgularıyla bellek indeksini arayın, türe/tarihe/projeye göre filtreleyin
-2. **`timeline`** - Belirli bir gözlem veya sorgu etrafındaki kronolojik bağlamı alın
-3. **`get_observations`** - ID'lere göre tam gözlem detaylarını getirin (her zaman birden fazla ID'yi toplu olarak işleyin)
+- **`claude-mem` komutu** (`src/npx-cli/index.ts`): Kurulum, onarım, tanılama, başlatma, arama ve diğer işlemler. Kurulum aracı PATH'e küçük bir başlatıcı ekler; olay kancaları böylece `claude-mem` komutunu doğrudan çalıştırabilir.
+- **Olay kancaları** (`src/cli/hook-command.ts`; her ajan için `src/cli/adapters/` altında bir bağdaştırıcı): Her ajan olayı, `claude-mem hook claude-code <event>` gibi kabuk gerektirmeyen bir komut çalıştırır. Claude Code için bu olaylar Setup (`claude --init` / `--maintenance`), SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, PostToolUseFailure, Stop, SubagentStop ve SessionEnd'dir.
+- **Arka plan hizmeti** (`src/services/worker-service.ts`; yollar `src/services/worker/http/routes/` altında): Bun tarafından yönetilen yerel bir HTTP hizmetidir. Kancalardan araç etkinliklerini alır, gözlemciyi çalıştırır, görüntüleyiciyi ve aramayı sunar.
+- **Gözlemci** (istemler `src/sdk/` altında; her model kaynağının sağlayıcısı `src/services/worker/` altında, örneğin `ClaudeProvider.ts` ve `OpenRouterProvider.ts`): Araç etkinliklerini gözlemlere ve özetlere dönüştürür.
+- **Depolama** (`src/services/sqlite/`): `~/.claude-mem/claude-mem.db` konumundaki SQLite veritabanı oturumları, gözlemleri ve özetleri saklar. Chroma, SQLite'ın anahtar kelime aramasına anlamsal arama ekler (`src/services/worker/search/`).
+- **Bağlam** (`src/services/context/`): Yeni oturumun başlangıcında kullanılacak bilgi bloğunu oluşturur.
+- **Arama** (`src/servers/mcp-server.ts`, `plugin/skills/mem-search/`): MCP araçları ve bu araçları kullanan mem-search becerisi.
+- **Görüntüleyici** (`/viewer` adresinde `src/ui/viewer/`, `/` adresinde `src/ui/my-work/`): Bellek, oturumlar, ayarlar ve Çalışmalarım sayfası.
+- **Derlenmiş eklenti** (`plugin/`): `npm run build` komutuyla oluşturulur. Değişiklikleri üretilen betiklerde değil, `src/` altında yapın.
 
-**Örnek Kullanım:**
+Bu bileşenler için kullanılan terimler ve ürünün anlatımı [docs/story.md](../story.md) dosyasında açıklanır.
+
+---
+
+## MCP arama araçları
+
+Arama, token kullanımını sınırlayan üç adımlı bir iş akışında üç MCP aracıyla yapılır. mem-search becerisi bu süreci sizin için yönetir.
+
+**Üç adım:**
+
+1. **`search`** — Kimlikleri içeren kısa bir dizin alın (sonuç başına yaklaşık 50–100 token).
+2. **`timeline`** — İlgili sonuçların öncesinde ve sonrasında neler olduğunu görün.
+3. **`get_observations`** — Yalnızca seçtiğiniz kimliklerin tüm ayrıntılarını getirin (sonuç başına yaklaşık 500–1.000 token).
+
+**Adım adım işleyiş:**
+
+- Ajanınız belleğinizde arama yapmak için MCP araçlarını kullanır.
+- Sonuç dizinini almak için `search` ile başlar.
+- Belirli gözlemlerin çevresindeki olayları görmek için `timeline` kullanır.
+- İlgili kimliklerin tüm ayrıntılarını `get_observations` ile getirir.
+- **Dizin satırları tam bir kaydın yaklaşık onda biri boyutundadır:** Yaklaşık 500–1.000 token yerine 50–100 token. Filtreleme, her kaydın boyutunu değil, kaç kaydın getirileceğini belirler. Toplam maliyete zaman çizelgesi ve seçilen ayrıntılar da dahildir. Bu oran, aramada ilgili kayıtları bulma başarısının veya uçtan uca tasarrufun ölçümü değildir ([#4138](https://github.com/thedotmack/claude-mem/issues/4138)).
+
+**Kullanılabilir MCP araçları:**
+
+1. **`search`** — Bellek dizininde tam metin sorgularıyla arama yapın; türe, tarihe veya projeye göre filtreleyin.
+2. **`timeline`** — Belirli bir gözlemin veya sorgunun çevresindeki olayları zaman sırasıyla getirin.
+3. **`get_observations`** — Kimliklere göre gözlemlerin tüm ayrıntılarını getirin (birden fazla kimliği her zaman toplu olarak sorgulayın).
+
+**Kullanım örneği:**
 
 ```typescript
-// Adım 1: İndeks için arama yapın
+// Adım 1: Sonuç dizinini getirmek için arama yapın
 search(query="authentication bug", type="bugfix", limit=10)
 
-// Adım 2: İndeksi inceleyin, ilgili ID'leri belirleyin (örn. #123, #456)
+// Adım 2: Dizini inceleyip ilgili kimlikleri belirleyin (ör. #123, #456)
 
-// Adım 3: Tam detayları getirin
+// Adım 3: Tüm ayrıntıları getirin
 get_observations(ids=[123, 456])
 ```
 
-Detaylı örnekler için [Arama Araçları Kılavuzu](https://docs.claude-mem.ai/usage/search-tools) bölümüne bakın.
+Arka plan hizmeti ayrıca kodda gezinme (`smart_search`, `smart_outline`, `smart_unfold`), açıkça not kaydetme (`save_memory`) ve devam eden işleri takip etme araçları sunar. Ayrıntılı örnekler için [arama araçları kılavuzuna](https://docs.claude-mem.ai/usage/search-tools) bakın.
 
 ---
 
-## System Requirements
+## Sistem gereksinimleri
 
-- **Node.js**: 20.0.0 veya üzeri
-- **Claude Code**: Plugin desteği olan en son sürüm
-- **Bun**: JavaScript çalışma zamanı ve işlem yöneticisi (eksikse otomatik kurulur)
-- **uv**: Vektör arama için Python paket yöneticisi (eksikse otomatik kurulur)
-- **SQLite 3**: Kalıcı depolama için (dahildir)
+- **Node.js**: 20.x serisinde 20.19 ve üzeri ya da 22.12 ve üzeri
+- **Desteklenen bir ajan**: Claude Code'un eklenti destekleyen en güncel sürümü veya [diğer ajanlardan](#diğer-ajanlar) biri
+- **Bun**: JavaScript çalışma zamanı ve süreç yöneticisi (yoksa otomatik kurulur)
+- **uv**: Vektör araması için Python paket yöneticisi (yoksa otomatik kurulur)
+- **SQLite 3**: Kalıcı depolama için (pakete dahildir)
 
 ---
-### Windows Kurulum Notları
 
-Aşağıdaki gibi bir hata görürseniz:
+### Windows kurulum notları
+
+Şu hatayı görürseniz:
 
 ```powershell
 npm : The term 'npm' is not recognized as the name of a cmdlet
 ```
 
-Node.js ve npm'in kurulu olduğundan ve PATH'inize eklendiğinden emin olun. https://nodejs.org adresinden en son Node.js kurulum dosyasını indirin ve kurulumdan sonra terminalinizi yeniden başlatın.
+Node.js ve npm'in kurulu olduğundan ve PATH'e eklendiğinden emin olun. [nodejs.org](https://nodejs.org) adresinden en güncel Node.js kurulum dosyasını indirin ve kurulumdan sonra terminalinizi yeniden başlatın.
+
+Claude Code'un olay kancaları Git Bash gerektirmez. Her kanca `claude-mem` komutunu doğrudan çalıştırır. `npx claude-mem install`, başlatıcıyı `%LOCALAPPDATA%\claude-mem\bin\claude-mem.exe` konumuna yerleştirir ve bu klasörü kullanıcı Path değişkenine ekler. Claude Code'un yeni Path değerini alması için terminalinizi veya geliştirme ortamınızı yeniden başlatın. Kancalar `Executable not found in $PATH: "claude-mem"` hatasını verirse `npx claude-mem doctor` komutunu çalıştırın ve [sorun giderme kılavuzuna](https://docs.claude-mem.ai/troubleshooting#claude-mem-command-not-found-in-hooks) bakın.
 
 ---
 
-## Configuration
+## Yapılandırma
 
-Ayarlar `~/.claude-mem/settings.json` dosyasında yönetilir (ilk çalıştırmada varsayılanlarla otomatik oluşturulur). AI modelini, worker portunu, veri dizinini, log seviyesini ve bağlam enjeksiyon ayarlarını yapılandırın.
+Ayarlar `~/.claude-mem/settings.json` dosyasında tutulur. Bu dosya ilk çalıştırmada varsayılan değerlerle otomatik olarak oluşturulur. Yapay zekâ modelini, arka plan hizmetinin portunu, veri dizinini, günlük düzeyini ve oturuma bağlam ekleme ayarlarını buradan yapılandırabilirsiniz.
 
-Tüm mevcut ayarlar ve örnekler için **[Yapılandırma Kılavuzu](https://docs.claude-mem.ai/configuration)** bölümüne bakın.
+Claude Code ve Codex'in SessionStart bağlamına tüm ajanlardan gelen gözlemleri dahil etmek için bu dosyada `"CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES": "true"` ayarını kullanın veya görüntüleyici ayarlarındaki **Include all sources at session start** (Oturum başlangıcında tüm kaynakları dahil et) seçeneğini etkinleştirin. Varsayılan `"false"` değeri, başlangıç bağlamını kullanılan ajanla sınırlar. Gözlem sayısı sınırı, seçilen tüm kaynakların toplamına uygulanır.
 
-### Mod ve Dil Yapılandırması
+Tüm ayarlar ve örnekler için **[yapılandırma kılavuzuna](https://docs.claude-mem.ai/configuration)** bakın.
 
-Claude-Mem, `CLAUDE_MEM_MODE` ayarı aracılığıyla birden fazla iş akışı modunu ve dili destekler.
+### Mod ve dil ayarları
 
-Bu seçenek şunları kontrol eder:
-- İş akışı davranışını (örn. code, chill, investigation)
-- Oluşturulan gözlemlerde kullanılan dili
+Claude-Mem, `CLAUDE_MEM_MODE` ayarıyla birden fazla iş akışı modunu ve dili destekler.
 
-#### Nasıl Yapılandırılır
+Bu ayar şunları belirler:
 
-`~/.claude-mem/settings.json` konumundaki ayarlar dosyanızı düzenleyin:
+- İş akışının davranışını (ör. code, chill, investigation)
+- Oluşturulan gözlemlerin dilini
+
+#### Nasıl ayarlanır?
+
+`~/.claude-mem/settings.json` dosyanızı düzenleyin. Türkçe için:
 
 ```json
 {
-  "CLAUDE_MEM_MODE": "code--zh"
+  "CLAUDE_MEM_MODE": "code--tr"
 }
 ```
 
-Modlar `plugin/modes/` içinde tanımlanır. Mevcut tüm modları yerel olarak görmek için:
+Modlar `plugin/modes/` dizininde tanımlanır. Yerel kurulumdaki tüm modları görmek için:
 
 ```bash
 ls ~/.claude/plugins/marketplaces/thedotmack/plugin/modes/
 ```
 
-#### Mevcut Modlar
+#### Kullanılabilir modlar
 
 | Mod | Açıklama |
-|------------|-------------------------|
+| --- | --- |
 | `code` | Varsayılan İngilizce mod |
-| `code--zh` | Basitleştirilmiş Çince mod |
-| `code--ja` | Japonca mod |
+| `code--chill` | Yeniden keşfetmesi zahmetli olacak bilgileri tutarak daha az gözlem kaydeder |
+| `code--[lang]` | `code` ile aynı davranış; gözlemler ve özetler seçilen dilde yazılır |
+| `code--tr` | Türkçe gözlemler ve özetler |
 
-Dile özgü modlar `code--[dil]` düzenini takip eder; burada `[dil]`, ISO 639-1 dil kodudur (örn. Çince için `zh`, Japonca için `ja`, İspanyolca için `es`).
+Yerleşik dil kodları: `ar`, `bn`, `cs`, `da`, `de`, `el`, `es`, `fi`, `fr`, `he`, `hi`, `hu`, `id`, `it`, `ja`, `ko`, `nl`, `no`, `pl`, `pt-br`, `ro`, `ru`, `sv`, `th`, `tr`, `uk`, `ur`, `vi`, `zh`. Örneğin `code--ko`, gözlemleri ve özetleri Korece yazar.
 
-> Not: `code--zh` (Basitleştirilmiş Çince) zaten dahil edilmiştir — ek bir kurulum veya plugin güncellemesi gerekmez.
+Dillerin adları, e-posta inceleme modu ve özel modlar için [modlar kılavuzuna](https://docs.claude-mem.ai/modes) bakın.
 
-#### Mod Değiştirdikten Sonra
+> **Not:** Bu modların tümü pakete dahildir. Ek kurulum veya eklenti güncellemesi gerekmez.
 
-Yeni mod yapılandırmasını uygulamak için Claude Code'u yeniden başlatın.
+#### Modu değiştirdikten sonra
 
----
-
-## Development
-
-Derleme talimatları, test etme ve katkı iş akışı için **[Geliştirme Kılavuzu](https://docs.claude-mem.ai/development)** bölümüne bakın.
+Yeni mod ayarının uygulanması için Claude Code'u yeniden başlatın.
 
 ---
 
-## Troubleshooting
+## Geliştirme
 
-Sorunlarla karşılaşırsanız, sorunu Claude'a açıklayın ve troubleshoot becerisi otomatik olarak teşhis edip düzeltmeleri sağlayacaktır.
-
-Yaygın sorunlar ve çözümler için **[Sorun Giderme Kılavuzu](https://docs.claude-mem.ai/troubleshooting)** bölümüne bakın.
+Derleme talimatları, testler ve katkı süreci için **[geliştirme kılavuzuna](https://docs.claude-mem.ai/development)** bakın.
 
 ---
 
-## Bug Reports
+## Sorun giderme
 
-Otomatik oluşturucu ile kapsamlı hata raporları oluşturun:
+Önce `npx claude-mem doctor` komutunu çalıştırın. Bun, uv, kanca başlatıcısı ve arka plan hizmetini kontrol ederek nelerin düzeltilmesi gerektiğini gösterir.
+
+Yaygın sorunlar ve çözümleri için **[sorun giderme kılavuzuna](https://docs.claude-mem.ai/troubleshooting)** bakın.
+
+---
+
+## Hata bildirme
+
+Otomatik rapor oluşturucuyla kapsamlı hata raporları hazırlayın:
 
 ```bash
 cd ~/.claude/plugins/marketplaces/thedotmack
 npm run bug-report
 ```
 
-## Contributing
+## Katkıda bulunma
 
-Katkılar memnuniyetle karşılanır! Lütfen:
+Katkılarınızı bekliyoruz:
 
-1. Depoyu fork edin
-2. Bir özellik dalı oluşturun
-3. Testlerle değişikliklerinizi yapın
-4. Dokümantasyonu güncelleyin
-5. Pull Request gönderin
+1. Deponun kendi hesabınızda bir kopyasını oluşturun (fork).
+2. Değişikliğiniz için bir dal oluşturun.
+3. Değişikliklerinizi yapın ve ilgili testleri ekleyin.
+4. Belgeleri güncelleyin. Kullanıcıya yönelik metinlerde [docs/story.md](../story.md) dosyasındaki anlatım kurallarını izleyin.
+5. `main` dalına yönelik bir pull request açın.
 
-Katkı iş akışı için [Geliştirme Kılavuzu](https://docs.claude-mem.ai/development) bölümüne bakın.
+Sürümler `main` dalından çıkarılır ve npm'de yayımlanır.
 
----
-
-## License
-
-Claude-Mem, Apache License 2.0 lisansı altında lisanslanmıştır.
-
-Apache-2.0'ı seçtik çünkü kalıcı ajan belleğinin geliştirici araçlarına, yerel
-ajanlara, MCP sunucularına, kurumsal sistemlere, robotik yığınlarına ve üretim
-ajan altyapılarına kolayca gömülebilir olması gerekiyor.
-
-Tüm detaylar için [LICENSE](../../LICENSE) dosyasına bakın. Lisanslama kapsamı ve
-açık/ticari sınır için [docs/license.md](../license.md) ve
-[docs/ip-boundary.md](../ip-boundary.md) bölümlerine bakın.
-
+Katkı süreci için [geliştirme kılavuzuna](https://docs.claude-mem.ai/development) bakın.
 
 ---
 
-## Support
+## Lisans
 
-- **Dokümantasyon**: [docs/](../)
-- **Sorunlar**: [GitHub Issues](https://github.com/thedotmack/claude-mem/issues)
+Claude-Mem, Apache License 2.0 ile lisanslanmıştır.
+
+Kalıcı ajan belleğinin geliştirici araçlarına, yerel ajanlara, MCP sunucularına, kurumsal sistemlere, robotik yazılım sistemlerine ve üretimde kullanılan ajan altyapılarına kolayca entegre edilebilmesi için Apache-2.0'ı seçtik.
+
+Ayrıntılar için [LICENSE](../../LICENSE) dosyasına bakın. Lisansın kapsamı ve açık kaynak ile ticari bileşenler arasındaki sınır, [docs/license.md](../license.md) ve [docs/ip-boundary.md](../ip-boundary.md) dosyalarında açıklanır.
+
+---
+
+## Destek
+
+- **Belgeler**: [docs/](../)
+- **Hata ve sorun bildirimleri**: [GitHub Issues](https://github.com/thedotmack/claude-mem/issues)
 - **Depo**: [github.com/thedotmack/claude-mem](https://github.com/thedotmack/claude-mem)
-- **Resmi X Hesabı**: [@Claude_Memory](https://x.com/Claude_Memory)
-- **Resmi Discord**: [Discord'a Katıl](https://discord.com/invite/J4wttp9vDu)
-- **Yazar**: Alex Newman ([@thedotmack](https://github.com/thedotmack))
+- **Resmî X hesabı**: [@Claude_Memory](https://x.com/Claude_Memory)
+- **Resmî Discord**: [Discord'a katılın](https://discord.com/invite/J4wttp9vDu)
+- **Geliştirici**: Alex Newman ([@thedotmack](https://github.com/thedotmack))
 
 ---
 
-**Claude Agent SDK ile geliştirilmiştir** | **Claude Code ile çalışır** | **TypeScript ile yapılmıştır**
+**Claude Agent SDK ile geliştirildi** | **Claude Code, Codex, Cursor, OpenCode ve diğer ajanlarla çalışır** | **TypeScript ile yazıldı**
 
 ---
 
-### CMEM Ne Demek?
+### CMEM nedir?
 
-CMEM, 3. bir taraf tarafından oluşturulan ancak Claude-Mem'in yaratıcısı (Alex Newman, @thedotmack) tarafından resmi olarak benimsenen bir token'dır. Bu token, büyüme için bir topluluk katalizörü ve CMEM'i en çok ihtiyaç duyan geliştiricilere ve bilgi çalışanlarına ulaştırmak için bir araç olarak işlev görür.
+CMEM, üçüncü bir tarafın oluşturduğu ve Claude-Mem'in geliştiricisi Alex Newman'ın (@thedotmack) resmen desteklediği bir kripto tokendir. Topluluğun büyümesine katkıda bulunmayı ve CMEM'i ona en çok ihtiyaç duyan geliştiricilere ve bilgi çalışanlarına ulaştırmayı amaçlar.
 
-Resmi BASE CA: 0x76b1967eec0ccaeb001bbbb2b40dc4badba31ba3
+BASE ağındaki resmî sözleşme adresi: 0x76b1967eec0ccaeb001bbbb2b40dc4badba31ba3

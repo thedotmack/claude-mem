@@ -135,12 +135,14 @@ const ENSURE_LAUNCHER = {
   source: 'src/launcher/ensure-launcher.ts'
 };
 
-// Claude Code mod (a hooks module named by `modules` in plugin/hooks/hooks.json):
-// at the configured share of the context window, Claude saves its work state,
-// then /clear runs and "continue" is sent.
-const AUTO_CLEAR_MOD = {
-  source: 'src/mods/auto-clear/register.ts',
-  outfile: 'plugin/hooks/auto-clear.js'
+// claude-mem's Claude Code hooks module, named by `modules` in
+// plugin/hooks/hooks.json. Claude Code allows a plugin one such module, so it
+// registers every claude-mem mod (src/mods/): auto-clear and the session-start card.
+const HOOKS_MODULE = {
+  source: 'src/mods/hooks-module.ts',
+  outfile: 'plugin/hooks/hooks-module.js',
+  // The same file as hooks.json names it: a path relative to hooks.json.
+  hooksJsonModules: ['./hooks-module.js']
 };
 
 // A hooks module runs with no Node: no require, no node: imports, and it must
@@ -1151,9 +1153,9 @@ async function buildHooks() {
     const ensureLauncherStats = fs.statSync(`${hooksDir}/${ENSURE_LAUNCHER.name}.cjs`);
     console.log(`✓ ensure-launcher built (${(ensureLauncherStats.size / 1024).toFixed(2)} KB)`);
 
-    console.log(`\n🔧 Building auto-clear mod...`);
+    console.log(`\n🔧 Building the Claude Code hooks module...`);
     await build({
-      entryPoints: [AUTO_CLEAR_MOD.source],
+      entryPoints: [HOOKS_MODULE.source],
       bundle: true,
       // A Claude Code hooks module is an ES module with no Node APIs, read as
       // source (Claude Code lists its hooks and $ calls off the text), so it is
@@ -1161,17 +1163,24 @@ async function buildHooks() {
       platform: 'neutral',
       target: 'es2022',
       format: 'esm',
-      outfile: AUTO_CLEAR_MOD.outfile,
+      outfile: HOOKS_MODULE.outfile,
       minify: false,
       legalComments: 'none',
       logLevel: 'error',
       banner: {
-        js: '// Built from src/mods/auto-clear/ by scripts/build-hooks.js. Edit the source, not this file.'
+        js: '// Built from src/mods/ by scripts/build-hooks.js. Edit the source, not this file.'
       }
     });
-    assertModBundle(AUTO_CLEAR_MOD.outfile);
-    const autoClearStats = fs.statSync(AUTO_CLEAR_MOD.outfile);
-    console.log(`✓ auto-clear mod built (${(autoClearStats.size / 1024).toFixed(2)} KB)`);
+    assertModBundle(HOOKS_MODULE.outfile);
+    const claudeCodeHooksJson = JSON.parse(fs.readFileSync('plugin/hooks/hooks.json', 'utf-8'));
+    if (!isDeepStrictEqual(claudeCodeHooksJson.modules, HOOKS_MODULE.hooksJsonModules)) {
+      throw new Error(
+        `plugin/hooks/hooks.json \`modules\` must be ${JSON.stringify(HOOKS_MODULE.hooksJsonModules)} (found ${JSON.stringify(claudeCodeHooksJson.modules)}). ` +
+        'Claude Code loads one hooks module per plugin and refuses a second entry.'
+      );
+    }
+    const hooksModuleStats = fs.statSync(HOOKS_MODULE.outfile);
+    console.log(`✓ hooks module built (${(hooksModuleStats.size / 1024).toFixed(2)} KB)`);
 
     console.log(`\n🔧 Building NPX CLI...`);
     const npxCliOutDir = 'dist/npx-cli';
@@ -1328,7 +1337,7 @@ async function buildHooks() {
       'plugin/skills/how-it-works/SKILL.md',
       'plugin/skills/how-it-works/onboarding-explainer.md',
       'plugin/hooks/hooks.json',
-      'plugin/hooks/auto-clear.js',
+      HOOKS_MODULE.outfile,
       'plugin/hooks/codex-hooks.json',
       'plugin/hooks/qoder-hooks.json',
       'plugin/hooks/qoder-repo-hooks.json',
