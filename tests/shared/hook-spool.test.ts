@@ -66,6 +66,30 @@ describe('HookSpool', () => {
     expect(spoolFiles(spool)).toEqual([]);
   });
 
+  it('reads the backlog without holding the event loop', async () => {
+    const spool = new HookSpool();
+    spool.enqueue('session_end', { contentSessionId: 'session-yield', platformSource: 'claude' });
+
+    let timerFired = false;
+    const timer = setTimeout(() => {
+      timerFired = true;
+    }, 0);
+    let sawTimerAtFirstAccept: boolean | undefined;
+    try {
+      await spool.drain(() => {
+        sawTimerAtFirstAccept ??= timerFired;
+        return true;
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+
+    // The drain reads the spool asynchronously, so the already-due timer runs
+    // before the first entry reaches ingest. A synchronous read reaches
+    // `accept` in the same tick and stalls the worker for the whole backlog.
+    expect(sawTimerAtFirstAccept).toBe(true);
+  });
+
   it('keeps same-millisecond enqueues from one process in call order', () => {
     const spool = new HookSpool();
     for (const contentSessionId of ['session-z', 'session-y', 'session-x']) {

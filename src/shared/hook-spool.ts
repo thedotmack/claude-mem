@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from 'crypto';
 import { existsSync, linkSync, mkdirSync, opendirSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync } from 'fs';
+import { readdir, readFile } from 'fs/promises';
 import { join } from 'path';
 import { writeJsonFileAtomic } from './atomic-json.js';
 import { ensurePrivateDir, resolveDataDir } from './paths.js';
@@ -204,6 +205,12 @@ const CORRUPT_DIRNAME = 'corrupt';
 const SPOOL_ENTRY_MODE = 0o600;
 
 const EXPIRED_DIRNAME = 'expired';
+/**
+ * Files read per parallel batch while draining. Reads are asynchronous either
+ * way; the batch bounds how many file handles a single drain holds at once so a
+ * large backlog costs memory proportional to the batch, not the directory.
+ */
+const DRAIN_READ_BATCH_SIZE = 256;
 
 /**
  * A retained entry (session never became known, ingest keeps failing) older
@@ -444,7 +451,7 @@ export class HookSpool {
     consumedMarkers?: HookSpoolConsumedMarkers,
     options: HookSpoolDrainOptions = {},
   ): Promise<HookSpoolDrainResult> {
-    const { files, quarantined: initiallyQuarantined, omitted } = this.readEntries(options.maxEntries);
+    const { files, quarantined: initiallyQuarantined, omitted } = await this.readEntriesAsync(options.maxEntries);
     let quarantined = initiallyQuarantined;
     let drained = 0;
     let retained = omitted;
@@ -681,6 +688,30 @@ export class HookSpool {
     }
   }
 
+  /** Oldest first; the filename breaks ties between same-millisecond enqueues. */
+  private static compareSpoolFiles(a: HookSpoolFile, b: HookSpoolFile): number {
+    return a.entry.enqueuedAtEpochMs - b.entry.enqueuedAtEpochMs || a.filename.localeCompare(b.filename);
+  }
+
+  /**
+   * Sorts the retained entries and drops everything past `maxEntries`, counting
+   * the overflow as omitted. One sort after the scan replaces the previous
+   * re-sort-per-overflow, which cost O(n² log n) on a large backlog.
+   */
+  private static retainEntries(files: HookSpoolFile[], maxEntries: number): number {
+    files.sort(HookSpool.compareSpoolFiles);
+    if (files.length <= maxEntries) return 0;
+    const omitted = files.length - maxEntries;
+    files.length = maxEntries;
+    return omitted;
+  }
+
+  /**
+   * Synchronous reader for `entries()`, whose callers need the list in the
+   * current tick. `drain` uses `readEntriesAsync` instead: a spool can hold one
+   * file per captured event, and reading them here would hold the event loop
+   * for the whole backlog.
+   */
   private readEntries(maxEntries: number = Number.POSITIVE_INFINITY): { files: HookSpoolFile[]; quarantined: number; omitted: number } {
     if (!existsSync(this.directory)) return { files: [], quarantined: 0, omitted: 0 };
 
@@ -695,7 +726,6 @@ export class HookSpool {
 
     const files: HookSpoolFile[] = [];
     let quarantined = 0;
-    let omitted = 0;
     for (const filename of filenames) {
       const entryPath = join(this.directory, filename);
       let raw: string;
@@ -716,15 +746,60 @@ export class HookSpool {
         continue;
       }
       files.push({ entry: parsed, path: entryPath, filename });
-      if (files.length > maxEntries) {
-        files.sort((a, b) => a.entry.enqueuedAtEpochMs - b.entry.enqueuedAtEpochMs || a.filename.localeCompare(b.filename));
-        files.pop();
-        omitted++;
+    }
+
+    return { files, quarantined, omitted: HookSpool.retainEntries(files, maxEntries) };
+  }
+
+  /**
+   * Reads the spool without holding the event loop. Listing and every file read
+   * are asynchronous and come in bounded batches, so a backlog left by a worker
+   * outage slows the drain instead of stalling hooks, the viewer and the health
+   * endpoint that share the worker's loop.
+   */
+  private async readEntriesAsync(maxEntries: number = Number.POSITIVE_INFINITY): Promise<{ files: HookSpoolFile[]; quarantined: number; omitted: number }> {
+    if (!existsSync(this.directory)) return { files: [], quarantined: 0, omitted: 0 };
+
+    let filenames: string[];
+    try {
+      filenames = (await readdir(this.directory)).filter(filename => ENTRY_FILENAME.test(filename));
+    } catch (error) {
+      logger.warn('HOOK', 'Could not list hook spool entries', { directory: this.directory },
+        error instanceof Error ? error : new Error(String(error)));
+      return { files: [], quarantined: 0, omitted: 0 };
+    }
+
+    const files: HookSpoolFile[] = [];
+    let quarantined = 0;
+    for (let start = 0; start < filenames.length; start += DRAIN_READ_BATCH_SIZE) {
+      const batch = filenames.slice(start, start + DRAIN_READ_BATCH_SIZE);
+      const raws = await Promise.all(batch.map(async filename => {
+        try {
+          return { filename, raw: await readFile(join(this.directory, filename), 'utf-8') };
+        } catch (error) {
+          // ENOENT: drained by a concurrent pass after the listing. Anything
+          // else is retried on the next pass.
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+            logger.warn('HOOK', 'Could not read hook spool entry; will retry', { file: filename },
+              error instanceof Error ? error : new Error(String(error)));
+          }
+          return null;
+        }
+      }));
+
+      for (const read of raws) {
+        if (!read) continue;
+        const entryPath = join(this.directory, read.filename);
+        const parsed = parseHookSpoolEntry(read.raw);
+        if ('corruptReason' in parsed) {
+          if (this.quarantine(read.filename, parsed.corruptReason)) quarantined++;
+          continue;
+        }
+        files.push({ entry: parsed, path: entryPath, filename: read.filename });
       }
     }
 
-    files.sort((a, b) => a.entry.enqueuedAtEpochMs - b.entry.enqueuedAtEpochMs || a.filename.localeCompare(b.filename));
-    return { files, quarantined, omitted };
+    return { files, quarantined, omitted: HookSpool.retainEntries(files, maxEntries) };
   }
 }
 
