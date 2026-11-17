@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { statSync, writeFileSync } from 'fs';
+import { fstatSync, statSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { pathToFileURL } from 'url';
 import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager.js';
@@ -48,11 +48,31 @@ async function withWorkerResponse<T>(url: string, read: (response: Response) => 
 }
 
 export async function exportMemories(query: string, outputFile: string, project?: string) {
+  let streamTarget = false;
+  let stdioTarget: number | undefined;
+  try {
+    const target = statSync(outputFile);
+    streamTarget = target.isCharacterDevice() || target.isFIFO();
+    for (const fd of [process.stdout.fd, process.stderr.fd]) {
+      const stream = fstatSync(fd);
+      if (target.dev === stream.dev && target.ino === stream.ino) {
+        stdioTarget = fd;
+        break;
+      }
+    }
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error;
+  }
+  // Match the open stream, including aliases such as /dev/fd/1 and symlinks.
+  // Progress on that stream would make an otherwise successful JSON export unusable.
+  const progress = stdioTarget === process.stdout.fd ? console.error : console.log;
+
   const settings = SettingsDefaultsManager.loadFromFile(join(resolveDataDir(), 'settings.json'));
   const port = parseWorkerPort(settings.CLAUDE_MEM_WORKER_PORT);
   const baseUrl = `http://${formatHostForUrl(settings.CLAUDE_MEM_WORKER_HOST)}:${port}`;
 
-  console.log(`🔍 Searching for: "${query}"${project ? ` (project: ${project})` : ' (all projects)'}`);
+  progress(`🔍 Searching for: "${query}"${project ? ` (project: ${project})` : ' (all projects)'}`);
 
   const params = new URLSearchParams({
     query,
@@ -64,7 +84,7 @@ export async function exportMemories(query: string, outputFile: string, project?
   });
   if (project) params.set('project', project);
 
-  console.log('📡 Fetching all memories via hybrid search...');
+  progress('📡 Fetching all memories via hybrid search...');
   const searchData = await withWorkerResponse(`${baseUrl}/api/search?${params.toString()}`, async response => {
     if (!response.ok) throw new Error(`Failed to search: ${response.status} ${response.statusText}`);
     return response.json();
@@ -74,9 +94,9 @@ export async function exportMemories(query: string, outputFile: string, project?
   const summaries: SessionSummaryRecord[] = searchData.sessions || [];
   const prompts: Array<UserPromptRecord & { id?: number; memory_session_id?: string | null }> = searchData.prompts || [];
 
-  console.log(`✅ Found ${observations.length} observations`);
-  console.log(`✅ Found ${summaries.length} session summaries`);
-  console.log(`✅ Found ${prompts.length} user prompts`);
+  progress(`✅ Found ${observations.length} observations`);
+  progress(`✅ Found ${summaries.length} session summaries`);
+  progress(`✅ Found ${prompts.length} user prompts`);
 
   const memorySessionIds = new Set<string>();
   observations.forEach((o) => {
@@ -96,7 +116,7 @@ export async function exportMemories(query: string, outputFile: string, project?
   const promptIds = prompts.map(p => p.id).filter((id): id is number =>
     typeof id === 'number' && Number.isSafeInteger(id) && id > 0);
 
-  console.log('📡 Fetching SDK sessions metadata...');
+  progress('📡 Fetching SDK sessions metadata...');
   let sessions: SdkSessionRecord[] = [];
   if (memorySessionIds.size > 0 || promptIds.length > 0) {
     sessions = await withWorkerResponse(`${baseUrl}/api/sdk-sessions/batch`, async response => {
@@ -109,7 +129,7 @@ export async function exportMemories(query: string, outputFile: string, project?
       body: JSON.stringify({ memorySessionIds: Array.from(memorySessionIds), ...(promptIds.length > 0 ? { promptIds } : {}) })
     });
   }
-  console.log(`✅ Found ${sessions.length} SDK sessions`);
+  progress(`✅ Found ${sessions.length} SDK sessions`);
 
   const exportData: ExportData = {
     exportedAt: new Date().toISOString(),
@@ -126,26 +146,20 @@ export async function exportMemories(query: string, outputFile: string, project?
     prompts
   };
 
-  let streamTarget = false;
-  try {
-    const target = statSync(outputFile);
-    streamTarget = target.isCharacterDevice() || target.isFIFO();
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error;
-  }
-  // Devices and pipes are streams, not replaceable files. Keep their native
-  // write behavior; only regular file destinations use atomic replacement.
-  if (streamTarget) writeFileSync(outputFile, JSON.stringify(exportData, null, 2));
+  // Write stdio through its open descriptor: Bun can back it with a socket,
+  // whose pseudo-path is not a replaceable file. Other devices and pipes keep
+  // direct writes; regular file destinations retain atomic replacement.
+  if (stdioTarget !== undefined) writeFileSync(stdioTarget, JSON.stringify(exportData, null, 2));
+  else if (streamTarget) writeFileSync(outputFile, JSON.stringify(exportData, null, 2));
   else writeJsonFileAtomic(outputFile, exportData);
 
-  console.log(`\n📦 Export complete!`);
-  console.log(`📄 Output: ${outputFile}`);
-  console.log(`📊 Stats:`);
-  console.log(`   • ${exportData.totalObservations} observations`);
-  console.log(`   • ${exportData.totalSessions} sessions`);
-  console.log(`   • ${exportData.totalSummaries} summaries`);
-  console.log(`   • ${exportData.totalPrompts} prompts`);
+  progress(`\n📦 Export complete!`);
+  progress(`📄 Output: ${outputFile}`);
+  progress(`📊 Stats:`);
+  progress(`   • ${exportData.totalObservations} observations`);
+  progress(`   • ${exportData.totalSessions} sessions`);
+  progress(`   • ${exportData.totalSummaries} summaries`);
+  progress(`   • ${exportData.totalPrompts} prompts`);
 }
 
 function isDirectRun(): boolean {
