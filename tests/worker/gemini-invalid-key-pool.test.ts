@@ -21,7 +21,9 @@ it.each(['400-invalid-key', '401-control', 'bad-request-control'])('rotates Gemi
   const requests: string[] = [];
   const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
     const url = new URL(request.url);
-    const key = url.searchParams.get('key')!;
+    // The key travels in the x-goog-api-key header, never the query string.
+    assert.equal(url.searchParams.get('key'), null);
+    const key = request.headers.get('x-goog-api-key')!;
     requests.push(key);
     const body: any = await request.json(); assert.ok(body.contents.length > 0);
     if (key === 'owned-refused') return Response.json({ error: { code: scenario === '401-control' ? 401 : 400, message: scenario === 'bad-request-control' ? 'Invalid argument: malformed request' : 'API key not valid. Please pass a valid API key.', status: 'INVALID_ARGUMENT', details: scenario === 'bad-request-control' ? [] : [{ '@type': 'type.googleapis.com/google.rpc.ErrorInfo', reason: 'API_KEY_INVALID', domain: 'googleapis.com' }] } }, { status: scenario === '401-control' ? 401 : 400 });
