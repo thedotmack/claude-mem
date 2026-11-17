@@ -336,6 +336,16 @@ const drawerHeight = `Math.round(document.querySelector('.console-drawer').getBo
     opened = await openDrawer(390, 844, false, { logs: text, path: FILE_PATH, exists: true, totalLines: 1000, returnedLines: 1000 });
     const { page } = opened;
     await waitFor(page, `!!document.querySelector('.console-row')`, 'rows');
+    await page.settle();
+    // PR #6229 review: a touch screen's rows measure 44px, not the 36px assumed until the first row is drawn, and the
+    // drawer still opens on the newest line (it opened about 8,000px above it, no longer following the end).
+    expect(await page.evaluate(`(() => {
+      const content = document.querySelector('.console-content'); const box = content.getBoundingClientRect();
+      const last = [...content.querySelectorAll('.console-row')].find(row => row.textContent.includes('LINE-LAST'))?.getBoundingClientRect();
+      return { rowHeight: Math.round(content.querySelector('.console-row-toggle').getBoundingClientRect().height),
+        lastInView: !!last && last.top >= box.top - 0.5 && last.bottom <= box.bottom + 0.5,
+        atEnd: content.scrollHeight - content.scrollTop - content.clientHeight < 2 };
+    })()`)).toEqual({ rowHeight: 44, lastInView: true, atEnd: true });
     // Find the 5,000-character line and open it: it wraps inside the drawer.
     await page.evaluate(`document.getElementById('console-search-input').focus()`);
     await page.send('Input.insertText', { text: 'LONG-LINE' });

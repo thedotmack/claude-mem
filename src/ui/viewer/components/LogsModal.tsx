@@ -623,10 +623,12 @@ function LogList({ lines, openKey, onToggle, jumpRequest, stateWords, listLabel,
     };
   }, [readView]);
 
-  // New lines or other filters: stay at the end if the reader was there (before paint, so no blank frame).
+  // New lines or other filters: stay at the end if the reader was there (before paint, so no blank frame). The first
+  // drawn row's measured height counts too: on a touch screen it is 44px, not the 36px the first scroll assumed, and
+  // the end moves about 8px per line further down. A reader who scrolled away is not following and stays put.
   useLayoutEffect(() => {
     if (followRef.current) scrollToEnd();
-  }, [lines, scrollToEnd]);
+  }, [lines, view.rowHeight, scrollToEnd]);
 
   useLayoutEffect(() => {
     if (!jumpRequest) return;
