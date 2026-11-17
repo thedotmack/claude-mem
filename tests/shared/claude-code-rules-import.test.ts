@@ -9,6 +9,8 @@ import { join } from 'path';
 import {
   claudeCodeAlreadyLoadsInstructions,
   claudeCodeImportLine,
+  forwardSlashPath,
+  hasImportLine,
   rulesAndToolsLoadedByClaudeCode,
   rulesAndToolsPointerLine,
   withoutLoadedRulesPointer,
@@ -67,6 +69,13 @@ describe('Claude Code rules import chain', () => {
   it('leaves POSIX paths alone, backslashes included', () => {
     expect(claudeCodeImportLine('/home/me/.claude-mem/MY-RULES.md', '/home/me', '/')).toBe('@~/.claude-mem/MY-RULES.md');
     expect(claudeCodeImportLine('/tmp/odd\\name.md', '/home/me', '/')).toBe('@/tmp/odd\\name.md');
+  });
+
+  it('counts the home-relative and the absolute forward-slash spellings as the import', () => {
+    const absolute = `@${forwardSlashPath(paths.myRulesPath).replaceAll(' ', '\\ ')}`;
+    expect(hasImportLine(`# Mine\n${claudeCodeImportLine(paths.myRulesPath)}\n`, paths.myRulesPath)).toBe(true);
+    expect(hasImportLine(`# Mine\n${absolute}\n`, paths.myRulesPath)).toBe(true);
+    expect(hasImportLine('# Mine\n', paths.myRulesPath)).toBe(false);
   });
 
   it('does not count a backslash-separated import line as loaded', () => {
