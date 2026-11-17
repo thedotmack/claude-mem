@@ -105,6 +105,16 @@ function resolveGrammarPath(language: string): string | null {
 
 const QUERIES: Record<string, string> = {
   jsts: `
+(assignment_expression left: [(identifier) (member_expression) (subscript_expression)] @name right: [
+  (arrow_function body: (_) @signature_body)
+  (function_expression body: (_) @signature_body)
+  (generator_function body: (_) @signature_body)
+  (parenthesized_expression [
+    (arrow_function body: (_) @signature_body)
+    (function_expression body: (_) @signature_body)
+    (generator_function body: (_) @signature_body)
+  ])
+]) @func @native_signature
 (function_declaration name: (identifier) @name body: (_) @signature_body) @func @native_signature
 (ambient_declaration (function_signature name: (identifier) @name)) @ts_signature
 (generator_function_declaration name: (identifier) @name body: (_) @signature_body) @func @native_signature
@@ -145,6 +155,16 @@ const QUERIES: Record<string, string> = {
   // cannot share the jsts query — tree-sitter aborts query compilation on the first
   // unknown node type. Class names are (identifier) here, not (type_identifier).
   js: `
+(assignment_expression left: [(identifier) (member_expression) (subscript_expression)] @name right: [
+  (arrow_function body: (_) @signature_body)
+  (function_expression body: (_) @signature_body)
+  (generator_function body: (_) @signature_body)
+  (parenthesized_expression [
+    (arrow_function body: (_) @signature_body)
+    (function_expression body: (_) @signature_body)
+    (generator_function body: (_) @signature_body)
+  ])
+]) @func @native_signature
 (function_declaration name: (identifier) @name body: (_) @signature_body) @func @native_signature
 (generator_function_declaration name: (identifier) @name body: (_) @signature_body) @func @native_signature
 (export_statement "default" @name value: [
