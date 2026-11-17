@@ -19,6 +19,8 @@ const _require = typeof __filename !== 'undefined'
 
 export interface CodeSymbol {
   name: string;
+  /** Legacy lookup name for a method whose overload identity includes parameters. */
+  shortName?: string;
   kind: "function" | "class" | "method" | "interface" | "type" | "const" | "variable" | "export" | "struct" | "enum" | "trait" | "impl" | "property" | "getter" | "setter" | "mixin" | "namespace" | "section" | "code" | "metadata" | "reference" | "macro" | "variant";
   signature: string;
   jsdoc?: string;
@@ -220,7 +222,7 @@ const QUERIES: Record<string, string> = {
 `,
 
   java: `
-(method_declaration name: (identifier) @name body: (_)? @signature_body) @method @native_signature
+(method_declaration name: (identifier) @name parameters: (formal_parameters) @overload_parameters body: (_)? @signature_body) @method @native_signature
 (constructor_declaration name: (identifier) @name parameters: (formal_parameters) @parameters body: (_) @signature_body) @ctor @native_signature
 (record_declaration
   parameters: (formal_parameters) @parameters
@@ -875,7 +877,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   const swiftParameters = new Map<string, string[]>();
   const swiftHeaders = new Map<string, { generics?: string; constraints?: string }>();
   const haskellSignatures = new Set<CodeSymbol>();
-  const cDeclarations = new Map<CodeSymbol, RawCapture>();
+  const callableNames = new Map<CodeSymbol, string>();
   const haskellDefaults: RawCapture[] = [];
   const ranges = new Map<CodeSymbol, RawCapture>();
   const implementedTraits = new Map<CodeSymbol, string>();
@@ -1154,7 +1156,9 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     }
 
     if (kindCapture.tag === "haskell_signature") haskellSignatures.add(sym);
-    if (kindCapture.tag === "c_declaration" && namedDeclarator) cDeclarations.set(sym, namedDeclarator);
+    if (kindCapture.tag === "c_declaration" && namedDeclarator) callableNames.set(sym, captureText(lines, namedDeclarator));
+    const parameters = match.captures.find(c => c.tag === "overload_parameters");
+    if (parameters) callableNames.set(sym, name + captureText(lines, parameters).replace(/\s+/g, " "));
     const trait = match.captures.find(c => c.tag === "implemented_trait");
     if (trait) implementedTraits.set(sym, captureText(lines, trait));
     ranges.set(sym, decoratedRanges.get(`${startRow}:${kindCapture.startCol}`) ?? kindCapture);
@@ -1365,17 +1369,20 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   }
 
   const roots = symbols.filter(s => !nested.has(s));
-  if (cDeclarations.size) {
-    // Keep the existing bare name when it is unambiguous. Only declarations
-    // sharing a sibling name gain their native parameter/qualifier spelling:
+  if (callableNames.size) {
+    // Keep the existing bare name when it is unambiguous. Declarations and
+    // Java methods sharing a sibling name gain their native parameter spelling:
     // overloads remain addressable, and a prototype cannot shadow the old
     // bare-name lookup of a function body in the same source file.
     const disambiguate = (siblings: CodeSymbol[]) => {
       const counts = new Map<string, number>();
       for (const symbol of siblings) counts.set(symbol.name, (counts.get(symbol.name) ?? 0) + 1);
       for (const symbol of siblings) {
-        const declaration = cDeclarations.get(symbol);
-        if (declaration && counts.get(symbol.name)! > 1) symbol.name = captureText(lines, declaration);
+        const callableName = callableNames.get(symbol);
+        if (callableName && counts.get(symbol.name)! > 1) {
+          if (language === "java") symbol.shortName = symbol.name;
+          symbol.name = callableName;
+        }
         if (symbol.children) disambiguate(symbol.children);
       }
     };
@@ -1735,7 +1742,7 @@ export function unfoldSymbol(content: string, filePath: string, symbolName: stri
 
   const findSymbol = (symbols: CodeSymbol[], qualified: boolean, parent?: string, shortAlias = false): CodeSymbol | null => {
     for (const sym of symbols) {
-      let name = sym.name;
+      let name = shortAlias ? sym.shortName ?? sym.name : sym.name;
       if (shortAlias && (sym.kind === "getter" || sym.kind === "setter")) name = name.slice(4);
       if (shortAlias && (file.language === "swift" || file.language === "scala")
         && sym.kind === "method" && name.startsWith("requirement ")) name = name.slice("requirement ".length);
