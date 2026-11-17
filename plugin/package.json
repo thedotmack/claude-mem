@@ -1,12 +1,12 @@
 {
   "name": "claude-mem-plugin",
-  "version": "15.19.0",
+  "version": "15.21.0",
   "private": true,
   "description": "Runtime dependencies for claude-mem bundled hooks",
   "type": "module",
   "dependencies": {
     "sharp": "0.35.5",
-    "zod": "^4.4.3",
+    "zod": "^4.6.6",
     "better-auth": "^1.6.16",
     "@better-auth/api-key": "^1.6.16",
     "tree-sitter-cli": "0.26.9",
@@ -34,7 +34,7 @@
     "@derekstride/tree-sitter-sql": "^0.3.11",
     "@tree-sitter-grammars/tree-sitter-markdown": "^0.3.2",
     "tree-sitter-delphi": "0.1.0",
-    "shell-quote": "1.9.0"
+    "shell-quote": "1.11.0"
   },
   "optionalDependencies": {
     "@huggingface/transformers": "^4.2.0"
@@ -42,7 +42,8 @@
   "overrides": {
     "tree-sitter": "^0.25.0",
     "onnxruntime-node": "1.23.2",
-    "onnxruntime-web": "npm:onnxruntime-common@1.23.2"
+    "onnxruntime-web": "npm:onnxruntime-common@1.23.2",
+    "adm-zip": "^0.6.1"
   },
   "trustedDependencies": [
     "tree-sitter-cli"

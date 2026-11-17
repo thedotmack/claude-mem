@@ -11,11 +11,11 @@ import {
 } from '../../src/mods/auto-clear/settings.js';
 
 describe('auto-clear settings', () => {
-  it('ships off, at 33%, matching SettingsDefaultsManager', () => {
+  it('ships off, at 40%, matching SettingsDefaultsManager', () => {
     const defaults = SettingsDefaultsManager.getAllDefaults();
     expect(defaults.CLAUDE_MEM_AUTO_CLEAR_ENABLED).toBe('false');
     expect(defaults.CLAUDE_MEM_AUTO_CLEAR_PERCENT).toBe(String(AUTO_CLEAR_DEFAULT_PERCENT));
-    expect(resolveAutoClearSettings({ env: {}, document: null })).toEqual({ enabled: false, percent: 33 });
+    expect(resolveAutoClearSettings({ env: {}, document: null })).toEqual({ enabled: false, percent: 40 });
     expect(resolveAutoClearSettings({ env: {}, document: { CLAUDE_MEM_AUTO_CLEAR_PERCENT: '40' } }).enabled).toBe(false);
   });
 
@@ -61,9 +61,9 @@ describe('auto-clear settings', () => {
       .toEqual({ enabled: false, percent: 40 });
   });
 
-  it('falls back to 33% for a percent out of range or unreadable', () => {
+  it('falls back to 40% for a percent out of range or unreadable', () => {
     for (const value of [undefined, '', '0', '-5', '96', '100', 'half', 'NaN']) {
-      expect(parseAutoClearPercent(value)).toBe(33);
+      expect(parseAutoClearPercent(value)).toBe(40);
     }
     expect(parseAutoClearPercent(' 1 ')).toBe(1);
     expect(parseAutoClearPercent('95')).toBe(95);

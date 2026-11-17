@@ -2,6 +2,11 @@
 // not bun). tests/integration/auto-clear-mod-engine.test.ts copies this file into
 // a scratch plugin as tests/engine.test.ts next to the bundled hooks module.
 // Each stub answers in Claude Code's place: the context reading, /clear, prompts.
+// A finished tool call is raised the way the engine raises it: as the
+// `session.append` row of its result (door `tool-result`), and the reminder the
+// mod appends comes back through `mock.session` as a row of the door `note`.
+// The save's arguments (the continuation prompt's blanks) are raised as the
+// engine raises the model's tool call: a row of the door `response`.
 import { expect, mock, test } from 'claude-code/testing'
 
 const WRITE = 'mcp__plugin_claude-mem_mcp-search__work_state_write'
@@ -11,6 +16,7 @@ function stubs(on: any, options: { percent: number; settings?: string | null; su
   // Auto-clear ships off; these checks turn it on the way a tester does, with the environment variable.
   mock.env(on, options.enabled === false ? { HOME: '/home/ada' } : { HOME: '/home/ada', CLAUDE_MEM_AUTO_CLEAR_ENABLED: 'true' })
   const record = { commands: [] as string[], prompts: [] as Array<{ text: string; asUser?: boolean }>, notes: [] as string[], reads: [] as string[] }
+  const session = mock.session(on)
   const state = { percent: options.percent }
   const isSettings = (path: string) => options.settings !== undefined && path.endsWith('/.claude-mem/settings.json')
   on('fs.exists', ($: any, e: any) => ({ value: isSettings(e.path) }))
@@ -28,25 +34,48 @@ function stubs(on: any, options: { percent: number; settings?: string | null; su
   on('turn.complete', () => ({ text: '' }))
   on('command.run', ($: any, e: any) => { record.commands.push(e.command); return { text: '' } })
   on('prompt.submit', ($: any, e: any) => { record.prompts.push({ text: e.text, asUser: e.origin?.asUser }); return { text: e.text } })
-  on('tool.call', ($: any, e: any) => e.tool === WRITE
-    ? { result: { content: [{ type: 'text', text: 'Saved to "work" in demo.' }], isError: false }, text: 'Saved to "work" in demo.' }
-    : { result: 'ok', text: 'ok' })
-  return { clock, record, state }
+  // What the mod appended for Claude to read (a plugin's own row has the door `note`), as text.
+  const reminders = () => session.appended()
+    .filter((row: any) => row.door === 'note' && row.origin.kind === 'plugin')
+    .map((row: any) => row.message.content.map((block: any) => block.text).join(''))
+  return { clock, record, state, reminders }
 }
+
+let rows = 0
+/**
+ * Raises a stored tool result as the engine does. `content` is what the model
+ * reads: a string, a block array, or '' as Code Mode stores a script's calls.
+ */
+async function toolResult($: any, tool: string, content: unknown = 'ok', options: { isError?: boolean; agentId?: string; toolUseId?: string } = {}) {
+  rows += 1
+  const block: Record<string, unknown> = { type: 'tool_result', tool_use_id: options.toolUseId ?? `toolu_${rows}`, content }
+  if (options.isError !== undefined) block.is_error = options.isError
+  return await $.session.append({
+    message: { type: 'user', role: 'user', content: [block] },
+    door: 'tool-result',
+    origin: { kind: 'tool', tool },
+    uuid: `row-${rows}`,
+    ...(options.agentId ? { agentId: options.agentId } : {}),
+  })
+}
+const saved = [{ type: 'text', text: 'Saved to "work" in demo.' }]
 
 const turnDone = { turnId: 't1', answer: 'done', durationMs: 5, isAborted: false, reason: 'answer', usage: null }
 
-test('at 34% a tool result carries the save request; after a save the turn end clears and sends continue as the user', async ($, on) => {
-  const { clock, record } = stubs(on, { percent: 34 })
+test('at 41% a tool result gets the save request appended behind it; after a save the turn end clears and sends continue as the user', async ($, on) => {
+  const { clock, record, reminders } = stubs(on, { percent: 41 })
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
 
-  const bash = await $.tool.call({ tool: 'Bash', command: 'ls' }) as any
-  expect(bash.result).toBe('ok')
-  expect(bash.context?.at(-1) ?? '').toContain('34% of the context window')
-  expect(record.notes[0] ?? '').toContain('Context is at 34%')
+  // The row is stored as the tool made it; the save request is a row of its own behind it.
+  const bash = await toolResult($, 'Bash', 'ok')
+  expect(bash.message.content[0].content).toBe('ok')
+  expect(reminders()).toHaveLength(1)
+  expect(reminders()[0]).toContain('41% of the context window')
+  expect(reminders()[0]).toContain('work_state_write')
+  expect(record.notes[0] ?? '').toContain('Context is at 41%')
 
-  const write = await $.tool.call({ tool: WRITE, list: 'work', fields: { next: 'wire the route' } }) as any
-  expect(write.context).toBeUndefined()
+  await toolResult($, WRITE, saved)
+  expect(reminders()).toHaveLength(1)
 
   await $.turn.complete(turnDone)
   await clock.settle()
@@ -56,10 +85,10 @@ test('at 34% a tool result carries the save request; after a save the turn end c
 })
 
 test('below the threshold nothing is attached and nothing runs', async ($, on) => {
-  const { clock, record } = stubs(on, { percent: 20 })
+  const { clock, record, reminders } = stubs(on, { percent: 20 })
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
-  const bash = await $.tool.call({ tool: 'Bash', command: 'ls' }) as any
-  expect(bash.context).toBeUndefined()
+  await toolResult($, 'Bash')
+  expect(reminders()).toEqual([])
   await $.turn.complete(turnDone)
   await clock.settle()
   expect(record.commands).toEqual([])
@@ -67,10 +96,10 @@ test('below the threshold nothing is attached and nothing runs', async ($, on) =
 })
 
 test('settings.json moves the threshold and can turn it off', async ($, on) => {
-  const { clock, record } = stubs(on, { percent: 40, settings: '{"CLAUDE_MEM_AUTO_CLEAR_PERCENT":"50"}' })
+  const { clock, record, reminders } = stubs(on, { percent: 40, settings: '{"CLAUDE_MEM_AUTO_CLEAR_PERCENT":"50"}' })
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
-  const bash = await $.tool.call({ tool: 'Bash', command: 'ls' }) as any
-  expect(bash.context).toBeUndefined()
+  await toolResult($, 'Bash')
+  expect(reminders()).toEqual([])
   expect(record.reads).toContain('/home/ada/.claude-mem/settings.json')
   await $.turn.complete(turnDone)
   await clock.settle()
@@ -78,10 +107,10 @@ test('settings.json moves the threshold and can turn it off', async ($, on) => {
 })
 
 test('no surface (a -p run or an SDK session): nothing happens', async ($, on) => {
-  const { clock, record } = stubs(on, { percent: 80, surfaces: [] })
+  const { clock, record, reminders } = stubs(on, { percent: 80, surfaces: [] })
   await $.session.start({ surface: 'terminal', isInteractive: false, cwd: '/work' })
-  const bash = await $.tool.call({ tool: 'Bash', command: 'ls' }) as any
-  expect(bash.context).toBeUndefined()
+  await toolResult($, 'Bash')
+  expect(reminders()).toEqual([])
   await $.turn.complete(turnDone)
   await clock.settle()
   expect(record.commands).toEqual([])
@@ -100,10 +129,10 @@ test('a turn that crossed with no tool call gets a save prompt from claude-mem, 
 })
 
 test('subagent tool calls and turns are never counted', async ($, on) => {
-  const { clock, record } = stubs(on, { percent: 60 })
+  const { clock, record, reminders } = stubs(on, { percent: 60 })
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
-  const sub = await $.tool.call({ tool: 'Bash', command: 'ls', agentId: 'agent-1' }) as any
-  expect(sub.context).toBeUndefined()
+  await toolResult($, 'Bash', 'ok', { agentId: 'agent-1' })
+  expect(reminders()).toEqual([])
   await $.turn.complete({ ...turnDone, agentId: 'agent-1' })
   await clock.settle()
   expect(record.commands).toEqual([])
@@ -113,8 +142,8 @@ test('subagent tool calls and turns are never counted', async ($, on) => {
 test('a refused save never clears: claude-mem asks once in its own turn, then gives up', async ($, on) => {
   const { clock, record } = stubs(on, { percent: 40 })
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
-  await $.tool.call({ tool: 'Bash', command: 'ls' })
-  await $.tool.call({ tool: 'Edit', file_path: '/work/a.ts' })
+  await toolResult($, 'Bash')
+  await toolResult($, 'Edit')
   await $.turn.complete(turnDone)
   await clock.settle()
   expect(record.prompts.length).toBe(1)
@@ -125,10 +154,10 @@ test('a refused save never clears: claude-mem asks once in its own turn, then gi
 })
 
 test('a settings.json that is there but cannot be read keeps auto-clear off instead of guessing', async ($, on) => {
-  const { clock, record } = stubs(on, { percent: 80, settings: null })
+  const { clock, record, reminders } = stubs(on, { percent: 80, settings: null })
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
-  const bash = await $.tool.call({ tool: 'Bash', command: 'ls' }) as any
-  expect(bash.context).toBeUndefined()
+  await toolResult($, 'Bash')
+  expect(reminders()).toEqual([])
   await $.turn.complete(turnDone)
   await clock.settle()
   expect(record.prompts).toEqual([])
@@ -145,8 +174,8 @@ test('a stopped turn past the threshold sends nothing', async ($, on) => {
 test('a prompt the person typed that starts before the clear holds the clear back', async ($, on) => {
   const { clock, record } = stubs(on, { percent: 40 })
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
-  await $.tool.call({ tool: 'Bash', command: 'ls' })
-  await $.tool.call({ tool: WRITE, list: 'work', fields: { next: 'x' } })
+  await toolResult($, 'Bash')
+  await toolResult($, WRITE, saved)
   await $.turn.complete(turnDone)
   await $.turn.start({ text: 'one more thing', turnId: 't2' })
   await clock.settle()
@@ -155,12 +184,107 @@ test('a prompt the person typed that starts before the clear holds the clear bac
 })
 
 test('off by default: with nothing turned on, a session past the threshold is left alone', async ($, on) => {
-  const { clock, record } = stubs(on, { percent: 80, enabled: false })
+  const { clock, record, reminders } = stubs(on, { percent: 80, enabled: false })
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
-  const bash = await $.tool.call({ tool: 'Bash', command: 'ls' }) as any
-  expect(bash.context).toBeUndefined()
+  await toolResult($, 'Bash')
+  expect(reminders()).toEqual([])
   await $.turn.complete(turnDone)
   await clock.settle()
   expect(record.commands).toEqual([])
   expect(record.prompts).toEqual([])
+})
+
+test('an error result for the save is not a save: no clear after it', async ($, on) => {
+  const { clock, record } = stubs(on, { percent: 40 })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await toolResult($, 'Bash')
+  await toolResult($, WRITE, 'Worker API error (500)', { isError: true })
+  await $.turn.complete(turnDone)
+  await clock.settle()
+  expect(record.commands).toEqual([])
+})
+
+test('Code Mode: a script\'s save is stored with no text, so nothing is cleared and the person is told why', async ($, on) => {
+  const { clock, record, reminders } = stubs(on, { percent: 40 })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+
+  // REPL's own result row comes first, then one row per tool the script called.
+  await toolResult($, 'REPL', '(dispatched #2)')
+  expect(reminders()).toHaveLength(1)
+  await toolResult($, WRITE, '', { isError: false })
+  expect(record.notes.at(-1) ?? '').toContain('Code Mode')
+  expect(record.notes.at(-1) ?? '').toContain('did not clear the conversation')
+
+  await $.turn.complete(turnDone)
+  await clock.settle()
+  await clock.settle()
+  expect(record.commands).toEqual([])
+  expect(record.prompts).toEqual([])
+
+  // Off for the rest of the session: no further request, even past the threshold.
+  const notesBefore = record.notes.length
+  await toolResult($, 'Bash')
+  await $.turn.complete({ ...turnDone, turnId: 't2' })
+  await clock.settle()
+  expect(reminders()).toHaveLength(1)
+  expect(record.prompts).toEqual([])
+  expect(record.notes).toHaveLength(notesBefore)
+})
+
+/** Raises a block of the model's response carrying one tool call, as the engine raises it. */
+async function toolUse($: any, tool: string, input: unknown, options: { agentId?: string } = {}) {
+  rows += 1
+  return await $.session.append({
+    message: { type: 'assistant', role: 'assistant', content: [{ type: 'tool_use', id: `toolu_${rows}`, name: tool, input }] },
+    door: 'response',
+    origin: { kind: 'model', model: 'claude-test' },
+    uuid: `row-${rows}`,
+    ...(options.agentId ? { agentId: options.agentId } : {}),
+  })
+}
+
+test('a save that carries the blanks becomes the continuation prompt sent as the user after the clear', async ($, on) => {
+  const { clock, record } = stubs(on, { percent: 45 })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await toolResult($, 'Bash', 'ok')
+  const fields = { continuation_recently_completed_task: 'wire the login route', continuation_overarching_goal: 'ship passwordless login' }
+  const row = await toolUse($, WRITE, { list: 'work', fields })
+  // The response row is kept as the model wrote it.
+  expect(row.message.content[0].input).toEqual({ list: 'work', fields })
+  await toolResult($, WRITE, saved, { toolUseId: row.message.content[0].id })
+  await $.turn.complete(turnDone)
+  await clock.settle()
+  await clock.settle()
+  expect(record.commands).toEqual(['clear'])
+  expect(record.prompts).toEqual([{
+    text: 'You are working on "work" and recently completed "wire the login route". Pick back up on our overarching goal "ship passwordless login" from where you left off.',
+    asUser: true,
+  }])
+})
+
+test('the default point is 40%: at 39% nothing is asked, at 40% the save request is attached', async ($, on) => {
+  const { state, reminders } = stubs(on, { percent: 39 })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await toolResult($, 'Bash')
+  expect(reminders()).toEqual([])
+  state.percent = 40
+  await toolResult($, 'Bash')
+  expect(reminders()).toHaveLength(1)
+  expect(reminders()[0]).toContain('past the 40% point')
+})
+
+test('a save that failed never supplies the blanks, even when a later save succeeds', async ($, on) => {
+  const { clock, record } = stubs(on, { percent: 45 })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await toolResult($, 'Bash', 'ok')
+  const fields = { continuation_recently_completed_task: 'wire the login route', continuation_overarching_goal: 'ship passwordless login' }
+  const failed = await toolUse($, WRITE, { list: 'work', fields })
+  await toolResult($, WRITE, 'fields is over the 2000-character limit', { isError: true, toolUseId: failed.message.content[0].id })
+  const retried = await toolUse($, WRITE, { list: 'work', fields: { status: 'doing' } })
+  await toolResult($, WRITE, saved, { toolUseId: retried.message.content[0].id })
+  await $.turn.complete(turnDone)
+  await clock.settle()
+  await clock.settle()
+  expect(record.commands).toEqual(['clear'])
+  expect(record.prompts).toEqual([{ text: 'continue', asUser: true }])
 })

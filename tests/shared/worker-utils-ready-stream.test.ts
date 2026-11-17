@@ -6,6 +6,7 @@ import * as realInfrastructure from '../../src/services/infrastructure/index.js'
 import * as realSupervisor from '../../src/supervisor/index.js';
 import * as realProcessManager from '../../src/services/infrastructure/ProcessManager.js';
 import * as realHealthMonitor from '../../src/services/infrastructure/HealthMonitor.js';
+import * as processTree from '../../src/shared/kill-process-tree.js';
 import { logger } from '../../src/utils/logger.js';
 
 const realInfrastructureSnapshot = { ...realInfrastructure };
@@ -135,6 +136,7 @@ describe('worker readiness via GET /api/ready', () => {
   const originalScriptPath = process.env.CLAUDE_MEM_WORKER_SCRIPT_PATH;
   let tempDataDir: string;
   let killSpy: ReturnType<typeof spyOn>;
+  let killTreeSpy: ReturnType<typeof spyOn>;
   let killCalls: Array<{ pid: number; signal: string | number | undefined }>;
 
   beforeEach(() => {
@@ -156,9 +158,16 @@ describe('worker readiness via GET /api/ready', () => {
       wedgedWorkerAlive = false;
       return true;
     }) as typeof process.kill);
+    // The owned PID is a fixture, not a host process. Keep readiness's exact
+    // signal assertions without enumerating unrelated descendants of PID 4343.
+    // The real tree traversal has separate kill-process-tree coverage.
+    killTreeSpy = spyOn(processTree, 'killProcessTree').mockImplementation(async (pid, options) => {
+      process.kill(pid, options?.signalMode === 'immediate' ? 'SIGKILL' : 'SIGTERM');
+    });
   });
 
   afterEach(() => {
+    killTreeSpy.mockRestore();
     killSpy.mockRestore();
     global.fetch = originalFetch;
     if (originalDataDir === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;

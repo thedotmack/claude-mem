@@ -490,6 +490,22 @@ describe('GeminiObservationProvider', () => {
     expect(err.retryAfterMs).toBe(3000);
   });
 
+  it('sends the API key in the x-goog-api-key header, never in the request URL', async () => {
+    const capturing = new CapturingFetch(
+      jsonResponse(200, {
+        candidates: [{ content: { parts: [{ text: '<observation><type>x</type><title>t</title></observation>' }] } }],
+      }),
+    );
+    const provider = new GeminiObservationProvider({ apiKey: 'gemini-header-key', fetchImpl: capturing.fetch });
+
+    await provider.generate(makeContext());
+
+    const url = new URL(capturing.lastUrl!);
+    expect(url.searchParams.has('key')).toBe(false);
+    expect(capturing.lastUrl).not.toContain('gemini-header-key');
+    expect((capturing.lastInit?.headers as Record<string, string>)['x-goog-api-key']).toBe('gemini-header-key');
+  });
+
   it('returns the answer rather than the reasoning when a thought part comes first', async () => {
     const fakeFetch = new FakeFetch(
       jsonResponse(200, {

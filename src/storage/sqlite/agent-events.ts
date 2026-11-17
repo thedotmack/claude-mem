@@ -6,6 +6,7 @@ import { AgentEventSchema, CreateAgentEventSchema, type AgentEvent, type AgentEv
 import { ensureServerStorageSchema } from './schema.js';
 import { redactJsonStrings } from '../../utils/redaction.js';
 import { stripMemoryTagsFromJsonStrings } from '../../utils/tag-stripping.js';
+import { logger } from '../../utils/logger.js';
 
 interface AgentEventRow {
   id: string;
@@ -20,6 +21,29 @@ interface AgentEventRow {
   created_at_epoch: number;
 }
 
+/**
+ * `payload` is any JSON value (`z.unknown()`), written through `create`, but a
+ * row can also be written by another process or left half-written. An
+ * unreadable payload reads as the schema's empty object instead of throwing
+ * out of `getById`/`listByProject`, which sit on the server's request path: one
+ * bad row would otherwise fail every read of the table. The raw payload is
+ * never logged, only the event id.
+ */
+function parseStoredPayload(raw: string, eventId: string): unknown {
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch (error) {
+    // Only the error's name is logged: JSON.parse messages can quote a token
+    // of the input (`Unexpected identifier "..."`), and the payload holds
+    // captured tool input.
+    logger.warn('DB', 'Unreadable agent event payload; reading it as an empty object', {
+      eventId,
+      errorName: error instanceof Error ? error.name : 'unknown',
+    });
+    return {};
+  }
+}
+
 function mapAgentEventRow(row: AgentEventRow): AgentEvent {
   return AgentEventSchema.parse({
     id: row.id,
@@ -27,7 +51,7 @@ function mapAgentEventRow(row: AgentEventRow): AgentEvent {
     serverSessionId: row.server_session_id,
     sourceType: row.source_type,
     eventType: row.event_type,
-    payload: JSON.parse(row.payload),
+    payload: parseStoredPayload(row.payload, row.id),
     contentSessionId: row.content_session_id,
     memorySessionId: row.memory_session_id,
     occurredAtEpoch: row.occurred_at_epoch,

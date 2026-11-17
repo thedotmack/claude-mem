@@ -5,6 +5,23 @@ var WORK_STATE_WRITE_TOOL = /(?:^|__)work_state_write$/;
 var WORK_STATE_READ_TOOL = /(?:^|__)work_state_read$/;
 var SAVED_RESULT = /^Saved to "/;
 var CONTINUE_PROMPT = "continue";
+var CONTINUATION_TASK_FIELD = "continuation_recently_completed_task";
+var CONTINUATION_GOAL_FIELD = "continuation_overarching_goal";
+function continuationPrompt(blanks) {
+  return `You are working on "${blanks.workStateList}" and recently completed "${blanks.recentlyCompletedTask}". Pick back up on our overarching goal "${blanks.overarchingGoal}" from where you left off.`;
+}
+function continuationBlanks(input) {
+  if (typeof input !== "object" || input === null) return null;
+  const { list, fields } = input;
+  if (typeof fields !== "object" || fields === null) return null;
+  const text = (value) => typeof value === "string" ? value.trim() : "";
+  const blanks = {
+    workStateList: text(list),
+    recentlyCompletedTask: text(fields[CONTINUATION_TASK_FIELD]),
+    overarchingGoal: text(fields[CONTINUATION_GOAL_FIELD])
+  };
+  return blanks.workStateList && blanks.recentlyCompletedTask && blanks.overarchingGoal ? blanks : null;
+}
 var AutoClearController = class {
   constructor(host) {
     this.host = host;
@@ -13,6 +30,10 @@ var AutoClearController = class {
   phase = "idle";
   /** The latest main-loop tool call since Claude was asked was a successful work_state_write. */
   saved = false;
+  /** The continuation prompt's blanks from the latest successful main-loop save of this flow that carried them. */
+  continuation = null;
+  /** Blanks read off a save call whose result has not come back, by tool_use id: only a successful result keeps them. */
+  pendingContinuations = /* @__PURE__ */ new Map();
   /** Waiting for the first context reading of a conversation auto-clear started. */
   checkFreshStart = false;
   /** No more requests in this conversation (a save was refused or stopped); cleared by the next /clear. */
@@ -28,12 +49,26 @@ var AutoClearController = class {
   turnsStarted = 0;
   /** Turn completion retires tool-hook reads even when the person stopped the turn. */
   readGeneration = 0;
-  /** A main-loop or subagent tool call finished; returns the note to attach to its result, if any. */
+  /** The model wrote a work_state_write call: a save this flow asked for may carry the continuation prompt's blanks. */
+  onWorkStateWriteCall(call) {
+    if (call.agentId || this.phase === "idle" || this.phase === "clearing") return;
+    const blanks = continuationBlanks(call.input);
+    if (blanks) this.pendingContinuations.set(call.toolUseId, blanks);
+  }
+  /** A main-loop or subagent tool result was stored; returns the reminder to append behind it, if any. */
   async onToolCallEnd(call) {
-    if (call.agentId || call.denied) return null;
+    if (call.agentId) return null;
     if (WORK_STATE_WRITE_TOOL.test(call.tool)) {
       if (this.phase !== "idle" && this.phase !== "clearing") {
-        this.saved = !call.isError && SAVED_RESULT.test((call.text ?? "").trim());
+        const text = (call.text ?? "").trim();
+        if (!call.isError && text === "") {
+          this.stopForUnreadableSave();
+          return null;
+        }
+        this.saved = !call.isError && SAVED_RESULT.test(text);
+        const blanks = call.toolUseId === void 0 ? void 0 : this.pendingContinuations.get(call.toolUseId);
+        if (call.toolUseId !== void 0) this.pendingContinuations.delete(call.toolUseId);
+        if (this.saved && blanks) this.continuation = blanks;
       }
       return null;
     }
@@ -44,6 +79,8 @@ var AutoClearController = class {
     if (percent === null || !isCurrent()) return null;
     this.phase = "saving-in-turn";
     this.saved = false;
+    this.continuation = null;
+    this.pendingContinuations.clear();
     this.host.note(`Context is at ${percent}% (auto-clear at ${this.threshold}%): Claude is saving the work state, then claude-mem clears and continues.`);
     return inTurnSaveRequest(percent, this.threshold);
   }
@@ -136,6 +173,8 @@ var AutoClearController = class {
   }
   queueSavePrompt(percent) {
     this.phase = "save-prompt-queued";
+    this.continuation = null;
+    this.pendingContinuations.clear();
     const conversation = this.conversation;
     const stillOurs = () => this.conversation === conversation && this.phase === "save-prompt-queued";
     this.host.defer(async () => {
@@ -152,6 +191,8 @@ var AutoClearController = class {
   clearAndContinue() {
     this.phase = "clearing";
     this.saved = false;
+    const continuation = this.continuation;
+    this.continuation = null;
     const conversation = this.conversation;
     this.host.note("Work state saved. Clearing the conversation and continuing.");
     this.host.defer(async () => {
@@ -173,12 +214,25 @@ var AutoClearController = class {
         this.host.note("The conversation was cleared after your last message ran, so that turn is not in the saved work state. Tell Claude where to pick up.");
         return;
       }
+      const prompt = continuation ? continuationPrompt(continuation) : CONTINUE_PROMPT;
+      if (!continuation) {
+        this.host.note(`No save carried the continuation prompt's blanks (${CONTINUATION_TASK_FIELD}, ${CONTINUATION_GOAL_FIELD}), so "continue" is sent instead.`);
+      }
       try {
-        await this.host.submitAsUser(CONTINUE_PROMPT);
+        await this.host.submitAsUser(prompt);
       } catch {
-        this.host.note('The conversation was cleared, but "continue" could not be sent. Type it to pick the work back up.');
+        this.host.note(`The conversation was cleared, but this message could not be sent. Type it to pick the work back up: ${prompt}`);
       }
     });
+  }
+  /** A save came back with no text, so it cannot be told from a refused one: clearing now could lose the work. */
+  stopForUnreadableSave() {
+    this.phase = "idle";
+    this.saved = false;
+    this.stopped = true;
+    this.host.note(
+      "This session runs tools from a script (Code Mode), so claude-mem cannot read the result of the work state save and did not clear the conversation. Auto-clear is off in this session until Claude Code restarts."
+    );
   }
   giveUp(reason) {
     this.phase = "idle";
@@ -189,11 +243,13 @@ var AutoClearController = class {
 };
 var SAVE_STEPS = [
   "- Update each list you are working from: mark finished items done and add what is still to do.",
-  "- Record the goal, the decisions made and why, the files involved, and the exact next step."
+  "- Record the goal, the decisions made and why, the files involved, and the exact next step.",
+  `- Last, in a work_state_write of its own: \`list\` is the list you are working from, and \`fields\` is {"${CONTINUATION_TASK_FIELD}": "<the task you just finished>", "${CONTINUATION_GOAL_FIELD}": "<the overarching goal, in the person's words>"}.`
 ].join("\n");
+var AFTER_THE_CLEAR = " When this turn ends, claude-mem clears the conversation and starts the fresh one with your open work state and this message, filled in from your last save: " + continuationPrompt({ workStateList: "<list>", recentlyCompletedTask: "<task>", overarchingGoal: "<goal>" });
 function inTurnSaveRequest(percent, threshold) {
   return [
-    `claude-mem auto-clear: this conversation now uses ${percent}% of the context window, past the ${threshold}% point set in claude-mem. When this turn ends, claude-mem clears the conversation and sends "continue", and the fresh conversation starts with your open work state.`,
+    `claude-mem auto-clear: this conversation now uses ${percent}% of the context window, past the ${threshold}% point set in claude-mem.` + AFTER_THE_CLEAR,
     "",
     "Wrap up now so the work carries over. Save where things stand with work_state_write:",
     SAVE_STEPS,
@@ -203,7 +259,7 @@ function inTurnSaveRequest(percent, threshold) {
 }
 function savePrompt(percent, threshold) {
   return [
-    `This conversation now uses ${percent}% of the context window, past the ${threshold}% auto-clear point set in claude-mem. When this turn ends, claude-mem clears the conversation and sends "continue", and the fresh conversation starts with your open work state.`,
+    `This conversation now uses ${percent}% of the context window, past the ${threshold}% auto-clear point set in claude-mem.` + AFTER_THE_CLEAR,
     "",
     "Save where things stand with work_state_write so the work carries over:",
     SAVE_STEPS,
@@ -228,7 +284,7 @@ function isWorkStateEnabled(value) {
 }
 
 // src/mods/auto-clear/settings.ts
-var AUTO_CLEAR_DEFAULT_PERCENT = 33;
+var AUTO_CLEAR_DEFAULT_PERCENT = 40;
 var AUTO_CLEAR_MIN_PERCENT = 1;
 var AUTO_CLEAR_MAX_PERCENT = 95;
 function parseSettingsJson(text) {
@@ -285,6 +341,29 @@ function redirectedDataDir(homeDocument, envDataDir, home) {
 
 // src/mods/auto-clear/register.ts
 var SETTINGS_TTL_MS = 3e4;
+function resultText(content) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.map((block) => block?.type === "text" && typeof block.text === "string" ? block.text : "").join("");
+}
+function toolCallEnd(e) {
+  let isError = false;
+  let text = "";
+  let toolUseId;
+  for (const block of e.message.content) {
+    if (block.type !== "tool_result") continue;
+    if (block.is_error === true) isError = true;
+    if (toolUseId === void 0 && typeof block.tool_use_id === "string") toolUseId = block.tool_use_id;
+    text += resultText(block.content);
+  }
+  return {
+    tool: typeof e.origin.tool === "string" ? e.origin.tool : "unknown",
+    agentId: e.agentId,
+    isError,
+    text,
+    toolUseId
+  };
+}
 function register(on) {
   let controller = null;
   on("session.start", async ($, e, next) => {
@@ -355,21 +434,29 @@ function register(on) {
     }
     return next(e);
   });
-  on("tool.call", async ($, e, next) => {
-    const result = await next(e);
-    if (!controller) return result;
+  on("session.append", { door: "tool-result" }, async ($, e, next) => {
+    const stored = await next(e);
+    if (!controller) return stored;
     try {
-      const note = await controller.onToolCallEnd({
-        tool: e.tool,
-        agentId: e.agentId,
-        denied: typeof result.deny === "string",
-        isError: result.isError === true,
-        text: typeof result.text === "string" ? result.text : void 0
-      });
-      if (note) return { ...result, context: [...result.context ?? [], note] };
+      const note = await controller.onToolCallEnd(toolCallEnd({ ...e, message: stored.message }));
+      if (note) await $.session.append({ message: { type: "user", content: [{ type: "text", text: note }] } });
     } catch {
     }
-    return result;
+    return stored;
+  }).catch(async ($, e, next) => next(e));
+  on("session.append", { door: "response" }, async ($, e, next) => {
+    const stored = await next(e);
+    if (!controller) return stored;
+    try {
+      for (const block of stored.message.content) {
+        if (block.type === "tool_use" && typeof block.id === "string" && typeof block.name === "string" && WORK_STATE_WRITE_TOOL.test(block.name)) {
+          controller.onWorkStateWriteCall({ agentId: e.agentId, toolUseId: block.id, input: block.input });
+        }
+      }
+    } catch (error) {
+      $.ui.log(`claude-mem auto-clear could not read a work_state_write call off the model's response, so the continuation prompt may fall back to "continue": ${error instanceof Error ? error.message : String(error)}`);
+    }
+    return stored;
   }).catch(async ($, e, next) => next(e));
   on("turn.start", async ($, e, next) => {
     controller?.onTurnStart();

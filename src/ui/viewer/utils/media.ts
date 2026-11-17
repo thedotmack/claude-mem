@@ -109,6 +109,26 @@ export function mediaAltText(ref: ObservationMediaRef, index: number, count: num
 export const inspectionText = (ref: ObservationMediaRef) =>
   ref.inspection === 'inspected' ? 'Inspected by the observer' : 'Not inspected (stored only)';
 
+const RECIPE_KINDS: Record<MediaMetadataResponse['recipe'], string> = {
+  'screenshot-v1': 'screenshots',
+  'photo-v1': 'photos',
+};
+
+/**
+ * The words after the image count under a card's strip: what kind of images
+ * (when every converted one shares a recipe) and how many were stored without
+ * being described, e.g. ["screenshots", "stored only"].
+ */
+export function mediaStripFacts(refs: ObservationMediaRef[], states: Record<string, MediaDisplayState>): string[] {
+  const facts: string[] = [];
+  const recipes = new Set(refs.map(ref => states[ref.id]).flatMap(state => state?.kind === 'ready' ? [state.metadata.recipe] : []));
+  if (recipes.size === 1) facts.push(t(RECIPE_KINDS[[...recipes][0]]));
+  const storedOnly = refs.filter(ref => ref.inspection === 'uninspected').length;
+  if (storedOnly === refs.length) facts.push(t('stored only'));
+  else if (storedOnly > 0) facts.push(interpolate(t('{count} stored only'), { count: storedOnly }));
+  return facts;
+}
+
 export function sourceAvailabilityText(details: MediaOwnerDetailsResponse): string {
   if (details.platform === null) return 'Synced from another device; converted copy retained';
   switch (details.sourceAvailability) {

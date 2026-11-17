@@ -457,6 +457,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL: string;
   CLAUDE_MEM_WORK_VIEW_API_MODEL: string;
   CLAUDE_MEM_CORPUS_AGENT: string;
+  CLAUDE_MEM_API_AGENT_EXTRA_BODY: string;
   CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE: string;
   // Automatic local DB snapshots (BackupManager). Opt-in via ENABLED.
   CLAUDE_MEM_BACKUP_ENABLED: string;
@@ -656,8 +657,8 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT: 'true',
     CLAUDE_MEM_WELCOME_HINT_ENABLED: 'true',
     CLAUDE_MEM_WORK_STATE_ENABLED: 'true',  // 'false' = no work-state section at SessionStart and no work_state_* MCP tools, for hosts that track work their own way
-    CLAUDE_MEM_AUTO_CLEAR_ENABLED: 'false', // Claude Code mod (plugin/hooks/auto-clear.js): at CLAUDE_MEM_AUTO_CLEAR_PERCENT of the context window, Claude saves its work state, then /clear runs and "continue" is sent. Off unless set to 'true'. Needs work state on
-    CLAUDE_MEM_AUTO_CLEAR_PERCENT: '33',    // Context window use (1-95) that starts the auto-clear
+    CLAUDE_MEM_AUTO_CLEAR_ENABLED: 'false', // Claude Code mod (plugin/hooks/auto-clear.js): at CLAUDE_MEM_AUTO_CLEAR_PERCENT of the context window, Claude saves its work state, then /clear runs and a continuation prompt built from that save is sent ("continue" when the save left its blanks out). Off unless set to 'true'. Needs work state on
+    CLAUDE_MEM_AUTO_CLEAR_PERCENT: '40',    // Context window use (1-95) that starts the auto-clear. 40: the maintainer's choice (raised from 33 on 2026-11-17); src/mods/auto-clear/settings.ts keeps the same value
     CLAUDE_MEM_FILE_READ_GATE_ENABLED: 'true',  // 'false' = never block a full-file Read; the file's observation timeline is still added as context
     CLAUDE_MEM_LINE_ANCHORS_ENABLED: 'false',  // #4943, opt-in: the worker records line anchors in observation metadata and the file-context timeline shows where that code is now (@L123) or "(code changed since)". Only 'true' turns it on
     CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED: 'false',
@@ -789,6 +790,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL: '', // #5164 — same for Gemini; empty keeps flash-lite/flash per step
     CLAUDE_MEM_WORK_VIEW_API_MODEL: '', // Model for every My Work refresh step on the selected API provider; empty keeps the provider's configured model
     CLAUDE_MEM_CORPUS_AGENT: '', // Which agent answers knowledge-corpus prime/query/reprime: '' uses the Claude Agent SDK (the Claude subscription); 'api' answers over chat completions on the selected openrouter/openai-compatible provider and spends that provider's credit
+    CLAUDE_MEM_API_AGENT_EXTRA_BODY: '', // JSON object merged into every api agent request (My Work refresh, corpus), e.g. {"chat_template_kwargs":{"enable_thinking":false}} for vLLM (#6223). Parsed like CLAUDE_MEM_OPENROUTER_EXTRA_BODY; never sets reasoning or response_format. File/env only
     CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE: '', // Language for My Work's generated text (titles, reviews, story), such as 'Turkish'. No extra model call; empty uses the language the grouping step finds in the owner's asks, decided once per run (#5660)
     // Automatic local DB snapshots (BackupManager). Off by default; opt-in.
     CLAUDE_MEM_BACKUP_ENABLED: 'false',
@@ -946,8 +948,9 @@ export class SettingsDefaultsManager {
   static loadFromFile(
     settingsPath: string,
     applyEnvOverrides = true,
-    options: { readOnly?: boolean } = {},
+    options: { readOnly?: boolean; warn?: (...args: unknown[]) => void } = {},
   ): SettingsDefaults {
+    const warn = options.warn ?? console.warn;
     try {
       const defaults = this.defaultsForSettingsPath(settingsPath);
       if (!existsSync(settingsPath)) {
@@ -959,9 +962,9 @@ export class SettingsDefaultsManager {
             // stderr, never stdout: this fires on the first boot in a fresh data
             // dir, and CLI commands like `start` promise machine-readable JSON
             // on stdout to the hook framework.
-            console.warn('[SETTINGS] Created settings file with defaults:', settingsPath);
+            warn('[SETTINGS] Created settings file with defaults:', settingsPath);
           } catch (error: unknown) {
-            console.warn('[SETTINGS] Failed to create settings file, using in-memory defaults:', settingsPath, error instanceof Error ? error.message : String(error));
+            warn('[SETTINGS] Failed to create settings file, using in-memory defaults:', settingsPath, error instanceof Error ? error.message : String(error));
           }
         }
         return this.finalizeSettings(defaults, applyEnvOverrides);
@@ -986,9 +989,9 @@ export class SettingsDefaultsManager {
           try {
             writeJsonFileAtomic(settingsPath, flatSettings, { mode: 0o600 });
             // stderr, never stdout — same JSON-on-stdout contract as above.
-            console.warn('[SETTINGS] Migrated settings file from nested to flat schema:', settingsPath);
+            warn('[SETTINGS] Migrated settings file from nested to flat schema:', settingsPath);
           } catch (error: unknown) {
-            console.warn('[SETTINGS] Failed to auto-migrate settings file:', settingsPath, error instanceof Error ? error.message : String(error));
+            warn('[SETTINGS] Failed to auto-migrate settings file:', settingsPath, error instanceof Error ? error.message : String(error));
             // Continue with in-memory migration even if write fails
           }
         }
@@ -1008,9 +1011,9 @@ export class SettingsDefaultsManager {
               { mode: 0o600 },
             );
             // stderr, never stdout — same JSON-on-stdout contract as above.
-            console.warn('[SETTINGS] Migrated Telegram trigger types off the legacy default:', settingsPath);
+            warn('[SETTINGS] Migrated Telegram trigger types off the legacy default:', settingsPath);
           } catch (error: unknown) {
-            console.warn('[SETTINGS] Failed to migrate Telegram trigger types:', settingsPath, error instanceof Error ? error.message : String(error));
+            warn('[SETTINGS] Failed to migrate Telegram trigger types:', settingsPath, error instanceof Error ? error.message : String(error));
             // Continue with the in-memory migration even if the write fails
           }
         }
@@ -1031,12 +1034,12 @@ export class SettingsDefaultsManager {
               { mode: 0o600 },
             );
             // stderr, never stdout — same JSON-on-stdout contract as above.
-            console.warn(
+            warn(
               `[SETTINGS] Migrated Claude model off the pinned ${pinnedModel} to ${this.DEFAULTS.CLAUDE_MEM_MODEL}:`,
               settingsPath,
             );
           } catch (error: unknown) {
-            console.warn('[SETTINGS] Failed to migrate the pinned Claude model:', settingsPath, error instanceof Error ? error.message : String(error));
+            warn('[SETTINGS] Failed to migrate the pinned Claude model:', settingsPath, error instanceof Error ? error.message : String(error));
             // Continue with the in-memory migration even if the write fails
           }
         }
@@ -1057,12 +1060,12 @@ export class SettingsDefaultsManager {
               { mode: 0o600 },
             );
             // stderr, never stdout — same JSON-on-stdout contract as above.
-            console.warn(
+            warn(
               `[SETTINGS] Migrated OpenRouter model off the retired default ${retiredModel} to ${this.DEFAULTS.CLAUDE_MEM_OPENROUTER_MODEL}:`,
               settingsPath,
             );
           } catch (error: unknown) {
-            console.warn('[SETTINGS] Failed to migrate the retired OpenRouter model:', settingsPath, error instanceof Error ? error.message : String(error));
+            warn('[SETTINGS] Failed to migrate the retired OpenRouter model:', settingsPath, error instanceof Error ? error.message : String(error));
             // Continue with the in-memory migration even if the write fails
           }
         }
@@ -1082,9 +1085,9 @@ export class SettingsDefaultsManager {
               hasPeerRootKeys ? { ...writableRoot, env: flatSettings } : flatSettings,
               { mode: 0o600 },
             );
-            console.warn('[SETTINGS] Migrated cloud sync hub URL to', rewrittenHubUrl, 'from a retired hub host:', settingsPath);
+            warn('[SETTINGS] Migrated cloud sync hub URL to', rewrittenHubUrl, 'from a retired hub host:', settingsPath);
           } catch (error: unknown) {
-            console.warn('[SETTINGS] Failed to migrate cloud sync hub URL:', settingsPath, error instanceof Error ? error.message : String(error));
+            warn('[SETTINGS] Failed to migrate cloud sync hub URL:', settingsPath, error instanceof Error ? error.message : String(error));
           }
         }
       }
@@ -1113,7 +1116,7 @@ export class SettingsDefaultsManager {
             );
             markRaisedDefaultDone(settingsPath, raised);
             // stderr, never stdout — same JSON-on-stdout contract as above.
-            console.warn(
+            warn(
               `[SETTINGS] Migrated ${raised.key} off the old ${raised.legacy}${raised.unit} default to ${this.DEFAULTS[raised.key]}${raised.unit}:`,
               settingsPath,
             );
@@ -1125,7 +1128,7 @@ export class SettingsDefaultsManager {
             const reported = `${raised.key}\0${settingsPath}`;
             if (!raisedDefaultFailuresReported.has(reported)) {
               raisedDefaultFailuresReported.add(reported);
-              console.warn(
+              warn(
                 raised.applyOnlyWhenSaved
                   ? `[SETTINGS] Failed to migrate ${raised.key}; keeping the saved ${raised.legacy} (reported once per process):`
                   : `[SETTINGS] Failed to migrate ${raised.key}; using the new default in memory (reported once per process):`,
@@ -1146,7 +1149,7 @@ export class SettingsDefaultsManager {
 
       return this.finalizeSettings(result, applyEnvOverrides);
     } catch (error: unknown) {
-      console.warn('[SETTINGS] Failed to load settings, using defaults:', settingsPath, error instanceof Error ? error.message : String(error));
+      warn('[SETTINGS] Failed to load settings, using defaults:', settingsPath, error instanceof Error ? error.message : String(error));
       const defaults = this.defaultsForSettingsPath(settingsPath);
       return this.finalizeSettings(defaults, applyEnvOverrides);
     }

@@ -20,10 +20,12 @@
  */
 
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { parseOpenRouterExtraBody, withOpenRouterExtraBody } from '../../shared/openrouter-extra-body.js';
 import { paths } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import { resolveOpenAICompatConfig } from '../worker/OpenAICompatProvider.js';
 import { resolveOpenRouterConfig } from '../worker/OpenRouterProvider.js';
+import { isMaxCompletionTokensCompatibilityError } from '../../shared/openrouter-token-compatibility.js';
 import { endpointRejectsReasoningField, isReasoningDisabledRejection, isUnknownReasoningParameter, rememberEndpointRejectsReasoningField } from '../worker/reasoning-budget.js';
 
 /** The provider an API step runs on. */
@@ -35,6 +37,8 @@ export interface ApiTarget {
   url: string;
   apiKey: string;
   model: string;
+  /** CLAUDE_MEM_API_AGENT_EXTRA_BODY, parsed: endpoint-specific request fields. */
+  extraBody?: Record<string, unknown>;
 }
 
 export interface ApiTargetResolution {
@@ -84,19 +88,22 @@ export function resolveSelectedApiProvider(settingsPath: string = paths.settings
 export function resolveApiTarget(settingsPath: string = paths.settings()): ApiTargetResolution {
   const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
   const provider = String(settings.CLAUDE_MEM_PROVIDER ?? '').trim();
+  const { extraBody, warning } = parseOpenRouterExtraBody(settings.CLAUDE_MEM_API_AGENT_EXTRA_BODY, 'CLAUDE_MEM_API_AGENT_EXTRA_BODY');
+  if (warning) logger.warn('WORKER', warning);
+  const extra = extraBody ? { extraBody } : {};
   if (OPENROUTER_PROVIDERS.has(provider)) {
     const config = resolveOpenRouterConfig(settingsPath);
     if (!config.apiUrl) return { target: null, reason: `CLAUDE_MEM_PROVIDER is ${provider}, but no endpoint is configured.` };
     if (!config.apiKey) return { target: null, reason: `CLAUDE_MEM_PROVIDER is ${provider}, but no API key is configured.` };
     if (!config.model) return { target: null, reason: `CLAUDE_MEM_PROVIDER is ${provider}, but no model is configured.` };
-    return { target: { provider: 'openrouter', url: config.apiUrl, apiKey: config.apiKey, model: config.model }, reason: '' };
+    return { target: { provider: 'openrouter', url: config.apiUrl, apiKey: config.apiKey, model: config.model, ...extra }, reason: '' };
   }
   if (provider === 'openai-compatible') {
     const config = resolveOpenAICompatConfig(settingsPath);
     if (!config.apiUrl) return { target: null, reason: 'CLAUDE_MEM_PROVIDER is openai-compatible, but no endpoint is configured.' };
     if (!config.model) return { target: null, reason: 'CLAUDE_MEM_PROVIDER is openai-compatible, but no model is configured.' };
     if (config.requiresApiKey && !config.apiKey) return { target: null, reason: 'CLAUDE_MEM_PROVIDER is openai-compatible, but no API key is configured.' };
-    return { target: { provider: 'openai-compatible', url: config.apiUrl, apiKey: config.apiKey, model: config.model }, reason: '' };
+    return { target: { provider: 'openai-compatible', url: config.apiUrl, apiKey: config.apiKey, model: config.model, ...extra }, reason: '' };
   }
   return {
     target: null,
@@ -161,10 +168,11 @@ function answerFormatBodies(format: AnswerFormat, schema?: Record<string, unknow
 /**
  * Ask the provider one question and return its answer text.
  *
- * Two refusals are retried rather than reported, because both are the
+ * Three refusals are retried rather than reported, because all are the
  * endpoint's schema and not the answer's fault: an endpoint that rejects the
- * `reasoning` field (vLLM), or says reasoning cannot be disabled, is sent the request once more without it, and an
- * endpoint whose 400/422 says it does not accept `json_schema` is sent the same
+ * `reasoning` field (vLLM), or says reasoning cannot be disabled, is sent the request once more without it, an
+ * endpoint whose 400 says to use `max_completion_tokens` in place of `max_tokens` is sent the request once more
+ * with that field (#4003), and an endpoint whose 400/422 says it does not accept `json_schema` is sent the same
  * question as `json_object`. A 400 about anything else (a context-length
  * refusal, say) is reported as it came, with no second request. Nothing else is retried, and no refusal ever moves the work
  * to another provider.
@@ -174,6 +182,7 @@ export async function askApiTarget(target: ApiTarget, prompt: string, options: A
   const formats: Array<AnswerFormat | 'none'> = options.answerSchema ? ['json_schema', 'json_object'] : ['none'];
   let format = formats[0];
   let includeReasoning = !endpointRejectsReasoningField(target.url);
+  let useMaxCompletionTokens = false;
 
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (target.apiKey) headers.Authorization = `Bearer ${target.apiKey}`;
@@ -186,12 +195,16 @@ export async function askApiTarget(target: ApiTarget, prompt: string, options: A
   const send = async () => fetch(target.url, {
     method: 'POST',
     signal,
+    // Bun's fetch fails a request after 5 minutes without a byte (BUN_CONFIG_HTTP_IDLE_TIMEOUT), and a
+    // non-streamed answer sends nothing until it is done. Off, so the signal above is the only limit.
+    timeout: false,
     headers,
-    body: JSON.stringify({
+    // The extra body never sets reasoning or response_format (plainText: true): the retries below resend without them.
+    body: JSON.stringify(withOpenRouterExtraBody({
       model,
       stream: false,
       temperature: TEMPERATURE,
-      max_tokens: MAX_OUTPUT_TOKENS,
+      ...(useMaxCompletionTokens ? { max_completion_tokens: MAX_OUTPUT_TOKENS } : { max_tokens: MAX_OUTPUT_TOKENS }),
       // Reasoning off by default: a reasoning model would spend the output budget thinking.
       ...(includeReasoning ? { reasoning: { enabled: false } } : {}),
       ...(format === 'none' ? {} : answerFormatBodies(format, options.answerSchema)),
@@ -199,10 +212,10 @@ export async function askApiTarget(target: ApiTarget, prompt: string, options: A
         { role: 'system', content: options.systemPrompt?.trim() || SYSTEM_PROMPT },
         { role: 'user', content: prompt },
       ],
-    }),
+    }, target.extraBody, target.url, true)),
   });
 
-  // At most one retry per refusal kind: the reasoning field, then the answer format.
+  // At most one retry per refusal kind: the reasoning field, the token field, then the answer format.
   for (let attempt = 0; attempt < 4; attempt++) {
     const response = await send();
     if (response.ok) return readAnswer(response, target);
@@ -219,6 +232,10 @@ export async function askApiTarget(target: ApiTarget, prompt: string, options: A
     // remember it against the URL, because a router picks a different model next time (#5265).
     if (includeReasoning && isReasoningDisabledRejection(text)) {
       includeReasoning = false;
+      continue;
+    }
+    if (!useMaxCompletionTokens && isMaxCompletionTokensCompatibilityError(response.status, text)) {
+      useMaxCompletionTokens = true;
       continue;
     }
     const next = formats[formats.indexOf(format) + 1];

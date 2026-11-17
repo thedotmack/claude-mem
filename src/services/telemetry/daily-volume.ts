@@ -14,6 +14,7 @@
  * at the call, which is what the existing suite asserts.
  */
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync, existsSync } from 'fs';
+import { randomUUID } from 'crypto';
 import { dirname, join } from 'path';
 import { resolveDataDir } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
@@ -129,9 +130,16 @@ function writeState(state: DailyFile): void {
   const path = statePath();
   try {
     mkdirSync(dirname(path), { recursive: true });
-    const tmp = `${path}.${process.pid}.tmp`;
-    writeFileSync(tmp, JSON.stringify(state));
-    renameSync(tmp, path);
+    const tmp = `${path}.${randomUUID()}.tmp`;
+    try {
+      writeFileSync(tmp, JSON.stringify(state), { flag: 'wx' });
+      renameSync(tmp, path);
+    } catch (error) {
+      // A failed write or rename (Windows EPERM/EBUSY while the target is held)
+      // would otherwise leave this randomly named temp behind on every attempt.
+      try { unlinkSync(tmp); } catch { /* the temp may not exist */ }
+      throw error;
+    }
   } catch (error) {
     logger.warn('SYSTEM', 'Telemetry daily file could not be written', undefined, error instanceof Error ? error : new Error(String(error)));
   }

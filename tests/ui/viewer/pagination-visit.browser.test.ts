@@ -40,14 +40,15 @@ for (const scope of ['project', 'session']) {
       function select(value) {
         if (${JSON.stringify(scope)} === 'session') location.hash = '#/sessions/claude/' + value;
         else {
-          const select = document.querySelector('.header select');
-          select.value = value; select.dispatchEvent(new Event('change', { bubbles: true }));
+          // The header's searchable Project filter: open it and choose the option.
+          if (document.querySelector('.project-picker-trigger').getAttribute('aria-expanded') !== 'true') document.querySelector('.project-picker-trigger').click();
+          document.querySelector('.project-picker [role="option"][data-value="' + value + '"]').click();
         }
       }
       (async () => {
         try {
           await originalFetch('/ready');
-          await until(() => [...document.querySelectorAll('.header select option')].some(o => o.value === 'A'), 'projects');
+          await until(() => [...document.querySelectorAll('.project-picker [role="option"]')].some(o => o.dataset.value === 'A'), 'projects');
           select('A');
           await originalFetch('/await-old');
           await until(() => oldReading === 3, 'old bodies started');
@@ -139,7 +140,9 @@ for (const scope of ['project', 'session']) {
     } });
     let chrome: OwnedChrome | undefined;
     try {
-      chrome = launchChrome(server.url.href, { profilePrefix: 'claude-mem-feed-visit-', extraFlags: ['--window-size=800,600'] });
+      // Tall enough that every loaded row is drawn: the checks read the page text, and the
+      // list recycles rows outside the window once it passes 50 (FEED_WINDOW_THRESHOLD).
+      chrome = launchChrome(server.url.href, { profilePrefix: 'claude-mem-feed-visit-', extraFlags: ['--window-size=800,12000'] });
       await withTimeout(ready, 30000, 'Owned browser deadline exceeded');
       expect(await withTimeout(result, 18000, 'Owned browser deadline exceeded')).toEqual({ staleRows: false, staleAlert: false, currentRows: true, continued: true });
       expect(aOffsets).toEqual([0, UI.PAGINATION_PAGE_SIZE]);

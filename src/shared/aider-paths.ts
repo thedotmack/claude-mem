@@ -6,8 +6,8 @@ import path from 'path';
 /**
  * Aider path resolution (mirror src/shared/kimi-paths.ts).
  *
- * Aider searches `.aider.conf.yml` in git root, then the working directory,
- * then $HOME (aider.chat/docs/config/aider_conf). The memory file is
+ * Aider loads `.aider.conf.yml` from home, git root, then the working directory;
+ * later settings win (aider.chat/docs/config/aider_conf). The memory file is
  * project-relative so it never collides with user files and stays portable:
  * `.claude-mem/aider-memory.md` under the directory that owns the config.
  * A global (~/.aider.conf.yml) config still gets a per-project memory file —
@@ -38,12 +38,11 @@ export function findAiderGitRoot(dir: string): string | null {
   }
 }
 
-/** Config search order: git root, working directory, $HOME (deduped). */
+/** Highest-precedence config first: working directory, git root, $HOME (deduped). */
 export function aiderConfigSearchPaths(cwd: string = process.cwd()): string[] {
-  const candidates = [];
+  const candidates = [path.join(cwd, AIDER_CONFIG_FILENAME)];
   const gitRoot = findAiderGitRoot(cwd);
   if (gitRoot) candidates.push(path.join(gitRoot, AIDER_CONFIG_FILENAME));
-  candidates.push(path.join(cwd, AIDER_CONFIG_FILENAME));
   candidates.push(aiderHomeConfigPath());
   return [...new Set(candidates)];
 }
@@ -53,7 +52,7 @@ export function resolveAiderConfigPath(cwd: string = process.cwd()): string {
   for (const candidate of aiderConfigSearchPaths(cwd)) {
     if (existsSync(candidate)) return candidate;
   }
-  return aiderConfigSearchPaths(cwd)[0];
+  return path.join(findAiderGitRoot(cwd) ?? cwd, AIDER_CONFIG_FILENAME);
 }
 
 /**

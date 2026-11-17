@@ -12,6 +12,7 @@ import {
 import { parseJsonArray, parseJsonObject } from '../../../src/storage/sqlite/serde.js';
 import { SettingsDefaultsManager } from '../../../src/shared/SettingsDefaultsManager.js';
 import { _resetRedactionConfigCache } from '../../../src/utils/redaction.js';
+import { logger } from '../../../src/utils/logger.js';
 
 interface TableNameRow {
   name: string;
@@ -431,6 +432,55 @@ describe('server-owned sqlite storage boundary', () => {
       expect(item.platformSource).toBe('codex');
       expect(item.narrative).not.toContain('provenance-secret');
       expect(memories.search(project.id, 'provenance-secret')).toHaveLength(0);
+    });
+  });
+
+  it('reads an unreadable payload as an empty object instead of failing the whole read', () => {
+    withDb(db => {
+      const project = new ProjectsRepository(db).create({ name: 'Corrupt payload' });
+      const events = new AgentEventsRepository(db);
+      const good = events.create({
+        projectId: project.id,
+        sourceType: 'hook',
+        eventType: 'tool_use',
+        payload: { tool: 'Bash' },
+        occurredAtEpoch: Date.now(),
+      });
+      // A row another process (or a half-written one) can leave behind: the
+      // read paths are on the server's request path, so one bad row must not
+      // throw out of getById/listByProject.
+      db.prepare('UPDATE agent_events SET payload = ? WHERE id = ?').run('{not json', good.id);
+
+      expect(events.getById(good.id)?.payload).toEqual({});
+      expect(events.listByProject(project.id).map(event => event.payload)).toEqual([{}]);
+    });
+  });
+
+  it('never logs a fragment of an unreadable payload', () => {
+    withDb(db => {
+      const project = new ProjectsRepository(db).create({ name: 'Corrupt payload log' });
+      const events = new AgentEventsRepository(db);
+      const event = events.create({
+        projectId: project.id,
+        sourceType: 'hook',
+        eventType: 'tool_use',
+        payload: { tool: 'Bash' },
+        occurredAtEpoch: Date.now(),
+      });
+      // JSC quotes the unexpected token in its message:
+      // `JSON Parse error: Unexpected identifier "secretmarker"`.
+      db.prepare('UPDATE agent_events SET payload = ? WHERE id = ?').run('{"a": secretmarker}', event.id);
+      const warnSpy = spyOn(logger, 'warn');
+      try {
+        expect(events.getById(event.id)?.payload).toEqual({});
+        expect(warnSpy).toHaveBeenCalled();
+        for (const call of warnSpy.mock.calls) {
+          const logged = call.map(arg => (arg instanceof Error ? `${arg.message} ${arg.stack}` : JSON.stringify(arg))).join(' ');
+          expect(logged).not.toContain('secretmarker');
+        }
+      } finally {
+        warnSpy.mockRestore();
+      }
     });
   });
 });

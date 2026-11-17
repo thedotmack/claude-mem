@@ -419,6 +419,7 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
 
   private fetchGenerateContent(
     url: string,
+    apiKey: string,
     contents: GeminiContent[],
     systemInstruction: string | null,
     maxOutputTokens: number,
@@ -430,6 +431,7 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'x-goog-api-key': apiKey,
         // Tracing only; never treated as server-side idempotency.
         'x-client-request-id': clientAttemptId,
       },
@@ -474,7 +476,10 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
       maxOutputTokens,
     });
 
-    const url = `${GEMINI_API_URL}/${model}:generateContent?key=${apiKey}`;
+    // The key travels in a header, never the URL: a query string reaches proxy
+    // and server access logs, and Google accepts x-goog-api-key (every other
+    // provider here already authenticates by header).
+    const url = `${GEMINI_API_URL}/${model}:generateContent`;
 
     await enforceRateLimitForModel(model, rateLimitingEnabled, signal);
 
@@ -485,7 +490,7 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
     let data = await withRetry<GeminiResponse>(async (attemptSignal) => {
       let response: Response;
       try {
-        response = await this.fetchGenerateContent(url, contents, system, maxOutputTokens, clientAttemptId, attemptSignal);
+        response = await this.fetchGenerateContent(url, apiKey, contents, system, maxOutputTokens, clientAttemptId, attemptSignal);
       } catch (networkError: unknown) {
         // Network failures, aborts, DNS, etc.
         const err = networkError instanceof Error ? networkError : new Error(String(networkError));
@@ -555,7 +560,7 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
         const deadline = startReasoningRetryDeadline(signal, perAttemptTimeoutMs);
         try {
           const response = await this.fetchGenerateContent(
-            url, contents, system, maxOutputTokens, clientAttemptId, deadline.signal, true,
+            url, apiKey, contents, system, maxOutputTokens, clientAttemptId, deadline.signal, true,
           );
           finalRequestId = response.headers.get('x-goog-request-id') ?? response.headers.get('x-request-id') ?? finalRequestId;
           if (!response.ok) {
@@ -672,7 +677,7 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
 /**
  * The Gemini keys that may be sent: the primary first, then the rotation list,
  * through the shared cmem key lock. Google is never the cmem gateway, so a
- * cm_pro_ key pasted into either setting is dropped rather than sent as ?key=.
+ * cm_pro_ key pasted into either setting is dropped rather than sent to Google.
  */
 function resolveGeminiKeys(settings: ReturnType<typeof SettingsDefaultsManager.loadFromFile>): string[] {
   const primaryKey = settings.CLAUDE_MEM_GEMINI_API_KEY || getCredential('GEMINI_API_KEY') || '';
