@@ -1,4 +1,4 @@
-import { closeSync, fstatSync, openSync, readSync, realpathSync, statSync } from 'fs';
+import { closeSync, openSync, readSync, realpathSync, statSync } from 'fs';
 import { homedir } from 'os';
 import path from 'path';
 import { OBS_PROMPT_FIELD_MAX_CHARS, OBS_PROMPT_FIELD_TAIL_RATIO } from '../../sdk/prompts.js';
@@ -30,11 +30,12 @@ export function withPersistedOutputTail(toolResponse: unknown): unknown {
   if (typeof stdout !== 'string' || typeof persistedOutputPath !== 'string' || persistedOutputPath === '') return toolResponse;
   try {
     const file = realpathSync(persistedOutputPath);
-    if (!isClaudeToolResult(file) || !statSync(file).isFile()) return toolResponse;
+    if (!isClaudeToolResult(file)) return toolResponse;
+    const stat = statSync(file);
+    const size = stat.size;
+    if (!stat.isFile() || size <= Buffer.byteLength(stdout)) return toolResponse;
     const fd = openSync(file, 'r');
     try {
-      const size = fstatSync(fd).size;
-      if (size <= Buffer.byteLength(stdout)) return toolResponse;
       const { head } = retainTextHeadTail(stdout, stdout.length - Math.min(TAIL_CHARS, Math.floor(stdout.length / 2)), 0);
       const headBytes = Buffer.byteLength(head);
       const tailStart = Math.max(headBytes, size - (stdout.length - head.length));
