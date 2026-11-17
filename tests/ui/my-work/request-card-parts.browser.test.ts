@@ -120,6 +120,18 @@ const FIXTURE = `
     setEncrypted = set;
     return <h3 data-renders={state.renders} style={{ fontSize: 20 }}><EncryptedText key={state.key} text="Show real usage on the price forecast page" revealDelayMs={500 / 42} /></h3>;
   }
+  const BOTH_GROUPS = [
+    { kind: 'Doc', label: 'notes.md', href: 'https://example.com/notes.md' },
+    { kind: 'PR', label: 'Pull request 6210', href: 'https://github.com/thedotmack/claude-mem/pull/6210' },
+    { kind: 'Branch', label: 'feature/cards' },
+  ];
+  let setFilterProducts;
+  function FilterEmptiesFixture() {
+    const [products, set] = useState(BOTH_GROUPS);
+    setFilterProducts = set;
+    return <DeliverableList products={products} />;
+  }
+  window.dropTheDocument = () => flushSync(() => setFilterProducts(BOTH_GROUPS.filter((product) => product.kind !== 'Doc')));
   window.rerenderEncrypted = () => flushSync(() => setEncrypted((state) => ({ ...state, renders: state.renders + 1 })));
   window.remountEncrypted = () => flushSync(() => setEncrypted((state) => ({ renders: state.renders + 1, key: 'second' })));
   window.mount = async (what) => {
@@ -167,6 +179,8 @@ const FIXTURE = `
       root.render(shell(<RequestDetail request={{ ...model.requests[0], story, storyNarrative: undefined }} onClose={() => {}} onOpenFocus={() => {}} />));
     }
     if (what === 'copy-name') root.render(shell(<div style={{ width: 560 }}><DeliverableList products={[{ kind: 'Branch', label: 'feature/cards' }]} /></div>));
+    // Both groups, then a live update that drops the only document (its local file was deleted).
+    if (what === 'filter-empties') root.render(shell(<div style={{ width: 560 }}><FilterEmptiesFixture /></div>));
     if (what === 'card') root.render(shell(<StoredCard id={yourMove.id} />));
     if (what === 'records') {
       const granular = [{ kind: 'work', text: LONG_RECORD, at: '2:44 pm' }, { kind: 'memory', text: 'Short memory', at: '11:51 am' },
@@ -792,6 +806,27 @@ it.skipIf(!chromeExecutablePath)('a refused copy of a name says so in plain word
 
     expect(refused).toEqual({ alert: 'Could not copy. Select the name to copy it.', cause: 'Write permission denied.' });
     expect(copied).toEqual({ alert: false, details: false });
+    expect(fixtureErrors).toEqual([]);
+  } finally {
+    await closePage();
+  }
+}, TEST_LIMIT_MS);
+
+it.skipIf(!chromeExecutablePath)('a live update that empties the chosen group shows every deliverable left, with no filter to undo', async () => {
+  try {
+    await open();
+    await page!.evaluate('window.mount("filter-empties")');
+    const list = `document.querySelector('[data-slot="deliverable-list"]')`;
+    const docsFilter = `[...${list}.querySelectorAll('[data-slot="toggle-group-item"]')].find((item) => item.textContent.startsWith('Docs and pages'))`;
+    await waitFor(docsFilter, 'the Docs and pages filter');
+    await page!.evaluate(`${docsFilter}.click()`);
+    const rows = `${list}.querySelectorAll(':scope > ul > li').length`;
+    await waitFor(`${rows} === 1`, 'the document alone');
+    await page!.evaluate('window.dropTheDocument()');
+    const after = await page!.evaluate(`({ rows: ${rows}, filters: !!${list}.querySelector('[data-slot="toggle-group"]'),
+      words: ${list}.textContent.includes('feature/cards') })`);
+
+    expect(after).toEqual({ rows: 2, filters: false, words: true });
     expect(fixtureErrors).toEqual([]);
   } finally {
     await closePage();

@@ -14,7 +14,8 @@ type Product = Request['workProduct'][number]
 
 /**
  * Which deliverables the list shows: all of them, or one group (c-bits-product-link M: All, Docs and pages, Code).
- * The person is its one writer, through the filter buttons; it starts at All each time the list is drawn.
+ * The person is its one writer, through the filter buttons; it starts at All each time the list is drawn. While the
+ * buttons are hidden the list shows All, whatever was chosen before.
  */
 type DeliverableFilter = 'all' | DeliverableGroup
 
@@ -40,13 +41,16 @@ export function DeliverableList({ products }: { products: readonly Product[] }) 
   const counts: Record<DeliverableFilter, number> = { all: products.length, 'docs-and-pages': inGroup('docs-and-pages').length, code: inGroup('code').length }
   // A filter that would show the same list as All is no choice at all.
   const offersFilters = counts['docs-and-pages'] > 0 && counts.code > 0
-  const ordered = deliverablesInOpeningOrder(filter === 'all' ? products : inGroup(filter))
+  // Without the buttons there is no way back from a group: a live update that empties the chosen group (a document
+  // whose file was deleted) would otherwise hide every deliverable left.
+  const shown: DeliverableFilter = offersFilters ? filter : 'all'
+  const ordered = deliverablesInOpeningOrder(shown === 'all' ? products : inGroup(shown))
   const rows = ordered.filter((product) => product.kind !== 'Commit')
   const commits = ordered.filter((product) => product.kind === 'Commit')
   return (
     <div data-slot="deliverable-list" className="space-y-2">
       {offersFilters && (
-        <ToggleGroup type="single" variant="outline" size="sm" spacing={1} value={filter} onValueChange={(next) => { if (next) setFilter(next as DeliverableFilter) }}
+        <ToggleGroup type="single" variant="outline" size="sm" spacing={1} value={shown} onValueChange={(next) => { if (next) setFilter(next as DeliverableFilter) }}
           aria-label={t('Which deliverables to show')} className="flex-wrap">
           {(Object.keys(FILTER_WORDS) as DeliverableFilter[]).map((key) => (
             <ToggleGroupItem key={key} value={key} className="gap-1.5 px-3">

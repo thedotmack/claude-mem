@@ -133,19 +133,25 @@ export function stopSharingFocusArea(focusAreaId: string): Promise<void> {
 }
 
 export async function readFocusShareComments(focusAreaId: string): Promise<FocusShareComment[]> {
-  const startedAt = changes
+  // The link this read asks about. Sharing again after a stop makes a new link (the worker's focus-share.ts stop), so
+  // an answer speaks for the area only while the area still has this link.
+  const readLink = state.shares[focusAreaId]?.url
+  const stillTheLinkRead = () => readLink !== undefined && state.shares[focusAreaId]?.url === readLink
   try {
     const answer = await call<{ comments: FocusShareComment[] }>(`/api/work-view/focus/share/comments?focusAreaId=${encodeURIComponent(focusAreaId)}`)
-    // The mark beside the area's name counts them (a read that answered after a stop leaves no count behind).
-    if (state.shares[focusAreaId]) set({ commentCounts: { ...state.commentCounts, [focusAreaId]: answer.comments.length } })
+    // The mark beside the area's name counts them. A read that answered after a stop leaves no count behind, and one
+    // that answered after a stop and a new share leaves the new link's mark alone.
+    if (stillTheLinkRead()) set({ commentCounts: { ...state.commentCounts, [focusAreaId]: answer.comments.length } })
     return answer.comments
   } catch (error) {
-    // A link stopped and shared again while this read was out is a new link: the old one's 410 leaves it alone.
-    if ((error as { status?: number }).status === 410 && startedAt === changes) forget(focusAreaId)
-    // The count is not known now: the mark drops its number rather than show an old one as if it were current.
-    else if (focusAreaId in state.commentCounts) {
-      const { [focusAreaId]: _unknown, ...commentCounts } = state.commentCounts
-      set({ commentCounts })
+    if (stillTheLinkRead()) {
+      // cmem.ai says this link stopped working (stopped on another machine or on cmem.ai): it is forgotten here too.
+      if ((error as { status?: number }).status === 410) forget(focusAreaId)
+      // The count is not known now: the mark drops its number rather than show an old one as if it were current.
+      else if (focusAreaId in state.commentCounts) {
+        const { [focusAreaId]: _unknown, ...commentCounts } = state.commentCounts
+        set({ commentCounts })
+      }
     }
     throw error
   }
