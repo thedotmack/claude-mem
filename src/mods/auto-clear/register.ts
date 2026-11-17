@@ -139,7 +139,8 @@ export function register(on: On): void {
     const stored = await next(e);
     if (!controller) return stored;
     try {
-      const note = await controller.onToolCallEnd(toolCallEnd(e));
+      // Judge the result by the row as kept: a later hook in the chain may have changed its content.
+      const note = await controller.onToolCallEnd(toolCallEnd({ ...e, message: stored.message }));
       if (note) await $.session.append({ message: { type: 'user', content: [{ type: 'text', text: note }] } });
     } catch {
       // Auto-clear never gets in the way of a tool result being kept.
