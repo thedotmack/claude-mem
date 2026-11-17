@@ -12,7 +12,7 @@ import {
 } from 'fs';
 import { execSync } from 'child_process';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
-import { formatTime, groupByDate } from '../shared/timeline-formatting.js';
+import { formatTime, groupByDate, parseJsonArray } from '../shared/timeline-formatting.js';
 import { isDirectChild, normalizePath } from '../shared/path-utils.js';
 import { logger } from '../utils/logger.js';
 import { getProjectContext } from '../utils/project-name.js';
@@ -21,7 +21,7 @@ import { findContextBlockRange } from '../utils/context-injection.js';
 import { toBmpSafe } from '../utils/bmp-safe.js';
 import { ensureDirectoryExists, resolveSymlinkWriteTarget } from '../shared/atomic-json.js';
 import { paths } from '../shared/paths.js';
-import { pageMatchingRows } from '../services/sqlite/stream-rows.js';
+import { streamRows } from '../services/sqlite/stream-rows.js';
 import { parseContextCountValue } from '../shared/context-count.js';
 
 const DB_PATH = paths.database();
@@ -183,54 +183,96 @@ export function makeFolderChildMatcher(relativeFolder: string, workingDir: strin
   };
 }
 
-function hasDirectChildFile(obs: ObservationRow, isFolderChild: (file: string) => boolean): boolean {
-  const checkFiles = (filesJson: string | null): boolean => {
-    if (!filesJson) return false;
-    try {
-      const files = JSON.parse(filesJson);
-      if (Array.isArray(files)) {
-        return files.some(f => typeof f === 'string' && isFolderChild(f));
-      }
-    } catch (error) {
-      logger.warn('CLAUDE_MD', 'Failed to parse files JSON in hasDirectChildFile', { error: error instanceof Error ? error.message : String(error) });
-    }
-    return false;
-  };
-
-  return checkFiles(obs.files_modified) || checkFiles(obs.files_read);
+/**
+ * Bucket key of a normalized path. A direct child's parent directory ends in
+ * its folder's last segment, so the key never skips a file the matcher accepts.
+ */
+function lastSegmentKey(normalized: string): string {
+  return path.posix.basename(normalized).toLowerCase();
 }
 
-function findObservationsByFolder(
+interface FolderObservations {
+  isFolderChild: (file: string) => boolean;
+  /**
+   * The folder's segments followed by a separator, once with `/` and once
+   * with a backslash, ASCII-lowercased. A candidate file must contain one of them:
+   * the same check the old per-folder `LIKE '%src/auth/%'` prefilter made, so
+   * relative `auth/login.ts` never reaches `src/auth` through the matcher's
+   * suffix rule.
+   */
+  pathNeedles: [string, string];
+  observations: ObservationRow[];
+}
+
+/** SQLite's LIKE folds ASCII letters only; fold the same way. */
+function asciiLowerCase(value: string): string {
+  return value.replace(/[A-Z]/g, letter => letter.toLowerCase());
+}
+
+function folderPathNeedles(relativeFolder: string): [string, string] {
+  const segments = relativeFolder.split(/[\\/]+/).filter(Boolean);
+  return [
+    asciiLowerCase(segments.join('/') + '/'),
+    asciiLowerCase(segments.join('\\') + '\\'),
+  ];
+}
+
+/**
+ * The newest `limit` direct-child observations of each folder, in folder
+ * order, from one scan of the project's rows. Rows are bucketed by the parent
+ * directory's last segment, and the folder matcher does the exact check.
+ */
+function findObservationsByFolders(
   db: Database,
-  relativeFolderPath: string,
+  relativeFolders: string[],
   workingDir: string,
   project: string,
   limit: number,
-): ObservationRow[] {
-  const sql = `
-    SELECT o.*, o.discovery_tokens
+): FolderObservations[] {
+  const folders: FolderObservations[] = [];
+  const bucketed = new Map<string, FolderObservations[]>();
+  for (const relativeFolder of relativeFolders) {
+    const entry: FolderObservations = {
+      isFolderChild: makeFolderChildMatcher(relativeFolder, workingDir),
+      pathNeedles: folderPathNeedles(relativeFolder),
+      observations: [],
+    };
+    folders.push(entry);
+    const key = lastSegmentKey(normalizePath(relativeFolder));
+    if (!bucketed.has(key)) bucketed.set(key, []);
+    bucketed.get(key)!.push(entry);
+  }
+  if (limit <= 0 || folders.length === 0) return folders;
+
+  const statement = db.prepare(`
+    SELECT o.*
     FROM observations o
     WHERE o.project COLLATE NOCASE = ?
-      AND (o.files_modified LIKE ? OR o.files_read LIKE ? OR o.files_modified LIKE ? OR o.files_read LIKE ?)
     ORDER BY o.created_at_epoch DESC
-  `;
-
-  // Unanchored prefilters: tool evidence stores absolute paths
-  // (".../repo/src/auth/x.ts", or "C:\\repo\\src\\auth\\x.ts" on Windows), so
-  // the folder need not follow the JSON quote. The matcher does the exact check.
-  const segments = relativeFolderPath.split(/[\\/]+/).filter(Boolean);
-  const likeFor = (separator: string) => `%${JSON.stringify(segments.join(separator) + separator).slice(1, -1)}%`;
-  const slashPattern = likeFor('/');
-  const backslashPattern = likeFor('\\');
-  const isFolderChild = makeFolderChildMatcher(relativeFolderPath, workingDir);
-  // Page the folder's direct children themselves, not a guessed window of the
-  // broader candidates that nested files can fill.
-  return pageMatchingRows<ObservationRow>(
-    db.prepare(sql),
-    [project, slashPattern, slashPattern, backslashPattern, backslashPattern],
-    obs => hasDirectChildFile(obs, isFolderChild),
-    { limit },
-  );
+  `);
+  // Folders whose page is not full yet. The scan stops when it reaches 0, as
+  // the old per-folder query stopped at its own limit.
+  let unfilledFolders = folders.length;
+  try {
+    for (const obs of streamRows(statement, project) as Iterable<ObservationRow>) {
+      for (const file of [...parseJsonArray(obs.files_modified), ...parseJsonArray(obs.files_read)]) {
+        const candidates = bucketed.get(lastSegmentKey(path.posix.dirname(normalizePath(file))));
+        if (!candidates) continue;
+        const comparableFile = asciiLowerCase(file);
+        for (const entry of candidates) {
+          // Rows arrive one at a time, so a row already added is the last one.
+          if (entry.observations.at(-1) === obs || entry.observations.length === limit) continue;
+          if (!entry.pathNeedles.some(needle => comparableFile.includes(needle)) || !entry.isFolderChild(file)) continue;
+          entry.observations.push(obs);
+          if (entry.observations.length === limit) unfilledFolders--;
+        }
+      }
+      if (unfilledFolders === 0) break;
+    }
+  } finally {
+    statement.finalize();
+  }
+  return folders;
 }
 
 // The heading uses the same predicate that selected the row, so an observation
@@ -332,13 +374,11 @@ function writeClaudeMdToFolder(folderPath: string, newContent: string): void {
 }
 
 function regenerateFolder(
-  db: Database,
   absoluteFolder: string,
   relativeFolder: string,
-  project: string,
+  folder: FolderObservations,
   dryRun: boolean,
-  workingDir: string,
-  observationLimit: number
+  workingDir: string
 ): { success: boolean; observationCount: number; error?: string } {
   if (!existsSync(absoluteFolder)) {
     return { success: false, observationCount: 0, error: 'Folder no longer exists' };
@@ -350,18 +390,17 @@ function regenerateFolder(
     return { success: false, observationCount: 0, error: 'Path escapes project root' };
   }
 
-  const observations = findObservationsByFolder(db, relativeFolder, resolvedWorkingDir, project, observationLimit);
-
-  if (observations.length === 0) {
+  if (folder.observations.length === 0) {
     return { success: false, observationCount: 0, error: 'No observations for folder' };
   }
 
+  const { observations, isFolderChild } = folder;
   if (dryRun) {
     return { success: true, observationCount: observations.length };
   }
 
   try {
-    const formatted = formatObservationsForClaudeMd(observations, makeFolderChildMatcher(relativeFolder, resolvedWorkingDir));
+    const formatted = formatObservationsForClaudeMd(observations, isFolderChild);
     writeClaudeMdToFolder(absoluteFolder, formatted);
     return { success: true, observationCount: observations.length };
   } catch (error) {
@@ -378,25 +417,26 @@ function processAllFoldersForGeneration(
   dryRun: boolean,
   observationLimit: number
 ): number {
+  const foldersArray = Array.from(trackedFolders).sort();
+  const relativeFolders = foldersArray.map(folder => path.relative(workingDir, folder));
+
   const db = new Database(DB_PATH, { readonly: true, create: false });
+  const observationsByFolder = findObservationsByFolders(db, relativeFolders, path.resolve(workingDir), project, observationLimit);
+  db.close();
 
   let successCount = 0;
   let skipCount = 0;
   let errorCount = 0;
 
-  const foldersArray = Array.from(trackedFolders).sort();
-
-  for (const absoluteFolder of foldersArray) {
-    const relativeFolder = path.relative(workingDir, absoluteFolder);
+  for (const [i, absoluteFolder] of foldersArray.entries()) {
+    const relativeFolder = relativeFolders[i];
 
     const result = regenerateFolder(
-      db,
       absoluteFolder,
       relativeFolder,
-      project,
+      observationsByFolder[i],
       dryRun,
-      workingDir,
-      observationLimit
+      workingDir
     );
 
     if (result.success) {
@@ -413,8 +453,6 @@ function processAllFoldersForGeneration(
       errorCount++;
     }
   }
-
-  db.close();
 
   logger.info('CLAUDE_MD', 'CLAUDE.md generation complete', {
     totalFolders: foldersArray.length,
