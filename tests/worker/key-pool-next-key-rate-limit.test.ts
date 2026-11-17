@@ -41,7 +41,11 @@ const CASES: Array<{
       CLAUDE_MEM_GEMINI_API_KEYS: 'gemini-key-two',
       CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: 'false',
     },
-    keyOf: url => new URL(url).searchParams.get('key') ?? '',
+    keyOf: (url, init) => {
+      // The key travels in the x-goog-api-key header, never the query string.
+      expect(new URL(url).searchParams.get('key')).toBeNull();
+      return String((init?.headers as Record<string, string>)?.['x-goog-api-key'] ?? '');
+    },
     respond: reply => reply === 'ok'
       ? Response.json({ candidates: [{ content: { parts: [{ text: 'ok' }] } }] })
       : reply === 'throttled'

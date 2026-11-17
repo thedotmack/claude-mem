@@ -5,6 +5,22 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/*
+ * Hover and press looks for controls that can act. Disabled controls keep pointer events so the not-allowed cursor
+ * shows (G16), so their hover and press looks must be skipped here instead. Hover stays inside (hover: hover), as
+ * Tailwind's own hover does, so a tap on a phone does not leave a stuck hover look. The condition sits in :where(),
+ * so these weigh what one class weighs: they still follow a primitive's base classes, and a caller's own `hover:` or
+ * `active:` class (two classes' weight) wins over them, as it would over the primitive's plain classes.
+ */
+@custom-variant hover-enabled {
+  @media (hover: hover) {
+    &:where(:hover:not(:disabled, [aria-disabled="true"], [aria-busy="true"])) {
+      @slot;
+    }
+  }
+}
+@custom-variant active-enabled (&:where(:active:not(:disabled, [aria-disabled="true"], [aria-busy="true"])));
+
 @theme inline {
     --font-heading: var(--font-sans);
     --font-sans: 'Geist Variable', sans-serif;
@@ -56,6 +72,7 @@
     --color-chart-1: var(--chart-1);
     --color-ring: var(--ring);
     --color-input: var(--input);
+    --color-control-edge: var(--control-edge);
     --color-border: var(--border);
     --color-destructive: var(--destructive);
     --color-accent-foreground: var(--accent-foreground);
@@ -92,6 +109,12 @@
 /*
  * Warm paper canvas in the claude-mem brand: brand orange #FD6500 for primary actions,
  * warm neutrals everywhere else. Elevation is reserved for panels and primary actions.
+ *
+ * Contrast (tests/ui/my-work/token-contrast.test.ts is the judge, plan rule 7 and G12): text ≥4.5:1; control
+ * edges, the focus ring and state marks ≥3:1 on every surface they sit on, in both themes.
+ * - Text on orange is near-black in both themes (G1): 6.53:1 on --primary, 7.52:1 on --primary-bright.
+ * - --control-edge is the edge of inputs, selects, outline buttons, chips, switches when off, toggles, the progress
+ *   track and dialog/sheet panels (G12). --border stays for decorative lines.
  */
 :root {
     --background: #f7f1e9;
@@ -103,18 +126,23 @@
     --primary: #fd6500;
     --primary-bright: #ff7b1a;
     --primary-deep: #e55800;
-    --primary-foreground: #ffffff;
+    --primary-foreground: #0f0c0a;
     --secondary: #f3ece3;
     --secondary-foreground: #3b3029;
     --muted: #f3ece3;
-    --muted-foreground: #776a5e;
+    /* One step darker than #776a5e, which was 4.47:1 on --muted; now ≥4.6:1 on every light surface. */
+    --muted-foreground: #75685c;
     --accent: #fdebdd;
     --accent-foreground: #b04800;
     --accent-border: #f6cdac;
-    --destructive: #c2413d;
+    /* #c2413d's hue, darker: #c2413d was 3.97:1 on its own 10% tint (destructive buttons and badges); ≥4.55:1 now. */
+    --destructive: #a33733;
     --border: #ebe2d6;
     --input: #e1d6c8;
-    --ring: #fd8a3d;
+    /* The review's #8f8071: ≥3.19:1 on every light surface and field fill. */
+    --control-edge: #8f8071;
+    /* #fd8a3d's hue at lower lightness: #fd8a3d was 2.33:1 on the card; this is ≥3.05:1 on every light surface. */
+    --ring: #e15c02;
     --chart-1: #fd6500;
     --chart-2: #4db8d4;
     --chart-3: #7eb663;
@@ -189,7 +217,7 @@
     --primary: #fd6500;
     --primary-bright: #ff7b1a;
     --primary-deep: #e55800;
-    --primary-foreground: #ffffff;
+    --primary-foreground: #0f0c0a;
     --secondary: #29231e;
     --secondary-foreground: #e6dbcd;
     --muted: #29231e;
@@ -200,6 +228,11 @@
     --destructive: #f08a86;
     --border: #3a312a;
     --input: #483d34;
+    /*
+     * The review's #7d6e60 hue and saturation, lightened until it clears 3:1 everywhere: #7d6e60 was 2.89:1 on
+     * #312923 (--input at 30% on the popover, a field inside a dialog). This is ≥3.09:1 on every dark surface.
+     */
+    --control-edge: #897869;
     --ring: #ff8a3d;
     --chart-1: #ff7b1a;
     --chart-2: #4db8d4;
@@ -294,6 +327,49 @@
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--muted-foreground);
+}
+
+/*
+ * Touch size (plan rule 6; UI UX Pro Max touch-target-size, WCAG 2.5.5 and Apple's 44pt): on a coarse pointer or a
+ * phone-width screen every control is at least 44×44px. The primitive owns this rule: interactive primitives carry
+ * the class, pages never add their own 44px classes. A min-height, so a page's h-8 cannot shrink a control on touch.
+ * 48rem is the md breakpoint pages already switch on.
+ */
+@utility touch-target-size {
+  @media (pointer: coarse), (width < 48rem) {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}
+
+/*
+ * A control that looks smaller than 44px still takes presses across 44×44px (UI UX Pro Max touch-target-size; the
+ * review's "sm keeps its look with a 44px hit area"): an invisible box centred on it. The host must be positioned
+ * and must not clip its overflow. Not for stacked rows, where the boxes would overlap the neighbours.
+ */
+@utility expanded-hit-area {
+  &::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 100%;
+    height: 100%;
+    min-width: 44px;
+    min-height: 44px;
+    transform: translate(-50%, -50%);
+  }
+}
+
+/* Numbers that change in place (counts, percents, durations, times) keep their width (plan rule 9, number-tabular). */
+@utility tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* The number beside a progress bar, table numbers and times: the app's system mono stack, tabular (D b14, b20, b22). */
+@utility mono-number {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
 }
 
 /*

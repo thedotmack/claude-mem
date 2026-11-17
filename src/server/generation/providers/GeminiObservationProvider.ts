@@ -210,7 +210,7 @@ export class GeminiObservationProvider implements ServerGenerationProvider {
       };
     }
 
-    const url = `${GEMINI_API_URL}/${encodeURIComponent(this.model)}:generateContent?key=${encodeURIComponent(this.apiKey)}`;
+    const url = `${GEMINI_API_URL}/${encodeURIComponent(this.model)}:generateContent`;
 
     let response: Response;
     try {
@@ -272,7 +272,8 @@ export class GeminiObservationProvider implements ServerGenerationProvider {
   private postGenerateContent(url: string, prompt: string, signal?: AbortSignal): Promise<Response> {
     return this.fetchImpl(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      // Header auth, never the URL: a query string ends up in access logs.
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': this.apiKey },
       body: JSON.stringify({
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
         generationConfig: {

@@ -22,7 +22,7 @@ export function groupIdFor(anchorConversationKey: string): string;
 export function refreshNeeds(options: { dir?: string; database: LedgerDatabase; now?: number; days?: number; localDeviceId: string }): RefreshNeeds;
 export function writeJsonAtomic(path: string, value: unknown): void;
 export function readLedger(dir?: string): Record<string, any>;
-export function readCandidates(database: LedgerDatabase, options: { sinceEpoch?: number; conversationKeys?: string[] | null; fullAsks?: boolean; excludedPromptIds?: Set<number> | null }): any[];
+export function readCandidates(database: LedgerDatabase, options: { sinceEpoch?: number; conversationKeys?: string[] | null; fullAsks?: boolean; recentAsks?: boolean; excludedPromptIds?: Set<number> | null }): any[];
 export function ledgerSignature(dir?: string): string;
 /** The decisions `apply` takes, merged into `stored` with projects and first asks read from the database; not written. */
 export function applyDecisions(stored: Record<string, any> | null, decisions: unknown, options: { database: LedgerDatabase; now?: number; excludedPromptIds?: Set<number> | null; enrichGroupIds?: string[] | null }): Record<string, any>;
@@ -62,7 +62,8 @@ export interface GroupingInput {
   proposedLinks: Array<{ kind: string; conversations: string[]; evidence: string; groups: string[] }>;
   remaining: number;
 }
-export function validateGroupingAnswer<T>(answer: T, input: GroupingInput): T;
+/** coerce: the refresh's one retry cuts what would be refused, naming each changed group or ignore entry in coercedFields. */
+export function validateGroupingAnswer<T>(answer: T, input: GroupingInput, options?: { coerce?: boolean; coercedFields?: Set<string> }): T;
 export interface StoryPreference { preference: string; kind: string; supportCount: number; quotes: Array<{ quote: string; at: string | null }> }
 export interface ValidatedStory { narrative: string; preferences: StoryPreference[] }
 export function validateStory(story: any): ValidatedStory;

@@ -1,17 +1,21 @@
 import { strict as assert } from 'node:assert';
 import { mock } from 'bun:test';
 import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { DatabaseManager } from '../../../src/services/worker/DatabaseManager.js';
 const actualFind = { ...(await import('../../../src/shared/find-claude-executable.js')) };
 const actualRegistry = { ...(await import('../../../src/supervisor/process-registry.js')) };
 const actualEnv = { ...(await import('../../../src/shared/EnvManager.js')) };
 let stallFixture = false;
+let contentFixture = false;
+const requestCountFile = join(process.env.CLAUDE_MEM_DATA_DIR!, 'summary-requests.txt');
 const cli = fileURLToPath(new URL('./queued-summary-origin-cli.cjs', import.meta.url));
 mock.module('../../../src/shared/find-claude-executable.js', () => ({ ...actualFind, findClaudeExecutable: () => cli }));
 mock.module('../../../src/supervisor/process-registry.js', () => ({ ...actualRegistry,
   createSdkSpawnFactory: (...args: Parameters<typeof actualRegistry.createSdkSpawnFactory>) => {
     const spawn = actualRegistry.createSdkSpawnFactory(...args);
-    return (options: Parameters<typeof spawn>[0]) => spawn({ ...options, command: process.execPath, args: [cli, ...(stallFixture ? ['--owned-summary-stall'] : []), ...options.args] });
+    return (options: Parameters<typeof spawn>[0]) => spawn({ ...options, command: process.execPath, args: [cli, ...(stallFixture ? ['--owned-summary-stall'] : []), ...(contentFixture ? ['--owned-summary-content', '--owned-summary-count', requestCountFile] : []), ...options.args] });
   },
 }));
 mock.module('../../../src/shared/EnvManager.js', () => ({ ...actualEnv,
@@ -25,6 +29,7 @@ const { SettingsDefaultsManager } = await import('../../../src/shared/SettingsDe
 const { ModeManager } = await import('../../../src/services/domain/ModeManager.js');
 const { ingestSummarize } = await import('../../../src/services/worker/http/shared.js');
 for (const kind of process.argv.slice(2)) {
+contentFixture = kind === 'content-rejected';
 const cleanup: Array<() => void | Promise<unknown>> = [];
 try {
         const savedSettings = SettingsDefaultsManager.loadFromFile;
@@ -120,6 +125,26 @@ if (kind === 'summary-stall') {
   session.abortReason = undefined;
 }
 await provider.startSession(session);
+if (kind === 'content-rejected') {
+  assert.deepEqual(store.db.query('SELECT * FROM session_summaries').all(), []);
+  assert.equal(session.lastSummaryStored, false);
+  assert.equal(readFileSync(requestCountFile, 'utf8').trim().split('\n').length, 1);
+  assert.equal(manager.getTotalQueueDepth(), 0);
+  // The owned CLI closes after its result. EOF may pause the SDK, but the
+  // answered batch must already be gone and cannot become output_retry work.
+  assert.equal(session.abortReason, 'transport:sdk_eof');
+  assert.equal(session.consecutiveInvalidOutputs, 0);
+  manager.queueSummarize(sid, 'Fresh summary', 2);
+  session.abortController = new AbortController();
+  session.abortReason = undefined;
+  await provider.startSession(session);
+  assert.equal(session.lastSummaryStored, true);
+  assert.equal(readFileSync(requestCountFile, 'utf8').trim().split('\n').length, 2);
+  assert.deepEqual(store.db.query('SELECT request, prompt_number FROM session_summaries').all(), [{ request: 'Owned summary', prompt_number: 2 }]);
+  assert.equal(manager.getTotalQueueDepth(), 0);
+  console.log('Rejected summary settled once; fresh summary stored');
+  continue;
+}
 if (kind === 'summary-stall') {
   const expectedGreeting = (mode as any).getActiveMode().prompts.continuation_greeting;
   const continued = session.conversationHistory[0].content.includes(expectedGreeting);

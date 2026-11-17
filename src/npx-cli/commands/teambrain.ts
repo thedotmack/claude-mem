@@ -636,6 +636,7 @@ async function runJoin(argv: string[]): Promise<number> {
     return 1;
   }
   log.success(`Joined ${team.name}. Your memory stays private; you choose what the team sees.`);
+  if (restartNeeded) await restartWorkerForSyncChange(true);
 
   const choice = shareFlags.choice ?? (isInteractive ? await promptShareChoice(team.name, membership) : null);
   if (choice) {
@@ -644,7 +645,6 @@ async function runJoin(argv: string[]): Promise<number> {
     log.info('Not sharing any projects yet. Choose them with: npx claude-mem teambrain share');
   }
 
-  if (restartNeeded) await restartWorkerForSyncChange(true);
   log.info('Your next session starts with the team brief, and agents can use the team_search tool. Check anytime: npx claude-mem teambrain status');
   return 0;
 }

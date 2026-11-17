@@ -1,3 +1,28 @@
+import { MAX_ERROR_BODY_BYTES } from './capped-error-body.js';
+
+async function inspectResponseHead(response: Response): Promise<string> {
+  const reader = response.clone().body?.getReader();
+  if (!reader) return '';
+  const decoder = new TextDecoder();
+  let text = '';
+  let remaining = MAX_ERROR_BODY_BYTES;
+  try {
+    while (remaining > 0) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = value.subarray(0, remaining);
+      text += decoder.decode(chunk, { stream: true });
+      remaining -= chunk.byteLength;
+    }
+    return text + decoder.decode();
+  } finally {
+    // A clone is one branch of a tee. Awaiting its cancellation can wait for
+    // the original response, which the caller cannot consume until we return.
+    void reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
+}
+
 export function isMaxCompletionTokensCompatibilityError(status: number, bodyText: string): boolean {
   let error: Record<string, unknown> | undefined;
   try {
@@ -40,7 +65,7 @@ export async function fetchWithOpenRouterTokenCompatibility(
 
   let bodyText = '';
   try {
-    bodyText = await response.clone().text();
+    bodyText = await inspectResponseHead(response);
   } catch {
     return response;
   }
@@ -51,6 +76,9 @@ export async function fetchWithOpenRouterTokenCompatibility(
     return response;
   }
 
+  // The first response will not be returned after a retry. Release its tee
+  // branch too so an oversized compatibility error cannot keep streaming.
+  void response.body?.cancel().catch(() => {});
   const { max_tokens: _ignored, ...bodyWithoutMaxTokens } = body;
   return fetchImpl(input, {
     ...init,

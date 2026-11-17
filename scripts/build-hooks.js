@@ -8,6 +8,7 @@ import vm from 'node:vm';
 import { isDeepStrictEqual } from 'node:util';
 import { fileURLToPath } from 'url';
 import { allowScriptsMap } from './postinstall-allowlist.js';
+import { refusedEventsHooked } from './code-mode-refused-events.js';
 import { OPENCODE_PLUGIN_BUILD_OPTIONS } from './opencode-plugin-build-options.js';
 import { preparePiExtensionBuild, preflightDshAttribution, DSH_PLUGIN_BUILD_OPTIONS } from './harness-plugin-build-options.js';
 
@@ -152,6 +153,13 @@ function assertModBundle(filePath) {
   const nodeImport = content.match(/\brequire\(|from\s+["']node:|from\s+["'](fs|os|path|child_process)["']/);
   if (nodeImport) {
     throw new Error(`${filePath} reaches for Node (${nodeImport[0]}). A hooks module has no Node APIs: keep src/mods/ free of Node imports.`);
+  }
+  const refused = refusedEventsHooked(content);
+  if (refused.length > 0) {
+    throw new Error(
+      `${filePath} hooks ${refused.join(', ')}. Claude Code's Code Mode refuses to start when an enabled plugin's hooks module hooks any event listed in scripts/code-mode-refused-events.js, `
+      + 'so this bundle would turn Code Mode off for all of claude-mem. Hook an event outside that list (session.append for tool results).'
+    );
   }
 }
 
@@ -523,7 +531,7 @@ async function buildHooks() {
         // Native decoder must remain external and be installed for each host.
         // https://sharp.pixelplumbing.com/install/#bundlers
         'sharp': packageJson.dependencies.sharp,
-        'zod': '^4.4.3',
+        'zod': '^4.6.6',
         // better-auth stays external in the bundles below (~3.7MB), so the
         // worker's /api/auth/* routes (Pro sign-in) resolve it from
         // plugin/node_modules at request time — the same pattern as sharp.
@@ -567,7 +575,7 @@ async function buildHooks() {
         // Its C sources are compiled and loaded whenever a Pascal file is parsed,
         // so a new version must arrive as a reviewed bump, never through a range.
         'tree-sitter-delphi': '0.1.0',
-        'shell-quote': '1.9.0',
+        'shell-quote': '1.11.0',
       },
       // The server's embedder, about 300 MB, which only server mode runs. The
       // plugin install omits optional dependencies (installPluginDependencies),
@@ -607,7 +615,10 @@ async function buildHooks() {
         // onnxruntime-common, which onnxruntime-node already installs, so it
         // downloads nothing. Remove it once transformers.js stops requiring
         // onnxruntime-web under Node.
-        'onnxruntime-web': `npm:onnxruntime-common@${onnxruntimeNode}`
+        'onnxruntime-web': `npm:onnxruntime-common@${onnxruntimeNode}`,
+        // onnxruntime-node 1.23.2 asks for adm-zip ^0.5.16, which stays on the
+        // 0.5 line and its High advisories (#6211); 0.6.1 fixes them all.
+        'adm-zip': '^0.6.1'
       },
       trustedDependencies: [
         'tree-sitter-cli'

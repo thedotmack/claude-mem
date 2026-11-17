@@ -71,23 +71,33 @@ class ServerRuntimeInfoRoutes implements RouteHandler {
     // can read waiting/active/completed/failed/delayed/stalled without
     // hitting `/api/health`. Sampling is best-effort: a Redis blip surfaces
     // the lane with `unavailable: true` rather than crashing the route.
+    //
+    // It is unauthenticated on purpose (a probe cannot present credentials) and
+    // the server runtime is reachable over the container network
+    // (docker-compose sets CLAUDE_MEM_SERVER_HOST=0.0.0.0). So it reports the
+    // state the route documents and nothing else: the auth mode, the Postgres
+    // schema version, the queue backend's connection coordinates (host, port,
+    // key prefix) and the raw driver error text were reconnaissance for anyone
+    // who could reach the port, and a probe reads the lanes without them.
+    // `vectorSearch` keeps its documented shape (available, model, missing
+    // count, last embedding error).
     app.get('/v1/info', async (_req, res) => {
       const queueLanes = await collectQueueLaneMetrics(this.graph);
-      const vectorSearch = await getVectorSearchStatus(this.graph.postgres.pool).catch((error: unknown) => ({
-        unavailable: true,
-        error: error instanceof Error ? error.message : String(error),
+      const vectorSearch = await getVectorSearchStatus(this.graph.postgres.pool).catch(() => ({
+        available: false,
+        model: '',
+        observationsWithoutVectors: null,
+        lastEmbedError: null,
       }));
       res.json({
         name: 'claude-mem-server',
         runtime: SERVER_RUNTIME,
-        authMode: this.graph.authMode,
         postgres: {
           initialized: this.graph.postgres.bootstrap.initialized,
-          schemaVersion: this.graph.postgres.bootstrap.schemaVersion,
         },
         boundaries: {
-          queueManager: this.graph.queueManager.getHealth(),
-          generationWorkerManager: this.graph.generationWorkerManager.getHealth(),
+          queueManager: { status: this.graph.queueManager.getHealth().status },
+          generationWorkerManager: { status: this.graph.generationWorkerManager.getHealth().status },
         },
         queueLanes,
         vectorSearch,

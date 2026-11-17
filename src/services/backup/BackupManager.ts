@@ -1,4 +1,4 @@
-import { join } from 'path';
+import { basename, join } from 'path';
 import { existsSync, mkdirSync, readdirSync, renameSync, statSync, statfsSync, unlinkSync } from 'fs';
 import { DB_PATH, paths } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
@@ -207,9 +207,13 @@ export class BackupManager {
   /**
    * Keep the retainCount most-recent snapshots; delete the rest. Sanitized
    * ISO filenames sort lexicographically, so name order is timestamp order.
+   * The snapshot just completed takes the first slot even if the clock moved
+   * backward; a successful run must not prune the data it has just saved.
    */
-  async applyRetention(): Promise<void> {
+  async applyRetention(completedSnapshot?: string): Promise<void> {
     const names = listSnapshotNames(this.backupsDir);
+    const completedIndex = completedSnapshot ? names.indexOf(basename(completedSnapshot)) : -1;
+    if (completedIndex > 0) names.unshift(...names.splice(completedIndex, 1));
     const pending = readPendingRestore()?.snapshot;
     const excess = names.slice(this.retainCount).filter(name => name !== pending);
     for (const name of excess) {
@@ -239,7 +243,7 @@ export class BackupManager {
     try {
       const result = await this.createSnapshot();
       try {
-        await this.applyRetention();
+        await this.applyRetention(result.path);
       } catch (error) {
         const normalized = error instanceof Error ? error : new Error(String(error));
         this.lastError = normalized.message;
