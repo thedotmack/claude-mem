@@ -9,6 +9,7 @@ import {
   migrateLegacySessionEndReplay,
   resolveHookSpoolDirectory,
   resolveLegacySessionEndReplayDirectory,
+  retainOldestEntries,
 } from '../../src/shared/hook-spool.js';
 import { logger } from '../../src/utils/logger.js';
 
@@ -64,6 +65,69 @@ describe('HookSpool', () => {
     expect(seen).toEqual(['session_end:session-a', 'session_end:session-b', 'subagent_stop:session-c', 'session_end:session-d']);
     expect(result).toEqual({ drained: 4, retained: 0, quarantined: 0, expired: 0 });
     expect(spoolFiles(spool)).toEqual([]);
+  });
+
+  it('retainOldestEntries keeps the oldest entries and counts the dropped ones', () => {
+    const files = [
+      { filename: 'b-2.json', path: '', entry: { enqueuedAtEpochMs: 20 } },
+      { filename: 'a-1.json', path: '', entry: { enqueuedAtEpochMs: 10 } },
+      { filename: 'c-3.json', path: '', entry: { enqueuedAtEpochMs: 30 } },
+      { filename: 'd-3.json', path: '', entry: { enqueuedAtEpochMs: 30 } },
+    ] as unknown as Parameters<typeof retainOldestEntries>[0];
+
+    expect(retainOldestEntries(files, 3)).toBe(1);
+    expect(files.map(file => file.filename)).toEqual(['a-1.json', 'b-2.json', 'c-3.json']);
+  });
+
+  it('drains only the oldest maxEntries and reports the rest as retained', async () => {
+    const spool = new HookSpool();
+    for (let index = 0; index < 40; index++) {
+      spool.enqueue('session_end', { contentSessionId: `session-${index}`, platformSource: 'claude' }, 1000 + index);
+    }
+
+    const seen: string[] = [];
+    const result = await spool.drain(entry => {
+      seen.push(entry.payload.contentSessionId);
+      return true;
+    }, undefined, { maxEntries: 2 });
+
+    expect(seen).toEqual(['session-0', 'session-1']);
+    expect(result).toEqual({ drained: 2, retained: 38, quarantined: 0, expired: 0 });
+  });
+
+  it('reads a backlog in parallel batches of at most 64 files, and no more than maxEntries', async () => {
+    const spool = new HookSpool();
+    for (let index = 0; index < 200; index++) {
+      spool.enqueue('session_end', { contentSessionId: `session-${index}`, platformSource: 'claude' }, 1000 + index);
+    }
+    const realReadFile = fs.readFile;
+    let inFlight = 0;
+    let peakInFlight = 0;
+    const readSpy = spyOn(fs, 'readFile').mockImplementation((async (...args: Parameters<typeof realReadFile>) => {
+      inFlight++;
+      peakInFlight = Math.max(peakInFlight, inFlight);
+      try {
+        await new Promise(resolve => setTimeout(resolve, 1));
+        return await realReadFile(...args);
+      } finally {
+        inFlight--;
+      }
+    }) as typeof realReadFile);
+
+    try {
+      const bounded = await spool.drain(() => true, undefined, { maxEntries: 16 });
+      expect(bounded).toEqual({ drained: 16, retained: 184, quarantined: 0, expired: 0 });
+      expect(peakInFlight).toBeGreaterThan(1);
+      expect(peakInFlight).toBeLessThanOrEqual(16);
+
+      peakInFlight = 0;
+      const unbounded = await spool.drain(() => true);
+      expect(unbounded).toEqual({ drained: 184, retained: 0, quarantined: 0, expired: 0 });
+      expect(peakInFlight).toBeGreaterThan(16);
+      expect(peakInFlight).toBeLessThanOrEqual(64);
+    } finally {
+      readSpy.mockRestore();
+    }
   });
 
   it('keeps same-millisecond enqueues from one process in call order', async () => {

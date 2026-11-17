@@ -205,6 +205,12 @@ const CORRUPT_DIRNAME = 'corrupt';
 const SPOOL_ENTRY_MODE = 0o600;
 
 const EXPIRED_DIRNAME = 'expired';
+/**
+ * Files read per parallel batch while draining. Bounded well under common file
+ * descriptor limits so a large backlog cannot exhaust them; the batch also caps
+ * how many raw payloads are held in memory at once.
+ */
+const DRAIN_READ_BATCH_SIZE = 64;
 
 /** Corrupt entries whose transient quarantine failure was already logged by this process. */
 const reportedTransientQuarantineFailures = new Set<string>();
@@ -334,6 +340,25 @@ interface HookSpoolFile {
   entry: HookSpoolEntry;
   path: string;
   filename: string;
+}
+
+/** Oldest first; the filename breaks ties between same-millisecond enqueues. */
+function compareSpoolFiles(a: HookSpoolFile, b: HookSpoolFile): number {
+  return a.entry.enqueuedAtEpochMs - b.entry.enqueuedAtEpochMs || a.filename.localeCompare(b.filename);
+}
+
+/**
+ * Sort the collected entries and keep only the oldest `maxEntries`, returning
+ * how many were dropped. The reader calls it as each entry is collected, so a
+ * bounded drain never holds more than `maxEntries` parsed payloads even when the
+ * spool holds thousands of files.
+ */
+export function retainOldestEntries(files: HookSpoolFile[], maxEntries: number): number {
+  files.sort(compareSpoolFiles);
+  if (files.length <= maxEntries) return 0;
+  const omitted = files.length - maxEntries;
+  files.length = maxEntries;
+  return omitted;
 }
 
 // Monotonic per process: two enqueues in the same millisecond (advisor-call
@@ -713,6 +738,11 @@ export class HookSpool {
     }
   }
 
+  /**
+   * Reads the spool without holding the event loop. Files are read in bounded
+   * parallel batches, so a backlog left by a worker outage is read quickly
+   * without opening more than `DRAIN_READ_BATCH_SIZE` files at once.
+   */
   private async readEntries(maxEntries: number = Number.POSITIVE_INFINITY): Promise<{ files: HookSpoolFile[]; quarantined: number; omitted: number }> {
     if (!existsSync(this.directory)) return { files: [], quarantined: 0, omitted: 0 };
 
@@ -729,36 +759,46 @@ export class HookSpool {
     const files: HookSpoolFile[] = [];
     let quarantined = 0;
     let omitted = 0;
-    for (const filename of filenames) {
-      const entryPath = join(this.directory, filename);
-      let raw: string;
-      try {
-        raw = await readFile(entryPath, 'utf-8');
-      } catch (error) {
-        // ENOENT: drained by a concurrent pass after the listing. Anything
-        // else is retried on the next pass.
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-          logger.warn('HOOK', 'Could not read hook spool entry; will retry', { file: filename },
-            error instanceof Error ? error : new Error(String(error)));
+    // Parse inside each read so a batch never holds more than one batch of raw
+    // payloads at once; a bounded drain keeps at most `maxEntries` parsed
+    // entries, so the batch shrinks with the caller's limit instead of
+    // dominating it.
+    const batchSize = Math.max(1, Math.min(DRAIN_READ_BATCH_SIZE, maxEntries));
+    for (let start = 0; start < filenames.length; start += batchSize) {
+      const batch = filenames.slice(start, start + batchSize);
+      const reads = await Promise.all(batch.map(async (filename): Promise<{ file: HookSpoolFile } | { corrupt: string; filename: string } | null> => {
+        const entryPath = join(this.directory, filename);
+        let raw: string;
+        try {
+          raw = await readFile(entryPath, 'utf-8');
+        } catch (error) {
+          // ENOENT: drained by a concurrent pass after the listing. Anything
+          // else is retried on the next pass.
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+            logger.warn('HOOK', 'Could not read hook spool entry; will retry', { file: filename },
+              error instanceof Error ? error : new Error(String(error)));
+          }
+          return null;
         }
-        continue;
-      }
-      const parsed = parseHookSpoolEntry(raw);
-      if ('corruptReason' in parsed) {
-        if (await this.quarantine(filename, parsed.corruptReason)) quarantined++;
-        continue;
-      }
-      // Rewritten with a valid entry: a later corrupt write here is a new failure to report.
-      reportedTransientQuarantineFailures.delete(entryPath);
-      files.push({ entry: parsed, path: entryPath, filename });
-      if (files.length > maxEntries) {
-        files.sort((a, b) => a.entry.enqueuedAtEpochMs - b.entry.enqueuedAtEpochMs || a.filename.localeCompare(b.filename));
-        files.pop();
-        omitted++;
+        const parsed = parseHookSpoolEntry(raw);
+        if ('corruptReason' in parsed) return { corrupt: parsed.corruptReason, filename };
+        return { file: { entry: parsed, path: entryPath, filename } };
+      }));
+
+      for (const read of reads) {
+        if (read === null) continue;
+        if ('corrupt' in read) {
+          if (await this.quarantine(read.filename, read.corrupt)) quarantined++;
+          continue;
+        }
+        // Rewritten with a valid entry: a later corrupt write here is a new failure to report.
+        reportedTransientQuarantineFailures.delete(read.file.path);
+        files.push(read.file);
+        if (files.length > maxEntries) omitted += retainOldestEntries(files, maxEntries);
       }
     }
 
-    files.sort((a, b) => a.entry.enqueuedAtEpochMs - b.entry.enqueuedAtEpochMs || a.filename.localeCompare(b.filename));
+    files.sort(compareSpoolFiles);
     return { files, quarantined, omitted };
   }
 }
