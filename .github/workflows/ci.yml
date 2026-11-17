@@ -94,7 +94,8 @@ jobs:
       # two Claude Codes. 2.1.326 is the first that runs every mod's engine
       # checks: the session-start card's need `$.process.hookEnv`, which came in
       # it. 2.1.287 is the first with mods at all: the same bundle must load
-      # there, and the card must leave SessionStart alone.
+      # there, and the card must leave SessionStart alone. Its test kit has no
+      # `mock.session`, so auto-clear's checks are not run on it.
       - name: Install Claude Code for the hooks module engine test
         if: ${{ !cancelled() }}
         run: |

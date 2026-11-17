@@ -7,8 +7,8 @@
  * tests/ folder.
  *
  * Skipped when no Claude Code with mods (2.1.287+) is on PATH. On a Claude
- * Code older than a mod needs, that mod's older-engine checks run in place of
- * its own: what it must leave alone there.
+ * Code older than a mod's checks need, that mod's older-engine checks run in
+ * place of its own (what it must leave alone there), when it has any.
  *
  * CI sets CLAUDE_MEM_TEST_HOOKS_MODULE_ENGINE=1, and the Claude Code on PATH
  * must then run every mod's own checks. It also names an older Claude Code in
@@ -29,12 +29,14 @@ const MODS_MINIMUM: Version = [2, 1, 287];
 
 /**
  * Each mod's folder under tests/fixtures/ and the first Claude Code that runs
- * its `engine-checks.ts`. On an older one its `older-engine-checks.ts` runs.
+ * its `engine-checks.ts`. On an older one its `older-engine-checks.ts` runs,
+ * or nothing when it has none.
  */
-const ENGINE_CHECKS: ReadonlyArray<{ fixture: string; minimumVersion: Version }> = [
-  { fixture: 'auto-clear-mod', minimumVersion: MODS_MINIMUM },
+const ENGINE_CHECKS: ReadonlyArray<{ fixture: string; minimumVersion: Version; hasOlderEngineChecks: boolean }> = [
+  // Its checks call the test kit's `mock.session`: 2.1.287's kit has none, 2.1.312's has it (no build between them was tried).
+  { fixture: 'auto-clear-mod', minimumVersion: [2, 1, 312], hasOlderEngineChecks: false },
   // Its checks answer `ui.place` and `process.hookEnv`, and a stub for a call the build lacks is refused.
-  { fixture: 'session-start-card-mod', minimumVersion: SESSION_START_CARD_MINIMUM_VERSION },
+  { fixture: 'session-start-card-mod', minimumVersion: SESSION_START_CARD_MINIMUM_VERSION, hasOlderEngineChecks: true },
 ];
 
 function isAtLeast(version: Version, minimum: Version): boolean {
@@ -85,8 +87,9 @@ async function runEngineChecks(claudeBinary: string) {
     });
     /** The mods this Claude Code is too old for: their older-engine checks ran. */
     const modsOnOlderEngineChecks: string[] = [];
-    for (const { fixture, minimumVersion } of ENGINE_CHECKS) {
+    for (const { fixture, minimumVersion, hasOlderEngineChecks } of ENGINE_CHECKS) {
       const runsItsOwnChecks = isAtLeast(version, minimumVersion);
+      if (!runsItsOwnChecks && !hasOlderEngineChecks) continue;
       if (!runsItsOwnChecks) modsOnOlderEngineChecks.push(fixture);
       copyFileSync(
         join(repoRoot, 'tests', 'fixtures', fixture, runsItsOwnChecks ? 'engine-checks.ts' : 'older-engine-checks.ts'),
