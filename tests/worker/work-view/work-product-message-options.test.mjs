@@ -16,9 +16,12 @@ const cases = [
   ['long equals heredoc', '--message="$(cat <<\'EOF\'\nfix: retain equals heredoc\nEOF\n)"', 'fix: retain equals heredoc'],
   ['short option control', "-m 'fix: preserve short message'", 'fix: preserve short message'],
   ['clustered option control', "-qm 'fix: preserve clustered message'", 'fix: preserve clustered message'],
+  ['long literal shell separators', "--message='fix: preserve ; and && and |'", 'fix: preserve ; and && and |'],
+  ['heredoc before long tag message', "-F - <<'EOF'\nfix: commit before release tag\nEOF", 'fix: commit before release tag', "\ngit tag -a v1 --message 'Release tag'\n"],
+  ['heredoc before substituted tag message', "-F - <<'EOF'\nfix: commit before substituted tag\nEOF", 'fix: commit before substituted tag', '\ngit tag -a v1 --message="$(cat <<\'TAG\'\nRelease tag\nTAG\n)"\n'],
 ];
 
-for (const [name, argument, subject] of cases) {
+for (const [name, argument, subject, followup = ' && '] of cases) {
   test(name + ' retains a quiet commit in My Work', { skip: process.platform === 'win32' }, () => {
     const cwd = mkdtempSync(join(tmpdir(), 'cmem-message-options-'));
     const env = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' };
@@ -29,7 +32,7 @@ for (const [name, argument, subject] of cases) {
       git('config', 'user.email', 'fixture@example.invalid');
       git('config', 'commit.gpgSign', 'false');
       git('config', 'core.hooksPath', join(cwd, 'no-hooks'));
-      const command = `git commit --allow-empty -q ${argument} && git log --oneline --abbrev=40 -1`;
+      const command = `git commit --allow-empty -q ${argument}${followup}git log --oneline --abbrev=40 -1`;
       const output = execFileSync('bash', ['-c', command], { cwd, env, encoding: 'utf8' });
       const sha = git('rev-parse', 'HEAD');
       assert.equal(git('log', '-1', '--format=%s'), subject);
