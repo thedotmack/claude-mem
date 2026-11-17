@@ -107,7 +107,7 @@ describe('remote hook spool receipts', () => {
     expect((await send(summary)).status).toBe(202);
     expect(queue).toHaveBeenCalledTimes(1);
     expect(startGenerator).toHaveBeenCalledTimes(1);
-    expect(spool.entries()).toEqual([]);
+    expect(await spool.entries()).toEqual([]);
   });
 
 
