@@ -172,7 +172,7 @@ export function composeSessionStartSystemMessage(
 /**
  * What the session-start card draws (src/shared/session-start-card-slot.ts):
  * the banner's header lines and the terminal preview. The closing line is not
- * in it: the hook message carries that one.
+ * in it, and neither is a line shown only once: the hook message carries those.
  */
 export function sessionStartCardText(preview: string, bannerHeader: string): string {
   return [bannerHeader, preview.replace(/^\n+/, '').trimEnd()].filter(Boolean).join('\n\n');
@@ -180,18 +180,21 @@ export function sessionStartCardText(preview: string, bannerHeader: string): str
 
 /**
  * The SessionStart `systemMessage` when the session-start card draws the
- * banner: any notice, then the closing line with the count of rows the card
- * shows. With no notice it is one line. That is what the card is for: the
- * stream Claude Code sends to the Claude app repeats the hook's name on every
- * line of a hook message, and the terminal shows it once.
+ * banner: any notice and the TeamBrain discovery line, then the closing line
+ * with the count of rows the card shows. Those first lines are shown only
+ * once, and the card can still fail to draw, so they are not left to it.
+ * With neither it is one line. That is what the card is for: the stream
+ * Claude Code sends to the Claude app repeats the hook's name on every line
+ * of a hook message, and the terminal shows it once.
  */
 export function composeSessionStartCardSystemMessage(
   preview: string,
   viewerUrl: string,
   userNotice: string | null,
+  teamBrainDiscoveryLine: string | null,
 ): string {
   const footer = sessionStartBannerFooter(viewerUrl, countTerminalTimelineRows(preview));
-  return userNotice ? `${userNotice}\n\n${footer}` : footer;
+  return [userNotice, teamBrainDiscoveryLine, footer].filter(Boolean).join('\n\n');
 }
 
 /**
@@ -631,12 +634,11 @@ export const contextHandler: EventHandler = {
     const viewerUrl = serverRuntime ? serverRuntime.serverBaseUrl : getViewerBaseUrl(port);
     const showsBanner = showTerminalOutput && Boolean(displayContent);
     // TeamBrain discovery: one line on the banner the user already reads, once
-    // per claude-mem version, and never once this install is in a team.
+    // per install, and never once this install is in a team.
     const teamBrainDiscoveryLine = showsBanner && !teamBrain && !hasShownTeamBrainDiscoveryNotice()
       ? TEAMBRAIN_DISCOVERY_LINE
       : null;
     if (teamBrainDiscoveryLine) markTeamBrainDiscoveryNoticeShown();
-    const bannerHeader = sessionStartBannerHeader(trialDaysLine, teamBrainDiscoveryLine, settings.CLAUDE_MEM_PRO_PLAN);
     const notice = userNotice(workerOutageNotice);
     // Claude Code's session-start card named a file: once the banner is in it
     // the card draws it, and the hook message is the closing line alone.
@@ -644,11 +646,22 @@ export const contextHandler: EventHandler = {
     // context (src/mods/session-start-card/register.ts), and Claude Code makes
     // that row only for context that is not empty: without any, the file stays
     // unwritten and the whole banner goes in the hook message.
+    // The card can still fail to draw, so what is shown only once (the
+    // notices, the TeamBrain discovery line) stays in the hook message.
     const cardDrawsBanner = showsBanner && additionalContext !== '' && input.sessionStartCardFile !== undefined
-      && writeSessionStartCardSlot(input.sessionStartCardFile, input.sessionId, sessionStartCardText(displayContent, bannerHeader));
+      && writeSessionStartCardSlot(
+        input.sessionStartCardFile,
+        input.sessionId,
+        sessionStartCardText(displayContent, sessionStartBannerHeader(trialDaysLine, null, settings.CLAUDE_MEM_PRO_PLAN)),
+      );
     const systemMessage = cardDrawsBanner
-      ? composeSessionStartCardSystemMessage(displayContent, viewerUrl, notice)
-      : composeSessionStartSystemMessage(showsBanner ? displayContent : null, bannerHeader, viewerUrl, notice);
+      ? composeSessionStartCardSystemMessage(displayContent, viewerUrl, notice, teamBrainDiscoveryLine)
+      : composeSessionStartSystemMessage(
+        showsBanner ? displayContent : null,
+        sessionStartBannerHeader(trialDaysLine, teamBrainDiscoveryLine, settings.CLAUDE_MEM_PRO_PLAN),
+        viewerUrl,
+        notice,
+      );
 
     return {
       hookSpecificOutput: {

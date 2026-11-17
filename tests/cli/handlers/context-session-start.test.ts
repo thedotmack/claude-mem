@@ -5,6 +5,7 @@ import path from 'path';
 
 import { PRO_FALLBACK_NOTICE_MARKER } from '../../../src/shared/cmem-gateway.js';
 import { sessionStartCardSlotPath } from '../../../src/shared/session-start-card-slot.js';
+import { TEAMBRAIN_DISCOVERY_LINE, TEAMBRAIN_DISCOVERY_NOTICE_MARKER } from '../../../src/shared/teambrain.js';
 import { paths } from '../../../src/shared/paths.js';
 import {
   contextCacheKeys,
@@ -656,6 +657,20 @@ describe('contextHandler SessionStart path', () => {
       expect(lines.at(-2)).toBe('');
       expect(lines.at(-1)).toMatch(/^View Observations Live @ \S+ · 2 lines$/);
       expect(readFileSync(slotFile, 'utf-8')).not.toContain('Setup is waiting');
+    });
+
+    it('keeps the TeamBrain discovery line in the message and out of the card: it is marked shown now, and the card can still fail to draw', async () => {
+      const discoveryMarker = path.join(paths.dataDir(), TEAMBRAIN_DISCOVERY_NOTICE_MARKER);
+      rmSync(discoveryMarker, { force: true });
+      const slotFile = slotFileOf('card-discovery');
+      const result = await start('card-discovery', slotFile);
+      expect(result.systemMessage!.split('\n')).toEqual([
+        TEAMBRAIN_DISCOVERY_LINE,
+        '',
+        expect.stringMatching(/^View Observations Live @ \S+ · 2 lines$/),
+      ]);
+      expect(readFileSync(slotFile, 'utf-8')).not.toContain(TEAMBRAIN_DISCOVERY_LINE);
+      expect(existsSync(discoveryMarker)).toBe(true);
     });
 
     it('sends the whole banner when the file is refused or cannot be written', async () => {
