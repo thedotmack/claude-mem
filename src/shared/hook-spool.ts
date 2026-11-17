@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'crypto';
 import { link, mkdir, readdir, readFile, rename, unlink } from 'fs/promises';
 import { existsSync, mkdirSync, opendirSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync } from 'fs';
-import { join } from 'path';
+import { dirname, join, resolve } from 'path';
 import { WINDOWS_RENAME_RETRY_CODES, writeJsonFileAtomic } from './atomic-json.js';
 import { ensurePrivateDir, resolveDataDir } from './paths.js';
 import { normalizePlatformSource } from './platform-source.js';
@@ -701,6 +701,18 @@ export class HookSpool {
     }
   }
 
+  /** A reported locked file that has left the spool no longer needs suppressing. */
+  private forgetReportedQuarantineFailuresNotIn(filenames: readonly string[]): void {
+    if (reportedTransientQuarantineFailures.size === 0) return;
+    const spoolDirectory = resolve(this.directory);
+    const listedPaths = new Set(filenames.map(filename => join(this.directory, filename)));
+    for (const reportedPath of reportedTransientQuarantineFailures) {
+      if (resolve(dirname(reportedPath)) === spoolDirectory && !listedPaths.has(reportedPath)) {
+        reportedTransientQuarantineFailures.delete(reportedPath);
+      }
+    }
+  }
+
   private async readEntries(maxEntries: number = Number.POSITIVE_INFINITY): Promise<{ files: HookSpoolFile[]; quarantined: number; omitted: number }> {
     if (!existsSync(this.directory)) return { files: [], quarantined: 0, omitted: 0 };
 
@@ -712,6 +724,7 @@ export class HookSpool {
         error instanceof Error ? error : new Error(String(error)));
       return { files: [], quarantined: 0, omitted: 0 };
     }
+    this.forgetReportedQuarantineFailuresNotIn(filenames);
 
     const files: HookSpoolFile[] = [];
     let quarantined = 0;
@@ -735,6 +748,8 @@ export class HookSpool {
         if (await this.quarantine(filename, parsed.corruptReason)) quarantined++;
         continue;
       }
+      // Rewritten with a valid entry: a later corrupt write here is a new failure to report.
+      reportedTransientQuarantineFailures.delete(entryPath);
       files.push({ entry: parsed, path: entryPath, filename });
       if (files.length > maxEntries) {
         files.sort((a, b) => a.entry.enqueuedAtEpochMs - b.entry.enqueuedAtEpochMs || a.filename.localeCompare(b.filename));

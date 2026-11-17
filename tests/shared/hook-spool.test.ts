@@ -228,6 +228,32 @@ describe('HookSpool', () => {
     }
   });
 
+  it('warns again for a locked corrupt file that left the spool and came back', async () => {
+    const spool = new HookSpool();
+    mkdirSync(spool.directory, { recursive: true });
+    const lockedPath = join(spool.directory, 'mystery-kind.json');
+    const corruptEntry = JSON.stringify({ kind: 'mystery', payload: { contentSessionId: 's' }, enqueuedAtEpochMs: 1 });
+    writeFileSync(lockedPath, corruptEntry);
+    const renameSpy = spyOn(fs, 'rename').mockImplementation(async () => {
+      throw Object.assign(new Error('EBUSY: resource busy or locked, rename'), { code: 'EBUSY' });
+    });
+    const lockedWarnings = () => loggerSpies[2].mock.calls.filter(call => String(call[1]).includes('is locked'));
+
+    try {
+      await spool.drain(() => true);
+      expect(lockedWarnings()).toHaveLength(1);
+
+      unlinkSync(lockedPath);
+      await spool.drain(() => true);
+
+      writeFileSync(lockedPath, corruptEntry);
+      await spool.drain(() => true);
+      expect(lockedWarnings()).toHaveLength(2);
+    } finally {
+      renameSpy.mockRestore();
+    }
+  });
+
   it('still reports a quarantine failure that is not a lock with an error log', async () => {
     const spool = new HookSpool();
     mkdirSync(spool.directory, { recursive: true });
