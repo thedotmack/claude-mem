@@ -8,6 +8,7 @@ import vm from 'node:vm';
 import { isDeepStrictEqual } from 'node:util';
 import { fileURLToPath } from 'url';
 import { allowScriptsMap } from './postinstall-allowlist.js';
+import { refusedEventsHooked } from './code-mode-refused-events.js';
 import { OPENCODE_PLUGIN_BUILD_OPTIONS } from './opencode-plugin-build-options.js';
 import { preparePiExtensionBuild, preflightDshAttribution, DSH_PLUGIN_BUILD_OPTIONS } from './harness-plugin-build-options.js';
 
@@ -152,6 +153,13 @@ function assertModBundle(filePath) {
   const nodeImport = content.match(/\brequire\(|from\s+["']node:|from\s+["'](fs|os|path|child_process)["']/);
   if (nodeImport) {
     throw new Error(`${filePath} reaches for Node (${nodeImport[0]}). A hooks module has no Node APIs: keep src/mods/ free of Node imports.`);
+  }
+  const refused = refusedEventsHooked(content);
+  if (refused.length > 0) {
+    throw new Error(
+      `${filePath} hooks ${refused.join(', ')}. Claude Code's Code Mode refuses to start when an enabled plugin's hooks module hooks any event listed in scripts/code-mode-refused-events.js, `
+      + 'so this bundle would turn Code Mode off for all of claude-mem. Hook an event outside that list (session.append for tool results).'
+    );
   }
 }
 

@@ -45,8 +45,8 @@ function fakeHost(options: { percent?: number; settings?: Partial<AutoClearSetti
 }
 
 const answered = { isAborted: false, reason: 'answer' };
-const tool = (name: string, text = 'ok', extra: Partial<{ agentId: string; isError: boolean; denied: boolean }> = {}) => ({
-  tool: name, text, denied: false, isError: false, ...extra,
+const tool = (name: string, text = 'ok', extra: Partial<{ agentId: string; isError: boolean }> = {}) => ({
+  tool: name, text, isError: false, ...extra,
 });
 
 /** Hold one host response after it has sampled the old conversation. */
@@ -162,7 +162,10 @@ describe('auto-clear controller', () => {
     for (const failed of [
       tool(WRITE, 'Not saved: this project is excluded from claude-mem (CLAUDE_MEM_EXCLUDED_PROJECTS).'),
       tool(WRITE, 'Worker API error (500)', { isError: true }),
-      tool(WRITE, SAVED, { denied: true }),
+      // A refused call is stored as an error result.
+      tool(WRITE, 'Permission denied.', { isError: true }),
+      // An error result does not count even when its text reads like a save.
+      tool(WRITE, SAVED, { isError: true }),
     ]) {
       const { host, calls, flush } = fakeHost({ percent: 40 });
       const controller = new AutoClearController(host);
@@ -172,6 +175,61 @@ describe('auto-clear controller', () => {
       await flush();
       expect(calls.some(call => call === 'clear')).toBe(false);
     }
+  });
+
+  it('does not clear when the save result cannot be read (Code Mode), says so, and stays off after that', async () => {
+    const { host, calls, notes, flush } = fakeHost({ percent: 40 });
+    const controller = new AutoClearController(host);
+    await controller.onToolCallEnd(tool('Bash'));
+    // A script's tool calls are stored with no result text, so a save looks like a blank success.
+    await controller.onToolCallEnd(tool(WRITE, ''));
+    expect(notes.at(-1)).toContain('(Code Mode)');
+    expect(notes.at(-1)).toContain('did not clear the conversation');
+    expect(notes.at(-1)).toContain('until Claude Code restarts');
+    const notesAfterStop = notes.length;
+
+    await controller.onTurnEnd(answered);
+    await flush();
+    expect(calls).toEqual([]);
+
+    // Nothing more is asked in this session, on a tool result or at a turn end, even past the threshold.
+    expect(await controller.onToolCallEnd(tool('Bash'))).toBeNull();
+    await controller.onTurnEnd(answered);
+    await flush();
+    expect(calls).toEqual([]);
+    expect(notes).toHaveLength(notesAfterStop);
+
+    // The person's own /clear does not bring it back: it stays off until Claude Code restarts.
+    controller.onConversationEnd();
+    expect(await controller.onToolCallEnd(tool('Bash'))).toBeNull();
+    await controller.onTurnEnd(answered);
+    await flush();
+    expect(calls).toEqual([]);
+  });
+
+  it('drops a queued save prompt when the save result turns out to be unreadable', async () => {
+    const { host, calls, flush } = fakeHost({ percent: 50 });
+    const controller = new AutoClearController(host);
+    await controller.onTurnEnd(answered); // queues the save prompt
+    await controller.onToolCallEnd(tool(WRITE, '  \n'));
+    await flush();
+    expect(calls).toEqual([]);
+  });
+
+  it('leaves a blank write result alone while nothing was asked of Claude, or an error result', async () => {
+    const { host, calls, notes, flush } = fakeHost({ percent: 40 });
+    const controller = new AutoClearController(host);
+    // Idle: a write nobody asked for says nothing about whether results can be read.
+    await controller.onToolCallEnd(tool(WRITE, ''));
+    expect(notes).toEqual([]);
+    await controller.onToolCallEnd(tool('Bash'));
+    // An error result is an error, not a blind session.
+    await controller.onToolCallEnd(tool(WRITE, '', { isError: true }));
+    expect(notes.every(note => !note.includes('Code Mode'))).toBe(true);
+    await controller.onToolCallEnd(tool(WRITE, SAVED));
+    await controller.onTurnEnd(answered);
+    await flush();
+    expect(calls).toEqual(['clear', 'user:continue']);
   });
 
   it('does not clear when the person stops the turn, even after a save', async () => {
