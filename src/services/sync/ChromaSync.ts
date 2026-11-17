@@ -2542,19 +2542,44 @@ export class ChromaSync {
     const completed: string[] = [];
     const incomplete: string[] = [];
 
+    // The worker starts this sweep right after it begins to listen; let the
+    // requests that are already waiting run before the synchronous query.
+    await new Promise(resolve => setImmediate(resolve));
+
     // Enumerate the union of projects across all three indexed tables
     // (#4069): a project with only summaries or session-joined prompts —
     // or an empty-string project — never appeared in the old
     // observations-only list, so its rows were never backfill candidates.
+    // Each table is walked one distinct project at a time through its project
+    // index, so the cost follows the project count, not the row count (#6246).
     const projects = store.db.prepare(`
-      SELECT DISTINCT project FROM (
-        SELECT project FROM observations WHERE project IS NOT NULL
-        UNION
-        SELECT project FROM session_summaries WHERE project IS NOT NULL
-        UNION
-        SELECT s.project FROM user_prompts up
-        JOIN sdk_sessions s ON up.session_db_id = s.id
-        WHERE s.project IS NOT NULL
+      WITH RECURSIVE
+        observation_projects(project) AS (
+          SELECT MIN(project) FROM observations
+          UNION ALL
+          SELECT (SELECT MIN(project) FROM observations WHERE project > p.project)
+          FROM observation_projects p WHERE p.project IS NOT NULL
+        ),
+        summary_projects(project) AS (
+          SELECT MIN(project) FROM session_summaries
+          UNION ALL
+          SELECT (SELECT MIN(project) FROM session_summaries WHERE project > p.project)
+          FROM summary_projects p WHERE p.project IS NOT NULL
+        ),
+        session_projects(project) AS (
+          SELECT MIN(project) FROM sdk_sessions
+          UNION ALL
+          SELECT (SELECT MIN(project) FROM sdk_sessions WHERE project > p.project)
+          FROM session_projects p WHERE p.project IS NOT NULL
+        )
+      SELECT project FROM observation_projects WHERE project IS NOT NULL
+      UNION
+      SELECT project FROM summary_projects WHERE project IS NOT NULL
+      UNION
+      SELECT p.project FROM session_projects p
+      WHERE p.project IS NOT NULL AND EXISTS (
+        SELECT 1 FROM sdk_sessions s JOIN user_prompts up ON up.session_db_id = s.id
+        WHERE s.project = p.project
       )
     `).all() as { project: string }[];
 
