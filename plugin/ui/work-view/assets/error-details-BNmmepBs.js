@@ -1,0 +1,1 @@
+import{Y as e,d as t,f as n,p as r,xn as i}from"./ui-message-CaleOM2N.js";var a=i();function o({cause:i}){let{t:o}=e();return(0,a.jsxs)(t,{children:[(0,a.jsx)(r,{className:`text-xs`,children:o(`Details`)}),(0,a.jsx)(n,{children:(0,a.jsx)(`p`,{className:`mt-2 rounded-md bg-muted px-3 py-2 font-mono text-xs break-words text-foreground/80`,children:i})})]})}export{o as t};

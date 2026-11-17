@@ -18,8 +18,10 @@ import ts from 'typescript';
  * change ticker's line was one, 38px on touch); the ticker now animates a Button: still 27 in 8 files, 0 of them motion.
  * Phase 7 (2026-11-16): My Rules (10 tags) and Past focus (2) moved onto Button: 27 in 7 files.
  * Phases 3 and 7 merged (2026-11-16): 15 in 6 files.
+ * Phase 5 (2026-11-16): the request card's title and terminal buttons, the focus area link, and the image strip and
+ * viewer (9 tags) moved onto Button, and the reply card's folder path left raw buttons too: 5 in 2 files.
  */
-const RAW_BUTTON_CEILING = 15;
+const RAW_BUTTON_CEILING = 5;
 
 const MY_WORK_SOURCE = resolve(import.meta.dir, '../../../src/ui/my-work/src');
 const SCANNED_FOLDERS = ['pages', 'components'];

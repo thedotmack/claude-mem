@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import {
   REPOSITORY_ROOT, UNTHROTTLED_TIMER_FLAGS, chromeExecutablePath, compileBrowserFixture, connectToPage,
-  failOnCiWithoutChrome, htmlResponse, launchChrome, scriptResponse, withTimeout, type DevToolsPage, type OwnedChrome,
+  failOnCiWithoutChrome, htmlResponse, launchChrome, myWorkFontResponse, scriptResponse, withTimeout, type DevToolsPage, type OwnedChrome,
 } from '../../helpers/chrome-devtools';
 import { REFRESH_LINE_STATES, type RefreshLineState } from '../../../src/ui/my-work/src/live/refresh-line';
 import { TICKER_STEP_MS } from '../../../src/ui/my-work/src/live/change-ticker';
@@ -209,14 +209,15 @@ beforeAll(async () => {
       return rect.bottom > 0 && rect.top < innerHeight && rect.width > 0 && rect.height > 0;
     }).map((button) => button.textContent);
   `, ['--loader:.webp=empty', '--loader:.css=empty']);
-  const fontFiles = resolve(app, 'node_modules/@fontsource-variable/geist/files');
+  // The stylesheet's @font-face rules ask for ./files/<name>.woff2 (Geist and Geist Mono); widths depend on the font,
+  // so the real files are served (myWorkFontResponse).
   server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
     const path = new URL(request.url).pathname;
     if (path === '/') return htmlResponse('<meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/app.css"><div id="root"></div><script src="/fixture.js"></script>');
     if (path === '/fixture.js') return scriptResponse(bundle);
     if (path === '/app.css') return new Response(styles, { headers: { 'Content-Type': 'text/css' } });
-    const font = /^\/files\/([a-z0-9-]+\.woff2)$/.exec(path);
-    if (font) return new Response(Bun.file(resolve(fontFiles, font[1])), { headers: { 'Content-Type': 'font/woff2' } });
+    const font = myWorkFontResponse(path);
+    if (font) return font;
     if (path === '/fixture-ready') { markReady(); return new Response('ready'); }
     if (path === '/fixture-error') { fixtureErrors.push(await request.text()); return new Response('noted'); }
     return new Response('not found', { status: 404 });

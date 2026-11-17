@@ -1,9 +1,21 @@
 import { memo, useCallback, useEffect, useRef } from "react";
 import { cn } from "@/lib/utils";
+import { usePrefersReducedMotion } from "@/lib/use-media";
 import { animate } from "motion/react";
 
 interface GlowingEffectProps {
+  /**
+   * The one colour of the edge, the left bar and the brightening near the pointer (default variant): a palette token,
+   * never a raw colour (c-aceternity-glowing-effect F: four raw hex colours that meant nothing).
+   */
+  color?: string;
   blur?: number;
+  /**
+   * The pointer layer's three distances; the defaults are the vendor's, and a caller states its own reason beside the
+   * values it passes (request-card.tsx). `inactiveZone`: the share of the card's half-size around its centre where the
+   * edge does not brighten. `proximity`: how far outside the card, in px, the pointer still brightens it. `spread`: half
+   * the bright arc's width, in degrees.
+   */
   inactiveZone?: number;
   proximity?: number;
   spread?: number;
@@ -14,8 +26,21 @@ interface GlowingEffectProps {
   movementDuration?: number;
   borderWidth?: number;
 }
+/**
+ * The mark of a card that needs you (c-aceternity-glowing-effect, decision for Phase 5):
+ * - `glow`: an always-on edge in one palette colour plus a thin bar on the left edge, so the card stands out on a phone,
+ *   by keyboard and under reduced motion too (it showed only when a mouse was near). The edge is the colour at 80%,
+ *   the strength of the state pill's edge, ≥3:1 on the card and the page in both themes (rule 7); the bar is full
+ *   strength.
+ * - near the pointer the edge brightens to full strength, in the same colour, along the side the pointer is on. That
+ *   layer follows the pointer only while the card is on screen, and is off when `disabled` and under reduced motion,
+ *   which the component checks itself whatever its caller passes (plan rule 8), leaving the resting edge.
+ * Nothing draws outside the card: no blur unless a caller asks, so no halo at rest. Keyboard focus is the card's own
+ * orange ring (request-card.tsx).
+ */
 const GlowingEffect = memo(
   ({
+    color = "var(--attention-foreground)",
     blur = 0,
     inactiveZone = 0.7,
     proximity = 0,
@@ -27,6 +52,10 @@ const GlowingEffect = memo(
     borderWidth = 1,
     disabled = true,
   }: GlowingEffectProps) => {
+    // The pointer layer moves, so it is off under reduced motion here in the component (plan rule 8), not only when a
+    // caller remembers to pass `disabled`; the resting edge and bar do not move and stay.
+    const reduceMotion = usePrefersReducedMotion();
+    const followsPointer = !disabled && !reduceMotion;
     const containerRef = useRef<HTMLDivElement>(null);
     const lastPosition = useRef({ x: 0, y: 0 });
     const animationFrameRef = useRef<number>(0);
@@ -95,7 +124,7 @@ const GlowingEffect = memo(
     );
 
     useEffect(() => {
-      if (disabled) return;
+      if (!followsPointer) return;
 
       const handleScroll = () => handleMove();
       const handlePointerMove = (e: PointerEvent) => handleMove(e);
@@ -134,22 +163,26 @@ const GlowingEffect = memo(
         glowAnimation.current?.stop();
         glowAnimation.current = null;
       };
-    }, [handleMove, disabled, proximity]);
+    }, [handleMove, followsPointer, proximity]);
 
     return (
       <>
         <div
+          data-glow-edge
+          style={{ "--glow-color": color } as React.CSSProperties}
           className={cn(
-            "pointer-events-none absolute -inset-px hidden rounded-[inherit] border opacity-0 transition-opacity",
-            glow && "opacity-100",
-            variant === "white" && "border-white",
-            disabled && "!block"
+            "pointer-events-none absolute -inset-px overflow-hidden rounded-[inherit] border-2",
+            glow ? "block" : "hidden",
+            variant === "white" ? "border-white" : "border-[color-mix(in_oklab,var(--glow-color)_80%,transparent)]"
           )}
-        />
+        >
+          {variant !== "white" && <span data-glow-bar className="absolute inset-y-0 left-0 w-1 bg-[var(--glow-color)]" />}
+        </div>
         <div
           ref={containerRef}
           style={
             {
+              "--glow-color": color,
               "--blur": `${blur}px`,
               "--spread": spread,
               "--start": "0",
@@ -163,26 +196,14 @@ const GlowingEffect = memo(
                   var(--black),
                   var(--black) calc(25% / var(--repeating-conic-gradient-times))
                 )`
-                  : `radial-gradient(circle, #dd7bbb 10%, #dd7bbb00 20%),
-                radial-gradient(circle at 40% 40%, #d79f1e 5%, #d79f1e00 15%),
-                radial-gradient(circle at 60% 60%, #5a922c 10%, #5a922c00 20%), 
-                radial-gradient(circle at 40% 60%, #4c7894 10%, #4c789400 20%),
-                repeating-conic-gradient(
-                  from 236.84deg at 50% 50%,
-                  #dd7bbb 0%,
-                  #d79f1e calc(25% / var(--repeating-conic-gradient-times)),
-                  #5a922c calc(50% / var(--repeating-conic-gradient-times)), 
-                  #4c7894 calc(75% / var(--repeating-conic-gradient-times)),
-                  #dd7bbb calc(100% / var(--repeating-conic-gradient-times))
-                )`,
+                  : "linear-gradient(var(--glow-color), var(--glow-color))",
             } as React.CSSProperties
           }
           className={cn(
             "pointer-events-none absolute inset-0 rounded-[inherit] opacity-100 transition-opacity",
-            glow && "opacity-100",
             blur > 0 && "blur-[var(--blur)] ",
             className,
-            disabled && "!hidden"
+            !followsPointer && "hidden"
           )}
         >
           <div
@@ -195,7 +216,7 @@ const GlowingEffect = memo(
               "after:opacity-[var(--active)] after:transition-opacity after:duration-300",
               "after:[mask-clip:padding-box,border-box]",
               "after:[mask-composite:intersect]",
-              "after:[mask-image:linear-gradient(#0000,#0000),conic-gradient(from_calc((var(--start)-var(--spread))*1deg),#00000000_0deg,#fff,#00000000_calc(var(--spread)*2deg))]"
+              "after:[mask-image:linear-gradient(transparent,transparent),conic-gradient(from_calc((var(--start)-var(--spread))*1deg),transparent_0deg,white,transparent_calc(var(--spread)*2deg))]"
             )}
           />
         </div>

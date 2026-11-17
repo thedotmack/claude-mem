@@ -205,9 +205,10 @@ for (const language of ['en', 'zh-CN']) {
     const metadata = pageMessage(new URL('request-detail.tsx', components), 'Asked by {name} · started {time} · {duration} · {stage}', { request, durationWords }, language);
     const stage = language === 'en' ? request.stage : myworkZh[request.stage] ?? request.stage;
     assert.equal(metadata, language === 'en' ? `Asked by ${request.askedBy} · started Nov 3 · 2 min · ${stage}` : `由 ${request.askedBy} 发起 · 开始于 Nov 3 · 2 min · ${stage}`);
+    // After a check the drawer says when, then where, as sentences of their own (c-request-detail-check-action).
     const checked = { ...request, checkedAt: '$& {checked}' };
-    assert.equal(pageMessage(new URL('request-detail.tsx', components), '{checked} Shipping is still your call. ', { request: checked, notice: null }, language),
-      language === 'en' ? 'Checked $& {checked}. Shipping is still your call. ' : '已于 $& {checked} 检查。 是否交付仍由您决定。 ');
+    assert.equal(pageMessage(new URL('request-detail.tsx', components), 'Checked {checkedAt}.', { request: checked }, language),
+      language === 'en' ? 'Checked $& {checked}.' : '已于 $& {checked} 检查。');
     const rule = { when: '$& {then}', then: '$$ {when}' };
     assert.equal(pageMessage(new URL('my-work.tsx', pages), 'When {when}: {then}', { rule }, language),
       language === 'en' ? `When ${rule.when}: ${rule.then}` : `当 ${rule.when} 时：${rule.then}`);

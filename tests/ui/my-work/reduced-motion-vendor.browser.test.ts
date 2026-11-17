@@ -15,7 +15,8 @@ failOnCiWithoutChrome('CI requires Chrome for the aceternity components’ reduc
  * PlaceholdersAndVanishInput alone, with no MotionConfig, under an emulated reduced-motion preference:
  * - a deciding card stays in place while dragged, so nothing springs back on release (the drag still decides);
  * - the sparkles are drawn still (no fade-in, twinkle or drift);
- * - the vanish input's example neither fades in nor rotates.
+ * - the vanish input's example neither fades in nor rotates;
+ * - the card glow (GlowingEffect) follows no pointer even when its caller asks it to, and keeps its resting edge.
  */
 let server: ReturnType<typeof Bun.serve> | undefined;
 let fixtureUrl = '';
@@ -60,16 +61,23 @@ beforeAll(async () => {
     import { DraggableCardBody } from './src/ui/my-work/src/components/aceternity/draggable-card';
     import { SparklesCore } from './src/ui/my-work/src/components/aceternity/sparkles';
     import { PlaceholdersAndVanishInput } from './src/ui/my-work/src/components/aceternity/placeholders-and-vanish-input';
+    import { GlowingEffect } from './src/ui/my-work/src/components/aceternity/glowing-effect';
     window.React = React;
     const report = (message) => fetch('/fixture-error', { method: 'POST', body: String(message) });
     window.addEventListener('error', (event) => report(event.error?.stack ?? event.message));
     window.addEventListener('unhandledrejection', (event) => report(event.reason?.stack ?? event.reason));
+    // Pointer listeners put on the page body: the card glow follows the pointer through one (glowing-effect.tsx).
+    window.pointerListeners = 0;
+    const addBodyListener = document.body.addEventListener.bind(document.body);
+    document.body.addEventListener = (type, listener, options) => { if (type === 'pointermove') window.pointerListeners++; addBodyListener(type, listener, options); };
     const root = createRoot(document.getElementById('root'));
     // Mounted on demand, after the test has set the reduced-motion preference.
     window.mount = (what) => {
       if (what === 'card') root.render(<div style={{ padding: 40 }}><DraggableCardBody dragAxis="x" onDragRelease={(offset) => { window.released = offset; }} className="h-32 min-h-0 w-64"><p>Card</p></DraggableCardBody></div>);
       if (what === 'sparkles') root.render(<div data-testid="sparkles" style={{ position: 'relative', width: 320, height: 200 }}><SparklesCore className="absolute inset-0" background="transparent" particleColor="#5b57e6" minSize={0.6} maxSize={1.6} particleDensity={90} speed={2} /></div>);
       if (what === 'vanish') root.render(<div style={{ padding: 40 }}><PlaceholdersAndVanishInput placeholders={['First example', 'Second example']} onChange={() => {}} onSubmit={() => {}} /></div>);
+      // Its caller asks for the pointer layer (disabled={false}), as a caller that forgot reduced motion would.
+      if (what === 'glow') root.render(<div data-testid="glow" style={{ position: 'relative', width: 320, height: 200, borderRadius: 12 }}><GlowingEffect disabled={false} glow spread={40} proximity={64} inactiveZone={0.01} borderWidth={2} /></div>);
     };
     fetch('/fixture-ready');
   `, ['--loader:.webp=empty', '--loader:.css=empty', '--loader:.png=empty', '--loader:.svg=empty', '--loader:.ttf=empty']);
@@ -133,6 +141,26 @@ it.skipIf(!chromeExecutablePath)('the sparkles are drawn still: no fade-in, twin
     const second = await page!.evaluate(snapshot);
     expect(first.length).toBeGreaterThan(1_000);
     expect(second).toBe(first);
+    expect(fixtureErrors).toEqual([]);
+  } finally {
+    await closePage();
+  }
+}, TEST_LIMIT_MS);
+
+it.skipIf(!chromeExecutablePath)('the card glow follows no pointer under reduced motion whatever its caller passes, and keeps its resting edge', async () => {
+  try {
+    await openWithReducedMotion();
+    await page!.evaluate('window.mount("glow")');
+    await waitFor('document.querySelector("[data-testid=glow] [data-glow-edge]")', 'the glow');
+    // The pointer listener goes on once the card is on screen (its IntersectionObserver answers within a frame or two);
+    // 300ms is many frames.
+    await page!.evaluate('new Promise((resolve) => setTimeout(resolve, 300))');
+    await page!.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 320, y: 60 });
+    await page!.evaluate('new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+    const glow = await page!.evaluate(`(() => { const layer = document.querySelector('[data-testid=glow] [style*="--blur"]'); return {
+      listeners: window.pointerListeners, layer: getComputedStyle(layer).display, active: layer.style.getPropertyValue('--active'),
+      edge: getComputedStyle(document.querySelector('[data-testid=glow] [data-glow-edge]')).display }; })()`);
+    expect(glow).toEqual({ listeners: 0, layer: 'none', active: '0', edge: 'block' });
     expect(fixtureErrors).toEqual([]);
   } finally {
     await closePage();

@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import {
   REPOSITORY_ROOT, UNTHROTTLED_TIMER_FLAGS, chromeExecutablePath, compileBrowserFixture, connectToPage,
-  failOnCiWithoutChrome, htmlResponse, launchChrome, scriptResponse, withTimeout, type DevToolsPage, type OwnedChrome,
+  failOnCiWithoutChrome, htmlResponse, launchChrome, myWorkFontResponse, scriptResponse, withTimeout, type DevToolsPage, type OwnedChrome,
 } from '../../helpers/chrome-devtools';
 
 failOnCiWithoutChrome('CI requires Chrome for the My Work toggle width regression.');
@@ -30,8 +30,8 @@ type ItemSamples = { label: string; chosen: number[]; notChosen: number[]; check
   const css = await compile(readFileSync(resolve(app, 'src/index.css'), 'utf8'), { base: app, onDependency() {} });
   const scanner = new Scanner({ sources: [{ base: resolve(app, 'src'), pattern: '**/*.{ts,tsx}', negated: false }] });
   const styles = css.build(scanner.scan());
-  // The stylesheet's @font-face rules ask for ./files/<name>.woff2; widths depend on the font, so serve the real one.
-  const fontFiles = resolve(app, 'node_modules/@fontsource-variable/geist/files');
+  // The stylesheet's @font-face rules ask for ./files/<name>.woff2 (Geist and Geist Mono); widths depend on the font,
+  // so the real files are served (myWorkFontResponse).
   // The page imports its focus artwork (.webp) and the focus overview's stylesheet. Neither styles the toggles, and
   // the one-file fixture bundle has nowhere to put them, so both load empty.
   const bundle = compileBrowserFixture(`
@@ -102,8 +102,8 @@ type ItemSamples = { label: string; chosen: number[]; notChosen: number[]; check
     if (path === '/') return htmlResponse('<meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/app.css"><div id="root"></div><script src="/fixture.js"></script>');
     if (path === '/fixture.js') return scriptResponse(bundle);
     if (path === '/app.css') return new Response(styles, { headers: { 'Content-Type': 'text/css' } });
-    const font = /^\/files\/([a-z0-9-]+\.woff2)$/.exec(path);
-    if (font) return new Response(Bun.file(resolve(fontFiles, font[1])), { headers: { 'Content-Type': 'font/woff2' } });
+    const font = myWorkFontResponse(path);
+    if (font) return font;
     if (path === '/fixture-ready') { markReady(); return new Response('ready'); }
     if (path === '/fixture-error') { fixtureErrors.push(await request.text()); return new Response('noted'); }
     return new Response('not found', { status: 404 });

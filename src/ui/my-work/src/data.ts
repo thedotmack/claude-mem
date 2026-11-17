@@ -69,7 +69,7 @@ export interface Request {
   /** Full-prompt checks for text that shared pages omit, even when the local quote is shortened. */
   summaryRepeatsPrompt?: boolean
   nextRepeatsPrompt?: boolean
-  /** The focus area it sits in: an area id, OTHER_FOCUS_AREA_ID, or absent while it is not sorted yet ("Sorting…"). */
+  /** The focus area it sits in: an area id, OTHER_FOCUS_AREA_ID, or absent while it is not sorted yet ("Not sorted yet"). */
   focusAreaId?: string
   /** False when the request has no conversation to file a move under (the worker refuses it). Sample fixtures leave it out. */
   canMoveFocus?: boolean
@@ -109,15 +109,22 @@ export interface Request {
   /** `media`: the record's image refs (ids and labels only); absent when it has none. */
   granular: { kind: 'work' | 'memory'; text: string; at: string; media?: WorkViewMediaManifest }[]
   /** `platform` and `conversationSessionId` come from the conversation key ["conversation", platform, session id]: the
-   * platform it was recorded from (sdk_sessions.platform_source) and its session id, which a continued turn resumes. */
-  conversations: { tool: string; at: string; title: string; platform: string; conversationSessionId: string }[]
+   * platform it was recorded from (sdk_sessions.platform_source) and its session id, which a continued turn resumes.
+   * `title`: its session's recorded title, or null when none is recorded, which the screens word ("{tool} conversation",
+   * live/conversation-continuation.ts conversationNaming); never English words in its place (fix round R2). */
+  conversations: { tool: string; at: string; title: string | null; platform: string; conversationSessionId: string }[]
   prompts: Quote[]
   /** `href` is a real published page, PR or commit; '#' means a sample link with nothing behind it; absent means a
    * recorded item with nothing to open, such as a commit whose remote is not GitHub (render with ProductLink). */
   /** `deliverable` marks a copy claude-mem keeps in the project's deliverables bucket: a file the agent made, kept after its source is gone. */
   workProduct: { kind: WorkProductKind; label: string; href?: string; deliverable?: boolean; availability?: 'origin-only' }[]
   followUps: { tag: 'Docs' | 'Promo' | 'Other'; text: string; done: boolean }[]
-  story: { label: string; description: string; status: 'complete' | 'active' | 'pending' }[]
+  /**
+   * The build story's steps, oldest first. `at`: when the step happened, as the mapper formats it, or null when the
+   * review recorded no time (a value the drawer words, never English text); absent for a step that carries no time (the
+   * sample's). `description`: words about the step, drawn under it, never in the time column.
+   */
+  story: { label: string; at?: string | null; description?: string; status: 'complete' | 'active' | 'pending' }[]
   /** The last memory review's account of how the request went (request-progress). */
   storyNarrative?: string
   evidence: { title: string; href: string }[]
@@ -127,7 +134,11 @@ export interface Request {
   checkedAt?: string
   /** Whether this acknowledgement is local-only or a shared, versioned decision. */
   review?: { mode: 'local' | 'shared'; hash: string | null; version?: number; available: boolean; conflict?: boolean; legacy?: boolean; pending?: boolean; message?: string }
-  suggestion?: { conversationKey: string; requestId: string; requestTitle: string; evidence: string; expectedSuggestionHash?: string | null; sharedConflict?: boolean }
+  /**
+   * The judge's "may be part of another request". `confidence`: its check's score, 0 to 1, which the drawer words as a
+   * percent; workers before 16.0.0 leave it out of the request they send (G19), and the drawer then says no number.
+   */
+  suggestion?: { conversationKey: string; requestId: string; requestTitle: string; evidence: string; confidence?: number; expectedSuggestionHash?: string | null; sharedConflict?: boolean }
   /** Live records only: the version a check certifies. */
   contentFingerprint?: string
   /** Free-text stage from the title writer. Hover text only; the stage chip comes from the recorded status. */

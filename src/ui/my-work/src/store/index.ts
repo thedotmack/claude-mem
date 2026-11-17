@@ -4,7 +4,7 @@ import { useShallow } from 'zustand/react/shallow'
 import type { Agent, Device } from '@/data'
 import type { ConnectionStatus } from '@/live/connection-status'
 import { localSource } from '@/live/local-source'
-import { sampleSource } from '@/live/sample-source'
+import { sampleSourceAtThisAddress } from '@/live/sample-source'
 import { isServedFromCloud } from '@/live/served-from'
 import { sendHostedUsage, sendUsageReport } from '@/live/usage'
 import type { WorkDataSource, WorkModel } from '@/live/work-data-source'
@@ -12,8 +12,12 @@ import { createBoundStore, PREFERENCES_STORAGE_KEY } from './create-store'
 import { createSelectors } from './create-selectors'
 import type { StoreEnvironment, Workspace } from './store-types'
 
-/** `?source=sample` shows the fixtures; otherwise the local worker (through the dev proxy, or same origin when the worker serves this page). Never falls back to sample data. */
-export const ACTIVE_SOURCE: WorkDataSource = new URLSearchParams(window.location.search).get('source') === 'sample' ? sampleSource : localSource
+/**
+ * `?source=sample` shows the fixtures (with `&sample-state=reply-card`, a reply card that can be tried, as a demonstration:
+ * sampleSourceAtThisAddress); otherwise the local worker (through the dev proxy, or same origin when the worker serves
+ * this page). Never falls back to sample data.
+ */
+export const ACTIVE_SOURCE: WorkDataSource = new URLSearchParams(window.location.search).get('source') === 'sample' ? sampleSourceAtThisAddress() : localSource
 
 /**
  * Where the display preferences are saved. persist writes on every state change, live models included, so a value

@@ -4,7 +4,7 @@ import { CreditCardIcon, CrosshairIcon, FlaskConicalIcon, InboxIcon, ListChecksI
 import { interpolate, useI18n } from '@/lib/i18n'
 import { useAppliedTheme } from '@/lib/use-applied-theme'
 import { Button } from '@/components/ui/button'
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
+import { RequestDrawerLoading, RequestDrawerSheet } from '@/components/request-drawer'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { ActivePill, ClassicViewerLink, DeviceFreshness, LiveIndicator, ReadAfterSaveNotice } from '@/components/bits'
@@ -107,18 +107,13 @@ function PageLoading({ label }: { label: string }) {
   </section>
 }
 
-/** Opening a request responds immediately, including focus trapping and a working close control. */
+/**
+ * Opening a request responds immediately, including focus trapping and a working close control: the drawer's own frame
+ * and loading shape (components/request-drawer.tsx), while its code arrives. It keeps what opened the drawer, so focus
+ * goes back there when the drawer closes (F 344).
+ */
 function RequestDetailLoading({ title, onClose }: { title: string; onClose: () => void }) {
-  const { t } = useI18n()
-  return <Sheet open onOpenChange={(open) => { if (!open) onClose() }}>
-    <SheetContent>
-      <SheetHeader className="gap-3 border-b p-5 pr-14 md:p-6 md:pr-14">
-        <SheetTitle className="text-xl leading-snug">{title}</SheetTitle>
-        <SheetDescription>{t('Request details')}</SheetDescription>
-      </SheetHeader>
-      <p role="status" className="flex items-center gap-2 p-5 text-sm text-muted-foreground md:p-6"><Spinner className="size-4" />{t('Loading request detail…')}</p>
-    </SheetContent>
-  </Sheet>
+  return <RequestDrawerSheet onClose={onClose}><RequestDrawerLoading title={title} /></RequestDrawerSheet>
 }
 
 export default function App() {

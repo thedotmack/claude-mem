@@ -11,6 +11,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Req } from '@/spec/req'
+import { FailureDetails } from '@/components/bits'
 import { type FocusArea, type FocusChange } from '@/data'
 import { useStore, useWorkModel } from '@/store'
 import { isPlaceableFocusArea } from '@/live/to-focus-model'
@@ -33,14 +34,23 @@ export function useFocusChanges() {
   return { last: history.at(-1) ?? null, apply, undoLast: undoLastFocusChange, error, saving }
 }
 
-/** The last change, where it was saved, and Undo; or why a change was not saved. */
+/**
+ * The last change, where it was saved, and Undo; or that a change was not saved, in the page's words, with why folded
+ * under Details: the reason is local-source's sentence around the worker's answer, or the browser's error, so it is
+ * English and never the visible text (G17, fix round R1: the drawer's Move to… shows this bar).
+ */
 export function FocusChangeBar({ changes }: { changes: FocusChanges }) {
   const { t } = useI18n()
   const { sourceKind } = useWorkModel()
   const { last, error, saving, undoLast } = changes
   return (
     <>
-      {error && <p role="alert" className="border-l-2 border-attention-border py-1 pl-3 text-xs text-attention-foreground">{error}</p>}
+      {error && (
+        <div role="alert" className="border-l-2 border-attention-border py-1 pl-3 text-xs">
+          <p className="text-attention-foreground">{t('This change was not saved.')}</p>
+          <FailureDetails cause={error} />
+        </div>
+      )}
       {last && (
         <Req ids={['R16.2', 'R13.7']}>
           <div role="status" className="space-y-1 border-l-2 border-shipped-border py-1 pl-3 text-xs">

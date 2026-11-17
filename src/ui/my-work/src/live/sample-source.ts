@@ -4,8 +4,9 @@ import { SAMPLE_CURRENT_PERIOD, SAMPLE_FOCUS_AREAS, SAMPLE_OTHER_ASKS, SAMPLE_PA
 import { SAMPLE_OWNER_RULES, SAMPLE_RULE_SCOPES, SAMPLE_RULES_LEARNING, type OwnerRule, type RuleChange, type RuleScope } from '../data-rules.ts'
 import { getConnectionStatus } from './connection-status.ts'
 import { byFocusPriority } from './to-focus-model.ts'
+import { TIME_NOT_RECORDED } from './to-work-model.ts'
 import { navWordIn } from '../../../../services/work-view/nav-words.mjs'
-import type { WorkDataSource, WorkModel } from './work-data-source.ts'
+import type { ConversationContinuationRead, ConversationContinuationSource, WorkDataSource, WorkModel } from './work-data-source.ts'
 
 /** Each checked sample request as it was before its check, so Undo restores it exactly. In memory only. */
 const sampleRequestsBeforeCheck = new Map<string, Request>()
@@ -120,9 +121,15 @@ function applySampleFocusChange({ action, focusAreaId, name, goal, intoFocusArea
  * - `refresh-failed`: the last learning run failed, as refresh.json reports it (My Rules' learning-run box);
  * - `rule-saves-fail`: every rule save and "Load my rules into Claude Code" fails, as a refusing worker answers (the
  *   failure lines on My Rules, and where focus stays after a failed decision);
- * - `months-unreadable`: Past focus cannot read the saved months (its read failure, with Try again).
+ * - `months-unreadable`: Past focus cannot read the saved months (its read failure, with Try again);
+ * - `reply-card`: the sample page can continue conversations, as a demonstration that runs no CLI and writes nothing:
+ *   the your-move request's reply card answers a running turn with Stop and the exchange before it, a conversation that
+ *   cannot be continued, a read that fails, and one ready for a reply whose folder is gone (sampleConversationCalls);
+ * - `check-save-waits`: Mark checked (and its Undo) is on its way and stays so: "Saving…", nothing written;
+ * - `check-save-fails`: Mark checked (and its Undo) is refused as the worker refuses it: "Not saved", nothing written.
+ * The last three are the drawer's states real data does not reach without writing (plan Phase 5 fix round V5).
  */
-export const SAMPLE_STATES = ['rules-unreadable', 'refresh-failed', 'rule-saves-fail', 'months-unreadable'] as const
+export const SAMPLE_STATES = ['rules-unreadable', 'refresh-failed', 'rule-saves-fail', 'months-unreadable', 'reply-card', 'check-save-waits', 'check-save-fails'] as const
 export type SampleState = (typeof SAMPLE_STATES)[number]
 /**
  * Read on every load, so a test can switch states with history.replaceState. Node tests have no address (and this file
@@ -145,10 +152,76 @@ const SAMPLE_FAILED_REFRESH = {
 const SAMPLE_RULE_SAVE_REFUSAL = 'The rule change was not saved: SQLITE_BUSY: database is locked (work_state.write rules/autonomy)'
 const SAMPLE_RULES_LOAD_REFUSAL = 'Loading the rules was not saved: EACCES: permission denied, open \'~/.claude/CLAUDE.md\''
 const SAMPLE_GOALS_READ_ERROR = 'owner-goals/2026-10-18 is unreadable: Unexpected token \'}\' in JSON at position 2214'
+// The worker's own words for a check it refuses as it is (WorkViewRoutes review, 409).
+const SAMPLE_CHECK_REFUSAL = 'This request has not been reported complete.'
+
+/** The your-move sample request: under `reply-card` its drawer's reply card shows each of the card's states. */
+const SAMPLE_REPLY_REQUEST_ID = 'r5'
+/** Session ids that are UUIDs, so the card offers to continue each (isContinuableConversation). Fixtures, never real. */
+const SAMPLE_REPLY_SESSION = {
+  running: 'a17c0001-5e2d-4c3b-9a10-5f6e7d8c9b01',
+  cannotContinue: 'b28d0002-6f3e-4d4c-8b21-6a7f8e9dac02',
+  readFails: 'c39e0003-7a4f-4e5d-9c32-7b8a9faebd03',
+  ready: 'd4af0004-8b5a-4f6e-8d43-8c9bafbfce04',
+}
+/** In this order, so the card opens on the running turn: the first listed that it can continue (defaultReplyConversation). */
+const SAMPLE_REPLY_CONVERSATIONS: Request['conversations'] = [
+  { tool: 'Claude Code', at: 'Oct 20, 12:40 pm', title: 'Price page: usage table first', platform: 'claude', conversationSessionId: SAMPLE_REPLY_SESSION.running },
+  { tool: 'Codex', at: TIME_NOT_RECORDED, title: null, platform: 'codex', conversationSessionId: SAMPLE_REPLY_SESSION.cannotContinue },
+  { tool: 'Claude Code', at: 'Oct 20, 1:05 pm', title: 'Forecast drafts', platform: 'claude', conversationSessionId: SAMPLE_REPLY_SESSION.readFails },
+  { tool: 'Claude Code', at: 'Oct 20, 1:22 pm', title: 'Scaling estimates below', platform: 'claude', conversationSessionId: SAMPLE_REPLY_SESSION.ready },
+]
+const SAMPLE_REPLY_FOLDER = '~/work/admin-pricing'
+/** Each demonstration conversation's record, as the worker's guarded read answers it; the read that fails has none. */
+const SAMPLE_CONVERSATION_READS: Record<string, ConversationContinuationRead> = {
+  [SAMPLE_REPLY_SESSION.running]: {
+    target: { canContinue: true, recordedFolder: SAMPLE_REPLY_FOLDER, runsInFolder: SAMPLE_REPLY_FOLDER, recordedFolderIsGone: false, opensInAppNamed: null },
+    exchanges: [
+      { exchangeId: 1, platform: 'claude', conversationSessionId: SAMPLE_REPLY_SESSION.running, state: 'replied', ownerMessage: 'Which forecast reads better at a glance?',
+        replyText: 'The usage-based one: it starts from what you spend today.', startedAtEpochMs: 1_000, endedAtEpochMs: 2_000, ranInFolder: SAMPLE_REPLY_FOLDER },
+      { exchangeId: 2, platform: 'claude', conversationSessionId: SAMPLE_REPLY_SESSION.running, state: 'running', ownerMessage: 'Keep the usage-based forecast and remove the other draft.',
+        startedAtEpochMs: 3_000, ranInFolder: SAMPLE_REPLY_FOLDER },
+    ],
+  },
+  // Shaped like the worker's refusal for a conversation with no recorded folder (ConversationContinuationRunner).
+  [SAMPLE_REPLY_SESSION.cannotContinue]: {
+    target: { canContinue: false, refusalText: 'No folder was recorded for this Codex conversation, so it can’t be continued from here.', recordedFolder: null }, exchanges: [],
+  },
+  [SAMPLE_REPLY_SESSION.ready]: {
+    target: { canContinue: true, recordedFolder: '~/work/admin-pricing-scaling', runsInFolder: '~/work', recordedFolderIsGone: true, opensInAppNamed: null }, exchanges: [],
+  },
+}
+// Shaped like local-source's sentence for a read the worker could not answer (conversationRouteFailureSentence).
+const SAMPLE_CONVERSATION_READ_FAILURE = 'Could not read this conversation: the worker answered 503 Service Unavailable.'
+
+/**
+ * The conversation calls of the `reply-card` sample state: a demonstration that never runs a CLI and writes nothing. A
+ * read answers from SAMPLE_CONVERSATION_READS (one fails, as an unavailable worker's does); a Send is refused, saying
+ * nothing was sent; a Stop is taken and changes nothing, so the demonstration turn runs on and its Stop waits, as a sent
+ * Stop does until the turn ends. No notice ever comes.
+ */
+const sampleConversationCalls: Pick<ConversationContinuationSource, 'loadConversationContinuation' | 'continueConversation' | 'stopConversationContinuation' | 'subscribeToConversationContinuations'> = {
+  async loadConversationContinuation(_platform, conversationSessionId) {
+    const read = SAMPLE_CONVERSATION_READS[conversationSessionId]
+    if (!read) throw new Error(SAMPLE_CONVERSATION_READ_FAILURE)
+    return structuredClone(read)
+  },
+  async continueConversation() {
+    throw new Error('Sample conversations are a demonstration: nothing was sent.')
+  },
+  async stopConversationContinuation(_platform, conversationSessionId) {
+    const running = SAMPLE_CONVERSATION_READS[conversationSessionId]?.exchanges.find((exchange) => exchange.state === 'running')
+    if (!running) throw new Error('Nothing sent from here is running in this conversation.')
+    return structuredClone(running)
+  },
+  subscribeToConversationContinuations: () => () => {},
+}
 
 const sampleModel = (sampleState: SampleState | null): WorkModel => ({
   sourceKind: 'sample',
-  requests: [...SAMPLE_REQUESTS],
+  requests: sampleState === 'reply-card'
+    ? SAMPLE_REQUESTS.map((request) => request.id === SAMPLE_REPLY_REQUEST_ID ? { ...request, conversations: SAMPLE_REPLY_CONVERSATIONS } : request)
+    : [...SAMPLE_REQUESTS],
   requestReadErrors: [],
   agents: SAMPLE_AGENTS,
   devices: SAMPLE_DEVICES,
@@ -208,6 +281,11 @@ export const sampleSource: WorkDataSource = {
 
   /** Checking hands the request back to you to ship; it never marks it shipped. Fixtures have no fingerprint to guard. */
   async setRequestChecked(requestId, _expectedFingerprint, checked) {
+    const sampleState = sampleStateFromAddress()
+    // A save on its way, to be seen: no answer ever comes, so "Saving…" stays until the page is left. Nothing is written.
+    if (sampleState === 'check-save-waits') return new Promise<never>(() => {})
+    // A save the worker refuses as it is (409), nothing written: "Not saved", with the worker's words under Details.
+    if (sampleState === 'check-save-fails') return { outcome: 'refused', serverMessage: SAMPLE_CHECK_REFUSAL, model: await loadSampleWorkModel() }
     const index = SAMPLE_REQUESTS.findIndex((request) => request.id === requestId)
     if (index < 0) throw new Error(`No sample request ${requestId}`)
     // Mutated in place, so every page reading the fixture objects sees the change.
@@ -223,4 +301,14 @@ export const sampleSource: WorkDataSource = {
     }
     return { outcome: 'saved', model: await loadSampleWorkModel() }
   },
+}
+
+/**
+ * The sample source the page's address asks for, chosen once as the page loads (store/index.ts ACTIVE_SOURCE): under
+ * `?sample-state=reply-card`, the fixtures plus the conversation calls of a demonstration that runs no CLI and writes
+ * nothing (sampleConversationCalls), so the reply card's states can be seen; otherwise sampleSource itself, which cannot
+ * continue a conversation, as no page but the one this computer's worker serves can (canContinueConversations).
+ */
+export function sampleSourceAtThisAddress(): WorkDataSource {
+  return sampleStateFromAddress() === 'reply-card' ? { ...sampleSource, ...sampleConversationCalls } : sampleSource
 }

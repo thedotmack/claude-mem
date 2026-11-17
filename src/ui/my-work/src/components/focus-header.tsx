@@ -203,8 +203,9 @@ function HeaderFrame({ children }: { children: ReactNode }) {
   return <section className="space-y-3 rounded-xl border bg-card p-4 shadow-panel">{children}</section>
 }
 
-// Switching areas decrypts the new name from scramble (EncryptedText), as a fresh request title does; ~0.5s whatever
-// the name's length, so it lands before the eye moves on to the goal. Reduced motion: the plain name.
+// Switching to an area fades its name's real letters in from left to right (EncryptedText), as a fresh request title
+// does; ~0.5s whatever the name's length, so it lands before the eye moves on to the goal. Once per name per page: a
+// name shown before in this page shows plain (EncryptedText keeps that record). Reduced motion: the plain name.
 const DECRYPT_AREA_NAME_IN_MS = 500
 function AreaName({ name }: { name: string }) {
   const reduceMotion = useReducedMotion()

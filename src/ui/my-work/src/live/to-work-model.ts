@@ -38,6 +38,20 @@ export const NEXT_STEP_NOT_RECORDED = 'Next step not recorded'
  */
 export const NO_WORK_YET = 'No agent work recorded yet'
 /**
+ * What the mapper writes for a conversation's or a prompt's time, and a saved rule's quote or record time, when none
+ * is recorded. The drawer's conversation rows
+ * leave it out (components/conversation-continue.tsx ConversationRow): it tells one conversation from no other.
+ */
+export const TIME_NOT_RECORDED = 'Time not recorded'
+/**
+ * The English title workers before 16.0.0 wrote for a conversation whose title is not recorded: "Conversation" and the
+ * first eight characters of its session id. The mapper now writes null instead, so no English rides the model as a title
+ * (fix round R2, rule 4); the screens read this filler as not recorded too (live/conversation-continuation.ts
+ * conversationNaming), so a page reading an older worker, such as the live 15.19.0 worker behind the preview, names the
+ * conversation the same way, in the reader's language (G19).
+ */
+export const legacyUntitledConversationTitle = (conversationSessionId: string) => `Conversation ${conversationSessionId.slice(0, 8)}`
+/**
  * The English that workers before 16.0.0 wrote for the step kinds that are not recorded words (data.ts NextStepKind):
  * a checked result's "Ship it", and "Unblock: " before a blocked request's step. nextStepShown reads them as their
  * kinds (G19), and the shared page still writes them, so its words stay as they were (live/to-shared-focus.ts).
@@ -79,6 +93,13 @@ export function nextStepShown(next: Partial<NextStep> | null | undefined): Shown
 }
 const KNOWN_TOOLS: AgentTool[] = ['claude', 'codex', 'gemini']
 const PLATFORM_LABEL: Record<string, string> = { claude: 'Claude Code', codex: 'Codex', gemini: 'Gemini' }
+/**
+ * The tool a conversation names when its platform has no name of its own above: the catalog word "Agent". A tool's
+ * own name is a name and shows as written; this word the screens say in the reader's language (conversationToolWords).
+ */
+export const UNNAMED_TOOL = 'Agent'
+/** A conversation's tool as the screens show it: its own name, or "Agent" in the reader's language (`t`). */
+export const conversationToolWords = (tool: string, t: (english: string) => string) => tool === UNNAMED_TOOL ? t(UNNAMED_TOOL) : tool
 const EVIDENCE_URL = /^\/api\/work-view\/evidence\/(work-state|observation|prompt|summary|session)\/\d+$/
 // work-product.mjs kinds onto the drawer's kinds; anything unknown is a plain link.
 const WORK_PRODUCT_KIND: Record<string, WorkProductKind> = {
@@ -165,13 +186,16 @@ function nextStepFor(status: NormalizedStatus, who: NextStep['who'], recordedNex
   return recordedNext === null ? { who, ...kind, missing } : { who, ...kind, text: recordedNext }
 }
 
-/** The review's milestones, oldest first, as build-story steps. Every milestone already happened. */
+/**
+ * The review's milestones, oldest first, as build-story steps. Every milestone already happened. A step's time is a
+ * value: the formatted time, or null when the review recorded none, which the drawer words (never English here).
+ */
 function storySteps(progress: WorkViewProgress, now: number): Request['story'] {
   return [...(progress.milestones ?? [])]
     .sort((a, b) => (Date.parse(a.at ?? '') || 0) - (Date.parse(b.at ?? '') || 0))
     .map((milestone) => {
       const at = Date.parse(milestone.at ?? '')
-      return { label: cleanText(milestone.text, 200), description: Number.isFinite(at) ? formatRecordTime(at, now) : 'Date not recorded', status: 'complete' as const }
+      return { label: cleanText(milestone.text, 200), at: Number.isFinite(at) ? formatRecordTime(at, now) : null, status: 'complete' as const }
     })
     .filter((step) => step.label)
 }
@@ -183,7 +207,7 @@ function reviewIsNewerThanLifecycle(review: Pick<WorkViewProgress, 'checkedAt'>,
   return Number.isFinite(reviewedAt) && reviewedAt >= lifecycle.atEpoch
 }
 
-/** One human request → one Request. Its area follows merges; a placement in no live area reads "Sorting…" (absent).
+/** One human request → one Request. Its area follows merges; a placement in no live area reads "Not sorted yet" (absent).
  * Throws when the result breaks the lifecycle rules; the caller turns that into a read-error card. */
 function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: number, resolveArea: ReturnType<typeof createFocusAreaResolver>): Request {
   const copy = raw.humanCopy
@@ -280,15 +304,16 @@ function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: numb
       const [, platform, sessionId] = parseRecordKey(key)
       const session = agents.find((agent) => agent.platformSource === platform && agent.contentSessionId === sessionId && agent.sessionTitle)
       return {
-        tool: PLATFORM_LABEL[platform] ?? 'Agent',
-        at: key === raw.id && raw.original.atEpoch ? formatDateTime(raw.original.atEpoch) : 'Time not recorded',
-        title: session?.sessionTitle ?? `Conversation ${sessionId.slice(0, 8)}`,
+        tool: PLATFORM_LABEL[platform] ?? UNNAMED_TOOL,
+        at: key === raw.id && raw.original.atEpoch ? formatDateTime(raw.original.atEpoch) : TIME_NOT_RECORDED,
+        // Its session's own title, or null when none is recorded: the screens word that ("{tool} conversation", R2).
+        title: session?.sessionTitle ?? null,
         platform,
         conversationSessionId: sessionId,
       }
     }),
     prompts: [raw.original, ...raw.scopeUpdates]
-      .map((prompt) => ({ at: prompt.atEpoch ? formatPromptStamp(prompt.atEpoch) : 'Time not recorded', quote: cleanText(prompt.text, 400) }))
+      .map((prompt) => ({ at: prompt.atEpoch ? formatPromptStamp(prompt.atEpoch) : TIME_NOT_RECORDED, quote: cleanText(prompt.text, 400) }))
       .filter((prompt) => prompt.quote),
     workProduct: mapWorkProduct(raw.workProduct),
     ...(raw.media ? { media: raw.media } : {}),
@@ -302,8 +327,9 @@ function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: numb
       legacy: raw.review.legacy, pending: raw.review.pending, message: raw.review.message } } : {}),
     ...(raw.suggestion ? { suggestion: { conversationKey: raw.suggestion.conversationKey,
       requestId: raw.suggestion.requestId, requestTitle: cleanText(raw.suggestion.requestTitle, 200),
-      evidence: cleanText(raw.suggestion.evidence, 500), expectedSuggestionHash: raw.suggestion.expectedSuggestionHash,
-      sharedConflict: raw.suggestion.sharedConflict } } : {}),
+      evidence: cleanText(raw.suggestion.evidence, 500),
+      ...(Number.isFinite(raw.suggestion.confidence) ? { confidence: raw.suggestion.confidence } : {}),
+      expectedSuggestionHash: raw.suggestion.expectedSuggestionHash, sharedConflict: raw.suggestion.sharedConflict } } : {}),
   })
 }
 
@@ -427,14 +453,14 @@ function toOwnerRule(rule: WorkViewRule, now: number): OwnerRule {
   const latest = Date.parse(rule.latestAt ?? '')
   const quotes = rule.quotes.map((quote): RuleQuote => {
     const at = Date.parse(quote.at ?? '')
-    return { at: Number.isFinite(at) ? formatDateTime(at) : 'Time not recorded', quote: quote.quote, kind: QUOTE_KINDS.includes(quote.kind as RuleQuote['kind']) ? quote.kind as RuleQuote['kind'] : 'directive', where: 'prompt' }
+    return { at: Number.isFinite(at) ? formatDateTime(at) : TIME_NOT_RECORDED, quote: quote.quote, kind: QUOTE_KINDS.includes(quote.kind as RuleQuote['kind']) ? quote.kind as RuleQuote['kind'] : 'directive', where: 'prompt' }
   })
   const savedAt = Date.parse(rule.savedAt ?? '')
   // Each record also says what it is (`fact`), so My Rules words it in the reader's language and shows a prompt in
   // full; `label` stays the English line older screens read.
   const records: RuleRecord[] = [
     ...quotes.map((quote): RuleRecord => ({ kind: 'Prompt', label: `Your prompt: “${cleanText(quote.quote, 60)}”`, at: quote.at, fact: 'your-prompt', said: quote.quote })),
-    ...(source === 'request-progress' ? [{ kind: 'Review', label: 'request-progress · build story', at: Number.isFinite(latest) ? formatDateTime(latest) : 'Time not recorded', fact: 'build-story' } satisfies RuleRecord] : []),
+    ...(source === 'request-progress' ? [{ kind: 'Review', label: 'request-progress · build story', at: Number.isFinite(latest) ? formatDateTime(latest) : TIME_NOT_RECORDED, fact: 'build-story' } satisfies RuleRecord] : []),
     ...(Number.isFinite(savedAt) ? [{ kind: 'Instructions', label: source === 'you' ? 'Written in My Rules on this computer' : 'Saved in My Rules on this computer', at: formatDateTime(savedAt), fact: source === 'you' ? 'written-here' : 'saved-here' } satisfies RuleRecord] : []),
   ]
   const replacedAt = Date.parse(rule.replacedAt ?? '')

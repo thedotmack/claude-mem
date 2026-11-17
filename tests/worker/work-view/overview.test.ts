@@ -7,6 +7,8 @@ import { sharedReviewDescriptor, readSharedReview } from '../../../src/services/
 import { sharedRecordKey } from '../../../src/services/work-view/shared-records.mjs';
 import { toWorkModel } from '../../../src/ui/my-work/src/live/to-work-model.js';
 import { expandWorkViewOverview } from '../../../src/ui/my-work/src/live/work-view-overview.js';
+import { mergeRequestDetail } from '../../../src/ui/my-work/src/live/request-detail-state.js';
+import type { Request as WorkRequest } from '../../../src/ui/my-work/src/data.js';
 import type { WorkViewSnapshot } from '../../../src/services/work-view/data-source.mjs';
 import { composeViewerSyncStatus } from '../../../src/shared/viewer-sync-status.js';
 
@@ -28,6 +30,9 @@ function largeSnapshot(withDetails = false) {
 
 const imageRef = (n: number) => ({ id: `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`, label: `screenshot-${n}`, inspection: 'uninspected' as const });
 
+/** A suggestion as the overview's cards carry it: everything but the judge's score, which only the drawer shows. */
+const withoutConfidence = ({ confidence: _confidence, ...rest }: NonNullable<WorkRequest['suggestion']>) => rest;
+
 describe('compact work view transport', () => {
   it('keeps the request image summary on the card and leaves per-record refs to the detail read', () => {
     const snapshot = fixture(); const raw = snapshot.humanRequests[0] as any;
@@ -46,6 +51,27 @@ describe('compact work view transport', () => {
     // New images on a record change what the drawer shows, so its revision moves.
     raw.activity[0].media.attachments.push(imageRef(3));
     expect(workViewOverview(snapshot).model.requests.find(request => request.id === raw.id)!.detailRevision).not.toBe(before);
+  });
+
+  it('sends the suggestion’s confidence with the request detail only, and the drawer’s merge keeps it for the suggestion the card still has', () => {
+    const snapshot = fixture(); const raw = snapshot.humanRequests[0] as any;
+    raw.suggestion = { conversationKey: JSON.stringify(['conversation', 'claude', 'session-1']), requestId: 'g_000000000001',
+      requestTitle: 'Related release request', confidence: 0.74, evidence: 'These requests concern the same release.', judge: 'fixture', at: null,
+      expectedSuggestionHash: 'suggestion-hash', sharedConflict: false };
+    const overview = workViewOverview(snapshot);
+    const wire = overview.model.requests.find(request => request.id === raw.id)!;
+    const detail = workViewRequestDetail(snapshot, raw.id)!.request;
+    // The card never shows the percent; only the drawer does, from the detail read (the 140-request budget stays).
+    expect(wire.suggestion).toEqual(withoutConfidence(detail.suggestion!));
+    expect(wire.suggestion).not.toHaveProperty('confidence');
+    expect(detail.suggestion?.confidence).toBe(0.74);
+    const summary = expandWorkViewOverview(overview).requests.find(request => request.id === raw.id)!;
+    expect(mergeRequestDetail(summary, detail).suggestion).toEqual(detail.suggestion);
+    // Answered (joined or kept separate), the card has no suggestion: an older detail on screen must not bring it back.
+    expect(mergeRequestDetail({ ...summary, suggestion: undefined }, detail).suggestion).toBeUndefined();
+    // A different suggestion on the card keeps its own words, with no score borrowed from another one.
+    const other = { ...summary.suggestion!, requestId: 'g_000000000002' };
+    expect(mergeRequestDetail({ ...summary, suggestion: other }, detail).suggestion).toEqual(other);
   });
 
   it('leaves default owner and focus fields off the wire and restores them for the UI', () => {
@@ -186,7 +212,7 @@ describe('compact work view transport', () => {
         expect(Boolean(summary.review?.pending)).toBe(Boolean(detail.review?.pending));
         expect(summary.review?.message).toBe(detail.review?.message);
         expect(summary.review?.legacy).toBeUndefined();
-        expect(summary.suggestion).toEqual(detail.suggestion);
+        expect(summary.suggestion).toEqual(detail.suggestion && withoutConfidence(detail.suggestion));
       }
       expect(expandWorkViewOverview(overview).requests.every(request => Array.isArray(request.terminal) && Array.isArray(request.followUps))).toBe(true);
     } finally { database.close(); }
