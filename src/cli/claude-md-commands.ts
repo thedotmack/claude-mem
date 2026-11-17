@@ -21,7 +21,7 @@ import { findContextBlockRange } from '../utils/context-injection.js';
 import { toBmpSafe } from '../utils/bmp-safe.js';
 import { ensureDirectoryExists, resolveSymlinkWriteTarget } from '../shared/atomic-json.js';
 import { paths } from '../shared/paths.js';
-import { pageMatchingRows } from '../services/sqlite/stream-rows.js';
+import { streamRows } from '../services/sqlite/stream-rows.js';
 import { parseContextCountValue } from '../shared/context-count.js';
 
 const DB_PATH = paths.database();
@@ -183,54 +183,76 @@ export function makeFolderChildMatcher(relativeFolder: string, workingDir: strin
   };
 }
 
-function hasDirectChildFile(obs: ObservationRow, isFolderChild: (file: string) => boolean): boolean {
-  const checkFiles = (filesJson: string | null): boolean => {
-    if (!filesJson) return false;
-    try {
-      const files = JSON.parse(filesJson);
-      if (Array.isArray(files)) {
-        return files.some(f => typeof f === 'string' && isFolderChild(f));
-      }
-    } catch (error) {
-      logger.warn('CLAUDE_MD', 'Failed to parse files JSON in hasDirectChildFile', { error: error instanceof Error ? error.message : String(error) });
-    }
-    return false;
-  };
-
-  return checkFiles(obs.files_modified) || checkFiles(obs.files_read);
+function parseFiles(filesJson: string | null): string[] {
+  if (!filesJson) return [];
+  try {
+    const files = JSON.parse(filesJson);
+    if (Array.isArray(files)) return files.filter((f): f is string => typeof f === 'string');
+  } catch (error) {
+    logger.warn('CLAUDE_MD', 'Failed to parse observation files JSON', { error: error instanceof Error ? error.message : String(error) });
+  }
+  return [];
 }
 
-function findObservationsByFolder(
+/** Bucket key: a direct child's parent directory and the folder end in the same segment. */
+function lastSegmentKey(p: string): string {
+  return path.posix.basename(normalizePath(p)).toLowerCase();
+}
+
+interface FolderObservations {
+  isFolderChild: (file: string) => boolean;
+  observations: ObservationRow[];
+}
+
+/**
+ * The newest `limit` direct-child observations of every folder, from one scan
+ * of the project's rows. A per-folder query cannot use an index for the file
+ * match, so it cost a full scan per folder (#6249). Rows are bucketed by the
+ * parent directory's last segment, and the folder matcher does the exact check.
+ */
+function findObservationsByFolders(
   db: Database,
-  relativeFolderPath: string,
+  relativeFolders: string[],
   workingDir: string,
   project: string,
   limit: number,
-): ObservationRow[] {
-  const sql = `
-    SELECT o.*, o.discovery_tokens
+): Map<string, FolderObservations> {
+  const byFolder = new Map<string, FolderObservations>();
+  const bucketed = new Map<string, FolderObservations[]>();
+  for (const relativeFolder of relativeFolders) {
+    const entry: FolderObservations = { isFolderChild: makeFolderChildMatcher(relativeFolder, workingDir), observations: [] };
+    byFolder.set(relativeFolder, entry);
+    const key = lastSegmentKey(relativeFolder);
+    if (!bucketed.has(key)) bucketed.set(key, []);
+    bucketed.get(key)!.push(entry);
+  }
+  if (limit <= 0 || byFolder.size === 0) return byFolder;
+
+  const statement = db.prepare(`
+    SELECT o.*
     FROM observations o
     WHERE o.project COLLATE NOCASE = ?
-      AND (o.files_modified LIKE ? OR o.files_read LIKE ? OR o.files_modified LIKE ? OR o.files_read LIKE ?)
     ORDER BY o.created_at_epoch DESC
-  `;
-
-  // Unanchored prefilters: tool evidence stores absolute paths
-  // (".../repo/src/auth/x.ts", or "C:\\repo\\src\\auth\\x.ts" on Windows), so
-  // the folder need not follow the JSON quote. The matcher does the exact check.
-  const segments = relativeFolderPath.split(/[\\/]+/).filter(Boolean);
-  const likeFor = (separator: string) => `%${JSON.stringify(segments.join(separator) + separator).slice(1, -1)}%`;
-  const slashPattern = likeFor('/');
-  const backslashPattern = likeFor('\\');
-  const isFolderChild = makeFolderChildMatcher(relativeFolderPath, workingDir);
-  // Page the folder's direct children themselves, not a guessed window of the
-  // broader candidates that nested files can fill.
-  return pageMatchingRows<ObservationRow>(
-    db.prepare(sql),
-    [project, slashPattern, slashPattern, backslashPattern, backslashPattern],
-    obs => hasDirectChildFile(obs, isFolderChild),
-    { limit },
-  );
+  `);
+  try {
+    let fullFolders = 0;
+    for (const obs of streamRows(statement, project) as Iterable<ObservationRow>) {
+      const matched = new Set<FolderObservations>();
+      for (const file of [...parseFiles(obs.files_modified), ...parseFiles(obs.files_read)]) {
+        for (const entry of bucketed.get(lastSegmentKey(path.posix.dirname(normalizePath(file)))) ?? []) {
+          if (!matched.has(entry) && entry.observations.length < limit && entry.isFolderChild(file)) matched.add(entry);
+        }
+      }
+      for (const entry of matched) {
+        entry.observations.push(obs);
+        if (entry.observations.length === limit) fullFolders++;
+      }
+      if (fullFolders === byFolder.size) break;
+    }
+  } finally {
+    statement.finalize();
+  }
+  return byFolder;
 }
 
 // The heading uses the same predicate that selected the row, so an observation
@@ -332,13 +354,11 @@ function writeClaudeMdToFolder(folderPath: string, newContent: string): void {
 }
 
 function regenerateFolder(
-  db: Database,
   absoluteFolder: string,
   relativeFolder: string,
-  project: string,
+  folder: FolderObservations | undefined,
   dryRun: boolean,
-  workingDir: string,
-  observationLimit: number
+  workingDir: string
 ): { success: boolean; observationCount: number; error?: string } {
   if (!existsSync(absoluteFolder)) {
     return { success: false, observationCount: 0, error: 'Folder no longer exists' };
@@ -350,18 +370,17 @@ function regenerateFolder(
     return { success: false, observationCount: 0, error: 'Path escapes project root' };
   }
 
-  const observations = findObservationsByFolder(db, relativeFolder, resolvedWorkingDir, project, observationLimit);
-
-  if (observations.length === 0) {
+  if (!folder?.observations.length) {
     return { success: false, observationCount: 0, error: 'No observations for folder' };
   }
 
+  const { observations, isFolderChild } = folder;
   if (dryRun) {
     return { success: true, observationCount: observations.length };
   }
 
   try {
-    const formatted = formatObservationsForClaudeMd(observations, makeFolderChildMatcher(relativeFolder, resolvedWorkingDir));
+    const formatted = formatObservationsForClaudeMd(observations, isFolderChild);
     writeClaudeMdToFolder(absoluteFolder, formatted);
     return { success: true, observationCount: observations.length };
   } catch (error) {
@@ -378,25 +397,26 @@ function processAllFoldersForGeneration(
   dryRun: boolean,
   observationLimit: number
 ): number {
+  const foldersArray = Array.from(trackedFolders).sort();
+  const relativeFolders = foldersArray.map(folder => path.relative(workingDir, folder));
+
   const db = new Database(DB_PATH, { readonly: true, create: false });
+  const observationsByFolder = findObservationsByFolders(db, relativeFolders, path.resolve(workingDir), project, observationLimit);
+  db.close();
 
   let successCount = 0;
   let skipCount = 0;
   let errorCount = 0;
 
-  const foldersArray = Array.from(trackedFolders).sort();
-
   for (const absoluteFolder of foldersArray) {
     const relativeFolder = path.relative(workingDir, absoluteFolder);
 
     const result = regenerateFolder(
-      db,
       absoluteFolder,
       relativeFolder,
-      project,
+      observationsByFolder.get(relativeFolder),
       dryRun,
-      workingDir,
-      observationLimit
+      workingDir
     );
 
     if (result.success) {
@@ -413,8 +433,6 @@ function processAllFoldersForGeneration(
       errorCount++;
     }
   }
-
-  db.close();
 
   logger.info('CLAUDE_MD', 'CLAUDE.md generation complete', {
     totalFolders: foldersArray.length,
