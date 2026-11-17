@@ -31,13 +31,18 @@ export interface ApiContentBlock {
 }
 
 /**
- * `session.append` for a tool result (`door: 'tool-result'`): the row as it will
- * be kept. Everything but `message.content` is pinned.
+ * `session.append` for a tool result (`door: 'tool-result'`) or a block of the
+ * model's response (`door: 'response'`, its tool_use blocks carrying each
+ * call's `name` and `input`): the row as it will be kept. Everything but
+ * `message.content` is pinned, and tool_use blocks are put back as they came.
  */
 export interface SessionAppendEvent {
   message: { type: string; content: ApiContentBlock[] };
   door: string;
-  /** For a tool result `{ kind: 'tool', tool }`: the full tool name, or `unknown` when no call matches the row. */
+  /**
+   * For a tool result `{ kind: 'tool', tool }`: the full tool name, or `unknown` when no call matches the row.
+   * For a response block `{ kind: 'model', model }`.
+   */
   origin: { kind: string; tool?: string; [field: string]: unknown };
   uuid: string;
   /** Set for a subagent's conversation; absent on main. */
@@ -78,7 +83,7 @@ export interface On {
   (event: 'session.end', hook: Hook<unknown, unknown>): Registration<unknown, unknown>;
   (
     event: 'session.append',
-    matcher: { door: 'tool-result' },
+    matcher: { door: 'tool-result' | 'response' },
     hook: Hook<SessionAppendEvent, SessionAppendResult>,
   ): Registration<SessionAppendEvent, SessionAppendResult>;
   (event: 'turn.start', hook: Hook<unknown, unknown>): Registration<unknown, unknown>;
