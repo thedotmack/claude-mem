@@ -206,11 +206,11 @@ const SPOOL_ENTRY_MODE = 0o600;
 
 const EXPIRED_DIRNAME = 'expired';
 /**
- * Files read per parallel batch while draining. Reads are asynchronous either
- * way; the batch bounds how many file handles a single drain holds at once so a
- * large backlog costs memory proportional to the batch, not the directory.
+ * Files read per parallel batch while draining. Bounded well under common file
+ * descriptor limits so a large backlog cannot exhaust them; the batch also caps
+ * how many parsed entries the collector holds at once.
  */
-const DRAIN_READ_BATCH_SIZE = 256;
+const DRAIN_READ_BATCH_SIZE = 64;
 
 /**
  * A retained entry (session never became known, ingest keeps failing) older
@@ -337,6 +337,25 @@ interface HookSpoolFile {
   entry: HookSpoolEntry;
   path: string;
   filename: string;
+}
+
+/** Oldest first; the filename breaks ties between same-millisecond enqueues. */
+function compareSpoolFiles(a: HookSpoolFile, b: HookSpoolFile): number {
+  return a.entry.enqueuedAtEpochMs - b.entry.enqueuedAtEpochMs || a.filename.localeCompare(b.filename);
+}
+
+/**
+ * Sort the collected entries and keep only the oldest `maxEntries`, returning
+ * how many were dropped. Both readers call it as each entry is collected, so a
+ * bounded drain never holds more than `maxEntries` parsed payloads even when the
+ * spool holds thousands of files.
+ */
+export function retainOldestEntries(files: HookSpoolFile[], maxEntries: number): number {
+  files.sort(compareSpoolFiles);
+  if (files.length <= maxEntries) return 0;
+  const omitted = files.length - maxEntries;
+  files.length = maxEntries;
+  return omitted;
 }
 
 // Monotonic per process: two enqueues in the same millisecond (advisor-call
@@ -688,25 +707,6 @@ export class HookSpool {
     }
   }
 
-  /** Oldest first; the filename breaks ties between same-millisecond enqueues. */
-  private static compareSpoolFiles(a: HookSpoolFile, b: HookSpoolFile): number {
-    return a.entry.enqueuedAtEpochMs - b.entry.enqueuedAtEpochMs || a.filename.localeCompare(b.filename);
-  }
-
-  /**
-   * Sort the collected entries and keep only the oldest `maxEntries`, returning
-   * how many were dropped. Called whenever the collector passes its limit, so a
-   * bounded drain never retains more than `maxEntries` parsed payloads even
-   * when the spool holds thousands of files.
-   */
-  private static trimToLimit(files: HookSpoolFile[], maxEntries: number): number {
-    files.sort(HookSpool.compareSpoolFiles);
-    if (files.length <= maxEntries) return 0;
-    const omitted = files.length - maxEntries;
-    files.length = maxEntries;
-    return omitted;
-  }
-
   /**
    * Synchronous reader for `entries()`, whose callers need the list in the
    * current tick. `drain` uses `readEntriesAsync` instead: a spool can hold one
@@ -748,10 +748,10 @@ export class HookSpool {
         continue;
       }
       files.push({ entry: parsed, path: entryPath, filename });
-      if (files.length > maxEntries) omitted += HookSpool.trimToLimit(files, maxEntries);
+      if (files.length > maxEntries) omitted += retainOldestEntries(files, maxEntries);
     }
 
-    files.sort(HookSpool.compareSpoolFiles);
+    files.sort(compareSpoolFiles);
     return { files, quarantined, omitted };
   }
 
@@ -776,11 +776,16 @@ export class HookSpool {
     const files: HookSpoolFile[] = [];
     let quarantined = 0;
     let omitted = 0;
-    for (let start = 0; start < filenames.length; start += DRAIN_READ_BATCH_SIZE) {
-      const batch = filenames.slice(start, start + DRAIN_READ_BATCH_SIZE);
-      const raws = await Promise.all(batch.map(async filename => {
+    // Parse inside each read so a batch never holds 256 raw payloads at once;
+    // a bounded drain keeps at most `maxEntries` parsed entries, so the batch
+    // shrinks with the caller's limit instead of dominating it.
+    const batchSize = Math.max(1, Math.min(DRAIN_READ_BATCH_SIZE, maxEntries));
+    for (let start = 0; start < filenames.length; start += batchSize) {
+      const batch = filenames.slice(start, start + batchSize);
+      const reads = await Promise.all(batch.map(async (filename): Promise<{ file: HookSpoolFile } | { corrupt: string; filename: string } | null> => {
+        let raw: string;
         try {
-          return { filename, raw: await readFile(join(this.directory, filename), 'utf-8') };
+          raw = await readFile(join(this.directory, filename), 'utf-8');
         } catch (error) {
           // ENOENT: drained by a concurrent pass after the listing. Anything
           // else is retried on the next pass.
@@ -790,22 +795,23 @@ export class HookSpool {
           }
           return null;
         }
+        const parsed = parseHookSpoolEntry(raw);
+        if ('corruptReason' in parsed) return { corrupt: parsed.corruptReason, filename };
+        return { file: { entry: parsed, path: join(this.directory, filename), filename } };
       }));
 
-      for (const read of raws) {
-        if (!read) continue;
-        const entryPath = join(this.directory, read.filename);
-        const parsed = parseHookSpoolEntry(read.raw);
-        if ('corruptReason' in parsed) {
-          if (this.quarantine(read.filename, parsed.corruptReason)) quarantined++;
+      for (const read of reads) {
+        if (read === null) continue;
+        if ('corrupt' in read) {
+          if (this.quarantine(read.filename, read.corrupt)) quarantined++;
           continue;
         }
-        files.push({ entry: parsed, path: entryPath, filename: read.filename });
-        if (files.length > maxEntries) omitted += HookSpool.trimToLimit(files, maxEntries);
+        files.push(read.file);
+        if (files.length > maxEntries) omitted += retainOldestEntries(files, maxEntries);
       }
     }
 
-    files.sort(HookSpool.compareSpoolFiles);
+    files.sort(compareSpoolFiles);
     return { files, quarantined, omitted };
   }
 }

@@ -9,6 +9,7 @@ import {
   migrateLegacySessionEndReplay,
   resolveHookSpoolDirectory,
   resolveLegacySessionEndReplayDirectory,
+  retainOldestEntries,
 } from '../../src/shared/hook-spool.js';
 import { logger } from '../../src/utils/logger.js';
 
@@ -64,6 +65,18 @@ describe('HookSpool', () => {
     expect(seen).toEqual(['session_end:session-a', 'session_end:session-b', 'subagent_stop:session-c', 'session_end:session-d']);
     expect(result).toEqual({ drained: 4, retained: 0, quarantined: 0, expired: 0 });
     expect(spoolFiles(spool)).toEqual([]);
+  });
+
+  it('retainOldestEntries keeps the oldest entries and counts the dropped ones', () => {
+    const files = [
+      { filename: 'b-2.json', path: '', entry: { enqueuedAtEpochMs: 20 } },
+      { filename: 'a-1.json', path: '', entry: { enqueuedAtEpochMs: 10 } },
+      { filename: 'c-3.json', path: '', entry: { enqueuedAtEpochMs: 30 } },
+      { filename: 'd-3.json', path: '', entry: { enqueuedAtEpochMs: 30 } },
+    ] as unknown as Parameters<typeof retainOldestEntries>[0];
+
+    expect(retainOldestEntries(files, 3)).toBe(1);
+    expect(files.map(file => file.filename)).toEqual(['a-1.json', 'b-2.json', 'c-3.json']);
   });
 
   it('drains only the oldest maxEntries and reports the rest as retained', async () => {
