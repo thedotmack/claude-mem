@@ -353,11 +353,6 @@ export async function updateFolderClaudeMdFiles(
 
   if (folderPaths.size === 0) return;
 
-  logger.debug('FOLDER_INDEX', 'Updating CLAUDE.md files', {
-    project,
-    folderCount: folderPaths.size
-  });
-
   const updateFolder = async (folderPath: string): Promise<void> => {
     let response: Response;
     try {
