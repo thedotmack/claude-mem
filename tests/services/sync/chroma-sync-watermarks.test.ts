@@ -985,11 +985,50 @@ describe('ChromaSync backfill project enumeration (#4069)', () => {
       store.saveUserPrompt('content-prompt', 1, 'a prompt');
       session('content-empty', 'empty-session', 'mem-empty');
       store.storeObservation('mem-empty', '', observation);
+      // A session without prompts names no backfill candidate by itself.
+      session('content-bare', 'bare-session', 'mem-bare');
+      // A project in every table is listed once.
+      session('content-all', 'everywhere', 'mem-all');
+      store.storeObservation('mem-all', 'everywhere', observation);
+      store.storeSummary('mem-all', 'everywhere', {
+        request: 'r', investigated: 'i', learned: 'l', completed: 'c', next_steps: 'n', notes: null,
+      });
+      store.saveUserPrompt('content-all', 1, 'a prompt');
 
       expect(await ChromaSync.backfillAllProjects(store)).toBe(true);
 
-      expect(seen).toEqual(expect.arrayContaining(['obs-only', 'summary-only', 'prompt-only', '']));
+      expect([...seen].sort()).toEqual(['', 'everywhere', 'obs-only', 'prompt-only', 'summary-only']);
     } finally {
+      ensureSpy.mockRestore();
+      store.close();
+    }
+  });
+
+  it('finds projects through the project indexes without a full table scan (#6246)', async () => {
+    useDataDir('claude-mem-enumeration-plan-');
+    ChromaSyncState.replace('enumeration-seed', { observations: 0, summaries: 0, prompts: 0 });
+    acceptingMutations = true;
+
+    const store = new SessionStore(':memory:');
+    const ensureSpy = spyOn(ChromaSync.prototype, 'ensureBackfilled').mockResolvedValue('completed');
+    const prepared: string[] = [];
+    const prepare = store.db.prepare.bind(store.db);
+    const prepareSpy = spyOn(store.db, 'prepare').mockImplementation(((sql: string) => {
+      prepared.push(sql);
+      return prepare(sql);
+    }) as typeof store.db.prepare);
+
+    try {
+      expect(await ChromaSync.backfillAllProjects(store)).toBe(true);
+      const enumeration = prepared.find(sql => sql.includes('observation_projects'));
+      expect(enumeration).toBeDefined();
+
+      const plan = (store.db.prepare(`EXPLAIN QUERY PLAN ${enumeration}`).all() as { detail: string }[])
+        .map(row => row.detail);
+      expect(plan.filter(detail => /^SCAN (observations|session_summaries|sdk_sessions|user_prompts|s|up)\b/.test(detail)))
+        .toEqual([]);
+    } finally {
+      prepareSpy.mockRestore();
       ensureSpy.mockRestore();
       store.close();
     }
