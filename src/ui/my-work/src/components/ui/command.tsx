@@ -22,7 +22,9 @@ import { useI18n } from "@/lib/i18n"
 // the dialog's default words go through t() (plan rule 4); the search field is 44px with the --control-edge edge (G12,
 // plan rule 6); rows are 40px, 44px on touch, with the pointer cursor and the highlight Select and menu rows use, the
 // --input fill edged in --muted-foreground (the registry's bg-muted is 1.02:1 on the dark popover; the edge is ≥5.3:1,
-// token contrast test); the list keeps its scrollbar, so a long list scrolls.
+// token contrast test); the list keeps its scrollbar, so a long list scrolls. The search field shows the same focus
+// look as an Input (the ring edge and the 3px ring) on its group: InputGroup draws that look only for its own
+// input-group-control, so the registry's search field showed no focus at all.
 
 function Command({
   className,
@@ -79,7 +81,7 @@ function CommandInput({
 }: React.ComponentProps<typeof CommandPrimitive.Input>) {
   return (
     <div data-slot="command-input-wrapper" className="p-1 pb-0">
-      <InputGroup className="h-11! rounded-lg! border-control-edge bg-input/30 shadow-none! *:data-[slot=input-group-addon]:pl-2!">
+      <InputGroup className="h-11! rounded-lg! border-control-edge bg-input/30 shadow-none! *:data-[slot=input-group-addon]:pl-2! has-[[data-slot=command-input]:focus-visible]:border-ring has-[[data-slot=command-input]:focus-visible]:ring-3 has-[[data-slot=command-input]:focus-visible]:ring-ring/50">
         <CommandPrimitive.Input
           data-slot="command-input"
           className={cn(

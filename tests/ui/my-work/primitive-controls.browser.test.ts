@@ -10,6 +10,17 @@ import {
 failOnCiWithoutChrome('CI requires Chrome for the My Work primitive size, cursor and focus regressions.');
 
 /**
+ * Tells Chrome it has a mouse, so the desktop half of this test runs on the desktop it describes on every platform.
+ * Headless Chrome on Linux finds no pointing device: it reports `(hover: none)` and `(pointer: none)`, and a CDP mouse
+ * move then gives a button `:hover` without the hover looks index.css keeps inside `@media (hover: hover)` (CI on PR
+ * 6210; Chrome 157 and Chromium 156 on Linux, 2026-11-16). Chrome on macOS reports a mouse already. The values are
+ * Blink's hover type "hover" (2) and pointer type "fine" (4), the setting Playwright 1.66 passes to every headless
+ * Chromium it launches. Turning touch emulation off puts Chrome's own values back, so the hover checks run before the
+ * touch part.
+ */
+const DESKTOP_MOUSE_FLAGS = ['--blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4'];
+
+/**
  * Phase 1 claims about My Work's control primitives, measured in a real browser on the app's real stylesheet:
  * - touch size (plan rule 6): on a coarse pointer, and at phone width, every Button, SelectTrigger, ToggleGroupItem,
  *   Switch, Input and Textarea renders at least 44px tall (icon buttons and toggles 44px wide too);
@@ -21,7 +32,7 @@ failOnCiWithoutChrome('CI requires Chrome for the My Work primitive size, cursor
  * Phase 1 fix round: a caller's own hover: class beats the primitive's hover look (the Team button keeps its tint); a
  * disabled switch inside a Label is dimmed once; an errored field says so and links its message; the toggle check sits
  * above a caller's highlight; a select row's highlight has a ≥3:1 mark; a popper select does not animate under
- * reduced motion.
+ * reduced motion. PR 6210 review: Command's search field shows the same focus look as an Input.
  */
 (chromeExecutablePath ? it : it.skip)('control primitives own touch size, hit areas, cursors, disabled, busy and focus', async () => {
   // Compile the application's real stylesheet and candidates; hand-written fixture CSS could hide a regression.
@@ -41,6 +52,7 @@ failOnCiWithoutChrome('CI requires Chrome for the My Work primitive size, cursor
     import { Badge, BadgeMore, badgeVariants } from './src/ui/my-work/src/components/ui/badge';
     import { toggleVariants } from './src/ui/my-work/src/components/ui/toggle';
     import { Card, CardContent, CardFooter } from './src/ui/my-work/src/components/ui/card';
+    import { Command, CommandInput } from './src/ui/my-work/src/components/ui/command';
     import { FieldCount, FieldHelperText, Input } from './src/ui/my-work/src/components/ui/input';
     import { Textarea } from './src/ui/my-work/src/components/ui/textarea';
     import { Label } from './src/ui/my-work/src/components/ui/label';
@@ -108,6 +120,9 @@ failOnCiWithoutChrome('CI requires Chrome for the My Work primitive size, cursor
           <div style={{ width: 320 }}><Input data-test="input-readonly" readOnly value="~/.claude-mem/MY-RULES.md" /></div>
           <div style={{ width: 320 }}><Input data-test="input-disabled" disabled /><FieldHelperText data-test="error" tone="error">A repo name has no spaces.</FieldHelperText></div>
           <div data-test="errored-field" style={{ width: 320 }}><Input data-test="input-error" aria-describedby="hint" error="A repo name has no spaces." /></div>
+          {/* The search field of Move to…'s list (Popover + Command, G15). No rows: cmdk scrolls its chosen row into view,
+              which would scroll this page. */}
+          <div style={{ width: 320 }}><Command label="Move to"><CommandInput data-test="command-input" placeholder="Move to…" /></Command></div>
         </Row>
         <Row>
           {/* App.tsx TeamSwitch with Team on: the caller's own hover tint must win over the primitive's hover look. */}
@@ -225,6 +240,11 @@ failOnCiWithoutChrome('CI requires Chrome for the My Work primitive size, cursor
       await Promise.all(element(name).getAnimations().filter((animation) => animation instanceof CSSTransition).map((animation) => animation.finished));
       return style(name).backgroundColor;
     };
+    // With the look, whether Chrome has a pointer that can hover and whether it is over the button, so a look that did
+    // not change says which of the three it was. The page has no doctype, and in quirks mode a bare :hover matches only
+    // links, so the check names an attribute too.
+    window.hoverLook = async (name) => ({ hoverCapablePointer: matchMedia('(hover: hover)').matches, hovered: element(name).matches('[data-test]:hover'),
+      background: await window.backgroundOf(name) });
     window.focusState = async () => {
       // Controls ease their colours (transition-all), so read the focus look once its transitions have finished.
       await Promise.all(document.activeElement.getAnimations().filter((animation) => animation instanceof CSSTransition).map((animation) => animation.finished));
@@ -254,9 +274,11 @@ failOnCiWithoutChrome('CI requires Chrome for the My Work primitive size, cursor
     };
     window.focusOn = (name) => element(name).focus();
     window.activeName = () => document.activeElement?.dataset.test ?? document.activeElement?.getAttribute('role');
-    window.inputFocusEdge = async () => {
-      await Promise.all(element('input').getAnimations().filter((animation) => animation instanceof CSSTransition).map((animation) => animation.finished));
-      return style('input').borderTopColor;
+    // A field's focus look: an Input draws it on itself, Command's search field on the InputGroup around it.
+    window.fieldLook = async (name) => {
+      const box = element(name).closest('[data-slot=input-group]') ?? element(name);
+      await Promise.all(box.getAnimations().filter((animation) => animation instanceof CSSTransition).map((animation) => animation.finished));
+      return { focusVisible: element(name).matches(':focus-visible'), edge: getComputedStyle(box).borderTopColor, boxShadow: getComputedStyle(box).boxShadow };
     };
     window.switchFocusRing = () => style('switch-off', '::before').boxShadow;
     window.toggleRoles = () => [element('toggle-chosen').getAttribute('role'), element('toggle-other').getAttribute('role')];
@@ -284,7 +306,8 @@ failOnCiWithoutChrome('CI requires Chrome for the My Work primitive size, cursor
   let page: DevToolsPage | undefined;
   const rgb = (hex: string) => `rgb(${[1, 3, 5].map((offset) => parseInt(hex.slice(offset, offset + 2), 16)).join(', ')})`;
   try {
-    chrome = launchChrome(server.url.href, { profilePrefix: 'claude-mem-primitives-', remoteDebugging: true, extraFlags: UNTHROTTLED_TIMER_FLAGS });
+    chrome = launchChrome(server.url.href, { profilePrefix: 'claude-mem-primitives-', remoteDebugging: true,
+      extraFlags: [...UNTHROTTLED_TIMER_FLAGS, ...DESKTOP_MOUSE_FLAGS] });
     // Chrome starts and runs this fixture in 0.65–0.94s here (3 runs, 2026-11-16); 15s is about 16× that, for a cold
     // Chrome on a shared CI runner.
     await withTimeout(ready, 15_000, 'Primitive fixture did not start');
@@ -345,9 +368,11 @@ failOnCiWithoutChrome('CI requires Chrome for the My Work primitive size, cursor
     };
     const plainAtRest = await page.evaluate('window.backgroundOf("secondary-plain")');
     await hover('team-on');
-    expect(await page.evaluate('window.backgroundOf("team-on")')).toBe(rgb('#fdebdd'));
+    expect(await page.evaluate('window.hoverLook("team-on")')).toEqual({ hoverCapablePointer: true, hovered: true, background: rgb('#fdebdd') });
     await hover('secondary-plain');
-    expect(await page.evaluate('window.backgroundOf("secondary-plain")')).not.toBe(plainAtRest);
+    const plainHovered = await page.evaluate('window.hoverLook("secondary-plain")');
+    expect({ hoverCapablePointer: plainHovered.hoverCapablePointer, hovered: plainHovered.hovered, lookChanged: plainHovered.background !== plainAtRest })
+      .toEqual({ hoverCapablePointer: true, hovered: true, lookChanged: true });
     // A caller's active: class wins over the primitive's pressed look in the same way.
     {
       const { x, y } = await page.evaluate('window.middleOf("press-override")');
@@ -393,7 +418,18 @@ failOnCiWithoutChrome('CI requires Chrome for the My Work primitive size, cursor
     };
     // Input keeps its orange focus edge (D b12 K245/248).
     await page.evaluate('window.focusOn("input")');
-    expect(await page.evaluate('window.inputFocusEdge()')).toBe(rgb('#e15c02'));
+    const inputFocused = await page.evaluate('window.fieldLook("input")');
+    expect(inputFocused.edge).toBe(rgb('#e15c02'));
+    // Command's search field shows that look too, on its group: the same edge and the same 3px ring (it showed none).
+    const ringOf = (boxShadow: string) => boxShadow.match(/(?:[a-z]+\([^)]*\)|#[0-9a-f]+) 0px 0px 0px 3px/)?.[0] ?? null;
+    const inputRing = ringOf(inputFocused.boxShadow);
+    expect(inputRing).not.toBeNull();
+    const commandAtRest = await page.evaluate('window.fieldLook("command-input")');
+    expect({ edge: commandAtRest.edge, ring: ringOf(commandAtRest.boxShadow) }).toEqual({ edge: lightEdge, ring: null });
+    await page.evaluate('window.focusOn("command-input")');
+    const commandFocused = await page.evaluate('window.fieldLook("command-input")');
+    expect({ focusVisible: commandFocused.focusVisible, edge: commandFocused.edge, ring: ringOf(commandFocused.boxShadow) })
+      .toEqual({ focusVisible: true, edge: inputFocused.edge, ring: inputRing });
     // Switch keeps its focus ring, now on the track (D b19 K389).
     await page.evaluate('window.focusOn("switch-off")');
     await page.settle();
