@@ -1397,6 +1397,16 @@ describe('SettingsDefaultsManager', () => {
   });
 });
 
+describe('Chroma resource-pacing defaults', () => {
+  it('paces bulk backfill at a 1:1 duty cycle by default', () => {
+    expect(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_CHROMA_BACKFILL_PAUSE_RATIO).toBe('1');
+  });
+
+  it('starts chroma-mcp at niceness 10 by default', () => {
+    expect(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_CHROMA_PROCESS_NICE).toBe('10');
+  });
+});
+
 describe('Chroma embedding function default', () => {
   it('keeps chroma-mcp\'s own default so existing installs are unchanged', () => {
     expect(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION).toBe('default');

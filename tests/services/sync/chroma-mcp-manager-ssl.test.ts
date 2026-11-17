@@ -105,6 +105,7 @@ import { ChromaMcpManager } from '../../../src/services/sync/ChromaMcpManager.js
 
 afterAll(() => {
   ChromaMcpManager.setUvxAvailabilityProbeForTesting(null);
+  ChromaMcpManager.setNiceAvailabilityProbeForTesting(null);
   mock.module('../../../src/shared/SettingsDefaultsManager.js', () => realSettingsSnapshot);
   mock.module('../../../src/shared/paths.js', () => realPathsSnapshot);
   mock.module('../../../src/utils/logger.js', () => realLoggerSnapshot);
@@ -154,6 +155,8 @@ describe('ChromaMcpManager SSL flag regression (#1286)', () => {
     capturedTransportOpts = null;
     currentSettings = {};
     ChromaMcpManager.setUvxAvailabilityProbeForTesting(() => true);
+    // These tests assert the bare uvx launch args; nice wrapping has its own tests.
+    ChromaMcpManager.setNiceAvailabilityProbeForTesting(() => false);
     mgr = ChromaMcpManager.getInstance();
   });
 

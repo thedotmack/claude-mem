@@ -3,6 +3,7 @@ import { Database } from 'bun:sqlite';
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { DatabaseManager } from '../../src/services/worker/DatabaseManager.js';
 import { DB_PATH, USER_SETTINGS_PATH } from '../../src/shared/paths.js';
+import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
 
 /**
  * A settings.json the old viewer saved: claude-mem's keys live in the `env`
@@ -136,5 +137,34 @@ describe('DatabaseManager reads cloud sync from the settings claude-mem actually
     const { n } = reopened.prepare('SELECT COUNT(*) AS n FROM tool_uses').get() as { n: number };
     reopened.close();
     expect(n).toBe(0);
+  });
+});
+
+describe('Chroma pacing settings in the settings file claude-mem uses', () => {
+  let savedSettings: string | null = null;
+
+  beforeEach(() => {
+    savedSettings = existsSync(USER_SETTINGS_PATH) ? readFileSync(USER_SETTINGS_PATH, 'utf-8') : null;
+  });
+
+  afterEach(() => {
+    if (savedSettings === null) rmSync(USER_SETTINGS_PATH, { force: true });
+    else writeFileSync(USER_SETTINGS_PATH, savedSettings, 'utf-8');
+  });
+
+  it('reads both keys from the env block of a wrapped settings document', () => {
+    writeFileSync(USER_SETTINGS_PATH, JSON.stringify({
+      env: { CLAUDE_MEM_CHROMA_BACKFILL_PAUSE_RATIO: '3', CLAUDE_MEM_CHROMA_PROCESS_NICE: '5' },
+    }), 'utf-8');
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    expect(settings.CLAUDE_MEM_CHROMA_BACKFILL_PAUSE_RATIO).toBe('3');
+    expect(settings.CLAUDE_MEM_CHROMA_PROCESS_NICE).toBe('5');
+  });
+
+  it('falls back to the defaults when a settings file omits both keys', () => {
+    writeFileSync(USER_SETTINGS_PATH, JSON.stringify({ CLAUDE_MEM_CHROMA_ENABLED: 'false' }), 'utf-8');
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    expect(settings.CLAUDE_MEM_CHROMA_BACKFILL_PAUSE_RATIO).toBe('1');
+    expect(settings.CLAUDE_MEM_CHROMA_PROCESS_NICE).toBe('10');
   });
 });
