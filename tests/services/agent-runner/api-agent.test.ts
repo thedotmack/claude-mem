@@ -112,6 +112,27 @@ describe('the API agent talks to the selected provider', () => {
     expect(again.calls[0].body.reasoning).toEqual({ enabled: false });
   });
 
+  it('resends with max_completion_tokens when the endpoint refuses max_tokens', async () => {
+    const { calls } = fakeFetch([
+      { status: 400, text: JSON.stringify({ error: { message: "Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.", param: 'max_tokens', code: 'unsupported_parameter' } }) },
+      { body: { choices: [{ message: { content: 'the answer' } }] } },
+    ]);
+    expect(await askApiTarget(target('https://example.test/v6/chat/completions'), 'the question')).toBe('the answer');
+    expect(calls.length).toBe(2);
+    expect(calls[0].body.max_tokens).toBe(16_000);
+    expect(calls[0].body.max_completion_tokens).toBeUndefined();
+    expect(calls[1].body.max_tokens).toBeUndefined();
+    expect(calls[1].body.max_completion_tokens).toBe(16_000);
+  });
+
+  it('resends with max_completion_tokens only once', async () => {
+    const { calls } = fakeFetch([
+      { status: 400, text: JSON.stringify({ error: { message: "Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead." } }) },
+    ]);
+    await expect(askApiTarget(target('https://example.test/v7/chat/completions'), 'the question')).rejects.toThrow(/HTTP 400/);
+    expect(calls.length).toBe(2);
+  });
+
   it('does not resend a schema-backed question when the 400 is about something else', async () => {
     const { calls } = fakeFetch([{ status: 400, text: JSON.stringify({ error: { message: "This model's maximum context length is 8192 tokens, however you requested 9000 tokens" } }) }]);
     await expect(askApiTarget(target('https://example.test/v5/chat/completions'), 'the question', { answerSchema: { type: 'object' } }))
