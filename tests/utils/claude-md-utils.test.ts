@@ -393,7 +393,7 @@ describe('updateFolderClaudeMdFiles', () => {
     const { paths, root } = fixture();
     const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
     global.fetch = fetchMock;
-    await updateFolderClaudeMdFiles(paths, 'test-project', 37777, root);
+    await updateFolderClaudeMdFiles(paths, 'test-project', root);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -416,7 +416,7 @@ describe('updateFolderClaudeMdFiles', () => {
       json: () => Promise.resolve({ content: [{ text: '| #123 | 4:30 PM | 🔵 | Test observation | ~100 |' }] }),
     } as Response));
     global.fetch = fetchMock;
-    await updateFolderClaudeMdFiles(paths, 'test-project', 37777, root);
+    await updateFolderClaudeMdFiles(paths, 'test-project', root);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const callUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
     expect(callUrl).toContain(encodeURIComponent(folder));
@@ -439,7 +439,7 @@ describe('updateFolderClaudeMdFiles', () => {
       json: () => Promise.resolve(apiResponse)
     } as Response));
 
-    await updateFolderClaudeMdFiles([filePath], 'test-project', 37777);
+    await updateFolderClaudeMdFiles([filePath], 'test-project');
 
     const claudeMdPath = join(folderPath, 'CLAUDE.md');
     expect(existsSync(claudeMdPath)).toBe(true);
@@ -467,9 +467,36 @@ describe('updateFolderClaudeMdFiles', () => {
     } as Response));
     global.fetch = fetchMock;
 
-    await updateFolderClaudeMdFiles([file1, file2], 'test-project', 37777);
+    await updateFolderClaudeMdFiles([file1, file2], 'test-project');
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('fetches folders concurrently, at most 8 at a time, and writes every folder', async () => {
+    const folders = Array.from({ length: 20 }, (_, i) => join(tempDir, `pool-${i}`));
+    for (const folder of folders) mkdirSync(folder, { recursive: true });
+
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const fetchMock = mock(async () => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise(resolve => setTimeout(resolve, 5));
+      inFlight--;
+      return {
+        ok: true,
+        json: () => Promise.resolve({ content: [{ text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |' }] })
+      } as Response;
+    });
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles(folders.map(folder => join(folder, 'file.ts')), 'test-project');
+
+    expect(fetchMock).toHaveBeenCalledTimes(20);
+    expect(maxInFlight).toBe(8);
+    for (const folder of folders) {
+      expect(existsSync(join(folder, 'CLAUDE.md'))).toBe(true);
+    }
   });
 
   it('should handle API errors gracefully (404 response)', async () => {
@@ -481,7 +508,7 @@ describe('updateFolderClaudeMdFiles', () => {
       status: 404
     } as Response));
 
-    await expect(updateFolderClaudeMdFiles([filePath], 'test-project', 37777)).resolves.toBeUndefined();
+    await expect(updateFolderClaudeMdFiles([filePath], 'test-project')).resolves.toBeUndefined();
 
     const claudeMdPath = join(folderPath, 'CLAUDE.md');
     expect(existsSync(claudeMdPath)).toBe(false);
@@ -493,7 +520,7 @@ describe('updateFolderClaudeMdFiles', () => {
 
     global.fetch = mock(() => Promise.reject(new Error('Network error')));
 
-    await expect(updateFolderClaudeMdFiles([filePath], 'test-project', 37777)).resolves.toBeUndefined();
+    await expect(updateFolderClaudeMdFiles([filePath], 'test-project')).resolves.toBeUndefined();
 
     const claudeMdPath = join(folderPath, 'CLAUDE.md');
     expect(existsSync(claudeMdPath)).toBe(false);
@@ -517,7 +544,6 @@ describe('updateFolderClaudeMdFiles', () => {
     await updateFolderClaudeMdFiles(
       ['src/utils/file.ts'],
       'test-project',
-      37777,
       join(tempDir, 'project-root-write-test')
     );
 
@@ -548,7 +574,6 @@ describe('issue #814 - reject consecutive duplicate path segments', () => {
     await updateFolderClaudeMdFiles(
       ['src/utils/file.ts'],
       'test-project',
-      37777,
       projectRoot
     );
 
@@ -575,7 +600,6 @@ describe('issue #859 - skip folders with active CLAUDE.md', () => {
         '/project/src/services/api.ts'   
       ],
       'test-project',
-      37777,
       '/project'
     );
 
@@ -602,7 +626,6 @@ describe('issue #859 - skip folders with active CLAUDE.md', () => {
         '/project/src/c/file.ts'
       ],
       'test-project',
-      37777,
       '/project'
     );
 
@@ -631,7 +654,6 @@ describe('issue #912 - skip unsafe directories for CLAUDE.md generation', () => 
       await updateFolderClaudeMdFiles(
         ['src/utils/file.ts'],
         'test-project',
-        37777,
         projectRoot
       );
 
@@ -697,7 +719,6 @@ describe('CLAUDE.local.md support', () => {
         '/project/src/c/file.ts'             
       ],
       'test-project',
-      37777,
       '/project'
     );
 
@@ -743,7 +764,7 @@ describe('skeleton CLAUDE.md deny-list (#2400)', () => {
       json: () => Promise.resolve(emptySkeletonResponse),
     } as Response));
 
-    await updateFolderClaudeMdFiles([filePath], 'test-project', 37777, tempDir);
+    await updateFolderClaudeMdFiles([filePath], 'test-project', tempDir);
 
     expect(existsSync(join(folderPath, 'CLAUDE.md'))).toBe(false);
   });
@@ -763,7 +784,7 @@ describe('skeleton CLAUDE.md deny-list (#2400)', () => {
       json: () => Promise.resolve(emptySkeletonResponse),
     } as Response));
 
-    await updateFolderClaudeMdFiles([filePath], 'test-project', 37777, tempDir);
+    await updateFolderClaudeMdFiles([filePath], 'test-project', tempDir);
 
     // Deny-listed + empty/skeleton => injection suppressed, file untouched.
     expect(readFileSync(claudeMdPath, 'utf-8')).toBe(userContent);
@@ -783,7 +804,7 @@ describe('skeleton CLAUDE.md deny-list (#2400)', () => {
       }),
     } as Response));
 
-    await updateFolderClaudeMdFiles([filePath], 'test-project', 37777, tempDir);
+    await updateFolderClaudeMdFiles([filePath], 'test-project', tempDir);
 
     const claudeMdPath = join(folderPath, 'CLAUDE.md');
     expect(existsSync(claudeMdPath)).toBe(true);
@@ -804,7 +825,7 @@ describe('skeleton CLAUDE.md deny-list (#2400)', () => {
       json: () => Promise.resolve(emptySkeletonResponse),
     } as Response));
 
-    await updateFolderClaudeMdFiles([filePath], 'test-project', 37777, tempDir);
+    await updateFolderClaudeMdFiles([filePath], 'test-project', tempDir);
 
     // With no deny-list, the existing file is still processed (the new guard is
     // a no-op), so the tagged context section is appended to the existing file.
@@ -840,7 +861,7 @@ describe('observation count setting in updateFolderClaudeMdFiles (#5507)', () =>
     const fetchMock = mock(() => Promise.resolve({ ok: true, json: () => Promise.resolve(apiResponse) } as Response));
     global.fetch = fetchMock;
 
-    await updateFolderClaudeMdFiles([join(folderPath, 'test.ts')], 'test-project', 37777);
+    await updateFolderClaudeMdFiles([join(folderPath, 'test.ts')], 'test-project');
 
     expect(fetchMock).toHaveBeenCalledTimes(0);
     expect(existsSync(join(folderPath, 'CLAUDE.md'))).toBe(false);
@@ -852,7 +873,7 @@ describe('observation count setting in updateFolderClaudeMdFiles (#5507)', () =>
     const fetchMock = mock((_url: string) => Promise.resolve({ ok: true, json: () => Promise.resolve(apiResponse) } as Response));
     global.fetch = fetchMock;
 
-    await updateFolderClaudeMdFiles([join(folderPath, 'test.ts')], 'test-project', 37777);
+    await updateFolderClaudeMdFiles([join(folderPath, 'test.ts')], 'test-project');
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(String(fetchMock.mock.calls[0][0])).toContain('&limit=7&');

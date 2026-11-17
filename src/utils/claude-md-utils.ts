@@ -246,10 +246,27 @@ function isExcludedFolder(folderPath: string, excludePaths: string[]): boolean {
   return false;
 }
 
+// Folder updates are independent, so a few run at once. The bound keeps a
+// large batch from flooding the worker that also serves live requests.
+const FOLDER_UPDATE_CONCURRENCY = 8;
+
+async function runWithConcurrency<T>(
+  items: T[],
+  limit: number,
+  task: (item: T) => Promise<void>
+): Promise<void> {
+  let next = 0;
+  const runNext = async (): Promise<void> => {
+    while (next < items.length) {
+      await task(items[next++]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, runNext));
+}
+
 export async function updateFolderClaudeMdFiles(
   filePaths: string[],
   project: string,
-  _port: number,
   projectRoot?: string
 ): Promise<void> {
   const settings = SettingsDefaultsManager.loadFromFile(SETTINGS_PATH);
@@ -341,7 +358,7 @@ export async function updateFolderClaudeMdFiles(
     folderCount: folderPaths.size
   });
 
-  for (const folderPath of folderPaths) {
+  const updateFolder = async (folderPath: string): Promise<void> => {
     let response: Response;
     try {
       response = await workerHttpRequest(
@@ -355,18 +372,18 @@ export async function updateFolderClaudeMdFiles(
         errorMessage: message,
         errorStack: stack
       });
-      continue;
+      return;
     }
 
     if (!response.ok) {
       logger.error('FOLDER_INDEX', 'Failed to fetch timeline', { folderPath, status: response.status });
-      continue;
+      return;
     }
 
     const result = await response.json() as { content?: Array<{ text?: string }> };
     if (!result.content?.[0]?.text) {
       logger.debug('FOLDER_INDEX', 'No content for folder', { folderPath });
-      continue;
+      return;
     }
 
     const formatted = formatTimelineForClaudeMd(result.content[0].text);
@@ -381,16 +398,24 @@ export async function updateFolderClaudeMdFiles(
     // so we don't pollute non-content dirs with empty skeletons).
     if (isEmptyOrSkeleton && matchesAnyGlob(folderPath, skeletonDenylistPatterns)) {
       logger.debug('FOLDER_INDEX', 'Skipping skeleton CLAUDE.md in deny-listed folder', { folderPath, targetFilename });
-      continue;
+      return;
     }
 
     if (isEmptyOrSkeleton && !fileExists) {
       logger.debug('FOLDER_INDEX', 'Skipping empty context file creation', { folderPath, targetFilename });
-      continue;
+      return;
     }
 
     writeClaudeMdToFolder(folderPath, formatted, targetFilename);
 
     logger.debug('FOLDER_INDEX', 'Updated context file', { folderPath, targetFilename });
-  }
+  };
+
+  const startedAt = Date.now();
+  await runWithConcurrency([...folderPaths], FOLDER_UPDATE_CONCURRENCY, updateFolder);
+  logger.debug('FOLDER_INDEX', 'Finished CLAUDE.md updates', {
+    project,
+    folderCount: folderPaths.size,
+    durationMs: Date.now() - startedAt
+  });
 }
