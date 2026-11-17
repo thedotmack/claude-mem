@@ -87,9 +87,9 @@ it('reads an in-place append when fs.watch does not fire', async () => {
   const internal = watcher as any;
   let pollSawUnreadBytes = false;
   const originalPoll = internal.pollTailedAppends.bind(watcher);
-  internal.pollTailedAppends = () => {
+  internal.pollTailedAppends = async () => {
     const tailer = internal.tailers.get(file);
-    if (tailer?.hasBytesPastReadOffset()) pollSawUnreadBytes = true;
+    if (await tailer?.hasBytesPastReadOffset()) pollSawUnreadBytes = true;
     return originalPoll();
   };
 
@@ -169,4 +169,66 @@ it('does not open a tailer for a file created after startup when watches are sil
   expect(saved.offsets[secondFile]).toBeUndefined();
   expect(saved.cwds?.[secondFile]).toBeUndefined();
   expect(saved.cwds?.[firstFile]).toBe('/first');
+});
+
+/** A stat the test releases by hand, so a poll tick stays in flight as long as needed. */
+function holdStats(tailer: any): { calls: () => number; release: (unread: boolean) => void } {
+  let calls = 0;
+  const waiting: Array<(unread: boolean) => void> = [];
+  tailer.hasBytesPastReadOffset = () => {
+    calls += 1;
+    return new Promise<boolean>(resolve => waiting.push(resolve));
+  };
+  return { calls: () => calls, release: unread => { for (const resolve of waiting.splice(0)) resolve(unread); } };
+}
+
+it('does not start a poll tick while the previous one is still awaiting a stat', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'cm-append-poll-overlap-'));
+  roots.push(root);
+  const file = join(root, 'rollout.jsonl');
+  const statePath = join(root, 'state.json');
+  writeFileSync(file, contextLine('/first'));
+
+  const watcher = startWatcher(file, statePath);
+  await watcher.start();
+  await waitFor(() => loadWatchState(statePath).cwds?.[file] === '/first');
+
+  const internal = watcher as any;
+  const stats = holdStats(internal.tailers.get(file));
+  await waitFor(() => stats.calls() >= 1);
+  // Several intervals pass while the first tick's stat is still pending.
+  await delay(POLL_MS * 5);
+  expect(stats.calls()).toBe(1);
+
+  stats.release(false);
+  // The next tick runs once the slow one has finished.
+  await waitFor(() => stats.calls() >= 2);
+  stats.release(false);
+});
+
+it('stop() during an in-flight poll does not poke the tailer', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'cm-append-poll-stop-inflight-'));
+  roots.push(root);
+  const file = join(root, 'rollout.jsonl');
+  const statePath = join(root, 'state.json');
+  writeFileSync(file, contextLine('/first'));
+
+  const watcher = startWatcher(file, statePath);
+  await watcher.start();
+  await waitFor(() => loadWatchState(statePath).cwds?.[file] === '/first');
+
+  const internal = watcher as any;
+  const tailer = internal.tailers.get(file);
+  const stats = holdStats(tailer);
+  let pokes = 0;
+  tailer.poke = () => { pokes += 1; };
+  await waitFor(() => stats.calls() >= 1);
+
+  watcher.stop();
+  // The pending stat now reports unread bytes; the stopped watcher must not act on it.
+  stats.release(true);
+  await delay(POLL_MS * 4);
+  expect(pokes).toBe(0);
+  expect(stats.calls()).toBe(1);
+  expect(internal.appendPollInFlight).toBe(false);
 });
