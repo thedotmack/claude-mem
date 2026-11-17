@@ -9,6 +9,10 @@ import { AIDER_MEMORY_RELATIVE_PATH } from '../../src/shared/aider-paths.js';
 
 const memory = AIDER_MEMORY_RELATIVE_PATH;
 
+// Independent YAML decoding prevents install and uninstall from agreeing on
+// the same corrupted filename. Bun is already the test runner.
+const yamlReadList = (text: string) => (Bun.YAML.parse(text) as { read: string[] }).read;
+
 describe('Aider flow-list file paths', () => {
   for (const [name, scalar, value] of [
     ['plain apostrophe', "docs/user's-guide.md", "docs/user's-guide.md"],
@@ -20,7 +24,9 @@ describe('Aider flow-list file paths', () => {
   ]) {
     test(`preserves a ${name} through install and uninstall`, () => {
       const original = `read: [${scalar}, NOTES.md] # [shared docs]\nmodel: local\n`;
+      expect(yamlReadList(original)).toEqual([value, 'NOTES.md']);
       const installed = upsertAiderReadEntry(original, memory);
+      expect(yamlReadList(installed)).toEqual([value, 'NOTES.md', memory]);
       expect(installed).toBe(
         `read: [${scalar}, NOTES.md, ${memory}] # [shared docs] ${AIDER_MANAGED_ENTRY_COMMENT}\nmodel: local\n`,
       );
@@ -29,6 +35,7 @@ describe('Aider flow-list file paths', () => {
       expect(upsertAiderReadEntry(installed, memory)).toBe(installed);
 
       const removed = removeAiderReadEntry(installed, memory)!;
+      expect(yamlReadList(removed)).toEqual([value, 'NOTES.md']);
       expect(hasAiderReadEntry(removed, value!)).toBe(true);
       expect(hasAiderReadEntry(removed, 'NOTES.md')).toBe(true);
       expect(hasAiderReadEntry(removed, memory)).toBe(false);
