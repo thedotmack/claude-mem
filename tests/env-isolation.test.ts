@@ -20,8 +20,11 @@ import { logger } from '../src/utils/logger.js';
 // CJS interop: the check is a .cjs module exporting findViolations.
 import { createRequire } from 'module';
 const requireCjs = createRequire(import.meta.url);
-const { findViolations } = requireCjs('../scripts/check-spawn-env-discipline.cjs') as {
-  findViolations: () => Array<{ file: string; line: number }>;
+type SpawnEnvViolation = { file: string; line: number; variable: string | null; exemptKey: string };
+const { findViolations, findViolationsInSources, unexemptedViolations } = requireCjs('../scripts/check-spawn-env-discipline.cjs') as {
+  findViolations: () => SpawnEnvViolation[];
+  findViolationsInSources: (sources: Array<{ file: string; source: string }>) => SpawnEnvViolation[];
+  unexemptedViolations: (violations: SpawnEnvViolation[]) => SpawnEnvViolation[];
 };
 
 /**
@@ -401,9 +404,43 @@ describe('spawn-env discipline (CI guard)', () => {
     // serves the host, and the check lists them in EXEMPT with that reason.
     // Pinning the set here means any OTHER env-bearing spawn without
     // sanitizeEnv fails this test, not just the check script.
-    expect([...new Set(violations.map(v => v.file))].sort()).toEqual([
-      'plugin/scripts/bun-runner.js',
-      'src/launcher/claude-mem-launcher.ts',
+    expect(violations.map(v => v.exemptKey).sort()).toEqual([
+      'plugin/scripts/bun-runner.js#spawnOptions',
+      'src/launcher/claude-mem-launcher.ts#spawnOptions',
+    ]);
+    expect(unexemptedViolations(violations)).toEqual([]);
+  });
+
+  // The check reads a 10-line window after each spawn, so fixture blocks are
+  // spaced further apart than that to be judged one at a time.
+  const spacedFixture = (...blocks: string[][]) =>
+    blocks.map(block => block.join('\n')).join('\n' + '\n'.repeat(12));
+
+  it('judges a spawn on the nearest declaration above it, not the last one in the file', () => {
+    const source = spacedFixture(
+      ["import { spawn } from 'child_process';", 'function rawOne() {', '  const options = { env: { ...process.env } };', "  spawn('a', [], options);", '}'],
+      ['function sanitizedOne() {', '  const options = { env: sanitizeEnv(process.env) };', "  spawn('b', [], options);", '}'],
+    );
+    expect(findViolationsInSources([{ file: 'src/fixture.ts', source }])).toEqual([
+      { file: 'src/fixture.ts', line: 4, variable: 'options', exemptKey: 'src/fixture.ts#options' },
+    ]);
+  });
+
+  it('still reports a second raw-env spawn added to an exempt file', () => {
+    const source = spacedFixture(
+      ["import { spawn } from 'child_process';", 'const spawnOptions = { env: { ...process.env } };', "spawn('bun', [], spawnOptions);"],
+      ['const extraOptions = { env: { ...process.env } };', "spawn('other', [], extraOptions);"],
+      ["spawn('inline', [], { env: process.env });"],
+    );
+    const violations = findViolationsInSources([{ file: 'plugin/scripts/bun-runner.js', source }]);
+    expect(violations.map(v => v.exemptKey)).toEqual([
+      'plugin/scripts/bun-runner.js#spawnOptions',
+      'plugin/scripts/bun-runner.js#extraOptions',
+      'plugin/scripts/bun-runner.js#inline',
+    ]);
+    expect(unexemptedViolations(violations).map(v => v.exemptKey)).toEqual([
+      'plugin/scripts/bun-runner.js#extraOptions',
+      'plugin/scripts/bun-runner.js#inline',
     ]);
   });
 });

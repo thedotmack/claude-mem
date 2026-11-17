@@ -20,11 +20,15 @@
  * credential-bearing worker/SDK boundary and the parent shell is their trust
  * boundary. Two host-boundary spawns *do* pass an env block explicitly and are
  * listed in EXEMPT for the same reason, so that they are reviewed rather than
- * invisible. Any other violation fails.
+ * invisible. An exemption names the file AND the env object the spawn
+ * passes, so a second raw-env spawn added to an exempt file still fails.
+ * Any other violation fails.
  *
- * Pure CJS (no compile step) so it can run before tsc. Exposes findViolations
- * for the bun test in tests/env-isolation.test.ts; exits non-zero with
- * file:line on any violation when run directly.
+ * Pure CJS (no compile step) so it can run before tsc. Exposes findViolations,
+ * findViolationsInSources (the same scan over in-memory sources, for fixture
+ * tests) and unexemptedViolations for the bun test in
+ * tests/env-isolation.test.ts; exits non-zero with file:line on any violation
+ * when run directly.
  */
 const fs = require('fs');
 const path = require('path');
@@ -59,9 +63,14 @@ const OBJECT_DECL_RE = /^\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]*)?
  * violation cannot hide in a shape the check does not read.
  */
 const EXEMPT = new Map([
-  ['plugin/scripts/bun-runner.js', 'host-boundary hook runner: hands the host environment to the worker it starts'],
-  ['src/launcher/claude-mem-launcher.ts', 'host-boundary hook launcher: same reason'],
+  ['plugin/scripts/bun-runner.js#spawnOptions', 'host-boundary hook runner: hands the host environment to the worker it starts'],
+  ['src/launcher/claude-mem-launcher.ts#spawnOptions', 'host-boundary hook launcher: same reason'],
 ]);
+
+/** The EXEMPT key a violation would match: `<file>#<env object name>`, or `<file>#inline`. */
+function exemptKeyOf(violation) {
+  return `${violation.file}#${violation.variable ?? 'inline'}`;
+}
 
 /** Strip // line comments and block comments so doc mentions don't trip. */
 function stripComments(source) {
@@ -108,8 +117,11 @@ function scanTargets() {
 
 /**
  * Object literals declared as `const name = { ... }` (or `: Type = {`), with
- * their line span. A spawn that passes `name` is then judged on the literal's
- * own text, not on the call's window.
+ * their start line. A spawn that passes `name` is then judged on the literal's
+ * own text, not on the call's window. Every declaration is kept (one name can
+ * be declared in several functions of one file), and a spawn is judged on the
+ * nearest declaration of that name above it, so a sanitized `options` in one
+ * function cannot mask a raw `options` in another.
  */
 function declaredObjects(lines) {
   const objects = new Map();
@@ -126,16 +138,31 @@ function declaredObjects(lines) {
       end = cursor;
       if (depth <= 0) break;
     }
-    objects.set(match[1], { text: lines.slice(index, end + 1).join('\n') });
+    const declarations = objects.get(match[1]) ?? [];
+    declarations.push({ start: index, text: lines.slice(index, end + 1).join('\n') });
+    objects.set(match[1], declarations);
   });
   return objects;
 }
 
-function findViolations() {
+/** The declaration of a name nearest above line `spawnIndex`, or undefined. */
+function nearestDeclarationAbove(declarations, spawnIndex) {
+  let nearest;
+  for (const declaration of declarations) {
+    if (declaration.start < spawnIndex && (!nearest || declaration.start > nearest.start)) nearest = declaration;
+  }
+  return nearest;
+}
+
+/**
+ * The scan itself, over `{ file, source }` pairs (`file` is the repo-relative
+ * path used in reports and EXEMPT keys). Each violation names the env object
+ * the spawn passes (`variable`), or null for an inline env block.
+ */
+function findViolationsInSources(sources) {
   const violations = [];
-  for (const file of scanTargets()) {
-    const relative = path.relative(REPO_ROOT, file).split(path.sep).join('/');
-    const stripped = stripComments(fs.readFileSync(file, 'utf-8'));
+  for (const { file: relative, source } of sources) {
+    const stripped = stripComments(source);
     const lines = stripped.split('\n');
     const objects = declaredObjects(lines);
 
@@ -146,13 +173,17 @@ function findViolations() {
 
       // Inline shape: the env block is written inside the call's own window.
       let envScope = ENV_KEY_RE.test(window) && PROCESS_ENV_RE.test(window) ? window : null;
+      let variable = null;
 
       // Declared shape: the call passes an object built above it.
       if (!envScope) {
-        for (const [name, object] of objects) {
+        for (const [name, declarations] of objects) {
           if (!new RegExp(`\\b${name}\\b`).test(window)) continue;
+          const object = nearestDeclarationAbove(declarations, i);
+          if (!object) continue;
           if (ENV_KEY_RE.test(object.text) && PROCESS_ENV_RE.test(object.text)) {
             envScope = object.text;
+            variable = name;
             break;
           }
         }
@@ -161,15 +192,28 @@ function findViolations() {
       if (!envScope) return;
       if (SANITIZE_RE.test(envScope)) return;
 
-      violations.push({ file: relative, line: i + 1 });
+      const violation = { file: relative, line: i + 1, variable };
+      violations.push({ ...violation, exemptKey: exemptKeyOf(violation) });
     });
   }
   return violations;
 }
 
+function findViolations() {
+  return findViolationsInSources(scanTargets().map((file) => ({
+    file: path.relative(REPO_ROOT, file).split(path.sep).join('/'),
+    source: fs.readFileSync(file, 'utf-8'),
+  })));
+}
+
+/** Violations no EXEMPT entry covers: these fail the check. */
+function unexemptedViolations(violations) {
+  return violations.filter((v) => !EXEMPT.has(v.exemptKey));
+}
+
 function run() {
   const all = findViolations();
-  const violations = all.filter((v) => !EXEMPT.has(v.file));
+  const violations = unexemptedViolations(all);
   if (violations.length === 0) {
     const exempted = all.length === 0 ? '' : ` (${all.length} reviewed host-boundary exception(s) skipped)`;
     console.log(`spawn-env discipline: OK (all env-bearing spawns sanitize process.env)${exempted}`);
@@ -182,7 +226,7 @@ function run() {
   return 1;
 }
 
-module.exports = { findViolations };
+module.exports = { findViolations, findViolationsInSources, unexemptedViolations };
 
 if (require.main === module) {
   process.exit(run());
