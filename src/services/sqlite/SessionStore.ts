@@ -3515,8 +3515,9 @@ export class SessionStore {
     const orderClause = preserveIdOrder ? '' : `ORDER BY o.created_at_epoch ${direction}, o.id ${direction}`;
     const limitClause = limit && !preserveIdOrder ? 'LIMIT ?' : '';
 
-    const placeholders = ids.map(() => '?').join(',');
-    const params: any[] = [...ids];
+    // Corpus builds can select more rows than SQLite permits bind parameters.
+    // Keep one native ID membership query, with filters/order/limit applied once.
+    const params: any[] = [JSON.stringify(ids)];
     const additionalConditions: string[] = [];
 
     if (projects.length > 0) {
@@ -3576,8 +3577,8 @@ export class SessionStore {
     }
 
     const whereClause = additionalConditions.length > 0
-      ? `WHERE o.id IN (${placeholders}) AND ${additionalConditions.join(' AND ')}`
-      : `WHERE o.id IN (${placeholders})`;
+      ? `WHERE o.id IN (SELECT value FROM json_each(?)) AND ${additionalConditions.join(' AND ')}`
+      : `WHERE o.id IN (SELECT value FROM json_each(?))`;
     if (limitClause) params.push(limit);
 
     const stmt = this.db.prepare(`
@@ -4781,8 +4782,7 @@ export class SessionStore {
     const direction = orderBy === 'date_asc' ? 'ASC' : 'DESC';
     const orderClause = preserveIdOrder ? '' : `ORDER BY ss.created_at_epoch ${direction}, ss.id ${direction}`;
     const limitClause = limit && !preserveIdOrder ? 'LIMIT ?' : '';
-    const placeholders = ids.map(() => '?').join(',');
-    const params: any[] = [...ids];
+    const params: any[] = [JSON.stringify(ids)];
     const additionalConditions: string[] = [];
 
     if (projects.length > 0) {
@@ -4805,7 +4805,7 @@ export class SessionStore {
       SELECT ss.*
       FROM session_summaries ss
       LEFT JOIN sdk_sessions s ON s.memory_session_id = ss.memory_session_id
-      WHERE ss.id IN (${placeholders}) ${additionalFilter}
+      WHERE ss.id IN (SELECT value FROM json_each(?)) ${additionalFilter}
       ${orderClause}
       ${limitClause}
     `);
@@ -4831,8 +4831,7 @@ export class SessionStore {
     const direction = orderBy === 'date_asc' ? 'ASC' : 'DESC';
     const orderClause = preserveIdOrder ? '' : `ORDER BY up.created_at_epoch ${direction}, up.id ${direction}`;
     const limitClause = limit && !preserveIdOrder ? 'LIMIT ?' : '';
-    const placeholders = ids.map(() => '?').join(',');
-    const params: any[] = [...ids];
+    const params: any[] = [JSON.stringify(ids)];
     const additionalConditions: string[] = [];
 
     if (projects.length > 0) {
@@ -4859,7 +4858,7 @@ export class SessionStore {
         COALESCE(NULLIF(s.platform_source, ''), '${DEFAULT_PLATFORM_SOURCE}') as platform_source
       FROM user_prompts up
       JOIN sdk_sessions s ON up.session_db_id = s.id
-      WHERE up.id IN (${placeholders}) ${additionalFilter}
+      WHERE up.id IN (SELECT value FROM json_each(?)) ${additionalFilter}
       ${orderClause}
       ${limitClause}
     `);
