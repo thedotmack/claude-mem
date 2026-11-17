@@ -28,12 +28,16 @@ import { PostgresServerSessionsRepository } from '../../storage/postgres/server-
 // Phase 11 — sentinel exception class so the worker can distinguish
 // scope-violation/revoked-key failures from generic processor errors and
 // audit them under the right action. Marked non-retryable: an attacker who
-// tampered with a payload should never be retried into the queue.
-export class ServerGenerationScopeViolationError extends Error {
+// tampered with a payload should never be retried into the queue. BullMQ only
+// skips the remaining attempts for an UnrecoverableError, so a plain Error
+// here was delivered again and audited once per attempt.
+export class ServerGenerationScopeViolationError extends UnrecoverableError {
   readonly reason: 'scope_mismatch' | 'revoked_key';
   constructor(reason: 'scope_mismatch' | 'revoked_key', message: string) {
     super(message);
     this.reason = reason;
+    // BullMQ matches on the name as well; see the terminal outcome error below.
+    this.name = 'UnrecoverableError';
   }
 }
 
