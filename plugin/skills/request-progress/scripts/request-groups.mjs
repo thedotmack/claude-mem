@@ -8165,7 +8165,6 @@ init_shared_file_hooks();
 init_SettingsDefaultsManager();
 init_settings_document();
 init_shared_records();
-init_logger();
 import { randomUUID as randomUUID3 } from "node:crypto";
 function validIdentity(value) {
   if (!value.trim() || Buffer.byteLength(value, "utf8") > 128 || value.includes("\0")) {
@@ -8193,14 +8192,7 @@ function ensureLocalDeviceIdentity(db, settingsPath, configuredId = "") {
     const deviceId = [...identities][0] ?? randomUUID3();
     if (settingsId !== deviceId) {
       const result = updateSettingsDocument(settingsPath, { CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: deviceId }, SettingsDefaultsManager.getAllDefaults());
-      if (result.status === "refused") {
-        const cause = result.error instanceof Error ? result.error : new Error(String(result.error));
-        if (pinned) {
-          logger.warn("DB", "Could not save the local device identity to settings; using the identity saved in the database", { settingsPath }, cause);
-        } else {
-          throw new Error(`Could not save the local device identity to ${settingsPath}: ${cause.message}. If this file is not valid JSON, repair or delete it, then restart claude-mem.`, { cause });
-        }
-      }
+      if (result.status === "refused") throw result.error instanceof Error ? result.error : new Error("Local device identity could not be saved");
     }
     if (!pinned) db.query("INSERT INTO local_work_view_identity(singleton,device_id) VALUES(1,?)").run(deviceId);
     return deviceId;
