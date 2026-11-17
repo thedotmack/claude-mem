@@ -51,7 +51,7 @@ describe('response metadata uses the registered memory identity', () => {
         await messages.next();
         const durableId = rekey ? 'deliberately-rekeyed-memory' : 'first-memory';
         if (rekey) store.updateMemorySessionId(sid, durableId);
-        const xml = kind === 'summary' ? '<summary><request>Read example</request></summary>'
+        const xml = kind === 'summary' ? '<summary><request>Read example</request><investigated>Read the example file</investigated></summary>'
           : '<observation><type>discovery</type><title>Read example</title></observation>';
         const result = await processAgentResponse(xml,
           session, dbManager, manager, { sseBroadcaster: { broadcast: event => events.push(event) } }, 10, null, 'SDK');

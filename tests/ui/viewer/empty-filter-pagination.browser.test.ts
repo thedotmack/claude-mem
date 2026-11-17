@@ -20,7 +20,7 @@ for (const mode of ['more', 'exhausted', 'loading'] as const) {
         import { createRoot } from 'react-dom/client';
         import { SessionDetailPage } from './src/ui/viewer/components/SessionDetailPage';
         import { removeLoadedRow } from './src/ui/viewer/utils/feed-deletion';
-        window.confirm = () => true;
+        window.confirm = () => { throw new Error('The viewer must not use the browser confirm box'); };
         function Probe() {
           const [items, setItems] = useState(${JSON.stringify(items)});
           const [loading, setLoading] = useState(${mode === 'loading'});
@@ -50,7 +50,10 @@ for (const mode of ['more', 'exhausted', 'loading'] as const) {
             await settle();
             document.querySelector('[title="Filter to Bugfix"]').click(); await settle();
             const beforeDelete = [...document.querySelectorAll('.card-title')].map(x => x.textContent);
-            document.querySelector('[title="Delete observation"]').click();
+            // Delete through the card's "…" menu and its in-page question (no browser confirm box).
+            document.querySelector('.observation-card .card-menu-trigger').click(); await settle();
+            [...document.querySelectorAll('.observation-card [role="menuitem"]')].find(item => item.textContent.includes('Delete')).click(); await settle();
+            document.querySelector('.inline-confirm-danger').click();
             const until = Date.now() + 1800;
             while (document.body.textContent.includes('OWNED_LOADED_BUGFIX') || (${mode === 'more'} && !document.body.textContent.includes('OWNED_OLDER_BUGFIX'))) {
               if (Date.now() > until) throw new Error('Deletion did not settle');

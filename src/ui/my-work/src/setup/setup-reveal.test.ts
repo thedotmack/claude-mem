@@ -2,7 +2,8 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { readFileSync } from 'node:fs'
-import { promptStamp, revealFromSnapshot, type SnapshotWithSetup, type WorkerExtraction } from './setup-reveal.ts'
+import { promptStamp, recordedNextStepText, revealFromSnapshot, type SnapshotWithSetup, type WorkerExtraction } from './setup-reveal.ts'
+import { NEXT_STEP_NOT_RECORDED, NO_WORK_YET } from '../live/to-work-model.ts'
 import type { WorkViewFocusArea } from '../live/work-view-api-types.ts'
 
 const extraction = (state: WorkerExtraction['state']): WorkerExtraction => ({ state, reason: 'setup-scan', step: null, agent: null, startedAt: null, finishedAt: null, error: null })
@@ -97,5 +98,22 @@ describe('the Reveal from the live snapshot', () => {
     ] })
     assert.equal(reveal.requestReadErrorCount, 1)
     assert.deepEqual(reveal.requests?.map((request) => request.id), ['readable'])
+  })
+})
+
+describe('recordedNextStepText', () => {
+  it('prints a recorded next step and leaves out the filler for a missing one (G3)', () => {
+    assert.equal(recordedNextStepText({ next: { who: 'human', text: '  Write the release notes ' } }), 'Write the release notes')
+    assert.equal(recordedNextStepText({ next: { who: 'bot', text: NEXT_STEP_NOT_RECORDED } }), null)
+    assert.equal(recordedNextStepText({ next: { who: 'bot', text: '   ' } }), null)
+  })
+  it('leaves out the filler of a request that has only asks: it is not a next step either (G3)', () => {
+    assert.equal(recordedNextStepText({ next: { who: 'bot', text: NO_WORK_YET } }), null)
+    // As the Reveal gets it: the mapper writes the filler for a request with no agent work, and the Reveal drops it.
+    const fixture = JSON.parse(readFileSync(new URL('../../test-fixtures/work-view-snapshot.trimmed.json', import.meta.url), 'utf8')) as SnapshotWithSetup
+    const asksOnly = { ...fixture.humanRequests[0], id: 'asks-only', items: [], activity: [], progress: null, humanCopy: null }
+    const [request] = revealFromSnapshot({ ...fixture, humanRequests: [asksOnly] }).requests ?? []
+    assert.equal(request?.next?.text, NO_WORK_YET)
+    assert.equal(recordedNextStepText(request), null)
   })
 })

@@ -3,12 +3,20 @@
  * registered by src/mods/hooks-module.ts, claude-mem's one hooks module.
  *
  * Claude Code reads what a hooks module hooks and calls off its source, so
- * every hook is `on("<event>", hook)`, and `$` is only ever spelled
+ * every hook is a literal `on("<event>", …)`, and `$` is only ever spelled
  * `$.<namespace>.<method>(…)` with literal names: it is never passed to a
- * helper, which is why the host below is built inline.
+ * helper, which is why the host below is built inline and why `toolCallEnd`
+ * takes only the event.
+ *
+ * Tool results are watched at `session.append` (door `tool-result`), not at the
+ * tool-call event: Claude Code's Code Mode refuses to start while any enabled
+ * plugin's hooks module hooks a tool-call, tool-check or classic PreToolUse
+ * event (and a few more), so one such hook here would turn Code Mode off for
+ * all of claude-mem. scripts/code-mode-refused-events.js lists the events and
+ * the build fails if the hooks module bundle hooks one.
  */
-import { AutoClearController, type AutoClearHost } from './controller.js';
-import type { On } from './mod-api.js';
+import { AutoClearController, type AutoClearHost, type ToolCallEnd } from './controller.js';
+import type { ApiContentBlock, On, SessionAppendEvent } from './mod-api.js';
 import {
   AUTO_CLEAR_DEFAULT_PERCENT,
   defaultDataDir,
@@ -21,6 +29,32 @@ import {
 
 /** settings.json is read again at most this often, so a change applies within a minute without a read per tool call. */
 const SETTINGS_TTL_MS = 30_000;
+
+/** The text of one tool_result block: its content as a string, or the text blocks of a block array. */
+function resultText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .map((block: ApiContentBlock) => (block?.type === 'text' && typeof block.text === 'string' ? block.text : ''))
+    .join('');
+}
+
+/** A stored tool-result row as the controller sees a finished tool call. */
+function toolCallEnd(e: SessionAppendEvent): ToolCallEnd {
+  let isError = false;
+  let text = '';
+  for (const block of e.message.content) {
+    if (block.type !== 'tool_result') continue;
+    if (block.is_error === true) isError = true;
+    text += resultText(block.content);
+  }
+  return {
+    tool: typeof e.origin.tool === 'string' ? e.origin.tool : 'unknown',
+    agentId: e.agentId,
+    isError,
+    text,
+  };
+}
 
 export function registerAutoClear(on: On): void {
   let controller: AutoClearController | null = null;
@@ -99,22 +133,18 @@ export function registerAutoClear(on: On): void {
     return next(e);
   });
 
-  on('tool.call', async ($, e, next) => {
-    const result = await next(e);
-    if (!controller) return result;
+  on('session.append', { door: 'tool-result' }, async ($, e, next) => {
+    // The row is stored first: nothing here may hold it back or change it.
+    const stored = await next(e);
+    if (!controller) return stored;
     try {
-      const note = await controller.onToolCallEnd({
-        tool: e.tool,
-        agentId: e.agentId,
-        denied: typeof result.deny === 'string',
-        isError: result.isError === true,
-        text: typeof result.text === 'string' ? result.text : undefined,
-      });
-      if (note) return { ...result, context: [...(result.context ?? []), note] };
+      // Judge the result by the row as kept: a later hook in the chain may have changed its content.
+      const note = await controller.onToolCallEnd(toolCallEnd({ ...e, message: stored.message }));
+      if (note) await $.session.append({ message: { type: 'user', content: [{ type: 'text', text: note }] } });
     } catch {
-      // Auto-clear never gets in the way of a tool call.
+      // Auto-clear never gets in the way of a tool result being kept.
     }
-    return result;
+    return stored;
   }).catch(async ($, e, next) => next(e));
 
   on('turn.start', async ($, e, next) => {

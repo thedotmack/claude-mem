@@ -6,11 +6,11 @@
  * It ships off: CLAUDE_MEM_AUTO_CLEAR_ENABLED=true turns it on.
  *
  * The flow, all on the main loop (subagents are never counted):
- *  1. After a tool call, context use is at or past the threshold: a note is
- *     attached to that tool's result asking Claude to save the work state with
- *     work_state_write and end its turn. A turn that crosses the threshold
- *     without a tool call is caught when it ends, and the same request is sent
- *     as a prompt of its own.
+ *  1. After a tool result is stored, context use is at or past the threshold:
+ *     a reminder row is appended right behind that result asking Claude to
+ *     save the work state with work_state_write and end its turn. A turn that
+ *     crosses the threshold without a tool call is caught when it ends, and the
+ *     same request is sent as a prompt of its own.
  *  2. The turn ends. If the latest thing Claude did was a successful
  *     work_state_write, /clear runs and "continue" is sent as the user.
  *     Otherwise Claude is asked once more in a turn of its own; if that turn
@@ -22,6 +22,10 @@
  *  4. A fresh conversation that already starts at or past the threshold (a
  *     large system prompt and context against a small window) would clear in
  *     a loop, so auto-clear turns itself off until Claude Code restarts.
+ *  5. A session that runs its tools from a script (Code Mode) stores every
+ *     tool result with no text, so a save cannot be told from a refused one.
+ *     Auto-clear never clears on a save it cannot read: it turns itself off
+ *     until Claude Code restarts.
  *
  * Nothing here talks to Claude Code directly: AutoClearHost is the mods API
  * as register.ts adapts it, which keeps this file testable.
@@ -60,10 +64,8 @@ export interface ToolCallEnd {
   tool: string;
   /** Set when a subagent made the call. */
   agentId?: string;
-  /** The call was refused before it ran. */
-  denied: boolean;
   isError: boolean;
-  /** The result as the model reads it. */
+  /** The result as the model reads it; empty when the session stores tool results with no text (Code Mode). */
   text?: string;
 }
 
@@ -109,12 +111,17 @@ export class AutoClearController {
 
   constructor(private readonly host: AutoClearHost) {}
 
-  /** A main-loop or subagent tool call finished; returns the note to attach to its result, if any. */
+  /** A main-loop or subagent tool result was stored; returns the reminder to append behind it, if any. */
   async onToolCallEnd(call: ToolCallEnd): Promise<string | null> {
-    if (call.agentId || call.denied) return null;
+    if (call.agentId) return null;
     if (WORK_STATE_WRITE_TOOL.test(call.tool)) {
       if (this.phase !== 'idle' && this.phase !== 'clearing') {
-        this.saved = !call.isError && SAVED_RESULT.test((call.text ?? '').trim());
+        const text = (call.text ?? '').trim();
+        if (!call.isError && text === '') {
+          this.stopForUnreadableSave();
+          return null;
+        }
+        this.saved = !call.isError && SAVED_RESULT.test(text);
       }
       return null;
     }
@@ -276,6 +283,17 @@ export class AutoClearController {
         this.host.note('The conversation was cleared, but "continue" could not be sent. Type it to pick the work back up.');
       }
     });
+  }
+
+  /** A save came back with no text, so it cannot be told from a refused one: clearing now could lose the work. */
+  private stopForUnreadableSave(): void {
+    this.phase = 'idle';
+    this.saved = false;
+    this.stopped = true;
+    this.host.note(
+      'This session runs tools from a script (Code Mode), so claude-mem cannot read the result of the work state save and did not clear the conversation. '
+      + 'Auto-clear is off in this session until Claude Code restarts.',
+    );
   }
 
   private giveUp(reason: string): void {
