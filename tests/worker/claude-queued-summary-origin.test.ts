@@ -11,3 +11,10 @@ it('SDK queued-summary origin preserves every capture source and stalled continu
   }
   expect(output).toContain('Owned summary');
 }, 10000);
+
+it('Claude SDK settles a content-poor summary without another send and accepts fresh work', async () => {
+  const output = await runOwnedFixture('tests/fixtures/worker/queued-summary-origin-cases.ts', {
+    prefix: 'summary-content-sdk-', args: ['content-rejected'], timeoutMs: 8000,
+  });
+  expect(output).toContain('Rejected summary settled once; fresh summary stored');
+}, 10000);

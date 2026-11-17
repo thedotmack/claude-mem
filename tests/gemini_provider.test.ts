@@ -189,9 +189,12 @@ describe('GeminiProvider', () => {
     await agent.startSession(session);
 
     expect(global.fetch).toHaveBeenCalledTimes(1);
-    const url = (global.fetch as any).mock.calls[0][0];
+    const [url, init] = (global.fetch as any).mock.calls[0];
     expect(url).toContain('https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent');
-    expect(url).toContain('key=test-api-key');
+    // The key travels in the header, never the URL: a query string is recorded
+    // by proxies and server access logs.
+    expect(url).not.toContain('key=');
+    expect(init.headers['x-goog-api-key']).toBe('test-api-key');
   });
 
   // A generator start opens a new generation (#3479), so a multi-turn history

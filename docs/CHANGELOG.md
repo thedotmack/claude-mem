@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [15.20.0] - 2026-11-17
+
+## Two critical fixes
+
+- **The worker starts when settings.json is not valid JSON** (#6259). The worker refused to start when `~/.claude-mem/settings.json` couldn't be parsed, even though the database already held the device identity it was trying to save there. Nothing was captured and no context was injected. It now logs a warning, leaves the file untouched, and starts. On a first start with no saved identity, the error names the file and says to repair or delete it.
+- **Live Codex Desktop capture on macOS** (#6285, thanks @MaxWang007; reported in #6283 by @AlbertValverdeC). Under Bun on macOS, `fs.watch` gives no event while another process appends to a file it holds open, and Codex Desktop holds a rollout file open for the life of a thread. Codex sessions were read in one burst, sometimes a day later, when Codex closed the file. The transcript watcher now checks the files it already tails every 3 seconds and reads new bytes. It awaits one stat at a time, so a large `~/.codex/sessions` history never blocks the worker, and it never opens new files on its own.
+
+## Also on main since 15.19.0
+
+Three pieces of the upcoming 16.0.0, already on main, ship in this release too:
+
+- **Mem0 and Supermemory import acceptance fixes** (#6206): Supermemory `--documents` reruns no longer duplicate, and documents imported by 15.19.0 still count as already imported. Mem0 expiry includes its own date. Every import limit names its source; the unsourced 100 MiB total and 10,000-record default are gone (`--max-records` stays).
+- **Classic viewer and TV page redesign** (#6229): jumping to the end of a long timeline no longer crashes the viewer (React error 185). A one-row header, timeline kind chips with counts, "Find in loaded memories", day labels, session pages titled by their newest summary, tabbed Settings, and plainer logs. The TV page fits titles in up to three lines and shows a Live dot.
+- **Setup step bar and Stop import** (#6233): a five-step bar with Back on every screen, errors in plain words with the raw cause under Details, and Stop import (`POST /api/setup/import/stop`, nothing deleted and nothing restarts by itself), with a receipt of what was added.
+
 ## [15.19.0] - 2026-11-16
 
 ## Continue a Claude Code or Codex conversation from My Work

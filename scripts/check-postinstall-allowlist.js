@@ -17,13 +17,21 @@
 // (tree-sitter grammars used for tests) legitimately carry install scripts and
 // are NOT the install surface the user fetches via npx — so they are out of
 // scope here.
+//
+// A direct dep is resolved in the root node_modules tree first and then in the
+// plugin's own tree, and a dep found in neither fails the guard: skipping it
+// silently is what let an uninspectable dependency through, which is the one
+// thing this check exists to prevent.
 
 import { readFileSync, existsSync } from 'fs';
-import { join, dirname } from 'path';
+import { join, dirname, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { POSTINSTALL_ALLOWLIST, allowScriptsMap } from './postinstall-allowlist.js';
 
-const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
+// Overridable so a test can point the guard at a fixture tree.
+const repoRoot = process.env.CLAUDE_MEM_GUARD_ROOT
+  ? resolve(process.env.CLAUDE_MEM_GUARD_ROOT)
+  : join(dirname(fileURLToPath(import.meta.url)), '..');
 const SCRIPT_KEYS = ['preinstall', 'install', 'postinstall'];
 
 // The known, reviewed set of plugin deps that carry install scripts. These are
@@ -44,19 +52,25 @@ const pluginPkg = JSON.parse(readFileSync(pluginPkgPath, 'utf-8'));
 const deps = Object.keys(pluginPkg.dependencies || {});
 
 const offenders = [];
-const missing = [];
+const uninspectable = [];
 for (const dep of deps) {
-  const installed = join(repoRoot, 'node_modules', ...dep.split('/'), 'package.json');
-  if (!existsSync(installed)) {
-    // Not resolvable in the dev tree — can't inspect. Note but don't fail
-    // (the dep may be plugin-only and not hoisted into the root dev tree).
-    missing.push(dep);
+  const segments = dep.split('/');
+  // A plugin-only dependency npm/bun did not hoist lives in the plugin's own
+  // tree; looking only at the root tree skipped exactly the dependency this
+  // guard exists to notice.
+  const installed = [
+    join(repoRoot, 'node_modules', ...segments, 'package.json'),
+    join(repoRoot, 'plugin', 'node_modules', ...segments, 'package.json'),
+  ].find(existsSync);
+  if (!installed) {
+    uninspectable.push(dep);
     continue;
   }
   let pkg;
   try {
     pkg = JSON.parse(readFileSync(installed, 'utf-8'));
   } catch {
+    uninspectable.push(dep);
     continue;
   }
   const scripts = pkg.scripts || {};
@@ -66,8 +80,13 @@ for (const dep of deps) {
   }
 }
 
-if (missing.length > 0) {
-  console.log(`(info) ${missing.length} plugin dep(s) not present in the dev node_modules tree — skipped: ${missing.join(', ')}`);
+if (uninspectable.length > 0) {
+  console.error('\nPostinstall allowlist guard FAILED.');
+  console.error('These direct plugin dependencies were found in neither node_modules tree, so their install scripts cannot be reviewed:');
+  for (const dep of uninspectable) console.error(`  - ${dep}`);
+  console.error('\nAn uninspectable dependency is not a reviewed one. Install the workspace dependencies');
+  console.error('(so the tree is complete) or remove the dependency.');
+  process.exit(1);
 }
 
 if (offenders.length > 0) {
