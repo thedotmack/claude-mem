@@ -62,4 +62,5 @@ export interface GroupingInput {
   proposedLinks: Array<{ kind: string; conversations: string[]; evidence: string; groups: string[] }>;
   remaining: number;
 }
-export function validateGroupingAnswer<T>(answer: T, input: GroupingInput): T;
+/** coerce: the refresh's one retry cuts what would be refused, naming each changed group or ignore entry in coercedFields. */
+export function validateGroupingAnswer<T>(answer: T, input: GroupingInput, options?: { coerce?: boolean; coercedFields?: Set<string> }): T;
