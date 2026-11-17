@@ -180,7 +180,7 @@ export function resolveSymlinkWriteTarget(filePath: string): string {
   return resolved;
 }
 
-const WINDOWS_RENAME_RETRY_CODES = new Set(['EPERM', 'EBUSY', 'EACCES']);
+export const WINDOWS_RENAME_RETRY_CODES = new Set(['EPERM', 'EBUSY', 'EACCES']);
 /** About 0.6 s in total, the same order as graceful-fs's Windows rename retry. */
 const WINDOWS_RENAME_RETRY_DELAYS_MS = [10, 20, 40, 80, 160, 320];
 

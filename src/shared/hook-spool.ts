@@ -1,8 +1,8 @@
 import { createHash, randomBytes } from 'crypto';
 import { link, mkdir, readdir, readFile, rename, unlink } from 'fs/promises';
 import { existsSync, mkdirSync, opendirSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync } from 'fs';
-import { join } from 'path';
-import { writeJsonFileAtomic } from './atomic-json.js';
+import { dirname, join, resolve } from 'path';
+import { WINDOWS_RENAME_RETRY_CODES, writeJsonFileAtomic } from './atomic-json.js';
 import { ensurePrivateDir, resolveDataDir } from './paths.js';
 import { normalizePlatformSource } from './platform-source.js';
 import { logger } from '../utils/logger.js';
@@ -205,6 +205,9 @@ const CORRUPT_DIRNAME = 'corrupt';
 const SPOOL_ENTRY_MODE = 0o600;
 
 const EXPIRED_DIRNAME = 'expired';
+
+/** Corrupt entries whose transient quarantine failure was already logged by this process. */
+const reportedTransientQuarantineFailures = new Set<string>();
 
 /**
  * A retained entry (session never became known, ingest keeps failing) older
@@ -665,6 +668,7 @@ export class HookSpool {
     try {
       await mkdir(this.corruptDirectory, { recursive: true });
       await rename(source, join(this.corruptDirectory, filename));
+      reportedTransientQuarantineFailures.delete(source);
       logger.error('HOOK', 'Quarantined corrupt hook spool entry', {
         file: filename,
         reason,
@@ -673,12 +677,39 @@ export class HookSpool {
       return true;
     } catch (error) {
       // ENOENT: a concurrent drain (another worker process) already moved it.
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+      const code = (error as NodeJS.ErrnoException).code ?? '';
+      if (code === 'ENOENT') {
+        reportedTransientQuarantineFailures.delete(source);
+        return false;
+      }
+      // Another process (antivirus, an indexer) holds the file open; a later drain retries it.
+      if (WINDOWS_RENAME_RETRY_CODES.has(code)) {
+        if (!reportedTransientQuarantineFailures.has(source)) {
+          reportedTransientQuarantineFailures.add(source);
+          logger.warn('HOOK', 'Corrupt hook spool entry is locked; leaving it in place and retrying on a later drain', {
+            file: filename,
+            reason,
+          }, error instanceof Error ? error : new Error(String(error)));
+        }
+        return false;
+      }
       logger.error('HOOK', 'Corrupt hook spool entry could not be quarantined; leaving it in place', {
         file: filename,
         reason,
       }, error instanceof Error ? error : new Error(String(error)));
       return false;
+    }
+  }
+
+  /** A reported locked file that has left the spool no longer needs suppressing. */
+  private forgetReportedQuarantineFailuresNotIn(filenames: readonly string[]): void {
+    if (reportedTransientQuarantineFailures.size === 0) return;
+    const spoolDirectory = resolve(this.directory);
+    const listedPaths = new Set(filenames.map(filename => join(this.directory, filename)));
+    for (const reportedPath of reportedTransientQuarantineFailures) {
+      if (resolve(dirname(reportedPath)) === spoolDirectory && !listedPaths.has(reportedPath)) {
+        reportedTransientQuarantineFailures.delete(reportedPath);
+      }
     }
   }
 
@@ -693,6 +724,7 @@ export class HookSpool {
         error instanceof Error ? error : new Error(String(error)));
       return { files: [], quarantined: 0, omitted: 0 };
     }
+    this.forgetReportedQuarantineFailuresNotIn(filenames);
 
     const files: HookSpoolFile[] = [];
     let quarantined = 0;
@@ -716,6 +748,8 @@ export class HookSpool {
         if (await this.quarantine(filename, parsed.corruptReason)) quarantined++;
         continue;
       }
+      // Rewritten with a valid entry: a later corrupt write here is a new failure to report.
+      reportedTransientQuarantineFailures.delete(entryPath);
       files.push({ entry: parsed, path: entryPath, filename });
       if (files.length > maxEntries) {
         files.sort((a, b) => a.entry.enqueuedAtEpochMs - b.entry.enqueuedAtEpochMs || a.filename.localeCompare(b.filename));
