@@ -69,3 +69,25 @@ test('leaves same-named methods in separate owners and existing constructors unc
   expect(unfoldSymbol(source, 'Outer.java', 'Outer.Outer(int seed)')).toContain('Outer(int seed)');
   expect(unfoldSymbol(source, 'Outer.java', 'Outer.Inner.reset')).toContain('void reset()');
 }, 120000);
+
+test('distinguishes a same-named method overload from the constructor', async () => {
+  const source = `class Foo {
+  Foo(int x) { System.out.println("constructor"); }
+  void Foo(int x) { System.out.println("integer method"); }
+  void Foo(String x) { System.out.println("string method"); }
+}`;
+  const methods = parseFile(source, 'Foo.java').symbols[0].children!;
+  expect(methods.map(method => method.name)).toEqual(['Foo(int x)', 'method Foo(int x)', 'Foo(String x)']);
+  const directory = mkdtempSync(join(tmpdir(), 'java-constructor-method-'));
+  try {
+    writeFileSync(join(directory, 'Foo.java'), source);
+    const result = await searchCodebase(directory, 'Foo');
+    const hits = result.matchingSymbols.filter(symbol => symbol.kind === 'method').sort((a, b) => a.lineStart - b.lineStart);
+    expect(hits.map(hit => hit.symbolName)).toEqual(['Foo.Foo(int x)', 'Foo.method Foo(int x)', 'Foo.Foo(String x)']);
+    for (const [index, hit] of hits.entries()) {
+      const body = unfoldSymbol(source, 'Foo.java', hit.symbolName);
+      expect(body).toContain(['"constructor"', '"integer method"', '"string method"'][index]);
+    }
+    expect(unfoldSymbol(source, 'Foo.java', 'Foo.Foo')).toContain('"integer method"');
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 120000);

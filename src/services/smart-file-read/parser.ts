@@ -1385,6 +1385,15 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
         }
         if (symbol.children) disambiguate(symbol.children);
       }
+      if (language === "java") {
+        // Constructors already include parameters. A legal same-named method
+        // can acquire that exact identity above; keep the constructor's name.
+        const finalCounts = new Map<string, number>();
+        for (const symbol of siblings) finalCounts.set(symbol.name, (finalCounts.get(symbol.name) ?? 0) + 1);
+        for (const symbol of siblings) {
+          if (symbol.shortName && finalCounts.get(symbol.name)! > 1) symbol.name = `method ${symbol.name}`;
+        }
+      }
     };
     disambiguate(roots);
   }
