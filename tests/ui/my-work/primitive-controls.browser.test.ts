@@ -3,22 +3,11 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import {
-  REPOSITORY_ROOT, UNTHROTTLED_TIMER_FLAGS, chromeExecutablePath, compileBrowserFixture, connectToPage,
+  DESKTOP_MOUSE_FLAGS, REPOSITORY_ROOT, UNTHROTTLED_TIMER_FLAGS, chromeExecutablePath, compileBrowserFixture, connectToPage,
   failOnCiWithoutChrome, htmlResponse, launchChrome, scriptResponse, withTimeout, type DevToolsPage, type OwnedChrome,
 } from '../../helpers/chrome-devtools';
 
 failOnCiWithoutChrome('CI requires Chrome for the My Work primitive size, cursor and focus regressions.');
-
-/**
- * Tells Chrome it has a mouse, so the desktop half of this test runs on the desktop it describes on every platform.
- * Headless Chrome on Linux finds no pointing device: it reports `(hover: none)` and `(pointer: none)`, and a CDP mouse
- * move then gives a button `:hover` without the hover looks index.css keeps inside `@media (hover: hover)` (CI on PR
- * 6210; Chrome 157 and Chromium 156 on Linux, 2026-11-16). Chrome on macOS reports a mouse already. The values are
- * Blink's hover type "hover" (2) and pointer type "fine" (4), the setting Playwright 1.66 passes to every headless
- * Chromium it launches. Turning touch emulation off puts Chrome's own values back, so the hover checks run before the
- * touch part.
- */
-const DESKTOP_MOUSE_FLAGS = ['--blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4'];
 
 /**
  * Phase 1 claims about My Work's control primitives, measured in a real browser on the app's real stylesheet:
@@ -306,6 +295,8 @@ const DESKTOP_MOUSE_FLAGS = ['--blink-settings=primaryHoverType=2,availableHover
   let page: DevToolsPage | undefined;
   const rgb = (hex: string) => `rgb(${[1, 3, 5].map((offset) => parseInt(hex.slice(offset, offset + 2), 16)).join(', ')})`;
   try {
+    // A mouse for the desktop half (DESKTOP_MOUSE_FLAGS). Turning touch emulation off puts Chrome's own values back, so
+    // the hover checks run before the touch part.
     chrome = launchChrome(server.url.href, { profilePrefix: 'claude-mem-primitives-', remoteDebugging: true,
       extraFlags: [...UNTHROTTLED_TIMER_FLAGS, ...DESKTOP_MOUSE_FLAGS] });
     // Chrome starts and runs this fixture in 0.65–0.94s here (3 runs, 2026-11-16); 15s is about 16× that, for a cold

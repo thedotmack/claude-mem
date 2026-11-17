@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import {
-  REPOSITORY_ROOT, UNTHROTTLED_TIMER_FLAGS, chromeExecutablePath, compileBrowserFixture, connectToPage,
+  DESKTOP_MOUSE_FLAGS, REPOSITORY_ROOT, UNTHROTTLED_TIMER_FLAGS, chromeExecutablePath, compileBrowserFixture, connectToPage,
   failOnCiWithoutChrome, htmlResponse, launchChrome, scriptResponse, withTimeout, type DevToolsPage, type OwnedChrome,
 } from '../../helpers/chrome-devtools';
 import { CONTENT_BODY_MAX_BYTES } from '../../../src/shared/cloud-sync-limits';
@@ -149,7 +149,11 @@ async function withSetupPage(query: string, viewport: { width: number; height: n
   let chrome: OwnedChrome | undefined;
   let page: DevToolsPage | undefined;
   try {
-    chrome = launchChrome(pageUrl, { profilePrefix: 'claude-mem-setup-', remoteDebugging: true, extraFlags: UNTHROTTLED_TIMER_FLAGS });
+    // A desktop walk gets a mouse on every platform (DESKTOP_MOUSE_FLAGS): without one, Linux's headless Chrome keeps
+    // the 44px touch sizes that setup.css lifts only under (pointer: fine), and the Reveal's bottom row ended at 932px
+    // of 900 on CI. A phone walk turns touch emulation on instead.
+    chrome = launchChrome(pageUrl, { profilePrefix: 'claude-mem-setup-', remoteDebugging: true,
+      extraFlags: [...UNTHROTTLED_TIMER_FLAGS, ...(viewport.phone ? [] : DESKTOP_MOUSE_FLAGS)] });
     // Same allowance as the primitive fixture: Chrome starts in under a second here, 15s covers a cold shared runner.
     await withTimeout(ready, 15_000, 'Setup fixture did not start');
     page = await connectToPage(chrome, pageUrl);
