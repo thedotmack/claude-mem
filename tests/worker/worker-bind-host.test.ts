@@ -119,6 +119,24 @@ describe('a leftover CLAUDE_MEM_TV_TOKEN with a non-loopback host and no local A
     expect(errorSpy).toHaveBeenCalledTimes(1);
   });
 
+  it('treats a saved boolean token as present, as the old settings reader did', () => {
+    // coercePersistedSettingValue turned a saved boolean into "true"/"false", which turned
+    // the TV guard on. Reading it as absent would expose the full API on a 0.0.0.0 bind.
+    spyOnLogs();
+    for (const saved of [true, false]) {
+      const settingsPath = writeSettings(`boolean-tv-token-${saved}`, {
+        CLAUDE_MEM_WORKER_HOST: '0.0.0.0',
+        CLAUDE_MEM_TV_TOKEN: saved,
+      });
+      expect(readLegacyTvToken(settingsPath, {})).toBe(String(saved));
+      expect(resolveWorkerBindHost({
+        configuredHost: '0.0.0.0',
+        legacyTvToken: readLegacyTvToken(settingsPath, {}),
+        localApiTokenSet: false,
+      })).toBe('127.0.0.1');
+    }
+  });
+
   it('finds the token in a nested { env } settings document', () => {
     const settingsPath = writeSettings('nested-tv-token', { env: { CLAUDE_MEM_TV_TOKEN: ' nested-token ' } });
     expect(readLegacyTvToken(settingsPath, {})).toBe('nested-token');

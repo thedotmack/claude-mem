@@ -33,7 +33,12 @@ export function readLegacyTvToken(settingsPath: string, env: NodeJS.ProcessEnv =
   const loaded = loadDocument(settingsPath);
   if (!loaded.document) return '';
   const value = settingsTarget(loaded.document)[LEGACY_TV_TOKEN_KEY];
-  return typeof value === 'string' ? value.trim() : '';
+  if (typeof value === 'string') return value.trim();
+  // The old settings reader (coercePersistedSettingValue) turned a saved boolean into
+  // "true"/"false", which switched the TV guard on. Count it as a token here too, so such
+  // an install falls back to loopback instead of exposing the full API.
+  if (typeof value === 'boolean') return String(value);
+  return '';
 }
 
 /**
