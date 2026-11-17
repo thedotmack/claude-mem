@@ -38,6 +38,7 @@ export const setupKo: Record<string, string> = {
   'Discover My Work, Rules & Focus': '내 작업, 규칙, 집중 영역 찾기',
   'Skip this step': '이 단계 건너뛰기',
   'Sending your choice…': '선택 사항을 보내는 중…',
+  'Too much for one upload. Untick a tool or skip.': '한 번에 업로드하기에는 너무 많습니다. 도구 선택을 해제하거나 이 단계를 건너뛰세요.',
   'Conversations': '대화',
   'Latest': '최근',
   'Continue setup.': '초기 설정을 계속하세요.',

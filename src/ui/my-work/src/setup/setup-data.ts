@@ -16,6 +16,8 @@ export interface SetupScanAgent {
   canRunSetup: boolean | null
   /** Why it cannot, e.g. "Gemini is installed, but this Google account can't use it: ...". */
   cannotRunReason: string | null
+  /** The JSON bytes this tool's prompts add to the hosted upload; 0 from an older worker. */
+  uploadBytes: number
 }
 
 export type { SetupScanPhase }
@@ -126,8 +128,8 @@ interface WorkerScanState extends Omit<SetupScanView, 'agents' | 'improveProduct
   uploadedAgents?: string[] | null
   /** Older workers do not send the hosted setup preference. */
   improveProduct?: boolean
-  /** An older worker sends no canRunSetup / cannotRunReason. */
-  agents: Array<Omit<SetupScanAgent, 'canRunSetup' | 'cannotRunReason'> & Partial<Pick<SetupScanAgent, 'canRunSetup' | 'cannotRunReason'>> & { fromMemory?: number; fromTranscripts?: number }>
+  /** An older worker sends no canRunSetup / cannotRunReason / uploadBytes. */
+  agents: Array<Omit<SetupScanAgent, 'canRunSetup' | 'cannotRunReason' | 'uploadBytes'> & Partial<Pick<SetupScanAgent, 'canRunSetup' | 'cannotRunReason' | 'uploadBytes'>> & { fromMemory?: number; fromTranscripts?: number }>
   /** The 30-day token usage the same pass sums, once the scan is done. */
   usage?: SetupScanUsage | null
   recentPrompts?: SetupRecentPrompt[]
@@ -164,9 +166,9 @@ export async function setupPending(): Promise<boolean> {
 }
 
 const toScanView = (scan: WorkerScanState): SetupScanView => ({
-  agents: scan.agents.map(({ id, label, detected, prompts }) => ({
+  agents: scan.agents.map(({ id, label, detected, prompts, uploadBytes }) => ({
     // Agent login is irrelevant to hosted setup; the transcript scan only reports which tools were found.
-    id, label, detected, prompts, canRunSetup: null, cannotRunReason: null,
+    id, label, detected, prompts, canRunSetup: null, cannotRunReason: null, uploadBytes: uploadBytes ?? 0,
   })),
   percent: scan.percent, phase: scan.phase, done: scan.done, error: scan.error, improveProduct: scan.improveProduct ?? true,
   uploadedAgents: scan.uploadedAgents ?? null, hostedNotice: scan.hostedNotice ?? null,

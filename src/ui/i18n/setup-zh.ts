@@ -45,6 +45,7 @@ export const setupZh: Record<string, string> = {
   'Discover My Work, Rules & Focus': '发现我的工作、规则与焦点',
   'Skip this step': '跳过此步骤',
   'Sending your choice…': '正在发送您的选择…',
+  'Too much for one upload. Untick a tool or skip.': '内容过多，无法一次上传。请取消勾选一个工具或跳过此步骤。',
 
   // Step 2: Reveal
   'Conversations': '对话',

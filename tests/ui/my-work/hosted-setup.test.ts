@@ -245,6 +245,14 @@ describe('hosted setup scan control', () => {
     expect(sending).toMatch(/<button[^>]*disabled[^>]*>Discover My Work, Rules &amp; Focus/);
     expect(app.renderScan(scan({ phase: 'awaiting-consent' }), null, false, null, 'Could not send your choice')).toContain('class="scan-error" role="alert">Could not send your choice');
     expect(app.renderScan(scan({ phase: 'awaiting-consent', agents: [{ id: 'codex', label: 'Codex', detected: true, prompts: 3, canRunSetup: null, cannotRunReason: null }] }))).toContain('Codex (3 messages)');
+    const agent = (id: string, uploadBytes: number) => ({ id, label: id, detected: true, prompts: 3, canRunSetup: null, cannotRunReason: null, uploadBytes });
+    const fits = app.renderScan(scan({ phase: 'awaiting-consent', agents: [agent('codex', 1024 * 1024), agent('claude-code', 1024 * 1024)] }));
+    expect(fits).not.toContain('Too much for one upload');
+    expect(fits).not.toMatch(/<button[^>]*disabled[^>]*>Discover My Work, Rules &amp; Focus/);
+    const over = app.renderScan(scan({ phase: 'awaiting-consent', agents: [agent('codex', 1024 * 1024), agent('claude-code', 1024 * 1024 + 1)] }));
+    expect(over).toContain('class="scan-error" role="alert">Too much for one upload. Untick a tool or skip.');
+    expect(over).toMatch(/<button[^>]*disabled[^>]*>Discover My Work, Rules &amp; Focus/);
+    expect(over).not.toMatch(/<button[^>]*disabled[^>]*>Skip this step/);
     const visibleConsent = consent.replace(/<details\b[^>]*>[\s\S]*?<\/details>/g, '');
     expect(visibleConsent).toContain('Claude-Mem scans your transcripts to automatically discover your existing work, your preferences, and what you’re focused on.');
     expect(visibleConsent).toContain('Selected messages are sent to cmem.ai and an AI provider.');

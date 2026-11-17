@@ -2,7 +2,7 @@
 // the local worker, or the review fixtures with `?source=sample` (loaded by a dynamic import, so they are never in
 // reach without the flag). The step machine is setup-flow.ts.
 import { CheckIcon } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { CmemMark } from '@/components/brand'
 import { interpolate, LOCALES, LOCALE_NAMES, useI18n, type Locale } from '@/lib/i18n'
 import { uiMessage, renderUiMessage, type UiMessage } from '../../../ui-message'
@@ -110,6 +110,8 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
       setConsentError(uiMessage('Could not confirm your choice: {error}. If you chose to upload, your prompts may already have been uploaded; reload this page to check.', { error: error instanceof Error ? error.message : String(error) }))
     } finally { consentPending.current = false; setConsentSending(false) }
   }
+
+  const uploadTooLarge = useCallback(() => telemetry.error('upload_too_large'), [telemetry])
 
   const [retrying, setRetrying] = useState(false)
   const [retryError, setRetryError] = useState<string | null>(null)
@@ -240,7 +242,7 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
       const failed = telemetry.failure('installer_failed')
       try { await source!.configureInstall(selection) } catch (error) { failed(); throw error }
     }} />,
-    scan: () => <ScanScreen scan={{ ...data.scan, improveProduct: improveProduct ?? data.scan.improveProduct }} onImproveProductChange={(checked) => void changeImproveProduct(checked)} onConfirmUpload={(upload, agents) => void confirmUpload(upload, agents)} consentError={consentError && renderUiMessage(consentError, t)} consentSending={consentSending} preferenceError={preferenceError && renderUiMessage(preferenceError, t)} onRetry={() => void retryScan()} retrying={retrying} retryError={retryError} />,
+    scan: () => <ScanScreen scan={{ ...data.scan, improveProduct: improveProduct ?? data.scan.improveProduct }} onImproveProductChange={(checked) => void changeImproveProduct(checked)} onConfirmUpload={(upload, agents) => void confirmUpload(upload, agents)} onUploadTooLarge={uploadTooLarge} consentError={consentError && renderUiMessage(consentError, t)} consentSending={consentSending} preferenceError={preferenceError && renderUiMessage(preferenceError, t)} onRetry={() => void retryScan()} retrying={retrying} retryError={retryError} />,
     reveal: () => <RevealScreen agents={data.scan.agents} reveal={data.reveal} extraction={data.extraction} uploadedAgents={data.scan.uploadedAgents} recentPrompts={data.recentPrompts} hostedNotice={data.scan.hostedNotice} onContinue={() => update({ revealContinued: true }, 'choice')} />,
     choice: () => <ChoiceScreen branch={flow.branch} onChoose={(branch) => { choiceEdited.current = true; telemetry.action('choose_memory', { branch, branch_confirmed: false }); setBranchConfirmed(false); update({ branch, memoryBilling: branch === 'go' ? 'hosted' : 'existing', choiceContinued: true, savingsComplete: false, checkoutReviewed: false, setupComplete: false, finishTools: [] }, 'savings') }} />,
     savings: () => (

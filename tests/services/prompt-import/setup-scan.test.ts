@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import { join } from 'path';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import { SetupScan, type SetupScanState } from '../../../src/services/prompt-import/setup-scan.js';
+import { HostedUploadTooLargeError } from '../../../src/services/work-view/hosted-intent.js';
 import { SettingsDefaultsManager } from '../../../src/shared/SettingsDefaultsManager.js';
 import { _resetRedactionConfigCache } from '../../../src/utils/redaction.js';
 
@@ -175,6 +176,37 @@ describe('setup prompt scan', () => {
     expect(done.hostedNotice).toContain('Automatic organization is temporarily unavailable');
     expect(done.hostedNotice).not.toContain('stayed on this machine');
     expect(batches[1]).toEqual([]);
+  });
+
+  it('finishes locally, with nothing marked uploaded, when the selected prompts are over the upload cap', async () => {
+    hookRecorded('claude', 'session-large', 'alpha', 'a prompt', '2026-10-05T09:00:00.000Z');
+    const batches: unknown[][] = [];
+    const scan = setupScan();
+    scan.setExtractor(async prompts => {
+      batches.push(prompts);
+      if (prompts.length) throw new HostedUploadTooLargeError('Hosted setup exceeds the 2 MiB upload cap. No prompts were truncated or uploaded.');
+    });
+    scan.start();
+    await scan.finished();
+    const done = await scan.confirmUpload(true);
+    expect(done).toMatchObject({ phase: 'done', done: true, uploadedAgents: [], error: null });
+    expect(done.hostedNotice).toContain('too much for one upload');
+    expect(batches).toHaveLength(2);
+    expect(batches[1]).toEqual([]);
+  });
+
+  it('reports each tool\'s share of the upload, never more than the upload itself', async () => {
+    hookRecorded('claude', 'session-size', 'alpha', 'a prompt', '2026-10-05T09:00:00.000Z');
+    let uploaded = 0;
+    const scan = setupScan();
+    scan.setExtractor(async prompts => { uploaded = Buffer.byteLength(JSON.stringify({ ownerPrompts: prompts, improveProduct: true, timezoneOffsetMinutes: 0 })); });
+    scan.start();
+    const state = await scan.finished();
+    const total = state.agents.reduce((sum, agent) => sum + agent.uploadBytes, 0);
+    expect(state.agents.every(agent => (agent.uploadBytes > 0) === (agent.prompts > 0))).toBe(true);
+    await scan.confirmUpload(true);
+    expect(total).toBeGreaterThan(0);
+    expect(total).toBeLessThanOrEqual(uploaded);
   });
 
   it('does not mark selected tools as uploaded when preflight refuses them', async () => {

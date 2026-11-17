@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { CheckIcon } from 'lucide-react'
 import { AgentMark } from '@/components/brand'
 import { DottedGlowBackground } from '@/components/aceternity/dotted-glow-background'
@@ -7,6 +7,7 @@ import { agentToolFor, type SetupScanPhase, type SetupScanView } from '../setup-
 import { scanAgentStatus } from '../setup-scan-status'
 import { useMatchesMedia } from '@/lib/use-media'
 import { PageHeading } from './shared'
+import { INTENT_MAX_UPLOAD_BYTES } from '../../../../../shared/setup-funnel.ts'
 
 /** PROTO savings.js status phrases, one per scan phase. */
 const STATUS: Record<SetupScanPhase, string> = {
@@ -21,10 +22,11 @@ const STATUS: Record<SetupScanPhase, string> = {
 }
 
 /** Step 1: each detected agent ticks in and its prompt count climbs while the worker reads the last 30 days. */
-export function ScanScreen({ scan, onImproveProductChange, onConfirmUpload, consentError, consentSending, preferenceError, onRetry, retrying, retryError }: {
+export function ScanScreen({ scan, onImproveProductChange, onConfirmUpload, onUploadTooLarge, consentError, consentSending, preferenceError, onRetry, retrying, retryError }: {
   scan: SetupScanView
   onImproveProductChange: (improveProduct: boolean) => void
   onConfirmUpload: (upload: boolean, agents?: string[]) => void
+  onUploadTooLarge?: () => void
   consentError?: string | null
   consentSending?: boolean
   preferenceError: string | null
@@ -38,6 +40,10 @@ export function ScanScreen({ scan, onImproveProductChange, onConfirmUpload, cons
   // Offer every tool that has prompts, even when its history folder is gone and only saved prompts remain.
   const uploadable = scan.agents.filter((agent) => agent.prompts > 0)
   const chosen = uploadable.filter((agent) => !unticked.includes(agent.id)).map((agent) => agent.id)
+  // The worker refuses an upload over the cap before it sends anything, so say it here, while the person can still untick a tool.
+  const tooLarge = scan.phase === 'awaiting-consent'
+    && uploadable.filter((agent) => chosen.includes(agent.id)).reduce((sum, agent) => sum + agent.uploadBytes, 0) > INTENT_MAX_UPLOAD_BYTES
+  useEffect(() => { if (tooLarge) onUploadTooLarge?.() }, [tooLarge, onUploadTooLarge])
   const reducedMotion = useMatchesMedia('(prefers-reduced-motion: reduce)')
   return (
     <section aria-labelledby="scan-title">
@@ -91,9 +97,10 @@ export function ScanScreen({ scan, onImproveProductChange, onConfirmUpload, cons
               ))}
             </ul>
             <div className="scan-consent-actions">
-              <button type="button" className="primary" disabled={chosen.length === 0 || consentSending} onClick={() => onConfirmUpload(true, chosen)}>{t('Discover My Work, Rules & Focus')}</button>
+              <button type="button" className="primary" disabled={chosen.length === 0 || tooLarge || consentSending} onClick={() => onConfirmUpload(true, chosen)}>{t('Discover My Work, Rules & Focus')}</button>
               <button type="button" className="scan-consent-skip" disabled={consentSending} onClick={() => onConfirmUpload(false)}>{t('Skip this step')}</button>
             </div>
+            {tooLarge && <p className="scan-error" role="alert">{t('Too much for one upload. Untick a tool or skip.')}</p>}
             {consentSending && <p className="scan-status" role="status">{t('Sending your choice…')}</p>}
             {consentError && <p className="scan-error" role="alert">{consentError}</p>}
           </div>

@@ -311,7 +311,7 @@ describe('hosted setup extraction', () => {
   it('fails loudly on the uncompressed cap even when the gzip would fit, with no paid request', async () => {
     let calls = 0;
     const { run } = fixture((async () => { calls++; return Response.json(answer()); }) as typeof fetch);
-    await expect(run.run([{ ...prompts[0], text: 'a'.repeat(INTENT_MAX_UPLOAD_BYTES) }], true)).rejects.toThrow('2 MiB upload cap');
+    await expect(run.run([{ ...prompts[0], text: 'a'.repeat(INTENT_MAX_UPLOAD_BYTES) }], true)).rejects.toMatchObject({ code: 'upload-too-large', sent: false, message: expect.stringContaining('2 MiB upload cap') });
     expect(calls).toBe(0);
   });
 

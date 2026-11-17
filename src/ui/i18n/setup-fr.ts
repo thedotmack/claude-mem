@@ -45,6 +45,7 @@ export const setupFr: Record<string, string> = {
   'Discover My Work, Rules & Focus': 'Découvrir mes activités, règles et domaines d’intérêt',
   'Skip this step': 'Ignorer cette étape',
   'Sending your choice…': 'Envoi de votre choix…',
+  'Too much for one upload. Untick a tool or skip.': 'Trop de données pour un seul envoi. Décochez un outil ou ignorez cette étape.',
 
   // Step 2: Reveal
   'Conversations': 'Conversations',
