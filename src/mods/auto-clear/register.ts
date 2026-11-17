@@ -44,9 +44,11 @@ function resultText(content: unknown): string {
 function toolCallEnd(e: SessionAppendEvent): ToolCallEnd {
   let isError = false;
   let text = '';
+  let toolUseId: string | undefined;
   for (const block of e.message.content) {
     if (block.type !== 'tool_result') continue;
     if (block.is_error === true) isError = true;
+    if (toolUseId === undefined && typeof block.tool_use_id === 'string') toolUseId = block.tool_use_id;
     text += resultText(block.content);
   }
   return {
@@ -54,6 +56,7 @@ function toolCallEnd(e: SessionAppendEvent): ToolCallEnd {
     agentId: e.agentId,
     isError,
     text,
+    toolUseId,
   };
 }
 
@@ -157,8 +160,8 @@ export function register(on: On): void {
     if (!controller) return stored;
     try {
       for (const block of stored.message.content) {
-        if (block.type === 'tool_use' && typeof block.name === 'string' && WORK_STATE_WRITE_TOOL.test(block.name)) {
-          controller.onWorkStateWriteCall({ agentId: e.agentId, input: block.input });
+        if (block.type === 'tool_use' && typeof block.id === 'string' && typeof block.name === 'string' && WORK_STATE_WRITE_TOOL.test(block.name)) {
+          controller.onWorkStateWriteCall({ agentId: e.agentId, toolUseId: block.id, input: block.input });
         }
       }
     } catch (error) {

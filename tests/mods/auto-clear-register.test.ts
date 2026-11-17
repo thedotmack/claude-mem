@@ -45,11 +45,11 @@ function harness() {
   };
 
   let rows = 0;
-  /** Raises a tool-result row; `storedAs` is the content the rest of the chain kept, when it differs. */
-  const toolResult = async (tool: string, content: unknown, storedAs?: unknown) => {
+  /** Raises a tool-result row; `storedAs` is the content the rest of the chain kept, when it differs; `toolUseId` names the call it answers. */
+  const toolResult = async (tool: string, content: unknown, storedAs?: unknown, toolUseId?: string) => {
     rows += 1;
     const row = (text: unknown) => ({
-      message: { type: 'user', content: [{ type: 'tool_result', tool_use_id: `toolu_${rows}`, content: text }] },
+      message: { type: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseId ?? `toolu_${rows}`, content: text }] },
       door: 'tool-result',
       origin: { kind: 'tool', tool },
       uuid: `row-${rows}`,
@@ -91,8 +91,8 @@ describe('auto-clear register (session.append, door response)', () => {
     const { record, settle, toolResult, toolUse, start, turnDone } = harness();
     await start();
     await toolResult('Bash', 'ok');
-    await toolUse(WRITE, { list: 'work', fields: BLANKS });
-    await toolResult(WRITE, [{ type: 'text', text: SAVED }]);
+    const call = await toolUse(WRITE, { list: 'work', fields: BLANKS });
+    await toolResult(WRITE, [{ type: 'text', text: SAVED }], undefined, call.message.content[0].id);
     await turnDone();
     await settle();
     await settle();
@@ -100,13 +100,29 @@ describe('auto-clear register (session.append, door response)', () => {
     expect(record.prompts).toEqual([CONTINUATION]);
   });
 
+  it('never uses the blanks of a save that failed, even when a later save succeeds', async () => {
+    const { record, settle, toolResult, toolUse, start, turnDone } = harness();
+    await start();
+    await toolResult('Bash', 'ok');
+    const failed = await toolUse(WRITE, { list: 'work', fields: BLANKS });
+    await toolResult(WRITE, 'HTTP 400: fields is over the 2000-character limit', undefined, failed.message.content[0].id);
+    const retried = await toolUse(WRITE, { list: 'work', fields: { status: 'doing' } });
+    await toolResult(WRITE, [{ type: 'text', text: SAVED }], undefined, retried.message.content[0].id);
+    await turnDone();
+    await settle();
+    await settle();
+    expect(record.commands).toEqual(['clear']);
+    expect(record.prompts).toEqual(['continue']);
+  });
+
   it('ignores a subagent\'s save and other tools\' calls', async () => {
     const { record, settle, toolResult, toolUse, start, turnDone } = harness();
     await start();
     await toolResult('Bash', 'ok');
-    await toolUse(WRITE, { list: 'work', fields: BLANKS }, 'agent-1');
-    await toolUse('Bash', { list: 'work', fields: BLANKS });
-    await toolResult(WRITE, [{ type: 'text', text: SAVED }]);
+    const subagentCall = await toolUse(WRITE, { list: 'work', fields: BLANKS }, 'agent-1');
+    const otherTool = await toolUse('Bash', { list: 'work', fields: BLANKS });
+    await toolResult(WRITE, [{ type: 'text', text: SAVED }], undefined, subagentCall.message.content[0].id);
+    await toolResult(WRITE, [{ type: 'text', text: SAVED }], undefined, otherTool.message.content[0].id);
     await turnDone();
     await settle();
     await settle();

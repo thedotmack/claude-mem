@@ -46,9 +46,9 @@ let rows = 0
  * Raises a stored tool result as the engine does. `content` is what the model
  * reads: a string, a block array, or '' as Code Mode stores a script's calls.
  */
-async function toolResult($: any, tool: string, content: unknown = 'ok', options: { isError?: boolean; agentId?: string } = {}) {
+async function toolResult($: any, tool: string, content: unknown = 'ok', options: { isError?: boolean; agentId?: string; toolUseId?: string } = {}) {
   rows += 1
-  const block: Record<string, unknown> = { type: 'tool_result', tool_use_id: `toolu_${rows}`, content }
+  const block: Record<string, unknown> = { type: 'tool_result', tool_use_id: options.toolUseId ?? `toolu_${rows}`, content }
   if (options.isError !== undefined) block.is_error = options.isError
   return await $.session.append({
     message: { type: 'user', role: 'user', content: [block] },
@@ -251,7 +251,7 @@ test('a save that carries the blanks becomes the continuation prompt sent as the
   const row = await toolUse($, WRITE, { list: 'work', fields })
   // The response row is kept as the model wrote it.
   expect(row.message.content[0].input).toEqual({ list: 'work', fields })
-  await toolResult($, WRITE, saved)
+  await toolResult($, WRITE, saved, { toolUseId: row.message.content[0].id })
   await $.turn.complete(turnDone)
   await clock.settle()
   await clock.settle()
@@ -271,4 +271,20 @@ test('the default point is 40%: at 39% nothing is asked, at 40% the save request
   await toolResult($, 'Bash')
   expect(reminders()).toHaveLength(1)
   expect(reminders()[0]).toContain('past the 40% point')
+})
+
+test('a save that failed never supplies the blanks, even when a later save succeeds', async ($, on) => {
+  const { clock, record } = stubs(on, { percent: 45 })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await toolResult($, 'Bash', 'ok')
+  const fields = { continuation_recently_completed_task: 'wire the login route', continuation_overarching_goal: 'ship passwordless login' }
+  const failed = await toolUse($, WRITE, { list: 'work', fields })
+  await toolResult($, WRITE, 'fields is over the 2000-character limit', { isError: true, toolUseId: failed.message.content[0].id })
+  const retried = await toolUse($, WRITE, { list: 'work', fields: { status: 'doing' } })
+  await toolResult($, WRITE, saved, { toolUseId: retried.message.content[0].id })
+  await $.turn.complete(turnDone)
+  await clock.settle()
+  await clock.settle()
+  expect(record.commands).toEqual(['clear'])
+  expect(record.prompts).toEqual([{ text: 'continue', asUser: true }])
 })

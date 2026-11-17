@@ -100,12 +100,16 @@ export interface ToolCallEnd {
   isError: boolean;
   /** The result as the model reads it; empty when the session stores tool results with no text (Code Mode). */
   text?: string;
+  /** The id of the tool call this result answers, when the row carries one. */
+  toolUseId?: string;
 }
 
 /** A work_state_write call as the model wrote it, read off its response row. */
 export interface WorkStateWriteCall {
   /** Set when a subagent made the call. */
   agentId?: string;
+  /** The tool_use block's id; its result carries the same id. */
+  toolUseId: string;
   /** The call's arguments: { list, fields }. */
   input: unknown;
 }
@@ -134,8 +138,10 @@ export class AutoClearController {
   private phase: Phase = 'idle';
   /** The latest main-loop tool call since Claude was asked was a successful work_state_write. */
   private saved = false;
-  /** The continuation prompt's blanks from the latest main-loop save of this flow that carried them. */
+  /** The continuation prompt's blanks from the latest successful main-loop save of this flow that carried them. */
   private continuation: ContinuationBlanks | null = null;
+  /** Blanks read off a save call whose result has not come back, by tool_use id: only a successful result keeps them. */
+  private readonly pendingContinuations = new Map<string, ContinuationBlanks>();
   /** Waiting for the first context reading of a conversation auto-clear started. */
   private checkFreshStart = false;
   /** No more requests in this conversation (a save was refused or stopped); cleared by the next /clear. */
@@ -158,7 +164,7 @@ export class AutoClearController {
   onWorkStateWriteCall(call: WorkStateWriteCall): void {
     if (call.agentId || this.phase === 'idle' || this.phase === 'clearing') return;
     const blanks = continuationBlanks(call.input);
-    if (blanks) this.continuation = blanks;
+    if (blanks) this.pendingContinuations.set(call.toolUseId, blanks);
   }
 
   /** A main-loop or subagent tool result was stored; returns the reminder to append behind it, if any. */
@@ -172,6 +178,10 @@ export class AutoClearController {
           return null;
         }
         this.saved = !call.isError && SAVED_RESULT.test(text);
+        // A refused or failed save never supplies the blanks.
+        const blanks = call.toolUseId === undefined ? undefined : this.pendingContinuations.get(call.toolUseId);
+        if (call.toolUseId !== undefined) this.pendingContinuations.delete(call.toolUseId);
+        if (this.saved && blanks) this.continuation = blanks;
       }
       return null;
     }
@@ -184,6 +194,7 @@ export class AutoClearController {
     this.phase = 'saving-in-turn';
     this.saved = false;
     this.continuation = null;
+    this.pendingContinuations.clear();
     this.host.note(`Context is at ${percent}% (auto-clear at ${this.threshold}%): Claude is saving the work state, then claude-mem clears and continues.`);
     return inTurnSaveRequest(percent, this.threshold);
   }
@@ -290,6 +301,7 @@ export class AutoClearController {
     this.phase = 'save-prompt-queued';
     // A fresh save is asked for: blanks from an earlier, stale one are not used.
     this.continuation = null;
+    this.pendingContinuations.clear();
     const conversation = this.conversation;
     const stillOurs = () => this.conversation === conversation && this.phase === 'save-prompt-queued';
     this.host.defer(async () => {

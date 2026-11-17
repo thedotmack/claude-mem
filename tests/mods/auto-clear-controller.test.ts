@@ -535,17 +535,21 @@ describe('auto-clear continuation prompt', () => {
       continuation_overarching_goal: 'ship passwordless login',
     },
   };
+  const SAVE_WITHOUT_BLANKS = { list: 'auth-refactor', fields: { status: 'doing' } };
   const CONTINUATION = 'You are working on "auth-refactor" and recently completed "wire the login route". '
     + 'Pick back up on our overarching goal "ship passwordless login" from where you left off.';
+  /** The model writes a save call; its result comes back under the same tool_use id. */
+  const saveCall = async (controller: AutoClearController, toolUseId: string, input: unknown, result = tool(WRITE, SAVED)) => {
+    controller.onWorkStateWriteCall({ toolUseId, input });
+    return controller.onToolCallEnd({ ...result, toolUseId });
+  };
 
   it('sends the sentence built from the save that carried the blanks, not "continue"', async () => {
     const { host, calls, notes, flush } = fakeHost({ percent: 40 });
     const controller = new AutoClearController(host);
     await controller.onToolCallEnd(tool('Bash'));
-    controller.onWorkStateWriteCall({ input: { list: 'auth-refactor', fields: { status: 'doing' } } });
-    await controller.onToolCallEnd(tool(WRITE, SAVED));
-    controller.onWorkStateWriteCall({ input: SAVE_WITH_BLANKS });
-    await controller.onToolCallEnd(tool(WRITE, SAVED));
+    await saveCall(controller, 'w1', SAVE_WITHOUT_BLANKS);
+    await saveCall(controller, 'w2', SAVE_WITH_BLANKS);
     await controller.onTurnEnd(answered);
     await flush();
     expect(calls).toEqual(['clear', `user:${CONTINUATION}`]);
@@ -558,21 +562,50 @@ describe('auto-clear continuation prompt', () => {
     await controller.onTurnEnd(answered);
     await flush();
     expect(calls[0]).toStartWith('prompt:');
-    controller.onWorkStateWriteCall({ input: SAVE_WITH_BLANKS });
-    await controller.onToolCallEnd(tool(WRITE, SAVED));
+    await saveCall(controller, 'w1', SAVE_WITH_BLANKS);
     await controller.onTurnEnd(answered);
     await flush();
     expect(calls.slice(1)).toEqual(['clear', `user:${CONTINUATION}`]);
+  });
+
+  it('matches each result to its own call when saves run side by side', async () => {
+    const { host, calls, flush } = fakeHost({ percent: 40 });
+    const controller = new AutoClearController(host);
+    await controller.onToolCallEnd(tool('Bash'));
+    controller.onWorkStateWriteCall({ toolUseId: 'w1', input: SAVE_WITHOUT_BLANKS });
+    controller.onWorkStateWriteCall({ toolUseId: 'w2', input: SAVE_WITH_BLANKS });
+    await controller.onToolCallEnd({ ...tool(WRITE, SAVED), toolUseId: 'w1' });
+    await controller.onToolCallEnd({ ...tool(WRITE, SAVED), toolUseId: 'w2' });
+    await controller.onTurnEnd(answered);
+    await flush();
+    expect(calls).toEqual(['clear', `user:${CONTINUATION}`]);
+  });
+
+  it('never takes the blanks from a failed or refused save, even when a later save succeeds', async () => {
+    const failedResults = [
+      tool(WRITE, 'HTTP 400: fields is over the 2000-character limit', { isError: true }),
+      tool(WRITE, 'The user doesn\'t want to proceed with this tool use.'),
+    ];
+    for (const failed of failedResults) {
+      const { host, calls, flush } = fakeHost({ percent: 40 });
+      const controller = new AutoClearController(host);
+      await controller.onToolCallEnd(tool('Bash'));
+      await saveCall(controller, 'w1', SAVE_WITH_BLANKS, failed);
+      await saveCall(controller, 'w2', SAVE_WITHOUT_BLANKS);
+      await controller.onTurnEnd(answered);
+      await flush();
+      expect(calls).toEqual(['clear', 'user:continue']);
+    }
   });
 
   it('sends "continue" and tells the person why when no save carried all three blanks', async () => {
     const { host, calls, notes, flush } = fakeHost({ percent: 40 });
     const controller = new AutoClearController(host);
     await controller.onToolCallEnd(tool('Bash'));
-    controller.onWorkStateWriteCall({
-      input: { list: 'auth-refactor', fields: { continuation_recently_completed_task: 'wire the login route', continuation_overarching_goal: '  ' } },
+    await saveCall(controller, 'w1', {
+      list: 'auth-refactor',
+      fields: { continuation_recently_completed_task: 'wire the login route', continuation_overarching_goal: '  ' },
     });
-    await controller.onToolCallEnd(tool(WRITE, SAVED));
     await controller.onTurnEnd(answered);
     await flush();
     expect(calls).toEqual(['clear', 'user:continue']);
@@ -582,10 +615,11 @@ describe('auto-clear continuation prompt', () => {
   it('never takes the blanks from a subagent or from a save made before auto-clear asked', async () => {
     const { host, calls, flush } = fakeHost({ percent: 40 });
     const controller = new AutoClearController(host);
-    controller.onWorkStateWriteCall({ input: SAVE_WITH_BLANKS });
+    await saveCall(controller, 'w0', SAVE_WITH_BLANKS); // idle: auto-clear has asked for nothing yet
     await controller.onToolCallEnd(tool('Bash'));
-    controller.onWorkStateWriteCall({ agentId: 'agent-1', input: SAVE_WITH_BLANKS });
-    await controller.onToolCallEnd(tool(WRITE, SAVED));
+    controller.onWorkStateWriteCall({ agentId: 'agent-1', toolUseId: 'w1', input: SAVE_WITH_BLANKS });
+    await controller.onToolCallEnd({ ...tool(WRITE, SAVED, { agentId: 'agent-1' }), toolUseId: 'w1' });
+    await saveCall(controller, 'w2', SAVE_WITHOUT_BLANKS);
     await controller.onTurnEnd(answered);
     await flush();
     expect(calls).toEqual(['clear', 'user:continue']);
@@ -595,13 +629,12 @@ describe('auto-clear continuation prompt', () => {
     const { host, calls, flush } = fakeHost({ percent: 40 });
     const controller = new AutoClearController(host);
     await controller.onToolCallEnd(tool('Bash'));
-    controller.onWorkStateWriteCall({ input: SAVE_WITH_BLANKS });
-    await controller.onToolCallEnd(tool(WRITE, SAVED));
+    await saveCall(controller, 'w1', SAVE_WITH_BLANKS);
     await controller.onToolCallEnd(tool('Edit')); // more work after the save: it is stale
     await controller.onTurnEnd(answered);
     await flush();
     expect(calls[0]).toStartWith('prompt:');
-    await controller.onToolCallEnd(tool(WRITE, SAVED)); // saved again, without the blanks
+    await saveCall(controller, 'w2', SAVE_WITHOUT_BLANKS);
     await controller.onTurnEnd(answered);
     await flush();
     expect(calls.slice(1)).toEqual(['clear', 'user:continue']);
@@ -612,8 +645,7 @@ describe('auto-clear continuation prompt', () => {
     state.failAsUser = true;
     const controller = new AutoClearController(host);
     await controller.onToolCallEnd(tool('Bash'));
-    controller.onWorkStateWriteCall({ input: SAVE_WITH_BLANKS });
-    await controller.onToolCallEnd(tool(WRITE, SAVED));
+    await saveCall(controller, 'w1', SAVE_WITH_BLANKS);
     await controller.onTurnEnd(answered);
     await flush();
     expect(calls).toEqual(['clear']);
