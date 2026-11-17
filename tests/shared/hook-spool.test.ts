@@ -95,6 +95,41 @@ describe('HookSpool', () => {
     expect(result).toEqual({ drained: 2, retained: 38, quarantined: 0, expired: 0 });
   });
 
+  it('reads a backlog in parallel batches of at most 64 files, and no more than maxEntries', async () => {
+    const spool = new HookSpool();
+    for (let index = 0; index < 200; index++) {
+      spool.enqueue('session_end', { contentSessionId: `session-${index}`, platformSource: 'claude' }, 1000 + index);
+    }
+    const realReadFile = fs.readFile;
+    let inFlight = 0;
+    let peakInFlight = 0;
+    const readSpy = spyOn(fs, 'readFile').mockImplementation((async (...args: Parameters<typeof realReadFile>) => {
+      inFlight++;
+      peakInFlight = Math.max(peakInFlight, inFlight);
+      try {
+        await new Promise(resolve => setTimeout(resolve, 1));
+        return await realReadFile(...args);
+      } finally {
+        inFlight--;
+      }
+    }) as typeof realReadFile);
+
+    try {
+      const bounded = await spool.drain(() => true, undefined, { maxEntries: 16 });
+      expect(bounded).toEqual({ drained: 16, retained: 184, quarantined: 0, expired: 0 });
+      expect(peakInFlight).toBeGreaterThan(1);
+      expect(peakInFlight).toBeLessThanOrEqual(16);
+
+      peakInFlight = 0;
+      const unbounded = await spool.drain(() => true);
+      expect(unbounded).toEqual({ drained: 184, retained: 0, quarantined: 0, expired: 0 });
+      expect(peakInFlight).toBeGreaterThan(16);
+      expect(peakInFlight).toBeLessThanOrEqual(64);
+    } finally {
+      readSpy.mockRestore();
+    }
+  });
+
   it('keeps same-millisecond enqueues from one process in call order', async () => {
     const spool = new HookSpool();
     for (const contentSessionId of ['session-z', 'session-y', 'session-x']) {
