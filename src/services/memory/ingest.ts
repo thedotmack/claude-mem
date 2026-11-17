@@ -35,6 +35,7 @@ import {
   statSync,
 } from 'fs';
 import { basename, dirname, isAbsolute, join, relative } from 'path';
+import { StringDecoder } from 'node:string_decoder';
 import { unified } from 'unified';
 import remarkParse from 'remark-parse';
 import { CLAUDE_CONFIG_DIR } from '../../shared/paths.js';
@@ -48,7 +49,7 @@ const JSONL_EXT = '.jsonl';
 /** The link-only index Claude Code maintains; carries no knowledge of its own. */
 const INDEX_FILE = 'MEMORY.md';
 const MEMORY_SUBDIR = 'memory';
-/** Bytes of a sibling transcript to sniff for the project's real cwd. */
+/** Read chunk size for finding the project's real cwd in a sibling transcript. */
 const CWD_SNIFF_BYTES = 16_384;
 /**
  * Claude Code's memory notes are short distilled prose. Anything larger is not
@@ -303,17 +304,28 @@ function sniffCwd(projectDir: string): string | undefined {
       if (!lstatSync(filePath).isFile()) continue;
       fd = openSync(filePath, OPEN_NO_FOLLOW_FLAGS);
       const buf = Buffer.alloc(CWD_SNIFF_BYTES);
-      const read = readSync(fd, buf, 0, CWD_SNIFF_BYTES, 0);
-      const chunk = buf.toString('utf-8', 0, read);
-      for (const line of chunk.split('\n')) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        try {
-          const cwd = (JSON.parse(trimmed) as { cwd?: unknown }).cwd;
-          if (typeof cwd === 'string' && cwd.trim()) return cwd;
-        } catch {
-          // Partial last line from the fixed-size read, or a non-JSON line.
+      const decoder = new StringDecoder('utf8');
+      let pending: string[] = [];
+      for (;;) {
+        const read = readSync(fd, buf, 0, buf.length, null);
+        const chunk = read ? decoder.write(buf.subarray(0, read)) : decoder.end();
+        // A native user record can exceed one chunk. Parse complete records,
+        // stopping at the first cwd without loading the rest of the history.
+        const lines = chunk.split('\n');
+        const tail = read ? lines.pop()! : '';
+        for (const line of lines) {
+          const trimmed = (pending.join('') + line).trim();
+          pending = [];
+          if (!trimmed) continue;
+          try {
+            const cwd = (JSON.parse(trimmed) as { cwd?: unknown }).cwd;
+            if (typeof cwd === 'string' && cwd.trim()) return cwd;
+          } catch {
+            // A malformed record or an incomplete final write has no cwd.
+          }
         }
+        if (!read) break;
+        if (tail) pending.push(tail);
       }
     } catch {
       // Unreadable transcript — try the next sibling.
