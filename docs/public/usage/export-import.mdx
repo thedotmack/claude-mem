@@ -49,9 +49,14 @@ Re-importing the same export still skips the memories already restored.
 Large files are sent in multiple requests within the worker's 5 MiB JSON body
 limit, measured in UTF-8 bytes. Parent sessions are imported first, and later
 requests use the local session identities returned by the worker. Use a worker
-from the same version as the script for this identity response. An input row
-whose serialized request alone exceeds the limit is refused before any rows
-are written; the script does not shorten its content.
+from the same version as the script for this identity response. The script checks
+the original input rows before writing: a row whose serialized request alone
+exceeds the limit is refused without shortening its content. After importing the
+parents, it checks the resolved child rows again before sending any children.
+An existing destination session can have a longer identity that makes a child
+row exceed the limit; this error names the row's original export index. The
+already accepted parent sessions remain, since a multi-request import is not a
+single transaction.
 
 **Duplicate Detection Strategy:**
 - **Sessions**: By `claude_session_id` (unique)

@@ -955,10 +955,6 @@ export class DataRoutes extends BaseRouteHandler {
         }
       });
 
-      if (stats.observationsImported > 0) {
-        store.rebuildObservationsFTSIndex();
-      }
-
       if (chromaSync && importedObservations.length > 0) {
         const safeParseJson = (val: string | null): string[] => {
           if (!val) return [];

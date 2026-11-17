@@ -20,6 +20,7 @@ describe('memory import request sizes', () => {
   let requests: number[];
   let oldWorker: boolean;
   let rejectRequest: number | undefined;
+  let rebuilds: number;
 
   beforeEach(async () => {
     directory = mkdtempSync(join(tmpdir(), 'cmem-import-size-'));
@@ -28,6 +29,9 @@ describe('memory import request sizes', () => {
     requests = [];
     oldWorker = false;
     rejectRequest = undefined;
+    rebuilds = 0;
+    const rebuild = store.rebuildObservationsFTSIndex.bind(store);
+    store.rebuildObservationsFTSIndex = () => { rebuilds++; rebuild(); };
     const app = express();
     app.use((req, res, next) => {
       if (req.path === '/api/import') requests.push(Number(req.headers['content-length']));
@@ -192,6 +196,43 @@ describe('memory import request sizes', () => {
     expect(requests).toHaveLength(0);
     expect(store.db.query('SELECT count(*) AS n FROM sdk_sessions').get()).toEqual({ n: 0 });
   });
+
+  it('checks resolved row sizes before importing any children and reports the original row index', async () => {
+    const payload = exportedMemory(false);
+    const session = store.createSDKSession('shared-content', 'import-project', 'Keep local prompt', undefined, 'claude');
+    store.ensureMemorySessionIdRegistered(session, 'destination-memory-'.repeat(256));
+    const index = payload.observations.findIndex(row => row.memory_session_id === 'exported-claude');
+    const row = payload.observations[index];
+    row.narrative = '';
+    const overhead = Buffer.byteLength(JSON.stringify({ observations: [row] }));
+    row.narrative = 'x'.repeat(WORKER_JSON_BODY_LIMIT_BYTES - overhead - 64);
+    expect(Buffer.byteLength(JSON.stringify({ observations: [row] }))).toBeLessThan(WORKER_JSON_BODY_LIMIT_BYTES);
+    const result = await run(payload);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(`observations[${index}] exceeds the worker's`);
+    expect(result.stderr).toContain('after resolving its session');
+    // Destination identities are only available after the parent request.
+    // Its accepted sessions remain, but no child batch should have started.
+    expect(requests).toHaveLength(1);
+    expect(store.db.query('SELECT count(*) AS n FROM sdk_sessions').get()).toEqual({ n: 3 });
+    for (const table of ['session_summaries', 'observations', 'user_prompts']) {
+      expect(store.db.query(`SELECT count(*) AS n FROM ${table}`).get()).toEqual({ n: 0 });
+    }
+    expect(result.stdout).not.toContain('Import complete!');
+  });
+
+  it('keeps accepted chunks searchable after a later failure without rebuilding all observations', async () => {
+    rejectRequest = 4;
+    const result = await run(exportedMemory());
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('503');
+    expect(requests).toHaveLength(4);
+    expect(store.db.query("SELECT count(*) AS n FROM observations_fts WHERE observations_fts MATCH 'Unicode'").get())
+      .toEqual({ n: 2 });
+    expect(store.db.query("SELECT count(*) AS n FROM session_summaries_fts WHERE session_summaries_fts MATCH 'ownership'").get())
+      .toEqual({ n: 3 });
+    expect(rebuilds).toBe(0);
+  }, 30_000);
 
   it('requires the worker identity response before importing children in another request', async () => {
     oldWorker = true;

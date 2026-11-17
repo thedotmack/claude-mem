@@ -35,12 +35,13 @@ async function importExportRows(payload: Record<ImportKind, any[]>) {
   // A file may contain many individually importable rows. Size requests by
   // encoded bytes, without truncating records or raising the worker's limit.
   const envelope = (kind: ImportKind) => `{"${kind}":[`;
+  const checkRowSize = (kind: ImportKind, row: any, index: number, context = '') => {
+    if (Buffer.byteLength(envelope(kind) + JSON.stringify(row) + ']}') > WORKER_JSON_BODY_LIMIT_BYTES) {
+      throw new Error(`${kind}[${index}] exceeds the worker's ${WORKER_JSON_BODY_LIMIT_BYTES}-byte request limit${context}`);
+    }
+  };
   for (const kind of IMPORT_KINDS) {
-    payload[kind].forEach((row, index) => {
-      if (Buffer.byteLength(envelope(kind) + JSON.stringify(row) + ']}') > WORKER_JSON_BODY_LIMIT_BYTES) {
-        throw new Error(`${kind}[${index}] exceeds the worker's ${WORKER_JSON_BODY_LIMIT_BYTES}-byte request limit`);
-      }
-    });
+    payload[kind].forEach((row, index) => checkRowSize(kind, row, index));
   }
 
   const stats: Record<string, number> = {};
@@ -67,6 +68,14 @@ async function importExportRows(payload: Record<ImportKind, any[]>) {
   // local memory id and same-content sessions owned by different platforms.
   // Carry those identities across requests instead of re-importing parents.
   for (const kind of IMPORT_KINDS) {
+    if (kind === 'summaries') {
+      // Existing destination identities can be longer than the exported ones.
+      // They are now known: check all resolved children before sending any.
+      for (const childKind of IMPORT_KINDS.slice(1)) {
+        payload[childKind].forEach((row, index) =>
+          checkRowSize(childKind, remap(childKind, row), index, ' after resolving its session'));
+      }
+    }
     let start = 0;
     while (start < payload[kind].length) {
       const rows: string[] = [];
