@@ -7,6 +7,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -28,7 +29,7 @@ import {
   uninstallAiderIntegration,
   upsertAiderReadEntry,
 } from '../../src/services/integrations/AiderInstaller.js';
-import { AIDER_MEMORY_RELATIVE_PATH } from '../../src/shared/aider-paths.js';
+import { AIDER_MEMORY_RELATIVE_PATH, resolveAiderConfigPath } from '../../src/shared/aider-paths.js';
 import { getProjectContext } from '../../src/utils/project-name.js';
 import { detectInstalledIDEs } from '../../src/npx-cli/commands/ide-detection.js';
 
@@ -51,9 +52,62 @@ afterEach(() => {
 });
 
 function makeProject(): string {
-  scratch = mkdtempSync(path.join(tmpdir(), 'aider-install-test-'));
+  // Real path: git reports the resolved root, and macOS's tmpdir sits behind the /var -> /private/var link.
+  scratch = realpathSync(mkdtempSync(path.join(tmpdir(), 'aider-install-test-')));
   return scratch;
 }
+
+describe('Aider config precedence', () => {
+  test('selects the current-directory config before the git-root config', () => {
+    const project = makeProject();
+    execFileSync('git', ['init', '-q'], { cwd: project });
+    const app = path.join(project, 'packages', 'app');
+    mkdirSync(app, { recursive: true });
+    const rootConfig = path.join(project, '.aider.conf.yml');
+    const appConfig = path.join(app, '.aider.conf.yml');
+    writeFileSync(rootConfig, 'read: [ROOT.md]\n');
+    writeFileSync(appConfig, 'read: [APP.md]\n');
+
+    expect(resolveAiderConfigPath(app)).toBe(appConfig);
+    expect(resolveAiderConfigPath(project)).toBe(rootConfig);
+  });
+
+  test('installs into the effective nested config and restores it on uninstall', async () => {
+    const project = makeProject();
+    execFileSync('git', ['init', '-q'], { cwd: project });
+    const app = path.join(project, 'packages', 'app');
+    mkdirSync(app, { recursive: true });
+    const rootConfig = path.join(project, '.aider.conf.yml');
+    const appConfig = path.join(app, '.aider.conf.yml');
+    const originalRoot = 'read: [ROOT.md]\n';
+    const originalApp = 'read: [APP.md]\n';
+    writeFileSync(rootConfig, originalRoot);
+    writeFileSync(appConfig, originalApp);
+
+    await captureConsoleAsync(async () => {
+      expect(await installAiderIntegration({ cwd: app }, async () => '# Shared project memory\n')).toBe(0);
+    });
+    expect(readFileSync(rootConfig, 'utf8')).toBe(originalRoot);
+    expect(hasAiderReadEntry(readFileSync(appConfig, 'utf8'), MEMORY)).toBe(true);
+    expect(readFileSync(path.join(app, MEMORY), 'utf8')).toContain('Shared project memory');
+    expect(checkAiderStatus({ cwd: app })).toBe(0);
+
+    expect(uninstallAiderIntegration({ cwd: app })).toBe(0);
+    expect(readFileSync(appConfig, 'utf8')).toBe(originalApp);
+    expect(readFileSync(rootConfig, 'utf8')).toBe(originalRoot);
+  });
+
+  test('retains the git-root config when the current directory has none', () => {
+    const project = makeProject();
+    execFileSync('git', ['init', '-q'], { cwd: project });
+    const app = path.join(project, 'packages', 'app');
+    mkdirSync(app, { recursive: true });
+    const rootConfig = path.join(project, '.aider.conf.yml');
+    writeFileSync(rootConfig, 'read: [ROOT.md]\n');
+
+    expect(resolveAiderConfigPath(app)).toBe(rootConfig);
+  });
+});
 
 /** Capture console.log/error output for the duration of `fn`. */
 function captureConsole(fn: () => unknown): string[] {

@@ -21,9 +21,9 @@ import { writeOwnerPromptsFile, type OwnerPromptsFile } from '../prompt-import/o
 import { resolvePythonCommand } from './python.js';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { logger } from '../../utils/logger.js';
-import { FOCUS_BATCH, readGoals, readLedger, runCli, validateFocusAnswer, validateGroupingAnswer, type FocusInput, type LedgerDatabase, type RefreshNeeds } from './request-groups.mjs';
+import { FOCUS_BATCH, readGoals, readLedger, runCli, storyInput as buildStoryInput, validateFocusAnswer, validateGroupingAnswer, validateStory, type FocusInput, type LedgerDatabase, type RefreshNeeds } from './request-groups.mjs';
 import { FOCUS_AUTO_PLACE_THRESHOLD, judgeFocusBatch, placesAlone, type FocusJudge, type FocusJudgement } from './focus-judge.mjs';
-import { isWithdrawnArea, ownerGoalsAreaRows, ownerGoalsSaveKey, PROPOSAL_KINDS, readFocusAreas, type FocusArea, type RouterFocusBody } from './my-focus.mjs';
+import { isWithdrawnArea, ownerGoalsAreaRows, ownerGoalsSaveKey, PROPOSAL_KINDS, readFocusAreas, routerFocusRows, type FocusArea, type RouterFocusBody } from './my-focus.mjs';
 import { NAV_LABELS } from './nav-words.mjs';
 import { routeUndecided, type RequestJudge } from './request-judge.mjs';
 import { RUNTIME_SKILLS } from '../../shared/runtime-skills.js';
@@ -352,7 +352,8 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
         if (existsSync(path)) inlineEvidence.set(path, readFileSync(path, 'utf8'));
       }
     }
-    let questionByteLimit: number | null = null;
+    /** The byte budget the next question must fit, and the refusal that names its step when it does not. */
+    let questionBudget: { bytes: number; refusal: string } | null = null;
     const expandedQuestion = (prompt: string): string => {
       const supplied = [...inlineEvidence].filter(([path]) => prompt.includes(path));
       return supplied.length ? prompt + '\n\nThe following input files are supplied inline; no file tools are available:\n'
@@ -360,9 +361,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
     };
     const ask: AskAgent = (prompt, models, schema) => {
       const expanded = expandedQuestion(prompt);
-      if (questionByteLimit !== null && Buffer.byteLength(expanded, 'utf8') > questionByteLimit) {
-        throw batchFailure('This owner-goals question exceeds the input budget, including its checked draft or refused answer. Progress is retained; no prompt was skipped.');
-      }
+      if (questionBudget && Buffer.byteLength(expanded, 'utf8') > questionBudget.bytes) throw batchFailure(questionBudget.refusal);
       return askBackend(agent === 'gemini' || agent === 'api' ? expanded : prompt, models, schema);
     };
     const writeInput = (name: string, value: unknown) => {
@@ -373,7 +372,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       return path;
     };
     const localDeviceId = options.localDeviceId();
-    const cli = (argv: string[], input?: unknown, cliOptions: { coerceProgress?: boolean } = {}) => {
+    const cli = (argv: string[], input?: unknown, cliOptions: { coerceProgress?: boolean; now?: number } = {}) => {
       let output: any;
       const database = openDatabase();
       try { runCli(input === undefined ? argv : [...argv, writeInput(argv[0], input)], { dir: ledgerDir, database, now: now(), print: value => { output = value; }, localDeviceId, ...cliOptions }); }
@@ -396,6 +395,26 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
         });
       } finally { database.close(); }
       return output as { placed: number; proposed: number };
+    };
+    let droppedProposals = 0;
+    /** For the focus step's retry: the answer without each proposal that record-focus's check or the worker's write
+     * refuses. A proposal is a suggestion the owner still decides, so a bad one no longer fails the placements beside it.
+     * Refused placements are left for record-focus to refuse. */
+    const withoutRefusedProposals = (answer: any, input: Parameters<typeof validateFocusAnswer>[1], flags: { other?: boolean } = {}) => {
+      const ledger = readLedger(ledgerDir);
+      const database = openDatabase();
+      let focusAreas: FocusArea[];
+      try { focusAreas = readFocusAreas(database, { localDeviceId }); } finally { database.close(); }
+      // The worker's pure preflight (WorkViewRoutes.recordRouterFocus) after record-focus's check, as the goals step reuses
+      // ownerGoalsAreaRows: a name reusing a nav label, or a row too long to save, fails only there. Nothing is written.
+      const accepted = (candidate: any) => {
+        try { routerFocusRows(validateFocusAnswer(candidate, input, ledger, flags), focusAreas); return true; }
+        catch (error) { if (error instanceof TypeError || error instanceof RangeError) return false; throw error; }
+      };
+      if (!Array.isArray(answer?.proposals) || !accepted({ ...answer, proposals: [] })) return answer;
+      const proposals = answer.proposals.reduce((kept: unknown[], proposal: unknown) => accepted({ ...answer, proposals: [...kept, proposal] }) ? [...kept, proposal] : kept, []);
+      droppedProposals += answer.proposals.length - proposals.length;
+      return { ...answer, proposals };
     };
     let python: ReturnType<typeof resolvePythonCommand> | undefined;
     /** Resolve once per refresh, and never retry the script with another interpreter. The goals step re-asks the model
@@ -439,18 +458,19 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       textLanguage = decided;
       writeFileSync(join(ledgerDir, DECIDED_LANGUAGE_FILE), JSON.stringify({ language: decided, decidedAt: new Date(now()).toISOString() }, null, 2), { mode: 0o600 });
     };
-    const step = <T>(name: Step, question: string, save: (answer: any) => T | Promise<T>, answerSchema?: AnswerSchema): Promise<T> => {
+    const step = <T>(name: Step, question: string, save: (answer: any, retry: boolean) => T | Promise<T>, answerSchema?: AnswerSchema): Promise<T> => {
       const rule = languageRule();
       return timed(name, () => askAndSave(name, rule ? `${question}\n\n${rule}` : question, save, answerSchema));
     };
     /** Ask, save, and on a refusal (unreadable JSON or a validator's) ask once more with the answer and reason.
-     * A step refused twice fails with its last raw answer kept in failed-answers/ for diagnosis. */
-    const askAndSave = async <T>(name: Step, question: string, save: (answer: any) => T | Promise<T>, answerSchema?: AnswerSchema): Promise<T> => {
+     * A step refused twice fails with its last raw answer kept in failed-answers/ for diagnosis. `retry` tells the save
+     * it holds that second answer. */
+    const askAndSave = async <T>(name: Step, question: string, save: (answer: any, retry: boolean) => T | Promise<T>, answerSchema?: AnswerSchema): Promise<T> => {
       let refusal: string | null = null;
       let answer = '';
       for (let attempt = 0; attempt < 2; attempt++) {
         answer = await ask(refusal ? `${question}\n\nYour previous answer was refused: ${refusal}\nRejected answer:\n${answer}\n\nFix it and answer again.` : question, stepModels[name], answerSchema);
-        try { return await save(parseAgentJson(answer)); }
+        try { return await save(parseAgentJson(answer), attempt > 0); }
         catch (error) {
           // A save that failed after it started writing is not the answer's fault, and asking again would write twice.
           if ((error as { retryable?: boolean })?.retryable === false) throw error;
@@ -559,7 +579,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
               const contents = renderOwnerGoalsBatch(batch);
               writeFileSync(batchPath, contents, { mode: 0o600 });
               inlineEvidence.set(batchPath, contents);
-              questionByteLimit = OWNER_GOALS_QUESTION_BYTES;
+              questionBudget = { bytes: OWNER_GOALS_QUESTION_BYTES, refusal: 'This owner-goals question exceeds the input budget, including its checked draft or refused answer. Progress is retained; no prompt was skipped.' };
               try {
                 await step('goals', question, async answer => {
                   if (typeof answer.map !== 'string' || !(answer.goals === null || (answer.goals && typeof answer.goals === 'object' && !Array.isArray(answer.goals)))) {
@@ -579,7 +599,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
                   goalsCheckpoint = next;
                   for (const section of batch) processed.add(section.key);
                 });
-              } finally { questionByteLimit = null; }
+              } finally { questionBudget = null; }
             }
             if (!checked && !ownerPrompts) checked = await validate({ generated_at: exportedAt, window_days: 31,
               human_summary: 'No owner prompts in this window.', focus_areas: [], asks: [], rules: [] });
@@ -678,7 +698,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       // Only conversations the ledger has not decided, one project root per question, each beside
       // that root's open requests. Every batch is saved before the next is read, so a later batch
       // sees the requests an earlier one started.
-      let grouped = 0;
+      let grouped = 0, repairedDecisions = 0;
       for (let input = cli(['grouping-input', '--days', '14']); input.conversations.length; input = cli(['grouping-input', '--days', '14'])) {
         await step('grouping', [
           requestProgress, '---', readOnly,
@@ -686,19 +706,23 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
           // answered {"groups": [], "ignored": []} without reading it (Oct 23, twice in a row).
           `Do only section 1 (grouping) for this one batch of new conversations, the \`grouping-input\` output (also saved in ${writeInput('grouping-input', input)}):\n\n\`\`\`json\n${JSON.stringify(input, null, 2)}\n\`\`\``,
           `Decide each of these ${input.conversations.length} conversations exactly once, in "groups" or "ignored": ${input.conversations.map((conversation: { conversationKey: string }) => conversation.conversationKey).join(', ')}. Reply with only the decisions JSON that \`apply\` takes ({"groups": [...], "ignored": [...]}), deciding every conversation in the batch and nothing else, plus "language": the human language most of the owner's asks are written in, as an English name such as "English", ignoring code, file paths, URLs and product names.`,
-        ].join('\n\n'), answer => {
+        ].join('\n\n'), (answer, retry) => {
           const { language, ...decisions } = answer ?? {};
-          const saved = cli(['apply'], validateGroupingAnswer(decisions, input));
+          // The first answer is held strictly, so the model can link its join itself. A retry that still names keys outside
+          // the batch or joins without links saves the parts its links support, instead of failing the whole run.
+          const repaired = new Set<string>();
+          const saved = cli(['apply'], validateGroupingAnswer(decisions, input, { coerce: retry, coercedFields: repaired }));
+          repairedDecisions += repaired.size;
           noteGroupingLanguage(language);
           return saved;
         }, GROUPING_ANSWER_SCHEMA);
         grouped += input.conversations.length;
       }
-      if (grouped) done.push(`${grouped} new conversations grouped`);
+      if (grouped) done.push(`${grouped} new conversations grouped${repairedDecisions ? ` (${repairedDecisions} decisions repaired after retry)` : ''}`);
 
       const due: Array<{ groupId: string }> = cli(['pending', '--days', '14', '--limit', '1000000']).groups;
       let reviewed = 0;
-      const coercedReviewFields = new Set<string>();
+      const coercedReviewFields = new Set<string>(), droppedPreferences = new Set<string>();
       /** One batch of reviews. Like step(), but a refusal re-asks only for the groups that were refused. */
       const reviewBatch = async (groups: Array<{ groupId: string }>, rule: string) => {
         let shows = groups.map(group => cli(['show', group.groupId]));
@@ -724,6 +748,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
               // still exceeds a review cap on its one retry, bound generated fields and save the partial review.
               const saved = cli(['record-progress'], review, { coerceProgress: attempt > 0 && retryGroupIds.has(String(review.groupId)) });
               for (const field of saved?.coercedFields ?? []) coercedReviewFields.add(`${review.groupId}:${field}`);
+              for (const label of saved?.droppedPreferences ?? []) droppedPreferences.add(`${review.groupId}:${label}`);
               recorded.add(String(review.groupId)); reviewed++;
             }
             catch (error) { rejectedReviews.push(review); refusals.push(`${review.groupId}: ${error instanceof Error ? error.message : String(error)}`); }
@@ -749,7 +774,9 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       await Promise.all(Array.from({ length: Math.min(reviewConcurrency(dataDir), batches.length) }, lane));
       const failed = outcomes.filter(outcome => outcome.status === 'rejected');
       if (failed.length) throw (failed[0] as PromiseRejectedResult).reason;
-      if (reviewed) done.push(`${reviewed} requests reviewed${coercedReviewFields.size ? ` (${coercedReviewFields.size} oversized fields trimmed after retry)` : ''}`);
+      const reviewRepairs = [...(coercedReviewFields.size ? [`${coercedReviewFields.size} oversized fields trimmed after retry`] : []),
+        ...(droppedPreferences.size ? [`${droppedPreferences.size} preferences without a quote or text dropped after retry`] : [])];
+      if (reviewed) done.push(`${reviewed} requests reviewed${reviewRepairs.length ? ` (${reviewRepairs.join(', ')})` : ''}`);
 
       // Focus: place the requests not placed yet (changed since, or whose area is gone) in batches, each saved before the
       // next is read, then propose areas from Other when the router-placed Other requests changed since the last pass.
@@ -801,7 +828,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
           const saved = await step('focus', sorting([
             `Do only section 3, steps 1–2 (place each request in a focus area, promoting one that holds several separate asks) for this batch, the \`focus-input\` output (also saved in ${writeInput('focus-input', input)}):\n\n\`\`\`json\n${JSON.stringify(input, null, 2)}\n\`\`\``,
             `Place each of these ${anchors.length} requests exactly once, by its "anchor": ${anchors.join(', ')}. Reply with only the JSON that \`record-focus\` takes ({"placements": [...], "proposals": [...]}).`,
-          ].join('\n\n')), answer => recordFocus(['--limit', String(FOCUS_BATCH)], answer), FOCUS_ANSWER_SCHEMA);
+          ].join('\n\n')), (answer, retry) => recordFocus(['--limit', String(FOCUS_BATCH)], retry ? withoutRefusedProposals(answer, input) : answer), FOCUS_ANSWER_SCHEMA);
           placed += saved.placed; proposed += saved.proposed;
         }
         if (judged.size) {
@@ -813,20 +840,88 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
         if (other.due) {
           const saved = await step('focus', sorting(
             `Do only section 3, step 3 (propose focus areas from Other) for the \`focus-input --other\` output (also saved in ${writeInput('focus-input-other', other)}):\n\n\`\`\`json\n${JSON.stringify(other, null, 2)}\n\`\`\`\n\nPlace nothing ("placements": []). Reply with only the JSON that \`record-focus --other\` takes ({"placements": [], "proposals": [...]}), proposing nothing when nothing qualifies.`,
-          ), answer => recordFocus(['--other'], answer), FOCUS_ANSWER_SCHEMA);
+          ), (answer, retry) => recordFocus(['--other'], retry ? withoutRefusedProposals(answer, other, { other: true }) : answer), FOCUS_ANSWER_SCHEMA);
           proposed += saved.proposed;
         }
-        if (placed || proposed) done.push([...(placed ? [`${placed} requests placed`] : []), ...(proposed ? [`${proposed} focus areas suggested`] : [])].join(', '));
+        if (placed || proposed || droppedProposals) done.push([...(placed ? [`${placed} requests placed`] : []), ...(proposed ? [`${proposed} focus areas suggested`] : []),
+          ...(droppedProposals ? [`${droppedProposals} refused focus area proposals dropped after retry`] : [])].join(', '));
       } catch (error) { focusError = error; }
 
       // Only reviews whose facts (state, percent, dates, milestones, preferences, outcome) moved since the last story; none means the story still holds.
+      // A story written in parts takes several calls, so a review can move while it is being written. The story is
+      // recorded as of this read, so a review that moves after it still counts as news for the next refresh.
+      const storyReadAt = now();
       const storyInput = cli(['story-input']);
       if (storyInput.reviews.length) {
-        await step('story', [
+        // One question held every moved review with no cap, so once enough reviews piled up the question
+        // outgrew the model's window and every later refresh failed the same way (#6226). The reviews are
+        // packed into parts under the complete-question budget the owner-goals map uses
+        // (OWNER_GOALS_QUESTION_BYTES, from the #5969 measurements), each part sized against the question
+        // as it will actually be asked: step() appends the run's language line, and the story so far rides
+        // along in every later part's input. The first part writes (or updates) the story and each later
+        // part updates the story the part before returned. Only the last part is recorded: record-story
+        // stamps the story's writtenAt, so recording an early part would mark the reviews still to come
+        // as already told, and no later refresh would send them again. A part that fails records nothing,
+        // so the next refresh tells the whole story again rather than losing the reviews it missed.
+        const batchPath = writeInput('story-input', '');
+        const storyQuestion = (input: any) => [
           requestProgress, '---', readOnly,
-          `Do only section 4 (${storyInput.update ? 'update' : 'write'} the build story). The \`story-input\` output is in ${writeInput('story-input', storyInput)}. Reply with only the JSON that \`record-story\` takes ({"narrative": "...", "preferences": [...]}).`,
-        ].join('\n\n'), answer => cli(['record-story'], answer));
-        done.push(storyInput.update ? 'story updated' : 'story written');
+          `Do only section 4 (${input.update ? 'update' : 'write'} the build story). The \`story-input\` output is in ${batchPath}. Reply with only the JSON that \`record-story\` takes ({"narrative": "...", "preferences": [...]}).`,
+        ].join('\n\n');
+        // The first part answers story-input as read; each later part updates the story the part before returned,
+        // shaped as story-input reads a recorded one back.
+        const storyInputFor = (reviews: any[], previous: { narrative: string; preferences: any[] } | null) => previous === null
+          ? { ...storyInput, reviews }
+          : buildStoryInput(storyInput.groups, reviews, { ...previous, writtenAt: new Date(storyReadAt).toISOString() });
+        /** Write the part's input file and measure the question exactly as step() will ask it. */
+        const storyQuestionBytes = (input: any) => {
+          const contents = JSON.stringify(input, null, 2);
+          writeFileSync(batchPath, contents, { mode: 0o600 });
+          inlineEvidence.set(batchPath, contents);
+          const question = storyQuestion(input);
+          const rule = languageRule();
+          return Buffer.byteLength(expandedQuestion(rule ? `${question}\n\n${rule}` : question), 'utf8');
+        };
+        const packStoryBatch = (remaining: any[], previous: { narrative: string; preferences: any[] } | null) => {
+          const available = Math.min(OWNER_GOALS_BATCH_BYTES, OWNER_GOALS_QUESTION_BYTES - storyQuestionBytes(storyInputFor([], previous)));
+          const batch: any[] = [];
+          let used = 0;
+          for (const review of remaining) {
+            // A review's cost in the pretty-printed input: its own JSON, four more spaces of indent on
+            // every line, and the comma and newline that separate it from the review before it.
+            const cost = Buffer.byteLength(JSON.stringify(review, null, 2).replaceAll('\n', '\n    '), 'utf8') + 4 + (batch.length ? 2 : 0);
+            if (used + cost > available) break;
+            batch.push(review);
+            used += cost;
+          }
+          // The packing estimates each review's bytes; the written batch is measured exactly, and reviews
+          // move to the next part until the question fits the budget.
+          while (batch.length > 1 && storyQuestionBytes(storyInputFor(batch, previous)) > OWNER_GOALS_QUESTION_BYTES) batch.pop();
+          if (!batch.length || storyQuestionBytes(storyInputFor(batch, previous)) > OWNER_GOALS_QUESTION_BYTES) {
+            throw batchFailure('One moved review and the story question around it exceed the input budget, so the story cannot be written in parts. No review was skipped.');
+          }
+          return batch;
+        };
+        let previous: { narrative: string; preferences: any[] } | null = null;
+        let remaining = storyInput.reviews as any[];
+        let parts = 0;
+        while (remaining.length) {
+          const batch = packStoryBatch(remaining, previous);
+          remaining = remaining.slice(batch.length);
+          const input = storyInputFor(batch, previous);
+          storyQuestionBytes(input);
+          const last = !remaining.length;
+          questionBudget = { bytes: OWNER_GOALS_QUESTION_BYTES, refusal: 'This story question exceeds the input budget, including its refused answer. Nothing was recorded; no review was skipped.' };
+          try {
+            await step('story', storyQuestion(input), async answer => {
+              if (last) return cli(['record-story'], answer, { now: storyReadAt });
+              previous = validateStory(answer);
+              return previous;
+            });
+          } finally { questionBudget = null; }
+          parts++;
+        }
+        done.push(`${storyInput.update ? 'story updated' : 'story written'}${parts > 1 ? ` in ${parts} parts` : ''}`);
       }
       if (focusError) throw focusError;
       return done.length ? `${done.join(', ')}.` : 'Nothing was due.';

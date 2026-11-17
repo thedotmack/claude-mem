@@ -5,7 +5,7 @@ import { toSetupUsage, type SetupScanUsage, type SetupUsage } from './setup-usag
 import { revealFromSnapshot, type SnapshotWithSetup, type WorkerExtraction } from './setup-reveal'
 import { noteFor, searchUrl, toMemoryResults, type MemoryResult, type WorkerSearchResult } from './setup-search'
 import { applySseFrame } from '../live/parse-sse-frame'
-import { HISTORY_IMPORT_RUN_STATES, type HistoryImportRunState, type SetupBranch, type SetupCheckoutState, type SetupEvent, type SetupMemoryBilling, type SetupScanPhase, type SetupStatus } from '../../../../shared/setup-funnel.ts'
+import { HISTORY_IMPORT_RUN_STATES, INTENT_MAX_UPLOAD_BYTES, type HistoryImportRunState, type SetupBranch, type SetupCheckoutState, type SetupEvent, type SetupMemoryBilling, type SetupScanPhase, type SetupStatus } from '../../../../shared/setup-funnel.ts'
 import { hasPendingInstallSetup, type SetupInstallSelection, type SetupInstallState } from '../../../../shared/setup-install.ts'
 
 /** Mirrors the worker's SetupScanState (src/services/prompt-import/setup-scan.ts), trimmed to what the screen shows. */
@@ -15,6 +15,17 @@ export interface SetupScanAgent {
   canRunSetup: boolean | null
   /** Why it cannot, e.g. "Gemini is installed, but this Google account can't use it: ...". */
   cannotRunReason: string | null
+  /** The JSON bytes this tool's prompts add to the hosted upload; 0 from an older worker. */
+  uploadBytes: number
+}
+
+/**
+ * Whether these tools' prompts are too much for setup's one hosted upload. The worker refuses such an upload before it
+ * sends anything, so the consent step says it while the person can still untick a tool. Each tool's share is a lower
+ * bound on its part of the upload, so this never warns about an upload that would fit.
+ */
+export function uploadTooLarge(agents: Pick<SetupScanAgent, 'uploadBytes'>[]): boolean {
+  return agents.reduce((sum, agent) => sum + agent.uploadBytes, 0) > INTENT_MAX_UPLOAD_BYTES
 }
 
 export type { SetupScanPhase }
@@ -182,8 +193,8 @@ interface WorkerScanState extends Omit<SetupScanView, 'agents' | 'improveProduct
   uploadedAgents?: string[] | null
   /** Older workers do not send the hosted setup preference. */
   improveProduct?: boolean
-  /** An older worker sends no canRunSetup / cannotRunReason. */
-  agents: Array<Omit<SetupScanAgent, 'canRunSetup' | 'cannotRunReason'> & Partial<Pick<SetupScanAgent, 'canRunSetup' | 'cannotRunReason'>> & { fromMemory?: number; fromTranscripts?: number }>
+  /** An older worker sends no canRunSetup / cannotRunReason / uploadBytes. */
+  agents: Array<Omit<SetupScanAgent, 'canRunSetup' | 'cannotRunReason' | 'uploadBytes'> & Partial<Pick<SetupScanAgent, 'canRunSetup' | 'cannotRunReason' | 'uploadBytes'>> & { fromMemory?: number; fromTranscripts?: number }>
   /** The 30-day token usage the same pass sums, once the scan is done. */
   usage?: SetupScanUsage | null
   recentPrompts?: SetupRecentPrompt[]
@@ -236,9 +247,9 @@ export async function setupPending(): Promise<boolean> {
 }
 
 const toScanView = (scan: WorkerScanState): SetupScanView => ({
-  agents: scan.agents.map(({ id, label, detected, prompts }) => ({
+  agents: scan.agents.map(({ id, label, detected, prompts, uploadBytes }) => ({
     // Agent login is irrelevant to hosted setup; the transcript scan only reports which tools were found.
-    id, label, detected, prompts, canRunSetup: null, cannotRunReason: null,
+    id, label, detected, prompts, canRunSetup: null, cannotRunReason: null, uploadBytes: uploadBytes ?? 0,
   })),
   percent: scan.percent, phase: scan.phase, done: scan.done, error: scan.error, improveProduct: scan.improveProduct ?? true,
   uploadedAgents: scan.uploadedAgents ?? null, hostedNotice: scan.hostedNotice ?? null,

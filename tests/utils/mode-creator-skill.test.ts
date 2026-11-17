@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import { spawnSync } from 'child_process';
@@ -81,6 +81,22 @@ describe('mode-creator skill', () => {
     expect(settings.CLAUDE_MEM_TELEGRAM_TRIGGER_CONCEPTS.split(',')).toEqual(['existing-tag', 'cost-impact']);
     expect(settings.CLAUDE_MEM_TELEGRAM_BOT_TOKEN).toBe('preserve-this-secret');
     expect(settings.UNRELATED_SETTING).toBe('preserved');
+    // The settings write goes through a random, exclusively created temp name
+    // (see configure-telegram.mjs), so nothing is left behind beside it.
+    expect(readdirSync(dataDir).filter(name => name.endsWith('.tmp'))).toEqual([]);
+  });
+
+  it('writes settings through an exclusive random temp name, like its hardened sibling', () => {
+    const installMode = readFileSync(path.join(skillDir, 'scripts/install-mode.mjs'), 'utf8');
+    const configureTelegram = readFileSync(path.join(skillDir, 'scripts/configure-telegram.mjs'), 'utf8');
+    // Both writers carry full settings, including the bot token, so both must
+    // create their temp exclusively: a predictable name can be pre-planted as
+    // a symlink and a following write lands on the link's target (#5145).
+    for (const source of [installMode, configureTelegram]) {
+      expect(source).toContain("flag: 'wx'");
+      expect(source).not.toContain('${process.pid}.tmp');
+    }
+    expect(configureTelegram).toContain('pre-planted as a symlink');
   });
 
   it('refuses to shadow a bundled mode ID', () => {

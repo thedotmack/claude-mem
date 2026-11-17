@@ -20,7 +20,7 @@
  *   CLI:    search "query" [--limit N] | status
  */
 
-import { readFileSync, appendFileSync, writeFileSync, existsSync, renameSync, mkdirSync, rmSync } from 'node:fs';
+import { readFileSync, appendFileSync, writeFileSync, existsSync, renameSync, mkdirSync, rmSync, unlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -198,9 +198,16 @@ function updateSession(sessionId, patch) {
   try {
     mkdirSync(SESSION_DIR, { recursive: true });
     const file = sessionFile(sessionId);
-    const tmp = `${file}.${process.pid}.tmp`;
-    writeFileSync(tmp, JSON.stringify(state), { mode: 0o600 });
-    renameSync(tmp, file);
+    const tmp = `${file}.${randomUUID()}.tmp`;
+    try {
+      writeFileSync(tmp, JSON.stringify(state), { mode: 0o600, flag: 'wx' });
+      renameSync(tmp, file);
+    } catch (error) {
+      // A failed write or rename (Windows EPERM/EBUSY while the target is held)
+      // would otherwise leave this randomly named temp behind on every attempt.
+      try { unlinkSync(tmp); } catch { /* the temp may not exist */ }
+      throw error;
+    }
   } catch { /* best effort */ }
   return state;
 }

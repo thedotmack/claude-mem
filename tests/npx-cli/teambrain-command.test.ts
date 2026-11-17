@@ -235,6 +235,31 @@ const JOINED = {
 };
 
 describe('npx claude-mem teambrain join', () => {
+  for (const status of [403, 500]) {
+    it(`activates the saved sync connection even when optional sharing returns HTTP ${status}`, async () => {
+      server.state.membership = { status, body: { error: 'sharing_refused', message: 'Sharing could not be enabled.' } };
+      const { exitCode, output } = await runCli(['teambrain', 'join', MOCK_INVITE_TOKEN, '--share-all'], OWN_OBSERVER);
+
+      expect(exitCode, output).toBe(1);
+      expect(readSettingsFile().CLAUDE_MEM_CLOUD_SYNC_TOKEN).toBe(MOCK_SEAT_SETUP_TOKEN);
+      expect(readSettingsFile().CLAUDE_MEM_TEAMBRAIN_TEAM_ID).toBe(MOCK_TEAM.id);
+      expect(server.requestsTo('/api/admin/restart')).toHaveLength(1);
+      expect(server.state.syncConfigured).toBe(true);
+      expect(output).toContain('Cloud sync is on');
+      expect(output).toContain('Sharing could not be enabled.');
+      expect(output).not.toContain('Sharing every project');
+      expect(output).not.toContain(MOCK_SEAT_SETUP_TOKEN);
+    }, 30_000);
+  }
+
+  it('does not restart an unchanged sync connection when optional sharing fails', async () => {
+    server.state.membership = { status: 500, body: { error: 'sharing_failed' } };
+    const { exitCode } = await runCli(['teambrain', 'join', MOCK_INVITE_TOKEN, '--share-all'], JOINED);
+    expect(exitCode).toBe(1);
+    expect(readSettingsFile().CLAUDE_MEM_TEAMBRAIN_TEAM_ID).toBe(MOCK_TEAM.id);
+    expect(server.requestsTo('/api/admin/restart')).toHaveLength(0);
+  }, 30_000);
+
   it('pairs with the invite, writes only sync and TeamBrain settings, shares the flagged projects and restarts the worker', async () => {
     const { exitCode, output } = await runCli(['teambrain', 'join', `${server.origin}/teambrain/app#invite=${MOCK_INVITE_TOKEN}`, '--share', 'proj-a,proj-b'], OWN_OBSERVER);
     expect(exitCode, output).toBe(0);

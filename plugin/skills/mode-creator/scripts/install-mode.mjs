@@ -7,10 +7,12 @@ import {
   mkdirSync,
   readFileSync,
   renameSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const MODE_ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*(?:--[a-z0-9]+(?:-[a-z0-9]+)*)?$/;
@@ -168,10 +170,18 @@ function validateMergedMode(mode) {
 
 function atomicWriteJson(filePath, value, mode = 0o600) {
   mkdirSync(path.dirname(filePath), { recursive: true });
-  const tempPath = path.join(path.dirname(filePath), `.${path.basename(filePath)}.${process.pid}.tmp`);
-  writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', mode });
+  // Random name + exclusive create, the same write configure-telegram.mjs uses:
+  // a predictable pid-suffixed temp can be pre-planted as a symlink, and this
+  // write carries the full settings file, including the Telegram bot token.
+  const tempPath = path.join(path.dirname(filePath), `.${path.basename(filePath)}.${randomUUID()}.tmp`);
+  writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', mode, flag: 'wx' });
   chmodSync(tempPath, mode);
-  renameSync(tempPath, filePath);
+  try {
+    renameSync(tempPath, filePath);
+  } catch (error) {
+    try { unlinkSync(tempPath); } catch { /* best effort */ }
+    throw error;
+  }
 }
 
 function timestamp() {

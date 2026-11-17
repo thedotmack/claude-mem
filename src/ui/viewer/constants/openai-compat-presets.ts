@@ -19,6 +19,7 @@ export const OPENAI_COMPAT_PRESET_OPTIONS: readonly OpenAICompatPresetOption[] =
   { id: 'nvidia-nim', label: 'NVIDIA NIM (build.nvidia.com)', baseUrl: 'https://integrate.api.nvidia.com/v1', defaultModel: 'nvidia/nemotron-3.5-lightning-30b-a3b' },
   { id: 'orcarouter', label: 'OrcaRouter (orcarouter.ai)', baseUrl: 'https://api.orcarouter.ai/v1', defaultModel: 'openai/gpt-4o-mini' },
   { id: 'api-route', label: 'API Route (api-route.com)', baseUrl: 'https://global.api-route.com/v1', defaultModel: '' },
+  { id: 'modelgo', label: 'ModelGo (modelgo.ai)', baseUrl: 'https://api.modelgo.ai/v1', defaultModel: '' },
   { id: 'opper', label: 'Opper (opper.ai)', baseUrl: 'https://api.opper.ai/v3/compat', defaultModel: 'gpt-5.4-mini' },
   { id: 'atlascloud', label: 'Atlas Cloud (atlascloud.ai)', baseUrl: 'https://api.atlascloud.ai/v1', defaultModel: 'deepseek-ai/deepseek-v4-flash' },
   { id: 'popnow', label: 'PopNow (popnow.ai)', baseUrl: 'https://api.popnow.ai/v1', defaultModel: 'deepseek/v4-flash/chat' },

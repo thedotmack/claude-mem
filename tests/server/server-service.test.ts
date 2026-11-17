@@ -94,6 +94,19 @@ describe('ServerService', () => {
     const body = await info.json();
     expect(body.runtime).toBe('server-beta');
     expect(body.boundaries.queueManager.status).toBe('disabled');
+    // The route is unauthenticated and reachable over the container network,
+    // so it publishes state a probe reads and not the deployment's internals.
+    expect(body.authMode).toBeUndefined();
+    expect(body.postgres.schemaVersion).toBeUndefined();
+    expect(typeof body.postgres.initialized).toBe('boolean');
+    expect(Object.keys(body.boundaries.queueManager)).toEqual(['status']);
+    expect(Object.keys(body.boundaries.generationWorkerManager)).toEqual(['status']);
+    // vectorSearch keeps the shape docs/public/hosted-server.mdx documents.
+    expect(typeof body.vectorSearch.available).toBe('boolean');
+    expect(typeof body.vectorSearch.model).toBe('string');
+    expect(body.vectorSearch).toHaveProperty('observationsWithoutVectors');
+    expect(body.vectorSearch).toHaveProperty('lastEmbedError');
+    expect(body.vectorSearch.error).toBeUndefined();
   });
 
   // Phase 4 integration test: Postgres-backed v1 events route must enforce

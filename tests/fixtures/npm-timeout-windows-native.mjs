@@ -89,5 +89,7 @@ try {
   syncBuiltinESMExports();
   if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath;
   if (oldTimeout === undefined) delete process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS; else process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS = oldTimeout;
-  rmSync(root, { recursive: true, force: true });
+  // taskkill can return before Windows releases the fixture cwd handle.
+  // Bound cleanup retries without changing the settlement assertions above.
+  rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }

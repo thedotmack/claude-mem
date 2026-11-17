@@ -47,6 +47,13 @@ interface HermesReceipt {
   mcp?: McpReceipt;
   /** Install wrote config.yaml where Hermes had none. */
   createdConfig?: boolean;
+  /** False for MCP-only installs. Omitted legacy receipts own provider files. */
+  providerFiles?: boolean;
+}
+
+export interface HermesInstallOptions {
+  mcpOnly?: boolean;
+  projectCwd?: string;
 }
 
 export function hermesHome(): string {
@@ -104,16 +111,38 @@ function writeConfig(text: string): void {
   writeTextFileAtomic(target, text, { mode });
 }
 
-function mcpEntry(mcpServerPath: string) {
+function mcpEntry(mcpServerPath: string, projectCwd?: string) {
   // Hermes starts MCP servers with a filtered environment, so a data dir
   // chosen through the environment is passed on explicitly.
-  const env = process.env.CLAUDE_MEM_DATA_DIR ? { CLAUDE_MEM_DATA_DIR: process.env.CLAUDE_MEM_DATA_DIR } : undefined;
-  return { command: getNodeAbsolutePath(), args: [mcpServerPath], ...(env ? { env } : {}) };
+  const env: Record<string, string> = {};
+  if (process.env.CLAUDE_MEM_DATA_DIR) env.CLAUDE_MEM_DATA_DIR = process.env.CLAUDE_MEM_DATA_DIR;
+  if (projectCwd) env.CLAUDE_MEM_RUNTIME = 'worker';
+  return {
+    command: getNodeAbsolutePath(), args: [mcpServerPath],
+    ...(projectCwd ? { cwd: projectCwd } : {}),
+    ...(Object.keys(env).length ? { env } : {}),
+  };
 }
 
-export function installHermesIntegration(): number {
-  const source = findHermesPluginSource();
-  if (!source) {
+export function installHermesIntegration(options: HermesInstallOptions = {}): number {
+  const { mcpOnly = false, projectCwd } = options;
+  if (mcpOnly) {
+    if (!projectCwd || !path.isAbsolute(projectCwd)) {
+      console.error('Hermes MCP-only setup requires --project-cwd with an absolute existing directory.');
+      return 1;
+    }
+    try {
+      if (!statSync(projectCwd).isDirectory()) throw new Error('not a directory');
+    } catch {
+      console.error('Hermes --project-cwd must identify an existing directory.');
+      return 1;
+    }
+  } else if (projectCwd !== undefined) {
+    console.error('Hermes --project-cwd requires --mcp-only.');
+    return 1;
+  }
+  const source = mcpOnly ? null : findHermesPluginSource();
+  if (!mcpOnly && !source) {
     console.error('Could not find the Hermes plugin shipped with claude-mem.');
     console.error('  Expected at: <marketplace>/hermes/claude-mem/');
     console.error('  Re-run `npx claude-mem install` to populate the marketplace,');
@@ -121,6 +150,10 @@ export function installHermesIntegration(): number {
     return 1;
   }
   const mcpServerPath = getMcpServerAbsolutePath();
+  if (mcpOnly && !mcpServerPath) {
+    console.error('Could not find the built Claude-Mem MCP server. Install Claude-Mem before connecting Hermes.');
+    return 1;
+  }
 
   try {
     // Work out every config change before anything is written, so a config
@@ -133,7 +166,15 @@ export function installHermesIntegration(): number {
     if (previous?.createdConfig || !configExisted) receipt.createdConfig = true;
 
     const current = readMemoryProvider(text);
-    if (current === HERMES_PLUGIN_NAME && previous?.provider) {
+    if (mcpOnly && current === HERMES_PLUGIN_NAME) {
+      console.error('Hermes still selects memory.provider: claude-mem, which enables automatic capture.');
+      console.error('  Disconnect that provider or select another provider before MCP-only setup. No configuration was changed.');
+      return 1;
+    }
+    if (mcpOnly) {
+      receipt.providerFiles = previous ? previous.providerFiles : false;
+      if (previous?.provider) receipt.provider = previous.provider;
+    } else if (current === HERMES_PLUGIN_NAME && previous?.provider) {
       receipt.provider = previous.provider;
     } else if (current !== HERMES_PLUGIN_NAME) {
       const selected = selectMemoryProvider(text, HERMES_PLUGIN_NAME);
@@ -145,29 +186,43 @@ export function installHermesIntegration(): number {
     if (mcpServerPath) {
       const ours = previous?.mcp && matchesMcpReceipt(text, HERMES_PLUGIN_NAME, previous.mcp);
       if (!hasMcpServer(text, HERMES_PLUGIN_NAME) || ours) {
-        const added = putMcpServer(text, HERMES_PLUGIN_NAME, mcpEntry(mcpServerPath));
+        const added = putMcpServer(text, HERMES_PLUGIN_NAME, mcpEntry(mcpServerPath, mcpOnly ? projectCwd : undefined));
         text = added.text;
         receipt.mcp = { ...added.receipt, mcpHeader: ours ? previous!.mcp!.mcpHeader : added.receipt.mcpHeader };
       } else {
+        if (mcpOnly) {
+          console.error('mcp_servers.claude-mem already exists and is not owned by this installer. No configuration was changed.');
+          return 1;
+        }
         console.log('  mcp_servers.claude-mem already exists in config.yaml; left as it is.');
       }
     } else {
       console.log('  claude-mem MCP server not found; Hermes gets memory but not the search tools.');
     }
 
-    const files = OWNED_FILES.map(name => ({ name, contents: readFileSync(path.join(source, name)) }));
-    replaceOwnedFiles(hermesPluginDirectory(), files);
+    if (!mcpOnly) {
+      const files = OWNED_FILES.map(name => ({ name, contents: readFileSync(path.join(source!, name)) }));
+      replaceOwnedFiles(hermesPluginDirectory(), files);
+    }
     writeJsonFileAtomic(path.join(hermesPluginDirectory(), RECEIPT_FILE), receipt);
     if (text !== original) writeConfig(text);
 
-    console.log(`  Hermes plugin installed to: ${hermesPluginDirectory()}`);
-    console.log(`  Hermes config updated: ${hermesConfigPath()} (memory.provider: claude-mem${receipt.mcp ? ', mcp_servers.claude-mem' : ''})`);
-    console.log('  Start a new Hermes session to load it.');
+    if (mcpOnly) {
+      console.log(`  Hermes MCP connection installed for: ${projectCwd}`);
+      console.log(`  Hermes config updated: ${hermesConfigPath()} (mcp_servers.claude-mem; memory provider unchanged)`);
+      console.log('  Restart the Hermes backend, then open a new chat. Recall and explicit save only; no automatic capture was enabled.');
+    } else {
+      console.log(`  Hermes plugin installed to: ${hermesPluginDirectory()}`);
+      console.log(`  Hermes config updated: ${hermesConfigPath()} (memory.provider: claude-mem${receipt.mcp ? ', mcp_servers.claude-mem' : ''})`);
+      console.log('  Start a new Hermes session to load it.');
+    }
     return 0;
   } catch (error) {
     if (error instanceof HermesConfigShapeError) {
       console.error(`Hermes config.yaml was not changed: ${error.message}.`);
-      console.error('  Set it by hand:  memory: { provider: claude-mem }  and re-run the installer.');
+      console.error(mcpOnly
+        ? '  Use a block mapping for mcp_servers and re-run MCP-only setup.'
+        : '  Set it by hand:  memory: { provider: claude-mem }  and re-run the installer.');
       return 1;
     }
     console.error(`Failed to install the Hermes plugin: ${error instanceof Error ? error.message : String(error)}`);
@@ -191,17 +246,18 @@ export function uninstallHermesIntegration(): number {
       if (receipt.createdConfig && text.trim() === '') rmSync(hermesConfigPath(), { force: true });
       else if (text !== original) writeConfig(text);
     }
-    for (const name of [...OWNED_FILES, RECEIPT_FILE]) rmSync(path.join(directory, name), { force: true });
+    const ownsProviderFiles = receipt?.providerFiles !== false;
+    for (const name of [...(ownsProviderFiles ? OWNED_FILES : []), RECEIPT_FILE]) rmSync(path.join(directory, name), { force: true });
     // Python leaves compiled copies of the provider beside it.
     const cache = path.join(directory, '__pycache__');
-    if (existsSync(cache)) {
+    if (ownsProviderFiles && existsSync(cache)) {
       for (const name of readdirSync(cache)) {
         if (/^(__init__|client)\..+\.pyc$/.test(name)) rmSync(path.join(cache, name), { force: true });
       }
       if (readdirSync(cache).length === 0) rmdirSync(cache);
     }
     if (existsSync(directory) && readdirSync(directory).length === 0) rmdirSync(directory);
-    console.log(`  Removed Hermes plugin: ${directory}`);
+    console.log(ownsProviderFiles ? `  Removed Hermes plugin: ${directory}` : '  Removed the Hermes MCP connection; other settings and memories were kept.');
     return 0;
   } catch (error) {
     if (error instanceof HermesConfigShapeError) {

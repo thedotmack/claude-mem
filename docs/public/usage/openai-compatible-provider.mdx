@@ -99,6 +99,7 @@ endpoint or model you pinned yourself.
 | `nvidia-nim` | `https://integrate.api.nvidia.com/v1` | yes |
 | `orcarouter` | `https://api.orcarouter.ai/v1` | yes |
 | `api-route` | `https://global.api-route.com/v1` | yes |
+| `modelgo` | `https://api.modelgo.ai/v1` | yes |
 | `opper` | `https://api.opper.ai/v3/compat` | yes |
 | `atlascloud` | `https://api.atlascloud.ai/v1` | yes |
 | `popnow` | `https://api.popnow.ai/v1` | yes |
@@ -319,6 +320,27 @@ Alternatively, store the key as `OPENAI_COMPAT_API_KEY` in
 `~/.claude-mem/.env`. Restart the worker after changing the configuration.
 Without a model or key, this provider is unconfigured and dispatch falls
 through to Claude.
+
+## ModelGo
+
+[ModelGo](https://modelgo.ai) exposes OpenAI-compatible chat completions and
+an authenticated model catalog behind one `mgk_` API key. The preset does not
+choose a default model because the logical model names available to each key
+depend on its account policy. List them with `GET https://api.modelgo.ai/v1/models`
+and select one that supports `/chat/completions`.
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openai-compatible",
+  "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "modelgo",
+  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "mgk_...",
+  "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "<your chat-completions model id>"
+}
+```
+
+Create a key in the [ModelGo console](https://console.modelgo.ai). Alternatively,
+store it as `OPENAI_COMPAT_API_KEY` in `~/.claude-mem/.env`. Restart the worker
+after changing the configuration.
 
 ## Opper
 
