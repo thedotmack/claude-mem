@@ -119,6 +119,7 @@
           "contextforge",
           "openclaw-integration",
           "hermes-integration",
+          "hermes-desktop-integration",
           "kimi-integration",
           "omo-native-integration",
           "cline",
