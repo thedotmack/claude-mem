@@ -29,11 +29,11 @@ import {
   lstatSync,
   openSync,
   readFileSync,
-  readSync,
   readdirSync,
   realpathSync,
   statSync,
 } from 'fs';
+import { open, type FileHandle } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative } from 'path';
 import { StringDecoder } from 'node:string_decoder';
 import { unified } from 'unified';
@@ -289,7 +289,7 @@ export interface ScanOptions {
 }
 
 /** Read the first JSONL line that carries a `cwd` from a sibling transcript. */
-function sniffCwd(projectDir: string): string | undefined {
+async function sniffCwd(projectDir: string): Promise<string | undefined> {
   let names: string[];
   try {
     names = readdirSync(projectDir).filter(n => n.endsWith(JSONL_EXT));
@@ -298,16 +298,19 @@ function sniffCwd(projectDir: string): string | undefined {
   }
   for (const name of names) {
     const filePath = join(projectDir, name);
-    let fd: number | undefined;
+    let file: FileHandle | undefined;
     try {
       // A symlinked transcript could point anywhere; only real files are sniffed.
       if (!lstatSync(filePath).isFile()) continue;
-      fd = openSync(filePath, OPEN_NO_FOLLOW_FLAGS);
+      file = await open(filePath, OPEN_NO_FOLLOW_FLAGS);
       const buf = Buffer.alloc(CWD_SNIFF_BYTES);
       const decoder = new StringDecoder('utf8');
       let pending: string[] = [];
       for (;;) {
-        const read = readSync(fd, buf, 0, buf.length, null);
+        // Yield between reads so an unresolved or unfinished transcript does
+        // not block other requests in the worker. Do not truncate a valid
+        // native record just because a pasted prompt is unusually long.
+        const { bytesRead: read } = await file.read(buf, 0, buf.length, null);
         const chunk = read ? decoder.write(buf.subarray(0, read)) : decoder.end();
         // A native user record can exceed one chunk. Parse complete records,
         // stopping at the first cwd without loading the rest of the history.
@@ -330,7 +333,7 @@ function sniffCwd(projectDir: string): string | undefined {
     } catch {
       // Unreadable transcript — try the next sibling.
     } finally {
-      if (fd !== undefined) closeSync(fd);
+      await file?.close();
     }
   }
   return undefined;
@@ -353,10 +356,10 @@ function fallbackProject(cwd: string | undefined, encodedName: string): string {
   return segs.length ? segs[segs.length - 1] : encodedName;
 }
 
-function readMemoryDir(memoryDir: string): MemoryDirRef {
+async function readMemoryDir(memoryDir: string): Promise<MemoryDirRef> {
   const projectDir = dirname(memoryDir);
   const encodedName = basename(projectDir);
-  const cwd = sniffCwd(projectDir);
+  const cwd = await sniffCwd(projectDir);
   const project = fallbackProject(cwd, encodedName);
 
   const ref: MemoryDirRef = { memoryDir, encodedName, cwd, project, files: [], unreadable: [], skipped: [] };
@@ -430,7 +433,7 @@ function hasMemorySubdir(dir: string): boolean {
  * or refused (single target). Throws MemorySourceError for a source that is
  * missing, not a directory, outside the root, or unreadable.
  */
-export function scanMemorySource(source: string, options: ScanOptions = {}): MemoryDirRef[] {
+export async function scanMemorySource(source: string, options: ScanOptions = {}): Promise<MemoryDirRef[]> {
   const { resolved, rootReal } = resolveSourceWithinRoot(source, options.root ?? claudeProjectsDir());
 
   if (options.all) {
@@ -444,7 +447,7 @@ export function scanMemorySource(source: string, options: ScanOptions = {}): Mem
         continue;
       }
       try {
-        refs.push(readMemoryDir(memoryDir));
+        refs.push(await readMemoryDir(memoryDir));
       } catch (error: unknown) {
         refs.push({
           memoryDir,
@@ -469,7 +472,7 @@ export function scanMemorySource(source: string, options: ScanOptions = {}): Mem
     throw new MemorySourceError(`memory ingest reads only Claude Code's projects directory; ${memoryDir} leads outside it`);
   }
   try {
-    return [readMemoryDir(memoryDir)];
+    return [await readMemoryDir(memoryDir)];
   } catch (error: unknown) {
     throw new MemorySourceError(`memory ingest source cannot be read: ${errorMessage(error)}`);
   }
@@ -511,8 +514,8 @@ export interface MemoryDryRunReport {
  * ingest WOULD store. No DB, no Haiku — memory is stored mechanically, so the
  * file count IS the observation count (modulo content-hash dedup at store time).
  */
-export function dryRunMemorySource(source: string, options: ScanOptions = {}): MemoryDryRunReport {
-  const refs = scanMemorySource(source, options);
+export async function dryRunMemorySource(source: string, options: ScanOptions = {}): Promise<MemoryDryRunReport> {
+  const refs = await scanMemorySource(source, options);
   const dirs: MemoryDirCounts[] = refs.map(ref => ({
     encodedName: ref.encodedName,
     project: ref.project,
@@ -680,7 +683,7 @@ export async function ingestMemorySource(
   options: MemoryIngestOptions,
   deps: MemoryIngestDeps
 ): Promise<MemoryIngestReport> {
-  const refs = scanMemorySource(source, { all: options.all, root: options.root });
+  const refs = await scanMemorySource(source, { all: options.all, root: options.root });
 
   const report: MemoryIngestReport = {
     source: expandHome(source),
