@@ -1023,7 +1023,6 @@ describe('ChromaSync backfill project enumeration (#4069)', () => {
       const enumeration = prepared.find(sql => sql.includes('observation_projects'));
       expect(enumeration).toBeDefined();
 
-      prepareSpy.mockRestore();
       const plan = (store.db.prepare(`EXPLAIN QUERY PLAN ${enumeration}`).all() as { detail: string }[])
         .map(row => row.detail);
       expect(plan.filter(detail => /^SCAN (observations|session_summaries|sdk_sessions|user_prompts|s|up)\b/.test(detail)))
