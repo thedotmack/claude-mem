@@ -70,13 +70,13 @@ describe('remote spool body limit', () => {
   it('preserves the default five MiB limit', async () => {
     const { url, spool } = await start();
     expect((await send(`${url}/api/spool/ingest`, body(5 * mib + 1))).status).toBe(413);
-    expect(spool.entries()).toEqual([]);
+    expect(await spool.entries()).toEqual([]);
   });
 
   it.each(['', 'invalid', '1.5', '0', '-1', 'Infinity', '9007199254740992'])('falls back to five MiB for invalid configuration %s', async limit => {
     const { url, spool } = await start(limit);
     expect((await send(`${url}/api/spool/ingest`, body(5 * mib + 1))).status).toBe(413);
-    expect(spool.entries()).toEqual([]);
+    expect(await spool.entries()).toEqual([]);
   });
 
   it('persists a complete envelope at the configured six MiB boundary', async () => {
@@ -84,7 +84,7 @@ describe('remote spool body limit', () => {
     const payload = body(6 * mib);
     expect(Buffer.byteLength(payload)).toBe(6 * mib);
     expect((await send(`${url}/api/spool/ingest`, payload)).status).toBe(202);
-    expect(spool.entries()).toEqual([JSON.parse(payload).entry]);
+    expect(await spool.entries()).toEqual([JSON.parse(payload).entry]);
   });
 
   it('accepts a complete observation envelope at the configured boundary and keeps only its receipt', async () => {
@@ -95,21 +95,21 @@ describe('remote spool body limit', () => {
     expect(response.status).toBe(202);
     const { receipt } = await response.json() as { receipt: string };
     expect([...markers]).toEqual([receipt]);
-    expect(spool.entries()).toEqual([]);
+    expect(await spool.entries()).toEqual([]);
     expect((await send(`${url}/api/spool/ingest`, observationBody(6 * mib + 1))).status).toBe(413);
   });
 
   it('rejects one byte over the configured limit without persisting', async () => {
     const { url, spool } = await start(6 * mib);
     expect((await send(`${url}/api/spool/ingest`, body(6 * mib + 1))).status).toBe(413);
-    expect(spool.entries()).toEqual([]);
+    expect(await spool.entries()).toEqual([]);
   });
 
   it('authenticates before parsing malformed or oversized JSON', async () => {
     const { url, spool } = await start(6 * mib);
     expect((await send(`${url}/api/spool/ingest`, '{invalid', 'wrong')).status).toBe(401);
     expect((await send(`${url}/api/spool/ingest`, body(6 * mib + 1), 'wrong')).status).toBe(401);
-    expect(spool.entries()).toEqual([]);
+    expect(await spool.entries()).toEqual([]);
   });
 
   it('keeps unrelated API requests at five MiB', async () => {

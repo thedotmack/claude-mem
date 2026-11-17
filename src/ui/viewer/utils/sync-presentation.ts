@@ -1,4 +1,7 @@
-/** Credential-free subset of src/shared/viewer-sync-status.ts used by both browser bundles. */
+/**
+ * Credential-free subset of src/shared/viewer-sync-status.ts used by both browser bundles. It imports nothing:
+ * My Work's tests compile it under nodenext resolution, and the viewer under bundler resolution.
+ */
 export interface SyncStatusForDisplay {
   configured: boolean;
   state: 'unconfigured' | 'unknown' | 'current' | 'catching-up' | 'paused' | 'offline' | 'partial' | 'stale';
@@ -15,9 +18,34 @@ export interface SyncPresentation {
   state: SyncStatusForDisplay['state'];
   label: string;
   detail: string;
+  /**
+   * The sentences `detail` is made of, so a screen can say each one in the reader's
+   * language: the state sentence (the worker's own, or one of SYNC_VIEWER_SENTENCES),
+   * the delivery mode, and the changes still to sync. presentSync always sets it;
+   * it is optional only for presentations built elsewhere (My Work's tests).
+   */
+  detailParts?: { sentence: string; mode: SyncDeliveryMode | null; remaining: string | null };
   tone: 'neutral' | 'positive' | 'warning';
   isCurrent: boolean;
 }
+
+type SyncDeliveryMode = Exclude<SyncStatusForDisplay['mode'], 'disabled'>;
+
+/** The sentence after the state sentence that says how updates arrive. */
+export const SYNC_MODE_SENTENCES: Record<SyncDeliveryMode, string> = {
+  realtime: 'Mode: realtime with HTTP recovery.',
+  polling: 'Mode: HTTP polling.',
+};
+
+/** The last sentence while sync catches up: how many changes are still to come ({count} is the worker's decimal string). */
+export const SYNC_REMAINING_SENTENCE = 'Changes remaining: {count}.';
+
+/** The state sentences this file writes itself (the worker writes the others, src/shared/viewer-sync-status.ts). */
+export const SYNC_VIEWER_SENTENCES = {
+  notReported: 'This worker has not reported synchronization freshness.',
+  stale: 'The last confirmed cloud check is old; the live connection does not prove the replica is current.',
+  unconfirmed: 'Cloud freshness has not been confirmed.',
+} as const;
 
 export const SYNC_EVIDENCE_STALE_MS = 60_000;
 
@@ -38,8 +66,14 @@ export function isSyncStatus(value: unknown): value is SyncStatusForDisplay {
 
 /** Age uses server-relative evidence at receipt plus a browser monotonic clock, never browser wall time. */
 export function presentSync(status: SyncStatusForDisplay | null, receivedAt: number | null, now: number): SyncPresentation {
-  if (!status) return { state: 'unknown', label: 'Cloud freshness unknown', detail: 'This worker has not reported synchronization freshness.', tone: 'neutral', isCurrent: false };
-  if (!status.configured) return { state: 'unconfigured', label: 'Cloud sync off', detail: status.message, tone: 'neutral', isCurrent: false };
+  if (!status) {
+    const sentence = SYNC_VIEWER_SENTENCES.notReported;
+    return { state: 'unknown', label: 'Cloud freshness unknown', detail: sentence, detailParts: { sentence, mode: null, remaining: null }, tone: 'neutral', isCurrent: false };
+  }
+  if (!status.configured) {
+    return { state: 'unconfigured', label: 'Cloud sync off', detail: status.message,
+      detailParts: { sentence: status.message, mode: null, remaining: null }, tone: 'neutral', isCurrent: false };
+  }
   const checked = status.checkedAt;
   const pulled = status.download?.lastSuccessAt ?? null;
   // A fresh authoritative head equal to the applied cursor proves quiet data is current;
@@ -59,11 +93,14 @@ export function presentSync(status: SyncStatusForDisplay | null, receivedAt: num
   };
   const limitedHistory = state === 'partial' && status.completeness.scope === 'local-history-excluded'
     && status.completeness.pushQuarantine === 0 && status.completeness.pullQuarantine === 0;
-  let detail = state !== status.state
-    ? state === 'stale' ? 'The last confirmed cloud check is old; the live connection does not prove the replica is current.' : 'Cloud freshness has not been confirmed.'
+  const sentence = state !== status.state
+    ? state === 'stale' ? SYNC_VIEWER_SENTENCES.stale : SYNC_VIEWER_SENTENCES.unconfirmed
     : status.message;
-  detail += status.mode === 'realtime' ? ' Mode: realtime with HTTP recovery.' : status.mode === 'polling' ? ' Mode: HTTP polling.' : '';
-  if (state === 'catching-up' && status.projection.remaining !== null) detail += ` Changes remaining: ${status.projection.remaining}.`;
-  return { state, label: limitedHistory ? 'Limited sync scope' : labels[state], detail,
+  const mode = status.mode === 'disabled' ? null : status.mode;
+  const remaining = state === 'catching-up' ? status.projection.remaining : null;
+  let detail = sentence;
+  if (mode) detail += ` ${SYNC_MODE_SENTENCES[mode]}`;
+  if (remaining !== null) detail += ` ${SYNC_REMAINING_SENTENCE.replace('{count}', () => remaining)}`;
+  return { state, label: limitedHistory ? 'Limited sync scope' : labels[state], detail, detailParts: { sentence, mode, remaining },
     tone: state === 'current' ? 'positive' : limitedHistory || state === 'unknown' ? 'neutral' : 'warning', isCurrent: state === 'current' };
 }

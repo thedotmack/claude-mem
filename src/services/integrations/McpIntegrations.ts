@@ -25,6 +25,7 @@ export function writeMcpJsonConfig(
   configFilePath: string,
   mcpServerPath: string,
   serversKeyName: string = 'mcpServers',
+  entryExtras: Record<string, unknown> = {},
 ): void {
   const parentDirectory = path.dirname(configFilePath);
   mkdirSync(parentDirectory, { recursive: true });
@@ -35,7 +36,7 @@ export function writeMcpJsonConfig(
     existingConfig[serversKeyName] = {};
   }
 
-  existingConfig[serversKeyName]['claude-mem'] = buildMcpServerEntry(mcpServerPath);
+  existingConfig[serversKeyName]['claude-mem'] = { ...buildMcpServerEntry(mcpServerPath), ...entryExtras };
 
   // Other MCP servers live in this file too, so replace it rather than truncate
   // it: an interrupted write must not leave a config every MCP host then fails
@@ -49,6 +50,8 @@ interface McpInstallerConfig {
   configPath: string;
   configKey: 'servers' | 'mcpServers';
   contextPath?: string;
+  /** Extra fields for the claude-mem entry that the host needs beyond command and args. */
+  entryExtras?: Record<string, unknown>;
 }
 
 function installMcpIntegration(config: McpInstallerConfig): () => Promise<number> {
@@ -89,7 +92,7 @@ function writeMcpConfigAndContext(
   if (skipWarpConfigWrite) {
     console.log(`  Note: ~/.warp/ not found. MCP may need to be configured via Warp Drive UI.`);
   } else {
-    writeMcpJsonConfig(configPath, mcpServerPath, config.configKey);
+    writeMcpJsonConfig(configPath, mcpServerPath, config.configKey, config.entryExtras);
     console.log(`  MCP config written to: ${configPath}`);
   }
 
@@ -125,6 +128,9 @@ const COPILOT_CLI_CONFIG: McpInstallerConfig = {
   configPath: path.join(process.env.COPILOT_HOME || path.join(homedir(), '.copilot'), 'mcp-config.json'),
   configKey: 'mcpServers',
   contextPath: path.join(process.cwd(), '.github', 'copilot-instructions.md'),
+  // Copilot (CLI and VS Code) exposes only the tools an entry lists. Without
+  // `tools` the server connects but the model never sees its tools.
+  entryExtras: { type: 'local', tools: ['*'] },
 };
 
 /** Remove claude-mem from Copilot CLI's MCP servers so Copilot stops launching a deleted MCP server. Returns 0 when an entry was removed. */
@@ -134,7 +140,7 @@ export function uninstallCopilotCliMcpIntegration(): number {
   if (!config.mcpServers?.['claude-mem']) return 1;
   delete config.mcpServers['claude-mem'];
   writeJsonFileAtomic(configPath, config);
-  console.log(`  Removed claude-mem from the Copilot CLI MCP servers in: ${configPath}`);
+  console.log(`  Removed claude-mem from the Copilot (CLI and VS Code) MCP servers in: ${configPath}`);
   return 0;
 }
 
@@ -756,6 +762,8 @@ export function uninstallZedMcpIntegration(configPath: string = getZedSettingsPa
 // install paths for the same IDE.
 export const MCP_IDE_INSTALLERS: Record<string, () => Promise<number>> = {
   'copilot-cli': installMcpIntegration(COPILOT_CLI_CONFIG),
+  // VS Code's Copilot reads the same file; a separate id keeps the setup name and messages accurate.
+  'copilot-vscode': installMcpIntegration({ ...COPILOT_CLI_CONFIG, ideId: 'copilot-vscode', ideLabel: 'Copilot in VS Code', contextPath: undefined }),
   'goose': installGooseMcpIntegration,
   'roo-code': installMcpIntegration(ROO_CODE_CONFIG),
   'warp': installMcpIntegration(WARP_CONFIG),

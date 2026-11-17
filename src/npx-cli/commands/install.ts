@@ -674,6 +674,7 @@ export function makeIDETask(ideId: string, summary: InstallSummary, dshProfile?:
     }
 
     case 'copilot-cli':
+    case 'copilot-vscode':
     case 'goose':
     case 'roo-code':
     case 'warp':

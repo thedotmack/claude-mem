@@ -38,7 +38,7 @@ it.each(['observation', 'override', 'summary', 'control', 'absent'])(
       const sdk = await sdkFixture.sdkStarted();
       await sdk.until(() => sdk.prompts.length === 1, 'queued prompt');
       const text = kind === 'summary'
-        ? '<summary><request>Owned SDK model attribution</request></summary>'
+        ? '<summary><request>Owned SDK model attribution</request><investigated>Read the owned file</investigated></summary>'
         : '<observation><type>discovery</type><title>Owned SDK model attribution</title></observation>';
       sdk.frame({
         type: 'assistant', session_id: 'owned-sdk-memory',

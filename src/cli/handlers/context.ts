@@ -44,6 +44,7 @@ import { hasPendingInstallSetup } from '../../shared/setup-install.js';
 import { projectsQueryString } from '../../shared/project-list.js';
 import { CONTEXT_OUTPUT_LIMIT } from '../../services/context/ContextBudget.js';
 import { consumeTelemetryNotice } from '../../services/telemetry/consent.js';
+import { writeSessionStartCardSlot } from '../session-start-card-slot-writer.js';
 import {
   fetchTeamBrief,
   formatTeamBrief,
@@ -166,6 +167,34 @@ export function composeSessionStartSystemMessage(
     });
   }
   return systemMessage;
+}
+
+/**
+ * What the session-start card draws (src/shared/session-start-card-slot.ts):
+ * the banner's header lines and the terminal preview. The closing line is not
+ * in it, and neither is a line shown only once: the hook message carries those.
+ */
+export function sessionStartCardText(preview: string, bannerHeader: string): string {
+  return [bannerHeader, preview.replace(/^\n+/, '').trimEnd()].filter(Boolean).join('\n\n');
+}
+
+/**
+ * The SessionStart `systemMessage` when the session-start card draws the
+ * banner: any notice and the TeamBrain discovery line, then the closing line
+ * with the count of rows the card shows. Those first lines are shown only
+ * once, and the card can still fail to draw, so they are not left to it.
+ * With neither it is one line. That is what the card is for: the stream
+ * Claude Code sends to the Claude app repeats the hook's name on every line
+ * of a hook message, and the terminal shows it once.
+ */
+export function composeSessionStartCardSystemMessage(
+  preview: string,
+  viewerUrl: string,
+  userNotice: string | null,
+  teamBrainDiscoveryLine: string | null,
+): string {
+  const footer = sessionStartBannerFooter(viewerUrl, countTerminalTimelineRows(preview));
+  return [userNotice, teamBrainDiscoveryLine, footer].filter(Boolean).join('\n\n');
 }
 
 /**
@@ -605,17 +634,34 @@ export const contextHandler: EventHandler = {
     const viewerUrl = serverRuntime ? serverRuntime.serverBaseUrl : getViewerBaseUrl(port);
     const showsBanner = showTerminalOutput && Boolean(displayContent);
     // TeamBrain discovery: one line on the banner the user already reads, once
-    // per claude-mem version, and never once this install is in a team.
+    // per install, and never once this install is in a team.
     const teamBrainDiscoveryLine = showsBanner && !teamBrain && !hasShownTeamBrainDiscoveryNotice()
       ? TEAMBRAIN_DISCOVERY_LINE
       : null;
     if (teamBrainDiscoveryLine) markTeamBrainDiscoveryNoticeShown();
-    const systemMessage = composeSessionStartSystemMessage(
-      showsBanner ? displayContent : null,
-      sessionStartBannerHeader(trialDaysLine, teamBrainDiscoveryLine, settings.CLAUDE_MEM_PRO_PLAN),
-      viewerUrl,
-      userNotice(workerOutageNotice),
-    );
+    const notice = userNotice(workerOutageNotice);
+    // Claude Code's session-start card named a file: once the banner is in it
+    // the card draws it, and the hook message is the closing line alone.
+    // The card is placed when Claude Code keeps the row that holds the hooks'
+    // context (src/mods/session-start-card/register.ts), and Claude Code makes
+    // that row only for context that is not empty: without any, the file stays
+    // unwritten and the whole banner goes in the hook message.
+    // The card can still fail to draw, so what is shown only once (the
+    // notices, the TeamBrain discovery line) stays in the hook message.
+    const cardDrawsBanner = showsBanner && additionalContext !== '' && input.sessionStartCardFile !== undefined
+      && writeSessionStartCardSlot(
+        input.sessionStartCardFile,
+        input.sessionId,
+        sessionStartCardText(displayContent, sessionStartBannerHeader(trialDaysLine, null, settings.CLAUDE_MEM_PRO_PLAN)),
+      );
+    const systemMessage = cardDrawsBanner
+      ? composeSessionStartCardSystemMessage(displayContent, viewerUrl, notice, teamBrainDiscoveryLine)
+      : composeSessionStartSystemMessage(
+        showsBanner ? displayContent : null,
+        sessionStartBannerHeader(trialDaysLine, teamBrainDiscoveryLine, settings.CLAUDE_MEM_PRO_PLAN),
+        viewerUrl,
+        notice,
+      );
 
     return {
       hookSpecificOutput: {

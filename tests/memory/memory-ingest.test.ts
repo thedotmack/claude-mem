@@ -128,8 +128,8 @@ describe('scanMemorySource', () => {
 
   afterEach(() => rmSync(root, { recursive: true, force: true }));
 
-  it('enumerates topic files, skips the MEMORY.md index, resolves cwd', () => {
-    const [ref] = scanMemorySource(memDir, { root });
+  it('enumerates topic files, skips the MEMORY.md index, resolves cwd', async () => {
+    const [ref] = await scanMemorySource(memDir, { root });
     expect(ref.indexFile?.fileName).toBe('MEMORY.md');
     const names = ref.files.map(f => f.fileName);
     expect(names).toContain('recent-work.md');
@@ -138,29 +138,29 @@ describe('scanMemorySource', () => {
     expect(ref.project).toBe('obs');
   });
 
-  it('accepts the parent project dir and finds its memory/ subdir', () => {
-    const [ref] = scanMemorySource(join(root, '-home-u-code-mm-obs'), { root });
+  it('accepts the parent project dir and finds its memory/ subdir', async () => {
+    const [ref] = await scanMemorySource(join(root, '-home-u-code-mm-obs'), { root });
     expect(ref.files.some(f => f.fileName === 'recent-work.md')).toBe(true);
   });
 
-  it('dry-run counts ingestable files and skips the index', () => {
-    const report = dryRunMemorySource(memDir, { root });
+  it('dry-run counts ingestable files and skips the index', async () => {
+    const report = await dryRunMemorySource(memDir, { root });
     // recent-work.md + empty.md are ingestable; MEMORY.md is not.
     expect(report.totals.files).toBe(2);
     expect(report.dirs[0].indexSkipped).toBe(true);
     expect(report.totals.cwdUnresolved).toBe(0);
   });
 
-  it('throws on a missing source', () => {
-    expect(() => scanMemorySource(join(root, 'nope'), { root })).toThrow(MemorySourceError);
+  it('throws on a missing source', async () => {
+    await expect(scanMemorySource(join(root, 'nope'), { root })).rejects.toThrow(MemorySourceError);
   });
 
-  it('refuses a source outside the projects directory', () => {
+  it('refuses a source outside the projects directory', async () => {
     const outside = mkdtempSync(join(tmpdir(), 'memscan-outside-'));
     try {
       writeFileSync(join(outside, 'secret.md'), '# not a memory\n');
-      expect(() => scanMemorySource(outside, { root })).toThrow(MemorySourceError);
-      expect(() => scanMemorySource(join(root, '..'), { root })).toThrow(MemorySourceError);
+      await expect(scanMemorySource(outside, { root })).rejects.toThrow(MemorySourceError);
+      await expect(scanMemorySource(join(root, '..'), { root })).rejects.toThrow(MemorySourceError);
     } finally {
       rmSync(outside, { recursive: true, force: true });
     }
@@ -173,7 +173,7 @@ describe('scanMemorySource', () => {
       writeFileSync(secrets, '[default]\naws_secret_access_key = SHOULD-NEVER-BE-STORED\n');
       symlinkSync(secrets, join(memDir, 'notes.md'), 'file');
 
-      const [ref] = scanMemorySource(memDir, { root });
+      const [ref] = await scanMemorySource(memDir, { root });
       expect(ref.files.map(f => f.fileName)).not.toContain('notes.md');
       expect(ref.skipped.map(entry => entry.fileName)).toEqual(['notes.md']);
 
@@ -192,7 +192,7 @@ describe('scanMemorySource', () => {
   });
 
   // Windows has no O_NOFOLLOW; there the lstat check alone is the guard.
-  it.skipIf(process.platform === 'win32')('never follows a note swapped for a symlink after its check', () => {
+  it.skipIf(process.platform === 'win32')('never follows a note swapped for a symlink after its check', async () => {
     const outside = mkdtempSync(join(tmpdir(), 'memscan-swap-'));
     // The scan reads the realpath of the source (macOS tmpdir is a symlink).
     const swapped = join(fs.realpathSync(memDir), 'notes.md');
@@ -205,7 +205,7 @@ describe('scanMemorySource', () => {
       writeFileSync(secrets, '[default]\naws_secret_access_key = SHOULD-NEVER-BE-STORED\n');
       symlinkSync(secrets, swapped, 'file');
 
-      const [ref] = scanMemorySource(memDir, { root });
+      const [ref] = await scanMemorySource(memDir, { root });
       expect(JSON.stringify(ref)).not.toContain('SHOULD-NEVER-BE-STORED');
       expect(ref.unreadable.map(entry => entry.fileName)).toEqual(['notes.md']);
     } finally {
@@ -214,15 +214,15 @@ describe('scanMemorySource', () => {
     }
   });
 
-  it('skips a note larger than the size cap', () => {
+  it('skips a note larger than the size cap', async () => {
     writeFileSync(join(memDir, 'huge.md'), `# huge\n\n${'x'.repeat(MAX_MEMORY_FILE_BYTES + 1)}`);
 
-    const [ref] = scanMemorySource(memDir, { root });
+    const [ref] = await scanMemorySource(memDir, { root });
     expect(ref.files.map(f => f.fileName)).not.toContain('huge.md');
     expect(ref.skipped.map(entry => entry.fileName)).toEqual(['huge.md']);
   });
 
-  it('does not follow a symlinked memory dir out of the projects directory', () => {
+  it('does not follow a symlinked memory dir out of the projects directory', async () => {
     const outside = mkdtempSync(join(tmpdir(), 'memscan-link-'));
     try {
       writeFileSync(join(outside, 'secret.md'), '# outside\n\nprivate notes');
@@ -230,8 +230,8 @@ describe('scanMemorySource', () => {
       mkdirSync(linkedProject);
       symlinkSync(outside, join(linkedProject, 'memory'), 'dir');
 
-      expect(() => scanMemorySource(linkedProject, { root })).toThrow(MemorySourceError);
-      const swept = scanMemorySource(root, { all: true, root });
+      await expect(scanMemorySource(linkedProject, { root })).rejects.toThrow(MemorySourceError);
+      const swept = await scanMemorySource(root, { all: true, root });
       expect(swept.map(ref => ref.encodedName)).toEqual(['-home-u-code-mm-obs']);
     } finally {
       rmSync(outside, { recursive: true, force: true });
@@ -240,15 +240,15 @@ describe('scanMemorySource', () => {
 
   it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
     'reports an unreadable file and still reads the rest',
-    () => {
+    async () => {
       const locked = join(memDir, 'locked.md');
       writeFileSync(locked, '# locked\n\nunreadable');
       chmodSync(locked, 0o000);
       try {
-        const [ref] = scanMemorySource(memDir, { root });
+        const [ref] = await scanMemorySource(memDir, { root });
         expect(ref.unreadable.map(entry => entry.fileName)).toEqual(['locked.md']);
         expect(ref.files.map(f => f.fileName)).toContain('recent-work.md');
-        expect(dryRunMemorySource(memDir, { root }).totals.unreadable).toBe(1);
+        expect((await dryRunMemorySource(memDir, { root })).totals.unreadable).toBe(1);
       } finally {
         chmodSync(locked, 0o644);
       }

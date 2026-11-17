@@ -2,7 +2,7 @@ import { expect, it } from 'bun:test';
 import {
   chromeExecutablePath, failOnCiWithoutChrome, type DevToolsPage, type OwnedChrome,
 } from '../../helpers/chrome-devtools';
-import { connectLoadedSettings, launchSettingsFixture, serveSettingsFixture } from './settings-fixture';
+import { connectLoadedSettings, launchSettingsFixture, serveSettingsFixture, showSection } from './settings-fixture';
 
 failOnCiWithoutChrome('CI requires Chrome or Chromium for the native settings-save regression tests.');
 
@@ -25,7 +25,7 @@ for (const succeeds of [true, false]) {
       page = await connectLoadedSettings(chrome, server.url.href);
       const { send, evaluate, settle } = page;
       const renderDeadline = Date.now() + 10000;
-      await evaluate('[...document.querySelectorAll(".section-header-btn")].find(x=>x.textContent.includes("Advanced")).click()');
+      await evaluate(showSection('AI provider'));
       await settle();
       const model = '[...document.querySelectorAll(".form-field")].find(x=>x.textContent.startsWith("Codex Model")).querySelector("input")';
       while (!await evaluate(`${model}.value === 'owned-before'`)) {

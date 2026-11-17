@@ -1,7 +1,7 @@
 {
   "description": "Claude-mem memory system hooks",
   "modules": [
-    "./auto-clear.js"
+    "./hooks-module.js"
   ],
   "hooks": {
     "Setup": [

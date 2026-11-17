@@ -1,5 +1,11 @@
 import { describe, expect, test } from 'bun:test';
-import { isSyncStatus, presentSync, type SyncStatusForDisplay } from '../../../src/ui/viewer/utils/sync-presentation.ts';
+import { readFileSync } from 'node:fs';
+import {
+  isSyncStatus, presentSync, SYNC_MODE_SENTENCES, SYNC_REMAINING_SENTENCE, SYNC_VIEWER_SENTENCES, type SyncStatusForDisplay,
+} from '../../../src/ui/viewer/utils/sync-presentation.ts';
+import { viewerZh } from '../../../src/ui/i18n/viewer-zh.ts';
+import { viewerKo } from '../../../src/ui/i18n/viewer-ko.ts';
+import { viewerFr } from '../../../src/ui/i18n/viewer-fr.ts';
 
 export const current = (): SyncStatusForDisplay => ({
   configured: true, state: 'current', mode: 'polling', observedAt: 100_000, checkedAt: 99_000,
@@ -61,5 +67,26 @@ describe('sync evidence presentation', () => {
     status.checkedAt = status.observedAt + 1;
     status.download!.lastSuccessAt = status.observedAt + 1;
     expect(presentSync(status, 0, 0).state).toBe('unknown');
+  });
+  test('keeps the detail\'s parts, so the header can say each sentence in the reader\'s language', () => {
+    const status = current();
+    status.state = 'catching-up';
+    status.mode = 'realtime';
+    status.projection.remaining = '42';
+    status.message = 'Cloud updates are being synchronized.';
+    expect(presentSync(status, 5000, 6000).detailParts).toEqual({ sentence: 'Cloud updates are being synchronized.', mode: 'realtime', remaining: '42' });
+    // The English detail is built from the same sentences the header translates (one definition each).
+    expect(presentSync(status, 5000, 6000).detail).toBe('Cloud updates are being synchronized. Mode: realtime with HTTP recovery. Changes remaining: 42.');
+    expect(presentSync(null, null, 1).detailParts).toEqual({ sentence: SYNC_VIEWER_SENTENCES.notReported, mode: null, remaining: null });
+  });
+  test('every sentence the sync detail can hold has a translation in each viewer catalog', () => {
+    // The worker writes its sentences in src/shared/viewer-sync-status.ts: the default message and each state('…', '…').
+    const worker = readFileSync(new URL('../../../src/shared/viewer-sync-status.ts', import.meta.url), 'utf8');
+    const workerSentences = [...worker.matchAll(/state\('[\w-]+', '([^']+)'\)|message: '([^']+)'/g)].map(match => match[1] ?? match[2]);
+    expect(workerSentences.length).toBeGreaterThanOrEqual(12);
+    const sentences = [...workerSentences, ...Object.values(SYNC_VIEWER_SENTENCES), ...Object.values(SYNC_MODE_SENTENCES), SYNC_REMAINING_SENTENCE];
+    for (const catalog of [viewerZh, viewerKo, viewerFr]) {
+      expect(sentences.filter(sentence => !(sentence in catalog))).toEqual([]);
+    }
   });
 });

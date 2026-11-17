@@ -44,6 +44,9 @@ console.log(JSON.stringify(z.custom(v => typeof v === 'object').parse({ok: true}
       });
       expect(run.status).toBe(0);
       expect(JSON.parse(run.stdout)).toEqual({ continue: true });
-    } finally { rmSync(dir, { recursive: true, force: true }); }
+    } finally {
+      // Allow Windows to release fixture handles after the child exits.
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
   }, 30_000);
 });

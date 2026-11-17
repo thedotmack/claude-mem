@@ -704,7 +704,16 @@ export function NoRulesYet({ onAdd, readError, refresh }: { onAdd: () => void; r
         <EmptyHeader>
           <EmptyTitle>{readError ? t("Can’t read your rules right now") : t("No rules yet")}</EmptyTitle>
           <EmptyDescription>{readError ?? description}</EmptyDescription>
-          {!readError && waiting && <RefreshStatus refresh={refresh} run={null} ids={['R14.13']} />}
+          {!readError && waiting && (
+            <>
+              <RefreshStatus refresh={refresh} run={null} ids={['R14.13']} />
+              <EmptyDescription>
+                <a href="https://docs.claude-mem.ai/configuration#my-work-refresh-models" target="_blank" rel="noopener noreferrer">
+                  {t('Configure My Work to use an API provider')}
+                </a>
+              </EmptyDescription>
+            </>
+          )}
         </EmptyHeader>
         {!readError && (
           <EmptyContent className="flex-row justify-center gap-2">

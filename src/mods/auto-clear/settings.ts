@@ -6,7 +6,8 @@
 import { isSettingsRecord, settingsTarget, type SettingsDocument } from '../../shared/settings-document-shape.js';
 import { isWorkStateEnabled } from '../../shared/work-state-setting.js';
 
-export const AUTO_CLEAR_DEFAULT_PERCENT = 33;
+/** 40: the maintainer's choice, raised from 33 on 2026-11-17 after a day of running auto-clear. SettingsDefaultsManager keeps the same value. */
+export const AUTO_CLEAR_DEFAULT_PERCENT = 40;
 export const AUTO_CLEAR_MIN_PERCENT = 1;
 export const AUTO_CLEAR_MAX_PERCENT = 95;
 

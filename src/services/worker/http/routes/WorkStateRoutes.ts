@@ -1,11 +1,12 @@
 import express, { Request, Response } from 'express';
+import { join } from 'node:path';
 import { z } from 'zod';
 import { DatabaseManager } from '../../DatabaseManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { isProjectExcluded } from '../../../../utils/project-filter.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
-import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
+import { DATA_DIR, USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import { getProjectContext } from '../../../../utils/project-name.js';
 import { logger } from '../../../../utils/logger.js';
 import type { WorkStateFields } from '../../../sqlite/work-state.js';
@@ -16,7 +17,9 @@ import { GOAL_KINDS, isOwnerGoalsList } from '../../../work-view/owner-goals.mjs
 import { MAX_WORK_STATE_FIELDS_JSON_CHARS } from '../../../work-view/work-state-limits.mjs';
 import { isSharedWorkList } from '../../../work-view/shared-records.mjs';
 import { isClosedWorkStateStatus } from '../../../work-view/work-state-status.mjs';
+import { checkWorkStateWrite } from '../work-state-write-guard.js';
 import {
+  foldWorkStateList,
   fitWorkStateLines,
   renderWorkStateLines,
   WORK_STATE_SECTION_CHARACTER_LIMIT,
@@ -67,7 +70,10 @@ export function ownerGoalsRowRefusal(fields: WorkStateFields): string | null {
  * scope SessionStart shows. Both answer in plain text for the agent.
  */
 export class WorkStateRoutes extends BaseRouteHandler {
-  constructor(private dbManager: DatabaseManager) {
+  constructor(
+    private dbManager: DatabaseManager,
+    private writeGuardPath = join(DATA_DIR, 'work-state-write-guard.json'),
+  ) {
     super();
   }
 
@@ -77,7 +83,7 @@ export class WorkStateRoutes extends BaseRouteHandler {
     app.get('/api/work-state/export', this.handleRead(true));
   }
 
-  private handleWrite = this.wrapHandler((req: Request, res: Response): void => {
+  private handleWrite = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     // These rows are the agent's canonical to-do lists, so other localhost pages
     // may not write them. Origin-less callers (the work_state_write MCP tool,
     // save_goals.py) keep the existing loopback-trust model.
@@ -116,6 +122,44 @@ export class WorkStateRoutes extends BaseRouteHandler {
 
     const checkout = getProjectContext(cwd);
     const store = this.dbManager.getSessionStore();
+    const task = fields.task == null ? '' : String(fields.task);
+    const currentSnapshot = () => {
+      const entries = store.getWorkStateEntries(checkout.allProjects, list)
+        .filter(entry => (entry.scope_project ?? entry.project) === checkout.primary);
+      const select = (folded: ReturnType<typeof foldWorkStateList>): WorkStateFields =>
+        task ? folded.tasks.get(task)?.fields ?? {} : folded.state;
+      let status: WorkStateFields[string] | undefined;
+      const history = entries
+        .filter(entry => (entry.fields.task == null ? '' : String(entry.fields.task)) === task)
+        .map(entry => {
+          if (Object.hasOwn(entry.fields, 'status')) status = entry.fields.status;
+          return { fields: entry.fields, closing: isClosedWorkStateStatus(status) };
+        });
+      return {
+        current: select(foldWorkStateList(entries)),
+        history,
+      };
+    };
+    const scope = { project: checkout.primary, projects: checkout.allProjects, list };
+    let snapshot: ReturnType<typeof currentSnapshot> | undefined;
+    const check = await checkWorkStateWrite(this.writeGuardPath, scope, () => {
+      snapshot = currentSnapshot();
+      const { current, history } = snapshot;
+      const proposed = { ...current, ...fields };
+      return {
+        ...scope, fields, current, proposed, history,
+        closing: isClosedWorkStateStatus(proposed.status),
+        currentClosing: isClosedWorkStateStatus(current.status),
+      };
+    });
+    if (check.refusal) {
+      res.status(409).send(`Not saved: ${check.refusal}`);
+      return;
+    }
+    if (check.checked && (!snapshot || JSON.stringify(currentSnapshot()) !== JSON.stringify(snapshot))) {
+      res.status(409).send('Not saved: the task changed during its write check. Read its current state and retry.');
+      return;
+    }
     store.appendWorkStateEntry({ project: checkout.primary, listName: list, fields });
     logger.debug('WORKER', 'Work state entry saved', { project: checkout.primary, list });
     // The row is a `work_state` sync op: nudge the push drain (null when sync is off).

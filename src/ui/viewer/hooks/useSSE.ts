@@ -15,6 +15,8 @@ export interface LiveSessionItem {
   session: SessionRef;
   project: string;
   createdAtEpoch: number;
+  /** A live summary's request: the session's newest summary title from now on. */
+  summaryTitle?: string;
 }
 
 /**
@@ -111,9 +113,10 @@ export function useSSE(handlers: StreamHandlers) {
     setProjects(prev => prev.includes(project) ? prev : [...prev, project]);
   };
 
-  const reportLiveItem = (row: { content_session_id?: string | null; session_id?: string | null; platform_source?: string | null; project: string; created_at_epoch: number }) => {
+  const reportLiveItem = (row: { content_session_id?: string | null; session_id?: string | null; platform_source?: string | null; project: string; created_at_epoch: number; request?: string | null }) => {
     const session = sessionRefOf(row);
-    if (session) handlersRef.current.onLiveItem({ session, project: row.project, createdAtEpoch: row.created_at_epoch });
+    const summaryTitle = typeof row.request === 'string' && row.request.trim() ? row.request.trim() : undefined;
+    if (session) handlersRef.current.onLiveItem({ session, project: row.project, createdAtEpoch: row.created_at_epoch, summaryTitle });
   };
 
   useEffect(() => {

@@ -265,6 +265,20 @@ describe('provider import contracts', () => {
     expect(run.vendorRequests).toHaveLength(1);
     expect(run.workerRequests).toHaveLength(1);
   });
+  test('dry-run previews the source without reading the worker API deadline', async () => {
+    const preview = await runCommand([...mem0Args, '--dry-run'], mem0Page(row()), undefined, { CLAUDE_MEM_API_TIMEOUT_MS: 'soon' });
+    expect(preview.error).toBe('');
+    expect(preview.lines).toContain('1 read; 0 skipped; 1 ready to import.');
+    expect(preview.lines).toContain('Dry run complete. No memories were written.');
+    expect(preview.vendorRequests).toHaveLength(1);
+    expect(preview.workerRequests).toHaveLength(0);
+  });
+  test('dry-run still rejects an explicitly invalid source deadline before any request', async () => {
+    const invalid = await runCommand([...mem0Args, '--dry-run', '--timeout-ms', 'soon'], mem0Page(row()));
+    expect(invalid.error).toContain('--timeout-ms must be between');
+    expect(invalid.vendorRequests).toHaveLength(0);
+    expect(invalid.workerRequests).toHaveLength(0);
+  });
   test('an invalid worker API deadline stops the import before any request, instead of a logged warning', async () => {
     const invalid = await runCommand(mem0Args, mem0Page(row()), undefined, { CLAUDE_MEM_API_TIMEOUT_MS: 'soon' });
     expect(invalid.error).toBe('CLAUDE_MEM_API_TIMEOUT_MS in the environment must be a whole number of milliseconds from 500 to 300000.');

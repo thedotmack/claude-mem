@@ -173,8 +173,8 @@ describe('remote upload scheduling', () => {
       expect(result.uploads).toBe(lateEvent ? 2 : 1);
       const deadline = Date.now() + 10000;
       const expected = lateEvent ? 9 : 8;
-      while (spool.entries().length < expected && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
-      expect(spool.entries()).toHaveLength(expected);
+      while ((await spool.entries()).length < expected && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+      expect(await spool.entries()).toHaveLength(expected);
       expect(requests).toBe(expected);
       const client = new HookSpool(join(directory, 'client/state/hook-spool'));
       while (client.hasEntries() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));

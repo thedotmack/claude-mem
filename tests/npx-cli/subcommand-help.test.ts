@@ -97,6 +97,7 @@ describe('npx CLI subcommand --help', () => {
     ['memory', 'ingest'],
     ['telemetry', 'disable'],
     ['kimi', 'uninstall'],
+    ['hermes', 'uninstall'],
     ['devin', 'uninstall'],
     ['antigravity-cli', 'uninstall'],
     ['pi', 'uninstall'],

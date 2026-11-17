@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'fs';
 import { claudeCodeAdapter } from '../../../src/cli/adapters/claude-code.js';
+import { SESSION_START_CARD_FILE_KEY } from '../../../src/shared/session-start-card-slot.js';
 
 const baseInput = {
   hook_event_name: 'SessionStart',
@@ -18,6 +19,22 @@ describe('Claude Code SessionStart source', () => {
   it('drops missing, unknown, and non-string sources', () => {
     for (const source of [undefined, null, '', 'archive', 42, { source: 'resume' }]) {
       expect(claudeCodeAdapter.normalizeInput({ ...baseInput, source }).sessionSource).toBeUndefined();
+    }
+  });
+});
+
+describe('Claude Code SessionStart card file', () => {
+  it('carries the file the session-start card named, under the key the card uses', () => {
+    const slotFile = '/home/ada/.claude/plugins/data/claude-mem/session-start-card/session-start-source.1794888786050.json';
+    expect(claudeCodeAdapter.normalizeInput({ ...baseInput, source: 'startup', [SESSION_START_CARD_FILE_KEY]: slotFile }).sessionStartCardFile)
+      .toBe(slotFile);
+  });
+
+  it('has none when Claude Code sent no such key, or not a filled string', () => {
+    expect(claudeCodeAdapter.normalizeInput({ ...baseInput, source: 'startup' }).sessionStartCardFile).toBeUndefined();
+    for (const value of [null, '', 42, true, ['/a.json'], { path: '/a.json' }]) {
+      expect(claudeCodeAdapter.normalizeInput({ ...baseInput, source: 'startup', [SESSION_START_CARD_FILE_KEY]: value }).sessionStartCardFile)
+        .toBeUndefined();
     }
   });
 });

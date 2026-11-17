@@ -38,7 +38,7 @@ const actualFindClaude = { ...(await import('../../src/shared/find-claude-execut
 const realFindClaudeExecutable = actualFindClaude.findClaudeExecutable;
 
 type FindClaudeExecutable = typeof realFindClaudeExecutable;
-let findClaudeExecutableImpl: (...args: Parameters<FindClaudeExecutable>) => string = realFindClaudeExecutable;
+let findClaudeExecutableImpl: (...args: Parameters<FindClaudeExecutable>) => string | Promise<string> = realFindClaudeExecutable;
 
 mock.module('../../src/shared/find-claude-executable.js', () => ({
   ...actualFindClaude,

@@ -1084,6 +1084,29 @@ describe('capture-only linkage, a turn that stored no observation', () => {
   const observationIds = () => rows('SELECT id FROM observations ORDER BY id').map(row => row.id as number);
   const links = () => rows('SELECT observation_id, attachment_id, label, inspection FROM observation_media_links ORDER BY observation_id, attachment_id');
 
+  for (const memorySessionId of [null, 'openrouter-media-session-1']) {
+    it(`retains media and records a terminal outcome for a rejected summary (memory ID: ${memorySessionId !== null})`, async () => {
+      await ingest('toolu_rejected_summary', redPng);
+      const imageMessage = { ...pending(queued[0]), prompt_number: 1 };
+      const attachmentId = imageMessage.mediaRefs![0].id;
+      const events: any[] = [];
+      await turn('<summary><request>Inspect the screenshot</request></summary>', 1, [imageMessage], { memorySessionId, events });
+      expect(count('SELECT COUNT(*) n FROM session_summaries')).toBe(0);
+      expect(count('SELECT COUNT(*) n FROM observations')).toBe(0);
+      expect(count('SELECT COUNT(*) n FROM media_attachments WHERE id=?', attachmentId)).toBe(1);
+      expect(rows('SELECT result_state, carry_prompt_number FROM media_events')).toEqual([{ result_state: 'skipped', carry_prompt_number: 1 }]);
+      expect(links()).toEqual([]);
+      expect(events).toEqual([]);
+      expect(await ingest('toolu_rejected_summary', redPng)).toEqual({ ok: true, status: 'skipped', reason: 'already_processed' });
+
+      await ingest('toolu_after_rejected_summary');
+      await turn(observation('Fresh text evidence'), 1, [pending(queued.at(-1))]);
+      const [id] = observationIds();
+      expect(manifestOf(id).attachments).toEqual([{ id: attachmentId, label: 'event1_image1', inspection: 'uninspected' }]);
+      expect(rows('SELECT carry_prompt_number FROM media_events WHERE event_key=?', imageMessage.mediaEventKey)).toEqual([{ carry_prompt_number: null }]);
+    });
+  }
+
   it('links backward to the most recent observation already stored for the same session and prompt', async () => {
     await ingest('toolu_text_turn');
     await ingest('toolu_image_turn', redPng);

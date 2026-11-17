@@ -13,6 +13,7 @@ export interface ModApi {
   session: {
     usage(): Promise<{ context: { tokens?: number; window: number; percent?: number } }>;
     surfaces(): Promise<readonly string[]>;
+    append(input: SessionAppendInput): Promise<unknown>;
   };
   prompt: { submit(input: { text: string; asUser?: boolean }): Promise<unknown> };
   command: { run(input: { command: string; args?: string }): Promise<unknown> };
@@ -23,21 +24,40 @@ export interface ModApi {
   };
 }
 
-/** `tool.call`: the tool's name, its arguments beside it, and `agentId` inside a subagent. */
-export interface ToolCallEvent {
-  tool: string;
-  agentId?: string;
-  [argument: string]: unknown;
+/** One block of a message as the Messages API spells it. */
+export interface ApiContentBlock {
+  type: string;
+  [field: string]: unknown;
 }
 
-/** What `next(e)` resolves to at `tool.call`: the result, or a refusal. */
-export interface ToolCallResult {
-  deny?: string;
-  result?: unknown;
-  text?: string;
-  isError?: boolean;
-  context?: readonly string[];
-  [key: string]: unknown;
+/**
+ * `session.append` for a tool result (`door: 'tool-result'`) or a block of the
+ * model's response (`door: 'response'`, its tool_use blocks carrying each
+ * call's `name` and `input`): the row as it will be kept. Everything but
+ * `message.content` is pinned, and tool_use blocks are put back as they came.
+ */
+export interface SessionAppendEvent {
+  message: { type: string; content: ApiContentBlock[] };
+  door: string;
+  /**
+   * For a tool result `{ kind: 'tool', tool }`: the full tool name, or `unknown` when no call matches the row.
+   * For a response block `{ kind: 'model', model }`.
+   */
+  origin: { kind: string; tool?: string; [field: string]: unknown };
+  uuid: string;
+  /** Set for a subagent's conversation; absent on main. */
+  agentId?: string;
+}
+
+/** What `next(e)` resolves to at `session.append`: the row as stored. */
+export interface SessionAppendResult {
+  message: { type: string; content: ApiContentBlock[] };
+  uuid: string;
+}
+
+/** `$.session.append`: a row the model reads and the person does not see as typed. */
+export interface SessionAppendInput {
+  message: { type: 'user'; content: Array<{ type: 'text'; text: string }> };
 }
 
 export interface TurnCompleteEvent {
@@ -61,7 +81,11 @@ export interface Registration<E, R> {
 export interface On {
   (event: 'session.start', hook: Hook<unknown, unknown>): Registration<unknown, unknown>;
   (event: 'session.end', hook: Hook<unknown, unknown>): Registration<unknown, unknown>;
-  (event: 'tool.call', hook: Hook<ToolCallEvent, ToolCallResult>): Registration<ToolCallEvent, ToolCallResult>;
+  (
+    event: 'session.append',
+    matcher: { door: 'tool-result' | 'response' },
+    hook: Hook<SessionAppendEvent, SessionAppendResult>,
+  ): Registration<SessionAppendEvent, SessionAppendResult>;
   (event: 'turn.start', hook: Hook<unknown, unknown>): Registration<unknown, unknown>;
   (event: 'turn.complete', hook: Hook<TurnCompleteEvent, unknown>): Registration<TurnCompleteEvent, unknown>;
 }

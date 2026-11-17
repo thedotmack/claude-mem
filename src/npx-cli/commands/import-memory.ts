@@ -360,14 +360,18 @@ export async function runImportCommand(args: string[], fetcher: typeof fetch = f
   validateImportOptions(options);
   const keyName = options.provider === 'mem0' ? 'MEM0_API_KEY' : 'SUPERMEMORY_API_KEY';
   const apiKey = required(process.env[keyName], keyName);
-  // Resolve/authenticate the destination separately. Never forward a vendor key. Every lookup
-  // is read-only: the import seeds no settings.json and writes nothing in the data folder.
-  const base = getWorkerBaseUrl({ readOnly: true });
-  const init = withWorkerAuth({ method: 'POST', headers: { 'Content-Type': 'application/json' } }, { readOnly: true });
-  // `--timeout-ms` covers saves too, as in 15.19.0. Unset, saves use the worker API deadline
-  // every claude-mem client uses (CLAUDE_MEM_API_TIMEOUT_MS). Read before the source, so an
-  // invalid setting stops the run before any request.
-  const saveTimeoutMs = options.timeoutMs ?? getWorkerApiRequestTimeoutMs({ readOnly: true });
+  let save: ((note: ImportNote) => Promise<unknown>) | undefined;
+  if (!values['dry-run']) {
+    // Validate the destination before any source request if we are writing. A preview
+    // needs only the source, so it neither reads worker settings nor authenticates to it.
+    const base = getWorkerBaseUrl({ readOnly: true });
+    const init = withWorkerAuth({ method: 'POST', headers: { 'Content-Type': 'application/json' } }, { readOnly: true });
+    // The flag covers saves too. Without it use the shared worker API deadline.
+    const saveTimeoutMs = options.timeoutMs ?? getWorkerApiRequestTimeoutMs({ readOnly: true });
+    save = note => requestJson(`${base}/api/memory/save`, {
+      ...init, body: saveRequestBody(note, options.cwd),
+    }, saveTimeoutMs, fetcher);
+  }
   const kind = options.documents ? 'documents' : 'memories';
   console.log(`Reading ${options.provider} ${kind}…`);
   const rows = await collectImportRows(options, apiKey, fetcher, total => console.log(`The source reports ${total} ${kind}; every page is read before anything is written.`));
@@ -379,9 +383,7 @@ export async function runImportCommand(args: string[], fetcher: typeof fetch = f
       ? '1 memory has an expiration date Mem0 cannot read; Mem0 treats it as never expiring, so it is imported that way.'
       : `${unreadable} memories have an expiration date Mem0 cannot read; Mem0 treats them as never expiring, so they are imported that way.`);
   }
-  if (values['dry-run']) { console.log('Dry run complete. No memories were written.'); return; }
-  const result = await applyImport(plan, note => requestJson(`${base}/api/memory/save`, {
-    ...init, body: saveRequestBody(note, options.cwd),
-  }, saveTimeoutMs, fetcher));
+  if (!save) { console.log('Dry run complete. No memories were written.'); return; }
+  const result = await applyImport(plan, save);
   console.log(`Import complete: ${result.imported} new, ${result.existing} already imported, ${plan.skipped} skipped.`);
 }

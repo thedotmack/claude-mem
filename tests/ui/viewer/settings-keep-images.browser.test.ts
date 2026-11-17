@@ -2,14 +2,16 @@ import { expect, it } from 'bun:test';
 import {
   chromeExecutablePath, failOnCiWithoutChrome, type DevToolsPage, type OwnedChrome,
 } from '../../helpers/chrome-devtools';
-import { connectLoadedSettings, launchSettingsFixture, serveSettingsFixture } from './settings-fixture';
+import { connectLoadedSettings, launchSettingsFixture, serveSettingsFixture, showSection } from './settings-fixture';
 
 failOnCiWithoutChrome('CI requires Chrome or Chromium for the native settings-save regression tests.');
 
 // Image capture is on by default, and "Keep images" is the visible switch that
-// turns it off. It sits in a section that is open when Settings opens, shows
-// the worker's value, and saves CLAUDE_MEM_MEDIA_CAPTURE_ENABLED as 'false'.
-(chromeExecutablePath ? it : it.skip)('shows "Keep images" on without expanding anything and saves turning it off', async () => {
+// turns it off. Settings shows one section at a time (16.0), so whether images
+// are kept is in view from the section list the moment Settings opens ("Images
+// On"), the switch is one click away, shows the worker's value, and saves
+// CLAUDE_MEM_MEDIA_CAPTURE_ENABLED as 'false'.
+(chromeExecutablePath ? it : it.skip)('shows images are kept from the section list, one click from "Keep images", and saves turning it off', async () => {
     let posted: any;
     const { server, ready } = serveSettingsFixture({
       settings: { CLAUDE_MEM_PROVIDER: 'claude', CLAUDE_MEM_MEDIA_CAPTURE_ENABLED: 'true', CLAUDE_MEM_MEDIA_INFERENCE_ENABLED: 'false' },
@@ -26,6 +28,10 @@ failOnCiWithoutChrome('CI requires Chrome or Chromium for the native settings-sa
       const { evaluate, settle } = page;
       const deadline = Date.now() + 10000;
       const keepImages = 'document.getElementById("media-capture-enabled")';
+      const imagesTab = '[...document.querySelectorAll(\'[role="tab"]\')].find(tab => tab.querySelector(".settings-nav-label")?.textContent === "Images")';
+      const listed = await evaluate(`(() => { const tab = ${imagesTab}; return { tab: !!tab, visible: tab.getBoundingClientRect().height > 0, hint: tab.querySelector('.settings-nav-hint')?.textContent }; })()`);
+      await evaluate(showSection('Images'));
+      await settle();
       const shown = await evaluate(`(() => {
         const el = ${keepImages};
         if (!el) return null;
@@ -35,18 +41,21 @@ failOnCiWithoutChrome('CI requires Chrome or Chromium for the native settings-sa
           label: row.querySelector('.toggle-label').textContent,
           description: row.querySelector('.toggle-description').textContent,
           visible: el.getBoundingClientRect().height > 0,
-          sectionOpen: el.closest('.settings-section-collapsible').classList.contains('open'),
+          sectionOpen: !el.closest('[role="tabpanel"]').hidden,
         };
       })()`);
       await evaluate(`${keepImages}.click()`);
       await settle();
       const afterClick = await evaluate(`${keepImages}.getAttribute('aria-checked')`);
+      const hintAfterClick = await evaluate(`${imagesTab}.querySelector('.settings-nav-hint')?.textContent`);
       await evaluate('document.querySelector(".save-btn").click()');
       while (!posted) {
         if (Date.now() > deadline) throw new Error('Save did not reach owned endpoint');
         await Bun.sleep(10);
       }
+      expect(listed).toEqual({ tab: true, visible: true, hint: 'On' });
       expect(shown).toMatchObject({ checked: 'true', label: 'Keep images', visible: true, sectionOpen: true });
+      expect(hintAfterClick).toBe('Off');
       expect(shown.description).toContain('until their event is deleted');
       expect(shown.description).toContain('never sends images to an AI model');
       expect(afterClick).toBe('false');
