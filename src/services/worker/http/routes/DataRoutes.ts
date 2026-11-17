@@ -1137,6 +1137,12 @@ export class DataRoutes extends BaseRouteHandler {
       success: true,
       stats: { ...stats, ...rejectedCounts },
       rejected,
+      // A multi-request file import must attach later children to these local
+      // parents, just as a single-request import does above.
+      sessionIdentities: {
+        memorySessionIds: [...importedMemorySessionIds],
+        contentSessionIds: [...sessionContextsByContentId],
+      },
     });
   });
 

@@ -37,14 +37,21 @@ to the selected project when `--project` is provided.
 Imports memories with **duplicate prevention**:
 - Checks if each record already exists before inserting
 - Skips duplicates automatically
-- Maintains data integrity with transactional imports
-- Reports what was imported vs. skipped
+- Preserves the owning session of each imported record
+- Reports what was imported, skipped, or rejected
 
 When a session already exists in the destination installation, its local title,
 prompt, and registered memory session ID are retained. New observations and
 summaries from the export attach to that existing session. If it has no memory
 session ID yet, the import registers the exported ID before adding those memories.
 Re-importing the same export still skips the memories already restored.
+
+Large files are sent in multiple requests within the worker's 5 MiB JSON body
+limit, measured in UTF-8 bytes. Parent sessions are imported first, and later
+requests use the local session identities returned by the worker. Use a worker
+from the same version as the script for this identity response. An input row
+whose serialized request alone exceeds the limit is refused before any rows
+are written; the script does not shorten its content.
 
 **Duplicate Detection Strategy:**
 - **Sessions**: By `claude_session_id` (unique)
@@ -203,7 +210,7 @@ If you run the import again on the same file, duplicates are automatically skipp
 ## Safety Features
 
 ✅ **Duplicate Prevention** - Won't re-import existing records
-✅ **Transactional** - All-or-nothing imports (database stays consistent)
+✅ **Explicit rejections** - Rejected rows are reported with their input positions
 ✅ **Read-only Export** - Export script opens database in read-only mode
 ✅ **Dependency Ordering** - Sessions imported before observations/summaries
 ✅ **Validation** - Checks database exists before starting
@@ -272,7 +279,10 @@ npx tsx scripts/import-memories.ts linux.json
 
 ### Partial Import
 
-If import fails mid-way, the transaction is rolled back - your database remains unchanged. Fix the issue and try again.
+If a request fails mid-way, earlier accepted rows remain imported and the script
+exits with a nonzero status. Fix the reported problem and import the same file
+again: duplicate prevention skips rows already restored. A rejected row also
+produces a nonzero exit status, with its original position in the export file.
 
 ## Contributing Memory Sets
 
