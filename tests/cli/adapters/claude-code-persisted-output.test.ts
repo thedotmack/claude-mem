@@ -58,12 +58,14 @@ describe('claudeCodeAdapter.normalizeInput — persistedOutputPath', () => {
     const stdout = (claudeCodeAdapter.normalizeInput(postToolUse(file)).toolResponse as { stdout: string }).stdout;
 
     expect(stdout.endsWith(`${FINAL_LINE}\n`)).toBe(true);
-    expect(stdout.startsWith('x'.repeat(1_000))).toBe(true);
-    expect(stdout).toContain(`original_size_bytes="${fullOutput.length}" reason="harness-cut"`);
-    const marker = stdout.match(/\n\.\.\. <elided [^>]*\/> \.\.\.\n/)![0];
-    expect(stdout.length).toBe(HARNESS_CAP + marker.length);
+    const note = stdout.match(/^<harness-cut [^>]*\/>\n/)![0];
+    expect(note).toContain(`original_size_bytes="${fullOutput.length}"`);
+    expect(stdout.slice(note.length).startsWith('x'.repeat(1_000))).toBe(true);
+    const marker = stdout.match(/\n\.\.\. <elided [^>]*reason="harness-cut" \/> \.\.\.\n/)![0];
+    expect(stdout.length).toBe(HARNESS_CAP + note.length + marker.length);
     const elided = Number(marker.match(/bytes="(\d+)"/)![1]);
-    expect(stdout.length - marker.length + elided).toBe(fullOutput.length);
+    expect(note).toContain(`elided_bytes="${elided}"`);
+    expect(stdout.length - note.length - marker.length + elided).toBe(fullOutput.length);
   });
 
   it('puts the final line of the real output into the observer prompt', () => {
@@ -78,6 +80,9 @@ describe('claudeCodeAdapter.normalizeInput — persistedOutputPath', () => {
     });
 
     expect(prompt).toContain(FINAL_LINE);
+    // The prompt drops the middle of the field, where the cut point is; the note on the cut survives at its head.
+    expect(prompt).toContain(`original_size_bytes=\\"${fullOutput.length}\\"`);
+    expect(prompt).toContain('<harness-cut ');
   });
 
   it('ignores a path outside Claude Code tool-results', () => {

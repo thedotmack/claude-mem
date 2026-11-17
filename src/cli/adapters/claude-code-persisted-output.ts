@@ -10,8 +10,12 @@ import { logger } from '../../utils/logger.js';
  * `<config>/projects/<project>/<session>/tool-results/<id>.txt`, and sends that path as `persistedOutputPath` (#6282).
  * The `stdout` in the hook payload is then only the head of the output, so the last lines, where a test summary or
  * the final error usually is, never reached the observer. This replaces the end of `stdout` with the end of that file
- * and marks the cut with the real size. `stdout` does not get longer, so the stored row and the observer prompt keep
- * their current bounds. The tail is the share of the field the observer prompt keeps from the end.
+ * and marks the cut with the real size. `stdout` grows only by the two markers, so the stored row and the observer
+ * prompt keep their current bounds. The tail is the share of the field the observer prompt keeps from the end.
+ *
+ * The observer prompt keeps the head and the tail of the whole serialized response and drops its middle, which is
+ * where the cut point lands. So the note saying Claude Code cut the output, and by how much, opens `stdout`: the
+ * prompt always keeps the head of the field. A short marker still sits at the cut point itself.
  */
 const TAIL_CHARS = Math.floor(OBS_PROMPT_FIELD_MAX_CHARS * OBS_PROMPT_FIELD_TAIL_RATIO);
 
@@ -48,7 +52,8 @@ export function withPersistedOutputTail(toolResponse: unknown): unknown {
       const elidedBytes = tailStart + skip - headBytes;
       return {
         ...response,
-        stdout: `${head}\n... <elided bytes="${elidedBytes}" original_size_bytes="${size}" reason="harness-cut" /> ...\n${tail}`,
+        stdout: `<harness-cut original_size_bytes="${size}" elided_bytes="${elidedBytes}" kept="head and end" />\n`
+          + `${head}\n... <elided bytes="${elidedBytes}" reason="harness-cut" /> ...\n${tail}`,
       };
     } finally {
       closeSync(fd);
