@@ -73,8 +73,9 @@ function queryInChunks(database, values, sqlFor, parametersFor = (chunk) => chun
 
 // Pass sinceEpoch for a time window, or conversationKeys for specific conversations.
 // fullAsks returns every qualifying ask untruncated (for `show`); listings stay short.
+// Grouping needs the recent window; ordinary candidate listings keep the opening one.
 // excludedPromptIds: hook-recorded prompts the setup scan found an agent wrote (agent-written-prompts.json).
-export function readCandidates(database, { sinceEpoch = 0, conversationKeys = null, fullAsks = false, excludedPromptIds = null }) {
+export function readCandidates(database, { sinceEpoch = 0, conversationKeys = null, fullAsks = false, recentAsks = false, excludedPromptIds = null }) {
   const columns = 'SELECT id, platform_source, content_session_id, project, user_prompt, started_at_epoch FROM sdk_sessions';
   const pairs = conversationKeys?.map((key) => JSON.parse(key).slice(1));
   const stored = pairs
@@ -122,7 +123,7 @@ export function readCandidates(database, { sinceEpoch = 0, conversationKeys = nu
       conversationKey: key, platform: session.platform_source, project: session.project,
       startedAt: iso(original.atEpoch ?? session.started_at_epoch), startedAtEpoch: original.atEpoch ?? session.started_at_epoch,
       lastActivityEpoch: Math.max(lastPrompt, observationsBySession.get(session.id)?.last_epoch ?? 0, lastToolUseBySession.get(session.id) ?? 0, session.started_at_epoch ?? 0),
-      firstAsk: requestText(original.text, 600), asks: fullAsks ? asks : asks.slice(0, 10), askCount: asks.length, original,
+      firstAsk: requestText(original.text, 600), asks: fullAsks ? asks : recentAsks ? asks.slice(-10) : asks.slice(0, 10), askCount: asks.length, original,
       workLists: [], requestIds: [], observationCount: observationsBySession.get(session.id)?.count ?? 0,
       sessionDbId: session.id,
     });
@@ -362,6 +363,19 @@ function reviewList(value, max, label, options) {
   return list.filter((_, index) => newestIndexes.has(index));
 }
 
+/** On the retry, a preference missing its words or the owner's quote is dropped: neither can be shortened into being,
+ * and the review's state and summary are saved without it. Each drop is named in `droppedPreferences`, apart from the
+ * trimmed fields. */
+function quotedPreferences(list, options) {
+  if (!options.coerce || !Array.isArray(list)) return list;
+  const said = (value) => typeof value === 'string' && value.trim() !== '';
+  return list.filter((preference, index) => {
+    if (said(preference?.preference) && said(preference?.quote)) return true;
+    options.droppedPreferences.add(`preferences[${index}]`);
+    return false;
+  });
+}
+
 // Models sometimes answer one citation as a plain string instead of a list (Oct 25: a review's
 // `evidence: "obs 101"` threw `.map is not a function` and failed the whole refresh run).
 const evidenceList = (value, limit = 8) => (Array.isArray(value) ? value : typeof value === 'string' && value.trim() ? [value] : []).map(String).slice(0, limit);
@@ -399,7 +413,7 @@ export function validateOutcome(outcome, options = {}) {
 /** Progress reviews are agent assessments; keep them bounded and dated. */
 export function validateProgress(entry, knownGroups, options = {}) {
   if (!entry || typeof entry !== 'object') throw new TypeError('Progress must be an object.');
-  options = { coerce: false, coercedFields: new Set(), ...options };
+  options = { coerce: false, coercedFields: new Set(), droppedPreferences: new Set(), ...options };
   const text = (value, max, label, optional = false) => reviewText(value, max, label, { ...options, optional });
   if (!knownGroups[entry.groupId]) throw new TypeError(`Unknown group ${entry.groupId}.`);
   const basis = entry.reviewBasis;
@@ -411,7 +425,7 @@ export function validateProgress(entry, knownGroups, options = {}) {
   for (const field of ['startedAt', 'shippedAt', 'lastActivityAt']) if (!isIsoOrNull(entry[field] ?? null)) throw new TypeError(`${field} must be an ISO date or null.`);
   if (entry.state === 'shipped' && (entry.percent !== 100 || !entry.shippedAt)) throw new TypeError('A shipped request needs percent 100 and shippedAt.');
   if (entry.state !== 'shipped' && entry.shippedAt) throw new TypeError('Only a shipped request has shippedAt.');
-  const milestones = reviewList(entry.milestones, 12, 'milestones', options), preferences = reviewList(entry.preferences, 10, 'preferences', options);
+  const milestones = reviewList(entry.milestones, 12, 'milestones', options), preferences = reviewList(quotedPreferences(entry.preferences, options), 10, 'preferences', options);
   return {
     groupId: entry.groupId, state: entry.state, percent: entry.percent,
     startedAt: entry.startedAt ?? null, shippedAt: entry.shippedAt ?? null, lastActivityAt: entry.lastActivityAt ?? null,
@@ -551,6 +565,26 @@ export function validateStory(story) {
       quotes: (preference.quotes ?? []).slice(0, 3).map((quote, quoteIndex) => ({ quote: boundedQuote(quote.quote, 300, `preferences[${index}].quotes[${quoteIndex}]`), at: isIsoOrNull(quote.at ?? null) ? quote.at ?? null : null })),
     })),
   };
+}
+
+/** The story step's input: the reviews to tell, the story they update and its budgets. `story-input` builds it from
+ * the saved story; the worker builds each later part of a story written in parts (#6226) from the part before. */
+export function storyInput(groups, reviews, story) {
+  const update = Number.isFinite(Date.parse(story?.writtenAt ?? ''));
+  // An update only ever added to the story until it reached the cap and every update was refused (Oct 24: 11,958 of 12,000),
+  // so the agent is told the budget and the previous story's length up front.
+  // With only the limit and length, an update at 11,836 of 12,000 still added ~1,300 characters and condensed nothing (Oct 24),
+  // so the room left is spelled out as well.
+  // With room counted up to the cap, updates still aimed at the cap and landed over it (Oct 24–26), so the room is
+  // counted up to the target, and a previous story past the target is first condensed back to it, part by part.
+  const previousNarrativeChars = story?.narrative?.length ?? 0;
+  return { groups, update, narrativeTarget: STORY_NARRATIVE_TARGET, narrativeLimit: STORY_NARRATIVE_MAX, previousNarrativeChars,
+    roomChars: Math.max(0, STORY_NARRATIVE_TARGET - previousNarrativeChars), condenseChars: Math.max(0, previousNarrativeChars - STORY_NARRATIVE_TARGET),
+    previousParts: update ? storyParts(story.narrative) : [], mergeOldestChapters: update ? storyChaptersToMerge(story.narrative) : 0,
+    reviews,
+    // Rules owner-goals put in the story are its own (record-story carries them over): shown here, the story model
+    // would echo them back without their source and when, leaving copies a later owner-goals save cannot replace.
+    previousStory: story && { ...story, preferences: (story.preferences ?? []).filter((preference) => preference?.source !== OWNER_GOALS_LIST) } };
 }
 
 /** Suggestions still waiting for the owner: the judge's mid-band picks (request-judge.mjs) whose
@@ -899,7 +933,7 @@ const CLOSED_STATES = new Set(['shipped', 'abandoned']);
  * again, and neither are the keys in `skip` (conversations the judge could not
  * place in this run). `remaining` counts the new conversations left for later questions. */
 export function groupingInput(ledger, database, { sinceEpoch, limit = GROUPING_BATCH, skip = null }) {
-  const candidates = readCandidates(database, { sinceEpoch, excludedPromptIds: ledger.agentWrittenPromptIds });
+  const candidates = readCandidates(database, { sinceEpoch, recentAsks: true, excludedPromptIds: ledger.agentWrittenPromptIds });
   const decided = (key) => Boolean(ledger.groups.conversations[key] || ledger.groups.ignored?.[key] || skip?.has(key));
   const fresh = candidates.filter((candidate) => !decided(candidate.conversationKey));
   if (!fresh.length) return { root: null, conversations: [], openRequests: [], proposedLinks: [], remaining: 0 };
@@ -919,7 +953,7 @@ export function groupingInput(ledger, database, { sinceEpoch, limit = GROUPING_B
     .filter(([groupId, group]) => groupRoot(group) === root && !CLOSED_STATES.has(ledger.progress[groupId]?.state))
     .map(([groupId, group]) => {
       const members = Object.entries(ledger.groups.conversations).filter(([, id]) => id === groupId).map(([key]) => byKey.get(key)).filter(Boolean);
-      const asks = members.flatMap((member) => member.asks).sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+      const asks = members.flatMap((member) => member.asks).sort((a, b) => Date.parse(b.at) - Date.parse(a.at) || b.promptId - a.promptId);
       return {
         groupId, title: group.title, anchor: group.anchor,
         anchorAsk: requestText(group.anchorAsk?.text ?? members[0]?.firstAsk ?? '', 400),
@@ -943,10 +977,14 @@ export function groupingInput(ledger, database, { sinceEpoch, limit = GROUPING_B
 
 /** The grouping agent decides exactly the conversations it was sent: each
  * one joins an open request (listed after that request's anchor), starts a new
- * one, or is ignored. Nothing already decided may move. */
-export function validateGroupingAnswer(answer, input) {
+ * one, or is ignored. Nothing already decided may move.
+ * With `coerce` (the refresh's one retry, as in validateProgress), what this check and `apply` would refuse is cut
+ * from the answer instead, and each changed group or ignore entry is named in `coercedFields`. */
+export function validateGroupingAnswer(answer, input, options = {}) {
+  options = { coerce: false, coercedFields: new Set(), ...options };
   const asked = new Set(input.conversations.map((conversation) => conversation.conversationKey));
   const anchors = new Set(input.openRequests.map((request) => request.anchor));
+  if (options.coerce) answer = coerceGroupingAnswer(answer, asked, anchors, options);
   const decided = new Set();
   for (const [index, group] of (Array.isArray(answer?.groups) ? answer.groups : []).entries()) {
     for (const [position, key] of (Array.isArray(group?.conversations) ? group.conversations : []).entries()) {
@@ -962,6 +1000,36 @@ export function validateGroupingAnswer(answer, input) {
   const missing = [...asked].filter((key) => !decided.has(key));
   if (missing.length) throw new TypeError(`Decide every conversation asked about; missing ${missing.join(', ')}.`);
   return answer;
+}
+
+/** A grouping answer without its unsupported parts. A key outside the batch goes (an open request's anchor may only
+ * come first); a link keeps only its group's conversations and goes below two; a group is cut into the parts its links
+ * connect, so a conversation no link ties to the anchor starts its own request under the same title, and a part
+ * holding no asked conversation (an anchor left alone) goes; an ignore reason over 200 characters is shortened.
+ * Nothing is joined without a link, and no asked conversation is dropped. */
+function coerceGroupingAnswer(answer, asked, anchors, options) {
+  const groups = (Array.isArray(answer?.groups) ? answer.groups : []).flatMap((group, index) => {
+    if (!Array.isArray(group?.conversations)) return [group];
+    const members = group.conversations.filter((key, position) => asked.has(key) || (position === 0 && anchors.has(key)));
+    const links = (Array.isArray(group.links) ? group.links : [])
+      .map((link) => ({ ...link, conversations: (Array.isArray(link?.conversations) ? link.conversations : []).filter((key) => members.includes(key)) }))
+      .filter((link) => link.conversations.length >= 2);
+    // The same union of linked conversations applyGroupDecisions checks against the anchor.
+    const parent = new Map(members.map((key) => [key, key]));
+    const find = (key) => { while (parent.get(key) !== key) key = parent.get(key); return key; };
+    for (const link of links) for (const key of link.conversations.slice(1)) parent.set(find(key), find(link.conversations[0]));
+    const parts = new Map();
+    for (const key of members) parts.set(find(key), [...(parts.get(find(key)) ?? []), key]);
+    if (parts.size === 1 && JSON.stringify([members, links]) === JSON.stringify([group.conversations, group.links ?? []])) return [group];
+    options.coercedFields.add(`groups[${index}]`);
+    return [...parts.values()].filter((part) => part.some((key) => asked.has(key)))
+      .map((part) => ({ ...group, conversations: part, links: links.filter((link) => link.conversations.every((key) => part.includes(key))) }));
+  });
+  const ignored = (Array.isArray(answer?.ignored) ? answer.ignored : []).flatMap((entry, index) => {
+    if (!asked.has(entry?.conversation)) { options.coercedFields.add(`ignored[${index}]`); return []; }
+    return typeof entry.reason === 'string' && entry.reason.length > 200 ? [{ ...entry, reason: reviewText(entry.reason, 200, `ignored[${index}].reason`, options) }] : [entry];
+  });
+  return { ...answer, groups, ignored };
 }
 
 /** `apply` without the file: the decisions merged into `stored`, with every touched conversation's
@@ -1054,36 +1122,24 @@ export function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now
   }
   if (command === 'record-progress') {
     const ledger = readLedger(dir);
-    const coercedFields = new Set();
-    const reviewed = validateProgress(readInput(args[0] ?? '-'), ledger.groups.groups, { coerce: coerceProgress, coercedFields });
+    const coercedFields = new Set(), droppedPreferences = new Set();
+    const reviewed = validateProgress(readInput(args[0] ?? '-'), ledger.groups.groups, { coerce: coerceProgress, coercedFields, droppedPreferences });
     const checkedAt = iso(now);
     const previous = ledger.progress[reviewed.groupId];
     // The story is retold only from reviews whose facts moved; reworded prose and review timestamps are not news.
     const unchanged = previous && JSON.stringify(storyFacts(previous)) === JSON.stringify(storyFacts(reviewed));
     const entry = { ...reviewed, checkedAt, changedAt: unchanged ? previous.changedAt ?? previous.checkedAt : checkedAt, readings: appendReading(ledger.progress[reviewed.groupId], { at: checkedAt, percent: reviewed.percent }) };
     writeJsonAtomic(join(dir, 'progress', `${entry.groupId}.json`), entry);
-    return print({ recorded: entry.groupId, state: entry.state, percent: entry.percent, readings: entry.readings.length, ...(coercedFields.size ? { coercedFields: [...coercedFields] } : {}) });
+    return print({ recorded: entry.groupId, state: entry.state, percent: entry.percent, readings: entry.readings.length, ...(coercedFields.size ? { coercedFields: [...coercedFields] } : {}),
+      ...(droppedPreferences.size ? { droppedPreferences: [...droppedPreferences] } : {}) });
   }
   if (command === 'story-input') {
     const { groups, progress, story } = readLedger(dir);
     const reviews = Object.values(progress).sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)));
     // With a previous story, only reviews whose facts changed after it was written.
     const writtenAt = Date.parse(story?.writtenAt ?? '');
-    const update = Number.isFinite(writtenAt);
-    // An update only ever added to the story until it reached the cap and every update was refused (Oct 24: 11,958 of 12,000),
-    // so the agent is told the budget and the previous story's length up front.
-    // With only the limit and length, an update at 11,836 of 12,000 still added ~1,300 characters and condensed nothing (Oct 24),
-    // so the room left is spelled out as well.
-    // With room counted up to the cap, updates still aimed at the cap and landed over it (Oct 24–26), so the room is
-    // counted up to the target, and a previous story past the target is first condensed back to it, part by part.
-    const previousNarrativeChars = story?.narrative?.length ?? 0;
-    return print({ groups: Object.keys(groups.groups).length, update, narrativeTarget: STORY_NARRATIVE_TARGET, narrativeLimit: STORY_NARRATIVE_MAX, previousNarrativeChars,
-      roomChars: Math.max(0, STORY_NARRATIVE_TARGET - previousNarrativeChars), condenseChars: Math.max(0, previousNarrativeChars - STORY_NARRATIVE_TARGET),
-      previousParts: update ? storyParts(story.narrative) : [], mergeOldestChapters: update ? storyChaptersToMerge(story.narrative) : 0,
-      reviews: update ? reviews.filter((review) => Date.parse(review.changedAt ?? review.checkedAt) > writtenAt) : reviews,
-      // Rules owner-goals put in the story are its own (record-story carries them over): shown here, the story model
-      // would echo them back without their source and when, leaving copies a later owner-goals save cannot replace.
-      previousStory: story && { ...story, preferences: (story.preferences ?? []).filter((preference) => preference?.source !== OWNER_GOALS_LIST) } });
+    return print(storyInput(Object.keys(groups.groups).length,
+      Number.isFinite(writtenAt) ? reviews.filter((review) => Date.parse(review.changedAt ?? review.checkedAt) > writtenAt) : reviews, story));
   }
   if (command === 'record-story') {
     const validated = validateStory(readInput(args[0] ?? '-'));

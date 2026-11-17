@@ -3,7 +3,7 @@ import { ArrowRightIcon, CheckIcon } from 'lucide-react'
 import { DottedGlowBackground } from '@/components/aceternity/dotted-glow-background'
 import { Collapsible, CollapsibleContent, CollapsibleFoldTrigger } from '@/components/ui/collapsible'
 import { interpolate, useI18n } from '@/lib/i18n'
-import type { SetupFailure, SetupScanPhase, SetupScanView } from '../setup-data'
+import { uploadTooLarge, type SetupFailure, type SetupScanPhase, type SetupScanView } from '../setup-data'
 import { scanAgentStatus } from '../setup-scan-status'
 import { PageHeading, SETUP_WAITING_LINE_ID, SetupActions, SetupButton, SetupError, ToolMark, type SetupBack } from './shared'
 
@@ -44,14 +44,18 @@ export function ScanScreen({ scan, back, onImproveProductChange, onConfirmUpload
   const [unticked, setUnticked] = useState<string[]>([])
   // Offer every tool that has prompts, even when its history folder is gone and only saved prompts remain.
   const uploadable = scan.agents.filter((agent) => agent.prompts > 0)
-  const chosen = uploadable.filter((agent) => !unticked.includes(agent.id)).map((agent) => agent.id)
+  const selected = uploadable.filter((agent) => !unticked.includes(agent.id))
+  const chosen = selected.map((agent) => agent.id)
   const asking = scan.phase === 'awaiting-consent'
+  const tooLarge = asking && uploadTooLarge(selected)
   const stopped = scan.phase === 'failed'
   const count = (prompts: number) => interpolate(t('{count} messages'), { count: prompts.toLocaleString('en-US') })
   const status = STATUS[scan.phase]
   // While the scan runs the row has nothing to press forward (the page moves on by itself), so its only line is
   // Back's reason, which the bottom row words (BACK_WAIT_WORDS).
-  const waiting = asking && chosen.length === 0 ? t('Tick at least one tool to turn on Discover.') : undefined
+  const waiting = asking && chosen.length === 0 ? t('Tick at least one tool to turn on Discover.')
+    : tooLarge ? t('Too much for one upload. Untick a tool or skip the scan.') : undefined
+  const discoverWaits = chosen.length === 0 || tooLarge
   return (
     <section aria-labelledby="scan-title">
       <PageHeading id="scan-title" title={asking ? t('Pick up where you left off.') : t('Finding your recent work.')} lead={detected.map((agent) => agent.label).join(' · ') || undefined} />
@@ -130,7 +134,7 @@ export function ScanScreen({ scan, back, onImproveProductChange, onConfirmUpload
         </>}
         {asking && <>
           <SetupButton look="outline" aria-disabled={consentSending || undefined} onClick={() => onConfirmUpload(false)}>{t('Skip the scan')}</SetupButton>
-          <SetupButton aria-disabled={chosen.length === 0 || consentSending || undefined} aria-describedby={chosen.length === 0 ? SETUP_WAITING_LINE_ID : undefined} onClick={() => onConfirmUpload(true, chosen)}>{t('Discover My Work, Rules & Focus')}</SetupButton>
+          <SetupButton aria-disabled={discoverWaits || consentSending || undefined} aria-describedby={discoverWaits ? SETUP_WAITING_LINE_ID : undefined} onClick={() => onConfirmUpload(true, chosen)}>{t('Discover My Work, Rules & Focus')}</SetupButton>
         </>}
         {scan.phase === 'done' && onContinue && <SetupButton onClick={onContinue}>{t('Continue')} <ArrowRightIcon aria-hidden="true" /></SetupButton>}
       </SetupActions>

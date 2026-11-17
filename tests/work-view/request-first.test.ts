@@ -318,6 +318,46 @@ const git = (cwd: string, ...args: string[]) => {
 };
 const gitRepo = (dir: string) => { mkdirSync(dir, { recursive: true }); git(dir, 'init', '-q'); git(dir, 'commit', '-q', '--allow-empty', '-m', 'init'); };
 
+describe('a grouping answer on the refresh\'s retry', () => {
+  const input = {
+    root: 'repo', proposedLinks: [], remaining: 0,
+    conversations: ['b', 'c', 'd', 'e'].map(id => ({ conversationKey: key(id), project: 'repo', startedAt: null, openingAsk: null, workLists: [] })),
+    openRequests: [{ groupId: groupIdFor(key('a')), title: 'Release cards', anchor: key('a'), anchorAsk: null, recentAsks: [], lastActivityAt: null }],
+  };
+
+  it('is cut to what apply accepts: no key outside the batch, no join without a link, no ignore reason past 200 characters', () => {
+    const answer = { groups: [
+      // The link names a conversation of another request (x); c is listed but linked to nothing.
+      { title: 'Release cards', conversations: [key('a'), key('b'), key('c'), key('x')], links: link([key('a'), key('b'), key('x')]) },
+      // An open request's anchor counts only when it comes first.
+      { title: 'Pricing', conversations: [key('d'), key('a')], links: link([key('d'), key('a')]) },
+    ], ignored: [{ conversation: key('e'), reason: 'Only a greeting. '.repeat(15) }, { conversation: key('y'), reason: 'From another batch.' }] };
+    expect(() => validateGroupingAnswer(answer, input)).toThrow('not asked about');
+    const coercedFields = new Set<string>();
+    const coerced = validateGroupingAnswer(answer, input, { coerce: true, coercedFields });
+    expect(coerced.groups.map(group => [group.title, group.conversations, group.links.map(entry => entry.conversations)])).toEqual([
+      ['Release cards', [key('a'), key('b')], [[key('a'), key('b')]]],
+      ['Release cards', [key('c')], []],
+      ['Pricing', [key('d')], []],
+    ]);
+    expect(coerced.ignored).toHaveLength(1);
+    expect(coerced.ignored[0].reason.length).toBeLessThanOrEqual(200);
+    expect(coerced.ignored[0].reason.endsWith('…')).toBe(true);
+    expect([...coercedFields]).toEqual(['groups[0]', 'groups[1]', 'ignored[0].reason', 'ignored[1]']);
+    expect(() => applyGroupDecisions(null, coerced, NOW)).not.toThrow();
+  });
+
+  it('a sound answer comes back as it was, with nothing named', () => {
+    const answer = { groups: [
+      { title: 'Release cards', conversations: [key('a'), key('b')], links: link([key('a'), key('b')]) },
+      { title: 'Pricing', conversations: [key('c'), key('d')], links: link([key('c'), key('d')]) },
+    ], ignored: [{ conversation: key('e'), reason: 'Only a greeting.' }] };
+    const coercedFields = new Set<string>();
+    expect(validateGroupingAnswer(answer, input, { coerce: true, coercedFields })).toEqual(answer);
+    expect(coercedFields.size).toBe(0);
+  });
+});
+
 describe('the real project of an agent scratch-folder session', () => {
   it('is named the way claude-mem names the checkout, so git-remote naming does not split one repo in two', () => {
     const root = mkdtempSync(join(tmpdir(), 'scratch-project-'));

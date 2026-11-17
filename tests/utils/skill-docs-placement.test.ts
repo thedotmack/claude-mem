@@ -5,6 +5,17 @@ import { join } from 'path';
 const SKILLS_DIR = join(import.meta.dir, '../../plugin/skills');
 
 describe('skill docs placement (#1651)', () => {
+  it('mem-search metadata can be read by a YAML parser', () => {
+    const content = readFileSync(join(SKILLS_DIR, 'mem-search/SKILL.md'), 'utf-8');
+    const frontmatter = content.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+    expect(frontmatter).not.toBeNull();
+
+    const metadata = Bun.YAML.parse(frontmatter![1]) as { name: string; description: string };
+    expect(metadata.name).toBe('mem-search');
+    expect(typeof metadata.description).toBe('string');
+    expect(metadata.description).toContain('search, timeline, then selected get_observations');
+  });
+
   it('smart-explore/SKILL.md contains Language Support section', () => {
     const path = join(SKILLS_DIR, 'smart-explore/SKILL.md');
     expect(existsSync(path)).toBe(true);

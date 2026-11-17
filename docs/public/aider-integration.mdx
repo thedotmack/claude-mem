@@ -87,9 +87,10 @@ npx claude-mem aider install
 
 What the installer does:
 
-- Resolves your config: the project's `.aider.conf.yml` (git root first,
-  then the working directory, then `~/.aider.conf.yml` — Aider's own
-  search order).
+- Selects the existing `.aider.conf.yml` with the highest priority in Aider:
+  the working directory first, then the Git root, then `~/.aider.conf.yml`.
+  If none exists, creates one in the Git root, or the working directory
+  outside a Git repository.
 - Backs up an existing `.aider.conf.yml` first, as
   `.aider.conf.yml.bak-YYYYMMDD` (owner-only, mode `0600`, one per day).
 - Merges `.claude-mem/aider-memory.md` into `read:`, preserving every
