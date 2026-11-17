@@ -39,10 +39,10 @@ export function ScanScreen({ scan, onImproveProductChange, onConfirmUpload, onUp
   const [unticked, setUnticked] = useState<string[]>([])
   // Offer every tool that has prompts, even when its history folder is gone and only saved prompts remain.
   const uploadable = scan.agents.filter((agent) => agent.prompts > 0)
-  const chosen = uploadable.filter((agent) => !unticked.includes(agent.id)).map((agent) => agent.id)
+  const selected = uploadable.filter((agent) => !unticked.includes(agent.id))
+  const chosen = selected.map((agent) => agent.id)
   // The worker refuses an upload over the cap before it sends anything, so say it here, while the person can still untick a tool.
-  const tooLarge = scan.phase === 'awaiting-consent'
-    && uploadable.filter((agent) => chosen.includes(agent.id)).reduce((sum, agent) => sum + agent.uploadBytes, 0) > INTENT_MAX_UPLOAD_BYTES
+  const tooLarge = scan.phase === 'awaiting-consent' && selected.reduce((sum, agent) => sum + agent.uploadBytes, 0) > INTENT_MAX_UPLOAD_BYTES
   useEffect(() => { if (tooLarge) onUploadTooLarge?.() }, [tooLarge, onUploadTooLarge])
   const reducedMotion = useMatchesMedia('(prefers-reduced-motion: reduce)')
   return (
