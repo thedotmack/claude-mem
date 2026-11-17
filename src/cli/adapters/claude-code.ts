@@ -1,6 +1,7 @@
 import type { PlatformAdapter, NormalizedHookInput, HookResult } from '../types.js';
 import { AdapterRejectedInput, isValidCwd } from './errors.js';
 import { resolveHookProjectPath } from '../../utils/project-name.js';
+import { withPersistedOutputTail } from './claude-code-persisted-output.js';
 import { SESSION_START_CARD_FILE_KEY } from '../../shared/session-start-card-slot.js';
 
 const MAX_AGENT_FIELD_LEN = 128;
@@ -87,7 +88,7 @@ export const claudeCodeAdapter: PlatformAdapter = {
       submittedPrompt: normalizeSubmittedPrompt(r),
       toolName,
       toolInput: withGrokReadPath(toolName, firstDefined(r.tool_input, r.toolInput)),
-      toolResponse: firstDefined(r.tool_response, r.toolResponse, r.toolResult) ?? failedToolResponse(r),
+      toolResponse: withPersistedOutputTail(firstDefined(r.tool_response, r.toolResponse, r.toolResult)) ?? failedToolResponse(r),
       toolUseId: firstFilledString(r.tool_use_id, r.toolUseId),
       transcriptPath: firstFilledString(r.transcript_path, r.transcriptPath),
       agentTranscriptPath: pickStringField(r.agent_transcript_path),
