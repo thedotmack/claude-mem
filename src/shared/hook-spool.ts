@@ -694,11 +694,12 @@ export class HookSpool {
   }
 
   /**
-   * Sorts the retained entries and drops everything past `maxEntries`, counting
-   * the overflow as omitted. One sort after the scan replaces the previous
-   * re-sort-per-overflow, which cost O(n² log n) on a large backlog.
+   * Sort the collected entries and keep only the oldest `maxEntries`, returning
+   * how many were dropped. Called whenever the collector passes its limit, so a
+   * bounded drain never retains more than `maxEntries` parsed payloads even
+   * when the spool holds thousands of files.
    */
-  private static retainEntries(files: HookSpoolFile[], maxEntries: number): number {
+  private static trimToLimit(files: HookSpoolFile[], maxEntries: number): number {
     files.sort(HookSpool.compareSpoolFiles);
     if (files.length <= maxEntries) return 0;
     const omitted = files.length - maxEntries;
@@ -726,6 +727,7 @@ export class HookSpool {
 
     const files: HookSpoolFile[] = [];
     let quarantined = 0;
+    let omitted = 0;
     for (const filename of filenames) {
       const entryPath = join(this.directory, filename);
       let raw: string;
@@ -746,9 +748,11 @@ export class HookSpool {
         continue;
       }
       files.push({ entry: parsed, path: entryPath, filename });
+      if (files.length > maxEntries) omitted += HookSpool.trimToLimit(files, maxEntries);
     }
 
-    return { files, quarantined, omitted: HookSpool.retainEntries(files, maxEntries) };
+    files.sort(HookSpool.compareSpoolFiles);
+    return { files, quarantined, omitted };
   }
 
   /**
@@ -771,6 +775,7 @@ export class HookSpool {
 
     const files: HookSpoolFile[] = [];
     let quarantined = 0;
+    let omitted = 0;
     for (let start = 0; start < filenames.length; start += DRAIN_READ_BATCH_SIZE) {
       const batch = filenames.slice(start, start + DRAIN_READ_BATCH_SIZE);
       const raws = await Promise.all(batch.map(async filename => {
@@ -796,10 +801,12 @@ export class HookSpool {
           continue;
         }
         files.push({ entry: parsed, path: entryPath, filename: read.filename });
+        if (files.length > maxEntries) omitted += HookSpool.trimToLimit(files, maxEntries);
       }
     }
 
-    return { files, quarantined, omitted: HookSpool.retainEntries(files, maxEntries) };
+    files.sort(HookSpool.compareSpoolFiles);
+    return { files, quarantined, omitted };
   }
 }
 

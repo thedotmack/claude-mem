@@ -66,6 +66,22 @@ describe('HookSpool', () => {
     expect(spoolFiles(spool)).toEqual([]);
   });
 
+  it('drains only the oldest maxEntries and reports the rest as retained', async () => {
+    const spool = new HookSpool();
+    for (let index = 0; index < 40; index++) {
+      spool.enqueue('session_end', { contentSessionId: `session-${index}`, platformSource: 'claude' }, 1000 + index);
+    }
+
+    const seen: string[] = [];
+    const result = await spool.drain(entry => {
+      seen.push(entry.payload.contentSessionId);
+      return true;
+    }, undefined, { maxEntries: 2 });
+
+    expect(seen).toEqual(['session-0', 'session-1']);
+    expect(result).toEqual({ drained: 2, retained: 38, quarantined: 0, expired: 0 });
+  });
+
   it('reads the backlog without holding the event loop', async () => {
     const spool = new HookSpool();
     spool.enqueue('session_end', { contentSessionId: 'session-yield', platformSource: 'claude' });
