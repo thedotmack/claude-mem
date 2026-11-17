@@ -40,7 +40,7 @@ describe('observation metadata recovery', () => {
       const html = renderToStaticMarkup(<ObservationCard observation={{ ...base,
         facts: stored.facts, concepts: stored.concepts }} onDeleted={() => {}} />);
       expect(html).toContain('OWNED EVIDENCE');
-      expect(html).toContain('<span>facts</span>');
+      expect(html).toMatch(/class="view-mode-toggle"[^>]*>Facts/);
     });
   }
 });

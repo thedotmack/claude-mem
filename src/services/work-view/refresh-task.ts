@@ -22,7 +22,7 @@ import { resolvePythonCommand } from './python.js';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { logger } from '../../utils/logger.js';
 import { FOCUS_BATCH, readGoals, readLedger, runCli, validateFocusAnswer, validateGroupingAnswer, validateStory, type FocusInput, type LedgerDatabase, type RefreshNeeds, type StoryDraft, type StoryInput } from './request-groups.mjs';
-import { nextStoryBatch, storyPreferenceEvidence } from './story-batches.js';
+import { boundedStoryPreferences, nextStoryBatch, storyPreferenceEvidence } from './story-batches.js';
 import { FOCUS_AUTO_PLACE_THRESHOLD, judgeFocusBatch, placesAlone, type FocusJudge, type FocusJudgement } from './focus-judge.mjs';
 import { isWithdrawnArea, ownerGoalsAreaRows, ownerGoalsSaveKey, PROPOSAL_KINDS, readFocusAreas, type FocusArea, type RouterFocusBody } from './my-focus.mjs';
 import { NAV_LABELS } from './nav-words.mjs';
@@ -824,16 +824,33 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       const storyReadAt = now();
       const storyInput: StoryInput = cli(['story-input']);
       if (storyInput.reviews.length) {
-        const preferenceEvidence = storyPreferenceEvidence(storyInput);
+        let preferenceEvidence: ReturnType<typeof storyPreferenceEvidence> | null = storyPreferenceEvidence(storyInput);
+        let resolvedPreferences: StoryDraft['preferences'] | undefined;
         let previous = storyInput.previousStory;
         let draft: StoryDraft;
         for (let offset = 0; offset < storyInput.reviews.length;) {
-          const input = nextStoryBatch(storyInput, offset, previous, preferenceEvidence);
+          let input: ReturnType<typeof nextStoryBatch>;
+          try { input = nextStoryBatch(storyInput, offset, previous, preferenceEvidence); }
+          catch (error) {
+            if (!preferenceEvidence) throw error;
+            // Do not spend on preference comparisons when the narrative review
+            // itself cannot fit. Nothing is saved until both passes finish.
+            nextStoryBatch(storyInput, offset, previous, null);
+            resolvedPreferences = await boundedStoryPreferences(storyInput, preferenceEvidence, (comparison, validate) => step('story', [
+              readOnly,
+              `The \`preference-input\` output is in ${writeInput('preference-input', comparison)}. Group its evidence ids by the same actionable preference, reading each complete statement and its verbatim quotes. Reply only with {"groups": [[<equivalent ids>], ...]}.`,
+              'Use only the supplied evidence. Every supplied id must occur exactly once. Keep singleton groups: another comparison may supply their supporting requests. Do not apply the final story\'s 30-preference limit or drop one-off remarks here. Do not invent, shorten, or rewrite evidence; return only ids. A saved preference has quotes and a supportCount; a per-request preference has a quote. Different wording or kinds can express the same preference; contradictory or unrelated statements must stay separate.',
+            ].join('\n\n'), validate));
+            preferenceEvidence = null;
+            input = nextStoryBatch(storyInput, offset, previous, null);
+          }
           draft = await step('story', [
             requestProgress, '---', readOnly,
             `Do only section 4 (${input.update ? 'update' : 'write'} the build story). The \`story-input\` output is in ${writeInput('story-input', input)}. Reply with only the JSON that \`record-story\` takes ({"narrative": "...", "preferences": [...]}).`,
-            'The reviews are one narrative batch. For preferences, use preferenceEvidence: it holds every preference from every request in this refresh, including requests in other batches. Each request lists indices into values; count distinct groupIds when merging equivalent statements and retain their verbatim quotes. Reconcile with previousStory.preferences, which always contains the saved story\'s preferences, not the previous batch\'s answer.',
-          ].join('\n\n'), validateStory);
+            preferenceEvidence
+              ? 'The reviews are one narrative batch. For preferences, use preferenceEvidence: it holds every preference from every request in this refresh, including requests in other batches. Each request lists indices into values; count distinct groupIds when merging equivalent statements and retain their verbatim quotes. Reconcile with previousStory.preferences, which always contains the saved story\'s preferences, not the previous batch\'s answer.'
+              : 'The reviews are one narrative batch. Preference reconciliation has finished separately against the complete evidence. Write only the narrative and return "preferences": []; the worker attaches the checked preferences without counting narrative drafts again.',
+          ].join('\n\n'), answer => validateStory(resolvedPreferences !== undefined ? { ...answer, preferences: resolvedPreferences } : answer));
           previous = { ...draft, writtenAt: new Date(storyReadAt).toISOString() };
           offset += input.reviews.length;
         }
