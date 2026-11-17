@@ -152,9 +152,9 @@ function commitSubjects(command) {
     // -m "$(cat <<'EOF'\n<subject>\n...EOF\n)": the subject is the heredoc's first
     // line, read raw — quotes inside the substitution are literal, so the outer
     // "..." match below would stop at the first one.
-    const substituted = invocation.match(/\s-[a-zA-Z]*m\s+"\$\(\s*cat\s+<<-?\s*['"]?\w+['"]?[^\n]*\n([^\n]*)/);
+    const substituted = invocation.match(/\s(?:-[a-zA-Z]*m\s+|--message(?:=|\s+))"\$\(\s*cat\s+<<-?\s*['"]?\w+['"]?[^\n]*\n([^\n]*)/);
     if (substituted) return short(substituted[1]);
-    const inline = invocation.match(/\s-[a-zA-Z]*m\s+(?:"((?:[^"\\]|\\.)*)"|'([^']*)')/);
+    const inline = invocation.match(/\s(?:-[a-zA-Z]*m\s+|--message(?:=|\s+))(?:"((?:[^"\\]|\\.)*)"|'([^']*)')/);
     const heredoc = invocation.match(/\s-F\s+-\s*<<-?\s*['"]?\w+['"]?\n([^\n]*)/);
     const text = inline ? inline[1]?.replace(BASH_DOUBLE_QUOTE_ESCAPE, '$1') ?? inline[2] : heredoc?.[1];
     return short(text?.split('\n')[0]);
