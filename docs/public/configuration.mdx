@@ -101,7 +101,6 @@ lock directory, and restart to finish applying the saved selection.
 | `CLAUDE_MEM_HOOK_SPOOL_TRANSPORT` | `auto` | `auto` uses HTTP when `CLAUDE_MEM_WORKER_URL` is set or the worker host is non-loopback, and the filesystem for a local worker. Set `http` for a loopback port forward configured through host and port, or `filesystem` only when hooks and worker share the same spool directory. |
 | `CLAUDE_MEM_ALLOWED_ORIGINS`  | _(empty)_                       | Comma-separated browser origins (e.g. `https://app.example.com`) allowed to call the worker API cross-origin, besides `http://localhost:*` and `http://127.0.0.1:*`. A page loaded from the worker's own address (the viewer at `http://<lan-ip>:<port>`) is always allowed. Other `http://localhost:*` pages can read the API but not delete: deletes sync to every device, so a `DELETE` is accepted only from the viewer's own page, an origin listed here, or a client that sends no `Origin` header (hooks, the CLI, curl). To block DNS rebinding, the worker also refuses a request whose `Host` is a DNS name it does not trust. IP addresses, `localhost`, `host.docker.internal`, `CLAUDE_MEM_WORKER_HOST`, the host of `CLAUDE_MEM_PUBLIC_URL`, and the hosts listed here are trusted. To open the viewer by a machine name, such as `http://mybox.local:37777`, list that origin here. Restart the worker after changing it. |
 | `CLAUDE_MEM_PUBLIC_URL`       | _(empty)_                       | Browser-reachable base URL printed for the viewer (live view, welcome hint, restart link) when the worker runs in a remote sandbox behind a port-forward, e.g. `https://37700.host.example`. Empty = `http://localhost:<port>`. The env var wins over the setting. (The [hosted server runtime](hosted-server) reads the same variable as its own public base URL.) |
-| `CLAUDE_MEM_TV_TOKEN`         | —                               | Shared secret for Observation TV remote access. Empty = off. With a non-loopback `CLAUDE_MEM_WORKER_HOST`, only `/tv`, `/tv.html`, `/stream` and `GET /api/observations` are reachable, and only with this token. |
 | `CLAUDE_MEM_LOCAL_API_TOKEN`      | _(empty)_                       | Local API token for hosts with more than one OS user. Empty = off, nothing changes. Set, the worker API and the MCP HTTP transport refuse any request without it, loopback included. Read from `settings.json` only (the environment cannot switch it, and HTTP cannot write it). Restart the worker and the MCP HTTP server to change it. See [Local API Token](#local-api-token). |
 | `CLAUDE_MEM_DATA_DIR`         | `~/.claude-mem`                 | Data root — every other path (database, chroma, logs, settings.json, worker.pid) derives from this |
 | `CLAUDE_MEM_SKIP_TOOLS`       | `ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion` | Comma-separated tools to exclude from observations |
@@ -732,7 +731,13 @@ Configuration is read on each write. Replace it atomically when changing it. Rem
 
 The worker API and the MCP HTTP transport trust any process that can reach loopback. On a host with several OS users, that is every user. `CLAUDE_MEM_LOCAL_API_TOKEN` is an opt-in switch: set it, and a request must carry the token or it is refused with `401`. Unset, nothing changes.
 
-Mint a token the same way as the Observation TV one, put it in `~/.claude-mem/settings.json` (created owner-only, mode `0600`), and restart the worker and any MCP HTTP server:
+Mint a token:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
+```
+
+Put it in `~/.claude-mem/settings.json` (created owner-only, mode `0600`), and restart the worker and any MCP HTTP server:
 
 ```json
 {
@@ -744,7 +749,7 @@ A request carries it as `X-Claude-Mem-Token: <token>` or `Authorization: Bearer 
 
 Only two API routes work without it: `GET /api/health` and the MCP HTTP server's `/health`. Point external health checks at those; `/api/readiness`, `/health` on the worker, `/stream` and the rest need the token.
 
-The worker also serves its UI files without the token, for `GET` and `HEAD` only: the HTML shells at `/`, `/viewer`, `/tv` and `/restart`, and the built scripts, styles, fonts and icons in its `ui` folder, matched by exact path. These files are the same on every install and hold no data; everything they load from the worker needs the token.
+The worker also serves its UI files without the token, for `GET` and `HEAD` only: the HTML shells at `/`, `/viewer` and `/restart`, and the built scripts, styles, fonts and icons in its `ui` folder, matched by exact path. These files are the same on every install and hold no data; everything they load from the worker needs the token.
 
 **The viewer.** Open it as `http://localhost:37777/?token=<token>`. Plain `http://localhost:37777` loads the page, but every request it makes is refused with `401`. The page reads the token from its URL, keeps it for the tab, removes it from the address bar, and sends it as the header on its own requests and as `?token=` on its event stream and media images, which cannot send a header. No cookie is set: browsers share cookies across every port on `localhost`, so one would reach any other local server you visit. A write must send the header. A repeated `token` parameter is refused, and neither the token nor the query string is logged. The viewer links the installer and the session-start text print do not carry the token; add `?token=<token>` to them by hand. The same goes for the worker restart link: open it as `/restart?token=<token>`, or from a tab that already has the token.
 
@@ -754,82 +759,13 @@ The worker also serves its UI files without the token, for `GET` and `HEAD` only
 
 **MCP HTTP clients.** Add the header beside `X-Claude-Mem-Cwd`. The working-directory header is only read from requests that carry the token.
 
-**What does not send it yet.** The Observation TV remote mode; the separately released `omp`, `hermes` and `openclaw` integrations; and the example `curl` commands in the `timeline-report`, `weekly-digests`, `ccs-align` and `mode-creator` skills. Leave the token unset, or add `-H "X-Claude-Mem-Token: <token>"` to them.
+**What does not send it yet.** The separately released `omp`, `hermes` and `openclaw` integrations, and the example `curl` commands in the `timeline-report`, `weekly-digests`, `ccs-align` and `mode-creator` skills. Leave the token unset, or add `-H "X-Claude-Mem-Token: <token>"` to them.
 
 The token keeps other OS users out. A process that runs as you can still read `settings.json`.
 
-### Observation TV Remote Access
+### Observation TV (removed)
 
-The worker binds to `127.0.0.1` by default and has **no request authentication** — the loopback bind is its only defence. `CLAUDE_MEM_TV_TOKEN` adds a read-only broadcast surface so a second device on your LAN (a phone, an iPad, a spare monitor) can watch Observation TV and do nothing else.
-
-Mint a token:
-
-```bash
-node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
-```
-
-The host setting and the token work as a pair:
-
-| `CLAUDE_MEM_WORKER_HOST` | `CLAUDE_MEM_TV_TOKEN` | Result |
-|---|---|---|
-| `127.0.0.1` (default) | empty | Today. Nothing reachable off-box. **Recommended for everyone not using the TV remotely.** |
-| `127.0.0.1` | set | Token is inert — nothing can reach the port anyway. Harmless. |
-| `0.0.0.0` | **empty** | **Dangerous, and unchanged from today**: the full API — settings incl. provider API keys, deletes, import, better-auth — is on the LAN. This is what the Docker setup already tells people to do, so the worker warns rather than refuses to bind. |
-| `0.0.0.0` | set | The point of the feature. LAN devices reach `/tv`, `/tv.html`, `/stream`, `GET /api/observations` with the secret, and get 404/403/401 for everything else. |
-
-Booting with a non-loopback host and no token logs a `SECURITY` warning; the worker still binds.
-
-**A local port-forward reopens the whole API.** The guard exempts loopback by socket peer, so anything that arrives *as* loopback bypasses it entirely — including `ssh -L <port>:127.0.0.1:<port> <box>` from another device, or any local forwarding proxy. To the worker that traffic is indistinguishable from the operator's own browser, so it gets the full API, `GET /api/settings` and its provider API keys included. This is the one concrete way "the device can do nothing else" stops being true: only forward the port to devices you would hand the machine to.
-
-**Docker and bridge networking.** With `CLAUDE_MEM_WORKER_HOST=0.0.0.0` inside a bridge-network container, requests from the host's own browser arrive from the bridge gateway address, not `127.0.0.1`. Once a token is set, that browser is treated as remote like any other device and must supply `?token=` to open the TV — and the React viewer at `/` is denied outright, exactly as it is for any other remote device.
-
-Open the TV on the second device at `http://<lan-ip>:<port>/tv.html?token=<secret>`.
-
-**The React viewer at `/` stops working remotely when a token is set.** That is intended — the viewer needs the write and settings routes the guard denies. Loopback is never gated, so the viewer keeps working normally on the machine running the worker.
-
-**Treat the URL as the secret.** The token rides in the query string for `/stream` because the browser's `EventSource` API cannot set request headers. It is *not* written to the worker log (the request logger records `req.path`, which excludes the query string), but it **will** be in the browser's history on the device you open it on. `Authorization: Bearer <token>` and `X-Api-Key: <token>` also work for anything that can set headers.
-
-**This is plain HTTP.** The token stops an unauthenticated device from reading the stream; it does not encrypt it. Anyone who can sniff your LAN sees observation titles. For a home network that is the accepted tradeoff; for anything else, terminate TLS in front of the worker (out of scope here) — and still never a tunnel to the unmodified worker, which would publish `GET /api/settings` and its provider API keys to the open internet.
-
-**Use the exact paths.** The allowlist is exact-match and case-sensitive: `/tv.html`, `/tv`, `/stream`, `/api/observations` and nothing else. A trailing slash or a different case — `/tv/`, `/API/observations`, `/api/observations/by-file` — returns 404 even with a valid token. That is deliberate fail-closed behavior, not a bug.
-
-The TV's `?project=` and `?source=` filters are **client-side only**. They are display filters, not access control — a token holder still receives every project's observations.
-
-Accepted risks, stated plainly:
-
-1. **`GET /api/observations` returns full observation bodies** — `narrative`, `facts`, `text`, `files_read`, `files_modified` — for **every project on the box**, not just the four fields the TV renders. A token holder can page back through the newest 10,000 observations for each filter with `offset`; an `offset` above 10,000 answers 400.
-2. **`/stream` is unfiltered.** It carries every observation for every project on the box, plus the project catalog and processing status. There is no per-client filtering.
-3. **No rate limiting.** A token holder can hammer `GET /api/observations` freely.
-4. **The token is readable on loopback** via `GET /api/settings`, exactly like your provider API keys are today. It is deliberately *not* writable through `POST /api/settings` (that route is unauthenticated), so it can only be set by someone with filesystem or environment access.
-5. **`/stream` does not limit concurrent subscribers.** Each connection receives its own `initial_load` snapshot without resetting other viewers, but the client list remains unbounded. A token holder opening many connections can still consume connection and memory resources. This connection-limit concern is pre-existing worker behavior; the token is what newly makes it reachable from the LAN.
-
-### Manual Configuration
-
-Edit `~/.claude-mem/settings.json`:
-
-```json
-{
-  "CLAUDE_MEM_WORKER_HOST": "0.0.0.0",
-  "CLAUDE_MEM_TV_TOKEN": "your-minted-token"
-}
-```
-
-Then restart the worker:
-```bash
-npm run worker:restart
-```
-
-### Watching Off-LAN (cmem.ai Pro)
-
-Everything above is the LAN path. Watching from *outside* your network — on cellular, at a coffee shop, from another house — is a **cmem.ai Pro** feature: open `https://cmem.ai/tv` in any browser while signed in to your account. It requires [Cloud Sync](/cloud-sync) to be enabled, because the hosted page reads titles your worker has already pushed to your sync hub.
-
-**No token, no open port, no inbound connection.** This path needs neither `CLAUDE_MEM_TV_TOKEN` nor a non-loopback `CLAUDE_MEM_WORKER_HOST` — both belong to the LAN path and have no effect on it, so leave them at their defaults. The box never accepts an inbound connection for the hosted TV; the worker only ever dials out. No tunnel (cloudflared, ngrok, or anything like them) is needed, and none is recommended.
-
-**The hosted TV surface shows observation titles and nothing else.** It never renders narratives, facts, file lists, snippets or prompt text.
-
-**That is not the same as "only titles leave your machine."** The hosted TV is a feature *of* cloud sync, and cloud sync uploads your observation narratives and your full prompt text to the sync hub under your cmem.ai account. The hosted page is titles-only; the upload standing behind it is not. Don't enable cloud sync if that content must stay on your machine.
-
-**One rendering difference.** An observation with no title still appears on the LAN TV, which falls back to the subtitle. It does not appear on the hosted phone TV — that surface receives titles only, so it has no subtitle to fall back to.
+Observation TV and its `CLAUDE_MEM_TV_TOKEN` setting were removed. If a worker still finds `CLAUDE_MEM_TV_TOKEN` with a non-loopback `CLAUDE_MEM_WORKER_HOST` and no `CLAUDE_MEM_LOCAL_API_TOKEN`, it binds to loopback instead and logs an error, so the full API is never exposed; to keep network access, set the [local API token](#local-api-token), which protects it now, and delete `CLAUDE_MEM_TV_TOKEN`.
 
 ## Folder Context Files
 

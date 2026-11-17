@@ -10,7 +10,7 @@ const LOOPBACK_PEERS = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
 const LOCAL_PAGE_POLICY = { allowedOrigins: [], workerHost: '' };
 
-/** Media is private even when the operator enables LAN/TV text reads. */
+/** Media is private even when the operator opens the worker to the LAN. */
 export function isTrustedMediaRead(req: Request): boolean {
   // Copy the worker's loopback trust boundary, using the actual socket rather
   // than req.ip: Express trust-proxy configuration must not grant pixel access.

@@ -354,7 +354,6 @@ describe('WorkerService.start', () => {
     const bootSteps: string[] = [];
     const listen = mock(async () => { bootSteps.push('listen'); });
     Object.assign(workerFixture.worker, {
-      tvToken: '',
       server: { ...workerFixture.worker.server, listen, getLastResponseFinishedAt: () => 0 },
       detectPreviousShutdown: () => {},
       initializeBackground: mock(() => { bootSteps.push('initializeBackground'); return initializeBackground(); }),

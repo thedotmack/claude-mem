@@ -49,7 +49,6 @@ const SECRET_SETTING_KEYS = new Set([
   'CLAUDE_MEM_TELEGRAM_WRAPUP_ROUTES',
   'CLAUDE_MEM_SERVER_API_KEY',
   'CLAUDE_MEM_SERVER_BETA_API_KEY',
-  'CLAUDE_MEM_TV_TOKEN',
   'CLAUDE_MEM_LOCAL_API_TOKEN',
   'CLAUDE_MEM_WORKER_INGEST_TOKEN',
   'CLAUDE_MEM_PRO_MEMORY_KEY',
@@ -132,7 +131,7 @@ function withoutEnvironmentEchoes(posted: Record<string, unknown>, settingsPath:
 // every secret live — an HTTP-writable redirect hands them to any caller that
 // reaches the API. CLAUDE_MEM_WORKER_HOST decides the bind interface; changing
 // it remotely could re-expose the worker on a non-loopback address without
-// the Observation TV guard's token ever being written. The auto-update pair
+// the local API token ever being written. The auto-update pair
 // decides what the installer runs on this machine:
 // CLAUDE_MEM_AUTO_UPDATE_PROMOTED_RELEASE_URL names the file that picks the
 // version `npx claude-mem@<version> update` installs (the updater reads it
@@ -297,7 +296,7 @@ export class SettingsRoutes extends BaseRouteHandler {
     // trusts loopback — so any page that can reach this origin could set one
     // of these. Secrets stay off this list except the two provider keys the
     // viewer Settings UI must save (Gemini / OpenRouter); those are masked on
-    // GET and an unchanged mask is skipped on POST. Observation TV / Chroma /
+    // GET and an unchanged mask is skipped on POST. Local API / Chroma /
     // Telegram / CloudSync / Redis tokens remain file/env only.
     //
     // Executable spawn paths (CLAUDE_CODE_PATH, CLAUDE_MEM_CODEX_PATH,
@@ -532,12 +531,12 @@ export class SettingsRoutes extends BaseRouteHandler {
 
     if (settings.CLAUDE_MEM_WORKER_HOST) {
       const host = settings.CLAUDE_MEM_WORKER_HOST;
-      // Loopback, plus the documented bind-all addresses used by Observation TV
-      // and Docker (docs/public/configuration.mdx). Arbitrary IPv4 used to be
+      // Loopback, plus the documented bind-all addresses used by Docker and
+      // remote capture (docs/public/configuration.mdx). Arbitrary IPv4 used to be
       // accepted and would expose the unauthenticated worker API on that NIC.
       const validHostPattern = /^(127\.0\.0\.1|0\.0\.0\.0|::1|::|localhost)$/;
       if (!validHostPattern.test(host)) {
-        return { valid: false, error: 'CLAUDE_MEM_WORKER_HOST must be a loopback address (127.0.0.1, ::1, localhost) or a bind-all address (0.0.0.0, ::) for Observation TV / Docker' };
+        return { valid: false, error: 'CLAUDE_MEM_WORKER_HOST must be a loopback address (127.0.0.1, ::1, localhost) or a bind-all address (0.0.0.0, ::) for Docker / remote capture' };
       }
     }
 

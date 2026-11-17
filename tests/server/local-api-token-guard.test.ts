@@ -60,8 +60,6 @@ let unguarded: Server;
 let unguardedPort = 0;
 let emptyToken: Server;
 let emptyTokenPort = 0;
-let withTv: Server;
-let withTvPort = 0;
 let spies: ReturnType<typeof spyOn>[] = [];
 let warnings: string[] = [];
 
@@ -83,14 +81,10 @@ beforeAll(async () => {
   ({ server: guarded, port: guardedPort } = await start(baseOptions({ localApiToken: { getToken: () => TOKEN, openStaticPaths: STATIC_PATHS } })));
   ({ server: unguarded, port: unguardedPort } = await start(baseOptions()));
   ({ server: emptyToken, port: emptyTokenPort } = await start(baseOptions({ localApiToken: { getToken: () => '', openStaticPaths: STATIC_PATHS } })));
-  ({ server: withTv, port: withTvPort } = await start(baseOptions({
-    localApiToken: { getToken: () => TOKEN },
-    remoteReadOnly: { getToken: () => 'tv-secret' },
-  })));
 });
 
 afterAll(async () => {
-  for (const server of [guarded, unguarded, emptyToken, withTv]) {
+  for (const server of [guarded, unguarded, emptyToken]) {
     if (server?.getHttpServer()) {
       try { await server.close(); } catch { /* ignore */ }
     }
@@ -275,9 +269,9 @@ describe('uiStaticPaths', () => {
       writeFileSync(join(root, 'ui', 'work-view', 'assets', 'index-abc.js'), '');
       writeFileSync(join(root, 'ui', 'space name.css'), '');
       mkdirSync(join(root, 'plugin', 'ui'), { recursive: true });
-      writeFileSync(join(root, 'plugin', 'ui', 'tv.html'), '');
+      writeFileSync(join(root, 'plugin', 'ui', 'viewer.html'), '');
       expect([...uiStaticPaths(root)].sort()).toEqual([
-        '/', '/restart', '/space%20name.css', '/tv', '/tv.html', '/viewer', '/viewer-bundle.js', '/work-view/assets/index-abc.js',
+        '/', '/restart', '/space%20name.css', '/viewer', '/viewer-bundle.js', '/viewer.html', '/work-view/assets/index-abc.js',
       ]);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -285,7 +279,7 @@ describe('uiStaticPaths', () => {
   });
 
   it('is only the shells when no UI directory exists', () => {
-    expect([...uiStaticPaths(join(tmpdir(), 'cm-ui-static-missing-dir'))].sort()).toEqual(['/', '/restart', '/tv', '/viewer']);
+    expect([...uiStaticPaths(join(tmpdir(), 'cm-ui-static-missing-dir'))].sort()).toEqual(['/', '/restart', '/viewer']);
   });
 });
 
@@ -294,17 +288,5 @@ describe('local-api-token guard: fails closed', () => {
     expect((await fetch(at(emptyTokenPort, '/api/settings'), { headers: { [LOCAL_API_TOKEN_HEADER]: '' } })).status).toBe(401);
     expect((await fetch(at(emptyTokenPort, '/api/health'))).status).toBe(401);
     expect((await fetch(at(emptyTokenPort, '/viewer-bundle.js'))).status).toBe(401);
-  });
-});
-
-describe('local-api-token guard with Observation TV', () => {
-  it('runs first: the TV guard lets loopback through, this one still refuses it', async () => {
-    const res = await fetch(at(withTvPort, '/api/observations'));
-    expect(res.status).toBe(401);
-  });
-
-  it('a request with the local API token passes both', async () => {
-    const res = await fetch(at(withTvPort, '/api/observations'), { headers: { [LOCAL_API_TOKEN_HEADER]: TOKEN } });
-    expect(res.status).toBe(200);
   });
 });

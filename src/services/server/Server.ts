@@ -10,11 +10,9 @@ import {
   createForeignPageDeleteGuard,
   createMiddleware,
   createLocalApiTokenGuard,
-  createRemoteReadOnlyGuard,
   createWorkerHostGuard,
   requireLocalhost,
   type LocalApiTokenOptions,
-  type RemoteReadOnlyOptions,
   type WorkerOriginPolicy,
 } from '../worker/http/middleware.js';
 import { errorHandler, notFoundHandler } from './ErrorHandler.js';
@@ -144,21 +142,11 @@ export interface ServerOptions {
   // the in-plugin worker runtime is unchanged; the server runtime sets it.
   securityHeaders?: boolean;
   /**
-   * Observation TV remote broadcast. When present, a guard runs BEFORE every
-   * other middleware and route: loopback requests are untouched, and non-loopback
-   * requests may reach only /tv, /tv.html, /stream and GET /api/observations, and
-   * only with the shared secret. Absent (the default, and the server runtime's
-   * choice — it has its own API-key auth) ⇒ nothing is mounted and behavior is
-   * unchanged.
-   */
-  remoteReadOnly?: RemoteReadOnlyOptions;
-  /**
-   * Local API token mode (#5141). When present, a guard runs before everything else,
-   * the Observation TV guard included, and refuses every request without the
-   * token, loopback too, except the exact routes in shared/local-api-token.ts. A
-   * browser page opened with `?token=` keeps working: see createLocalApiTokenGuard.
-   * Observation TV's remote mode needs the token as well. Absent (the default, and
-   * the server runtime's choice) ⇒ nothing is mounted and behavior is unchanged.
+   * Local API token mode (#5141). When present, a guard runs before everything else
+   * and refuses every request without the token, loopback too, except the exact
+   * routes in shared/local-api-token.ts. A browser page opened with `?token=` keeps
+   * working: see createLocalApiTokenGuard. Absent (the default, and the server
+   * runtime's choice) ⇒ nothing is mounted and behavior is unchanged.
    */
   localApiToken?: LocalApiTokenOptions;
   /**
@@ -227,7 +215,6 @@ export class Server {
     // and every route registered later all mount after this point. Anything
     // mounted afterwards leaves earlier routes uncovered.
     this.setupLocalApiTokenGuard();
-    this.setupRemoteReadOnlyGuard();
     this.setupSecurityHeaders();
     this.setupCors();
     this.setupPreBodyParserRoutes();
@@ -339,10 +326,10 @@ export class Server {
 
   private setupMiddleware(): void {
     // Idle-exit request tracking, ahead of the body parsers and every route
-    // registered from here on. The remote read-only guard, security headers,
+    // registered from here on. The local API token guard, security headers,
     // host/CORS guards and the /api/auth routes mount before it (position
-    // zero belongs to the read-only guard), so a request that only they
-    // answer is not counted; none of those stays open.
+    // zero belongs to the token guard), so a request that only they answer
+    // is not counted; none of those stays open.
     this.app.use((_req: Request, res: Response, next: () => void) => {
       this.trackRequestActivity(res);
       next();
@@ -356,13 +343,6 @@ export class Server {
       return;
     }
     this.app.use(createLocalApiTokenGuard(this.options.localApiToken));
-  }
-
-  private setupRemoteReadOnlyGuard(): void {
-    if (!this.options.remoteReadOnly) {
-      return;
-    }
-    this.app.use(createRemoteReadOnlyGuard(this.options.remoteReadOnly));
   }
 
   private setupSecurityHeaders(): void {
