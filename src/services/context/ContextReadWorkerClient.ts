@@ -27,7 +27,31 @@ export const CONTEXT_READ_REQUEST_TIMEOUT_MS = 120_000;
  */
 export const CONTEXT_READ_TERMINATE_TIMEOUT_MS = 2_000;
 
+export type ContextReadMethod = keyof ContextReadMethods;
+
+/**
+ * The reader retired after a read ran past the deadline. Every read pending on
+ * that reader gets this error, and it names the read that timed out: the
+ * oldest one, which the reader was running because it answers in order.
+ */
+export class ContextReadTimeoutError extends Error {
+  constructor(
+    timeoutMs: number,
+    readonly method: ContextReadMethod,
+    /** Time that read waited behind earlier reads before the reader started it. */
+    readonly queuedMs: number,
+    readonly runningMs: number,
+  ) {
+    super(`Context reader timed out after ${timeoutMs}ms`);
+    this.name = 'ContextReadTimeoutError';
+  }
+}
+
 type PendingRead = {
+  method: ContextReadMethod;
+  queuedAt: number;
+  /** Set when every earlier read has replied, so the reader runs this one. */
+  startedAt?: number;
   resolve(value: unknown): void;
   reject(error: Error): void;
   timer: ReturnType<typeof setTimeout>;
@@ -53,6 +77,7 @@ export class ContextReadWorkerClient {
   private readonly pending = new Map<number, PendingRead>();
   private nextId = 0;
   private closed = false;
+  private timeoutListener: ((error: ContextReadTimeoutError) => void) | null = null;
   private readonly requestTimeoutMs: number;
   private readonly terminateTimeoutMs: number;
   private readonly openWorker: () => ContextReadWorkerHandle;
@@ -99,6 +124,11 @@ export class ContextReadWorkerClient {
     return this.request('searchUserPrompts', { query, options });
   }
 
+  /** Called once each time a read runs past the deadline and retires the reader. */
+  setTimeoutListener(listener: ((error: ContextReadTimeoutError) => void) | null): void {
+    this.timeoutListener = listener;
+  }
+
   async close(): Promise<void> {
     this.closed = true;
     const worker = this.worker;
@@ -119,6 +149,8 @@ export class ContextReadWorkerClient {
       if (!request) return;
       this.pending.delete(reply.id);
       clearTimeout(request.timer);
+      const next = this.pending.values().next().value;
+      if (next && next.startedAt === undefined) next.startedAt = Date.now();
       if (reply.ok) request.resolve(reply.result);
       else request.reject(Object.assign(new Error(reply.error.message), { name: reply.error.name }));
       if (this.pending.size === 0) worker.unref();
@@ -139,20 +171,27 @@ export class ContextReadWorkerClient {
     return new Worker(entry, { workerData: { contextPlaceholderNonce: CONTEXT_PLACEHOLDER_NONCE } });
   }
 
-  private request<Method extends keyof ContextReadMethods>(
+  private request<Method extends ContextReadMethod>(
     method: Method,
     input: ContextReadMethods[Method]['input'],
   ): Promise<ContextReadMethods[Method]['result']> {
     if (this.pending.size >= MAX_PENDING_READS) return Promise.reject(new Error('Context reader queue is full'));
     const worker = this.getWorker();
     const id = ++this.nextId;
+    const queuedAt = Date.now();
     return new Promise((resolve, reject) => {
       const pending: PendingRead = {
+        method,
+        queuedAt,
+        startedAt: this.pending.size === 0 ? queuedAt : undefined,
         resolve: value => resolve(value as ContextReadMethods[Method]['result']),
         reject,
         timer: setTimeout(() => {
           if (this.pending.get(id) !== pending) return;
-          this.retireWorker(worker, new Error(`Context reader timed out after ${this.requestTimeoutMs}ms`));
+          const now = Date.now();
+          const startedAt = pending.startedAt ?? now;
+          const error = new ContextReadTimeoutError(this.requestTimeoutMs, method, startedAt - queuedAt, now - startedAt);
+          if (this.retireWorker(worker, error)) this.timeoutListener?.(error);
         }, this.requestTimeoutMs),
       };
       unrefTimer(pending.timer);
@@ -173,10 +212,11 @@ export class ContextReadWorkerClient {
     this.detachWorker(worker, error);
   }
 
-  private retireWorker(worker: ContextReadWorkerHandle, error: Error): void {
-    if (!this.detachWorker(worker, error)) return;
+  private retireWorker(worker: ContextReadWorkerHandle, error: Error): boolean {
+    if (!this.detachWorker(worker, error)) return false;
     worker.unref();
     void this.boundedTerminate(worker);
+    return true;
   }
 
   /** Drop this thread from the client. A later read opens a replacement. */
