@@ -1,61 +1,57 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { CmemMark } from '@/components/brand'
-import { SparklesCore } from '@/components/aceternity/sparkles'
 import { useI18n } from '@/lib/i18n'
 import type { SetupTool } from '../setup-data'
-import chatgptMark from '../assets/agents/chatgpt.webp'
-import claudeMark from '../assets/agents/claude.webp'
-import geminiMark from '../assets/agents/gemini.webp'
+import { launchLengthMs } from '../setup-flow'
 import { prefersReducedMotion } from '../format'
-
-/** The launch tokens are brand images, as in PROTO: Claude Code flies in as the Claude mark, Codex CLI as the OpenAI mark. */
-const TOKEN_IMAGES: Record<SetupTool['mark'], string> = { terminal: claudeMark, codex: chatgptMark, chatgpt: chatgptMark, claude: claudeMark, gemini: geminiMark }
+import { SetupActions, SetupButton, ToolMark, type SetupBack } from './shared'
 
 /**
- * Step 7 (PROTO finish-setup.js `animateLaunch`, Web Animations): the picked tools gather at the brain's edges and are
- * drawn into its center, then the brain folds away. Reduced motion never mounts this step (the page skips to the workspace).
+ * Step 7 (PROTO finish-setup.js `animateLaunch`): the picked tools, joined to the brain, move into it, then the
+ * workspace opens. Two moving things at most (rule 8, E10): the tools as one group and the brain; the sparkle field is
+ * gone. Skip works from the first frame, so the wait never holds anyone (review `no-blocking-animation`). Reduced motion
+ * never mounts this step (the page skips to the workspace).
+ *
+ * The launch takes as long as it did before Phase 8 for the tools picked (launchLengthMs), and plays once: its length is
+ * fixed when it starts, and a worker update while it plays (a new tools list with the same tools) does not restart it.
  */
-export function LaunchScreen({ tools, onDone }: { tools: SetupTool[]; onDone: () => void }) {
+export function LaunchScreen({ tools, back, onDone }: { tools: SetupTool[]; back?: SetupBack | null; onDone: () => void }) {
   const { t } = useI18n()
-  const stageRef = useRef<HTMLDivElement>(null)
+  const toolsRef = useRef<HTMLUListElement>(null)
   const brainRef = useRef<HTMLSpanElement>(null)
   const doneRef = useRef(onDone)
+  // Set once, from the tools picked when the launch starts.
+  const [lengthMs] = useState(() => launchLengthMs(tools.length))
   useEffect(() => { doneRef.current = onDone })
   useEffect(() => {
-    const stage = stageRef.current!
-    const brain = brainRef.current!
     if (prefersReducedMotion()) { doneRef.current(); return }
-    const radius = Math.min(stage.clientWidth * 0.38, 220)
-    const tokens: HTMLImageElement[] = []
-    const animations = tools.map((tool, index) => {
-      const angle = (index / tools.length) * Math.PI * 2 - Math.PI / 2
-      const [x, y, edgeX, edgeY] = [Math.cos(angle) * radius, Math.sin(angle) * radius, Math.cos(angle) * 72, Math.sin(angle) * 72]
-      const token = document.createElement('img')
-      token.className = 'launch-token'
-      token.src = TOKEN_IMAGES[tool.mark]
-      token.alt = ''
-      stage.append(token)
-      tokens.push(token)
-      return token.animate([
-        { opacity: 0, transform: `translate(-50%,-50%) translate(${x}px,${y}px) scale(.9)` },
-        { opacity: 1, transform: `translate(-50%,-50%) translate(${edgeX}px,${edgeY}px) scale(1)`, offset: 0.65 },
-        { opacity: 0, transform: 'translate(-50%,-50%) scale(0)' },
-      ], { duration: 1500, delay: index * 80, easing: 'cubic-bezier(.22,.8,.2,1)', fill: 'forwards' })
-    })
-    animations.push(brain.animate([{ transform: 'scale(1)', opacity: 1 }, { transform: 'scale(1.12)', opacity: 1, offset: 0.7 }, { transform: 'scale(.3)', opacity: 0 }], { duration: 1950, easing: 'ease-in-out', fill: 'forwards' }))
+    const animations = [
+      toolsRef.current!.animate([
+        { transform: 'none', opacity: 1 },
+        { transform: 'none', opacity: 1, offset: 0.35 },
+        { transform: 'translateY(56px) scale(.55)', opacity: 0 },
+      ], { duration: lengthMs, easing: 'cubic-bezier(.22,.8,.2,1)', fill: 'forwards' }),
+      brainRef.current!.animate([{ transform: 'scale(1)' }, { transform: 'scale(1.12)', offset: 0.75 }, { transform: 'scale(1)' }], { duration: lengthMs, easing: 'ease-in-out', fill: 'forwards' }),
+    ]
     let cancelled = false
     Promise.all(animations.map((animation) => animation.finished)).then(() => { if (!cancelled) doneRef.current() }, () => {})
-    return () => { cancelled = true; animations.forEach((animation) => animation.cancel()); tokens.forEach((token) => token.remove()) }
-  }, [tools])
+    return () => { cancelled = true; animations.forEach((animation) => animation.cancel()) }
+  }, [lengthMs])
   return (
     <section aria-labelledby="launch-title">
-      <h1 id="launch-title" className="sr-only" tabIndex={-1}>{t('Opening your memory workspace')}</h1>
-      <p className="sr-only" role="status" aria-live="polite">{t('Bringing your tools and memory together.')}</p>
-      <div ref={stageRef} className="launch-stage">
-        {/* One sparkle field behind the brain while the tools gather; reduced motion never reaches this step. */}
-        <SparklesCore className="launch-sparkles" background="transparent" particleColor="#5b57e6" minSize={0.6} maxSize={1.6} particleDensity={90} speed={2} />
+      <div className="launch-stage" aria-hidden="true">
+        <ul ref={toolsRef} className="launch-tools">
+          {tools.map((tool) => <li key={tool.id}><ToolMark id={tool.id} name={tool.name} /><span>{tool.name}</span></li>)}
+        </ul>
         <span ref={brainRef} className="launch-brain"><CmemMark className="size-full" /></span>
       </div>
+      <div className="page-heading">
+        <h1 id="launch-title" tabIndex={-1}>{t('Opening your memory workspace')}</h1>
+        <p className="lead" role="status" aria-live="polite">{t('Bringing your tools and memory together.')}</p>
+      </div>
+      <SetupActions back={back}>
+        <SetupButton look="outline" onClick={() => doneRef.current()}>{t('Skip')}</SetupButton>
+      </SetupActions>
     </section>
   )
 }
