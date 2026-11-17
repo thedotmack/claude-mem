@@ -313,11 +313,13 @@ export const DottedGlowBackground = ({
     speedScale,
   ]);
 
+  // Local fix (UI UX Pro Max E14): the dots are decoration, so screen readers skip the canvas.
   return (
     <div
       ref={containerRef}
       className={className}
       style={{ position: "absolute", inset: 0 }}
+      aria-hidden="true"
     >
       <canvas
         ref={canvasRef}

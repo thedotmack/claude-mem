@@ -199,7 +199,7 @@ export const viewerZh: Record<string, string> = {
   'Show kinds': '显示的类型',
   'Deleting…': '正在删除…',
   'Copy details': '复制详情',
-  'Open My Work': '打开 My Work',
+  'Open My Work': '打开“我的工作”',
   'Reload the viewer': '重新加载查看器',
   'Something went wrong while showing your memories': '显示记忆时出错了',
   'The viewer stopped': '查看器已停止',

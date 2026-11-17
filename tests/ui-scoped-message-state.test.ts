@@ -100,7 +100,10 @@ test('workspace search and save statuses rerender in the selected language; raw 
   search();
   await new Promise(resolve => setImmediate(resolve));
   ui.language('zh-CN');
-  assert.equal(byClass(ui.render(props), 'workspace-status').props.children, 'Note saved.');
+  // A failure says what failed in the selected language; the raw error stays verbatim under Details (plan G17).
+  const failure = find(ui.render(props), e => e.type?.name === 'SetupError');
+  assert.equal(failure.props.title, setupZh['Couldn’t search your memory.']);
+  assert.equal(failure.props.failure.detail, 'Note saved.');
 });
 
 test('logs fetch and clear errors translate at render time without refetching', async () => {

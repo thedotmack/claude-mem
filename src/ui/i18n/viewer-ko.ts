@@ -197,7 +197,7 @@ export const viewerKo: Record<string, string> = {
   'Show kinds': '표시할 종류',
   'Deleting…': '삭제하는 중…',
   'Copy details': '세부 정보 복사',
-  'Open My Work': 'My Work 열기',
+  'Open My Work': '내 작업 열기',
   'Reload the viewer': '뷰어 다시 불러오기',
   'Something went wrong while showing your memories': '메모리를 표시하는 중 문제가 발생했습니다',
   'The viewer stopped': '뷰어가 멈췄습니다',

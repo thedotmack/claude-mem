@@ -1,7 +1,7 @@
 import { displayTime } from '@/lib/display-time'
 import { useEffect, useState, type ReactNode } from 'react'
-import { motion } from 'motion/react'
-import { BotIcon, CloudAlertIcon, CloudCheckIcon, CloudIcon, CloudOffIcon, CornerLeftUpIcon, MessageSquareIcon, RefreshCwIcon, StarIcon, UserIcon } from 'lucide-react'
+import { motion, useReducedMotion } from 'motion/react'
+import { BotIcon, CheckIcon, CloudAlertIcon, CloudCheckIcon, CloudIcon, CloudOffIcon, CornerLeftUpIcon, MessageSquareIcon, RefreshCwIcon, StarIcon, UserIcon } from 'lucide-react'
 import { interpolate, useI18n } from '@/lib/i18n'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -11,11 +11,12 @@ import { Spinner } from '@/components/ui/spinner'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
-import { isSampleHref, measuredEstimate, SAMPLE_DEVICES, OTHER_FOCUS_AREA_ID, type Device, type LiveState, type Request, type Run, type SkillRun } from '@/data'
+import { isSampleHref, measuredEstimate, RefreshNotStartedError, SAMPLE_DEVICES, OTHER_FOCUS_AREA_ID, type Device, type LiveState, type Request, type Run, type SkillRun } from '@/data'
 import { agentById, deviceById, useConnection, useStore, useWorkModel, useWorkspace } from '@/store'
 import type { AutoRefresh } from '@/live/work-data-source'
 import { focusAreaLabel, resolveFocusAreaId } from '@/live/to-focus-model'
 import { presentSharedState } from '@/live/shared-state-presentation'
+import { NEXT_STEP_NOT_RECORDED } from '@/live/to-work-model'
 import { AgentMark } from './brand'
 
 /**
@@ -39,7 +40,8 @@ export function AgentIcon({ agentId, withDevice = false }: { agentId: string; wi
       <Tooltip>
         <TooltipTrigger asChild>
           <span className="inline-flex min-w-0 items-center gap-1.5">
-            <span className="flex size-7 shrink-0 items-center justify-center rounded-lg border bg-card" aria-label={`${agent.name}, ${agent.role}, ${onText}`}>
+            {/* role="img" names the mark: the trigger around it is a Tab stop now (G10), and a stop needs a name. */}
+            <span role="img" className="flex size-7 shrink-0 items-center justify-center rounded-lg border bg-card" aria-label={`${agent.name}, ${agent.role}, ${onText}`}>
               <AgentMark tool={agent.tool} className="size-4" />
             </span>
             {withDevice && <Req ids={['R13.4']}><span className="truncate text-xs text-muted-foreground">{agent.name} · {agent.role} · {device.name}</span></Req>}
@@ -58,13 +60,41 @@ export const STATE_LABEL: Record<LiveState, string> = {
 /** Attention first: what waits on you, then what to check, then what is moving, then the rest. */
 export const ATTENTION_ORDER: LiveState[] = ['your-move', 'needs-check', 'working', 'idle', 'shipped']
 
-/** Each state's colors, shared by the badge and the List view's flipboard so both read as the same state. */
+/**
+ * Each state's colors, shared by the badge and the List view's flipboard so both read as the same state. The edge is
+ * the state's own text colour at 80%: ≥3.18:1 against the card and the page in both themes (plan rule 7; the *-border
+ * tokens measured 1.4–1.9:1 against the card).
+ */
 export const STATE_SURFACE: Record<LiveState, string> = {
-  working: 'border-working-border bg-working text-working-foreground',
-  'needs-check': 'border-review-border bg-review text-review-foreground',
-  'your-move': 'border-attention-border bg-attention font-medium text-attention-foreground',
-  idle: 'border-idle-border bg-idle text-idle-foreground',
-  shipped: 'border-shipped-border bg-shipped text-shipped-foreground',
+  working: 'border-working-foreground/80 bg-working text-working-foreground',
+  'needs-check': 'border-review-foreground/80 bg-review text-review-foreground',
+  'your-move': 'border-attention-foreground/80 bg-attention font-medium text-attention-foreground',
+  idle: 'border-idle-foreground/80 bg-idle text-idle-foreground',
+  shipped: 'border-shipped-foreground/80 bg-shipped text-shipped-foreground',
+}
+
+/**
+ * The mark beside each state's word (decision G11), so a state never rests on colour alone: your move a filled dot,
+ * done but not checked a half dot, working an open ring, idle a hollow ring, shipped a check. Every mark is still:
+ * a turning ring on each working badge put 14 moving things on the home page, and rule 8 allows two per view, so a
+ * card's one activity indicator is what moves. Drawn in the state's text colour, ≥4.6:1 on its fill. One table for
+ * StateBadge, the List status pill and the split-flap rows. Each entry draws at render time, so importing this file
+ * creates no elements.
+ */
+const STATE_MARK: Record<LiveState, () => ReactNode> = {
+  'your-move': () => <span className="size-2 rounded-full bg-current" />,
+  'needs-check': () => <span className="size-2.5 rounded-full border-[1.5px] border-current bg-[linear-gradient(90deg,currentColor_50%,transparent_50%)]" />,
+  working: () => <span className="size-2.5 rounded-full border-[1.5px] border-current border-t-transparent" />,
+  idle: () => <span className="size-2.5 rounded-full border-[1.5px] border-current" />,
+  shipped: () => <CheckIcon className="size-3 stroke-3" />,
+}
+
+export function StateMark({ state, className }: { state: LiveState; className?: string }) {
+  return (
+    <span data-state-mark={state} aria-hidden="true" className={cn('inline-flex size-3 shrink-0 items-center justify-center', className)}>
+      {STATE_MARK[state]()}
+    </span>
+  )
 }
 
 /** One glance tells working, done-but-unchecked, waiting on you and shipped apart (§6). State is the only thing colored. */
@@ -72,14 +102,8 @@ export function StateBadge({ state }: { state: LiveState }) {
   const { t } = useI18n()
   return (
     <Req ids={['R6.2']}>
-      <Badge variant="outline" className={cn('shrink-0 gap-1.5 font-normal', STATE_SURFACE[state])}>
-        <span className={cn('size-1.5 rounded-full', {
-          'bg-working-foreground motion-safe:animate-pulse': state === 'working',
-          'bg-review-foreground': state === 'needs-check',
-          'bg-attention-foreground': state === 'your-move',
-          'bg-idle-foreground': state === 'idle',
-          'bg-shipped-foreground': state === 'shipped',
-        })} />
+      <Badge variant="outline" data-state-badge={state} className={cn('shrink-0 gap-1.5 font-normal', STATE_SURFACE[state])}>
+        <StateMark state={state} />
         {t(STATE_LABEL[state])}
       </Badge>
     </Req>
@@ -110,18 +134,52 @@ export function FocusAreaChip({ focusAreaId, onOpen }: { focusAreaId?: string; o
   )
 }
 
-/** Whose move is next: the agent's or yours (§5). A person's move is the one thing that gets weight. */
-export function NextMove({ next, className }: { next: Request['next']; className?: string }) {
+/**
+ * The next step to show, or null when none is recorded: no text, or the English filler (NEXT_STEP_NOT_RECORDED) that
+ * the mapper, older workers and the 15.19.0 worker the preview reads write in its place. Decision G3: the UI treats
+ * that filler as a missing step, not as a step.
+ */
+function recordedNextStep(next: Request['next'] | null | undefined): Request['next'] | null {
+  const text = next?.text?.trim()
+  return next && text && text !== NEXT_STEP_NOT_RECORDED ? next : null
+}
+
+/** Whose move a next step is, worded on screen (c-bits-next-move: these words were for screen readers only). */
+const NEXT_MOVE_OWNER_WORDS: Record<Request['next']['who'], string> = {
+  human: 'Your move',
+  bot: 'Agent’s move',
+}
+
+/**
+ * Whose move is next: the agent's or yours (§5), with its words on screen. A person's move is the one thing that gets
+ * weight. A missing step (G3) draws nothing on cards and in the drawer (`whenMissing="omit"`); the List passes
+ * `"dash"` for "—" with "No next step recorded" read out.
+ */
+export function NextMove({ next, className, whenMissing = 'omit' }: { next: Request['next'] | null | undefined; className?: string; whenMissing?: 'omit' | 'dash' }) {
   const { t } = useI18n()
-  if (!next.text) return null
-  const human = next.who === 'human'
+  const step = recordedNextStep(next)
+  if (!step) {
+    if (whenMissing === 'omit') return null
+    return (
+      <Req ids={['R5.8', 'R6.3']}>
+        <span data-next-move="missing" className={cn('text-[0.84rem] text-muted-foreground', className)}>
+          <span aria-hidden="true">—</span>
+          <span className="sr-only">{t('No next step recorded')}</span>
+        </span>
+      </Req>
+    )
+  }
+  const human = step.who === 'human'
   return (
     <Req ids={['R5.8', 'R6.3']}>
-      <div className={cn('flex items-start gap-2 text-[0.84rem] leading-snug', human ? 'font-medium text-attention-foreground' : 'text-foreground/80', className)}>
-        <span className={cn('mt-px flex size-5 shrink-0 items-center justify-center rounded-full', human ? 'bg-attention' : 'bg-muted')}>
+      <div data-next-move={step.who} className={cn('flex items-start gap-2 text-[0.84rem] leading-snug', className)}>
+        <span aria-hidden="true" className={cn('mt-px flex size-5 shrink-0 items-center justify-center rounded-full', human ? 'bg-attention text-attention-foreground' : 'bg-muted text-muted-foreground')}>
           {human ? <UserIcon className="size-3" /> : <BotIcon className="size-3" />}
         </span>
-        <span><span className="sr-only">{human ? t('Your move: ') : t('Agent’s move: ')}</span>{next.text}</span>
+        <span className="min-w-0">
+          <span className={cn('block text-xs font-medium', human ? 'text-attention-foreground' : 'text-muted-foreground')}>{t(NEXT_MOVE_OWNER_WORDS[step.who])}</span>
+          <span className={human ? 'font-medium text-foreground' : 'text-foreground/80'}>{step.text}</span>
+        </span>
       </div>
     </Req>
   )
@@ -137,9 +195,27 @@ export function reviewCoverage(request: Request, t?: (s: string) => string) {
   return interpolate(template, { reviewed: coverage.reviewed, total: coverage.total, reviewedAt })
 }
 
-/** Progress from the last memory review (§5), with the measured-pace estimate only when it exists (decision 3). */
+/**
+ * Each state's bar fill at full strength: ≥3:1 against the muted track in both themes (the Phase 1 contract; the /75
+ * fills were 2.86:1 shipped and 3.00:1 review in light).
+ */
+const STATE_PROGRESS_FILL: Record<LiveState, string> = {
+  working: '[&_[data-slot=progress-indicator]]:bg-working-foreground',
+  'needs-check': '[&_[data-slot=progress-indicator]]:bg-review-foreground',
+  'your-move': '[&_[data-slot=progress-indicator]]:bg-attention-foreground',
+  idle: '[&_[data-slot=progress-indicator]]:bg-idle-foreground',
+  shipped: '[&_[data-slot=progress-indicator]]:bg-shipped-foreground',
+}
+
+/**
+ * Progress from the last memory review (§5), with the measured-pace estimate only when it exists (decision 3). The bar
+ * reports its value, and a request no review measured shows the unknown track, not 0% (c-bits-progress-meter); a
+ * finished bar ends in a check; the percent is monospace and dates keep tabular figures (plan rule 9). A working bar's
+ * light sweep runs only when motion is allowed.
+ */
 export function ProgressMeter({ request, compact = false }: { request: Request; compact?: boolean }) {
   const { t } = useI18n()
+  const motionReduced = useReducedMotion()
   const { progress } = request
   const estimate = measuredEstimate(request)
   const translatedEstimate = estimate
@@ -150,15 +226,12 @@ export function ProgressMeter({ request, compact = false }: { request: Request; 
   return (
     <Req ids={['R5.9', 'R5.6', 'R5.11']}>
       <div className="space-y-1.5">
-        <Progress value={progress.percent ?? 0} aria-label={progress.percent === null ? t('Not reviewed yet') : interpolate(t('{percent}% complete'), { percent: progress.percent })} className={cn('h-1.5 bg-muted [&_[data-slot=progress-indicator]]:duration-700 [&_[data-slot=progress-indicator]]:ease-out', request.state === 'working' && 'progress-sweep', {
-          '[&_[data-slot=progress-indicator]]:bg-working-foreground/75': request.state === 'working',
-          '[&_[data-slot=progress-indicator]]:bg-review-foreground/75': request.state === 'needs-check',
-          '[&_[data-slot=progress-indicator]]:bg-attention-foreground/75': request.state === 'your-move',
-          '[&_[data-slot=progress-indicator]]:bg-idle-foreground/75': request.state === 'idle',
-          '[&_[data-slot=progress-indicator]]:bg-shipped-foreground/75': request.state === 'shipped',
-        })} />
-        <div className="flex flex-wrap justify-between gap-x-2 text-xs text-muted-foreground">
-          <span>{progress.completedAt ? interpolate(t('Completed {completedAt}'), { completedAt: progress.completedAt }) : progress.readings ? <><span className="font-medium text-foreground/80 tabular-nums">{progress.percent}%</span>{compact ? '' : ` · ${reviewCoverage(request, t)}`}</> : t('Not reviewed yet')}</span>
+        <div className="flex items-center gap-1.5">
+          <Progress value={progress.percent} aria-label={progress.percent === null ? t('Not reviewed yet') : interpolate(t('{percent}% complete'), { percent: progress.percent })} className={cn('[&_[data-slot=progress-indicator]]:duration-700 [&_[data-slot=progress-indicator]]:ease-out', STATE_PROGRESS_FILL[request.state], request.state === 'working' && !motionReduced && 'progress-sweep')} />
+          {progress.percent === 100 && <CheckIcon data-slot="progress-finished" aria-hidden="true" className="size-3.5 shrink-0 stroke-3 text-foreground/80" />}
+        </div>
+        <div className="flex flex-wrap justify-between gap-x-2 text-xs text-muted-foreground tabular">
+          <span>{progress.completedAt ? interpolate(t('Completed {completedAt}'), { completedAt: progress.completedAt }) : progress.readings ? <><span className="font-medium text-foreground/80 mono-number">{progress.percent}%</span>{compact ? '' : ` · ${reviewCoverage(request, t)}`}</> : t('Not reviewed yet')}</span>
           {!compact && translatedEstimate && <span>{translatedEstimate}</span>}
         </div>
       </div>
@@ -365,25 +438,39 @@ export function RefreshStatus({ refresh, run, ids, label = 'Last run' }: { refre
   )
 }
 
+/**
+ * Why a refresh did not start, in the person's language: the worker's own reason when it gave one (its words are the
+ * worker's), otherwise the status it answered, or the failure itself (no connection).
+ */
+function refreshNotStartedWords(cause: unknown, t: (text: string) => string): string {
+  if (cause instanceof RefreshNotStartedError) {
+    return cause.workerReason !== null
+      ? interpolate(t('Refresh could not start: {reason}'), { reason: cause.workerReason })
+      : interpolate(t('Refresh could not start: the worker answered {status}'), { status: cause.status })
+  }
+  return interpolate(t('Refresh could not start: {reason}'), { reason: cause instanceof Error ? cause.message : String(cause) })
+}
+
 /** Starts the local goals and progress refresh on demand. */
 export function ManualRefreshButton({ ids, running = false }: { ids: string[]; running?: boolean }) {
   const { t } = useI18n()
   const refreshWork = useStore((state) => state.refreshWork)
   const [pending, setPending] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  // Why the last start failed; worded at render, so the words follow a change of language.
+  const [failure, setFailure] = useState<{ cause: unknown } | null>(null)
   const [nothingNew, setNothingNew] = useState(false)
   const start = async () => {
     setPending(true)
-    setError(null)
+    setFailure(null)
     setNothingNew(false)
     try { setNothingNew((await refreshWork()).state === 'idle') }
-    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) }
+    catch (cause) { setFailure({ cause }) }
     finally { setPending(false) }
   }
   return (
     <Req ids={ids}>
       <div className="flex items-center gap-2">
-        {error && <span role="alert" className="text-xs text-attention-foreground">{error}</span>}
+        {failure && <span role="alert" className="text-xs text-attention-foreground">{refreshNotStartedWords(failure.cause, t)}</span>}
         {nothingNew && !running && <span aria-live="polite" className="text-xs text-muted-foreground">{t('Nothing new to refresh')}</span>}
         <Button variant="outline" size="sm" className="h-11 min-w-11 md:h-8 md:min-w-0" onClick={start} disabled={pending || running}>
           {pending || running ? <Spinner /> : <RefreshCwIcon />}
