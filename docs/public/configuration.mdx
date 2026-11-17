@@ -689,6 +689,45 @@ Search operations are provided via:
 
 Worker service is managed by Bun as a background process. The worker auto-starts on first session and runs continuously in the background.
 
+### Native work-state write checks
+
+An operator can require a local check before writes to selected work-state lists. The check runs inside `POST /api/work-state/entries`, the endpoint used by `work_state_write`, so writes through either cannot skip it, for example by omitting an evidence field. The worker's own My Focus and owner-goals rows are written without it.
+
+Create `work-state-write-guard.json` in the worker's data directory (`~/.claude-mem` by default):
+
+```json
+{
+  "version": 1,
+  "scopes": [{ "project": "example-project", "list": "release" }],
+  "command": ["/absolute/path/to/check-write"]
+}
+```
+
+Keep this file owner-controlled, for example with mode `0600` on Unix. It is separate from `settings.json`: the settings API and `work_state_write` cannot set its command. No file means no additional check. Other lists keep their existing behavior. Project matching includes the checkout's configured and legacy aliases and uses storage's ASCII case folding; list names match exactly.
+
+The executable path must be absolute. Arguments follow it in the array. The worker does not start a shell. The command runs with the configuration directory as its working directory and receives one JSON object on stdin:
+
+- `project` and `projects`: the primary checkout key and its read aliases.
+- `list`: the list being written.
+- `fields`: the requested patch.
+- `current` and `proposed`: the task's folded fields before and after that patch, or the list's own fields for a write without a task.
+- `closing` and `currentClosing`: whether the proposed and current statuses close work, using the worker's shared status definition.
+- `history`: all stored patches for this task, or for the list's own state when no task is supplied, in storage order. Each entry has `fields` and a server-derived `closing` flag for the folded status at that point. No sibling task rows are included. A validator can use the complete history to preserve earlier review decisions and prevent reuse of acceptance evidence from any prior closure, not just the most recent one.
+
+The check runs for every write in a matched list, not just a closing write. This lets a validator refuse removal of required evidence as well as premature completion. It must be read-only: do not call the same write endpoint from the command.
+
+Exit successfully and print exactly one JSON response:
+
+```json
+{ "allowed": false, "reason": "Repair owner: builder. Required documentation sections are missing." }
+```
+
+Approval is `{ "allowed": true }`. A refusal needs a nonempty reason of at most 1,000 characters. The command must finish within two seconds; stdout and stderr are each limited to 16 KiB. Crashes, incomplete input delivery, invalid output, timeouts and malformed installed configuration refuse the write. Diagnostic output is not returned to the caller.
+
+A refusal returns HTTP `409` before any row is appended or cloud sync is notified. Approval also fails if the same task changed while the command ran; the caller must read its current state and retry. Changes to unrelated tasks do not invalidate the check.
+
+Configuration is read on each write. Replace it atomically when changing it. Removing it disables this additional validation; treat that as an operator policy change, not an agent repair. This is local workflow enforcement, not a sandbox or identity-authentication system: a process running as the OS owner can still alter its configuration or database.
+
 ### Local API Token
 
 The worker API and the MCP HTTP transport trust any process that can reach loopback. On a host with several OS users, that is every user. `CLAUDE_MEM_LOCAL_API_TOKEN` is an opt-in switch: set it, and a request must carry the token or it is refused with `401`. Unset, nothing changes.
