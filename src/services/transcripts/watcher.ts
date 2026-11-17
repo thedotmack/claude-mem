@@ -64,6 +64,17 @@ const RESUME_SCAN_BYTES_PER_STEP = 16 * 1024 * 1024;
  */
 const WATCH_ROOT_SETTLE_MS = 100;
 
+/**
+ * How often already-tailed transcripts are checked for bytes fs.watch did not
+ * report. Bun on macOS delivers no fs.watch event while another process
+ * appends to a file it keeps open (Codex Desktop holds a rollout open for the
+ * life of the thread), and the recursive root watch stays quiet until that
+ * process closes the file, so poke-on-root-event (#2192) never runs.
+ * Only files that already have a tailer are visited. Nothing is scanned into
+ * existence, and bytes already covered by readOffset are not read again.
+ */
+const TAILED_APPEND_POLL_MS = 3000;
+
 // A bulk backfill can walk hundreds of files and tens of thousands of lines on
 // the Bun event loop that also serves the worker's HTTP API. Awaiting line
 // after line back to back starves live hook capture, so dispatch hands a
@@ -292,6 +303,15 @@ class FileTailer {
 
   poke(): void {
     this.requestRead();
+  }
+
+  /** True when the file ends past the bytes already read. A missing file does not. */
+  hasBytesPastReadOffset(): boolean {
+    try {
+      return statSync(this.filePath).size > this.tailState.readOffset;
+    } catch {
+      return false;
+    }
   }
 
   private requestRead(): void {
@@ -541,11 +561,14 @@ export class TranscriptWatcher {
   private startingTailers = new Set<string>();
   /** Set by stop(): a tailer still awaiting its start offset then never starts. */
   private stopped = false;
+  /** Re-reads already-tailed files when fs.watch misses an append (TAILED_APPEND_POLL_MS). */
+  private appendPollTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     private config: TranscriptWatchConfig,
     private statePath: string,
-    observationTransport: TranscriptObservationTransport = 'in-process'
+    observationTransport: TranscriptObservationTransport = 'in-process',
+    private appendPollIntervalMs = TAILED_APPEND_POLL_MS,
   ) {
     this.processor = new TranscriptEventProcessor(observationTransport);
     this.state = loadWatchState(statePath);
@@ -562,6 +585,7 @@ export class TranscriptWatcher {
     for (const file of Object.keys(this.state.pendingTools ?? {})) {
       if (!this.tailers.has(file)) this.scheduleRetirementCheck(file);
     }
+    this.startAppendPoll();
   }
 
   stop(): void {
@@ -579,6 +603,27 @@ export class TranscriptWatcher {
     if (this.retirementTimer) clearTimeout(this.retirementTimer);
     this.retirementTimer = null;
     this.retirementCandidates.clear();
+    if (this.appendPollTimer) clearInterval(this.appendPollTimer);
+    this.appendPollTimer = null;
+  }
+
+  private startAppendPoll(): void {
+    if (this.appendPollTimer !== null || this.appendPollIntervalMs <= 0) return;
+    this.appendPollTimer = setInterval(() => {
+      this.pollTailedAppends();
+    }, this.appendPollIntervalMs);
+    this.appendPollTimer.unref?.();
+  }
+
+  /**
+   * Already-tailed files only. poke() runs readNewData(), which returns
+   * immediately when the size is still the read offset.
+   */
+  private pollTailedAppends(): void {
+    if (this.stopped) return;
+    for (const tailer of this.tailers.values()) {
+      if (tailer.hasBytesPastReadOffset()) tailer.poke();
+    }
   }
 
   private async setupWatch(watch: WatchTarget): Promise<void> {
