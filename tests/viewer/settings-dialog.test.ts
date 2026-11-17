@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { readFileSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
-import ts from 'typescript';
+import ts from 'typescript-compiler-api';
 import { DEFAULT_SETTINGS } from '../../src/ui/viewer/constants/settings';
 import { PREVIEW_SHORTENINGS, previewTruncationNote, type PreviewShortening } from '../../src/ui/context-preview-note';
 import { viewerZh } from '../../src/ui/i18n/viewer-zh';
