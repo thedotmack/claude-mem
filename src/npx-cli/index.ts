@@ -99,7 +99,7 @@ ${styleText('bold', 'Claude Code Hooks')}:
 
 ${styleText('bold', 'Agent IDs')} (for --ide):
   claude-code, cursor, grok-bot, opencode, openclaw, omp, hermes, pi, dsh,
-  windsurf, codex-cli, t3code (aliases: t3, t3-code), kimi, devin, copilot-cli, antigravity, goose,
+  windsurf, codex-cli, t3code (aliases: t3, t3-code), kimi, devin, copilot-cli, copilot-vscode, antigravity, goose,
   roo-code, warp, zed
 `);
 }
