@@ -29,4 +29,36 @@ describe('generateClaudeMd', () => {
 
     expect(project).toBeTruthy();
   });
+
+  it('yields again when a later batch starts', () => {
+    // 30 leaf folders plus their parents exceed one batch of 25, so generation
+    // must reach the check phase at least twice. Counting setImmediate calls
+    // observes the batch boundaries without depending on wall-clock timing.
+    const files = Array.from(
+      { length: 30 },
+      (_, index) => `src/folder-${String(index).padStart(2, '0')}/file.ts`,
+    );
+    const script = `
+      let yields = 0;
+      const original = globalThis.setImmediate;
+      globalThis.setImmediate = (callback, ...args) => {
+        yields += 1;
+        return original(callback, ...args);
+      };
+      try {
+        const code = await generateClaudeMd(false);
+        if (code !== 0) process.exitCode = code;
+      } finally {
+        globalThis.setImmediate = original;
+      }
+      if (yields < 2) {
+        console.error('generateClaudeMd yielded ' + yields + ' time(s); later batches did not yield');
+        process.exitCode = 1;
+      }
+    `;
+
+    const project = generateIn({ files, seed: '', script });
+
+    expect(project).toBeTruthy();
+  });
 });
