@@ -193,7 +193,28 @@ function lastSegmentKey(normalized: string): string {
 
 interface FolderObservations {
   isFolderChild: (file: string) => boolean;
+  /**
+   * The folder's segments followed by a separator, once with `/` and once
+   * with a backslash, ASCII-lowercased. A candidate file must contain one of them:
+   * the same check the old per-folder `LIKE '%src/auth/%'` prefilter made, so
+   * relative `auth/login.ts` never reaches `src/auth` through the matcher's
+   * suffix rule.
+   */
+  pathNeedles: [string, string];
   observations: ObservationRow[];
+}
+
+/** SQLite's LIKE folds ASCII letters only; fold the same way. */
+function asciiLowerCase(value: string): string {
+  return value.replace(/[A-Z]/g, letter => letter.toLowerCase());
+}
+
+function folderPathNeedles(relativeFolder: string): [string, string] {
+  const segments = relativeFolder.split(/[\\/]+/).filter(Boolean);
+  return [
+    asciiLowerCase(segments.join('/') + '/'),
+    asciiLowerCase(segments.join('\\') + '\\'),
+  ];
 }
 
 /**
@@ -211,7 +232,11 @@ function findObservationsByFolders(
   const folders: FolderObservations[] = [];
   const bucketed = new Map<string, FolderObservations[]>();
   for (const relativeFolder of relativeFolders) {
-    const entry: FolderObservations = { isFolderChild: makeFolderChildMatcher(relativeFolder, workingDir), observations: [] };
+    const entry: FolderObservations = {
+      isFolderChild: makeFolderChildMatcher(relativeFolder, workingDir),
+      pathNeedles: folderPathNeedles(relativeFolder),
+      observations: [],
+    };
     folders.push(entry);
     const key = lastSegmentKey(normalizePath(relativeFolder));
     if (!bucketed.has(key)) bucketed.set(key, []);
@@ -225,15 +250,24 @@ function findObservationsByFolders(
     WHERE o.project COLLATE NOCASE = ?
     ORDER BY o.created_at_epoch DESC
   `);
+  // Folders whose page is not full yet. The scan stops when it reaches 0, as
+  // the old per-folder query stopped at its own limit.
+  let unfilledFolders = folders.length;
   try {
     for (const obs of streamRows(statement, project) as Iterable<ObservationRow>) {
       for (const file of [...parseJsonArray(obs.files_modified), ...parseJsonArray(obs.files_read)]) {
-        for (const entry of bucketed.get(lastSegmentKey(path.posix.dirname(normalizePath(file)))) ?? []) {
+        const candidates = bucketed.get(lastSegmentKey(path.posix.dirname(normalizePath(file))));
+        if (!candidates) continue;
+        const comparableFile = asciiLowerCase(file);
+        for (const entry of candidates) {
           // Rows arrive one at a time, so a row already added is the last one.
-          if (entry.observations.at(-1) === obs || entry.observations.length === limit || !entry.isFolderChild(file)) continue;
+          if (entry.observations.at(-1) === obs || entry.observations.length === limit) continue;
+          if (!entry.pathNeedles.some(needle => comparableFile.includes(needle)) || !entry.isFolderChild(file)) continue;
           entry.observations.push(obs);
+          if (entry.observations.length === limit) unfilledFolders--;
         }
       }
+      if (unfilledFolders === 0) break;
     }
   } finally {
     statement.finalize();
