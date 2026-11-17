@@ -1,5 +1,6 @@
 import { ArrowRightIcon, CheckIcon, InfoIcon, SearchIcon } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
+import { flushSync } from 'react-dom'
 import { Collapsible, CollapsibleContent, CollapsibleFoldTrigger } from '@/components/ui/collapsible'
 import { Spinner } from '@/components/ui/spinner'
 import { interpolate, useI18n } from '@/lib/i18n'
@@ -65,6 +66,7 @@ function InstallOptions({ install, onInstall }: { install: SetupInstallState; on
   const [reinstallConfirmed, setReinstallConfirmed] = useState(!catalog.reinstall)
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<SetupFailure | null>(null)
+  const [optionsOpen, setOptionsOpen] = useState(false)
   const [noteCut, setNoteCut] = useState(false)
   const [profileCut, setProfileCut] = useState(false)
   const change = (patch: Partial<SetupInstallSelection>) => setSelection(current => ({ ...current, ...patch }))
@@ -126,10 +128,13 @@ function InstallOptions({ install, onInstall }: { install: SetupInstallState; on
           </>}
         </fieldset>
 
-        <Collapsible className="panel install-options">
+        <Collapsible className="panel install-options" open={optionsOpen} onOpenChange={setOptionsOpen}>
           <CollapsibleFoldTrigger count={summary}>{t('Skills and preferences')}</CollapsibleFoldTrigger>
-          {/* Kept in the form while folded, as the closed <details> did: the browser's own checks still see its fields. */}
-          <CollapsibleContent forceMount className="install-options-body">
+          {/* Kept in the form while folded, as the closed <details> did: the browser's own checks still see its fields.
+              One that fails them (the email address) opens the fold, or Install would seem to do nothing: the browser
+              can't point at a hidden field. It looks right after this event, so flushSync opens the fold before the
+              handler returns; without it, a submit started by a script is checked before React renders the fold. */}
+          <CollapsibleContent forceMount className="install-options-body" onInvalid={() => flushSync(() => setOptionsOpen(true))}>
             <fieldset disabled={sending || catalog.skillsLocked}>
               <legend>{t('Bundled skills')}</legend>
               <p className="install-help">{t('Choose which claude-mem skills your agents can discover. You can change these later.')}</p>
