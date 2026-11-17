@@ -5,6 +5,8 @@
 // A finished tool call is raised the way the engine raises it: as the
 // `session.append` row of its result (door `tool-result`), and the reminder the
 // mod appends comes back through `mock.session` as a row of the door `note`.
+// The save's arguments (the continuation prompt's blanks) are raised as the
+// engine raises the model's tool call: a row of the door `response`.
 import { expect, mock, test } from 'claude-code/testing'
 
 const WRITE = 'mcp__plugin_claude-mem_mcp-search__work_state_write'
@@ -60,17 +62,17 @@ const saved = [{ type: 'text', text: 'Saved to "work" in demo.' }]
 
 const turnDone = { turnId: 't1', answer: 'done', durationMs: 5, isAborted: false, reason: 'answer', usage: null }
 
-test('at 34% a tool result gets the save request appended behind it; after a save the turn end clears and sends continue as the user', async ($, on) => {
-  const { clock, record, reminders } = stubs(on, { percent: 34 })
+test('at 41% a tool result gets the save request appended behind it; after a save the turn end clears and sends continue as the user', async ($, on) => {
+  const { clock, record, reminders } = stubs(on, { percent: 41 })
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
 
   // The row is stored as the tool made it; the save request is a row of its own behind it.
   const bash = await toolResult($, 'Bash', 'ok')
   expect(bash.message.content[0].content).toBe('ok')
   expect(reminders()).toHaveLength(1)
-  expect(reminders()[0]).toContain('34% of the context window')
+  expect(reminders()[0]).toContain('41% of the context window')
   expect(reminders()[0]).toContain('work_state_write')
-  expect(record.notes[0] ?? '').toContain('Context is at 34%')
+  expect(record.notes[0] ?? '').toContain('Context is at 41%')
 
   await toolResult($, WRITE, saved)
   expect(reminders()).toHaveLength(1)
@@ -227,4 +229,46 @@ test('Code Mode: a script\'s save is stored with no text, so nothing is cleared 
   expect(reminders()).toHaveLength(1)
   expect(record.prompts).toEqual([])
   expect(record.notes).toHaveLength(notesBefore)
+})
+
+/** Raises a block of the model's response carrying one tool call, as the engine raises it. */
+async function toolUse($: any, tool: string, input: unknown, options: { agentId?: string } = {}) {
+  rows += 1
+  return await $.session.append({
+    message: { type: 'assistant', role: 'assistant', content: [{ type: 'tool_use', id: `toolu_${rows}`, name: tool, input }] },
+    door: 'response',
+    origin: { kind: 'model', model: 'claude-test' },
+    uuid: `row-${rows}`,
+    ...(options.agentId ? { agentId: options.agentId } : {}),
+  })
+}
+
+test('a save that carries the blanks becomes the continuation prompt sent as the user after the clear', async ($, on) => {
+  const { clock, record } = stubs(on, { percent: 45 })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await toolResult($, 'Bash', 'ok')
+  const fields = { continuation_recently_completed_task: 'wire the login route', continuation_overarching_goal: 'ship passwordless login' }
+  const row = await toolUse($, WRITE, { list: 'work', fields })
+  // The response row is kept as the model wrote it.
+  expect(row.message.content[0].input).toEqual({ list: 'work', fields })
+  await toolResult($, WRITE, saved)
+  await $.turn.complete(turnDone)
+  await clock.settle()
+  await clock.settle()
+  expect(record.commands).toEqual(['clear'])
+  expect(record.prompts).toEqual([{
+    text: 'You are working on "work" and recently completed "wire the login route". Pick back up on our overarching goal "ship passwordless login" from where you left off.',
+    asUser: true,
+  }])
+})
+
+test('the default point is 40%: at 39% nothing is asked, at 40% the save request is attached', async ($, on) => {
+  const { state, reminders } = stubs(on, { percent: 39 })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await toolResult($, 'Bash')
+  expect(reminders()).toEqual([])
+  state.percent = 40
+  await toolResult($, 'Bash')
+  expect(reminders()).toHaveLength(1)
+  expect(reminders()[0]).toContain('past the 40% point')
 })

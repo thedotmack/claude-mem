@@ -2,6 +2,9 @@ import { describe, it, expect } from 'bun:test';
 import {
   AutoClearController,
   CONTINUE_PROMPT,
+  continuationBlanks,
+  inTurnSaveRequest,
+  savePrompt,
   type AutoClearHost,
 } from '../../src/mods/auto-clear/controller.js';
 import type { AutoClearSettings } from '../../src/mods/auto-clear/settings.js';
@@ -129,7 +132,7 @@ describe('auto-clear controller', () => {
     const controller = new AutoClearController(host);
     await controller.onTurnEnd(answered);
     await flush();
-    expect(calls).toEqual(['prompt:This conversation now uses 50% of the context window, past the 33% auto-clear point set in claude-mem. When this turn ends, claude-mem clears the conversation and sends "continue", and the fresh conversation starts with your open work state.']);
+    expect(calls).toEqual(['prompt:This conversation now uses 50% of the context window, past the 33% auto-clear point set in claude-mem. When this turn ends, claude-mem clears the conversation and starts the fresh one with your open work state and this message, filled in from your last save: You are working on "<list>" and recently completed "<task>". Pick back up on our overarching goal "<goal>" from where you left off.']);
 
     await controller.onToolCallEnd(tool(WRITE, SAVED));
     await controller.onTurnEnd(answered);
@@ -521,5 +524,127 @@ describe('auto-clear controller', () => {
     await flush();
     expect(calls).toEqual(['clear']);
     expect(notes.at(-1)).toContain('Type it to pick the work back up');
+  });
+});
+
+describe('auto-clear continuation prompt', () => {
+  const SAVE_WITH_BLANKS = {
+    list: 'auth-refactor',
+    fields: {
+      continuation_recently_completed_task: 'wire the login route',
+      continuation_overarching_goal: 'ship passwordless login',
+    },
+  };
+  const CONTINUATION = 'You are working on "auth-refactor" and recently completed "wire the login route". '
+    + 'Pick back up on our overarching goal "ship passwordless login" from where you left off.';
+
+  it('sends the sentence built from the save that carried the blanks, not "continue"', async () => {
+    const { host, calls, notes, flush } = fakeHost({ percent: 40 });
+    const controller = new AutoClearController(host);
+    await controller.onToolCallEnd(tool('Bash'));
+    controller.onWorkStateWriteCall({ input: { list: 'auth-refactor', fields: { status: 'doing' } } });
+    await controller.onToolCallEnd(tool(WRITE, SAVED));
+    controller.onWorkStateWriteCall({ input: SAVE_WITH_BLANKS });
+    await controller.onToolCallEnd(tool(WRITE, SAVED));
+    await controller.onTurnEnd(answered);
+    await flush();
+    expect(calls).toEqual(['clear', `user:${CONTINUATION}`]);
+    expect(notes.join('\n')).not.toContain('"continue" is sent instead');
+  });
+
+  it('builds it the same way when the save was asked for in a turn of its own', async () => {
+    const { host, calls, flush } = fakeHost({ percent: 50 });
+    const controller = new AutoClearController(host);
+    await controller.onTurnEnd(answered);
+    await flush();
+    expect(calls[0]).toStartWith('prompt:');
+    controller.onWorkStateWriteCall({ input: SAVE_WITH_BLANKS });
+    await controller.onToolCallEnd(tool(WRITE, SAVED));
+    await controller.onTurnEnd(answered);
+    await flush();
+    expect(calls.slice(1)).toEqual(['clear', `user:${CONTINUATION}`]);
+  });
+
+  it('sends "continue" and tells the person why when no save carried all three blanks', async () => {
+    const { host, calls, notes, flush } = fakeHost({ percent: 40 });
+    const controller = new AutoClearController(host);
+    await controller.onToolCallEnd(tool('Bash'));
+    controller.onWorkStateWriteCall({
+      input: { list: 'auth-refactor', fields: { continuation_recently_completed_task: 'wire the login route', continuation_overarching_goal: '  ' } },
+    });
+    await controller.onToolCallEnd(tool(WRITE, SAVED));
+    await controller.onTurnEnd(answered);
+    await flush();
+    expect(calls).toEqual(['clear', 'user:continue']);
+    expect(notes.at(-1)).toContain('"continue" is sent instead');
+  });
+
+  it('never takes the blanks from a subagent or from a save made before auto-clear asked', async () => {
+    const { host, calls, flush } = fakeHost({ percent: 40 });
+    const controller = new AutoClearController(host);
+    controller.onWorkStateWriteCall({ input: SAVE_WITH_BLANKS });
+    await controller.onToolCallEnd(tool('Bash'));
+    controller.onWorkStateWriteCall({ agentId: 'agent-1', input: SAVE_WITH_BLANKS });
+    await controller.onToolCallEnd(tool(WRITE, SAVED));
+    await controller.onTurnEnd(answered);
+    await flush();
+    expect(calls).toEqual(['clear', 'user:continue']);
+  });
+
+  it('drops the blanks of a stale save once a fresh save is asked for', async () => {
+    const { host, calls, flush } = fakeHost({ percent: 40 });
+    const controller = new AutoClearController(host);
+    await controller.onToolCallEnd(tool('Bash'));
+    controller.onWorkStateWriteCall({ input: SAVE_WITH_BLANKS });
+    await controller.onToolCallEnd(tool(WRITE, SAVED));
+    await controller.onToolCallEnd(tool('Edit')); // more work after the save: it is stale
+    await controller.onTurnEnd(answered);
+    await flush();
+    expect(calls[0]).toStartWith('prompt:');
+    await controller.onToolCallEnd(tool(WRITE, SAVED)); // saved again, without the blanks
+    await controller.onTurnEnd(answered);
+    await flush();
+    expect(calls.slice(1)).toEqual(['clear', 'user:continue']);
+  });
+
+  it('shows the person the message it could not send, so they can type it', async () => {
+    const { host, calls, notes, state, flush } = fakeHost({ percent: 40 });
+    state.failAsUser = true;
+    const controller = new AutoClearController(host);
+    await controller.onToolCallEnd(tool('Bash'));
+    controller.onWorkStateWriteCall({ input: SAVE_WITH_BLANKS });
+    await controller.onToolCallEnd(tool(WRITE, SAVED));
+    await controller.onTurnEnd(answered);
+    await flush();
+    expect(calls).toEqual(['clear']);
+    expect(notes.at(-1)).toContain(`Type it to pick the work back up: ${CONTINUATION}`);
+  });
+
+  it('asks for the blanks in both save requests and shows the sentence they fill', () => {
+    for (const request of [inTurnSaveRequest(40, 40), savePrompt(40, 40)]) {
+      expect(request).toContain('"continuation_recently_completed_task"');
+      expect(request).toContain('"continuation_overarching_goal"');
+      expect(request).toContain('You are working on "<list>" and recently completed "<task>". Pick back up on our overarching goal "<goal>" from where you left off.');
+      expect(request).not.toContain('sends "continue"');
+    }
+  });
+
+  it('reads the list and the two fields, trimmed, and nothing less', () => {
+    expect(continuationBlanks({
+      list: ' work ',
+      fields: { continuation_recently_completed_task: ' a ', continuation_overarching_goal: ' b ' },
+    })).toEqual({ workStateList: 'work', recentlyCompletedTask: 'a', overarchingGoal: 'b' });
+    for (const input of [
+      null,
+      'text',
+      {},
+      { list: 'work' },
+      { list: 'work', fields: null },
+      { list: '', fields: { continuation_recently_completed_task: 'a', continuation_overarching_goal: 'b' } },
+      { list: 'work', fields: { continuation_recently_completed_task: 'a' } },
+      { list: 'work', fields: { continuation_recently_completed_task: 3, continuation_overarching_goal: 'b' } },
+    ]) {
+      expect(continuationBlanks(input)).toBeNull();
+    }
   });
 });

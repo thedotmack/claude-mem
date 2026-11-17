@@ -18,6 +18,10 @@ describe('auto-clear bundle', () => {
     expect(bundle).toContain('$.session.append(');
   });
 
+  it('reads the save\'s own arguments off the model\'s response row, also at session.append', () => {
+    expect(bundle).toMatch(/\bon\(\s*"session\.append"\s*,\s*\{\s*door:\s*"response"\s*\}/);
+  });
+
   it('finds a refused event whichever quote style registers it, and leaves other events alone', () => {
     expect(refusedEventsHooked('on("tool.call", hook)')).toEqual(['tool.call']);
     expect(refusedEventsHooked("on('classic.PreToolUse', hook)")).toEqual(['classic.PreToolUse']);
