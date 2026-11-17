@@ -22,6 +22,16 @@ export function groupIdFor(anchorConversationKey: string): string;
 export function refreshNeeds(options: { dir?: string; database: LedgerDatabase; now?: number; days?: number; localDeviceId: string }): RefreshNeeds;
 export function writeJsonAtomic(path: string, value: unknown): void;
 export function readLedger(dir?: string): Record<string, any>;
+export interface StoryDraft { narrative: string; preferences: Array<Record<string, any>> }
+export interface StoryInput {
+  groups: number; update: boolean; narrativeTarget: number; narrativeLimit: number;
+  previousNarrativeChars: number; roomChars: number; condenseChars: number;
+  previousParts: Array<Record<string, any>>; mergeOldestChapters: number;
+  reviews: Array<Record<string, any>>;
+  previousStory: (StoryDraft & { writtenAt: string }) | null;
+}
+export function validateStory(story: unknown): StoryDraft;
+export function storyInput(groups: number, reviews: Array<Record<string, any>>, story: StoryInput['previousStory']): StoryInput;
 export function readCandidates(database: LedgerDatabase, options: { sinceEpoch?: number; conversationKeys?: string[] | null; fullAsks?: boolean; excludedPromptIds?: Set<number> | null }): any[];
 export function ledgerSignature(dir?: string): string;
 /** The decisions `apply` takes, merged into `stored` with projects and first asks read from the database; not written. */

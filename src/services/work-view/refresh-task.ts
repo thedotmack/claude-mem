@@ -21,7 +21,8 @@ import { writeOwnerPromptsFile, type OwnerPromptsFile } from '../prompt-import/o
 import { resolvePythonCommand } from './python.js';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { logger } from '../../utils/logger.js';
-import { FOCUS_BATCH, readGoals, readLedger, runCli, validateFocusAnswer, validateGroupingAnswer, type FocusInput, type LedgerDatabase, type RefreshNeeds } from './request-groups.mjs';
+import { FOCUS_BATCH, readGoals, readLedger, runCli, validateFocusAnswer, validateGroupingAnswer, validateStory, type FocusInput, type LedgerDatabase, type RefreshNeeds, type StoryDraft, type StoryInput } from './request-groups.mjs';
+import { nextStoryBatch } from './story-batches.js';
 import { FOCUS_AUTO_PLACE_THRESHOLD, judgeFocusBatch, placesAlone, type FocusJudge, type FocusJudgement } from './focus-judge.mjs';
 import { isWithdrawnArea, ownerGoalsAreaRows, ownerGoalsSaveKey, PROPOSAL_KINDS, readFocusAreas, type FocusArea, type RouterFocusBody } from './my-focus.mjs';
 import { NAV_LABELS } from './nav-words.mjs';
@@ -373,7 +374,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       return path;
     };
     const localDeviceId = options.localDeviceId();
-    const cli = (argv: string[], input?: unknown, cliOptions: { coerceProgress?: boolean } = {}) => {
+    const cli = (argv: string[], input?: unknown, cliOptions: { coerceProgress?: boolean; now?: number } = {}) => {
       let output: any;
       const database = openDatabase();
       try { runCli(input === undefined ? argv : [...argv, writeInput(argv[0], input)], { dir: ledgerDir, database, now: now(), print: value => { output = value; }, localDeviceId, ...cliOptions }); }
@@ -820,12 +821,23 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       } catch (error) { focusError = error; }
 
       // Only reviews whose facts (state, percent, dates, milestones, preferences, outcome) moved since the last story; none means the story still holds.
-      const storyInput = cli(['story-input']);
+      const storyReadAt = now();
+      const storyInput: StoryInput = cli(['story-input']);
       if (storyInput.reviews.length) {
-        await step('story', [
-          requestProgress, '---', readOnly,
-          `Do only section 4 (${storyInput.update ? 'update' : 'write'} the build story). The \`story-input\` output is in ${writeInput('story-input', storyInput)}. Reply with only the JSON that \`record-story\` takes ({"narrative": "...", "preferences": [...]}).`,
-        ].join('\n\n'), answer => cli(['record-story'], answer));
+        let previous = storyInput.previousStory;
+        let draft: StoryDraft;
+        for (let offset = 0; offset < storyInput.reviews.length;) {
+          const input = nextStoryBatch(storyInput, offset, previous);
+          draft = await step('story', [
+            requestProgress, '---', readOnly,
+            `Do only section 4 (${input.update ? 'update' : 'write'} the build story). The \`story-input\` output is in ${writeInput('story-input', input)}. Reply with only the JSON that \`record-story\` takes ({"narrative": "...", "preferences": [...]}).`,
+          ].join('\n\n'), validateStory);
+          previous = { ...draft, writtenAt: new Date(storyReadAt).toISOString() };
+          offset += input.reviews.length;
+        }
+        // Commit only after every batch succeeds. The timestamp covers the snapshot,
+        // so a review changed during the calls remains due for the next refresh.
+        cli(['record-story'], draft!, { now: storyReadAt });
         done.push(storyInput.update ? 'story updated' : 'story written');
       }
       if (focusError) throw focusError;
