@@ -39,10 +39,12 @@ describe('openai-compatible settings surface', () => {
     for (const key of ['CLAUDE_MEM_OPENROUTER_BASE_URL', 'CLAUDE_MEM_OPENAI_COMPAT_PRESET', 'CLAUDE_MEM_OPENAI_COMPAT_BASE_URL', 'CLAUDE_MEM_OPENAI_COMPAT_API_KEY']) {
       expect(source).not.toContain(`updateSetting('${key}'`);
     }
+    // Both base URLs and the preset show in read-only fields (ReadOnlyInput: a lock and a readOnly input).
     for (const key of ['CLAUDE_MEM_OPENROUTER_BASE_URL', 'CLAUDE_MEM_OPENAI_COMPAT_BASE_URL']) {
-      expect(source.match(new RegExp(`<input[^>]*value=\\{formState\\.${key}[^>]*>`, 's'))?.[0]).toContain('readOnly');
+      expect(source.match(new RegExp(`<ReadOnlyInput[^>]*value=\\{formState\\.${key}[^>]*>`, 's'))?.[0]).toBeString();
     }
-    expect(source.match(/<select[^>]*value=\{openAICompatPresetOption[^>]*>/s)?.[0]).toContain('disabled');
+    expect(source.match(/<ReadOnlyInput[^>]*value=\{t\(presetOption\.label\)\}[^>]*>/s)?.[0]).toBeString();
+    expect(source.match(/function ReadOnlyInput[\s\S]*?<input[^>]*>/)?.[0]).toContain('readOnly');
 
     const routeSource = readFileSync('src/services/worker/http/routes/SettingsRoutes.ts', 'utf-8');
     const writeList = routeSource.slice(routeSource.indexOf('const settingKeys = ['), routeSource.indexOf('];', routeSource.indexOf('const settingKeys = [')));

@@ -31,6 +31,7 @@ import type {
   TokenEconomics,
 } from './types.js';
 import { colors } from './types.js';
+import { previewTruncationNote } from '../../ui/context-preview-note.js';
 import { loadContextConfig } from './ContextConfigLoader.js';
 import { fitContextToBudget, CONTEXT_OUTPUT_LIMIT, TERMINAL_BANNER_RESERVE_CHARS } from './ContextBudget.js';
 import { calculateTokenEconomics } from './TokenCalculator.js';
@@ -393,10 +394,9 @@ function prependObserverHealthWarning(warning: string, text: string): string {
  * where the cut is, just above the oldest entry still shown.
  */
 function truncateTerminalPreview(rendered: RenderedContext | string, limit: number): string {
+  // The note's words are shared with the classic viewer's Settings preview, which reads them (context-preview-note.ts).
   const truncationNotice = (omitted: boolean) =>
-    `${colors.reset}\n\n[Terminal preview truncated. The model received the full selected context; ${omitted
-      ? 'additional observations are not shown here.'
-      : 'some presentation text is not shown here.'}]\n`;
+    `${colors.reset}\n\n${previewTruncationNote(omitted ? 'observations' : 'text')}\n`;
   if (typeof rendered === 'string') {
     if (rendered.length <= limit) return rendered;
     // No row boundaries to cut at: keep the newest end, which ends the preview.

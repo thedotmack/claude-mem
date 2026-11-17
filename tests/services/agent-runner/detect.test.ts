@@ -3,11 +3,13 @@ import { EventEmitter } from 'events';
 import type { spawn } from 'child_process';
 import { join, resolve } from 'node:path';
 import {
+  detectUsableAgent,
   detectUsableAgents,
   GEMINI_NO_MCP_SERVERS,
   runCommand,
   type AgentDetectionDependencies,
   type UsableAgent,
+  type UsableAgentId,
 } from '../../../src/services/agent-runner/detect.js';
 import type { OAuthTokenResult } from '../../../src/shared/oauth-token.js';
 
@@ -353,6 +355,52 @@ describe('detectUsableAgents', () => {
       expect(agent.authenticated).toBe(false);
       expect(agent.reason).toContain('unreadable');
     });
+  });
+});
+
+describe('detectUsableAgent', () => {
+  const settingsPath = join(HOME, '.gemini', 'settings.json');
+  const credentialsPath = join(HOME, '.gemini', 'oauth_creds.json');
+  const GEMINI_ACCOUNT_PROBE = [GEMINI_PATH, '--skip-trust', '-e', 'none', '--allowed-mcp-server-names', GEMINI_NO_MCP_SERVERS, '-o', 'json'].join(' ');
+  /** All three installed and logged in so that each check runs commands; Gemini with a Google login, so its check starts the Gemini CLI. */
+  const everyAgentInstalled = (calls: string[]) => dependencies({
+    findClaudeExecutable: () => CLAUDE_PATH,
+    readClaudeOAuthToken: async () => ({ kind: 'expired', reason: 'expired', expiresAt: 10 }),
+    spawn: fakeSpawn({
+      [`${CLAUDE_PATH} auth status --json`]: { exitCode: 0, stdout: '{"loggedIn": true, "authMethod": "claude.ai"}' },
+      ...WHICH_CODEX,
+      [`${CODEX_PATH} login status`]: { exitCode: 0, stderr: 'Logged in using ChatGPT\n' },
+      ...WHICH_GEMINI,
+      [GEMINI_ACCOUNT_PROBE]: { exitCode: 42, stderr: 'No input provided via stdin.\n' },
+    }, calls),
+    fileExists: path => path === settingsPath || path === credentialsPath,
+    readTextFile: path => JSON.stringify(path === settingsPath ? { security: { auth: { selectedType: 'oauth-personal' } } } : { refresh_token: 'refresh-1' }),
+  });
+
+  it("runs that agent's own check alone, so no other CLI starts, and answers what detectUsableAgents answers for it", async () => {
+    const everyCall: string[] = [];
+    const everyAgent = await detectUsableAgents(everyAgentInstalled(everyCall));
+    // Checking all three starts the Gemini CLI for Gemini's account check.
+    expect(everyCall).toContain(GEMINI_ACCOUNT_PROBE);
+    const ownCommands: Record<UsableAgentId, string[]> = {
+      'claude-code': [`${CLAUDE_PATH} auth status --json`],
+      codex: ['which codex', `${CODEX_PATH} login status`],
+      gemini: ['which gemini', GEMINI_ACCOUNT_PROBE],
+    };
+    expect(everyAgent.map(agent => agent.id)).toEqual(['claude-code', 'codex', 'gemini']);
+    for (const agent of everyAgent) {
+      const calls: string[] = [];
+      expect(await detectUsableAgent(agent.id, everyAgentInstalled(calls))).toEqual(agent);
+      expect(calls).toEqual(ownCommands[agent.id]);
+    }
+  });
+
+  it('never throws: a check that throws is reported in plain words, with no path', async () => {
+    const agent = await detectUsableAgent('claude-code', dependencies({
+      findClaudeExecutable: () => CLAUDE_PATH,
+      readClaudeOAuthToken: async () => { throw new Error('the login keychain could not be read'); },
+    }));
+    expect(agent).toEqual({ id: 'claude-code', path: null, authenticated: false, reason: 'check failed: the login keychain could not be read' });
   });
 });
 

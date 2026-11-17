@@ -1,11 +1,14 @@
 import { afterEach, describe, expect, it } from 'bun:test';
+import { spawn, type ChildProcess } from 'child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import { OBSERVER_SESSIONS_DIR } from '../../src/shared/paths.js';
+import type { ProcessGroupMember } from '../../src/shared/kill-process-tree.js';
 import {
   createProcessRegistry,
   isPidAlive,
+  processGroupHasProcessesThatHaveNotExited,
   normalizeSpawnSdkArgs,
   normalizeSpawnSdkCwd,
   spawnSdkProcess,
@@ -673,5 +676,84 @@ describe('waitForSlot / parked waiters (#2756)', () => {
 
     expect(isSessionParkedForSlot('sess-not-parked')).toBe(false);
     expect(getParkedSlotWaiterCount()).toBe(0);
+  });
+});
+
+const describeOnMacOsAndLinux = process.platform === 'win32' ? describe.skip : describe;
+
+describeOnMacOsAndLinux('processGroupHasProcessesThatHaveNotExited, with the reads of the process table passed in', () => {
+  /** A real process group, so kill(2) finds it and the reads passed in decide. Ended after each test. */
+  let groupLeader: ChildProcess | null = null;
+  afterEach(() => {
+    groupLeader?.kill('SIGKILL');
+    groupLeader = null;
+  });
+
+  /** Starts a process in a group of its own (detached), and returns that group's id, which is the process's own. */
+  function idOfARunningProcessGroup(): number {
+    groupLeader = spawn('sleep', ['30'], { detached: true, stdio: 'ignore' });
+    return groupLeader.pid!;
+  }
+
+  /** Reads of the process table that answer, in turn, each list given, and remember which group each was asked about. */
+  function readsAnswering(...answers: ProcessGroupMember[][]) {
+    const groupsAskedAbout: number[] = [];
+    const read = async (processGroupId: number) => {
+      groupsAskedAbout.push(processGroupId);
+      const answer = answers[groupsAskedAbout.length - 1];
+      if (!answer) throw new Error(`read ${groupsAskedAbout.length} was not expected`);
+      return answer;
+    };
+    return { read, groupsAskedAbout };
+  }
+
+  const parentThatExited: ProcessGroupMember = { pid: 990001, hasExited: true };
+
+  it('finds none left when a second read lists the same processes, all exited', async () => {
+    const processGroupId = idOfARunningProcessGroup();
+    const { read, groupsAskedAbout } = readsAnswering([parentThatExited], [parentThatExited]);
+
+    expect(await processGroupHasProcessesThatHaveNotExited(processGroupId, read)).toBe(false);
+    expect(groupsAskedAbout).toEqual([processGroupId, processGroupId]);
+  });
+
+  it('finds the child a first read missed, which its parent started before exiting between the list and its own line', async () => {
+    const processGroupId = idOfARunningProcessGroup();
+    const { read } = readsAnswering([parentThatExited], [parentThatExited, { pid: 990002, hasExited: false }]);
+
+    expect(await processGroupHasProcessesThatHaveNotExited(processGroupId, read)).toBe(true);
+  });
+
+  it('counts a process the first read missed even when the second read shows it has exited too', async () => {
+    const processGroupId = idOfARunningProcessGroup();
+    const { read } = readsAnswering([parentThatExited], [parentThatExited, { pid: 990002, hasExited: true }]);
+
+    expect(await processGroupHasProcessesThatHaveNotExited(processGroupId, read)).toBe(true);
+  });
+
+  it('does not believe a second read that lists nothing: the next look asks kill(2) again', async () => {
+    const processGroupId = idOfARunningProcessGroup();
+    const { read } = readsAnswering([parentThatExited], []);
+
+    expect(await processGroupHasProcessesThatHaveNotExited(processGroupId, read)).toBe(true);
+  });
+
+  it('reads the table once when it lists a process that has not exited', async () => {
+    const processGroupId = idOfARunningProcessGroup();
+    const { read, groupsAskedAbout } = readsAnswering([parentThatExited, { pid: 990002, hasExited: false }]);
+
+    expect(await processGroupHasProcessesThatHaveNotExited(processGroupId, read)).toBe(true);
+    expect(groupsAskedAbout).toHaveLength(1);
+  });
+
+  it('reads no table when kill(2) finds no process left in the group', async () => {
+    const processGroupId = idOfARunningProcessGroup();
+    const leaderHasExited = new Promise(resolve => groupLeader!.once('exit', resolve));
+    groupLeader!.kill('SIGKILL');
+    await leaderHasExited;
+    const { read, groupsAskedAbout } = readsAnswering();
+
+    expect(await processGroupHasProcessesThatHaveNotExited(processGroupId, read)).toBe(false);
+    expect(groupsAskedAbout).toHaveLength(0);
   });
 });

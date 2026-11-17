@@ -1,4 +1,5 @@
 import { expect, it } from 'bun:test';
+import { FEED_WINDOW_THRESHOLD } from '../../../src/ui/viewer/components/WindowedFeed';
 import {
   chromeExecutablePath, compileBrowserFixture, connectToPage, failOnCiWithoutChrome,
   htmlResponse, launchChrome, readViewerTemplateStyles, scriptResponse, UNTHROTTLED_TIMER_FLAGS,
@@ -48,7 +49,7 @@ failOnCiWithoutChrome('CI requires Chrome for long memory-feed scrolling.');
       .toEqual({ windowed: 'true', cards: expect.any(Number), total: '5000', header: true });
     expect(await page.evaluate(`document.querySelectorAll('.card').length`)).toBeLessThan(30);
 
-    await page.evaluate(`[...document.querySelectorAll('[data-feed-key="observation-1"] button[aria-pressed]')].find(button=>button.textContent.includes('narrative')).click(); document.querySelector('[data-feed-key="prompt-2"] .prompt-show-more').click(); document.querySelector('#outside').focus();`);
+    await page.evaluate(`[...document.querySelectorAll('[data-feed-key="observation-1"] .view-mode-toggle')].find(button=>/narrative/i.test(button.textContent)).click(); document.querySelector('[data-feed-key="prompt-2"] .prompt-show-more').click(); document.querySelector('#outside').focus();`);
     await page.settle();
     expect(await page.evaluate(`document.querySelector('[data-feed-key="observation-1"] .narrative')!==null`)).toBe(true);
     expect(await page.evaluate(`document.querySelector('[data-feed-key="prompt-2"] .prompt-show-more').getAttribute('aria-expanded')`)).toBe('true');
@@ -81,13 +82,15 @@ failOnCiWithoutChrome('CI requires Chrome for long memory-feed scrolling.');
     expect(Math.abs(replacementTop)).toBeLessThan(2);
 
     const focusedKey = await page.evaluate(`(()=>{const f=document.querySelector('.feed');const top=f.getBoundingClientRect().top;const row=[...document.querySelectorAll('[data-feed-key]')].find(r=>r.getBoundingClientRect().bottom>top);row.querySelector('button').focus();return row.dataset.feedKey;})()`);
+    // Tab stops inside one row (its time, Facts, Narrative and "…"; menu items are not Tab stops).
+    const rowTabStops = await page.evaluate(`[...document.querySelector('[data-feed-key="${focusedKey}"]').querySelectorAll('button, a[href]')].filter(element=>element.tabIndex>=0&&element.getClientRects().length>0).length`);
     await page.settle();
     const focusedPosition = await page.evaluate(`document.activeElement.closest('[data-feed-key]').getAttribute('aria-posinset')`);
     await page.evaluate(`document.querySelector('.feed').scrollTop=700000;`);
     await page.settle();
     expect(await page.evaluate(`document.activeElement.closest('[data-feed-key]')?.dataset.feedKey`)).toBe(focusedKey);
     expect(await page.evaluate(`document.querySelectorAll('.card').length`)).toBeLessThan(50);
-    for (let index = 0; index < 3; index++) {
+    for (let index = 0; index < rowTabStops; index++) {
       await page.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 });
       await page.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 });
       await page.settle();
@@ -119,7 +122,7 @@ failOnCiWithoutChrome('CI requires Chrome for long memory-feed scrolling.');
       narrative:'Expanded narrative content. '.repeat(120), facts:'["First fact","Second fact"]',
       concepts:'[]', files_read:'[]', files_modified:'[]', created_at_epoch:1793800000000-id});
     function App(){
-      const [items,setItems]=useState(()=>Array.from({length:501},(_,i)=>observation(i+1)));
+      const [items,setItems]=useState(()=>Array.from({length:${FEED_WINDOW_THRESHOLD + 1}},(_,i)=>observation(i+1)));
       useLayoutEffect(()=>{void fetch('/ready');},[]);
       window.shrink=()=>setItems(old=>old.filter(item=>item.id!==1));
       window.grow=()=>setItems(old=>[observation(1),...old]);
@@ -143,19 +146,19 @@ failOnCiWithoutChrome('CI requires Chrome for long memory-feed scrolling.');
     await withTimeout(ready, 30_000, 'Threshold browser did not become ready');
     page = await connectToPage(chrome, server.url.href);
     await page.settle();
-    await page.evaluate(`document.querySelector('.feed').scrollTop=60000;`);
+    await page.evaluate(`document.querySelector('.feed').scrollTop=document.querySelector('.feed').scrollHeight/2;`);
     await page.settle();
     expect(await page.evaluate(`new Set([...document.querySelectorAll('[data-feed-key]')].map(row=>row.getBoundingClientRect().height)).size`)).toBeGreaterThan(1);
-    await page.evaluate(`(()=>{const top=document.querySelector('.feed').getBoundingClientRect().top;const row=[...document.querySelectorAll('[data-feed-key]')].find(row=>row.getBoundingClientRect().bottom>top);window.thresholdKey=row.dataset.feedKey;const button=[...row.querySelectorAll('button[aria-pressed]')].find(button=>button.textContent.includes('narrative'));button.click();button.focus({preventScroll:true});window.thresholdFocused=button;})()`);
+    await page.evaluate(`(()=>{const top=document.querySelector('.feed').getBoundingClientRect().top;const row=[...document.querySelectorAll('[data-feed-key]')].find(row=>row.getBoundingClientRect().bottom>top);window.thresholdKey=row.dataset.feedKey;const button=[...row.querySelectorAll('.view-mode-toggle')].find(button=>/narrative/i.test(button.textContent));button.click();button.focus({preventScroll:true});window.thresholdFocused=button;})()`);
     await page.settle();
     const originalTop = await page.evaluate(`document.querySelector('[data-feed-key="'+window.thresholdKey+'"]').getBoundingClientRect().top-document.querySelector('.feed').getBoundingClientRect().top`);
-    expect(await page.evaluate(`document.querySelector('.feed').scrollTop`)).toBeGreaterThan(10000);
+    expect(await page.evaluate(`document.querySelector('.feed').scrollTop`)).toBeGreaterThan(1000);
     for (const focusInside of [true, false]) {
       // An external focused control ensures focus pinning cannot mask a lost
       // visible anchor when the full list starts windowing again.
       await page.evaluate(`window.expectedFocus=${focusInside ? 'window.thresholdFocused' : 'document.querySelector("#outside")'};window.expectedFocus.focus({preventScroll:true});`);
       await page.settle();
-      for (const [operation, windowed, count] of [['shrink', 'false', 500], ['grow', 'true', 501]] as const) {
+      for (const [operation, windowed, count] of [['shrink', 'false', FEED_WINDOW_THRESHOLD], ['grow', 'true', FEED_WINDOW_THRESHOLD + 1]] as const) {
         await page.evaluate(`window.${operation}()`);
         await page.settle();
         expect(await page.evaluate(`({windowed:document.querySelector('[data-windowed]').dataset.windowed,total:Number(document.querySelector('[aria-setsize]').getAttribute('aria-setsize')),focused:document.activeElement===window.expectedFocus,expanded:!!document.querySelector('[data-feed-key="'+window.thresholdKey+'"] .narrative')})`))

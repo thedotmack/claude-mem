@@ -15,9 +15,17 @@ import type { WorkViewAgent, WorkViewBuildStory, WorkViewGoalItem, WorkViewGoalL
 export const THIS_COMPUTER: Device = { id: 'this-computer', name: 'This computer', syncedMinutesAgo: 0, online: true }
 /** Stands in when a request names no agent the snapshot knows: the card then names the machine (§13.2). */
 const UNRECORDED_AGENT: Agent = { id: 'agent-not-recorded', tool: 'other', name: 'Agent not recorded', role: 'Recorded work', deviceId: THIS_COMPUTER.id }
-const NEXT_STEP_NOT_RECORDED = 'Next step not recorded'
-/** A request is built from its prompts; until an agent records work it has only asks. */
-const NO_WORK_YET = 'No agent work recorded yet'
+/**
+ * The English filler written in place of a next step when none is recorded, here and by older workers. Its one
+ * definition: the UI (components/bits.tsx) and the shared page (to-shared-focus.ts) import it, and the UI treats it as
+ * a missing step (decision G3). Phase 3 of the pro-max-v16 plan stops writing it.
+ */
+export const NEXT_STEP_NOT_RECORDED = 'Next step not recorded'
+/**
+ * The English filler written in place of a next step when a request has only asks (no agent has recorded work yet).
+ * Like NEXT_STEP_NOT_RECORDED it is not a step: setup's Reveal imports it and leaves the line out (decision G3).
+ */
+export const NO_WORK_YET = 'No agent work recorded yet'
 const KNOWN_TOOLS: AgentTool[] = ['claude', 'codex', 'gemini']
 const PLATFORM_LABEL: Record<string, string> = { claude: 'Claude Code', codex: 'Codex', gemini: 'Gemini' }
 const EVIDENCE_URL = /^\/api\/work-view\/evidence\/(work-state|observation|prompt|summary|session)\/\d+$/
@@ -228,6 +236,8 @@ function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: numb
         tool: PLATFORM_LABEL[platform] ?? 'Agent',
         at: key === raw.id && raw.original.atEpoch ? formatDateTime(raw.original.atEpoch) : 'Time not recorded',
         title: session?.sessionTitle ?? `Conversation ${sessionId.slice(0, 8)}`,
+        platform,
+        conversationSessionId: sessionId,
       }
     }),
     prompts: [raw.original, ...raw.scopeUpdates]

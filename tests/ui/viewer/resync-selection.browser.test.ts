@@ -14,7 +14,8 @@ failOnCiWithoutChrome('CI requires Chrome for stale remote refresh ownership.');
     createRoot(document.getElementById('root')).render(<App/>);
     const has=text=>document.body.textContent.includes(text);
     async function until(check,label){const end=Date.now()+10000;while(!check()){if(Date.now()>end)throw Error(label);await new Promise(r=>setTimeout(r,10));}}
-    function project(value){const select=document.querySelector('select[aria-label="Filter memories by project"]');select.value=value;select.dispatchEvent(new Event('change',{bubbles:true}));}
+    // The header's searchable Project filter: open it and choose the option.
+    function project(value){const option=document.querySelector('.project-picker [role="option"][data-value="'+CSS.escape(value)+'"]');document.querySelector('.project-picker-trigger').click();option.click();}
     (async()=>{try{
       await original('/ready');await until(()=>has('A_1_END'),'initial');project('A');await until(()=>aLoaded>0&&!has('Loading more...'),'A baseline');
       await original('/begin',{method:'POST'});await original('/held');project('B');

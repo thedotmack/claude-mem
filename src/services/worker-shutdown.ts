@@ -18,7 +18,13 @@
  *   2. Pre-shutdown bookkeeping (watcher/heartbeat/sentinel/telemetry).
  *   3. performGracefulShutdown under a hard deadline — it has no global
  *      deadline of its own and session drain has been observed at 35-40s.
- *   4. reason === 'restart' ONLY: spawn the successor worker as the dying
+ *   4. Force-stop the child commands that must not outlive the worker and
+ *      are still running (forceStopCommandsStillRunning), whether step 3
+ *      finished, failed or ran out of its deadline.
+ *   5. When step 3 failed or ran out of its deadline: run the supervisor's
+ *      cascade, step 3's last step, which it may not have reached or may be
+ *      running now (stopEveryRegisteredChildProcess).
+ *   6. reason === 'restart' ONLY: spawn the successor worker as the dying
  *      worker's final act, AFTER the port is confirmed free. 'stop' and
  *      signal shutdowns stay kill-only.
  */
@@ -69,6 +75,21 @@ export interface ShutdownSequenceOptions {
   beforeGracefulShutdown: () => Promise<void>;
   performGracefulShutdown: () => Promise<void>;
   gracefulDeadlineMs: number;
+  /**
+   * The worker's last step before it exits, and before a restart's successor starts: once performGracefulShutdown has
+   * finished, failed or run out of its deadline, it force-stops each child command that must not outlive the worker and
+   * is still running (ConversationContinuationRunner.forceStopCommandsStillRunning, which says why). Its bound is the
+   * supervisor cascade's grace windows, which it reuses (terminateThenForceKillProcessGroups, terminateThenForceKill).
+   */
+  forceStopCommandsStillRunning: () => Promise<void>;
+  /**
+   * The supervisor's shutdown cascade (getSupervisor().stop()): SIGTERM, then SIGKILL, to every child still in the
+   * supervisor's registry, with its own grace windows; a call while one runs waits for that run. performGracefulShutdown
+   * runs it as its last step, after the stopped commands have exited. Run again only when the graceful shutdown failed
+   * or ran out of its deadline, after the force stop: it may not have got there, or may be running it now, released by the
+   * force stop, and spawnDaemon refuses while it runs (Supervisor.assertCanSpawn).
+   */
+  stopEveryRegisteredChildProcess: () => Promise<void>;
   restartHandoff: RestartHandoffDeps;
 }
 
@@ -104,8 +125,9 @@ export async function runShutdownSequence(options: ShutdownSequenceOptions): Pro
     deadlineTimer = setTimeout(() => resolve('deadline'), options.gracefulDeadlineMs);
     deadlineTimer.unref?.();
   });
+  let outcome: 'graceful' | 'graceful-error' | 'deadline';
   try {
-    const outcome = await Promise.race([
+    outcome = await Promise.race([
       options.performGracefulShutdown().then(
         () => 'graceful' as const,
         (error: unknown) => {
@@ -130,6 +152,43 @@ export async function runShutdownSequence(options: ShutdownSequenceOptions): Pro
     }
   } finally {
     if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
+  }
+
+  // Every way out calls process.exit once this sequence returns (the shutdown routes through flushResponseThen, the
+  // signal handler, the idle exit), and a restart starts its successor below. A command still running then would outlive
+  // the worker: a detached CLI in a process group of its own, still writing to a conversation the successor may take a
+  // turn in. So it is force-stopped here, after the graceful shutdown however that ended, and before either. Like the
+  // steps above, a failure is logged and the sequence goes on.
+  try {
+    await options.forceStopCommandsStillRunning();
+  } catch (error: unknown) {
+    logger.error(
+      'SYSTEM',
+      'Force-stopping the commands still running before the worker exits failed — proceeding',
+      { reason: options.reason },
+      error instanceof Error ? error : new Error(String(error))
+    );
+  }
+
+  // The graceful shutdown did not finish, so its last step, the supervisor's cascade, may not have run: a session drain
+  // or a stopped command can hold it past the deadline. Or it is running now, released by the force stop above. Either
+  // way the worker would exit, or spawn its successor (refused while the cascade runs), with registered children still
+  // running. So it is run, or waited for, here. It is bounded by its own grace windows.
+  if (outcome !== 'graceful') {
+    logger.warn('SYSTEM', 'Graceful shutdown did not finish — running the supervisor shutdown cascade before the worker exits', {
+      reason: options.reason,
+      outcome,
+    });
+    try {
+      await options.stopEveryRegisteredChildProcess();
+    } catch (error: unknown) {
+      logger.error(
+        'SYSTEM',
+        'Supervisor shutdown cascade before the worker exits failed — proceeding',
+        { reason: options.reason },
+        error instanceof Error ? error : new Error(String(error))
+      );
+    }
   }
 
   // Successor handoff — ONLY for restart; 'stop' and signal shutdowns stay

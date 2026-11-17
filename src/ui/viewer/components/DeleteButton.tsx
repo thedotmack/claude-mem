@@ -1,7 +1,10 @@
-import React, { useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef } from 'react';
 import { useI18n, interpolate } from '../../i18n';
 import { translateViewerError } from '../../i18n/errors';
-import { deleteFeedItem, type DeletableItemType } from '../utils/feed-deletion';
+import type { DeletableItemType } from '../utils/feed-deletion';
+import { DELETE_STAGE_STATUS, useFeedItemDelete, type FeedItemDeletion } from '../hooks/useFeedItemDelete';
+import { InlineConfirm } from './InlineConfirm';
+import { TrashIcon } from './icons';
 
 interface DeleteButtonProps {
   itemType: DeletableItemType;
@@ -9,60 +12,80 @@ interface DeleteButtonProps {
   onDeleted: (itemType: DeletableItemType, id: number) => void;
 }
 
-const CONFIRM_LABELS: Record<DeletableItemType, string> = {
+export const DELETE_ITEM_LABELS: Record<DeletableItemType, string> = {
   observation: 'observation',
   summary: 'session summary',
 };
 
 /**
- * Trash-icon button that deletes a feed item after a confirmation prompt. A
- * refused delete (synced from another device, cloud sync unavailable, worker
- * down) is shown inline next to the button instead of failing silently.
+ * The in-page question, the pending state and a failed delete's reason for one
+ * card. A delete that did not finish (refused because it was synced from another
+ * device, cloud sync unavailable, worker down, no answer, or stopped by the reader)
+ * stays on the card with Try again and Dismiss, never failing silently.
  */
-export function DeleteButton({ itemType, id, onDeleted }: DeleteButtonProps) {
+export function DeleteConfirmation({ itemType, question, confirmLabel, deletion, returnFocus }: {
+  deletion: FeedItemDeletion;
+  /** Where focus goes when the question is cancelled or the reason dismissed. */
+  returnFocus?: () => void;
+} & (
+  | { itemType: DeletableItemType; question?: undefined; confirmLabel?: undefined }
+  /** A whole session: its own question (how many memories go) and its own red button. */
+  | { itemType?: undefined; question: string; confirmLabel: string }
+)) {
   const { t } = useI18n();
-  const [isDeleting, setIsDeleting] = useState(false);
-  const [failure, setFailure] = useState<string | null>(null);
-
-  const label = CONFIRM_LABELS[itemType];
-  const translatedLabel = t(label);
-
-  const handleClick = async () => {
-    const confirmMessage = interpolate(
-      t('Delete this {item}? This cannot be undone.'),
-      { item: translatedLabel }
-    );
-    if (!window.confirm(confirmMessage)) return;
-    setIsDeleting(true);
-    setFailure(null);
-    try {
-      await deleteFeedItem(itemType, id);
-      onDeleted(itemType, id);
-    } catch (error) {
-      setFailure(error instanceof Error ? error.message : String(error));
-      setIsDeleting(false);
-    }
+  const retryRef = useRef<HTMLButtonElement>(null);
+  const cancel = () => {
+    // Cancel before the delete was sent leaves the question; after, the card says it stopped waiting.
+    if (deletion.stage === 'asking') returnFocus?.();
+    deletion.cancel();
   };
-
-  const actionTitle = interpolate(t('Delete {item}'), { item: translatedLabel });
-
+  const dismiss = () => { deletion.dismiss(); returnFocus?.(); };
+  // The question's buttons go away when the delete fails; keep keyboard focus on the card.
+  useLayoutEffect(() => {
+    if (deletion.stage === 'failed' && (document.activeElement === document.body || document.activeElement === null)) {
+      retryRef.current?.focus({ preventScroll: true });
+    }
+  }, [deletion.stage]);
   return (
     <>
-      <button
-        className="card-delete-btn"
-        onClick={handleClick}
-        disabled={isDeleting}
-        title={actionTitle}
-        aria-label={actionTitle}
-      >
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <polyline points="3 6 5 6 21 6"></polyline>
-          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-          <line x1="10" y1="11" x2="10" y2="17"></line>
-          <line x1="14" y1="11" x2="14" y2="17"></line>
-        </svg>
-      </button>
-      {failure && <span className="card-delete-error" role="alert">{translateViewerError(failure, t)}</span>}
+      <span className="visually-hidden" role="status">{DELETE_STAGE_STATUS[deletion.stage] && t(DELETE_STAGE_STATUS[deletion.stage])}</span>
+      {(deletion.stage === 'asking' || deletion.stage === 'deleting') && (
+        <InlineConfirm
+          question={question ?? interpolate(t('Delete this {item}? This cannot be undone.'), { item: t(DELETE_ITEM_LABELS[itemType!]) })}
+          confirmLabel={confirmLabel ?? t('Delete')}
+          busyLabel={t('Deleting…')}
+          busy={deletion.stage === 'deleting'}
+          onConfirm={deletion.confirm}
+          onCancel={cancel}
+        />
+      )}
+      {deletion.stage === 'failed' && deletion.failure && (
+        <div className="card-delete-error" role="alert" onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); dismiss(); } }}>
+          <span>{translateViewerError(deletion.failure, t)}</span>
+          <button ref={retryRef} type="button" className="link-button" onClick={deletion.retry}>{t('Try again')}</button>
+          <button type="button" className="link-button" onClick={dismiss}>{t('Dismiss')}</button>
+        </div>
+      )}
     </>
+  );
+}
+
+/** A bin that turns red under the pointer and asks in place on the card before deleting. */
+export function DeleteButton({ itemType, id, onDeleted }: DeleteButtonProps) {
+  const { t } = useI18n();
+  const deletion = useFeedItemDelete(itemType, id, onDeleted);
+  const binRef = useRef<HTMLButtonElement>(null);
+  const refocusBin = useRef(false);
+  useEffect(() => {
+    if (deletion.stage === 'idle' && refocusBin.current) { refocusBin.current = false; binRef.current?.focus(); }
+  }, [deletion.stage]);
+  const actionTitle = interpolate(t('Delete {item}'), { item: t(DELETE_ITEM_LABELS[itemType]) });
+  if (deletion.stage !== 'idle') {
+    return <DeleteConfirmation itemType={itemType} deletion={deletion} returnFocus={() => { refocusBin.current = true; }} />;
+  }
+  return (
+    <button ref={binRef} type="button" className="card-delete-btn" onClick={deletion.ask} title={actionTitle} aria-label={actionTitle}>
+      <TrashIcon size={14} />
+    </button>
   );
 }

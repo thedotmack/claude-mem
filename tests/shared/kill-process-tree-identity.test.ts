@@ -15,7 +15,7 @@ import {
  *
  * collectDescendantIdentities() takes each PID's start token from the SAME
  * process-table read that discovered it — /proc/<pid>/stat on Linux, one
- * `ps -eo pid=,ppid=,lstart=` on macOS/BSD, one CIM query on Windows. Every
+ * `ps -eo pid=,ppid=,pgid=,stat=,lstart=` on macOS/BSD, one CIM query on Windows. Every
  * later revalidation re-reads that token through captureProcessStartToken().
  *
  * If those two ever disagree on FORMAT, the failure is silent and severe: no

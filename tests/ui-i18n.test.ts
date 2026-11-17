@@ -19,6 +19,68 @@ import { myworkFr } from '../src/ui/i18n/mywork-fr.ts';
 import { setupFr } from '../src/ui/i18n/setup-fr.ts';
 import { settingsFr } from '../src/ui/i18n/settings-fr.ts';
 
+const UI_ROOT = fileURLToPath(new URL('../src/ui/', import.meta.url));
+
+/** Every literal t('…') call in the .ts and .tsx files under `directory` (tests left out), with the file it is in. */
+function literalTranslationKeys(directory: string): { path: string; key: string }[] {
+  const found: { path: string; key: string }[] = [];
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) { found.push(...literalTranslationKeys(path)); continue; }
+    if (!/\.tsx?$/.test(path) || path.includes('.test.')) continue;
+    const source = ts.createSourceFile(path, readFileSync(path, 'utf8'), ts.ScriptTarget.Latest, true);
+    function visit(node: ts.Node) {
+      if (ts.isCallExpression(node) && node.expression.getText(source) === 't'
+        && node.arguments.length && ts.isStringLiteral(node.arguments[0])) {
+        found.push({ path, key: node.arguments[0].text });
+      }
+      ts.forEachChild(node, visit);
+    }
+    visit(source);
+  }
+  return found;
+}
+
+/**
+ * The words a t() call picks with a ternary (or `??` / `||`) inside it, such as t(failed ? 'A' : 'B'), under
+ * `directory`: the check above sees only a string as the first argument, so these keys would go unchecked.
+ */
+function conditionalTranslationKeys(directory: string): { path: string; key: string }[] {
+  const found: { path: string; key: string }[] = [];
+  const literalsIn = (node: ts.Node, keys: string[]): void => {
+    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) keys.push(node.text);
+    else if (ts.isConditionalExpression(node)) { literalsIn(node.whenTrue, keys); literalsIn(node.whenFalse, keys); }
+    else if (ts.isParenthesizedExpression(node)) literalsIn(node.expression, keys);
+    else if (ts.isBinaryExpression(node) && [ts.SyntaxKind.QuestionQuestionToken, ts.SyntaxKind.BarBarToken].includes(node.operatorToken.kind)) {
+      literalsIn(node.left, keys); literalsIn(node.right, keys);
+    }
+  };
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) { found.push(...conditionalTranslationKeys(path)); continue; }
+    if (!/\.tsx?$/.test(path) || path.includes('.test.')) continue;
+    const source = ts.createSourceFile(path, readFileSync(path, 'utf8'), ts.ScriptTarget.Latest, true);
+    function visit(node: ts.Node) {
+      if (ts.isCallExpression(node) && node.expression.getText(source) === 't'
+        && node.arguments.length && !ts.isStringLiteral(node.arguments[0])) {
+        const keys: string[] = [];
+        literalsIn(node.arguments[0], keys);
+        found.push(...keys.map(key => ({ path, key })));
+      }
+      ts.forEachChild(node, visit);
+    }
+    visit(source);
+  }
+  return found;
+}
+
+/** The literal t() calls under these folders of src/ui whose words `catalog` lacks, as "file: words". */
+function wordsMissingFrom(catalog: Record<string, string>, folders: string[]): string[] {
+  return folders.flatMap(folder => literalTranslationKeys(join(UI_ROOT, folder)))
+    .filter(({ key }) => !(key in catalog) && key !== 'GitHub')
+    .map(({ path, key }) => `${path}: ${key}`);
+}
+
 describe('UI language catalogs', () => {
   it('keeps English as the default and accepts each supported locale', () => {
     assert.equal(parseLocale(null), 'en');
@@ -66,29 +128,21 @@ describe('UI language catalogs', () => {
   });
 
   it('every literal t() call has a catalog entry', () => {
+    assert.deepEqual(wordsMissingFrom({ ...viewerZh, ...myworkZh, ...setupZh, ...settingsZh }, ['viewer', 'my-work/src']), []);
+  });
+
+  // Setup's own screens only: My Work's pages still have such calls without entries (their track's to fix).
+  it('every word a setup t() call picks with a ternary has a catalog entry', () => {
     const catalog = { ...viewerZh, ...myworkZh, ...setupZh, ...settingsZh };
-    const missing: string[] = [];
-    function scan(directory: string) {
-      for (const entry of readdirSync(directory, { withFileTypes: true })) {
-        const path = join(directory, entry.name);
-        if (entry.isDirectory()) { scan(path); continue; }
-        if (!/\.tsx?$/.test(path) || path.includes('.test.')) continue;
-        const source = ts.createSourceFile(path, readFileSync(path, 'utf8'), ts.ScriptTarget.Latest, true);
-        function visit(node: ts.Node) {
-          if (ts.isCallExpression(node) && node.expression.getText(source) === 't'
-            && node.arguments.length && ts.isStringLiteral(node.arguments[0])) {
-            const key = node.arguments[0].text;
-            if (!(key in catalog) && key !== 'GitHub') missing.push(`${path}: ${key}`);
-          }
-          ts.forEachChild(node, visit);
-        }
-        visit(source);
-      }
-    }
-    const root = fileURLToPath(new URL('../src/ui/', import.meta.url));
-    scan(join(root, 'viewer'));
-    scan(join(root, 'my-work/src'));
-    assert.deepEqual(missing, []);
+    assert.deepEqual(conditionalTranslationKeys(join(UI_ROOT, 'my-work/src/setup')).filter(({ key }) => !(key in catalog))
+      .map(({ path, key }) => `${path}: ${key}`), []);
+  });
+
+  // Turkish reads the My Work catalog alone (core.ts), so words that only the setup or viewer catalogs carry, such as
+  // 'Try again', show in English to a Turkish reader while the check above passes. My Work's setup flow has no Turkish
+  // catalog, so only its pages and components are checked here.
+  it('the Turkish catalog has the words of every literal t() call in My Work’s pages and components', () => {
+    assert.deepEqual(wordsMissingFrom(myworkTr, ['my-work/src/pages', 'my-work/src/components']), []);
   });
 
   for (const catalogs of [

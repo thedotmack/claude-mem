@@ -13,6 +13,7 @@ import * as cleanup from '../../src/services/infrastructure/CleanupV12_4_3.js';
 import * as fts from '../../src/services/infrastructure/FtsMaintenance.js';
 import * as adoption from '../../src/services/infrastructure/WorktreeAdoption.js';
 import * as graceful from '../../src/services/infrastructure/GracefulShutdown.js';
+import { getSupervisor } from '../../src/supervisor/index.js';
 import { logger } from '../../src/utils/logger.js';
 
 // tests/preload.ts sets CLAUDE_MEM_DATA_DIR before these modules load. All
@@ -147,5 +148,34 @@ describe('Work View startup ordering', () => {
     await worker.shutdown('stop');
     expect(worker.workViewRoutes).toBeNull();
     expect(await refresh.check()).toBe('closed');
+  });
+
+  it("waits for My Work's turns and opens in the graceful shutdown, and force-stops any still running before it returns", async () => {
+    await worker.initializeBackground();
+    const runner = worker.conversationContinuationRunner;
+    expect(runner).toBeTruthy();
+    expect(worker.workViewRoutes.conversationContinuationRunner).toBe(runner);
+    const forceStop = spyOn(runner, 'forceStopCommandsStillRunning');
+    let commandsStoppedAsShutdownBegan: unknown;
+    spyOn(graceful, 'performGracefulShutdown').mockImplementation(async config => {
+      commandsStoppedAsShutdownBegan = config.commandsStoppedAsShutdownBegan;
+      // The graceful shutdown comes first: the force stop is the last step before the worker exits.
+      expect(forceStop).not.toHaveBeenCalled();
+    });
+    await worker.shutdown('stop');
+    expect(commandsStoppedAsShutdownBegan).toBe(runner);
+    expect(forceStop).toHaveBeenCalledTimes(1);
+  });
+
+  it("runs the supervisor's cascade after the force stop when the graceful shutdown did not finish, before it returns", async () => {
+    await worker.initializeBackground();
+    const order: string[] = [];
+    spyOn(worker.conversationContinuationRunner, 'forceStopCommandsStillRunning').mockImplementation(async () => { order.push('force stop'); });
+    // The real cascade would act on whatever other tests in this process registered with the supervisor.
+    spyOn(getSupervisor(), 'stop').mockImplementation(async () => { order.push('supervisor cascade'); });
+    // performGracefulShutdown runs the cascade as its last step; failing, it may not have got there.
+    spyOn(graceful, 'performGracefulShutdown').mockRejectedValue(new Error('database close failed'));
+    await worker.shutdown('stop');
+    expect(order).toEqual(['force stop', 'supervisor cascade']);
   });
 });

@@ -153,6 +153,51 @@ describe('GracefulShutdown', () => {
       ]);
     }, 15000);
 
+    it("runs the session drain and the other steps while the commands stopped as the shutdown began are still ending, and the supervisor's cascade only once they have exited", async () => {
+      const callOrder: string[] = [];
+      const mockServer = {
+        closeAllConnections: mock(() => { callOrder.push('closeAllConnections'); }),
+        close: mock((cb: (err?: Error) => void) => { callOrder.push('serverClose'); cb(); }),
+      } as unknown as http.Server;
+      let everyStoppedCommandExits!: () => void;
+      const everyStoppedCommandHasExited = new Promise<void>(resolve => { everyStoppedCommandExits = resolve; });
+      // The cascade's real stop would act on whatever other tests in this process registered with the supervisor.
+      const supervisorStop = spyOn(getSupervisor(), 'stop').mockImplementation(async () => { callOrder.push('supervisor.stop'); });
+      try {
+        const shuttingDown = performGracefulShutdown({
+          server: mockServer,
+          commandsStoppedAsShutdownBegan: {
+            waitUntilEveryCommandHasExited: async () => {
+              callOrder.push('waiting for the stopped commands');
+              await everyStoppedCommandHasExited;
+              callOrder.push('every stopped command has exited');
+            },
+          },
+          sessionManager: { shutdownAll: mock(async () => { callOrder.push('sessionManager.shutdownAll'); }) },
+          mcpClient: { close: mock(async () => { callOrder.push('mcpClient.close'); }) },
+          chromaMcpManager: { stop: mock(async () => { callOrder.push('chromaMcpManager.stop'); }) },
+          dbManager: { close: mock(async () => { callOrder.push('dbManager.close'); }) },
+        });
+        await new Promise(resolve => setImmediate(resolve));
+        // A stopped command still runs: every step but the supervisor's cascade, whose SIGTERM would cut it short, has run.
+        expect(callOrder).toEqual([
+          'serverClose',
+          'closeAllConnections',
+          'waiting for the stopped commands',
+          'sessionManager.shutdownAll',
+          'mcpClient.close',
+          'chromaMcpManager.stop',
+          'dbManager.close',
+        ]);
+
+        everyStoppedCommandExits();
+        await shuttingDown;
+        expect(callOrder.slice(-2)).toEqual(['every stopped command has exited', 'supervisor.stop']);
+      } finally {
+        supervisorStop.mockRestore();
+      }
+    });
+
     it('should remove its OWN PID file during shutdown (owner guard)', async () => {
       const mockSessionManager: ShutdownableService = {
         shutdownAll: mock(async () => {})
