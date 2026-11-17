@@ -1,12 +1,13 @@
 import { expect, test } from 'bun:test';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 for (const insideGit of [true, false]) {
   test(`new Aider config belongs to ${insideGit ? 'the Git root' : 'the current directory'}`, () => {
-    const scratch = mkdtempSync(path.join(tmpdir(), 'aider-empty-config-'));
+    // Real path: git reports the resolved root, and macOS's tmpdir sits behind the /var -> /private/var link.
+    const scratch = realpathSync(mkdtempSync(path.join(tmpdir(), 'aider-empty-config-')));
     try {
       const home = path.join(scratch, 'home');
       const project = path.join(scratch, 'project');

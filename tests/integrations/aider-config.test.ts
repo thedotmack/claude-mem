@@ -7,6 +7,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -51,7 +52,8 @@ afterEach(() => {
 });
 
 function makeProject(): string {
-  scratch = mkdtempSync(path.join(tmpdir(), 'aider-install-test-'));
+  // Real path: git reports the resolved root, and macOS's tmpdir sits behind the /var -> /private/var link.
+  scratch = realpathSync(mkdtempSync(path.join(tmpdir(), 'aider-install-test-')));
   return scratch;
 }
 
