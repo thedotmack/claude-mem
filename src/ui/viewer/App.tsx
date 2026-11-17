@@ -680,8 +680,10 @@ export function App() {
         isSaving={isSaving}
         saveStatus={saveStatus}
         onShowInTimeline={project => {
-          // A shortened preview's left-out observations, all of them: the timeline filtered to that project.
-          // The dialog has already closed (asking first when there were unsaved changes).
+          // A shortened preview's left-out observations, all of them: the timeline filtered to that project, with no
+          // kind or search left from before to hide some. The dialog has already closed (asking first when there were
+          // unsaved changes).
+          clearTimelineFilters();
           setCurrentFilter(project);
           navigate('');
         }}

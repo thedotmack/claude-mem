@@ -109,6 +109,11 @@ const clickByText = (selector: string, text: string) =>
   try {
     opened = await openApp(1440, 900, 'claude-mem-app-show-all-');
     const { page, requests } = opened;
+    // PR #6229 review: a search and a kind chosen on the timeline earlier must not hide what "Show all" opens.
+    await page.evaluate(`document.querySelector('.timeline-search input').focus()`);
+    await page.send('Input.insertText', { text: 'continue' });
+    await page.evaluate(`[...document.querySelectorAll('.kind-chip')].find(chip => chip.textContent.trim().startsWith('Prompt')).click()`);
+    await until(page, `document.querySelectorAll('main.feed .observation-card').length === 0`, 'the search and the kind to hide the observations');
     await page.evaluate(`document.querySelector('.settings-btn').click()`);
     await until(page, `[...document.querySelectorAll('.terminal-note button')].some(button => button.textContent === 'Show all in the timeline')`,
       'the shortened note with its Show all');
@@ -117,6 +122,10 @@ const clickByText = (selector: string, text: string) =>
     await until(page, `!document.querySelector('.context-settings-modal')`, 'Settings to close');
     await until(page, `document.querySelector('.project-picker-trigger')?.textContent.includes(${JSON.stringify(PROJECT)})`, 'the header filter on the project');
     expect(await page.evaluate(`({ hash: location.hash, timeline: !!document.querySelector('main.feed') })`)).toEqual({ hash: '', timeline: true });
+    expect(await page.evaluate(`({ search: document.querySelector('.timeline-search input').value,
+      chosen: [...document.querySelectorAll('.kind-chip[aria-pressed="true"]')].map(chip => chip.textContent.trim().split(' ')[0]) })`))
+      .toEqual({ search: '', chosen: ['All'] });
+    await until(page, `document.querySelectorAll('main.feed .observation-card').length > 0`, "the project's observations");
     const deadline = Date.now() + 10_000;
     while (!requests.some(line => line.startsWith('GET /api/observations') && line.includes(`project=${PROJECT}`))) {
       if (Date.now() > deadline) throw new Error('The timeline did not ask for the project');
