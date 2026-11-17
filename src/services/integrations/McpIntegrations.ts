@@ -763,7 +763,7 @@ export function uninstallZedMcpIntegration(configPath: string = getZedSettingsPa
 export const MCP_IDE_INSTALLERS: Record<string, () => Promise<number>> = {
   'copilot-cli': installMcpIntegration(COPILOT_CLI_CONFIG),
   // VS Code's Copilot reads the same file; a separate id keeps the setup name and messages accurate.
-  'copilot-vscode': installMcpIntegration({ ...COPILOT_CLI_CONFIG, ideId: 'copilot-vscode', ideLabel: 'Copilot in VS Code' }),
+  'copilot-vscode': installMcpIntegration({ ...COPILOT_CLI_CONFIG, ideId: 'copilot-vscode', ideLabel: 'Copilot in VS Code', contextPath: undefined }),
   'goose': installGooseMcpIntegration,
   'roo-code': installMcpIntegration(ROO_CODE_CONFIG),
   'warp': installMcpIntegration(WARP_CONFIG),

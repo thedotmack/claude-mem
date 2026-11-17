@@ -75,6 +75,12 @@ describe('Copilot CLI MCP config', () => {
     expect(readConfig(configPath).mcpServers['claude-mem'].tools).toEqual(['*']);
   });
 
+  it('copilot-vscode writes only the user-level MCP config, not project instructions', () => {
+    expect(run(`MCP_IDE_INSTALLERS['copilot-vscode']()`)).toBe(0);
+
+    expect(existsSync(path.join(tmp, 'project', '.github', 'copilot-instructions.md'))).toBe(false);
+  });
+
   it('uninstall removes an entry that copilot-vscode wrote', () => {
     const original = writeUserConfig();
     expect(run(`MCP_IDE_INSTALLERS['copilot-vscode']()`)).toBe(0);
