@@ -3,7 +3,7 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { ShortTime } from '../../src/ui/viewer/components/ShortTime';
 import { GITHUB_STARS_TIMEOUT_MS, readStarCount } from '../../src/ui/viewer/hooks/useGitHubStars';
-import { SessionDetailPage, SESSION_PAGE_WINDOW_THRESHOLD } from '../../src/ui/viewer/components/SessionDetailPage';
+import { SessionDetailPage } from '../../src/ui/viewer/components/SessionDetailPage';
 import { FEED_WINDOW_THRESHOLD } from '../../src/ui/viewer/components/WindowedFeed';
 import type { FeedItem } from '../../src/ui/viewer/types';
 
@@ -78,8 +78,7 @@ describe('the GitHub star count', () => {
 });
 
 describe('session pages', () => {
-  it('keep every row drawn up to 500, so the browser\'s find still sees them', () => {
-    expect(SESSION_PAGE_WINDOW_THRESHOLD).toBe(500);
+  it('recycle rows past 50 like the timeline, with "Find in this session" over every loaded row', () => {
     expect(FEED_WINDOW_THRESHOLD).toBe(50);
     const items: FeedItem[] = Array.from({ length: 120 }, (_, index) => ({
       itemType: 'prompt', id: index + 1, project: 'p', platform_source: 'claude', content_session_id: 's',
@@ -87,7 +86,8 @@ describe('session pages', () => {
     }));
     const html = renderToStaticMarkup(<SessionDetailPage tabs={null} title="A session" session={{ platformSource: 'claude', contentSessionId: 's' }}
       items={items} isLoading={false} hasMore={false} onLoadMore={() => {}} onDeleted={() => {}} onBack={() => {}} />);
-    expect(html).toContain('data-windowed="false"');
-    expect(html.match(/role="listitem"/g)?.length).toBe(120);
+    expect(html).toContain('data-windowed="true"');
+    expect(html.match(/role="listitem"/g)!.length).toBeLessThan(120);
+    expect(html).toContain('aria-label="Find in this session"');
   });
 });

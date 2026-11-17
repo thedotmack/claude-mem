@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'bun:test';
-import { FEED_ENDINGS, FEED_ENDING_WORDS, feedEnding, foldPromptRepeats, kindsByCount, matchesSearch, memoriesBefore } from '../../src/ui/viewer/utils/feed-display';
+import {
+  FEED_ENDINGS, FEED_ENDING_WORDS, feedEnding, foldPromptRepeats, kindsByCount, matchesSearch, memoriesBefore, memoryCount,
+} from '../../src/ui/viewer/utils/feed-display';
+import { SESSION_LIST_ENDING_WORDS } from '../../src/ui/viewer/components/SessionList';
 import { formatDayLabel, formatShortTime, localDayKey } from '../../src/ui/viewer/utils/formatters';
 import type { FeedItem } from '../../src/ui/viewer/types';
 
@@ -26,11 +29,30 @@ describe('prompt repeats', () => {
     expect(rows).toHaveLength(3);
     expect(repeats.size).toBe(0);
   });
+
+  // G2 (PR #6229 review): folding runs over the whole loaded timeline first, then the search, so a search never
+  // makes prompts look typed in a row that another prompt separated.
+  it('folds over the whole timeline before a search filters it', () => {
+    const items = [prompt(1, 'continue'), prompt(2, 'run tests'), prompt(3, 'continue')];
+    const searched = foldPromptRepeats(items, item => matchesSearch(item, 'continue'));
+    expect(searched.rows.map(row => row.id)).toEqual([1, 3]);
+    expect(searched.repeats.size).toBe(0);
+    expect(memoryCount(searched.rows, searched.repeats)).toBe(2);
+    // A folded row stays while it or one of its repeats matches, with every time it was typed.
+    const folded = foldPromptRepeats([prompt(4, 'continue'), { ...prompt(5, 'continue'), project: 'other-project' }],
+      item => matchesSearch(item, 'other-project'));
+    expect(folded.rows.map(row => row.id)).toEqual([4]);
+    expect(folded.repeats.get('prompt-4')?.map(repeat => repeat.id)).toEqual([5]);
+    expect(memoryCount(folded.rows, folded.repeats)).toBe(2);
+  });
 });
 
 describe('feed ending', () => {
   it('names one state for the end of the list', () => {
-    expect(feedEnding({ rowCount: 0, isLoading: true, hasMore: true })).toBe('loading');
+    expect(feedEnding({ rowCount: 0, isLoading: true, hasMore: true })).toBe('first-load');
+    expect(feedEnding({ rowCount: 3, isLoading: true, hasMore: true })).toBe('loading');
+    // A search that hides every loaded row is loading more, not loading for the first time.
+    expect(feedEnding({ rowCount: 0, loadedCount: 40, isLoading: true, hasMore: true, filtered: true })).toBe('loading');
     expect(feedEnding({ rowCount: 3, isLoading: false, hasMore: true, loadError: 'Loading observations timed out. Try again.' })).toBe('failed');
     expect(feedEnding({ rowCount: 0, isLoading: false, hasMore: false })).toBe('empty');
     expect(feedEnding({ rowCount: 3, isLoading: false, hasMore: true })).toBeNull();
@@ -40,11 +62,22 @@ describe('feed ending', () => {
     expect(feedEnding({ rowCount: 0, isLoading: false, hasMore: true, autoLoad: false })).toBe('more');
     // An empty list with more to load lets the end load it by itself.
     expect(feedEnding({ rowCount: 0, isLoading: false, hasMore: true })).toBeNull();
+    // A filter or search that hides every loaded row, with nothing left to load, is its own state (L8).
+    expect(feedEnding({ rowCount: 0, loadedCount: 40, isLoading: false, hasMore: false, filtered: true })).toBe('no-match');
+    expect(feedEnding({ rowCount: 0, loadedCount: 0, isLoading: false, hasMore: false, filtered: true })).toBe('empty');
   });
 
-  it('has words for every ending it defines', () => {
-    for (const ending of FEED_ENDINGS) expect(FEED_ENDING_WORDS[ending].trim()).not.toBe('');
+  it('has words for every ending it defines, on the timeline and on the Sessions list', () => {
+    const english = (words: string) => words;
+    for (const ending of FEED_ENDINGS) {
+      expect(FEED_ENDING_WORDS[ending](english).trim()).not.toBe('');
+      expect(SESSION_LIST_ENDING_WORDS[ending](english).trim()).not.toBe('');
+    }
     expect(Object.keys(FEED_ENDING_WORDS).sort()).toEqual([...FEED_ENDINGS].sort());
+    expect(Object.keys(SESSION_LIST_ENDING_WORDS).sort()).toEqual([...FEED_ENDINGS].sort());
+    // The two states the Sessions list once drew outside its definition (L8) are worded in its Record.
+    expect(SESSION_LIST_ENDING_WORDS['first-load'](english)).toBe('Loading sessions…');
+    expect(SESSION_LIST_ENDING_WORDS['no-match'](english)).toBe('No session matches');
   });
 });
 
@@ -63,6 +96,16 @@ describe('timeline search and kinds', () => {
     expect(matchesSearch(observation(1), 'narrative fact')).toBe(true);
     expect(matchesSearch(observation(1), 'missing')).toBe(false);
     expect(matchesSearch(prompt(1, 'use the plan'), '')).toBe(true);
+  });
+
+  // G3 (PR #6229 review): what the card shows in its Facts view and footer is found too.
+  it('finds an observation by its files read and modified, its concepts and its #id', () => {
+    const card = { ...observation(4242), concepts: '["concept-zeta"]', files_read: '["src/read-only-file.ts"]', files_modified: '["src/modified-only-file.ts"]' };
+    for (const query of ['read-only-file', 'modified-only-file', 'concept-zeta', '4242', '#4242']) {
+      expect({ query, found: matchesSearch(card, query) }).toEqual({ query, found: true });
+    }
+    expect(matchesSearch(card, 'a fact')).toBe(true);
+    expect(matchesSearch(card, 'not-on-this-card')).toBe(false);
   });
 
   it('orders kinds by how many rows they have, keeping chosen kinds with no rows', () => {

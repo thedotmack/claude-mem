@@ -15,6 +15,8 @@ export const CheckIcon = ({ size }: { size?: number }) => <Icon size={size}><pol
 export const ChevronDownIcon = ({ size }: { size?: number }) => <Icon size={size}><polyline points="6 9 12 15 18 9" /></Icon>;
 export const ChevronRightIcon = ({ size }: { size?: number }) => <Icon size={size}><polyline points="9 6 15 12 9 18" /></Icon>;
 export const ArrowUpIcon = ({ size }: { size?: number }) => <Icon size={size}><line x1="12" y1="19" x2="12" y2="5" /><polyline points="5 12 12 5 19 12" /></Icon>;
+export const ArrowRightIcon = ({ size }: { size?: number }) => <Icon size={size}><line x1="5" y1="12" x2="19" y2="12" /><polyline points="12 5 19 12 12 19" /></Icon>;
+export const ArrowLeftIcon = ({ size }: { size?: number }) => <Icon size={size}><line x1="19" y1="12" x2="5" y2="12" /><polyline points="12 19 5 12 12 5" /></Icon>;
 export const TrashIcon = ({ size }: { size?: number }) => (
   <Icon size={size}>
     <polyline points="3 6 5 6 21 6" />
@@ -81,6 +83,40 @@ export const FileIcon = ({ size }: { size?: number }) => (
 );
 export const StackIcon = ({ size }: { size?: number }) => (
   <Icon size={size}><rect x="3" y="7" width="14" height="12" rx="2" /><path d="M7 7V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-2" /></Icon>
+);
+// The logs drawer's controls (they replaced the ↻, ⬇, 🗑 and ✕ glyphs).
+export const RefreshIcon = ({ size }: { size?: number }) => (
+  <Icon size={size}><polyline points="23 4 23 10 17 10" /><polyline points="1 20 1 14 7 14" /><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" /></Icon>
+);
+export const ArrowDownToLineIcon = ({ size }: { size?: number }) => (
+  <Icon size={size}><line x1="12" y1="3" x2="12" y2="15" /><polyline points="6 9 12 15 18 9" /><line x1="5" y1="21" x2="19" y2="21" /></Icon>
+);
+export const XIcon = ({ size }: { size?: number }) => <Icon size={size}><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></Icon>;
+export const MaximizeIcon = ({ size }: { size?: number }) => (
+  <Icon size={size}><polyline points="15 3 21 3 21 9" /><polyline points="9 21 3 21 3 15" /><line x1="21" y1="3" x2="14" y2="10" /><line x1="3" y1="21" x2="10" y2="14" /></Icon>
+);
+export const MinimizeIcon = ({ size }: { size?: number }) => (
+  <Icon size={size}><polyline points="4 14 10 14 10 20" /><polyline points="20 10 14 10 14 4" /><line x1="14" y1="10" x2="21" y2="3" /><line x1="3" y1="21" x2="10" y2="14" /></Icon>
+);
+// Settings dialog (Phase 10): read-only lock, show/hide a secret, the preview's note and the saved line (its close uses XIcon above).
+export const LockIcon = ({ size }: { size?: number }) => (
+  <Icon size={size}><rect x="4" y="11" width="16" height="10" rx="2" /><path d="M8 11V7a4 4 0 0 1 8 0v4" /></Icon>
+);
+export const EyeIcon = ({ size }: { size?: number }) => (
+  <Icon size={size}><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z" /><circle cx="12" cy="12" r="3" /></Icon>
+);
+export const EyeOffIcon = ({ size }: { size?: number }) => (
+  <Icon size={size}>
+    <path d="M17.94 17.94A10.07 10.07 0 0 1 12 19c-6.4 0-10-7-10-7a18.45 18.45 0 0 1 5.06-5.94" />
+    <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c6.4 0 10 7 10 7a18.5 18.5 0 0 1-2.16 3.19" />
+    <path d="M14.12 14.12a3 3 0 1 1-4.24-4.24" /><line x1="2" y1="2" x2="22" y2="22" />
+  </Icon>
+);
+export const InfoIcon = ({ size }: { size?: number }) => (
+  <Icon size={size}><circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" /><line x1="12" y1="8" x2="12.01" y2="8" /></Icon>
+);
+export const CheckCircleIcon = ({ size }: { size?: number }) => (
+  <Icon size={size}><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" /><polyline points="22 4 12 14.01 9 11.01" /></Icon>
 );
 /** The "…" of a menu button: three filled dots. */
 export function DotsIcon() {

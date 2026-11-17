@@ -33,7 +33,8 @@ failOnCiWithoutChrome('CI requires Chrome for the session project-case regressio
         await pause();
       }
     }
-    const ids = () => [...document.querySelectorAll('.session-card-id')].map(node => node.textContent).sort();
+    // The row shows a short id chip; its full id is on data-session-id (and in its title).
+    const ids = () => [...document.querySelectorAll('.session-card-id')].map(node => node.getAttribute('data-session-id')).sort();
     (async () => {
       try {
         const option = value => document.querySelector('.project-picker [role="option"][data-value="' + CSS.escape(value) + '"]');

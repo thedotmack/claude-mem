@@ -123,7 +123,7 @@ function words(seed: number, count: number): string {
   const bundle = compileBrowserFixture(`
     import React, { useRef } from 'react';
     import { createRoot } from 'react-dom/client';
-    import { WindowedFeed } from './src/ui/viewer/components/WindowedFeed';
+    import { WindowedFeed, feedItemKey } from './src/ui/viewer/components/WindowedFeed';
     import { ErrorBoundary } from './src/ui/viewer/components/ErrorBoundary';
     window.__errors = [];
     window.__warnings = [];
@@ -140,7 +140,7 @@ function words(seed: number, count: number): string {
     function Page() {
       const ref = useRef(null);
       return <main className="feed" ref={ref} style={{ height: '600px', overflowY: 'auto' }}>
-        <WindowedFeed items={items} scrollRef={ref} renderItem={(item, index) => <Row index={index} />} />
+        <WindowedFeed items={items} itemKey={feedItemKey} scrollRef={ref} renderItem={(item, index) => <Row index={index} />} />
       </main>;
     }
     createRoot(document.getElementById('root')).render(<ErrorBoundary><Page /></ErrorBoundary>);
@@ -193,7 +193,7 @@ function words(seed: number, count: number): string {
   const bundle = compileBrowserFixture(`
     import React, { useRef, useState } from 'react';
     import { createRoot } from 'react-dom/client';
-    import { WindowedFeed } from './src/ui/viewer/components/WindowedFeed';
+    import { WindowedFeed, feedItemKey } from './src/ui/viewer/components/WindowedFeed';
     window.requestAnimationFrame = () => 0;
     window.cancelAnimationFrame = () => {};
     window.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
@@ -207,7 +207,7 @@ function words(seed: number, count: number): string {
       const [items, setItems] = useState(() => Array.from({ length: 120 }, (_, i) => prompt(120 - i)));
       window.addRow = () => setItems(old => [prompt(old[0].id + 1), ...old]);
       return <main className="feed" ref={ref} style={{ height: '600px', overflowY: 'auto' }}>
-        <WindowedFeed items={items} scrollRef={ref} renderItem={item => <div style={{ height: 40 + (item.id % 4) * 30 }}>{item.prompt_text}</div>} />
+        <WindowedFeed items={items} itemKey={feedItemKey} scrollRef={ref} renderItem={item => <div style={{ height: 40 + (item.id % 4) * 30 }}>{item.prompt_text}</div>} />
       </main>;
     }
     createRoot(document.getElementById('root')).render(<Page />);

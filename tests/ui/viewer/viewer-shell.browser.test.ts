@@ -266,12 +266,12 @@ async function pressAt(page: DevToolsPage, x: number, y: number) {
     expect(sizes.short).toEqual([]);
     expect(sizes.scrollsSideways).toBe(false);
     // Kind chips past the right edge fade there, so the row reads as one to swipe; at its end the fade moves to the start.
-    expect(await page.evaluate(`document.querySelector('.kind-chips').className`)).toContain('kind-chips--more-after');
+    expect(await page.evaluate(`document.querySelector('.kind-chips').className`)).toContain('scroll-more-after');
     await page.evaluate(`(() => { const row = document.querySelector('.kind-chips'); row.scrollLeft = row.scrollWidth; })()`);
     await page.settle();
     const chipRow = await page.evaluate(`document.querySelector('.kind-chips').className`);
-    expect(chipRow).toContain('kind-chips--more-before');
-    expect(chipRow).not.toContain('kind-chips--more-after');
+    expect(chipRow).toContain('scroll-more-before');
+    expect(chipRow).not.toContain('scroll-more-after');
     // Links that left the row are in the menu, with the sync state and its full words as the first item.
     await page.evaluate(`document.querySelector('.header-more').focus()`);
     await key(page, 'ArrowDown', 'ArrowDown', 40);
@@ -288,7 +288,7 @@ async function pressAt(page: DevToolsPage, x: number, y: number) {
     const french = await page.evaluate(chipRowSizes);
     expect(french.width).toBe(english.width);
     expect(french.content).toBeGreaterThan(english.content);
-    expect(french.className).toContain('kind-chips--more-before');
-    expect(french.className).toContain('kind-chips--more-after');
+    expect(french.className).toContain('scroll-more-before');
+    expect(french.className).toContain('scroll-more-after');
   } finally { opened?.page.close(); await opened?.chrome.close(); opened?.server.stop(true); }
 }, 60_000);

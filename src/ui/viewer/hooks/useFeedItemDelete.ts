@@ -2,7 +2,8 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 import { deleteFeedItem, type DeletableItemType } from '../utils/feed-deletion';
 
 /**
- * Where a card's delete stands. One writer: useFeedDeletes.
+ * Where a delete stands, for a card (a memory) and for a Sessions row (a whole session). One writer: useDeletes below,
+ * which the cards reach through useFeedDeletes and the Sessions list uses directly.
  *
  *   idle --ask--> asking --confirm--> deleting --refused / no answer / stopped--> failed --retry--> deleting
  *     ^             |                    |                                          |
@@ -37,15 +38,14 @@ export interface FeedItemDeletion {
 interface DeleteEntry { stage: Exclude<DeleteStage, 'idle'>; failure: string | null }
 
 /**
- * Every card's delete in one place, keyed by row (feedItemKey). Held above the cards, so a
- * delete on its way, and its refusal, outlive a card that scrolls out of the list's window
- * or a view that is left and opened again; `active` names the rows whose card must stay drawn.
+ * Every delete of one list in one place, keyed by row (a card's feedItemKey, a session's sessionKey). Held above the
+ * rows, so a question, a delete on its way and its refusal outlive a row that scrolls out of the list's window or a
+ * view that is left and opened again; `active` names the rows that must stay drawn. `forKey` takes what the delete
+ * sends: it rejects with the user-facing reason the row shows, and `signal` stops waiting for the worker.
  */
-export function useFeedDeletes(onDeleted: (itemType: DeletableItemType, id: number) => void) {
+export function useDeletes() {
   const [entries, setEntries] = useState<Record<string, DeleteEntry>>({});
   const requests = useRef(new Map<string, AbortController>());
-  const onDeletedRef = useRef(onDeleted);
-  onDeletedRef.current = onDeleted;
 
   const put = useCallback((key: string, entry: DeleteEntry | null) => setEntries(previous => {
     if (entry) return { ...previous, [key]: entry };
@@ -55,15 +55,14 @@ export function useFeedDeletes(onDeleted: (itemType: DeletableItemType, id: numb
     return next;
   }), []);
 
-  const send = useCallback(async (key: string, itemType: DeletableItemType, id: number) => {
+  const send = useCallback(async (key: string, perform: (signal: AbortSignal) => Promise<void>) => {
     // One request per row at a time: a second press while it runs does nothing.
     if (requests.current.has(key)) return;
     const request = new AbortController();
     requests.current.set(key, request);
     put(key, { stage: 'deleting', failure: null });
     try {
-      await deleteFeedItem(itemType, id, fetch, { signal: request.signal });
-      onDeletedRef.current(itemType, id);
+      await perform(request.signal);
       put(key, null);
     } catch (error) {
       put(key, { stage: 'failed', failure: error instanceof Error ? error.message : String(error) });
@@ -72,7 +71,7 @@ export function useFeedDeletes(onDeleted: (itemType: DeletableItemType, id: numb
     }
   }, [put]);
 
-  const forRow = useCallback((key: string, itemType: DeletableItemType, id: number): FeedItemDeletion => {
+  const forKey = useCallback((key: string, perform: (signal: AbortSignal) => Promise<void>): FeedItemDeletion => {
     const entry = entries[key];
     return {
       stage: entry?.stage ?? 'idle',
@@ -83,13 +82,26 @@ export function useFeedDeletes(onDeleted: (itemType: DeletableItemType, id: numb
         if (request) request.abort();
         else put(key, null);
       },
-      confirm: () => { void send(key, itemType, id); },
-      retry: () => { void send(key, itemType, id); },
+      confirm: () => { void send(key, perform); },
+      retry: () => { void send(key, perform); },
       dismiss: () => put(key, null),
     };
   }, [entries, put, send]);
 
   const active = useMemo(() => new Set(Object.keys(entries)), [entries]);
+  return { forKey, active };
+}
+
+/** The cards' deletes (useDeletes keyed by feedItemKey): each removes one memory, then tells the page it is gone. */
+export function useFeedDeletes(onDeleted: (itemType: DeletableItemType, id: number) => void) {
+  const { forKey, active } = useDeletes();
+  const onDeletedRef = useRef(onDeleted);
+  onDeletedRef.current = onDeleted;
+  const forRow = useCallback((key: string, itemType: DeletableItemType, id: number): FeedItemDeletion =>
+    forKey(key, async signal => {
+      await deleteFeedItem(itemType, id, fetch, { signal });
+      onDeletedRef.current(itemType, id);
+    }), [forKey]);
   return { forRow, active };
 }
 

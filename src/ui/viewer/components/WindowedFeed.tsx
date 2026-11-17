@@ -72,16 +72,24 @@ export interface WindowedFeedHandle {
 
 interface DayMark { index: number; label: string }
 
-interface WindowedFeedProps {
-  items: FeedItem[];
-  scrollRef: React.RefObject<HTMLDivElement | null>;
-  renderItem: (item: FeedItem, index: number) => React.ReactNode;
+interface WindowedFeedProps<T> {
+  items: T[];
+  scrollRef: React.RefObject<HTMLElement | null>;
+  renderItem: (item: T, index: number) => React.ReactNode;
+  /**
+   * A stable key per row: feedItemKey for timeline rows, sessionKey for Sessions rows. Pass a function defined
+   * outside the component. Required: a list of anything but timeline rows once fell back to feedItemKey, which gave
+   * every row the key "undefined-undefined", so the rows collapsed into one key and shared one measured height.
+   */
+  itemKey: (item: T) => string;
+  /** A row's height before it is first drawn and measured; the timeline's mean card unless the list's rows differ. */
+  estimatedHeight?: number;
+  /** The list's accessible name; "Loaded memories" unless the list holds something else. */
+  listLabel?: string;
   /** The row at the top of the scroll view, and whether the list is still at its start, reported once per frame while scrolling. */
   onTopIndexChange?: (index: number, atStart: boolean) => void;
   /** The first row of each day, for the thin day rail beside a long list. */
   dayMarks?: DayMark[];
-  /** Recycle rows once the list passes this many; FEED_WINDOW_THRESHOLD unless a page has a reason to draw more. */
-  threshold?: number;
   /** Rows that stay drawn wherever the reader scrolls (a delete on its way, or the reason it did not finish). */
   keepMounted?: ReadonlySet<string>;
 }
@@ -131,9 +139,10 @@ function DayRail({ marks, offsets, total, viewportTop, onJump }: {
 }
 
 /** Keeps loaded records in memory while mounting only the visible cards on long histories. */
-export const WindowedFeed = forwardRef<WindowedFeedHandle, WindowedFeedProps>(function WindowedFeed({
-  items, scrollRef, renderItem, onTopIndexChange, dayMarks, threshold = FEED_WINDOW_THRESHOLD, keepMounted,
-}, ref) {
+function WindowedFeedList<T>({
+  items, scrollRef, renderItem, onTopIndexChange, dayMarks, keepMounted,
+  itemKey, estimatedHeight = ESTIMATED_HEIGHT, listLabel,
+}: WindowedFeedProps<T>, ref: React.ForwardedRef<WindowedFeedHandle>) {
   const { t } = useI18n();
   const sectionRef = useRef<HTMLDivElement>(null);
   const rows = useRef(new Map<string, HTMLDivElement>());
@@ -143,14 +152,14 @@ export const WindowedFeed = forwardRef<WindowedFeedHandle, WindowedFeedProps>(fu
   // Before the first measurement: a laptop window's height, replaced by the real one in the first layout pass.
   const [viewport, setViewport] = useState({ top: 0, height: 900 });
   const [focusedKey, setFocusedKey] = useState<string | null>(null);
-  const windowed = items.length > threshold;
-  const keys = useMemo(() => items.map(feedItemKey), [items]);
+  const windowed = items.length > FEED_WINDOW_THRESHOLD;
+  const keys = useMemo(() => items.map(itemKey), [items, itemKey]);
   const positions = useMemo(() => new Map(keys.map((key, index) => [key, index])), [keys]);
   const offsets = useMemo(() => {
     const values = [0];
-    for (const key of keys) values.push(values.at(-1)! + (heights.current.get(key) ?? ESTIMATED_HEIGHT));
+    for (const key of keys) values.push(values.at(-1)! + (heights.current.get(key) ?? estimatedHeight));
     return values;
-  }, [keys, revision]);
+  }, [keys, revision, estimatedHeight]);
   const geometry = useRef({ keys, positions, offsets, top: 0, windowed, viewport });
   const anchor = useRef<{ key: string; index: number; within: number; atStart: boolean; scrollTop: number } | null>(null);
   /**
@@ -173,7 +182,7 @@ export const WindowedFeed = forwardRef<WindowedFeedHandle, WindowedFeedProps>(fu
 
   const recordHeight = (key: string, node: HTMLElement): boolean => {
     const height = node.getBoundingClientRect().height;
-    if (height <= 0 || Math.abs((heights.current.get(key) ?? ESTIMATED_HEIGHT) - height) <= HEIGHT_EPSILON_PX) return false;
+    if (height <= 0 || Math.abs((heights.current.get(key) ?? estimatedHeight) - height) <= HEIGHT_EPSILON_PX) return false;
     heights.current.set(key, height);
     return true;
   };
@@ -482,10 +491,19 @@ export const WindowedFeed = forwardRef<WindowedFeedHandle, WindowedFeedProps>(fu
   };
   return (
     <>
-      <div ref={sectionRef} role="list" aria-label={t('Loaded memories')} data-windowed={windowed ? 'true' : 'false'}>{children}</div>
+      <div ref={sectionRef} role="list" aria-label={listLabel ?? t('Loaded memories')} data-windowed={windowed ? 'true' : 'false'}>{children}</div>
       {windowed && dayMarks && dayMarks.length > 1 && total > 0 && (
         <DayRail marks={dayMarks} offsets={offsets} total={total} viewportTop={viewport.top} onJump={jumpToDay} />
       )}
     </>
   );
-});
+}
+
+/** The windowed list for any rows: timeline rows (FeedItem) by default, each list keyed by its own `itemKey`. */
+export const WindowedFeed = forwardRef(WindowedFeedList) as <T = FeedItem>(
+  props: WindowedFeedProps<T> & React.RefAttributes<WindowedFeedHandle>,
+) => React.ReactElement | null;
+
+// Fails the viewer typecheck if `itemKey` becomes optional again (the "undefined-undefined" key hole above).
+const ITEM_KEY_IS_REQUIRED: undefined extends WindowedFeedProps<unknown>['itemKey'] ? never : true = true;
+void ITEM_KEY_IS_REQUIRED;

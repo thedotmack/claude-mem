@@ -115,6 +115,9 @@ export function PromptCard({ prompt, expanded: controlledExpanded, onExpandedCha
               <span className="card-project">{repeat.project}</span>
               <span className="meta-date" title={formatDate(repeat.created_at_epoch)}>{formatDate(repeat.created_at_epoch)}</span>
               <span className="meta-date">#{repeat.id}</span>
+              {/* A repeat folds by its words, whatever their case and spacing (foldPromptRepeats); one typed
+                  differently keeps its own text here, so nothing it said is lost (rule 2). */}
+              {repeat.prompt_text !== text && <span className="prompt-repeat-text">{repeat.prompt_text}</span>}
             </li>
           ))}
         </ul>

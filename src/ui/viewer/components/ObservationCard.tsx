@@ -45,9 +45,25 @@ function stripProjectRoot(storedPath: string): string {
   return parts.length > 3 ? parts.slice(-3).join('/') : filePath;
 }
 
-/** The plain text of an observation, for Copy text. */
-function observationText(observation: Observation): string {
-  return [observation.title, observation.subtitle, observation.narrative].filter(Boolean).join('\n\n');
+/**
+ * The plain text of an observation for Copy text: every section its card can show (G4), as the summary card's
+ * Copy text has every section, folded ones too. Title, one-line summary, narrative, then the Facts view (its facts,
+ * concepts and files), with the card's own labels in the reader's language.
+ */
+export function observationText(observation: Observation, t: (english: string) => string): string {
+  const facts = parseStoredStringList(observation.facts);
+  const concepts = parseStoredStringList(observation.concepts);
+  const filesRead = parseStoredStringList(observation.files_read);
+  const filesModified = parseStoredStringList(observation.files_modified);
+  return [
+    observation.title,
+    observation.subtitle,
+    observation.narrative,
+    facts.length ? `${t('Facts')}\n${facts.map(fact => `- ${fact}`).join('\n')}` : null,
+    concepts.length ? concepts.join(', ') : null,
+    filesRead.length ? `${t('read:')} ${filesRead.join(', ')}` : null,
+    filesModified.length ? `${t('modified:')} ${filesModified.join(', ')}` : null,
+  ].filter(Boolean).join('\n\n');
 }
 
 /**
@@ -192,7 +208,7 @@ export function ObservationCard({
           {close => (
             <>
               <CopyMenuItem label={interpolate(t('Copy id #{id}'), { id: observation.id })} text={() => String(observation.id)} />
-              <CopyMenuItem label={t('Copy text')} text={() => observationText(observation)} />
+              <CopyMenuItem label={t('Copy text')} text={() => observationText(observation, t)} />
               <MenuSeparator />
               <MenuItem danger icon={<TrashIcon />} onSelect={() => { close(false); deletion.ask(); }}>
                 {interpolate(t('Delete {item}…'), { item: t(DELETE_ITEM_LABELS.observation) })}

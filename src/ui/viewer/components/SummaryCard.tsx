@@ -34,6 +34,8 @@ interface SummaryCardProps {
   onSectionModeChange?: (mode: SummarySectionMode) => void;
   /** The list's record of this card's delete, so it outlives the card; a card on its own keeps its own. */
   deletion?: FeedItemDeletion;
+  /** The page's heading already shows this summary's request (a session page pins its summary under it). */
+  titleShownAbove?: boolean;
 }
 
 /** The summary as plain text for Copy text, with the section labels in the reader's language. */
@@ -42,7 +44,7 @@ function summaryText(summary: Summary, t: (english: string) => string): string {
     .filter(Boolean).join("\n\n");
 }
 
-export function SummaryCard({ summary, onDeleted, sectionMode, onSectionModeChange, deletion: listDeletion }: SummaryCardProps) {
+export function SummaryCard({ summary, onDeleted, sectionMode, onSectionModeChange, deletion: listDeletion, titleShownAbove = false }: SummaryCardProps) {
   const { t } = useI18n();
   const [localMode, setLocalMode] = useState<SummarySectionMode>("folded");
   const mode = sectionMode ?? localMode;
@@ -70,7 +72,7 @@ export function SummaryCard({ summary, onDeleted, sectionMode, onSectionModeChan
         <span className="summary-project-badge card-project">{summary.project}</span>
         <ShortTime epoch={summary.created_at_epoch} className="card-time" />
       </div>
-      {summary.request && <h3 className="summary-title">{summary.request}</h3>}
+      {summary.request && !titleShownAbove && <h3 className="summary-title">{summary.request}</h3>}
 
       <div className="summary-sections" id={sectionsId}>
         {sections.map((section) => (

@@ -42,9 +42,11 @@ for(const scenario of ['item','recreated-visible','recreated-session','late-dele
             await until(()=>document.querySelector('.session-card-count')?.textContent==='1 memory');
             await fetch('/snapshot-started');
             if(['late-delete-response','live-before-delete'].includes(${JSON.stringify(scenario)})) {
-              window.confirm=()=>true;
+              window.confirm=()=>{throw Error('The viewer must not use the browser confirm box')};
               document.querySelector('.session-card-menu-trigger').click();await paint();
-              document.querySelector('.session-card-menu-item--danger').click();
+              document.querySelector('.session-card-menu-item--danger').click();await paint();
+              // The row asks in the page how many memories go; confirm there.
+              document.querySelector('.session-row .inline-confirm-danger').click();
             } else await fetch('/delete');
             await paint();
             if(${JSON.stringify(scenario)}!=='item') {

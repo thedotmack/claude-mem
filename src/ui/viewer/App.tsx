@@ -17,7 +17,7 @@ import { PageRejectedError, usePagination } from './hooks/usePagination';
 import { useSessionCatalog } from './hooks/useSessionCatalog';
 import { useTheme } from './hooks/useTheme';
 import { useFeedDeletes } from './hooks/useFeedItemDelete';
-import { Observation, Summary, UserPrompt, FeedItemType } from './types';
+import { Observation, Summary, UserPrompt, FeedItemType, type FeedItem } from './types';
 import { buildFeedItems, mergeAndDeduplicateByProject } from './utils/data';
 import { categoryOf, countByCategory, type Category } from './utils/category';
 import { matchesSearch } from './utils/feed-display';
@@ -307,10 +307,12 @@ export function App() {
 
   const timelineCounts = useMemo(() => countByCategory(feedItems), [feedItems]);
   const timelineFiltered = timelineKinds.size > 0 || timelineQuery.trim() !== '';
-  const timelineItems = useMemo(() => {
-    if (!timelineFiltered) return feedItems;
-    return feedItems.filter(item => (timelineKinds.size === 0 || timelineKinds.has(categoryOf(item))) && matchesSearch(item, timelineQuery));
-  }, [feedItems, timelineKinds, timelineQuery, timelineFiltered]);
+  // The kinds and the search. The feed applies them after folding prompt repeats over the whole timeline (G2), so
+  // "<n> times in a row" stays true under a search; the counts below are the memories that match.
+  const timelineMatches = useMemo(() => timelineFiltered
+    ? (item: FeedItem) => (timelineKinds.size === 0 || timelineKinds.has(categoryOf(item))) && matchesSearch(item, timelineQuery)
+    : undefined, [timelineKinds, timelineQuery, timelineFiltered]);
+  const timelineItems = useMemo(() => timelineMatches ? feedItems.filter(timelineMatches) : feedItems, [feedItems, timelineMatches]);
   const toggleTimelineKind = useCallback((kind: Category) => {
     setTimelineKinds(previous => {
       const next = new Set(previous);
@@ -465,11 +467,11 @@ export function App() {
     }
   }
 
-  /** Rejects with a user-facing reason; the card shows it. */
-  async function handleDeleteSession(session: SessionRef): Promise<void> {
+  /** Rejects with a user-facing reason; the row shows it. `signal` stops waiting for the worker. */
+  async function handleDeleteSession(session: SessionRef, signal?: AbortSignal): Promise<void> {
     const key = sessionKey(session);
     const deletionVersion = sessionDeletionVersionsRef.current.get(key) ?? 0;
-    await deleteSession(session);
+    await deleteSession(session, fetch, { signal });
     // The stream may have already delivered this delete, followed by a new
     // live row recreating the session. Its HTTP acknowledgment must not delete
     // that newer incarnation a second time.
@@ -505,35 +507,38 @@ export function App() {
   // Retry still helps when a sibling list has more, even if one list was refused.
   const feedCanRetry = hasMore || feedLoadError !== rejectedFeedErrorRef.current;
   const activeTab: ViewTab = route.view === 'timeline' ? 'timeline' : 'sessions';
+  const viewTabs = (
+    <ViewTabs
+      active={activeTab}
+      onSelect={tab => navigate(tab === 'sessions' ? sessionsHash() : '')}
+    />
+  );
+  // Below the heading row, so its arrival never moves the tabs.
+  const notices = (showLatestRefresh || feedRefreshNotice) ? (
+    <div className="memory-page-notices">
+      {showLatestRefresh && <button type="button" className="btn-primary" onClick={() => {
+        resyncPausedRef.current = false;
+        resyncInterruptionsRef.current = 0;
+        refreshLatestRef.current = true;
+        queueDataRefresh({});
+      }}>{t('Refresh latest memories')}</button>}
+      {feedRefreshNotice && <p role="status">{t(feedRefreshNotice)}</p>}
+    </div>
+  ) : null;
+  // A session's own page heads itself (breadcrumb, its real title, id and time span: SessionDetailPage).
   const tabs = (
     <>
       <div className="memory-page-heading">
         <div>
           <p className="memory-eyebrow">{t('Your saved context')}</p>
-          <h2>{route.view === 'timeline' ? t('Memory timeline') : route.view === 'sessions' ? t('Sessions') : t('Session memory')}</h2>
+          <h2>{route.view === 'timeline' ? t('Memory timeline') : t('Sessions')}</h2>
           <p>{route.view === 'timeline'
             ? t('Browse observations, summaries, and prompts from your work.')
-            : route.view === 'sessions'
-              ? t('Open a session to revisit what happened and what was learned.')
-              : t('Review the context captured during this session.')}</p>
+            : t('Open a session to revisit what happened and what was learned.')}</p>
         </div>
-        <ViewTabs
-          active={activeTab}
-          onSelect={tab => navigate(tab === 'sessions' ? sessionsHash() : '')}
-        />
+        {viewTabs}
       </div>
-      {/* Below the heading row, so its arrival never moves the tabs. */}
-      {(showLatestRefresh || feedRefreshNotice) && (
-        <div className="memory-page-notices">
-          {showLatestRefresh && <button type="button" className="btn-primary" onClick={() => {
-            resyncPausedRef.current = false;
-            resyncInterruptionsRef.current = 0;
-            refreshLatestRef.current = true;
-            queueDataRefresh({});
-          }}>{t('Refresh latest memories')}</button>}
-          {feedRefreshNotice && <p role="status">{t(feedRefreshNotice)}</p>}
-        </div>
-      )}
+      {notices}
     </>
   );
   const timelineHeader = (
@@ -586,6 +591,8 @@ export function App() {
         loadError={catalog.loadError}
         canRetry={!catalog.loadErrorIsFinal}
         offsetCapReachedAt={catalog.offsetCapReachedAt}
+        projectFilter={currentFilter}
+        onClearProjectFilter={() => setCurrentFilter('')}
         onOpen={session => navigate(sessionHash(session))}
         onDelete={handleDeleteSession}
         onLoadMore={catalog.loadMore}
@@ -596,9 +603,10 @@ export function App() {
     const catalogEntry = catalog.sessions.find(entry => sameSession(catalogEntryRef(entry), route.session));
     content = (
       <SessionDetailPage
-        tabs={tabs}
+        tabs={viewTabs}
+        notices={notices}
         session={route.session}
-        title={catalogEntry?.custom_title ?? catalogEntry?.project ?? null}
+        catalogEntry={catalogEntry}
         items={feedItems}
         isLoading={isLoading}
         hasMore={hasMore}
@@ -615,7 +623,8 @@ export function App() {
     content = (
       <Feed
         header={timelineHeader}
-        items={timelineItems}
+        items={feedItems}
+        matches={timelineMatches}
         onLoadMore={handleLoadMore}
         onDeleted={removeDeletedItem}
         deletes={feedDeletes}
@@ -670,6 +679,12 @@ export function App() {
         onSave={saveSettings}
         isSaving={isSaving}
         saveStatus={saveStatus}
+        onShowInTimeline={project => {
+          // A shortened preview's left-out observations, all of them: the timeline filtered to that project.
+          // The dialog has already closed (asking first when there were unsaved changes).
+          setCurrentFilter(project);
+          navigate('');
+        }}
       />
 
       <button

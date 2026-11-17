@@ -5,13 +5,17 @@ export function formatDate(epoch: number): string {
   return new Date(epoch).toLocaleString(getLocale());
 }
 
-/** The short local time people scan in a list: "6:07 pm" in English, the locale's own short time elsewhere. */
-export function formatShortTime(epoch: number): string {
+/**
+ * The short local time people scan in a list: "6:07 pm" in English, the locale's own short time elsewhere.
+ * `seconds` adds them ("6:07:12 pm") where things move by the second, as the logs drawer's "updated" time does.
+ */
+export function formatShortTime(epoch: number, { seconds = false }: { seconds?: boolean } = {}): string {
   const locale = getLocale();
   const english = locale === 'en';
-  const text = new Date(epoch).toLocaleTimeString(locale, english
-    ? { hour: 'numeric', minute: '2-digit', hour12: true }
-    : { hour: 'numeric', minute: '2-digit' });
+  const parts: Intl.DateTimeFormatOptions = seconds
+    ? { hour: 'numeric', minute: '2-digit', second: '2-digit' }
+    : { hour: 'numeric', minute: '2-digit' };
+  const text = new Date(epoch).toLocaleTimeString(locale, english ? { ...parts, hour12: true } : parts);
   // en-US writes "6:07 PM" with a narrow no-break space; the timeline reads "6:07 pm".
   return english ? text.replace(/\s?(AM|PM)$/, (_, period: string) => `\u202f${period.toLowerCase()}`) : text;
 }

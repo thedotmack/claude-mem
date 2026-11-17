@@ -23,14 +23,16 @@ export const DELETE_ITEM_LABELS: Record<DeletableItemType, string> = {
  * device, cloud sync unavailable, worker down, no answer, or stopped by the reader)
  * stays on the card with Try again and Dismiss, never failing silently.
  */
-export function DeleteConfirmation({ itemType, deletion, returnFocus }: {
-  itemType: DeletableItemType;
+export function DeleteConfirmation({ itemType, question, confirmLabel, deletion, returnFocus }: {
   deletion: FeedItemDeletion;
   /** Where focus goes when the question is cancelled or the reason dismissed. */
   returnFocus?: () => void;
-}) {
+} & (
+  | { itemType: DeletableItemType; question?: undefined; confirmLabel?: undefined }
+  /** A whole session: its own question (how many memories go) and its own red button. */
+  | { itemType?: undefined; question: string; confirmLabel: string }
+)) {
   const { t } = useI18n();
-  const item = t(DELETE_ITEM_LABELS[itemType]);
   const retryRef = useRef<HTMLButtonElement>(null);
   const cancel = () => {
     // Cancel before the delete was sent leaves the question; after, the card says it stopped waiting.
@@ -49,8 +51,8 @@ export function DeleteConfirmation({ itemType, deletion, returnFocus }: {
       <span className="visually-hidden" role="status">{DELETE_STAGE_STATUS[deletion.stage] && t(DELETE_STAGE_STATUS[deletion.stage])}</span>
       {(deletion.stage === 'asking' || deletion.stage === 'deleting') && (
         <InlineConfirm
-          question={interpolate(t('Delete this {item}? This cannot be undone.'), { item })}
-          confirmLabel={t('Delete')}
+          question={question ?? interpolate(t('Delete this {item}? This cannot be undone.'), { item: t(DELETE_ITEM_LABELS[itemType!]) })}
+          confirmLabel={confirmLabel ?? t('Delete')}
           busyLabel={t('Deleting…')}
           busy={deletion.stage === 'deleting'}
           onConfirm={deletion.confirm}

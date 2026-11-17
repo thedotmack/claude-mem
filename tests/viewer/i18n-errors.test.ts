@@ -90,20 +90,13 @@ describe('render-time viewer errors', () => {
     assert.equal(translateViewerError('Failed to load more data', chinese), chinese('Failed to load more data'));
   });
 
-  it('renders settings envelopes and status changes without rewriting server details', () => {
-    for (const [prefix, template] of [
-      ['Could not load settings: ', 'Could not load settings: {error}'],
-      ['\u2717 Error: ', '\u2717 Error: {error}'],
-    ]) {
-      const detail = 'Saving... $& {error}';
-      const stored = prefix + detail;
-      assert.equal(translateSettingsStatus(stored, chinese), chinese(template).replace('{error}', () => detail));
-      assert.equal(translateSettingsStatus(stored, english), stored);
-    }
-    for (const status of ['Saving...', '\u2713 Saved']) {
-      assert.equal(translateSettingsStatus(status, chinese), chinese(status));
-      assert.equal(translateSettingsStatus(status, english), status);
-    }
+  it('renders a refused save\'s reason in the reader\'s language without rewriting the worker\'s words', () => {
+    const detail = 'Saving... $& {error}';
+    const stored = '\u2717 Error: ' + detail;
+    assert.equal(translateSettingsStatus(stored, chinese), chinese('\u2717 Error: {error}').replace('{error}', () => detail));
+    assert.equal(translateSettingsStatus(stored, english), stored);
+    // Anything without the viewer's own prefix is shown as it came.
     assert.equal(translateSettingsStatus('Delete', chinese), 'Delete');
+    assert.equal(translateSettingsStatus('HTTP 500', chinese), 'HTTP 500');
   });
 });

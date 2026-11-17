@@ -2,6 +2,7 @@ import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useI18n, interpolate } from '../../i18n';
 import { formatCount } from '../utils/formatters';
 import { CheckIcon, ChevronDownIcon, FilterIcon, SearchIcon } from './icons';
+import { hasEveryWord } from '../utils/search';
 
 // UI UX Pro Max `virtualize-lists`: draw 50 matches, then offer the rest with their count.
 const SHOWN_MATCHES = 50;
@@ -29,10 +30,8 @@ export function ProjectPicker({ projects, value, onChange }: ProjectPickerProps)
   const labelId = useId(), valueId = useId(), listId = useId(), optionPrefix = useId();
   const allLabel = t('All Projects');
 
-  const matches = useMemo(() => {
-    const words = query.toLowerCase().split(/\s+/).filter(Boolean);
-    return words.length ? projects.filter(project => words.every(word => project.toLowerCase().includes(word))) : projects;
-  }, [projects, query]);
+  // The viewer's one search rule (hasEveryWord): every word of the query, in any case.
+  const matches = useMemo(() => projects.filter(project => hasEveryWord(project, query)), [projects, query]);
   const firstMatches = matches.slice(0, SHOWN_MATCHES);
   // The chosen project stays listed, checked and first, when it matches but falls past the first 50.
   const chosenPastFirst = !showAll && value !== '' && !firstMatches.includes(value) && matches.includes(value);

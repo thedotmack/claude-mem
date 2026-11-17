@@ -9,6 +9,7 @@ const DELETE_FAILURES = new Set([
   'Not deleted: this session is already gone.',
   'Not deleted: the claude-mem worker could not be reached.',
   'Stopped waiting for the delete. If the worker finishes it anyway, this memory leaves the list.',
+  'Stopped waiting for the delete. If the worker finishes it anyway, this session leaves the list.',
 ]);
 
 /** Render application-owned English errors; never translate opaque error details. */
@@ -18,9 +19,13 @@ export function translateViewerError(message: string, t: Translate): string {
   const http = /^Not deleted: the worker answered HTTP (\d+)\.$/.exec(message);
   if (http) return interpolate(t('Not deleted: the worker answered HTTP {status}.'), { status: http[1] });
 
-  const noAnswer = /^No answer from the worker in (\d+(?:\.\d+)?) seconds, so the viewer stopped waiting\. If the delete finishes anyway, this memory leaves the list\.$/.exec(message);
+  // A card's delete and a session's delete time out with the same sentence (feed-deletion.ts sendDelete), naming what leaves.
+  const noAnswer = /^No answer from the worker in (\d+(?:\.\d+)?) seconds, so the viewer stopped waiting\. If the delete finishes anyway, this (memory|session) leaves the list\.$/.exec(message);
   if (noAnswer) {
-    return interpolate(t('No answer from the worker in {seconds} seconds, so the viewer stopped waiting. If the delete finishes anyway, this memory leaves the list.'), { seconds: noAnswer[1] });
+    const template = noAnswer[2] === 'session'
+      ? t('No answer from the worker in {seconds} seconds, so the viewer stopped waiting. If the delete finishes anyway, this session leaves the list.')
+      : t('No answer from the worker in {seconds} seconds, so the viewer stopped waiting. If the delete finishes anyway, this memory leaves the list.');
+    return interpolate(template, { seconds: noAnswer[1] });
   }
 
   const timedOut = /^Loading (observations|summaries|prompts) timed out\. Try again\.$/.exec(message);
@@ -38,15 +43,12 @@ export function translateViewerError(message: string, t: Translate): string {
   return message;
 }
 
-/** Settings state stays in English, including unmodified server response details. */
+/**
+ * A refused save's reason, as the Settings dialog folds it under Details: the viewer's own "✗ Error:" prefix (every
+ * reason useSettings and describeSaveFailure write starts with it) in the reader's language, the worker's words after
+ * it untouched. Anything else is shown as it came.
+ */
 export function translateSettingsStatus(message: string, t: Translate): string {
-  for (const [prefix, template] of [
-    ['Could not load settings: ', 'Could not load settings: {error}'],
-    ['\u2717 Error: ', '\u2717 Error: {error}'],
-  ]) {
-    if (message.startsWith(prefix)) {
-      return interpolate(t(template), { error: message.slice(prefix.length) });
-    }
-  }
-  return message === 'Saving...' || message === '\u2713 Saved' ? t(message) : message;
+  const prefix = '\u2717 Error: ';
+  return message.startsWith(prefix) ? interpolate(t('\u2717 Error: {error}'), { error: message.slice(prefix.length) }) : message;
 }
