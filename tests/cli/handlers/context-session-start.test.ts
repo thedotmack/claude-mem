@@ -1,8 +1,10 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
-import { rmSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
 import path from 'path';
 
 import { PRO_FALLBACK_NOTICE_MARKER } from '../../../src/shared/cmem-gateway.js';
+import { sessionStartCardSlotPath } from '../../../src/shared/session-start-card-slot.js';
 import { paths } from '../../../src/shared/paths.js';
 import {
   contextCacheKeys,
@@ -598,6 +600,94 @@ describe('contextHandler SessionStart path', () => {
     } finally {
       includeAllSources = false;
     }
+  });
+
+  describe('session-start card (the hooks module named a file for the banner)', () => {
+    const timeline = '\x1b[2mAccess Claude-Mem Rules + Tools: ~/.claude-mem/RULES-AND-TOOLS.md\x1b[0m\n\n'
+      + '  \x1b[2m#101\x1b[0m  11:55a  first row\n  \x1b[2m#102\x1b[0m          newest row';
+    const savedPluginData = process.env.CLAUDE_PLUGIN_DATA;
+    let pluginDataDirectory: string;
+    const slotFileOf = (sessionId: string) => sessionStartCardSlotPath(pluginDataDirectory, sessionId, 1794888786050);
+    const start = async (sessionId: string, sessionStartCardFile?: string) => {
+      const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+      return contextHandler.execute({ sessionId, cwd: '/tmp/repo', platform: 'claude-code', sessionSource: 'startup', sessionStartCardFile });
+    };
+
+    beforeEach(async () => {
+      pluginDataDirectory = mkdtempSync(path.join(tmpdir(), 'session-start-card-context-'));
+      process.env.CLAUDE_PLUGIN_DATA = pluginDataDirectory;
+      showTerminalOutput = true;
+      workerContext = timeline;
+      // Once-only lines (the TeamBrain discovery line, the telemetry notice) are used up here.
+      await start('card-prime');
+    });
+    afterEach(() => {
+      rmSync(pluginDataDirectory, { recursive: true, force: true });
+      if (savedPluginData === undefined) delete process.env.CLAUDE_PLUGIN_DATA;
+      else process.env.CLAUDE_PLUGIN_DATA = savedPluginData;
+      showTerminalOutput = false;
+    });
+
+    it('writes the banner to the file and sends one line: the closing line with the rows the card shows', async () => {
+      const whole = await start('card-off');
+      const slotFile = slotFileOf('card-on');
+      const result = await start('card-on', slotFile);
+
+      expect(result.systemMessage).toMatch(/^View Observations Live @ \S+ · 2 lines$/);
+      const { text } = JSON.parse(readFileSync(slotFile, 'utf-8')) as { text: string };
+      expect(text.endsWith(timeline)).toBe(true);
+      expect(text).not.toContain('View Observations Live');
+      // Card and message together are the banner a session without the card gets.
+      expect(`${text}\n\n${result.systemMessage}`).toBe(whole.systemMessage!);
+      // The model's block is the same either way.
+      expect(result.hookSpecificOutput).toEqual(whole.hookSpecificOutput);
+    });
+
+    it('keeps a notice in the message, above the closing line, and out of the card', async () => {
+      setupState = pendingInstall();
+      const slotFile = slotFileOf('card-notice');
+      const result = await start('card-notice', slotFile);
+      const lines = result.systemMessage!.split('\n');
+      expect(lines[0]).toContain('Setup is waiting for your choices:');
+      expect(lines.at(-2)).toBe('');
+      expect(lines.at(-1)).toMatch(/^View Observations Live @ \S+ · 2 lines$/);
+      expect(readFileSync(slotFile, 'utf-8')).not.toContain('Setup is waiting');
+    });
+
+    it('sends the whole banner when the file is refused or cannot be written', async () => {
+      const whole = await start('card-off');
+      const anotherSessionsFile = slotFileOf('someone-else');
+      expect((await start('card-refused', anotherSessionsFile)).systemMessage).toBe(whole.systemMessage!);
+      expect(existsSync(anotherSessionsFile)).toBe(false);
+
+      delete process.env.CLAUDE_PLUGIN_DATA;
+      const slotFile = slotFileOf('card-no-data-folder');
+      expect((await start('card-no-data-folder', slotFile)).systemMessage).toBe(whole.systemMessage!);
+      expect(existsSync(slotFile)).toBe(false);
+    });
+
+    it('writes no file when there is no banner to draw', async () => {
+      showTerminalOutput = false;
+      const slotFile = slotFileOf('card-banner-off');
+      const result = await start('card-banner-off', slotFile);
+      expect(result.systemMessage).toBeUndefined();
+      expect(existsSync(slotFile)).toBe(false);
+
+      showTerminalOutput = true;
+      workerUnreachable = true;
+      try {
+        const outage = await start('card-worker-down', slotFileOf('card-worker-down'));
+        expect(outage.systemMessage).toBe('claude-mem worker unreachable for 3 consecutive hooks');
+        expect(existsSync(slotFileOf('card-worker-down'))).toBe(false);
+      } finally { workerUnreachable = false; }
+    });
+
+    it('leaves a session without the card exactly as it was', async () => {
+      const result = await start('card-off');
+      expect(result.systemMessage).toContain(timeline);
+      expect(result.systemMessage).toMatch(/\n\nView Observations Live @ \S+ · 2 lines$/);
+      expect(existsSync(path.join(pluginDataDirectory, 'session-start-card'))).toBe(false);
+    });
   });
 
   describe('context cache reserve (#5672)', () => {

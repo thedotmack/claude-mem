@@ -1,6 +1,6 @@
 // Claude Code test-kit checks for the auto-clear mod (run by `claude plugin test`,
-// not bun). tests/integration/auto-clear-mod-engine.test.ts copies this file into
-// a scratch plugin as tests/engine.test.ts next to the bundled hooks module.
+// not bun). tests/integration/hooks-module-engine.test.ts copies this file into
+// a scratch plugin's tests/ folder, next to the bundled hooks module.
 // Each stub answers in Claude Code's place: the context reading, /clear, prompts.
 import { expect, mock, test } from 'claude-code/testing'
 

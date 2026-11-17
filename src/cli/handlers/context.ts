@@ -44,6 +44,7 @@ import { hasPendingInstallSetup } from '../../shared/setup-install.js';
 import { projectsQueryString } from '../../shared/project-list.js';
 import { CONTEXT_OUTPUT_LIMIT } from '../../services/context/ContextBudget.js';
 import { consumeTelemetryNotice } from '../../services/telemetry/consent.js';
+import { writeSessionStartCardSlot } from '../session-start-card-slot-writer.js';
 import {
   fetchTeamBrief,
   formatTeamBrief,
@@ -166,6 +167,31 @@ export function composeSessionStartSystemMessage(
     });
   }
   return systemMessage;
+}
+
+/**
+ * What the session-start card draws (src/shared/session-start-card-slot.ts):
+ * the banner's header lines and the terminal preview. The closing line is not
+ * in it: the hook message carries that one.
+ */
+export function sessionStartCardText(preview: string, bannerHeader: string): string {
+  return [bannerHeader, preview.replace(/^\n+/, '').trimEnd()].filter(Boolean).join('\n\n');
+}
+
+/**
+ * The SessionStart `systemMessage` when the session-start card draws the
+ * banner: any notice, then the closing line with the count of rows the card
+ * shows. With no notice it is one line. That is what the card is for: the
+ * stream Claude Code sends to the Claude app repeats the hook's name on every
+ * line of a hook message, and the terminal shows it once.
+ */
+export function composeSessionStartCardSystemMessage(
+  preview: string,
+  viewerUrl: string,
+  userNotice: string | null,
+): string {
+  const footer = sessionStartBannerFooter(viewerUrl, countTerminalTimelineRows(preview));
+  return userNotice ? `${userNotice}\n\n${footer}` : footer;
 }
 
 /**
@@ -610,12 +636,15 @@ export const contextHandler: EventHandler = {
       ? TEAMBRAIN_DISCOVERY_LINE
       : null;
     if (teamBrainDiscoveryLine) markTeamBrainDiscoveryNoticeShown();
-    const systemMessage = composeSessionStartSystemMessage(
-      showsBanner ? displayContent : null,
-      sessionStartBannerHeader(trialDaysLine, teamBrainDiscoveryLine, settings.CLAUDE_MEM_PRO_PLAN),
-      viewerUrl,
-      userNotice(workerOutageNotice),
-    );
+    const bannerHeader = sessionStartBannerHeader(trialDaysLine, teamBrainDiscoveryLine, settings.CLAUDE_MEM_PRO_PLAN);
+    const notice = userNotice(workerOutageNotice);
+    // Claude Code's session-start card named a file: once the banner is in it
+    // the card draws it, and the hook message is the closing line alone.
+    const cardDrawsBanner = showsBanner && input.sessionStartCardFile !== undefined
+      && writeSessionStartCardSlot(input.sessionStartCardFile, input.sessionId, sessionStartCardText(displayContent, bannerHeader));
+    const systemMessage = cardDrawsBanner
+      ? composeSessionStartCardSystemMessage(displayContent, viewerUrl, notice)
+      : composeSessionStartSystemMessage(showsBanner ? displayContent : null, bannerHeader, viewerUrl, notice);
 
     return {
       hookSpecificOutput: {

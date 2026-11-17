@@ -1,12 +1,11 @@
 /**
- * The auto-clear mod's hooks module: Claude Code loads the bundle of this file
- * (plugin/hooks/auto-clear.js, named by `modules` in plugin/hooks/hooks.json)
- * and calls `register`. Claude Code versions without mods ignore `modules`.
+ * The auto-clear mod's hooks (controller.ts says what auto-clear is). They are
+ * registered by src/mods/hooks-module.ts, claude-mem's one hooks module.
  *
  * Claude Code reads what a hooks module hooks and calls off its source, so
- * `register` is a function declaration, every hook is `on("<event>", hook)`,
- * and `$` is only ever spelled `$.<namespace>.<method>(…)` with literal names:
- * it is never passed to a helper, which is why the host below is built inline.
+ * every hook is `on("<event>", hook)`, and `$` is only ever spelled
+ * `$.<namespace>.<method>(…)` with literal names: it is never passed to a
+ * helper, which is why the host below is built inline.
  */
 import { AutoClearController, type AutoClearHost } from './controller.js';
 import type { On } from './mod-api.js';
@@ -23,7 +22,7 @@ import {
 /** settings.json is read again at most this often, so a change applies within a minute without a read per tool call. */
 const SETTINGS_TTL_MS = 30_000;
 
-export function register(on: On): void {
+export function registerAutoClear(on: On): void {
   let controller: AutoClearController | null = null;
 
   on('session.start', async ($, e, next) => {
