@@ -814,7 +814,7 @@ describe('story in parts (#6226)', () => {
     return { asks, ask };
   }
 
-  const storyTask = (database: Database, dir: string, unplaced: number) => buildRefreshTask({ localDeviceId: () => '', needs: { due: 0, ungrouped: 0, goalsStale: false, unplaced, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, saveFocus: focusWriter(database).save });
+  const storyTask = (database: Database, dir: string, unplaced: number, clock: () => number = () => NOW) => buildRefreshTask({ localDeviceId: () => '', needs: { due: 0, ungrouped: 0, goalsStale: false, unplaced, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: clock, saveFocus: focusWriter(database).save });
 
   it('writes the story in parts when every moved review in one question would exceed the budget', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-story-parts-'));
@@ -865,6 +865,66 @@ describe('story in parts (#6226)', () => {
       const story = readLedger(dir).story;
       expect(story.narrative).toBe('Narrative from part 2.');
       expect(story.preferences.map((preference: any) => preference.preference)).toEqual(['Stored preference.']);
+    } finally { database.close(); rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('records the story as of its read, so a review that moves while a later part is written is told next time', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-story-parts-moved-'));
+    const database = storyDatabase(50);
+    try {
+      const groupIds = seedMovedReviews(database, dir, 50);
+      const LATER = NOW + 60_000;
+      let clock = NOW;
+      const movedWhileWriting = groupIds[0];
+      const { asks, ask } = storyAskRecorder();
+      const task = storyTask(database, dir, 50, () => clock);
+      expect(await task.run(async prompt => {
+        if (prompt.includes('Do only section 4') && asks.length === 1) {
+          // Part 2 is being written: time passes and one review's facts move.
+          clock = LATER;
+          let show: any;
+          runCli(['show', movedWhileWriting], { dir, database, now: LATER, print: value => { show = value; } });
+          const reviewPath = join(dir, 'moved-review.json');
+          writeFileSync(reviewPath, JSON.stringify({ ...bigReview(show), percent: 80 }));
+          runCli(['record-progress', reviewPath], { dir, database, now: LATER, print: () => {} });
+        }
+        return ask(prompt);
+      }, 'api')).toBe('50 requests placed, story written in 2 parts.');
+      // The story is stamped with the time story-input was read, not the time the last part finished.
+      expect(readLedger(dir).story.writtenAt).toBe(new Date(NOW).toISOString());
+      let next: any;
+      runCli(['story-input'], { dir, database, now: LATER, print: value => { next = value; } });
+      expect(next.reviews.map((review: any) => review.groupId)).toEqual([movedWhileWriting]);
+    } finally { database.close(); rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('a later part that fails leaves the stored story untouched, and the next refresh tells every moved review again', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-story-parts-failed-'));
+    const database = storyDatabase(50);
+    try {
+      const groupIds = seedMovedReviews(database, dir, 50);
+      writeFileSync(join(dir, 'story.json'), JSON.stringify({ narrative: 'The story so far.', preferences: [{ preference: 'Stored preference.', kind: 'directive', supportCount: 1, quotes: [] }], writtenAt: new Date(NOW - DAY).toISOString() }));
+      const before = readFileSync(join(dir, 'story.json'), 'utf8');
+      let storyAsks = 0;
+      const error = await storyTask(database, dir, 50).run(async prompt => {
+        if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
+        if (prompt.includes('Do only section 4')) {
+          storyAsks++;
+          // Part 1 answers well; part 2 answers without a narrative, on its first try and on its retry.
+          return JSON.stringify(storyAsks === 1 ? { narrative: 'Part 1 only.', preferences: [] } : { preferences: [] });
+        }
+        throw new Error(`Unexpected prompt: ${prompt.slice(-200)}`);
+      }, 'api').then(() => null, failure => failure as Error);
+      expect(error).not.toBeNull();
+      expect(storyAsks).toBe(3);
+      // Neither the narrative nor writtenAt moved: part 1's answer was never recorded.
+      expect(readFileSync(join(dir, 'story.json'), 'utf8')).toBe(before);
+      const { asks, ask } = storyAskRecorder();
+      expect(await storyTask(database, dir, 0).run(ask, 'api')).toContain('story updated in 2 parts.');
+      const seen = asks.flatMap(entry => entry.input.reviews.map((review: any) => review.groupId));
+      expect([...seen].sort()).toEqual([...groupIds].sort());
+      expect(asks[0].input.previousStory.narrative).toBe('The story so far.');
+      expect(readLedger(dir).story.narrative).toBe('Narrative from part 2.');
     } finally { database.close(); rmSync(dir, { recursive: true, force: true }); }
   });
 

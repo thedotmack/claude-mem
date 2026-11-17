@@ -63,11 +63,15 @@ export interface GroupingInput {
   remaining: number;
 }
 export function validateGroupingAnswer<T>(answer: T, input: GroupingInput): T;
-export const STORY_NARRATIVE_MAX: number;
-export const STORY_NARRATIVE_TARGET: number;
-export interface StoryPart { part: string; chars: number; words: number; budgetChars: number; budgetWords: number; overBudgetChars: number }
-export function storyParts(narrative: string): StoryPart[];
-export function storyChaptersToMerge(narrative: string): number;
 export interface StoryPreference { preference: string; kind: string; supportCount: number; quotes: Array<{ quote: string; at: string | null }> }
 export interface ValidatedStory { narrative: string; preferences: StoryPreference[] }
 export function validateStory(story: any): ValidatedStory;
+export interface StoryPart { part: string; chars: number; words: number; budgetChars: number; budgetWords: number; overBudgetChars: number }
+export interface StoryInput {
+  groups: number; update: boolean; narrativeTarget: number; narrativeLimit: number;
+  previousNarrativeChars: number; roomChars: number; condenseChars: number;
+  previousParts: StoryPart[]; mergeOldestChapters: number;
+  reviews: any[];
+  previousStory: (Record<string, any> & { narrative: string; preferences: any[] }) | null;
+}
+export function storyInput(groups: number, reviews: any[], story: (Record<string, any> & { narrative: string; preferences?: any[]; writtenAt?: string }) | null): StoryInput;
