@@ -135,7 +135,7 @@ function resolveSourceWithinRoot(source: string, root: string): { resolved: stri
 export interface MemoryFrontmatter {
   name?: string;
   description?: string;
-  /** metadata.type — e.g. project | feedback | reference | user. */
+  /** metadata.type, or top-level type before native stamping — project | feedback | reference | user. */
   type?: string;
   /** metadata.originSessionId — the session that produced this memory. */
   originSessionId?: string;
@@ -191,6 +191,7 @@ export function parseMemoryFrontmatter(raw: string): { frontmatter: MemoryFrontm
   if (close === -1) return { frontmatter: {}, body: raw };
 
   const fm: MemoryFrontmatter = {};
+  let topLevelType: string | undefined;
   let inMetadata = false;
   let metadataIndent: number | undefined;
   for (let i = 1; i < close; i++) {
@@ -209,6 +210,7 @@ export function parseMemoryFrontmatter(raw: string): { frontmatter: MemoryFrontm
       metadataIndent = undefined;
       if (key === 'name') fm.name = unquote(value);
       else if (key === 'description') fm.description = unquote(value);
+      else if (key === 'type') topLevelType = unquote(value);
       continue;
     }
     // Only direct children belong to this note's metadata. Unknown fields may
@@ -222,6 +224,9 @@ export function parseMemoryFrontmatter(raw: string): { frontmatter: MemoryFrontm
     }
   }
 
+  // Notes written outside Claude Code's Write/Edit stamper keep their type at the root.
+  // Preserve the existing stamped value when a file contains both spellings.
+  if (fm.type === undefined && topLevelType !== undefined) fm.type = topLevelType;
   const body = lines.slice(close + 1).join('\n').replace(/^\n+/, '');
   return { frontmatter: fm, body };
 }
