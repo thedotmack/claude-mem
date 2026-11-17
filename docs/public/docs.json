@@ -119,6 +119,7 @@
           "contextforge",
           "openclaw-integration",
           "hermes-integration",
+          "hermes-desktop-integration",
           "kimi-integration",
           "omo-native-integration",
           "cline",
@@ -131,13 +132,6 @@
           "eve-integration",
           "notion-export",
           "obsidian"
-        ]
-      },
-      {
-        "group": "Apps & tools",
-        "icon": "desktop",
-        "pages": [
-          "hermes-desktop-integration"
         ]
       },
       {
