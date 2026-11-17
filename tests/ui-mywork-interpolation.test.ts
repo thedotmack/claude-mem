@@ -200,7 +200,9 @@ function pageMessage(file: URL, template: string, values: Record<string, unknown
 for (const language of ['en', 'zh-CN']) {
   test(`request metadata and conditional rules use complete sentences (${language})`, () => {
     const request = { askedBy: '$& {time}', startedAt: 'Nov 3', runningFor: '2 min', stage: 'Building' };
-    const metadata = pageMessage(new URL('request-detail.tsx', components), 'Asked by {name} · started {time} · {duration} · {stage}', { request }, language);
+    // The duration is worded by live-motion.tsx durationWords; an older worker's text shows as it is, as here.
+    const durationWords = (milliseconds: number | undefined, olderWorkerText: string) => milliseconds === undefined ? olderWorkerText : String(milliseconds);
+    const metadata = pageMessage(new URL('request-detail.tsx', components), 'Asked by {name} · started {time} · {duration} · {stage}', { request, durationWords }, language);
     const stage = language === 'en' ? request.stage : myworkZh[request.stage] ?? request.stage;
     assert.equal(metadata, language === 'en' ? `Asked by ${request.askedBy} · started Nov 3 · 2 min · ${stage}` : `由 ${request.askedBy} 发起 · 开始于 Nov 3 · 2 min · ${stage}`);
     const checked = { ...request, checkedAt: '$& {checked}' };
@@ -214,3 +216,17 @@ for (const language of ['en', 'zh-CN']) {
     }, language), language === 'en' ? 'Why it’s suggested: $& {reason}' : '建议原因：$& {reason}');
   });
 }
+
+// FeedbackLink and GitHubStars (components/bits.tsx) keep their aria-labels, and each name must hold the words the
+// button shows (label in name, WCAG 2.5.3): French named them without the visible "Commentaires" and "Ajouter aux favoris".
+test('the Star and Feedback buttons are named with their visible words in every language', async () => {
+  const { myworkKo } = await import('../src/ui/i18n/mywork-ko.ts');
+  const { myworkTr } = await import('../src/ui/i18n/mywork-tr.ts');
+  const { myworkFr } = await import('../src/ui/i18n/mywork-fr.ts');
+  for (const [locale, catalog] of Object.entries({ zh: myworkZh, ko: myworkKo, tr: myworkTr, fr: myworkFr })) {
+    for (const [visible, name] of [['Star', 'Star claude-mem on GitHub'], ['Feedback', 'Send feedback about My Work on GitHub']]) {
+      const shown = catalog[visible].toLocaleLowerCase(locale);
+      assert.ok(catalog[name].toLocaleLowerCase(locale).includes(shown), `${locale}: "${catalog[name]}" does not hold "${catalog[visible]}"`);
+    }
+  }
+});

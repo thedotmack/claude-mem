@@ -22,6 +22,13 @@ const OTHER_LABEL = 'Other'
 export const byFocusPriority = (a: FocusArea, b: FocusArea) =>
   (a.ownerRank ?? Infinity) - (b.ownerRank ?? Infinity) || (a.priorityRank ?? Infinity) - (b.priorityRank ?? Infinity) || a.name.localeCompare(b.name)
 
+/**
+ * A suggested area asks the owner to keep or dismiss it, so its header (components/focus-header.tsx) holds the screen's
+ * one solid orange button, Keep (G1: one primary per screen). The one rule: the header draws Keep and Dismiss by it,
+ * and a focus page's summary (pages/my-work.tsx) asks it before giving Reply the orange.
+ */
+export const asksToKeepOrDismiss = (area: Pick<FocusArea, 'status'>) => area.status === 'suggested'
+
 /** An area a request can be moved into (the worker's isPlaceableArea): kept or suggested, not merged. */
 export const isPlaceableFocusArea = (area: FocusArea) => (area.status === 'kept' || area.status === 'suggested') && !area.mergedInto
 

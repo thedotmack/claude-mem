@@ -61,3 +61,12 @@ export function focusOverview(areas: readonly FocusArea[], requests: readonly Re
 export function keptFocusAreas(areas: readonly FocusArea[]): FocusArea[] {
   return areas.filter((area) => area.status === 'kept' && !area.mergedInto).sort(byFocusPriority)
 }
+
+/**
+ * The board's order (c-focus-overview, page-01): areas that need the owner first, then the rest, each part keeping the
+ * owner's saved order. Display only: the saved order (ownerRank) is unchanged, so the area menu's "Move up" still
+ * counts in it (Phase 6).
+ */
+export function needsOwnerFirst(rows: readonly FocusOverviewRow[]): FocusOverviewRow[] {
+  return [...rows.filter((row) => row.needsYou > 0), ...rows.filter((row) => row.needsYou === 0)]
+}

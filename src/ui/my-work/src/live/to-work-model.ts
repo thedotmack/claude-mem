@@ -1,12 +1,12 @@
 // The one pure mapper from a WorkViewSnapshot (local worker today, cmem.ai later) to the WorkModel the screens use.
 // It follows the plan's mapping table. Where the snapshot has no value, the field takes the table's "missing" value;
 // nothing is estimated or made up (spec §12). Relative imports with .ts extensions so `node --test` can load it.
-import { assertConsistentRequest, type WorkProductKind, type Agent, type AgentTool, type CurrentPeriod, type Device, type PastPeriod, type Request, type SkillRun } from '../data.ts'
+import { assertConsistentRequest, type WorkProductKind, type Agent, type AgentTool, type CurrentPeriod, type Device, type NextStep, type NextStepMissing, type PastPeriod, type Request, type SkillRun } from '../data.ts'
 import { createFocusAreaResolver, toFocusModel, type MinedGoalItem } from './to-focus-model.ts'
 import { normalizeRequestStatus, presentStatus, STALE_AFTER_MS, type NormalizedStatus } from './status-normalization.ts'
 import type { MappedWorkModel, RequestReadError } from './work-data-source.ts'
 import type { OwnerRule, RuleQuote, RuleRecord } from '../data-rules.ts'
-import type { AutoRefresh, BuildStory } from './work-data-source.ts'
+import type { AutoRefresh, BuildStory, StoryChapter } from './work-data-source.ts'
 import { measuredEstimate } from './measured-estimate.ts'
 import { repeatsOwnerWords } from './prompt-echo.ts'
 import { SOLO_REQUESTER } from './work-view-overview.ts'
@@ -26,13 +26,57 @@ export const UNRECORDED_AGENT: Agent = { id: 'agent-not-recorded', tool: 'other'
 export const RECORDED_SESSION_ROLE = 'Recorded session'
 export const SUBAGENT_ROLE_PREFIX = 'Subagent · '
 /**
- * The English filler written in place of a next step when none is recorded, here and by older workers. Its one
- * definition: the UI (components/bits.tsx) and the shared page (to-shared-focus.ts) import it, and the UI treats it as
- * a missing step (decision G3). Phase 3 of the pro-max-v16 plan stops writing it.
+ * The English filler workers before 16.0.0 wrote in place of a next step when none was recorded. The mapper now
+ * writes the missing value instead (NextStepMissing, decision G3); this stays so nextStepShown can read an older
+ * worker's payload (G19: the 15.19.0 worker still sends it), and as the shared page's English for that value.
  */
 export const NEXT_STEP_NOT_RECORDED = 'Next step not recorded'
-/** A request is built from its prompts; until an agent records work it has only asks. */
-const NO_WORK_YET = 'No agent work recorded yet'
+/**
+ * The same filler for a request with only asks, before any agent recorded work (the `no-agent-work` value now). Like
+ * NEXT_STEP_NOT_RECORDED it is not a step: nextStepShown reads it as missing, and the shared page still words that
+ * value with it (live/to-shared-focus.ts).
+ */
+export const NO_WORK_YET = 'No agent work recorded yet'
+/**
+ * The English that workers before 16.0.0 wrote for the step kinds that are not recorded words (data.ts NextStepKind):
+ * a checked result's "Ship it", and "Unblock: " before a blocked request's step. nextStepShown reads them as their
+ * kinds (G19), and the shared page still writes them, so its words stay as they were (live/to-shared-focus.ts).
+ */
+export const LEGACY_SHIP_STEP = 'Ship it'
+export const LEGACY_UNBLOCK_PREFIX = 'Unblock: '
+/** The fillers an older worker may send, and the missing value each one stands for. */
+const LEGACY_MISSING_NEXT_STEP: ReadonlyMap<string, NextStepMissing> = new Map([
+  [NEXT_STEP_NOT_RECORDED, 'not-recorded'],
+  [`${LEGACY_UNBLOCK_PREFIX}${NEXT_STEP_NOT_RECORDED}`, 'not-recorded'],
+  [NO_WORK_YET, 'no-agent-work'],
+  [`${LEGACY_UNBLOCK_PREFIX}${NO_WORK_YET}`, 'no-agent-work'],
+])
+
+/** What a next-step line shows (decision G3): a step of one kind (data.ts NextStepKind), or why none is recorded. */
+export type ShownNextStep =
+  | { kind: 'step'; who: NextStep['who']; step: 'recorded' | 'unblock'; text: string }
+  | { kind: 'step'; who: NextStep['who']; step: 'ship'; text?: undefined }
+  | { kind: 'missing'; who: NextStep['who'] | null; missing: NextStepMissing }
+
+/**
+ * What a request's next-step line shows (decision G3): its step and the step's kind, or why none is recorded. Reads
+ * the values this mapper writes and the English older workers wrote in their place (fillers, "Ship it", "Unblock: …";
+ * G19), so every screen and the shared page decide it in this one place. An empty text counts as not recorded.
+ */
+export function nextStepShown(next: Partial<NextStep> | null | undefined): ShownNextStep {
+  const who = next?.who ?? null
+  if (next?.missing) return { kind: 'missing', who, missing: next.missing }
+  if (next?.kind === 'ship' && who) return { kind: 'step', who, step: 'ship' }
+  const text = next?.text?.trim() ?? ''
+  const legacy = LEGACY_MISSING_NEXT_STEP.get(text)
+  if (!text || legacy || !who) return { kind: 'missing', who, missing: legacy ?? 'not-recorded' }
+  if (text === LEGACY_SHIP_STEP) return { kind: 'step', who, step: 'ship' }
+  if (text.startsWith(LEGACY_UNBLOCK_PREFIX)) {
+    const step = text.slice(LEGACY_UNBLOCK_PREFIX.length).trim()
+    return step ? { kind: 'step', who, step: 'unblock', text: step } : { kind: 'missing', who, missing: 'not-recorded' }
+  }
+  return { kind: 'step', who, step: next?.kind === 'unblock' ? 'unblock' : 'recorded', text }
+}
 const KNOWN_TOOLS: AgentTool[] = ['claude', 'codex', 'gemini']
 const PLATFORM_LABEL: Record<string, string> = { claude: 'Claude Code', codex: 'Codex', gemini: 'Gemini' }
 const EVIDENCE_URL = /^\/api\/work-view\/evidence\/(work-state|observation|prompt|summary|session)\/\d+$/
@@ -87,17 +131,6 @@ function formatPromptStamp(epoch: number) {
   const two = (value: number) => String(value).padStart(2, '0')
   return `${two(date.getMonth() + 1)}-${two(date.getDate())} ${two(date.getHours())}:${two(date.getMinutes())}`
 }
-/** How long a request has been going, as the card shows it. Exported so the card can keep an open request's time current. */
-export function formatDuration(milliseconds: number) {
-  const minutes = Math.max(0, Math.floor(milliseconds / 60000))
-  if (minutes < 1) return 'Just started'
-  if (minutes < 60) return `${minutes} min`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours} hr`
-  const days = Math.floor(hours / 24)
-  return `${days} day${days === 1 ? '' : 's'}`
-}
-
 const lastPathSegment = (path: string | null) => path?.split('/').filter(Boolean).at(-1) ?? null
 /** Conversation and agent keys are JSON arrays: ["conversation", "<platform>", "<session uuid>"]. */
 function parseRecordKey(key: string): string[] {
@@ -121,10 +154,15 @@ export function toAgent(agent: WorkViewAgent): Agent {
   }
 }
 
-function nextTextFor(status: NormalizedStatus, recordedNext: string) {
-  if (status === 'checked') return 'Ship it'
-  if (status === 'blocked') return `Unblock: ${recordedNext}`
-  return recordedNext
+/**
+ * The next step a request carries, as values the screens word (data.ts NextStepKind): a checked result is the owner's
+ * to ship; a blocked one puts its recorded step on them as one that unblocks it; with no recorded step it carries why
+ * (decision G3). Never English text.
+ */
+function nextStepFor(status: NormalizedStatus, who: NextStep['who'], recordedNext: string | null, missing: NextStepMissing): NextStep {
+  if (status === 'checked') return { who, kind: 'ship' }
+  const kind = status === 'blocked' ? { kind: 'unblock' as const } : {}
+  return recordedNext === null ? { who, ...kind, missing } : { who, ...kind, text: recordedNext }
 }
 
 /** The review's milestones, oldest first, as build-story steps. Every milestone already happened. */
@@ -165,7 +203,9 @@ function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: numb
   const { state, stage, who } = presentStatus(status, now - updatedAt <= STALE_AFTER_MS)
   const recordedNext = (copyReady && cleanText(copy.next, 240))
     || cleanText(raw.items.find((item) => item.nextStep?.text)?.nextStep?.text, 140)
-    || (raw.items.length || raw.activity.length || recordedReview ? NEXT_STEP_NOT_RECORDED : NO_WORK_YET)
+    || null
+  // With no step recorded: did any agent record work (items, activity or a review), or are there only asks?
+  const missingNext: NextStepMissing = raw.items.length || raw.activity.length || recordedReview ? 'not-recorded' : 'no-agent-work'
   const agentId = agents.some((agent) => agent.id === raw.agentIds[0]) ? raw.agentIds[0] : UNRECORDED_AGENT.id
   const started = raw.startedAtEpoch
   const reviewedAt = review ? Date.parse(review.checkedAt ?? '') : NaN
@@ -183,9 +223,9 @@ function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: numb
   const titleRepeatsPrompt = !!title && repeatsOwnerWords(title, ownerWords)
   const summary = raw.groupId && recordedReview ? (reviewCounts ? recordedReview.summary?.trim() || null : null) : copyReady && copy.summary?.trim() ? copy.summary.trim() : null
   const summaryRepeatsPrompt = !!summary && repeatsOwnerWords(summary, ownerWords)
-  // Check the recorded text before a blocked request adds its "Unblock:" label.
-  // Checked requests use a fixed next step instead of this recorded text.
-  const nextRepeatsPrompt = status !== 'checked' && repeatsOwnerWords(recordedNext, ownerWords)
+  // Checked against the recorded text alone, whatever kind of step it is (a blocked request's included).
+  // A checked request's step is the owner's ship, not this recorded text.
+  const nextRepeatsPrompt = status !== 'checked' && recordedNext !== null && repeatsOwnerWords(recordedNext, ownerWords)
 
   return assertConsistentRequest({
     id: raw.id,
@@ -203,7 +243,7 @@ function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: numb
     agentId,
     startedAt: started ? formatDateTime(started) : 'Start not recorded',
     startedAtIso: started ? new Date(started).toISOString() : undefined,
-    runningFor: started ? formatDuration((completedEpoch ?? now) - started) : 'Not recorded',
+    runningForMs: started ? (completedEpoch ?? now) - started : null,
     // Counts up only while the request is open: not closed, and not completed by a recorded time or a lifecycle that
     // says complete (the projection's own rule, even when the lifecycle carries no time).
     runningLive: started && completedEpoch === null && status !== 'closed' && raw.lifecycle?.complete !== true ? true : undefined,
@@ -219,8 +259,8 @@ function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: numb
       history: readingsStopShort || (review && readings.length === 0) ? undefined : readings.map((reading) => reading.percent),
       completedAt: status === 'shipped' && completedEpoch ? formatDateTime(completedEpoch) : undefined,
     },
-    estimate: measuredEstimate(readings, status === 'shipped'),
-    next: { who, text: nextTextFor(status, recordedNext) },
+    estimate: measuredEstimate(readings, status === 'shipped', now),
+    next: nextStepFor(status, who, recordedNext, missingNext),
     // No agent activity yet: the card shows the human's own asks instead.
     terminal: raw.activity.length
       ? raw.activity.slice(0, 4).reverse().map((activity) => cleanText(`${activity.kind} ${activity.title}${activity.detail ? `: ${activity.detail}` : ''}`, 160)).filter(Boolean)
@@ -442,7 +482,12 @@ function toRulesModel(snapshot: Pick<WorkViewSnapshot, 'rules' | 'ruleScopes' | 
 function toAutoRefresh(raw: WorkViewRefresh | null): AutoRefresh | null {
   if (!raw) return null
   const finished = Date.parse(raw.finishedAt ?? '')
-  return { state: raw.state, finishedAt: Number.isFinite(finished) ? formatDateTime(finished) : null, error: raw.state === 'failed' || raw.state === 'waiting-for-agent' ? raw.error?.trim() || null : null }
+  return {
+    state: raw.state,
+    finishedAt: Number.isFinite(finished) ? formatDateTime(finished) : null,
+    error: raw.state === 'failed' || raw.state === 'waiting-for-agent' ? raw.error?.trim() || null : null,
+    ...(Number.isFinite(finished) ? { finishedAtIso: new Date(finished).toISOString() } : {}),
+  }
 }
 
 /** The build story request-progress wrote: its first paragraph is My Work's recap. No story, no recap. */
@@ -452,8 +497,17 @@ function toBuildStory(story: WorkViewBuildStory | null, now: number): BuildStory
   const recap = blocks.find((block) => !block.startsWith('#'))
   if (!recap) return null
   const paragraphs = blocks.map((block) => block.replace(/^#+\s*/, ''))
+  // Which blocks were headings: the sheet draws them as headings over their paragraphs (c-work-story-sheet).
+  const chapters: StoryChapter[] = []
+  for (const block of blocks) {
+    if (block.startsWith('#')) chapters.push({ heading: block.replace(/^#+\s*/, ''), paragraphs: [] })
+    else if (chapters.length) chapters[chapters.length - 1].paragraphs.push(block)
+    else chapters.push({ heading: null, paragraphs: [block] })
+  }
   const writtenAt = Date.parse(story?.writtenAt ?? '')
-  return { recap, paragraphs, writtenAt: Number.isFinite(writtenAt) ? formatRecordTime(writtenAt, now) : null }
+  // The ISO time too: it dates the headings' UTC days and times, which the page shows in the reader's own clock.
+  const written = Number.isFinite(writtenAt)
+  return { recap, paragraphs, writtenAt: written ? formatRecordTime(writtenAt, now) : null, ...(written ? { writtenAtIso: new Date(writtenAt).toISOString() } : {}), chapters }
 }
 
 export function toWorkModel(snapshot: WorkViewSnapshot, now: number): MappedWorkModel {

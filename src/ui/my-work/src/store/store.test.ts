@@ -10,6 +10,7 @@ import { sampleSource } from '../live/sample-source.ts'
 import type { UsageReport } from '../live/usage.ts'
 import type { RuleSaveResult, WorkDataSource, WorkModel } from '../live/work-data-source.ts'
 import { createBoundStore } from './create-store.ts'
+import { OLDEST_MIGRATED_PREFERENCES_VERSION, PREFERENCES_STORAGE_KEY, PREFERENCES_VERSION } from './preferences.ts'
 import { themeChoiceInUse } from './slices/view-slice.ts'
 import type { StoreEnvironment } from './store-types.ts'
 
@@ -264,9 +265,47 @@ describe('saving work', () => {
     await settle()
     reads[1].reject(new Error('worker restarting'))
     await saving
-    assert.match(store.getState().work.refreshError ?? '', /^Saved\. .*worker restarting/)
+    assert.match(store.getState().work.readAfterSaveFailure ?? '', /worker restarting/)
     const load = store.getState().work.load
     assert.equal(load.state === 'loaded' && load.model.requests.length, 4)
+  })
+
+  it('the next read that succeeds clears a failed read after a save (Try again on the notice)', async () => {
+    const { store } = testStore()
+    const saves: ReturnType<typeof deferred<RuleSaveResult>>[] = []
+    const { source, feed, reads } = ruleSaveSource(saves)
+    store.getState().startWorkSource(source)
+    feed.onModel(withRequests(1))
+    const saving = store.getState().saveRuleChange({ action: 'turn-off', ruleId: 'x' })
+    feed.onModel(withRequests(4))
+    saves[0].resolve({ model: withRequests(3), savedRuleId: null })
+    await settle()
+    reads[1].reject(new Error('worker restarting'))
+    await saving
+    assert.ok(store.getState().work.readAfterSaveFailure)
+    const retrying = store.getState().retryWorkRead()
+    reads[2].resolve(withRequests(4))
+    await retrying
+    assert.equal(store.getState().work.readAfterSaveFailure, null)
+  })
+
+  it('a newer model from the live feed clears the notice that a save’s follow-up read failed', async () => {
+    const { store } = testStore()
+    const saves: ReturnType<typeof deferred<RuleSaveResult>>[] = []
+    const { source, feed, reads } = ruleSaveSource(saves)
+    store.getState().startWorkSource(source)
+    feed.onModel(withRequests(1))
+    const saving = store.getState().saveRuleChange({ action: 'turn-off', ruleId: 'x' })
+    feed.onModel(withRequests(4))
+    saves[0].resolve({ model: withRequests(3), savedRuleId: null })
+    await settle()
+    reads[1].reject(new Error('worker restarting'))
+    await saving
+    assert.ok(store.getState().work.readAfterSaveFailure)
+    feed.onModel(withRequests(5))
+    assert.equal(store.getState().work.readAfterSaveFailure, null, 'the screen shows the worker’s newer work, so it is not behind')
+    const load = store.getState().work.load
+    assert.equal(load.state === 'loaded' && load.model.requests.length, 5)
   })
 
   it('a refusal shows the snapshot the worker refused against, then rejects with the reason', async () => {
@@ -342,6 +381,16 @@ describe('where the person is', () => {
     assert.deepEqual(urls.at(-1), { href: 'http://localhost/', replace: true })
     feed.onModel(LOCAL_MODEL)
     assert.equal(store.getState().view.openRequest, null, 'it never reopens by itself')
+  })
+
+  it('Reply opens the drawer on its reply box; the address is the plain drawer, and a later open is plain (G2)', () => {
+    const { store, urls } = testStore()
+    const [first, second] = LOCAL_MODEL.requests
+    store.getState().openRequestDrawer(first, { reply: true })
+    assert.equal(store.getState().view.openRequest?.replyAsked, true)
+    assert.equal(urls.at(-1)?.href, `http://localhost/?request=${first.id}`)
+    store.getState().openRequestDrawer(second)
+    assert.equal(store.getState().view.openRequest?.replyAsked, undefined)
   })
 
   it('the home anchors have their own addresses; asking for one scrolls there, Back does not', () => {
@@ -430,17 +479,31 @@ describe('display preferences', () => {
   it('leaves unknown saved values at their defaults, drops the team view, and starts the theme from ?theme=', () => {
     const storage = memoryStorage({ 'claude-mem:my-work:preferences': JSON.stringify({ version: 1, state: { dark: false, theme: 'sepia', listView: 'team', filter: 'mine', sort: 7, focusArtwork: 'animated' } }) })
     const view = testStore({ storage, href: 'http://localhost/?theme=dark' }).store.getState().view
-    assert.deepEqual([themeChoiceInUse(view), view.listView, view.filter, view.sort, view.focusArtwork], ['dark', 'cards', 'all', 'attention', 'full'])
+    assert.deepEqual([themeChoiceInUse(view), view.listView, view.filter, view.sort, view.focusArtwork], ['dark', 'cards', 'all', 'attention', 'compact'])
     assert.equal(themeChoiceInUse(testStore({ storage }).store.getState().view), 'system', 'an unknown saved theme falls back to the system')
     assert.equal(themeChoiceInUse(testStore({ storage, href: 'http://localhost/?theme=sepia' }).store.getState().view), 'system', 'an unknown ?theme= is ignored')
   })
 
-  it('drops preferences saved by another version, as the pre-paint script does', () => {
-    for (const version of [0, 2]) {
-      const storage = memoryStorage({ 'claude-mem:my-work:preferences': JSON.stringify({ version, state: { theme: 'dark', listView: 'list' } }) })
+  it('drops preferences saved by a version it cannot migrate, as the pre-paint script does', () => {
+    for (const version of [OLDEST_MIGRATED_PREFERENCES_VERSION - 1, PREFERENCES_VERSION + 1]) {
+      const storage = memoryStorage({ [PREFERENCES_STORAGE_KEY]: JSON.stringify({ version, state: { theme: 'dark', listView: 'list' } }) })
       const view = testStore({ storage }).store.getState().view
       assert.deepEqual([view.theme, view.listView], ['system', 'cards'], `version ${version}`)
     }
+  })
+
+  it('opens Compact for a browser whose version-1 save held the old default, Full; a choice of Full after that stays Full', () => {
+    // 15.19.0 saved 'full' on every visit, as if chosen (persist writes after every state change). Its other choices stay.
+    const storage = memoryStorage({ [PREFERENCES_STORAGE_KEY]: JSON.stringify({ version: 1, state: { listView: 'list', filter: 'working', sort: 'started', focusArtwork: 'full', theme: 'dark' } }) })
+    const first = testStore({ storage }).store
+    const view = first.getState().view
+    assert.deepEqual([view.focusArtwork, view.listView, view.filter, view.sort, view.theme], ['compact', 'list', 'working', 'started', 'dark'])
+    assert.equal(JSON.parse(storage.items.get(PREFERENCES_STORAGE_KEY)!).version, PREFERENCES_VERSION, 'the migrated choices are saved in this version')
+    first.getState().setFocusArtwork('full')
+    for (const reload of [1, 2]) assert.equal(testStore({ storage }).store.getState().view.focusArtwork, 'full', `a chosen Full survives reload ${reload}`)
+    // A version-1 save that chose Off or Compact keeps it: only the old default is not a choice.
+    const off = memoryStorage({ [PREFERENCES_STORAGE_KEY]: JSON.stringify({ version: 1, state: { focusArtwork: 'off' } }) })
+    assert.equal(testStore({ storage: off }).store.getState().view.focusArtwork, 'off')
   })
 
   it('G8: the theme is one saved choice; ?theme= wins for the visit, and choosing one in the menu saves it and drops ?theme=', () => {
@@ -471,7 +534,8 @@ describe('display preferences', () => {
   it('keeps existing preferences when artwork density is absent and remembers turning artwork off', () => {
     const storage = memoryStorage({ 'claude-mem:my-work:preferences': JSON.stringify({ version: 1, state: { listView: 'list', filter: 'working', sort: 'started' } }) })
     const first = testStore({ storage }).store
-    assert.deepEqual([first.getState().view.listView, first.getState().view.focusArtwork], ['list', 'full'])
+    // No saved density: the board's default, compact rows (page-01); the other saved choices stay.
+    assert.deepEqual([first.getState().view.listView, first.getState().view.focusArtwork], ['list', 'compact'])
     first.getState().setFocusArtwork('off')
     const next = testStore({ storage }).store.getState().view
     assert.deepEqual([next.listView, next.filter, next.sort, next.focusArtwork], ['list', 'working', 'started', 'off'])

@@ -174,7 +174,7 @@ export const sampleSource: WorkDataSource = {
     if (checked) {
       const request = SAMPLE_REQUESTS[index]
       sampleRequestsBeforeCheck.set(requestId, request)
-      SAMPLE_REQUESTS[index] = assertConsistentRequest({ ...request, state: 'your-move', checkedAt: 'just now', next: { who: 'human', text: 'Ship it' } })
+      SAMPLE_REQUESTS[index] = assertConsistentRequest({ ...request, state: 'your-move', checkedAt: 'just now', next: { who: 'human', kind: 'ship' } })
     } else {
       const requestBeforeCheck = sampleRequestsBeforeCheck.get(requestId)
       if (!requestBeforeCheck) throw new Error(`Sample request ${requestId} has no check to undo`)

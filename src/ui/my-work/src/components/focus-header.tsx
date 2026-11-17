@@ -23,6 +23,7 @@ import { navWordIn } from '../../../../services/work-view/nav-words.mjs'
 import { AreaEditDialog, type AreaEdit, type FocusChanges } from './focus-changes'
 import { SharedMark, ShareFocusDialog } from './share-focus'
 import { canShareArea } from '@/live/to-shared-focus'
+import { asksToKeepOrDismiss } from '@/live/to-focus-model'
 
 const requestTitle = (request: Request, t?: (s: string) => string) => request.title ?? (t ? t('New request, title being written') : 'New request, title being written')
 const isReviewed = (request: Request) => request.progress.readings > 0
@@ -252,7 +253,7 @@ export function FocusHeader({ area, requests, changes }: { area: FocusArea; requ
         </div>
         {shippedBefore && <p className="text-xs text-review-foreground">{interpolate(t('You asked again on {latestAt}, after the last ship on {shippedBefore}. What shipped doesn’t cover it yet.'), { latestAt: formatPromptDay(area.latestAt!), shippedBefore })}</p>}
         <NotStartedAsks asks={area.asks} />
-        {area.status === 'suggested' && (
+        {asksToKeepOrDismiss(area) && (
           <Req ids={['R16.4']}>
             <div className="flex flex-wrap gap-2 border-t pt-3">
               <Button size="sm" className="h-11 sm:h-8" disabled={changes.saving} onClick={() => changes.apply({ action: 'keep', focusAreaId: area.id })}><CheckIcon />{t('Keep')}</Button>

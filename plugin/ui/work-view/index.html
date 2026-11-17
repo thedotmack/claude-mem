@@ -7,7 +7,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>My Work · claude-mem</title>
     <!-- Decision G8: vite.config.ts puts the pre-paint theme script (src/lib/theme-pre-paint.ts) here, in dev and in the build. -->
-    <script>(function (choices, followsSystem, dark, key, version) {
+    <script>(function (choices, followsSystem, dark, key, oldest, version) {
   var params = new URLSearchParams(location.search)
   if (params.get('setup') === '1') return
   var choice = params.get('theme')
@@ -15,22 +15,19 @@
     choice = followsSystem
     try {
       var saved = JSON.parse(localStorage.getItem(key) || 'null')
-      if (saved && saved.version === version && saved.state && choices.indexOf(saved.state.theme) >= 0) choice = saved.state.theme
+      if (saved && saved.version >= oldest && saved.version <= version && saved.state && choices.indexOf(saved.state.theme) >= 0) choice = saved.state.theme
     } catch (error) {
       console.warn('[my-work] The saved theme could not be read, so the page follows the system theme:', error)
     }
   }
   var resolved = choice === followsSystem ? (matchMedia('(prefers-color-scheme: dark)').matches ? dark : null) : choice
   if (resolved === dark) document.documentElement.classList.add('dark')
-})(["system","light","dark"], "system", "dark", "claude-mem:my-work:preferences", 1)</script>
-    <script type="module" crossorigin src="/work-view/assets/index-Bk4fajfs.js"></script>
-    <link rel="modulepreload" crossorigin href="/work-view/assets/ui-message-D6WkjNuD.js">
-    <link rel="modulepreload" crossorigin href="/work-view/assets/data-Bg9FJQps.js">
-    <link rel="modulepreload" crossorigin href="/work-view/assets/parse-sse-frame-B8lQCrnh.js">
-    <link rel="modulepreload" crossorigin href="/work-view/assets/data-goals-B8WXc4DY.js">
-    <link rel="modulepreload" crossorigin href="/work-view/assets/textarea-BE1vL0db.js">
-    <link rel="modulepreload" crossorigin href="/work-view/assets/animate-BKuMR9B1.js">
-    <link rel="stylesheet" crossorigin href="/work-view/assets/index-Dd5Spp1H.css">
+})(["system","light","dark"], "system", "dark", "claude-mem:my-work:preferences", 1, 2)</script>
+    <script type="module" crossorigin src="/work-view/assets/index-Bz1bZhXb.js"></script>
+    <link rel="modulepreload" crossorigin href="/work-view/assets/ui-message-B-TsXqa7.js">
+    <link rel="modulepreload" crossorigin href="/work-view/assets/animate-D0EiNzRV.js">
+    <link rel="modulepreload" crossorigin href="/work-view/assets/data-TIcTWh92.js">
+    <link rel="stylesheet" crossorigin href="/work-view/assets/index-DTKAiQqi.css">
   </head>
   <body>
     <div id="root"></div>

@@ -89,7 +89,9 @@ export const createViewSlice = (environment: StoreEnvironment): SliceCreator<Vie
       listView: 'cards',
       filter: 'all',
       sort: 'attention',
-      focusArtwork: 'full',
+      // The home board opens as compact rows with a 56px picture (page-01, c-focus-overview); Full is one press away in
+      // its Artwork control, and a saved choice wins.
+      focusArtwork: 'compact',
     },
 
     goToPage: (page) => navigate({ section: page, focusChoice: null, homeAnchor: null, homeAnchorRequest: null }),
@@ -109,8 +111,8 @@ export const createViewSlice = (environment: StoreEnvironment): SliceCreator<Vie
       else navigate({ section: selection.kind, focusChoice: null, homeAnchor: null, homeAnchorRequest: null })
     },
 
-    openRequestDrawer: (request) => {
-      const open: OpenRequest = { id: request.id, fromLiveFeed: requestInFeed(request.id) !== null, fallback: request }
+    openRequestDrawer: (request, options) => {
+      const open: OpenRequest = { id: request.id, fromLiveFeed: requestInFeed(request.id) !== null, fallback: request, ...(options?.reply ? { replyAsked: true } : {}) }
       navigate({ openRequest: open })
     },
     closeRequestDrawer: () => navigate({ openRequest: null }),

@@ -54,10 +54,21 @@ const SEND_KEYS_HINT = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.tes
 /** The two quiet buttons under the message box: smaller than Send, and tall enough for a finger on a phone. */
 const QUIET_ACTION = 'h-11 text-muted-foreground md:h-7'
 
-/** One quiet line saying a conversation can't be continued from here, and why when the worker said. */
-function CannotContinueLine({ children }: { children: ReactNode }) {
+/**
+ * One quiet line saying a conversation can't be continued from here, and why when the worker said. `focusWhenShown`:
+ * the person pressed Reply (G2) on a request with no conversation that can be continued, so the line that says so
+ * takes focus once, and the press is seen and heard to land somewhere.
+ */
+function CannotContinueLine({ children, focusWhenShown = false }: { children: ReactNode; focusWhenShown?: boolean }) {
+  const line = useRef<HTMLParagraphElement>(null)
+  // After the drawer's own first focus, which Radix gives its panel once this row's effects have run: one frame later.
+  useEffect(() => {
+    if (!focusWhenShown) return
+    const frame = requestAnimationFrame(() => line.current?.focus())
+    return () => cancelAnimationFrame(frame)
+  }, [focusWhenShown])
   return (
-    <p className="flex items-start gap-1.5 break-words text-xs text-muted-foreground">
+    <p ref={line} tabIndex={focusWhenShown ? -1 : undefined} className="flex items-start gap-1.5 rounded-sm break-words text-xs text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring/50">
       <CircleSlashIcon aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" /><span className="min-w-0">{children}</span>
     </p>
   )
@@ -117,7 +128,7 @@ function ReadFailure({ view, onTryAgain }: { view: ConversationReadFailureView; 
 }
 
 /** Under one conversation's line: a box to continue it, or one line saying why it can't be continued from here. */
-export function ConversationContinue({ platform, conversationSessionId, toolName, conversationTitle, anotherConversationHasTheSameTitle = false }: {
+export function ConversationContinue({ platform, conversationSessionId, toolName, conversationTitle, anotherConversationHasTheSameTitle = false, focusMessageBoxWhenShown = false }: {
   /** The platform its conversation key records, such as "claude" or "codex". */
   platform: string
   conversationSessionId: string
@@ -131,6 +142,11 @@ export function ConversationContinue({ platform, conversationSessionId, toolName
    * label, Send and Stop then add the last eight characters of this session id, so the rows can be told apart.
    */
   anotherConversationHasTheSameTitle?: boolean
+  /**
+   * The person pressed Reply (G2): the message box takes focus the first time the conversation is read. Where it cannot
+   * be continued from here, the line saying why takes focus instead, as the drawer shows it.
+   */
+  focusMessageBoxWhenShown?: boolean
 }) {
   useI18n()
   const source = useStore((state) => state.conversationContinuationSource())
@@ -138,20 +154,22 @@ export function ConversationContinue({ platform, conversationSessionId, toolName
   if (!source) return null
   const conversation = { platform, conversationSessionId }
   if (!isContinuableConversation(conversation)) {
-    return <Req ids={['R2.8']}><CannotContinueLine>{t('This conversation can’t be continued from here.')}</CannotContinueLine></Req>
+    return <Req ids={['R2.8']}><CannotContinueLine focusWhenShown={focusMessageBoxWhenShown}>{t('This conversation can’t be continued from here.')}</CannotContinueLine></Req>
   }
   const names = conversationControlNames({ toolName, conversationTitle, conversationSessionId, anotherConversationHasTheSameTitle })
   return (
     <Req ids={['R2.8']}>
       <ContinuableConversation source={source} platform={conversation.platform} conversationSessionId={conversationSessionId}
         boxLabel={inPageLanguage(names.messageBox)} sendButtonName={inPageLanguage(names.sendButton)} stopButtonName={inPageLanguage(names.stopButton)}
-        toolName={toolName} conversationTitle={conversationTitle} anotherConversationHasTheSameTitle={anotherConversationHasTheSameTitle} />
+        toolName={toolName} conversationTitle={conversationTitle} anotherConversationHasTheSameTitle={anotherConversationHasTheSameTitle}
+        focusMessageBoxWhenShown={focusMessageBoxWhenShown} />
     </Req>
   )
 }
 
 function ContinuableConversation({
   source, platform, conversationSessionId, boxLabel, sendButtonName, stopButtonName, toolName, conversationTitle, anotherConversationHasTheSameTitle,
+  focusMessageBoxWhenShown,
 }: {
   source: ConversationContinuationSource
   platform: ContinuablePlatform
@@ -164,6 +182,7 @@ function ContinuableConversation({
   toolName: string
   conversationTitle: string
   anotherConversationHasTheSameTitle: boolean
+  focusMessageBoxWhenShown: boolean
 }) {
   useI18n()
   const [read, setRead] = useState<ConversationContinuationRead | null>(null)
@@ -232,6 +251,15 @@ function ContinuableConversation({
     })
     return () => { rowIsOpen = false; readAgain.current = null; stopHearing() }
   }, [source, platform, conversationSessionId])
+
+  // Reply (G2): the first read decides where focus goes, once, so a later read leaves it where it is: the message box
+  // when the conversation can be continued, otherwise this box, which then holds the worker's reason it cannot.
+  const focusedForReply = useRef(false)
+  useEffect(() => {
+    if (!focusMessageBoxWhenShown || !read || focusedForReply.current) return
+    focusedForReply.current = true
+    ;(messageBox.current ?? conversationBox.current)?.focus()
+  }, [focusMessageBoxWhenShown, read])
 
   const readFailureView = conversationReadFailureView(readFailure, tryingAgain)
   /**

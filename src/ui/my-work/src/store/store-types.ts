@@ -27,8 +27,11 @@ export interface WorkState {
   /** What changed in the models this screen showed, newest first, one entry per request (update-queue.ts). */
   recentChanges: RequestChange[]
   sourceKind: WorkDataSource['sourceKind'] | null
-  /** A save went through but reading the model after it failed. The save stands; this says why the screen may lag. */
-  refreshError: string | null
+  /**
+   * A save went through but reading the work after it failed: the raw cause. The save stands; the screen may be behind
+   * until a read succeeds (components/bits.tsx ReadAfterSaveNotice says so, with Try again). A successful read clears it.
+   */
+  readAfterSaveFailure: string | null
 }
 
 export interface WorkSlice {
@@ -79,7 +82,15 @@ export type FocusSelection = { kind: 'area'; focusAreaId: string } | { kind: 'su
  * The open request drawer, by id so it always shows the current record. `fromLiveFeed` tells "left the feed" (close)
  * from "never in it" (an older goal-only request, shown from `fallback`); null until a model confirms it (a reload).
  */
-export interface OpenRequest { id: string; fromLiveFeed: boolean | null; fallback: Request | null }
+export interface OpenRequest {
+  id: string; fromLiveFeed: boolean | null; fallback: Request | null
+  /**
+   * The person pressed Reply (G2), so the drawer opens on the reply box: "Where this came from" opens and the first
+   * conversation that can be continued takes focus once its box shows (components/request-detail.tsx). Not in the
+   * address: a reload or Back opens the drawer plainly.
+   */
+  replyAsked?: boolean
+}
 
 export interface ViewState {
   page: Page
@@ -119,7 +130,8 @@ export interface ViewSlice {
   /** The home page, scrolled to `anchor` (and its address `/#anchor`), or to its top when null. */
   goToHome: (anchor: HomeAnchor | null) => void
   selectFocus: (selection: FocusSelection) => void
-  openRequestDrawer: (request: Request) => void
+  /** Opens a request's drawer; `{ reply: true }` opens it on its reply box (Reply on a card or the summary, G2). */
+  openRequestDrawer: (request: Request, options?: { reply?: boolean }) => void
   closeRequestDrawer: () => void
   /** Keeps the drawer on the current record; closes it when its request left the feed. Runs on every model. */
   reconcileOpenRequest: () => void

@@ -130,7 +130,8 @@ const DESKTOP_MOUSE_FLAGS = ['--blink-settings=primaryHoverType=2,availableHover
           <div style={{ width: 320 }}><Command label="Move to"><CommandInput data-test="command-input" placeholder="Move to…" /></Command></div>
         </Row>
         <Row>
-          {/* App.tsx TeamSwitch with Team on: the caller's own hover tint must win over the primitive's hover look. */}
+          {/* A toggled-on button that draws its own hover tint (the look of the old header Team switch, now a menu row):
+              the caller's own hover tint must win over the primitive's hover look. */}
           <Button data-test="team-on" variant="secondary" size="sm" className="bg-accent text-accent-foreground hover:bg-accent">Team</Button>
           <Button data-test="secondary-plain" variant="secondary" size="sm">Plain</Button>
           <Button data-test="press-override" variant="outline" className="active:bg-accent">Pressed</Button>

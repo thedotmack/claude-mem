@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
-import { ActivePill, ClassicViewerLink, DeviceFreshness, LiveIndicator } from '@/components/bits'
+import { ActivePill, ClassicViewerLink, DeviceFreshness, LiveIndicator, ReadAfterSaveNotice } from '@/components/bits'
 import { AppBrand, ShellGrid, ShellLoading, ShellReadError } from '@/components/app-shell'
 import { HeaderMenu } from '@/components/header-menu'
 import { Navbar, NavBody } from '@/components/aceternity/resizable-navbar'
@@ -312,8 +312,10 @@ function LoadedApp({ focusMainOnMount = false }: { focusMainOnMount?: boolean })
 
                 <main ref={mainRef} id="main-content" tabIndex={-1} className="min-w-0 space-y-4 outline-none md:space-y-5">
                   <FocusChipRow selected={selected} onSelect={selectFocus} onShowAllAreas={showAllAreas} />
+                  {/* A save whose follow-up read failed, on whichever page made it (store work.readAfterSaveFailure). */}
+                  <ReadAfterSaveNotice />
                   <Suspense fallback={<PageLoading label={heading} />}>
-                    {view === 'work' && <MyWork focusAreaId={focusAreaId} onOpen={openRequestDrawer} onOpenFocus={goToFocus} onOpenRules={() => goToPage('rules')} />}
+                    {view === 'work' && <MyWork focusAreaId={focusAreaId} onOpen={openRequestDrawer} onReply={(request) => openRequestDrawer(request, { reply: true })} onOpenFocus={goToFocus} onOpenRules={() => goToPage('rules')} />}
                     {view === 'suggested' && <SuggestedAreas onOpenFocus={goToFocus} />}
                     {view === 'past-focus' && <PastFocus onOpenFocus={goToFocus} />}
                     {view === 'rules' && <MyRules />}

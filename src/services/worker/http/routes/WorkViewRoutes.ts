@@ -38,6 +38,7 @@ import { FocusSharePublisher } from '../../../work-view/focus-share-publisher.js
 import { cmemProOrigin } from '../../../../shared/cmem-gateway.js';
 import { isOpenRouterApiUrl } from '../../../../shared/openrouter-base-url.js';
 import { FOCUS_CHANGED_MESSAGE, focusChangeVersion } from '../../../../shared/focus-change-version.js';
+import { REFRESH_START_REFUSAL } from '../../../../shared/work-view-refresh-reasons.js';
 import { runAgentTask } from '../../../agent-runner/run.js';
 import { ledgerSignature, readLedger } from '../../../work-view/request-groups.mjs';
 import { configuredJudge, decideSuggestion, jevClientFromSettings } from '../../../work-view/request-judge.mjs';
@@ -1693,7 +1694,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
 
   /** Starts an on-demand refresh and answers before the run ends, which can take many minutes. */
   private startManualRefresh = async (_req: Request, res: Response): Promise<void> => {
-    if (!this.autoRefresh) { res.status(503).json({ error: 'Refresh is unavailable on this worker.' }); return; }
+    if (!this.autoRefresh) { res.status(503).json({ error: REFRESH_START_REFUSAL.unavailable }); return; }
     const started = this.autoRefresh.runNow({ reason: 'manual' });
     // runNow decides before its first await: busy now means a run started, and any other answer is already settled.
     if (this.autoRefresh.busy) {
@@ -1702,8 +1703,8 @@ export class WorkViewRoutes extends BaseRouteHandler {
       return;
     }
     const state = await started;
-    if (state === 'setup-running') { res.status(409).json({ error: 'Refresh is unavailable until setup finishes.' }); return; }
-    if (state === 'closed') { res.status(503).json({ error: 'This worker is shutting down.' }); return; }
+    if (state === 'setup-running') { res.status(409).json({ error: REFRESH_START_REFUSAL.setupRunning }); return; }
+    if (state === 'closed') { res.status(503).json({ error: REFRESH_START_REFUSAL.shuttingDown }); return; }
     res.status(state === 'running' ? 202 : 200).json({ state });
   };
 

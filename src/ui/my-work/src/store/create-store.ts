@@ -9,7 +9,7 @@ import { createFocusSlice } from './slices/focus-slice.ts'
 import { createRulesSlice } from './slices/rules-slice.ts'
 import { createViewSlice } from './slices/view-slice.ts'
 import { createWorkSlice } from './slices/work-slice.ts'
-import { PREFERENCES_STORAGE_KEY, PREFERENCES_VERSION } from './preferences.ts'
+import { OLDEST_MIGRATED_PREFERENCES_VERSION, PREFERENCES_STORAGE_KEY, PREFERENCES_VERSION } from './preferences.ts'
 import type { BoundStore, StoreEnvironment, ViewState } from './store-types.ts'
 
 /** The pre-paint script in index.html (lib/theme-pre-paint.ts) reads the saved theme from here (`state.theme`). */
@@ -44,6 +44,22 @@ function validPreferences(saved: unknown): Partial<Preferences> {
   return preferences
 }
 
+/** The first saved version in which `focusArtwork` is the person's choice (preferences.ts PREFERENCES_VERSION, 2). */
+const FOCUS_ARTWORK_CHOSEN_FROM_VERSION = 2
+
+/**
+ * Saved preferences from another version, in this version's meaning; persist calls it when the saved version differs
+ * and then saves the result as this version. A version-1 `focusArtwork: 'full'` is dropped, so the board opens at this
+ * version's default: 15.19.0 saved its own default on every visit, so it was never a choice. A choice made from
+ * version 2 on is kept as made. A version this store cannot read is dropped whole, as the pre-paint script drops it.
+ */
+export function migratePreferences(saved: unknown, version: number): Partial<Preferences> {
+  if (version < OLDEST_MIGRATED_PREFERENCES_VERSION || version > PREFERENCES_VERSION) return {}
+  const { focusArtwork, ...kept } = validPreferences(saved)
+  if (version < FOCUS_ARTWORK_CHOSEN_FROM_VERSION && focusArtwork === 'full') return kept
+  return focusArtwork ? { ...kept, focusArtwork } : kept
+}
+
 export function createBoundStore(environment: StoreEnvironment) {
   return create<BoundStore>()(
     persist(
@@ -60,6 +76,7 @@ export function createBoundStore(environment: StoreEnvironment) {
       {
         name: PREFERENCES_STORAGE_KEY,
         version: PREFERENCES_VERSION,
+        migrate: migratePreferences,
         ...(environment.storage ? { storage: createJSONStorage(() => environment.storage!) } : {}),
         // Only how the person likes to see My Work is saved. Server records stay in memory.
         partialize: ({ view: { listView, filter, sort, focusArtwork, theme } }): Preferences => ({ listView, filter, sort, focusArtwork, theme }),

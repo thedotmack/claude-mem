@@ -1,5 +1,5 @@
 import { displayTime } from '@/lib/display-time'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { CheckIcon } from 'lucide-react'
 import { useReducedMotion } from 'motion/react'
 import { interpolate, useI18n } from '@/lib/i18n'
@@ -8,6 +8,7 @@ import { Terminal, TerminalContent } from '@/components/ai-elements/terminal'
 import { EncryptedText } from '@/components/aceternity/encrypted-text'
 import { GlowingEffect } from '@/components/aceternity/glowing-effect'
 import { RunningFor } from '@/components/live-motion'
+import { DURATION_WORD } from '@/live/running-time'
 import { SaveButton } from '@/components/save-button'
 import { Button, buttonVariants } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
@@ -17,6 +18,7 @@ import { isCardDeliverable } from '@/lib/deliverables'
 import { PRODUCT_ICON } from '@/lib/product-icons'
 import { Req } from '@/spec/req'
 import type { Request } from '@/data'
+import type { CardSize } from '@/live/card-groups'
 import { requestById, useFreshlyUpdated, useStore, useWorkspace } from '@/store'
 import { AgentIcon, FocusAreaChip, NextMove, ProductLink, ProgressMeter, StateBadge } from './bits'
 import { MediaCountBadge, ObsMediaStrip } from './observation-media/ObsMedia'
@@ -151,7 +153,17 @@ export function Deliverables({ request, onOpen }: { request: Request; onOpen: ()
   )
 }
 
-export function RequestCard({ request, onOpen, onOpenFocus }: { request: Request; onOpen: () => void; onOpenFocus: (focusAreaId: string) => void }) {
+/**
+ * One request as a card. `size` (c-work-cards-view, live/card-groups.ts CARD_SIZE): `full` shows everything; `medium`
+ * (a working request on the Cards board) holds the title to two lines and the summary to one and leaves the image strip
+ * to the drawer (its count stays on the badge), so cards in a row keep close heights. `actions`: the caller's buttons
+ * for this card, at its foot (the board's Reply and Open on a card that needs you, G2).
+ */
+export function RequestCard({ request, onOpen, onOpenFocus, size = 'full', actions }: {
+  request: Request; onOpen: () => void; onOpenFocus: (focusAreaId: string) => void
+  size?: Exclude<CardSize, 'line'>; actions?: ReactNode
+}) {
+  const medium = size === 'medium'
   const { t } = useI18n()
   const { team } = useWorkspace()
   const { phase, text, word } = useAgentViewTransform(request)
@@ -192,11 +204,11 @@ export function RequestCard({ request, onOpen, onOpenFocus }: { request: Request
           {text ? (
             <button type="button" onClick={onOpen} className={cn('-mx-1 space-y-1 rounded-md px-1 text-left focus-visible:outline-2 focus-visible:outline-ring', fresh && 'motion-safe:animate-in motion-safe:fade-in motion-safe:blur-in-sm motion-safe:duration-300')}>
               <Req ids={['R2.6', 'R10.5']}>
-                <h3 className="text-[1.06rem] leading-snug font-semibold tracking-tight">
+                <h3 className={cn('text-[1.06rem] leading-snug font-semibold tracking-tight', medium && 'line-clamp-2')}>
                   {fresh && !reduceMotion ? <><span className="sr-only">{text.title}</span><span aria-hidden="true"><EncryptedText text={text.title} revealDelayMs={DECRYPT_TITLE_IN_MS / Math.max(1, text.title.length)} /></span></> : text.title}
                 </h3>
               </Req>
-              <p className="line-clamp-2 text-sm text-muted-foreground">{text.summary}</p>
+              <p className={cn('text-sm text-muted-foreground', medium ? 'line-clamp-1' : 'line-clamp-2')}>{text.summary}</p>
             </button>
           ) : (
             <Req ids={['D5']}>
@@ -218,23 +230,25 @@ export function RequestCard({ request, onOpen, onOpenFocus }: { request: Request
           <Deliverables request={request} onOpen={onOpen} />
 
           {/* The request's images: its first few, with "+N" opening the drawer that holds every one. */}
-          {request.media && <ObsMediaStrip media={{ version: 1, attachments: request.media.preview }} total={request.media.count} title={text?.title ?? 'Untitled request'} onMore={onOpen} />}
+          {request.media && !medium && <ObsMediaStrip media={{ version: 1, attachments: request.media.preview }} total={request.media.count} title={text?.title ?? t('Untitled request')} onMore={onOpen} />}
 
           <OpenFollowUps request={request} limit={3} />
 
           <div className="mt-auto space-y-2.5 border-t border-border/70 pt-3">
             {/* An empty bar says nothing, so an unreviewed request says so in words instead. */}
             {reviewed ? <ProgressMeter request={request} /> : <Req ids={['R5.9']}><p className="text-xs text-muted-foreground">{t('Not reviewed yet')}</p></Req>}
-            {/* Stage, start and running time on one quiet line instead of a three-column grid. */}
+            {/* Stage and start on the left, the duration at the right end in monospace (c-live-motion-running-for), so
+                durations line up from card to card. The last group drops its "·" separator. */}
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
               <Req ids={['R5.3', 'R5.4', 'R5.5']}>
-                <dl className="flex flex-wrap items-center gap-x-2 gap-y-0.5 [&>div+div]:before:mr-1 [&>div+div]:before:content-['·']">
+                <dl className="flex w-full flex-wrap items-center gap-x-2 gap-y-0.5 [&>div+div]:before:mr-1 [&>div+div]:before:content-['·'] [&>div:last-child]:ml-auto [&>div:last-child]:before:content-none">
                   <div className="flex gap-1"><dt className="sr-only">{t('Stage')}</dt><dd className="font-medium text-foreground/85" title={request.stageNote}>{t(request.stage)}</dd></div>
-                  <div className="flex gap-1"><dt>{t('Started')}</dt><dd><time dateTime={request.startedAtIso}>{displayTime(request.startedAt)}</time></dd></div>
-                  <div className="flex gap-1"><dt>{request.state === 'shipped' ? t('Took') : t('Running')}</dt><dd className="tabular-nums"><RunningFor request={request} /></dd></div>
+                  <div className="flex gap-1"><dt>{t('Started')}</dt><dd><time dateTime={request.startedAtIso} className="tabular">{displayTime(request.startedAt)}</time></dd></div>
+                  <div className="flex items-center gap-1"><dt>{t(DURATION_WORD[request.state])}</dt><dd><RunningFor request={request} /></dd></div>
                 </dl>
               </Req>
             </div>
+            {actions && <div data-slot="request-card-actions" className="flex flex-wrap items-center gap-x-3 gap-y-2 pt-1">{actions}</div>}
           </div>
                 </CardContent>
       </Card>

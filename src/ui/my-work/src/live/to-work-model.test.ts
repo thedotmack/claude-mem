@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import { assertConsistentRequest } from '../data.ts'
-import { NEXT_STEP_NOT_RECORDED, toWorkModel } from './to-work-model.ts'
+import { NEXT_STEP_NOT_RECORDED, NO_WORK_YET, nextStepShown, toWorkModel } from './to-work-model.ts'
 import type { WorkViewHumanRequest, WorkViewSnapshot } from './work-view-api-types.ts'
 
 const appRoot = new URL('../../', import.meta.url)
@@ -26,6 +26,13 @@ for (const url of SNAPSHOT_FILES) {
     assert.equal(model.requests.length + model.requestReadErrors.length, snapshot.humanRequests.length)
     assert.deepEqual(model.requestReadErrors, [], 'real records read without errors')
     for (const request of model.requests) assert.doesNotThrow(() => assertConsistentRequest(request))
+  })
+
+  test(`${name}: a missing next step is a value, never English filler (decision G3)`, () => {
+    for (const request of model.requests) {
+      assert.ok(request.next.missing || request.next.text?.trim(), `${request.id} says what happens next, or why nothing is recorded`)
+      for (const filler of [NEXT_STEP_NOT_RECORDED, NO_WORK_YET]) assert.ok(!request.next.text?.includes(filler), `${request.id} next step carries "${filler}"`)
+    }
   })
 
   test(`${name}: percent, estimate and asked-by are never invented`, () => {
@@ -91,14 +98,19 @@ const mapOne = (change: Partial<WorkViewHumanRequest>) => {
 test('a checked result hands the next move back to you, and never ships it', () => {
   const { request } = mapOne({ review: { checked: true, checkedAtEpoch: snapshotTime(baseSnapshot), available: true } })
   assert.equal(request.state, 'your-move')
-  assert.deepEqual(request.next, { who: 'human', text: 'Ship it' })
+  // A value the screens word ("Ship it" in English), not English text in the model (M6).
+  assert.deepEqual(request.next, { who: 'human', kind: 'ship' })
+  assert.deepEqual(nextStepShown(request.next), { kind: 'step', who: 'human', step: 'ship' })
   assert.ok(request.checkedAt)
 })
 
-test('a blocked item puts an Unblock step on you', () => {
+test('a blocked item puts its step on you as one that unblocks it, without English words in the model', () => {
   const { request } = mapOne({ lifecycle: null, items: baseRequest.items.map((item, index) => index === 0 ? { ...item, status: 'blocked' } : item) })
   assert.equal(request.state, 'your-move')
-  assert.match(request.next.text, /^Unblock: /)
+  const shown = nextStepShown(request.next)
+  assert.equal(request.next.kind, 'unblock')
+  assert.equal(shown.kind === 'step' && shown.step, 'unblock')
+  assert.doesNotMatch(request.next.text ?? '', /^Unblock: /)
 })
 
 test('a shipped lifecycle without a completion time becomes a read-error card, not a crash', () => {
@@ -142,6 +154,16 @@ const syntheticRequest = (): WorkViewHumanRequest => ({
 const snapshotWith = (humanRequests: WorkViewHumanRequest[], extra: Partial<WorkViewSnapshot> = {}): WorkViewSnapshot => ({
   version: 1, generatedAt: '2026-10-22T12:00:00Z', agents: [], humanRequests, unlinkedWork: [], revision: '1',
   source: { kind: 'test', connected: true, error: null, lastCheckedAt: null }, ...extra,
+})
+
+test('a request carries how long it has run as a value; a start that was not recorded is null (never English)', () => {
+  const now = Date.parse('2026-10-22T12:00:00Z')
+  const started = Date.parse('2026-10-20T12:00:00Z')
+  const [running] = toWorkModel(snapshotWith([{ ...syntheticRequest(), startedAtEpoch: started }]), now).requests
+  assert.equal(running.runningForMs, now - started)
+  assert.equal('runningFor' in running, false, 'no English duration rides the model')
+  const [unstarted] = toWorkModel(snapshotWith([{ ...syntheticRequest(), startedAtEpoch: null }]), now).requests
+  assert.equal(unstarted.runningForMs, null)
 })
 
 test('looks up conversation titles by platform and content-session identity', () => {
@@ -263,7 +285,8 @@ test('a request with only asks maps cleanly: its asks show, no activity, and a f
   assert.deepEqual(fresh.terminal, ['ask Build the release cards', 'ask Keep the existing design.'])
   assert.deepEqual(fresh.granular, [])
   assert.deepEqual(fresh.workstreams, [])
-  assert.equal(fresh.next.text, 'No agent work recorded yet')
+  // Only asks so far: the missing step is a value (decision G3), not the English filler older workers wrote.
+  assert.deepEqual(fresh.next, { who: 'bot', missing: 'no-agent-work' })
   assert.equal(fresh.state, 'working')
   assert.deepEqual(fresh.prompts.map((prompt) => prompt.quote), ['Build the release cards', 'Keep the existing design.'])
   assert.equal(old.state, 'idle')
@@ -274,6 +297,10 @@ test('the build story recap is its first paragraph; no story hides it', () => {
   const model = toWorkModel(snapshotWith([], { story: { story: { narrative: '## Velocity\n\nFirst **part**.\n\nSecond part.', writtenAt: '2026-10-22T10:00:00Z' } } }), now)
   assert.equal(model.buildStory?.recap, 'First part.')
   assert.deepEqual(model.buildStory?.paragraphs, ['Velocity', 'First part.', 'Second part.'])
+  // The sheet draws headings as headings (c-work-story-sheet), so the mapper keeps which block was one.
+  assert.deepEqual(model.buildStory?.chapters, [{ heading: 'Velocity', paragraphs: ['First part.', 'Second part.'] }])
+  // Its writing time as an ISO time too: it dates the headings' UTC days and times (lib/display-time.ts displayRecordedDate).
+  assert.equal(model.buildStory?.writtenAtIso, '2026-10-22T10:00:00.000Z')
   assert.equal(toWorkModel(snapshotWith([]), now).buildStory, null)
 })
 
@@ -285,6 +312,7 @@ test('the automatic refresh maps running, last refreshed and failure text, with 
   const ok = toWorkModel({ ...base, refresh: { state: 'ok', startedAt: '2026-10-21T11:00:00Z', finishedAt: '2026-10-21T11:40:00Z', error: null } }, at).refresh
   assert.equal(ok?.state, 'ok')
   assert.match(ok!.finishedAt!, /^Oct 21(,| at) \d{1,2}:\d{2} [ap]m$/)
+  assert.equal(ok!.finishedAtIso, '2026-10-21T11:40:00.000Z', 'the same time for the reader\'s own clock')
   assert.deepEqual(toWorkModel({ ...base, refresh: { state: 'failed', finishedAt: '2026-10-21T11:40:00Z', error: 'codex exec exited 1' } }, at).refresh?.error, 'codex exec exited 1')
   assert.deepEqual(toWorkModel({ ...base, refresh: { state: 'waiting-for-agent', error: 'No logged-in Claude Code, Codex or Gemini on this computer yet.' } }, at).refresh, { state: 'waiting-for-agent', finishedAt: null, error: 'No logged-in Claude Code, Codex or Gemini on this computer yet.' })
 })
@@ -360,7 +388,7 @@ for (const state of ['in-progress', 'stalled', 'shipped'] as const) {
     const request = model.requests[0]
     assert.equal(request.title, 'Cards')
     assert.equal(request.summary, raw.progress.summary)
-    assert.equal(request.next.text, NEXT_STEP_NOT_RECORDED)
+    assert.deepEqual(request.next, { who: 'bot', missing: 'not-recorded' })
     assert.equal(request.progress.percent, raw.progress.percent)
     assert.equal(request.state, state === 'shipped' ? 'shipped' : 'idle')
   })
@@ -409,7 +437,7 @@ test('reopening a shipped group does not display its older completion summary', 
 test('recorded observations without work-state items do not claim no agent work exists', () => {
   const raw: WorkViewHumanRequest = { ...syntheticRequest(), activity: [{ id: 'observation-42', kind: 'observation', title: 'Cards built', detail: 'Ready for review', atEpoch: Date.parse('2026-10-21T12:00:00Z'), url: '/api/work-view/evidence/observation/42' }] }
   const model = toWorkModel(snapshotWith([raw]), Date.parse('2026-10-22T12:00:00Z'))
-  assert.equal(model.requests[0].next.text, NEXT_STEP_NOT_RECORDED)
+  assert.deepEqual(model.requests[0].next, { who: 'bot', missing: 'not-recorded' })
 })
 
 for (const status of ['shipped', 'blocked']) {
@@ -491,4 +519,30 @@ test('image refs ride through: the card summary to Request.media, each record\'s
   assert.equal('media' in request.granular[1], false, 'an image-free record gains no key')
   const [plain] = toWorkModel(snapshotWith([syntheticRequest()]), Date.parse('2026-10-22T12:00:00Z')).requests
   assert.equal('media' in plain, false, 'an image-free request gains no key')
+})
+
+test('a blocked request with no recorded step is your move, and carries why rather than "Unblock: <filler>"', () => {
+  const raw = { ...syntheticRequest(), updatedAtEpoch: Date.parse('2026-10-22T11:00:00Z'),
+    items: [{ kind: 'work-state', status: 'blocked', title: 'Ship', url: '/api/work-view/evidence/work-state/1', lastUpdateEpoch: Date.parse('2026-10-22T11:00:00Z') }] }
+  const [request] = toWorkModel(snapshotWith([raw as WorkViewHumanRequest]), Date.parse('2026-10-22T12:00:00Z')).requests
+  assert.equal(request.state, 'your-move')
+  assert.deepEqual(request.next, { who: 'human', kind: 'unblock', missing: 'not-recorded' })
+  assert.deepEqual(nextStepShown(request.next), { kind: 'missing', who: 'human', missing: 'not-recorded' }, 'screens leave it out (G3)')
+})
+
+test('nextStepShown reads the missing value and every English filler an older worker sends as missing', () => {
+  assert.deepEqual(nextStepShown({ who: 'bot', missing: 'no-agent-work' }), { kind: 'missing', who: 'bot', missing: 'no-agent-work' })
+  // The 15.19.0 worker (and every worker before 16.0.0) writes these in place of a step (G19).
+  assert.deepEqual(nextStepShown({ who: 'bot', text: NEXT_STEP_NOT_RECORDED }), { kind: 'missing', who: 'bot', missing: 'not-recorded' })
+  assert.deepEqual(nextStepShown({ who: 'human', text: `Unblock: ${NEXT_STEP_NOT_RECORDED}` }), { kind: 'missing', who: 'human', missing: 'not-recorded' })
+  assert.deepEqual(nextStepShown({ who: 'bot', text: ` ${NO_WORK_YET} ` }), { kind: 'missing', who: 'bot', missing: 'no-agent-work' })
+  assert.deepEqual(nextStepShown({ who: 'bot', text: '   ' }), { kind: 'missing', who: 'bot', missing: 'not-recorded' })
+  assert.deepEqual(nextStepShown(null), { kind: 'missing', who: null, missing: 'not-recorded' })
+  // An older worker's English for the two step kinds that are not recorded words reads as those kinds (G19).
+  assert.deepEqual(nextStepShown({ who: 'human', text: 'Unblock: pick a forecast' }), { kind: 'step', who: 'human', step: 'unblock', text: 'pick a forecast' })
+  assert.deepEqual(nextStepShown({ who: 'human', text: 'Ship it' }), { kind: 'step', who: 'human', step: 'ship' })
+  assert.deepEqual(nextStepShown({ who: 'human', text: `Unblock: ${NO_WORK_YET}` }), { kind: 'missing', who: 'human', missing: 'no-agent-work' })
+  // This mapper's own values.
+  assert.deepEqual(nextStepShown({ who: 'human', kind: 'unblock', text: 'pick a forecast' }), { kind: 'step', who: 'human', step: 'unblock', text: 'pick a forecast' })
+  assert.deepEqual(nextStepShown({ who: 'bot', text: 'Write the tests' }), { kind: 'step', who: 'bot', step: 'recorded', text: 'Write the tests' })
 })

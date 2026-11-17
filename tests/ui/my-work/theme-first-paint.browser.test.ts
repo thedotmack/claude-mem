@@ -8,7 +8,7 @@ import {
 } from '../../helpers/chrome-devtools';
 import { resolveTheme, THEME_CHOICES } from '../../../src/ui/my-work/src/lib/theme';
 import { THEME_PRE_PAINT_MARK, THEME_PRE_PAINT_SCRIPT, withThemePrePaintScript } from '../../../src/ui/my-work/src/lib/theme-pre-paint';
-import { PREFERENCES_STORAGE_KEY, PREFERENCES_VERSION } from '../../../src/ui/my-work/src/store/preferences';
+import { OLDEST_MIGRATED_PREFERENCES_VERSION, PREFERENCES_STORAGE_KEY, PREFERENCES_VERSION } from '../../../src/ui/my-work/src/store/preferences';
 import { createBoundStore } from '../../../src/ui/my-work/src/store/create-store';
 import { themeChoiceInUse } from '../../../src/ui/my-work/src/store/slices/view-slice';
 
@@ -20,8 +20,8 @@ failOnCiWithoutChrome('CI requires Chrome for the My Work first-paint theme regr
  * the pre-paint script vite.config.ts writes into index.html (lib/theme-pre-paint.ts), with the app's real stylesheet
  * and no app code, and reads the class and the page colour in the first animation frame, which runs before the browser
  * paints anything. Each case's answer is also asked of the store itself with the same saved preferences and address, so
- * the first frame and the app agree: saved choices, `?theme=`, unreadable or unknown values, preferences saved by
- * another version (the store drops those), and setup, which stays light.
+ * the first frame and the app agree: saved choices, `?theme=`, unreadable or unknown values, preferences saved by an
+ * older version the store migrates (their theme is kept) or by one it cannot read (dropped), and setup, which stays light.
  */
 const INDEX_HTML = resolve(REPOSITORY_ROOT, 'src/ui/my-work/index.html');
 const BUILT_INDEX_HTML = resolve(REPOSITORY_ROOT, 'plugin/ui/work-view/index.html');
@@ -113,8 +113,10 @@ function storeTheme(saved: string | null, query: string, systemDark: boolean): '
       // Nothing saved, or saved preferences that cannot be read, or a theme this version does not know: follow the system.
       cases.push({ query: '', saved: null, system, expected: system }, { query: '', saved: '{not json', system, expected: system },
         { query: '', saved: preferences('sepia'), system, expected: system });
-      // Preferences saved by another version are dropped, by the store and the script alike.
-      for (const version of [PREFERENCES_VERSION - 1, PREFERENCES_VERSION + 1]) cases.push({ query: '', saved: preferences(other, version), system, expected: system });
+      // Preferences saved by a version the store cannot migrate are dropped, by the store and the script alike; the
+      // versions it migrates keep their theme in both.
+      for (const version of [OLDEST_MIGRATED_PREFERENCES_VERSION - 1, PREFERENCES_VERSION + 1]) cases.push({ query: '', saved: preferences(other, version), system, expected: system });
+      for (let version = OLDEST_MIGRATED_PREFERENCES_VERSION; version < PREFERENCES_VERSION; version++) cases.push({ query: '', saved: preferences(other, version), system, expected: other });
       for (const choice of THEME_CHOICES) {
         cases.push({ query: '', saved: preferences(choice), system, expected: resolveTheme(choice, system === 'dark') });
         // ?theme= wins over the saved choice for this visit.

@@ -17,6 +17,7 @@ import { useStore, useWorkModel, useWorkspace } from '@/store'
 import { themeChoiceInUse } from '@/store/slices/view-slice'
 import { TEAMBRAIN_START_URL } from '../../../viewer/constants/promo'
 import { useGitHubStarCount } from '@/lib/use-github-star-count'
+import { useMatchesMedia } from '@/lib/use-media'
 import { CLASSIC_VIEWER_PATH, CLAUDE_MEM_REPO_URL, MY_WORK_FEEDBACK_URL, StarCount } from './bits'
 
 /** Each theme choice's words and icon. "Light mode", not "Light": the catalogs already give "Light" another meaning. */
@@ -25,6 +26,13 @@ const THEME_CHOICE_LOOK: Record<ThemeChoice, { words: string; icon: LucideIcon }
   light: { words: 'Light mode', icon: SunIcon },
   dark: { words: 'Dark mode', icon: MoonIcon },
 }
+
+/**
+ * Where the Language choices open beside the menu: from Tailwind's sm breakpoint (640px) up. Narrower, the 288px menu
+ * sits at the screen's right edge with under 100px left of it, so a side menu was cut off (it opened 18px past the left
+ * edge at 390); there the choices are rows of the menu itself, as Theme's are.
+ */
+const LANGUAGE_SUBMENU_FITS = '(min-width: 640px)'
 
 /** A menu row that opens another site: its words, a quiet hint, and the external-link mark at the right. */
 function ExternalRow({ icon: Icon, children, trailing }: { icon: LucideIcon; children: ReactNode; trailing?: ReactNode }) {
@@ -64,6 +72,7 @@ export function HeaderMenu({ classicViewerInBar }: { classicViewerInBar: boolean
     if (!isThemeChoice(value)) throw new Error(`Unknown theme choice ${value}`)
     setTheme(value)
   }
+  const languageSubmenuFits = useMatchesMedia(LANGUAGE_SUBMENU_FITS)
   const chooseLocale = (value: string) => {
     const chosen = LOCALES.find((code) => code === value)
     if (!chosen) throw new Error(`Unknown language ${value}`)
@@ -99,20 +108,30 @@ export function HeaderMenu({ classicViewerInBar }: { classicViewerInBar: boolean
             )}
           </DropdownMenuGroup>
         </Req>
-        <DropdownMenuSub>
-          <DropdownMenuSubTrigger>
-            <GlobeIcon aria-hidden="true" className="text-muted-foreground" />
-            <span className="flex-1">{t('Language')}</span>
-            <span className="text-xs text-muted-foreground">{LOCALE_NAMES[locale]}</span>
-          </DropdownMenuSubTrigger>
-          <DropdownMenuPortal>
-            <DropdownMenuSubContent>
-              <DropdownMenuRadioGroup value={locale} onValueChange={chooseLocale}>
-                {LOCALES.map((code) => <DropdownMenuRadioItem key={code} value={code} lang={code}>{LOCALE_NAMES[code]}</DropdownMenuRadioItem>)}
-              </DropdownMenuRadioGroup>
-            </DropdownMenuSubContent>
-          </DropdownMenuPortal>
-        </DropdownMenuSub>
+        {languageSubmenuFits ? (
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger>
+              <GlobeIcon aria-hidden="true" className="text-muted-foreground" />
+              <span className="flex-1">{t('Language')}</span>
+              <span className="text-xs text-muted-foreground">{LOCALE_NAMES[locale]}</span>
+            </DropdownMenuSubTrigger>
+            <DropdownMenuPortal>
+              {/* Never past the screen's edge, whichever side it opens on. */}
+              <DropdownMenuSubContent collisionPadding={8}>
+                <DropdownMenuRadioGroup value={locale} onValueChange={chooseLocale}>
+                  {LOCALES.map((code) => <DropdownMenuRadioItem key={code} value={code} lang={code}>{LOCALE_NAMES[code]}</DropdownMenuRadioItem>)}
+                </DropdownMenuRadioGroup>
+              </DropdownMenuSubContent>
+            </DropdownMenuPortal>
+          </DropdownMenuSub>
+        ) : (
+          <DropdownMenuGroup data-language-choices="inline">
+            <DropdownMenuLabel className="flex items-center gap-2"><GlobeIcon aria-hidden="true" className="size-4 text-muted-foreground" />{t('Language')}</DropdownMenuLabel>
+            <DropdownMenuRadioGroup value={locale} onValueChange={chooseLocale}>
+              {LOCALES.map((code) => <DropdownMenuRadioItem key={code} value={code} lang={code}>{LOCALE_NAMES[code]}</DropdownMenuRadioItem>)}
+            </DropdownMenuRadioGroup>
+          </DropdownMenuGroup>
+        )}
         <DropdownMenuSeparator />
         <DropdownMenuGroup>
           <DropdownMenuLabel>{t('Theme')}</DropdownMenuLabel>

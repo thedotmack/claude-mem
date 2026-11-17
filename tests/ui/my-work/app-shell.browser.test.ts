@@ -118,8 +118,11 @@ beforeAll(async () => {
     // The star count would come from GitHub; a test never calls out, so the page reads this one.
     const realFetch = window.fetch.bind(window);
     window.githubStarReads = 0;
+    // \`&github=refuse\`: GitHub gives no count (a network failure, as a rate-limited or offline page sees).
+    const githubRefuses = new URLSearchParams(location.search).get('github') === 'refuse';
     window.fetch = (input, init) => String(input).startsWith('https://api.github.com/')
-      ? (window.githubStarReads++, Promise.resolve(new Response(JSON.stringify({ stargazers_count: 117482 }), { headers: { 'Content-Type': 'application/json' } })))
+      ? (window.githubStarReads++, githubRefuses ? Promise.reject(new TypeError('Failed to fetch'))
+        : Promise.resolve(new Response(JSON.stringify({ stargazers_count: 117482 }), { headers: { 'Content-Type': 'application/json' } })))
       : realFetch(input, init);
     // \`&fail-reads=N\`: the first N reads of the work fail as an unreachable worker's do, then the sample answers.
     const failReads = Number(new URLSearchParams(location.search).get('fail-reads') ?? 0);
@@ -179,6 +182,26 @@ beforeAll(async () => {
     };
     // Tab from the top of the page. A blurred element stays the starting point of the next Tab, so the shell itself
     // takes focus first (not as a stop of its own: tabindex -1). The failed-read screen has no shell: its body does.
+    // The header slides between the bar and the floating pill with a spring (aceternity/resizable-navbar.tsx: y 20px and
+    // its width; stiffness 200, damping 50). Resolves once its whole-pixel box has stayed put for eight frames in a row:
+    // simulated from those constants and motion's default rest thresholds (2026-11-16), the box holds still for at most
+    // 7 frames while the spring still crawls sub-pixel at its end (the 390px pill at 60 fps; 3 frames on the 1440px bar,
+    // 1 at 15 fps), so eight still frames only happen once motion has stopped it.
+    window.headerAtRest = () => new Promise((resolve, reject) => {
+      const started = performance.now();
+      let last = '', still = 0;
+      (function check() {
+        const box = document.querySelector('[data-slot="work-shell"] header > * > *')?.getBoundingClientRect();
+        const now = box ? [box.top, box.bottom, box.left, box.right].map(Math.round).join(',') : '';
+        still = now === last ? still + 1 : 0;
+        last = now;
+        if (still >= 8) return resolve(true);
+        // The spring settles in under a second here (2026-11-16); 8s covers a runner several times slower (the test
+        // held with the CPU slowed 4×, Emulation.setCPUThrottlingRate).
+        if (performance.now() - started > 8000) return reject(new Error('the header did not come to rest in 8s'));
+        requestAnimationFrame(check);
+      })();
+    });
     window.focusPageStart = () => {
       const shell = document.querySelector('[data-slot="work-shell"]') ?? document.body;
       shell.tabIndex = -1;
@@ -353,6 +376,26 @@ async function tabTo(match: (focus: any) => boolean, what: string, limit = 12) {
   // 1–2s here (2026-11-16); 30s for a slow CI runner.
 }, 30_000);
 
+(chromeExecutablePath ? it : it.skip)('a star count GitHub does not give shows "—" with its reason, not a loading bar that never ends', async () => {
+  await openShell({ query: '&github=refuse' });
+  try {
+    await desktop();
+    await tabTo((focus) => focus.name === 'More', 'the menu button');
+    await press('Enter');
+    await waitFor('window.menu()', 'the menu');
+    const starCount = `document.querySelector('[role="menu"] [data-star-count]')`;
+    await waitFor(`${starCount}?.getAttribute('data-star-count') === 'unavailable'`, 'the star count to say it is unavailable');
+    const shown = await page!.evaluate(`({ text: ${starCount}.textContent, loadingBars: ${starCount}.querySelectorAll('[aria-hidden="true"].rounded-full').length })`);
+    expect(shown.text).toContain('—');
+    expect(shown.text).toContain('Star count unavailable');
+    expect(shown.loadingBars).toBe(0);
+    expect(await page!.evaluate('window.githubStarReads')).toBe(1);
+    await press('Escape');
+    expect(fixtureErrors).toEqual([]);
+  } finally { await closeShell(); }
+  // 1–2s here, like the menu test above (2026-11-16); 30s for a slow CI runner.
+}, 30_000);
+
 (chromeExecutablePath ? it : it.skip)('G8: a ?theme= address lasts the visit and is never saved, even after other changes are', async () => {
   await openShell({ query: '&theme=dark' });
   try {
@@ -436,6 +479,12 @@ async function tabTo(match: (focus: any) => boolean, what: string, limit = 12) {
     const menu = await page!.evaluate('window.menu()');
     expect(menu.rows.some((row: { name: string }) => row.name.startsWith('Classic viewer'))).toBe(true);
     expect(menu.rows.filter((row: { height: number }) => row.height < 44)).toEqual([]);
+    // Every language is a row of the menu itself at this width, wholly on the screen (a side menu opened 18px past the
+    // left edge and cut the first letters of each name).
+    const languages: { lang: string; left: number; right: number }[] = await page!.evaluate(`[...document.querySelectorAll('[role="menu"] [role="menuitemradio"][lang]')]
+      .map((row) => { const box = row.getBoundingClientRect(); return { lang: row.getAttribute('lang'), left: Math.floor(box.left), right: Math.ceil(box.right) } })`);
+    expect(languages.map((language) => language.lang)).toEqual(['en', 'zh-CN', 'ko', 'tr', 'fr']);
+    expect(languages.filter((language) => language.left < 0 || language.right > 390)).toEqual([]);
     await press('Escape');
     await waitFor('!window.menu()', 'the menu to close');
     // The page ends above the pinned bottom bar.
@@ -449,13 +498,16 @@ async function tabTo(match: (focus: any) => boolean, what: string, limit = 12) {
     const chips: { name: string; height: number }[] = await page!.evaluate(`window.visibleIn('nav[aria-label="My focus"] button').map((chip) => ({ name: chip.textContent.trim().slice(0, 40), height: chip.getBoundingClientRect().height }))`);
     expect(chips.length).toBeGreaterThan(2);
     expect(chips.filter((chip) => chip.height < 44)).toEqual([]);
-    // Tab through the page: no stop lands under the header or the bottom bar (scroll padding, index.css).
+    // Tab through the page: no stop lands under the header or the bottom bar (scroll padding, index.css). The jump back to
+    // the top turns the pill back into the bar; it is measured at rest, as a person sees it (Linux CI read the first
+    // chip while the header was still sliding back).
     await page!.evaluate('window.focusPageStart()');
+    await page!.evaluate('window.headerAtRest()');
     const stops: number = await page!.evaluate('document.querySelectorAll("a[href], button, input, select, textarea, [tabindex]:not([tabindex=\\"-1\\"])").length');
     const hidden: unknown[] = [];
     for (let index = 0; index < stops; index++) {
       await press('Tab');
-      const found = await page!.evaluate(`(() => {
+      const measure = `(() => {
         const element = document.activeElement;
         // Only page content counts: the header, the bottom bar, the sample strip and the skip link are the fixed and
         // sticky chrome the content scrolls under, drawn on top on purpose.
@@ -465,7 +517,10 @@ async function tabTo(match: (focus: any) => boolean, what: string, limit = 12) {
         const header = document.querySelector('[data-slot="work-shell"] header > * > *').getBoundingClientRect();
         const bar = document.querySelector('nav[aria-label="Pages"].md\\\\:hidden .pointer-events-auto').getBoundingClientRect();
         return box.height > 0 && (box.top < header.bottom - 1 || box.bottom > bar.top + 1) ? { name: (element.getAttribute('aria-label') || element.textContent || '').trim().slice(0, 40), top: Math.round(box.top), bottom: Math.round(box.bottom), headerBottom: Math.round(header.bottom), barTop: Math.round(bar.top) } : null;
-      })()`);
+      })()`;
+      let found = await page!.evaluate(measure);
+      // A stop whose focus scrolled the page can catch the header mid-slide (bar to pill or back): read it again at rest.
+      if (found) { await page!.evaluate('window.headerAtRest()'); found = await page!.evaluate(measure); }
       if (found) hidden.push(found);
     }
     expect(hidden).toEqual([]);
@@ -647,10 +702,13 @@ async function tabTo(match: (focus: any) => boolean, what: string, limit = 12) {
         widths.add(Math.round(bar.getBoundingClientRect().width));
         opacities.add(getComputedStyle(strip).opacity);
         if (++frames < 20) requestAnimationFrame(sample);
-        else resolve({ widths: [...widths].sort((a, b) => a - b), opacities: [...opacities].sort(), pill: !!document.querySelector('.header-pill') });
+        else resolve({ widths: [...widths].sort((a, b) => a - b), opacities: [...opacities].sort(), pill: !!document.querySelector('.header-pill'), pageWidth: document.documentElement.clientWidth });
       })();
     })`);
-    expect(scrolled).toEqual({ widths: [800, 1440], opacities: ['0', '1'], pill: true });
+    // The full bar is as wide as the page's layout width: 1440 here, 1425 where Chrome draws a 15px classic scrollbar
+    // (Linux CI), so the page's own clientWidth is the measure, not the window's 1440.
+    const { pageWidth, ...seen } = scrolled;
+    expect(seen).toEqual({ widths: [800, pageWidth], opacities: ['0', '1'], pill: true });
     // The bottom bar, mounted outside the App's MotionConfig: no fade and blur in.
     const bar = await page!.evaluate(`new Promise((resolve) => {
       window.mountNotchProbe();

@@ -21,6 +21,8 @@ import { PRODUCT_ICON } from '@/lib/product-icons'
 import { cn } from '@/lib/utils'
 import { AgentIcon, FocusAreaChip, NextMove, ProductLink, ProgressMeter, StateBadge } from './bits'
 import { ConversationContinue } from './conversation-continue'
+import { durationWords } from '@/live/running-time'
+import { isContinuableConversation } from '@/live/conversation-continuation'
 import { FocusChangeBar, useFocusChanges } from './focus-changes'
 import { OpenFollowUps } from './request-card'
 import { mergeRequestDetail, requestDetailKey } from '@/live/request-detail-state'
@@ -39,11 +41,21 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   )
 }
 
-/** A quiet disclosure for the secondary layers (§3: granular content is small and not the primary focus). */
-function Disclosure({ label, children }: { label: string; children: React.ReactNode }) {
+/**
+ * A quiet disclosure for the secondary layers (§3: granular content is small and not the primary focus). `focusOnOpen`:
+ * its row takes focus once, as it opens (Reply on a request with no recorded conversation lands on what Reply opened).
+ */
+function Disclosure({ label, children, defaultOpen = false, focusOnOpen = false }: { label: string; children: React.ReactNode; defaultOpen?: boolean; focusOnOpen?: boolean }) {
+  const trigger = useRef<HTMLButtonElement>(null)
+  // After the drawer's own first focus, which Radix gives its panel once this row's effects have run: one frame later.
+  useEffect(() => {
+    if (!focusOnOpen) return
+    const frame = requestAnimationFrame(() => trigger.current?.focus())
+    return () => cancelAnimationFrame(frame)
+  }, [focusOnOpen])
   return (
-    <Collapsible className="group/disclosure">
-      <CollapsibleTrigger className="flex min-h-11 w-full items-center gap-2 text-left text-sm text-muted-foreground hover:text-foreground md:min-h-9">
+    <Collapsible className="group/disclosure" defaultOpen={defaultOpen}>
+      <CollapsibleTrigger ref={trigger} className="flex min-h-11 w-full items-center gap-2 text-left text-sm text-muted-foreground hover:text-foreground md:min-h-9">
         <ChevronDownIcon className="size-4 transition-transform group-data-[state=open]/disclosure:rotate-180 motion-reduce:transition-none" />
         {t(label)}
       </CollapsibleTrigger>
@@ -285,6 +297,19 @@ export function RequestDetail({ request, onClose, onOpenFocus }: { request: Requ
 /** `newerVersionReadFailure`: the detail shown is an older version of this request, because reading the newer one failed. */
 function LoadedRequestDetail({ request, newerVersionReadFailure, onClose, onOpenFocus }: { request: Request; newerVersionReadFailure?: { message: string; tryAgain: () => void }; onClose: () => void; onOpenFocus: (focusAreaId: string) => void }) {
   useI18n()
+  // Reply on a card or the summary (G2): "Where this came from" opens, and the first conversation that can be continued
+  // takes focus once its reply box shows (its worker read decides that). With none that can, the first conversation's
+  // line saying why takes focus: what the drawer shows for such a conversation. The layout stays as it is otherwise.
+  const replyAsked = useStore((state) => state.view.openRequest?.id === request.id && state.view.openRequest.replyAsked === true)
+  const replyConversation = replyAsked ? request.conversations.find((conversation) => isContinuableConversation(conversation)) ?? request.conversations[0] : undefined
+  const conversationCount = request.conversations.length || 1
+  const sourceCount = request.evidence.length
+  const whereItCameFrom = sourceCount === 0
+    ? interpolate(conversationCount === 1 ? t('Where this came from · {count} conversation') : t('Where this came from · {count} conversations'), { count: conversationCount })
+    : interpolate(conversationCount === 1
+      ? (sourceCount === 1 ? t('Where this came from · {count} conversation, {sources} source') : t('Where this came from · {count} conversation, {sources} sources'))
+      : (sourceCount === 1 ? t('Where this came from · {count} conversations, {sources} source') : t('Where this came from · {count} conversations, {sources} sources')),
+    { count: conversationCount, sources: sourceCount })
   const title = request.title ?? request.resolvesTo?.title ?? 'Untitled request'
   const recent = request.granular.slice(0, RECENT_RECORDS)
   const earlier = request.granular.slice(RECENT_RECORDS)
@@ -327,7 +352,7 @@ function LoadedRequestDetail({ request, newerVersionReadFailure, onClose, onOpen
               <FocusAreaChip focusAreaId={request.focusAreaId} onOpen={onOpenFocus} />
               {/* Sample fixtures change in memory; live requests save as my-focus rows. */}
               <MoveTo request={request} />
-              <span>{interpolate(t('Asked by {name} · started {time} · {duration} · {stage}'), { name: request.askedBy, time: displayTime(request.startedAt), duration: request.runningFor, stage: t(request.stage) })}</span>
+              <span>{interpolate(t('Asked by {name} · started {time} · {duration} · {stage}'), { name: request.askedBy, time: displayTime(request.startedAt), duration: durationWords(request.runningForMs, request.runningFor, t), stage: t(request.stage) })}</span>
             </div>
           </div>
 
@@ -391,14 +416,14 @@ function LoadedRequestDetail({ request, newerVersionReadFailure, onClose, onOpen
           </Req>
 
           <Req ids={['R2.5', 'R2.2', 'R5.11']}>
-            <Disclosure label={`Where this came from · ${request.conversations.length || 1} conversation${request.conversations.length > 1 ? 's' : ''}${request.evidence.length ? `, ${request.evidence.length} sources` : ''}`}>
+            <Disclosure defaultOpen={replyAsked} focusOnOpen={replyAsked && request.conversations.length === 0} label={whereItCameFrom}>
               <div className="space-y-2.5 pb-2">
                 {request.conversations.length === 0 && request.prompts.length === 0 && <p className="text-sm text-muted-foreground">{t("One conversation so far.")}</p>}
                 {request.conversations.map((conversation, index) => (
                   <div key={JSON.stringify([conversation.platform, conversation.conversationSessionId])} className="space-y-1">
                     <p key={`${index}-${displayTime(conversation.at)}`} className="text-sm"><span className="text-muted-foreground">{conversation.tool} · {displayTime(conversation.at)}</span> — {conversation.title}</p>
                     <ConversationContinue platform={conversation.platform} conversationSessionId={conversation.conversationSessionId} toolName={conversation.tool}
-                      conversationTitle={conversation.title}
+                      conversationTitle={conversation.title} focusMessageBoxWhenShown={conversation === replyConversation}
                       anotherConversationHasTheSameTitle={request.conversations.filter((other) => other.title === conversation.title).length > 1} />
                   </div>
                 ))}

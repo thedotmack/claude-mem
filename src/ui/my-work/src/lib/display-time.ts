@@ -1,4 +1,5 @@
 import { getLocale, type Locale } from '@/lib/i18n'
+import { storyHeadingInReaderClock } from '@/live/build-story'
 
 const WORDS: Partial<Record<Locale, Record<string, string>>> = {
   'zh-CN': { Today: '今天', Yesterday: '昨天', am: '上午', pm: '下午' },
@@ -26,6 +27,16 @@ export function clockTime(iso: string, now: number = Date.now()): { short: strin
     short: locale === 'en' ? short.replace(/\s?(AM|PM)$/, (_, half: string) => ` ${half.toLowerCase()}`) : short,
     full: new Intl.DateTimeFormat(locale, { dateStyle: 'full', timeStyle: 'long' }).format(date),
   }
+}
+
+/**
+ * A build story heading's date as the recap and the sheet show it: a day and time, which request-progress writes in
+ * UTC, in the reader's own date and clock (live/build-story.ts storyHeadingInReaderClock: "Nov 17 01:13" reads "Nov 16,
+ * 5:13 pm" in Los Angeles), or a day or a range of days as written ("Nov 9-10"); then worded for the reader by
+ * displayTime, as "written …" is (French reads 24-hour). `writtenAtIso` is the story's writing time (BuildStory).
+ */
+export function displayRecordedDate(value: string, writtenAtIso: string | null | undefined, now: number = Date.now()): string {
+  return displayTime(storyHeadingInReaderClock(value, writtenAtIso, now) ?? value)
 }
 
 /** Localize recorded display dates without changing model timestamps or their sort keys. */

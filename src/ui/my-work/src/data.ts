@@ -2,6 +2,7 @@
 import type { WorkModel } from './live/work-data-source.ts'
 import type { WorkViewFocusArea, WorkViewMediaManifest, WorkViewRequestMedia } from './live/work-view-api-types.ts'
 import { SAMPLE_MEDIA_REFS } from './components/observation-media/sample-media.ts'
+import { estimateDayIsPast } from './live/measured-estimate.ts'
 
 export interface Device { id: string; name: string; syncedMinutesAgo: number; online: boolean }
 /** 'other' is any platform without its own mark (a neutral mark is shown). */
@@ -24,6 +25,32 @@ export type LiveState = 'working' | 'needs-check' | 'your-move' | 'idle' | 'ship
 
 export interface Quote { at: string; quote: string }
 export type WorkProductKind = 'PR' | 'Commit' | 'Branch' | 'Page' | 'Deck' | 'Doc' | 'File' | 'Link'
+
+/**
+ * Why a request has no next step to show (decision G3), as a value and never as English text: `not-recorded`, its
+ * agents recorded work but no step; `no-agent-work`, it has only the owner's asks so far. Its one writer is the mapper
+ * (live/to-work-model.ts toRequest); the screens word it from a Record (components/bits.tsx). Workers before 16.0.0
+ * wrote English fillers in its place, which live/to-work-model.ts nextStepShown reads as these values.
+ */
+export type NextStepMissing = 'not-recorded' | 'no-agent-work'
+/**
+ * What kind of step a request's next move is, as a value and never as English text (Phase 0's "English mapper text
+ * shown as data"): `recorded`, the step its agent recorded; `unblock`, a recorded step that unblocks a blocked request;
+ * `ship`, a checked result that is the owner's to ship. The one definition: the mapper writes it (live/to-work-model.ts
+ * nextStepFor), components/bits.tsx words each kind from a Record, and the shared page words it as before 16.0.0
+ * (live/to-shared-focus.ts). Workers before 16.0.0 sent the last two as English text ("Unblock: …", "Ship it"), which
+ * live/to-work-model.ts nextStepShown reads as these kinds (G19).
+ */
+export type NextStepKind = 'recorded' | 'unblock' | 'ship'
+/**
+ * Whose move is next, and the step, or why none is recorded. `who` is set either way: the lifecycle rules check it.
+ * `kind` is left out for a recorded step; a blocked request whose step is not recorded keeps `unblock` beside its
+ * missing value, which the shared page words as it did before 16.0.0.
+ */
+export type NextStep =
+  | { who: 'bot' | 'human'; kind?: 'unblock'; text: string; missing?: undefined }
+  | { who: 'bot' | 'human'; kind?: 'unblock'; text?: undefined; missing: NextStepMissing }
+  | { who: 'bot' | 'human'; kind: 'ship'; text?: undefined; missing?: undefined }
 
 export interface Request {
   id: string
@@ -51,8 +78,14 @@ export interface Request {
   startedAt: string
   /** Sortable start time. The List sorts on this, never on the display string. */
   startedAtIso?: string
-  runningFor: string
-  /** Live records only: no completion is recorded, so `runningFor` counts up to now and the card keeps it ticking. */
+  /**
+   * How long it has run (to its completion, or to the mapping's time), in milliseconds; null when its start is not
+   * recorded. A value the screens word (live/running-time.ts durationIn), never English text.
+   */
+  runningForMs?: number | null
+  /** Workers before 16.0.0 sent the duration as English text instead (G19); shown only when `runningForMs` is absent. */
+  runningFor?: string
+  /** Live records only: no completion is recorded, so the duration counts up to now and the card keeps it ticking. */
   runningLive?: boolean
   stage: Stage
   state: LiveState
@@ -69,7 +102,7 @@ export interface Request {
   }
   /** Only shown through measuredEstimate(), which checks the readings behind it. */
   estimate: string | null
-  next: { who: 'bot' | 'human'; text: string }
+  next: NextStep
   terminal: string[]
   activityWord: string
   workstreams: { title: string; tasks: { name: string; done: boolean }[] }[]
@@ -194,7 +227,7 @@ export const SAMPLE_REQUESTS: Request[] = [
   {
     ...emptyRequest,
     id: 'r1', title: 'Spec and wireframe the new work viewer', summary: 'Turn your prompts into a spec, then a React wireframe that traces every element back to it.',
-    focusAreaId: 'fa-viewer', askedBy: 'Alex', agentId: 'claude', startedAt: 'Oct 20, 1:16 pm', startedAtIso: '2026-10-20T13:16:00-07:00', runningFor: '42 min', stage: 'Building', state: 'working',
+    focusAreaId: 'fa-viewer', askedBy: 'Alex', agentId: 'claude', startedAt: 'Oct 20, 1:16 pm', startedAtIso: '2026-10-20T13:16:00-07:00', runningForMs: 42 * 60_000, stage: 'Building', state: 'working',
     progress: { percent: 70, readings: 3, reviewedAt: '1:50 pm', history: [30, 55, 70], coverage: { reviewed: 2, total: 2 } }, estimate: 'at this pace, about Oct 21',
     next: { who: 'bot', text: 'Finish the My Rules screens' }, activityWord: 'Editing',
     workstreams: [
@@ -228,7 +261,7 @@ export const SAMPLE_REQUESTS: Request[] = [
   },
   {
     ...emptyRequest,
-    id: 'r2', title: null, summary: null, askedBy: 'Alex', agentId: 'codex', startedAt: 'Oct 20, 1:58 pm', startedAtIso: '2026-10-20T13:58:00-07:00', runningFor: '3 min', stage: 'Planning', state: 'working',
+    id: 'r2', title: null, summary: null, askedBy: 'Alex', agentId: 'codex', startedAt: 'Oct 20, 1:58 pm', startedAtIso: '2026-10-20T13:58:00-07:00', runningForMs: 3 * 60_000, stage: 'Planning', state: 'working',
     progress: { percent: 0, readings: 0, reviewedAt: '—', history: [] }, estimate: null, next: { who: 'bot', text: 'Read the current usage rollup' }, activityWord: 'Searching',
     resolvesTo: { title: 'Show real usage on the price forecast page', summary: 'Lead with what you spend today, then what it costs as usage grows.' },
     terminal: ['$ work_state_write list=usage-forecast', '  task: "read current usage rollup" status=doing', '$ rg "forecast" src/app/admin', '  12 matches in 4 files'],
@@ -236,7 +269,7 @@ export const SAMPLE_REQUESTS: Request[] = [
   {
     ...emptyRequest,
     id: 'r3', title: 'Move embeddings into their own table', summary: 'Stops write stalls by keeping vector indexes off the main content table.',
-    focusAreaId: 'fa-sync', askedBy: 'Alex', agentId: 'claude-sync', startedAt: 'Oct 17, 7:55 am', startedAtIso: '2026-10-17T07:55:00-07:00', runningFor: '3 days', stage: 'Reviewing', state: 'needs-check',
+    focusAreaId: 'fa-sync', askedBy: 'Alex', agentId: 'claude-sync', startedAt: 'Oct 17, 7:55 am', startedAtIso: '2026-10-17T07:55:00-07:00', runningForMs: 3 * 86_400_000, stage: 'Reviewing', state: 'needs-check',
     progress: { percent: 100, readings: 4, reviewedAt: 'Oct 20, 9:10 am', history: [40, 70, 90, 100], coverage: { reviewed: 2, total: 2 } }, estimate: null,
     next: { who: 'human', text: 'Check the remap queue drained' },
     workstreams: [
@@ -249,7 +282,7 @@ export const SAMPLE_REQUESTS: Request[] = [
   {
     ...emptyRequest,
     id: 'r4', title: 'Live request monitor with cards and list', summary: 'The first live version of My Work, with sortable list.',
-    focusAreaId: 'fa-viewer', askedBy: 'Sam', agentId: 'codex', startedAt: 'Oct 16, 9:39 am', startedAtIso: '2026-10-16T09:39:00-07:00', runningFor: '2 days', stage: 'Shipped', state: 'shipped',
+    focusAreaId: 'fa-viewer', askedBy: 'Sam', agentId: 'codex', startedAt: 'Oct 16, 9:39 am', startedAtIso: '2026-10-16T09:39:00-07:00', runningForMs: 2 * 86_400_000, stage: 'Shipped', state: 'shipped',
     progress: { percent: 100, readings: 5, reviewedAt: 'Oct 19', completedAt: 'Oct 18', history: [20, 45, 70, 90, 100], coverage: { reviewed: 3, total: 3 } }, estimate: null,
     next: { who: 'human', text: 'Write the release notes' },
     workProduct: [{ kind: 'PR', label: '#330 live human-request monitor', href: `${PULL_REQUEST}330` }, { kind: 'Deck', label: 'Launch walkthrough', href: '#', deliverable: true }],
@@ -258,7 +291,7 @@ export const SAMPLE_REQUESTS: Request[] = [
   {
     ...emptyRequest,
     id: 'r5', title: 'Fix the admin model price page', summary: 'Show current usage first, with scaling estimates below.',
-    focusAreaId: OTHER_FOCUS_AREA_ID, askedBy: 'Priya', agentId: 'gemini', startedAt: 'Oct 20, 12:40 pm', startedAtIso: '2026-10-20T12:40:00-07:00', runningFor: '1 hr', stage: 'Building', state: 'your-move',
+    focusAreaId: OTHER_FOCUS_AREA_ID, askedBy: 'Priya', agentId: 'gemini', startedAt: 'Oct 20, 12:40 pm', startedAtIso: '2026-10-20T12:40:00-07:00', runningForMs: 60 * 60_000, stage: 'Building', state: 'your-move',
     progress: { percent: 30, readings: 1, reviewedAt: '1:30 pm', history: [30], coverage: { reviewed: 1, total: 2 } }, estimate: null,
     next: { who: 'human', text: 'Pick which forecast to keep' },
     workstreams: [
@@ -277,7 +310,7 @@ export function assertConsistentRequest(request: Request): Request {
     if (state === 'needs-check' && (stage !== 'Reviewing' || next.who !== 'human')) return 'a request done but not checked is in Reviewing and waits on a person'
     if (state === 'your-move' && next.who !== 'human') return 'Your move means the next step is a person’s'
     if (state === 'working' && (next.who !== 'bot' || (progress.percent ?? 0) >= 100 || stage === 'Reviewing')) return 'a working request has an agent next step and is not finished'
-    if (!next.text) return 'every request says what happens next'
+    if (!next.missing && next.kind !== 'ship' && !next.text?.trim()) return 'every request says what happens next, or why nothing is recorded'
     if (progress.history && progress.history.length !== progress.readings) return 'reading count matches the readings'
     if (progress.history?.length && progress.history.at(-1) !== progress.percent) return 'percent is the latest reading'
     return null
@@ -286,6 +319,11 @@ export function assertConsistentRequest(request: Request): Request {
   return request
 }
 SAMPLE_REQUESTS.forEach(assertConsistentRequest)
+
+/** A request's title, or the words for one still being written, in the reader's language (`t`). */
+export function requestTitle(request: Pick<Request, 'title' | 'resolvesTo'>, t: (text: string) => string): string {
+  return request.title ?? request.resolvesTo?.title ?? t('New request, title being written')
+}
 
 /** Waits on you: your move, or done and waiting for your check. The nav counts and the Needs you filter both use this. */
 export const needsYou = (request: Request) => request.state === 'your-move' || request.state === 'needs-check'
@@ -311,11 +349,16 @@ export class RefreshNotStartedError extends Error {
   }
 }
 
-/** The ship estimate only from measured pace: two or more readings, the latest moving forward (decision 3). */
-export function measuredEstimate(request: Request): string | null {
+/**
+ * The ship estimate only from measured pace: two or more readings, the latest moving forward (decision 3), and never
+ * a day already behind `now` (c-bits-progress-meter: it read "about Oct 22" on Nov 16). A worker before 16.0.0 sends
+ * estimates it never compared with the day, and a page left open keeps one past its day, so the screen checks too.
+ */
+export function measuredEstimate(request: Request, now: number = Date.now()): string | null {
   const history = request.progress.history ?? []
   const advancing = history.length >= 2 && history.at(-1)! > history.at(-2)!
-  return advancing && request.state !== 'shipped' ? request.estimate : null
+  if (!advancing || request.state === 'shipped' || !request.estimate) return null
+  return estimateDayIsPast(request.estimate, now) ? null : request.estimate
 }
 
 /** Sort key for "Started": the recorded timestamp. A start that was never recorded sorts as oldest. */

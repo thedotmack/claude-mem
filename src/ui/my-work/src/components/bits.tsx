@@ -1,8 +1,10 @@
 import { clockTime, displayTime } from '@/lib/display-time'
+import { sentenceWith } from '@/lib/sentence-with'
 import { useState, type KeyboardEvent, type ReactNode } from 'react'
 import { motion, useReducedMotion } from 'motion/react'
-import { BotIcon, CheckIcon, CloudAlertIcon, CloudIcon, CornerLeftUpIcon, ExternalLinkIcon, HistoryIcon, LaptopIcon, MessageSquareIcon, RefreshCwIcon, Share2Icon, StarIcon, UserIcon } from 'lucide-react'
+import { BotIcon, CheckIcon, ClockIcon, CloudAlertIcon, CloudIcon, CornerLeftUpIcon, ExternalLinkIcon, HistoryIcon, LaptopIcon, MessageSquareIcon, RefreshCwIcon, Share2Icon, StarIcon, UserIcon } from 'lucide-react'
 import { interpolate, useI18n } from '@/lib/i18n'
+import { Alert, AlertAction, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleFoldTrigger } from '@/components/ui/collapsible'
@@ -14,16 +16,20 @@ import { useGitHubStarCount } from '@/lib/use-github-star-count'
 import { tabStopAfter, tabStops } from '@/lib/tab-order'
 import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
-import { isSampleHref, measuredEstimate, RefreshNotStartedError, SAMPLE_DEVICES, OTHER_FOCUS_AREA_ID, type AgentTool, type Device, type LiveState, type Request, type Run, type SkillRun } from '@/data'
+import { isSampleHref, measuredEstimate, RefreshNotStartedError, SAMPLE_DEVICES, OTHER_FOCUS_AREA_ID, type AgentTool, type Device, type LiveState, type NextStepMissing, type Request, type Run, type SkillRun } from '@/data'
 import { agentById, deviceById, useConnection, useStore, useWorkModel, useWorkspace } from '@/store'
 import type { AutoRefresh } from '@/live/work-data-source'
+import { pageStartsRefresh, refreshRecordKey, shownRefreshLine, type RefreshLineState, type RefreshPressAnswer } from '@/live/refresh-line'
+import { ESTIMATE_PREFIX } from '@/live/measured-estimate'
+import { isRefreshStartRefusal, isWaitingForAgentReason } from '../../../../shared/work-view-refresh-reasons.ts'
 import { focusAreaLabel, resolveFocusAreaId } from '@/live/to-focus-model'
 import { presentSharedState } from '@/live/shared-state-presentation'
 import { isServedFromCloud } from '@/live/served-from'
 import { LIVE_CHIP_PROBLEM_SOURCE, liveChipProblem, type LiveChipProblem } from '@/live/live-chip'
 import type { ConnectionTone } from '@/live/connection-status'
 import type { StarCountRead } from '@/live/github-star-count'
-import { NEXT_STEP_NOT_RECORDED, RECORDED_SESSION_ROLE, SUBAGENT_ROLE_PREFIX, THIS_COMPUTER, UNRECORDED_AGENT } from '@/live/to-work-model'
+import { nextStepShown, RECORDED_SESSION_ROLE, SUBAGENT_ROLE_PREFIX, THIS_COMPUTER, UNRECORDED_AGENT } from '@/live/to-work-model'
+import { nextStepWords } from '@/live/next-step-words'
 import { AgentMark } from './brand'
 
 /**
@@ -63,16 +69,16 @@ export function NeedsYouPill({ count, className }: { count: number; className?: 
   return (
     <span className={cn('inline-flex shrink-0 items-center gap-1 rounded-full border border-control-edge px-1.5 py-px text-xs font-normal whitespace-nowrap text-attention-foreground tabular', className)}>
       <span aria-hidden="true" className="size-1.5 rounded-full bg-attention-foreground" />
-      {interpolate(t(count === 1 ? '{count} needs you' : '{count} need you'), { count })}
+      {interpolate(count === 1 ? t('{count} needs you') : t('{count} need you'), { count })}
     </span>
   )
 }
 
-/** Puts a node where a translated sentence has its `{slot}`, so a time or a command can sit inside the sentence. */
-function sentenceWith(sentence: string, slot: string, node: ReactNode): ReactNode {
-  const [before, after = ''] = sentence.split(`{${slot}}`)
-  return <>{before}{node}{after}</>
-}
+/**
+ * The page's translator, as word tables take it: each entry calls it on its own literal words, so the catalog test
+ * (tests/ui-i18n.test.ts, which reads literal t() calls) checks every one.
+ */
+export type Translate = (text: string) => string
 
 /**
  * A recorded time in the reader's clock (G9, plan rule 9): short, with the full stamp on hover, keyboard focus and tap
@@ -243,16 +249,6 @@ export function FocusAreaChip({ focusAreaId, onOpen }: { focusAreaId?: string; o
   )
 }
 
-/**
- * The next step to show, or null when none is recorded: no text, or the English filler (NEXT_STEP_NOT_RECORDED) that
- * the mapper, older workers and the 15.19.0 worker the preview reads write in its place. Decision G3: the UI treats
- * that filler as a missing step, not as a step.
- */
-function recordedNextStep(next: Request['next'] | null | undefined): Request['next'] | null {
-  const text = next?.text?.trim()
-  return next && text && text !== NEXT_STEP_NOT_RECORDED ? next : null
-}
-
 /** Whose move a next step is, worded on screen (c-bits-next-move: these words were for screen readers only). */
 const NEXT_MOVE_OWNER_WORDS: Record<Request['next']['who'], string> = {
   human: 'Your move',
@@ -260,34 +256,44 @@ const NEXT_MOVE_OWNER_WORDS: Record<Request['next']['who'], string> = {
 }
 
 /**
+ * Why no step shows (decision G3): what a screen reader hears where the List draws "—". The words for the model's
+ * missing value (data.ts NextStepMissing), one entry per reason.
+ */
+const NEXT_STEP_MISSING_WORDS: Record<NextStepMissing, string> = {
+  'not-recorded': 'No next step recorded',
+  'no-agent-work': 'No agent work recorded yet',
+}
+
+/**
  * Whose move is next: the agent's or yours (§5), with its words on screen. A person's move is the one thing that gets
- * weight. A missing step (G3) draws nothing on cards and in the drawer (`whenMissing="omit"`); the List passes
- * `"dash"` for "—" with "No next step recorded" read out.
+ * weight. A missing step (G3: the model's missing value, or an older worker's English filler, both read by
+ * nextStepShown) draws nothing on cards and in the drawer (`whenMissing="omit"`); the List passes `"dash"` for "—" with
+ * the reason read out.
  */
 export function NextMove({ next, className, whenMissing = 'omit' }: { next: Request['next'] | null | undefined; className?: string; whenMissing?: 'omit' | 'dash' }) {
   const { t } = useI18n()
-  const step = recordedNextStep(next)
-  if (!step) {
+  const shown = nextStepShown(next)
+  if (shown.kind === 'missing') {
     if (whenMissing === 'omit') return null
     return (
       <Req ids={['R5.8', 'R6.3']}>
         <span data-next-move="missing" className={cn('text-[0.84rem] text-muted-foreground', className)}>
           <span aria-hidden="true">—</span>
-          <span className="sr-only">{t('No next step recorded')}</span>
+          <span className="sr-only">{t(NEXT_STEP_MISSING_WORDS[shown.missing])}</span>
         </span>
       </Req>
     )
   }
-  const human = step.who === 'human'
+  const human = shown.who === 'human'
   return (
     <Req ids={['R5.8', 'R6.3']}>
-      <div data-next-move={step.who} className={cn('flex items-start gap-2 text-[0.84rem] leading-snug', className)}>
+      <div data-next-move={shown.who} className={cn('flex items-start gap-2 text-[0.84rem] leading-snug', className)}>
         <span aria-hidden="true" className={cn('mt-px flex size-5 shrink-0 items-center justify-center rounded-full', human ? 'bg-attention text-attention-foreground' : 'bg-muted text-muted-foreground')}>
           {human ? <UserIcon className="size-3" /> : <BotIcon className="size-3" />}
         </span>
         <span className="min-w-0">
-          <span className={cn('block text-xs font-medium', human ? 'text-attention-foreground' : 'text-muted-foreground')}>{t(NEXT_MOVE_OWNER_WORDS[step.who])}</span>
-          <span className={human ? 'font-medium text-foreground' : 'text-foreground/80'}>{step.text}</span>
+          <span className={cn('block text-xs font-medium', human ? 'text-attention-foreground' : 'text-muted-foreground')}>{t(NEXT_MOVE_OWNER_WORDS[shown.who])}</span>
+          <span className={human ? 'font-medium text-foreground' : 'text-foreground/80'}>{nextStepWords(shown, t)}</span>
         </span>
       </div>
     </Req>
@@ -319,24 +325,24 @@ const STATE_PROGRESS_FILL: Record<LiveState, string> = {
 /**
  * Progress from the last memory review (§5), with the measured-pace estimate only when it exists (decision 3). The bar
  * reports its value, and a request no review measured shows the unknown track, not 0% (c-bits-progress-meter); a
- * finished bar ends in a check; the percent is monospace and dates keep tabular figures (plan rule 9). A working bar's
- * light sweep runs only when motion is allowed.
+ * finished bar ends in a check; the percent is monospace and dates keep tabular figures (plan rule 9). Nothing on it
+ * moves: a light sweep ran on every working bar, and with the board's working cards that broke rule 8's two moving
+ * things per view (the bar still eases to a new value).
  */
 export function ProgressMeter({ request, compact = false }: { request: Request; compact?: boolean }) {
   const { t } = useI18n()
-  const motionReduced = useReducedMotion()
   const { progress } = request
   const estimate = measuredEstimate(request)
   const translatedEstimate = estimate
-    ? (estimate.startsWith('at this pace, about ')
-      ? interpolate(t('at this pace, about {date}'), { date: displayTime(estimate.slice('at this pace, about '.length)) })
+    ? (estimate.startsWith(ESTIMATE_PREFIX)
+      ? interpolate(t('at this pace, about {date}'), { date: displayTime(estimate.slice(ESTIMATE_PREFIX.length)) })
       : t(estimate))
     : null
   return (
     <Req ids={['R5.9', 'R5.6', 'R5.11']}>
       <div className="space-y-1.5">
         <div className="flex items-center gap-1.5">
-          <Progress value={progress.percent} aria-label={progress.percent === null ? t('Not reviewed yet') : interpolate(t('{percent}% complete'), { percent: progress.percent })} className={cn('[&_[data-slot=progress-indicator]]:duration-700 [&_[data-slot=progress-indicator]]:ease-out', STATE_PROGRESS_FILL[request.state], request.state === 'working' && !motionReduced && 'progress-sweep')} />
+          <Progress value={progress.percent} aria-label={progress.percent === null ? t('Not reviewed yet') : interpolate(t('{percent}% complete'), { percent: progress.percent })} className={cn('[&_[data-slot=progress-indicator]]:duration-700 [&_[data-slot=progress-indicator]]:ease-out', STATE_PROGRESS_FILL[request.state])} />
           {progress.percent === 100 && <CheckIcon data-slot="progress-finished" aria-hidden="true" className="size-3.5 shrink-0 stroke-3 text-foreground/80" />}
         </div>
         <div className="flex flex-wrap justify-between gap-x-2 text-xs text-muted-foreground tabular">
@@ -387,12 +393,17 @@ const LIVE_CHIP_WORDS: Record<LiveChipProblem, { words: string; tone: Exclude<Co
   'cloud-behind': { words: 'Cloud behind', tone: 'warning' },
 }
 
-/** One row of a header popover: a mark, what it is about, and its state (with a time) at the right. */
+/**
+ * One row of a header popover: a mark, what it is about, and its state (with a time) at the right. A `<div>` in a
+ * `<dl>` may hold only `<dt>` and `<dd>`, so the mark sits inside the term it marks.
+ */
 function StatusRow({ mark, title, tone = 'neutral', children }: { mark: ReactNode; title: string; tone?: ConnectionTone; children: ReactNode }) {
   return (
     <div className="flex items-start gap-2">
-      <span aria-hidden="true" className="flex h-4 w-4 shrink-0 items-center justify-center text-muted-foreground">{mark}</span>
-      <dt className="font-medium">{title}</dt>
+      <dt className="flex items-start gap-2 font-medium">
+        <span aria-hidden="true" className="flex h-4 w-4 shrink-0 items-center justify-center text-muted-foreground">{mark}</span>
+        {title}
+      </dt>
       <dd className={cn('ml-auto min-w-0 text-right', tone === 'warning' ? 'text-attention-foreground' : 'text-muted-foreground')}>{children}</dd>
     </div>
   )
@@ -651,6 +662,15 @@ export function ClassicViewerLink({ className }: { className?: string }) {
   )
 }
 
+/**
+ * How long the sample's pretend run shows as running (or queued) before it reads idle again. Sample mode only, so a
+ * press can be seen to do something; nothing is started, the timer only resets this fixture button. 2.4 s: the longest
+ * line it shows, My Rules' "Running rules from preferences on MacBook Pro…" (7 words; My Work's is 5), reads in 1.8 s at
+ * the 238 words a minute adults read silently (Brysbaert 2019, Journal of Memory and Language 109), which leaves about
+ * half a second to find the line; and it stays under WCAG 2.2.2's 5 s, past which moving content needs a pause control.
+ */
+const SAMPLE_RUN_SHOWN_FOR_MS = 2400
+
 /** Sample runs only (their machines are fixtures). Runs a skill from the GUI (§14): last run time, machine and progress (cost display dropped by the owner, Oct 20, 2026). On the web it queues for an online machine. */
 export function RefreshButton({ run, ids }: { run: Run; ids: string[] }) {
   const { t } = useI18n()
@@ -661,7 +681,7 @@ export function RefreshButton({ run, ids }: { run: Run; ids: string[] }) {
   if (!runMachine) throw new Error(`Sample run ${run.label} names no sample device ${run.deviceId}`)
   const start = () => {
     setState(mode === 'web' ? 'queued' : 'running')
-    setTimeout(() => setState('idle'), 2400)
+    setTimeout(() => setState('idle'), SAMPLE_RUN_SHOWN_FOR_MS)
   }
   return (
     <Req ids={[...ids, 'R14.10', 'R14.11']}>
@@ -671,7 +691,8 @@ export function RefreshButton({ run, ids }: { run: Run; ids: string[] }) {
           {state === 'running' && <>{interpolate(t('Running {label} on {name}…'), { label: run.label, name: runMachine.name })}</>}
           {state === 'idle' && <>{interpolate(t('Last run {lastRunAt}'), { lastRunAt: displayTime(run.lastRunAt) })}<br />{interpolate(t('on {name}'), { name: runMachine.name })}</>}
         </span>
-        <Button variant="outline" size="sm" className="h-11 min-w-11 md:h-8 md:min-w-0" onClick={start} disabled={state !== 'idle'} aria-label={interpolate(t('Refresh {label}'), { label: run.label })}>
+        {/* The Button owns the 44px touch size (plan rule 6); the page adds no size of its own. */}
+        <Button variant="outline" size="sm" onClick={start} disabled={state !== 'idle'} aria-label={interpolate(t('Refresh {label}'), { label: run.label })}>
           {state === 'idle' ? <RefreshCwIcon /> : <Spinner />}
           {t('Refresh')}
         </Button>
@@ -681,63 +702,243 @@ export function RefreshButton({ run, ids }: { run: Run; ids: string[] }) {
 }
 
 /**
- * The worker's automatic refresh: it runs owner-goals and request-progress on
- * the user's own logged-in agent whenever something is due, so there is no
- * command to copy. Before its first run, the last saved run shows instead.
+ * The refresh line's sentence for each of its four states (c-bits-refresh-controls; the state is
+ * live/refresh-line.ts RefreshLineState), each in its own t() call so the catalog test reads every one. `{time}` is
+ * the refresh's own time when the worker reported one.
  */
-export function RefreshStatus({ refresh, run, ids, label = 'Last run' }: { refresh: AutoRefresh | null; run: SkillRun | null; ids: string[]; label?: string }) {
+const REFRESH_LINE_SENTENCE: Record<RefreshLineState, (t: Translate) => string> = {
+  'up-to-date': (t) => t('Last refreshed {time}'),
+  updating: (t) => t('Updating your goals and progress…'),
+  failed: (t) => t('Could not refresh at {time}.'),
+  'waiting-for-agent': (t) => t('Waiting for an agent to run the refresh. The next check tries again by itself.'),
+}
+
+/**
+ * Each state's mark, so a state never rests on its words' colour alone (a failure had no icon and no colour). Each
+ * draws at render time, so importing this file creates no elements (as STATE_MARK).
+ */
+const REFRESH_LINE_MARK: Record<RefreshLineState, () => ReactNode> = {
+  'up-to-date': () => <CheckIcon aria-hidden="true" className="size-3.5 shrink-0" />,
+  updating: () => <Spinner />,
+  failed: () => null, // the Alert's attention kind draws its own mark
+  'waiting-for-agent': () => <ClockIcon aria-hidden="true" className="size-3.5 shrink-0" />,
+}
+
+/** A time the worker reported: the reader's own clock with the full stamp on hover and focus (G9), or as recorded. */
+function RefreshTime({ display, iso }: { display: string; iso?: string }) {
+  return iso ? <LocalTime iso={iso} /> : <span className="tabular">{displayTime(display)}</span>
+}
+
+/**
+ * A failure in plain words, then its raw cause folded under Details in monospace (G17), so no internal id, database
+ * message or browser error is the visible text. Nothing to fold when there is no cause. The Details row is the shared
+ * fold row as it is (G5): 44px on touch by its own rule, so no size is set here.
+ */
+function FailureDetails({ cause }: { cause: string | null }) {
   const { t } = useI18n()
-  let text: ReactNode = null
-  if (refresh?.state === 'running') text = <span className="inline-flex items-center gap-1.5"><Spinner />{t('Updating your goals and progress…')}</span>
-  else if (refresh?.error) text = refresh.state === 'waiting-for-agent' ? <>{interpolate(t('Waiting to refresh: {error}'), { error: refresh.error })}</> : <>{interpolate(t('Refresh failed: {error}'), { error: refresh.error })}</>
-  else if (refresh?.finishedAt) text = <>{interpolate(t('Last refreshed {finishedAt}'), { finishedAt: refresh.finishedAt })}</>
-  else if (run) text = <>{t(label)} {displayTime(run.lastRunAt)}<br />{interpolate(t('on {name}'), { name: run.deviceName })}</>
-  if (!text) return null
+  if (!cause) return null
+  return (
+    <Collapsible>
+      <CollapsibleFoldTrigger className="mt-1.5 w-auto text-xs">{t('Details')}</CollapsibleFoldTrigger>
+      <CollapsibleContent>
+        <p className="mt-2 rounded-md bg-card px-3 py-2 font-mono text-xs break-words text-foreground/80">{cause}</p>
+      </CollapsibleContent>
+    </Collapsible>
+  )
+}
+
+/**
+ * Why a refresh did not start (G17): plain words in the person's language, and the raw cause for Details. The worker's
+ * refusal sentences (src/shared/work-view-refresh-reasons.ts, the route's own words for people) stay visible; anything
+ * else it answered, such as a raw error with a file path in it, and a bare status or a browser error ("Failed to
+ * fetch"), goes under Details.
+ */
+function refreshNotStartedWords(cause: unknown, t: Translate): { words: string; details: string | null } {
+  if (cause instanceof RefreshNotStartedError) {
+    if (isRefreshStartRefusal(cause.workerReason)) return { words: interpolate(t('Refresh could not start: {reason}'), { reason: t(cause.workerReason) }), details: null }
+    return { words: t('Refresh could not start. The worker refused it.'), details: cause.workerReason ?? interpolate(t('The worker answered {status}.'), { status: cause.status }) }
+  }
+  return { words: t('Refresh could not start. The worker did not answer; it may be restarting.'), details: cause instanceof Error ? cause.message : String(cause) }
+}
+
+/**
+ * Starts this computer's refresh of goals and progress on demand (POST /api/work-view/refresh, which runs at most one
+ * refresh at a time). Remembers what the worker answered the last press (live/refresh-line.ts RefreshPressAnswer), or
+ * why the start failed, worded at render so the words follow a change of language. `recordAtPress` is the refresh
+ * record on screen at the press (refreshRecordKey), so the line can tell when the worker's record catches up.
+ */
+function useRefreshStart() {
+  const refreshWork = useStore((state) => state.refreshWork)
+  const [pending, setPending] = useState(false)
+  const [failure, setFailure] = useState<{ cause: unknown; recordAtPress: string } | null>(null)
+  const [answer, setAnswer] = useState<RefreshPressAnswer | null>(null)
+  const start = async (recordAtPress: string) => {
+    setPending(true)
+    setFailure(null)
+    setAnswer(null)
+    try {
+      const { state } = await refreshWork()
+      setAnswer({ state, atIso: new Date().toISOString(), recordAtPress })
+    } catch (cause) { setFailure({ cause, recordAtPress }) }
+    finally { setPending(false) }
+  }
+  return { start, pending, failure, answer }
+}
+
+/** A start that failed, announced once as an alert: what happened, then the raw cause folded (G17). */
+function RefreshStartFailure({ cause }: { cause: unknown }) {
+  const { t } = useI18n()
+  const { words, details } = refreshNotStartedWords(cause, t)
+  return (
+    <Alert variant="attention" role="alert" className="w-full py-2.5 text-xs">
+      <AlertTitle className="text-xs font-normal">{words}</AlertTitle>
+      {details && <AlertDescription><FailureDetails cause={details} /></AlertDescription>}
+    </Alert>
+  )
+}
+
+/**
+ * The worker's automatic refresh of goals and progress (c-bits-refresh-controls, page-01): it runs owner-goals and
+ * request-progress on the user's own logged-in agent whenever something is due, so there is no command to copy. One
+ * line in four states (live/refresh-line.ts): up to date (when it last refreshed, or before its first run the last
+ * saved run), updating, waiting for an agent, and failed. A failure says when it failed and how old the shown review
+ * is, folds the raw cause under Details (G17: it printed "Refresh failed: <agent>: reviews: <group id>: database is
+ * locked") and is announced once as an alert. The worker's own sentences for people (why it waits for an agent,
+ * src/shared/work-view-refresh-reasons.ts) are the visible line (#5535: the "why" is in sight); anything else it sent
+ * goes under Details below a plain line. A press of Try again or Refresh now always shows its outcome
+ * (live/refresh-line.ts shownRefreshLine): the run updating, a new failure with its own time, or "Nothing new to
+ * refresh".
+ */
+export function RefreshStatus({ refresh, run, ids, label = 'Last run', canStartRefresh }: {
+  refresh: AutoRefresh | null; run: SkillRun | null; ids: string[]; label?: string
+  /**
+   * Left out: a failed refresh carries Try again wherever this page can start a refresh (live/refresh-line.ts
+   * pageStartsRefresh), so My Rules and Past focus have it with no prop. `true`: "Refresh now" in every state, reading
+   * "Try again" after a failure (My Work: the review's time beside Refresh, c-work-filters). `false`: no button.
+   */
+  canStartRefresh?: boolean
+}) {
+  const { t } = useI18n()
+  const starting = useRefreshStart()
+  const sourceKind = useStore((state) => state.work.sourceKind)
+  const shown = shownRefreshLine(refresh, starting.answer)
+  const state = shown.state
+  const lastRun = run ? <>{t(label)} <span className="tabular">{displayTime(run.lastRunAt)}</span></> : null
+  const recordedTime = refresh?.finishedAt ? <RefreshTime display={refresh.finishedAt} iso={refresh.finishedAtIso} /> : null
+  const offersButton = state === 'failed' ? canStartRefresh ?? pageStartsRefresh(sourceKind) : canStartRefresh === true
+  // While the worker runs a refresh the button waits (aria-disabled, so it stays reachable, G16) and the line beside it
+  // says why; only this page's own press shows the button busy, so one spinner turns, not two (rule 8).
+  const button = offersButton && (
+    <Button variant="outline" size="sm" className="shrink-0" onClick={() => void starting.start(refreshRecordKey(refresh))} busy={starting.pending}
+      aria-disabled={state === 'updating' || undefined} busyLabel={t('Refreshing…')}>
+      <RefreshCwIcon />{state === 'failed' ? t('Try again') : t('Refresh now')}
+    </Button>
+  )
+  const nothingNew = shown.nothingNew && <span role="status" className="text-xs text-muted-foreground">{t('Nothing new to refresh')}</span>
+  // A start that failed is that press's outcome: it shows until the worker's record changes, as an answer does.
+  const startFailure = starting.failure && starting.failure.recordAtPress === refreshRecordKey(refresh) && <RefreshStartFailure cause={starting.failure.cause} />
+  if (state === 'failed') {
+    // A start that failed before the worker's record caught up shows when it failed; the record's older cause waits.
+    const failedAt = shown.failedAtIso ? <LocalTime iso={shown.failedAtIso} /> : recordedTime
+    const cause = shown.failedAtIso ? null : refresh?.error ?? null
+    return (
+      <Req ids={[...ids, 'R14.10']}>
+        <div data-refresh-line={state} className="w-full space-y-2">
+          <Alert variant="attention" role="alert" className="py-2.5">
+            <AlertTitle className="font-normal">
+              {failedAt ? sentenceWith(REFRESH_LINE_SENTENCE.failed(t), 'time', failedAt) : t('Could not refresh.')}
+              {lastRun && <> {lastRun}.</>}
+            </AlertTitle>
+            {cause && <AlertDescription><FailureDetails cause={cause} /></AlertDescription>}
+            {button && <AlertAction>{button}</AlertAction>}
+          </Alert>
+          {nothingNew}
+          {startFailure}
+        </div>
+      </Req>
+    )
+  }
+  const workerSaid = refresh?.error ?? null
+  const waitingReason = state === 'waiting-for-agent' && isWaitingForAgentReason(workerSaid) ? workerSaid : null
+  const sentence = state === 'up-to-date'
+    ? recordedTime ? sentenceWith(REFRESH_LINE_SENTENCE[state](t), 'time', recordedTime)
+      : run ? <>{lastRun} {interpolate(t('on {name}'), { name: run.deviceName })}</> : null
+    : waitingReason ? interpolate(t('Waiting to refresh: {error}'), { error: t(waitingReason) })
+      : REFRESH_LINE_SENTENCE[state](t)
+  // Anything else the worker sent with a waiting refresh, under Details (G17).
+  const details = state === 'waiting-for-agent' && !waitingReason ? workerSaid : null
+  if (!sentence && !button) return null
   return (
     <Req ids={[...ids, 'R14.10']}>
-      <span className="block w-full text-xs leading-tight text-muted-foreground sm:w-auto sm:text-right" aria-live="polite">{text}</span>
+      <div data-refresh-line={state} className="flex w-full flex-wrap items-center justify-end gap-x-3 gap-y-2 sm:w-auto">
+        {sentence && (
+          // One status region: the line is read out when its state changes, once (it was a polite region of plain text).
+          <p role="status" className="flex min-w-0 items-start gap-1.5 text-xs leading-snug text-muted-foreground">
+            <span className="mt-px flex shrink-0 empty:hidden">{REFRESH_LINE_MARK[state]()}</span>
+            <span className="min-w-0">{sentence}</span>
+          </p>
+        )}
+        {details && <div className="w-full sm:w-auto"><FailureDetails cause={details} /></div>}
+        {nothingNew}
+        {button}
+        {startFailure}
+      </div>
     </Req>
   )
 }
 
 /**
- * Why a refresh did not start, in the person's language: the worker's own reason when it gave one (its words are the
- * worker's), otherwise the status it answered, or the failure itself (no connection).
+ * The work could not be read, as one alert (G17): plain words, the raw cause folded under Details, and Try again, which
+ * reads the work again (the store's retryWorkRead). The one alert for both failed reads: the worker's records
+ * (pages/my-work.tsx SourceReadAlert) and the read after a save (ReadAfterSaveNotice).
  */
-function refreshNotStartedWords(cause: unknown, t: (text: string) => string): string {
-  if (cause instanceof RefreshNotStartedError) {
-    return cause.workerReason !== null
-      ? interpolate(t('Refresh could not start: {reason}'), { reason: cause.workerReason })
-      : interpolate(t('Refresh could not start: the worker answered {status}'), { status: cause.status })
-  }
-  return interpolate(t('Refresh could not start: {reason}'), { reason: cause instanceof Error ? cause.message : String(cause) })
+export function WorkReadFailureAlert({ title, description, cause }: { title: string; description?: string; cause: string | null }) {
+  const { t } = useI18n()
+  const retryWorkRead = useStore((state) => state.retryWorkRead)
+  const [retrying, setRetrying] = useState(false)
+  return (
+    <Alert variant="attention" role="alert">
+      <AlertTitle>{title}</AlertTitle>
+      <AlertDescription className="text-foreground/80">
+        {description}
+        <FailureDetails cause={cause} />
+      </AlertDescription>
+      <AlertAction>
+        <Button variant="outline" size="sm" busy={retrying} onClick={async () => { setRetrying(true); try { await retryWorkRead() } finally { setRetrying(false) } }}>{t('Try again')}</Button>
+      </AlertAction>
+    </Alert>
+  )
 }
 
-/** Starts the local goals and progress refresh on demand. */
+/**
+ * A save went through but reading the work after it failed (the store's work.readAfterSaveFailure, which nothing
+ * showed before): the save stands and the screen may be behind until a read succeeds. A successful read clears it,
+ * and so does a newer model from the live feed (store/slices/work-slice.ts).
+ */
+export function ReadAfterSaveNotice() {
+  const { t } = useI18n()
+  const failure = useStore((state) => state.work.readAfterSaveFailure)
+  if (!failure) return null
+  return <WorkReadFailureAlert title={t('Saved. The newest work could not be read, so this page may be behind.')} cause={failure} />
+}
+
+/**
+ * Starts the local goals and progress refresh on demand. Kept for callers that place it beside RefreshStatus (Past
+ * focus); My Work passes `canStartRefresh` to RefreshStatus instead, so the line and its button change together.
+ */
 export function ManualRefreshButton({ ids, running = false }: { ids: string[]; running?: boolean }) {
   const { t } = useI18n()
-  const refreshWork = useStore((state) => state.refreshWork)
-  const [pending, setPending] = useState(false)
-  // Why the last start failed; worded at render, so the words follow a change of language.
-  const [failure, setFailure] = useState<{ cause: unknown } | null>(null)
-  const [nothingNew, setNothingNew] = useState(false)
-  const start = async () => {
-    setPending(true)
-    setFailure(null)
-    setNothingNew(false)
-    try { setNothingNew((await refreshWork()).state === 'idle') }
-    catch (cause) { setFailure({ cause }) }
-    finally { setPending(false) }
-  }
+  const starting = useRefreshStart()
   return (
     <Req ids={ids}>
-      <div className="flex items-center gap-2">
-        {failure && <span role="alert" className="text-xs text-attention-foreground">{refreshNotStartedWords(failure.cause, t)}</span>}
-        {nothingNew && !running && <span aria-live="polite" className="text-xs text-muted-foreground">{t('Nothing new to refresh')}</span>}
-        <Button variant="outline" size="sm" className="h-11 min-w-11 md:h-8 md:min-w-0" onClick={start} disabled={pending || running}>
-          {pending || running ? <Spinner /> : <RefreshCwIcon />}
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        {starting.answer?.state === 'idle' && !running && <span role="status" className="text-xs text-muted-foreground">{t('Nothing new to refresh')}</span>}
+        {/* The Button owns the 44px touch size (plan rule 6) and its busy look; the page adds neither. */}
+        <Button variant="outline" size="sm" onClick={() => void starting.start(refreshRecordKey(null))} busy={starting.pending} aria-disabled={running || undefined} busyLabel={t('Refreshing…')}>
+          <RefreshCwIcon />
           {t('Refresh now')}
         </Button>
+        {starting.failure && <RefreshStartFailure cause={starting.failure.cause} />}
       </div>
     </Req>
   )
