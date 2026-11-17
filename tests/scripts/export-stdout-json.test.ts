@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import express from 'express';
 import { once } from 'node:events';
-import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, mkdtempSync, openSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Server } from 'node:http';
@@ -55,22 +55,24 @@ describe.skipIf(process.platform === 'win32')('JSON memory export to stdout', ()
     rmSync(directory, { recursive: true, force: true });
   });
 
-  async function run(output: string, pipe = false) {
+  async function run(output: string, pipe = false, appendStdout?: string) {
     const args = [process.execPath, '--preload', join(import.meta.dir, '../preload.ts'),
       join(import.meta.dir, '../../scripts/export-memories.ts'), '', output, '--project=stdio-project'];
     // Python's capture uses native pipes; Bun.spawn uses Unix socket pairs.
     const launch = pipe ? [Bun.which('python3')!, '-c',
       'import subprocess,json,sys; r=subprocess.run(sys.argv[1:],capture_output=True); print(json.dumps(dict(status=r.returncode,stdout=r.stdout.decode(),stderr=r.stderr.decode())))',
       ...args] : args;
+    const stdoutFd = appendStdout ? openSync(appendStdout, 'a') : undefined;
     const child = Bun.spawn(launch, {
       cwd: directory,
       env: { ...process.env, CLAUDE_MEM_DATA_DIR: directory, CLAUDE_CONFIG_DIR: join(directory, 'config'),
         CLAUDE_MEM_EXPORT_MEMORIES_NO_MAIN: '0' },
-      stdout: 'pipe', stderr: 'pipe',
+      stdout: stdoutFd ?? 'pipe', stderr: 'pipe',
     });
     const [status, stdout, stderr] = await Promise.all([
       child.exited, new Response(child.stdout).text(), new Response(child.stderr).text(),
     ]);
+    if (stdoutFd !== undefined) closeSync(stdoutFd);
     if (pipe) {
       if (status !== 0) throw new Error(stderr);
       return JSON.parse(stdout) as { status: number; stdout: string; stderr: string };
@@ -122,6 +124,47 @@ describe.skipIf(process.platform === 'win32')('JSON memory export to stdout', ()
     expect(result.status).toBe(0);
     expect(JSON.parse(result.stderr)).toMatchObject({ totalObservations: 1, totalSessions: 1, totalPrompts: 1 });
     expect(result.stdout).toContain('Export complete!');
+  });
+
+  it('keeps legacy-settings diagnostics off the stderr data stream', async () => {
+    const settings = JSON.parse(readFileSync(join(directory, 'settings.json'), 'utf8'));
+    writeFileSync(join(directory, 'settings.json'), JSON.stringify({ env: settings }));
+    const result = await run('/dev/stderr');
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stderr)).toMatchObject({ totalObservations: 1, totalSessions: 1, totalPrompts: 1 });
+    expect(result.stdout).toContain('[SETTINGS] Migrated settings file');
+  });
+
+  for (const alias of [false, true]) {
+    it(`atomically replaces ${alias ? 'a regular-file symlink target' : 'a regular output file'} also opened as append stdout`, async () => {
+      const destination = join(directory, 'export.json');
+      writeFileSync(destination, JSON.stringify({ previous: 'last successful export' }));
+      const output = alias ? join(directory, 'file-link') : destination;
+      if (alias) symlinkSync(destination, output);
+      const result = await run(output, false, destination);
+      expect(result.status, result.stderr).toBe(0);
+      expect(JSON.parse(readFileSync(destination, 'utf8'))).toMatchObject({
+        totalObservations: 1, totalSessions: 1, totalPrompts: 1,
+      });
+    });
+  }
+
+  it('follows a directory alias to a native stdout descriptor', async () => {
+    const alias = join(directory, 'descriptors');
+    symlinkSync('/dev/fd', alias);
+    const result = await run(join(alias, '1'));
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ totalObservations: 1, totalSessions: 1, totalPrompts: 1 });
+  });
+
+  it('still writes an explicit stdout destination through a redirected file descriptor', async () => {
+    const destination = join(directory, 'stdout-data.json');
+    const result = await run('/dev/stdout', false, destination);
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(readFileSync(destination, 'utf8'))).toMatchObject({
+      totalObservations: 1, totalSessions: 1, totalPrompts: 1,
+    });
+    expect(result.stderr).toContain('Export complete!');
   });
 
   it('leaves the data stream empty when the worker rejects the export', async () => {
