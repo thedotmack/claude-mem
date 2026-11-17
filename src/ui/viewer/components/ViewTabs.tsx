@@ -14,6 +14,7 @@ export function ViewTabs({ active, onSelect }: ViewTabsProps) {
   return (
     <nav className="view-tabs" aria-label={t('View')}>
       <button
+        type="button"
         className={`view-tab${active === 'timeline' ? ' active' : ''}`}
         aria-pressed={active === 'timeline'}
         onClick={() => onSelect('timeline')}
@@ -21,6 +22,7 @@ export function ViewTabs({ active, onSelect }: ViewTabsProps) {
         {t('Timeline')}
       </button>
       <button
+        type="button"
         className={`view-tab${active === 'sessions' ? ' active' : ''}`}
         aria-pressed={active === 'sessions'}
         onClick={() => onSelect('sessions')}
