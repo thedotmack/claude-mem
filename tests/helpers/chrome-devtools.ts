@@ -74,8 +74,28 @@ export function myWorkFontResponse(path: string): Response | null {
  * with and without it, so a Mac run shows what CI and Windows show.
  */
 export const CLASSIC_SCROLLBAR_STYLE = '<style>::-webkit-scrollbar{width:15px;height:15px}</style>';
-/** The classic scrollbar's style when the fixture page's address asks for it, else nothing. */
-export const scrollbarStyleFor = (requestUrl: string) => new URL(requestUrl).searchParams.get('scrollbar') === 'classic' ? CLASSIC_SCROLLBAR_STYLE : '';
+/**
+ * No scrollbar, for a fixture page whose address asks for none (`scrollbar=none`). Leaving CLASSIC_SCROLLBAR_STYLE out
+ * is not enough: Chrome on Linux and Windows then draws its own 15px one (PR #6210 CI, 2026-11-17: a "no scrollbar" run
+ * that only left the style out had the List's table from 1380px, as with a scrollbar, where a Mac had it at 1366).
+ */
+export const NO_SCROLLBAR_STYLE = '<style>::-webkit-scrollbar{width:0;height:0}</style>';
+/** The style for the scrollbar the fixture page's address asks for (`scrollbar=classic` or `none`); nothing when it asks for none of them. */
+export function scrollbarStyleFor(requestUrl: string): string {
+  const scrollbar = new URL(requestUrl).searchParams.get('scrollbar');
+  if (scrollbar === null) return '';
+  if (scrollbar === 'classic') return CLASSIC_SCROLLBAR_STYLE;
+  if (scrollbar === 'none') return NO_SCROLLBAR_STYLE;
+  throw new Error(`scrollbar=${scrollbar} is neither classic nor none`);
+}
+/**
+ * The two scrollbars each width-sensitive test runs with, the same on every machine: none (headless Chrome on a Mac
+ * draws overlay ones) and a classic 15px one (Chrome on Linux CI and on Windows). `query` goes on the fixture's address.
+ */
+export const SCROLLBAR_MODES = [
+  { label: 'no scrollbar', query: '&scrollbar=none', classic: false },
+  { label: 'a classic 15px scrollbar', query: '&scrollbar=classic', classic: true },
+] as const;
 /** The width a classic scrollbar takes from the page: CLASSIC_SCROLLBAR_STYLE's, and Chrome's own on Linux and Windows. */
 export const CLASSIC_SCROLLBAR_PX = 15;
 /**

@@ -4,7 +4,8 @@ import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import {
   REPOSITORY_ROOT, UNTHROTTLED_TIMER_FLAGS, chromeExecutablePath, compileBrowserFixture, connectToPage,
-  failOnCiWithoutChrome, htmlResponse, launchChrome, myWorkFontResponse, scriptResponse, scrollbarStyleFor, withTimeout, type DevToolsPage, type OwnedChrome,
+  failOnCiWithoutChrome, htmlResponse, launchChrome, myWorkFontResponse, scriptResponse, SCROLLBAR_MODES, scrollbarStyleFor, withTimeout,
+  type DevToolsPage, type OwnedChrome,
 } from '../../helpers/chrome-devtools';
 import { CONTINUATION_STATE_WORDS, REPLY_CARD_STATES } from '../../../src/ui/my-work/src/live/conversation-continuation';
 import { STATEFUL_BUTTON_STATE } from '../../../src/ui/my-work/src/components/aceternity/stateful-button-state';
@@ -1238,14 +1239,11 @@ for (const titles of ['missing', 'legacy'] as const) {
   }, 60_000);
 }
 
-/**
- * The drawer panel scrolls, so where a browser draws a classic 15px scrollbar (Chrome on Linux CI and on Windows) its
- * rows are 15px narrower: the reply row had 509px there, not 524 (PR #6210's CI). Each run here has one or the other.
- */
-const DRAWER_SCROLLBAR_MODES = [{ label: 'no scrollbar', query: '' }, { label: 'a classic 15px scrollbar', query: '&scrollbar=classic' }] as const;
+// The drawer panel scrolls, so where a browser draws a classic 15px scrollbar (Chrome on Linux CI and on Windows) its
+// rows are 15px narrower: the reply row had 509px there, not 524 (PR #6210's CI). Each run has one or none (SCROLLBAR_MODES).
 
 for (const [count, picker] of [[10, 'Select'], [37, 'searchable list']] as const) {
-  for (const scrollbar of DRAWER_SCROLLBAR_MODES) {
+  for (const scrollbar of SCROLLBAR_MODES) {
   (chromeExecutablePath ? it : it.skip)(`at 1440 with ${scrollbar.label} the ${picker} keeps "Reply to", a long name cut at its width cap and "${count} of ${count}" on one line in every language, the whole name reachable (R4)`, async () => {
     // The long name on the last conversation, so the count beside it is the widest it gets ("37 of 37").
     await openFixture(`conversations=${count}&titles=long&long-at=${count - 1}${scrollbar.query}`, DESKTOP);

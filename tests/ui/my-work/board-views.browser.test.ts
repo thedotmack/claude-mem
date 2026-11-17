@@ -4,8 +4,8 @@ import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import {
   REPOSITORY_ROOT, UNTHROTTLED_TIMER_FLAGS, chromeExecutablePath, compileBrowserFixture, connectToPage,
-  failOnCiWithoutChrome, FITS_THE_WINDOW, htmlResponse, launchChrome, myWorkFontResponse, PAGE_WIDTHS, pageFitsTheWindow, scriptResponse, scrollbarStyleFor,
-  withTimeout, type DevToolsPage, type OwnedChrome,
+  failOnCiWithoutChrome, FITS_THE_WINDOW, htmlResponse, launchChrome, myWorkFontResponse, PAGE_WIDTHS, pageFitsTheWindow, scriptResponse, SCROLLBAR_MODES,
+  scrollbarStyleFor, withTimeout, type DevToolsPage, type OwnedChrome,
 } from '../../helpers/chrome-devtools';
 import { THEME_PRE_PAINT_SCRIPT } from '../../../src/ui/my-work/src/lib/theme-pre-paint';
 import { SAMPLE_STATES } from '../../../src/ui/my-work/src/live/sample-source';
@@ -767,12 +767,8 @@ async function resize(width: number, touch = false) {
  */
 const SQUEEZED_ROW_PX = 64;
 
-/**
- * Each width-sensitive test runs without a scrollbar (headless Chrome on a Mac draws overlay ones) and with a classic
- * 15px one (Chrome on Linux CI and on Windows: PR #6210's CI measured every width here 15px narrower).
- */
-const SCROLLBAR_MODES = [{ label: 'no scrollbar', query: '' }, { label: 'a classic 15px scrollbar', query: '&scrollbar=classic' }] as const;
-
+// Each width-sensitive test runs with no scrollbar and with a classic 15px one (SCROLLBAR_MODES): PR #6210's CI measured
+// every width here 15px narrower with Chrome's own scrollbar on Linux.
 for (const scrollbar of SCROLLBAR_MODES) {
 it.skipIf(!chromeExecutablePath)(`Team columns at 768, 1024, 1280, 1440 and on a touch phone, in English and Korean, with ${scrollbar.label}: each row’s whole title on a line of its own as wide as the row, the tool’s name whole, every status badge one line with its words whole, also squeezed`, async () => {
   try {
@@ -919,7 +915,7 @@ it.skipIf(!chromeExecutablePath)(`from 768px up to the table a List row keeps it
     }
     // The table comes within the sweep either way, and with no scrollbar it is the table at 1366, as before.
     expect(sweep.at(-1)!.table).toBe(true);
-    if (!scrollbar.query) expect(sweep.find((step) => step.width === 1366)!.table).toBe(true);
+    if (!scrollbar.classic) expect(sweep.find((step) => step.width === 1366)!.table).toBe(true);
     // At 1440 the table, its title column at least as wide; its start time opens its full stamp on keyboard focus too
     // (G10; it was a mouse-only title): Tab from the row's area link lands on it.
     await page!.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });

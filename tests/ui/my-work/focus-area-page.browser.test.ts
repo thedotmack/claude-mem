@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import {
   FITS_THE_WINDOW, PAGE_WIDTHS, REPOSITORY_ROOT, UNTHROTTLED_TIMER_FLAGS, chromeExecutablePath, compileBrowserFixture, connectToPage,
-  failOnCiWithoutChrome, htmlResponse, launchChrome, myWorkFontResponse, pageFitsTheWindow, pinnedClockFor, scriptResponse, scrollbarStyleFor, withTimeout,
+  failOnCiWithoutChrome, htmlResponse, launchChrome, myWorkFontResponse, pageFitsTheWindow, pinnedClockFor, scriptResponse, SCROLLBAR_MODES, scrollbarStyleFor, withTimeout,
   type DevToolsPage, type OwnedChrome,
 } from '../../helpers/chrome-devtools';
 import { THEME_PRE_PAINT_SCRIPT } from '../../../src/ui/my-work/src/lib/theme-pre-paint';
@@ -28,7 +28,7 @@ failOnCiWithoutChrome('CI requires Chrome for the My Work focus area page regres
  *   group, at most two moving things on home after a live change, the List title's room before its area link (and a
  *   request not sorted yet cut there with an ellipsis), By agent's next step on as many lines as it needs, read errors'
  *   Try again focus, and My Rules' copy with no clipboard.
- * Each width-sensitive check runs without a scrollbar and with a classic 15px one (CLASSIC_SCROLLBAR_STYLE). A check of
+ * Each width-sensitive check runs with no scrollbar and with a classic 15px one (SCROLLBAR_MODES). A check of
  * fixed instants' words pins the page's clock (PINNED_NOW), so it reads the same on any run date.
  * Nothing here reaches a worker: every change is the sample's, kept in the page (plan rule: write only in sample mode).
  */
@@ -36,9 +36,6 @@ const sampleState = (name: SampleState) => {
   if (!SAMPLE_STATES.includes(name)) throw new Error(`No sample state ${name} in SAMPLE_STATES`);
   return `&sample-state=${name}`;
 };
-
-/** Without a scrollbar (a Mac's overlay ones) and with a classic 15px one (Chrome on Linux CI and on Windows). */
-const SCROLLBAR_MODES = [{ label: 'no scrollbar', query: '' }, { label: 'a classic 15px scrollbar', query: '&scrollbar=classic' }] as const;
 
 const KEYS = {
   Enter: { code: 'Enter', keyCode: 13, text: '\r' }, Escape: { code: 'Escape', keyCode: 27, text: undefined },
@@ -232,14 +229,17 @@ async function openPage(query: string, viewport: { width: number; height: number
   fixtureErrors.length = 0;
   const ready = new Promise<void>((resolveReady) => { markReady = resolveReady; });
   const url = `${fixtureUrl}${query}`;
-  chrome = launchChrome(url, { profilePrefix: 'claude-mem-focus-page-', remoteDebugging: true, extraFlags: [...UNTHROTTLED_TIMER_FLAGS, ...(reducedMotion ? ['--force-prefers-reduced-motion'] : [])] });
+  // A fixed zone, so a date reads the same on every machine (CI runs in UTC), set on a blank page before the fixture
+  // draws: set after its first draw, the dates drawn first kept the machine's zone and a later redraw wrote Los
+  // Angeles's (PR #6210 CI, 2026-11-17: Past focus's done date read "4:05:00 PM UTC", then "PDT" after a rename).
+  chrome = launchChrome('about:blank', { profilePrefix: 'claude-mem-focus-page-', remoteDebugging: true, extraFlags: [...UNTHROTTLED_TIMER_FLAGS, ...(reducedMotion ? ['--force-prefers-reduced-motion'] : [])] });
+  page = await connectToPage(chrome, 'about:blank');
+  await page.send('Emulation.setTimezoneOverride', { timezoneId: 'America/Los_Angeles' });
+  await page.send('Page.navigate', { url });
   // The App with sample data drew its first page in 1.0–2.0s in board-views.browser.test.ts (2026-11-16); 20s is for
   // a cold Chrome on a CI runner.
   await withTimeout(ready, 20_000, 'My Work fixture did not draw its page');
-  page = await connectToPage(chrome, url);
   await resize(viewport.width, viewport.height, viewport.touch);
-  // A fixed zone, so a date reads the same on every machine (CI runs in UTC).
-  await page.send('Emulation.setTimezoneOverride', { timezoneId: 'America/Los_Angeles' });
   await page.settle();
 }
 
@@ -841,11 +841,11 @@ it.skipIf(!chromeExecutablePath)('Other shows every ask nobody has started, each
 // A phone draws overlay scrollbars, so the classic scrollbar's run is a 390px desktop window (Windows, Linux), where
 // Chrome draws it: the page then has 375px. Below 48rem every control is 44px there too (touch-target-size).
 for (const scrollbar of SCROLLBAR_MODES) {
-  const where = scrollbar.query ? 'a 390px desktop window with a classic 15px scrollbar' : 'a 390px touch phone';
+  const where = scrollbar.classic ? 'a 390px desktop window with a classic 15px scrollbar' : 'a 390px touch phone';
   it.skipIf(!chromeExecutablePath)(`a focus area page and Other fit ${where}: nothing runs past the page's width, the "…" and the menu rows are 44px or more`, async () => {
     try {
-      await openPage(`&focus=fa-sync${scrollbar.query}`, { width: 390, height: 844, touch: !scrollbar.query });
-      if (scrollbar.query) expect(await page!.evaluate('document.documentElement.clientWidth')).toBe(375);
+      await openPage(`&focus=fa-sync${scrollbar.query}`, { width: 390, height: 844, touch: !scrollbar.classic });
+      if (scrollbar.classic) expect(await page!.evaluate('document.documentElement.clientWidth')).toBe(375);
       const fits = () => page!.evaluate(`(() => {
         const width = document.documentElement.clientWidth;
         const parts = [...document.querySelectorAll('[data-focus-header], section[data-main-card], [data-not-started-asks], [data-board-view]')];
