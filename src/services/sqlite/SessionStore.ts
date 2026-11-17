@@ -5491,6 +5491,20 @@ export class SessionStore {
       );
       const id = result.lastInsertRowid as number;
       replaceObservationFileIndex(this.db, id, obs.files_read, obs.files_modified);
+      // Restore derived lookup data too, without merging historical rows.
+      // Read SQLite's saved title (legacy imports can have numeric/boolean
+      // values) and the actual local parent, not an exported platform hint.
+      const saved = this.db.prepare(`SELECT o.title, o.agent_id, o.agent_type, s.platform_source
+        FROM observations o LEFT JOIN sdk_sessions s ON s.memory_session_id = o.memory_session_id
+        WHERE o.id = ?`).get(id) as {
+          title: string | null; agent_id: string | null; agent_type: string | null; platform_source: string | null;
+        };
+      this.db.prepare('UPDATE observations SET title_norm_key = ? WHERE id = ?').run(
+        computeTitleNormKey(obs.project, saved.platform_source, saved.title,
+          isSubagentEvent(saved.agent_id, saved.agent_type)), id,
+      );
+      const dedup = this.dedupConfig();
+      if (dedup.enabled) this.maintainDedupOnInsert(obs.project, id, saved.title, dedup);
       return id;
     })();
     emitContextInvalidation({ projects: importedRowProjects(obs) }, 'importObservation');
