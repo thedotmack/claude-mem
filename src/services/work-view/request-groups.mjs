@@ -567,6 +567,26 @@ export function validateStory(story) {
   };
 }
 
+/** The story step's input: the reviews to tell, the story they update and its budgets. `story-input` builds it from
+ * the saved story; the worker builds each later part of a story written in parts (#6226) from the part before. */
+export function storyInput(groups, reviews, story) {
+  const update = Number.isFinite(Date.parse(story?.writtenAt ?? ''));
+  // An update only ever added to the story until it reached the cap and every update was refused (Oct 24: 11,958 of 12,000),
+  // so the agent is told the budget and the previous story's length up front.
+  // With only the limit and length, an update at 11,836 of 12,000 still added ~1,300 characters and condensed nothing (Oct 24),
+  // so the room left is spelled out as well.
+  // With room counted up to the cap, updates still aimed at the cap and landed over it (Oct 24–26), so the room is
+  // counted up to the target, and a previous story past the target is first condensed back to it, part by part.
+  const previousNarrativeChars = story?.narrative?.length ?? 0;
+  return { groups, update, narrativeTarget: STORY_NARRATIVE_TARGET, narrativeLimit: STORY_NARRATIVE_MAX, previousNarrativeChars,
+    roomChars: Math.max(0, STORY_NARRATIVE_TARGET - previousNarrativeChars), condenseChars: Math.max(0, previousNarrativeChars - STORY_NARRATIVE_TARGET),
+    previousParts: update ? storyParts(story.narrative) : [], mergeOldestChapters: update ? storyChaptersToMerge(story.narrative) : 0,
+    reviews,
+    // Rules owner-goals put in the story are its own (record-story carries them over): shown here, the story model
+    // would echo them back without their source and when, leaving copies a later owner-goals save cannot replace.
+    previousStory: story && { ...story, preferences: (story.preferences ?? []).filter((preference) => preference?.source !== OWNER_GOALS_LIST) } };
+}
+
 /** Suggestions still waiting for the owner: the judge's mid-band picks (request-judge.mjs) whose
  * request still exists and whose conversation is not in it yet. */
 export function openSuggestions(ledger) {
@@ -1118,21 +1138,8 @@ export function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now
     const reviews = Object.values(progress).sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)));
     // With a previous story, only reviews whose facts changed after it was written.
     const writtenAt = Date.parse(story?.writtenAt ?? '');
-    const update = Number.isFinite(writtenAt);
-    // An update only ever added to the story until it reached the cap and every update was refused (Oct 24: 11,958 of 12,000),
-    // so the agent is told the budget and the previous story's length up front.
-    // With only the limit and length, an update at 11,836 of 12,000 still added ~1,300 characters and condensed nothing (Oct 24),
-    // so the room left is spelled out as well.
-    // With room counted up to the cap, updates still aimed at the cap and landed over it (Oct 24–26), so the room is
-    // counted up to the target, and a previous story past the target is first condensed back to it, part by part.
-    const previousNarrativeChars = story?.narrative?.length ?? 0;
-    return print({ groups: Object.keys(groups.groups).length, update, narrativeTarget: STORY_NARRATIVE_TARGET, narrativeLimit: STORY_NARRATIVE_MAX, previousNarrativeChars,
-      roomChars: Math.max(0, STORY_NARRATIVE_TARGET - previousNarrativeChars), condenseChars: Math.max(0, previousNarrativeChars - STORY_NARRATIVE_TARGET),
-      previousParts: update ? storyParts(story.narrative) : [], mergeOldestChapters: update ? storyChaptersToMerge(story.narrative) : 0,
-      reviews: update ? reviews.filter((review) => Date.parse(review.changedAt ?? review.checkedAt) > writtenAt) : reviews,
-      // Rules owner-goals put in the story are its own (record-story carries them over): shown here, the story model
-      // would echo them back without their source and when, leaving copies a later owner-goals save cannot replace.
-      previousStory: story && { ...story, preferences: (story.preferences ?? []).filter((preference) => preference?.source !== OWNER_GOALS_LIST) } });
+    return print(storyInput(Object.keys(groups.groups).length,
+      Number.isFinite(writtenAt) ? reviews.filter((review) => Date.parse(review.changedAt ?? review.checkedAt) > writtenAt) : reviews, story));
   }
   if (command === 'record-story') {
     const validated = validateStory(readInput(args[0] ?? '-'));

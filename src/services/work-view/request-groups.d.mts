@@ -64,3 +64,15 @@ export interface GroupingInput {
 }
 /** coerce: the refresh's one retry cuts what would be refused, naming each changed group or ignore entry in coercedFields. */
 export function validateGroupingAnswer<T>(answer: T, input: GroupingInput, options?: { coerce?: boolean; coercedFields?: Set<string> }): T;
+export interface StoryPreference { preference: string; kind: string; supportCount: number; quotes: Array<{ quote: string; at: string | null }> }
+export interface ValidatedStory { narrative: string; preferences: StoryPreference[] }
+export function validateStory(story: any): ValidatedStory;
+export interface StoryPart { part: string; chars: number; words: number; budgetChars: number; budgetWords: number; overBudgetChars: number }
+export interface StoryInput {
+  groups: number; update: boolean; narrativeTarget: number; narrativeLimit: number;
+  previousNarrativeChars: number; roomChars: number; condenseChars: number;
+  previousParts: StoryPart[]; mergeOldestChapters: number;
+  reviews: any[];
+  previousStory: (Record<string, any> & { narrative: string; preferences: any[] }) | null;
+}
+export function storyInput(groups: number, reviews: any[], story: (Record<string, any> & { narrative: string; preferences?: any[]; writtenAt?: string }) | null): StoryInput;

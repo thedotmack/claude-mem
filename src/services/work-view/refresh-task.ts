@@ -21,7 +21,7 @@ import { writeOwnerPromptsFile, type OwnerPromptsFile } from '../prompt-import/o
 import { resolvePythonCommand } from './python.js';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { logger } from '../../utils/logger.js';
-import { FOCUS_BATCH, readGoals, readLedger, runCli, validateFocusAnswer, validateGroupingAnswer, type FocusInput, type LedgerDatabase, type RefreshNeeds } from './request-groups.mjs';
+import { FOCUS_BATCH, readGoals, readLedger, runCli, storyInput as buildStoryInput, validateFocusAnswer, validateGroupingAnswer, validateStory, type FocusInput, type LedgerDatabase, type RefreshNeeds } from './request-groups.mjs';
 import { FOCUS_AUTO_PLACE_THRESHOLD, judgeFocusBatch, placesAlone, type FocusJudge, type FocusJudgement } from './focus-judge.mjs';
 import { isWithdrawnArea, ownerGoalsAreaRows, ownerGoalsSaveKey, PROPOSAL_KINDS, readFocusAreas, routerFocusRows, type FocusArea, type RouterFocusBody } from './my-focus.mjs';
 import { NAV_LABELS } from './nav-words.mjs';
@@ -352,7 +352,8 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
         if (existsSync(path)) inlineEvidence.set(path, readFileSync(path, 'utf8'));
       }
     }
-    let questionByteLimit: number | null = null;
+    /** The byte budget the next question must fit, and the refusal that names its step when it does not. */
+    let questionBudget: { bytes: number; refusal: string } | null = null;
     const expandedQuestion = (prompt: string): string => {
       const supplied = [...inlineEvidence].filter(([path]) => prompt.includes(path));
       return supplied.length ? prompt + '\n\nThe following input files are supplied inline; no file tools are available:\n'
@@ -360,9 +361,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
     };
     const ask: AskAgent = (prompt, models, schema) => {
       const expanded = expandedQuestion(prompt);
-      if (questionByteLimit !== null && Buffer.byteLength(expanded, 'utf8') > questionByteLimit) {
-        throw batchFailure('This owner-goals question exceeds the input budget, including its checked draft or refused answer. Progress is retained; no prompt was skipped.');
-      }
+      if (questionBudget && Buffer.byteLength(expanded, 'utf8') > questionBudget.bytes) throw batchFailure(questionBudget.refusal);
       return askBackend(agent === 'gemini' || agent === 'api' ? expanded : prompt, models, schema);
     };
     const writeInput = (name: string, value: unknown) => {
@@ -373,7 +372,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       return path;
     };
     const localDeviceId = options.localDeviceId();
-    const cli = (argv: string[], input?: unknown, cliOptions: { coerceProgress?: boolean } = {}) => {
+    const cli = (argv: string[], input?: unknown, cliOptions: { coerceProgress?: boolean; now?: number } = {}) => {
       let output: any;
       const database = openDatabase();
       try { runCli(input === undefined ? argv : [...argv, writeInput(argv[0], input)], { dir: ledgerDir, database, now: now(), print: value => { output = value; }, localDeviceId, ...cliOptions }); }
@@ -580,7 +579,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
               const contents = renderOwnerGoalsBatch(batch);
               writeFileSync(batchPath, contents, { mode: 0o600 });
               inlineEvidence.set(batchPath, contents);
-              questionByteLimit = OWNER_GOALS_QUESTION_BYTES;
+              questionBudget = { bytes: OWNER_GOALS_QUESTION_BYTES, refusal: 'This owner-goals question exceeds the input budget, including its checked draft or refused answer. Progress is retained; no prompt was skipped.' };
               try {
                 await step('goals', question, async answer => {
                   if (typeof answer.map !== 'string' || !(answer.goals === null || (answer.goals && typeof answer.goals === 'object' && !Array.isArray(answer.goals)))) {
@@ -600,7 +599,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
                   goalsCheckpoint = next;
                   for (const section of batch) processed.add(section.key);
                 });
-              } finally { questionByteLimit = null; }
+              } finally { questionBudget = null; }
             }
             if (!checked && !ownerPrompts) checked = await validate({ generated_at: exportedAt, window_days: 31,
               human_summary: 'No owner prompts in this window.', focus_areas: [], asks: [], rules: [] });
@@ -849,13 +848,80 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       } catch (error) { focusError = error; }
 
       // Only reviews whose facts (state, percent, dates, milestones, preferences, outcome) moved since the last story; none means the story still holds.
+      // A story written in parts takes several calls, so a review can move while it is being written. The story is
+      // recorded as of this read, so a review that moves after it still counts as news for the next refresh.
+      const storyReadAt = now();
       const storyInput = cli(['story-input']);
       if (storyInput.reviews.length) {
-        await step('story', [
+        // One question held every moved review with no cap, so once enough reviews piled up the question
+        // outgrew the model's window and every later refresh failed the same way (#6226). The reviews are
+        // packed into parts under the complete-question budget the owner-goals map uses
+        // (OWNER_GOALS_QUESTION_BYTES, from the #5969 measurements), each part sized against the question
+        // as it will actually be asked: step() appends the run's language line, and the story so far rides
+        // along in every later part's input. The first part writes (or updates) the story and each later
+        // part updates the story the part before returned. Only the last part is recorded: record-story
+        // stamps the story's writtenAt, so recording an early part would mark the reviews still to come
+        // as already told, and no later refresh would send them again. A part that fails records nothing,
+        // so the next refresh tells the whole story again rather than losing the reviews it missed.
+        const batchPath = writeInput('story-input', '');
+        const storyQuestion = (input: any) => [
           requestProgress, '---', readOnly,
-          `Do only section 4 (${storyInput.update ? 'update' : 'write'} the build story). The \`story-input\` output is in ${writeInput('story-input', storyInput)}. Reply with only the JSON that \`record-story\` takes ({"narrative": "...", "preferences": [...]}).`,
-        ].join('\n\n'), answer => cli(['record-story'], answer));
-        done.push(storyInput.update ? 'story updated' : 'story written');
+          `Do only section 4 (${input.update ? 'update' : 'write'} the build story). The \`story-input\` output is in ${batchPath}. Reply with only the JSON that \`record-story\` takes ({"narrative": "...", "preferences": [...]}).`,
+        ].join('\n\n');
+        // The first part answers story-input as read; each later part updates the story the part before returned,
+        // shaped as story-input reads a recorded one back.
+        const storyInputFor = (reviews: any[], previous: { narrative: string; preferences: any[] } | null) => previous === null
+          ? { ...storyInput, reviews }
+          : buildStoryInput(storyInput.groups, reviews, { ...previous, writtenAt: new Date(storyReadAt).toISOString() });
+        /** Write the part's input file and measure the question exactly as step() will ask it. */
+        const storyQuestionBytes = (input: any) => {
+          const contents = JSON.stringify(input, null, 2);
+          writeFileSync(batchPath, contents, { mode: 0o600 });
+          inlineEvidence.set(batchPath, contents);
+          const question = storyQuestion(input);
+          const rule = languageRule();
+          return Buffer.byteLength(expandedQuestion(rule ? `${question}\n\n${rule}` : question), 'utf8');
+        };
+        const packStoryBatch = (remaining: any[], previous: { narrative: string; preferences: any[] } | null) => {
+          const available = Math.min(OWNER_GOALS_BATCH_BYTES, OWNER_GOALS_QUESTION_BYTES - storyQuestionBytes(storyInputFor([], previous)));
+          const batch: any[] = [];
+          let used = 0;
+          for (const review of remaining) {
+            // A review's cost in the pretty-printed input: its own JSON, four more spaces of indent on
+            // every line, and the comma and newline that separate it from the review before it.
+            const cost = Buffer.byteLength(JSON.stringify(review, null, 2).replaceAll('\n', '\n    '), 'utf8') + 4 + (batch.length ? 2 : 0);
+            if (used + cost > available) break;
+            batch.push(review);
+            used += cost;
+          }
+          // The packing estimates each review's bytes; the written batch is measured exactly, and reviews
+          // move to the next part until the question fits the budget.
+          while (batch.length > 1 && storyQuestionBytes(storyInputFor(batch, previous)) > OWNER_GOALS_QUESTION_BYTES) batch.pop();
+          if (!batch.length || storyQuestionBytes(storyInputFor(batch, previous)) > OWNER_GOALS_QUESTION_BYTES) {
+            throw batchFailure('One moved review and the story question around it exceed the input budget, so the story cannot be written in parts. No review was skipped.');
+          }
+          return batch;
+        };
+        let previous: { narrative: string; preferences: any[] } | null = null;
+        let remaining = storyInput.reviews as any[];
+        let parts = 0;
+        while (remaining.length) {
+          const batch = packStoryBatch(remaining, previous);
+          remaining = remaining.slice(batch.length);
+          const input = storyInputFor(batch, previous);
+          storyQuestionBytes(input);
+          const last = !remaining.length;
+          questionBudget = { bytes: OWNER_GOALS_QUESTION_BYTES, refusal: 'This story question exceeds the input budget, including its refused answer. Nothing was recorded; no review was skipped.' };
+          try {
+            await step('story', storyQuestion(input), async answer => {
+              if (last) return cli(['record-story'], answer, { now: storyReadAt });
+              previous = validateStory(answer);
+              return previous;
+            });
+          } finally { questionBudget = null; }
+          parts++;
+        }
+        done.push(`${storyInput.update ? 'story updated' : 'story written'}${parts > 1 ? ` in ${parts} parts` : ''}`);
       }
       if (focusError) throw focusError;
       return done.length ? `${done.join(', ')}.` : 'Nothing was due.';
