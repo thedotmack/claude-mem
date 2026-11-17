@@ -19,8 +19,26 @@ export interface SetupInstallSelection {
    */
   emailProvided?: boolean;
   claudeModel?: string;
+  /** At most SETUP_DSH_PROFILE_MAX_CHARACTERS after trimming. */
   dshProfile?: string;
 }
+
+/**
+ * The longest DeepSeek Harness profile name the install takes: one definition for the worker's install check
+ * (WorkViewRoutes.ts `setupInstallSelectionBody`) and the setup page's field. A request-size and abuse cap on a loopback
+ * write, like the other install fields' caps there: a profile name is one short word (the default is `web`; the
+ * installer allows letters, digits, `.`, `_` and `-`, DeepSeekHarnessInstaller.ts `PROFILE_NAME`), so 200 characters
+ * refuses no real name.
+ */
+export const SETUP_DSH_PROFILE_MAX_CHARACTERS = 200;
+
+/**
+ * The longest note ("Anything you'd like us to know?", sent with the product-updates signup) the install takes: one
+ * definition for the worker's install check (WorkViewRoutes.ts `setupInstallSelectionBody`) and the setup page's box,
+ * which cuts a longer paste to it and says so. A request-size and abuse cap on a loopback write, the same 2,000
+ * characters the install route allows its other free text (the installer's error reports).
+ */
+export const SETUP_INSTALL_NOTE_MAX_CHARACTERS = 2000;
 
 export interface SetupInstallCatalog {
   agents: Array<{ id: string; label: string; hint: string; detected: boolean }>;

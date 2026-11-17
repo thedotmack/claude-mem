@@ -1,12 +1,19 @@
+import * as React from "react"
 import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "cn"
+import { Slot } from "radix-ui"
 
+/**
+ * An empty, loading or failed state (D b10). It says what happened and offers one next step: put one Button in
+ * EmptyContent (a retry when a read failed, M 211 and M 213). The dashed edge is --control-edge, ≥3:1 on the page and
+ * the card (F 208); every colour is a theme token, so it follows the page's theme.
+ */
 function Empty({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       data-slot="empty"
       className={cn(
-        "flex w-full min-w-0 flex-1 flex-col items-center justify-center gap-4 rounded-xl border-dashed p-10 text-center text-balance",
+        "flex w-full min-w-0 flex-1 flex-col items-center justify-center gap-4 rounded-xl border border-dashed border-control-edge p-10 text-center text-balance",
         className
       )}
       {...props}
@@ -54,9 +61,15 @@ function EmptyMedia({
   )
 }
 
-function EmptyTitle({ className, ...props }: React.ComponentProps<"div">) {
+/** A heading (D b10 F 206), `h2` unless the caller supplies another level with `asChild`. */
+function EmptyTitle({
+  className,
+  asChild = false,
+  ...props
+}: React.ComponentProps<"h2"> & { asChild?: boolean }) {
+  const Comp = asChild ? Slot.Root : "h2"
   return (
-    <div
+    <Comp
       data-slot="empty-title"
       className={cn(
         "font-heading text-base font-medium tracking-tight",

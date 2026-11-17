@@ -2,7 +2,7 @@
 // then work (request groups), then rules (the build story's preferences). Nothing is invented: a set the run has not
 // reached yet is `null` (placeholders), and a finished run leaves an empty set empty.
 import type { WorkViewRefreshState, WorkViewSnapshot } from '../live/work-view-api-types.ts'
-import { toWorkModel } from '../live/to-work-model.ts'
+import { NEXT_STEP_NOT_RECORDED, NO_WORK_YET, toWorkModel } from '../live/to-work-model.ts'
 import type { FocusArea, Request } from '../data.ts'
 
 /** data.ts AgentTool, spelled out so this file (and its node test) needs no app alias. */
@@ -97,4 +97,18 @@ export function revealFromSnapshot(snapshot: SnapshotWithSetup): RevealSets {
     goals: goals ?? (finished ? [] : null), work: work ?? (finished ? [] : null), rules: rules ?? (finished ? [] : null),
     focusAreas, requests: workModel.requests, requestReadErrorCount: workModel.requestReadErrors.length,
   }
+}
+
+/** The mapper's English fillers in place of a next step (live/to-work-model.ts): none of them is a step (decision G3). */
+const NEXT_STEP_FILLERS: ReadonlySet<string> = new Set([NEXT_STEP_NOT_RECORDED, NO_WORK_YET])
+
+/**
+ * A request's next step as the Reveal prints it, or null when none is recorded: no text, or one of the mapper's English
+ * fillers for a missing step ("Next step not recorded", and "No agent work recorded yet" for a request with only
+ * asks). Built on the same rule as `recordedNextStep` in components/bits.tsx, which keeps its copy private to My Work's
+ * cards and leaves out only the first filler.
+ */
+export function recordedNextStepText(request: Pick<Request, 'next'>): string | null {
+  const text = request.next?.text?.trim()
+  return text && !NEXT_STEP_FILLERS.has(text) ? text : null
 }

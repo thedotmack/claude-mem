@@ -9,8 +9,14 @@
   :root {
     --bg: #0d0d0c;
     --fg: #f4f2ee;
-    --dim: rgba(244, 242, 238, 0.45);
-    --accent: #c15f3c;
+    /* Raised for reading across a room (F5; C13: the contrast fix wins over "same colours"): 9.2:1 on --bg.
+       It was 45% white, 4.2:1. */
+    --dim: rgba(244, 242, 238, 0.72);
+    /* The kind word: the same terracotta, lighter, 7.7:1 on --bg (#c15f3c was 4.6:1). */
+    --accent: #e98a64;
+    /* Room kept clear above and below the title: the status row's 44px buttons plus a 12px gap (56px = 3.5rem), and
+       the same below for the queue line, so the title never runs under either. */
+    --edge-row: 3.5rem;
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; }
@@ -29,12 +35,17 @@
     inset: 0;
     display: grid;
     place-items: center;
-    padding: max(4vmin, env(safe-area-inset-top)) 6vmin;
+    padding: calc(max(1rem, env(safe-area-inset-top)) + var(--edge-row)) 0
+      calc(max(1rem, env(safe-area-inset-bottom)) + var(--edge-row));
     text-align: center;
   }
+  /* In the picture-in-picture window the status row and queue line stay behind, so no room is kept for them. */
+  #stage.in-pip { padding: 4vmin 0; }
 
   #card {
-    max-width: 22ch;
+    /* B4: the box is 80% of the screen wide. It was max-width: 22ch, and ch is measured in the card's own 16px body
+       type, so a 104px title got a 222px box and ran 1,323px tall on a 900px screen. */
+    width: 80vw;
     opacity: 0;
     transition: opacity 900ms ease, transform 900ms ease;
     transform: scale(0.985);
@@ -44,19 +55,29 @@
 
   #title {
     margin: 0;
+    /* The largest size. fitTitle() steps it down until the title fits its lines and the screen. */
     font-size: clamp(2rem, 7.5vw, 6.5rem);
     font-weight: 650;
     letter-spacing: -0.02em;
     line-height: 1.06;
     text-wrap: balance;
+    overflow-wrap: break-word;
+  }
+  /* Still too long at the smallest size: end the last line in an ellipsis. The title attribute keeps every word. */
+  #title.clamped {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: var(--title-lines, 3);
+    overflow: hidden;
   }
 
   #meta {
     margin-top: 3vmin;
-    font-size: clamp(0.75rem, 1.6vw, 1.1rem);
+    font-size: clamp(0.875rem, 1.5vw, 1.75rem);
     letter-spacing: 0.14em;
     text-transform: uppercase;
     color: var(--dim);
+    font-variant-numeric: tabular-nums;
   }
   #meta .type { color: var(--accent); }
 
@@ -75,44 +96,85 @@
   }
   #idle.show { opacity: 1; }
 
-  #hud {
+  /* Top right: the stream state, always on screen in the corner, and to its left the two controls, which show on a
+     pointer move, a touch or any key (#hud.show), and stay while one of them has keyboard focus (:focus-visible). */
+  #topbar {
     position: fixed;
     top: max(1rem, env(safe-area-inset-top));
     right: max(1rem, env(safe-area-inset-right));
+    display: flex;
+    gap: 1rem;
+    align-items: center;
+    font-size: clamp(0.875rem, 1.1vw, 1.25rem);
+  }
+  #status {
+    display: inline-flex;
+    gap: 0.5em;
+    align-items: center;
+    color: var(--dim);
+  }
+  #hud {
     display: flex;
     gap: 0.5rem;
     align-items: center;
     opacity: 0;
     transition: opacity 400ms ease;
   }
-  #hud.show { opacity: 1; }
+  /* Keyboard focus only: a clicked button keeps focus, and the controls must still hide after a click. */
+  #hud.show, #hud:has(:focus-visible) { opacity: 1; }
   #hud button {
     font: inherit;
-    font-size: 0.8rem;
-    letter-spacing: 0.06em;
-    padding: 0.45rem 0.85rem;
+    letter-spacing: 0.02em;
+    min-height: 44px; /* touch size (WCAG 2.5.5); the old 12.8px words and padding made them 34px */
+    padding: 0 1.1em;
     color: var(--fg);
-    background: rgba(255, 255, 255, 0.07);
-    border: 1px solid rgba(255, 255, 255, 0.14);
-    border-radius: 999px;
+    background: transparent;
+    /* Edge 4.9:1 on --bg and 3.7:1 on the hover fill (it was white at 14%, 1.45:1): a control edge needs 3:1. */
+    border: 1px solid rgba(244, 242, 238, 0.5);
+    border-radius: 8px;
     cursor: pointer;
   }
-  #hud button:hover { background: rgba(255, 255, 255, 0.14); }
+  #hud button:hover { background: rgba(244, 242, 238, 0.12); }
+  #hud button:focus-visible { outline: 2px solid #58a6ff; outline-offset: 3px; }
   #dot {
-    width: 0.5rem;
-    height: 0.5rem;
+    flex: none;
+    width: 0.625em;
+    height: 0.625em;
     border-radius: 50%;
-    background: #666;
-    margin-right: 0.25rem;
+    /* Grey 5.6:1 when not live; green 8.5:1 when live. The word beside it says which, so colour is never alone. */
+    background: #8a8a8a;
   }
   #dot.live { background: #4ec07a; }
+
+  /* Bottom left: how many new observations wait to be shown (only when some do). */
+  #queue {
+    position: fixed;
+    left: max(1rem, env(safe-area-inset-left));
+    bottom: max(1rem, env(safe-area-inset-bottom));
+    color: var(--dim);
+    font-size: clamp(0.875rem, 1.1vw, 1.25rem);
+    font-variant-numeric: tabular-nums;
+  }
+  #queue[hidden] { display: none; }
+
+  /* A phone: the status and both worded buttons share one row at 390px while the status is one short word. Longer
+     words ("Not connected · retrying every 3 s") take a row of their own above the buttons, still in the corner,
+     instead of wrapping the buttons' words (measured at 390px: the French words made the row 61px tall). The room kept
+     above and below the title is two rows: the 44px buttons, an 8px gap and the status words' 20px line (14px type at
+     the body's 1.4 line height), plus 12px clear: 84px = 5.25rem. */
+  @media (max-width: 767px) {
+    :root { --edge-row: 5.25rem; }
+    #topbar { left: max(1rem, env(safe-area-inset-left)); flex-wrap: wrap-reverse; justify-content: flex-end; gap: 0.5rem 0.75rem; }
+    #hud button { padding: 0 0.75em; white-space: nowrap; }
+    #status { white-space: nowrap; }
+  }
 
   /* Off-screen source for the canvas route into picture-in-picture. */
   #pip { position: fixed; left: -9999px; top: 0; width: 640px; height: 360px; }
   #pipcanvas { position: fixed; left: -9999px; top: 0; }
 
   @media (prefers-reduced-motion: reduce) {
-    #card { transition-duration: 1ms; }
+    #card, #hud, #idle { transition-duration: 1ms; }
   }
 </style>
 </head>
@@ -124,11 +186,18 @@
   </div>
 </div>
 <div id="idle">waiting for observations</div>
-<div id="hud">
-  <span id="dot" title="stream status"></span>
-  <button id="pipBtn" type="button">PiP</button>
-  <button id="fsBtn" type="button">Full screen</button>
+<div id="topbar">
+  <!-- The controls come and go to the left of the stream state, which keeps the corner. -->
+  <div id="hud">
+    <button id="pipBtn" type="button" aria-pressed="false">Picture in picture</button>
+    <button id="fsBtn" type="button" aria-pressed="false">Full screen</button>
+  </div>
+  <div id="status" role="status">
+    <span id="dot" title="stream status" aria-hidden="true"></span>
+    <span id="streamWord">Connecting</span>
+  </div>
 </div>
+<div id="queue" hidden></div>
 <video id="pip" muted playsinline></video>
 <canvas id="pipcanvas" width="1280" height="720"></canvas>
 
@@ -161,6 +230,8 @@
     idle: document.getElementById('idle'),
     hud: document.getElementById('hud'),
     dot: document.getElementById('dot'),
+    streamWord: document.getElementById('streamWord'),
+    queue: document.getElementById('queue'),
     pipBtn: document.getElementById('pipBtn'),
     fsBtn: document.getElementById('fsBtn'),
     video: document.getElementById('pip'),
@@ -172,11 +243,21 @@
   // empty so an idle worker still leaves something on screen.
   // Follow the same explicit preference as My Work and the classic viewer.
   const languageKey = ['claude', 'mem', 'ui', 'language'].join('-');
+  // connecting / live / reconnecting / down word the stream state (renderStatus), {s} being the seconds between tries;
+  // queueOne / queueMany the new observations still waiting to be shown (renderQueue), {n} being the count.
   const tvText = {
-    en: { title: 'claude-mem · Observation TV', idle: 'waiting for observations', dot: 'stream status', pip: 'PiP', fs: 'Full screen', now: 'just now', min: 'm ago', hr: 'h ago', day: 'd ago' },
-    'zh-CN': { title: 'claude-mem · 观察电视墙', idle: '等待观察记录', dot: '实时流状态', pip: '画中画', fs: '全屏', now: '刚刚', min: ' 分钟前', hr: ' 小时前', day: ' 天前' },
-    ko: { title: 'claude-mem · 관찰 TV', idle: '관찰을 기다리는 중', dot: '스트림 상태', pip: 'PiP', fs: '전체 화면', now: '방금', min: '분 전', hr: '시간 전', day: '일 전' },
-    fr: { title: 'claude-mem · Observation TV', idle: 'En attente d’observations', dot: 'État du flux', pip: 'Image dans l’image', fs: 'Plein écran', now: 'À l’instant', min: ' min', hr: ' h', day: ' j' },
+    en: { title: 'claude-mem · Observation TV', idle: 'waiting for observations', dot: 'stream status', pip: 'Picture in picture', fs: 'Full screen', now: 'just now', min: 'm ago', hr: 'h ago', day: 'd ago',
+      connecting: 'Connecting', live: 'Live', reconnecting: 'Reconnecting', down: 'Not connected · retrying every {s} s',
+      queueOne: '{n} new observation waiting', queueMany: '{n} new observations waiting' },
+    'zh-CN': { title: 'claude-mem · 观察电视墙', idle: '等待观察记录', dot: '实时流状态', pip: '画中画', fs: '全屏', now: '刚刚', min: ' 分钟前', hr: ' 小时前', day: ' 天前',
+      connecting: '正在连接', live: '实时', reconnecting: '正在重新连接', down: '未连接 · 每 {s} 秒重试一次',
+      queueOne: '{n} 条新观察记录待显示', queueMany: '{n} 条新观察记录待显示' },
+    ko: { title: 'claude-mem · 관찰 TV', idle: '관찰을 기다리는 중', dot: '스트림 상태', pip: '화면 속 화면', fs: '전체 화면', now: '방금', min: '분 전', hr: '시간 전', day: '일 전',
+      connecting: '연결 중', live: '실시간', reconnecting: '다시 연결하는 중', down: '연결 안 됨 · {s}초마다 다시 시도',
+      queueOne: '새 관찰 {n}개 대기 중', queueMany: '새 관찰 {n}개 대기 중' },
+    fr: { title: 'claude-mem · Observation TV', idle: 'En attente d’observations', dot: 'État du flux', pip: 'Image dans l’image', fs: 'Plein écran', now: 'À l’instant', min: ' min', hr: ' h', day: ' j',
+      connecting: 'Connexion…', live: 'En direct', reconnecting: 'Reconnexion…', down: 'Non connecté · nouvel essai toutes les {s} s',
+      queueOne: '{n} nouvelle observation en attente', queueMany: '{n} nouvelles observations en attente' },
   };
   let labels = tvText.en;
   function applyLanguage() {
@@ -197,13 +278,43 @@
   }
   applyLanguage();
   window.addEventListener('storage', event => {
-    if (event.key === languageKey || event.key === null) applyLanguage();
+    if (event.key !== languageKey && event.key !== null) return;
+    applyLanguage();
+    renderStatus();
+    renderQueue();
   });
 
   const live = [];
   let replay = [];
   let replayIndex = 0;
   let current = null;
+
+  // Tries again 3 s after the stream fails or drops, for as long as the page is open: an unattended TV page must come
+  // back by itself whenever the worker does, and a try is one request to this page's own worker, which costs nothing.
+  // 3 s is the browser's own EventSource retry delay (Chromium's EventSource::kDefaultReconnectDelay, 3000 ms; the
+  // HTML standard leaves it to the browser), which the page would get if it let the EventSource retry by itself.
+  const RECONNECT_MS = 3000;
+
+  // The stream's state, which renderStatus words beside the dot. One writer: connect().
+  //   connecting --open--> live --error--> reconnecting --open--> live
+  //   connecting | reconnecting | down --error before it opened--> down --open--> live
+  // `down` says on screen that the worker is not answering while the page keeps trying (RECONNECT_MS).
+  let streamState = 'connecting';
+  function renderStatus() {
+    els.dot.classList.toggle('live', streamState === 'live');
+    els.streamWord.textContent = labels[streamState].replace('{s}', String(RECONNECT_MS / 1000));
+  }
+  renderStatus();
+
+  // New observations that arrived while the page is open and have not been shown yet: a count the page really
+  // holds (the live queue), so nothing is estimated. Hidden while none wait.
+  function renderQueue() {
+    const waiting = live.length;
+    els.queue.hidden = waiting === 0;
+    if (!waiting) return;
+    const words = waiting === 1 ? labels.queueOne : labels.queueMany;
+    els.queue.textContent = words.replace('{n}', waiting.toLocaleString(document.documentElement.lang));
+  }
 
   function leafProject(name) {
     if (!name) return '';
@@ -216,11 +327,13 @@
   // claude / codex / cursor. Only those three names are mirrored here; the full
   // normalizePlatformSource() mapping is not duplicated. Anything else keeps
   // its own name and is hashed to a hue.
+  // Each hue is lightened to 7:1 or more on --bg so the source reads from across a room (F5, C13): claude 7.7
+  // (was 4.6), codex 8.3 (was 6.1), cursor 7.5 (was 5.4), antigravity-cli 7.1 (was 4.8).
   const SOURCE_COLORS = {
-    claude: '#c15f3c',
-    codex: '#4f9d8c',
-    cursor: '#8b7ad6',
-    'antigravity-cli': '#0284c7',
+    claude: '#e98a64',
+    codex: '#5fb9a6',
+    cursor: '#a596e6',
+    'antigravity-cli': '#38a6e0',
   };
 
   function platformSource(value) {
@@ -232,7 +345,8 @@
     if (Object.prototype.hasOwnProperty.call(SOURCE_COLORS, name)) return SOURCE_COLORS[name];
     let hash = 0;
     for (let i = 0; i < name.length; i += 1) hash = (hash * 31 + name.charCodeAt(i)) >>> 0;
-    return 'hsl(' + (hash % 360) + ', 58%, 62%)';
+    // 75% lightness keeps every hue at 7.5:1 or more on --bg (62% fell to 4.1:1 for blue).
+    return 'hsl(' + (hash % 360) + ', 58%, 75%)';
   }
 
   function normalize(obs) {
@@ -256,7 +370,11 @@
   }
 
   function nextItem() {
-    if (live.length) return live.shift();
+    if (live.length) {
+      const item = live.shift();
+      renderQueue();
+      return item;
+    }
     if (!REPLAY || replay.length === 0) return null;
     const item = replay[replayIndex % replay.length];
     replayIndex += 1;
@@ -285,8 +403,53 @@
     return Math.round(hrs / 24) + labels.day;
   }
 
+  // F5/B4: the title fills the 80%-wide card on at most this many balanced lines. Three read at a glance from across
+  // a room (review page-15). A portrait phone has the height for six, the most lines Chrome balances, so its type
+  // stays near the 32px it had before (31px for the longest live title) instead of shrinking to fit three lines.
+  const TITLE_MAX_LINES = { landscape: 3, portrait: 6 };
+  const TITLE_LINE_HEIGHT = 1.06; // #title's line-height in the CSS above
+
+  // Steps the title down from the CSS's largest size to the largest whole pixel at which it fits its lines and the
+  // room between the status row and the queue line; past the smallest size its last line ends in an ellipsis.
+  function fitTitle() {
+    const title = els.title;
+    // The stage moves into the picture-in-picture window, so measure in the window that holds it.
+    const view = title.ownerDocument.defaultView || window;
+    const portrait = view.innerHeight > view.innerWidth;
+    const maxLines = portrait ? TITLE_MAX_LINES.portrait : TITLE_MAX_LINES.landscape;
+    title.style.setProperty('--title-lines', String(maxLines));
+    title.classList.remove('clamped');
+    title.style.fontSize = '';
+    const largest = Math.floor(parseFloat(view.getComputedStyle(title).fontSize));
+    // The smallest size. Landscape: 3vw, twice the meta line's 1.5vw under it (#meta), so the title stays the card's
+    // heading at every width; never under 32px, the CSS's own minimum (clamp(2rem, …)). A portrait phone, read at arm's
+    // length: 24px, WCAG's large-text size (18pt).
+    const floor = Math.min(largest, Math.ceil(portrait ? 24 : Math.max(32, view.innerWidth * 0.03)));
+    const stageStyle = view.getComputedStyle(els.stage);
+    const room = els.stage.clientHeight - parseFloat(stageStyle.paddingTop) - parseFloat(stageStyle.paddingBottom);
+    // offsetHeight is the layout size, unaffected by the card's fade-in scale.
+    const fits = (size) => {
+      title.style.fontSize = size + 'px';
+      return Math.round(title.offsetHeight / (size * TITLE_LINE_HEIGHT)) <= maxLines && els.card.offsetHeight <= room;
+    };
+    // The measured whole pixel stays set (the CSS size can be a fraction larger); a resize fits the title again.
+    if (fits(largest)) return;
+    // The line count never grows as the size shrinks, so a binary search finds the largest size that fits.
+    let low = floor;
+    let high = largest - 1;
+    let best = 0;
+    while (low <= high) {
+      const mid = (low + high) >> 1;
+      if (fits(mid)) { best = mid; low = mid + 1; } else { high = mid - 1; }
+    }
+    title.style.fontSize = (best || floor) + 'px';
+    if (!best) title.classList.add('clamped');
+  }
+
   function render(item) {
     els.title.textContent = item.title;
+    // The full words stay in the title attribute, also when the ellipsis cuts the last line.
+    els.title.title = item.title;
     const bits = ['<span class="type">' + escapeHtml(item.type) + '</span>'];
     if (item.project) bits.push(escapeHtml(item.project));
     // The colour comes from sourceColor(), never from the raw field, so it is
@@ -298,6 +461,7 @@
     bits.push(escapeHtml(relTime(item.at)));
     els.meta.innerHTML = bits.join(' &nbsp;·&nbsp; ');
     document.title = item.title + ' · claude-mem TV';
+    fitTitle();
   }
 
   async function loop() {
@@ -343,12 +507,19 @@
     // token in the query string.
     const es = new EventSource('/stream' + (TOKEN ? '?token=' + encodeURIComponent(TOKEN) : ''));
 
-    es.onopen = () => els.dot.classList.add('live');
+    let opened = false;
+    es.onopen = () => {
+      opened = true;
+      streamState = 'live';
+      renderStatus();
+    };
 
     es.onerror = () => {
-      els.dot.classList.remove('live');
+      // A stream that was live dropped; one that never opened means the worker is not answering.
+      streamState = opened ? 'reconnecting' : 'down';
+      renderStatus();
       es.close();
-      setTimeout(connect, 3000);
+      setTimeout(connect, RECONNECT_MS);
     };
 
     es.onmessage = (event) => {
@@ -363,7 +534,9 @@
       const item = normalize(data.observation);
       if (!item) return;
       live.push(item);
+      renderQueue();
       replay.push(item);
+      // The backlog keeps as many as the largest seed (100), so a TV left running holds a bounded list.
       if (replay.length > 100) replay.shift();
     };
   }
@@ -395,13 +568,24 @@
       }
     }
     pipWindow.document.body.appendChild(els.stage);
+    els.stage.classList.add('in-pip');
+    els.pipBtn.setAttribute('aria-pressed', 'true');
+    fitTitle();
+    pipWindow.addEventListener('resize', fitTitle);
     pipWindow.addEventListener('pagehide', () => {
+      els.stage.classList.remove('in-pip');
       document.body.prepend(els.stage);
       pipWindow = null;
+      els.pipBtn.setAttribute('aria-pressed', 'false');
+      fitTitle();
     });
   }
 
+  // The canvas copy follows the page's rule: at most three lines (TITLE_MAX_LINES.landscape, the canvas is 16:9),
+  // stepping the size down (its own 8px steps from 72px to 32px, unchanged); past that the third line ends in an
+  // ellipsis instead of words silently dropping off (the old copy kept four lines and dropped the rest unmarked).
   function wrap(ctx, text, maxWidth, fontSize) {
+    const maxLines = TITLE_MAX_LINES.landscape;
     let size = fontSize;
     for (;;) {
       ctx.font = '650 ' + size + 'px ui-sans-serif, system-ui, sans-serif';
@@ -418,7 +602,16 @@
         }
       }
       if (line) lines.push(line);
-      if (lines.length <= 4 || size <= 32) return lines.slice(0, 4);
+      if (lines.length <= maxLines) return lines;
+      if (size <= 32) {
+        const kept = lines.slice(0, maxLines);
+        let last = kept[maxLines - 1] + '…';
+        while (ctx.measureText(last).width > maxWidth && last.includes(' ')) {
+          last = last.slice(0, last.lastIndexOf(' ')) + '…';
+        }
+        kept[maxLines - 1] = last;
+        return kept;
+      }
       size -= 8;
     }
   }
@@ -443,7 +636,8 @@
     const startY = h / 2 - ((lines.length - 1) * lineHeight) / 2;
     lines.forEach((line, i) => ctx.fillText(line, w / 2, startY + i * lineHeight));
 
-    ctx.globalAlpha = alpha * 0.5;
+    // The same strength as --dim (72%), raised with it for reading across a room.
+    ctx.globalAlpha = alpha * 0.72;
     ctx.font = '500 24px ui-sans-serif, system-ui, sans-serif';
     const subY = startY + lines.length * lineHeight + 24;
     const sep = '  ·  ';
@@ -511,11 +705,16 @@
     }
   }
 
+  // The controls show for 2.5 s after a pointer move, a touch or any key, then hide so the screen stays clean: the
+  // same time Chrome's own video controls stay after the pointer stops (kTimeWithoutMouseMovementBeforeHidingMediaControls,
+  // 2.5 s, in Chromium's media_controls_impl.cc). A TV remote sends keys and never moves a pointer, so a key wakes them
+  // too; while one has keyboard focus they stay (#hud:has(:focus-visible) in the CSS).
+  const HUD_SHOW_MS = 2500;
   let hudTimer = null;
   function pokeHud() {
     els.hud.classList.add('show');
     clearTimeout(hudTimer);
-    hudTimer = setTimeout(() => els.hud.classList.remove('show'), 2500);
+    hudTimer = setTimeout(() => els.hud.classList.remove('show'), HUD_SHOW_MS);
   }
 
   els.pipBtn.addEventListener('click', togglePiP);
@@ -523,9 +722,19 @@
   document.addEventListener('mousemove', pokeHud);
   document.addEventListener('touchstart', pokeHud, { passive: true });
   document.addEventListener('keydown', (event) => {
+    pokeHud();
     if (event.key === 'f') toggleFullscreen();
     if (event.key === 'p') togglePiP();
   });
+  document.addEventListener('fullscreenchange', () => {
+    els.fsBtn.setAttribute('aria-pressed', String(Boolean(document.fullscreenElement)));
+  });
+  els.video.addEventListener('enterpictureinpicture', () => els.pipBtn.setAttribute('aria-pressed', 'true'));
+  els.video.addEventListener('leavepictureinpicture', () => els.pipBtn.setAttribute('aria-pressed', 'false'));
+  // The card is 80vw wide and the title's largest size follows the width, so a resize fits the title again.
+  window.addEventListener('resize', () => { if (current) fitTitle(); });
+  // A late web font changes the line breaks the first fit measured.
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { if (current) fitTitle(); });
 
   pokeHud();
   connect();
