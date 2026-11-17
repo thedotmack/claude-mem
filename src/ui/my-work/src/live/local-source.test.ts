@@ -3,10 +3,11 @@ import { readFileSync } from 'node:fs'
 import { describe, it, type TestContext } from 'node:test'
 import { createLocalSource, type LocalSourceOptions } from './local-source.ts'
 import { sampleSource } from './sample-source.ts'
-import type { MappedWorkModel, WorkModel } from './work-data-source.ts'
+import type { ConversationContinuationEvent, MappedWorkModel, WorkModel } from './work-data-source.ts'
 import type { WorkViewOverview } from './work-view-overview.ts'
 import type { WorkViewSnapshot } from './work-view-api-types.ts'
-import { SaveRefusedError } from '../data.ts'
+import { RefreshNotStartedError, SaveRefusedError } from '../data.ts'
+import { OPEN_IN_APP_CLICK_ID_PATTERN } from '../../../../shared/conversation-continuation.ts'
 
 const SAMPLE = await sampleSource.loadWorkModel()
 const FIRST = 'a'.repeat(64)
@@ -44,7 +45,18 @@ class FakeStream {
   emit(type: string, value: unknown) { this.handlers.get(type)?.({ data: JSON.stringify(value) }) }
   close() { this.closed = true; this.readyState = 2 }
 }
-function harness(fetcher: typeof fetch, bootstrapTimeoutMs = 100, page: Pick<LocalSourceOptions, 'hostname' | 'visibility'> = {}) {
+/** A page that can be unloaded: it fires 'pagehide' to its listeners, as `window` does on a reload or a closed tab. */
+function fakePageUnload() {
+  const listeners = new Set<() => void>()
+  return {
+    addEventListener: (_type: 'pagehide', listener: () => void) => { listeners.add(listener) },
+    removeEventListener: (_type: 'pagehide', listener: () => void) => { listeners.delete(listener) },
+    hide: () => { for (const listener of [...listeners]) listener() },
+    listenerCount: () => listeners.size,
+  }
+}
+
+function harness(fetcher: typeof fetch, bootstrapTimeoutMs = 100, page: Pick<LocalSourceOptions, 'hostname' | 'visibility' | 'pageUnload'> = {}) {
   const streams: FakeStream[] = []
   const urls: string[] = []
   const local = createLocalSource({ hostname: 'localhost', ...page, fetchImpl: fetcher, bootstrapTimeoutMs,
@@ -789,5 +801,302 @@ describe('a hidden cloud tab', () => {
       assert.equal(streams[0].closed, false)
       assert.equal(fetched.length, 5)
     } finally { stop(); clock.restore() }
+  })
+})
+
+describe('continuing a conversation from this computer', () => {
+  const SESSION = '0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d'
+  const OTHER_SESSION = '9f8e7d6c-5b4a-4c3d-8e2f-1a0b9c8d7e6f'
+  const CONTINUATION_MEMBERS = ['loadConversationContinuation', 'continueConversation', 'stopConversationContinuation', 'subscribeToConversationContinuations', 'openConversationInApp'] as const
+  const target = { canContinue: true, recordedFolder: '/work/example/worktree', runsInFolder: '/work/example', recordedFolderIsGone: true, opensInAppNamed: 'Claude' }
+  // Text that would read as a flag or a shell command if it were ever an argument. It travels in the JSON body, as typed.
+  const ownerMessage = '--resume other "; rm -rf ~'
+  const running = { exchangeId: 7, platform: 'claude', conversationSessionId: SESSION, state: 'running', ownerMessage, startedAtEpochMs: 1_000, ranInFolder: '/work/example' }
+  const notice = { exchangeId: 7, platform: 'claude', conversationSessionId: SESSION, state: 'replied' }
+  async function rejectionMessage(call: Promise<unknown>): Promise<string> {
+    try { await call } catch (error) { return error instanceof Error ? error.message : String(error) }
+    throw new Error('The call resolved; a rejection was expected.')
+  }
+  /**
+   * Records each console.warn and console.error call's arguments, in order, and prints none, until restore(). By hand, so
+   * a test runs the same under `node --test` and under bun, whose node:test has no mock.
+   */
+  function recordingConsole() {
+    const { warn: originalWarn, error: originalError } = console
+    const warnings: unknown[][] = []
+    const errors: unknown[][] = []
+    console.warn = (...args: unknown[]) => { warnings.push(args) }
+    console.error = (...args: unknown[]) => { errors.push(args) }
+    return { warnings, errors, restore: () => { console.warn = originalWarn; console.error = originalError } }
+  }
+
+  it('reads, sends and stops through the three conversation routes', async () => {
+    const calls: Array<{ url: string; init: RequestInit | undefined }> = []
+    const { local } = harness(async (url, init) => {
+      calls.push({ url: String(url), init })
+      if (init?.method !== 'POST') return json({ target, exchanges: [running] })
+      return json({ exchange: running }, String(url).endsWith('/continue') ? 202 : 200)
+    })
+    assert.deepEqual(await local.loadConversationContinuation!('claude', SESSION), { target, exchanges: [running] })
+    assert.deepEqual(await local.continueConversation!('claude', SESSION, ownerMessage), running)
+    assert.deepEqual(await local.stopConversationContinuation!('claude', SESSION), running)
+    assert.deepEqual(calls.map(({ url, init }) => ({ url, method: init?.method ?? 'GET', headers: init?.headers, body: init?.body === undefined ? undefined : JSON.parse(String(init.body)) })), [
+      { url: `/api/work-view/conversations/continuation?platform=claude&conversationSessionId=${SESSION}`, method: 'GET', headers: undefined, body: undefined },
+      { url: '/api/work-view/conversations/continue', method: 'POST', headers: { 'Content-Type': 'application/json' }, body: { platform: 'claude', conversationSessionId: SESSION, ownerMessage } },
+      { url: '/api/work-view/conversations/stop', method: 'POST', headers: { 'Content-Type': 'application/json' }, body: { platform: 'claude', conversationSessionId: SESSION } },
+    ])
+    assert.equal(calls[0].init?.cache, 'no-store')
+  })
+
+  it('opens a conversation in its app through the open-in-app route, naming each click by an id of its own, and resolves with what the CLI printed as it opened it', async () => {
+    const calls: Array<{ url: string; init: RequestInit | undefined }> = []
+    const printedText = `Opening session ${SESSION} in Claude Desktop`
+    const answers = [json({ printedText }), json({ printedText: null })]
+    const { local } = harness(async (url, init) => { calls.push({ url: String(url), init }); return answers.shift()! })
+    assert.deepEqual(await local.openConversationInApp!('claude', SESSION), { printedText })
+    assert.deepEqual(await local.openConversationInApp!('claude', SESSION), { printedText: null })
+    const bodies = calls.map(({ init }) => JSON.parse(String(init?.body)) as { openInAppClickId: string })
+    const clickIds = bodies.map((body) => body.openInAppClickId)
+    for (const clickId of clickIds) assert.match(clickId, OPEN_IN_APP_CLICK_ID_PATTERN)
+    assert.notEqual(clickIds[0], clickIds[1], 'each click has its own id')
+    assert.deepEqual(calls.map(({ url, init }) => ({ url, method: init?.method, headers: init?.headers, body: JSON.parse(String(init?.body)) })), clickIds.map((openInAppClickId) => ({
+      url: '/api/work-view/conversations/open-in-app', method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: { platform: 'claude', conversationSessionId: SESSION, openInAppClickId },
+    })))
+  })
+
+  it('names in each stop it sends as the page goes away the click whose open is still running', async () => {
+    const pageUnload = fakePageUnload()
+    const openings = [deferred<Response>(), deferred<Response>()]
+    const calls: Array<{ url: string; body: { conversationSessionId: string; openInAppClickId: string } }> = []
+    const { local } = harness(async (url, init) => {
+      calls.push({ url: String(url), body: JSON.parse(String(init?.body)) })
+      return String(url).endsWith('/open-in-app') ? openings[calls.filter((call) => call.url.endsWith('/open-in-app')).length - 1].promise : json({})
+    }, 100, { pageUnload })
+    // Two rows of the page, each opening its own conversation in its app.
+    const firstOpen = local.openConversationInApp!('claude', SESSION)
+    const secondOpen = local.openConversationInApp!('claude', OTHER_SESSION)
+    pageUnload.hide()
+    const opens = calls.filter((call) => call.url.endsWith('/open-in-app'))
+    const stops = calls.filter((call) => call.url.endsWith('/open-in-app/stop'))
+    assert.equal(stops.length, 2)
+    assert.deepEqual(stops.map((stop) => stop.body), opens.map((open) => open.body))
+    assert.notEqual(opens[0].body.openInAppClickId, opens[1].body.openInAppClickId)
+    for (const opening of openings) opening.resolve(json({ printedText: null }))
+    await Promise.all([firstOpen, secondOpen])
+  })
+
+  it('asks the worker to stop the open when the page is unloaded while the open still runs, and not before or after', async () => {
+    const pageUnload = fakePageUnload()
+    const opening = deferred<Response>()
+    const calls: Array<{ url: string; init: RequestInit | undefined }> = []
+    const { local } = harness(async (url, init) => {
+      calls.push({ url: String(url), init })
+      return String(url).endsWith('/open-in-app') ? opening.promise : json({})
+    }, 100, { pageUnload })
+    pageUnload.hide()
+    assert.equal(calls.length, 0, 'nothing to stop before an open')
+
+    const opened = local.openConversationInApp!('claude', SESSION)
+    // A reload or a closed tab while the worker's command still runs: the worker cannot see this request go away.
+    pageUnload.hide()
+    // The stop names the same click as the open it stops.
+    const body = { platform: 'claude', conversationSessionId: SESSION, openInAppClickId: (JSON.parse(String(calls[0].init?.body)) as { openInAppClickId: string }).openInAppClickId }
+    assert.match(body.openInAppClickId, OPEN_IN_APP_CLICK_ID_PATTERN)
+    assert.deepEqual(calls.map(({ url, init }) => ({ url, method: init?.method, keepalive: init?.keepalive, headers: init?.headers, body: JSON.parse(String(init?.body)) })), [
+      { url: '/api/work-view/conversations/open-in-app', method: 'POST', keepalive: undefined, headers: { 'Content-Type': 'application/json' }, body },
+      { url: '/api/work-view/conversations/open-in-app/stop', method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json' }, body },
+    ])
+    const stopped = 'Claude Code could not open this conversation in the Claude app: the page that asked went away, so it was stopped.'
+    opening.resolve(json({ error: stopped }, 409))
+    assert.equal(await rejectionMessage(opened), stopped)
+    assert.equal(pageUnload.listenerCount(), 0)
+    pageUnload.hide()
+    assert.equal(calls.length, 2, 'nothing to stop once the open has ended')
+  })
+
+  it('rejects an open that did not happen with the worker\'s sentence, whole, and an answer it cannot read with a plain one', async () => {
+    const noDocumentedWay = 'Codex has no documented way to open a conversation in its app. Copy the resume command instead.'
+    // What the worker answers when Claude Code did not open the app: a sentence, then everything the CLI printed.
+    const didNotOpen = `Claude Code could not open this conversation in the Claude app. Claude Code exited with code 1.\n\n${'x'.repeat(200_000)}`
+    const answers = [json({ error: noDocumentedWay }, 409), json({ error: didNotOpen }, 409), json([]), json({ error: 'Continuing a conversation is unavailable on this worker.' }, 503)]
+    const { local } = harness(async () => answers.shift()!)
+    assert.equal(await rejectionMessage(local.openConversationInApp!('codex', SESSION)), noDocumentedWay)
+    const whole = await rejectionMessage(local.openConversationInApp!('claude', SESSION))
+    assert.equal(whole.length, didNotOpen.length)
+    assert.equal(whole, didNotOpen)
+    assert.equal(await rejectionMessage(local.openConversationInApp!('claude', SESSION)), 'The worker answered 200, but this page cannot read its answer.')
+    assert.equal(await rejectionMessage(local.openConversationInApp!('claude', SESSION)), 'Continuing a conversation is unavailable on this worker.')
+  })
+
+  it('rejects an open with a plain sentence when the worker cannot be reached', async () => {
+    const { local } = harness(async () => { throw new TypeError('fetch failed') })
+    assert.equal(await rejectionMessage(local.openConversationInApp!('claude', SESSION)), 'Could not open this conversation in its app: the worker could not be reached (fetch failed).')
+  })
+
+  it('rejects a refusal with the worker\'s own sentence', async () => {
+    const stillRunning = 'This conversation is still answering your last message from here. Wait for its reply, or stop it, before you send another.'
+    const nothingRunning = 'Nothing sent from here is running in this conversation.'
+    const answers = [json({ error: stillRunning }, 409), json({ error: nothingRunning }, 409)]
+    const { local } = harness(async () => answers.shift()!)
+    assert.equal(await rejectionMessage(local.continueConversation!('claude', SESSION, 'And the word before that?')), stillRunning)
+    assert.equal(await rejectionMessage(local.stopConversationContinuation!('claude', SESSION)), nothingRunning)
+  })
+
+  it('turns an HTML error page, a failed request check, a lost worker and an unreadable answer into plain sentences', async () => {
+    const answers: Array<() => Promise<Response>> = [
+      // Express's own page for a body over the worker's 5 MB JSON limit.
+      async () => new Response('<!DOCTYPE html><html><body><pre>PayloadTooLargeError: request entity too large</pre></body></html>', { status: 413, headers: { 'Content-Type': 'text/html' } }),
+      async () => json({ error: 'ValidationError', issues: [{ path: ['ownerMessage'], message: 'Too small: expected string to have >=1 characters', code: 'too_small' }] }, 400),
+      async () => { throw new TypeError('fetch failed') },
+      async () => json({ accepted: true }, 202),
+      async () => new Response('<html><body>Bad gateway</body></html>', { status: 502, headers: { 'Content-Type': 'text/html' } }),
+    ]
+    const { local } = harness(() => answers.shift()!())
+    const sentences = [
+      await rejectionMessage(local.continueConversation!('claude', SESSION, 'x'.repeat(6_000_000))),
+      await rejectionMessage(local.continueConversation!('claude', SESSION, ' ')),
+      await rejectionMessage(local.continueConversation!('claude', SESSION, 'Which word?')),
+      await rejectionMessage(local.continueConversation!('claude', SESSION, 'Which word?')),
+      await rejectionMessage(local.loadConversationContinuation!('claude', SESSION)),
+    ]
+    assert.deepEqual(sentences, [
+      'Could not send your message: it is too large for the worker to take.',
+      'Could not send your message: the worker could not read the request (ownerMessage: Too small: expected string to have >=1 characters).',
+      'Could not send your message: the worker could not be reached (fetch failed).',
+      'The worker answered 202, but this page cannot read its answer.',
+      'Could not read this conversation: the worker answered 502.',
+    ])
+    for (const sentence of sentences) assert.doesNotMatch(sentence, /</, 'no HTML reaches the row')
+  })
+
+  it('tells subscribers each notice with its four fields only, and skips a frame it cannot read', () => {
+    let fetches = 0
+    const { local, streams } = harness(async () => { fetches++; return json(overview()) })
+    const heard: ConversationContinuationEvent[] = []
+    const stopLive = local.subscribeToLiveUpdates(() => {}, () => {})
+    const unsubscribe = local.subscribeToConversationContinuations!((event) => { heard.push(event) })
+    const originalWarn = console.warn
+    const warnings: string[] = []
+    console.warn = (message: string) => { warnings.push(message) }
+    try {
+      streams[0].onopen?.()
+      streams[0].emit('conversation-continuation', { ...notice, ownerMessage: 'never on the stream' })
+      streams[0].emit('conversation-continuation', { ...notice, state: 'paused' })
+      streams[0].handlers.get('conversation-continuation')?.({ data: '<html>secret prompt</html>' })
+      assert.deepEqual(heard, [notice])
+      assert.equal(warnings.length, 2, 'each skipped frame is reported')
+      for (const warning of warnings) {
+        assert.match(warning, /conversation-continuation/)
+        assert.doesNotMatch(warning, /secret|paused/, 'a warning names the event type only')
+      }
+      unsubscribe()
+      streams[0].emit('conversation-continuation', notice)
+      assert.deepEqual(heard, [notice])
+      assert.equal(fetches, 0, 'a notice asks nothing of the worker: the row it concerns reads')
+    } finally { console.warn = originalWarn; stopLive() }
+  })
+
+  it('tells subscribers each time the live stream opens again, and sends or reads nothing itself', () => {
+    let fetches = 0
+    const { local, streams } = harness(async () => { fetches++; return json(overview()) })
+    const heard: ConversationContinuationEvent[] = []
+    const unsubscribe = local.subscribeToConversationContinuations!((event) => { heard.push(event) })
+    let stopLive = local.subscribeToLiveUpdates(() => {}, () => {})
+    try {
+      streams[0].onopen?.()
+      assert.deepEqual(heard, [], 'the first open has missed nothing: a row reads its conversation when it opens')
+      // The worker restarted: the browser reconnects the same stream by itself.
+      streams[0].onerror?.()
+      streams[0].onopen?.()
+      assert.deepEqual(heard, ['live-updates-reconnected'])
+      // The page stopped and started its live updates: a new stream, and notices sent in between are lost.
+      stopLive()
+      streams[0].onopen?.()
+      stopLive = local.subscribeToLiveUpdates(() => {}, () => {})
+      streams[1].onopen?.()
+      assert.deepEqual(heard, ['live-updates-reconnected', 'live-updates-reconnected'], 'a stopped stream tells nothing')
+      // An outage cannot send a message again or start a turn: the source made no request of its own.
+      assert.equal(fetches, 0)
+    } finally { unsubscribe(); stopLive() }
+  })
+
+  it('tells every subscriber a notice when one before it throws, and reports the throw as that listener\'s own error', () => {
+    const { local, streams } = harness(async () => json(overview()))
+    const consoleOutput = recordingConsole()
+    const listenerError = new Error('the first row could not draw its reply')
+    const heardBySecondRow: ConversationContinuationEvent[] = []
+    const stopLive = local.subscribeToLiveUpdates(() => {}, () => {})
+    const unsubscribeFirstRow = local.subscribeToConversationContinuations!(() => { throw listenerError })
+    const unsubscribeSecondRow = local.subscribeToConversationContinuations!((event) => { heardBySecondRow.push(event) })
+    try {
+      streams[0].emit('conversation-continuation', notice)
+      // Missing this 'replied' notice would leave the second row on 'Working…' until the stream reopens.
+      assert.deepEqual(heardBySecondRow, [notice], 'the row after a throwing one still hears the notice')
+      assert.deepEqual(consoleOutput.warnings, [], 'a readable frame is never reported as unreadable')
+      assert.equal(consoleOutput.errors.length, 1)
+      const [message, reported] = consoleOutput.errors[0]
+      assert.match(String(message), /conversation-continuation listener threw/)
+      assert.equal(reported, listenerError, 'the listener\'s own error is reported, with its stack')
+      // A frame that really is unreadable is still skipped with its warning, and reaches no listener.
+      streams[0].handlers.get('conversation-continuation')?.({ data: '<html>secret prompt</html>' })
+      assert.deepEqual(consoleOutput.warnings, [['[work-view] Ignoring a conversation-continuation frame that is not JSON']])
+      assert.deepEqual(heardBySecondRow, [notice])
+      assert.equal(consoleOutput.errors.length, 1)
+    } finally { consoleOutput.restore(); unsubscribeFirstRow(); unsubscribeSecondRow(); stopLive() }
+  })
+
+  it('tells every subscriber the stream reopened when one before it throws, and reports the throw as that listener\'s own error', () => {
+    const { local, streams } = harness(async () => json(overview()))
+    const consoleOutput = recordingConsole()
+    const listenerError = new Error('the first row could not read its conversation again')
+    const heardBySecondRow: ConversationContinuationEvent[] = []
+    const stopLive = local.subscribeToLiveUpdates(() => {}, () => {})
+    const unsubscribeFirstRow = local.subscribeToConversationContinuations!(() => { throw listenerError })
+    const unsubscribeSecondRow = local.subscribeToConversationContinuations!((event) => { heardBySecondRow.push(event) })
+    try {
+      streams[0].onopen?.()
+      streams[0].onerror?.()
+      assert.doesNotThrow(() => streams[0].onopen?.(), 'a listener\'s throw does not escape the stream\'s open handler')
+      // A row that misses this, while it shows 'Working…', would stay that way until the stream reopens again.
+      assert.deepEqual(heardBySecondRow, ['live-updates-reconnected'], 'the row after a throwing one still hears the stream reopened')
+      assert.deepEqual(consoleOutput.warnings, [], 'nothing is reported as an unreadable frame')
+      assert.equal(consoleOutput.errors.length, 1)
+      const [message, reported] = consoleOutput.errors[0]
+      assert.match(String(message), /conversation-continuation listener threw/)
+      assert.equal(reported, listenerError, 'the listener\'s own error is reported, with its stack')
+    } finally { consoleOutput.restore(); unsubscribeFirstRow(); unsubscribeSecondRow(); stopLive() }
+  })
+
+  it('exists only on the page this computer\'s worker serves', () => {
+    const fetcher = async () => json(overview())
+    const onThisComputer = harness(fetcher).local
+    const cloudServed = harness(fetcher, 100, { hostname: 'work.cmem.ai' }).local
+    for (const member of CONTINUATION_MEMBERS) {
+      assert.equal(typeof onThisComputer[member], 'function', member)
+      assert.equal(member in cloudServed, false, `a cloud-served page has ${member}`)
+      assert.equal(member in sampleSource, false, `the sample source has ${member}`)
+    }
+  })
+})
+
+describe('manual refresh', () => {
+  it('a refresh the worker refuses throws its status and its own reason, for the screen to word in the reader\'s language', async () => {
+    const withReason = harness(async () => json({ error: 'database is locked' }, 409)).local
+    await assert.rejects(withReason.refreshWork(), (error: unknown) => {
+      assert.ok(error instanceof RefreshNotStartedError)
+      assert.equal(error.status, 409)
+      assert.equal(error.workerReason, 'database is locked')
+      assert.equal(error.message, 'Refresh could not start: database is locked')
+      return true
+    })
+    const withoutReason = harness(async () => new Response('not json', { status: 503 })).local
+    await assert.rejects(withoutReason.refreshWork(), (error: unknown) => {
+      assert.ok(error instanceof RefreshNotStartedError)
+      assert.equal(error.status, 503)
+      assert.equal(error.workerReason, null)
+      assert.equal(error.message, 'Refresh could not start: the worker answered 503')
+      return true
+    })
   })
 })

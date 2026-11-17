@@ -7,7 +7,7 @@ import type { ReviewResult } from '../live/review-response.ts'
 import type { RuleDecision, SavedRuleDecision } from '../live/rule-actions.ts'
 import type { RequestChange } from '../live/update-queue.ts'
 import type { UsageReport } from '../live/usage.ts'
-import type { RuleSaveResult, SuggestionSaveResult, WorkDataSource, WorkModel } from '../live/work-data-source.ts'
+import type { ConversationContinuationSource, RuleSaveResult, SuggestionSaveResult, WorkDataSource, WorkModel } from '../live/work-data-source.ts'
 
 // ---------- Work: the active source's model ----------
 
@@ -48,6 +48,11 @@ export interface WorkSlice {
   markAgentFinished: (agentId: string) => Promise<void>
   loadRulesInClaudeCode: () => Promise<void>
   refreshWork: () => Promise<{ state: string }>
+  /**
+   * The active source, when it can continue a conversation from this page; null when it can't. Only the page this
+   * computer's worker serves can run a CLI here, so sample data and a cloud-served page answer null.
+   */
+  conversationContinuationSource: () => ConversationContinuationSource | null
   /** Sample mode only: replace one fixture request everywhere. */
   updateSampleRequest: (id: string, change: (request: Request) => Request) => void
   /** Sample mode only: the wireframe agent finishes while you watch. Returns the stop. */

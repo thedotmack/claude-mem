@@ -171,14 +171,28 @@ describe('utc: prefix agreement between the single-PID reader and the ps -eo tab
   // every cross-reader comparison would degrade to "proceed" and silently
   // remove the PID-reuse guard from tree-kill and the orphan sweep.
   it('BSD/POSIX table rows carry the prefix; blank tokens stay null', () => {
+    // `ps -eo pid=,ppid=,pgid=,stat=,lstart=`, as readProcessTablePosix runs it.
     const stdout = [
-      '  812     1 Sun Oct 12 14:22:01 2026',
-      '  813     1',
+      '  812     1   812 Ss   Sun Oct 12 14:22:01 2026',
+      '  813     1   813 Ss',
       'garbage',
     ].join('\n');
     const rows = parsePosixProcessTable(stdout);
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toEqual({ pid: 812, ppid: 1, startToken: withUtcStartTokenPrefix('Sun Oct 12 14:22:01 2026') });
+    expect(rows[0]).toEqual({
+      pid: 812, ppid: 1, startToken: withUtcStartTokenPrefix('Sun Oct 12 14:22:01 2026'), processGroupId: 812, hasExited: false,
+    });
+  });
+
+  it('BSD/POSIX table rows carry each process group, and a zombie (stat Z) as exited', () => {
+    const rows = parsePosixProcessTable([
+      '  814   812   812 S+   Sun Oct 12 14:22:02 2026',
+      '  815   900   812 Z    Sun Oct 12 14:22:03 2026',
+    ].join('\n'));
+    expect(rows.map(({ pid, processGroupId, hasExited }) => ({ pid, processGroupId, hasExited }))).toEqual([
+      { pid: 814, processGroupId: 812, hasExited: false },
+      { pid: 815, processGroupId: 812, hasExited: true },
+    ]);
   });
 
   it('Linux /proc starttime stays unprefixed (already zone-independent)', () => {

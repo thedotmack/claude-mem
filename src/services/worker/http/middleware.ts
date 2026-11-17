@@ -25,6 +25,7 @@ import {
 } from './origin-policy.js';
 import { redactForLog } from '../../../utils/redaction.js';
 import { scanMediaFields } from '../../../shared/media-ingress.js';
+import { WORKER_JSON_BODY_LIMIT_BYTES } from '../../../shared/worker-http-limits.js';
 
 /**
  * Every worker response refuses framing, except Observation TV (`/tv`,
@@ -49,7 +50,7 @@ export function createMiddleware(): RequestHandler[] {
   // First, so it covers both static UI mounts and every route after them.
   const middlewares: RequestHandler[] = [refuseFramingExceptObservationTv];
 
-  const parseJson = express.json({ limit: '5mb' });
+  const parseJson = express.json({ limit: WORKER_JSON_BODY_LIMIT_BYTES });
   middlewares.push((req: Request, res: Response, next: NextFunction) => {
     // Spool ingestion authenticates before applying its own body limit.
     if (req.method === 'POST' && /^\/api\/spool\/ingest\/?$/i.test(req.path)) return next();

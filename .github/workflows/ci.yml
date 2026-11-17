@@ -417,6 +417,21 @@ jobs:
       - name: Clean-room dependency closure smoke
         run: npm run smoke:clean-room
 
+      # The build job runs the provider import smoke on the build tree. This runs
+      # it on the packed npm package instead, installed outside the checkout so
+      # nothing resolves from the repo: the CLI and worker `npx claude-mem`
+      # installs, against synthetic vendor APIs. `npx --no` runs the packed bin
+      # or fails; it never fetches claude-mem from the registry.
+      - name: Provider import smoke from the packed package
+        run: |
+          set -euo pipefail
+          package_dir="$RUNNER_TEMP/import-package"
+          mkdir -p "$package_dir/install"
+          tarball="$(npm pack --silent --pack-destination "$package_dir" | tail -n 1)"
+          npm install "$package_dir/$tarball" --prefix "$package_dir/install" --ignore-scripts --no-audit --no-fund
+          (cd "$package_dir/install" && npx --no claude-mem import --help | grep -F -- '--from mem0')
+          CLAUDE_MEM_IMPORT_TEST_PACKAGE="$package_dir/install/node_modules/claude-mem" python3 tests/fixtures/import-provider-smoke.py
+
   server-runtime-e2e-docker:
     name: server-runtime e2e (docker · pg + valkey)
     runs-on: ubuntu-latest

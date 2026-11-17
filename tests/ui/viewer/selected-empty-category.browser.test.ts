@@ -13,7 +13,7 @@ failOnCiWithoutChrome('CI requires Chrome for selected category clearing.');
     import { App } from './src/ui/viewer/App';
     import { setStoredWelcomeDismissed } from './src/ui/viewer/components/WelcomeCard';
     setStoredWelcomeDismissed(true);
-    window.confirm = () => true;
+    window.confirm = () => { throw new Error('The viewer must not use the browser confirm box'); };
     location.hash = '#/sessions/claude/owned-session';
     createRoot(document.getElementById('root')).render(<App />);
     async function until(predicate) {
@@ -29,12 +29,17 @@ failOnCiWithoutChrome('CI requires Chrome for selected category clearing.');
         await until(() => titles().length === 2);
         document.querySelector('[title="Filter to Bugfix"]').click();
         await until(() => titles().length === 1 && titles()[0] === 'OWNED_BUGFIX');
-        document.querySelector('[title="Delete observation"]').click();
+        // Delete through the card's "…" menu and its in-page question (no browser confirm box).
+        document.querySelector('.observation-card .card-menu-trigger').click();
+        await until(() => document.querySelector('.menu-button--open'));
+        [...document.querySelectorAll('.observation-card [role="menuitem"]')].find(item => item.textContent.includes('Delete')).click();
+        await until(() => document.querySelector('.inline-confirm-danger'));
+        document.querySelector('.inline-confirm-danger').click();
         await until(() => !document.body.textContent.includes('OWNED_BUGFIX'));
         const afterDelete = titles();
         const chip = document.querySelector('[title="Filter to Bugfix"]');
         const selected = chip?.getAttribute('aria-pressed') === 'true';
-        const zeroLabel = chip?.textContent === 'Bugfix (0)';
+        const zeroLabel = chip?.textContent === 'Bugfix 0';
         const unrelatedEmptyChip = !!document.querySelector('[title="Filter to Feature"]');
         if (chip) {
           chip.click();

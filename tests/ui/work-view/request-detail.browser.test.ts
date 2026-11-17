@@ -63,12 +63,17 @@ failOnCiWithoutChrome('CI requires Chrome or Chromium for the lazy request detai
         const stableCalls = calls;
         setRequest({ ...compact, detailRevision: 'b'.repeat(64), contentFingerprint: 'b'.repeat(64) });
         phase = 'next-version';
-        await until(() => calls === 4 && document.body.textContent.includes('Loading request detail'));
-        const hidStale = !document.body.textContent.includes('COMPLETE_DETAIL');
+        // The drawer has drawn the next version's card (its title is the card's again), and the fourth load is in flight.
+        await until(() => calls === 4 && !document.body.textContent.includes('RENAMED_CURRENT_REQUEST'));
+        // The fourth load never answers, so nothing else changes the drawer before it is closed. React draws what that
+        // load's start set (the empty read of the next version) in its next scheduler task, well within this wait.
+        await new Promise(resolve => setTimeout(resolve, 50));
+        const keptPreviousDetailWhileNextVersionLoads = document.body.textContent.includes('COMPLETE_DETAIL')
+          && !document.body.textContent.includes('Loading request detail');
         document.querySelector('[data-slot="sheet-close"]').click();
         await until(() => aborted === 2);
         stop();
-        await fetch('/result', { method: 'POST', body: JSON.stringify({ didWait, aborted, keptDetail, stableCalls, hidStale }) });
+        await fetch('/result', { method: 'POST', body: JSON.stringify({ didWait, aborted, keptDetail, stableCalls, keptPreviousDetailWhileNextVersionLoads }) });
       } catch (error) {
         await fetch('/result', { method: 'POST', body: JSON.stringify({ error: String(error) }) });
       }
@@ -86,7 +91,9 @@ failOnCiWithoutChrome('CI requires Chrome or Chromium for the lazy request detai
   let chrome: OwnedChrome | undefined;
   try {
     chrome = launchChrome(server.url.href, { profilePrefix: 'claude-mem-lazy-detail-', extraFlags: UNTHROTTLED_TIMER_FLAGS });
-    expect(await withTimeout(result, 30000, 'Lazy detail browser did not report')).toEqual({ didWait: true, aborted: 2, keptDetail: true, stableCalls: 3, hidStale: true });
+    expect(await withTimeout(result, 30000, 'Lazy detail browser did not report')).toEqual({
+      didWait: true, aborted: 2, keptDetail: true, stableCalls: 3, keptPreviousDetailWhileNextVersionLoads: true,
+    });
   } finally {
     await chrome?.close();
     server.stop(true);

@@ -42,9 +42,11 @@ for(const scenario of ['item','recreated-visible','recreated-session','late-dele
             await until(()=>document.querySelector('.session-card-count')?.textContent==='1 memory');
             await fetch('/snapshot-started');
             if(['late-delete-response','live-before-delete'].includes(${JSON.stringify(scenario)})) {
-              window.confirm=()=>true;
+              window.confirm=()=>{throw Error('The viewer must not use the browser confirm box')};
               document.querySelector('.session-card-menu-trigger').click();await paint();
-              document.querySelector('.session-card-menu-item--danger').click();
+              document.querySelector('.session-card-menu-item--danger').click();await paint();
+              // The row asks in the page how many memories go; confirm there.
+              document.querySelector('.session-row .inline-confirm-danger').click();
             } else await fetch('/delete');
             await paint();
             if(${JSON.stringify(scenario)}!=='item') {
@@ -129,7 +131,9 @@ for(const scenario of ['item','recreated-visible','recreated-session','late-dele
         if(url.pathname==='/result'){finish(await request.json());return new Response('received')}
         return Response.json({});
       }});
-      chrome=launchChrome(server.url.href,{profilePrefix:'cm-viewer-deletion-',extraFlags:UNTHROTTLED_TIMER_FLAGS});
+      // Tall enough that every loaded row is drawn: the checks read the page text, and the
+      // list recycles rows outside the window once it passes 50 (FEED_WINDOW_THRESHOLD).
+      chrome=launchChrome(server.url.href,{profilePrefix:'cm-viewer-deletion-',extraFlags:[...UNTHROTTLED_TIMER_FLAGS,'--window-size=1280,12000']});
       // Chrome's cold start gets its own window; the page's phases start at /ready.
       await withTimeout(ready,30000,'Viewer did not become ready');
       const received=await withTimeout(result,25000,'Browser page timed out');

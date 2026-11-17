@@ -53,8 +53,13 @@ import { readHistoryCounts, type HistoryImport } from '../../../setup/history-im
 import { createSetupTelemetry } from '../../../setup/telemetry.js';
 import { createSetupInstallerResumer } from '../../../setup/resume-installer.js';
 import { hasActiveSetupSession, hasProConfiguration, readSetupState, setupStatePath, writeSetupState, type SetupStateFile, type SetupStateView } from '../../../../shared/setup-state.js';
-import { SETUP_BRANCHES, SETUP_INSTALLER_STAGES, SETUP_MEMORY_BILLINGS } from '../../../../shared/setup-funnel.js';
-import { hasPendingInstallSetup, SETUP_INSTALL_STATUSES } from '../../../../shared/setup-install.js';
+import { historyImportRunning, SETUP_BRANCHES, SETUP_INSTALLER_STAGES, SETUP_MEMORY_BILLINGS } from '../../../../shared/setup-funnel.js';
+import { hasPendingInstallSetup, SETUP_DSH_PROFILE_MAX_CHARACTERS, SETUP_INSTALL_NOTE_MAX_CHARACTERS, SETUP_INSTALL_STATUSES } from '../../../../shared/setup-install.js';
+import {
+  CONTINUABLE_PLATFORMS, CONVERSATION_SESSION_UUID_PATTERN, OPEN_IN_APP_CLICK_ID_PATTERN, type ConversationContinuation, type ConversationContinuationNotice,
+  type ConversationOpenedInApp,
+} from '../../../../shared/conversation-continuation.js';
+import type { ConversationContinuationRunner } from '../../../work-view/conversation-continuation-runner.js';
 
 // A request is ready for a human check once its explicit lifecycle reports it complete, shipped, or waiting for review.
 // Statuses are compared lowercased with `_` and spaces read as `-`, matching the viewer's status normalization.
@@ -236,6 +241,26 @@ const markAgentFinishedBody = z.object({
   agentGroupId: z.string().min(1).max(2000),
 }).strict();
 
+// Continuing a conversation from My Work. The platforms and the session id pattern are the shared module's.
+const conversationRef = z.object({
+  platform: z.enum(CONTINUABLE_PLATFORMS),
+  conversationSessionId: z.string().regex(CONVERSATION_SESSION_UUID_PATTERN),
+}).strict();
+// No .max() on the message: its bound is the worker's 5 MB JSON body limit (express.json in createMiddleware,
+// middleware.ts), which is under Claude Code's own 10 MB stdin cap (headless docs, "Pipe data through Claude").
+const continueConversationBody = conversationRef.extend({ ownerMessage: z.string().trim().min(1) }).strict();
+// An open in its app and its stop name the click they belong to: the id the page made for it (OPEN_IN_APP_CLICK_ID_PATTERN).
+const openInAppClickBody = conversationRef.extend({ openInAppClickId: z.string().regex(OPEN_IN_APP_CLICK_ID_PATTERN) }).strict();
+// The read's query. Only a tool this cannot continue is refused here. Any other id is answered with its target, whose
+// sentence says why it can't be continued, such as an id that is not a UUID. No .max() on the id: it is only matched
+// against the UUID pattern before any lookup, and the URL carrying it is bounded by the HTTP server's header limit.
+// Not strict, because in local API token mode a read may carry the token as ?token= (createLocalApiTokenGuard).
+const conversationContinuationQuery = z.object({
+  platform: z.enum(CONTINUABLE_PLATFORMS),
+  conversationSessionId: z.string().min(1),
+});
+const CONVERSATION_CONTINUATION_UNAVAILABLE = 'Continuing a conversation is unavailable on this worker.';
+
 // Shared focus pages. cmem.ai checks the page's shape (src/lib/focus-share/snapshot.ts there); here it only has to be an object.
 const focusShareAreaBody = z.object({ focusAreaId: focusAreaIdField }).strict();
 const focusShareCommentBody = z.object({ focusAreaId: focusAreaIdField, body: z.string().trim().min(1).max(4000) }).strict();
@@ -298,7 +323,7 @@ interface WorkViewOptions {
   setupTelemetry?: ReturnType<typeof createSetupTelemetry>;
   /** Read for `alreadyPro`; defaults to ~/.claude-mem/settings.json. */
   settingsPath?: string;
-  /** Finish Setup's history upload to CMEM Pro. Without it POST /api/setup/import answers 503. */
+  /** Finish Setup's history upload to CMEM Pro. Without it POST /api/setup/import and /api/setup/import/stop answer 503. */
   historyImport?: HistoryImport | null;
   /** Setup extraction only. Ongoing automatic refresh continues to use the local agent runner. */
   hostedIntent?: Pick<HostedIntent, 'run' | 'state'> | null;
@@ -306,6 +331,11 @@ interface WorkViewOptions {
   focusShares?: Pick<FocusShares, 'connected' | 'list' | 'publish' | 'stop' | 'comments' | 'comment'> | null;
   /** How often shared focus pages are republished from this worker; 0 stops the timer (tests). */
   focusSharePublishEveryMs?: number;
+  /**
+   * Sends the owner's message from My Work to a Claude Code or Codex conversation as one turn. Without it the
+   * conversation routes answer 503. Its onChange should be publishConversationContinuation, as the worker's is.
+   */
+  conversationContinuationRunner?: ConversationContinuationRunner;
 }
 
 /** One overall request on the Reveal, read from the request-group ledger so new installs (prompts only) have work too. */
@@ -317,7 +347,8 @@ const setupScanConsentBody = z.object({ upload: z.boolean(), agents: z.array(z.e
 const setupScanPreferencesBody = z.object({ improveProduct: z.boolean() }).strict();
 // Request-size and abuse caps on loopback writes, set about twice what the installer offers today (measured
 // 2026-11-11: 19 agents in ide-detection.ts, 30 bundled skills, the longest id 17 characters). The email cap is RFC 5321's 254-character path
-// limit; the note and error caps match the setup page's textarea and the installer's other setup errors.
+// limit; the note's is SETUP_INSTALL_NOTE_MAX_CHARACTERS (setup-install.ts, which the setup page's box takes too), the
+// same 2,000 characters as the installer's error reports below.
 const setupInstallId = z.string().min(1).max(80);
 const setupInstallSelectionBody = z.object({
   agents: z.array(setupInstallId).min(1).max(40),
@@ -326,10 +357,10 @@ const setupInstallSelectionBody = z.object({
   disableAutoMemory: z.boolean(),
   telemetryEnabled: z.boolean(),
   email: z.union([z.literal(''), z.email().max(254)]).optional(),
-  note: z.string().max(2000).optional(),
+  note: z.string().max(SETUP_INSTALL_NOTE_MAX_CHARACTERS).optional(),
   emailProvided: z.boolean().optional(),
   claudeModel: z.string().trim().min(1).max(200).optional(),
-  dshProfile: z.string().trim().min(1).max(200).optional(),
+  dshProfile: z.string().trim().min(1).max(SETUP_DSH_PROFILE_MAX_CHARACTERS).optional(),
 }).strict();
 const setupInstallCatalogBody = z.object({
   agents: z.array(z.object({ id: setupInstallId, label: z.string().max(200), hint: z.string().max(1000), detected: z.boolean() }).strict()).min(1).max(40),
@@ -548,6 +579,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
   private focusShares: NonNullable<WorkViewOptions['focusShares']> | null;
   private focusSharePublisher: FocusSharePublisher | null;
   private resumeSetup: (retry?: boolean) => Promise<void>;
+  private readonly conversationContinuationRunner: ConversationContinuationRunner | null;
 
   constructor(options: WorkViewOptions = {}) {
     super();
@@ -558,6 +590,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
     this.getSharedStatus = options.getSharedStatus;
     this.getSyncStatus = options.getSyncStatus;
     this.updateViewerActivity = options.updateViewerActivity;
+    this.conversationContinuationRunner = options.conversationContinuationRunner ?? null;
     this.pollIntervalMs = options.pollIntervalMs ?? 1000;
     this.getLocalDeviceId = options.getLocalDeviceId ?? (() => '');
     const ledgerDir = options.ledgerDir === undefined ? join(DATA_DIR, 'work-view') : options.ledgerDir;
@@ -860,6 +893,16 @@ export class WorkViewRoutes extends BaseRouteHandler {
     app.post('/api/work-view/suggestions', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(suggestionBody), this.wrapHandler(this.ownerEdit(this.answerSuggestion)));
     app.post('/api/work-view/rules/load-in-claude-code', workViewLoopbackOnly, requireWorkViewOrigin, this.wrapHandler(this.ownerEdit(this.loadRulesInClaudeCode)));
     app.post('/api/work-view/refresh', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(z.object({}).strict()), this.wrapHandler(this.startManualRefresh));
+    // Continuing a conversation from My Work. These read, start and stop a real turn in the owner's own conversation,
+    // and on the owner's computer that turn can run with full tool access (their own permission mode). So each keeps
+    // every work-view guard: this computer only and through no proxy, the viewer's own page, and JSON for the writes.
+    // None is in OPEN_ROUTES (shared/local-api-token.ts), so local API token mode (#5141) covers them as well.
+    app.get('/api/work-view/conversations/continuation', workViewLoopbackOnly, requireWorkViewReadOrigin, this.wrapHandler(this.readConversationContinuation));
+    app.post('/api/work-view/conversations/continue', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(continueConversationBody), this.wrapHandler(this.continueConversation));
+    app.post('/api/work-view/conversations/stop', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(conversationRef), this.wrapHandler(this.stopConversationContinuation));
+    // Opens the owner's conversation in its tool's app on this computer's screen. It starts no turn, and keeps the same guards.
+    app.post('/api/work-view/conversations/open-in-app', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(openInAppClickBody), this.wrapHandler(this.openConversationInApp));
+    app.post('/api/work-view/conversations/open-in-app/stop', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(openInAppClickBody), this.wrapHandler(this.stopOpeningConversationInApp));
     app.post('/api/work-view/usage', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(usageBody), this.wrapHandler(this.recordUsage));
     // Shared focus pages: this worker signs the cmem.ai calls, so the sync credential never reaches the page.
     app.get('/api/work-view/focus/shares', workViewLoopbackOnly, requireWorkViewReadOrigin, this.wrapHandler(this.listFocusShares));
@@ -910,6 +953,8 @@ export class WorkViewRoutes extends BaseRouteHandler {
     app.post('/api/setup/installer', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupInstallerBody), this.wrapHandler(this.saveInstallerStage));
     app.post('/api/setup/checkout', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupCheckoutBody), this.wrapHandler(this.requestCheckout));
     app.post('/api/setup/import', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupImportBody), this.wrapHandler(this.startHistoryImport));
+    // Finish Setup's "Stop import": the same guards. It only ends a run; the person's own POST above starts one again.
+    app.post('/api/setup/import/stop', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupImportBody), this.wrapHandler(this.stopHistoryImport));
     app.post('/api/setup/complete', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupCompleteBody), this.wrapHandler(this.completeSetup));
   }
 
@@ -940,7 +985,8 @@ export class WorkViewRoutes extends BaseRouteHandler {
     const scanning = !['idle', 'done', 'failed'].includes(scanPhase)
       && (countScanWaitingForUploadAnswer || scanPhase !== 'awaiting-consent');
     if (scanning || (refresh?.state === 'running' && processIsAlive(Number((refresh as { pid?: number }).pid)))) backgroundWorkRunning.push('extraction');
-    if (this.historyImport?.state().state === 'running') backgroundWorkRunning.push('history-import');
+    const importState = this.historyImport?.state().state;
+    if (importState && historyImportRunning(importState)) backgroundWorkRunning.push('history-import');
     return backgroundWorkRunning;
   }
 
@@ -975,6 +1021,19 @@ export class WorkViewRoutes extends BaseRouteHandler {
     } catch (error) {
       res.status(409).json({ error: error instanceof Error ? error.message : String(error) });
     }
+  };
+
+  /**
+   * Finish Setup's "Stop import" (HistoryImport.stop): the upload ends at once and no request to cmem.ai starts after
+   * this answers. 200 with the stopped run (what was sent, and the batch whose answer never came); 409 with a sentence
+   * when no upload is running. What already reached cmem.ai stays there; nothing is deleted on either side.
+   */
+  private stopHistoryImport = (_req: Request, res: Response): void => {
+    if (!this.historyImport) { res.status(503).json({ error: 'Bringing your memory is unavailable on this worker.' }); return; }
+    const stopped = this.historyImport.stop();
+    if (!stopped) { res.status(409).json({ error: 'No import is running, so there is nothing to stop.' }); return; }
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(stopped);
   };
 
   private saveSetupState(state: SetupStateFile, res: Response): void {
@@ -1665,6 +1724,87 @@ export class WorkViewRoutes extends BaseRouteHandler {
     res.status(state === 'running' ? 202 : 200).json({ state });
   };
 
+  /** Whether a conversation can be continued from here and where its turn would run, and what was sent to it from here. */
+  private readConversationContinuation = (req: Request, res: Response): void => {
+    const query = conversationContinuationQuery.safeParse(req.query);
+    if (!query.success) {
+      this.badRequest(res, `Name the conversation with platform (${CONTINUABLE_PLATFORMS.join(' or ')}) and conversationSessionId.`);
+      return;
+    }
+    const runner = this.conversationContinuationRunner;
+    if (!runner) { res.status(503).json({ error: CONVERSATION_CONTINUATION_UNAVAILABLE }); return; }
+    const { platform, conversationSessionId } = query.data;
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ target: runner.target(platform, conversationSessionId), exchanges: runner.exchanges(platform, conversationSessionId) });
+  };
+
+  /**
+   * Sends the owner's message to the conversation as one turn, and answers 202 with the running exchange without waiting
+   * for the turn. Every open window hears that it started and that it ended through a conversation-continuation notice,
+   * and reads how through the guarded read. A refusal starts nothing.
+   */
+  private continueConversation = async (req: Request, res: Response): Promise<void> => {
+    const runner = this.conversationContinuationRunner;
+    if (!runner) { res.status(503).json({ error: CONVERSATION_CONTINUATION_UNAVAILABLE }); return; }
+    const { platform, conversationSessionId, ownerMessage } = req.body as z.infer<typeof continueConversationBody>;
+    const started = await runner.start(platform, conversationSessionId, ownerMessage);
+    if ('refusalText' in started) { res.status(409).json({ error: started.refusalText }); return; }
+    // The runner reports an exchange only when it ends, so its start is pushed here, for every other open window. The
+    // pushed state is the runner's current one, so a turn that has ended already is never pushed as running after it.
+    const { exchangeId } = started.exchange;
+    const exchange = runner.exchanges(platform, conversationSessionId).find(candidate => candidate.exchangeId === exchangeId);
+    // The runner keeps every exchange it starts for the worker's life. Without it there is no current state to push, and
+    // the copy start answered with could be pushed as running after the turn ended, so this is a broken invariant.
+    if (!exchange) throw new Error(`The conversation runner does not hold exchange ${exchangeId}, which it has just started.`);
+    this.publishConversationContinuation(exchange);
+    res.setHeader('Cache-Control', 'no-store');
+    res.status(202).json({ exchange });
+  };
+
+  /** Asks the running turn to end. Its exchange stays running until the CLI has exited, and its end is pushed then. */
+  private stopConversationContinuation = (req: Request, res: Response): void => {
+    const runner = this.conversationContinuationRunner;
+    if (!runner) { res.status(503).json({ error: CONVERSATION_CONTINUATION_UNAVAILABLE }); return; }
+    const { platform, conversationSessionId } = req.body as z.infer<typeof conversationRef>;
+    const stopped = runner.stop(platform, conversationSessionId);
+    if ('refusalText' in stopped) { res.status(409).json({ error: stopped.refusalText }); return; }
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ exchange: stopped.exchange });
+  };
+
+  /**
+   * Opens the conversation in its tool's own app: Claude Code's `claude --desktop --resume <session uuid>`. It starts no
+   * turn. Answers once the command has exited, with no deadline: 200 with what it printed when the app opened it, else
+   * 409 with the sentence saying why, which holds everything the command printed when it ran. While one open of a
+   * conversation runs, another is refused (409), and the stop route below ends it when it names this open's click.
+   */
+  private openConversationInApp = async (req: Request, res: Response): Promise<void> => {
+    const runner = this.conversationContinuationRunner;
+    if (!runner) { res.status(503).json({ error: CONVERSATION_CONTINUATION_UNAVAILABLE }); return; }
+    const { platform, conversationSessionId, openInAppClickId } = req.body as z.infer<typeof openInAppClickBody>;
+    const opened = await runner.openInApp(platform, conversationSessionId, openInAppClickId);
+    if ('refusalText' in opened) { res.status(409).json({ error: opened.refusalText }); return; }
+    const answer: ConversationOpenedInApp = { printedText: opened.printedText };
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(answer);
+  };
+
+  /**
+   * Stops the command opening a conversation in its app for the click the body names. The page asks for it as it is
+   * unloaded while its open still runs (a reload, a closed tab): the worker cannot see that page's request go away
+   * (stopOpeningInApp says why). 200 once the stop is sent, which the open's own answer then reports; 409 with a sentence
+   * when no open of that click is running, or when the stop could not be sent.
+   */
+  private stopOpeningConversationInApp = (req: Request, res: Response): void => {
+    const runner = this.conversationContinuationRunner;
+    if (!runner) { res.status(503).json({ error: CONVERSATION_CONTINUATION_UNAVAILABLE }); return; }
+    const { platform, conversationSessionId, openInAppClickId } = req.body as z.infer<typeof openInAppClickBody>;
+    const stopping = runner.stopOpeningInApp(platform, conversationSessionId, openInAppClickId);
+    if ('refusalText' in stopping) { res.status(409).json({ error: stopping.refusalText }); return; }
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({});
+  };
+
   /** Adds the MY-RULES.md import to the user-level CLAUDE.md once. Never touches a project's CLAUDE.md or AGENTS.md. */
   private loadRulesInClaudeCode = async (_req: Request, res: Response): Promise<void> => {
     const snapshot = await this.ownerStateSnapshot();
@@ -1853,8 +1993,21 @@ export class WorkViewRoutes extends BaseRouteHandler {
     this.broadcast('sync_status', { sync });
   }
 
+  /**
+   * Tells every open window that an exchange sent from My Work started (the continue route) or ended (the runner's
+   * onChange), by its id, its conversation and its state only. The event stream checks no origin and the worker's CORS
+   * lets any localhost page read it, so the message, the reply, the failure text and the folder stay behind the guarded
+   * read, which the page asks when the notice arrives.
+   */
+  publishConversationContinuation({ exchangeId, platform, conversationSessionId, state }: ConversationContinuation): void {
+    const notice: ConversationContinuationNotice = { exchangeId, platform, conversationSessionId, state };
+    this.broadcast('conversation-continuation', notice);
+  }
+
   close(): void {
     this.closed = true;
+    // Stops every turn and open started from My Work, and refuses new ones (ConversationContinuationRunner.close).
+    this.conversationContinuationRunner?.close();
     this.unsubscribeSetupScan?.();
     this.unsubscribeHistoryImport?.();
     this.stopRulesSync();

@@ -3,6 +3,7 @@ import type { DeepSearchResult } from '../services/sqlite/tool-use-search.js';
 import { logger } from '../utils/logger.js';
 import { projectMemoryContent } from '../shared/progressive-search.js';
 import { retainTextHeadTail } from '../shared/text-truncation.js';
+import { isMemorySaveRefusalReason, type MemorySaveRefusalReason } from '../shared/memory-save-refusal.js';
 
 export type McpTextPurpose = 'save' | 'observation-add' | 'event' | 'search' | 'server-search' | 'server-timeline' | 'context' | 'job'
   | 'observations' | 'tool-uses' | 'corpus-list' | 'corpus-build' | 'corpus-prime' | 'corpus-query';
@@ -121,6 +122,11 @@ function corpusSummary(value: unknown): string {
     + (corpus.description ? `\n${line(corpus.description, '', 300)}` : '');
 }
 
+/** Words for each reason the worker refuses a save_memory write (src/shared/memory-save-refusal.ts). */
+const SAVE_REFUSAL_TEXT: Record<MemorySaveRefusalReason, string> = {
+  project_excluded: 'Not saved: this checkout is excluded by CLAUDE_MEM_EXCLUDED_PROJECTS.',
+};
+
 /** Select model-visible information explicitly. Unknown backend fields are never dumped into the prompt. */
 export function formatMcpPayload(purpose: McpTextPurpose, payload: unknown): McpTextResult {
   const data = record(payload);
@@ -133,8 +139,8 @@ export function formatMcpPayload(purpose: McpTextPurpose, payload: unknown): Mcp
         // "Saved memory #?" here told the caller a note it never stored (#6098).
         const reason = typeof data.reason === 'string' ? data.reason : '';
         isError = true;
-        text = reason === 'project_excluded'
-          ? 'Not saved: this checkout is excluded by CLAUDE_MEM_EXCLUDED_PROJECTS.'
+        text = isMemorySaveRefusalReason(reason)
+          ? SAVE_REFUSAL_TEXT[reason]
           : `Not saved${reason ? `: ${line(reason)}.` : '.'}`;
         break;
       }

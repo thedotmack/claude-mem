@@ -11,7 +11,7 @@ import { ensureDir, OBSERVER_SESSIONS_DIR, paths } from '../shared/paths.js';
 // here so every existing caller keeps its import path.
 import { captureProcessName, captureProcessStartToken, isSameProcess, isSameProcessName, isSameProcessStartToken, normalizeProcessName } from '../shared/process-identity.js';
 export { captureProcessName, captureProcessStartToken, isSameProcess, isSameProcessName, isSameProcessStartToken, normalizeProcessName };
-import { killProcessTree } from '../shared/kill-process-tree.js';
+import { collectProcessGroupMembers, killProcessTree, type ProcessGroupMember } from '../shared/kill-process-tree.js';
 
 const REAP_SESSION_SIGTERM_TIMEOUT_MS = 5_000;
 const REAP_SESSION_SIGKILL_TIMEOUT_MS = 1_000;
@@ -68,15 +68,71 @@ export function isPidAlive(pid: number): boolean {
   }
 }
 
-// Poll until every record's pid is gone or the timeout elapses. Shared by the
+/**
+ * Whether the process group `processGroupId` still has a process in it that has not exited.
+ *
+ * kill(2) with signal 0 to the group answers first: ESRCH, no process at all is left in it. Any other answer can come
+ * from zombies alone: processes that have exited and that their parent has not collected. Linux counts them as
+ * processes it may signal, and macOS answers EPERM for a group left with nothing else (both seen with real processes).
+ * A zombie runs nothing and writes nothing, and no signal ends it. Its parent may never collect it: a container's PID 1
+ * that does not reap the orphans it adopts (a worker run as PID 1 with no init, under Bun or Node, does not). So the
+ * process table decides (collectProcessGroupMembers): the group has processes while it lists one of them that has not
+ * exited. When it lists none of them, kill(2)'s answer stands: they exited between the two reads, which the next look
+ * sees, or the table could not be read, which its reader logs at WARN. EPERM from a group with processes that have not
+ * exited means some are left that this process may not signal.
+ *
+ * Only a look that kill(2) does not answer with ESRCH reads the table, and that read is the whole table: one ps(1) run on
+ * macOS, about 25 ms with 710 processes, and a /proc scan on Linux, about 4 to 6 ms with 600 (measured under Bun and
+ * Node). Its callers look again every PROCESS_EXIT_POLL_INTERVAL_MS while processes are left in a group they watch.
+ *
+ * A read that lists only processes that have exited is read once more before it is believed. On Linux the table is read
+ * as a list of process ids and then one process at a time, so a process can start a child after the list was taken and
+ * exit before its own line is read: that read shows the parent as exited and does not list the child, which may still be
+ * running. Every process the first read listed had exited before the second read began, and a process that has exited
+ * starts nothing, so a second read that lists no process the first did not, and none that has not exited, means none is
+ * left. A second read that lists nothing at all is not believed either: the next look asks kill(2) again.
+ *
+ * While any process is left in a group, a zombie too, the system gives its id to no new process or group (POSIX), so a
+ * group a caller has watched since it was made is still that group.
+ *
+ * `readGroupMembers` reads the table; tests pass their own reads in its place.
+ */
+export async function processGroupHasProcessesThatHaveNotExited(
+  processGroupId: number,
+  readGroupMembers: (processGroupId: number) => Promise<ProcessGroupMember[]> = collectProcessGroupMembers,
+): Promise<boolean> {
+  try {
+    process.kill(-processGroupId, 0);
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
+  }
+  const members = await readGroupMembers(processGroupId);
+  if (members.length === 0 || members.some(member => !member.hasExited)) return true;
+  const idsOfMembersThatHadExited = new Set(members.map(member => member.pid));
+  const membersReadAgain = await readGroupMembers(processGroupId);
+  return membersReadAgain.length === 0
+    || membersReadAgain.some(member => !member.hasExited || !idsOfMembersThatHadExited.has(member.pid));
+}
+
+/**
+ * How often waitForExit, and the waits like it, look again for the processes they wait on. 100 ms has been the
+ * supervisor's interval since it was added (#1370); no measurement behind it is recorded.
+ */
+export const PROCESS_EXIT_POLL_INTERVAL_MS = 100;
+
+// Poll until no record is running or the timeout elapses: by default a record runs while its pid is alive. Shared by the
 // reapSession wait phase and shutdown.ts's SIGTERM grace period.
-export async function waitForExit(records: ManagedProcessRecord[], timeoutMs: number): Promise<void> {
+export async function waitForExit<RecordWaitedOn extends ManagedProcessRecord>(
+  records: RecordWaitedOn[],
+  timeoutMs: number,
+  isRunning: (record: RecordWaitedOn) => boolean | Promise<boolean> = record => isPidAlive(record.pid),
+): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (records.every(record => !isPidAlive(record.pid))) {
+    if (!(await Promise.all(records.map(record => isRunning(record)))).includes(true)) {
       return;
     }
-    await new Promise(resolve => setTimeout(resolve, 100));
+    await new Promise(resolve => setTimeout(resolve, PROCESS_EXIT_POLL_INTERVAL_MS));
   }
 }
 
@@ -465,7 +521,7 @@ export class ProcessRegistry {
       while (Date.now() < sigkillDeadline) {
         const remaining = survivors.filter(r => isPidAlive(r.pid));
         if (remaining.length === 0) break;
-        await new Promise(resolve => setTimeout(resolve, 100));
+        await new Promise(resolve => setTimeout(resolve, PROCESS_EXIT_POLL_INTERVAL_MS));
       }
     }
 

@@ -329,6 +329,13 @@ interface ProcessTableRow {
   pid: number;
   ppid: number;
   startToken: string | null;
+  /** The process group it is in: on macOS and Linux. Windows has no process groups, so there it is null. */
+  processGroupId: number | null;
+  /**
+   * It has exited, and its parent has not yet collected its exit status (a zombie): state Z, or on Linux X while it is
+   * being collected. It runs no code and writes nothing, and no signal ends it. Windows lists no such process.
+   */
+  hasExited: boolean;
 }
 
 /**
@@ -357,7 +364,8 @@ async function readProcessTable(): Promise<ProcessTableRow[]> {
 /**
  * Linux: one read of /proc/<pid>/stat yields ppid (field 4) and starttime
  * (field 22) together — genuinely atomic per process, and starttime is exactly
- * what captureProcessStartToken() returns on this platform.
+ * what captureProcessStartToken() returns on this platform. The same read
+ * yields the state (field 3) and the process group (field 5).
  */
 function readProcessTableLinux(): ProcessTableRow[] {
   const rows: ProcessTableRow[] = [];
@@ -365,7 +373,7 @@ function readProcessTableLinux(): ProcessTableRow[] {
   try {
     entries = readdirSync('/proc');
   } catch (error) {
-    logger.warn('PROCESS', 'Cannot read /proc — tree-kill degrades to a single-PID kill', {
+    logger.warn('PROCESS', 'Cannot read /proc — tree-kill degrades to a single-PID kill, and a process group left with only zombies counts as still running', {
       error: error instanceof Error ? error.message : String(error),
     });
     return rows;
@@ -386,20 +394,24 @@ function readProcessTableLinux(): ProcessTableRow[] {
     if (tailStart < 0) continue;
     const fields = raw.slice(tailStart + 2).split(' ');
     const ppid = Number.parseInt(fields[1] ?? '', 10);
+    const processGroupId = Number.parseInt(fields[2] ?? '', 10);
     const starttime = fields[19];
     if (!Number.isFinite(ppid)) continue;
     rows.push({
       pid: Number.parseInt(entry, 10),
       ppid,
       startToken: starttime && /^\d+$/.test(starttime) ? starttime : null,
+      processGroupId: Number.isFinite(processGroupId) ? processGroupId : null,
+      // proc(5): Z zombie, X dead; x is X on kernels 2.6.33 to 3.13.
+      hasExited: /^[ZXx]$/.test(fields[0] ?? ''),
     });
   }
   return rows;
 }
 
 /**
- * macOS/BSD: `ps -eo pid=,ppid=,lstart=` is one snapshot carrying all three.
- * Its lstart is byte-identical to `ps -p <pid> -o lstart=`, which is what
+ * macOS/BSD: `ps -eo pid=,ppid=,pgid=,stat=,lstart=` is one snapshot carrying
+ * them all. Its lstart is byte-identical to `ps -p <pid> -o lstart=`, which is what
  * captureProcessStartToken() uses here. LC_ALL/LANG are pinned for the same
  * reason they are pinned there — a locale-formatted date would not compare
  * equal on the revalidation — and TZ is pinned with them (#5311), because a
@@ -410,14 +422,14 @@ function readProcessTableLinux(): ProcessTableRow[] {
 async function readProcessTablePosix(): Promise<ProcessTableRow[]> {
   let stdout: string;
   try {
-    const result = await execFileAsync('ps', ['-eo', 'pid=,ppid=,lstart='], {
+    const result = await execFileAsync('ps', ['-eo', 'pid=,ppid=,pgid=,stat=,lstart='], {
       timeout: 10_000,
       maxBuffer: 32 * 1024 * 1024,
       env: startTokenProbeEnv(process.env),
     });
     stdout = result.stdout;
   } catch (error) {
-    logger.warn('PROCESS', 'Cannot enumerate the process table — tree-kill degrades to a single-PID kill', {
+    logger.warn('PROCESS', 'Cannot enumerate the process table — tree-kill degrades to a single-PID kill, and a process group left with only zombies counts as still running', {
       error: error instanceof Error ? error.message : String(error),
     });
     return [];
@@ -425,17 +437,22 @@ async function readProcessTablePosix(): Promise<ProcessTableRow[]> {
   return parsePosixProcessTable(stdout);
 }
 
-/** Rows from `ps -eo pid=,ppid=,lstart=` output. Pure and exported for tests. */
+/**
+ * Rows from `ps -eo pid=,ppid=,pgid=,stat=,lstart=` output. A stat that starts with Z is a zombie (ps(1)). Pure and
+ * exported for tests.
+ */
 export function parsePosixProcessTable(stdout: string): ProcessTableRow[] {
   const rows: ProcessTableRow[] = [];
   for (const line of stdout.split('\n')) {
-    const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/);
+    const match = line.trim().match(/^(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(.+)$/);
     if (!match) continue;
-    const startToken = match[3]!.trim();
+    const startToken = match[5]!.trim();
     rows.push({
       pid: Number.parseInt(match[1]!, 10),
       ppid: Number.parseInt(match[2]!, 10),
       startToken: startToken.length > 0 ? withUtcStartTokenPrefix(startToken) : null,
+      processGroupId: Number.parseInt(match[3]!, 10),
+      hasExited: match[4]!.startsWith('Z'),
     });
   }
   return rows;
@@ -479,6 +496,8 @@ async function readProcessTableWindows(): Promise<ProcessTableRow[]> {
       pid: Number.parseInt(match[1]!, 10),
       ppid: Number.parseInt(match[2]!, 10),
       startToken: startToken.length > 0 ? startToken : null,
+      processGroupId: null,
+      hasExited: false,
     });
   }
   return rows;
@@ -527,4 +546,21 @@ export async function collectDescendantIdentities(rootPid: number): Promise<Desc
 /** PID-only view, for callers that do not signal what they enumerate. */
 export async function collectDescendantPids(rootPid: number): Promise<number[]> {
   return (await collectDescendantIdentities(rootPid)).map(entry => entry.pid);
+}
+
+/** A process of a process group, and whether it has exited but not been collected by its parent (a zombie). */
+export interface ProcessGroupMember {
+  pid: number;
+  hasExited: boolean;
+}
+
+/**
+ * Each process of the process group `processGroupId` that one read of the process table lists, zombies too, on macOS
+ * and Linux. Returns [] when it lists none, and on Windows, which has no process groups. Also [] when the table could
+ * not be read, which the reader logs at WARN.
+ */
+export async function collectProcessGroupMembers(processGroupId: number): Promise<ProcessGroupMember[]> {
+  return (await readProcessTable())
+    .filter(row => row.processGroupId === processGroupId)
+    .map(row => ({ pid: row.pid, hasExited: row.hasExited }));
 }
