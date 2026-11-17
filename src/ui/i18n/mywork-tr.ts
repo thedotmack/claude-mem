@@ -554,6 +554,7 @@ export const myworkTr: Record<string, string> = {
   'Previous slide': 'Önceki slayt',
   'Next slide': 'Sonraki slayt',
   'Rule learning is waiting for an agent. Sign in to a supported agent on the worker machine, or add a rule yourself.': 'Kural öğrenme bir ajan bekliyor. Çalışan sürecin bulunduğu cihazda desteklenen bir ajanda oturum açın veya kuralı kendiniz ekleyin.',
+  'Configure My Work to use an API provider': 'Çalışmalarım’ı bir API sağlayıcısı kullanacak şekilde yapılandırın',
   'Focus overview': 'Odak alanlarına genel bakış',
   'Concept illustration': 'Kavram çizimi',
   'Your focus areas': 'Odak alanlarınız',

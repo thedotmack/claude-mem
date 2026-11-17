@@ -498,6 +498,7 @@ export const myworkFr: Record<string, string> = {
   'No rules yet': 'Pas encore de règles',
   'claude-mem learns how you like to work from your requests on its own. You can also add one.': 'claude-mem apprend automatiquement vos préférences de travail à partir de vos demandes. Vous pouvez aussi en ajouter une.',
   "Rule learning is waiting for an agent. Sign in to a supported agent on the worker machine, or add a rule yourself.": 'L’apprentissage des règles attend qu’un agent soit disponible. Connectez-vous à un agent pris en charge sur la machine du processus en arrière-plan, ou ajoutez vous-même une règle.',
+  'Configure My Work to use an API provider': 'Configurer un fournisseur API pour My Work',
   'Add rule': 'Ajouter une règle',
   '{waiting} learned rules are waiting for you. ': '{waiting} règles apprises attendent votre décision. ',
   '{waiting} learned rule is waiting for you. ': '{waiting} règle apprise attend votre décision. ',
