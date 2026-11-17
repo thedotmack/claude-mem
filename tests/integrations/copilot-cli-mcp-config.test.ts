@@ -57,8 +57,30 @@ describe('Copilot CLI MCP config', () => {
   it('registers claude-mem under mcpServers in ~/.copilot/mcp-config.json', () => {
     expect(install()).toBe(0);
 
-    expect(readConfig(configPath).mcpServers['claude-mem'].args).toEqual([serverPath]);
+    const entry = readConfig(configPath).mcpServers['claude-mem'];
+    expect(entry.args).toEqual([serverPath]);
+    // Without `tools`, VS Code connects the server but never offers its tools to the model.
+    expect(entry.type).toBe('local');
+    expect(entry.tools).toEqual(['*']);
     expect(existsSync(path.join(home, '.github', 'copilot', 'mcp.json'))).toBe(false);
+  });
+
+  it('copilot-vscode writes the same entry as copilot-cli, with tools exposed', () => {
+    expect(run(`MCP_IDE_INSTALLERS['copilot-vscode']()`)).toBe(0);
+    const viaVscode = readFileSync(configPath, 'utf-8');
+
+    expect(install()).toBe(0);
+
+    expect(readFileSync(configPath, 'utf-8')).toBe(viaVscode);
+    expect(readConfig(configPath).mcpServers['claude-mem'].tools).toEqual(['*']);
+  });
+
+  it('uninstall removes an entry that copilot-vscode wrote', () => {
+    const original = writeUserConfig();
+    expect(run(`MCP_IDE_INSTALLERS['copilot-vscode']()`)).toBe(0);
+
+    expect(uninstall()).toBe(0);
+    expect(readFileSync(configPath, 'utf-8')).toBe(original);
   });
 
   it('writes mcp-config.json in the directory COPILOT_HOME names', () => {
@@ -68,6 +90,26 @@ describe('Copilot CLI MCP config', () => {
 
     expect(readConfig(path.join(copilotHome, 'mcp-config.json')).mcpServers['claude-mem'].args).toEqual([serverPath]);
     expect(existsSync(path.join(home, '.copilot'))).toBe(false);
+  });
+
+  it('keeps other servers and writes the same file when installed twice', () => {
+    writeUserConfig();
+    expect(install()).toBe(0);
+    const first = readFileSync(configPath, 'utf-8');
+
+    expect(install()).toBe(0);
+
+    expect(readFileSync(configPath, 'utf-8')).toBe(first);
+    expect(readConfig(configPath).mcpServers.playwright).toEqual(playwright);
+  });
+
+  it('refuses to overwrite a malformed mcp-config.json', () => {
+    mkdirSync(path.dirname(configPath), { recursive: true });
+    writeFileSync(configPath, '{ not json');
+
+    expect(install()).toBe(1);
+
+    expect(readFileSync(configPath, 'utf-8')).toBe('{ not json');
   });
 
   it('uninstall removes claude-mem and leaves the rest of mcp-config.json as it was', () => {

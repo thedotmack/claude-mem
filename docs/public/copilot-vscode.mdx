@@ -1,0 +1,60 @@
+---
+title: GitHub Copilot in VS Code
+description: Search and explicitly save Claude-Mem memories from Copilot agent mode in VS Code, using the existing Copilot MCP installer.
+---
+
+VS Code's Copilot agent mode reads the same user-level MCP file as Copilot CLI, so the `copilot-vscode` installer connects Claude-Mem to it. This guide covers search, selected observation retrieval and explicit save. It adds no automatic capture and no context injection.
+
+Checked on VS Code 1.146.0 on Windows 11: Copilot's agent loaded `claude-mem` from `~/.copilot/mcp-config.json` without a trust prompt in the logs, and called `search` and `get_observations`. Not yet checked: the minimum VS Code version, macOS and Linux, and the content of the returned results. The entry must contain `"tools": ["*"]`, which the installer writes. Without it the server connects but Copilot never offers its tools to the model.
+
+Official references: [MCP servers in VS Code](https://code.visualstudio.com/docs/agent-customization/mcp-servers) and [MCP configuration reference](https://code.visualstudio.com/docs/agents/reference/mcp-configuration).
+
+## Requirements
+
+- VS Code with GitHub Copilot Chat and agent mode, signed in to a Copilot plan that allows MCP servers (organization policy can disable MCP).
+- A running Claude-Mem worker and Node.js.
+- Neither the `copilot` command nor GitHub CLI (`gh`) is required. The VS Code check in the intro ran with no `copilot` command on the PATH.
+
+## Connect
+
+```bash
+npx claude-mem install --ide copilot-vscode
+```
+
+This writes `claude-mem` under `mcpServers` in `~/.copilot/mcp-config.json` (or `$COPILOT_HOME/mcp-config.json`), keeping any other servers in that file. That is the file VS Code's Copilot harness reads. `copilot-vscode` writes exactly what `copilot-cli` writes, because Copilot CLI and VS Code share this one file. Restart VS Code afterwards.
+
+Do not create `.vscode/mcp.json` for this. That file uses a different `servers` key and belongs to VS Code's older local harness.
+
+## Save and recall
+
+Open Copilot Chat in **Agent** mode and confirm `claude-mem` appears in the tools list. Then ask:
+
+> Use claude-mem `search` for "restore" in project "memory-practice", then `get_observations` for the IDs you pick.
+
+VS Code asks "Allow tool from claude-mem?" before a call runs, and that prompt is VS Code's, not Claude-Mem's. In testing, `save_memory` waited on it and, once allowed, was stored in the worker database with the project and text we gave it. A following `search` appeared to run without a second prompt after **Allow in this Session**. **Skip** means the tool does not run, so nothing is saved; this was not tested. Read each call before approving it. Inspect the tool result itself; a fluent reply does not prove the call succeeded. To store something, ask for `save_memory` with an explicit project name.
+
+## What works
+
+| Capability | Status |
+| --- | --- |
+| Search, timeline, `get_observations` | Yes, through MCP |
+| Explicit `save_memory` | Yes, through MCP |
+| Automatic capture of Copilot sessions | No |
+| Automatic context injection | No |
+
+VS Code does expose hook events (`sessionStart`, `postToolUse`, `agentStop`), but their payloads have not been verified for capture, so none are installed.
+
+## Troubleshooting
+
+- **No `claude-mem` tools:** restart VS Code, then check `~/.copilot/mcp-config.json` (or `$COPILOT_HOME`) contains `mcpServers.claude-mem`.
+- **Install fails with "Corrupt JSON file":** the existing file is not valid JSON. The installer refuses to overwrite it; fix or move it, then rerun.
+- **Tool errors:** start the worker (`npx claude-mem start`) and read the tool's error text.
+- **MCP unavailable:** your organization's Copilot policy may disable MCP servers.
+
+## Disconnect
+
+```bash
+npx claude-mem uninstall
+```
+
+The uninstaller removes the `claude-mem` entry from the Copilot MCP file and leaves other servers alone. It is part of the full Claude-Mem uninstall, which also removes other integrations. To disconnect only Copilot, delete the `claude-mem` key under `mcpServers` in the file by hand. Saved memories remain in the worker.
