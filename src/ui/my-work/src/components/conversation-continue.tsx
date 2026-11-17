@@ -16,7 +16,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { CheckIcon, CircleSlashIcon, ExternalLinkIcon, FolderIcon, FolderXIcon, ReplyIcon, SquareIcon, TerminalIcon } from 'lucide-react'
 import { Shimmer } from '@/components/ai-elements/shimmer'
-import { FailureDetails, StateMark } from '@/components/bits'
+import { FailureDetails, RecordedTime, StateMark } from '@/components/bits'
 import { AgentMark } from '@/components/brand'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -27,7 +27,6 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { FieldHelperText, Textarea } from '@/components/ui/textarea'
 import { SEARCHABLE_CHOICES_AFTER, SearchablePicker } from '@/components/searchable-picker'
 import type { AgentTool, Request } from '@/data'
-import { displayTime } from '@/lib/display-time'
 import { interpolate, t, useI18n } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
 import {
@@ -775,9 +774,11 @@ export function ConversationContinue({ platform, conversationSessionId, toolName
  * two gaps take 144px in English, 197 in Chinese, 184 in Korean, 215 in Turkish and 174 in French, so Turkish leaves the
  * trigger 309px. 20rem (340px) put the count on a second line in Chinese and Turkish. 37 is the most conversations one
  * request has on the owner's data (plan Phase 5 checklist), and any two-digit count is as wide in the mono face. Below
- * sm the trigger may take the row's whole width, on its own line.
+ * sm the trigger may take the row's whole width, on its own line. The cap is the most it takes: where a browser draws a
+ * classic 15px scrollbar in the drawer, the row has 509px and the trigger gives way to stay on the line (ConversationPicker).
  */
-const PICKER_TRIGGER_WIDTH = 'max-w-full sm:max-w-72'
+// `shrink`: the searchable trigger is a Button, which does not shrink by default.
+const PICKER_TRIGGER_WIDTH = 'max-w-full shrink sm:max-w-72'
 
 /**
  * Which conversation the reply card answers, when the request has more than one (c-conversation-continue, page-05): a
@@ -809,8 +810,11 @@ function ConversationPicker({ id, conversations, chosen, onChoose, cannotChoose 
     </span>
   )
   return (
-    <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5">
-      <Label htmlFor={id}>{t('Reply to')}</Label>
+    // From sm up the row never wraps: the label and the count keep their width and the trigger gives way, so a 15px
+    // classic scrollbar in the drawer (Chrome on Windows and Linux) cannot push the count to a second line (PR #6210
+    // CI: Turkish needed 11.7px more in a 509px row). The trigger's cut name stays whole in its title and in the list.
+    <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 sm:flex-nowrap">
+      <Label htmlFor={id} className="shrink-0">{t('Reply to')}</Label>
       {conversations.length > SEARCHABLE_CHOICES_AFTER ? (
         <SearchablePicker id={id} trigger={choiceWords(chosenChoice, true)} triggerTitle={wholeName}
           groups={[{ choices: choices.map((choice) => ({ value: choice.value, label: choiceWords(choice, false), searchWords: [choice.name, choice.idChip] })) }]}
@@ -825,7 +829,7 @@ function ConversationPicker({ id, conversations, chosen, onChoose, cannotChoose 
           </SelectContent>
         </Select>
       )}
-      <span className="mono-number text-xs text-muted-foreground">{interpolate(t('{position} of {count}'), { position, count: conversations.length })}</span>
+      <span className="shrink-0 whitespace-nowrap mono-number text-xs text-muted-foreground">{interpolate(t('{position} of {count}'), { position, count: conversations.length })}</span>
     </div>
   )
 }
@@ -957,7 +961,7 @@ export function ConversationRow({ conversation, conversations, onReplyHere, repl
         {tool && <AgentMark tool={tool} className="size-3.5" />}
         <span className="min-w-0 font-medium break-words">{name}</span>
         <Badge variant="outline" className="font-mono font-normal">{naming.idChip}</Badge>
-        {conversation.at !== TIME_NOT_RECORDED && <span className="text-xs text-muted-foreground tabular">{displayTime(conversation.at)}</span>}
+        {conversation.at !== TIME_NOT_RECORDED && <RecordedTime iso={conversation.atIso} words={conversation.at} className="text-xs text-muted-foreground" />}
       </p>
       {source && (isContinuableConversation(conversation)
         ? <ConversationTurns source={source} platform={conversation.platform} conversationSessionId={conversation.conversationSessionId} toolName={conversation.tool}

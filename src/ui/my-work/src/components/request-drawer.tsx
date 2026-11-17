@@ -5,33 +5,41 @@
 import type { ReactNode } from 'react'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Skeleton } from '@/components/ui/skeleton'
+import { focusReturnFallback, focusReturnTarget } from '@/components/ui/interaction-behavior'
 import { t, useI18n } from '@/lib/i18n'
 import { useStore } from '@/store'
 
 /**
  * What opened the request drawer: the element focused as the drawer's first frame opened (a card's title, its Reply, a
- * list row). The drawer can open in two frames (App.tsx's loading screen while the drawer's code arrives, then the
- * drawer), and the second sees focus on the page body, so the opener is kept here for the whole time it is open. Each
- * Sheet keeps its own opener otherwise (ui/interaction-behavior.ts useReturnFocusToOpener), which loses it here.
+ * list row, or for a menu item what opened its menu: the one focus-return rule, ui/interaction-behavior.ts
+ * focusReturnTarget), with the request it opened and whether it sat on the board. The drawer can open in two frames
+ * (App.tsx's loading screen while the drawer's code arrives, then the drawer), and the second sees focus on the page
+ * body, so the opener is kept here for the whole time it is open. Each Sheet keeps its own opener otherwise
+ * (useReturnFocusToOpener), which loses it here.
  */
-let drawerOpener: HTMLElement | null = null
+let drawerOpener: { element: HTMLElement; requestId: string | null; inBoard: boolean } | null = null
 
 function rememberDrawerOpener() {
-  const focused = document.activeElement
-  if (focused instanceof HTMLElement && focused !== document.body && !focused.closest('[data-slot="sheet-content"]')) drawerOpener = focused
+  const element = focusReturnTarget(document.activeElement)
+  if (!element || element.closest('[data-slot="sheet-content"]')) return
+  drawerOpener = { element, requestId: useStore.getState().view.openRequest?.id ?? null, inBoard: element.closest('[data-board-view]') !== null }
 }
 
 /**
  * Called as a frame of the drawer leaves the page. While a request is still open (the store's `view.openRequest`), the
  * frame gave way to the drawer's next one and focus stays inside it; once none is, the drawer has closed (Close,
- * Escape, Back) and focus goes back to its opener, if that is still on the page.
+ * Escape, Back) and focus goes back to its opener. When that opener left the page while the drawer was open (the List
+ * draws each state group apart, so a request that changed state is drawn again under its new group), focus goes to
+ * the same request's row in its new place, else to the view's heading, never the page body (phase-4 quality finding 1).
  */
 function returnFocusWhenTheDrawerCloses(event: Event) {
   event.preventDefault()
   if (useStore.getState().view.openRequest) return
   const opener = drawerOpener
   drawerOpener = null
-  if (opener?.isConnected) opener.focus()
+  if (!opener) return
+  const target = opener.element.isConnected ? opener.element : focusReturnFallback(opener)
+  target?.focus()
 }
 
 /** The drawer's Sheet. `onEscapeKeyDown` lets the drawer keep itself open while its image viewer takes Escape. */

@@ -1,4 +1,4 @@
-import { clockTime, displayTime } from '@/lib/display-time'
+import { clockTime, clockTimeOrDay, displayTime, recordedTimeWords } from '@/lib/display-time'
 import { sentenceWith } from '@/lib/sentence-with'
 import { useState, type HTMLAttributes, type KeyboardEvent, type ReactNode, type Ref } from 'react'
 import { motion, useReducedMotion } from 'motion/react'
@@ -16,17 +16,18 @@ import { useGitHubStarCount } from '@/lib/use-github-star-count'
 import { tabStopAfter, tabStops } from '@/lib/tab-order'
 import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
-import { isSampleHref, measuredEstimate, RefreshNotStartedError, SAMPLE_DEVICES, OTHER_FOCUS_AREA_ID, type AgentTool, type Device, type LiveState, type NextStepMissing, type Request, type Run, type SkillRun } from '@/data'
+import { isSampleHref, measuredEstimate, RefreshNotStartedError, SAMPLE_DEVICES, type AgentTool, type Device, type LiveState, type NextStepMissing, type Request, type Run, type SkillRun } from '@/data'
 import { agentById, deviceById, useConnection, useStore, useWorkModel, useWorkspace } from '@/store'
 import type { AutoRefresh } from '@/live/work-data-source'
 import { pageStartsRefresh, refreshRecordKey, shownRefreshLine, type RefreshLineState, type RefreshPressAnswer } from '@/live/refresh-line'
 import { ESTIMATE_PREFIX } from '@/live/measured-estimate'
 import { isRefreshStartRefusal, isWaitingForAgentReason } from '../../../../shared/work-view-refresh-reasons.ts'
-import { NOT_SORTED_YET_LABEL, focusAreaLabel, resolveFocusAreaId } from '@/live/to-focus-model'
+import { NOT_SORTED_YET_LABEL, focusAreaPlaceWords, resolveFocusAreaId } from '@/live/to-focus-model'
 import { presentSharedState } from '@/live/shared-state-presentation'
 import { isServedFromCloud } from '@/live/served-from'
 import { LIVE_CHIP_PROBLEM_SOURCE, liveChipProblem, type LiveChipProblem } from '@/live/live-chip'
 import type { ConnectionTone } from '@/live/connection-status'
+import { syncDetailWords } from '../../../viewer/utils/sync-presentation'
 import type { StarCountRead } from '@/live/github-star-count'
 import { nextStepShown, UNRECORDED_AGENT } from '@/live/to-work-model'
 import { agentRoleWords, deviceName } from '@/lib/agent-words'
@@ -83,10 +84,11 @@ export type Translate = (text: string) => string
 
 /**
  * A recorded time in the reader's clock (G9, plan rule 9): short, with the full stamp on hover, keyboard focus and tap
- * (G10). Times were printed as raw UTC stamps (c-bits-live-indicator, c-bits-device-freshness).
+ * (G10). Times were printed as raw UTC stamps (c-bits-live-indicator, c-bits-device-freshness). `form`: the clock, with
+ * the day on another day (clockTime), or the clock today and the day before (clockTimeOrDay: a record, a review).
  */
-export function LocalTime({ iso, className }: { iso: string; className?: string }) {
-  const time = clockTime(iso)
+export function LocalTime({ iso, className, form = 'time' }: { iso: string; className?: string; form?: 'time' | 'time-or-day' }) {
+  const time = form === 'time' ? clockTime(iso) : clockTimeOrDay(iso)
   if (!time) throw new Error(`LocalTime needs an ISO time, got ${JSON.stringify(iso)}`)
   return (
     <Tooltip>
@@ -94,6 +96,15 @@ export function LocalTime({ iso, className }: { iso: string; className?: string 
       <TooltipContent>{time.full}</TooltipContent>
     </Tooltip>
   )
+}
+
+/**
+ * A time the model recorded, in the reader's words (V3: no English word in a time, in any language): from its ISO
+ * instant when the model carries one (LocalTime, with the full stamp on hover and focus), else the words a sample
+ * fixture or an older model carries, said by the one formatter (lib/display-time.ts displayTime).
+ */
+export function RecordedTime({ iso, words, form = 'time', className }: { iso?: string | null; words: string; form?: 'time' | 'time-or-day'; className?: string }) {
+  return iso ? <LocalTime iso={iso} form={form} className={className} /> : <span className={cn('tabular', className)}>{displayTime(words)}</span>
 }
 
 /**
@@ -217,7 +228,10 @@ export function StateBadge({ state, children }: { state: LiveState; children?: R
   const { t } = useI18n()
   return (
     <Req ids={['R6.2']}>
-      <Badge variant="outline" data-state-badge={state} className={cn('shrink-0 gap-1.5 font-normal', STATE_BADGE_WORDS_WHOLE, STATE_SURFACE[state])}>
+      {/* A new state's colours come at once (transition-none over the Badge's own): a live change moves two things at
+          most, the change ticker and, where rows show their status, the newest change's riffle (request-rows.tsx
+          ListStatus); every changed card's badge fading to its colours was one more each (Phase 6 verify V2). */}
+      <Badge variant="outline" data-state-badge={state} className={cn('shrink-0 gap-1.5 font-normal transition-none', STATE_BADGE_WORDS_WHOLE, STATE_SURFACE[state])}>
         <StateMark state={state} />
         {children ?? t(STATE_LABEL[state])}
       </Badge>
@@ -233,28 +247,34 @@ export function StateBadge({ state, children }: { state: LiveState; children?: R
  * ring and no link look, until the next refresh places it (it read "Sorting…", italic at 80%, like a broken label).
  * Color is reserved for state, so neither is coloured. 44px on touch through the Button's own rule: its 24px desktop
  * minimum applies only where that rule does not (a plain min-h utility comes after touch-target-size in the stylesheet
- * and beat its 44px, V3). The unplaced words are the focus model's one definition (NOT_SORTED_YET_LABEL). They wrap in a
- * narrow row instead of being cut (plan rule 5: a cut must say what it hides, and these three words hide nothing), and
- * they keep the placed link's heights through the same touch rule, so the header does not change height when the next
- * refresh places the request.
+ * and beat its 44px, V3). The unplaced words are the focus model's one definition (NOT_SORTED_YET_LABEL). Where the chip
+ * can wrap (a card, the drawer, the List rows' facts line) they wrap in a narrow row instead of being cut (plan rule 5: a
+ * cut must say what it hides, and these three words hide nothing), and they keep the placed link's heights through the
+ * same touch rule, so the header does not change height when the next refresh places the request.
+ *
+ * `layout="line"` is a row that keeps one line (the List table's Request cell, whose cells do not wrap): there the
+ * unplaced words are cut the way a placed area's name is, down to the cell's floor, its mark, a letter and a whole
+ * ellipsis ("○ N…"; pages/my-work.tsx ListTableRow sets the floor), the whole words in the row's hover text and, uncut
+ * in the page, for screen readers. Built to wrap, they were clipped mid-word with no ellipsis there, "○ Not so" (owner's
+ * data at 1366 and 1440, Phase 6 re-verify).
  */
-export function FocusAreaChip({ focusAreaId, onOpen }: { focusAreaId?: string; onOpen?: (focusAreaId: string) => void }) {
+export function FocusAreaChip({ focusAreaId, onOpen, layout = 'wrap' }: { focusAreaId?: string; onOpen?: (focusAreaId: string) => void; layout?: 'wrap' | 'line' }) {
   const { t } = useI18n()
   const { focusAreas } = useWorkModel()
   const placed = resolveFocusAreaId(focusAreaId, focusAreas)
-  const label = focusAreaLabel(focusAreaId, focusAreas)
+  const label = focusAreaPlaceWords(focusAreaId, focusAreas, t)
   return (
     <Req ids={['R16.5']}>
       {placed ? (
         <Button variant="bare" data-focus-area="placed" onClick={(event) => { event.stopPropagation(); onOpen?.(placed) }}
           className="max-w-full gap-1.5 self-start text-xs text-muted-foreground underline decoration-control-edge underline-offset-4 md:not-pointer-coarse:min-h-6 hover-enabled:text-foreground hover-enabled:decoration-current">
           <FocusIcon aria-hidden="true" className="size-3.5 shrink-0" />
-          <span className="truncate">{placed === OTHER_FOCUS_AREA_ID ? t('Other') : label}</span>
+          <span className="truncate">{label}</span>
         </Button>
       ) : (
         <span data-focus-area="not-sorted" className="inline-flex min-w-0 items-center gap-1.5 self-start text-xs text-muted-foreground touch-target-size md:not-pointer-coarse:min-h-6">
           <CircleDashedIcon aria-hidden="true" className="size-3.5 shrink-0" />
-          <span className="min-w-0 break-words">{t(NOT_SORTED_YET_LABEL)}</span>
+          <span className={cn('min-w-0', layout === 'line' ? 'truncate' : 'break-words')}>{t(NOT_SORTED_YET_LABEL)}</span>
         </span>
       )}
     </Req>
@@ -282,9 +302,11 @@ const NEXT_STEP_MISSING_WORDS: Record<NextStepMissing, string> = {
  * nextStepShown) draws nothing on cards and in the drawer (`whenMissing="omit"`); the List passes `"dash"` for "—" with
  * the reason read out. `layout="line"` is the List's one-line cell (c-work-list-view: 48px rows): the step cut with an
  * ellipsis after its owner's icon, a person's step in the attention colour, and whose move it is read out first.
+ * `layout="lines"` is the same look with the whole step, wrapping under its icon: the rows that give the title a line
+ * of its own (By agent's cards, the Team columns) show the step whole, as HEAD's cards did (rule 2).
  */
 export function NextMove({ next, className, whenMissing = 'omit', layout = 'block' }: {
-  next: Request['next'] | null | undefined; className?: string; whenMissing?: 'omit' | 'dash'; layout?: 'block' | 'line'
+  next: Request['next'] | null | undefined; className?: string; whenMissing?: 'omit' | 'dash'; layout?: 'block' | 'line' | 'lines'
 }) {
   const { t } = useI18n()
   const shown = nextStepShown(next)
@@ -300,18 +322,19 @@ export function NextMove({ next, className, whenMissing = 'omit', layout = 'bloc
     )
   }
   const human = shown.who === 'human'
+  const small = layout === 'line' || layout === 'lines'
   const ownerIcon = (
-    <span aria-hidden="true" className={cn('flex shrink-0 items-center justify-center rounded-full', layout === 'line' ? 'size-4' : 'mt-px size-5', human ? 'bg-attention text-attention-foreground' : 'bg-muted text-muted-foreground')}>
-      {human ? <UserIcon className={layout === 'line' ? 'size-2.5' : 'size-3'} /> : <BotIcon className={layout === 'line' ? 'size-2.5' : 'size-3'} />}
+    <span aria-hidden="true" className={cn('flex shrink-0 items-center justify-center rounded-full', small ? 'size-4' : 'mt-px size-5', layout === 'lines' && 'mt-0.5', human ? 'bg-attention text-attention-foreground' : 'bg-muted text-muted-foreground')}>
+      {human ? <UserIcon className={small ? 'size-2.5' : 'size-3'} /> : <BotIcon className={small ? 'size-2.5' : 'size-3'} />}
     </span>
   )
-  if (layout === 'line') {
+  if (small) {
     const words = nextStepWords(shown, t)
     return (
       <Req ids={['R5.8', 'R6.3']}>
-        <span data-next-move={shown.who} className={cn('flex min-w-0 items-center gap-1.5 text-[0.84rem]', className)}>
+        <span data-next-move={shown.who} className={cn('flex min-w-0 gap-1.5 text-[0.84rem]', layout === 'line' ? 'items-center' : 'items-start leading-snug', className)}>
           {ownerIcon}
-          <span className={cn('min-w-0 truncate', human ? 'font-medium text-attention-foreground' : 'text-foreground/80')}>
+          <span className={cn('min-w-0', layout === 'line' ? 'truncate' : 'wrap-break-word', human ? 'font-medium text-attention-foreground' : 'text-foreground/80')}>
             <span className="sr-only">{interpolate(t('{owner}: {step}'), { owner: t(NEXT_MOVE_OWNER_WORDS[shown.who]), step: words })}</span>
             <span aria-hidden="true">{words}</span>
           </span>
@@ -332,9 +355,10 @@ export function NextMove({ next, className, whenMissing = 'omit', layout = 'bloc
   )
 }
 
-/** What the last memory review covered: "2 of 3 workstreams reviewed". */
+/** What the last memory review covered: "2 of 3 workstreams reviewed", with when, in the reader's words (V3). */
 export function reviewCoverage(request: Request, t?: (s: string) => string) {
-  const { coverage, readings, reviewedAt } = request.progress
+  const { coverage, readings } = request.progress
+  const reviewedAt = recordedTimeWords(request.progress.reviewedAtIso, request.progress.reviewedAt, 'time-or-day')
   const tr = t ?? ((s: string) => s)
   if (!readings) return tr('Not reviewed yet')
   if (!coverage) return interpolate(tr('reviewed {reviewedAt}'), { reviewedAt })
@@ -359,7 +383,7 @@ const STATE_PROGRESS_FILL: Record<LiveState, string> = {
  * reports its value, and a request no review measured shows the unknown track, not 0% (c-bits-progress-meter); a
  * finished bar ends in a check; the percent is monospace and dates keep tabular figures (plan rule 9). Nothing on it
  * moves: a light sweep ran on every working bar, and with the board's working cards that broke rule 8's two moving
- * things per view (the bar still eases to a new value). `compact` is the List's cell, on one line for its 48px rows
+ * things per view (and a new value is drawn at once). `compact` is the List's cell, on one line for its 48px rows
  * (c-work-list-view, D b20 M 418): a short bar, then the percent in monospace at the right; a request no review measured
  * says so in words.
  */
@@ -373,7 +397,9 @@ export function ProgressMeter({ request, compact = false }: { request: Request; 
       : t(estimate))
     : null
   const bar = (
-    <Progress value={progress.percent} aria-label={progress.percent === null ? t('Not reviewed yet') : interpolate(t('{percent}% complete'), { percent: progress.percent })} className={cn('[&_[data-slot=progress-indicator]]:duration-700 [&_[data-slot=progress-indicator]]:ease-out', compact && 'w-14 shrink-0', STATE_PROGRESS_FILL[request.state])} />
+    // The bar takes a new value at once (plan rule 8, Phase 6 verify V2): a review that updates many requests in one live
+    // change eased every one of their bars for 0.7 s, each a moving thing.
+    <Progress value={progress.percent} aria-label={progress.percent === null ? t('Not reviewed yet') : interpolate(t('{percent}% complete'), { percent: progress.percent })} className={cn('[&_[data-slot=progress-indicator]]:transition-none', compact && 'w-14 shrink-0', STATE_PROGRESS_FILL[request.state])} />
   )
   const finished = progress.percent === 100 && <CheckIcon data-slot="progress-finished" aria-hidden="true" className="size-3.5 shrink-0 stroke-3 text-foreground/80" />
   if (compact) {
@@ -396,7 +422,7 @@ export function ProgressMeter({ request, compact = false }: { request: Request; 
           {finished}
         </div>
         <div className="flex flex-wrap justify-between gap-x-2 text-xs text-muted-foreground tabular">
-          <span>{progress.completedAt ? interpolate(t('Completed {completedAt}'), { completedAt: progress.completedAt }) : progress.readings ? <><span className="font-medium text-foreground/80 mono-number">{progress.percent}%</span>{` · ${reviewCoverage(request, t)}`}</> : t('Not reviewed yet')}</span>
+          <span>{progress.completedAt ? interpolate(t('Completed {completedAt}'), { completedAt: recordedTimeWords(progress.completedAtIso, progress.completedAt) }) : progress.readings ? <><span className="font-medium text-foreground/80 mono-number">{progress.percent}%</span>{` · ${reviewCoverage(request, t)}`}</> : t('Not reviewed yet')}</span>
           {translatedEstimate && <span>{translatedEstimate}</span>}
         </div>
       </div>
@@ -573,9 +599,7 @@ export function LiveIndicator() {
                   <p>{t(connection.detail)}</p>
                   {connection.activityCheckedAt && <p>{sentenceWith(t('Activity last inspected {time}'), 'time', <LocalTime iso={connection.activityCheckedAt} />)}</p>}
                   {connection.clockSkew && <p>{t('Source and browser clocks differ; freshness uses received heartbeats.')}</p>}
-                  {/* English for now: the worker's message plus sentences from src/ui/viewer/utils/sync-presentation.ts.
-                      They go through t() once that file's change in the classic viewer's worktree reaches main. */}
-                  {sync && <p>{sync.detail}</p>}
+                  {sync && <p data-sync-detail="">{syncDetailWords(sync, t)}</p>}
                   {shared && <p>{t(shared.detail)}</p>}
                 </CollapsibleContent>
               </Collapsible>
@@ -785,11 +809,6 @@ const REFRESH_LINE_MARK: Record<RefreshLineState, () => ReactNode> = {
   'waiting-for-agent': () => <ClockIcon aria-hidden="true" className="size-3.5 shrink-0" />,
 }
 
-/** A time the worker reported: the reader's own clock with the full stamp on hover and focus (G9), or as recorded. */
-function RefreshTime({ display, iso }: { display: string; iso?: string }) {
-  return iso ? <LocalTime iso={iso} /> : <span className="tabular">{displayTime(display)}</span>
-}
-
 /**
  * A failure in plain words, then its raw cause folded under Details in monospace (G17), so no internal id, database
  * message or browser error is the visible text. Nothing to fold when there is no cause. The Details row is the shared
@@ -886,8 +905,8 @@ export function RefreshStatus({ refresh, run, ids, label = 'Last run', canStartR
   const sourceKind = useStore((state) => state.work.sourceKind)
   const shown = shownRefreshLine(refresh, starting.answer)
   const state = shown.state
-  const lastRun = run ? <>{t(label)} <span className="tabular">{displayTime(run.lastRunAt)}</span></> : null
-  const recordedTime = refresh?.finishedAt ? <RefreshTime display={refresh.finishedAt} iso={refresh.finishedAtIso} /> : null
+  const lastRun = run ? <>{t(label)} <RecordedTime iso={run.lastRunAtIso} words={run.lastRunAt} /></> : null
+  const recordedTime = refresh?.finishedAt ? <RecordedTime iso={refresh.finishedAtIso} words={refresh.finishedAt} /> : null
   const offersButton = state === 'failed' ? canStartRefresh ?? pageStartsRefresh(sourceKind) : canStartRefresh === true
   // While the worker runs a refresh the button waits (aria-disabled, so it stays reachable, G16) and the line beside it
   // says why; only this page's own press shows the button busy, so one spinner turns, not two (rule 8).

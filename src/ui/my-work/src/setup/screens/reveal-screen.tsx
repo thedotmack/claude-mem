@@ -4,6 +4,7 @@ import { FocusArtwork } from '@/components/focus-artwork'
 import { Collapsible, CollapsibleContent, CollapsibleFoldTrigger, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { needsYou, type Request } from '@/data'
 import { formatPromptDay } from '@/lib/prompt-time'
+import { displayTime } from '@/lib/display-time'
 import { interpolate, useI18n } from '@/lib/i18n'
 import { focusOverview, type FocusOverviewRow } from '@/live/focus-overview'
 import type { RevealSets, SetupExtraction, SetupRecentPrompt, SetupScanAgent } from '../setup-data'
@@ -74,7 +75,7 @@ function PromptsOnly({ agents, recentPrompts }: { agents: SetupScanAgent[]; rece
                 <span className="lead-icon" aria-hidden="true">“</span>
                 <div>
                   <p className="quote">“{prompt.text}”</p>
-                  <p className="meta">{formatPromptDay(promptStamp(prompt.at))}</p>
+                  <p className="meta">{displayTime(formatPromptDay(promptStamp(prompt.at)))}</p>
                 </div>
               </li>
             ))}
@@ -120,7 +121,7 @@ function AreaRow({ row, workLoading, incomplete }: { row: FocusOverviewRow; work
           <CollapsibleFoldTrigger className="reveal-evidence-trigger" aria-describedby={headingId}>{t('Work & evidence')}</CollapsibleFoldTrigger>
         </div>
         <CollapsibleContent className="reveal-evidence">
-          {area.quotes[0] && <blockquote>“{area.quotes[0].quote}”<cite>{formatPromptDay(area.quotes[0].at)}</cite></blockquote>}
+          {area.quotes[0] && <blockquote>“{area.quotes[0].quote}”<cite>{displayTime(formatPromptDay(area.quotes[0].at))}</cite></blockquote>}
           {!area.quotes.length && area.evidence && <p>{area.evidence}</p>}
           {area.timesAsked !== null && <p>{interpolate(t('Mentioned {count} times in the reviewed prompts'), { count: area.timesAsked })}</p>}
           {nextText && <p className="reveal-next">{nextText}</p>}
@@ -247,7 +248,7 @@ export function RevealScreen({ agents, reveal, extraction, uploadedAgents, recen
             <p>{t('A selection of requests and preferences from your conversations.')}</p>
             {(reveal.requestReadErrorCount ?? 0) > 0 && <p role="status">{t('Some requests could not be read. The work shown may be incomplete.')}</p>}
             {reveal.work?.map((work) => <p key={work.id}>{work.title}</p>)}
-            {reveal.rules?.map((rule) => <blockquote key={rule.id}>{rule.text}<p>“{rule.quote}” · {formatPromptDay(rule.quotedAt)}</p></blockquote>)}
+            {reveal.rules?.map((rule) => <blockquote key={rule.id}>{rule.text}<p>“{rule.quote}” · {displayTime(formatPromptDay(rule.quotedAt))}</p></blockquote>)}
             {!reveal.focusAreas?.length && reveal.goals?.map((goal) => <p key={goal.id}>{goal.title}</p>)}
           </CollapsibleContent>
         </Collapsible>

@@ -30,7 +30,7 @@ export function RequestLine({ request, onOpen, showState = true, className }: {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <Button variant="bare" data-request-line={request.state} onClick={() => onOpen(request)}
+        <Button variant="bare" data-request-line={request.state} data-request-opener={request.id} onClick={() => onOpen(request)}
           className={cn('flex h-9 w-full items-center gap-3 rounded-lg px-3 py-1.5 text-sm hover-enabled:bg-surface', className)}>
           <span className={cn('min-w-0 flex-1 truncate font-medium', !request.title && 'text-muted-foreground')}>{title}</span>
           {showState && <StateBadge state={request.state} />}

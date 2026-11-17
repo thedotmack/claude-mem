@@ -62,7 +62,8 @@ function ReadErrorEntry({ readError, children }: { readError: RequestReadError; 
  * - The dismissed ones fold to one row with their count (G5's fold row, "Show them"), so none is left out unsaid (plan
  *   rule 5); the row keeps focus while it opens and closes.
  * - Dismiss moves focus on to the next error's Dismiss (the one before it when it was the last), or with none left to
- *   the board's heading (`onAllDismissed`), never to the page body.
+ *   the board's heading (`onAllDismissed`), never to the page body. A Try again whose read leaves nothing unreadable
+ *   sends focus to the same place.
  */
 export function RequestReadErrors({ readErrors, onAllDismissed }: { readErrors: RequestReadError[]; onAllDismissed: () => void }) {
   const { t } = useI18n()
@@ -92,11 +93,20 @@ export function RequestReadErrors({ readErrors, onAllDismissed }: { readErrors: 
     focusAfterDismiss.current = { next: next ? readErrorIdentity(next) : null }
     setDismissed((current) => new Set([...current, identity]))
   }
-  const readAgain = () => {
+  const readAgain = (pressed: HTMLButtonElement) => {
     setOutcome({ state: 'reading', atIso: null, cause: null })
-    void useStore.getState().retryWorkRead().then((answer) => setOutcome(answer.read
-      ? { state: 'read', atIso: new Date().toISOString(), cause: null }
-      : { state: 'failed', atIso: null, cause: answer.error }))
+    void useStore.getState().retryWorkRead().then((answer) => {
+      setOutcome(answer.read
+        ? { state: 'read', atIso: new Date().toISOString(), cause: null }
+        : { state: 'failed', atIso: null, cause: answer.error })
+      // A read that leaves nothing unreadable takes the card, and the Try again just pressed, off the page: focus goes
+      // where the last Dismiss sends it (`onAllDismissed`, the board's heading), never the page body (PR #6210 review).
+      // After the frame the new model is drawn in; focus the person moved elsewhere meanwhile stays where it is.
+      requestAnimationFrame(() => {
+        const focused = document.activeElement
+        if (!pressed.isConnected && (focused === null || focused === document.body)) onAllDismissed()
+      })
+    })
   }
   const outcomeWords = READ_AGAIN_WORDS[outcome.state]?.(t, count) ?? null
   return (
@@ -127,7 +137,7 @@ export function RequestReadErrors({ readErrors, onAllDismissed }: { readErrors: 
             {/* Beside the words from 640px; under them on a phone, where a column beside them left the words a few
                 characters wide. */}
             <AlertAction className="flex-wrap max-sm:col-start-2 max-sm:row-span-1 max-sm:row-start-3 max-sm:self-start max-sm:pt-2">
-              <Button variant="outline" size="sm" busy={outcome.state === 'reading'} busyLabel={t('Reading…')} onClick={readAgain}><RefreshCwIcon />{t('Try again')}</Button>
+              <Button variant="outline" size="sm" busy={outcome.state === 'reading'} busyLabel={t('Reading…')} onClick={(event) => readAgain(event.currentTarget)}><RefreshCwIcon />{t('Try again')}</Button>
             </AlertAction>
           </Alert>
         )}

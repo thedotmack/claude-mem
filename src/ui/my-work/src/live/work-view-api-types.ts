@@ -283,6 +283,8 @@ export interface WorkViewFocusArea {
   /** 'owner-restore': the owner handed it back to suggestions, so refreshes may update it again. */
   decidedBy: 'owner' | 'system' | 'owner-restore'
   savedAt: string | null
+  /** When the row that marked it done was written (ISO); null unless done (my-focus.mjs). Older workers leave it out. */
+  doneAt?: string | null
 }
 
 export interface WorkViewRuleScope { id: string; tier: 'everywhere' | 'project' | 'situation'; name: string }

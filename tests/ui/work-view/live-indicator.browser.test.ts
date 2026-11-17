@@ -26,7 +26,9 @@ failOnCiWithoutChrome('CI requires Chrome for the mobile cloud sync indicator re
     import { createLocalSource } from './src/ui/my-work/src/live/local-source';
     import { sampleSource } from './src/ui/my-work/src/live/sample-source';
     import { useStore } from './src/ui/my-work/src/store';
+    import { setLocale } from './src/ui/i18n/core';
     window.React = React;
+    window.setLocale = setLocale;
     window.waitForSync = async (state) => {
       const deadline = performance.now() + 6000;
       while (!document.querySelector('[role="status"][data-sync-state="' + state + '"]')) {
@@ -70,8 +72,9 @@ failOnCiWithoutChrome('CI requires Chrome for the mobile cloud sync indicator re
   let unexpectedStatusGets = 0;
   const source = (at: string) => ({kind:'claude-mem-recorded-agent-activity',mode:'read-only-sqlite',connected:true,
     pollIntervalMs:1000,lastCheckedAt:at,activityCheckedAt:at,lastUpdatedAt:null,error:null,stale:false});
-  const sync = (state: string, remaining = '9007199254740993') => ({ configured:true,state,mode:'polling',observedAt:Date.now(),checkedAt:Date.now(),
-    message:state === 'offline' ? 'Incoming cloud download failed.' : state === 'catching-up' ? 'Applying incoming cloud changes.' : 'Shared records are current.',
+  // `message` stands for the worker's own sentence (src/shared/viewer-sync-status.ts) when a test needs a real one.
+  const sync = (state: string, remaining = '9007199254740993', message?: string) => ({ configured:true,state,mode:'polling',observedAt:Date.now(),checkedAt:Date.now(),
+    message:message ?? (state === 'offline' ? 'Incoming cloud download failed.' : state === 'catching-up' ? 'Applying incoming cloud changes.' : 'Shared records are current.'),
     download:{lastSuccessAt:Date.now()},projection:{remaining:state === 'catching-up' ? remaining : '0'},
     completeness:{pushQuarantine:0,pullQuarantine:0,excludedNative:0,scope:'eligible'} });
   const emit = (event: string, value: unknown) => controller?.enqueue(new TextEncoder().encode(`event: ${event}\ndata: ${JSON.stringify(value)}\n\n`));
@@ -89,7 +92,7 @@ failOnCiWithoutChrome('CI requires Chrome for the mobile cloud sync indicator re
     if (url.pathname === '/sync') {
       const at = new Date().toISOString();
       emit('heartbeat',{source:source(at),at});
-      emit('sync_status',{sync:sync(url.searchParams.get('state')!, url.searchParams.get('remaining') ?? undefined)});
+      emit('sync_status',{sync:sync(url.searchParams.get('state')!, url.searchParams.get('remaining') ?? undefined, url.searchParams.get('message') ?? undefined)});
       return new Response('sent');
     }
     if (url.pathname === '/api/sync/status') unexpectedStatusGets++;
@@ -188,6 +191,19 @@ failOnCiWithoutChrome('CI requires Chrome for the mobile cloud sync indicator re
     await key('Enter', 13, '\r');
     await tab(true);
     expect(await page.evaluate(`[document.activeElement?.hasAttribute('data-live-chip'), !!document.querySelector('[data-slot="popover-content"]')]`)).toEqual([true, true]);
+
+    // In Turkish the panel says the cloud copy's label and every sentence of its detail in Turkish: the worker's own
+    // sentence, the delivery mode and the changes left (they showed in English in every language).
+    await fetch(new URL(`/sync?state=catching-up&remaining=12&message=${encodeURIComponent('Cloud updates are being synchronized.')}`, server.url));
+    await withTimeout(page.evaluate(`new Promise((resolve) => { const check = () => window.syncDetail()?.startsWith('Cloud updates are being synchronized.') ? resolve(true) : requestAnimationFrame(check); check(); })`), 5_000, 'the real sync sentence did not arrive');
+    await page.evaluate(`window.setLocale('tr')`);
+    await page.settle();
+    await page.evaluate(`document.querySelector('[data-slot="popover-content"] [data-slot="collapsible-fold-trigger"]').click()`);
+    await withTimeout(page.evaluate(`new Promise((resolve) => { const check = () => document.querySelector('[data-sync-detail]') ? resolve(true) : requestAnimationFrame(check); check(); })`), 5_000, 'the Details fold did not open');
+    expect(await page.evaluate(`({ label: [...document.querySelectorAll('[data-slot="popover-content"] dd')].map((cell) => cell.textContent.trim()).find((words) => words.startsWith('Bulut')) ?? null,
+      detail: document.querySelector('[data-sync-detail]').textContent })`))
+      .toEqual({ label: 'Bulut yetişiyor', detail: 'Bulut güncellemeleri eşitleniyor. Mod: HTTP yoklama. Kalan değişiklikler: 12.' });
+    await page.evaluate(`window.setLocale('en')`);
     expect(unexpectedStatusGets).toBe(0);
   } finally {
     await page?.evaluate('window.stopSource?.()').catch(() => {});

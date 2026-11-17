@@ -10,6 +10,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { MAX_WORK_STATE_FIELDS_JSON_CHARS } from './work-state-limits.mjs';
 import { reduceWorkState } from './work-state-reduce.mjs';
 import { navWordIn } from './nav-words.mjs';
+import { doneAtAfterChange } from './focus-done-date.mjs';
 
 export const MY_FOCUS_LIST = 'my-focus';
 /** The permanent bucket for requests that fit no area. Never an area id. */
@@ -200,11 +201,14 @@ export function buildFocusAreas(state, { localDeviceId = null } = {}) {
       if (focusAreaId === OTHER_FOCUS_AREA_ID) throw new Error(`A my-focus area row uses the reserved id "${OTHER_FOCUS_AREA_ID}".`);
       const decidedBy = event.fields.decided_by;
       if (!FOCUS_AREA_DECIDED_BY.includes(decidedBy)) throw new Error(`Focus area ${focusAreaId} has an unknown writer: ${decidedBy}`);
-      const area = areas.get(focusAreaId) ?? { fields: {}, ownerDecided: false, savedAt: null };
+      const area = areas.get(focusAreaId) ?? { fields: {}, ownerDecided: false, savedAt: null, doneAt: null };
       if (area.ownerDecided && decidedBy === 'system') continue;
+      const statusBefore = area.fields.status;
       applyPatch(area.fields, event.fields);
       if (decidedBy !== 'system') area.ownerDecided = decidedBy === 'owner';
       area.savedAt = event.at;
+      // When it was marked done: the row that moved it into done (the one rule, focus-done-date.mjs).
+      area.doneAt = doneAtAfterChange({ statusBefore, doneAtBefore: area.doneAt, statusAfter: area.fields.status, changedAt: event.at });
       areas.set(focusAreaId, area);
     } else if (event.task.startsWith(PLACEMENT_TASK_PREFIX)) {
       const anchor = text(event.fields.anchor_conversation_key) || event.task.slice(PLACEMENT_TASK_PREFIX.length);
@@ -221,7 +225,7 @@ export function buildFocusAreas(state, { localDeviceId = null } = {}) {
     }
   }
 
-  const focusAreas = [...areas].map(([focusAreaId, { fields, savedAt }]) => {
+  const focusAreas = [...areas].map(([focusAreaId, { fields, savedAt, doneAt }]) => {
     if (!text(fields.name)) throw new Error(`Focus area ${focusAreaId} has no name.`);
     if (!FOCUS_AREA_STATUSES.includes(fields.status)) throw new Error(`Focus area ${focusAreaId} has an unknown status: ${fields.status}`);
     if (!FOCUS_AREA_SOURCES.includes(fields.source)) throw new Error(`Focus area ${focusAreaId} has an unknown source: ${fields.source}`);
@@ -229,7 +233,7 @@ export function buildFocusAreas(state, { localDeviceId = null } = {}) {
       focusAreaId, name: text(fields.name), goal: text(fields.goal) || null, about: text(fields.about) || null, status: fields.status,
       priorityRank: rank(fields.priority_rank), ownerRank: rank(fields.owner_rank), source: fields.source,
       mergedInto: text(fields.merged_into) || null, evidence: text(fields.evidence) || null,
-      decidedBy: fields.decided_by, savedAt,
+      decidedBy: fields.decided_by, savedAt, doneAt,
     };
   })
     // The owner's order wins; areas they have not ordered follow by suggested priority.

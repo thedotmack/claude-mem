@@ -3,9 +3,11 @@ import { assertConsistentRequest, OTHER_FOCUS_AREA_ID, SAMPLE_AGENTS, SAMPLE_DEV
 import { SAMPLE_CURRENT_PERIOD, SAMPLE_FOCUS_AREAS, SAMPLE_OTHER_ASKS, SAMPLE_PAST_PERIODS } from '../data-goals.ts'
 import { SAMPLE_OWNER_RULES, SAMPLE_RULE_SCOPES, SAMPLE_RULES_LEARNING, type OwnerRule, type RuleChange, type RuleScope } from '../data-rules.ts'
 import { getConnectionStatus } from './connection-status.ts'
+import { answerFocusShareCallsInPage, type FocusShare, type FocusShareAnswerInPage, type FocusShareComment } from './focus-shares.ts'
 import { byFocusPriority } from './to-focus-model.ts'
 import { TIME_NOT_RECORDED } from './to-work-model.ts'
 import { navWordIn } from '../../../../services/work-view/nav-words.mjs'
+import { doneAtAfterChange } from '../../../../services/work-view/focus-done-date.mjs'
 import type { ConversationContinuationRead, ConversationContinuationSource, RequestReadError, WorkDataSource, WorkModel } from './work-data-source.ts'
 
 /** Each checked sample request as it was before its check, so Undo restores it exactly. In memory only. */
@@ -62,7 +64,14 @@ function applySampleFocusChange({ action, focusAreaId, name, goal, intoFocusArea
   if (trimmedName !== undefined && (!trimmedName || trimmedName.length > MAX_AREA_NAME_CHARS)) throw new Error('ValidationError')
   if (trimmedGoal !== undefined && (!trimmedGoal || trimmedGoal.length > MAX_AREA_GOAL_CHARS)) throw new Error('ValidationError')
   const byId = new Map(sampleFocusAreas.map((area) => [area.id, area]))
-  const replace = (id: string, change: Partial<FocusArea>) => { sampleFocusAreas = sampleFocusAreas.map((area) => area.id === id ? { ...area, ...change } : area).sort(byFocusPriority) }
+  // When it was marked done, by the worker's own rule (focus-done-date.mjs, which its reducer dates every area with).
+  const replace = (id: string, change: Partial<FocusArea>) => {
+    sampleFocusAreas = sampleFocusAreas.map((area) => {
+      if (area.id !== id) return area
+      const next = { ...area, ...change }
+      return { ...next, doneAt: doneAtAfterChange({ statusBefore: area.status, doneAtBefore: area.doneAt ?? null, statusAfter: next.status, changedAt: new Date().toISOString() }) }
+    }).sort(byFocusPriority)
+  }
   const stillInFocus = (area: FocusArea | undefined) => !!area && area.status !== 'dismissed' && !area.mergedInto
   if (action === 'reorder') {
     if (!focusAreaIds) throw new Error('List the focus areas in the order you want.')
@@ -131,9 +140,16 @@ function applySampleFocusChange({ action, focusAreaId, name, goal, intoFocusArea
  *   cannot be continued, a read that fails, and one ready for a reply whose folder is gone (sampleConversationCalls);
  * - `check-save-waits`: Mark checked (and its Undo) is on its way and stays so: "Saving…", nothing written;
  * - `check-save-fails`: Mark checked (and its Undo) is refused as the worker refuses it: "Not saved", nothing written.
- * The last three are the drawer's states real data does not reach without writing (plan Phase 5 fix round V5).
+ * - `focus-saves-fail`: every focus area change (Rename, Edit goal, Merge, Mark done, Move up/down, Keep, Dismiss, and
+ *   their Undo) is refused as a busy worker refuses it: the change bar's failed row and the dialog's failure line;
+ * - `area-shared`: the first kept area is shared by link, with comments on its page, as a demonstration answered in the
+ *   page (sampleShareAnswer: nothing is posted, no worker or cmem.ai is asked): the shared mark with its count, the
+ *   header's Sharing row and the sharing dialog with its comments;
+ * - `share-comments-unreadable`: the same shared area, whose comments read fails (the dialog's plain words and Try again).
+ * Reply card to check-save-fails are the drawer's states real data does not reach without writing (plan Phase 5 fix
+ * round V5); the last three are the focus area page's (plan Phase 6: the change bar, the share dialog, the shared mark).
  */
-export const SAMPLE_STATES = ['rules-unreadable', 'refresh-failed', 'rule-saves-fail', 'months-unreadable', 'read-errors', 'subagents', 'reply-card', 'check-save-waits', 'check-save-fails'] as const
+export const SAMPLE_STATES = ['rules-unreadable', 'refresh-failed', 'rule-saves-fail', 'months-unreadable', 'read-errors', 'subagents', 'reply-card', 'check-save-waits', 'check-save-fails', 'focus-saves-fail', 'area-shared', 'share-comments-unreadable'] as const
 export type SampleState = (typeof SAMPLE_STATES)[number]
 /**
  * Read on every load, so a test can switch states with history.replaceState. Node tests have no address (and this file
@@ -254,6 +270,51 @@ const sampleConversationCalls: Pick<ConversationContinuationSource, 'loadConvers
   subscribeToConversationContinuations: () => () => {},
 }
 
+// Shaped like local-source's refused save (postForWorkModel) for a focus change; neutral words.
+const SAMPLE_FOCUS_SAVE_REFUSAL = 'The focus change was not saved: SQLITE_BUSY: database is locked (work_state.write my-focus)'
+
+/** The area the `area-shared` states share: the sample's first kept area. Its link is a placeholder, never cmem.ai. */
+const SAMPLE_SHARED_AREA_ID = 'fa-viewer'
+const sampleShareEntry = (focusAreaId: string): FocusShare => ({
+  url: `https://example.com/focus/sample-${focusAreaId}`, sharedAt: '2026-10-19T09:00:00-07:00', publishedAt: '2026-10-20T13:50:00-07:00', publishError: null,
+})
+/** The shares as this session's Share and Stop sharing left them. In memory only, like the sample's other changes. */
+const sampleShares = new Map<string, FocusShare>([[SAMPLE_SHARED_AREA_ID, sampleShareEntry(SAMPLE_SHARED_AREA_ID)]])
+/** Two comments on the shared page: a person's and an agent's (neutral words). */
+const SAMPLE_SHARE_COMMENTS: FocusShareComment[] = [
+  { id: 'sample-comment-1', authorKind: 'person', authorName: 'Sam', agentName: null, isOwner: false, body: 'Is the live indicator next, after the list sorting?', createdAt: '2026-10-20T11:05:00-07:00' },
+  { id: 'sample-comment-2', authorKind: 'agent', authorName: 'Priya', agentName: 'Claude', isOwner: false, body: 'The list sorting shipped in the live monitor request; the live indicator is still an ask.', createdAt: '2026-10-20T12:40:00-07:00' },
+]
+// Shaped like the worker's answer when cmem.ai cannot be read (focus-share.ts FocusShareError); neutral words.
+const SAMPLE_COMMENTS_READ_FAILURE = 'cmem.ai answered 503 Service Unavailable while reading the comments.'
+
+/**
+ * The sharing calls of the `area-shared` and `share-comments-unreadable` states, answered in the page
+ * (live/focus-shares.ts answerFocusShareCallsInPage): the shares list and the comments read from the fixtures above, a
+ * comment is refused (nothing is posted), and Share and Stop sharing change this session's shares only. No worker or
+ * cmem.ai is asked. The comments read fails while the address names `share-comments-unreadable`, read on every call, so
+ * a test can switch it with history.replaceState (as sampleStateFromAddress is read on every load).
+ */
+function sampleShareAnswer(): FocusShareAnswerInPage {
+  return async (url, init) => {
+    const path = url.split('?')[0]
+    const focusAreaId = init ? (init.body as { focusAreaId: string }).focusAreaId : new URLSearchParams(url.split('?')[1] ?? '').get('focusAreaId') ?? ''
+    if (!init && path === '/api/work-view/focus/shares') return { connected: true, shares: Object.fromEntries(sampleShares) }
+    if (!init && path === '/api/work-view/focus/share/comments') {
+      if (sampleStateFromAddress() === 'share-comments-unreadable') throw new Error(SAMPLE_COMMENTS_READ_FAILURE)
+      return { comments: sampleShares.has(focusAreaId) ? structuredClone(SAMPLE_SHARE_COMMENTS) : [] }
+    }
+    if (init && path === '/api/work-view/focus/share/comments') throw new Error('Sample comments are a demonstration: nothing was posted.')
+    if (init && path === '/api/work-view/focus/share') {
+      const entry = sampleShareEntry(focusAreaId)
+      sampleShares.set(focusAreaId, entry)
+      return { url: entry.url, sharedAt: entry.sharedAt, publishedAt: entry.publishedAt, sent: false }
+    }
+    if (init && path === '/api/work-view/focus/share/stop') { sampleShares.delete(focusAreaId); return { stopped: true } }
+    throw new Error(`The sample has no answer for ${init ? 'POST' : 'GET'} ${path}`)
+  }
+}
+
 
 const sampleModel = (sampleState: SampleState | null): WorkModel => ({
   sourceKind: 'sample',
@@ -305,6 +366,7 @@ export const sampleSource: WorkDataSource = {
     return { model: await loadSampleWorkModel(), savedRuleId: null }
   },
   async saveFocusChange(change) {
+    if (sampleStateFromAddress() === 'focus-saves-fail') throw new Error(SAMPLE_FOCUS_SAVE_REFUSAL)
     applySampleFocusChange(change)
     return loadSampleWorkModel()
   },
@@ -354,5 +416,8 @@ export const sampleSource: WorkDataSource = {
  * continue a conversation, as no page but the one this computer's worker serves can (canContinueConversations).
  */
 export function sampleSourceAtThisAddress(): WorkDataSource {
-  return sampleStateFromAddress() === 'reply-card' ? { ...sampleSource, ...sampleConversationCalls } : sampleSource
+  const sampleState = sampleStateFromAddress()
+  // Sharing on the sample page: a demonstration answered in the page, chosen with the address like the reply card.
+  if (sampleState === 'area-shared' || sampleState === 'share-comments-unreadable') answerFocusShareCallsInPage(sampleShareAnswer())
+  return sampleState === 'reply-card' ? { ...sampleSource, ...sampleConversationCalls } : sampleSource
 }

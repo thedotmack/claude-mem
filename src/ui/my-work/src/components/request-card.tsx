@@ -1,4 +1,3 @@
-import { displayTime } from '@/lib/display-time'
 import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react'
 import { BookOpenIcon, CheckIcon, MegaphoneIcon, TagIcon, TerminalIcon, Undo2Icon } from 'lucide-react'
 import { useReducedMotion } from 'motion/react'
@@ -9,6 +8,7 @@ import { EncryptedText } from '@/components/aceternity/encrypted-text'
 import { GlowingEffect } from '@/components/aceternity/glowing-effect'
 import { RunningFor } from '@/components/live-motion'
 import { DURATION_WORD } from '@/live/running-time'
+import { recordedStart } from '@/live/to-work-model'
 import { SaveButton } from '@/components/save-button'
 import { BadgeMore } from '@/components/ui/badge'
 import { Button, buttonVariants } from '@/components/ui/button'
@@ -21,7 +21,7 @@ import { Req } from '@/spec/req'
 import { isSampleHref, needsYou, type LiveState, type Request } from '@/data'
 import type { CardSize } from '@/live/card-groups'
 import { requestById, useFreshlyUpdated, useStore, useWorkModel, useWorkspace } from '@/store'
-import { AgentIcon, FocusAreaChip, NextMove, ProductLink, ProgressMeter, StateBadge, type Translate } from './bits'
+import { AgentIcon, FocusAreaChip, NextMove, ProductLink, ProgressMeter, RecordedTime, StateBadge, type Translate } from './bits'
 import { MediaCountBadge, ObsMediaStrip } from './observation-media/ObsMedia'
 
 /**
@@ -352,6 +352,7 @@ export function RequestCard({ request, onOpen, onOpenFocus, size = 'full', actio
   // Only a card that needs you gets the always-on edge and the brightening near the pointer (R10.2).
   const needsYouEdge = needsYou(request) ? STATE_EDGE_COLOR[request.state] : undefined
   const reviewed = request.progress.readings > 0 || !!request.progress.completedAt
+  const started = recordedStart(request.startedAt)
   // The activity mark means an agent is on it. While the sample writes its title, the shimmer line says so with its own
   // ring, so the corner mark steps aside: two moving things at most (plan rule 8).
   const showsActivity = ((phase !== 'human' && phase !== 'translating' && request.state === 'working') || fresh || contentJustUpdated)
@@ -370,11 +371,17 @@ export function RequestCard({ request, onOpen, onOpenFocus, size = 'full', actio
           inactiveZone 0.01, so only the very centre stays dark (the vendor default, 0.7, darkened most of a card).
           GlowingEffect also turns its pointer layer off under reduced motion itself. */}
       {needsYouEdge && <GlowingEffect color={needsYouEdge} spread={40} glow proximity={64} inactiveZone={0.01} borderWidth={2} disabled={!!reduceMotion} />}
-      <Card interactive tabIndex={-1} onClick={openFromCard} data-request-card={request.state}
-        className={cn('h-full gap-3 py-4 transition-[border-color] duration-500 md:py-5',
+      <Card interactive tabIndex={-1} onClick={openFromCard} data-request-card={request.state} data-just-updated={contentJustUpdated || undefined}
+        className={cn('h-full gap-3 py-4 md:py-5',
           // The card's own outline-none (interactive) sets the outline style to none, so the ring names its style too.
           'has-[[data-request-card-open]:focus-visible]:outline-solid has-[[data-request-card-open]:focus-visible]:outline-2 has-[[data-request-card-open]:focus-visible]:outline-offset-2 has-[[data-request-card-open]:focus-visible]:outline-ring',
-          contentJustUpdated && 'just-updated border-primary/50')}>
+          // Its colours change at once (over the interactive card's own fade, data-interactive:): the "just updated" mark
+          // comes and goes with no fade, also when it ends 4 s after a live change, when every marked card's fade was a
+          // moving thing (rule 8, Phase 6 verify V2).
+          'data-interactive:transition-none',
+          // A card whose record just changed is marked still, as the List's rows are (index.css .just-updated-mark), not
+          // with the glow: on home the glow beside the change ticker made three moving things for about 3 s (rule 8).
+          contentJustUpdated && 'just-updated-mark border-primary/50')}>
         <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-x-2 gap-y-1.5 px-4 md:px-5">
           <div className="flex min-w-0 items-center gap-2">
             <AgentIcon agentId={request.agentId} />
@@ -388,8 +395,10 @@ export function RequestCard({ request, onOpen, onOpenFocus, size = 'full', actio
               joined the left side (c-bits-agent-icon). With the activity's words beside it, a narrow card moves the
               whole group to its own line at the right instead. The pill is the mockup's 28px (1.75rem). */}
           <div className="ml-auto flex shrink-0 items-center gap-1.5 [&_[data-state-badge]]:min-h-7">
-            {/* A status change cross-fades the badge, so the move is seen, not just the result. */}
-            <span key={request.state} className="motion-safe:animate-in motion-safe:fade-in motion-safe:zoom-in-95 motion-safe:duration-500"><StateBadge state={request.state} /></span>
+            {/* A status change swaps the badge at once (plan rule 8, Phase 6 verify V2): the change ticker says the move,
+                and the card carries the still "just updated" mark. Its cross-fade ran again on every card the board
+                re-placed (a moved card's elements are re-inserted, which starts their animations over). */}
+            <StateBadge state={request.state} />
             {request.media && <MediaCountBadge media={{ version: 1, attachments: request.media.preview }} count={request.media.count} />}
             {showsActivity && <ActivityMark word={word} settled={fresh || contentJustUpdated} />}
           </div>
@@ -400,7 +409,7 @@ export function RequestCard({ request, onOpen, onOpenFocus, size = 'full', actio
             <div className="space-y-1">
               <Req ids={['R2.6', 'R10.5']}>
                 <h3 className="text-[1.06rem] leading-snug font-semibold tracking-tight">
-                  <Button variant="bare" data-request-card-open="" onClick={onOpen} className="focus-visible:border-transparent focus-visible:ring-0">
+                  <Button variant="bare" data-request-card-open="" data-request-opener={request.id} onClick={onOpen} className="focus-visible:border-transparent focus-visible:ring-0">
                     <span className={cn(medium && 'line-clamp-2')}>
                       {fresh && !reduceMotion ? <><span className="sr-only">{text.title}</span><span aria-hidden="true"><EncryptedText text={text.title} revealDelayMs={DECRYPT_TITLE_IN_MS / Math.max(1, Array.from(text.title).length)} /></span></> : text.title}
                     </span>
@@ -416,7 +425,7 @@ export function RequestCard({ request, onOpen, onOpenFocus, size = 'full', actio
                 <p className="flex items-center gap-2 text-[0.8125rem] text-muted-foreground">
                   <TerminalIcon aria-hidden="true" className="size-4 shrink-0" />{t('What the agent is doing · title coming')}
                 </p>
-                <Button variant="bare" data-request-card-open="" onClick={onOpen} aria-label={t('Open this request; its title is still being written')}
+                <Button variant="bare" data-request-card-open="" data-request-opener={request.id} onClick={onOpen} aria-label={t('Open this request; its title is still being written')}
                   className="w-full focus-visible:border-transparent focus-visible:ring-0">
                   <Terminal output={request.terminal.join('\n')} className="w-full border-control-edge bg-terminal text-terminal-foreground">
                     <TerminalContent className="max-h-none space-y-1 overflow-visible p-3.5 text-[0.8125rem] leading-relaxed">
@@ -451,7 +460,8 @@ export function RequestCard({ request, onOpen, onOpenFocus, size = 'full', actio
             <Req ids={['R5.3', 'R5.4', 'R5.5']}>
               <dl className="flex w-full flex-wrap items-center gap-x-2 gap-y-0.5 [&>div+div]:before:mr-1 [&>div+div]:before:content-['·'] [&>div:last-child]:ml-auto [&>div:last-child]:before:content-none">
                 <div className="flex gap-1"><dt className="sr-only">{t('Stage')}</dt><dd className="font-medium text-foreground/85" title={request.stageNote}>{t(request.stage)}</dd></div>
-                <div className="flex gap-1"><dt>{t('Started')}</dt><dd><time dateTime={request.startedAtIso} className="tabular">{displayTime(request.startedAt)}</time></dd></div>
+                {/* A start that is not recorded is a missing value, worded here (never the mapper's English). */}
+                <div className="flex gap-1"><dt>{t('Started')}</dt><dd>{started ? <RecordedTime iso={request.startedAtIso} words={started} /> : t('Not recorded')}</dd></div>
                 <div className="flex items-center gap-1"><dt>{t(DURATION_WORD[request.state])}</dt><dd><RunningFor request={request} /></dd></div>
               </dl>
             </Req>

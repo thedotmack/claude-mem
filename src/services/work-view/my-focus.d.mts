@@ -11,8 +11,10 @@ export interface FocusArea {
   about: string | null; status: FocusAreaStatus;
   priorityRank: number | null; ownerRank: number | null; source: FocusAreaSource;
   mergedInto: string | null; evidence: string | null; decidedBy: FocusAreaDecidedBy; savedAt: string | null;
+  /** When the row that marked it done was written (ISO); null unless it is done. A later rename or goal edit keeps it. */
+  doneAt: string | null;
 }
-export function focusAreaRowFields(area: Omit<FocusArea, 'savedAt' | 'about'> & { about?: string | null }): Record<string, string | number | null>;
+export function focusAreaRowFields(area: Omit<FocusArea, 'savedAt' | 'doneAt' | 'about'> & { about?: string | null }): Record<string, string | number | null>;
 export function placementRowFields(placement: {
   anchorConversationKey: string; focusAreaId: string; placedBy: 'router' | 'owner'; confidence?: number | null; basis?: string | null; evidence?: string | null;
 }): Record<string, string | number | null>;

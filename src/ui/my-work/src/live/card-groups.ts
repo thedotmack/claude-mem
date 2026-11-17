@@ -29,8 +29,10 @@ export const LINE_ROWS_PER_PAGE = 50
  * 1360px without Team, the narrowest width the table shows a title at (measured on the owner's data, 2026-11-16,
  * verify-4). With Team on, an Asked by column (7rem, 119px at the 17px desktop root) left the title 64px at 1360 and
  * 128px from 1440, where the page stops widening, so in team mode the table never fits this width and the List is
- * rows at every width, with who asked on each row's facts line. The browser test holds the List to it at 1366, Team
- * off and on.
+ * rows at every width, with who asked on each row's facts line. The List draws the table only where its own width
+ * leaves the title column this wide (pages/my-work.tsx ListView), so a classic 15px scrollbar, which a window-width rule
+ * did not count (175.5px at 1366 on PR #6210's Linux CI), keeps it rows. The browser test holds the List to it from 1355
+ * to 1390px with and without that scrollbar, Team off and on.
  */
 export const LIST_TITLE_MIN_PX = 183
 

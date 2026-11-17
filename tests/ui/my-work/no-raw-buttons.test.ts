@@ -23,8 +23,9 @@ import ts from 'typescript';
  * Phase 5 (2026-11-16): the request card's title and terminal buttons, the focus area link, and the image strip and
  * viewer (9 tags) moved onto Button, and the reply card's folder path left raw buttons too: 5 in 2 files.
  * Phases 4 and 5 merged (2026-11-17): 1 in 1 file (components/share-focus.tsx).
+ * Phase 6 (2026-11-17): the shared mark (share-focus.tsx SharedMark) moved onto Button: 0.
  */
-const RAW_BUTTON_CEILING = 1;
+const RAW_BUTTON_CEILING = 0;
 
 const MY_WORK_SOURCE = resolve(import.meta.dir, '../../../src/ui/my-work/src');
 const SCANNED_FOLDERS = ['pages', 'components'];

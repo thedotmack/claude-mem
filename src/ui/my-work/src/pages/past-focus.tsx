@@ -43,16 +43,17 @@ function DoneAreas({ onOpenFocus }: { onOpenFocus: (focusAreaId: string) => void
       ) : (
         <ul className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
           {done.map((area) => {
-            // The day it was marked done, from its last save, through the shared formatter (rule 9): "Oct 30", with the
-            // year when it is not this year's, and the full stamp for screen readers (no tooltip inside a button).
-            const day = area.savedAt ? clockDay(area.savedAt) : null
+            // The day it was marked done (the row that marked it done: a later rename or goal edit does not move it,
+            // my-focus.mjs), through the shared formatter (rule 9): "Oct 30", with the year when it is not this year's,
+            // and the full stamp for screen readers (no tooltip inside a button).
+            const day = area.doneAt ? clockDay(area.doneAt) : null
             return (
               <li key={area.id} className="flex">
                 <Button variant="bare" onClick={() => onOpenFocus(area.id)} data-slot="done-area-card"
                   className="flex w-full flex-col items-stretch gap-2 rounded-xl border border-t-4 border-control-edge/55 border-t-shipped-foreground bg-card p-4 shadow-panel hover-enabled:bg-surface">
                   <span className="flex items-center gap-1.5 text-xs font-medium text-shipped-foreground">
                     <CheckIcon aria-hidden="true" className="size-3.5" />{t("Done")}
-                    {day && <><span aria-hidden="true">·</span><time dateTime={area.savedAt ?? undefined} className="mono-number font-normal text-muted-foreground"><span aria-hidden="true">{day.short}</span><span className="sr-only">{day.full}</span></time></>}
+                    {day && <><span aria-hidden="true">·</span><time dateTime={area.doneAt ?? undefined} className="mono-number font-normal text-muted-foreground"><span aria-hidden="true">{day.short}</span><span className="sr-only">{day.full}</span></time></>}
                   </span>
                   <span className="text-base leading-snug font-semibold">{area.name}</span>
                   {area.goal && <span className="text-xs text-muted-foreground">{area.goal}</span>}

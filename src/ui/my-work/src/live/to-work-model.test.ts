@@ -3,8 +3,8 @@
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
 import { test } from 'node:test'
-import { assertConsistentRequest } from '../data.ts'
-import { NEXT_STEP_NOT_RECORDED, NO_WORK_YET, UNNAMED_TOOL, conversationToolWords, nextStepShown, toWorkModel } from './to-work-model.ts'
+import { assertConsistentRequest, EVIDENCE_KINDS } from '../data.ts'
+import { NEXT_STEP_NOT_RECORDED, NO_WORK_YET, UNNAMED_TOOL, conversationToolWords, evidenceShown, nextStepShown, recordedStart, recordedTaskName, recordedWorkstreamTitle, toWorkModel } from './to-work-model.ts'
 import type { WorkViewHumanRequest, WorkViewSnapshot } from './work-view-api-types.ts'
 import { myworkFr } from '../../../i18n/mywork-fr.ts'
 import { myworkKo } from '../../../i18n/mywork-ko.ts'
@@ -661,4 +661,58 @@ test('nextStepShown reads the missing value and every English filler an older wo
   // This mapper's own values.
   assert.deepEqual(nextStepShown({ who: 'human', kind: 'unblock', text: 'pick a forecast' }), { kind: 'step', who: 'human', step: 'unblock', text: 'pick a forecast' })
   assert.deepEqual(nextStepShown({ who: 'bot', text: 'Write the tests' }), { kind: 'step', who: 'bot', step: 'recorded', text: 'Write the tests' })
+})
+
+test('a start, a workstream title and a task name that are not recorded are null, and each source carries its kind, never English words as data', () => {
+  const now = Date.parse('2026-10-22T12:00:00Z')
+  const item = (id: string, title: string, url = `/api/work-view/evidence/work-state/${id}`) => ({ id, kind: 'work-state' as const, title, status: 'in_progress', nextStep: null, lastUpdateEpoch: now - 60_000, sourceRefs: [], url })
+  const raw: WorkViewHumanRequest = {
+    ...syntheticRequest(), startedAtEpoch: null,
+    original: { text: 'Build the release cards', atEpoch: Date.UTC(2026, 9, 18), url: '/api/work-view/evidence/prompt/7' },
+    items: [item('1', 'Write the card copy'), item('2', 'Saw the build fail', '/api/work-view/evidence/observation/2')],
+    workstreams: [{ id: 'ws1', title: 'Cards', items: [item('3', '')] }],
+  }
+  const [request] = toWorkModel(snapshotWith([raw]), now).requests
+  assert.equal(request.startedAt, null)
+  // The workstream's title comes from the human copy, which this request has none of; its one task has no name.
+  assert.deepEqual(request.workstreams, [{ title: null, tasks: [{ name: null, done: false }] }])
+  assert.deepEqual(request.evidence.map(({ kind, title }) => [kind, title]), [['prompt', 'Build the release cards'], ['work-state', 'Write the card copy'], ['observation', 'Saw the build fail']])
+  assert.ok(!JSON.stringify(request).includes('Start not recorded') && !JSON.stringify(request).includes('Supporting work') && !JSON.stringify(request).includes('Untitled task'))
+})
+
+// Phase 6 fix AP-L4: the kinds come from the one list (data.ts EVIDENCE_KINDS), and an unknown one is said, never `record`.
+test('each source\'s kind is read against the one list of evidence kinds; a kind the list does not name makes the request unreadable with the link in its reason, never a plain record', () => {
+  const now = Date.parse('2026-10-22T12:00:00Z')
+  const item = (id: string, url: string) => ({ id, kind: 'work-state' as const, title: `Record ${id}`, status: 'in_progress', nextStep: null, lastUpdateEpoch: now - 60_000, sourceRefs: [], url })
+  const routeKinds = EVIDENCE_KINDS.filter((kind) => kind !== 'record')
+  const known: WorkViewHumanRequest = {
+    ...syntheticRequest(), id: 'known-kinds',
+    items: [...routeKinds.map((kind, index) => item(String(index), `/api/work-view/evidence/${kind}/${index + 1}`)), item('other', 'https://example.com/not-a-record')],
+  }
+  const unknown: WorkViewHumanRequest = { ...syntheticRequest(), id: 'unknown-kind', items: [item('9', '/api/work-view/evidence/tool-use/9')] }
+  const model = toWorkModel(snapshotWith([known, unknown]), now)
+  const [request] = model.requests
+  // Every kind the route serves, by its own name, and the link of another shape left out; none is `record`.
+  assert.deepEqual(request.evidence.filter((source) => source.title.startsWith('Record ')).map((source) => source.kind), routeKinds)
+  assert.ok(!request.evidence.some((source) => source.kind === 'record' || source.href === 'https://example.com/not-a-record'))
+  assert.deepEqual(model.requests.map((each) => each.id), ['known-kinds'])
+  assert.equal(model.requestReadErrors.length, 1)
+  assert.equal(model.requestReadErrors[0].requestId, 'unknown-kind')
+  assert.match(model.requestReadErrors[0].reason, /evidence kind this page does not know: \/api\/work-view\/evidence\/tool-use\/9/)
+})
+
+test('an older worker\'s English for a missing start, workstream title, task name and a source\'s kind reads as the missing value and the kind (G19)', () => {
+  assert.equal(recordedStart('Start not recorded'), null)
+  assert.equal(recordedStart(null), null)
+  assert.equal(recordedStart('Oct 20, 1:16 pm'), 'Oct 20, 1:16 pm')
+  assert.equal(recordedWorkstreamTitle('Supporting work'), null)
+  assert.equal(recordedWorkstreamTitle('Cards'), 'Cards')
+  assert.equal(recordedTaskName('Untitled task'), null)
+  assert.equal(recordedTaskName(null), null)
+  const href = '/api/work-view/evidence/observation/2'
+  assert.deepEqual(evidenceShown({ title: 'Observation: Saw the build fail', href }), { kind: 'observation', title: 'Saw the build fail' })
+  assert.deepEqual(evidenceShown({ title: 'Your prompt: Build it', href }), { kind: 'prompt', title: 'Build it' })
+  assert.deepEqual(evidenceShown({ title: 'Work state: Write it', href }), { kind: 'work-state', title: 'Write it' })
+  assert.deepEqual(evidenceShown({ title: 'A title naming no kind', href }), { kind: null, title: 'A title naming no kind' })
+  assert.deepEqual(evidenceShown({ kind: 'session', title: 'Session 4', href }), { kind: 'session', title: 'Session 4' })
 })

@@ -1,4 +1,4 @@
-import { displayTime } from '@/lib/display-time'
+import { recordedTimeWords } from '@/lib/display-time'
 import { getLocale, t, useI18n, interpolate } from '@/lib/i18n'
 import { uiMessage, renderUiMessage, type UiMessage } from '../../../ui-message'
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
@@ -32,6 +32,7 @@ import { RULE_TIERS, type OwnerRule, type RuleChange, type RuleQuote, type RuleR
 import { addedRuleFromSave, currentRuleDecisions, ruleUndoIsCurrent, type RuleDecision } from '@/live/rule-actions'
 import { currentIn, inShownOrder, keepShownOrder, stepFrom, upNextAfter } from '@/live/rule-queue'
 import { refreshLineState } from '@/live/refresh-line'
+import { recordedTime } from '@/live/to-work-model'
 import type { AutoRefresh, RuleSaveResult } from '@/live/work-data-source'
 
 // ---------- Derived facts ----------
@@ -135,13 +136,29 @@ function StrengthBars({ rule }: { rule: OwnerRule }) {
   )
 }
 
+/**
+ * A rule's time as My Rules shows it: the reader's words for a recorded time, from its ISO instant (`atIso`) where the
+ * model has one (V3: never the mapper's English), or "Time not recorded" in the reader's language for a missing one
+ * (the mapper's null, or an older worker's English for it, read by recordedTime; G19). `form` as recordedTimeWords.
+ */
+const ruleTimeWords = (at: string | null, atIso?: string, form: 'time' | 'time-or-day' = 'time') => {
+  const time = recordedTime(at)
+  return time === null ? t('Time not recorded') : recordedTimeWords(atIso, time, form)
+}
+
 /** Strength in human terms: a three-step meter, the word, times seen and the latest date (§14), in tabular figures. */
 function Strength({ rule }: { rule: OwnerRule }) {
+  const latest = recordedTime(rule.latestAt)
+  const words = { strength: t(RULE_STRENGTH_WORDS[strengthOf(rule)]), timesSeen: rule.timesSeen, latestAt: latest === null ? '' : recordedTimeWords(rule.latestAtIso, latest, 'time-or-day') }
+  // Each wording its own literal t() call (the catalog test reads literal calls only); no latest date leaves it out.
+  const line = latest === null
+    ? (rule.timesSeen === 1 ? t('{strength} · said {timesSeen} time') : t('{strength} · said {timesSeen} times'))
+    : (rule.timesSeen === 1 ? t('{strength} · said {timesSeen} time, latest {latestAt}') : t('{strength} · said {timesSeen} times, latest {latestAt}'))
   return (
     <Req ids={['R14.14', 'R14.7']}>
       <span className="inline-flex items-center gap-1.5">
         <StrengthBars rule={rule} />
-        <span className="tabular">{interpolate(t(rule.timesSeen === 1 ? '{strength} · said {timesSeen} time, latest {latestAt}' : '{strength} · said {timesSeen} times, latest {latestAt}'), { strength: t(RULE_STRENGTH_WORDS[strengthOf(rule)]), timesSeen: rule.timesSeen, latestAt: displayTime(rule.latestAt) })}</span>
+        <span className="tabular">{interpolate(line, words)}</span>
       </span>
     </Req>
   )
@@ -174,9 +191,9 @@ const recordText = (record: RuleRecord) => !record.fact || (record.fact === 'you
 function sourceRows(rule: OwnerRule, current: RuleQuote) {
   const quoteTimes = new Set(rule.quotes.map((quote) => quote.at))
   return [
-    ...rule.quotes.map((quote) => ({ key: `quote:${quote.at}:${quote.quote}`, kind: t(QUOTE_WHERE_WORDS[quote.where]), text: `“${quote.quote}”`, at: quote.at, current: quote === current })),
+    ...rule.quotes.map((quote) => ({ key: `quote:${quote.at}:${quote.quote}`, kind: t(QUOTE_WHERE_WORDS[quote.where]), text: `“${quote.quote}”`, at: quote.at, atIso: quote.atIso, current: quote === current })),
     ...rule.records.filter((record) => !(record.kind === 'Prompt' && quoteTimes.has(record.at)))
-      .map((record) => ({ key: `record:${record.kind}:${record.label}:${record.at}`, kind: t(RULE_RECORD_KIND_WORDS[record.kind]), text: recordText(record), at: record.at, current: false })),
+      .map((record) => ({ key: `record:${record.kind}:${record.label}:${record.at}`, kind: t(RULE_RECORD_KIND_WORDS[record.kind]), text: recordText(record), at: record.at, atIso: record.atIso, current: false })),
   ]
 }
 
@@ -191,7 +208,7 @@ function Quote({ quote, rule }: { quote: RuleQuote; rule: OwnerRule }) {
           <InlineCitationText>“{quote.quote}”</InlineCitationText>
         </InlineCitation>
         <InlineCitationCard open={open} onOpenChange={setOpen}>
-          <InlineCitationCardTrigger sources={[displayTime(quote.at)]} className="mono-number ml-0 w-fit justify-self-start sm:justify-self-end">
+          <InlineCitationCardTrigger sources={[ruleTimeWords(quote.at, quote.atIso)]} className="mono-number ml-0 w-fit justify-self-start sm:justify-self-end">
             <span className="sr-only">{t('Source records')}</span>
           </InlineCitationCardTrigger>
           <InlineCitationCardBody aria-labelledby={titleId} align="end" className="w-[min(36rem,calc(100vw-2rem))] p-0">
@@ -208,7 +225,7 @@ function Quote({ quote, rule }: { quote: RuleQuote; rule: OwnerRule }) {
                       {row.current && <span className="block font-normal">{interpolate(t('This quote · {kind}'), { kind: t(QUOTE_KIND_WORDS[quote.kind]) })}</span>}
                     </th>
                     <td className="py-2 pr-3 text-foreground">{row.text}</td>
-                    <td className="mono-number py-2 pr-4 text-right whitespace-nowrap text-muted-foreground">{displayTime(row.at)}</td>
+                    <td className="mono-number py-2 pr-4 text-right whitespace-nowrap text-muted-foreground">{ruleTimeWords(row.at, row.atIso)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -253,7 +270,7 @@ function SourceRecords({ rule }: { rule: OwnerRule }) {
                 <tr key={`${record.kind}:${record.label}:${record.at}`} className="border-b last:border-b-0 align-top">
                   <th scope="row" className="w-24 py-1.5 pr-3 text-left font-medium text-foreground/80">{t(RULE_RECORD_KIND_WORDS[record.kind])}</th>
                   <td className="py-1.5 pr-3">{recordText(record)}</td>
-                  <td className="mono-number py-1.5 text-right whitespace-nowrap">{displayTime(record.at)}</td>
+                  <td className="mono-number py-1.5 text-right whitespace-nowrap">{ruleTimeWords(record.at, record.atIso)}</td>
                 </tr>
               ))}
             </tbody>
@@ -345,7 +362,7 @@ function RuleBlock({ rule, replaces, justApproved, highlighted, toggled, actions
                   <p className="text-xs font-medium text-muted-foreground">{t("Earlier versions it replaced")}</p>
                   {replaces.map((earlier) => (
                     <Button key={earlier.id} variant="bare" onClick={() => actions.onJump(earlier.id)} className="block min-h-6 w-full text-xs text-muted-foreground hover-enabled:text-foreground">
-                      {lowerFirst(earlier.then)} · {interpolate(t('until {time}'), { time: displayTime(earlier.replacedBy!.at) })}
+                      {lowerFirst(earlier.then)} · {recordedTime(earlier.replacedBy!.at) === null ? t('until a time not recorded') : interpolate(t('until {time}'), { time: recordedTimeWords(earlier.replacedBy!.atIso, recordedTime(earlier.replacedBy!.at)!, 'time-or-day') })}
                     </Button>
                   ))}
                 </div>
@@ -372,7 +389,7 @@ function ReplacedRow({ rule, replacement, onJump }: { rule: OwnerRule; replaceme
           <span className="inline-flex items-center gap-1.5 rounded-full border border-control-edge px-2.5 py-0.5 font-medium text-foreground">
             <RefreshCcwIcon aria-hidden="true" className="size-3.5" />{t(RULE_STATUS_WORDS.replaced)}
           </span>
-          <span className="mono-number text-muted-foreground">{displayTime(rule.replacedBy!.at)}</span>
+          <span className="mono-number text-muted-foreground">{ruleTimeWords(rule.replacedBy!.at, rule.replacedBy!.atIso, 'time-or-day')}</span>
         </p>
         <RuleSentence rule={rule} />
         {replacement && (
@@ -964,13 +981,22 @@ function rulesFileLines(rules: OwnerRule[], scopes: RuleScope[]) {
 type CopyOutcome = 'copied' | 'failed'
 const COPY_OUTCOME_WORDS: Record<CopyOutcome, string> = { copied: 'Copied', failed: 'Could not copy. Select the text and copy it yourself.' }
 
-/** Copies text to the clipboard and remembers how it went until the next copy (no timer). */
+/**
+ * Copies text to the clipboard and remembers how it went until the next copy (no timer). A page that is not a secure
+ * context (plain http at a LAN address, with the worker bound beyond localhost) has no `navigator.clipboard` at all:
+ * the call throws before it returns a promise, so it is awaited inside the try and lands in the same "Could not copy"
+ * as a refusal (PR #6210 review: the buttons showed nothing).
+ */
 function useCopy() {
   const [outcome, setOutcome] = useState<{ what: string; outcome: CopyOutcome } | null>(null)
-  const copy = (what: string, text: string) => {
-    navigator.clipboard.writeText(text)
-      .then(() => setOutcome({ what, outcome: 'copied' }))
-      .catch((error: unknown) => { console.warn('[my-rules] copy failed', error); setOutcome({ what, outcome: 'failed' }) })
+  const copy = async (what: string, text: string) => {
+    try {
+      await navigator.clipboard.writeText(text)
+      setOutcome({ what, outcome: 'copied' })
+    } catch (error: unknown) {
+      console.warn('[my-rules] copy failed', error)
+      setOutcome({ what, outcome: 'failed' })
+    }
   }
   return { copied: (what: string) => outcome?.what === what ? outcome.outcome : null, copy, reset: () => setOutcome(null) }
 }
@@ -1017,7 +1043,7 @@ function AgentFile({ rules, changed, open, onOpenChange }: { rules: OwnerRule[];
           <ArtifactActions className="flex-wrap gap-2 @md:justify-end">
             <Button variant="outline" onClick={() => onOpenChange(true)}><EyeIcon />{t("Preview file")}{changed.size > 0 && interpolate(t(' · {count} changed'), { count: changed.size })}</Button>
             {/* Narrow, the copy button is its icon (the mockup's narrow card); its name stays "Copy path". */}
-            <Button variant="outline" className="@max-md:px-3" onClick={() => copy('path', path)}>
+            <Button variant="outline" className="@max-md:px-3" onClick={() => void copy('path', path)}>
               {pathCopied === 'copied' ? <CheckIcon /> : <CopyIcon />}
               <span className="@max-md:sr-only">{pathCopied === 'copied' ? t(COPY_OUTCOME_WORDS.copied) : t('Copy path')}</span>
             </Button>
@@ -1048,7 +1074,7 @@ function AgentFile({ rules, changed, open, onOpenChange }: { rules: OwnerRule[];
           </DialogHeader>
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="mono-number text-xs text-muted-foreground">{interpolate(t('{rules} · {lines}'), { rules: interpolate(t(loaded === 1 ? '{count} rule' : '{count} rules'), { count: loaded }), lines: interpolate(t(lines.length === 1 ? '{count} line' : '{count} lines'), { count: lines.length }) })}</p>
-            <Button variant="outline" size="sm" onClick={() => copy('file', lines.map((line) => line.text).join('\n'))}>{fileCopied === 'copied' ? <CheckIcon /> : <CopyIcon />}{fileCopied === 'copied' ? t(COPY_OUTCOME_WORDS.copied) : t('Copy')}</Button>
+            <Button variant="outline" size="sm" onClick={() => void copy('file', lines.map((line) => line.text).join('\n'))}>{fileCopied === 'copied' ? <CheckIcon /> : <CopyIcon />}{fileCopied === 'copied' ? t(COPY_OUTCOME_WORDS.copied) : t('Copy')}</Button>
           </div>
           {fileCopied === 'failed' && <p role="alert" className="text-xs text-destructive">{t(COPY_OUTCOME_WORDS.failed)}</p>}
           {/* Line numbers in their own column (not copied with the text); lines wrap at 100 characters (F3). */}
@@ -1168,7 +1194,7 @@ function LearningRun({ refresh }: { refresh: AutoRefresh | null }) {
           {sourceKind === 'cloud' && <p className="text-xs text-muted-foreground">{t('claude-mem learns again on its own whenever new work is due, using the agent you are logged in to.')}</p>}
           {rulesLearning && run && (
             <div className="space-y-2 border-t pt-3">
-              <p className="text-xs font-medium">{interpolate(t('The last learning run that finished, {date}'), { date: displayTime(run.lastRunAt) })}</p>
+              <p className="text-xs font-medium">{interpolate(t('The last learning run that finished, {date}'), { date: recordedTimeWords(run.lastRunAtIso, run.lastRunAt) })}</p>
               <LearningRunNumbers learning={rulesLearning} run={run} earlier />
             </div>
           )}
@@ -1183,7 +1209,7 @@ function LearningRun({ refresh }: { refresh: AutoRefresh | null }) {
         <CollapsibleFoldTrigger>
           <span className="flex items-start gap-2">
             <SparklesIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-            <span className="min-w-0">{t("Last learning run")}<span className="mono-number block text-xs font-normal text-muted-foreground">{displayTime(run.lastRunAt)}</span></span>
+            <span className="min-w-0">{t("Last learning run")}<span className="mono-number block text-xs font-normal text-muted-foreground">{recordedTimeWords(run.lastRunAtIso, run.lastRunAt)}</span></span>
           </span>
         </CollapsibleFoldTrigger>
         <CollapsibleContent>

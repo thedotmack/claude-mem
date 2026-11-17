@@ -8,6 +8,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { useI18n, interpolate } from '@/lib/i18n'
 import { formatPromptDay } from '@/lib/prompt-time'
+import { displayTime } from '@/lib/display-time'
 import { cn } from '@/lib/utils'
 import { needsYou, type FocusArea, type Request } from '@/data'
 import { focusOverview, needsOwnerFirst, type FocusOverviewRow } from '@/live/focus-overview'
@@ -104,7 +105,7 @@ function AreaCard({ row, index, artwork, incomplete, workLoading, onOpenArea, on
             </div>
           )}
           <CollapsibleContent className="focus-area-evidence focus-area-above">
-            {area.quotes[0] && <blockquote>“{area.quotes[0].quote}”<cite>{formatPromptDay(area.quotes[0].at)}</cite></blockquote>}
+            {area.quotes[0] && <blockquote>“{area.quotes[0].quote}”<cite>{displayTime(formatPromptDay(area.quotes[0].at))}</cite></blockquote>}
             {!area.quotes.length && area.evidence && <p>{area.evidence}</p>}
             {area.timesAsked !== null && <p>{interpolate(t('Mentioned {count} times in the reviewed prompts'), { count: area.timesAsked })}</p>}
             {active.length > 0 ? (

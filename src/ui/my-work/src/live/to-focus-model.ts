@@ -90,6 +90,16 @@ export function focusAreaLabel(focusAreaId: string | undefined, areas: readonly 
   return areas.find((area) => area.id === placed)?.name ?? NOT_SORTED_YET_LABEL
 }
 
+/**
+ * A request's place as the screens word it (components/bits.tsx FocusAreaChip): its area's own name, or "Other" and
+ * "Not sorted yet" in the reader's language (`t`). A row that may cut the chip gives these whole words as its hover
+ * text (pages/my-work.tsx ListTableRow).
+ */
+export function focusAreaPlaceWords(focusAreaId: string | undefined, areas: readonly FocusArea[], t: (english: string) => string): string {
+  const placed = resolveFocusAreaId(focusAreaId, areas)
+  return placed === null ? t(NOT_SORTED_YET_LABEL) : placed === OTHER_FOCUS_AREA_ID ? t(OTHER_LABEL) : focusAreaLabel(focusAreaId, areas)
+}
+
 const toAsk = (item: MinedGoalItem): FocusAsk => ({ id: item.id, title: item.title, timesAsked: item.timesAsked, latestAt: item.latestAt, quotes: item.quotes })
 /** Prompt stamps are `MM-DD HH:MM`, `MM-DD` or '' (not recorded); as strings they sort in time order within a run. */
 const newerStamp = (a: string, b: string) => (a > b ? a : b)
@@ -104,7 +114,7 @@ export function toFocusModel(raw: readonly WorkViewFocusArea[] | undefined, mine
   const areas: FocusArea[] = (raw ?? []).map((area) => ({
     id: area.focusAreaId, name: area.name, goal: area.goal, about: area.about ?? null, status: area.status,
     ownerRank: area.ownerRank, priorityRank: area.priorityRank, source: area.source,
-    mergedInto: area.mergedInto, evidence: area.evidence, savedAt: area.savedAt ?? null,
+    mergedInto: area.mergedInto, evidence: area.evidence, doneAt: area.doneAt ?? null,
     timesAsked: null, latestAt: null, quotes: [], asks: [],
   })).sort(byFocusPriority)
   const resolveArea = createFocusAreaResolver(areas)

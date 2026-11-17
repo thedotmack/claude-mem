@@ -1,46 +1,45 @@
-import { displayRecordedDate, displayTime } from '@/lib/display-time'
+import { displayRecordedDate, recordedTimeWords } from '@/lib/display-time'
 import { t, useI18n, interpolate } from '@/lib/i18n'
 import { useCallback, useId, useMemo, useRef, useState, type ReactNode } from 'react'
-import { motion, useReducedMotion } from 'motion/react'
-import { ArrowDownIcon, ArrowRightIcon, ArrowUpDownIcon, ExternalLinkIcon, ImageIcon, InboxIcon, PlugIcon, PlusIcon, ReplyIcon, TriangleAlertIcon, UsersIcon } from 'lucide-react'
+import { ArrowDownIcon, ArrowRightIcon, ArrowUpDownIcon, ExternalLinkIcon, ImageIcon, InboxIcon, PlugIcon, PlusIcon, TriangleAlertIcon, UsersIcon } from 'lucide-react'
 import { Agent, AgentContent, AgentHeader } from '@/components/ai-elements/agent'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleFoldTrigger } from '@/components/ui/collapsible'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
+import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TablePageFooter, TableRow } from '@/components/ui/table'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { AgentIcon, ATTENTION_ORDER, FocusAreaChip, LocalTime, NeedsYouPill, NextMove, ProgressMeter, RefreshButton, RefreshStatus, StateMark, WorkReadFailureAlert } from '@/components/bits'
+import { AgentIcon, FocusAreaChip, LocalTime, NeedsYouPill, NextMove, ProgressMeter, RecordedTime, RefreshButton, RefreshStatus, StateMark, WorkReadFailureAlert } from '@/components/bits'
 import { sentenceWith } from '@/lib/sentence-with'
-import { nextStepWords } from '@/live/next-step-words'
 import { TracingBeam } from '@/components/aceternity/tracing-beam'
 import { AgentMark } from '@/components/brand'
 import { FocusChangeBar, useFocusChanges } from '@/components/focus-changes'
-import { FocusHeader, OtherHeader } from '@/components/focus-header'
+import { FocusHeader, NotStartedAsks, OtherHeader } from '@/components/focus-header'
+import { FocusMainCard, ReplyActions } from '@/components/focus-main-card'
 import { ErrorDetails } from '@/components/error-details'
 import { agentOwnRoleWords, deviceName } from '@/lib/agent-words'
 import { ChangeTicker, RunningFor } from '@/components/live-motion'
 import { RequestCard } from '@/components/request-card'
 import { RequestLine } from '@/components/request-line'
-import { useMatchesMedia } from '@/lib/use-media'
+import { useWidthOf } from '@/lib/use-media'
 import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
-import { isSubagent, needsYou, OTHER_FOCUS_AREA_ID, requestTitle, SAMPLE_RUNS, startedTimestamp, type Agent as WorkAgent, type LiveState, type Request } from '@/data'
+import { byAttention, firstNeedingYou, isSubagent, isWorkingNow, needsYou, OTHER_FOCUS_AREA_ID, requestTitle, SAMPLE_RUNS, startedTimestamp, type Agent as WorkAgent, type LiveState, type Request } from '@/data'
 import { type WorkFilter, type WorkListView, type WorkSort, deviceById, useFreshlyUpdated, useStore, useWorkModel, useWorkspace } from '@/store'
 import type { HomeAnchor } from '@/store/home-anchor'
 import { useShallow } from 'zustand/react/shallow'
 import type { BuildStory, StoryChapter } from '@/live/work-data-source'
-import { asksToKeepOrDismiss, createFocusAreaResolver } from '@/live/to-focus-model'
-import { nextStepShown, THIS_COMPUTER } from '@/live/to-work-model'
+import { asksToKeepOrDismiss, createFocusAreaResolver, focusAreaPlaceWords } from '@/live/to-focus-model'
+import { THIS_COMPUTER } from '@/live/to-work-model'
 import { agentBoard, type AgentEntry } from '@/live/agent-board'
 import { DURATION_WORD } from '@/live/running-time'
 import { refreshLineState } from '@/live/refresh-line'
-import { CARD_SIZE, LINE_ROWS_PER_PAGE, cardGridEntries, lineSections, requestSections, type CardGroup, type CardSize } from '@/live/card-groups'
+import { CARD_SIZE, LINE_ROWS_PER_PAGE, LIST_TITLE_MIN_PX, cardGridEntries, lineSections, requestSections, type CardGroup, type CardSize } from '@/live/card-groups'
 import { datedHeading, fitLine, storyChapters, storyNumbers } from '@/live/build-story'
 import { FocusOverview } from '@/components/focus-overview'
 import '@/components/focus-overview.css'
@@ -63,7 +62,7 @@ type SortKey = WorkSort
 const FILTERS: { value: Filter; label: string; matches: (request: Request) => boolean; dot?: string }[] = [
   { value: 'all', label: 'All', matches: (request) => !request.closed },
   { value: 'needs-you', label: 'Needs you', matches: (request) => !request.closed && needsYou(request), dot: 'bg-attention-foreground' },
-  { value: 'working', label: 'Working', matches: (request) => !request.closed && request.state === 'working', dot: 'bg-working-foreground' },
+  { value: 'working', label: 'Working', matches: isWorkingNow, dot: 'bg-working-foreground' },
   { value: 'shipped', label: 'Shipped', matches: (request) => !request.closed && request.state === 'shipped', dot: 'bg-shipped-foreground' },
   { value: 'closed', label: 'Closed', matches: (request) => !!request.closed },
 ]
@@ -80,7 +79,7 @@ function sortRequests(requests: Request[], sort: SortKey) {
   return [...requests].sort((a, b) =>
     sort === 'progress' ? (b.progress.percent ?? -1) - (a.progress.percent ?? -1) || newest(a, b)
       : sort === 'started' ? newest(a, b)
-        : ATTENTION_ORDER.indexOf(a.state) - ATTENTION_ORDER.indexOf(b.state) || newest(a, b))
+        : byAttention(a, b))
 }
 
 /**
@@ -88,28 +87,6 @@ function sortRequests(requests: Request[], sort: SortKey) {
  * "Moving now" (the plan's "three titles readable"), and the rest are counted, not drawn (progressive-disclosure).
  */
 const MOVING_NAMED = 3
-
-/** Whether this page can continue a conversation: only the page this computer's worker serves (live/work-data-source). */
-function useCanReply() {
-  return useStore((state) => state.conversationContinuationSource() !== null)
-}
-
-/**
- * A request's answer buttons (G2): Reply opens its drawer with the reply box focused, and Open opens the drawer. Where
- * this page cannot continue a conversation (sample data, the cloud page) the one button is "Open request". `primary`
- * makes the first button the screen's one orange button (G1: one primary per decision unit); every other is outlined.
- */
-function ReplyActions({ request, primary, onOpen, onReply }: { request: Request; primary: boolean; onOpen: (request: Request) => void; onReply: (request: Request) => void }) {
-  const canReply = useCanReply()
-  const variant = primary ? 'default' : 'outline'
-  if (!canReply) return <Button variant={variant} onClick={() => onOpen(request)}>{t('Open request')}</Button>
-  return (
-    <>
-      <Button variant={variant} onClick={() => onReply(request)}><ReplyIcon aria-hidden="true" />{t('Reply')}</Button>
-      <Button variant="link" className="px-1" onClick={() => onOpen(request)}>{t('Open')}</Button>
-    </>
-  )
-}
 
 /** A section heading in the page's label style, with its count in monospace ("NEEDS YOU · 2"). */
 function CountedHeading({ id, dot, tone, label, count }: { id?: string; dot: string; tone: string; label: string; count: number }) {
@@ -130,7 +107,7 @@ function NeedsYouFirst({ requests, onOpen, onReply, onOpenFocus, onShowWorking }
   requests: Request[]; onOpen: (request: Request) => void; onReply: (request: Request) => void
   onOpenFocus: (focusAreaId: string) => void; onShowWorking: () => void
 }) {
-  const waiting = sortRequests(requests.filter(needsYou), 'attention')
+  const waiting = firstNeedingYou(requests)
   const moving = sortRequests(requests.filter((request) => request.state === 'working'), 'started')
   const needsYouId = useId()
   const movingId = useId()
@@ -140,7 +117,8 @@ function NeedsYouFirst({ requests, onOpen, onReply, onOpenFocus, onShowWorking }
         <section aria-labelledby={needsYouId} className="space-y-3">
           <CountedHeading id={needsYouId} dot="bg-attention-foreground" tone="text-attention-foreground" label="Needs you" count={waiting.length} />
           {waiting.length === 0 ? <p className="text-sm text-muted-foreground">{t('Nothing needs you right now.')}</p> : (
-            <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-2">
+            // Cards in a row share its height, each footer on its card's bottom edge (D b5 M116, CardFooter mt-auto).
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
               {waiting.map((request, index) => (
                 <RequestCard key={request.id} request={request} onOpen={() => onOpen(request)} onOpenFocus={onOpenFocus}
                   actions={<ReplyActions request={request} primary={index === 0} onOpen={onOpen} onReply={onReply} />} />
@@ -159,74 +137,6 @@ function NeedsYouFirst({ requests, onOpen, onReply, onOpenFocus, onShowWorking }
             )}
           </section>
         )}
-      </div>
-    </Req>
-  )
-}
-
-/** One moving request's title as a quiet link on the summary's line, cut with its whole title in a tooltip (G10). */
-function MovingTitle({ request, onOpen }: { request: Request; onOpen: (request: Request) => void }) {
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Button variant="bare" onClick={() => onOpen(request)} className="max-w-[16rem] min-w-0 truncate text-foreground/85 underline decoration-border underline-offset-4 hover-enabled:text-foreground hover-enabled:decoration-current">
-          {titleOf(request)}
-        </Button>
-      </TooltipTrigger>
-      <TooltipContent className="max-w-sm">{titleOf(request)}</TooltipContent>
-    </Tooltip>
-  )
-}
-
-/**
- * What leads a focus area's requests (c-work-summary, c-aceternity-pointer-highlight): the first thing that needs you
- * as a raised row with its Reply, then what is moving, by name, on one line. No drawn box or pointer: it drew itself
- * over a second on load and looked like someone else's cursor (the PointerHighlight file stays for other layouts).
- */
-function Summary({ requests, primary, onOpen, onReply, onShowNeedsYou, onShowWorking }: {
-  requests: Request[]
-  /** Whether the first row's Reply is the screen's one orange button (G1): not when the area header holds one. */
-  primary: boolean
-  onOpen: (request: Request) => void; onReply: (request: Request) => void; onShowNeedsYou: () => void; onShowWorking: () => void
-}) {
-  const waiting = sortRequests(requests.filter(needsYou), 'attention')
-  const moving = sortRequests(requests.filter((request) => request.state === 'working'), 'started')
-  const first = waiting[0]
-  const firstStep = first ? nextStepShown(first.next) : null
-  return (
-    <Req ids={['R12.2', 'R12.3', 'R1.1']}>
-      <div className="space-y-2.5 rounded-xl border border-border/70 bg-card/60 p-3 md:p-4">
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-          <p className="flex items-center gap-2 font-semibold">
-            <span aria-hidden="true" className="size-2 shrink-0 rounded-full bg-attention-foreground" />
-            {waiting.length ? interpolate(waiting.length === 1 ? t('{count} needs you') : t('{count} need you'), { count: waiting.length }) : t('Nothing needs you right now.')}
-          </p>
-          {waiting.length > 1 && <Button variant="link" size="sm" className="ml-auto px-1" onClick={onShowNeedsYou}>{interpolate(t('Show all {count} that need you'), { count: waiting.length })}</Button>}
-        </div>
-        {first && (
-          <div className="flex flex-wrap items-center gap-3 rounded-lg border border-control-edge/55 bg-card p-3 shadow-panel">
-            <div className="min-w-0 flex-1 space-y-0.5">
-              {/* The step, or the request's title when no step is recorded (G3: never the filler). */}
-              <p className="leading-snug font-semibold">{firstStep?.kind === 'step' ? nextStepWords(firstStep, t) : titleOf(first)}</p>
-              {firstStep?.kind === 'step' && <p className="truncate text-xs text-muted-foreground">{titleOf(first)}</p>}
-            </div>
-            <div className="flex shrink-0 flex-wrap items-center gap-2"><ReplyActions request={first} primary={primary} onOpen={onOpen} onReply={onReply} /></div>
-          </div>
-        )}
-        <div className="flex min-w-0 flex-wrap items-center gap-x-2 text-sm text-muted-foreground">
-          <span className="inline-flex items-center gap-1.5 text-working-foreground">
-            <span aria-hidden="true" className="size-1.5 rounded-full bg-working-foreground" />
-            {moving.length ? interpolate(t('{count} moving now'), { count: moving.length }) : t('Nothing is moving right now.')}
-          </span>
-          {/* Phones name the first one; wider screens name up to MOVING_NAMED. */}
-          {moving.slice(0, MOVING_NAMED).map((request, index) => (
-            <span key={request.id} className={cn('min-w-0 items-center gap-2', index === 0 ? 'inline-flex' : 'hidden md:inline-flex')}>
-              <span aria-hidden="true">·</span><MovingTitle request={request} onOpen={onOpen} />
-            </span>
-          ))}
-          {moving.length > 1 && <Button variant="link" size="sm" className="px-1 md:hidden" onClick={onShowWorking}>{interpolate(t('and {count} more'), { count: moving.length - 1 })}</Button>}
-          {moving.length > MOVING_NAMED && <Button variant="link" size="sm" className="hidden px-1 md:inline-flex" onClick={onShowWorking}>{interpolate(t('and {count} more'), { count: moving.length - MOVING_NAMED })}</Button>}
-        </div>
       </div>
     </Req>
   )
@@ -296,7 +206,7 @@ function TodayPanel({ story, requests, onOpenStory }: { story: BuildStory; reque
           <div className="space-y-4">
             <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
               <h2 className="section-label">{t('Build story')}</h2>
-              {story.writtenAt && <span className="text-xs text-muted-foreground mono-number">{interpolate(t('written {date}'), { date: displayTime(story.writtenAt) })}</span>}
+              {story.writtenAt && <span className="text-xs text-muted-foreground mono-number">{interpolate(t('written {date}'), { date: recordedTimeWords(story.writtenAtIso, story.writtenAt, 'time-or-day') })}</span>}
               {/* An outlined button, 36px at desktop (rule 6's 24px floor; it was a 23px link) and 44px on touch. */}
               <Button variant="outline" size="sm" className="ml-auto" onClick={onOpenStory}>{t('Read the build story')}<ArrowRightIcon aria-hidden="true" /></Button>
             </div>
@@ -373,7 +283,7 @@ function StorySheet({ open, story, requests, onClose, onOpenRules }: { open: boo
       <SheetContent ref={scrollRef}>
         <SheetHeader className="pr-14">
           <SheetTitle>{t("Build story")}</SheetTitle>
-          <SheetDescription>{interpolate(t('From request-progress, reviewed from memory{writtenAt}.'), { writtenAt: story.writtenAt ? `, ${interpolate(t('written {date}'), { date: displayTime(story.writtenAt) })}` : '' })}</SheetDescription>
+          <SheetDescription>{interpolate(t('From request-progress, reviewed from memory{writtenAt}.'), { writtenAt: story.writtenAt ? `, ${interpolate(t('written {date}'), { date: recordedTimeWords(story.writtenAtIso, story.writtenAt, 'time-or-day') })}` : '' })}</SheetDescription>
         </SheetHeader>
         <div className="space-y-6 px-6 pb-8">
           <Req ids={['R7.1']}><StoryNumbers requests={requests} /></Req>
@@ -451,60 +361,58 @@ function StorySheet({ open, story, requests, onClose, onOpenRules }: { open: boo
 /** card-hover-effect, in place: a soft panel fades in behind the card the pointer is on. It never slides between cards. */
 function HoverCell({ children }: { children: ReactNode }) {
   return (
-    <div className="group/hover-cell relative min-w-0">
+    // As tall as its grid row, so the card in it can be (D b5 M116: cards in a row end level, footers pinned).
+    <div className="group/hover-cell relative h-full min-w-0">
       <span aria-hidden="true" className="pointer-events-none absolute -inset-2 block rounded-2xl bg-accent/70 opacity-0 transition-opacity duration-150 group-hover/hover-cell:opacity-100" />
       <div className="relative h-full">{children}</div>
     </div>
   )
 }
 
-/** A card or row glides to its new place when the order changes (a status moved, a new request arrived). Position only:
- * a card that grows or shrinks snaps, so text never stretches mid-animation. Off under reduced motion (MotionConfig). */
-const GLIDE = { type: 'spring', bounce: 0.15, duration: 0.55 } as const
-
-/**
- * The board's glide and a card's entrance, off under reduced motion here in the component as well as through the
- * app's MotionConfig (plan rule 8): no layout animation, and a card is simply there.
- */
-function useBoardMotion() {
-  const reduceMotion = useReducedMotion()
-  return reduceMotion
-    ? { layout: false as const, entrance: { initial: false as const } }
-    : { layout: 'position' as const, entrance: { initial: { opacity: 0, y: 8 }, animate: { opacity: 1, y: 0 } } }
-}
-
 /**
  * One board card, its size by state (live/card-groups.ts CARD_SIZE); a card that needs you carries its Reply (G2).
  * `pagedRow`: one of the sorted board's paged cards, which "Show 50 more" puts focus on (lib/paged-rows.ts).
+ *
+ * A live change moves nothing on the board (plan rule 8: at most two moving things per view, the change ticker
+ * included; Phase 6 verify V2): a card takes its new place, state and value at once, and the changed one carries the
+ * still "just updated" mark (request-card.tsx). A state flip on home moved up to 6 things a frame for 0.58 s here: every
+ * card's glide to its new place, each new or re-placed card's fade-in and the section headings' glide. The ticker's
+ * slide to the new change (components/live-motion.tsx) is what moves.
  */
 function CardCell({ request, size, pagedRow = false, onOpen, onReply, onOpenFocus }: { request: Request; size: Exclude<CardSize, 'line'>; pagedRow?: boolean; onOpen: (request: Request) => void; onReply: (request: Request) => void; onOpenFocus: (focusAreaId: string) => void }) {
-  const motionProps = useBoardMotion()
   return (
-    <motion.div layout={motionProps.layout} transition={GLIDE} {...motionProps.entrance} {...(pagedRow ? { 'data-list-row': '', tabIndex: -1 } : {})}
-      className={cn('min-w-0', pagedRow && cn('rounded-xl', FOCUS_FROM_CODE_CLASS_NAME))}>
+    <div {...(pagedRow ? { 'data-list-row': '', tabIndex: -1 } : {})} className={cn('min-w-0', pagedRow && cn('rounded-xl', FOCUS_FROM_CODE_CLASS_NAME))}>
       <HoverCell>
         <RequestCard request={request} size={size} onOpen={() => onOpen(request)} onOpenFocus={onOpenFocus}
           actions={needsYou(request) ? <ReplyActions request={request} primary={false} onOpen={onOpen} onReply={onReply} /> : undefined} />
       </HoverCell>
-    </motion.div>
+    </div>
   )
 }
 
 /**
  * The Cards view (c-work-cards-view). Attention-first with every request: what needs you as full cards with Reply,
- * what is working as medium cards, both in one grid under h3 headings (so a card whose status changes glides from one
- * section to the other), then Idle and Shipped folded to one line each (G4). Sorted another way or filtered, the
- * requests keep that order, each drawn at its state's size, 50 at a time through the boards' one paging
+ * what is working as medium cards, both in one grid under h3 headings (a card whose status changes takes its place in
+ * the other section at once, CardCell), then Idle and Shipped folded to one line each (G4). Sorted another way or
+ * filtered, the requests keep that order, each drawn at its state's size, 50 at a time through the boards' one paging
  * (lib/paged-rows.ts): a new filter, sort or area starts on the first page, and "Show 50 more" puts focus on the first
- * card it added.
+ * card it added. Cards in a row share its height, each footer on its card's bottom edge (D b5 M116; they ended at
+ * heights up to 345px apart in one row on the owner's data at 768, 2026-11-17).
+ *
+ * On a focus area page (`focusPage`, page-03 and page-04's order), attention-first with every request: the page's main
+ * card above the board already leads with the first request that needs you (`lead`, components/focus-main-card.tsx),
+ * so the board leaves it out; any others that need you stay full cards, and Working is one-line rows under its heading,
+ * then Idle and Shipped folded.
  */
-function CardsView({ requests, grouped, onOpen, onReply, onOpenFocus }: { requests: Request[]; grouped: boolean; onOpen: (request: Request) => void; onReply: (request: Request) => void; onOpenFocus: (focusAreaId: string) => void }) {
+function CardsView({ requests, grouped, focusPage = false, lead = null, onOpen, onReply, onOpenFocus }: {
+  requests: Request[]; grouped: boolean; focusPage?: boolean; lead?: string | null
+  onOpen: (request: Request) => void; onReply: (request: Request) => void; onOpenFocus: (focusAreaId: string) => void
+}) {
   const paged = usePagedRows(requests.length, true)
-  const { layout } = useBoardMotion()
   if (!grouped) {
     return (
       <div className="space-y-3">
-        <div id={paged.listId} className="grid grid-cols-1 items-start gap-4 sm:grid-cols-2 xl:grid-cols-3">
+        <div id={paged.listId} className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {requests.slice(0, paged.shown).map((request) => {
             const size = CARD_SIZE[request.state]
             return size === 'line'
@@ -516,33 +424,48 @@ function CardsView({ requests, grouped, onOpen, onReply, onOpenFocus }: { reques
       </div>
     )
   }
+  const onBoard = lead ? requests.filter((request) => request.id !== lead) : requests
+  // On a focus page only the full cards stay in the grid; Working joins the sections drawn as rows.
+  const cardEntries = cardGridEntries(focusPage ? onBoard.filter((request) => CARD_SIZE[request.state] === 'full') : onBoard)
+  const rowSections = focusPage ? requestSections(onBoard).filter(({ group }) => group.size !== 'full') : lineSections(onBoard)
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-1 items-start gap-4 sm:grid-cols-2 xl:grid-cols-3">
-        {cardGridEntries(requests).map((entry) => entry.kind === 'card'
-          ? <CardCell key={entry.key} request={entry.request} size={entry.size} onOpen={onOpen} onReply={onReply} onOpenFocus={onOpenFocus} />
-          : (
-            <motion.div key={entry.key} layout={layout} transition={GLIDE} className="col-span-full flex items-center gap-2.5 pt-2 first:pt-0">
-              <span aria-hidden="true" className={cn('size-2 rounded-full', entry.group.dot)} />
-              <h3 className="text-sm font-semibold tracking-tight">{t(entry.group.label)}</h3>
-              <span className="text-sm text-muted-foreground mono-number">{entry.count}</span>
-              <span className="h-px flex-1 bg-border/70" />
-            </motion.div>
-          ))}
-      </div>
-      {lineSections(requests).map(({ group, members }) => <RequestGroup key={group.id} group={group} members={members} renderRow={(request) => <RequestLine request={request} onOpen={onOpen} />} />)}
+      {cardEntries.length > 0 && (
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          {cardEntries.map((entry) => entry.kind === 'card'
+            ? <CardCell key={entry.key} request={entry.request} size={entry.size} onOpen={onOpen} onReply={onReply} onOpenFocus={onOpenFocus} />
+            : (
+              <div key={entry.key} className="col-span-full flex items-center gap-2.5 pt-2 first:pt-0">
+                <span aria-hidden="true" className={cn('size-2 rounded-full', entry.group.dot)} />
+                <h3 className="text-sm font-semibold tracking-tight">{t(entry.group.label)}</h3>
+                <span className="text-sm text-muted-foreground mono-number">{entry.count}</span>
+                <span className="h-px flex-1 bg-border/70" />
+              </div>
+            ))}
+        </div>
+      )}
+      {rowSections.map(({ group, members }) => <RequestGroup key={group.id} group={group} members={members} renderRow={(request) => <RequestLine request={request} onOpen={onOpen} />} />)}
     </div>
   )
 }
 
 /**
- * The List is a table from 1360px. Its fixed columns take 689px, so a title gets about 190px there (measured on the
- * owner's data, 2026-11-16: 188px at a 1366px window, 247px from 1440, where the page stops widening; about 130px at
- * 1280), nothing scrolls sideways, and so the column headings can stick under the floating header (a scroll box would
- * hold them back). Narrower, each request is a RequestRow with its title on a line of its own and, from 768px, the
- * table's other columns on a line under it. Only one is built.
+ * The List table's columns (c-ui-table): fixed widths in rem, the Next step column a share of the table, and the title
+ * the rest. One definition: the headings take their widths from it, and ListView draws the table only where its own
+ * width leaves the title column at least LIST_TITLE_MIN_PX (live/card-groups.ts). The fixed columns take 40.5rem (689px
+ * at the 17px desktop root), so a title gets 187.5px at a 1366px window and 247px from 1440, where the page stops
+ * widening (measured on the owner's data, 2026-11-17), nothing scrolls sideways, and the column headings can stick
+ * under the floating header (a scroll box would hold them back). Narrower, each request is a RequestRow with its title
+ * on a line of its own and, from 768px, the table's other columns on a line under it. Only one is built.
  */
-const TABLE_QUERY = '(min-width: 85rem)'
+const LIST_COLUMN_REM = { agent: 4, status: 11, progress: 9, started: 8.75, running: 7.75 } as const
+const LIST_NEXT_STEP_SHARE = 0.2
+/** The table box's 1px edge on each side: the table is the box's width less these. */
+const LIST_TABLE_EDGES_PX = 2
+/** The title column's width in a List `listWidth` wide, at a root font size of `remPx` (px). */
+const listTitleColumnPx = (listWidth: number, remPx: number) =>
+  (listWidth - LIST_TABLE_EDGES_PX) * (1 - LIST_NEXT_STEP_SHARE) - Object.values(LIST_COLUMN_REM).reduce((sum, rem) => sum + rem, 0) * remPx
+const columnWidth = (rem: number) => ({ width: `${rem}rem` })
 
 
 /**
@@ -556,10 +479,10 @@ const STUCK_HEAD = 'sticky top-(--page-header-bottom) z-[2] bg-card shadow-[inse
  * A column the List sorts by. Only Status, Progress and Started sort, and each looks it: the sorted one with its
  * direction and `aria-sort`, the others with both arrows (F 410); the other headings are plain words.
  */
-function SortHead({ label, value, sort, onSort, numeric = false, className }: { label: string; value: SortKey; sort: SortKey; onSort: (sort: SortKey) => void; numeric?: boolean; className?: string }) {
+function SortHead({ label, value, sort, onSort, numeric = false, widthRem }: { label: string; value: SortKey; sort: SortKey; onSort: (sort: SortKey) => void; numeric?: boolean; widthRem: number }) {
   const sorted = sort === value
   return (
-    <TableHead numeric={numeric} aria-sort={sorted ? 'descending' : undefined} className={cn(STUCK_HEAD, className)}>
+    <TableHead numeric={numeric} aria-sort={sorted ? 'descending' : undefined} className={STUCK_HEAD} style={columnWidth(widthRem)}>
       <Button variant="ghost" size="sm" onClick={() => onSort(value)} className={cn('font-medium', numeric ? '-mr-3' : '-ml-3', sorted ? 'text-foreground' : 'text-muted-foreground')}>
         {label}{sorted ? <ArrowDownIcon aria-hidden="true" /> : <ArrowUpDownIcon aria-hidden="true" />}
       </Button>
@@ -584,13 +507,28 @@ function StartedAt({ request }: { request: Request }) {
  */
 function ListTableRow({ request, onOpen, onOpenFocus }: { request: Request; onOpen: (request: Request) => void; onOpenFocus: (focusAreaId: string) => void }) {
   const fresh = useFreshlyUpdated(request.id)
+  const { focusAreas } = useWorkModel()
   return (
-    <TableRow data-list-row="" data-just-updated={fresh || undefined} onActivate={() => onOpen(request)} className={cn(fresh && 'just-updated-mark')}>
+    <TableRow data-list-row="" data-request-opener={request.id} data-just-updated={fresh || undefined} onActivate={() => onOpen(request)} className={cn(fresh && 'just-updated-mark')}>
       <TableCell><AgentIcon agentId={request.agentId} showName={false} /></TableCell>
       <TableCell>
+        {/* The title has the cell's room first (G18's one line). The area link gives up its room first, a hundred times
+            faster than the title (flex-shrink 100 to 1), down to its floor: it took up to 40% of the cell and left the
+            title 89-99px at 1366 and 124-158px at 1440, cut on every row (owner's data, 2026-11-17). Its floor, min-w-11
+            (2.75rem, 46.75px at the 17px desktop root), is the chip's mark (0.875rem) and gap (0.375rem), and 1.5rem for the
+            name, less the link's 1px edges: 23.5px for an area's name, 25.5px for "Not sorted yet". A cut line keeps its
+            first letter (CSS Overflow 3 clips the first character rather than replace it) and draws the ellipsis after
+            it, so the name needs a letter and a whole ellipsis at text-xs (Geist, 12.75px): the ellipsis is 7.28px, and a
+            Chinese first letter, the widest of the UI's languages (13.02px; Korean 11.03px, a Latin "W" 12.06px), makes
+            20.30px together (measured 2026-11-17). At min-w-10 (2.5rem, 19.25px for the name) a Chinese first letter was
+            1px over; at min-w-8 (2rem, sized for an ellipsis alone) the name had 10.75px and showed one dot of its
+            ellipsis, "V.", which did not say that it is cut (plan rule 5; Phase 6 fix 2). So a cut link shows its mark
+            and that it is cut, and never runs into the next column. A cut area name stays whole in the link's name for
+            screen readers, in its hover text, and on the page it opens. A request not sorted yet is cut the same way
+            (the chip's one-line layout): its words were built to wrap, which this row does not do. */}
         <div className="flex min-w-0 items-center gap-2">
-          <span className={cn('min-w-0 truncate font-medium', !request.title && 'text-muted-foreground')}>{titleOf(request)}</span>
-          <span className="flex max-w-[40%] min-w-0 shrink-0"><FocusAreaChip focusAreaId={request.focusAreaId} onOpen={onOpenFocus} /></span>
+          <span data-row-title="" className={cn('min-w-0 truncate font-medium', !request.title && 'text-muted-foreground')}>{titleOf(request)}</span>
+          <span data-row-area="" className="flex min-w-11 shrink-[100]" title={focusAreaPlaceWords(request.focusAreaId, focusAreas, t)}><FocusAreaChip focusAreaId={request.focusAreaId} onOpen={onOpenFocus} layout="line" /></span>
           {fresh && <span className="sr-only">{t('Just updated')}</span>}
         </div>
       </TableCell>
@@ -634,7 +572,7 @@ function TableGroup({ group, members, columns, renderRow }: { group: CardGroup; 
 /**
  * The table (c-ui-table): named for screen readers (F 415), fixed columns so a page of rows never shifts them, and its
  * headings stuck under the floating header. The box rounds its corners with overflow-clip, not hidden, so it does not
- * become a scroll box and the headings can stick; from TABLE_QUERY's width the columns fit, so nothing scrolls sideways.
+ * become a scroll box and the headings can stick; ListView draws it only where the columns fit, so nothing scrolls sideways.
  * Only without Team (live/card-groups.ts LIST_TITLE_MIN_PX): in team mode the List is rows, with who asked on each row.
  */
 function ListTable({ requests, grouped, sort, onSort, onOpen, onOpenFocus }: { requests: Request[]; grouped: boolean; sort: SortKey; onSort: (sort: SortKey) => void; onOpen: (request: Request) => void; onOpenFocus: (focusAreaId: string) => void }) {
@@ -647,13 +585,13 @@ function ListTable({ requests, grouped, sort, onSort, onOpen, onOpenFocus }: { r
         <Table aria-label={t('Requests')} className="table-fixed [&_td]:px-3 [&_th]:px-3">
           <TableHeader className="[&_tr]:border-b-0">
             <TableRow className="hover:bg-transparent">
-              <TableHead className={cn(STUCK_HEAD, 'w-[4rem]')}><span className="sr-only">{t('Agent')}</span></TableHead>
-              <TableHead className={STUCK_HEAD}>{t('Request')}</TableHead>
-              <SortHead label={t('Status')} value="attention" sort={sort} onSort={onSort} className="w-[11rem]" />
-              <TableHead className={cn(STUCK_HEAD, 'w-[20%]')}>{t('Next step')}</TableHead>
-              <SortHead label={t('Progress')} value="progress" sort={sort} onSort={onSort} numeric className="w-[9rem]" />
-              <SortHead label={t('Started')} value="started" sort={sort} onSort={onSort} numeric className="w-[8.75rem]" />
-              <TableHead numeric className={cn(STUCK_HEAD, 'w-[7.75rem]')}>{t('Running')}</TableHead>
+              <TableHead className={STUCK_HEAD} style={columnWidth(LIST_COLUMN_REM.agent)}><span className="sr-only">{t('Agent')}</span></TableHead>
+              <TableHead className={STUCK_HEAD} data-list-title-column="">{t('Request')}</TableHead>
+              <SortHead label={t('Status')} value="attention" sort={sort} onSort={onSort} widthRem={LIST_COLUMN_REM.status} />
+              <TableHead className={STUCK_HEAD} style={{ width: `${LIST_NEXT_STEP_SHARE * 100}%` }}>{t('Next step')}</TableHead>
+              <SortHead label={t('Progress')} value="progress" sort={sort} onSort={onSort} numeric widthRem={LIST_COLUMN_REM.progress} />
+              <SortHead label={t('Started')} value="started" sort={sort} onSort={onSort} numeric widthRem={LIST_COLUMN_REM.started} />
+              <TableHead numeric className={STUCK_HEAD} style={columnWidth(LIST_COLUMN_REM.running)}>{t('Running')}</TableHead>
             </TableRow>
           </TableHeader>
           {grouped
@@ -669,21 +607,28 @@ function ListTable({ requests, grouped, sort, onSort, onOpen, onOpenFocus }: { r
 /**
  * The List (c-work-list-view): 48px rows, the status as the state badge, "—" for a missing next step, 50 rows at a time
  * (G4: grouped attention-first, Idle and Shipped folded; sorted another way or filtered, one list with "Showing 50 of
- * 195 · Show 50 more"). Rows are Tab stops that Enter opens. The table from TABLE_QUERY's width without Team
+ * 195 · Show 50 more"). Rows are Tab stops that Enter opens. The table where its title column keeps its floor, without Team
  * (live/card-groups.ts LIST_TITLE_MIN_PX); otherwise rows, which from 768px carry the table's other columns on a line
  * of their own (rule 2).
  */
 function ListView({ requests, grouped, sort, onSort, onOpen, onOpenFocus }: { requests: Request[]; grouped: boolean; sort: SortKey; onSort: (sort: SortKey) => void; onOpen: (request: Request) => void; onOpenFocus: (focusAreaId: string) => void }) {
   const { team } = useWorkspace()
-  const wide = useMatchesMedia(TABLE_QUERY) && !team
+  const box = useRef<HTMLDivElement>(null)
+  const measured = useWidthOf(box)
+  // From the List's own width, not the window's: a classic 15px scrollbar (Chrome on Windows and Linux) takes 12px from
+  // the title column, which left it 175.5px at a 1366px window under a window-width rule (PR #6210 CI); now the List
+  // stays rows there, and is the table wherever its title column keeps LIST_TITLE_MIN_PX.
+  const wide = !team && measured !== null && listTitleColumnPx(measured.width, measured.remPx) >= LIST_TITLE_MIN_PX
   return (
     <Req ids={['R4.2', 'R4.4', 'R2.1', 'R5.8', 'R11.1']}>
-      {wide ? <ListTable requests={requests} grouped={grouped} sort={sort} onSort={onSort} onOpen={onOpen} onOpenFocus={onOpenFocus} />
-        : (
-          <div className="rounded-xl border bg-card p-1.5 shadow-panel">
-            <RequestGroups requests={requests} grouped={grouped} countAlways renderRow={(request) => <RequestRow request={request} onOpen={onOpen} facts={{ onOpenFocus }} />} />
-          </div>
-        )}
+      <div ref={box} data-list-box={wide ? 'table' : 'rows'}>
+        {wide ? <ListTable requests={requests} grouped={grouped} sort={sort} onSort={onSort} onOpen={onOpen} onOpenFocus={onOpenFocus} />
+          : (
+            <div className="rounded-xl border bg-card p-1.5 shadow-panel">
+              <RequestGroups requests={requests} grouped={grouped} countAlways renderRow={(request) => <RequestRow request={request} onOpen={onOpen} facts={{ onOpenFocus }} />} />
+            </div>
+          )}
+      </div>
     </Req>
   )
 }
@@ -757,7 +702,7 @@ function SubagentStatus({ agent }: { agent: WorkAgent }) {
         <span>{t(AGENT_STATUS_LABEL[agent.status])}</span>
         {agent.status === 'finished' && (agent.finishedAtIso
           ? <LocalTime iso={agent.finishedAtIso} className="text-xs text-muted-foreground" />
-          : agent.finishedAt && <span className="text-xs text-muted-foreground tabular">{displayTime(agent.finishedAt)}</span>)}
+          : agent.finishedAt && <RecordedTime iso={agent.finishedAtIso} words={agent.finishedAt} className="text-xs text-muted-foreground" />)}
       </p>
       {agent.canMarkFinished && <Button variant="outline" size="sm" className="shrink-0" onClick={() => setConfirming(true)}>{t('Mark finished')}</Button>}
       <MarkFinishedDialog agent={agent} open={confirming} onOpenChange={setConfirming} onMarked={() => statusRef.current?.focus()} />
@@ -1046,7 +991,7 @@ function WorkToolbar({ view, filter, sort, requests, team, refreshLine, refreshF
 export function MyWork({ focusAreaId, onOpen, onReply = onOpen, onOpenFocus, onOpenRules }: { focusAreaId: string | null; onOpen: (request: Request) => void; onReply?: (request: Request) => void; onOpenFocus: (focusAreaId: string) => void; onOpenRules: () => void }) {
   useI18n()
   const { team } = useWorkspace()
-  const { sourceKind, requests: allRequests, requestReadErrors: allReadErrors, unlinkedWorkCount, sourceHealth, buildStory, lastRuns, refresh, focusAreas } = useWorkModel()
+  const { sourceKind, requests: allRequests, requestReadErrors: allReadErrors, unlinkedWorkCount, sourceHealth, buildStory, lastRuns, refresh, focusAreas, otherAsks } = useWorkModel()
   const area = focusAreaId && focusAreaId !== OTHER_FOCUS_AREA_ID ? focusAreas.find((entry) => entry.id === focusAreaId) ?? null : null
   const requests = useMemo(() => {
     if (!focusAreaId) return allRequests
@@ -1055,7 +1000,8 @@ export function MyWork({ focusAreaId, onOpen, onReply = onOpen, onOpenFocus, onO
   }, [allRequests, focusAreas, focusAreaId])
   // A request that could not be read has no placement to file it under, so its card shows only under every request.
   const requestReadErrors = focusAreaId ? [] : allReadErrors
-  const focusChanges = useFocusChanges()
+  // This page's saves: a failure made on another area's page, a dialog or a drawer is never offered here (Q-M1).
+  const focusChanges = useFocusChanges(focusAreaId === null ? 'home' : `focus:${focusAreaId}`)
   const sample = sourceKind === 'sample'
   // How the person likes to see My Work is saved across visits (store/create-store.ts).
   const { listView: view, filter, sort } = useStore(useShallow((state) => ({ listView: state.view.listView, filter: state.view.filter, sort: state.view.sort })))
@@ -1088,12 +1034,17 @@ export function MyWork({ focusAreaId, onOpen, onReply = onOpen, onOpenFocus, onO
       {/* `/#focus-areas` (the rail's and chip row's "All N", the bottom bar's Focus) opens this board with every area shown. */}
       {!focusAreaId && <FocusOverview anchorId={'focus-areas' satisfies HomeAnchor} expandAllOn={homeAnchorRequest?.anchor === 'focus-areas' ? homeAnchorRequest.sequence : 0} areas={focusAreas} requests={allRequests} incomplete={allReadErrors.length > 0} onOpenArea={onOpenFocus} onOpenRequest={onOpen} artwork={focusArtwork} onArtworkChange={useStore.getState().setFocusArtwork} />}
       {/* Every request in the area, closed ones too: the combined progress counts each reviewed request (D1's rule). */}
-      {area ? <FocusHeader key={area.id} area={area} requests={requests} changes={focusChanges} />
-        : focusAreaId === OTHER_FOCUS_AREA_ID && <OtherHeader requests={requests} />}
-      {/* `/#all-requests`: the rail's and the bottom bar's My Work land here (page-02 deep-linking). */}
-      {!focusAreaId && <h2 ref={boardHeading} id={'all-requests' satisfies HomeAnchor} tabIndex={-1} className={cn('section-label rounded-sm', FOCUS_FROM_CODE_CLASS_NAME)}>{t('All requests')}</h2>}
-      {focusAreaId && <Summary requests={open} primary={!(area && asksToKeepOrDismiss(area))} onOpen={onOpen} onReply={onReply} onShowNeedsYou={() => showOnBoard('needs-you')} onShowWorking={() => showOnBoard('working')} />}
-      <ChangeTicker onOpen={(requestId) => { const request = allRequests.find((entry) => entry.id === requestId); if (request) onOpen(request) }} />
+      {area ? <FocusHeader key={area.id} area={area} requests={requests} changes={focusChanges} onOpen={onOpen} />
+        : focusAreaId === OTHER_FOCUS_AREA_ID && <OtherHeader requests={requests} onOpen={onOpen} />}
+      {/* `/#all-requests`: the rail's and the bottom bar's My Work land here (page-02 deep-linking). It is the view's
+          heading where the request drawer puts focus when the row that opened it is gone (request-drawer.tsx). */}
+      {!focusAreaId && <h2 ref={boardHeading} id={'all-requests' satisfies HomeAnchor} tabIndex={-1} data-view-heading="" className={cn('section-label rounded-sm', FOCUS_FROM_CODE_CLASS_NAME)}>{t('All requests')}</h2>}
+      {/* page-03's order: the header, then what needs you as the main card with its reply card, then the asks nobody
+          has started, then the board. The header's Keep, on a suggested area, is then the screen's one orange (G1). */}
+      {focusAreaId && <FocusMainCard requests={open} primary={!(area && asksToKeepOrDismiss(area))} onOpen={onOpen} onReply={onReply} onShowAll={() => showOnBoard('needs-you')} />}
+      {focusAreaId && <NotStartedAsks asks={area ? area.asks : focusAreaId === OTHER_FOCUS_AREA_ID ? otherAsks : []} />}
+      {/* It counts the working requests this page's Working filter counts: the page's own (isWorkingNow). */}
+      <ChangeTicker requests={requests} onOpen={(requestId) => { const request = allRequests.find((entry) => entry.id === requestId); if (request) onOpen(request) }} />
 
       <WorkToolbar view={view} filter={filter} sort={sort} requests={requests} team={team} refreshLine={refreshLine} refreshFailed={!sample && refreshLineState(refresh) === 'failed'}
         onView={setView} onFilter={setFilter} onSort={setSort} />
@@ -1102,12 +1053,15 @@ export function MyWork({ focusAreaId, onOpen, onReply = onOpen, onOpenFocus, onO
 
       {requests.length === 0 && requestReadErrors.length === 0 ? (
         <Req ids={['R12.1']}>
-          <Empty className="border bg-card/60">
+          {/* An empty area is a compact box around its one next step (D b10 M211, F209: it was 1171×233px for two lines
+              and no button): All requests, where a request's own page moves it here. */}
+          <Empty className={cn('border bg-card/60', focusAreaId && 'mx-auto w-full max-w-md')}>
             <EmptyHeader>
               <EmptyMedia variant="icon"><InboxIcon /></EmptyMedia>
               <EmptyTitle>{focusAreaId ? t("No requests in this area yet.") : t("No requests recorded yet.")}</EmptyTitle>
               <EmptyDescription>{focusAreaId ? t("A refresh places new requests here, or move one here from its page.") : t("Ask an agent for something and it appears here.")}</EmptyDescription>
             </EmptyHeader>
+            {focusAreaId && <EmptyContent><Button variant="outline" onClick={() => goToHome('all-requests')}>{t('Find a request to move here')}<ArrowRightIcon aria-hidden="true" /></Button></EmptyContent>}
           </Empty>
         </Req>
       ) : (
@@ -1129,7 +1083,7 @@ export function MyWork({ focusAreaId, onOpen, onReply = onOpen, onOpenFocus, onO
             )}
             {view === 'agents' ? <ByAgentView requests={visible} grouped={filter === 'all'} onOpen={onOpen} />
               : visible.length === 0 ? null
-                : view === 'cards' ? <CardsView requests={visible} grouped={grouped} onOpen={onOpen} onReply={onReply} onOpenFocus={onOpenFocus} />
+                : view === 'cards' ? <CardsView requests={visible} grouped={grouped} focusPage={!!focusAreaId} lead={focusAreaId ? firstNeedingYou(open)[0]?.id ?? null : null} onOpen={onOpen} onReply={onReply} onOpenFocus={onOpenFocus} />
                   : view === 'list' ? <ListView requests={visible} grouped={grouped} sort={sort} onSort={setSort} onOpen={onOpen} onOpenFocus={onOpenFocus} />
                     : <TeamBoard requests={visible} grouped={grouped} onOpen={onOpen} />}
           </div>

@@ -16,7 +16,7 @@ import { TICKER_OFFERS_RECONNECT, TICKER_STEP_MS, tickerState, type TickerState 
 import { durationWords, isFinishedRun } from '@/live/running-time'
 import type { RequestChange } from '@/live/update-queue'
 import { Req } from '@/spec/req'
-import type { LiveState, Request } from '@/data'
+import { isWorkingNow, type LiveState, type Request } from '@/data'
 import { useConnection, useRecentChanges, useWorkModel } from '@/store'
 
 /**
@@ -103,14 +103,17 @@ const TICKER_MARK: Record<TickerState, string> = {
 /**
  * "Just changed": the newest changes the screen saw, one at a time, every few seconds, each opening its request. It
  * pauses with its pause button, and while the pointer is on it or a key has focus in it (auto-rotation-controls).
- * At rest it says since when nothing has changed and how many working requests it watches. While the feed connects it
+ * At rest it says since when nothing has changed and how many working requests it watches: `requests`, the page's,
+ * counted by the Working filter's rule (data.ts isWorkingNow), so the two never disagree; every request when a caller
+ * passes none. While the feed connects it
  * says so; when it is not live it says why, with the time of the shown data, and offers Reconnect only where reading
  * the page again can help (live/change-ticker.ts).
  */
-export function ChangeTicker({ onOpen }: { onOpen: (requestId: string) => void }) {
+export function ChangeTicker({ onOpen, requests: pageRequests }: { onOpen: (requestId: string) => void; requests?: Request[] }) {
   const { t } = useI18n()
   const changes = useRecentChanges()
-  const { sourceKind, requests } = useWorkModel()
+  const { sourceKind, requests: allRequests } = useWorkModel()
+  const requests = pageRequests ?? allRequests
   const connection = useConnection()
   const reduceMotion = useReducedMotion()
   const state = tickerState(connection, sourceKind === 'sample', changes.length)
@@ -136,7 +139,7 @@ export function ChangeTicker({ onOpen }: { onOpen: (requestId: string) => void }
     return () => clearInterval(timer)
   }, [shown.length, newest, paused, live])
   const change = shown[step % Math.max(1, shown.length)]
-  const watching = requests.filter((request) => request.state === 'working' && !request.closed).length
+  const watching = requests.filter(isWorkingNow).length
   const words = change ? changeWords(change, t) : null
   const { label, line, asOf } = TICKER_WORDS[state]
   return (

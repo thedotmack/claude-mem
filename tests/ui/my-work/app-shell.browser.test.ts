@@ -4,7 +4,8 @@ import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import {
   REPOSITORY_ROOT, UNTHROTTLED_TIMER_FLAGS, chromeExecutablePath, compileBrowserFixture, connectToPage,
-  failOnCiWithoutChrome, htmlResponse, launchChrome, myWorkFontResponse, scriptResponse, withTimeout, type DevToolsPage, type OwnedChrome,
+  failOnCiWithoutChrome, FITS_THE_WINDOW, htmlResponse, launchChrome, myWorkFontResponse, PAGE_WIDTHS, pageFitsTheWindow, scriptResponse, withTimeout,
+  type DevToolsPage, type OwnedChrome,
 } from '../../helpers/chrome-devtools';
 import { THEME_PRE_PAINT_SCRIPT } from '../../../src/ui/my-work/src/lib/theme-pre-paint';
 
@@ -483,7 +484,9 @@ async function tabTo(match: (focus: any) => boolean, what: string, limit = 12) {
     await page!.evaluate('window.scrollTo(0, 0)');
     await page!.settle();
     expect(await page!.evaluate("matchMedia('(pointer: coarse)').matches")).toBe(true);
-    expect(await page!.evaluate('document.documentElement.scrollWidth')).toBe(390);
+    // Nothing scrolls sideways, at the width named: the window is that wide, the page that wide or a classic scrollbar
+    // narrower (Linux CI draws a 15px one; a touch phone none), and nothing runs past it.
+    expect(pageFitsTheWindow(await page!.evaluate(PAGE_WIDTHS), 390, { touch: true })).toMatchObject(FITS_THE_WINDOW);
     const controls: { name: string; height: number; width: number }[] = await page!.evaluate('window.headerControls()');
     expect(controls.filter((control) => control.height < 44 || control.width < 44)).toEqual([]);
     // G7: with sample data the strip says so, and its controls are 44px on touch too, measured at rest (stripAtRest).

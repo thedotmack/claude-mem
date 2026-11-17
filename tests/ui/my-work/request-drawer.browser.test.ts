@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import {
   REPOSITORY_ROOT, UNTHROTTLED_TIMER_FLAGS, chromeExecutablePath, compileBrowserFixture, connectToPage,
-  failOnCiWithoutChrome, htmlResponse, launchChrome, myWorkFontResponse, scriptResponse, withTimeout, type DevToolsPage, type OwnedChrome,
+  failOnCiWithoutChrome, htmlResponse, launchChrome, myWorkFontResponse, scriptResponse, scrollbarStyleFor, withTimeout, type DevToolsPage, type OwnedChrome,
 } from '../../helpers/chrome-devtools';
 import { CONTINUATION_STATE_WORDS, REPLY_CARD_STATES } from '../../../src/ui/my-work/src/live/conversation-continuation';
 import { STATEFUL_BUTTON_STATE } from '../../../src/ui/my-work/src/components/aceternity/stateful-button-state';
@@ -289,7 +289,7 @@ beforeAll(async () => {
   // so the real files are served (myWorkFontResponse).
   server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
     const path = new URL(request.url).pathname;
-    if (path === '/') return htmlResponse('<meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/app.css"><div id="root"></div><script src="/fixture.js"></script>');
+    if (path === '/') return htmlResponse(`<meta name="viewport" content="width=device-width,initial-scale=1">${scrollbarStyleFor(request.url)}<link rel="stylesheet" href="/app.css"><div id="root"></div><script src="/fixture.js"></script>`);
     if (path === '/fixture.js') return scriptResponse(bundle);
     if (path === '/app.css') return new Response(styles, { headers: { 'Content-Type': 'text/css' } });
     const font = myWorkFontResponse(path);
@@ -1182,7 +1182,8 @@ for (const [review, plainWords, workerWords] of [
     await page!.evaluate(`document.querySelector('[data-slot="command-item"]').click()`);
     await waitFor(`window.focusSaves.length === 1 && [...window.sheet().querySelectorAll('[role="alert"]')].length > 0`, 'the refused move', 5_000,
       `[...window.sheet().querySelectorAll('[role="alert"]')].map((alert) => alert.textContent)`);
-    const refused = `window.alertSaying('This change was not saved.')`;
+    // The drawer's own change row names the move it did not save, in the saved note's words (Phase 6 fix Q-M1).
+    const refused = `window.alertSaying('Not saved: Moved “Fix the admin model price page” to Team workspaces.')`;
     await waitFor(refused, 'the refused move in plain words', 5_000, `[...window.sheet().querySelectorAll('[role="alert"]')].map((alert) => alert.textContent)`);
     expect(await page!.evaluate(`window.sheet().textContent.includes('FOCUS_REFUSED')`)).toBe(false);
     expect(await page!.evaluate(`window.openDetails(${refused})`)).toBe(true);
@@ -1237,10 +1238,17 @@ for (const titles of ['missing', 'legacy'] as const) {
   }, 60_000);
 }
 
+/**
+ * The drawer panel scrolls, so where a browser draws a classic 15px scrollbar (Chrome on Linux CI and on Windows) its
+ * rows are 15px narrower: the reply row had 509px there, not 524 (PR #6210's CI). Each run here has one or the other.
+ */
+const DRAWER_SCROLLBAR_MODES = [{ label: 'no scrollbar', query: '' }, { label: 'a classic 15px scrollbar', query: '&scrollbar=classic' }] as const;
+
 for (const [count, picker] of [[10, 'Select'], [37, 'searchable list']] as const) {
-  (chromeExecutablePath ? it : it.skip)(`at 1440 the ${picker} keeps "Reply to", a long name cut at its width cap and "${count} of ${count}" on one line in every language, the whole name reachable (R4)`, async () => {
+  for (const scrollbar of DRAWER_SCROLLBAR_MODES) {
+  (chromeExecutablePath ? it : it.skip)(`at 1440 with ${scrollbar.label} the ${picker} keeps "Reply to", a long name cut at its width cap and "${count} of ${count}" on one line in every language, the whole name reachable (R4)`, async () => {
     // The long name on the last conversation, so the count beside it is the widest it gets ("37 of 37").
-    await openFixture(`conversations=${count}&titles=long&long-at=${count - 1}`, DESKTOP);
+    await openFixture(`conversations=${count}&titles=long&long-at=${count - 1}${scrollbar.query}`, DESKTOP);
     try {
       await openDrawer();
       await waitFor(`window.box()`, 'the reply box');
@@ -1268,17 +1276,20 @@ for (const [count, picker] of [[10, 'Select'], [37, 'searchable list']] as const
             // Room left on the line once the label, the trigger at its cap, the count and the two gaps between them are in it.
             roomLeft: Math.round((box(row).width - box(label).width - box(trigger).width - box(position).width - 2 * gap) * 100) / 100,
             oneLine: Math.abs(middle(label) - middle(trigger)) < 4 && Math.abs(middle(position) - middle(trigger)) < 4,
+            // Nothing runs past the row's end: one line by giving way, never by sticking out.
+            insideTheRow: box(position).right <= box(row).right + 0.5,
             cut, title: trigger.title };
         })()`);
       }
-      console.log(`[request-drawer] ${picker} row at 1440: ${JSON.stringify(rows)}`);
-      for (const [language, row] of Object.entries(rows) as [string, { position: string; triggerWidth: number; cap: number; oneLine: boolean; cut: boolean; title: string }][]) {
-        expect({ language, oneLine: row.oneLine, atMostTheCap: row.triggerWidth <= row.cap + 0.5, cut: row.cut, wholeInTitle: row.title.includes(LONG_TITLE) })
-          .toEqual({ language, oneLine: true, atMostTheCap: true, cut: true, wholeInTitle: true });
+      console.log(`[request-drawer] ${picker} row at 1440 with ${scrollbar.label}: ${JSON.stringify(rows)}`);
+      for (const [language, row] of Object.entries(rows) as [string, { position: string; triggerWidth: number; cap: number; oneLine: boolean; insideTheRow: boolean; cut: boolean; title: string }][]) {
+        expect({ language, oneLine: row.oneLine, insideTheRow: row.insideTheRow, atMostTheCap: row.triggerWidth <= row.cap + 0.5, cut: row.cut, wholeInTitle: row.title.includes(LONG_TITLE) })
+          .toEqual({ language, oneLine: true, insideTheRow: true, atMostTheCap: true, cut: true, wholeInTitle: true });
         expect(row.position).toContain(String(count));
       }
       expect(fixtureErrors).toEqual([]);
     } finally { await closeFixture(); }
   // About 3s here (2026-11-17); 60s for a slow CI runner.
   }, 60_000);
+  }
 }

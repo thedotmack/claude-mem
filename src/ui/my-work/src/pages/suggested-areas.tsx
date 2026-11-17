@@ -130,7 +130,7 @@ function DecidedArea({ area, decision, saving, onUndo, onShow }: { area: FocusAr
 export function SuggestedAreas({ onOpenFocus }: { onOpenFocus: (focusAreaId: string) => void }) {
   useI18n()
   const { focusAreas, requests, sourceKind, refresh, lastRuns } = useWorkModel()
-  const changes = useFocusChanges()
+  const changes = useFocusChanges('suggested-areas')
   const isPhone = useIsPhone()
   // Decisions made on this page stay in the queue (with Undo) until you leave; the saved rows are the truth.
   const [decisions, setDecisions] = useState<Record<string, Decision>>({})

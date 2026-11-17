@@ -4,7 +4,8 @@ import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import {
   REPOSITORY_ROOT, UNTHROTTLED_TIMER_FLAGS, chromeExecutablePath, compileBrowserFixture, connectToPage,
-  failOnCiWithoutChrome, htmlResponse, launchChrome, myWorkFontResponse, scriptResponse, withTimeout, type DevToolsPage, type OwnedChrome,
+  failOnCiWithoutChrome, FITS_THE_WINDOW, htmlResponse, launchChrome, myWorkFontResponse, PAGE_WIDTHS, pageFitsTheWindow, scriptResponse, withTimeout,
+  type DevToolsPage, type OwnedChrome,
 } from '../../helpers/chrome-devtools';
 import { THEME_PRE_PAINT_SCRIPT } from '../../../src/ui/my-work/src/lib/theme-pre-paint';
 import { RULE_DECISIONS } from '../../../src/ui/my-work/src/live/rule-actions';
@@ -280,7 +281,9 @@ it.skipIf(!chromeExecutablePath)('the bottom bar never covers Approve or Reject 
     await openPage('&view=rules');
     await phone();
     await waitFor('window.buttonsNamed("^Approve$").length > 0 && window.bottomBar()', 'the current rule and the bottom bar');
-    expect(await page!.evaluate('document.documentElement.scrollWidth')).toBe(390);
+    // Nothing scrolls sideways, at the width named: the window is that wide, the page that wide or a classic scrollbar
+    // narrower (Linux CI draws a 15px one; a touch phone none), and nothing runs past it.
+    expect(pageFitsTheWindow(await page!.evaluate(PAGE_WIDTHS), 390, { touch: true })).toMatchObject(FITS_THE_WINDOW);
     // From the top of the page to past the end of the decision section, in 8px steps (finer than the 44px buttons,
     // so no position where the bar could cover one is skipped). Each step waits a frame for layout and sticky offsets.
     const covered = await page!.evaluate(`(async () => {
@@ -486,7 +489,9 @@ it.skipIf(!chromeExecutablePath)('swiping the current rule sideways shows what l
     for (let x = side.x + 70; x <= side.x + 130; x += 10) await touch('touchMove', x, side.y);
     await page!.settle();
     expect(await page!.evaluate('document.querySelector("[data-slot=swipe-progress] p")?.textContent')).toBe('Let go to approve');
-    expect(await page!.evaluate('document.documentElement.scrollWidth')).toBe(390);
+    // Nothing scrolls sideways, at the width named: the window is that wide, the page that wide or a classic scrollbar
+    // narrower (Linux CI draws a 15px one; a touch phone none), and nothing runs past it.
+    expect(pageFitsTheWindow(await page!.evaluate(PAGE_WIDTHS), 390, { touch: true })).toMatchObject(FITS_THE_WINDOW);
     await touch('touchEnd', side.x + 130, side.y);
     await waitFor(`document.querySelector("[data-slot=decision-result][data-decision=${APPROVED}]")`, 'the decision from the swipe');
     expect(fixtureErrors).toEqual([]);
@@ -941,7 +946,9 @@ it.skipIf(!chromeExecutablePath)('under reduced motion a sideways swipe on a pho
     await page!.settle();
     expect(await page!.evaluate(progressLine)).toBe('Let go to keep');
     expect(await page!.evaluate(stripShows)).toEqual({ word: 'Keep', icon: true, shown: [true, true, true], cardMoved: 0 });
-    expect(await page!.evaluate('document.documentElement.scrollWidth')).toBe(390);
+    // Nothing scrolls sideways, at the width named: the window is that wide, the page that wide or a classic scrollbar
+    // narrower (Linux CI draws a 15px one; a touch phone none), and nothing runs past it.
+    expect(pageFitsTheWindow(await page!.evaluate(PAGE_WIDTHS), 390, { touch: true })).toMatchObject(FITS_THE_WINDOW);
     await touch('touchEnd', start.x + 130, start.y);
     await waitFor(`document.querySelector("[data-slot=suggested-area-card][data-decision=${KEPT}]")`, 'the area kept on release');
     expect(fixtureErrors).toEqual([]);

@@ -12,9 +12,10 @@ type ActionWords = {
   savedLabel?: string
   /**
    * What a screen reader hears when the action did not work, in place of "Not saved" ("Not copied"). The button shows
-   * its own label again, so it can be pressed to try again; the caller says why under it.
+   * its own label again, so it can be pressed to try again; the caller says why under it. `null`: the caller's line under
+   * it is the announcement (an alert in its own words), so the button says nothing and the failure is heard once.
    */
-  notSavedLabel?: string
+  notSavedLabel?: string | null
 }
 
 /**
@@ -25,12 +26,12 @@ type ActionWords = {
  */
 const SAVE_BUTTON_WORDS: Record<StatefulButtonState, {
   label: ((t: Translate, own: ActionWords) => string) | null
-  spoken: ((t: Translate, own: ActionWords) => string) | null
+  spoken: ((t: Translate, own: ActionWords) => string | null) | null
 }> = {
   rest: { label: null, spoken: null },
   saving: { label: (t, own) => own.savingLabel ?? t('Saving…'), spoken: null },
   saved: { label: (t, own) => own.savedLabel ?? t('Saved'), spoken: (t, own) => own.savedLabel ?? t('Saved') },
-  'not-saved': { label: null, spoken: (t, own) => own.notSavedLabel ?? t('Not saved') },
+  'not-saved': { label: null, spoken: (t, own) => own.notSavedLabel === null ? null : own.notSavedLabel ?? t('Not saved') },
 }
 
 type SaveButtonProps = Omit<ComponentProps<typeof StatefulButton>, 'stateLabels' | 'onStateChange'> & ActionWords
@@ -59,7 +60,7 @@ export function SaveButton({ savingLabel, savedLabel, notSavedLabel, ...props }:
       <StatefulButton stateLabels={stateLabels} onStateChange={setState} {...props} />
       {/* Polite: "Saved". The region is always there, so the change to it is what a screen reader announces. */}
       <span role="status" className="sr-only">{state === STATEFUL_BUTTON_STATE.saved ? spoken : ''}</span>
-      {state === STATEFUL_BUTTON_STATE.notSaved && <span role="alert" className="sr-only">{spoken}</span>}
+      {state === STATEFUL_BUTTON_STATE.notSaved && spoken && <span role="alert" className="sr-only">{spoken}</span>}
     </>
   )
 }

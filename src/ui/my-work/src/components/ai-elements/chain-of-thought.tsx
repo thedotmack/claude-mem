@@ -9,7 +9,7 @@ import {
   FOLD_TRIGGER_CLASS_NAME,
   FoldTriggerParts,
 } from "@/components/ui/collapsible";
-import { displayTime } from "@/lib/display-time";
+import { recordedTimeWords } from "@/lib/display-time";
 import { interpolate, useI18n } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import type { LucideIcon } from "lucide-react";
@@ -142,7 +142,7 @@ export type ChainOfThoughtStepsProps = {
    * Oldest first, as the build story records them (data.ts Request['story']). `at`: the step's time, null when none
    * was recorded, absent when the step carries none; `description`: words about the step.
    */
-  steps: readonly { label: string; at?: string | null; description?: string; status: "complete" | "active" | "pending" }[];
+  steps: readonly { label: string; at?: string | null; atIso?: string; description?: string; status: "complete" | "active" | "pending" }[];
 };
 
 /**
@@ -157,7 +157,7 @@ export const ChainOfThoughtSteps = ({ steps }: ChainOfThoughtStepsProps) => {
   const earlier = steps.slice(0, Math.max(0, steps.length - NEWEST_STEPS_SHOWN));
   const newest = steps.slice(earlier.length);
   const timeOf = (step: ChainOfThoughtStepsProps["steps"][number]) =>
-    step.at === undefined ? undefined : step.at === null ? t("Date not recorded") : displayTime(step.at);
+    step.at === undefined ? undefined : step.at === null ? t("Date not recorded") : recordedTimeWords(step.atIso, step.at, "time-or-day");
   const draw = (step: ChainOfThoughtStepsProps["steps"][number], index: number) => (
     <ChainOfThoughtStep key={`${index}:${step.label}`} label={step.label} time={timeOf(step)} description={step.description} status={step.status} />
   );

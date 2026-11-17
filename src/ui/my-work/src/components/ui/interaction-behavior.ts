@@ -136,8 +136,12 @@ export function rememberMenuOpener(menu: Element, opener: React.RefObject<HTMLEl
   MENU_OPENERS.set(menu, opener)
 }
 
-/** Menus nest only a few levels deep; each step of the walk below climbs one, and an element seen twice ends it. */
-function focusReturnTarget(focused: Element | null): HTMLElement | null {
+/**
+ * The one rule for where focus goes back when something opened from the page closes: the element that had focus when
+ * it opened, or for a menu item, what opened its menu. Menus nest only a few levels deep; each step of the walk below
+ * climbs one, and an element seen twice ends it.
+ */
+export function focusReturnTarget(focused: Element | null): HTMLElement | null {
   let target = focused instanceof HTMLElement && focused !== document.body ? focused : null
   const seen = new Set<Element>()
   while (target && !seen.has(target)) {
@@ -150,6 +154,18 @@ function focusReturnTarget(focused: Element | null): HTMLElement | null {
     target = opener
   }
   return target
+}
+
+/**
+ * Where focus goes when the element that opened something has left the page by the time it closes: the element that
+ * now opens the same thing (`[data-request-opener="<id>"]`: a request's row redrawn in another state group while its
+ * drawer was open, phase-4 quality finding 1), else the view's heading (`[data-view-heading]`, focusable from code).
+ * One that sits in the same board as the old one comes first. Null when the page has neither.
+ */
+export function focusReturnFallback(gone: { requestId: string | null; inBoard: boolean }): HTMLElement | null {
+  const openers = gone.requestId === null ? [] : [...document.querySelectorAll<HTMLElement>(`[data-request-opener="${CSS.escape(gone.requestId)}"]`)]
+  const sameBoard = openers.find((opener) => gone.inBoard === (opener.closest('[data-board-view]') !== null))
+  return sameBoard ?? openers[0] ?? document.querySelector<HTMLElement>('[data-view-heading]')
 }
 
 /**

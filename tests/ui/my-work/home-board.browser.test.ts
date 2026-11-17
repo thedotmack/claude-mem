@@ -190,8 +190,10 @@ beforeAll(async () => {
     window.tickerTitle = () => document.querySelector('[data-ticker] button .truncate')?.textContent ?? null;
     // The build story with dated chapters as request-progress writes their headings (24-hour times), for the recap.
     // The headings' days and times are UTC, as request-progress writes them; writtenAtIso dates them (Nov 17, 02:12 UTC).
+    // Written just now: the page words "written …" from that instant in the reader's clock (Phase 6 fix V3), never the
+    // words beside it, here an older model's 24-hour words, which would show as written.
     window.useDatedStory = () => useStore.setState((state) => { const load = state.work.load; if (load.state === 'loaded') load.model.buildStory = {
-      recap: 'Opening paragraph.', paragraphs: ['Opening paragraph.'], writtenAt: '3:10 pm', writtenAtIso: '2026-11-17T02:12:00.000Z',
+      recap: 'Opening paragraph.', paragraphs: ['Opening paragraph.'], writtenAt: '15:10', writtenAtIso: new Date().toISOString(),
       chapters: [{ heading: null, paragraphs: ['Opening paragraph.'] }, { heading: 'Nov 13-14: first entry', paragraphs: ['a.'] },
         { heading: 'Nov 15 22:05: second entry', paragraphs: ['b.'] }, { heading: 'Nov 16 01:56: third entry', paragraphs: ['c.'] },
         { heading: 'Nov 16 13:20: fourth entry', paragraphs: ['d.'] }],
@@ -532,7 +534,8 @@ const pressTryAgain = (name: string) => page!.evaluate(`[...window.lineOf(${JSON
     await page!.evaluate('window.useDatedStory()');
     await waitFor(`[...document.querySelectorAll('h2')].some((heading) => heading.textContent === 'Build story')`, 'the recap');
     const recap: string = await page!.evaluate(`[...document.querySelectorAll('h2')].find((heading) => heading.textContent === 'Build story').closest('.space-y-4').innerText`);
-    expect(recap).toContain('written 3:10 pm');
+    // Today's clock time in the page's twelve-hour notation, from the story's instant.
+    expect(recap).toMatch(/written \d{1,2}:\d{2} (am|pm)\n/);
     // "Nov 16 13:20", "Nov 16 01:56" and "Nov 15 22:05" are UTC: 8 hours earlier in Los Angeles in November.
     expect(recap).toContain('Nov 16, 5:20 am');
     expect(recap).toContain('Nov 15, 5:56 pm');

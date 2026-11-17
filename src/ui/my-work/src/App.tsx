@@ -21,7 +21,7 @@ import { Spinner } from '@/components/ui/spinner'
 import { needsYou, OTHER_FOCUS_AREA_ID } from '@/data'
 import { ACTIVE_SOURCE, useStore, useWorkModel, useWorkspace, type FocusSelection, type NavPage } from '@/store'
 import { shownFocusAreaId, themeChoiceInUse } from '@/store/slices/view-slice'
-import { useFocusSharesLoader } from '@/live/focus-shares'
+import { focusSharesAreADemonstration, useFocusSharesLoader } from '@/live/focus-shares'
 import { isServedFromCloud } from '@/live/served-from'
 import { MediaSourceContext } from '@/components/observation-media/ObsMedia'
 import { SAMPLE_MEDIA_SOURCE } from '@/components/observation-media/sample-media'
@@ -171,8 +171,9 @@ function LoadedApp({ focusMainOnMount = false }: { focusMainOnMount?: boolean })
   const mainRef = useRef<HTMLElement>(null)
   useEffect(() => { if (focusMainOnMount) mainRef.current?.focus({ preventScroll: true }) }, [focusMainOnMount])
   const { sourceKind, requests, focusAreas } = useWorkModel()
-  // Which areas are shared, for their Shared mark. The worker keeps the pages current (R17.3).
-  useFocusSharesLoader(sourceKind === 'local')
+  // Which areas are shared, for their Shared mark. The worker keeps the pages current (R17.3). The sample page reads
+  // them only in its sharing demonstration (`sample-state=area-shared`), answered in the page.
+  useFocusSharesLoader(sourceKind === 'local' || focusSharesAreADemonstration())
   const sample = sourceKind === 'sample'
   const view = useStore((state) => state.view.section)
   const focusChoice = useStore((state) => state.view.focusChoice)

@@ -423,9 +423,10 @@
 }
 
 /*
- * Live motion on My Work (components/live-motion.tsx). A card whose record just changed glows once in the accent
- * color, so the eye lands on it; it stops under reduced motion (the rule below). The progress bar's light sweep is gone:
- * every working bar ran it, past rule 8's two moving things per view, and no component uses it now.
+ * Live motion on My Work (components/live-motion.tsx). A glow in the accent color that plays when a record just
+ * changed; it stops under reduced motion (the rule below). My Work's own cards show the still mark below instead (with the
+ * change ticker it made three moving things on home, rule 8); the class stays for other layouts (PR #6054's rows use
+ * it). The progress bar's light sweep is gone: every working bar ran it, past rule 8's two moving things per view.
  */
 @keyframes just-updated-glow {
   0% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--primary) 55%, transparent); }
@@ -434,13 +435,17 @@
 }
 .just-updated { animation: just-updated-glow 1.6s ease-out 2; }
 /*
- * A List, By agent or Team row whose record just changed (components/request-rows.tsx RequestRow, pages/my-work.tsx
- * ListTableRow), for the store's FRESHLY_UPDATED_FOR_MS: a still mark, never the glow, so one live model that changes
+ * A List, By agent or Team row or a card whose record just changed (components/request-rows.tsx RequestRow,
+ * pages/my-work.tsx ListTableRow, components/request-card.tsx), for the store's FRESHLY_UPDATED_FOR_MS: a still mark,
+ * never the glow, so one live model that changes
  * several rows moves only the change ticker and the newest change's riffle (rule 8: two moving things per view). A
  * 3px bar in the accent text colour (5.57:1 on the light card, high on the dark one: ≥3:1 for a state mark, rule 7) at
- * the row's start, over a faint accent tint; a table row draws its bar on its first cell.
+ * the row's start, over a faint accent tint; a table row draws its bar on its first cell. The tint is drawn as an image,
+ * which no row's or card's colour fade (transition-colors) animates, so the mark comes and goes at once, also when the
+ * next live change moves it to other rows and when it ends: as a colour, every row losing it faded out, one moving thing
+ * each (Phase 6 verify V2).
  */
-.just-updated-mark { background-color: color-mix(in oklab, var(--accent) 45%, transparent); }
+.just-updated-mark { background-image: linear-gradient(color-mix(in oklab, var(--accent) 45%, transparent), color-mix(in oklab, var(--accent) 45%, transparent)); }
 .just-updated-mark:not(tr), tr.just-updated-mark > :first-child { box-shadow: inset 3px 0 0 var(--accent-foreground); }
 
 /* Reduced motion everywhere: spinners stop, pulses and slides are instant, the text simply swaps (decision 5). */

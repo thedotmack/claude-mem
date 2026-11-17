@@ -12,7 +12,7 @@ import { OTHER_FOCUS_AREA_ID, type FocusArea, type NextStepKind, type NextStepMi
 import { repeatsOwnerWords } from './prompt-echo.ts'
 import { durationIn, type DurationUnit } from './running-time.ts'
 import { resolveFocusAreaId } from './to-focus-model.ts'
-import { LEGACY_SHIP_STEP, LEGACY_UNBLOCK_PREFIX, NEXT_STEP_NOT_RECORDED, NO_WORK_YET, nextStepShown } from './to-work-model.ts'
+import { LEGACY_SHIP_STEP, LEGACY_START_NOT_RECORDED, LEGACY_UNBLOCK_PREFIX, NEXT_STEP_NOT_RECORDED, NO_WORK_YET, nextStepShown, recordedStart } from './to-work-model.ts'
 import type { WorkModel } from './work-data-source.ts'
 
 export const SHARED_REQUESTS_MAX = 200
@@ -163,7 +163,8 @@ export function toSharedFocusPage(model: Pick<WorkModel, 'requests' | 'focusArea
       percent: request.progress.percent,
       next: sharedNextStep(request),
       agent: clip(agentName(request), 80),
-      startedAt: clip(request.startedAt, 60),
+      // The published page keeps its words from before 16.0.0 for a start that is not recorded (cmem.ai shows them).
+      startedAt: clip(recordedStart(request.startedAt) ?? LEGACY_START_NOT_RECORDED, 60),
       runningFor: clip(sharedRunningFor(request), 60),
       completedAt: request.progress.completedAt ? clip(request.progress.completedAt, 60) : null,
     })),

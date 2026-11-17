@@ -1,4 +1,4 @@
-import { displayTime } from '@/lib/display-time'
+import { displayTime, recordedTimeWords } from '@/lib/display-time'
 import { getLocale, interpolate, t, useI18n } from '@/lib/i18n'
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode, type Ref } from 'react'
 import { ArrowRightIcon, CheckIcon, FileTextIcon, GitMergeIcon, SplitIcon, Undo2Icon } from 'lucide-react'
@@ -13,20 +13,19 @@ import { Button, buttonVariants } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleFoldTrigger } from '@/components/ui/collapsible'
 import { SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Req } from '@/spec/req'
-import { OTHER_FOCUS_AREA_ID, type Request, type WorkProductKind } from '@/data'
+import { OTHER_FOCUS_AREA_ID, type EvidenceKind, type Request, type WorkProductKind } from '@/data'
 import { useStore, useWorkModel, useWorkspace } from '@/store'
 import { isPlaceableFocusArea, resolveFocusAreaId } from '@/live/to-focus-model'
-import { nextStepShown, TIME_NOT_RECORDED } from '@/live/to-work-model'
+import { evidenceShown, nextStepShown, recordedStart, recordedTaskName, recordedWorkstreamTitle, TIME_NOT_RECORDED } from '@/live/to-work-model'
 import { CHANGED_WHILE_READING_MESSAGE, CHECK_UNDONE_MESSAGE, CHECKED_LOCALLY_MESSAGE, type ReviewResult } from '@/live/review-response'
 import { cn } from '@/lib/utils'
-import { AgentIcon, FailureDetails, FocusAreaChip, NextMove, ProductLink, ProgressMeter, STATE_LABEL, StateBadge, StateMark } from './bits'
+import { AgentIcon, FailureDetails, FocusAreaChip, NextMove, ProductLink, ProgressMeter, RecordedTime, STATE_LABEL, StateBadge, StateMark } from './bits'
 import { ConversationReplyCard, ConversationRow, type SendEmphasis } from './conversation-continue'
-import { durationWords } from '@/live/running-time'
+import { durationWords, isFinishedRun } from '@/live/running-time'
 import { conversationKey } from '@/live/conversation-continuation'
 import { FocusChangeBar, useFocusChanges, type FocusChanges } from './focus-changes'
 import { OpenFollowUps } from './request-card'
-import { mergeRequestDetail, requestDetailKey } from '@/live/request-detail-state'
-import { requestDetailToShow, requestOnScreen } from '@/live/request-detail-state'
+import { useRequestDetail } from '@/lib/use-request-detail'
 import { MediaCountBadge, ObsMediaStrip } from './observation-media/ObsMedia'
 import { DeliverableList } from './deliverable-list'
 import { isCardDeliverable } from '@/lib/deliverables'
@@ -110,6 +109,26 @@ function workstreamsCount(workstreams: Request['workstreams']): string {
   return interpolate(workstreams.length === 1 ? t('{count} workstream') : t('{count} workstreams'), { count: workstreams.length })
 }
 
+/**
+ * Each source record's kind in the reader's language, before its title in "Where this came from" (the mapper sent these
+ * as English words in the title, "Observation: …"; Phase 5 fix round 3's open list). Each entry words its own literal
+ * text, so the catalog test sees it; a new kind fails the typecheck until it has words here.
+ */
+const EVIDENCE_KIND_WORDS: Record<EvidenceKind, () => string> = {
+  prompt: () => t('Your prompt'),
+  'work-state': () => t('Work state'),
+  observation: () => t('Observation'),
+  summary: () => t('Session summary'),
+  session: () => t('Session'),
+  record: () => t('Record'),
+}
+
+/** A source record's line: its kind's words and its title (an older worker's title that names no kind shows as sent). */
+function sourceRecordWords(source: Request['evidence'][number]): string {
+  const shown = evidenceShown(source)
+  return shown.kind === null ? shown.title : interpolate(t('{kind}: {title}'), { kind: EVIDENCE_KIND_WORDS[shown.kind](), title: shown.title })
+}
+
 /** "Where this came from"'s count: its conversations, then its sources when it has any. */
 function whereItCameFromCount(request: Request): string {
   const conversations = request.conversations.length || 1
@@ -150,7 +169,7 @@ function Records({ records, boxed = false }: { records: Request['granular']; box
               8ch is exactly its width (66.5px of the column's 70.7px at the 17px root, measured); the half character
               keeps it on one line. A Chinese or Korean time is wider (its half-day word is two characters of about 1.7ch
               each) and wraps inside the column, whole: nothing in it is ever cut (fix round R4, request-card-parts test). */}
-          <span className="mono-number w-[8.5ch] text-[0.8125rem] leading-5 text-muted-foreground">{displayTime(record.at)}</span>
+          <RecordedTime iso={record.atIso} words={record.at} form="time-or-day" className="mono-number w-[8.5ch] text-[0.8125rem] leading-5 text-muted-foreground" />
           <QueueItemContent className="text-sm leading-5 text-foreground/90">
             {record.text}
             {record.media && <> <MediaCountBadge media={record.media} /></>}
@@ -329,7 +348,7 @@ function CheckAction({ request }: { request: Request }) {
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3 rounded-xl border border-control-edge bg-surface p-4 text-sm">
         <div ref={outcomeLine} tabIndex={-1} role="status" className="min-w-0 flex-1 basis-60 space-y-1 rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50">
           <p className="flex items-start gap-2 font-medium text-shipped-foreground"><CheckIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
-            <span className="tabular">{interpolate(t('Checked {checkedAt}.'), { checkedAt: displayTime(request.checkedAt) })}</span></p>
+            <span className="tabular">{interpolate(t('Checked {checkedAt}.'), { checkedAt: recordedTimeWords(request.checkedAtIso, request.checkedAt) })}</span></p>
           <p className="text-muted-foreground">{sentences(savedWhere, t('Shipping is still your call.'))}</p>
         </div>
         <SaveButton className={buttonVariants({ variant: 'outline', size: DRAWER_ACTION_SIZE })} onClick={() => save(false)} aria-disabled={waits}><Undo2Icon />{t('Undo')}</SaveButton>
@@ -481,7 +500,7 @@ function MoveTo({ request, changes }: { request: Request; changes: FocusChanges 
 function FocusAreaRow({ request, onOpenFocus }: { request: Request; onOpenFocus: (focusAreaId: string) => void }) {
   useI18n()
   // The shared save: a second pick while one move is saving does nothing, and the move shows with Undo.
-  const changes = useFocusChanges()
+  const changes = useFocusChanges(`request:${request.id}`)
   const labelId = useId()
   return (
     <div className="space-y-2">
@@ -503,51 +522,21 @@ function FocusAreaRow({ request, onOpenFocus }: { request: Request; onOpenFocus:
  */
 export function RequestDetail({ request, onClose, onOpenFocus }: { request: Request | null; onClose: () => void; onOpenFocus: (focusAreaId: string) => void }) {
   useI18n()
-  const readDetail = useStore((state) => state.loadRequestDetail)
-  const [retry, setRetry] = useState(0)
-  /** `waitedMs`: how long a failed read waited for its answer, so the drawer can say (page-05 F timeout-feedback). */
-  const [detail, setDetail] = useState<{ key: string; request?: Request; error?: string; waitedMs?: number } | null>(null)
-  // The last read that brought a detail back. A newer version's read starts empty, so this one stays on screen
-  // meanwhile (requestDetailToShow). It is recorded while rendering: React's way to keep a value from an earlier render.
-  const [lastReadWithDetail, setLastReadWithDetail] = useState<typeof detail>(null)
-  if (detail?.request && detail !== lastReadWithDetail) setLastReadWithDetail(detail)
-  const key = request ? requestDetailKey(request) : ''
-  const needsDetail = request?.detailLoaded === false
-  const requestRef = useRef(request)
-  requestRef.current = request
-  useEffect(() => {
-    const summary = requestRef.current
-    if (!summary || !needsDetail) return
-    const controller = new AbortController()
-    let active = true
-    const startedAt = Date.now()
-    setDetail({ key })
-    void readDetail(summary, { signal: controller.signal }).then(
-      (loaded) => { if (active) setDetail({ key, request: loaded }) },
-      (error: unknown) => {
-        if (active && !controller.signal.aborted) setDetail({ key, error: error instanceof Error ? error.message : 'Request detail could not be loaded.', waitedMs: Date.now() - startedAt })
-      },
-    )
-    return () => { active = false; controller.abort() }
-    // The detail version changes only when recorded content changes. A new overview object must not restart this read.
-  }, [key, needsDetail, readDetail, retry])
+  // The one detail read (lib/use-request-detail.ts): a newer version of the same request keeps the detail read before it
+  // on screen while it loads, or with its failure if it fails, so the drawer stays as the owner left it. The same
+  // component in the same place, so React keeps it. Its review actions act on that older version, the one on screen.
+  // Keyed by the request, so another request starts afresh.
+  const read = useRequestDetail(request)
   if (!request) return null
-  const tryAgain = () => setRetry((value) => value + 1)
-  const current = detail?.key === key ? detail : null
-  // A newer version of the same request is loading, or failed to load: the detail read before it stays, so the drawer
-  // stays as the owner left it. The same component in the same place, so React keeps it. Its review actions act on that
-  // older version, the one on screen (requestOnScreen). Keyed by the request, so another request starts afresh.
-  const shown = !needsDetail || current?.request ? null : requestDetailToShow(request.id, current, lastReadWithDetail)
-  const loaded = !needsDetail ? request : current?.request ? mergeRequestDetail(request, current.request) : shown ? requestOnScreen(request, shown.request) : null
   const title = request.title ?? request.resolvesTo?.title ?? t('Untitled request')
   const summary = request.summary ?? request.resolvesTo?.summary
   return (
     <RequestDrawerSheet onClose={onClose} onEscapeKeyDown={keepDrawerOpenForGallery}>
-      {loaded
-        ? <LoadedRequestDetail key={request.id} request={loaded} onOpenFocus={onOpenFocus}
-            newerVersionReadFailure={shown?.newerVersionReadFailure === undefined ? undefined : { message: shown.newerVersionReadFailure, tryAgain }} />
-        : current?.error
-          ? <RequestDetailFailure title={title} summary={summary} cause={current.error} waitedMs={current.waitedMs} onTryAgain={tryAgain} />
+      {read.loaded
+        ? <LoadedRequestDetail key={request.id} request={read.loaded} onOpenFocus={onOpenFocus}
+            newerVersionReadFailure={read.newerVersionReadFailure === null ? undefined : { message: read.newerVersionReadFailure, tryAgain: read.tryAgain }} />
+        : read.failure
+          ? <RequestDetailFailure title={title} summary={summary} cause={read.failure.message} waitedMs={read.failure.waitedMs ?? undefined} onTryAgain={read.tryAgain} />
           : <RequestDrawerLoading title={title} summary={summary} />}
     </RequestDrawerSheet>
   )
@@ -625,6 +614,7 @@ function LoadedRequestDetail({ request, newerVersionReadFailure, onOpenFocus }: 
   const hasNextStep = nextStepShown(request.next).kind !== 'missing'
   const title = request.title ?? request.resolvesTo?.title ?? t('Untitled request')
   const summary = request.summary ?? request.resolvesTo?.summary
+  const started = recordedStart(request.startedAt)
   const recent = request.granular.slice(0, RECENT_RECORDS)
   const earlier = request.granular.slice(RECENT_RECORDS)
   const images = requestImages(request)
@@ -670,7 +660,11 @@ function LoadedRequestDetail({ request, newerVersionReadFailure, onOpenFocus }: 
         <div className="space-y-3">
           <ProgressMeter request={request} />
           <FocusAreaRow request={request} onOpenFocus={onOpenFocus} />
-          <p className="text-xs text-muted-foreground tabular">{interpolate(t('Asked by {name} · started {time} · {duration} · {stage}'), { name: request.askedBy, time: displayTime(request.startedAt), duration: durationWords(request.runningForMs, request.runningFor, t), stage: t(request.stage) })}</p>
+          {/* A shipped run's time is how long it took, never "Just started" (live/running-time.ts isFinishedRun, the List's
+              rule); a start that is not recorded is a missing value, worded here. */}
+          <p className="text-xs text-muted-foreground tabular">{started
+            ? interpolate(t('Asked by {name} · started {time} · {duration} · {stage}'), { name: request.askedBy, time: recordedTimeWords(request.startedAtIso, started), duration: durationWords(request.runningForMs, request.runningFor, t, isFinishedRun(request.state)), stage: t(request.stage) })
+            : interpolate(t('Asked by {name} · start not recorded · {duration} · {stage}'), { name: request.askedBy, duration: durationWords(request.runningForMs, request.runningFor, t, isFinishedRun(request.state)), stage: t(request.stage) })}</p>
         </div>
 
         {/* Done and not checked: Mark checked comes first and is the drawer's one primary. It stays here whatever the
@@ -701,9 +695,10 @@ function LoadedRequestDetail({ request, newerVersionReadFailure, onOpenFocus }: 
                 <div className="divide-y divide-border/70">
                   {request.workstreams.map((stream, index) => (
                     <Task key={`${index}-${stream.title}`} defaultOpen={false} className="py-0.5">
-                      <TaskTrigger title={stream.title} done={stream.tasks.filter((task) => task.done).length} total={stream.tasks.length} />
+                      {/* A title or name that is not recorded is worded here, in the reader's language. */}
+                      <TaskTrigger title={recordedWorkstreamTitle(stream.title) ?? t('Supporting work')} done={stream.tasks.filter((task) => task.done).length} total={stream.tasks.length} />
                       <TaskContent className="pb-3">
-                        {openTasksFirst(stream.tasks).map((task, index) => <TaskItem key={`${index}-${task.name}`} done={task.done}>{task.name}</TaskItem>)}
+                        {openTasksFirst(stream.tasks).map((task, index) => <TaskItem key={`${index}-${task.name}`} done={task.done}>{recordedTaskName(task.name) ?? t('Untitled task')}</TaskItem>)}
                       </TaskContent>
                     </Task>
                   ))}
@@ -754,7 +749,7 @@ function LoadedRequestDetail({ request, newerVersionReadFailure, onOpenFocus }: 
                   <blockquote key={`${index}-${prompt.at}`} className="border-l-2 pl-3 text-sm text-muted-foreground">“{prompt.quote}” {prompt.at !== TIME_NOT_RECORDED && <span className="text-xs tabular">{displayTime(prompt.at)}</span>}</blockquote>
                 ))}
                 {request.evidence.map((source) => (
-                  <ProductLink key={source.href === '#' ? source.title : source.href} href={source.href} className="flex min-h-9 items-center gap-2 text-xs text-muted-foreground"><FileTextIcon className="size-3.5" />{source.title}</ProductLink>
+                  <ProductLink key={source.href === '#' ? source.title : source.href} href={source.href} className="flex min-h-9 items-center gap-2 text-xs text-muted-foreground"><FileTextIcon className="size-3.5" />{sourceRecordWords(source)}</ProductLink>
                 ))}
               </div>
             </DrawerFold>

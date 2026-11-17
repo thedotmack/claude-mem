@@ -182,17 +182,17 @@ export function RequestRow({ request, onOpen, showAgent = true, showAgentName = 
   const title = requestTitle(request, t)
   const titleTone = !request.title && 'text-muted-foreground'
   const rowClassName = cn('relative min-w-0 rounded-lg px-2.5 py-2 hover:bg-surface', titleOnItsOwnLine ? 'space-y-1.5' : 'space-y-1', fresh && 'just-updated-mark')
-  const nextStep = <NextMove next={request.next} whenMissing="dash" layout="line" />
   const freshWords = fresh && <span className="sr-only">{t('Just updated')}</span>
   if (titleOnItsOwnLine) {
     return (
       <div data-request-row={request.state} data-just-updated={fresh || undefined} className={rowClassName}>
         {/* Borderless, so the title is exactly as wide as the row's content (the bare button keeps a 1px clear edge). */}
-        <Button variant="bare" data-row-target="" onClick={() => onOpen(request)} className={cn('flex w-full flex-col items-stretch gap-1.5 border-0 text-sm', ROW_TARGET_CLASS_NAME)}>
+        <Button variant="bare" data-row-target="" data-request-opener={request.id} onClick={() => onOpen(request)} className={cn('flex w-full flex-col items-stretch gap-1.5 border-0 text-sm', ROW_TARGET_CLASS_NAME)}>
           <span data-row-title="" className={cn('font-medium wrap-break-word', titleTone)}>{title}</span>
           <span className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1">
             <ListStatus request={request} />
-            {nextStep}
+            {/* The step whole, wrapping as the title does (HEAD's By agent cards showed it whole; rule 2). */}
+            <NextMove next={request.next} whenMissing="dash" layout="lines" className="basis-full" />
           </span>
           {freshWords}
         </Button>
@@ -204,12 +204,12 @@ export function RequestRow({ request, onOpen, showAgent = true, showAgentName = 
     <div data-request-row={request.state} data-just-updated={fresh || undefined} className={rowClassName}>
       <div className="flex min-w-0 items-start gap-2.5">
         {showAgent && <span className="relative z-[1]"><AgentIcon agentId={request.agentId} showName={showAgentName} /></span>}
-        <Button variant="bare" data-row-target="" onClick={() => onOpen(request)} className={cn('min-w-0 flex-1 flex-col items-stretch gap-1 text-sm', ROW_TARGET_CLASS_NAME)}>
+        <Button variant="bare" data-row-target="" data-request-opener={request.id} onClick={() => onOpen(request)} className={cn('min-w-0 flex-1 flex-col items-stretch gap-1 text-sm', ROW_TARGET_CLASS_NAME)}>
           <span className="flex min-w-0 items-center gap-2">
             <span data-row-title="" className={cn('min-w-0 flex-1 truncate font-medium', titleTone)}>{title}</span>
             <ListStatus request={request} />
           </span>
-          {nextStep}
+          <NextMove next={request.next} whenMissing="dash" layout="line" />
           {freshWords}
         </Button>
       </div>

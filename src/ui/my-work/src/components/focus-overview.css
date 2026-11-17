@@ -1,6 +1,6 @@
 .focus-overview { container-type: inline-size; padding-bottom: 1.5rem; border-bottom: 1px solid var(--border); text-align: left; }
 .focus-area-grid { display: grid; align-items: start; gap: 1rem; }
-.focus-area-card { position: relative; overflow: hidden; border: 1px solid var(--border); border-radius: 12px; background: var(--card); box-shadow: none; animation: focus-area-arrive .35s ease-out; transition: background-color .15s; }
+.focus-area-card { position: relative; overflow: hidden; border: 1px solid var(--border); border-radius: 12px; background: var(--card); box-shadow: none; transition: background-color .15s; }
 /* An area that needs the owner: a brighter edge in its attention colour (c-focus-overview). */
 .focus-area-card.needs-owner { border-color: color-mix(in oklab, var(--attention-foreground) 70%, transparent); }
 /* The whole card opens the area: the name's button stretches over it (one Tab stop per card); the card's other
@@ -75,9 +75,12 @@
 .focus-area-goal { margin-top: .35rem; color: var(--muted-foreground); font-size: .85rem; line-height: 1.55; }
 .focus-area-eyebrow { color: var(--muted-foreground); font-size: .75rem; font-weight: 500; letter-spacing: .025em; }
 .focus-reveal-notice { color: var(--foreground); border: 1px solid var(--border); padding: 1rem; border-radius: 8px; margin-bottom: 1rem; font-size: .9rem; line-height: 1.6; }
+/* Setup's reveal shows the areas arriving, once. In My Work an area card is simply there: re-placed by a live change (an
+   area that comes to need you moves first), its slide ran again, a moving thing on top of the board's (plan rule 8,
+   Phase 6 verify V2). Reduced motion: no slide, here in the component's own stylesheet. */
 @keyframes focus-area-arrive { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
-/* Reduced motion: a card arrives without its slide, here in the component's own stylesheet (plan rule 8). */
-@media (prefers-reduced-motion: reduce) { .focus-area-card { animation: none; } }
+.cmem-setup .focus-area-card { animation: focus-area-arrive .35s ease-out; }
+@media (prefers-reduced-motion: reduce) { .cmem-setup .focus-area-card { animation: none; } }
 .focus-header-intro { display: grid; grid-template-columns: minmax(100px, 180px) minmax(0, 1fr); align-items: start; gap: 1.25rem; }
 .focus-header-intro > .focus-artwork { aspect-ratio: 1.5; border-radius: 8px; }
 .focus-header-intro.artwork-off { display: block; }

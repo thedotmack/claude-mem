@@ -195,18 +195,38 @@ export interface RulesSlice {
 
 export interface FocusChangeRecord { text: string; undo: FocusChange[] | null; expectedVersions?: string[] | null }
 
+/**
+ * The last My Focus save that failed, the one record of it every screen reads: what it tried (a change, or the Undo of
+ * the newest change in the history), the saved note's words that name it (components/focus-change-message.ts), the
+ * screen that made it (`place`, components/focus-changes.tsx useFocusChanges), and why, as the source said it. Only
+ * that screen shows it and offers Try again, which makes exactly this save once more; the next save of anything
+ * replaces it, and leaving the screen forgets it.
+ */
+export interface FailedFocusSave {
+  attempt: { kind: 'change'; change: FocusChange; record: FocusChangeRecord | null } | { kind: 'undo' }
+  words: FocusChangeRecord
+  place: string
+  reason: string
+}
+
 export interface FocusState {
   history: FocusChangeRecord[]
   /** One change at a time: a second click while one is saving does nothing. */
   saving: boolean
-  error: string | null
+  failed: FailedFocusSave | null
 }
 
 export interface FocusSlice {
   focus: FocusState
-  /** Saves one change; `record` (null when the screen shows its own Undo) goes in the history. Resolves true when saved. */
-  applyFocusChange: (change: FocusChange, record: FocusChangeRecord | null) => Promise<boolean>
-  undoLastFocusChange: () => Promise<boolean>
+  /**
+   * Saves one change; `record` (null when the screen shows its own Undo) goes in the history. `made`: the words that
+   * name the change and the screen making it, kept if the save fails. Resolves true when saved.
+   */
+  applyFocusChange: (change: FocusChange, record: FocusChangeRecord | null, made: { words: FocusChangeRecord; place: string }) => Promise<boolean>
+  /** Undoes the newest change in the history, from the screen `place` (kept if the Undo fails). */
+  undoLastFocusChange: (place: string) => Promise<boolean>
+  /** Forgets the failed save that `place` made, if the last one is its: a closed dialog, a screen left behind. */
+  forgetFailedFocusSave: (place: string) => void
 }
 
 export type BoundStore = WorkSlice & ViewSlice & RulesSlice & FocusSlice

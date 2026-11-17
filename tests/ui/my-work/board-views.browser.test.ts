@@ -4,7 +4,8 @@ import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import {
   REPOSITORY_ROOT, UNTHROTTLED_TIMER_FLAGS, chromeExecutablePath, compileBrowserFixture, connectToPage,
-  failOnCiWithoutChrome, htmlResponse, launchChrome, myWorkFontResponse, scriptResponse, withTimeout, type DevToolsPage, type OwnedChrome,
+  failOnCiWithoutChrome, FITS_THE_WINDOW, htmlResponse, launchChrome, myWorkFontResponse, PAGE_WIDTHS, pageFitsTheWindow, scriptResponse, scrollbarStyleFor,
+  withTimeout, type DevToolsPage, type OwnedChrome,
 } from '../../helpers/chrome-devtools';
 import { THEME_PRE_PAINT_SCRIPT } from '../../../src/ui/my-work/src/lib/theme-pre-paint';
 import { SAMPLE_STATES } from '../../../src/ui/my-work/src/live/sample-source';
@@ -160,14 +161,27 @@ beforeAll(async () => {
     // What moves in the change ticker and the board, once a frame for \`ms\`, as rule 8 counts things, not animations:
     // every running Web Animation and CSS animation, and every element whose inline transform changed since the frame
     // before (motion's glides and slides write one; a progress bar's still transform is its value, not a move), grouped
-    // by what it moves (the ticker, one status badge's riffle, or one row or card). Answers the things of each frame.
+    // by what it moves: the ticker, one status badge's riffle, one agent's card (the one around the element or inside
+    // it), or the request it moves (the one whose row, line or card is around the element, or the one inside it), else
+    // that one element. So each moving element is counted apart unless it moves a part of the same thing: an element
+    // outside a row or card was named by its tag, so several of them read as one thing (Phase 6 re-verify V2). Answers
+    // the things of each frame.
     window.movingThingsOver = (ms) => {
       const scopes = () => [document.querySelector('[data-ticker]'), document.querySelector('[data-board-view]')].filter(Boolean);
+      // An element named apart has its own number: one in no agent's or request's block, or in a block of several.
+      const elementNumbers = new WeakMap();
+      let elementsNumbered = 0;
+      const numberedName = (element) => { if (!elementNumbers.has(element)) elementNumbers.set(element, ++elementsNumbered); return element.tagName + '#' + elementNumbers.get(element); };
+      // One thing's own block: an agent's card, a request's card, its List row or table row, its one-line row.
+      const ownBlock = (element) => element.closest('[data-agent-card], [data-slot="card"], [data-list-row], [data-request-row], [data-request-line]') ?? element;
+      const requestIdsIn = (element) => new Set([...(element.matches('[data-request-opener]') ? [element] : []), ...element.querySelectorAll('[data-request-opener]')].map((opener) => opener.dataset.requestOpener));
       const thing = (element) => {
         if (element.closest('[data-ticker]')) return 'ticker';
-        const holder = element.closest('[data-agent-card], [data-list-row], [data-request-row], [data-request-line]');
-        const name = holder ? holder.dataset.agentCard ?? holder.querySelector('td:nth-child(2) span, [data-row-title], .truncate')?.textContent ?? '' : element.tagName;
-        return (element.closest('[data-state-badge]') ? 'riffle: ' : 'moving: ') + name.trim().slice(0, 40);
+        const own = ownBlock(element);
+        const agents = own.matches('[data-agent-card]') ? [own] : [...own.querySelectorAll('[data-agent-card]')];
+        const requests = requestIdsIn(own);
+        const name = agents.length === 1 ? 'agent ' + agents[0].dataset.agentCard : requests.size === 1 ? [...requests][0] : numberedName(own);
+        return (element.closest('[data-state-badge]') ? 'riffle: ' : 'moving: ') + name;
       };
       const lastTransform = new WeakMap();
       return window.sampleFrames(ms, () => {
@@ -243,7 +257,7 @@ beforeAll(async () => {
   `, ['--loader:.webp=empty', '--loader:.css=empty', '--loader:.png=empty', '--loader:.svg=empty', '--loader:.ttf=empty']);
   server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
     const path = new URL(request.url).pathname;
-    if (path === '/') return htmlResponse(`<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><script>${THEME_PRE_PAINT_SCRIPT}</script><link rel="stylesheet" href="/app.css"><div id="root"></div><script src="/fixture.js"></script>`);
+    if (path === '/') return htmlResponse(`<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><script>${THEME_PRE_PAINT_SCRIPT}</script>${scrollbarStyleFor(request.url)}<link rel="stylesheet" href="/app.css"><div id="root"></div><script src="/fixture.js"></script>`);
     if (path === '/fixture.js') return scriptResponse(bundle);
     if (path === '/app.css') return new Response(styles, { headers: { 'Content-Type': 'text/css' } });
     const font = myWorkFontResponse(path);
@@ -450,7 +464,9 @@ it.skipIf(!chromeExecutablePath)('on a touch phone every List row is at least 44
     await waitFor(`document.querySelectorAll('[data-request-row]').length === ${LINE_ROWS_PER_PAGE}`, 'the first 50 rows');
     const heights = await page!.evaluate(`[...document.querySelectorAll('[data-request-row]')].map((row) => row.getBoundingClientRect().height)`);
     expect(Math.min(...heights)).toBeGreaterThanOrEqual(44);
-    expect(await page!.evaluate('document.documentElement.scrollWidth')).toBe(390);
+    // Nothing scrolls sideways, at the width named: the window is that wide, the page that wide or a classic scrollbar
+    // narrower (Linux CI draws a 15px one; a touch phone none), and nothing runs past it.
+    expect(pageFitsTheWindow(await page!.evaluate(PAGE_WIDTHS), 390, { touch: true })).toMatchObject(FITS_THE_WINDOW);
     // Two Tab stops per phone row: the agent's mark (a tooltip trigger, G10) and the row's own button; the facts line
     // of wider screens is not drawn here.
     expect(await page!.evaluate(`[...document.querySelectorAll('[data-request-row]')].map((row) => [...row.querySelectorAll('button, a[href], [tabindex="0"]')].filter((stop) => stop.getClientRects().length > 0).length)`))
@@ -721,7 +737,9 @@ it.skipIf(!chromeExecutablePath)('Team view: one line for a board of one, Sort s
     const phoneNames: { text: string; whole: boolean; height: number }[] = await page!.evaluate(teamRowNames);
     expect(phoneNames.map((name) => name && [name.text, name.whole]).sort()).toEqual([['Claude Code', true], ['Claude Code', true], ['Claude Code', true], ['Codex', true], ['Gemini', true]]);
     expect(Math.min(...phoneNames.map((name) => name.height))).toBeGreaterThanOrEqual(44);
-    expect(await page!.evaluate('document.documentElement.scrollWidth')).toBe(390);
+    // Nothing scrolls sideways, at the width named: the window is that wide, the page that wide or a classic scrollbar
+    // narrower (Linux CI draws a 15px one; a touch phone none), and nothing runs past it.
+    expect(pageFitsTheWindow(await page!.evaluate(PAGE_WIDTHS), 390, { touch: true })).toMatchObject(FITS_THE_WINDOW);
     expect(fixtureErrors).toEqual([]);
   } finally {
     await closePage();
@@ -749,9 +767,16 @@ async function resize(width: number, touch = false) {
  */
 const SQUEEZED_ROW_PX = 64;
 
-it.skipIf(!chromeExecutablePath)('Team columns at 768, 1024, 1280, 1440 and on a touch phone, in English and Korean: each row’s whole title on a line of its own as wide as the row, the tool’s name whole, every status badge one line with its words whole, also squeezed', async () => {
+/**
+ * Each width-sensitive test runs without a scrollbar (headless Chrome on a Mac draws overlay ones) and with a classic
+ * 15px one (Chrome on Linux CI and on Windows: PR #6210's CI measured every width here 15px narrower).
+ */
+const SCROLLBAR_MODES = [{ label: 'no scrollbar', query: '' }, { label: 'a classic 15px scrollbar', query: '&scrollbar=classic' }] as const;
+
+for (const scrollbar of SCROLLBAR_MODES) {
+it.skipIf(!chromeExecutablePath)(`Team columns at 768, 1024, 1280, 1440 and on a touch phone, in English and Korean, with ${scrollbar.label}: each row’s whole title on a line of its own as wide as the row, the tool’s name whole, every status badge one line with its words whole, also squeezed`, async () => {
   try {
-    await openPage('&scenario=team', { width: 768, height: 900 });
+    await openPage(`&scenario=team${scrollbar.query}`, { width: 768, height: 900 });
     await waitFor(`window.store.getState().work.load.state === 'loaded'`, 'the sample board');
     await page!.evaluate(`window.store.getState().setWorkspace({ team: true })`);
     await waitFor(`[...document.querySelectorAll('[role=radio]')].some((item) => window.nameOf(item) === 'Team')`, 'the Team view');
@@ -773,7 +798,7 @@ it.skipIf(!chromeExecutablePath)('Team columns at 768, 1024, 1280, 1440 and on a
             .toEqual({ locale, width, title: row.title, widths: row.widths, asWideAsRow: true, whole: true, badge: { lines: 1, brokenWord: null, inside: true }, name: true });
         }
         if (touch) expect(Math.min(...rows.map((row) => row.height))).toBeGreaterThanOrEqual(44);
-        expect(await page!.evaluate('document.documentElement.scrollWidth')).toBe(width);
+        expect(pageFitsTheWindow(await page!.evaluate(PAGE_WIDTHS), width, { touch })).toMatchObject(FITS_THE_WINDOW);
       }
       // At any width (StateBadge): every row squeezed to 64px in the page, its badge keeps each word whole and inside
       // the pill, wrapping between words only.
@@ -794,9 +819,9 @@ it.skipIf(!chromeExecutablePath)('Team columns at 768, 1024, 1280, 1440 and on a
   }
 }, TEST_LIMIT_MS);
 
-it.skipIf(!chromeExecutablePath)('By agent cards at 768, 1024 and 1280: each request’s whole title on a line of its own as wide as its row, its status badge one line', async () => {
+it.skipIf(!chromeExecutablePath)(`By agent cards at 768, 1024 and 1280, with ${scrollbar.label}: each request’s whole title on a line of its own as wide as its row, its status badge one line`, async () => {
   try {
-    await openPage('&scenario=team', { width: 768, height: 900 });
+    await openPage(`&scenario=team${scrollbar.query}`, { width: 768, height: 900 });
     await waitFor(`window.store.getState().work.load.state === 'loaded'`, 'the sample board');
     await chooseView('By agent');
     await waitFor(`document.querySelector('[data-agent-card] [data-request-row]')`, 'the agent cards');
@@ -809,13 +834,14 @@ it.skipIf(!chromeExecutablePath)('By agent cards at 768, 1024 and 1280: each req
         expect({ width, title: row.title, widths: row.widths, asWideAsRow: row.titleAsWideAsRow, whole: row.titleWhole, badge: row.badge })
           .toEqual({ width, title: row.title, widths: row.widths, asWideAsRow: true, whole: true, badge: { lines: 1, brokenWord: null, inside: true } });
       }
-      expect(await page!.evaluate('document.documentElement.scrollWidth')).toBe(width);
+      expect(pageFitsTheWindow(await page!.evaluate(PAGE_WIDTHS), width)).toMatchObject(FITS_THE_WINDOW);
     }
     expect(fixtureErrors).toEqual([]);
   } finally {
     await closePage();
   }
 }, TEST_LIMIT_MS);
+}
 
 it.skipIf(!chromeExecutablePath)('one live model that changes two requests moves two things at most in the List, By agent and Team: the ticker and the newest riffle (rule 8)', async () => {
   try {
@@ -848,9 +874,10 @@ it.skipIf(!chromeExecutablePath)('one live model that changes two requests moves
   }
 }, TEST_LIMIT_MS);
 
-it.skipIf(!chromeExecutablePath)('from 768px up to the table a List row keeps its progress, start, area and running time; with Team on the List is rows that say who asked, the title kept readable', async () => {
+for (const scrollbar of SCROLLBAR_MODES) {
+it.skipIf(!chromeExecutablePath)(`from 768px up to the table a List row keeps its progress, start, area and running time; with Team on the List is rows that say who asked, the title kept readable; the table only where its title column keeps ${LIST_TITLE_MIN_PX}px, with ${scrollbar.label}`, async () => {
   try {
-    await openPage('&scenario=many', { width: 1024, height: 900 });
+    await openPage(`&scenario=many${scrollbar.query}`, { width: 1024, height: 900 });
     await waitFor(`window.store.getState().work.load.state === 'loaded'`, 'the many-request board');
     await chooseView('List');
     await waitFor(`document.querySelector('[data-request-row] [data-row-facts]')`, 'the List rows');
@@ -875,12 +902,30 @@ it.skipIf(!chromeExecutablePath)('from 768px up to the table a List row keeps it
     expect(await page!.evaluate(`document.querySelector('table[aria-label]')`)).toBe(null);
     const rowTitle = await page!.evaluate(`document.querySelector('[data-request-row] [data-row-target] .truncate').getBoundingClientRect().width`);
     expect(rowTitle).toBeGreaterThanOrEqual(LIST_TITLE_MIN_PX);
-    // Team off at 1366: the table, its title column at least as wide.
+    // Team off: across the widths where the table starts (1355 to 1390px, and the owner's 1366), the List is the table
+    // exactly where its title column keeps LIST_TITLE_MIN_PX, and rows elsewhere. A classic scrollbar takes 12px from
+    // that column (it was 175.5px at 1366 on PR #6210's Linux CI under a window-width rule), so it moves the start.
     await page!.evaluate(`window.store.getState().setWorkspace({ team: false })`);
+    const sweep: { width: number; table: boolean; titleColumn: number | null; rows: number }[] = [];
+    for (const width of [1355, 1360, 1365, 1366, 1370, 1375, 1380, 1385, 1390]) {
+      await page!.send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: false });
+      await page!.settle();
+      sweep.push(await page!.evaluate(`(() => { const head = document.querySelector('table[aria-label] thead th:nth-child(2)');
+        return { width: ${width}, table: !!head, titleColumn: head ? Math.round(head.getBoundingClientRect().width * 100) / 100 : null, rows: document.querySelectorAll('[data-request-row]').length }; })()`));
+    }
+    console.log(`[board-views] List at 1355-1390px with ${scrollbar.label}: ${JSON.stringify(sweep)}`);
+    for (const step of sweep) {
+      expect({ width: step.width, kept: step.table ? step.titleColumn! >= LIST_TITLE_MIN_PX : step.rows > 0 }).toEqual({ width: step.width, kept: true });
+    }
+    // The table comes within the sweep either way, and with no scrollbar it is the table at 1366, as before.
+    expect(sweep.at(-1)!.table).toBe(true);
+    if (!scrollbar.query) expect(sweep.find((step) => step.width === 1366)!.table).toBe(true);
+    // At 1440 the table, its title column at least as wide; its start time opens its full stamp on keyboard focus too
+    // (G10; it was a mouse-only title): Tab from the row's area link lands on it.
+    await page!.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
+    await page!.settle();
     await waitFor(`document.querySelector('table[aria-label]')`, 'the table');
     expect(await page!.evaluate(`document.querySelector('table[aria-label] thead th:nth-child(2)').getBoundingClientRect().width`)).toBeGreaterThanOrEqual(LIST_TITLE_MIN_PX);
-    // Its start time opens its full stamp on keyboard focus too (G10; it was a mouse-only title): Tab from the row's
-    // area link lands on it.
     await page!.evaluate(`[...window.tableRows()][0].querySelector('td:nth-child(2) button').focus()`);
     await press('Tab');
     expect(await page!.evaluate(`document.activeElement.matches('td:nth-child(6) time[datetime]') && !document.activeElement.hasAttribute('title')`)).toBe(true);
@@ -894,6 +939,7 @@ it.skipIf(!chromeExecutablePath)('from 768px up to the table a List row keeps it
     await closePage();
   }
 }, TEST_LIMIT_MS);
+}
 
 it.skipIf(!chromeExecutablePath)('the Progress cell reads its percent once, and a shipped request that took under a minute says so', async () => {
   try {

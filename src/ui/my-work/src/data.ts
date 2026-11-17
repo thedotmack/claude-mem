@@ -55,6 +55,14 @@ export type Stage = 'Planning' | 'Building' | 'Reviewing' | 'Shipped'
 export type LiveState = 'working' | 'needs-check' | 'your-move' | 'idle' | 'shipped'
 
 export interface Quote { at: string; quote: string }
+/**
+ * What kind of record a request came from, read from its evidence link (/api/work-view/evidence/<kind>/<id>): a prompt
+ * you typed, a work-state item, an observation, a session summary or a session; `record` names no evidence route (an
+ * older worker's "Record: …" title, live/to-work-model.ts evidenceShown). The one definition: the mapper checks a link's
+ * kind against this list and writes it (live/to-work-model.ts), and the drawer words each from a Record.
+ */
+export const EVIDENCE_KINDS = ['prompt', 'work-state', 'observation', 'summary', 'session', 'record'] as const
+export type EvidenceKind = (typeof EVIDENCE_KINDS)[number]
 export type WorkProductKind = 'PR' | 'Commit' | 'Branch' | 'Page' | 'Deck' | 'Doc' | 'File' | 'Link'
 
 /**
@@ -106,7 +114,12 @@ export interface Request {
   canMoveFocus?: boolean
   askedBy: string
   agentId: string
-  startedAt: string
+  /**
+   * When it started, as the mapper words a recorded time ("Oct 20, 1:16 pm"); null when its start is not recorded, a
+   * value the screens word in the reader's language ("Start not recorded"), never English text. Workers before 16.0.0
+   * wrote those English words in its place, which recordedStart (live/to-work-model.ts) reads as not recorded (G19).
+   */
+  startedAt: string | null
   /**
    * Sortable start time, and the List's start in the reader's own clock (the shared LocalTime). Absent when the start
    * is not recorded: that missing value is what the List words, through t() ("Start not recorded"), never `startedAt`'s
@@ -129,7 +142,11 @@ export interface Request {
     percent: number | null
     readings: number
     reviewedAt: string
+    /** `reviewedAt`'s instant: the same instant as an ISO time, which the screens word in the reader's language (lib/display-time.ts); absent in sample fixtures, which carry their words only. */
+    reviewedAtIso?: string
     completedAt?: string
+    /** `completedAt`'s instant: the same instant as an ISO time, which the screens word in the reader's language (lib/display-time.ts); absent in sample fixtures, which carry their words only. */
+    completedAtIso?: string
     /** Each memory review's percent, oldest first. The ship estimate needs two of them, moving forward (decision 3). */
     history?: number[]
     /** How much of the request the last review could assess (§15.1: a percentage shows its coverage). */
@@ -140,14 +157,20 @@ export interface Request {
   next: NextStep
   terminal: string[]
   activityWord: string
-  workstreams: { title: string; tasks: { name: string; done: boolean }[] }[]
-  /** `media`: the record's image refs (ids and labels only); absent when it has none. */
-  granular: { kind: 'work' | 'memory'; text: string; at: string; media?: WorkViewMediaManifest }[]
+  /**
+   * Its workstreams and their tasks. A title or a task's name that is not recorded is null, which the drawer words in the
+   * reader's language ("Supporting work", "Untitled task"), never English text; workers before 16.0.0 wrote those words
+   * in its place, which recordedWorkstreamTitle and recordedTaskName (live/to-work-model.ts) read the same way (G19).
+   */
+  workstreams: { title: string | null; tasks: { name: string | null; done: boolean }[] }[]
+  /** `media`: the record's image refs (ids and labels only); absent when it has none. `atIso`: `at`'s instant, the same instant as an ISO time, which the screens word in the reader's language (lib/display-time.ts); absent in sample fixtures, which carry their words only. */
+  granular: { kind: 'work' | 'memory'; text: string; at: string; atIso?: string; media?: WorkViewMediaManifest }[]
   /** `platform` and `conversationSessionId` come from the conversation key ["conversation", platform, session id]: the
    * platform it was recorded from (sdk_sessions.platform_source) and its session id, which a continued turn resumes.
    * `title`: its session's recorded title, or null when none is recorded, which the screens word ("{tool} conversation",
-   * live/conversation-continuation.ts conversationNaming); never English words in its place (fix round R2). */
-  conversations: { tool: string; at: string; title: string | null; platform: string; conversationSessionId: string }[]
+   * live/conversation-continuation.ts conversationNaming); never English words in its place (fix round R2).
+   * `atIso`: `at`'s instant, the same instant as an ISO time, which the screens word in the reader's language (lib/display-time.ts); absent in sample fixtures, which carry their words only. */
+  conversations: { tool: string; at: string; atIso?: string; title: string | null; platform: string; conversationSessionId: string }[]
   prompts: Quote[]
   /** `href` is a real published page, PR or commit; '#' means a sample link with nothing behind it; absent means a
    * recorded item with nothing to open, such as a commit whose remote is not GitHub (render with ProductLink). */
@@ -157,16 +180,24 @@ export interface Request {
   /**
    * The build story's steps, oldest first. `at`: when the step happened, as the mapper formats it, or null when the
    * review recorded no time (a value the drawer words, never English text); absent for a step that carries no time (the
-   * sample's). `description`: words about the step, drawn under it, never in the time column.
+   * sample's). `description`: words about the step, drawn under it, never in the time column. `atIso`: `at`'s
+   * instant, the same instant as an ISO time, which the screens word in the reader's language (lib/display-time.ts); absent in sample fixtures, which carry their words only.
    */
-  story: { label: string; at?: string | null; description?: string; status: 'complete' | 'active' | 'pending' }[]
+  story: { label: string; at?: string | null; atIso?: string; description?: string; status: 'complete' | 'active' | 'pending' }[]
   /** The last memory review's account of how the request went (request-progress). */
   storyNarrative?: string
-  evidence: { title: string; href: string }[]
+  /**
+   * The records it came from: each one's kind (EvidenceKind, which the drawer words before its title in the reader's
+   * language), its title and its evidence link. Workers before 16.0.0 sent no kind and put its English words in front
+   * of the title ("Observation: …"), which evidenceShown (live/to-work-model.ts) reads as the kind (G19).
+   */
+  evidence: { title: string; href: string; kind?: EvidenceKind }[]
   /** Agent-only cards: the human text the title writer produces, so the wireframe can play the transform. */
   resolvesTo?: { title: string; summary: string }
   /** Set when a person marks this version checked (§6). Checking never marks a request shipped. */
   checkedAt?: string
+  /** `checkedAt`'s instant: the same instant as an ISO time, which the screens word in the reader's language (lib/display-time.ts); absent in sample fixtures, which carry their words only. */
+  checkedAtIso?: string
   /** Whether this acknowledgement is local-only or a shared, versioned decision. */
   review?: { mode: 'local' | 'shared'; hash: string | null; version?: number; available: boolean; conflict?: boolean; legacy?: boolean; pending?: boolean; message?: string }
   /**
@@ -211,8 +242,11 @@ export interface FocusArea {
   quotes: Quote[]
   /** Owner-goals asks in this area. None is linked to a request, so each reads "Not started". */
   asks: FocusAsk[]
-  /** When the area's record was last saved (ISO). Past focus shows it as a done area's date. Older workers leave it out. */
-  savedAt?: string | null
+  /**
+   * When it was marked done (ISO): the row that marked it done, which a later rename or goal edit does not move
+   * (my-focus.mjs). Past focus shows it as a done area's date. Null unless done; workers before 16.0.0 leave it out.
+   */
+  doneAt?: string | null
 }
 
 /** One owner change to My Focus, as POST /api/work-view/focus takes it (WorkViewRoutes.ts focusBody). */
@@ -245,7 +279,8 @@ export interface PastPeriod {
 }
 
 /** When and where a skill last ran. Real timestamps only; no cost (owner, Oct 20, 2026). */
-export interface SkillRun { label: string; lastRunAt: string; deviceName: string }
+/** `lastRunAtIso`: `lastRunAt`'s instant, the same instant as an ISO time, which the screens word in the reader's language (lib/display-time.ts); absent in sample fixtures, which carry their words only. */
+export interface SkillRun { label: string; lastRunAt: string; lastRunAtIso?: string; deviceName: string }
 
 export interface Run { label: string; lastRunAt: string; deviceId: string; state: 'idle' | 'running' | 'queued'; progress?: number }
 
@@ -377,6 +412,14 @@ export function requestTitle(request: Pick<Request, 'title' | 'resolvesTo'>, t: 
 export const needsYou = (request: Request) => request.state === 'your-move' || request.state === 'needs-check'
 
 /**
+ * Working now: open, and an agent is on it. The one counting rule for the board's Working filter (pages/my-work.tsx
+ * FILTERS) and the change ticker's "Watching N working requests" (components/live-motion.tsx), which count the same
+ * requests: the page's, an area's own on its page (Phase 6 verify V7: the ticker counted every area's while the filter
+ * beside it counted the page's).
+ */
+export const isWorkingNow = (request: Request) => !request.closed && request.state === 'working'
+
+/**
  * Attention first: what waits on you, then what to check, then what is moving, then the rest. The one order; the
  * boards' "Needs you first" sort and By agent's busiest-first order ask it (components/bits.tsx re-exports it).
  */
@@ -419,6 +462,13 @@ export function measuredEstimate(request: Request, now: number = Date.now()): st
 export function startedTimestamp(request: Request): number {
   return request.startedAtIso ? Date.parse(request.startedAtIso) : 0
 }
+
+/** Attention order (ATTENTION_ORDER), the newest first within a state: the boards' "Needs you first" sort. */
+export const byAttention = (a: Request, b: Request) =>
+  ATTENTION_ORDER.indexOf(a.state) - ATTENTION_ORDER.indexOf(b.state) || startedTimestamp(b) - startedTimestamp(a)
+
+/** What needs you, first (home's Needs you, a focus area page's main card): your move, then to check, newest first. */
+export const firstNeedingYou = (requests: readonly Request[]) => requests.filter(needsYou).sort(byAttention)
 
 export const isSampleHref = (href: string | undefined) => href !== undefined && (!href || href === '#')
 

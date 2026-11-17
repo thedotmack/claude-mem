@@ -8,10 +8,11 @@ import type { SliceCreator } from '../create-store.ts'
 import type { WorkReadResult, WorkSlice } from '../store-types.ts'
 
 /**
- * How long a changed request shows "Just updated": past a card's glow, which plays twice at 1.6s (index.css
- * .just-updated, 3.2s), and past the List's split-flap riffle into a new status (components/request-rows.tsx
- * ListStatus; the longest label, "Done, not checked", lands after 23 flaps of 55ms, 1.3s), so the tiles rest on the
- * word before the badge returns. The List, By agent and Team rows show their still mark for the same time.
+ * How long a changed request shows "Just updated": past the glow a layout may still play, twice at 1.6s (index.css
+ * .just-updated, 3.2s; My Work's own cards and rows show the still mark instead), and past the List's split-flap riffle
+ * into a new status (components/request-rows.tsx ListStatus; the longest label, "Done, not checked", lands after 23
+ * flaps of 55ms, 1.3s), so the tiles rest on the word before the badge returns. Cards and the List, By agent and Team
+ * rows show their still mark for the same time.
  */
 const FRESHLY_UPDATED_FOR_MS = 4000
 /** The sample demo: the wireframe agent finishes this long after the page opens, so the status flip can be seen. */

@@ -77,10 +77,12 @@ export const StickyBanner = ({
         transition={reduceMotion ? { duration: 0 } : undefined}
         // Local fix: labelled, thumb-sized (the Button's own touch rule), the Button's focus ring and cursor, and in
         // the text color (white was invisible on light surfaces). Centred with margins, not a transform, so the
-        // Button's press nudge does not move it.
+        // Button's press nudge does not move it. right-1.5, not right-1: its 44px hit area (expanded-hit-area) is 5px
+        // wider each side than the 34px button, and 4.25px from the edge it reached past the page, which then scrolled
+        // 1px sideways on every sample page at 1440 and 1366 (Phase 6 verify V4).
         type="button"
         aria-label={t('Hide banner')}
-        className={cn(buttonVariants({ variant: "ghost", size: "icon-sm" }), "absolute inset-y-0 right-1 my-auto size-8 rounded-lg text-muted-foreground")}
+        className={cn(buttonVariants({ variant: "ghost", size: "icon-sm" }), "absolute inset-y-0 right-1.5 my-auto size-8 rounded-lg text-muted-foreground")}
         onClick={dismiss}
       >
         <CloseIcon className="size-5" />
