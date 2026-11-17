@@ -32,8 +32,9 @@ describe('generateClaudeMd', () => {
 
   it('yields again when a later batch starts', () => {
     // 30 leaf folders plus their parents exceed one batch of 25, so generation
-    // must reach the check phase at least twice. Counting setImmediate calls
-    // observes the batch boundaries without depending on wall-clock timing.
+    // must reach the check phase exactly twice (folders 1 and 26). Counting
+    // setImmediate calls observes the batch boundaries without depending on
+    // wall-clock timing.
     const files = Array.from(
       { length: 30 },
       (_, index) => `src/folder-${String(index).padStart(2, '0')}/file.ts`,
@@ -51,8 +52,8 @@ describe('generateClaudeMd', () => {
       } finally {
         globalThis.setImmediate = original;
       }
-      if (yields < 2) {
-        console.error('generateClaudeMd yielded ' + yields + ' time(s); later batches did not yield');
+      if (yields !== 2) {
+        console.error('generateClaudeMd yielded ' + yields + ' time(s); expected 2 batch boundaries');
         process.exitCode = 1;
       }
     `;

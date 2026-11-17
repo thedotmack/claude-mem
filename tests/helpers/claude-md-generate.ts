@@ -17,7 +17,12 @@ export function generateIn({ files, settings = {}, seed, writer = 'generate', ru
   seed: string | ((paths: { root: string; project: string }) => string);
   writer?: 'generate' | 'regenerate';
   runs?: number;
-  /** Replaces the default generation loop; runs after the seed. */
+  /**
+   * Replaces the default generation loop; runs after the seed with
+   * `generateClaudeMd` in scope, so it can wrap the call. Spliced into a
+   * template literal: it must not contain `${` or backticks, and it supersedes
+   * `runs`.
+   */
   script?: string;
 }): string {
   const root = mkdtempSync(join(tmpdir(), 'claude-md-generate-')); sandboxes.push(root);

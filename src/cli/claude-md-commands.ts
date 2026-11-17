@@ -393,40 +393,42 @@ async function processAllFoldersForGeneration(
 
   const foldersArray = Array.from(trackedFolders).sort();
 
-  for (const [index, absoluteFolder] of foldersArray.entries()) {
-    if (index % FOLDER_BATCH_SIZE === 0) {
-      // Yield before each batch, including the first: the caller's event loop
-      // must run again while generation proceeds.
-      await new Promise<void>(resolve => setImmediate(resolve));
-    }
-    const relativeFolder = path.relative(workingDir, absoluteFolder);
+  try {
+    for (const [index, absoluteFolder] of foldersArray.entries()) {
+      if (index % FOLDER_BATCH_SIZE === 0) {
+        // Yield before each batch, including the first, so timers and other
+        // queued work in this process run while a large project is generated.
+        await new Promise<void>(resolve => setImmediate(resolve));
+      }
+      const relativeFolder = path.relative(workingDir, absoluteFolder);
 
-    const result = regenerateFolder(
-      db,
-      absoluteFolder,
-      relativeFolder,
-      project,
-      dryRun,
-      workingDir,
-      observationLimit
-    );
+      const result = regenerateFolder(
+        db,
+        absoluteFolder,
+        relativeFolder,
+        project,
+        dryRun,
+        workingDir,
+        observationLimit
+      );
 
-    if (result.success) {
-      logger.debug('CLAUDE_MD', `Processed folder: ${relativeFolder}`, {
-        observationCount: result.observationCount
-      });
-      successCount++;
-    } else if (result.error?.includes('No observations')) {
-      skipCount++;
-    } else {
-      logger.warn('CLAUDE_MD', `Error processing folder: ${relativeFolder}`, {
-        error: result.error
-      });
-      errorCount++;
+      if (result.success) {
+        logger.debug('CLAUDE_MD', `Processed folder: ${relativeFolder}`, {
+          observationCount: result.observationCount
+        });
+        successCount++;
+      } else if (result.error?.includes('No observations')) {
+        skipCount++;
+      } else {
+        logger.warn('CLAUDE_MD', `Error processing folder: ${relativeFolder}`, {
+          error: result.error
+        });
+        errorCount++;
+      }
     }
+  } finally {
+    db.close();
   }
-
-  db.close();
 
   logger.info('CLAUDE_MD', 'CLAUDE.md generation complete', {
     totalFolders: foldersArray.length,
