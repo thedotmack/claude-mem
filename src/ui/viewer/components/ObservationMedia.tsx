@@ -13,6 +13,7 @@ import {
   inspectionText,
   mediaAltText,
   mediaOwnerDetailsUrl,
+  mediaStripFacts,
   mediaStatusText,
   mediaVariantFailed,
   mediaVariantStatusText,
@@ -87,7 +88,6 @@ export function ObservationMediaStripView({ observationId, media, states, onOpen
               ) : (
                 <span className="media-thumb-status">{translateMediaStatus(mediaVariantStatusText(state, 'llm'), t)}</span>
               )}
-              {ref.inspection === 'uninspected' && <span className="media-thumb-badge">{t('not inspected')}</span>}
               {isLastWithMore && <span className="media-thumb-more">+{hiddenCount}</span>}
             </button>
             {canRetryMediaState(state) && (
@@ -96,11 +96,14 @@ export function ObservationMediaStripView({ observationId, media, states, onOpen
           </div>
         );
       })}
-      <span className="media-strip-count">
-        {interpolate(t(media.overflow
-          ? (refs.length === 1 ? '{count} image (more on the source event)' : '{count} images (more on the source event)')
-          : (refs.length === 1 ? '{count} image' : '{count} images')), { count: refs.length })}
-      </span>
+      <p className="media-strip-summary">
+        <span className="media-strip-count">
+          {interpolate(t(media.overflow
+            ? (refs.length === 1 ? '{count} image (more on the source event)' : '{count} images (more on the source event)')
+            : (refs.length === 1 ? '{count} image' : '{count} images')), { count: refs.length })}
+        </span>
+        {mediaStripFacts(refs, states).map(fact => <span key={fact} className="media-strip-fact"> · {fact}</span>)}
+      </p>
     </div>
   );
 }
@@ -159,22 +162,25 @@ export function MediaLightboxDialog({ observationId, refs, index, state, ownerDe
         </div>
         <button type="button" className="media-lightbox-nav" aria-label={t('Next image')} disabled={index === refs.length - 1} onClick={() => onShow(index + 1)}>›</button>
       </div>
-      <dl className="media-lightbox-provenance">
-        <dt>{t('Inspection')}</dt><dd>{t(inspectionText(ref))}</dd>
-        <dt>{t('Status')}</dt><dd>{translateMediaStatus(mediaStatusText(state), t)}</dd>
-        {metadata && (
-          <>
-            <dt>{t('Recipe')}</dt><dd>{metadata.recipe}</dd>
-            {metadata.viewer && (
-              <>
-                <dt>{t('Dimensions')}</dt><dd>{metadata.viewer.width} × {metadata.viewer.height}</dd>
-                <dt>{t('Size')}</dt><dd>{formatMediaBytes(metadata.viewer.byteLength)} (WebP)</dd>
-              </>
-            )}
-            <dt>{t('Captured')}</dt><dd>{formatDate(metadata.capturedAt)}</dd>
-          </>
-        )}
-      </dl>
+      <div className="media-lightbox-footer">
+        {/* One line of facts so the picture keeps the room; each value keeps its name for screen readers. */}
+        <p className="media-lightbox-facts">
+          <span><span className="visually-hidden">{t('Status')}: </span>{translateMediaStatus(mediaStatusText(state), t)}</span>
+          {metadata && (
+            <>
+              <span><span className="visually-hidden">{t('Recipe')}: </span>{metadata.recipe}</span>
+              {metadata.viewer && (
+                <>
+                  <span><span className="visually-hidden">{t('Dimensions')}: </span>{metadata.viewer.width} × {metadata.viewer.height}</span>
+                  <span><span className="visually-hidden">{t('Size')}: </span>{formatMediaBytes(metadata.viewer.byteLength)} WebP</span>
+                </>
+              )}
+              <span><span className="visually-hidden">{t('Captured')}: </span>{formatDate(metadata.capturedAt)}</span>
+            </>
+          )}
+        </p>
+        <p className="media-lightbox-inspection"><span className="visually-hidden">{t('Inspection')}: </span>{t(inspectionText(ref))}</p>
+      </div>
       {metadata && (
         <div className="media-lightbox-owner">
           {ownerDetails === null && (

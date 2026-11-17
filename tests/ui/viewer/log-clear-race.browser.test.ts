@@ -17,6 +17,21 @@ const FAST_TIMERS = `
   }
 `;
 
+// "Clear logs…" asks in the page (16.0); its red button sends the clear. The browser's confirm box is never used.
+// While the drawer reads or clears, the button says so with aria-disabled (it keeps focus), not the disabled property.
+const CLEAR_IN_PAGE = `
+  window.confirm = () => { throw new Error('the logs drawer must not use the browser confirm box'); };
+  const busy = button => button.getAttribute('aria-disabled') === 'true';
+  async function confirmClear() {
+    const end = Date.now() + 5000;
+    while (!document.querySelector('.console-clear-question .inline-confirm-danger')) {
+      if (Date.now() > end) throw new Error('The clear question did not open');
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    document.querySelector('.console-clear-question .inline-confirm-danger').click();
+  }
+`;
+
 // Chrome's cold start gets its own 30 s window. The page's own phases start
 // only once its script fetches /ready, so a slow start cannot eat into them.
 async function reportAfterReady(ready: Promise<void>, result: Promise<unknown>, resultWindowMs: number): Promise<unknown> {
@@ -39,6 +54,7 @@ async function reportAfterReady(ready: Promise<void>, result: Promise<unknown>, 
         import { createRoot } from 'react-dom/client';
         import { LogsDrawer } from './src/ui/viewer/components/LogsModal';
         ${FAST_TIMERS}
+        ${CLEAR_IN_PAGE}
         createRoot(document.getElementById('root')).render(<LogsDrawer isOpen={true} onClose={() => {}} />);
         async function waitFor(test) {
           const deadline = Date.now() + 9000;
@@ -48,7 +64,6 @@ async function reportAfterReady(ready: Promise<void>, result: Promise<unknown>, 
           }
         }
         function messages() { return [...document.querySelectorAll('.log-message')].map(x => x.textContent); }
-        window.confirm = () => true;
         (async () => {
           try {
             await fetch('/ready');
@@ -56,10 +71,11 @@ async function reportAfterReady(ready: Promise<void>, result: Promise<unknown>, 
             document.querySelector('.console-auto-refresh input').click();
             await waitFor(() => messages().includes('LATEST'));
             document.querySelector('.console-auto-refresh input').click();
-            const clear = document.querySelector('[title="Clear logs"]');
-            await waitFor(() => !clear.disabled);
+            const clear = document.querySelector('.console-clear-btn');
+            await waitFor(() => !busy(clear));
             clear.click();
-            await waitFor(() => !clear.disabled && messages().length === 0);
+            await confirmClear();
+            await waitFor(() => !busy(clear) && messages().length === 0);
             const completed=performance.getEntriesByName(location.origin + '/api/logs').map(entry=>entry.startTime).sort((a,b)=>a-b);
             const initialStart=completed[0], latestStart=completed[1];
             await fetch('/release');
@@ -123,6 +139,7 @@ async function reportAfterReady(ready: Promise<void>, result: Promise<unknown>, 
         import {createRoot} from 'react-dom/client';
         import {LogsDrawer} from './src/ui/viewer/components/LogsModal';
         ${FAST_TIMERS}
+        ${CLEAR_IN_PAGE}
         const nativeFetch=window.fetch.bind(window);
         window.fetch=async(url,options)=>{
           try{return await nativeFetch(url,options);}
@@ -132,14 +149,16 @@ async function reportAfterReady(ready: Promise<void>, result: Promise<unknown>, 
           }
         };
         createRoot(document.getElementById('root')).render(<LogsDrawer isOpen={true} onClose={()=>{}}/>);
-        window.confirm=()=>true;
         async function waitFor(test){const end=Date.now()+10000;while(!test()){if(Date.now()>end)throw Error('Browser state timeout');await new Promise(r=>setTimeout(r,10));}}
         (async()=>{try{
           await fetch('/ready');
           await waitFor(()=>document.querySelector('.log-message'));
           document.querySelector('.console-auto-refresh input').click();
-          document.querySelector('[title="Clear logs"]').click();
-          await waitFor(()=>!document.querySelector('[title="Clear logs"]').disabled);
+          const clear=document.querySelector('.console-clear-btn');
+          clear.click();
+          await confirmClear();
+          await waitFor(()=>busy(clear));
+          await waitFor(()=>!busy(clear));
           await waitFor(()=>[...document.querySelectorAll('.log-message')].some(x=>x.textContent==='POLLED_AFTER_CLEAR'));
           await fetch('/result',{method:'POST',body:JSON.stringify({recovered:true,autoRefresh:document.querySelector('.console-auto-refresh input').checked})});
         }catch(error){await fetch('/result',{method:'POST',body:JSON.stringify({failure:String(error)})})}})();
@@ -186,14 +205,14 @@ for(const scenario of ['reconciled','read-hung'] as const) {
         import React from 'react';import {createRoot} from 'react-dom/client';
         import {LogsDrawer} from './src/ui/viewer/components/LogsModal';
         ${FAST_TIMERS}
+        ${CLEAR_IN_PAGE}
         createRoot(document.getElementById('root')).render(<LogsDrawer isOpen={true} onClose={()=>{}}/>);
-        window.confirm=()=>true;
         async function waitFor(test){const end=Date.now()+13000;while(!test()){if(Date.now()>end)throw Error('Browser state timeout');await new Promise(r=>setTimeout(r,10));}}
         (async()=>{try{
           await fetch('/ready');
           await waitFor(()=>document.querySelector('.log-message'));
-          const clear=document.querySelector('[title="Clear logs"]');clear.click();
-          await waitFor(()=>clear.disabled);await waitFor(()=>!clear.disabled);
+          const clear=document.querySelector('.console-clear-btn');clear.click();await confirmClear();
+          await waitFor(()=>busy(clear));await waitFor(()=>!busy(clear));
           await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
           await fetch('/result',{method:'POST',body:JSON.stringify({messages:[...document.querySelectorAll('.log-message')].map(row=>row.textContent),unknown:document.querySelector('.console-error')?.textContent.includes('outcome is unknown')??false,autoRefresh:document.querySelector('.console-auto-refresh input').checked})});
         }catch(error){await fetch('/result',{method:'POST',body:JSON.stringify({failure:String(error)})})}})();

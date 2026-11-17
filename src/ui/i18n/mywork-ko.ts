@@ -543,7 +543,7 @@ export const myworkKo: Record<string, string> = {
   'Discard what you typed?': '입력한 내용을 버릴까요?',
   'Keep editing': '계속 편집',
   'Discard': '버리기',
-  'Breadcrumb': '이동 경로',
+  'Breadcrumb': '현재 위치',
   'More': '더 보기',
   'Command palette': '명령 팔레트',
   'Search for a command to run…': '실행할 명령 검색…',

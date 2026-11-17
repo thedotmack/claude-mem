@@ -564,7 +564,7 @@ export const myworkZh: Record<string, string> = {
   'Discard what you typed?': '放弃您输入的内容？',
   'Keep editing': '继续编辑',
   'Discard': '放弃',
-  'Breadcrumb': '面包屑导航',
+  'Breadcrumb': '位置导航',
   'More': '更多',
   'Command palette': '命令面板',
   'Search for a command to run…': '搜索要运行的命令…',
