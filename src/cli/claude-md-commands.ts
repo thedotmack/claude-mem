@@ -12,7 +12,7 @@ import {
 } from 'fs';
 import { execSync } from 'child_process';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
-import { formatTime, groupByDate } from '../shared/timeline-formatting.js';
+import { formatTime, groupByDate, parseJsonArray } from '../shared/timeline-formatting.js';
 import { isDirectChild, normalizePath } from '../shared/path-utils.js';
 import { logger } from '../utils/logger.js';
 import { getProjectContext } from '../utils/project-name.js';
@@ -183,20 +183,12 @@ export function makeFolderChildMatcher(relativeFolder: string, workingDir: strin
   };
 }
 
-function parseFiles(filesJson: string | null): string[] {
-  if (!filesJson) return [];
-  try {
-    const files = JSON.parse(filesJson);
-    if (Array.isArray(files)) return files.filter((f): f is string => typeof f === 'string');
-  } catch (error) {
-    logger.warn('CLAUDE_MD', 'Failed to parse observation files JSON', { error: error instanceof Error ? error.message : String(error) });
-  }
-  return [];
-}
-
-/** Bucket key: a direct child's parent directory and the folder end in the same segment. */
-function lastSegmentKey(p: string): string {
-  return path.posix.basename(normalizePath(p)).toLowerCase();
+/**
+ * Bucket key of a normalized path. A direct child's parent directory ends in
+ * its folder's last segment, so the key never skips a file the matcher accepts.
+ */
+function lastSegmentKey(normalized: string): string {
+  return path.posix.basename(normalized).toLowerCase();
 }
 
 interface FolderObservations {
@@ -205,10 +197,9 @@ interface FolderObservations {
 }
 
 /**
- * The newest `limit` direct-child observations of every folder, from one scan
- * of the project's rows. A per-folder query cannot use an index for the file
- * match, so it cost a full scan per folder (#6249). Rows are bucketed by the
- * parent directory's last segment, and the folder matcher does the exact check.
+ * The newest `limit` direct-child observations of each folder, in folder
+ * order, from one scan of the project's rows. Rows are bucketed by the parent
+ * directory's last segment, and the folder matcher does the exact check.
  */
 function findObservationsByFolders(
   db: Database,
@@ -216,17 +207,17 @@ function findObservationsByFolders(
   workingDir: string,
   project: string,
   limit: number,
-): Map<string, FolderObservations> {
-  const byFolder = new Map<string, FolderObservations>();
+): FolderObservations[] {
+  const folders: FolderObservations[] = [];
   const bucketed = new Map<string, FolderObservations[]>();
   for (const relativeFolder of relativeFolders) {
     const entry: FolderObservations = { isFolderChild: makeFolderChildMatcher(relativeFolder, workingDir), observations: [] };
-    byFolder.set(relativeFolder, entry);
-    const key = lastSegmentKey(relativeFolder);
+    folders.push(entry);
+    const key = lastSegmentKey(normalizePath(relativeFolder));
     if (!bucketed.has(key)) bucketed.set(key, []);
     bucketed.get(key)!.push(entry);
   }
-  if (limit <= 0 || byFolder.size === 0) return byFolder;
+  if (limit <= 0 || folders.length === 0) return folders;
 
   const statement = db.prepare(`
     SELECT o.*
@@ -235,24 +226,19 @@ function findObservationsByFolders(
     ORDER BY o.created_at_epoch DESC
   `);
   try {
-    let fullFolders = 0;
     for (const obs of streamRows(statement, project) as Iterable<ObservationRow>) {
-      const matched = new Set<FolderObservations>();
-      for (const file of [...parseFiles(obs.files_modified), ...parseFiles(obs.files_read)]) {
+      for (const file of [...parseJsonArray(obs.files_modified), ...parseJsonArray(obs.files_read)]) {
         for (const entry of bucketed.get(lastSegmentKey(path.posix.dirname(normalizePath(file)))) ?? []) {
-          if (!matched.has(entry) && entry.observations.length < limit && entry.isFolderChild(file)) matched.add(entry);
+          // Rows arrive one at a time, so a row already added is the last one.
+          if (entry.observations.at(-1) === obs || entry.observations.length === limit || !entry.isFolderChild(file)) continue;
+          entry.observations.push(obs);
         }
       }
-      for (const entry of matched) {
-        entry.observations.push(obs);
-        if (entry.observations.length === limit) fullFolders++;
-      }
-      if (fullFolders === byFolder.size) break;
     }
   } finally {
     statement.finalize();
   }
-  return byFolder;
+  return folders;
 }
 
 // The heading uses the same predicate that selected the row, so an observation
@@ -356,7 +342,7 @@ function writeClaudeMdToFolder(folderPath: string, newContent: string): void {
 function regenerateFolder(
   absoluteFolder: string,
   relativeFolder: string,
-  folder: FolderObservations | undefined,
+  folder: FolderObservations,
   dryRun: boolean,
   workingDir: string
 ): { success: boolean; observationCount: number; error?: string } {
@@ -370,7 +356,7 @@ function regenerateFolder(
     return { success: false, observationCount: 0, error: 'Path escapes project root' };
   }
 
-  if (!folder?.observations.length) {
+  if (folder.observations.length === 0) {
     return { success: false, observationCount: 0, error: 'No observations for folder' };
   }
 
@@ -408,13 +394,13 @@ function processAllFoldersForGeneration(
   let skipCount = 0;
   let errorCount = 0;
 
-  for (const absoluteFolder of foldersArray) {
-    const relativeFolder = path.relative(workingDir, absoluteFolder);
+  for (const [i, absoluteFolder] of foldersArray.entries()) {
+    const relativeFolder = relativeFolders[i];
 
     const result = regenerateFolder(
       absoluteFolder,
       relativeFolder,
-      observationsByFolder.get(relativeFolder),
+      observationsByFolder[i],
       dryRun,
       workingDir
     );
