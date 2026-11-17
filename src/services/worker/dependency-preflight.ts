@@ -31,7 +31,7 @@ interface ClassifiedClaudeSetupError {
 export interface WorkerDependencyPreflightOptions {
   settings: DependencyPreflightSettings;
   classifyClaudeError: (error: unknown) => ClassifiedClaudeSetupError;
-  findClaudeExecutable?: () => string;
+  findClaudeExecutable?: () => string | Promise<string>;
   env?: Record<string, string | undefined>;
   platform?: NodeJS.Platform;
   homedir?: () => string;
@@ -162,7 +162,7 @@ function resolveUvxCommand(options: WorkerDependencyPreflightOptions): string {
   return 'uvx.exe';
 }
 
-export function runWorkerDependencyPreflight(options: WorkerDependencyPreflightOptions): DependencyHealthSnapshot {
+export async function runWorkerDependencyPreflight(options: WorkerDependencyPreflightOptions): Promise<DependencyHealthSnapshot> {
   const provider = options.settings.CLAUDE_MEM_PROVIDER || 'claude';
   const chromaEnabled = options.settings.CLAUDE_MEM_CHROMA_ENABLED !== 'false';
 
@@ -172,7 +172,7 @@ export function runWorkerDependencyPreflight(options: WorkerDependencyPreflightO
   if (needsClaudeCli) {
     const findClaudeExecutable = options.findClaudeExecutable ?? (() => defaultFindClaudeExecutable('WORKER'));
     try {
-      findClaudeExecutable();
+      await findClaudeExecutable();
       clearDependencyStatus('claude_cli');
       clearClaudeCliSelfHealAttempts();
     } catch (error) {

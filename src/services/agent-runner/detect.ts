@@ -238,7 +238,7 @@ export function runCommand(first: typeof spawn | string, second: string | string
 
 export interface AgentDetectionDependencies {
   spawn: typeof spawn;
-  findClaudeExecutable: () => string;
+  findClaudeExecutable: () => string | Promise<string>;
   readClaudeOAuthToken: () => Promise<OAuthTokenResult>;
   hasAnthropicApiKey: () => boolean;
   hasAnthropicAuthToken: () => boolean;
@@ -306,7 +306,7 @@ function commandFailureReason(command: string, result: CommandResult): string {
 async function detectClaudeCode(dependencies: AgentDetectionDependencies): Promise<UsableAgent> {
   let path: string;
   try {
-    path = dependencies.findClaudeExecutable();
+    path = await dependencies.findClaudeExecutable();
   } catch (error) {
     return { id: 'claude-code', path: null, authenticated: false, reason: `not installed: ${describeError(error)}` };
   }

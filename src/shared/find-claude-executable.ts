@@ -22,7 +22,8 @@
  * Closes #2222 (desktop-app detection), hardens against stale-CLI selection.
  */
 
-import { execSync, execFileSync } from 'child_process';
+import { exec, execFile } from 'child_process';
+import { promisify } from 'util';
 import { existsSync, realpathSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
@@ -85,8 +86,8 @@ export function resetClaudeExecutableCache(): void {
  * which tests replace by reassigning these members (no module mocking).
  */
 export const _internals = {
-  execSync,
-  execFileSync,
+  exec: promisify(exec),
+  execFile: promisify(execFile),
   existsSync,
   realpathSync,
   homedir,
@@ -159,24 +160,23 @@ type ProbeResult =
   | { kind: 'broken'; detail: string; launchFailed: boolean };
 
 /**
- * Run `<candidate> <args>` and return trimmed stdout, or null on any failure.
+ * Run `<candidate> <args>` without blocking the worker while the CLI starts.
  *
- * Uses execFileSync (not execSync) so the candidate path is passed as a
+ * Uses asynchronous execFile so the candidate path is passed as a
  * separate argument and never interpreted by a shell. This prevents shell
  * injection if the path contains characters like `"`, `;`, `&` — reachable
  * on Windows via a crafted CLAUDE_CODE_PATH in settings.json.
  */
-function runProbe(candidate: string, args: readonly string[]): { stdout: string } | { error: string; flagRejection: boolean; launchFailed: boolean } {
+async function runProbe(candidate: string, args: readonly string[]): Promise<{ stdout: string } | { error: string; flagRejection: boolean; launchFailed: boolean }> {
   try {
-    const stdout = _internals.execFileSync(candidate, [...args], {
+    const { stdout } = await _internals.execFile(candidate, [...args], {
       encoding: 'utf8',
       timeout: VERSION_CHECK_TIMEOUT_MS,
       windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    }).trim();
-    return { stdout };
+    });
+    return { stdout: stdout.trim() };
   } catch (error) {
-    const err = error as { stderr?: unknown; status?: unknown; signal?: unknown; killed?: unknown };
+    const err = error as { stderr?: unknown; code?: unknown; signal?: unknown; killed?: unknown };
     const stderrText = String(err.stderr ?? '').trim();
     const firstLine = (stderrText || (error instanceof Error ? error.message : String(error)))
       .split('\n')[0]
@@ -186,16 +186,16 @@ function runProbe(candidate: string, args: readonly string[]): { stdout: string 
     // A timeout or signal kill (killed/signal set, empty stderr — a Windows
     // cold start losing the 10 s race) leaves no such proof, so it must stay
     // retryable and never classify as incompatible.
-    const status = err.status;
+    const status = err.code;
     const killed = err.killed === true;
     const signalled = err.signal != null;
     const flagRejection = stderrText.length > 0 && !killed && !signalled && typeof status === 'number' && status !== 0;
     // Did the OS fail to launch the process at all (ENOENT/EACCES/ENOEXEC), or
-    // did the process run and then fail? A launch failure yields neither an
-    // exit status nor a termination signal — the child never started. A
-    // non-zero exit sets `status`; a timeout sets `signal`/`killed`. Only a
+    // did the process run and then fail? A launch failure yields neither a
+    // numeric exit code nor a termination signal — the child never started. A
+    // non-zero exit sets a numeric `code`; a timeout sets `signal`/`killed`. Only a
     // true launch failure is the "found but could not be executed" case.
-    const launchFailed = err.status == null && err.signal == null && !err.killed;
+    const launchFailed = typeof status !== 'number' && err.signal == null && !err.killed;
     // Probe failures are expected classification signals (stale CLI, desktop
     // app, broken install); callers warn on or surface the detail, so this
     // stays at debug with the full error for deep troubleshooting.
@@ -218,8 +218,8 @@ function runProbe(candidate: string, args: readonly string[]): { stdout: string 
  * old". So after `--version` warms the binary, the capability probe runs once
  * more; only real flag rejection classifies the CLI as incompatible.
  */
-function probeCandidate(candidate: string): ProbeResult {
-  const capability = runProbe(candidate, CAPABILITY_PROBE_ARGS);
+async function probeCandidate(candidate: string): Promise<ProbeResult> {
+  const capability = await runProbe(candidate, CAPABILITY_PROBE_ARGS);
   if ('stdout' in capability && capability.stdout) {
     return { kind: 'capable', version: capability.stdout };
   }
@@ -228,7 +228,7 @@ function probeCandidate(candidate: string): ProbeResult {
   // CLI) from "doesn't run at all" (desktop app, broken install) via a plain
   // --version. Any error wording ("invalid", "unknown option", localized
   // variants) classifies the same way, so no stderr pattern-matching.
-  const plain = runProbe(candidate, ['--version']);
+  const plain = await runProbe(candidate, ['--version']);
   if ('stdout' in plain && plain.stdout) {
     if ('flagRejection' in capability && capability.flagRejection) {
       return { kind: 'incompatible', version: plain.stdout, detail: capability.error };
@@ -236,7 +236,7 @@ function probeCandidate(candidate: string): ProbeResult {
     // No flag-rejection evidence: the capability probe most likely lost a
     // cold-start race that the --version spawn just warmed away. Re-probe the
     // warm binary once before giving up.
-    const warm = runProbe(candidate, CAPABILITY_PROBE_ARGS);
+    const warm = await runProbe(candidate, CAPABILITY_PROBE_ARGS);
     if ('stdout' in warm && warm.stdout) {
       return { kind: 'capable', version: warm.stdout };
     }
@@ -280,7 +280,7 @@ function compareVersionKeysDesc(a: [number, number, number], b: [number, number,
  *
  * Order is preserved (PATH order first) and only used to break version ties.
  */
-function discoverCandidates(): string[] {
+async function discoverCandidates(): Promise<string[]> {
   const candidates: string[] = [];
 
   if (_internals.platform() === 'win32') {
@@ -295,10 +295,9 @@ function discoverCandidates(): string[] {
         // where.exe itself must come from System32, and its results exclude
         // the current directory — hooks run with the user's project as cwd,
         // where a planted claude.exe would otherwise be found and spawned.
-        const output = _internals.execFileSync(windowsWhereExecutablePath(), [name], {
+        const { stdout: output } = await _internals.execFile(windowsWhereExecutablePath(), [name], {
           encoding: 'utf8',
           windowsHide: true,
-          stdio: ['ignore', 'pipe', 'ignore'],
         });
         // where.exe writes the console's active code page (cp949 on ko-KR) but
         // the `encoding: 'utf8'` above decodes the bytes as UTF-8, so a
@@ -333,10 +332,9 @@ function discoverCandidates(): string[] {
     }
   } else {
     try {
-      const output = _internals.execSync('which -a claude', {
+      const { stdout: output } = await _internals.exec('which -a claude', {
         encoding: 'utf8',
         windowsHide: true,
-        stdio: ['ignore', 'pipe', 'ignore'],
       });
       candidates.push(...output.split('\n').map((line) => line.trim()).filter(Boolean));
     } catch {
@@ -424,7 +422,7 @@ function updateInstructions(): string {
  * @param logComponent  Logger {@link Component} tag (e.g. 'SDK', 'WORKER')
  * @throws {Error} when no Claude CLI compatible with claude-mem can be found
  */
-export function findClaudeExecutable(logComponent: Component = 'SDK'): string {
+export async function findClaudeExecutable(logComponent: Component = 'SDK'): Promise<string> {
   const settings = _internals.loadSettings();
   const configuredSetting = settings.CLAUDE_CODE_PATH || '';
 
@@ -454,7 +452,7 @@ export function findClaudeExecutable(logComponent: Component = 'SDK'): string {
       );
     }
 
-    const probe = probeCandidate(configuredPath);
+    const probe = await probeCandidate(configuredPath);
     if (probe.kind === 'capable') {
       logger.info(logComponent, `Using configured CLAUDE_CODE_PATH: ${configuredPath} (${probe.version})`);
       cachedResolution = {
@@ -516,10 +514,10 @@ export function findClaudeExecutable(logComponent: Component = 'SDK'): string {
   // instead of looping forever in setup_required cooldown.
   const presentButUnspawnable: Array<{ path: string; detail: string }> = [];
 
-  const candidates = discoverCandidates();
+  const candidates = await discoverCandidates();
   for (let order = 0; order < candidates.length; order++) {
     const candidate = candidates[order];
-    const probe = probeCandidate(candidate);
+    const probe = await probeCandidate(candidate);
 
     if (probe.kind === 'capable') {
       capable.push({ path: candidate, version: probe.version, key: parseVersionKey(probe.version), order });

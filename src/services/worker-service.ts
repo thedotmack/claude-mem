@@ -1113,7 +1113,7 @@ export class WorkerService implements WorkerRef {
       ModeManager.getInstance().loadMode(modeId);
       logger.info('SYSTEM', `Mode loaded: ${modeId}`);
 
-      const dependencyHealth = runWorkerDependencyPreflight({
+      const dependencyHealth = await runWorkerDependencyPreflight({
         settings,
         classifyClaudeError,
       });
