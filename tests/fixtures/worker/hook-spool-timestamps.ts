@@ -57,7 +57,7 @@ spool.enqueue('summarize', {
   lastAssistantMessage: 'Verified the handler persists events before returning.',
 }, captureTime + 1000);
 // Exercise fresh live handoffs; disk-spooled inference is retired on upgrade.
-for (const entry of spool.entries()) await ingestHookSpoolEntry(entry, () => {});
+for (const entry of (await spool.entries())) await ingestHookSpoolEntry(entry, () => {});
 const drain = { liveHandoffs: 3 };
 const sid = store.findSessionDbIdByContentSessionId('spooled-time-1', 'claude')!;
 const session = manager.getSession(sid)!;

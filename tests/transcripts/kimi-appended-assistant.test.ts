@@ -72,7 +72,7 @@ describe('Kimi appended assistant messages', () => {
     expect(input.transcriptPath).toBe(wirePath);
     const result = await summarizeHandler.execute({ ...input, platform: 'kimi' });
     expect(result.exitCode).toBe(0);
-    const summaries = spooledEntries('summarize');
+    const summaries = (await spooledEntries('summarize'));
     expect(summaries).toHaveLength(1);
     expect(summaries[0].payload.lastAssistantMessage).toBe(answer);
     expect(summaries[0].payload.platformSource).toBe('kimi');

@@ -79,7 +79,7 @@ describe('Codex transcript patch capture', () => {
 
     expect(readFileSync(join(cwd, 'report.txt'), 'utf8')).toBe('before');
     expect(manager.getTotalQueueDepth()).toBe(0);
-    expect(spooledEntries('file_edit')).toEqual([]);
+    expect(await spooledEntries('file_edit')).toEqual([]);
   });
 
   it('captures the result once and preserves its patch evidence through ingest and SQLite storage', async () => {
@@ -103,7 +103,7 @@ describe('Codex transcript patch capture', () => {
       );
       const observation = store.db.query('SELECT files_modified FROM observations WHERE id = ?').get(saved!.observationIds[0]) as { files_modified: string };
       expect(JSON.parse(observation.files_modified)).toEqual(['report.txt']);
-      expect(spooledEntries('file_edit')).toEqual([]);
+      expect(await spooledEntries('file_edit')).toEqual([]);
       expect(manager.getTotalQueueDepth()).toBe(0);
     } finally {
       session.abortController.abort();

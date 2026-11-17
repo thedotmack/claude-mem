@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, spyOn, mock } from 'bun:te
 import express from 'express';
 import type { Server } from 'http';
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'fs';
-import * as filesystem from 'fs';
+import * as filesystem from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
@@ -78,7 +78,7 @@ describe('remote hook spool receipts', () => {
     expect(responses.map(r => r.status)).toEqual([202, 202, 202]);
     expect(queueObservation).toHaveBeenCalledTimes(1);
     expect(startGenerator).toHaveBeenCalledTimes(1);
-    expect(spool.entries()).toEqual([]);
+    expect(await spool.entries()).toEqual([]);
     store.close();
     store = new SessionStore(join(directory, 'worker.db'));
     expect((await send(fresh)).status).toBe(202);
@@ -90,7 +90,7 @@ describe('remote hook spool receipts', () => {
     expect((await send({ ...entry, enqueuedAtEpochMs: Date.now() - LIVE_OBSERVER_MAX_AGE_MS })).status).toBe(202);
     expect(queueObservation).not.toHaveBeenCalled();
     expect(startGenerator).not.toHaveBeenCalled();
-    expect(spool.entries()).toEqual([]);
+    expect(await spool.entries()).toEqual([]);
   });
 
 
@@ -105,9 +105,9 @@ describe('remote hook spool receipts', () => {
         expect(response.status).toBe(202);
         expect((await response.json()).receipt).toBe(remoteHookSpoolReceipt(value));
       }
-      expect(spool.entries()).toContainEqual(value);
+      expect(await spool.entries()).toContainEqual(value);
     }
-    expect(spool.entries()).toHaveLength(2);
+    expect(await spool.entries()).toHaveLength(2);
   });
 
   it('rejects malformed or content-bearing work-state telemetry before persistence', async () => {
@@ -121,7 +121,7 @@ describe('remote hook spool receipts', () => {
     ]) {
       expect((await send({ kind: 'work_state_telemetry', payload: { ...payload, ...invalid }, enqueuedAtEpochMs: 1 })).status).toBe(400);
     }
-    expect(spool.entries()).toEqual([]);
+    expect(await spool.entries()).toEqual([]);
     expect(drains).toBe(0);
   });
 
@@ -133,7 +133,7 @@ describe('remote hook spool receipts', () => {
     } });
     expect((await send(event(errorsOf(DELIVERABLE_ERRORS_PER_EVENT)))).status).toBe(202);
     expect((await send(event(errorsOf(DELIVERABLE_ERRORS_PER_EVENT + 1)))).status).toBe(400);
-    expect(spool.entries()).toHaveLength(1);
+    expect(await spool.entries()).toHaveLength(1);
   });
 
   it('acknowledges the exact event only after it is in the server spool', async () => {
@@ -141,7 +141,7 @@ describe('remote hook spool receipts', () => {
     const response = await send(entry);
     expect(response.status).toBe(202);
     expect(await response.json()).toEqual({ protocolVersion: 1, status: 'accepted', receipt: remoteHookSpoolReceipt(entry) });
-    expect(spool.entries()).toEqual([entry]);
+    expect(await spool.entries()).toEqual([entry]);
     expect(drains).toBe(1);
     const filename = readdirSync(spool.directory)[0];
     expect(JSON.parse(readFileSync(join(spool.directory, filename), 'utf8')).enqueuedAtEpochMs).toBe(entry.enqueuedAtEpochMs);
@@ -152,7 +152,7 @@ describe('remote hook spool receipts', () => {
     await send(entry);
     let ingested = 0;
     await spool.drain((_entry, mark) => { ingested++; mark(); return true; }, hookSpoolConsumedMarkers(store));
-    expect(spool.entries()).toEqual([]);
+    expect(await spool.entries()).toEqual([]);
     expect(store.isHookSpoolEntryConsumed(remoteHookSpoolReceipt(entry))).toBe(true);
     store.close();
     store = new SessionStore(join(directory, 'worker.db'));
@@ -161,13 +161,13 @@ describe('remote hook spool receipts', () => {
     expect((await retried.json()).receipt).toBe(remoteHookSpoolReceipt(entry));
     await spool.drain(() => { ingested++; return true; }, hookSpoolConsumedMarkers(store));
     expect(ingested).toBe(1);
-    expect(spool.entries()).toEqual([]);
+    expect(await spool.entries()).toEqual([]);
   });
 
   it('deduplicates repeated pending deliveries before ingest', async () => {
     const entry = metadataEntry;
     await Promise.all([send(entry), send(entry), send(entry)]);
-    expect(spool.entries()).toEqual([entry]);
+    expect(await spool.entries()).toEqual([entry]);
   });
 
   it('retains transport receipt protection even when the later ingest marker write fails', async () => {
@@ -193,7 +193,7 @@ describe('remote hook spool receipts', () => {
     const failure = spyOn(store, 'markHookSpoolEntryConsumed').mockImplementation(() => { throw new Error('receipt commit failed'); });
     try {
       expect((await send(entry)).status).toBe(500);
-      expect(spool.entries()).toEqual([entry]);
+      expect(await spool.entries()).toEqual([entry]);
       expect(drains).toBe(0);
     } finally { failure.mockRestore(); }
   });
@@ -217,14 +217,14 @@ describe('remote hook spool receipts', () => {
   it('rejects unauthenticated requests without writing or draining', async () => {
     expect((await send(entry, '')).status).toBe(401);
     expect((await send(entry, 'Bearer another-token')).status).toBe(401);
-    expect(spool.entries()).toEqual([]);
+    expect(await spool.entries()).toEqual([]);
     expect(drains).toBe(0);
   });
 
   it('is disabled until the worker has an ingest token', async () => {
     token = '';
     expect((await send()).status).toBe(503);
-    expect(spool.entries()).toEqual([]);
+    expect(await spool.entries()).toEqual([]);
   });
 
   it('does not acknowledge a failed durable write', async () => {
@@ -232,7 +232,7 @@ describe('remote hook spool receipts', () => {
     const failure = spyOn(spool, 'enqueueRemote').mockImplementation(() => { throw new Error('disk full'); });
     try {
       expect((await send(entry)).status).toBe(500);
-      expect(spool.entries()).toEqual([]);
+      expect(await spool.entries()).toEqual([]);
       expect(drains).toBe(0);
     } finally { failure.mockRestore(); }
   });
@@ -247,7 +247,7 @@ describe('remote hook spool receipts', () => {
       { kind: 'summarize', payload: { contentSessionId: 's', platformSource: 'claude' }, enqueuedAtEpochMs: 1 },
       { kind: 'advisor_calls', payload: { contentSessionId: 's', platformSource: 'claude', calls: [] }, enqueuedAtEpochMs: 1 },
     ]) expect((await send(invalid)).status).toBe(400);
-    expect(spool.entries()).toEqual([]);
+    expect(await spool.entries()).toEqual([]);
     expect(drains).toBe(0);
   });
 
@@ -260,7 +260,7 @@ describe('remote hook spool receipts', () => {
       { kind: 'advisor_calls', payload: { ...common, calls: [{ toolUseId: 'advisor-1', advice: 'keep the queue', occurredAtEpoch: 13 }] }, enqueuedAtEpochMs: 13 },
     ];
     for (const value of entries) expect((await send(value)).status).toBe(202);
-    expect(spool.entries()).toHaveLength(2);
+    expect(await spool.entries()).toHaveLength(2);
     expect(remoteSpoolEnvelopeSchema.safeParse({ protocolVersion: 1, entry, filename: '../outside.json' }).success).toBe(false);
   });
 });
@@ -282,24 +282,24 @@ describe('client hook spool receipts', () => {
       return true;
     }, undefined, { verifyUnchanged: true });
     expect(result.retained).toBe(1);
-    expect(client.entries()[0].payload).toMatchObject({ toolResponse: 'new result' });
+    expect((await client.entries())[0].payload).toMatchObject({ toolResponse: 'new result' });
     expect(readFileSync(original, 'utf8')).toContain('new result');
   });
 
   it('keeps both unacknowledged replacements when the original path is recreated during restore', async () => {
     const client = new HookSpool(join(directory, 'client-spool'));
     client.enqueue('observation', entry.payload);
-    const link = filesystem.linkSync;
-    const race = spyOn(filesystem, 'linkSync').mockImplementation((source, destination) => {
+    const link = filesystem.link;
+    const race = spyOn(filesystem, 'link').mockImplementation(async (source, destination) => {
       client.enqueue('observation', { ...entry.payload, toolResponse: 'replacement C' });
-      link(source, destination);
+      await link(source, destination);
     });
     try {
       await client.drain(() => {
         client.enqueue('observation', { ...entry.payload, toolResponse: 'replacement B' });
         return true;
       }, undefined, { verifyUnchanged: true });
-      expect(client.entries().map(e => (e.payload as { toolResponse: unknown }).toolResponse).sort())
+      expect((await client.entries()).map(e => (e.payload as { toolResponse: unknown }).toolResponse).sort())
         .toEqual(['replacement B', 'replacement C']);
     } finally { race.mockRestore(); }
   });
@@ -308,7 +308,7 @@ describe('client hook spool receipts', () => {
     const client = new HookSpool(join(directory, 'client-spool'));
     client.enqueue('observation', entry.payload);
     expect((await client.drain(() => true, undefined, { verifyUnchanged: true })).drained).toBe(1);
-    expect(client.entries()).toEqual([]);
+    expect(await client.entries()).toEqual([]);
   });
 
   it('stops at the transport budget without dropping remaining entries', async () => {
@@ -326,7 +326,7 @@ describe('client hook spool receipts', () => {
       { maxEntries: 2, verifyUnchanged: true });
     expect(seen).toEqual([10, 20]);
     expect(result).toMatchObject({ drained: 2, retained: 1 });
-    expect(client.entries().map(e => e.enqueuedAtEpochMs)).toEqual([30]);
+    expect((await client.entries()).map(e => e.enqueuedAtEpochMs)).toEqual([30]);
     expect(client.hasEntries()).toBe(true);
     await client.drain(() => true);
     expect(client.hasEntries()).toBe(false);

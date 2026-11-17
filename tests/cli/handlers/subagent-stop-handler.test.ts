@@ -77,7 +77,7 @@ describe('SubagentStop hook', () => {
     const result = await getEventHandler('subagent-stop').execute(input);
     expect(result).toMatchObject({ continue: true, suppressOutput: true });
     expect(nudgeLog).toEqual(['/api/spool/nudge']);
-    expect(spooledEntries()).toEqual([{
+    expect(await spooledEntries()).toEqual([{
       kind: 'subagent_stop',
       payload: { contentSessionId: 'parent-session', platformSource: 'claude', agentId: 'a1e7d1aa9fa57892a', agentType: 'general-purpose', cwd: '/tmp/subagent-stop-project' },
       enqueuedAtEpochMs: expect.any(Number),
@@ -87,7 +87,7 @@ describe('SubagentStop hook', () => {
   it('skips a stop with no agent id', async () => {
     const input = claudeCodeAdapter.normalizeInput({ ...SUBAGENT_STOP_INPUT, agent_id: undefined });
     await getEventHandler('subagent-stop').execute(input);
-    expect(spooledEntries()).toEqual([]);
+    expect(await spooledEntries()).toEqual([]);
   });
 
   it('accepts the entry over the remote spool protocol', () => {
