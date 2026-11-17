@@ -1,4 +1,4 @@
-// Built from src/mods/auto-clear/ by scripts/build-hooks.js. Edit the source, not this file.
+// Built from src/mods/ by scripts/build-hooks.js. Edit the source, not this file.
 
 // src/mods/auto-clear/controller.ts
 var WORK_STATE_WRITE_TOOL = /(?:^|__)work_state_write$/;
@@ -364,7 +364,7 @@ function toolCallEnd(e) {
     toolUseId
   };
 }
-function register(on) {
+function registerAutoClear(on) {
   let controller = null;
   on("session.start", async ($, e, next) => {
     if (!controller) {
@@ -475,6 +475,213 @@ function register(on) {
     controller?.onConversationEnd();
     return next(e);
   });
+}
+
+// src/shared/session-start-card-slot.ts
+var SESSION_START_CARD_FILE_KEY = "claude_mem_session_start_card_file";
+var SESSION_START_CARD_FOLDER = "session-start-card";
+var SESSION_START_CARD_SOURCES = ["startup", "clear", "compact"];
+var FILE_NAME_SAFE_SESSION_ID = /^[A-Za-z0-9_-]+$/;
+function isFileNameSafeSessionId(sessionId) {
+  return typeof sessionId === "string" && FILE_NAME_SAFE_SESSION_ID.test(sessionId);
+}
+function sessionStartCardSlotPath(pluginDataDirectory, sessionId, startedAtEpochMs) {
+  return `${pluginDataDirectory.replace(/[\\/]+$/, "")}/${SESSION_START_CARD_FOLDER}/${sessionId}.${startedAtEpochMs}.json`;
+}
+
+// src/mods/session-start-card/card.ts
+var TERMINAL_ENTRYPOINT = "cli";
+var SESSION_START_CARD_MINIMUM_VERSION = [2, 1, 326];
+function supportsSessionStartCard(version) {
+  const match = /^(\d+)\.(\d+)\.(\d+)/.exec(version ?? "");
+  if (!match) return false;
+  for (let i = 0; i < SESSION_START_CARD_MINIMUM_VERSION.length; i += 1) {
+    const part = Number(match[i + 1]);
+    if (part !== SESSION_START_CARD_MINIMUM_VERSION[i]) return part > SESSION_START_CARD_MINIMUM_VERSION[i];
+  }
+  return true;
+}
+function isSessionStartCardSource(source) {
+  return SESSION_START_CARD_SOURCES.includes(source);
+}
+var COMPACT_SOURCE = "compact";
+var TERMINAL_SURFACE = "terminal";
+function drawsSessionStartCard(source, isFullscreen) {
+  if (!isSessionStartCardSource(source)) return false;
+  return source !== COMPACT_SOURCE || isFullscreen === true;
+}
+var SGR_COLOR_NAMES = {
+  "31": "red",
+  "32": "green",
+  "33": "yellow",
+  "34": "blue",
+  "35": "magenta",
+  "36": "cyan",
+  "90": "gray"
+};
+var SGR_SEQUENCE = /\x1b\[([0-9;]*)m/g;
+var REFUSED_IN_DRAWN_TEXT = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\uD800-\uDFFF\u{10EEEE}]/gu;
+var BRAILLE_BLANK = /⠀/g;
+function drawableText(text) {
+  return text.replace(REFUSED_IN_DRAWN_TEXT, "").replace(BRAILLE_BLANK, " ");
+}
+function parseAnsiLines(text) {
+  let color;
+  let isBold = false;
+  let isDim = false;
+  return text.split(/\r?\n/).map((line) => {
+    const runs = [];
+    const addRun = (raw) => {
+      const runText = drawableText(raw);
+      if (runText) runs.push({ text: runText, color, isBold, isDim });
+    };
+    let from = 0;
+    for (const sequence of line.matchAll(SGR_SEQUENCE)) {
+      addRun(line.slice(from, sequence.index));
+      for (const code of (sequence[1] || "0").split(";")) {
+        if (code === "0" || code === "") {
+          color = void 0;
+          isBold = false;
+          isDim = false;
+        } else if (code === "1") {
+          isBold = true;
+        } else if (code === "2") {
+          isDim = true;
+        } else if (SGR_COLOR_NAMES[code]) {
+          color = SGR_COLOR_NAMES[code];
+        }
+      }
+      from = sequence.index + sequence[0].length;
+    }
+    addRun(line.slice(from));
+    return runs;
+  });
+}
+function sessionStartCardLines(slotFileText) {
+  let slot;
+  try {
+    slot = JSON.parse(slotFileText);
+  } catch {
+    return null;
+  }
+  if (!slot || typeof slot.text !== "string" || slot.text.trim() === "") return null;
+  return parseAnsiLines(slot.text);
+}
+
+// src/mods/session-start-card/register.ts
+var CARD_TITLE = "claude-mem";
+function cardNotShownLine(error) {
+  return `claude-mem: the session-start card is not shown: ${error instanceof Error ? error.message : String(error)}`;
+}
+function registerSessionStartCard(on) {
+  let card = null;
+  let isFullscreen = null;
+  let waitingForHookRows = null;
+  on("classic.SessionStart", async ($, e, next) => {
+    waitingForHookRows = null;
+    if (!drawsSessionStartCard(e.source, isFullscreen) || !isFileNameSafeSessionId(e.session_id)) return next(e);
+    let addition = null;
+    let slotPath = null;
+    let startedAtEpochMs = 0;
+    try {
+      if (await $.env.get("CLAUDE_CODE_ENTRYPOINT") === TERMINAL_ENTRYPOINT) {
+        const engine = await $.session.version();
+        if (supportsSessionStartCard(engine.base ?? engine.version)) {
+          const pluginDataDirectory = (await $.process.hookEnv()).CLAUDE_PLUGIN_DATA;
+          if (!pluginDataDirectory) throw new Error("Claude Code named no plugin data folder");
+          startedAtEpochMs = await $.clock.now();
+          slotPath = sessionStartCardSlotPath(pluginDataDirectory, e.session_id, startedAtEpochMs);
+        }
+      }
+    } catch (error) {
+      addition = { notShownLine: cardNotShownLine(error) };
+    }
+    let result;
+    if (slotPath === null) {
+      result = await next(e);
+    } else {
+      const slotFile = slotPath;
+      result = await next({ ...e, [SESSION_START_CARD_FILE_KEY]: slotFile });
+      try {
+        if (await $.fs.exists(slotFile)) {
+          const lines = sessionStartCardLines(await $.fs.read(slotFile));
+          if (!lines) throw new Error(`${slotFile} holds no banner`);
+          addition = { card: { rowId: `session-start-${startedAtEpochMs}`, lines } };
+        }
+      } catch (error) {
+        addition = { notShownLine: cardNotShownLine(error) };
+      }
+    }
+    if (addition === null) return result;
+    if (e.source !== COMPACT_SOURCE) {
+      waitingForHookRows = addition;
+      return result;
+    }
+    if ("notShownLine" in addition) {
+      $.ui.log(addition.notShownLine);
+      return result;
+    }
+    const cardBeforeThisCompaction = card;
+    card = addition.card;
+    try {
+      const placed = await $.ui.place({ id: addition.card.rowId });
+      if (!placed.isPlaced && placed.requestId === void 0) throw new Error(placed.reason);
+      $.ui.invalidate("ui.render");
+    } catch (error) {
+      card = cardBeforeThisCompaction;
+      $.ui.log(cardNotShownLine(error));
+    }
+    return result;
+  }).catch(async ($, e, next) => next(e));
+  on(
+    "session.append",
+    { door: "hook-context", origin: { kind: "hook", event: "SessionStart" }, message: { name: "hook_additional_context" } },
+    async ($, e, next) => {
+      const keptRow = await next(e);
+      const addition = waitingForHookRows;
+      waitingForHookRows = null;
+      if (addition === null) return keptRow;
+      if ("notShownLine" in addition) {
+        $.ui.log(addition.notShownLine);
+        return keptRow;
+      }
+      const cardBeforeThisStart = card;
+      card = addition.card;
+      try {
+        const placed = await $.ui.place({ id: addition.card.rowId });
+        if (!placed.isPlaced && placed.requestId === void 0) throw new Error(placed.reason);
+        $.ui.invalidate("ui.render");
+      } catch (error) {
+        card = cardBeforeThisStart;
+        $.ui.log(cardNotShownLine(error));
+      }
+      return keptRow;
+    }
+  );
+  on("ui.render", { component: "Placed" }, async ($, e, next) => {
+    if (e.surface === TERMINAL_SURFACE && typeof e.viewport?.isFullscreen === "boolean") isFullscreen = e.viewport.isFullscreen;
+    if (!card || e.props.plugin !== $.plugin.name || e.props.id !== card.rowId) return next(e);
+    const { Box, Text } = $.ui.resolve(e);
+    return h(
+      Box,
+      { flexDirection: "column", borderStyle: "round", borderColor: "claude", paddingX: 1 },
+      h(Text, { weight: "bold", color: "claude" }, CARD_TITLE),
+      card.lines.map(
+        (runs) => h(
+          Text,
+          null,
+          // A Text with nothing in it takes no row; a space keeps the blank line.
+          runs.length === 0 ? " " : runs.map((run) => h(Text, { color: run.color, dimColor: run.isDim, weight: run.isBold ? "bold" : void 0 }, run.text))
+        )
+      )
+    );
+  });
+}
+
+// src/mods/hooks-module.ts
+function register(on) {
+  registerAutoClear(on);
+  registerSessionStartCard(on);
 }
 export {
   register

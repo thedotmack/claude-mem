@@ -3,9 +3,10 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { CODE_MODE_REFUSED_EVENTS, refusedEventsHooked } from '../../scripts/code-mode-refused-events.js';
 
-const bundle = readFileSync(join(import.meta.dir, '..', '..', 'plugin', 'hooks', 'auto-clear.js'), 'utf-8');
+// claude-mem's one hooks module: auto-clear and the session-start card ship in it.
+const bundle = readFileSync(join(import.meta.dir, '..', '..', 'plugin', 'hooks', 'hooks-module.js'), 'utf-8');
 
-describe('auto-clear bundle', () => {
+describe('hooks module bundle', () => {
   it('registers no event that makes Claude Code refuse Code Mode', () => {
     expect(refusedEventsHooked(bundle)).toEqual([]);
     for (const event of CODE_MODE_REFUSED_EVENTS) {

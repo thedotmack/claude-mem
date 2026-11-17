@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { register } from '../../src/mods/auto-clear/register.js';
+import { registerAutoClear } from '../../src/mods/auto-clear/register.js';
 
 const WRITE = 'mcp__plugin_claude-mem_mcp-search__work_state_write';
 const SAVED = 'Saved to "work" in demo.';
@@ -7,10 +7,10 @@ const SAVED = 'Saved to "work" in demo.';
 type Hook = ($: unknown, e: any, next: (e: any) => Promise<any>) => Promise<any>;
 
 /**
- * register() against a stand-in for Claude Code's mods API: each hook is kept
- * by event and door (`session.append:tool-result`), and `$` records what the
- * mod asks for. Context use is fixed at 45%, past the default threshold, with
- * auto-clear turned on by the environment.
+ * registerAutoClear() against a stand-in for Claude Code's mods API: each hook
+ * is kept by event and door (`session.append:tool-result`), and `$` records
+ * what the mod asks for. Context use is fixed at 45%, past the default
+ * threshold, with auto-clear turned on by the environment.
  */
 function harness() {
   const hooks = new Map<string, Hook>();
@@ -19,7 +19,7 @@ function harness() {
     hooks.set(door ? `${event}:${door}` : event, rest[rest.length - 1] as Hook);
     return { catch: () => undefined };
   }) as any;
-  register(on);
+  registerAutoClear(on);
 
   const record = { commands: [] as string[], prompts: [] as string[], notes: [] as string[], appended: [] as string[] };
   const timers: Array<() => void> = [];

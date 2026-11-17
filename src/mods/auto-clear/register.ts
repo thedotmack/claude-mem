@@ -1,20 +1,19 @@
 /**
- * The auto-clear mod's hooks module: Claude Code loads the bundle of this file
- * (plugin/hooks/auto-clear.js, named by `modules` in plugin/hooks/hooks.json)
- * and calls `register`. Claude Code versions without mods ignore `modules`.
+ * The auto-clear mod's hooks (controller.ts says what auto-clear is). They are
+ * registered by src/mods/hooks-module.ts, claude-mem's one hooks module.
  *
  * Claude Code reads what a hooks module hooks and calls off its source, so
- * `register` is a function declaration, every hook is a literal
- * `on("<event>", …)`, and `$` is only ever spelled `$.<namespace>.<method>(…)`
- * with literal names: it is never passed to a helper, which is why the host
- * below is built inline and why `toolCallEnd` takes only the event.
+ * every hook is a literal `on("<event>", …)`, and `$` is only ever spelled
+ * `$.<namespace>.<method>(…)` with literal names: it is never passed to a
+ * helper, which is why the host below is built inline and why `toolCallEnd`
+ * takes only the event.
  *
  * Tool results are watched at `session.append` (door `tool-result`), not at the
  * tool-call event: Claude Code's Code Mode refuses to start while any enabled
  * plugin's hooks module hooks a tool-call, tool-check or classic PreToolUse
  * event (and a few more), so one such hook here would turn Code Mode off for
  * all of claude-mem. scripts/code-mode-refused-events.js lists the events and
- * the build fails if this bundle hooks one.
+ * the build fails if the hooks module bundle hooks one.
  */
 import { AutoClearController, WORK_STATE_WRITE_TOOL, type AutoClearHost, type ToolCallEnd } from './controller.js';
 import type { ApiContentBlock, On, SessionAppendEvent } from './mod-api.js';
@@ -60,7 +59,7 @@ function toolCallEnd(e: SessionAppendEvent): ToolCallEnd {
   };
 }
 
-export function register(on: On): void {
+export function registerAutoClear(on: On): void {
   let controller: AutoClearController | null = null;
 
   on('session.start', async ($, e, next) => {
