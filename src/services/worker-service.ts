@@ -36,6 +36,7 @@ import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { getUptimeSeconds } from '../shared/uptime.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { readLocalApiToken } from '../shared/hook-settings.js';
+import { readLegacyTvToken, resolveWorkerBindHost } from './worker/worker-bind-host.js';
 import { describeObserverAuthMethod } from './worker/observer-auth-method.js';
 import { logger } from '../utils/logger.js';
 import { isHookStdoutClosed } from '../shared/hook-io.js';
@@ -335,8 +336,8 @@ export class WorkerService implements WorkerRef {
   // the previous run's stale PID file + the clean-shutdown sentinel.
   private previousShutdown: 'clean' | 'crash' | 'unknown' = 'unknown';
   private previousUptimeSeconds: number | null = null;
-  // Observation TV shared secret, resolved once in the constructor. Empty = off.
-  private tvToken: string = '';
+  // Whether the local API token guard is mounted, resolved once in the constructor.
+  private localApiTokenEnabled: boolean = false;
   private mcpClient: Client;
 
   private mcpReady: boolean = false;
@@ -445,20 +446,11 @@ export class WorkerService implements WorkerRef {
       version: packageVersion
     }, { capabilities: {} });
 
-    // Observation TV remote broadcast secret. Must be read from settings.json —
-    // SettingsDefaultsManager.get() only consults process.env and DEFAULTS, so a
-    // token written to ~/.claude-mem/settings.json would be invisible to it.
-    // Whitespace-only is OFF, not a secret equal to a space.
-    // RESOLUTION POINT: the token is the single switch. It is passed to the
-    // Server below as `remoteReadOnly`, and only when it is non-empty — so a
-    // token-less install constructs an options object identical to today's and
-    // the read-only guard is never mounted.
     const workerSettings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-    const tvToken = (workerSettings.CLAUDE_MEM_TV_TOKEN ?? '').trim();
-    this.tvToken = tvToken;
     // Local API token (#5141): file-only, so the environment cannot switch the mode.
     // Read once at boot; restart to change.
     const localApiToken = readLocalApiToken();
+    this.localApiTokenEnabled = localApiToken !== '';
 
     this.server = new Server({
       getInitializationComplete: () => this.initializationCompleteFlag,
@@ -488,7 +480,6 @@ export class WorkerService implements WorkerRef {
       preBodyParserRoutes: [
         new BetterAuthRoutes(() => this.dbManager.getConnection()),
       ],
-      ...(tvToken ? { remoteReadOnly: { getToken: () => tvToken } } : {}),
       ...(localApiToken ? { localApiToken: { getToken: () => localApiToken, openStaticPaths: uiStaticPaths() } } : {}),
       // Browser access: same-host and CLAUDE_MEM_ALLOWED_ORIGINS for CORS, plus
       // the DNS-rebinding Host check. Read once at boot; restart to change it.
@@ -1002,7 +993,13 @@ export class WorkerService implements WorkerRef {
 
   async start(): Promise<void> {
     const port = getWorkerPort();
-    const host = getWorkerHost();
+    // A leftover CLAUDE_MEM_TV_TOKEN with a non-loopback host and no local API
+    // token binds to loopback: see resolveWorkerBindHost.
+    const host = resolveWorkerBindHost({
+      configuredHost: getWorkerHost(),
+      legacyTvToken: readLegacyTvToken(USER_SETTINGS_PATH),
+      localApiTokenSet: this.localApiTokenEnabled,
+    });
 
     // Phase 3 telemetry: bridge logged errors into PostHog Error Tracking
     // WITHOUT the logger importing telemetry (no import cycle). captureException
@@ -1054,23 +1051,6 @@ export class WorkerService implements WorkerRef {
     // promotes to fix it. Every signal its tick reads copes with a startup
     // that has not finished or failed (buildAutoUpdateCheckDeps).
     this.startAutoUpdateTimer();
-
-    if (this.tvToken) {
-      // Operators need to see, in the log, that a remote surface is open.
-      // Never log the token itself.
-      logger.info('SYSTEM', 'Observation TV remote broadcast enabled', {
-        host,
-        allowedPaths: ['/tv', '/tv.html', '/stream', 'GET /api/observations'],
-      });
-    } else if (host !== '127.0.0.1' && host !== '::1' && host !== '::ffff:127.0.0.1' && host !== 'localhost') {
-      // Warn, do not refuse to bind: docs/docker.md tells people to set
-      // CLAUDE_MEM_WORKER_HOST=0.0.0.0, and refusing would break that install.
-      logger.warn(
-        'SECURITY',
-        'Worker bound to a non-loopback host with no CLAUDE_MEM_TV_TOKEN — the full worker API, including provider API keys via GET /api/settings, is reachable from the network',
-        { host }
-      );
-    }
 
     writePidFile({
       pid: process.pid,

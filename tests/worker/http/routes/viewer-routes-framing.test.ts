@@ -66,12 +66,10 @@ describe('static /viewer.html', () => {
   async function withWorkerStaticMount(run: (baseUrl: string) => Promise<void>): Promise<void> {
     const dir = mkdtempSync(join(tmpdir(), 'claude-mem-viewer-static-'));
     writeFileSync(join(dir, 'viewer.html'), '<html>viewer</html>');
-    writeFileSync(join(dir, 'tv.html'), '<html>tv</html>');
 
     const app = express();
     createMiddleware().forEach((middleware) => app.use(middleware));
     app.use(express.static(dir));
-    app.get('/tv', (_req, res) => { res.send('<html>tv</html>'); });
     const server = await new Promise<ReturnType<typeof app.listen>>((resolve, reject) => {
       const listening = app.listen(0, '127.0.0.1', () => resolve(listening));
       listening.once('error', reject);
@@ -118,17 +116,6 @@ describe('static /viewer.html', () => {
     await withWorkerStaticMount(async (baseUrl) => {
       for (const rawPath of ['/viewer%2Ehtml', '/%76iewer.html', '//viewer.html']) {
         expect((await getRaw(baseUrl, rawPath)).status).toBe(200);
-      }
-    });
-  });
-
-  it('still lets Observation TV be framed', async () => {
-    await withWorkerStaticMount(async (baseUrl) => {
-      for (const rawPath of ['/tv.html', '/tv']) {
-        const response = await getRaw(baseUrl, rawPath);
-        expect(response.status).toBe(200);
-        expect(response.headers['x-frame-options']).toBeUndefined();
-        expect(response.headers['content-security-policy']).toBeUndefined();
       }
     });
   });

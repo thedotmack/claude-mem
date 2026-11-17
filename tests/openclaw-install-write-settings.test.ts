@@ -22,14 +22,14 @@ describe('openclaw install.sh write_settings', () => {
   const temps: string[] = [];
   afterEach(() => { for (const dir of temps.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
-  // A reinstall that dropped the TV token but kept a non-loopback bind would leave the worker open (#5141).
+  // A reinstall that dropped the local API token but kept a non-loopback bind would leave the worker open (#5141).
   it('keeps every existing key on reinstall, including ones the installer has no default for', () => {
     const home = mkdtempSync(path.join(tmpdir(), 'openclaw-settings-'));
     temps.push(home);
     mkdirSync(path.join(home, '.claude-mem'));
     const settingsPath = path.join(home, '.claude-mem', 'settings.json');
     writeFileSync(settingsPath, JSON.stringify({
-      CLAUDE_MEM_TV_TOKEN: 'keep-me',
+      CLAUDE_MEM_LOCAL_API_TOKEN: 'keep-me',
       CLAUDE_MEM_WORKER_HOST: '0.0.0.0',
       CLAUDE_MEM_PROVIDER: 'gemini',
     }));
@@ -37,7 +37,7 @@ describe('openclaw install.sh write_settings', () => {
     runWriteSettings(home, 'claude');
 
     const settings = JSON.parse(readFileSync(settingsPath, 'utf8'));
-    expect(settings.CLAUDE_MEM_TV_TOKEN).toBe('keep-me');
+    expect(settings.CLAUDE_MEM_LOCAL_API_TOKEN).toBe('keep-me');
     expect(settings.CLAUDE_MEM_WORKER_HOST).toBe('0.0.0.0');
     expect(settings.CLAUDE_MEM_PROVIDER).toBe('claude');
   });

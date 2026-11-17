@@ -99,7 +99,6 @@ describe('SettingsRoutes — credential redaction (#3861)', () => {
       CLAUDE_MEM_OPENROUTER_API_KEY: 'or-secret-5678',
       CLAUDE_MEM_CHROMA_API_KEY: 'chroma-secret-abcd',
       CLAUDE_MEM_CLOUD_SYNC_TOKEN: 'sync-token-wxyz',
-      CLAUDE_MEM_TV_TOKEN: 'tv-token-9999',
       CLAUDE_MEM_WORKER_INGEST_TOKEN: 'spool-ingest-token-1234',
       CLAUDE_MEM_PRO_MEMORY_KEY: 'pro-memory-key-aaaa',
       CLAUDE_MEM_GROK_BOT_WEBHOOK_SECRET: 'brainbeat-secret-bbbb',
@@ -111,6 +110,8 @@ describe('SettingsRoutes — credential redaction (#3861)', () => {
     };
     writeFileSync(settingsPath, JSON.stringify({
       ...secrets,
+      // Observation TV was removed: its leftover token is no longer a setting, so GET never returns it.
+      CLAUDE_MEM_TV_TOKEN: 'tv-token-9999',
       CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: 'false',
       CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS: 'true',
     }));
@@ -124,6 +125,7 @@ describe('SettingsRoutes — credential redaction (#3861)', () => {
       expect(body[key]).toBe(expectedMask(value));
       expect(body[key]).not.toBe(value);
     }
+    expect(body.CLAUDE_MEM_TV_TOKEN).toBeUndefined();
     expect(body.CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS).toBe('false');
     expect(body.CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS).toBe('true');
 

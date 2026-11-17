@@ -41,8 +41,6 @@ The ingest token authenticates only `POST /api/spool/ingest`. It does not protec
 the rest of the worker API. Keep the worker reachable only over a network you
 trust, such as a private network or an authenticated tunnel; do not expose the
 worker directly to the public internet.
-The optional TV read-only guard continues rejecting remote mutations, including
-spool ingestion; an observation-TV endpoint is not a capture endpoint.
 
 ## Delivery and failures
 

@@ -404,19 +404,13 @@ export interface SettingsDefaults {
   CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS: string;
   CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS: string;
   CLAUDE_MEM_WORKER_HEARTBEAT_STALE_MS: string;
-  // Observation TV remote broadcast. EMPTY = OFF: the read-only guard is not
-  // mounted and the worker behaves exactly as before. Set (with a non-loopback
-  // CLAUDE_MEM_WORKER_HOST) to expose ONLY /tv, /tv.html, /stream and
-  // GET /api/observations to holders of this secret. Mint with:
-  //   node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
-  CLAUDE_MEM_TV_TOKEN: string;
   // Local API token (#5141), for hosts with more than one OS user. EMPTY = OFF:
   // nothing changes. Set, the worker API and the MCP HTTP transport refuse a
   // request that does not carry it (X-Claude-Mem-Token or Authorization:
   // Bearer), except GET /api/health and the MCP /health. The viewer opens as
   // /?token=... File-only: HTTP cannot write it and the environment does not
-  // switch it. Read once at boot; restart to change. Mint with the same
-  // command as CLAUDE_MEM_TV_TOKEN.
+  // switch it. Read once at boot; restart to change. Mint with:
+  //   node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
   CLAUDE_MEM_LOCAL_API_TOKEN: string;
   // claude-mem sign-in funnel state, written by the installer's browser-login
   // step (install.ts promptBrowserLogin/completeTrialPairing). Declared here so
@@ -753,12 +747,6 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS: String(DEFAULT_LLM_TIMEOUT_MS),  // Oversized-field condensation deadline (field-optimizer.ts); a request to the same backend, so the same deadline
     CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS: '90000',  // Streamed request idle window (streamed-chat-completion.ts): silence that ends a stream. Self-hosted backends queue behind a load balancer, and the queue wait reads as idle (#4737) — raise it there. Literal because shared cannot import from the worker; a drift test pins it to the shipped constant
     CLAUDE_MEM_WORKER_HEARTBEAT_STALE_MS: '120000', // A silent worker whose liveness heartbeat is younger than this is slow, not dead (10000-3600000).
-    // Observation TV remote broadcast. EMPTY = OFF: the read-only guard is not
-    // mounted and the worker behaves exactly as before. Set (with a non-loopback
-    // CLAUDE_MEM_WORKER_HOST) to expose ONLY /tv, /tv.html, /stream and
-    // GET /api/observations to holders of this secret. Mint with:
-    //   node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
-    CLAUDE_MEM_TV_TOKEN: '',
     CLAUDE_MEM_LOCAL_API_TOKEN: '', // Local API token. Empty = off. See the declaration above.
     // claude-mem sign-in funnel state: all empty until the installer's
     // browser-login step writes them.
