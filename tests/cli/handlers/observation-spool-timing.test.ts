@@ -77,7 +77,7 @@ async function timeObservationHookInChild(workerPort: number): Promise<HookTimin
     await settleHookSpoolNudges();
     const throughNudgeSettleMs = performance.now() - startedAt;
     if (result.continue !== true) throw new Error('handler did not continue: ' + JSON.stringify(result));
-    const spooledToolUseIds = new HookSpool().entries()
+    const spooledToolUseIds = (await new HookSpool().entries())
       .filter(entry => entry.kind === 'observation')
       .map(entry => entry.payload.toolUseId);
     console.log(JSON.stringify({ handlerMs, throughNudgeSettleMs, spooledToolUseIds }));

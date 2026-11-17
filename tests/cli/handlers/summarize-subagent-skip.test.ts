@@ -89,7 +89,7 @@ describe('summarizeHandler — subagent short-circuit', () => {
     expect(result.suppressOutput).toBe(true);
     expect(result.exitCode).toBe(0);
     expect(workerCallLog.length).toBe(0);
-    expect(spooledEntries('summarize')).toHaveLength(0);
+    expect(await spooledEntries('summarize')).toHaveLength(0);
   });
 
   it('does NOT skip when only agentType is set (--agent main session still owns its summary)', async () => {
@@ -106,8 +106,8 @@ describe('summarizeHandler — subagent short-circuit', () => {
     expect(result.continue).toBe(true);
     expect(result.exitCode).toBe(0);
     expect(workerCallLog.length).toBe(0);
-    expect(spooledEntries('summarize')).toHaveLength(1);
-    expect(spooledEntries('summarize')[0].payload.lastAssistantMessage).toBe('Completed the requested work.');
+    expect(await spooledEntries('summarize')).toHaveLength(1);
+    expect((await spooledEntries('summarize'))[0].payload.lastAssistantMessage).toBe('Completed the requested work.');
   });
 
   it('skips summary when both agentId and agentType are set', async () => {
@@ -126,7 +126,7 @@ describe('summarizeHandler — subagent short-circuit', () => {
     expect(result.suppressOutput).toBe(true);
     expect(result.exitCode).toBe(0);
     expect(workerCallLog.length).toBe(0);
-    expect(spooledEntries('summarize')).toHaveLength(0);
+    expect(await spooledEntries('summarize')).toHaveLength(0);
   });
 
   it('summarizes a main session without a transcript when the host supplies its last message', async () => {
@@ -143,6 +143,6 @@ describe('summarizeHandler — subagent short-circuit', () => {
     expect(result.suppressOutput).toBe(true);
     expect(result.exitCode).toBe(0);
     expect(workerCallLog.length).toBe(0);
-    expect(spooledEntries('summarize')).toHaveLength(1);
+    expect(await spooledEntries('summarize')).toHaveLength(1);
   });
 });

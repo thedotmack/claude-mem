@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from 'crypto';
-import { existsSync, linkSync, mkdirSync, opendirSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync } from 'fs';
+import { link, mkdir, readdir, readFile, rename, unlink } from 'fs/promises';
+import { existsSync, mkdirSync, opendirSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { writeJsonFileAtomic } from './atomic-json.js';
 import { ensurePrivateDir, resolveDataDir } from './paths.js';
@@ -388,8 +389,8 @@ export class HookSpool {
   }
 
   /** Readable entries in drain order. Corrupt files are quarantined as a side effect. */
-  entries(): HookSpoolEntry[] {
-    return this.readEntries().files.map(file => file.entry);
+  async entries(): Promise<HookSpoolEntry[]> {
+    return (await this.readEntries()).files.map(file => file.entry);
   }
 
   hasEntries(): boolean {
@@ -444,7 +445,7 @@ export class HookSpool {
     consumedMarkers?: HookSpoolConsumedMarkers,
     options: HookSpoolDrainOptions = {},
   ): Promise<HookSpoolDrainResult> {
-    const { files, quarantined: initiallyQuarantined, omitted } = this.readEntries(options.maxEntries);
+    const { files, quarantined: initiallyQuarantined, omitted } = await this.readEntries(options.maxEntries);
     let quarantined = initiallyQuarantined;
     let drained = 0;
     let retained = omitted;
@@ -471,7 +472,7 @@ export class HookSpool {
           contentSessionId: file.entry.payload.contentSessionId,
           file: file.filename,
         });
-        if (this.unlinkEntry(file)) {
+        if (await this.unlinkEntry(file)) {
           if (!isRemoteReceipt(entryKey)) consumedMarkers.clearConsumed(entryKey);
           drained++;
         } else {
@@ -519,7 +520,7 @@ export class HookSpool {
       if (handedOff) accepted = true;
 
       if (accepted === 'rejected') {
-        if (this.unlinkTransferredEntry(file, 'Remote worker permanently rejected this capture event')) quarantined++;
+        if (await this.unlinkTransferredEntry(file, 'Remote worker permanently rejected this capture event')) quarantined++;
         else retained++;
         continue;
       }
@@ -528,7 +529,7 @@ export class HookSpool {
         // Ingest's verdict: this entry can never succeed (it was not handed
         // off — no marker was written). Retire it the way the retry window
         // does, to expired/, never silently deleted.
-        if (this.expireIfPastWindow(file, HOOK_SPOOL_SESSION_END_UNKNOWN_GRACE_MS, 'unknown-session grace window')) {
+        if (await this.expireIfPastWindow(file, HOOK_SPOOL_SESSION_END_UNKNOWN_GRACE_MS, 'unknown-session grace window')) {
           expired++;
         } else {
           retained++;
@@ -538,7 +539,7 @@ export class HookSpool {
 
       if (!accepted) {
         // Never handed off (no marker was written): the next drain retries it.
-        if (this.expireIfPastWindow(file, HOOK_SPOOL_RETRY_WINDOW_MS, 'retry window')) {
+        if (await this.expireIfPastWindow(file, HOOK_SPOOL_RETRY_WINDOW_MS, 'retry window')) {
           expired++;
         } else {
           if (file.entry.kind === 'observation' || file.entry.kind === 'file_edit') sessionsWithRetainedObservations.add(sessionKey);
@@ -547,7 +548,7 @@ export class HookSpool {
         continue;
       }
 
-      if (this.unlinkEntry(file, options.verifyUnchanged)) {
+      if (await this.unlinkEntry(file, options.verifyUnchanged)) {
         // A remote sender can retry after its acknowledgement was lost.
         if (!isRemoteReceipt(entryKey)) consumedMarkers?.clearConsumed(entryKey);
         drained++;
@@ -561,10 +562,10 @@ export class HookSpool {
   }
 
   /** True when the file is gone (removed here, or by a concurrent drain). */
-  private unlinkEntry(file: HookSpoolFile, verifyUnchanged: boolean = false): boolean {
+  private async unlinkEntry(file: HookSpoolFile, verifyUnchanged: boolean = false): Promise<boolean> {
     if (verifyUnchanged) return this.unlinkTransferredEntry(file);
     try {
-      unlinkSync(file.path);
+      await unlink(file.path);
       return true;
     } catch (error) {
       // ENOENT: a concurrent drain (another worker process) already removed it.
@@ -577,11 +578,11 @@ export class HookSpool {
     }
   }
 
-  private unlinkTransferredEntry(file: HookSpoolFile, rejectionReason?: string): boolean {
+  private async unlinkTransferredEntry(file: HookSpoolFile, rejectionReason?: string): Promise<boolean> {
     const claimedPath = join(this.directory, `${file.entry.kind}-ack-${randomBytes(16).toString('hex')}.json`);
     try {
       // Claim atomically so a concurrent hook's replacement is never unlinked.
-      renameSync(file.path, claimedPath);
+      await rename(file.path, claimedPath);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true;
       logger.warn('HOOK', 'Could not claim an acknowledged spool file; retaining it', {},
@@ -589,18 +590,18 @@ export class HookSpool {
       return false;
     }
     try {
-      const current = parseHookSpoolEntry(readFileSync(claimedPath, 'utf8'));
+      const current = parseHookSpoolEntry(await readFile(claimedPath, 'utf8'));
       if (!('corruptReason' in current) && canonicalJson(current) === canonicalJson(file.entry)) {
         if (rejectionReason) {
-          mkdirSync(this.corruptDirectory, { recursive: true });
-          renameSync(claimedPath, join(this.corruptDirectory, file.filename));
+          await mkdir(this.corruptDirectory, { recursive: true });
+          await rename(claimedPath, join(this.corruptDirectory, file.filename));
           logger.error('HOOK', rejectionReason, { file: file.filename, corruptDirectory: this.corruptDirectory });
-        } else unlinkSync(claimedPath);
+        } else await unlink(claimedPath);
         return true;
       }
       try {
-        linkSync(claimedPath, file.path);
-        unlinkSync(claimedPath);
+        await link(claimedPath, file.path);
+        await unlink(claimedPath);
       } catch (error) {
         // A newer writer may own the original path; keep this unacknowledged version too.
         if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
@@ -619,7 +620,7 @@ export class HookSpool {
    * Moves an entry older than `windowMs` to `expired/`, with an error log.
    * True when the file is gone (moved here, or by a concurrent drain).
    */
-  private expireIfPastWindow(file: HookSpoolFile, windowMs: number, windowDescription: string): boolean {
+  private async expireIfPastWindow(file: HookSpoolFile, windowMs: number, windowDescription: string): Promise<boolean> {
     const ageMs = Date.now() - file.entry.enqueuedAtEpochMs;
     if (ageMs <= windowMs) return false;
 
@@ -632,8 +633,8 @@ export class HookSpool {
       expiredDirectory: this.expiredDirectory,
     };
     try {
-      mkdirSync(this.expiredDirectory, { recursive: true });
-      renameSync(file.path, join(this.expiredDirectory, file.filename));
+      await mkdir(this.expiredDirectory, { recursive: true });
+      await rename(file.path, join(this.expiredDirectory, file.filename));
     } catch (error) {
       // ENOENT: a concurrent drain (another worker process) already moved it.
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true;
@@ -659,11 +660,11 @@ export class HookSpool {
     }
   }
 
-  private quarantine(filename: string, reason: string): boolean {
+  private async quarantine(filename: string, reason: string): Promise<boolean> {
     const source = join(this.directory, filename);
     try {
-      mkdirSync(this.corruptDirectory, { recursive: true });
-      renameSync(source, join(this.corruptDirectory, filename));
+      await mkdir(this.corruptDirectory, { recursive: true });
+      await rename(source, join(this.corruptDirectory, filename));
       logger.error('HOOK', 'Quarantined corrupt hook spool entry', {
         file: filename,
         reason,
@@ -681,12 +682,12 @@ export class HookSpool {
     }
   }
 
-  private readEntries(maxEntries: number = Number.POSITIVE_INFINITY): { files: HookSpoolFile[]; quarantined: number; omitted: number } {
+  private async readEntries(maxEntries: number = Number.POSITIVE_INFINITY): Promise<{ files: HookSpoolFile[]; quarantined: number; omitted: number }> {
     if (!existsSync(this.directory)) return { files: [], quarantined: 0, omitted: 0 };
 
     let filenames: string[];
     try {
-      filenames = readdirSync(this.directory).filter(filename => ENTRY_FILENAME.test(filename));
+      filenames = (await readdir(this.directory)).filter(filename => ENTRY_FILENAME.test(filename));
     } catch (error) {
       logger.warn('HOOK', 'Could not list hook spool entries', { directory: this.directory },
         error instanceof Error ? error : new Error(String(error)));
@@ -700,7 +701,7 @@ export class HookSpool {
       const entryPath = join(this.directory, filename);
       let raw: string;
       try {
-        raw = readFileSync(entryPath, 'utf-8');
+        raw = await readFile(entryPath, 'utf-8');
       } catch (error) {
         // ENOENT: drained by a concurrent pass after the listing. Anything
         // else is retried on the next pass.
@@ -712,7 +713,7 @@ export class HookSpool {
       }
       const parsed = parseHookSpoolEntry(raw);
       if ('corruptReason' in parsed) {
-        if (this.quarantine(filename, parsed.corruptReason)) quarantined++;
+        if (await this.quarantine(filename, parsed.corruptReason)) quarantined++;
         continue;
       }
       files.push({ entry: parsed, path: entryPath, filename });
