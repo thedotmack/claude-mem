@@ -16,7 +16,7 @@ import { pathToFileURL } from 'url';
 import type { Database } from 'bun:sqlite';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { buildWorkerUrl, getWorkerPort, getWorkerHost, fetchWithTimeout, resolvePluginRoot, resolveWorkerScriptPath } from '../shared/worker-utils.js';
+import { buildWorkerUrl, getWorkerPort, getWorkerHost, fetchWithTimeout, isWorkerScriptOutsideRoot, resolvePluginRoot, resolveWorkerScriptPath } from '../shared/worker-utils.js';
 import { InvalidWorkerUrlError, normalizeWorkerBaseUrl } from '../shared/worker-url.js';
 import { getCurrentWorkerPid, verifyRestartedWorker } from './restart-verify.js';
 import { runShutdownSequence, WORKER_GRACEFUL_SHUTDOWN_DEADLINE_BASE_MS, type WorkerShutdownReason } from './worker-shutdown.js';
@@ -2226,6 +2226,16 @@ export async function main() {
         }
         if (typeof health.workerPath === 'string') {
           console.log(`  Worker path: ${health.workerPath}`);
+          // A worker rooted outside the resolved plugin root — the
+          // leftover-alias case of #6228 — runs a copy whose dependencies
+          // and updates the install does not control, and nothing else
+          // flags it: hooks and the MCP server compare versions only.
+          // Skipped for an explicit worker URL: that worker's path belongs
+          // to another machine, so the local resolved root says nothing.
+          const resolvedRoot = explicitWorkerUrl ? null : resolvePluginRoot();
+          if (resolvedRoot && isWorkerScriptOutsideRoot(health.workerPath, resolvedRoot.root)) {
+            console.log(`  Warning: the worker is running from outside the resolved plugin root (${resolvedRoot.root}) — \`claude-mem restart\` boots the resolved install instead.`);
+          }
         }
         const dependencyHint = formatDependencyHealthHint(health);
         if (dependencyHint) {

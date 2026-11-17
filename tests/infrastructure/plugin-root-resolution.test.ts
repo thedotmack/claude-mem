@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { resolvePluginRoot, type WorkerScriptSearchRoots } from '../../src/shared/worker-utils.js';
+import { isWorkerScriptOutsideRoot, resolvePluginRoot, type WorkerScriptSearchRoots } from '../../src/shared/worker-utils.js';
 import { findMissingPluginDependencies } from '../../src/shared/plugin-dependency-closure.js';
 import { marketplaceManifestCheck, pluginRootCheck } from '../../src/npx-cli/commands/doctor.js';
 
@@ -154,6 +154,48 @@ describe('resolvePluginRoot (shared worker-script oracle)', () => {
       root: join(roots.cwd, 'plugin'),
       version: '99.0.0',
     });
+  });
+});
+
+// `status` warns when the live worker's path belongs to a different root
+// than the resolved one (#6228): the marketplace-clone worker the leftover
+// alias produces, while installs resolve to the cache.
+describe('isWorkerScriptOutsideRoot', () => {
+  let base: string;
+
+  beforeEach(() => {
+    base = mkdtempSync(join(tmpdir(), 'worker-outside-root-'));
+  });
+
+  afterEach(() => {
+    rmSync(base, { recursive: true, force: true });
+  });
+
+  function scriptAt(root: string): string {
+    mkdirSync(join(root, 'scripts'), { recursive: true });
+    const script = join(root, 'scripts', 'worker-service.cjs');
+    writeFileSync(script, '// fake worker\n');
+    return script;
+  }
+
+  it('is false when the worker runs from the resolved root', () => {
+    const root = join(base, 'cache', 'plugin');
+    expect(isWorkerScriptOutsideRoot(scriptAt(root), root)).toBe(false);
+  });
+
+  it('is true when the worker runs from a different root', () => {
+    const cacheRoot = join(base, 'cache', 'plugin');
+    const marketplaceRoot = join(base, 'marketplaces', 'thedotmack', 'plugin');
+    scriptAt(cacheRoot);
+    expect(isWorkerScriptOutsideRoot(scriptAt(marketplaceRoot), cacheRoot)).toBe(true);
+  });
+
+  it('is false when the resolved root reaches the worker root through a symlink', () => {
+    const realRoot = join(base, 'real', 'plugin');
+    const script = scriptAt(realRoot);
+    const link = join(base, 'link');
+    symlinkSync(join(base, 'real'), link, 'dir');
+    expect(isWorkerScriptOutsideRoot(script, join(link, 'plugin'))).toBe(false);
   });
 });
 
