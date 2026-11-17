@@ -11,12 +11,14 @@ export function cleanupGeneratedProjects(): void {
   for (const root of sandboxes.splice(0)) rmSync(root, { recursive: true, force: true });
 }
 
-export function generateIn({ files, settings = {}, seed, writer = 'generate', runs = 1 }: {
+export function generateIn({ files, settings = {}, seed, writer = 'generate', runs = 1, script }: {
   files: string[];
   settings?: Record<string, string>;
   seed: string | ((paths: { root: string; project: string }) => string);
   writer?: 'generate' | 'regenerate';
   runs?: number;
+  /** Replaces the default generation loop; runs after the seed. */
+  script?: string;
 }): string {
   const root = mkdtempSync(join(tmpdir(), 'claude-md-generate-')); sandboxes.push(root);
   const project = join(root, 'project'); const data = join(root, 'data');
@@ -41,10 +43,10 @@ export function generateIn({ files, settings = {}, seed, writer = 'generate', ru
     const project = getProjectContext(process.cwd()).primary;
     ${typeof seed === 'function' ? seed({ root, project }) : seed}
     store.close();
-    ${writer === 'generate' ? `for (let run = 0; run < ${runs}; run++) {
+    ${script ?? (writer === 'generate' ? `for (let run = 0; run < ${runs}; run++) {
       const code = await generateClaudeMd(false);
       if (code !== 0) { process.exitCode = code; break; }
-    }` : ''}
+    }` : '')}
   `], { cwd: project, env });
   expect(child.exitCode).toBe(0);
   if (writer === 'regenerate') {

@@ -26,6 +26,13 @@ import { parseContextCountValue } from '../shared/context-count.js';
 
 const DB_PATH = paths.database();
 const SETTINGS_PATH = paths.settings();
+/**
+ * Folders regenerated per turn. `regenerateFolder` queries and writes with
+ * bun:sqlite, which is synchronous, so the loop yields after each batch to let
+ * timers, the worker's HTTP server and other queued work run while a large
+ * project is generated.
+ */
+const FOLDER_BATCH_SIZE = 25;
 
 interface ObservationRow {
   id: number;
@@ -371,13 +378,13 @@ function regenerateFolder(
   }
 }
 
-function processAllFoldersForGeneration(
+async function processAllFoldersForGeneration(
   trackedFolders: Set<string>,
   workingDir: string,
   project: string,
   dryRun: boolean,
   observationLimit: number
-): number {
+): Promise<number> {
   const db = new Database(DB_PATH, { readonly: true, create: false });
 
   let successCount = 0;
@@ -386,7 +393,12 @@ function processAllFoldersForGeneration(
 
   const foldersArray = Array.from(trackedFolders).sort();
 
-  for (const absoluteFolder of foldersArray) {
+  for (const [index, absoluteFolder] of foldersArray.entries()) {
+    if (index % FOLDER_BATCH_SIZE === 0) {
+      // Yield before each batch, including the first: the caller's event loop
+      // must run again while generation proceeds.
+      await new Promise<void>(resolve => setImmediate(resolve));
+    }
     const relativeFolder = path.relative(workingDir, absoluteFolder);
 
     const result = regenerateFolder(
@@ -454,7 +466,7 @@ export async function generateClaudeMd(dryRun: boolean): Promise<number> {
   }
 
   try {
-    return processAllFoldersForGeneration(trackedFolders, workingDir, project, dryRun, observationLimit);
+    return await processAllFoldersForGeneration(trackedFolders, workingDir, project, dryRun, observationLimit);
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     logger.error('CLAUDE_MD', 'Fatal error during CLAUDE.md generation', {
