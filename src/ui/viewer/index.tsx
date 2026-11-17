@@ -10,8 +10,10 @@ if (!container) {
 }
 
 const root = createRoot(container);
+// The page's own boundary keeps a minimal header; App wraps its content in another
+// boundary so a drawing error there leaves the real header on screen.
 root.render(
-  <ErrorBoundary>
+  <ErrorBoundary withHeader>
     <App />
   </ErrorBoundary>
 );

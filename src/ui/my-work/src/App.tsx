@@ -105,7 +105,8 @@ function LanguageSelector() {
         aria-label={t('Language')}
         value={locale}
         onChange={(e) => setLocale(e.target.value as Locale)}
-        className="h-7 rounded-md border border-border bg-card px-2 text-xs text-muted-foreground transition-colors hover:text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+        // The control edge, ≥3:1 on the header in both themes (G12; --border measured 1.53:1 dark, 1.26:1 light).
+        className="h-7 rounded-md border border-control-edge bg-card px-2 text-xs text-muted-foreground transition-colors hover:text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
       >
         {LOCALES.map((code) => <option key={code} value={code}>{LOCALE_NAMES[code]}</option>)}
       </select>
@@ -131,9 +132,9 @@ function PageLoading({ label }: { label: string }) {
 function RequestDetailLoading({ title, onClose }: { title: string; onClose: () => void }) {
   const { t } = useI18n()
   return <Sheet open onOpenChange={(open) => { if (!open) onClose() }}>
-    <SheetContent className="w-full gap-0 overflow-y-auto data-[side=right]:w-full data-[side=right]:sm:max-w-xl">
-      <SheetHeader className="gap-3 border-b p-5 md:p-6">
-        <SheetTitle className="pr-8 text-xl leading-snug">{title}</SheetTitle>
+    <SheetContent>
+      <SheetHeader className="gap-3 border-b p-5 pr-14 md:p-6 md:pr-14">
+        <SheetTitle className="text-xl leading-snug">{title}</SheetTitle>
         <SheetDescription>{t('Request details')}</SheetDescription>
       </SheetHeader>
       <p role="status" className="flex items-center gap-2 p-5 text-sm text-muted-foreground md:p-6"><Spinner className="size-4" />{t('Loading request detail…')}</p>
@@ -173,7 +174,9 @@ function WorkApp() {
   return (
     <div className="flex min-h-svh items-center justify-center p-4 text-foreground">
       <Empty className="max-w-md border bg-card/60">
-        <EmptyHeader>
+        {/* While reading, the header is the one status region, so "Reading local work…" is announced once (the ring
+            beside it says nothing, D b18 M 372). */}
+        <EmptyHeader role={load.state === 'loading' ? 'status' : undefined}>
           {load.state === 'loading' ? <><Spinner /><EmptyTitle>{t('Reading local work…')}</EmptyTitle></> : (
             <>
               <EmptyTitle>{t("Can't read local work right now")}</EmptyTitle>
