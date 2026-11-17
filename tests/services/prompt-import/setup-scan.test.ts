@@ -190,6 +190,23 @@ describe('setup prompt scan', () => {
     expect(done.hostedNotice).toContain('You can continue');
   });
 
+  it('finishes locally with a notice when the hosted history exceeds the upload cap', async () => {
+    hookRecorded('claude', 'session-too-large', 'alpha', 'a prompt', '2026-10-05T09:00:00.000Z');
+    const batches: unknown[][] = [];
+    const scan = setupScan();
+    scan.setExtractor(async prompts => {
+      batches.push(prompts);
+      if (prompts.length) throw Object.assign(new Error('Hosted setup exceeds the 2 MiB upload cap. No prompts were truncated or uploaded.'), { code: 'hosted-too-large', sent: false });
+    });
+    scan.start();
+    await scan.finished();
+    const done = await scan.confirmUpload(true);
+    expect(done).toMatchObject({ phase: 'done', done: true, uploadedAgents: [], error: null });
+    expect(done.hostedNotice).toContain('larger than the hosted setup limit');
+    expect(done.hostedNotice).toContain('You can continue');
+    expect(batches[1]).toEqual([]);
+  });
+
   it('fails with no tools marked uploaded when the run stopped before sending anything', async () => {
     hookRecorded('claude', 'session-unsent', 'alpha', 'a prompt', '2026-10-05T09:00:00.000Z');
     const scan = setupScan();
