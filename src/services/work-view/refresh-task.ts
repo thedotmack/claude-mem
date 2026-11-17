@@ -22,7 +22,7 @@ import { resolvePythonCommand } from './python.js';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { logger } from '../../utils/logger.js';
 import { FOCUS_BATCH, readGoals, readLedger, runCli, validateFocusAnswer, validateGroupingAnswer, validateStory, type FocusInput, type LedgerDatabase, type RefreshNeeds, type StoryDraft, type StoryInput } from './request-groups.mjs';
-import { nextStoryBatch } from './story-batches.js';
+import { nextStoryBatch, storyPreferenceEvidence } from './story-batches.js';
 import { FOCUS_AUTO_PLACE_THRESHOLD, judgeFocusBatch, placesAlone, type FocusJudge, type FocusJudgement } from './focus-judge.mjs';
 import { isWithdrawnArea, ownerGoalsAreaRows, ownerGoalsSaveKey, PROPOSAL_KINDS, readFocusAreas, type FocusArea, type RouterFocusBody } from './my-focus.mjs';
 import { NAV_LABELS } from './nav-words.mjs';
@@ -824,13 +824,15 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       const storyReadAt = now();
       const storyInput: StoryInput = cli(['story-input']);
       if (storyInput.reviews.length) {
+        const preferenceEvidence = storyPreferenceEvidence(storyInput);
         let previous = storyInput.previousStory;
         let draft: StoryDraft;
         for (let offset = 0; offset < storyInput.reviews.length;) {
-          const input = nextStoryBatch(storyInput, offset, previous);
+          const input = nextStoryBatch(storyInput, offset, previous, preferenceEvidence);
           draft = await step('story', [
             requestProgress, '---', readOnly,
             `Do only section 4 (${input.update ? 'update' : 'write'} the build story). The \`story-input\` output is in ${writeInput('story-input', input)}. Reply with only the JSON that \`record-story\` takes ({"narrative": "...", "preferences": [...]}).`,
+            'The reviews are one narrative batch. For preferences, use preferenceEvidence: it holds every preference from every request in this refresh, including requests in other batches. Each request lists indices into values; count distinct groupIds when merging equivalent statements and retain their verbatim quotes. Reconcile with previousStory.preferences, which always contains the saved story\'s preferences, not the previous batch\'s answer.',
           ].join('\n\n'), validateStory);
           previous = { ...draft, writtenAt: new Date(storyReadAt).toISOString() };
           offset += input.reviews.length;

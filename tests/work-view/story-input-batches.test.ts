@@ -77,7 +77,7 @@ describe('bounded story inputs', () => {
         batches++;
         return JSON.stringify({ narrative: seen.join(', '), preferences: [] });
       }, agent);
-      expect(batches).toBeGreaterThan(2);
+      expect(batches).toBeGreaterThan(1);
       expect(seen).toEqual(f.ids);
       expect(readLedger(f.dir).story.narrative).toBe(seen.join(', '));
       expect(f.cli(['story-input']).reviews).toEqual([]);
@@ -113,6 +113,68 @@ describe('bounded story inputs', () => {
         return JSON.stringify({ narrative: 'The snapshot showed 40 percent.', preferences: [] });
       }, 'api');
       expect(f.cli(['story-input']).reviews.map((review: any) => review.percent)).toEqual([60]);
+    } finally { f.close(); }
+  });
+
+  it('keeps preference evidence from separate narrative batches together without counting drafts again', async () => {
+    const f = fixture();
+    const savedPreference = { preference: 'Keep changes focused.', kind: 'directive', supportCount: 3,
+      quotes: [{ quote: 'One concern per change.', at: null }] };
+    writeFileSync(join(f.dir, 'story.json'), JSON.stringify({ narrative: 'Existing story.', preferences: [savedPreference],
+      writtenAt: new Date(NOW - 2000).toISOString() }));
+    const first = { kind: 'directive', preference: 'Run tests before committing.', quote: 'Please run the tests before you commit.', at: null };
+    const last = { kind: 'correction', preference: 'Validate changes before committing.', quote: 'Before any commit, run the tests.', at: null };
+    try {
+      for (const groupId of f.ids) {
+        const preferences = groupId === f.ids[0] ? [first, first] : groupId === f.ids.at(-1) ? [last] : [];
+        f.cli(['record-progress'], { ...readLedger(f.dir).progress[groupId], preferences,
+          reviewBasis: f.cli(['show', groupId]).reviewBasis });
+      }
+      let calls = 0;
+      const seen: string[] = [];
+      await f.task().run(async prompt => {
+        if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
+        const { text, input } = storyFile(prompt);
+        expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(INPUT_BYTES);
+        expect(input.preferenceEvidence).toEqual({
+          values: [first, last],
+          requests: [{ groupId: f.ids[0], preferences: [0] }, { groupId: f.ids.at(-1), preferences: [1] }],
+        });
+        expect(input.previousStory.preferences).toEqual([savedPreference]);
+        expect(input.reviews.every((review: any) => !Object.hasOwn(review, 'preferences'))).toBe(true);
+        expect(prompt).toContain('preferenceEvidence');
+        seen.push(...input.reviews.map((review: any) => review.groupId));
+        calls++;
+        return JSON.stringify({ narrative: seen.join(', '), preferences: [savedPreference, {
+          preference: first.preference, kind: 'directive', supportCount: 2,
+          quotes: [{ quote: first.quote, at: null }, { quote: last.quote, at: null }],
+        }] });
+      }, 'api');
+      expect(calls).toBeGreaterThan(1);
+      expect(seen).toEqual(f.ids);
+      expect(readLedger(f.dir).story.preferences[1].supportCount).toBe(2);
+      expect(readLedger(f.dir).story.preferences[1].quotes.map((quote: any) => quote.quote)).toEqual([first.quote, last.quote]);
+    } finally { f.close(); }
+  });
+
+  it('does not discard shared preference evidence when the complete index cannot fit', async () => {
+    const f = fixture();
+    try {
+      for (const groupId of f.ids) {
+        f.cli(['record-progress'], { ...readLedger(f.dir).progress[groupId],
+          preferences: Array.from({ length: 10 }, (_, index) => ({ kind: 'directive',
+            preference: `${groupId}-${index}-${'规'.repeat(150)}`, quote: '据'.repeat(280) })),
+          reviewBasis: f.cli(['show', groupId]).reviewBasis });
+      }
+      let calls = 0;
+      await expect(f.task().run(async prompt => {
+        if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
+        calls++;
+        return JSON.stringify({ narrative: 'Must not be requested.', preferences: [] });
+      }, 'api')).rejects.toThrow('complete preference evidence');
+      expect(calls).toBe(0);
+      expect(readLedger(f.dir).story).toBeNull();
+      expect(f.cli(['story-input']).reviews.map((review: any) => review.groupId)).toEqual(f.ids);
     } finally { f.close(); }
   });
 
