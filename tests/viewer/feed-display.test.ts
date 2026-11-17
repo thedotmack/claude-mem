@@ -108,6 +108,20 @@ describe('timeline search and kinds', () => {
     expect(matchesSearch(card, 'not-on-this-card')).toBe(false);
   });
 
+  // G3, the row ID: a summary's footer shows "Session #<id>" and a prompt's time details show "#<id>", so each is found by it.
+  it('finds a summary and a prompt by the #id their cards show', () => {
+    const summary: FeedItem = {
+      itemType: 'summary', id: 5151, session_id: 's', project: 'p', platform_source: 'claude', request: 'the request',
+      next_steps: 'the next steps', created_at_epoch: at(18),
+    };
+    for (const row of [summary, prompt(6161, 'use the plan')]) {
+      for (const query of [String(row.id), `#${row.id}`]) {
+        expect({ row: row.itemType, query, found: matchesSearch(row, query) }).toEqual({ row: row.itemType, query, found: true });
+      }
+      expect(matchesSearch(row, '#7272')).toBe(false);
+    }
+  });
+
   it('orders kinds by how many rows they have, keeping chosen kinds with no rows', () => {
     expect(kindsByCount({ prompt: 1, discovery: 38, change: 9, decision: 2 })).toEqual(['discovery', 'change', 'decision', 'prompt']);
     expect(kindsByCount({ discovery: 2 }, ['bugfix'])).toEqual(['discovery', 'bugfix']);

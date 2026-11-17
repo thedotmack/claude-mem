@@ -113,16 +113,17 @@ export function feedEnding({ rowCount, loadedCount = rowCount, isLoading, hasMor
 
 /**
  * Every searchable word of a feed row: what its card shows, so a word read on a card is found. An observation's
- * Facts view (facts, concepts, files read and modified) and its "#id" count, as a summary's sections do.
+ * Facts view (facts, concepts, files read and modified) counts, as a summary's sections do, and so does every row's
+ * "#id" (an observation's footer, a summary's "Session #id", a prompt's time details).
  */
 function searchableText(item: FeedItem): string {
   const parts = item.itemType === 'observation'
     ? [item.title, item.subtitle, item.narrative, ...parseStoredStringList(item.facts), ...parseStoredStringList(item.concepts),
-      ...parseStoredStringList(item.files_read), ...parseStoredStringList(item.files_modified), item.project, item.type, `#${item.id}`]
+      ...parseStoredStringList(item.files_read), ...parseStoredStringList(item.files_modified), item.project, item.type]
     : item.itemType === 'summary'
       ? [item.request, item.investigated, item.learned, item.completed, item.next_steps, item.notes, item.project]
       : [item.prompt_text, item.project];
-  return parts.filter(Boolean).join('\n');
+  return [...parts, `#${item.id}`].filter(Boolean).join('\n');
 }
 
 /** True when every word of the query appears somewhere in the row, in any case (the viewer's one search rule). */
