@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'crypto';
 import { existsSync, linkSync, mkdirSync, opendirSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync } from 'fs';
 import { join } from 'path';
-import { writeJsonFileAtomic } from './atomic-json.js';
+import { WINDOWS_RENAME_RETRY_CODES, writeJsonFileAtomic } from './atomic-json.js';
 import { ensurePrivateDir, resolveDataDir } from './paths.js';
 import { normalizePlatformSource } from './platform-source.js';
 import { logger } from '../utils/logger.js';
@@ -204,12 +204,6 @@ const CORRUPT_DIRNAME = 'corrupt';
 const SPOOL_ENTRY_MODE = 0o600;
 
 const EXPIRED_DIRNAME = 'expired';
-
-/**
- * Windows refuses a rename while another process holds the file open
- * (antivirus, an indexer, a second worker). The next drain retries it.
- */
-const TRANSIENT_RENAME_CODES = ['EPERM', 'EBUSY', 'EACCES'];
 
 /** Corrupt entries whose transient quarantine failure was already logged by this process. */
 const reportedTransientQuarantineFailures = new Set<string>();
@@ -687,7 +681,8 @@ export class HookSpool {
         reportedTransientQuarantineFailures.delete(source);
         return false;
       }
-      if (TRANSIENT_RENAME_CODES.includes(code)) {
+      // Another process (antivirus, an indexer) holds the file open; a later drain retries it.
+      if (WINDOWS_RENAME_RETRY_CODES.has(code)) {
         if (!reportedTransientQuarantineFailures.has(source)) {
           reportedTransientQuarantineFailures.add(source);
           logger.warn('HOOK', 'Corrupt hook spool entry is locked; leaving it in place and retrying on a later drain', {
