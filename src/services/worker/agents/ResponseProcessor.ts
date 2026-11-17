@@ -1593,7 +1593,6 @@ async function syncAndBroadcastObservations(
       updateFolderClaudeMdFiles(
         allFilePaths,
         context.project,
-        getWorkerPort(),
         projectRoot
       ).catch(error => {
         logger.warn('FOLDER_INDEX', 'CLAUDE.md update failed (non-critical)', { project: context.project }, error as Error);
