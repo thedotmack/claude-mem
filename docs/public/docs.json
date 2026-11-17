@@ -134,6 +134,13 @@
         ]
       },
       {
+        "group": "Apps & tools",
+        "icon": "desktop",
+        "pages": [
+          "hermes-desktop-integration"
+        ]
+      },
+      {
         "group": "Agent Frameworks",
         "icon": "robot",
         "pages": [

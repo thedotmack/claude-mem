@@ -76,6 +76,8 @@ ${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed p
   ${styleText('cyan', 'npx claude-mem memory ingest [--source <dir> | --all] [--dry-run] [--require-cwd]')}   Import Claude Code auto-memory notes as observations
   ${styleText('cyan', 'npx claude-mem antigravity-cli install|status|uninstall')}   Manage Antigravity CLI hooks + MCP config
   ${styleText('cyan', 'npx claude-mem kimi install|status|uninstall')}   Manage Kimi Code CLI hooks + MCP config
+  ${styleText('cyan', 'npx claude-mem hermes install --mcp-only --project-cwd <absolute-directory>')}   Connect Hermes MCP without selecting a memory provider
+  ${styleText('cyan', 'npx claude-mem hermes uninstall')}   Remove the owned Hermes integration; keep other settings and memories
   ${styleText('cyan', 'npx claude-mem aider install|status|uninstall|sync')}   Manage Aider file-based context
   ${styleText('cyan', 'npx claude-mem gemini install|status|uninstall')}   Manage Gemini CLI capture hooks
   ${styleText('cyan', 'npx claude-mem devin install|status|uninstall')}   Manage Devin CLI / Devin Desktop hooks + MCP
@@ -176,7 +178,7 @@ const HELP_AWARE_COMMANDS = new Set([
   'start', 'stop', 'restart', 'status', 'doctor', 'mcp', 'hook',
   'adopt', 'cleanup',
   'memory', 'import', 'telemetry', 'project', 'backup', 'restore', 'server', 'worker', 'transcript',
-  'gemini', 'kimi', 'aider', 'devin', 'antigravity-cli', 'pi', 't3code', 't3-code', 't3', 'grok',
+  'gemini', 'kimi', 'hermes', 'aider', 'devin', 'antigravity-cli', 'pi', 't3code', 't3-code', 't3', 'grok',
 ]);
 
 async function main(): Promise<void> {
@@ -327,6 +329,11 @@ async function main(): Promise<void> {
       if (typeof exitCode === 'number') {
         process.exit(exitCode);
       }
+      break;
+    }
+    case 'hermes': {
+      const { runHermesCommand } = await import('./commands/hermes.js');
+      process.exitCode = await runHermesCommand(args[1]?.toLowerCase(), args.slice(2));
       break;
     }
     case 'aider': {

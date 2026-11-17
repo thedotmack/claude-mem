@@ -1,0 +1,164 @@
+---
+title: Hermes Desktop Integration
+description: Find project memories and save explicit notes from Hermes One using a local Claude-Mem worker
+icon: feather
+---
+
+Connect Hermes One to Claude-Mem's MCP tools to find earlier project decisions and explicitly save a note for another chat.
+
+This guide covers the community [Hermes One / Hermes Desktop](https://github.com/fathah/hermes-desktop), the target of [integration issue #5940](https://github.com/thedotmack/claude-mem/issues/5940). It does not establish compatibility with the separate Nous Desktop product.
+
+## Verified scope
+
+| Component | Tested configuration |
+| --- | --- |
+| Desktop | Hermes One 0.7.8, Windows x64 |
+| Agent backend | Hermes Agent 0.23.1, commit `3b421578588243f920886e6fe79a6faa87ea026e` |
+| Backend Python | 3.14.9 |
+| Claude-Mem | 15.19.0, local worker and built MCP bundle |
+| Model connection | Hermes `openai-codex` OAuth, `gpt-6.1-sol`, default Hermes runtime |
+
+Verified on 17 November 2026: in a fresh normal Desktop chat, `save_memory` without a project argument saved a note in the configured checkout. Project-filtered `search` and `get_observations` retrieved a previously saved fact, a search scoped to a second project returned no match, and the turn completed with its final response. The tested model was available to that account; use a model your account supports.
+
+<Info>
+This connection provides on-demand recall and explicit save. It does not enable automatic capture, automatic session-start context, or mirroring of Desktop's native memory-editor saves. The existing Hermes Agent provider is a separate integration.
+</Info>
+
+## Before you connect
+
+1. Install Hermes One and its local Hermes Agent backend. Use a separate test profile first.
+2. Install Claude-Mem and confirm its local worker is available. Locate the absolute Node executable and installed `plugin/scripts/mcp-server.cjs` bundle.
+3. Find the backend home and active profile that Desktop actually uses. Edit that profile's `config.yaml`; the Desktop executable directory is not the backend home. Named profiles have their own configuration. Back up the file, including any existing `memory.provider` and `mcp_servers.claude-mem` entry.
+4. Choose one absolute checkout directory. Find its Claude-Mem project key in an existing saved observation or the worker's project list; worktrees and configured overrides can make it differ from the folder name.
+
+Do not run `npx claude-mem install --ide hermes` for this MCP-only setup: that installer also selects the automatic Claude-Mem memory provider. See the separate [Hermes Agent guide](/hermes-integration) for its behavior.
+
+## Connect with the command
+
+Point `HERMES_HOME` at the profile home you found above, then run:
+
+```powershell
+$env:HERMES_HOME = "C:/path/to/selected-hermes-profile"
+npx claude-mem hermes install --mcp-only --project-cwd "C:/path/to/your-project"
+```
+
+The command adds only `mcp_servers.claude-mem` (with `cwd` and `CLAUDE_MEM_RUNTIME: worker`) and records an ownership receipt. It leaves `memory.provider` unchanged and installs no provider files. It stops without changes if `memory.provider` is `claude-mem`, if `--project-cwd` is not an existing absolute directory, or if an `mcp_servers.claude-mem` entry it does not own already exists. Restart the backend afterwards. The manual steps below produce the same entry.
+
+## Configure the model
+
+The verified memory workflow used Hermes's own `openai-codex` OAuth connection and default tool loop. An existing Codex CLI login alone did not initialize the fresh Hermes credential store. Authenticate in the same backend/profile home you selected above:
+
+```powershell
+$env:HERMES_HOME = "C:/path/to/selected-hermes-profile"
+hermes auth add openai-codex --type oauth --no-browser
+```
+
+Use the installed Hermes CLI for that backend. Complete the displayed OpenAI device authorization in your browser. Keep tokens and device codes out of diagnostic reports. This creates Hermes's own login without manually copying Codex credentials.
+
+Merge the model settings into that profile's existing configuration:
+
+```yaml
+model:
+  provider: openai-codex
+  default: gpt-6.1-sol
+  openai_runtime: auto
+```
+
+Here `auto` keeps Hermes's own tool loop. The optional `codex_app_server` runtime runs the Codex CLI agent instead; a plain chat worked there, but this guide's memory workflow was verified with the default Hermes runtime. Do not run Codex-runtime migration commands for this setup: they can change Codex's separate MCP configuration.
+
+Desktop recognizes `openai-codex` as a keyless model provider. If Desktop requests its separate local backend API key, use its supported key-generation UI; that key authenticates the backend and is not a model-provider API key. Restart the backend and confirm an ordinary chat works before testing memory.
+
+## Connect manually
+
+Skip this section if you used the command. Merge this entry into the existing `mcp_servers` mapping. Replace the three absolute paths. Windows forward slashes avoid backslash escapes in quoted YAML strings.
+
+```yaml
+mcp_servers:
+  claude-mem:
+    command: "C:/path/to/node.exe"
+    args:
+      - "C:/path/to/claude-mem/plugin/scripts/mcp-server.cjs"
+    cwd: "C:/path/to/your-project"
+    enabled: true
+    env:
+      CLAUDE_MEM_RUNTIME: worker
+```
+
+If your worker uses a custom data directory, add its matching `CLAUDE_MEM_DATA_DIR` under this entry's `env`. Preserve any existing worker connection settings. A source TypeScript file is not the installed MCP bundle.
+
+If `claude-mem` already exists, compare and update that entry once; do not create a duplicate YAML key. Preserve its prior contents for disconnect. Keep unrelated MCP entries and settings.
+
+For a fresh profile, omit the external `memory.provider` key to retain Hermes's built-in memory. If it selects `claude-mem`, back up that setting and remove only the provider key for this MCP-only workflow. Preserve the rest of the `memory` mapping. Another external provider has its own capture behavior; assess that separately before using the profile. Do not delete memory files or records.
+
+Restart the backend and open a fresh Desktop chat. Restarting only the window may leave an old backend or MCP process running. Confirm the discovered Claude-Mem tools include `search`, `timeline`, `get_observations` and `save_memory`.
+
+The MCP `cwd` is fixed for that connection's lifetime. Use one configured profile per checkout, and restart the backend after changing it. Selecting a context folder in chat does not change this MCP directory. The fixed directory supplies default save attribution and exclusion checks; it does not automatically scope every search.
+
+## Verify a note across chats
+
+Use harmless content. First ask the agent to search for a duplicate under your exact project key. Then ask it to call `save_memory` without a project argument:
+
+```json
+{"text":"The integration test color is amber.","title":"Desktop memory check"}
+```
+
+Confirm the successful response contains a saved observation ID and your intended project. This checks the actual configured directory. An error, skipped response or queued action is not confirmed storage.
+
+Open a fresh chat and ask the agent to recall the test fact. Use the exact project key on every retrieval call:
+
+```json
+{"query":"integration test color","project":"YOUR_PROJECT_KEY"}
+```
+
+Call `search`, review its IDs, then use `timeline` around a selected result:
+
+```json
+{"anchor":123,"depth_before":1,"depth_after":1,"project":"YOUR_PROJECT_KEY"}
+```
+
+Fetch only the selected note with `get_observations`:
+
+```json
+{"ids":[123],"project":"YOUR_PROJECT_KEY"}
+```
+
+Replace `123` with the saved ID. Confirm the project and fact match. Repeat the search with a different project key; the first project's note must not appear in that scoped result. Hermes may prefix MCP tool names; use the discovered tools with these schemas.
+
+## Privacy and limits
+
+- The local worker can hold memories from several projects and agents. Explicit project filters select results; they are not an account or authorization boundary. Profiles connected to the same store intentionally share access. Unfiltered searches can find other projects.
+- Selected memories enter the model conversation and are processed by the configured model provider. Local storage does not make remote model inference local.
+- `save_memory` stores the submitted note without an observer inference call. Do not include secrets or rely on automatic-capture private tags to redact an explicit note. Existing cloud sync or export settings can carry saved records elsewhere.
+- Excluded-checkout checks use the MCP request directory. Keep `cwd` correct: a project label alone does not change that directory. The Desktop excluded-profile/checkouts matrix was not exercised; verify your exclusion policy before entering private material.
+- Remote backends, hosted Claude-Mem, other operating systems and an unconfigured-profile isolation test remain unverified. Normal-chat usability during a worker outage was not tested. With the worker stopped, the configured built MCP transport returned an explicit save error in approximately 2.9 seconds; this was a separate transport check.
+- The Claude subscription plugin worked through the Desktop backend bridge, but normal onboarding remained blocked by its API-key gate. Local Ollama onboarding worked; the tested 8B model could not complete a memory tool turn within the bounded test on the available machine.
+
+## Troubleshooting
+
+| Symptom | Check |
+| --- | --- |
+| No Claude-Mem tools | Actual backend/profile, YAML indentation, absolute Node/bundle paths, enabled entry and full backend restart |
+| Wrong project | Exact project key for retrieval and the MCP entry's absolute `cwd`; the chat context-folder picker is insufficient |
+| Codex reports missing credentials | Run the independent Hermes OAuth login in the selected profile home; a Codex CLI login alone is insufficient for a fresh Hermes store |
+| Model unavailable | Choose a model available to the authenticated account |
+| Save fails | Check the worker connection and returned error; confirm a saved ID before reporting success |
+| Memory screen shows no Claude-Mem provider | This MCP-only setup does not select an external memory provider; inspect tool discovery instead |
+
+## Disconnect
+
+If you connected with the command, run it with the same `HERMES_HOME`, then restart the backend:
+
+```powershell
+npx claude-mem hermes uninstall
+```
+
+It removes only the entry it wrote, using its receipt, and keeps other settings and all memories. For a manual setup, restore only the `mcp_servers.claude-mem` entry you changed, or remove it if this setup created it. Restore the previous `memory.provider` only if you changed it and it has not since been intentionally changed again. Keep all other settings and entries. Restart the backend and verify the removed connection no longer advertises its tools.
+
+Do not delete Desktop profiles, native memory files, Claude-Mem databases or saved observations. A manual setup has no installer ownership receipt, so `hermes uninstall` does not own it; roll it back by hand. Manual rollback matched the disposable configuration snapshot, and all four saved test records remained readable afterward. 
+
+## Official references
+
+- [Pinned Desktop backend and chat routing](https://github.com/fathah/hermes-desktop/blob/8fe1828e6a82aabb1e5b85ebe29b4690756a216c/src/main/hermes.ts)
+- [Pinned Agent MCP transport and supported per-server cwd](https://github.com/NousResearch/hermes-agent/blob/3b421578588243f920886e6fe79a6faa87ea026e/tools/mcp_tool_transport.py)
+- [Pinned Agent profile and checkout configuration](https://github.com/NousResearch/hermes-agent/blob/3b421578588243f920886e6fe79a6faa87ea026e/website/docs/user-guide/profiles.md)
+- [Pinned Agent OAuth command options](https://github.com/NousResearch/hermes-agent/blob/3b421578588243f920886e6fe79a6faa87ea026e/hermes_cli/subcommands/auth.py)
