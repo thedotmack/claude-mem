@@ -55,11 +55,23 @@ describe.skipIf(process.platform === 'win32')('JSON memory export to stdout', ()
     rmSync(directory, { recursive: true, force: true });
   });
 
-  async function run(output: string, pipe = false, appendStdout?: string) {
+  async function run(output: string, pipe: boolean | 'fifo' = false, appendStdout?: string) {
     const args = [process.execPath, '--preload', join(import.meta.dir, '../preload.ts'),
       join(import.meta.dir, '../../scripts/export-memories.ts'), '', output, '--project=stdio-project'];
     // Python's capture uses native pipes; Bun.spawn uses Unix socket pairs.
-    const launch = pipe ? [Bun.which('python3')!, '-c',
+    const launch = pipe === 'fifo' ? [Bun.which('python3')!, '-c', `
+import concurrent.futures, json, os, subprocess, sys
+fifo = sys.argv[1]
+os.mkfifo(fifo)
+def receive():
+    with open(fifo) as stream:
+        return stream.read()
+with concurrent.futures.ThreadPoolExecutor() as pool:
+    incoming = pool.submit(receive)
+    with open(fifo, 'w') as stream:
+        result = subprocess.run(sys.argv[2:], stdout=stream, stderr=subprocess.PIPE, text=True)
+    print(json.dumps(dict(status=result.returncode, stdout=incoming.result(), stderr=result.stderr)))
+`, output, ...args] : pipe ? [Bun.which('python3')!, '-c',
       'import subprocess,json,sys; r=subprocess.run(sys.argv[1:],capture_output=True); print(json.dumps(dict(status=r.returncode,stdout=r.stdout.decode(),stderr=r.stderr.decode())))',
       ...args] : args;
     const stdoutFd = appendStdout ? openSync(appendStdout, 'a') : undefined;
@@ -106,6 +118,13 @@ describe.skipIf(process.platform === 'win32')('JSON memory export to stdout', ()
   it.skipIf(!Bun.which('python3'))('keeps native pipe stdout free of progress messages', async () => {
     const result = await run('/dev/stdout', true);
     expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ totalObservations: 1, totalSessions: 1, totalPrompts: 1 });
+    expect(result.stderr).toContain('Export complete!');
+  });
+
+  it.skipIf(!Bun.which('python3'))('keeps a named FIFO also opened as stdout free of progress messages', async () => {
+    const result = await run(join(directory, 'export.fifo'), 'fifo');
+    expect(result.status, result.stderr).toBe(0);
     expect(JSON.parse(result.stdout)).toMatchObject({ totalObservations: 1, totalSessions: 1, totalPrompts: 1 });
     expect(result.stderr).toContain('Export complete!');
   });

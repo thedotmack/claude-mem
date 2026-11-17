@@ -69,11 +69,15 @@ export async function exportMemories(query: string, outputFile: string, project?
   try {
     const target = statSync(outputFile);
     streamTarget = target.isCharacterDevice() || target.isFIFO();
-    const fd = standardStreamDescriptor(outputFile);
-    if (fd !== undefined) {
+    const descriptors = streamTarget
+      ? [process.stdout.fd, process.stderr.fd]
+      : [standardStreamDescriptor(outputFile)];
+    for (const fd of descriptors) {
+      if (fd === undefined) continue;
       const stream = fstatSync(fd);
       if (target.dev === stream.dev && target.ino === stream.ino) {
         stdioTarget = fd;
+        break;
       }
     }
   } catch (error) {
