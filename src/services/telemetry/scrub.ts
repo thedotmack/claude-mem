@@ -205,6 +205,10 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   // context_injected_rollup aggregation fields:
   'total_tokens',
   'avg_tokens',
+  // context_read_timed_out: read_method is a closed enum of context-reader
+  // method names (ContextReadMethods), queue_wait_ms an integer duration.
+  'read_method',
+  'queue_wait_ms',
   // skill_invoked — closed skill identity only. skill_id is a first-party
   // plugin/skills/ name or `other`; skill_source is first_party | third_party;
   // skill_trigger is tool | prompt. Never a third-party skill name, never
