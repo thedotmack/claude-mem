@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'bun:test';
 import {
+  DELETE_REQUEST_TIMEOUT_MS,
+  DELETE_STOPPED,
   deleteFeedItem,
   describeDeleteFailure,
+  describeDeleteTimeout,
   itemDeletedTarget,
   removeLoadedRow,
 } from '../../src/ui/viewer/utils/feed-deletion';
@@ -41,6 +44,25 @@ describe('viewer delete flow', () => {
 
   it('names the status for any other refusal', () => {
     expect(describeDeleteFailure(500)).toBe('Not deleted: the worker answered HTTP 500.');
+  });
+
+  // A fetch that only ends when its signal aborts, like a worker that never answers.
+  const hangingFetch = (async (_url: string, init?: RequestInit) => new Promise<Response>((_, reject) => {
+    init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+  })) as typeof fetch;
+
+  it('stops waiting after its timeout and says the outcome is unknown', async () => {
+    expect(DELETE_REQUEST_TIMEOUT_MS).toBe(10_000);
+    await expect(deleteFeedItem('observation', 1, hangingFetch, { timeoutMs: 20 })).rejects.toThrow(describeDeleteTimeout(0.02));
+    expect(describeDeleteTimeout(10)).toBe('No answer from the worker in 10 seconds, so the viewer stopped waiting. If the delete finishes anyway, this memory leaves the list.');
+  });
+
+  it('stops when the reader cancels, and says so instead of calling the worker unreachable', async () => {
+    const reader = new AbortController();
+    const pending = deleteFeedItem('summary', 2, hangingFetch, { signal: reader.signal });
+    reader.abort();
+    await expect(pending).rejects.toThrow(DELETE_STOPPED);
+    await expect(deleteFeedItem('summary', 2, hangingFetch, { signal: reader.signal })).rejects.toThrow(DELETE_STOPPED);
   });
 });
 

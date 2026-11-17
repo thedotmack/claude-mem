@@ -75,7 +75,9 @@ export interface Request {
   workstreams: { title: string; tasks: { name: string; done: boolean }[] }[]
   /** `media`: the record's image refs (ids and labels only); absent when it has none. */
   granular: { kind: 'work' | 'memory'; text: string; at: string; media?: WorkViewMediaManifest }[]
-  conversations: { tool: string; at: string; title: string }[]
+  /** `platform` and `conversationSessionId` come from the conversation key ["conversation", platform, session id]: the
+   * platform it was recorded from (sdk_sessions.platform_source) and its session id, which a continued turn resumes. */
+  conversations: { tool: string; at: string; title: string; platform: string; conversationSessionId: string }[]
   prompts: Quote[]
   /** `href` is a real published page, PR or commit; '#' means a sample link with nothing behind it; absent means a
    * recorded item with nothing to open, such as a commit whose remote is not GitHub (render with ProductLink). */
@@ -210,7 +212,11 @@ export const SAMPLE_REQUESTS: Request[] = [
       { kind: 'work', text: 'Spec: home and on the go section written', at: '1:28 pm' },
       { kind: 'memory', text: 'Spec derived from 466 owner prompts', at: '1:20 pm' },
     ],
-    conversations: [{ tool: 'Claude Code', at: 'Oct 20, 1:16 pm', title: 'Work state spec from prompts' }, { tool: 'Claude Code', at: 'Oct 20, 1:24 pm', title: 'Home and on the go (after /clear)' }],
+    // The session ids are not UUIDs, so sample data never offers to continue a conversation.
+    conversations: [
+      { tool: 'Claude Code', at: 'Oct 20, 1:16 pm', title: 'Work state spec from prompts', platform: 'claude', conversationSessionId: 'sample-conversation-1' },
+      { tool: 'Claude Code', at: 'Oct 20, 1:24 pm', title: 'Home and on the go (after /clear)', platform: 'claude', conversationSessionId: 'sample-conversation-2' },
+    ],
     prompts: [{ at: '10-20 13:24', quote: 'it should work the same at my desk and on my phone' }, { at: '10-20 13:27', quote: 'rules could read as simple when-then blocks' }],
     workProduct: [{ kind: 'Page', label: 'My Work LIVE spec', href: '#' }],
     story: [
@@ -288,6 +294,21 @@ export const needsYou = (request: Request) => request.state === 'your-move' || r
 export class SaveRefusedError extends Error {
   readonly model: WorkModel
   constructor(message: string, model: WorkModel) { super(message); this.name = 'SaveRefusedError'; this.model = model }
+}
+
+/**
+ * The worker did not start a refresh. `workerReason` is the worker's own words when its answer carried any, else
+ * null; the screen words the rest in the person's language (ManualRefreshButton). The message stays English for logs.
+ */
+export class RefreshNotStartedError extends Error {
+  readonly status: number
+  readonly workerReason: string | null
+  constructor(status: number, workerReason: string | null) {
+    super(`Refresh could not start: ${workerReason ?? `the worker answered ${status}`}`)
+    this.name = 'RefreshNotStartedError'
+    this.status = status
+    this.workerReason = workerReason
+  }
 }
 
 /** The ship estimate only from measured pace: two or more readings, the latest moving forward (decision 3). */

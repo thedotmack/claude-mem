@@ -40,6 +40,7 @@ import { isOwnPageOrigin, type WorkerOriginPolicy } from '../services/worker/htt
 import { extractLocalApiToken, safeEqualSecret } from '../shared/local-api-token.js';
 import { logger } from '../utils/logger.js';
 import { MAX_MCP_ROOTS_ATTEMPTS, MCP_ROOTS_TIMEOUT_MS, normalizeCwd, resolveMcpProjectCwd } from './mcp-project-cwd.js';
+import { WORKER_JSON_BODY_LIMIT_BYTES } from '../shared/worker-http-limits.js';
 export { cwdFromRoots, normalizeCwd } from './mcp-project-cwd.js';
 
 export const CWD_HEADER = 'x-claude-mem-cwd';
@@ -47,10 +48,10 @@ export const MCP_HTTP_PATH = '/mcp';
 export const DEFAULT_HTTP_HOST = '127.0.0.1';
 export const DEFAULT_HTTP_PORT = 37790;
 
-// The same cap as the worker's JSON body limit (express.json({ limit: '5mb' }) in
-// src/services/worker/http/middleware.ts): tool arguments are forwarded to the worker,
-// so a larger request could never succeed there anyway.
-const MAX_BODY_BYTES = 5 * 1024 * 1024;
+// The worker's own JSON body limit (WORKER_JSON_BODY_LIMIT_BYTES, which
+// src/services/worker/http/middleware.ts passes to express.json): tool arguments are
+// forwarded to the worker, so a larger request could never succeed there anyway.
+const MAX_BODY_BYTES = WORKER_JSON_BODY_LIMIT_BYTES;
 // Reaps sessions whose client went away without a DELETE (abandoned-session memory
 // protection). Reaping a live but idle session is cheap: the MCP Streamable HTTP spec
 // requires a client that gets 404 for its session id to initialize a new one.

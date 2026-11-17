@@ -2,7 +2,7 @@ import { expect, it } from 'bun:test';
 import {
   chromeExecutablePath, failOnCiWithoutChrome, type DevToolsPage, type OwnedChrome,
 } from '../../helpers/chrome-devtools';
-import { connectLoadedSettings, launchSettingsFixture, serveSettingsFixture } from './settings-fixture';
+import { connectLoadedSettings, launchSettingsFixture, serveSettingsFixture, showSection } from './settings-fixture';
 
 failOnCiWithoutChrome('CI requires Chrome or Chromium for the native settings-save regression tests.');
 
@@ -22,7 +22,8 @@ failOnCiWithoutChrome('CI requires Chrome or Chromium for the native settings-sa
       page = await connectLoadedSettings(chrome, server.url.href);
       const { evaluate, settle } = page;
       const deadline = Date.now() + 10000;
-      await evaluate('[...document.querySelectorAll(".section-header-btn")].find(x=>x.textContent.includes("Advanced")).click()');
+      // The provider's select is in "AI provider"; the fallback's, the one changed below, in "Fallbacks".
+      await evaluate(showSection('AI provider'));
       await settle();
       const authSelects = '[...document.querySelectorAll(".form-field")].filter(x=>x.textContent.startsWith("Claude Auth Method")).map(x=>x.querySelector("select"))';
       // The provider dropdowns' Claude options (other selects also carry a "claude" value, e.g. source filters).
@@ -33,6 +34,8 @@ failOnCiWithoutChrome('CI requires Chrome or Chromium for the native settings-sa
       }
       const loaded = { values: await evaluate(`${authSelects}.map(s=>s.value)`), labels: await evaluate(claudeLabels) };
       // Change the FALLBACK select: both selects and both labels follow the one setting.
+      await evaluate(showSection('Fallbacks'));
+      await settle();
       await evaluate(`(() => { const s = ${authSelects}[1]; Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(s, 'gateway'); s.dispatchEvent(new Event('change', { bubbles: true })); })()`);
       await settle();
       const changed = { values: await evaluate(`${authSelects}.map(s=>s.value)`), labels: await evaluate(claudeLabels) };

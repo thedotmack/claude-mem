@@ -1,0 +1,6 @@
+{
+  "capturedWith": "Claude Code 2.1.325, `claude --desktop --resume 00000000-0000-4000-8000-000000000000` (a made-up session id) under `/usr/bin/script -q /dev/null`, TERM=dumb, stdin ignored, stdout and stderr piped, as the runner spawns it, on macOS, 15 Nov 2026",
+  "exitCode": 1,
+  "stdout": "^D\b\b\u001b[0m\u001b[31mNo session found with ID 00000000-0000-4000-8000-000000000000. Run `claude --resume` to pick a session, then /desktop inside it.\u001b[0m\r\n\u001b[?25h",
+  "stderr": ""
+}

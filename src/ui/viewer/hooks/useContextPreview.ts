@@ -4,6 +4,7 @@ import type { ProjectCatalog, Settings } from '../types';
 
 interface UseContextPreviewResult {
   preview: string;
+  /** True while a read is on its way, and while the preview shown is still the one for an earlier source or project. */
   isLoading: boolean;
   error: string | null;
   projects: string[];
@@ -21,6 +22,11 @@ function getPreferredSource(catalog: ProjectCatalog): string | null {
   return sources[0] || null;
 }
 
+/** Which source and project a preview was read for. */
+function selectionKey(source: string | null, project: string | null): string {
+  return JSON.stringify([source ?? '', project ?? '']);
+}
+
 function withDefaultSources(sources: string[]): string[] {
   const merged = ['claude', 'codex', ...sources];
   return Array.from(new Set(merged));
@@ -35,6 +41,10 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
   const [projects, setProjects] = useState<string[]>([]);
   const [selectedSource, setSelectedSource] = useState<string | null>(null);
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
+  // The source and project the shown preview (or its error) was read for. A new choice reads after a 300 ms pause,
+  // and until its preview arrives the old one's counts must not stand beside the new choice's name.
+  const [shownFor, setShownFor] = useState<string | null>(null);
+  const currentSelection = selectionKey(selectedSource, selectedProject);
 
   useEffect(() => {
     async function fetchProjects() {
@@ -92,8 +102,10 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
   }, [catalog, selectedSource]);
 
   const refresh = useCallback(async (isCurrent: () => boolean) => {
+    const readFor = selectionKey(selectedSource, selectedProject);
     if (!selectedProject) {
       setPreview('No project selected');
+      setShownFor(readFor);
       setIsLoading(false);
       setError(null);
       return;
@@ -120,9 +132,13 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
       } else {
         setError('Failed to load preview');
       }
+      setShownFor(readFor);
     } catch (error: unknown) {
       console.error('Failed to load context preview:', error instanceof Error ? error.message : String(error));
-      if (isCurrent()) setError('Failed to load preview');
+      if (isCurrent()) {
+        setError('Failed to load preview');
+        setShownFor(readFor);
+      }
     }
 
     if (isCurrent()) setIsLoading(false);
@@ -139,10 +155,12 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
     };
   }, [settings, refresh]);
 
+  const stale = shownFor !== currentSelection;
   return {
     preview: preview === 'No project selected' ? t(preview) : preview,
-    isLoading,
-    error: error ? t(error) : null,
+    isLoading: isLoading || stale,
+    // An error read for an earlier choice is not this choice's: the preview says it is loading instead.
+    error: error && !stale ? t(error) : null,
     projects,
     sources: catalog.sources,
     selectedSource,
