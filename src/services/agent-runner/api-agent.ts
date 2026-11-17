@@ -20,6 +20,7 @@
  */
 
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { parseOpenRouterExtraBody, withOpenRouterExtraBody } from '../../shared/openrouter-extra-body.js';
 import { paths } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import { resolveOpenAICompatConfig } from '../worker/OpenAICompatProvider.js';
@@ -35,6 +36,8 @@ export interface ApiTarget {
   url: string;
   apiKey: string;
   model: string;
+  /** CLAUDE_MEM_API_AGENT_EXTRA_BODY, parsed: endpoint-specific request fields. */
+  extraBody?: Record<string, unknown>;
 }
 
 export interface ApiTargetResolution {
@@ -84,19 +87,22 @@ export function resolveSelectedApiProvider(settingsPath: string = paths.settings
 export function resolveApiTarget(settingsPath: string = paths.settings()): ApiTargetResolution {
   const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
   const provider = String(settings.CLAUDE_MEM_PROVIDER ?? '').trim();
+  const { extraBody, warning } = parseOpenRouterExtraBody(settings.CLAUDE_MEM_API_AGENT_EXTRA_BODY, 'CLAUDE_MEM_API_AGENT_EXTRA_BODY');
+  if (warning) logger.warn('WORKER', warning);
+  const extra = extraBody ? { extraBody } : {};
   if (OPENROUTER_PROVIDERS.has(provider)) {
     const config = resolveOpenRouterConfig(settingsPath);
     if (!config.apiUrl) return { target: null, reason: `CLAUDE_MEM_PROVIDER is ${provider}, but no endpoint is configured.` };
     if (!config.apiKey) return { target: null, reason: `CLAUDE_MEM_PROVIDER is ${provider}, but no API key is configured.` };
     if (!config.model) return { target: null, reason: `CLAUDE_MEM_PROVIDER is ${provider}, but no model is configured.` };
-    return { target: { provider: 'openrouter', url: config.apiUrl, apiKey: config.apiKey, model: config.model }, reason: '' };
+    return { target: { provider: 'openrouter', url: config.apiUrl, apiKey: config.apiKey, model: config.model, ...extra }, reason: '' };
   }
   if (provider === 'openai-compatible') {
     const config = resolveOpenAICompatConfig(settingsPath);
     if (!config.apiUrl) return { target: null, reason: 'CLAUDE_MEM_PROVIDER is openai-compatible, but no endpoint is configured.' };
     if (!config.model) return { target: null, reason: 'CLAUDE_MEM_PROVIDER is openai-compatible, but no model is configured.' };
     if (config.requiresApiKey && !config.apiKey) return { target: null, reason: 'CLAUDE_MEM_PROVIDER is openai-compatible, but no API key is configured.' };
-    return { target: { provider: 'openai-compatible', url: config.apiUrl, apiKey: config.apiKey, model: config.model }, reason: '' };
+    return { target: { provider: 'openai-compatible', url: config.apiUrl, apiKey: config.apiKey, model: config.model, ...extra }, reason: '' };
   }
   return {
     target: null,
@@ -190,7 +196,8 @@ export async function askApiTarget(target: ApiTarget, prompt: string, options: A
     // non-streamed answer sends nothing until it is done. Off, so the signal above is the only limit.
     timeout: false,
     headers,
-    body: JSON.stringify({
+    // The extra body never sets reasoning or response_format (plainText: true): the retries below resend without them.
+    body: JSON.stringify(withOpenRouterExtraBody({
       model,
       stream: false,
       temperature: TEMPERATURE,
@@ -202,7 +209,7 @@ export async function askApiTarget(target: ApiTarget, prompt: string, options: A
         { role: 'system', content: options.systemPrompt?.trim() || SYSTEM_PROMPT },
         { role: 'user', content: prompt },
       ],
-    }),
+    }, target.extraBody, target.url, true)),
   });
 
   // At most one retry per refusal kind: the reasoning field, then the answer format.

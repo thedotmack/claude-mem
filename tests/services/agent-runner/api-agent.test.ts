@@ -1,9 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { askApiTarget, resolveApiTarget, type ApiTarget } from '../../../src/services/agent-runner/api-agent.js';
 import { resetReasoningFieldRejectionsForTesting } from '../../../src/services/worker/reasoning-budget.js';
+import { logger } from '../../../src/utils/logger.js';
 
 interface FetchCall { url: string; headers: Record<string, string>; body: Record<string, unknown>; timeout: unknown }
 
@@ -130,6 +131,28 @@ describe('the API agent talks to the selected provider', () => {
     fakeFetch([{ status: 429, text: JSON.stringify({ error: { message: 'rate limited' } }) }]);
     await expect(askApiTarget(target('https://example.test/v4/chat/completions'), 'the question')).rejects.toThrow(/quota/i);
   });
+
+  it('merges the extra body into the request, but never over the fields the agent sets itself', async () => {
+    // vLLM ignores `reasoning`; a Qwen chat template reads chat_template_kwargs.enable_thinking (#6223).
+    const { calls } = fakeFetch([{ body: { choices: [{ message: { content: '{}' } }] } }]);
+    const extraBody = {
+      chat_template_kwargs: { enable_thinking: false },
+      temperature: 0.7,
+      reasoning: { effort: 'high' },
+      response_format: { type: 'text' },
+      model: 'other', messages: [], max_tokens: 1, stream: true,
+    };
+    await askApiTarget({ ...target('https://llm.test/v1/chat/completions'), extraBody }, 'the question', { answerSchema: { type: 'object' } });
+    const body = calls[0].body;
+    expect(body.chat_template_kwargs).toEqual({ enable_thinking: false });
+    expect(body.temperature).toBe(0.7);
+    expect(body.reasoning).toEqual({ enabled: false });
+    expect(body.response_format).toEqual(expect.objectContaining({ type: 'json_schema' }));
+    expect(body.model).toBe('vendor/model');
+    expect(body.messages).toHaveLength(2);
+    expect(body.max_tokens).toBe(16_000);
+    expect(body.stream).toBe(false);
+  });
 });
 
 describe('the API target follows the selected provider', () => {
@@ -176,5 +199,37 @@ describe('the API target follows the selected provider', () => {
       expect(resolution.target).toBeNull();
       expect(resolution.reason).toMatch(/no API key/i);
     });
+  });
+
+  it('reads CLAUDE_MEM_API_AGENT_EXTRA_BODY, without the fields it cannot set', async () => {
+    const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+    try {
+      await withSettings({
+        CLAUDE_MEM_PROVIDER: 'openai-compatible', CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: 'https://llm.test/v1', CLAUDE_MEM_OPENAI_COMPAT_API_KEY: 'sk-test', CLAUDE_MEM_OPENAI_COMPAT_MODEL: 'local/model',
+        CLAUDE_MEM_API_AGENT_EXTRA_BODY: '{"chat_template_kwargs":{"enable_thinking":false},"max_tokens":1}',
+      }, path => {
+        expect(resolveApiTarget(path).target?.extraBody).toEqual({ chat_template_kwargs: { enable_thinking: false } });
+      });
+      expect(warn.mock.calls.some(call => String(call[1]).includes('CLAUDE_MEM_API_AGENT_EXTRA_BODY cannot set max_tokens'))).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('ignores a CLAUDE_MEM_API_AGENT_EXTRA_BODY that is not valid JSON, with a warning', async () => {
+    const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+    try {
+      await withSettings({
+        CLAUDE_MEM_PROVIDER: 'openrouter', CLAUDE_MEM_OPENROUTER_API_KEY: 'sk-or-test', CLAUDE_MEM_OPENROUTER_MODEL: 'vendor/model',
+        CLAUDE_MEM_API_AGENT_EXTRA_BODY: '{not json',
+      }, path => {
+        const resolution = resolveApiTarget(path);
+        expect(resolution.target?.model).toBe('vendor/model');
+        expect(resolution.target?.extraBody).toBeUndefined();
+      });
+      expect(warn.mock.calls.some(call => String(call[1]).includes('CLAUDE_MEM_API_AGENT_EXTRA_BODY is not valid JSON'))).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
