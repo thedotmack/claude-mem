@@ -5,8 +5,9 @@ import {
   CATEGORY_ORDER,
   categoryOf,
   countByCategory,
-  labelForCategory,
 } from '../../src/ui/viewer/utils/category';
+import { KIND_CHIP_WORDS } from '../../src/ui/viewer/components/CategoryFilter';
+import { viewerZh } from '../../src/ui/i18n/viewer-zh';
 import { FeedItem } from '../../src/ui/viewer/types';
 
 const modesDir = new URL('../../plugin/modes/', import.meta.url);
@@ -73,15 +74,21 @@ describe('countByCategory', () => {
   });
 });
 
-describe('labelForCategory', () => {
-  it('title-cases single-word categories', () => {
-    expect(labelForCategory('bugfix')).toBe('Bugfix');
-    expect(labelForCategory('discovery')).toBe('Discovery');
+describe('kind chip words', () => {
+  const english = (source: string) => source;
+  it('keeps the English words the chips always had', () => {
+    expect(KIND_CHIP_WORDS.bugfix(english)).toBe('Bugfix');
+    expect(KIND_CHIP_WORDS.discovery(english)).toBe('Discovery');
+    expect(KIND_CHIP_WORDS.security_alert(english)).toBe('Security Alert');
+    expect(KIND_CHIP_WORDS.security_note(english)).toBe('Security Note');
   });
 
-  it('replaces underscores with spaces and title-cases each word', () => {
-    expect(labelForCategory('security_alert')).toBe('Security Alert');
-    expect(labelForCategory('security_note')).toBe('Security Note');
+  it('says every kind in the reader\'s language', () => {
+    const chinese = (source: string) => viewerZh[source] ?? source;
+    for (const category of CATEGORY_ORDER) {
+      const word = KIND_CHIP_WORDS[category](english);
+      expect(KIND_CHIP_WORDS[category](chinese)).not.toBe(word);
+    }
   });
 });
 

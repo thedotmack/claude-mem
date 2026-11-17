@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import { assertConsistentRequest } from '../data.ts'
-import { toWorkModel } from './to-work-model.ts'
+import { NEXT_STEP_NOT_RECORDED, toWorkModel } from './to-work-model.ts'
 import type { WorkViewHumanRequest, WorkViewSnapshot } from './work-view-api-types.ts'
 
 const appRoot = new URL('../../', import.meta.url)
@@ -360,7 +360,7 @@ for (const state of ['in-progress', 'stalled', 'shipped'] as const) {
     const request = model.requests[0]
     assert.equal(request.title, 'Cards')
     assert.equal(request.summary, raw.progress.summary)
-    assert.equal(request.next.text, 'Next step not recorded')
+    assert.equal(request.next.text, NEXT_STEP_NOT_RECORDED)
     assert.equal(request.progress.percent, raw.progress.percent)
     assert.equal(request.state, state === 'shipped' ? 'shipped' : 'idle')
   })
@@ -409,7 +409,7 @@ test('reopening a shipped group does not display its older completion summary', 
 test('recorded observations without work-state items do not claim no agent work exists', () => {
   const raw: WorkViewHumanRequest = { ...syntheticRequest(), activity: [{ id: 'observation-42', kind: 'observation', title: 'Cards built', detail: 'Ready for review', atEpoch: Date.parse('2026-10-21T12:00:00Z'), url: '/api/work-view/evidence/observation/42' }] }
   const model = toWorkModel(snapshotWith([raw]), Date.parse('2026-10-22T12:00:00Z'))
-  assert.equal(model.requests[0].next.text, 'Next step not recorded')
+  assert.equal(model.requests[0].next.text, NEXT_STEP_NOT_RECORDED)
 })
 
 for (const status of ['shipped', 'blocked']) {
