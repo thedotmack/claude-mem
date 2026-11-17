@@ -482,11 +482,17 @@ export function mergeProducts(lists, limit = 60) {
     const repos = product.sha ? repoByHead.get(product.sha) : null;
     return product.repo ?? pushedAfter(product) ?? (repos?.size === 1 ? [...repos][0] : null);
   };
-  for (const product of products) if (product.kind === 'commit' && repoOf(product) && sourceKey(product)) repoBySource.set(sourceKey(product), repoOf(product));
+  for (const product of products) if (product.kind === 'commit') {
+    const source = sourceKey(product), repo = repoOf(product);
+    if (!source || !repo) continue;
+    if (!repoBySource.has(source)) repoBySource.set(source, new Set());
+    repoBySource.get(source).add(repo);
+  }
   const unique = new Map();
   for (const product of products.sort((a, b) => (b.atEpoch ?? 0) - (a.atEpoch ?? 0))) {
     const isGit = product.kind === 'commit' || product.kind === 'branch';
-    const repo = isGit && !product.repo ? repoOf(product) ?? (product.kind === 'commit' ? repoBySource.get(sourceKey(product)) : null) : null;
+    const sourceRepos = repoBySource.get(sourceKey(product));
+    const repo = isGit && !product.repo ? repoOf(product) ?? (product.kind === 'commit' && sourceRepos?.size === 1 ? [...sourceRepos][0] : null) : null;
     const resolved = repo || (isGit && product.repo) ? { ...product, ...(repo ? { repo } : {}), url: gitUrl({ ...product, repo: repo ?? product.repo }) } : product;
     const key = productKey(resolved);
     if (!unique.has(key)) unique.set(key, resolved);
