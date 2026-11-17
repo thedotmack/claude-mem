@@ -190,6 +190,20 @@ describe('setup prompt scan', () => {
     expect(done.hostedNotice).toContain('You can continue');
   });
 
+  it('reports each tool\'s share of the upload, never more than the upload itself', async () => {
+    hookRecorded('claude', 'session-size', 'alpha', 'a prompt', '2026-10-05T09:00:00.000Z');
+    let uploaded = 0;
+    const scan = setupScan();
+    scan.setExtractor(async prompts => { uploaded = Buffer.byteLength(JSON.stringify({ ownerPrompts: prompts, improveProduct: true, timezoneOffsetMinutes: 0 })); });
+    scan.start();
+    const state = await scan.finished();
+    const total = state.agents.reduce((sum, agent) => sum + agent.uploadBytes, 0);
+    expect(state.agents.every(agent => (agent.uploadBytes > 0) === (agent.prompts > 0))).toBe(true);
+    await scan.confirmUpload(true);
+    expect(total).toBeGreaterThan(0);
+    expect(total).toBeLessThanOrEqual(uploaded);
+  });
+
   it('finishes locally with a notice when the hosted history exceeds the upload cap', async () => {
     hookRecorded('claude', 'session-too-large', 'alpha', 'a prompt', '2026-10-05T09:00:00.000Z');
     const batches: unknown[][] = [];

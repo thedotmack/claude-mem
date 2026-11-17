@@ -38,6 +38,11 @@ export interface SetupScanAgent {
   canRunSetup: boolean | null;
   /** Why it cannot, in the detection's words (e.g. "Gemini is installed, but this Google account can't use it: ..."). */
   cannotRunReason: string | null;
+  /**
+   * The JSON bytes this tool's prompts add to the hosted upload. The sum over the selected tools is never more than
+   * the upload's size, so a sum over INTENT_MAX_UPLOAD_BYTES means the upload cannot fit.
+   */
+  uploadBytes: number;
 }
 
 export interface SetupScanState {
@@ -117,7 +122,7 @@ function idleState(): SetupScanState {
     // This preference does not start an upload; discovery still requires the person's confirmation.
     improveProduct: true,
     uploadedAgents: null,
-    agents: AGENT_LABELS.map(([id, label]) => ({ id, label, detected: false, prompts: 0, fromMemory: 0, fromTranscripts: 0, canRunSetup: null, cannotRunReason: null })),
+    agents: AGENT_LABELS.map(([id, label]) => ({ id, label, detected: false, prompts: 0, fromMemory: 0, fromTranscripts: 0, canRunSetup: null, cannotRunReason: null, uploadBytes: 0 })),
     percent: 0, phase: 'idle', done: false, windowStart: null, startedAt: null, finishedAt: null, durationMs: null,
     added: 0, skippedSources: 0, error: null, usage: null, usageError: null, hostedNotice: null, recentPrompts: [],
   };
@@ -352,13 +357,16 @@ export class SetupScan {
           at: prompt.createdAtEpoch, cwd: prompt.cwd ?? null, text, project: prompt.project ?? '' }];
       });
       const ownerPrompts = [...result.ownerPrompts.filter(prompt => !deletedPrompts.has(prompt)), ...memoryOnly];
+      const uploadBytes = new Map<PromptAgentId, number>();
+      // One byte more per prompt for the comma that joins it to the next one in the upload's array.
+      for (const prompt of ownerPrompts) uploadBytes.set(prompt.agent, (uploadBytes.get(prompt.agent) ?? 0) + Buffer.byteLength(JSON.stringify(prompt)) + 1);
       const notTyped = memoryPrompts.filter(prompt => !result.ownerMemoryPromptIds.has(prompt.id)
         || (!claimedHookRowIds.has(prompt.id) && completeTranscript(sessionsByPlatform.get(prompt.platformSource), prompt.contentSessionId)));
       this.options.saveAgentWrittenPromptIds?.(notTyped.map(prompt => prompt.id));
       const { usage, usageError } = await this.tokenSavings(store, tokenUsage);
       const recentPrompts = [...ownerPrompts].sort((left, right) => right.at - left.at).slice(0, RECENT_PROMPTS)
         .map(prompt => ({ agent: prompt.agent, at: new Date(prompt.at).toISOString(), text: prompt.text.trim().slice(0, RECENT_PROMPT_CHARACTERS) }));
-      const summary = { agents, added, skippedSources: result.skippedSources.length, usage, usageError, recentPrompts };
+      const summary = { agents: agents.map(agent => ({ ...agent, uploadBytes: uploadBytes.get(agent.id) ?? 0 })), added, skippedSources: result.skippedSources.length, usage, usageError, recentPrompts };
       if (this.extract && !ownerPrompts.length) {
         // Nothing to upload, so there is nothing to ask about; the extractor records an empty result without contacting Cloud.
         this.update({ phase: 'uploading', percent: 99, ...summary }, true);

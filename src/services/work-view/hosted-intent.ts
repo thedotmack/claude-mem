@@ -11,10 +11,9 @@ import { projectRoot } from './session-project.mjs';
 import { readFocusAreas } from './data-source.mjs';
 import { MY_FOCUS_LIST, navWordIn, ownerGoalsAreaRows } from './my-focus.mjs';
 import { logger } from '../../utils/logger.js';
+import { INTENT_MAX_UPLOAD_BYTES } from '../../shared/setup-funnel.js';
 
-/** Owner-approved cap: the largest measured export was 262 KB, and all exports fit one 1M-context call.
- * Cloud enforces this against both compressed and uncompressed bytes, plus its offline 400k-token budget. */
-export const INTENT_MAX_UPLOAD_BYTES = 2 * 1024 * 1024;
+export { INTENT_MAX_UPLOAD_BYTES };
 
 /** claude-mem-pro's /api/pro/intent route sets Vercel's `maxDuration = 300` for GET and POST, so no preflight answer can
  * arrive after this. It is that provider limit, not a measured latency: the GET has no production traffic to measure yet. */
