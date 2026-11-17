@@ -16,6 +16,7 @@ const configSchema = z.object({
 
 const answerSchema = z.object({
   allowed: z.boolean(),
+  // The reason goes back to the calling agent in the 409, so it is bounded to keep a validator from flooding that agent's context.
   reason: z.string().trim().min(1).max(1_000).optional(),
 }).strict().refine(answer => answer.allowed || answer.reason !== undefined);
 
@@ -47,6 +48,7 @@ export async function checkWorkStateWrite(
     lstatSync(configPath);
     configured = true;
     const stat = statSync(configPath);
+    // The configuration is a few lines read on every write; a file this large is a mistake, refused rather than parsed.
     if (!stat.isFile() || stat.size > 32_768) throw new Error('Invalid guard configuration');
     config = configSchema.parse(JSON.parse(readFileSync(configPath, 'utf8')));
   } catch (error) {
@@ -66,6 +68,8 @@ export async function checkWorkStateWrite(
       let delivered = false;
       const child = execFile(config.command[0], config.command.slice(1), {
         cwd: dirname(configPath),
+        // The caller's write waits on this command, so a hung or runaway command is killed and the write refused.
+        // The answer is one small JSON object and output is never returned to the caller, so larger output is refused too.
         timeout: 2_000,
         maxBuffer: 16_384,
         killSignal: 'SIGKILL',

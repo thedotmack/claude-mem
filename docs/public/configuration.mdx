@@ -690,7 +690,7 @@ Worker service is managed by Bun as a background process. The worker auto-starts
 
 ### Native work-state write checks
 
-An operator can require a local check before writes to selected work-state lists. The check runs inside `POST /api/work-state/entries`, the endpoint used by `work_state_write`. A caller cannot skip it by omitting an evidence field.
+An operator can require a local check before writes to selected work-state lists. The check runs inside `POST /api/work-state/entries`, the endpoint used by `work_state_write`, so writes through either cannot skip it, for example by omitting an evidence field. The worker's own My Focus and owner-goals rows are written without it.
 
 Create `work-state-write-guard.json` in the worker's data directory (`~/.claude-mem` by default):
 
