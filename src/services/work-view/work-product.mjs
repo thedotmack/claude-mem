@@ -146,16 +146,25 @@ const BASH_DOUBLE_QUOTE_ESCAPE = /\\([$`"\\])/g;
 // The subject line of the message each `git commit` in a command passes with
 // -m or a heredoc, in order; null where the message comes from elsewhere.
 function commitSubjects(command) {
-  const starts = [...command.matchAll(gitPattern(String.raw`commit\b`, 'g'))].map((match) => match.index);
+  const starts = [...command.matchAll(gitPattern(String.raw`commit\b`, 'g'))].map((match) => match.index + match[0].length);
   return starts.map((start, index) => {
     const invocation = command.slice(start, starts[index + 1]);
+    // Only options before this command's unquoted separator belong to it.
+    // Keep the remainder available for a heredoc body, but never borrow a
+    // later tag (or another command)'s message as the commit's subject.
+    // Consume redirection operators first: their & or | does not end a command.
+    const argumentEnd = invocation.match(/^(?:>[&|]|<&|&>>?|[^"'\\;&|\n]|\\[\s\S]|"(?:[^"\\]|\\[\s\S])*"|'[^']*')*/)[0].length;
+    const matchArgument = pattern => {
+      const match = invocation.match(pattern);
+      return match && match.index < argumentEnd ? match : null;
+    };
     // -m "$(cat <<'EOF'\n<subject>\n...EOF\n)": the subject is the heredoc's first
     // line, read raw — quotes inside the substitution are literal, so the outer
     // "..." match below would stop at the first one.
-    const substituted = invocation.match(/\s-[a-zA-Z]*m\s+"\$\(\s*cat\s+<<-?\s*['"]?\w+['"]?[^\n]*\n([^\n]*)/);
+    const substituted = matchArgument(/\s(?:-[a-zA-Z]*m\s+|--message(?:=|\s+))"\$\(\s*cat\s+<<-?\s*['"]?\w+['"]?[^\n]*\n([^\n]*)/);
     if (substituted) return short(substituted[1]);
-    const inline = invocation.match(/\s-[a-zA-Z]*m\s+(?:"((?:[^"\\]|\\.)*)"|'([^']*)')/);
-    const heredoc = invocation.match(/\s-F\s+-\s*<<-?\s*['"]?\w+['"]?\n([^\n]*)/);
+    const inline = matchArgument(/\s(?:-[a-zA-Z]*m\s+|--message(?:=|\s+))(?:"((?:[^"\\]|\\.)*)"|'([^']*)')/);
+    const heredoc = matchArgument(/\s-F\s+-\s*<<-?\s*['"]?\w+['"]?\n([^\n]*)/);
     const text = inline ? inline[1]?.replace(BASH_DOUBLE_QUOTE_ESCAPE, '$1') ?? inline[2] : heredoc?.[1];
     return short(text?.split('\n')[0]);
   });
