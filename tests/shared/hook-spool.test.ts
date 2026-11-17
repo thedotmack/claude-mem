@@ -95,28 +95,29 @@ describe('HookSpool', () => {
     expect(result).toEqual({ drained: 2, retained: 38, quarantined: 0, expired: 0 });
   });
 
-  it('reads the backlog without holding the event loop', async () => {
+  it('drains through the asynchronous reader, not the blocking one', async () => {
     const spool = new HookSpool();
-    spool.enqueue('session_end', { contentSessionId: 'session-yield', platformSource: 'claude' });
+    // The synchronous reader holds the loop for the whole backlog, so the drain
+    // must reach the asynchronous one. A timer probe cannot prove this: whether
+    // a due timer runs first depends on which phase of the loop the readFile
+    // completion lands in.
+    const reader = spool as unknown as {
+      readEntries: (...args: unknown[]) => unknown;
+      readEntriesAsync: (...args: unknown[]) => Promise<unknown>;
+    };
+    const reads: string[] = [];
+    reader.readEntries = () => {
+      throw new Error('drain must not use the synchronous reader');
+    };
+    reader.readEntriesAsync = async () => {
+      reads.push('async');
+      return { files: [], quarantined: 0, omitted: 0 };
+    };
 
-    let timerFired = false;
-    const timer = setTimeout(() => {
-      timerFired = true;
-    }, 0);
-    let sawTimerAtFirstAccept: boolean | undefined;
-    try {
-      await spool.drain(() => {
-        sawTimerAtFirstAccept ??= timerFired;
-        return true;
-      });
-    } finally {
-      clearTimeout(timer);
-    }
+    const result = await spool.drain(() => true);
 
-    // The drain reads the spool asynchronously, so the already-due timer runs
-    // before the first entry reaches ingest. A synchronous read reaches
-    // `accept` in the same tick and stalls the worker for the whole backlog.
-    expect(sawTimerAtFirstAccept).toBe(true);
+    expect(reads).toEqual(['async']);
+    expect(result).toEqual({ drained: 0, retained: 0, quarantined: 0, expired: 0 });
   });
 
   it('keeps same-millisecond enqueues from one process in call order', () => {
