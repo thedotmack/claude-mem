@@ -5,6 +5,8 @@ import { withLocalApiTokenQuery } from '../../local-api-token-client';
 
 interface WelcomeCardProps {
   onDismiss: () => void;
+  /** "Open Settings" on the Tune it tile closes the welcome card and opens Settings. */
+  onOpenSettings?: () => void;
 }
 
 const STORAGE_KEY = 'claude-mem-welcome-dismissed-v3';
@@ -140,6 +142,8 @@ interface Feature {
   illustration: React.ReactNode;
   title: string;
   description: string;
+  /** A tile that names an action offers it as a button. */
+  action?: 'settings';
 }
 
 const FEATURES: Feature[] = [
@@ -154,6 +158,7 @@ const FEATURES: Feature[] = [
     illustration: <TuneIllustration />,
     title: 'Tune it',
     description: 'Open Settings to choose the context your next session receives.',
+    action: 'settings',
   },
   {
     kind: 'recall',
@@ -163,7 +168,7 @@ const FEATURES: Feature[] = [
   },
 ];
 
-export function WelcomeCard({ onDismiss }: WelcomeCardProps) {
+export function WelcomeCard({ onDismiss, onOpenSettings }: WelcomeCardProps) {
   const { t } = useI18n();
   const dialogRef = useDialogFocus(true);
   const handleDismiss = () => {
@@ -206,19 +211,28 @@ export function WelcomeCard({ onDismiss }: WelcomeCardProps) {
                 {feature.illustration}
                 <h3 className="welcome-modal-feature-title">{t(feature.title)}</h3>
                 <p className="welcome-modal-feature-desc">{t(feature.description)}</p>
+                {feature.action === 'settings' && onOpenSettings && (
+                  <button type="button" className="link-button welcome-modal-feature-action" onClick={() => { handleDismiss(); onOpenSettings(); }}>
+                    {t('Open Settings')}
+                  </button>
+                )}
               </div>
             </div>
           ))}
         </div>
 
         <footer className="welcome-modal-footer">
-          <a href={withLocalApiTokenQuery(EXPLAINER_URL)} target="_blank" rel="noopener noreferrer">
-            {t('How it works')}
-          </a>
-          <span className="welcome-modal-footer-sep">{'·'}</span>
-          <a href={DOCS_URL} target="_blank" rel="noopener noreferrer">
-            {t('Read the docs')}
-          </a>
+          <span className="welcome-modal-footer-links">
+            <a href={withLocalApiTokenQuery(EXPLAINER_URL)} target="_blank" rel="noopener noreferrer">
+              {t('How it works')}
+            </a>
+            <a href={DOCS_URL} target="_blank" rel="noopener noreferrer">
+              {t('Read the docs')}
+            </a>
+          </span>
+          <button type="button" className="btn-primary welcome-modal-continue" onClick={handleDismiss}>
+            {t('Show my timeline')}
+          </button>
         </footer>
       </div>
     </div>

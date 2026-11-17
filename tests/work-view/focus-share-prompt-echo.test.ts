@@ -6,7 +6,7 @@ import { FocusShares } from '../../src/services/work-view/focus-share.js';
 import { FocusSharePublisher } from '../../src/services/work-view/focus-share-publisher.js';
 import { sampleSource } from '../../src/ui/my-work/src/live/sample-source.ts';
 import { toSharedFocusPage } from '../../src/ui/my-work/src/live/to-shared-focus.ts';
-import { toWorkModel } from '../../src/ui/my-work/src/live/to-work-model.ts';
+import { NEXT_STEP_NOT_RECORDED, toWorkModel } from '../../src/ui/my-work/src/live/to-work-model.ts';
 
 const cleanups: Array<() => void> = [];
 afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); });
@@ -19,7 +19,7 @@ test('a copied prompt in a display summary or next step stays out of the shared 
   const request = { ...model.requests[0], summary: SECRET, next: { who: 'bot' as const, text: SECRET }, prompts: [{ at: 'now', quote: `${SECRET}.` }] };
   const page = toSharedFocusPage({ ...model, requests: [request] }, 'fa-viewer', NOW)!;
   expect(page.requests[0].summary).toBeNull();
-  expect(page.requests[0].next).toEqual({ who: 'bot', text: 'Next step not recorded' });
+  expect(page.requests[0].next).toEqual({ who: 'bot', text: NEXT_STEP_NOT_RECORDED });
   expect(JSON.stringify(page)).not.toContain('Cedar Partners');
   expect(request.summary).toBe(SECRET);
   expect(request.next.text).toBe(SECRET);
@@ -57,7 +57,7 @@ for (const blocked of [false, true]) test(`publication checks the full prompt be
   expect(received).toHaveLength(1);
   expect(JSON.stringify(received[0])).not.toContain('Cedar Partners');
   expect(received[0].snapshot.requests[0].summary).toBeNull();
-  expect(received[0].snapshot.requests[0].next.text).toBe('Next step not recorded');
+  expect(received[0].snapshot.requests[0].next.text).toBe(NEXT_STEP_NOT_RECORDED);
 });
 
 test('independently written summaries and next steps remain useful on the shared page', async () => {

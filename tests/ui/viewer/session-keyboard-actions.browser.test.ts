@@ -5,14 +5,15 @@ import {
 } from '../../helpers/chrome-devtools';
 
 for (const key of ['Enter', 'Space'] as const) {
-  (chromeExecutablePath ? it : it.skip)(`toggles session actions with a pointer and activates focused controls with ${key}`, async () => {
+  (chromeExecutablePath ? it : it.skip)(`toggles session actions with a pointer, opens the row's link with Enter and the menu's buttons with ${key}`, async () => {
     const session = { content_session_id: 'owned-session', platform_source: 'claude',
       project: 'owned-project', custom_title: null, item_count: 1, started_at_epoch: Date.now() };
     const bundle = compileBrowserFixture(`
       import React from 'react';
       import { createRoot } from 'react-dom/client';
       import { SessionCard } from './src/ui/viewer/components/SessionCard';
-      window.opens = 0; window.deletes = 0; window.confirm = () => true;
+      window.opens = 0; window.deletes = 0;
+      window.confirm = () => { throw new Error('The viewer must not use the browser confirm box'); };
       createRoot(document.getElementById('root')).render(<>
         <button id="outside">Outside</button>
         <SessionCard session={${JSON.stringify(session)}}
@@ -55,7 +56,7 @@ for (const key of ['Enter', 'Space'] as const) {
         await Bun.sleep(10);
       }
       const triggerIcon = '.session-card-menu-trigger circle:first-child';
-      const hasMenu = () => evaluate('!!document.querySelector(".session-card-menu")');
+      const hasMenu = () => evaluate('!!document.querySelector(".session-card-menu:not([hidden])")');
       await click(triggerIcon);
       const clickedOpen = await hasMenu();
       await click(triggerIcon);
@@ -66,27 +67,37 @@ for (const key of ['Enter', 'Space'] as const) {
       const outsideClosed = !await hasMenu();
       const outsideFocused = await evaluate('document.activeElement.id === "outside"');
 
-      await evaluate('document.querySelector(".session-card").focus()'); await press(key);
+      // The row's own control is a link to the session's address (F19: no button inside a button);
+      // links activate with Enter, so Enter opens it whichever key this run exercises on the buttons.
+      const cardIsLink = await evaluate('document.querySelector(".session-card").tagName === "A" && document.querySelector(".session-card").getAttribute("href") === "#/sessions/claude/owned-session"');
+      const nestedControls = await evaluate('document.querySelectorAll(".session-card button, .session-card a").length');
+      await evaluate('document.querySelector(".session-card").focus()'); await press('Enter');
       const ownCardOpens = await evaluate('window.opens');
       await evaluate('window.opens=0;document.querySelector(".session-card-menu-trigger").focus()');
       await press(key);
       const buttonOpens = await evaluate('window.opens');
       const menuOpened = await hasMenu();
-      // Keep the later native Delete regression observable even on the broken baseline.
-      if (!menuOpened) { await evaluate('document.querySelector(".session-card-menu-trigger").click()'); await settle(); }
-      await evaluate('document.querySelector(".session-card-menu-item").focus()');
+      const firstItemFocused = await evaluate('document.activeElement?.getAttribute("role") === "menuitem" && document.activeElement.textContent.trim() === "Open"');
       await press('Escape');
       const escaped = !await hasMenu();
       const restoredFocus = await evaluate('document.activeElement === document.querySelector(".session-card-menu-trigger")');
+      // Delete asks in the page how many memories go; the key on "Delete session…" opens the question, not the session.
       await evaluate('document.querySelector(".session-card-menu-trigger").click()'); await settle();
       await evaluate('window.opens=0;document.querySelector(".session-card-menu-item--danger").focus()');
       await press(key);
       const deleteOpens = await evaluate('window.opens');
+      const question = await evaluate('document.querySelector(".session-row .inline-confirm-question")?.textContent ?? null');
+      const deletesBeforeConfirm = await evaluate('window.deletes');
+      const cancelFocused = await evaluate('document.activeElement?.classList.contains("inline-confirm-cancel")');
+      await evaluate('document.querySelector(".session-row .inline-confirm-danger").focus()');
+      await press(key);
       const deletes = await evaluate('window.deletes');
-      expect({ clickedOpen, clickedClosed, outsideClosed, outsideFocused, ownCardOpens, buttonOpens,
-        menuOpened, deleteOpens, deletes, escaped, restoredFocus }).toEqual({
-        clickedOpen: true, clickedClosed: true, outsideClosed: true, outsideFocused: true,
-        ownCardOpens: 1, buttonOpens: 0, menuOpened: true, deleteOpens: 0, deletes: 1, escaped: true, restoredFocus: true,
+      expect({ clickedOpen, clickedClosed, outsideClosed, outsideFocused, cardIsLink, nestedControls, ownCardOpens, buttonOpens,
+        menuOpened, firstItemFocused, deleteOpens, question, deletesBeforeConfirm, cancelFocused, deletes, escaped, restoredFocus }).toEqual({
+        clickedOpen: true, clickedClosed: true, outsideClosed: true, outsideFocused: true, cardIsLink: true, nestedControls: 0,
+        ownCardOpens: 1, buttonOpens: 0, menuOpened: true, firstItemFocused: true, deleteOpens: 0,
+        question: 'Delete this session and everything captured in it (1 memory)? This cannot be undone.',
+        deletesBeforeConfirm: 0, cancelFocused: true, deletes: 1, escaped: true, restoredFocus: true,
       });
     } finally {
       page?.close(); await chrome?.close(); server.stop(true);
