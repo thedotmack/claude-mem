@@ -1710,6 +1710,10 @@ export class ChromaSync {
     } catch (error) {
       logger.error('CHROMA_SYNC', 'Backfill failed', { project }, error instanceof Error ? error : new Error(String(error)));
       throw new Error(`Backfill failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      // Per-row watermarks are coalesced: write them before this run reports
+      // back, so a completed or aborted backfill leaves a current checkpoint.
+      ChromaSyncState.flush();
     }
   }
 

@@ -83,6 +83,60 @@ function createProjectMap(): Record<string, ProjectWatermarks> {
 const PERSIST_FAILURE_BACKOFF_MS = 5_000;
 let persistBlockedUntil = 0;
 
+/**
+ * How long per-row progress may stay in memory before it is written. A backfill
+ * bumps the watermark and clears pending for every row it indexes; persisting
+ * each bump rewrote the whole (shrinking) pending list every time, so the bytes
+ * written grew quadratically with the batch (#6203). One coalesced write per
+ * window keeps the file consistent while bounding a crash to the progress made
+ * since the last flush: those rows keep their previous watermark and pending
+ * entry, so the next run indexes them again.
+ */
+const PERSIST_COALESCE_MS = 250;
+
+let coalesceTimer: ReturnType<typeof setTimeout> | null = null;
+let persistPending = false;
+/**
+ * The checkpoint file the dirty in-memory state belongs to. The data directory
+ * can change between calls (tests, a settings reload), and a coalesced write
+ * must land next to the state it describes, not in whatever directory is
+ * current when the timer fires.
+ */
+let dirtyPath: string | null = null;
+
+/** Remember that the in-memory state differs from the file, and schedule one write. */
+function schedulePersist(): void {
+  persistPending = true;
+  dirtyPath = statePath();
+  if (coalesceTimer) return;
+  // A failed write backs off; the retry waits it out instead of dropping the
+  // change on the floor.
+  const delay = Math.max(PERSIST_COALESCE_MS, persistBlockedUntil - Date.now());
+  coalesceTimer = setTimeout(() => {
+    coalesceTimer = null;
+    flushScheduledPersist();
+  }, delay);
+  // A pending state write must not keep a short-lived process alive.
+  (coalesceTimer as { unref?: () => void }).unref?.();
+}
+
+function flushScheduledPersist(): void {
+  if (coalesceTimer) {
+    clearTimeout(coalesceTimer);
+    coalesceTimer = null;
+  }
+  if (!persistPending) return;
+  if (!persist(dirtyPath ?? statePath())) {
+    // Only a write that reached the disk may clear the flag. Otherwise a
+    // finished backfill stays dirty for an explicit flush() to retry, even
+    // after the disk recovers.
+    schedulePersist();
+    return;
+  }
+  persistPending = false;
+  dirtyPath = null;
+}
+
 function normalizePendingIds(ids: unknown): number[] {
   if (!Array.isArray(ids)) {
     return [];
@@ -195,12 +249,12 @@ function load(): Record<string, ProjectWatermarks> {
   return cache;
 }
 
-function persistOrThrow(): void {
+function persistOrThrow(path: string = statePath()): void {
   if (!cache) return;
   // The common path (a watermark or pending-row change) writes the project map
   // exactly as before; only retry records need the extra entry.
   if (!pendingDeletesCache || pendingDeletesCache.length === 0) {
-    writeJsonFileAtomic(statePath(), cache);
+    writeJsonFileAtomic(path, cache);
     return;
   }
   const body: Record<string, unknown> = createProjectMap();
@@ -216,31 +270,55 @@ function persistOrThrow(): void {
   } else {
     body[PENDING_DELETES_KEY] = pendingDeletesCache;
   }
-  writeJsonFileAtomic(statePath(), body);
+  writeJsonFileAtomic(path, body);
 }
 
 /**
  * A failed write must not abort the sync pipeline. The cache keeps the
  * change, the next persist writes it, and SQLite stays the source of truth.
+ * `path` is the file the dirty state belongs to; it may differ from the current
+ * data directory when that setting changed after the change was made.
  */
-function persist(): void {
-  if (Date.now() < persistBlockedUntil) return;
+function persist(path: string = statePath()): boolean {
+  if (Date.now() < persistBlockedUntil) return false;
   try {
-    persistOrThrow();
+    persistOrThrow(path);
+    return true;
   } catch (error) {
     persistBlockedUntil = Date.now() + PERSIST_FAILURE_BACKOFF_MS;
     logger.warn('CHROMA_SYNC', 'Could not write chroma-sync-state.json, will retry on the next change', {
-      path: statePath()
+      path
     }, error instanceof Error ? error : new Error(String(error)));
+    return false;
   }
 }
 
 export const ChromaSyncState = {
   /** Test hook: drop the in-memory watermark cache so the next read hits disk. */
   resetCacheForTests(): void {
+    // Keep the tests' "bump, then reload" contract: write what is pending
+    // before the cache goes away.
+    flushScheduledPersist();
+    // Test isolation: a failed write must not carry its retry into the next
+    // test's data directory.
+    if (coalesceTimer) {
+      clearTimeout(coalesceTimer);
+      coalesceTimer = null;
+    }
+    persistPending = false;
+    dirtyPath = null;
     cache = null;
     pendingDeletesCache = null;
     persistBlockedUntil = 0;
+  },
+
+  /**
+   * Write coalesced progress now. A backfill calls this when it finishes so the
+   * checkpoint is current before the run reports back; the timer alone is
+   * bounded by PERSIST_COALESCE_MS.
+   */
+  flush(): void {
+    flushScheduledPersist();
   },
 
   exists(): boolean {
@@ -403,7 +481,7 @@ export const ChromaSyncState = {
 
     if (!changed) return;
     all[project] = current;
-    persist();
+    schedulePersist();
   },
 
   replace(project: string, marks: ProjectWatermarks): void {
@@ -482,6 +560,6 @@ export const ChromaSyncState = {
       delete current.pending;
     }
     all[project] = current;
-    persist();
+    schedulePersist();
   }
 };
