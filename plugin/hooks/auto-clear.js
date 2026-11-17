@@ -28,17 +28,12 @@ var AutoClearController = class {
   turnsStarted = 0;
   /** Turn completion retires tool-hook reads even when the person stopped the turn. */
   readGeneration = 0;
-  /** A main-loop or subagent tool result was stored; returns the reminder to append behind it, if any. */
+  /** A main-loop or subagent tool call finished; returns the note to attach to its result, if any. */
   async onToolCallEnd(call) {
-    if (call.agentId) return null;
+    if (call.agentId || call.denied) return null;
     if (WORK_STATE_WRITE_TOOL.test(call.tool)) {
       if (this.phase !== "idle" && this.phase !== "clearing") {
-        const text = (call.text ?? "").trim();
-        if (!call.isError && text === "") {
-          this.stopForUnreadableSave();
-          return null;
-        }
-        this.saved = !call.isError && SAVED_RESULT.test(text);
+        this.saved = !call.isError && SAVED_RESULT.test((call.text ?? "").trim());
       }
       return null;
     }
@@ -185,15 +180,6 @@ var AutoClearController = class {
       }
     });
   }
-  /** A save came back with no text, so it cannot be told from a refused one: clearing now could lose the work. */
-  stopForUnreadableSave() {
-    this.phase = "idle";
-    this.saved = false;
-    this.stopped = true;
-    this.host.note(
-      "This session runs tools from a script (Code Mode), so claude-mem cannot read the result of the work state save and did not clear the conversation. Auto-clear is off in this session until Claude Code restarts."
-    );
-  }
   giveUp(reason) {
     this.phase = "idle";
     this.saved = false;
@@ -299,26 +285,6 @@ function redirectedDataDir(homeDocument, envDataDir, home) {
 
 // src/mods/auto-clear/register.ts
 var SETTINGS_TTL_MS = 3e4;
-function resultText(content) {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content.map((block) => block?.type === "text" && typeof block.text === "string" ? block.text : "").join("");
-}
-function toolCallEnd(e) {
-  let isError = false;
-  let text = "";
-  for (const block of e.message.content) {
-    if (block.type !== "tool_result") continue;
-    if (block.is_error === true) isError = true;
-    text += resultText(block.content);
-  }
-  return {
-    tool: typeof e.origin.tool === "string" ? e.origin.tool : "unknown",
-    agentId: e.agentId,
-    isError,
-    text
-  };
-}
 function register(on) {
   let controller = null;
   on("session.start", async ($, e, next) => {
@@ -389,15 +355,21 @@ function register(on) {
     }
     return next(e);
   });
-  on("session.append", { door: "tool-result" }, async ($, e, next) => {
-    const stored = await next(e);
-    if (!controller) return stored;
+  on("tool.call", async ($, e, next) => {
+    const result = await next(e);
+    if (!controller) return result;
     try {
-      const note = await controller.onToolCallEnd(toolCallEnd(e));
-      if (note) await $.session.append({ message: { type: "user", content: [{ type: "text", text: note }] } });
+      const note = await controller.onToolCallEnd({
+        tool: e.tool,
+        agentId: e.agentId,
+        denied: typeof result.deny === "string",
+        isError: result.isError === true,
+        text: typeof result.text === "string" ? result.text : void 0
+      });
+      if (note) return { ...result, context: [...result.context ?? [], note] };
     } catch {
     }
-    return stored;
+    return result;
   }).catch(async ($, e, next) => next(e));
   on("turn.start", async ($, e, next) => {
     controller?.onTurnStart();
