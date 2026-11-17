@@ -1,9 +1,6 @@
 ---
 name: mem-search
-description: >-
-  Smart search (default). Search claude-mem's persistent cross-session memory database
-  in three steps: search, timeline, then selected get_observations. Use when user asks
-  "did we already solve this?", "how did we do X last time?", or needs work from previous sessions.
+description: Smart search (default). Search claude-mem's persistent cross-session memory database in three steps — search, timeline, then selected get_observations. Use when user asks "did we already solve this?", "how did we do X last time?", or needs work from previous sessions.
 ---
 
 # Smart Search (Default)
