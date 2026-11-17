@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
-import { fstatSync, statSync, writeFileSync } from 'fs';
-import { join } from 'path';
+import { fstatSync, lstatSync, readlinkSync, realpathSync, statSync, writeFileSync } from 'fs';
+import { basename, dirname, join, resolve } from 'path';
 import { pathToFileURL } from 'url';
 import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager.js';
 import { resolveDataDir } from '../src/shared/paths.js';
@@ -16,6 +16,22 @@ import type {
 } from './types/export.js';
 
 const WORKER_FETCH_TIMEOUT_MS = 30_000;
+
+function standardStreamDescriptor(outputFile: string): number | undefined {
+  let current = resolve(outputFile);
+  for (;;) {
+    // Resolve directory aliases without following the final descriptor link
+    // into a redirected regular file. A normal path to that file still needs
+    // atomic replacement, even when stdout happens to have it open.
+    current = join(realpathSync(dirname(current)), basename(current));
+    if (current === '/dev/stdout') return process.stdout.fd;
+    if (current === '/dev/stderr') return process.stderr.fd;
+    const descriptor = current.match(new RegExp(`^(?:/dev/fd|/proc/${process.pid}(?:/task/[0-9]+)?/fd)/([12])$`));
+    if (descriptor) return Number(descriptor[1]);
+    if (!lstatSync(current).isSymbolicLink()) return undefined;
+    current = resolve(dirname(current), readlinkSync(current));
+  }
+}
 
 function parseWorkerPort(rawPort: unknown): number {
   if (typeof rawPort !== 'string' || rawPort.trim() === '') {
@@ -53,11 +69,11 @@ export async function exportMemories(query: string, outputFile: string, project?
   try {
     const target = statSync(outputFile);
     streamTarget = target.isCharacterDevice() || target.isFIFO();
-    for (const fd of [process.stdout.fd, process.stderr.fd]) {
+    const fd = standardStreamDescriptor(outputFile);
+    if (fd !== undefined) {
       const stream = fstatSync(fd);
       if (target.dev === stream.dev && target.ino === stream.ino) {
         stdioTarget = fd;
-        break;
       }
     }
   } catch (error) {
@@ -68,7 +84,9 @@ export async function exportMemories(query: string, outputFile: string, project?
   // Progress on that stream would make an otherwise successful JSON export unusable.
   const progress = stdioTarget === process.stdout.fd ? console.error : console.log;
 
-  const settings = SettingsDefaultsManager.loadFromFile(join(resolveDataDir(), 'settings.json'));
+  const settings = SettingsDefaultsManager.loadFromFile(join(resolveDataDir(), 'settings.json'), true, {
+    warn: stdioTarget === process.stderr.fd ? progress : undefined,
+  });
   const port = parseWorkerPort(settings.CLAUDE_MEM_WORKER_PORT);
   const baseUrl = `http://${formatHostForUrl(settings.CLAUDE_MEM_WORKER_HOST)}:${port}`;
 
