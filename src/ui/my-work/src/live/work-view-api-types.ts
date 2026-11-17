@@ -179,6 +179,12 @@ export interface WorkViewAgent {
   sessionTitle: string | null
   project: string | null
   contentSessionId: string | null
+  /**
+   * A subagent's launch: its parent's Agent call (agent-view.mjs readAgentLaunches). Only `description`, the call's
+   * short task title, is read; `prompt` is the whole task text and stays off the screens. Null when none is recorded;
+   * older workers leave it out.
+   */
+  launch?: { description?: string | null } | null
 }
 
 export interface WorkViewSource {

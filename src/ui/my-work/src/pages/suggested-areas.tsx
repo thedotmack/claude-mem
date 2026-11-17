@@ -7,7 +7,7 @@ import { useId, useMemo, useState } from 'react'
 import { ArrowRightIcon, CheckIcon, CircleCheckIcon, CircleXIcon, LayersIcon, MergeIcon, PencilIcon, Undo2Icon, XIcon, type LucideIcon } from 'lucide-react'
 import { Confirmation, ConfirmationAccepted, ConfirmationAction, ConfirmationActions, ConfirmationRejected, ConfirmationRequest, ConfirmationTitle } from '@/components/ai-elements/confirmation'
 import { Button } from '@/components/ui/button'
-import { StateBadge } from '@/components/bits'
+import { RefreshButton, RefreshStatus, StateBadge } from '@/components/bits'
 import { AreaEditDialog, FocusChangeBar, useFocusChanges, type AreaEdit } from '@/components/focus-changes'
 import { Quotes } from '@/components/focus-header'
 import { MoreQuotesFold } from '@/components/more-quotes'
@@ -16,7 +16,7 @@ import { READING_MEASURE } from '@/lib/reading-measure'
 import { useIsPhone } from '@/lib/swipe-to-decide'
 import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
-import { type FocusArea, type Request } from '@/data'
+import { SAMPLE_RUNS, type FocusArea, type Request } from '@/data'
 import { useWorkModel } from '@/store'
 import { resolveFocusAreaId, suggestionEditDecision, type SuggestionDecision } from '@/live/to-focus-model'
 
@@ -129,7 +129,7 @@ function DecidedArea({ area, decision, saving, onUndo, onShow }: { area: FocusAr
 
 export function SuggestedAreas({ onOpenFocus }: { onOpenFocus: (focusAreaId: string) => void }) {
   useI18n()
-  const { focusAreas, requests } = useWorkModel()
+  const { focusAreas, requests, sourceKind, refresh, lastRuns } = useWorkModel()
   const changes = useFocusChanges()
   const isPhone = useIsPhone()
   // Decisions made on this page stay in the queue (with Undo) until you leave; the saved rows are the truth.
@@ -192,6 +192,11 @@ export function SuggestedAreas({ onOpenFocus }: { onOpenFocus: (focusAreaId: str
         )}
         <AreaEditDialog edit={edit} changes={changes} onClose={() => setEdit(null)} ownUndo={(change) => suggestionEditDecision(change) !== null}
           onSaved={(change) => { const decision = suggestionEditDecision(change); if (decision && change.focusAreaId) setDecisions((previous) => ({ ...previous, [change.focusAreaId!]: decision })) }} />
+        {/* The shared refresh line at the foot, as on My Rules and Past focus: new suggestions come from the refresh
+            (owner-goals), so the page says when it last ran, and after a failed one offers its one Try again. */}
+        <div className="min-w-0 border-t pt-3 [overflow-wrap:anywhere]">
+          {sourceKind === 'sample' ? <RefreshButton run={SAMPLE_RUNS.goals} ids={['R14.10']} /> : <RefreshStatus refresh={refresh} run={lastRuns.goals} ids={['R14.10']} />}
+        </div>
       </section>
     </Req>
   )

@@ -1,11 +1,11 @@
 // The wireframe fixtures as a data source, for design review (`?source=sample`). Nothing here is real.
-import { assertConsistentRequest, OTHER_FOCUS_AREA_ID, SAMPLE_AGENTS, SAMPLE_DEVICES, SAMPLE_PEOPLE, SAMPLE_REQUESTS, SAMPLE_RUNS, type FocusArea, type FocusChange, type Request } from '../data.ts'
+import { assertConsistentRequest, OTHER_FOCUS_AREA_ID, SAMPLE_AGENTS, SAMPLE_DEVICES, SAMPLE_PEOPLE, SAMPLE_REQUESTS, SAMPLE_RUNS, type Agent, type FocusArea, type FocusChange, type Request } from '../data.ts'
 import { SAMPLE_CURRENT_PERIOD, SAMPLE_FOCUS_AREAS, SAMPLE_OTHER_ASKS, SAMPLE_PAST_PERIODS } from '../data-goals.ts'
 import { SAMPLE_OWNER_RULES, SAMPLE_RULE_SCOPES, SAMPLE_RULES_LEARNING, type OwnerRule, type RuleChange, type RuleScope } from '../data-rules.ts'
 import { getConnectionStatus } from './connection-status.ts'
 import { byFocusPriority } from './to-focus-model.ts'
 import { navWordIn } from '../../../../services/work-view/nav-words.mjs'
-import type { WorkDataSource, WorkModel } from './work-data-source.ts'
+import type { RequestReadError, WorkDataSource, WorkModel } from './work-data-source.ts'
 
 /** Each checked sample request as it was before its check, so Undo restores it exactly. In memory only. */
 const sampleRequestsBeforeCheck = new Map<string, Request>()
@@ -120,9 +120,13 @@ function applySampleFocusChange({ action, focusAreaId, name, goal, intoFocusArea
  * - `refresh-failed`: the last learning run failed, as refresh.json reports it (My Rules' learning-run box);
  * - `rule-saves-fail`: every rule save and "Load my rules into Claude Code" fails, as a refusing worker answers (the
  *   failure lines on My Rules, and where focus stays after a failed decision);
- * - `months-unreadable`: Past focus cannot read the saved months (its read failure, with Try again).
+ * - `months-unreadable`: Past focus cannot read the saved months (its read failure, with Try again);
+ * - `read-errors`: two requests whose saved records break the lifecycle rules (the board's read-error card, with Try
+ *   again and Dismiss); the real data had none when the review looked;
+ * - `subagents`: the Claude Code agent's subagents, linked to it as a 16.0.0 worker links them (Agent.parentId), plus
+ *   one whose parent is not recorded (By agent's nesting, its "Subagent" label, and Mark finished with its confirm).
  */
-export const SAMPLE_STATES = ['rules-unreadable', 'refresh-failed', 'rule-saves-fail', 'months-unreadable'] as const
+export const SAMPLE_STATES = ['rules-unreadable', 'refresh-failed', 'rule-saves-fail', 'months-unreadable', 'read-errors', 'subagents'] as const
 export type SampleState = (typeof SAMPLE_STATES)[number]
 /**
  * Read on every load, so a test can switch states with history.replaceState. Node tests have no address (and this file
@@ -145,12 +149,44 @@ const SAMPLE_FAILED_REFRESH = {
 const SAMPLE_RULE_SAVE_REFUSAL = 'The rule change was not saved: SQLITE_BUSY: database is locked (work_state.write rules/autonomy)'
 const SAMPLE_RULES_LOAD_REFUSAL = 'Loading the rules was not saved: EACCES: permission denied, open \'~/.claude/CLAUDE.md\''
 const SAMPLE_GOALS_READ_ERROR = 'owner-goals/2026-10-18 is unreadable: Unexpected token \'}\' in JSON at position 2214'
+// Shaped like the mapper's read errors (to-work-model toWorkModel, data.ts assertConsistentRequest); neutral words. No
+// evidence link: in sample mode it would open a record from the person's own worker.
+const SAMPLE_READ_ERRORS: RequestReadError[] = [
+  { requestId: 'r-unreadable-1', title: 'Move the release notes into the docs site', reason: 'Request r-unreadable-1 is inconsistent: a working request has an agent next step and is not finished', evidenceHref: null },
+  { requestId: 'r-unreadable-2', title: null, reason: 'Request r-unreadable-2 is inconsistent: shipped requests are 100% with a completion date', evidenceHref: null },
+]
+
+/**
+ * The `subagents` state's agents: three subagents of the work viewer's Claude Code, linked to it (one working, one
+ * finished, one quiet), and one of the sync agent's whose parent is not recorded. Each has the task title its launch
+ * would record, except the quiet linked one, which shows its state only, as a launch recorded without one does. A
+ * stop's time is an ISO time worded by the shared formatter, as the mapper's is (live/to-work-model.ts toAgent). Each
+ * subagent's recorded stop, as this session's Mark finished saved it, is kept in memory only, like the sample checks.
+ */
+const sampleSubagent = (id: string, parent: Agent, status: NonNullable<Agent['status']>, linked: boolean, launchDescription?: string): Agent => ({
+  id, tool: parent.tool, name: parent.name, role: parent.role, deviceId: parent.deviceId, status,
+  canMarkFinished: status !== 'finished', ...(status === 'finished' ? { finishedAtIso: '2026-10-20T13:40:00-07:00' } : {}),
+  ...(linked ? { parentId: parent.id } : {}), ...(launchDescription ? { launchDescription } : {}),
+})
+const SAMPLE_SUBAGENTS: Agent[] = [
+  sampleSubagent('claude-subagent-1', SAMPLE_AGENTS[0], 'working', true, 'Check the List rows at 768px'),
+  sampleSubagent('claude-subagent-2', SAMPLE_AGENTS[0], 'finished', true, 'Measure the By agent folds'),
+  sampleSubagent('claude-subagent-3', SAMPLE_AGENTS[0], 'quiet', true),
+  sampleSubagent('claude-sync-subagent-1', SAMPLE_AGENTS[1], 'quiet', false, 'Read the sync queue'),
+]
+/** Each stop this session's Mark finished saved: the subagent, and when it was saved (an ISO time). */
+const sampleAgentStops = new Map<string, string>()
+const sampleAgents = (sampleState: SampleState | null): Agent[] => sampleState !== 'subagents' ? SAMPLE_AGENTS
+  : [...SAMPLE_AGENTS, ...SAMPLE_SUBAGENTS.map((agent) => {
+    const stoppedAtIso = sampleAgentStops.get(agent.id)
+    return stoppedAtIso ? { ...agent, status: 'finished' as const, finishedAtIso: stoppedAtIso, canMarkFinished: false } : agent
+  })]
 
 const sampleModel = (sampleState: SampleState | null): WorkModel => ({
   sourceKind: 'sample',
   requests: [...SAMPLE_REQUESTS],
-  requestReadErrors: [],
-  agents: SAMPLE_AGENTS,
+  requestReadErrors: sampleState === 'read-errors' ? SAMPLE_READ_ERRORS : [],
+  agents: sampleAgents(sampleState),
   devices: SAMPLE_DEVICES,
   people: SAMPLE_PEOPLE,
   unlinkedWorkCount: 0,
@@ -203,8 +239,14 @@ export const sampleSource: WorkDataSource = {
     return loadSampleWorkModel()
   },
   refreshWork: async () => ({ state: 'idle' }),
-  // Sample agents are fixtures with no recorded state to change.
-  markAgentFinished: () => Promise.reject(new Error('Sample agents have no recorded state to change.')),
+  // Only the `subagents` state's subagents with no recorded stop have one to record; the other sample agents are
+  // fixtures with no recorded state to change.
+  async markAgentFinished(agentId) {
+    const subagent = SAMPLE_SUBAGENTS.find((agent) => agent.id === agentId)
+    if (sampleStateFromAddress() !== 'subagents' || !subagent?.canMarkFinished) throw new Error('Sample agents have no recorded state to change.')
+    sampleAgentStops.set(agentId, new Date().toISOString())
+    return loadSampleWorkModel()
+  },
 
   /** Checking hands the request back to you to ship; it never marks it shipped. Fixtures have no fingerprint to guard. */
   async setRequestChecked(requestId, _expectedFingerprint, checked) {

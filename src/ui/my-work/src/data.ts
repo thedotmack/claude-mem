@@ -9,16 +9,47 @@ export interface Device { id: string; name: string; syncedMinutesAgo: number; on
 export type AgentTool = 'claude' | 'codex' | 'gemini' | 'other'
 /** One running agent. Several can share a tool, so each also has a role and the machine it runs on (§13.2). */
 /**
- * `status` is set only for a subagent, from recorded evidence: `finished` means a recorded stop (its SubagentStop,
- * its Agent call returning, or the owner's Mark finished) came after its last recorded step. Quiet is never finished.
+ * `role` is the agent's own: its session's title or folder, or the mapper's "Recorded session". `status` is set only
+ * for a subagent, from recorded evidence: `finished` means a recorded stop (its SubagentStop, its Agent call returning,
+ * or the owner's Mark finished) came after its last recorded step. Quiet is never finished.
  */
 export interface Agent {
   id: string; tool: AgentTool; name: string; role: string; deviceId: string
   status?: 'working' | 'quiet' | 'finished'
+  /** When a finished subagent stopped, as display text; workers before 16.0.0 send only this (G19). */
   finishedAt?: string
+  /** `finishedAt` as an ISO time, for the reader's own clock (G9, the shared LocalTime). */
+  finishedAtIso?: string
   /** A subagent with no recorded stop: the owner may record one. */
   canMarkFinished?: boolean
+  /**
+   * A subagent's parent: the main agent of the conversation it ran in, set only when the recorded session links them
+   * (live/to-work-model.ts subagentParents). The 15.19.0 worker's own overview leaves it out, so there its subagents
+   * stand on their own, labelled as subagents (G19); a model this page maps itself from the worker's records (after a
+   * save, or from an older worker's events, live/local-source.ts) links them.
+   */
+  parentId?: string
+  /**
+   * What a subagent was launched to do: the short task title its parent's Agent call gave it (agent-view.mjs
+   * readAgentLaunches `description`), never the whole task text. Shown as its first line. Older workers send none
+   * (the 15.19.0 worker maps its overview without it, G19), and a launch recorded without one has none: the subagent
+   * then shows its state only.
+   */
+  launchDescription?: string
+  /**
+   * The start of the recorded session a main agent ran in (sdk_sessions.content_session_id), set only where another
+   * main agent has the same name, role and machine (several sessions in one folder): the one fact that tells their
+   * cards apart (live/to-work-model.ts toWorkModel; pages/my-work.tsx AgentCard shows it). Workers before 16.0.0 send
+   * none (G19).
+   */
+  sessionShortId?: string
 }
+
+/**
+ * Whether an agent is a subagent: it carries a recorded status, which the mapper sets for subagents only (every worker
+ * since 15.x does), never read from its role's words. The one rule; By agent and the agent's identity ask it.
+ */
+export const isSubagent = (agent: Pick<Agent, 'status'>) => agent.status !== undefined
 
 export type Stage = 'Planning' | 'Building' | 'Reviewing' | 'Shipped'
 export type LiveState = 'working' | 'needs-check' | 'your-move' | 'idle' | 'shipped'
@@ -76,7 +107,11 @@ export interface Request {
   askedBy: string
   agentId: string
   startedAt: string
-  /** Sortable start time. The List sorts on this, never on the display string. */
+  /**
+   * Sortable start time, and the List's start in the reader's own clock (the shared LocalTime). Absent when the start
+   * is not recorded: that missing value is what the List words, through t() ("Start not recorded"), never `startedAt`'s
+   * English text.
+   */
   startedAtIso?: string
   /**
    * How long it has run (to its completion, or to the mapping's time), in milliseconds; null when its start is not
@@ -329,6 +364,12 @@ export function requestTitle(request: Pick<Request, 'title' | 'resolvesTo'>, t: 
 
 /** Waits on you: your move, or done and waiting for your check. The nav counts and the Needs you filter both use this. */
 export const needsYou = (request: Request) => request.state === 'your-move' || request.state === 'needs-check'
+
+/**
+ * Attention first: what waits on you, then what to check, then what is moving, then the rest. The one order; the
+ * boards' "Needs you first" sort and By agent's busiest-first order ask it (components/bits.tsx re-exports it).
+ */
+export const ATTENTION_ORDER: LiveState[] = ['your-move', 'needs-check', 'working', 'idle', 'shipped']
 
 /** A save the worker refused, with the snapshot it answered: the screen shows that state, then the reason. */
 export class SaveRefusedError extends Error {

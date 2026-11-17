@@ -17,7 +17,7 @@ import { Switch } from '@/components/ui/switch'
 import { LIST_ROWS_PER_PAGE, TablePageFooter } from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import { ManualRefreshButton, RefreshButton, RefreshStatus, StateBadge } from '@/components/bits'
+import { RefreshButton, RefreshStatus, StateBadge } from '@/components/bits'
 import { DECISION_CARD_BODY, STICKY_ABOVE_BOTTOM_BAR, SwipeHint, SwipeToDecide } from '@/components/swipe-to-decide'
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
 import { ErrorDetails } from '@/components/error-details'
@@ -31,6 +31,7 @@ import { RULE_CHANGED_SINCE_EDIT } from '@/store/slices/rules-slice'
 import { RULE_TIERS, type OwnerRule, type RuleChange, type RuleQuote, type RuleRecord, type RuleRecordFact, type RuleScope, type RuleStatus, type RuleTier, type RulesLearning } from '@/data-rules'
 import { addedRuleFromSave, currentRuleDecisions, ruleUndoIsCurrent, type RuleDecision } from '@/live/rule-actions'
 import { currentIn, inShownOrder, keepShownOrder, stepFrom, upNextAfter } from '@/live/rule-queue'
+import { refreshLineState } from '@/live/refresh-line'
 import type { AutoRefresh, RuleSaveResult } from '@/live/work-data-source'
 
 // ---------- Derived facts ----------
@@ -579,15 +580,27 @@ const scrollCueMask = ({ before, after }: { before: boolean; after: boolean }) =
  * the one current rule in full, the last decision's result, then "Up next" rows and "Show all N". The card stays on the
  * rule the person is reading, held by its id, until they decide it or move on themselves (quality M1).
  */
-function DecisionQueue({ suggestions, decisions, lastDecidedId, saving, pointer, onPoint, onDecide, onEdit, onUndo, onShow }: {
+function DecisionQueue({ suggestions, decisions, lastDecidedId, saving, pointer, review, onPoint, onDecide, onEdit, onUndo, onShow }: {
   suggestions: OwnerRule[]; decisions: Record<string, Decision>; lastDecidedId: string | null; saving: boolean
   pointer: string | null; onPoint: (ruleId: string | null) => void
+  /** The rule a scope's "review above" asked for, and which press that was: the queue shows it, whatever the chip. */
+  review: ReviewAsk | null
   onDecide: (rule: OwnerRule, decision: Decision) => Promise<boolean>; onEdit: (rule: OwnerRule) => void
   onUndo: (rule: OwnerRule) => Promise<boolean>; onShow: (rule: OwnerRule) => void
 }) {
   const isPhone = useIsPhone()
   const savingReasonId = useId()
   const [filter, setFilter] = useState<StrengthFilter>('all')
+  // A scope's "review above" asks for one rule (Greptile P2 on PR #6210: a strength chip that hid it showed another
+  // rule instead). The chip makes room for it, back to All, and the queue says so; followed while drawing, React's
+  // pattern for state that follows a prop.
+  const [reviewSeen, setReviewSeen] = useState(review?.press ?? 0)
+  const [madeRoom, setMadeRoom] = useState(false)
+  if (review && review.press !== reviewSeen) {
+    setReviewSeen(review.press)
+    const asked = suggestions.find((rule) => rule.id === review.ruleId)
+    if (asked && filter !== 'all' && strengthOf(asked) !== filter) { setFilter('all'); setMadeRoom(true) }
+  }
   const [showAll, setShowAll] = useState(false)
   const [shownRows, setShownRows] = useState(LIST_ROWS_PER_PAGE)
   const sectionRef = useRef<HTMLElement>(null)
@@ -673,12 +686,14 @@ function DecisionQueue({ suggestions, decisions, lastDecidedId, saving, pointer,
               <div ref={chipsRef} className={cn('max-sm:-mx-1 max-sm:w-[calc(100%+0.5rem)] max-sm:overflow-x-auto max-sm:p-1 max-sm:[scrollbar-width:none] sm:ml-auto', scrollCueMask(chipsCue))}
                 data-slot="strength-chips" data-more-before={chipsCue.before || undefined} data-more-after={chipsCue.after || undefined}>
                 <ToggleGroup type="single" variant="outline" size="sm" spacing={1} className="flex-wrap max-sm:w-max max-sm:flex-nowrap" aria-label={t('Strength')} value={filter}
-                  onValueChange={(value) => { if (isStrengthFilter(value)) { setFilter(value); onPoint(null); setShownRows(LIST_ROWS_PER_PAGE) } }}>
+                  onValueChange={(value) => { if (isStrengthFilter(value)) { setFilter(value); setMadeRoom(false); onPoint(null); setShownRows(LIST_ROWS_PER_PAGE) } }}>
                   {STRENGTH_FILTERS.map((strength) => <ToggleGroupItem key={strength} value={strength}>{t(STRENGTH_FILTER_WORDS[strength])} <span className="tabular">{strengthCounts[strength]}</span></ToggleGroupItem>)}
                 </ToggleGroup>
               </div>
             )}
           </div>
+          {/* Said once the chip went back to All to show the rule a scope's "review above" asked for. */}
+          <p role="status" data-slot="strength-made-room" className={cn('text-xs text-muted-foreground', !madeRoom && 'sr-only')}>{madeRoom ? t('Strength set to All, so the rule you asked to review shows.') : ''}</p>
           {/* The thin decided-of-total line (c-rules-decision-queue M3), with its words beside it. */}
           {total > 0 && (
             <div className="flex items-center gap-3">
@@ -762,6 +777,9 @@ function DecisionQueue({ suggestions, decisions, lastDecidedId, saving, pointer,
     </Req>
   )
 }
+
+/** One press of a scope's "review above": the rule it asks for, and a count that tells two presses on one rule apart. */
+interface ReviewAsk { ruleId: string; press: number }
 
 // ---------- Scope sections ----------
 
@@ -1125,29 +1143,29 @@ function LearningRunNumbers({ learning, run, earlier }: { learning: RulesLearnin
  * What the last learning run (request-progress) read and found, and where it ran (§14; c-rules-learning-run): a fold
  * row with the run's time, holding the three numbers as a small table. When the latest refresh failed, the box says so
  * in plain words: the refresh runs owner-goals and request-progress, so it names the refresh, not the learning run (a
- * failure can come from either). It offers the one start button (ManualRefreshButton) and the raw cause under Details
- * (G17), and the last good run's numbers are marked as that earlier run's, never presented as current.
+ * failure can come from either). It holds the shared refresh line (RefreshStatus): when the refresh failed, the raw
+ * cause folded under Details (G17), and the page's one refresh control, Try again, where this page can start one. The
+ * line leaves the foot of the page meanwhile, so one failure shows once with one button (it showed here with Refresh
+ * now and again at the foot with Try again). The last good run's numbers are marked as that earlier run's, never
+ * presented as current.
  */
 function LearningRun({ refresh }: { refresh: AutoRefresh | null }) {
   const { t } = useI18n()
   const { mode } = useWorkspace()
   const { sourceKind, rulesLearning, lastRuns } = useWorkModel()
   const run = lastRuns.progress
-  const failed = refresh?.state === 'failed'
-  if (failed) {
+  if (refreshLineState(refresh) === 'failed') {
     return (
       <Req ids={['R14.10', 'R14.13', 'R7.3']}>
         <div data-slot="learning-run-failed" className="space-y-3 rounded-xl border border-attention-border bg-card p-4 text-sm shadow-panel">
           <p className="flex flex-wrap items-center gap-x-2 gap-y-1 font-medium">
             <TriangleAlertIcon aria-hidden="true" className="size-4 shrink-0 text-attention-foreground" />{t('The last refresh didn’t finish')}
-            {refresh.finishedAt && <span className="mono-number ml-auto text-xs font-normal text-muted-foreground">{displayTime(refresh.finishedAt)}</span>}
           </p>
           <p>{t('A refresh updates your goals and learns new rules from your requests. This one stopped, so rules from your latest requests may be missing.')}</p>
-          {/* The cloud viewer cannot start a run on a computer; this computer's worker (and the sample) can. */}
-          {sourceKind === 'cloud'
-            ? <p className="text-xs text-muted-foreground">{t('claude-mem learns again on its own whenever new work is due, using the agent you are logged in to.')}</p>
-            : <ManualRefreshButton ids={['R14.13']} />}
-          {refresh.error && <ErrorDetails cause={refresh.error} />}
+          {/* When it failed is in the line; the earlier run's day is below, so the line names no run. */}
+          <RefreshStatus refresh={refresh} run={null} ids={['R14.13']} />
+          {/* The cloud viewer cannot start a run on a computer, so its line has no button. */}
+          {sourceKind === 'cloud' && <p className="text-xs text-muted-foreground">{t('claude-mem learns again on its own whenever new work is due, using the agent you are logged in to.')}</p>}
           {rulesLearning && run && (
             <div className="space-y-2 border-t pt-3">
               <p className="text-xs font-medium">{interpolate(t('The last learning run that finished, {date}'), { date: displayTime(run.lastRunAt) })}</p>
@@ -1328,7 +1346,9 @@ export function NoRulesYet({ onAdd, readError, refresh }: { onAdd: () => void; r
         <EmptyHeader>
           <EmptyTitle>{readError ? t("Can’t read your rules right now") : t("No rules yet")}</EmptyTitle>
           <EmptyDescription>{readError ? t('My Rules could not read your saved rules. Nothing was changed; they show here again once the read works.') : description}</EmptyDescription>
-          {!readError && waiting && <RefreshStatus refresh={refresh} run={null} ids={['R14.13']} />}
+          {/* Waiting for an agent, or failed: the shared refresh line, with Try again after a failure, as the page with
+              rules shows it (a first refresh that failed left this page with no word of it). */}
+          {!readError && (waiting || refreshLineState(refresh) === 'failed') && <RefreshStatus refresh={refresh} run={null} ids={['R14.13']} />}
         </EmptyHeader>
         <EmptyContent className="items-center gap-3">
           {readError
@@ -1468,7 +1488,8 @@ export function MyRules() {
     }
   }
   const startAdding = () => openDraft({ id: null, scopeId: 'everywhere', newScopeName: '', when: '', then: '', approving: false })
-  const review = (ruleId: string) => { setPointer(ruleId); scrollToId('decide') }
+  const [reviewAsk, setReviewAsk] = useState<ReviewAsk | null>(null)
+  const review = (ruleId: string) => { setPointer(ruleId); setReviewAsk((last) => ({ ruleId, press: (last?.press ?? 0) + 1 })); scrollToId('decide') }
   const editor = <RuleEditor draft={draft} start={draftStart} error={draftError} saving={saving} onChange={setDraft} onClose={closeDraft} onSave={() => void saveDraft()} onCloseAutoFocus={placeFocusAfterEditor} />
 
   if (rulesReadError || (!sample && rules.length === 0 && !rulesLearning)) {
@@ -1526,7 +1547,7 @@ export function MyRules() {
 
         <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_15rem]">
           <div className="min-w-0 space-y-8">
-            <DecisionQueue suggestions={suggestions} decisions={decisions} lastDecidedId={lastDecidedId} saving={saving} pointer={pointer} onPoint={setPointer}
+            <DecisionQueue suggestions={suggestions} decisions={decisions} lastDecidedId={lastDecidedId} saving={saving} pointer={pointer} review={reviewAsk} onPoint={setPointer}
               onDecide={decide} onUndo={undoDecision} onShow={(rule) => jump(rule.id)}
               onEdit={(rule) => openDraft({ id: rule.id, scopeId: rule.scopeId, newScopeName: '', when: rule.when, then: rule.then, approving: true })} />
             <RulesPageDescription className="sm:hidden" />
@@ -1534,10 +1555,14 @@ export function MyRules() {
               <ScopeSection key={scope.id} scope={scope} rules={rules.filter((rule) => rule.scopeId === scope.id)} counts={countsByScope.get(scope.id)!}
                 approvedNow={approvedNow} highlighted={highlighted} toggled={toggled} actions={actions} onReview={review} />
             ))}
-            {/* The shared refresh line, at the foot of the page (page-07 M5); its plain-words version comes with Phase 3. */}
-            <div className="min-w-0 border-t pt-3 [overflow-wrap:anywhere]">
-              {sample ? <RefreshButton run={SAMPLE_RUNS.rules} ids={['R14.13', 'R11.1']} /> : <RefreshStatus refresh={refresh} run={lastRuns.progress} ids={['R14.13']} />}
-            </div>
+            {/* The shared refresh line, at the foot of the page (page-07 M5). While the last refresh failed it sits in the
+                learning-run box instead (LearningRun, c-rules-learning-run: "a failed run shows here, with Try again"),
+                so the failure and its one Try again show once. The sample's pretend run keeps its own button. */}
+            {(sample || refreshLineState(refresh) !== 'failed') && (
+              <div className="min-w-0 border-t pt-3 [overflow-wrap:anywhere]">
+                {sample ? <RefreshButton run={SAMPLE_RUNS.rules} ids={['R14.13', 'R11.1']} /> : <RefreshStatus refresh={refresh} run={lastRuns.progress} ids={['R14.13']} />}
+              </div>
+            )}
           </div>
 
           {/* Only the jump list stays in view while the page scrolls (a whole sticky column was taller than a 900px

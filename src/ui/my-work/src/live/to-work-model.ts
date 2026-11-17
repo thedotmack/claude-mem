@@ -19,12 +19,26 @@ export const THIS_COMPUTER: Device = { id: 'this-computer', name: 'This computer
  */
 export const UNRECORDED_AGENT: Agent = { id: 'agent-not-recorded', tool: 'other', name: 'Agent not recorded', role: 'Recorded work', deviceId: THIS_COMPUTER.id }
 /**
- * The mapper's English words in an agent's role (toAgent): the role of a session with no title and no project folder,
- * and what goes before a subagent's role. The UI words both in the reader's language (components/bits.tsx
- * agentRoleWords); a session title or folder name is the agent's own and stays as written.
+ * The mapper's English words for the role of a session with no title and no project folder (toAgent). The UI words it
+ * in the reader's language (lib/agent-words.ts); a session title or folder name is the agent's own and stays as
+ * written.
  */
 export const RECORDED_SESSION_ROLE = 'Recorded session'
+/**
+ * What workers before 16.0.0 wrote before a subagent's role ("Subagent · repo"). The mapper no longer writes it: a
+ * subagent is known by its typed status (data.ts isSubagent), and its role is its own. agentOwnRole reads an older
+ * worker's role without it (G19: the 15.19.0 worker still sends it).
+ */
 export const SUBAGENT_ROLE_PREFIX = 'Subagent · '
+
+/**
+ * An agent's own role: its session title, folder or "Recorded session". A subagent mapped by a worker before 16.0.0
+ * carries SUBAGENT_ROLE_PREFIX before it, which is read off here, in this one place, as nextStepShown reads an older
+ * worker's fillers (G19). Whether the agent is a subagent comes from its typed status, never from these words.
+ */
+export function agentOwnRole(agent: Pick<Agent, 'role' | 'status'>): string {
+  return agent.status !== undefined && agent.role.startsWith(SUBAGENT_ROLE_PREFIX) ? agent.role.slice(SUBAGENT_ROLE_PREFIX.length) : agent.role
+}
 /**
  * The English filler workers before 16.0.0 wrote in place of a next step when none was recorded. The mapper now
  * writes the missing value instead (NextStepMissing, decision G3); this stays so nextStepShown can read an older
@@ -139,19 +153,77 @@ function parseRecordKey(key: string): string[] {
   return parsed.map(String)
 }
 
-export function toAgent(agent: WorkViewAgent): Agent {
+/**
+ * One agent as the screens show it. A subagent carries its recorded status (which is what marks it as one, data.ts
+ * isSubagent), its stop's time, its parent where the recorded session links them, and the short task title its
+ * launch recorded (`launch.description`; never `launch.prompt`, the whole task text). A main agent's session start is
+ * added by toWorkModel only where two main agents would read the same (sessionsThatTellAgentsApart).
+ */
+export function toAgent(agent: WorkViewAgent, parentId?: string): Agent {
   const tool = KNOWN_TOOLS.includes(agent.platformSource as AgentTool) ? agent.platformSource as AgentTool : 'other'
   const mapped: Agent = { id: agent.id, tool, name: agent.label, role: agent.sessionTitle ?? lastPathSegment(agent.project) ?? RECORDED_SESSION_ROLE, deviceId: THIS_COMPUTER.id }
   if (!agent.isSubagent) return mapped
   const finished = agent.presence?.status === 'finished'
   const finishedAt = finished && agent.presence?.finishedAt ? Date.parse(agent.presence.finishedAt) : NaN
+  // The worker cuts it to 160 characters (agent-view.mjs readAgentLaunches); the screens cut it to one line.
+  const launchDescription = cleanText(agent.launch?.description, 160)
   return {
     ...mapped,
-    role: `${SUBAGENT_ROLE_PREFIX}${mapped.role}`,
     status: finished ? 'finished' : agent.presence?.status === 'recent' ? 'working' : 'quiet',
-    ...(Number.isFinite(finishedAt) ? { finishedAt: formatDateTime(finishedAt) } : {}),
+    ...(Number.isFinite(finishedAt) ? { finishedAt: formatDateTime(finishedAt), finishedAtIso: new Date(finishedAt).toISOString() } : {}),
     canMarkFinished: agent.canMarkFinished === true,
+    ...(parentId ? { parentId } : {}),
+    ...(launchDescription ? { launchDescription } : {}),
   }
+}
+
+/**
+ * How much of a session id tells two sessions apart: its first 8 characters, a UUID's first block, as a conversation
+ * with no title is named ("Conversation 1a2b3c4d", toRequest). Only the short form rides the overview, which has a
+ * 300 KiB budget for 140 requests (docs/development/viewer-sync-recovery.md).
+ */
+const SESSION_SHORT_ID_CHARS = 8
+
+/**
+ * The start of each main agent's session, by agent id, for the main agents whose card would read the same as another's:
+ * the same name and role on the same machine (several sessions in one folder; By agent's card header shows those).
+ * Every other agent gets none, so the overview carries the fact only where it tells cards apart.
+ */
+export function sessionsThatTellAgentsApart(raw: WorkViewAgent[], mapped: Agent[]): Map<string, string> {
+  const headerOf = (agent: Agent) => JSON.stringify([agent.name, agent.role, agent.deviceId])
+  const mains = mapped.filter((agent) => agent.status === undefined)
+  const counts = new Map<string, number>()
+  for (const agent of mains) counts.set(headerOf(agent), (counts.get(headerOf(agent)) ?? 0) + 1)
+  const sessions = new Map(raw.map((agent) => [agent.id, agent.contentSessionId]))
+  const shortIds = new Map<string, string>()
+  for (const agent of mains) {
+    const session = sessions.get(agent.id)
+    if (counts.get(headerOf(agent))! > 1 && session) shortIds.set(agent.id, session.slice(0, SESSION_SHORT_ID_CHARS))
+  }
+  return shortIds
+}
+
+/**
+ * Each subagent's parent, by agent id: the main agent of the conversation the subagent ran in (agent-view.mjs: a
+ * subagent works inside its parent's conversation, and its group carries that conversation's platform and session).
+ * Linked only when exactly one main agent of that platform and session is in the snapshot; with none, or with two
+ * (a session seen twice), the subagent has no parent here. Read from the recorded session only, never from names,
+ * folders or roles, which several unrelated agents can share.
+ */
+export function subagentParents(agents: WorkViewAgent[]): Map<string, string> {
+  const sessionKey = (agent: WorkViewAgent) => JSON.stringify([agent.platformSource, agent.contentSessionId])
+  const mainsBySession = new Map<string, string[]>()
+  for (const agent of agents) {
+    if (agent.isSubagent || !agent.contentSessionId) continue
+    mainsBySession.set(sessionKey(agent), [...(mainsBySession.get(sessionKey(agent)) ?? []), agent.id])
+  }
+  const parents = new Map<string, string>()
+  for (const agent of agents) {
+    if (!agent.isSubagent || !agent.contentSessionId) continue
+    const mains = mainsBySession.get(sessionKey(agent)) ?? []
+    if (mains.length === 1) parents.set(agent.id, mains[0])
+  }
+  return parents
 }
 
 /**
@@ -534,7 +606,10 @@ export function toWorkModel(snapshot: WorkViewSnapshot, now: number): MappedWork
     }
   }
   const { progressRun, ...rulesModel } = toRulesModel(snapshot, now)
-  const agents = snapshot.agents.map(toAgent)
+  const parents = subagentParents(snapshot.agents)
+  const mappedAgents = snapshot.agents.map((agent) => toAgent(agent, parents.get(agent.id)))
+  const sessionShortIds = sessionsThatTellAgentsApart(snapshot.agents, mappedAgents)
+  const agents = mappedAgents.map((agent) => sessionShortIds.has(agent.id) ? { ...agent, sessionShortId: sessionShortIds.get(agent.id)! } : agent)
   if (requests.some((request) => request.agentId === UNRECORDED_AGENT.id)) agents.push(UNRECORDED_AGENT)
   return {
     sourceKind: 'local',

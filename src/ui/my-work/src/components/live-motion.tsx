@@ -13,7 +13,7 @@ import { Button } from '@/components/ui/button'
 import { interpolate, useI18n } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
 import { TICKER_OFFERS_RECONNECT, TICKER_STEP_MS, tickerState, type TickerState } from '@/live/change-ticker'
-import { durationWords } from '@/live/running-time'
+import { durationWords, isFinishedRun } from '@/live/running-time'
 import type { RequestChange } from '@/live/update-queue'
 import { Req } from '@/spec/req'
 import type { LiveState, Request } from '@/data'
@@ -22,19 +22,21 @@ import { useConnection, useRecentChanges, useWorkModel } from '@/store'
 /**
  * How long a request has been going, in monospace so durations line up from card to card (plan rule 9), at the body's
  * small size rather than the card's 12px metadata (c-live-motion-running-for F: 12.75px, 12px at 390). An open live
- * request counts up as you watch, with a still dot (rule 8: nothing here moves); anything else shows its record. No
+ * request counts up as you watch, with a still dot (rule 8: nothing here moves); anything else shows its record, and a
+ * shipped one how long it took ("under a minute", never "Just started": live/running-time.ts isFinishedRun). No
  * "long" marker: no constant in claude-mem says when a run is long (STALE_AFTER_MS measures quiet time, not a run's
- * length), and the plan allows the marker only with one.
+ * length), and the plan allows the marker only with one. `className` sets another size where a column holds it (the
+ * List's Running column is the small size of its Started column beside it).
  */
-export function RunningFor({ request }: { request: Request }) {
+export function RunningFor({ request, className }: { request: Request; className?: string }) {
   const { t } = useI18n()
   const counting = !!request.runningLive && !!request.startedAtIso
   const now = useNow(counting)
   const milliseconds = counting ? now - Date.parse(request.startedAtIso!) : request.runningForMs
   return (
-    <span className="inline-flex items-center gap-1.5 text-sm">
+    <span className={cn('inline-flex items-center gap-1.5 text-sm', className)}>
       {counting && request.state !== 'idle' && <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-working-foreground" />}
-      <span className="mono-number">{durationWords(milliseconds, request.runningFor, t)}</span>
+      <span className="mono-number">{durationWords(milliseconds, request.runningFor, t, isFinishedRun(request.state))}</span>
     </span>
   )
 }

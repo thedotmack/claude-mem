@@ -24,6 +24,16 @@ export const CARD_SIZE: Record<LiveState, CardSize> = {
  */
 export const LINE_ROWS_PER_PAGE = 50
 
+/**
+ * The narrowest title column the List's table may give a request (pages/my-work.tsx ListView): the 183px it has at
+ * 1360px without Team, the narrowest width the table shows a title at (measured on the owner's data, 2026-11-16,
+ * verify-4). With Team on, an Asked by column (7rem, 119px at the 17px desktop root) left the title 64px at 1360 and
+ * 128px from 1440, where the page stops widening, so in team mode the table never fits this width and the List is
+ * rows at every width, with who asked on each row's facts line. The browser test holds the List to it at 1366, Team
+ * off and on.
+ */
+export const LIST_TITLE_MIN_PX = 183
+
 export type CardGroup = { id: string; label: string; states: LiveState[]; dot: string; size: CardSize }
 
 const group = (id: string, label: string, states: LiveState[], dot: string): CardGroup => {
@@ -59,11 +69,19 @@ export function cardGridEntries(requests: Request[]): CardGridEntry[] {
   })
 }
 
+/**
+ * Every group with its requests in board order, empty groups left out: the List, By agent's no-agent block and the Team
+ * columns draw these as group rows (G4), the groups of one-line cards folded until opened.
+ */
+export function requestSections(requests: Request[]): { group: CardGroup; members: Request[] }[] {
+  return CARD_GROUPS
+    .map((cardGroup) => ({ group: cardGroup, members: requests.filter((request) => cardGroup.states.includes(request.state)) }))
+    .filter((section) => section.members.length > 0)
+}
+
 /** The one-line sections (idle, shipped), each with its requests in board order. Empty sections are left out. */
 export function lineSections(requests: Request[]): { group: CardGroup; members: Request[] }[] {
-  return CARD_GROUPS.filter((entry) => entry.size === 'line')
-    .map((lineGroup) => ({ group: lineGroup, members: requests.filter((request) => lineGroup.states.includes(request.state)) }))
-    .filter((section) => section.members.length > 0)
+  return requestSections(requests).filter((section) => section.group.size === 'line')
 }
 
 /** How many of `total` rows show once `pages` pages are open, and how many are left (G4: "Show 50 more · 68 left"). */

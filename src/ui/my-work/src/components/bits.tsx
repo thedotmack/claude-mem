@@ -28,7 +28,8 @@ import { isServedFromCloud } from '@/live/served-from'
 import { LIVE_CHIP_PROBLEM_SOURCE, liveChipProblem, type LiveChipProblem } from '@/live/live-chip'
 import type { ConnectionTone } from '@/live/connection-status'
 import type { StarCountRead } from '@/live/github-star-count'
-import { nextStepShown, RECORDED_SESSION_ROLE, SUBAGENT_ROLE_PREFIX, THIS_COMPUTER, UNRECORDED_AGENT } from '@/live/to-work-model'
+import { nextStepShown, UNRECORDED_AGENT } from '@/live/to-work-model'
+import { agentRoleWords, deviceName } from '@/lib/agent-words'
 import { nextStepWords } from '@/live/next-step-words'
 import { AgentMark } from './brand'
 
@@ -95,11 +96,6 @@ export function LocalTime({ iso, className }: { iso: string; className?: string 
   )
 }
 
-/** "This computer" is the mapper's English name for the machine the page runs on; any other machine keeps its own name. */
-function deviceName(device: Device, t: (text: string) => string): string {
-  return device.id === THIS_COMPUTER.id ? t(THIS_COMPUTER.name) : device.name
-}
-
 /**
  * The tool's own name, printed beside its mark where there is room (c-bits-agent-icon M, c-shell-brand M): nearly every
  * card carries the same mark, and on a phone the name was in a tooltip only. An agent on a platform we have no mark
@@ -110,15 +106,6 @@ const AGENT_TOOL_NAME: Record<AgentTool, string | null> = {
   codex: 'Codex',
   gemini: 'Gemini',
   other: null,
-}
-
-/**
- * An agent's role in the reader's language: the mapper's own English words (live/to-work-model.ts toAgent) go through
- * the catalog; a session title or folder name is the agent's and stays as written.
- */
-function agentRoleWords(role: string, t: (text: string) => string): string {
-  if (role.startsWith(SUBAGENT_ROLE_PREFIX)) return interpolate(t('Subagent · {role}'), { role: agentRoleWords(role.slice(SUBAGENT_ROLE_PREFIX.length), t) })
-  return role === RECORDED_SESSION_ROLE ? t(RECORDED_SESSION_ROLE) : role
 }
 
 /**
@@ -134,7 +121,7 @@ export function AgentIcon({ agentId, withDevice = false, showName = true }: { ag
   const name = unrecorded ? t(UNRECORDED_AGENT.name) : AGENT_TOOL_NAME[agent.tool] ?? agent.name
   const where = deviceName(device, t)
   // The agent's own name (often a worktree id) and its role only when they add something to the tool's name.
-  const details = unrecorded ? [] : [...(agent.name !== name ? [agent.name] : []), agentRoleWords(agent.role, t)]
+  const details = unrecorded ? [] : [...(agent.name !== name ? [agent.name] : []), agentRoleWords(agent, t)]
   const identity = [name, ...details, interpolate(t('on {name}'), { name: where })].join(' · ')
   return (
     <Req ids={['R5.1', 'R10.4']}>
@@ -172,8 +159,8 @@ export const STATE_LABEL: Record<LiveState, string> = {
   working: 'Working', 'needs-check': 'Done, not checked', 'your-move': 'Your move', idle: 'Idle', shipped: 'Shipped',
 }
 
-/** Attention first: what waits on you, then what to check, then what is moving, then the rest. */
-export const ATTENTION_ORDER: LiveState[] = ['your-move', 'needs-check', 'working', 'idle', 'shipped']
+/** Attention first (data.ts ATTENTION_ORDER, the one definition), kept here for the screens that import it from bits. */
+export { ATTENTION_ORDER } from '@/data'
 
 /**
  * Each state's colors, shared by the badge and the List view's flipboard so both read as the same state. The edge is
@@ -212,14 +199,27 @@ export function StateMark({ state, className }: { state: LiveState; className?: 
   )
 }
 
-/** One glance tells working, done-but-unchecked, waiting on you and shipped apart (§6). State is the only thing colored. */
-export function StateBadge({ state }: { state: LiveState }) {
+/**
+ * A state's words never break inside a word, at any width, in every language: the chip's own rule breaks a label
+ * anywhere once its row runs out (components/ui/badge.tsx), and squeezed rows stacked "Working" letter by letter. The
+ * badge is never narrower than its longest word, and a label longer than its whole line wraps between words only, as
+ * the split-flap tiles do (components/split-flap.tsx). keep-all keeps Korean and Chinese words whole as well, which
+ * otherwise break between any two syllables or characters.
+ */
+const STATE_BADGE_WORDS_WHOLE = 'min-w-min wrap-normal break-keep'
+
+/**
+ * One glance tells working, done-but-unchecked, waiting on you and shipped apart (§6). State is the only thing colored.
+ * `children` draws the state's word another way inside the same badge and mark (the List's split-flap tiles while a
+ * status changes); left out, the badge shows the word.
+ */
+export function StateBadge({ state, children }: { state: LiveState; children?: ReactNode }) {
   const { t } = useI18n()
   return (
     <Req ids={['R6.2']}>
-      <Badge variant="outline" data-state-badge={state} className={cn('shrink-0 gap-1.5 font-normal', STATE_SURFACE[state])}>
+      <Badge variant="outline" data-state-badge={state} className={cn('shrink-0 gap-1.5 font-normal', STATE_BADGE_WORDS_WHOLE, STATE_SURFACE[state])}>
         <StateMark state={state} />
-        {t(STATE_LABEL[state])}
+        {children ?? t(STATE_LABEL[state])}
       </Badge>
     </Req>
   )
@@ -268,9 +268,12 @@ const NEXT_STEP_MISSING_WORDS: Record<NextStepMissing, string> = {
  * Whose move is next: the agent's or yours (§5), with its words on screen. A person's move is the one thing that gets
  * weight. A missing step (G3: the model's missing value, or an older worker's English filler, both read by
  * nextStepShown) draws nothing on cards and in the drawer (`whenMissing="omit"`); the List passes `"dash"` for "—" with
- * the reason read out.
+ * the reason read out. `layout="line"` is the List's one-line cell (c-work-list-view: 48px rows): the step cut with an
+ * ellipsis after its owner's icon, a person's step in the attention colour, and whose move it is read out first.
  */
-export function NextMove({ next, className, whenMissing = 'omit' }: { next: Request['next'] | null | undefined; className?: string; whenMissing?: 'omit' | 'dash' }) {
+export function NextMove({ next, className, whenMissing = 'omit', layout = 'block' }: {
+  next: Request['next'] | null | undefined; className?: string; whenMissing?: 'omit' | 'dash'; layout?: 'block' | 'line'
+}) {
   const { t } = useI18n()
   const shown = nextStepShown(next)
   if (shown.kind === 'missing') {
@@ -285,12 +288,29 @@ export function NextMove({ next, className, whenMissing = 'omit' }: { next: Requ
     )
   }
   const human = shown.who === 'human'
+  const ownerIcon = (
+    <span aria-hidden="true" className={cn('flex shrink-0 items-center justify-center rounded-full', layout === 'line' ? 'size-4' : 'mt-px size-5', human ? 'bg-attention text-attention-foreground' : 'bg-muted text-muted-foreground')}>
+      {human ? <UserIcon className={layout === 'line' ? 'size-2.5' : 'size-3'} /> : <BotIcon className={layout === 'line' ? 'size-2.5' : 'size-3'} />}
+    </span>
+  )
+  if (layout === 'line') {
+    const words = nextStepWords(shown, t)
+    return (
+      <Req ids={['R5.8', 'R6.3']}>
+        <span data-next-move={shown.who} className={cn('flex min-w-0 items-center gap-1.5 text-[0.84rem]', className)}>
+          {ownerIcon}
+          <span className={cn('min-w-0 truncate', human ? 'font-medium text-attention-foreground' : 'text-foreground/80')}>
+            <span className="sr-only">{interpolate(t('{owner}: {step}'), { owner: t(NEXT_MOVE_OWNER_WORDS[shown.who]), step: words })}</span>
+            <span aria-hidden="true">{words}</span>
+          </span>
+        </span>
+      </Req>
+    )
+  }
   return (
     <Req ids={['R5.8', 'R6.3']}>
       <div data-next-move={shown.who} className={cn('flex items-start gap-2 text-[0.84rem] leading-snug', className)}>
-        <span aria-hidden="true" className={cn('mt-px flex size-5 shrink-0 items-center justify-center rounded-full', human ? 'bg-attention text-attention-foreground' : 'bg-muted text-muted-foreground')}>
-          {human ? <UserIcon className="size-3" /> : <BotIcon className="size-3" />}
-        </span>
+        {ownerIcon}
         <span className="min-w-0">
           <span className={cn('block text-xs font-medium', human ? 'text-attention-foreground' : 'text-muted-foreground')}>{t(NEXT_MOVE_OWNER_WORDS[shown.who])}</span>
           <span className={human ? 'font-medium text-foreground' : 'text-foreground/80'}>{nextStepWords(shown, t)}</span>
@@ -327,7 +347,9 @@ const STATE_PROGRESS_FILL: Record<LiveState, string> = {
  * reports its value, and a request no review measured shows the unknown track, not 0% (c-bits-progress-meter); a
  * finished bar ends in a check; the percent is monospace and dates keep tabular figures (plan rule 9). Nothing on it
  * moves: a light sweep ran on every working bar, and with the board's working cards that broke rule 8's two moving
- * things per view (the bar still eases to a new value).
+ * things per view (the bar still eases to a new value). `compact` is the List's cell, on one line for its 48px rows
+ * (c-work-list-view, D b20 M 418): a short bar, then the percent in monospace at the right; a request no review measured
+ * says so in words.
  */
 export function ProgressMeter({ request, compact = false }: { request: Request; compact?: boolean }) {
   const { t } = useI18n()
@@ -338,16 +360,32 @@ export function ProgressMeter({ request, compact = false }: { request: Request; 
       ? interpolate(t('at this pace, about {date}'), { date: displayTime(estimate.slice(ESTIMATE_PREFIX.length)) })
       : t(estimate))
     : null
+  const bar = (
+    <Progress value={progress.percent} aria-label={progress.percent === null ? t('Not reviewed yet') : interpolate(t('{percent}% complete'), { percent: progress.percent })} className={cn('[&_[data-slot=progress-indicator]]:duration-700 [&_[data-slot=progress-indicator]]:ease-out', compact && 'w-14 shrink-0', STATE_PROGRESS_FILL[request.state])} />
+  )
+  const finished = progress.percent === 100 && <CheckIcon data-slot="progress-finished" aria-hidden="true" className="size-3.5 shrink-0 stroke-3 text-foreground/80" />
+  if (compact) {
+    return (
+      <Req ids={['R5.9', 'R5.6', 'R5.11']}>
+        <div data-progress="compact" className="flex items-center justify-end gap-2 text-xs">
+          {(progress.readings || progress.completedAt) && progress.percent !== null
+            // The bar's name already says "30% complete", so readers skip the number beside it (it was read twice).
+            ? <>{bar}<span aria-hidden="true" className="w-10 shrink-0 text-right font-medium text-foreground/80 mono-number">{progress.percent}%</span>{finished}</>
+            : <span className="text-muted-foreground">{t('Not reviewed yet')}</span>}
+        </div>
+      </Req>
+    )
+  }
   return (
     <Req ids={['R5.9', 'R5.6', 'R5.11']}>
       <div className="space-y-1.5">
         <div className="flex items-center gap-1.5">
-          <Progress value={progress.percent} aria-label={progress.percent === null ? t('Not reviewed yet') : interpolate(t('{percent}% complete'), { percent: progress.percent })} className={cn('[&_[data-slot=progress-indicator]]:duration-700 [&_[data-slot=progress-indicator]]:ease-out', STATE_PROGRESS_FILL[request.state])} />
-          {progress.percent === 100 && <CheckIcon data-slot="progress-finished" aria-hidden="true" className="size-3.5 shrink-0 stroke-3 text-foreground/80" />}
+          {bar}
+          {finished}
         </div>
         <div className="flex flex-wrap justify-between gap-x-2 text-xs text-muted-foreground tabular">
-          <span>{progress.completedAt ? interpolate(t('Completed {completedAt}'), { completedAt: progress.completedAt }) : progress.readings ? <><span className="font-medium text-foreground/80 mono-number">{progress.percent}%</span>{compact ? '' : ` · ${reviewCoverage(request, t)}`}</> : t('Not reviewed yet')}</span>
-          {!compact && translatedEstimate && <span>{translatedEstimate}</span>}
+          <span>{progress.completedAt ? interpolate(t('Completed {completedAt}'), { completedAt: progress.completedAt }) : progress.readings ? <><span className="font-medium text-foreground/80 mono-number">{progress.percent}%</span>{` · ${reviewCoverage(request, t)}`}</> : t('Not reviewed yet')}</span>
+          {translatedEstimate && <span>{translatedEstimate}</span>}
         </div>
       </div>
     </Req>
@@ -813,8 +851,9 @@ export function RefreshStatus({ refresh, run, ids, label = 'Last run', canStartR
   refresh: AutoRefresh | null; run: SkillRun | null; ids: string[]; label?: string
   /**
    * Left out: a failed refresh carries Try again wherever this page can start a refresh (live/refresh-line.ts
-   * pageStartsRefresh), so My Rules and Past focus have it with no prop. `true`: "Refresh now" in every state, reading
-   * "Try again" after a failure (My Work: the review's time beside Refresh, c-work-filters). `false`: no button.
+   * pageStartsRefresh), so My Rules and Suggested areas have it with no prop. `true`: "Refresh now" in every state,
+   * reading "Try again" after a failure (My Work: the review's time beside Refresh, c-work-filters; Past focus, whose
+   * line had its own Refresh now beside it). `false`: no button.
    */
   canStartRefresh?: boolean
 }) {
@@ -844,13 +883,15 @@ export function RefreshStatus({ refresh, run, ids, label = 'Last run', canStartR
     return (
       <Req ids={[...ids, 'R14.10']}>
         <div data-refresh-line={state} className="w-full space-y-2">
-          <Alert variant="attention" role="alert" className="py-2.5">
+          <Alert variant="attention" role="alert" className="@container py-2.5">
             <AlertTitle className="font-normal">
               {failedAt ? sentenceWith(REFRESH_LINE_SENTENCE.failed(t), 'time', failedAt) : t('Could not refresh.')}
               {lastRun && <> {lastRun}.</>}
             </AlertTitle>
             {cause && <AlertDescription><FailureDetails cause={cause} /></AlertDescription>}
-            {button && <AlertAction>{button}</AlertAction>}
+            {/* Beside the words; under them in a narrow box (My Rules' side column, where beside them it ran out of
+                the box). */}
+            {button && <AlertAction className="@max-xs:col-start-2 @max-xs:row-span-1 @max-xs:row-start-3 @max-xs:self-start @max-xs:pt-1">{button}</AlertAction>}
           </Alert>
           {nothingNew}
           {startFailure}
@@ -923,8 +964,10 @@ export function ReadAfterSaveNotice() {
 }
 
 /**
- * Starts the local goals and progress refresh on demand. Kept for callers that place it beside RefreshStatus (Past
- * focus); My Work passes `canStartRefresh` to RefreshStatus instead, so the line and its button change together.
+ * Starts the local goals and progress refresh on demand. No page here mounts it any more: beside RefreshStatus it made
+ * a second button for one failed refresh (Refresh now next to Try again), so the pages pass `canStartRefresh` to
+ * RefreshStatus instead and the line and its one button change together. It stays exported for other board layouts
+ * (plan rule 2; PR #6054).
  */
 export function ManualRefreshButton({ ids, running = false }: { ids: string[]; running?: boolean }) {
   const { t } = useI18n()

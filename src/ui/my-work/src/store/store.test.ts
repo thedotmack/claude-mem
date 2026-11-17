@@ -179,6 +179,22 @@ describe('reading work', () => {
     assert.equal(store.getState().work.load.state, 'loaded')
   })
 
+  it('Try again answers whether the read worked, and a failed one keeps the shown work', async () => {
+    const { store } = testStore()
+    const { source, reads } = fakeSource()
+    store.getState().startWorkSource(source)
+    reads[0].resolve(withRequests(2))
+    await settle()
+    const failing = store.getState().retryWorkRead()
+    reads[1].reject(new Error('worker busy'))
+    assert.deepEqual(await failing, { read: false, error: 'worker busy' })
+    const load = store.getState().work.load
+    assert.equal(load.state === 'loaded' && load.model.requests.length, 2)
+    const working = store.getState().retryWorkRead()
+    reads[2].resolve(withRequests(3))
+    assert.deepEqual(await working, { read: true })
+  })
+
   it('a stopped source can no longer change the screen', async () => {
     const { store } = testStore()
     const { source, feed, reads } = fakeSource()

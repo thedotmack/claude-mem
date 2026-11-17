@@ -315,8 +315,11 @@
    * this much room. The header's floating pill ends 76px down at the 16px root (3.5rem tall, 20px lower), 79.5px at
    * 17px, so 5.5rem leaves 8–12px; the pinned bottom bar is 69px tall (60px items, 8px padding, 1px edge), so 5rem plus
    * the safe area leaves 11px. Only while the My Work shell is on the page: the install funnel keeps its own layout.
+   * --page-header-bottom is where that pill ends (App.tsx HeaderBody h-14, resizable-navbar's 20px drop), where the
+   * List's column headings stick so no row shows between them and the pill.
    */
   html:has([data-slot="work-shell"]) {
+    --page-header-bottom: calc(3.5rem + 20px);
     scroll-padding-top: 5.5rem;
     @media (width < 48rem) {
       scroll-padding-bottom: calc(5rem + env(safe-area-inset-bottom));
@@ -397,21 +400,22 @@
 
 /*
  * SplitFlapText (components/split-flap.tsx): one tile per character, a hairline across its middle where the flap
- * splits; the fold on each flap is a Web Animation in the component. Colors come from the tile's state classes.
+ * splits; the fold on each flap is a Web Animation in the component. Colors come from the tile's state classes. The
+ * tiles ride inside the List's status pill (components/request-rows.tsx ListStatus), so each is one character wide, a
+ * little under the pill's own size, with no frame and no gap: the longest label, "Done, not checked", and its mark then
+ * fit the 187px Status column (c-split-flap F; framed 12.5px tiles took 260px there and covered the next columns while
+ * they riffled).
  */
 .split-flap-tile {
   position: relative; display: inline-flex; align-items: center; justify-content: center;
-  min-width: 1.05em; height: 1.7em; padding: 0 0.14em; border-radius: 3px; border: 1px solid currentColor;
-  border-color: color-mix(in oklab, currentColor 22%, transparent);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; font-weight: 600; line-height: 1;
+  min-width: 1ch; height: 1.3em; border-radius: 1px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.88em; font-weight: 600; line-height: 1;
   perspective: 120px; overflow: hidden;
 }
 .split-flap-tile::after {
   content: ''; position: absolute; inset-inline: 0; top: 50%; height: 1px;
   background: color-mix(in oklab, currentColor 18%, transparent);
 }
-.split-flap-gap { min-width: 0.4em; border-color: transparent; background: transparent !important; }
-.split-flap-gap::after { display: none; }
 
 /*
  * Live motion on My Work (components/live-motion.tsx). A card whose record just changed glows once in the accent
@@ -424,6 +428,15 @@
   100% { box-shadow: 0 0 0 0 transparent; }
 }
 .just-updated { animation: just-updated-glow 1.6s ease-out 2; }
+/*
+ * A List, By agent or Team row whose record just changed (components/request-rows.tsx RequestRow, pages/my-work.tsx
+ * ListTableRow), for the store's FRESHLY_UPDATED_FOR_MS: a still mark, never the glow, so one live model that changes
+ * several rows moves only the change ticker and the newest change's riffle (rule 8: two moving things per view). A
+ * 3px bar in the accent text colour (5.57:1 on the light card, high on the dark one: ≥3:1 for a state mark, rule 7) at
+ * the row's start, over a faint accent tint; a table row draws its bar on its first cell.
+ */
+.just-updated-mark { background-color: color-mix(in oklab, var(--accent) 45%, transparent); }
+.just-updated-mark:not(tr), tr.just-updated-mark > :first-child { box-shadow: inset 3px 0 0 var(--accent-foreground); }
 
 /* Reduced motion everywhere: spinners stop, pulses and slides are instant, the text simply swaps (decision 5). */
 @media (prefers-reduced-motion: reduce) {

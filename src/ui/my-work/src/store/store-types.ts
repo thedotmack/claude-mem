@@ -34,12 +34,18 @@ export interface WorkState {
   readAfterSaveFailure: string | null
 }
 
+/** What one read of the work answered: it read, or it could not, with the reason (the raw cause, G17's Details). */
+export type WorkReadResult = { read: true } | { read: false; error: string }
+
 export interface WorkSlice {
   work: WorkState
   /** Reads the source and follows its live feed. The returned function stops it; nothing it started can publish after that. */
   startWorkSource: (source: WorkDataSource) => () => void
-  /** Reads the active source again: the Retry after a failed first read. */
-  retryWorkRead: () => Promise<void>
+  /**
+   * Reads the active source again: the Retry after a failed first read, and Try again where a screen asks for fresh
+   * records. Answers whether the read worked and, when it did not, why (the shown work stays as it was).
+   */
+  retryWorkRead: () => Promise<WorkReadResult>
   /** Loads one compact request's complete detail; old/full sources return the supplied request. */
   loadRequestDetail: (request: Request, options?: { signal?: AbortSignal }) => Promise<Request>
   receiveWorkModel: (model: WorkModel) => void

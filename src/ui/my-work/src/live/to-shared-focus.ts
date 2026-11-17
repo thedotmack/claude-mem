@@ -102,9 +102,14 @@ function sharedNextStep(request: Request): SharedRequest['next'] {
   return { who: request.next.who, text: repeatsTheOwnersWords ? NEXT_STEP_NOT_RECORDED : clip(text.trim() || NEXT_STEP_NOT_RECORDED, 300) }
 }
 
-/** Each duration unit (live/running-time.ts) in the shared page's English, as the card wrote it before 16.0.0. */
+/**
+ * Each duration unit (live/running-time.ts) in the shared page's English, as the card wrote it before 16.0.0. The
+ * shared page asks durationIn without `finishedRun`, so its payload stays the one it was ("Just started" under a
+ * minute); `under-a-minute` has its English here for the day it does.
+ */
 const SHARED_DURATION_WORDS: Record<DurationUnit, (count: number) => string> = {
   'just-started': () => 'Just started',
+  'under-a-minute': () => 'under a minute',
   minutes: (count) => `${count} min`,
   hours: (count) => `${count} hr`,
   days: (count) => `${count} day${count === 1 ? '' : 's'}`,

@@ -588,7 +588,7 @@ it.skipIf(!chromeExecutablePath)('focus after a press lands where the person can
   }
 }, TEST_LIMIT_MS);
 
-it.skipIf(!chromeExecutablePath)('a failed refresh names the refresh, offers the one start button, folds the cause, and marks the last good run as earlier', async () => {
+it.skipIf(!chromeExecutablePath)('a failed refresh names the refresh, holds the shared refresh line, folds the cause, and marks the last good run as earlier', async () => {
   try {
     await openPage(`&view=rules&sample-state=${sampleState('refresh-failed')}`);
     await desktop();
@@ -596,8 +596,12 @@ it.skipIf(!chromeExecutablePath)('a failed refresh names the refresh, offers the
     const box = 'document.querySelector("[data-slot=learning-run-failed]")';
     // The refresh runs owner-goals and the learning run, so the box names the refresh, not the learning run.
     expect(await page!.evaluate(`${box}.textContent`)).toContain('The last refresh didn’t finish');
-    // The one start button (ManualRefreshButton), the raw cause folded under Details.
-    expect(await page!.evaluate(`[...${box}.querySelectorAll("button")].map((button) => window.nameOf(button))`)).toContain('Refresh now');
+    // The shared refresh line sits in the box, once on the page, its raw cause folded under Details. Its Try again
+    // shows where a page can start a refresh (board-views.browser.test.ts); the sample cannot, and its pretend run
+    // keeps its own button at the foot: one control on the page.
+    expect(await page!.evaluate(`${box}.querySelector("[data-refresh-line=failed]") !== null`)).toBe(true);
+    expect(await page!.evaluate('document.querySelectorAll("[data-refresh-line=failed]").length')).toBe(1);
+    expect(await page!.evaluate('window.buttonsNamed("^(Try again|Refresh)").map((button) => window.nameOf(button))')).toEqual(['Refresh rules from preferences']);
     expect(await page!.evaluate(`${box}.innerText.includes("preferences[3]")`)).toBe(false);
     // The last good run's numbers, named as that earlier run's.
     expect(await page!.evaluate(`${box}.querySelector("[data-slot=learning-run-numbers]") !== null`)).toBe(true);
@@ -939,6 +943,37 @@ it.skipIf(!chromeExecutablePath)('under reduced motion a sideways swipe on a pho
     expect(await page!.evaluate('document.documentElement.scrollWidth')).toBe(390);
     await touch('touchEnd', start.x + 130, start.y);
     await waitFor(`document.querySelector("[data-slot=suggested-area-card][data-decision=${KEPT}]")`, 'the area kept on release');
+    expect(fixtureErrors).toEqual([]);
+  } finally {
+    await closePage();
+  }
+}, TEST_LIMIT_MS);
+
+it.skipIf(!chromeExecutablePath)('a scope’s “review above” shows the rule it names: a strength chip that hides it goes back to All and says so (Greptile P2, PR #6210)', async () => {
+  try {
+    await openPage('&view=rules');
+    await desktop();
+    await waitFor('window.buttonsNamed("^Approve$").length > 0', 'the current rule');
+    // A light rule in the first suggestion's scope, so the Light chip has a card of its own to show.
+    await addToModel({ rules: `[${waitingRule('light-rule', 'Name the file a change lives in.', 1, 60)}]` });
+    // With All on, the scope's link shows the scope's strongest waiting rule: the rule it names.
+    const link = 'window.buttonsNamed("suggested · review above")[0]';
+    await page!.evaluate(`${link}.click()`);
+    await page!.settle();
+    const named = await page!.evaluate('window.currentRuleId()');
+    expect(named).not.toBe('light-rule');
+    // The Light chip hides that rule; the link still shows it, the chip goes back to All, and the queue says so.
+    await page!.evaluate('window.clickNamed("^Light 1$")');
+    await waitFor('window.currentRuleId() === "light-rule"', 'the light rule as the card');
+    expect(await page!.evaluate('document.querySelector("[data-slot=strength-made-room]").textContent')).toBe('');
+    await page!.evaluate(`${link}.click()`);
+    await waitFor(`window.currentRuleId() === ${JSON.stringify(named)}`, 'the named rule as the card');
+    expect(await page!.evaluate('window.nameOf(document.querySelector("[data-slot=strength-chips] [data-state=on]"))')).toMatch(/^All \d+$/);
+    expect(await page!.evaluate('document.querySelector("[data-slot=strength-made-room]").textContent')).toBe('Strength set to All, so the rule you asked to review shows.');
+    // Choosing a chip again clears the line.
+    await page!.evaluate('window.clickNamed("^Light 1$")');
+    await waitFor('window.currentRuleId() === "light-rule"', 'the light rule again');
+    expect(await page!.evaluate('document.querySelector("[data-slot=strength-made-room]").textContent')).toBe('');
     expect(fixtureErrors).toEqual([]);
   } finally {
     await closePage();

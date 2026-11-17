@@ -1,45 +1,53 @@
 import { displayRecordedDate, displayTime } from '@/lib/display-time'
 import { t, useI18n, interpolate } from '@/lib/i18n'
-import { useId, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import { motion, useReducedMotion } from 'motion/react'
-import { ArrowRightIcon, ArrowUpDownIcon, ImageIcon, InboxIcon, PlugIcon, ReplyIcon, TriangleAlertIcon } from 'lucide-react'
+import { ArrowDownIcon, ArrowRightIcon, ArrowUpDownIcon, ExternalLinkIcon, ImageIcon, InboxIcon, PlugIcon, PlusIcon, ReplyIcon, TriangleAlertIcon, UsersIcon } from 'lucide-react'
 import { Agent, AgentContent, AgentHeader } from '@/components/ai-elements/agent'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
-import { Button, buttonVariants } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleFoldTrigger } from '@/components/ui/collapsible'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TablePageFooter, TableRow } from '@/components/ui/table'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { AgentIcon, ATTENTION_ORDER, FocusAreaChip, NextMove, ProgressMeter, RefreshButton, RefreshStatus, STATE_LABEL, STATE_SURFACE, StateBadge, WorkReadFailureAlert } from '@/components/bits'
+import { AgentIcon, ATTENTION_ORDER, FocusAreaChip, LocalTime, NeedsYouPill, NextMove, ProgressMeter, RefreshButton, RefreshStatus, StateMark, WorkReadFailureAlert } from '@/components/bits'
 import { sentenceWith } from '@/lib/sentence-with'
 import { nextStepWords } from '@/live/next-step-words'
 import { TracingBeam } from '@/components/aceternity/tracing-beam'
 import { AgentMark } from '@/components/brand'
 import { FocusChangeBar, useFocusChanges } from '@/components/focus-changes'
 import { FocusHeader, OtherHeader } from '@/components/focus-header'
-import { ChangeTicker } from '@/components/live-motion'
+import { ErrorDetails } from '@/components/error-details'
+import { agentOwnRoleWords, deviceName } from '@/lib/agent-words'
+import { ChangeTicker, RunningFor } from '@/components/live-motion'
 import { RequestCard } from '@/components/request-card'
 import { RequestLine } from '@/components/request-line'
-import { SplitFlapText } from '@/components/split-flap'
-import { SaveButton } from '@/components/save-button'
 import { useMatchesMedia } from '@/lib/use-media'
 import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
-import { needsYou, OTHER_FOCUS_AREA_ID, requestTitle, SAMPLE_RUNS, startedTimestamp, type Agent as WorkAgent, type LiveState, type Request } from '@/data'
+import { isSubagent, needsYou, OTHER_FOCUS_AREA_ID, requestTitle, SAMPLE_RUNS, startedTimestamp, type Agent as WorkAgent, type LiveState, type Request } from '@/data'
 import { type WorkFilter, type WorkListView, type WorkSort, deviceById, useFreshlyUpdated, useStore, useWorkModel, useWorkspace } from '@/store'
 import type { HomeAnchor } from '@/store/home-anchor'
 import { useShallow } from 'zustand/react/shallow'
-import type { BuildStory, RequestReadError, StoryChapter } from '@/live/work-data-source'
+import type { BuildStory, StoryChapter } from '@/live/work-data-source'
 import { asksToKeepOrDismiss, createFocusAreaResolver } from '@/live/to-focus-model'
-import { nextStepShown } from '@/live/to-work-model'
+import { nextStepShown, THIS_COMPUTER } from '@/live/to-work-model'
+import { agentBoard, type AgentEntry } from '@/live/agent-board'
+import { DURATION_WORD } from '@/live/running-time'
 import { refreshLineState } from '@/live/refresh-line'
-import { CARD_SIZE, LINE_ROWS_PER_PAGE, cardGridEntries, linePage, lineSections, type CardGroup, type CardSize } from '@/live/card-groups'
+import { CARD_SIZE, LINE_ROWS_PER_PAGE, cardGridEntries, lineSections, requestSections, type CardGroup, type CardSize } from '@/live/card-groups'
 import { datedHeading, fitLine, storyChapters, storyNumbers } from '@/live/build-story'
 import { FocusOverview } from '@/components/focus-overview'
 import '@/components/focus-overview.css'
+import { GroupLabel, ListStatus, RequestGroup, RequestGroups, RequestRow, ShowMoreRows } from '@/components/request-rows'
+import { RequestReadErrors } from '@/components/request-read-errors'
+import { FOCUS_FROM_CODE_CLASS_NAME, PagingResetContext, usePagedRows } from '@/lib/paged-rows'
+import { TEAMBRAIN_START_URL } from '../../../viewer/constants/promo'
 
 type View = WorkListView
 const VIEWS: { value: View; label: string }[] = [
@@ -450,14 +458,6 @@ function HoverCell({ children }: { children: ReactNode }) {
   )
 }
 
-/**
- * The List is a departures board (decision 2, R4.4): each status is a line of split-flap tiles exactly as wide as its
- * label, colored by its state. It riffles in when the List opens and again when the status changes, then stops.
- */
-function FlipStatus({ state }: { state: LiveState }) {
-  return <SplitFlapText text={t(STATE_LABEL[state])} tileClassName={STATE_SURFACE[state]} />
-}
-
 /** A card or row glides to its new place when the order changes (a status moved, a new request arrived). Position only:
  * a card that grows or shrinks snaps, so text never stretches mid-animation. Off under reduced motion (MotionConfig). */
 const GLIDE = { type: 'spring', bounce: 0.15, duration: 0.55 } as const
@@ -473,11 +473,15 @@ function useBoardMotion() {
     : { layout: 'position' as const, entrance: { initial: { opacity: 0, y: 8 }, animate: { opacity: 1, y: 0 } } }
 }
 
-/** One board card, its size by state (live/card-groups.ts CARD_SIZE); a card that needs you carries its Reply (G2). */
-function CardCell({ request, size, onOpen, onReply, onOpenFocus }: { request: Request; size: Exclude<CardSize, 'line'>; onOpen: (request: Request) => void; onReply: (request: Request) => void; onOpenFocus: (focusAreaId: string) => void }) {
+/**
+ * One board card, its size by state (live/card-groups.ts CARD_SIZE); a card that needs you carries its Reply (G2).
+ * `pagedRow`: one of the sorted board's paged cards, which "Show 50 more" puts focus on (lib/paged-rows.ts).
+ */
+function CardCell({ request, size, pagedRow = false, onOpen, onReply, onOpenFocus }: { request: Request; size: Exclude<CardSize, 'line'>; pagedRow?: boolean; onOpen: (request: Request) => void; onReply: (request: Request) => void; onOpenFocus: (focusAreaId: string) => void }) {
   const motionProps = useBoardMotion()
   return (
-    <motion.div layout={motionProps.layout} transition={GLIDE} {...motionProps.entrance} className="min-w-0">
+    <motion.div layout={motionProps.layout} transition={GLIDE} {...motionProps.entrance} {...(pagedRow ? { 'data-list-row': '', tabIndex: -1 } : {})}
+      className={cn('min-w-0', pagedRow && cn('rounded-xl', FOCUS_FROM_CODE_CLASS_NAME))}>
       <HoverCell>
         <RequestCard request={request} size={size} onOpen={() => onOpen(request)} onOpenFocus={onOpenFocus}
           actions={needsYou(request) ? <ReplyActions request={request} primary={false} onOpen={onOpen} onReply={onReply} /> : undefined} />
@@ -486,64 +490,29 @@ function CardCell({ request, size, onOpen, onReply, onOpenFocus }: { request: Re
   )
 }
 
-/** "Show 50 more · 68 left": the next page of one-line rows (G4, live/card-groups.ts LINE_ROWS_PER_PAGE). */
-function ShowMoreRows({ left, onShowMore }: { left: number; onShowMore: () => void }) {
-  if (left === 0) return null
-  return (
-    <Button variant="ghost" size="sm" className="text-muted-foreground" onClick={onShowMore}>
-      {interpolate(t('Show {count} more · {left} left'), { count: Math.min(LINE_ROWS_PER_PAGE, left), left })}
-    </Button>
-  )
-}
-
-/**
- * Idle or Shipped on the board (G4): one fold row, "Idle · 118" with its chevron (the shared fold row, G5), until it is
- * opened; opened, it draws one-line rows 50 at a time. Nothing folds by itself.
- */
-function LineSection({ group, members, onOpen }: { group: CardGroup; members: Request[]; onOpen: (request: Request) => void }) {
-  const [pages, setPages] = useState(0)
-  const { shown, left } = linePage(members.length, pages)
-  return (
-    <Collapsible open={pages > 0} onOpenChange={(open) => setPages(open ? 1 : 0)} data-line-section={group.id}>
-      <h3>
-        <CollapsibleFoldTrigger count={<span className="mono-number">{members.length}</span>}>
-          <span className="inline-flex items-center gap-2"><span aria-hidden="true" className={cn('size-2 rounded-full', group.dot)} />{t(group.label)}</span>
-        </CollapsibleFoldTrigger>
-      </h3>
-      <CollapsibleContent className="space-y-1 pt-1">
-        <ul className="divide-y divide-border/70">
-          {members.slice(0, shown).map((request) => <li key={request.id}><RequestLine request={request} onOpen={onOpen} /></li>)}
-        </ul>
-        <ShowMoreRows left={left} onShowMore={() => setPages((current) => current + 1)} />
-      </CollapsibleContent>
-    </Collapsible>
-  )
-}
-
 /**
  * The Cards view (c-work-cards-view). Attention-first with every request: what needs you as full cards with Reply,
  * what is working as medium cards, both in one grid under h3 headings (so a card whose status changes glides from one
  * section to the other), then Idle and Shipped folded to one line each (G4). Sorted another way or filtered, the
- * requests keep that order, each drawn at its state's size, 50 at a time.
+ * requests keep that order, each drawn at its state's size, 50 at a time through the boards' one paging
+ * (lib/paged-rows.ts): a new filter, sort or area starts on the first page, and "Show 50 more" puts focus on the first
+ * card it added.
  */
-function CardsView({ requests, grouped, readErrors, onOpen, onReply, onOpenFocus }: { requests: Request[]; grouped: boolean; readErrors: RequestReadError[]; onOpen: (request: Request) => void; onReply: (request: Request) => void; onOpenFocus: (focusAreaId: string) => void }) {
-  const [pages, setPages] = useState(1)
+function CardsView({ requests, grouped, onOpen, onReply, onOpenFocus }: { requests: Request[]; grouped: boolean; onOpen: (request: Request) => void; onReply: (request: Request) => void; onOpenFocus: (focusAreaId: string) => void }) {
+  const paged = usePagedRows(requests.length, true)
   const { layout } = useBoardMotion()
-  const errors = readErrors.map((readError) => <RequestReadErrorCard key={readError.requestId} readError={readError} />)
   if (!grouped) {
-    const { shown, left } = linePage(requests.length, pages)
     return (
       <div className="space-y-3">
-        <div className="grid grid-cols-1 items-start gap-4 sm:grid-cols-2 xl:grid-cols-3">
-          {requests.slice(0, shown).map((request) => {
+        <div id={paged.listId} className="grid grid-cols-1 items-start gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          {requests.slice(0, paged.shown).map((request) => {
             const size = CARD_SIZE[request.state]
             return size === 'line'
-              ? <div key={request.id} className="col-span-full"><RequestLine request={request} onOpen={onOpen} /></div>
-              : <CardCell key={request.id} request={request} size={size} onOpen={onOpen} onReply={onReply} onOpenFocus={onOpenFocus} />
+              ? <div key={request.id} data-list-row="" className="col-span-full"><RequestLine request={request} onOpen={onOpen} /></div>
+              : <CardCell key={request.id} request={request} size={size} pagedRow onOpen={onOpen} onReply={onReply} onOpenFocus={onOpenFocus} />
           })}
-          {errors}
         </div>
-        <ShowMoreRows left={left} onShowMore={() => setPages((current) => current + 1)} />
+        <ShowMoreRows left={paged.left} onShowMore={paged.showMore} />
       </div>
     )
   }
@@ -561,188 +530,403 @@ function CardsView({ requests, grouped, readErrors, onOpen, onReply, onOpenFocus
             </motion.div>
           ))}
       </div>
-      {lineSections(requests).map(({ group, members }) => <LineSection key={group.id} group={group} members={members} onOpen={onOpen} />)}
-      {errors.length > 0 && (
-        <div className="space-y-2">
-          <h3 className="text-sm font-semibold tracking-tight">{t("Couldn't read")}</h3>
-          <div className="grid grid-cols-1 items-start gap-4 sm:grid-cols-2 xl:grid-cols-3">{errors}</div>
-        </div>
-      )}
+      {lineSections(requests).map(({ group, members }) => <RequestGroup key={group.id} group={group} members={members} renderRow={(request) => <RequestLine request={request} onOpen={onOpen} />} />)}
     </div>
   )
 }
 
-// The List switches from stacked lines to the table at Tailwind's md breakpoint (768px); only one of them is built.
-const TABLE_QUERY = '(min-width: 768px)'
+/**
+ * The List is a table from 1360px. Its fixed columns take 689px, so a title gets about 190px there (measured on the
+ * owner's data, 2026-11-16: 188px at a 1366px window, 247px from 1440, where the page stops widening; about 130px at
+ * 1280), nothing scrolls sideways, and so the column headings can stick under the floating header (a scroll box would
+ * hold them back). Narrower, each request is a RequestRow with its title on a line of its own and, from 768px, the
+ * table's other columns on a line under it. Only one is built.
+ */
+const TABLE_QUERY = '(min-width: 85rem)'
 
-/** A List line that glides when the order changes and glows once when its record changes. */
-function ListItem({ requestId, children }: { requestId: string; children: ReactNode }) {
-  const fresh = useFreshlyUpdated(requestId)
-  return <motion.li layout="position" transition={GLIDE} className={cn(fresh && 'just-updated')}>{children}</motion.li>
-}
 
-/** The table row version of ListItem, with TableRow's own look (components/ui/table.tsx). */
-function ListTableRow({ requestId, onClick, children }: { requestId: string; onClick: () => void; children: ReactNode }) {
-  const fresh = useFreshlyUpdated(requestId)
+/**
+ * The column headings stay in view under the floating header while the page scrolls the table (c-split-flap F
+ * fixed-element-offset: the header covered them): stuck right under the header's pill (index.css
+ * --page-header-bottom), on the table's own fill, with the row line drawn on them.
+ */
+const STUCK_HEAD = 'sticky top-(--page-header-bottom) z-[2] bg-card shadow-[inset_0_-1px_0_var(--color-border)]'
+
+/**
+ * A column the List sorts by. Only Status, Progress and Started sort, and each looks it: the sorted one with its
+ * direction and `aria-sort`, the others with both arrows (F 410); the other headings are plain words.
+ */
+function SortHead({ label, value, sort, onSort, numeric = false, className }: { label: string; value: SortKey; sort: SortKey; onSort: (sort: SortKey) => void; numeric?: boolean; className?: string }) {
+  const sorted = sort === value
   return (
-    <motion.tr layout="position" transition={GLIDE} data-slot="table-row" onClick={onClick}
-      className={cn('cursor-pointer border-b border-border/80 transition-colors hover:bg-surface', fresh && 'just-updated')}>
-      {children}
-    </motion.tr>
-  )
-}
-
-function ListView({ requests, sort, onSort, onOpen, onOpenFocus }: { requests: Request[]; sort: SortKey; onSort: (sort: SortKey) => void; onOpen: (request: Request) => void; onOpenFocus: (focusAreaId: string) => void }) {
-  const { team } = useWorkspace()
-  const wide = useMatchesMedia(TABLE_QUERY)
-  const sortHead = (label: string, value: SortKey) => (
-    <TableHead aria-sort={sort === value ? 'descending' : undefined}>
-      <Button variant="ghost" size="sm" className="-ml-3 h-8 text-[0.82rem] font-medium text-muted-foreground" onClick={() => onSort(value)}>{t(label)}<ArrowUpDownIcon className={sort === value ? '' : 'opacity-30'} /></Button>
+    <TableHead numeric={numeric} aria-sort={sorted ? 'descending' : undefined} className={cn(STUCK_HEAD, className)}>
+      <Button variant="ghost" size="sm" onClick={() => onSort(value)} className={cn('font-medium', numeric ? '-mr-3' : '-ml-3', sorted ? 'text-foreground' : 'text-muted-foreground')}>
+        {label}{sorted ? <ArrowDownIcon aria-hidden="true" /> : <ArrowUpDownIcon aria-hidden="true" />}
+      </Button>
     </TableHead>
   )
-  return (
-    <Req ids={['R4.2', 'R4.4', 'R2.1', 'R5.8', 'R11.1']}>
-      {/* Phones: stacked rows, request then status then next step. */}
-      {!wide && <ul className="divide-y rounded-xl border bg-card shadow-panel">
-        {requests.map((request) => (
-          <ListItem key={request.id} requestId={request.id}>
-            <button type="button" onClick={() => onOpen(request)} className="flex w-full flex-col gap-2 p-4 text-left focus-visible:outline-2 focus-visible:outline-ring">
-              <span className="flex w-full items-start gap-2.5">
-                <AgentIcon agentId={request.agentId} showName={false} />
-                <span className={cn('min-w-0 flex-1 pt-0.5 text-[0.95rem] leading-snug font-medium', !request.title && 'text-muted-foreground')}>{titleOf(request)}</span>
-              </span>
-              <span className="flex flex-col items-start gap-1.5 pl-[38px]">
-                <FlipStatus state={request.state} />
-                <NextMove next={request.next} />
-              </span>
-            </button>
-          </ListItem>
-        ))}
-      </ul>}
+}
 
-      {wide && <div className="overflow-hidden rounded-xl border bg-card shadow-panel">
-        <Table>
-          <TableHeader className="bg-surface/60">
-            <TableRow>
-              <TableHead className="w-10"><span className="sr-only">{t("Agent")}</span></TableHead>
-              <TableHead>{t("Request")}</TableHead>
-              {team && <TableHead>{t("Asked by")}</TableHead>}
-              {sortHead('Status', 'attention')}
-              <TableHead>{t("Next step")}</TableHead>
-              {sortHead('Progress', 'progress')}
-              {sortHead('Started', 'started')}
+/**
+ * When a request started, in the reader's clock and short ("Nov 15, 2:50 pm"), the full stamp on hover, focus and tap
+ * (the shared LocalTime, G9, G10, rule 9); a start that is not recorded (no `startedAtIso`) says so in words.
+ */
+function StartedAt({ request }: { request: Request }) {
+  return request.startedAtIso ? <LocalTime iso={request.startedAtIso} /> : <span>{t('Start not recorded')}</span>
+}
+
+/**
+ * One table row (D b20): 48px, a Tab stop that Enter or a click opens (the primitive's onActivate; the focus area link
+ * and the start time inside keep their own press), the agent's mark (kept: the mockup leaves it out), the title on one
+ * line, the status, the next step ("—" when none, G3), and progress, start and running time in monospace at the right
+ * (M 418). Four Tab stops: the row, the agent's mark and the start time (G10: tooltip triggers), and the area link. A
+ * row whose record just changed shows the still "just updated" mark (components/request-rows.tsx ListStatus).
+ */
+function ListTableRow({ request, onOpen, onOpenFocus }: { request: Request; onOpen: (request: Request) => void; onOpenFocus: (focusAreaId: string) => void }) {
+  const fresh = useFreshlyUpdated(request.id)
+  return (
+    <TableRow data-list-row="" data-just-updated={fresh || undefined} onActivate={() => onOpen(request)} className={cn(fresh && 'just-updated-mark')}>
+      <TableCell><AgentIcon agentId={request.agentId} showName={false} /></TableCell>
+      <TableCell>
+        <div className="flex min-w-0 items-center gap-2">
+          <span className={cn('min-w-0 truncate font-medium', !request.title && 'text-muted-foreground')}>{titleOf(request)}</span>
+          <span className="flex max-w-[40%] min-w-0 shrink-0"><FocusAreaChip focusAreaId={request.focusAreaId} onOpen={onOpenFocus} /></span>
+          {fresh && <span className="sr-only">{t('Just updated')}</span>}
+        </div>
+      </TableCell>
+      <TableCell><ListStatus request={request} /></TableCell>
+      <TableCell><NextMove next={request.next} whenMissing="dash" layout="line" /></TableCell>
+      <TableCell numeric><ProgressMeter request={request} compact /></TableCell>
+      <TableCell numeric className="text-xs text-muted-foreground"><StartedAt request={request} /></TableCell>
+      <TableCell numeric className="text-muted-foreground"><span className="sr-only">{t(DURATION_WORD[request.state])} </span><RunningFor request={request} className="text-xs" /></TableCell>
+    </TableRow>
+  )
+}
+
+/**
+ * A state group in the table (G4): its heading row, or for Idle and Shipped its fold row ("Idle · 118"), then its rows
+ * 50 at a time. Each group is its own row group (tbody), so its fold controls exactly its rows. A folded group is that
+ * one line: its "Show 50 more" shows only once it is open (it showed under the closed fold row).
+ */
+function TableGroup({ group, members, columns, renderRow }: { group: CardGroup; members: Request[]; columns: number; renderRow: (request: Request) => ReactNode }) {
+  const folds = group.size === 'line'
+  const paged = usePagedRows(members.length, !folds)
+  const body = (
+    <TableBody id={paged.listId} data-list-group={group.id}>
+      <TableRow className="hover:bg-transparent">
+        <TableHead scope="rowgroup" colSpan={columns} className={cn('h-auto py-1.5', folds ? 'px-2 first:pl-2 last:pr-2' : 'text-sm font-semibold text-foreground')}>
+          {folds
+            ? <CollapsibleFoldTrigger aria-controls={paged.listId} count={<span className="mono-number">{members.length}</span>}><GroupLabel group={group} /></CollapsibleFoldTrigger>
+            : <span className="flex items-center gap-2"><GroupLabel group={group} /><span className="font-normal text-muted-foreground mono-number">{members.length}</span></span>}
+        </TableHead>
+      </TableRow>
+      {members.slice(0, paged.shown).map(renderRow)}
+      {paged.open && paged.left > 0 && (
+        <TableRow className="hover:bg-transparent">
+          <TableCell colSpan={columns}><ShowMoreRows left={paged.left} onShowMore={paged.showMore} /></TableCell>
+        </TableRow>
+      )}
+    </TableBody>
+  )
+  return folds ? <Collapsible asChild open={paged.open} onOpenChange={paged.setOpen}>{body}</Collapsible> : body
+}
+
+/**
+ * The table (c-ui-table): named for screen readers (F 415), fixed columns so a page of rows never shifts them, and its
+ * headings stuck under the floating header. The box rounds its corners with overflow-clip, not hidden, so it does not
+ * become a scroll box and the headings can stick; from TABLE_QUERY's width the columns fit, so nothing scrolls sideways.
+ * Only without Team (live/card-groups.ts LIST_TITLE_MIN_PX): in team mode the List is rows, with who asked on each row.
+ */
+function ListTable({ requests, grouped, sort, onSort, onOpen, onOpenFocus }: { requests: Request[]; grouped: boolean; sort: SortKey; onSort: (sort: SortKey) => void; onOpen: (request: Request) => void; onOpenFocus: (focusAreaId: string) => void }) {
+  const paged = usePagedRows(requests.length, true)
+  const columns = 7
+  const row = (request: Request) => <ListTableRow key={request.id} request={request} onOpen={onOpen} onOpenFocus={onOpenFocus} />
+  return (
+    <div className="space-y-1">
+      <div className="overflow-clip rounded-xl border bg-card shadow-panel [&>[data-slot=table-container]]:overflow-visible">
+        <Table aria-label={t('Requests')} className="table-fixed [&_td]:px-3 [&_th]:px-3">
+          <TableHeader className="[&_tr]:border-b-0">
+            <TableRow className="hover:bg-transparent">
+              <TableHead className={cn(STUCK_HEAD, 'w-[4rem]')}><span className="sr-only">{t('Agent')}</span></TableHead>
+              <TableHead className={STUCK_HEAD}>{t('Request')}</TableHead>
+              <SortHead label={t('Status')} value="attention" sort={sort} onSort={onSort} className="w-[11rem]" />
+              <TableHead className={cn(STUCK_HEAD, 'w-[20%]')}>{t('Next step')}</TableHead>
+              <SortHead label={t('Progress')} value="progress" sort={sort} onSort={onSort} numeric className="w-[9rem]" />
+              <SortHead label={t('Started')} value="started" sort={sort} onSort={onSort} numeric className="w-[8.75rem]" />
+              <TableHead numeric className={cn(STUCK_HEAD, 'w-[7.75rem]')}>{t('Running')}</TableHead>
             </TableRow>
           </TableHeader>
-          <TableBody>
-            {requests.map((request) => (
-              <ListTableRow key={request.id} requestId={request.id} onClick={() => onOpen(request)}>
-                <TableCell className="align-top"><AgentIcon agentId={request.agentId} showName={false} /></TableCell>
-                <TableCell className="max-w-72 align-top whitespace-normal">
-                  <button type="button" onClick={(event) => { event.stopPropagation(); onOpen(request) }} className={cn('rounded-sm text-left leading-snug font-medium hover:underline focus-visible:outline-2 focus-visible:outline-ring', !request.title && 'text-muted-foreground')}>{titleOf(request)}</button>
-                  <div><FocusAreaChip focusAreaId={request.focusAreaId} onOpen={onOpenFocus} /></div>
-                </TableCell>
-                {team && <TableCell className="align-top text-sm">{request.askedBy}</TableCell>}
-                <TableCell className="align-top"><FlipStatus state={request.state} /></TableCell>
-                <TableCell className="max-w-64 align-top whitespace-normal"><NextMove next={request.next} /></TableCell>
-                <TableCell className="w-32 align-top"><ProgressMeter request={request} compact /></TableCell>
-                <TableCell className="align-top text-xs text-muted-foreground"><time dateTime={request.startedAtIso}>{displayTime(request.startedAt)}</time></TableCell>
-              </ListTableRow>
-            ))}
-          </TableBody>
+          {grouped
+            ? requestSections(requests).map(({ group, members }) => <TableGroup key={group.id} group={group} members={members} columns={columns} renderRow={row} />)
+            : <TableBody id={paged.listId}>{requests.slice(0, paged.shown).map(row)}</TableBody>}
         </Table>
-      </div>}
+      </div>
+      {!grouped && <TablePageFooter className="px-1" shownCount={paged.shown} totalCount={requests.length} pageSize={LINE_ROWS_PER_PAGE} onShowMore={paged.showMore} />}
+    </div>
+  )
+}
+
+/**
+ * The List (c-work-list-view): 48px rows, the status as the state badge, "—" for a missing next step, 50 rows at a time
+ * (G4: grouped attention-first, Idle and Shipped folded; sorted another way or filtered, one list with "Showing 50 of
+ * 195 · Show 50 more"). Rows are Tab stops that Enter opens. The table from TABLE_QUERY's width without Team
+ * (live/card-groups.ts LIST_TITLE_MIN_PX); otherwise rows, which from 768px carry the table's other columns on a line
+ * of their own (rule 2).
+ */
+function ListView({ requests, grouped, sort, onSort, onOpen, onOpenFocus }: { requests: Request[]; grouped: boolean; sort: SortKey; onSort: (sort: SortKey) => void; onOpen: (request: Request) => void; onOpenFocus: (focusAreaId: string) => void }) {
+  const { team } = useWorkspace()
+  const wide = useMatchesMedia(TABLE_QUERY) && !team
+  return (
+    <Req ids={['R4.2', 'R4.4', 'R2.1', 'R5.8', 'R11.1']}>
+      {wide ? <ListTable requests={requests} grouped={grouped} sort={sort} onSort={onSort} onOpen={onOpen} onOpenFocus={onOpenFocus} />
+        : (
+          <div className="rounded-xl border bg-card p-1.5 shadow-panel">
+            <RequestGroups requests={requests} grouped={grouped} countAlways renderRow={(request) => <RequestRow request={request} onOpen={onOpen} facts={{ onOpenFocus }} />} />
+          </div>
+        )}
     </Req>
   )
 }
 
+/** A subagent's recorded state in words. Finished only on a recorded stop; a quiet subagent stays quiet, never guessed done. */
 const AGENT_STATUS_LABEL: Record<NonNullable<WorkAgent['status']>, string> = { working: 'Working', quiet: 'No recent step', finished: 'Finished' }
+/** The mark beside each, G11's shapes: working's ring, a hollow ring while quiet, a check once finished. */
+const AGENT_STATUS_MARK: Record<NonNullable<WorkAgent['status']>, LiveState> = { working: 'working', quiet: 'idle', finished: 'shipped' }
+/** The words' colour for each, the colour of the state whose mark it borrows. */
+const AGENT_STATUS_TONE: Record<NonNullable<WorkAgent['status']>, string> = { working: 'text-working-foreground', quiet: 'text-muted-foreground', finished: 'text-shipped-foreground' }
 
 /**
- * A subagent's recorded state. Finished only on a recorded stop; a quiet subagent stays quiet, never guessed done.
- * One that finished before stops were recorded can be marked finished by the owner (saved as a work-state row).
+ * "Mark finished" records a stop for a subagent no recorded stop covers. POST /api/work-view/agents/mark-finished
+ * appends an agent-lifecycle work-state row, and no route removes one, so My Work cannot undo it: it asks first
+ * (c-work-by-agent-view F confirmation-dialogs; it saved on one press). A failure says so in plain words, the worker's
+ * message under Details (G17), and the dialog stays open to try again or cancel. Once saved, the button is gone (the
+ * stop is recorded), so focus lands on the subagent's status, which now reads Finished (`onMarked`).
  */
-function SubagentStatus({ agent }: { agent: WorkAgent }) {
+function MarkFinishedDialog({ agent, open, onOpenChange, onMarked }: { agent: WorkAgent; open: boolean; onOpenChange: (open: boolean) => void; onMarked: () => void }) {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  if (!agent.status) return null
-  // Resolves false on failure so the button shows no check; the error line below says what went wrong.
-  const mark = async () => {
+  const marked = useRef(false)
+  const confirm = async () => {
     setSaving(true)
     setError(null)
     try {
       await useStore.getState().markAgentFinished(agent.id)
-      return true
+      marked.current = true
+      onOpenChange(false)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
-      return false
     } finally {
       setSaving(false)
     }
   }
   return (
-    <div className="space-y-1 px-3 pb-2">
-      <div className="flex min-h-9 items-center justify-between gap-2 text-xs">
-        <span className={cn('text-muted-foreground', agent.status === 'finished' && 'text-shipped-foreground')}>
-          {t(AGENT_STATUS_LABEL[agent.status])}{agent.status === 'finished' && agent.finishedAt ? ` · ${displayTime(agent.finishedAt)}` : ''}
-        </span>
-        {agent.canMarkFinished && (
-          <SaveButton className={cn(buttonVariants({ variant: 'outline', size: 'sm' }), 'h-11 shrink-0 text-xs md:h-7')} disabled={saving} onClick={mark}>{t("Mark finished")}</SaveButton>
+    <Dialog open={open} onOpenChange={(next) => { if (saving) return; onOpenChange(next); if (!next) setError(null) }}>
+      <DialogContent onCloseAutoFocus={(event) => { if (!marked.current) return; event.preventDefault(); marked.current = false; onMarked() }}>
+        <DialogHeader>
+          <DialogTitle>{t('Mark this subagent finished?')}</DialogTitle>
+          <DialogDescription>{t('My Work records that it stopped now. This can’t be undone here; the subagent shows as working again only if it records new work.')}</DialogDescription>
+        </DialogHeader>
+        {error && (
+          <div role="alert" className="space-y-2">
+            <p className="text-sm text-destructive">{t('The subagent wasn’t marked finished.')}</p>
+            <ErrorDetails cause={error} />
+          </div>
         )}
-      </div>
-      {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
+        <DialogFooter showCloseButton>
+          <Button busy={saving} busyLabel={t('Saving…')} onClick={() => void confirm()}>{t('Mark finished')}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/**
+ * A subagent's recorded state with its mark, and "Mark finished" only where no stop is recorded
+ * (c-work-by-agent-view M; agent-view.mjs canMarkFinished). The confirm stays mounted after the stop is saved, so it can
+ * close and put focus on the status, which shows the focus ring (G16). A stop's time is the reader's clock (the shared
+ * LocalTime); an older worker sends it only as text (G19).
+ */
+function SubagentStatus({ agent }: { agent: WorkAgent }) {
+  const statusRef = useRef<HTMLParagraphElement | null>(null)
+  const [confirming, setConfirming] = useState(false)
+  if (!agent.status) return null
+  return (
+    <div className="flex min-h-9 items-center justify-between gap-2 px-2.5 text-sm">
+      <p ref={statusRef} tabIndex={-1} data-subagent-status="" className={cn('flex min-w-0 items-center gap-1.5 rounded-sm', FOCUS_FROM_CODE_CLASS_NAME, AGENT_STATUS_TONE[agent.status])}>
+        <StateMark state={AGENT_STATUS_MARK[agent.status]} />
+        <span>{t(AGENT_STATUS_LABEL[agent.status])}</span>
+        {agent.status === 'finished' && (agent.finishedAtIso
+          ? <LocalTime iso={agent.finishedAtIso} className="text-xs text-muted-foreground" />
+          : agent.finishedAt && <span className="text-xs text-muted-foreground tabular">{displayTime(agent.finishedAt)}</span>)}
+      </p>
+      {agent.canMarkFinished && <Button variant="outline" size="sm" className="shrink-0" onClick={() => setConfirming(true)}>{t('Mark finished')}</Button>}
+      <MarkFinishedDialog agent={agent} open={confirming} onOpenChange={setConfirming} onMarked={() => statusRef.current?.focus()} />
     </div>
   )
 }
 
-/** Each agent with its requests in this view, busiest first: most urgent request, then how many; idle agents last. */
-function agentsByUrgency(agents: WorkAgent[], requests: Request[]) {
-  const urgency = (theirs: Request[]) => theirs.length ? Math.min(...theirs.map((request) => ATTENTION_ORDER.indexOf(request.state))) : ATTENTION_ORDER.length
-  return agents
-    .map((agent, index) => ({ agent, index, theirs: requests.filter((request) => request.agentId === agent.id) }))
-    .sort((a, b) => urgency(a.theirs) - urgency(b.theirs) || b.theirs.length - a.theirs.length || a.index - b.index)
+/**
+ * What a subagent was launched to do (Agent.launchDescription): its first line, on its row and its card, cut to one
+ * line with its whole text in a tooltip on hover, focus and tap (rule 5, G10). Older workers send none, and a launch
+ * may record none: such a subagent shows its state only.
+ */
+function SubagentTask({ agent }: { agent: WorkAgent }) {
+  if (!agent.launchDescription) return null
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <p data-subagent-task="" className="min-w-0 truncate rounded-sm text-sm font-normal text-foreground/90">{agent.launchDescription}</p>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-sm">{agent.launchDescription}</TooltipContent>
+    </Tooltip>
+  )
 }
 
-/** One card per running agent: its mark, its role and machine, so two agents of one tool are told apart (§4, §13.2). */
-function ByAgentView({ requests, onOpen }: { requests: Request[]; onOpen: (request: Request) => void }) {
+/** Subagents fold under their parent (c-ai-agent M), each with its task, state, Mark finished and its requests; 50 at a time. */
+function SubagentsFold({ subagents, onOpen }: { subagents: AgentEntry['subagents']; onOpen: (request: Request) => void }) {
+  const paged = usePagedRows(subagents.length, false)
+  return (
+    <Collapsible open={paged.open} onOpenChange={paged.setOpen} data-subagents="">
+      <CollapsibleFoldTrigger count={<span className="mono-number">{subagents.length}</span>}>{t('Subagents')}</CollapsibleFoldTrigger>
+      <CollapsibleContent className="pt-1">
+        <ul id={paged.listId} className="ml-3 divide-y divide-border/70 border-l border-control-edge/55">
+          {subagents.slice(0, paged.shown).map(({ agent, requests }) => (
+            <li key={agent.id} data-list-row="" tabIndex={-1} data-subagent-row={agent.status ?? ''} data-subagent-id={agent.id} className={cn('rounded-sm py-1', FOCUS_FROM_CODE_CLASS_NAME)}>
+              {agent.launchDescription && <div className="min-w-0 px-2.5 pt-1"><SubagentTask agent={agent} /></div>}
+              <SubagentStatus agent={agent} />
+              {requests.map((request) => <RequestRow key={request.id} request={request} onOpen={onOpen} showAgent={false} titleOnItsOwnLine />)}
+            </li>
+          ))}
+        </ul>
+        <ShowMoreRows left={paged.left} onShowMore={paged.showMore} />
+      </CollapsibleContent>
+    </Collapsible>
+  )
+}
+
+/**
+ * One agent: its mark, name and what it works in, wrapping instead of cut (two agents of one tool tell apart by it,
+ * §13.2), how many requests it holds here, its requests as rows 50 at a time, each with its whole title on a line of
+ * its own (HEAD's cards wrapped it; beside the status it was cut on nearly every row, 110–238px wide from 768 to
+ * 1440px, measured on the owner's data and in sample mode, 2026-11-17), and its subagents folded under it. A
+ * subagent whose parent is not recorded is a card of its own, labelled "Subagent", with its task first and its state.
+ * Where another card would read the same (several sessions in one folder), a main agent's header adds the start of its
+ * session, which the mapper sends only then (Agent.sessionShortId); a subagent's carries its task, which tells it apart.
+ */
+function AgentCard({ entry, onOpen }: { entry: AgentEntry; onOpen: (request: Request) => void }) {
+  const { agent, requests, subagents, total } = entry
+  const device = deviceById(agent.deviceId)
+  const subagent = isSubagent(agent)
+  const where = [deviceName(device, t), device.syncedMinutesAgo !== 0 ? interpolate(t('synced {minutes} min ago'), { minutes: device.syncedMinutesAgo }) : device.id === THIS_COMPUTER.id ? null : t('this machine')]
+  const detail = subagent ? (agent.launchDescription ? <SubagentTask agent={agent} /> : undefined)
+    : agent.sessionShortId ? <p className="text-xs text-muted-foreground mono-number">{interpolate(t('Session {id}'), { id: agent.sessionShortId })}</p> : undefined
+  return (
+    <Agent data-agent-card={agent.id} className="min-w-0">
+      <AgentHeader name={agent.name} icon={<AgentMark tool={agent.tool} className="size-5" />}
+        tag={subagent ? <Badge variant="outline" className="font-normal text-muted-foreground">{t('Subagent')}</Badge> : undefined}
+        detail={detail}
+        role={agentOwnRoleWords(agent, t)}
+        model={where.filter(Boolean).join(' · ')}
+        count={interpolate(total === 1 ? t('{count} request') : t('{count} requests'), { count: total })} />
+      <AgentContent className="space-y-2 px-2 pb-2">
+        {subagent && <SubagentStatus agent={agent} />}
+        {total === 0 && <p className="px-2.5 pb-1 text-sm text-muted-foreground">{t('Nothing on it in this view.')}</p>}
+        {requests.length > 0 && <RequestGroups requests={requests} grouped={false} renderRow={(request) => <RequestRow request={request} onOpen={onOpen} showAgent={false} titleOnItsOwnLine />} />}
+        {subagents.length > 0 && <SubagentsFold subagents={subagents} onOpen={onOpen} />}
+      </AgentContent>
+    </Agent>
+  )
+}
+
+/**
+ * A fold for what By agent keeps out of the way (c-work-by-agent-view, page-02, G4): one dashed line that says what it
+ * holds and "Show them"; opened, the things below it. Nothing folds by itself.
+ */
+function DashedFold({ id, label, children }: { id: string; label: string; children: ReactNode }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <Collapsible open={open} onOpenChange={setOpen} data-agent-fold={id}>
+      <CollapsibleFoldTrigger className="border-dashed" count={open ? t('Hide them') : t('Show them')}>{label}</CollapsibleFoldTrigger>
+      <CollapsibleContent className="pt-3">{children}</CollapsibleContent>
+    </Collapsible>
+  )
+}
+
+/** Agents with nothing in this view, opened: their cards, 50 at a time (G4); "Show 50 more" puts focus on the first new card. */
+function IdleAgentCards({ entries, onOpen }: { entries: AgentEntry[]; onOpen: (request: Request) => void }) {
+  const paged = usePagedRows(entries.length, true)
+  return (
+    <div className="space-y-2">
+      <div id={paged.listId} className="min-w-0 gap-4 md:columns-2 xl:columns-3">
+        {entries.slice(0, paged.shown).map((entry) => (
+          <div key={entry.agent.id} data-list-row="" tabIndex={-1} className={cn('mb-4 break-inside-avoid rounded-xl', FOCUS_FROM_CODE_CLASS_NAME)}>
+            <AgentCard entry={entry} onOpen={onOpen} />
+          </div>
+        ))}
+      </div>
+      <ShowMoreRows left={paged.left} onShowMore={paged.showMore} />
+    </div>
+  )
+}
+
+/**
+ * One card per agent with work in this view: its mark, role and machine, so two agents of one tool are told apart (§4,
+ * §13.2), busiest first (live/agent-board.ts). Then the requests no agent is recorded for, and the agents with nothing
+ * here, each folded to one dashed line with "Show them" (c-work-by-agent-view: one 18,066px card held 188 requests, and
+ * 42 of the first 60 cards were empty). The board's Sort is not shown here, so nothing here follows it: requests are
+ * attention first, in state groups while the filter shows every request. Cards do not glide to a new place: with the
+ * change ticker and the newest change's riffle, that would be a third moving thing (rule 8).
+ */
+function ByAgentView({ requests, grouped, onOpen }: { requests: Request[]; grouped: boolean; onOpen: (request: Request) => void }) {
   const { agents } = useWorkModel()
+  const headingId = useId()
+  const board = agentBoard(agents, sortRequests(requests, 'attention'))
   return (
     <Req ids={['R4.3', 'R13.2', 'R13.4']}>
-      {/* Masonry columns, so a short card never leaves a gap under a long one. Agents with work in this view come
-          first, the one with the most urgent request on top; agents with nothing here go last. */}
-      <div className="min-w-0 gap-4 md:columns-2 xl:columns-3">
-        {agentsByUrgency(agents, requests).map(({ agent, theirs }) => {
-          const device = deviceById(agent.deviceId)
-          return (
-            <motion.div key={agent.id} layout="position" transition={GLIDE} className="mb-4 break-inside-avoid">
-            <HoverCell>
-            <Agent className="min-w-0">
-              <AgentHeader name={agent.name} role={agent.role} icon={<AgentMark tool={agent.tool} className="size-5" />}
-                model={`${device.name} · ${device.syncedMinutesAgo === 0 ? t("this machine") : interpolate(t('synced {minutes} min ago'), { minutes: device.syncedMinutesAgo })}`} />
-              <AgentContent className="space-y-0 px-2 pb-2">
-                <SubagentStatus agent={agent} />
-                {theirs.length === 0 && <p className="px-3 pb-3 text-sm text-muted-foreground">{t("Nothing on it in this view.")}</p>}
-                {theirs.map((request) => (
-                  <button key={request.id} type="button" onClick={() => onOpen(request)} className="flex w-full min-w-0 flex-col gap-1.5 rounded-lg px-3 py-2.5 text-left hover:bg-surface focus-visible:outline-2 focus-visible:outline-ring">
-                    <span className="flex w-full min-w-0 items-start justify-between gap-2">
-                      <span className={cn('min-w-0 text-sm leading-snug font-medium', !request.title && 'text-muted-foreground')}>{titleOf(request)}</span>
-                      <StateBadge state={request.state} />
-                    </span>
-                    <NextMove next={request.next} className="text-xs" />
-                  </button>
-                ))}
-              </AgentContent>
-            </Agent>
-            </HoverCell>
-            </motion.div>
-          )
-        })}
+      <div className="space-y-4">
+        {board.withWork.length > 0 && (
+          <section aria-labelledby={headingId} className="space-y-3">
+            <h3 id={headingId} className="section-label flex items-center gap-1.5">{t('Agents with work')}<span aria-hidden="true">·</span><span className="mono-number">{board.withWork.length}</span></h3>
+            {/* Masonry columns, so a short card never leaves a gap under a long one. */}
+            <div className="min-w-0 gap-4 md:columns-2 xl:columns-3">
+              {board.withWork.map((entry) => (
+                <div key={entry.agent.id} className="mb-4 break-inside-avoid">
+                  <AgentCard entry={entry} onOpen={onOpen} />
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+        {board.unrecorded.length > 0 && (
+          <DashedFold id="no-agent" label={interpolate(board.unrecorded.length === 1 ? t('{count} request has no agent recorded') : t('{count} requests have no agent recorded'), { count: board.unrecorded.length })}>
+            <RequestGroups requests={board.unrecorded} grouped={grouped} renderRow={(request) => <RequestLine request={request} onOpen={onOpen} />} />
+          </DashedFold>
+        )}
+        {board.idle.length > 0 && (
+          <DashedFold id="idle-agents" label={interpolate(board.idleAgents === 1 ? t('{count} agent has nothing in this view') : t('{count} agents have nothing in this view'), { count: board.idleAgents })}>
+            <IdleAgentCards entries={board.idle} onOpen={onOpen} />
+          </DashedFold>
+        )}
       </div>
     </Req>
   )
 }
 
-/** TeamBrain on the same GUI: one column per person, with collisions called out (§9). */
-function TeamBoard({ requests, onOpen }: { requests: Request[]; onOpen: (request: Request) => void }) {
+/**
+ * How many columns the Team board has from 768px (md:grid-cols-3): the review found one person using one of the three
+ * (c-work-team-board), so the others are dashed places for teammates.
+ */
+const TEAM_COLUMNS = 3
+
+/**
+ * TeamBrain on the same GUI: one column per person, with collisions called out (§9). Each column follows G4: what needs
+ * you and what is working as rows with their next step, Idle and Shipped folded to one line each, 50 rows at a time.
+ * Each row shows its whole title on a line of its own and prints its agent's tool name beside the mark, as HEAD's Team
+ * cards did (rule 2: nothing removed; a column is 202px wide at 768px, too narrow to share the title's line).
+ * With only you on the board, one line says so, what the layout is for and how a teammate joins (the words of
+ * docs/public/usage/teambrain.mdx), and the board's other columns are dashed places for teammates (c-work-team-board).
+ */
+function TeamBoard({ requests, grouped, onOpen }: { requests: Request[]; grouped: boolean; onOpen: (request: Request) => void }) {
   const { sourceKind, people } = useWorkModel()
   return (
     <Req ids={['R9.2', 'R9.1', 'R9.3']}>
@@ -754,36 +938,36 @@ function TeamBoard({ requests, onOpen }: { requests: Request[]; onOpen: (request
             <AlertDescription className="text-attention-foreground">{t("Alex and Priya both have agents changing the price forecast page.")}</AlertDescription>
           </Alert>
         )}
-        <div className="grid gap-4 md:grid-cols-3">
-          {people.map((person) => (
-            <div key={person} className="space-y-2.5 rounded-xl border bg-card/60 p-4 shadow-panel">
-              <p className="section-label">{person}</p>
-              {requests.filter((request) => request.askedBy === person).map((request) => (
-                <button key={request.id} type="button" onClick={() => onOpen(request)} className="w-full space-y-2 rounded-lg border bg-card p-3 text-left hover:bg-surface">
-                  <p className="text-sm leading-snug">{titleOf(request)}</p>
-                  <div className="flex items-center justify-between gap-2"><AgentIcon agentId={request.agentId} /><StateBadge state={request.state} /></div>
-                </button>
-              ))}
+        {people.length === 1 && (
+          <div data-team-note="" className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-control-edge/55 bg-card/60 px-4 py-2.5 text-sm">
+            <UsersIcon aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" />
+            <p className="min-w-0 flex-1">{t('You are the only person here. Each person gets a column, and team owners can invite people from the cloud workspace.')}</p>
+            <Button asChild variant="outline" size="sm"><a href={TEAMBRAIN_START_URL} target="_blank" rel="noreferrer">{t('Start team plan')}<ExternalLinkIcon aria-hidden="true" /></a></Button>
+          </div>
+        )}
+        <div className="grid items-start gap-4 md:grid-cols-3">
+          {people.map((person) => {
+            const asked = requests.filter((request) => request.askedBy === person)
+            return (
+              <section key={person} aria-label={person} data-team-column={person} className="min-w-0 space-y-2 rounded-xl border bg-card/60 p-2 shadow-panel">
+                <div className="flex flex-wrap items-center gap-2 px-2 pt-1">
+                  <h3 className="section-label">{person}</h3>
+                  <span className="text-xs text-muted-foreground mono-number">{asked.length}</span>
+                  <NeedsYouPill count={asked.filter(needsYou).length} />
+                </div>
+                {asked.length > 0
+                  ? <RequestGroups requests={asked} grouped={grouped} heading="h4" renderRow={(request) => <RequestRow request={request} onOpen={onOpen} showAgentName titleOnItsOwnLine />} />
+                  : <p className="px-2 pb-2 text-sm text-muted-foreground">{t('Nothing here')}</p>}
+              </section>
+            )
+          })}
+          {Array.from({ length: Math.max(0, TEAM_COLUMNS - people.length) }, (_, place) => (
+            <div key={place} data-team-place="" className="hidden min-h-40 items-start gap-2 rounded-xl border border-dashed border-control-edge p-4 text-sm text-muted-foreground md:flex">
+              <PlusIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0" />{t('When a teammate joins, their requests show here.')}
             </div>
           ))}
         </div>
       </div>
-    </Req>
-  )
-}
-
-/** A request whose records disagree with the lifecycle rules: its own card, with the reason and its source (plan R3). */
-function RequestReadErrorCard({ readError }: { readError: RequestReadError }) {
-  return (
-    <Req ids={['R12.1']}>
-      <Alert className="h-full border-attention-border bg-card">
-        <TriangleAlertIcon />
-        <AlertTitle className="line-clamp-none">{interpolate(t("Couldn't read this request: {reason}"), { reason: readError.reason })}</AlertTitle>
-        <AlertDescription>
-          {readError.title && <p>{readError.title}</p>}
-          {readError.evidenceHref && <a href={readError.evidenceHref} target="_blank" rel="noreferrer" className="underline underline-offset-4 hover:text-foreground">{t("Open the prompt it came from")}</a>}
-        </AlertDescription>
-      </Alert>
     </Req>
   )
 }
@@ -835,7 +1019,8 @@ function WorkToolbar({ view, filter, sort, requests, team, refreshLine, refreshF
             </ToggleGroupItem>
           ))}
         </ToggleGroup>
-        {view !== 'agents' && view !== 'team' && (
+        {/* Sort orders the List, the Cards and each Team column (c-work-team-board F consistency); By agent orders by agent. */}
+        {view !== 'agents' && (
           <Select value={sort} onValueChange={(next) => onSort(next as SortKey)}>
             {/* "Sort: Needs you first" with the primitive's ≥3:1 edge (G12; it had none). A phone shows the word and the icon. */}
             <SelectTrigger size="sm" aria-label={t('Sort')} className="shrink-0 bg-transparent text-[0.82rem]">
@@ -878,8 +1063,14 @@ export function MyWork({ focusAreaId, onOpen, onReply = onOpen, onOpenFocus, onO
   const homeAnchorRequest = useStore((state) => state.view.homeAnchorRequest)
   const { setListView: setView, setFilter, setSort, goToHome } = useStore.getState()
   const [storyOpen, setStoryOpen] = useState(false)
+  // Where focus goes once the last unreadable request is dismissed: the board's heading (components/request-read-errors.tsx).
+  const boardHeading = useRef<HTMLHeadingElement | null>(null)
+  const focusBoardHeading = useCallback(() => boardHeading.current?.focus(), [])
   const matches = FILTERS.find((entry) => entry.value === filter)!.matches
   const visible = useMemo(() => sortRequests(requests.filter(matches), sort), [requests, matches, sort])
+  // Attention-first with every request, the board groups by state (G4); sorted another way or filtered, it is one list.
+  // By agent shows no Sort, so it groups whenever the filter shows every request (ByAgentView orders attention first).
+  const grouped = sort === 'attention' && filter === 'all'
   const open = requests.filter((request) => !request.closed)
   // "Show all N" lands on every request with that filter on (the home page's All requests; a focus page's own board).
   const showOnBoard = (next: Filter) => { setFilter(next); if (!focusAreaId) goToHome('all-requests') }
@@ -900,12 +1091,14 @@ export function MyWork({ focusAreaId, onOpen, onReply = onOpen, onOpenFocus, onO
       {area ? <FocusHeader key={area.id} area={area} requests={requests} changes={focusChanges} />
         : focusAreaId === OTHER_FOCUS_AREA_ID && <OtherHeader requests={requests} />}
       {/* `/#all-requests`: the rail's and the bottom bar's My Work land here (page-02 deep-linking). */}
-      {!focusAreaId && <h2 id={'all-requests' satisfies HomeAnchor} className="section-label">{t('All requests')}</h2>}
+      {!focusAreaId && <h2 ref={boardHeading} id={'all-requests' satisfies HomeAnchor} tabIndex={-1} className={cn('section-label rounded-sm', FOCUS_FROM_CODE_CLASS_NAME)}>{t('All requests')}</h2>}
       {focusAreaId && <Summary requests={open} primary={!(area && asksToKeepOrDismiss(area))} onOpen={onOpen} onReply={onReply} onShowNeedsYou={() => showOnBoard('needs-you')} onShowWorking={() => showOnBoard('working')} />}
       <ChangeTicker onOpen={(requestId) => { const request = allRequests.find((entry) => entry.id === requestId); if (request) onOpen(request) }} />
 
       <WorkToolbar view={view} filter={filter} sort={sort} requests={requests} team={team} refreshLine={refreshLine} refreshFailed={!sample && refreshLineState(refresh) === 'failed'}
         onView={setView} onFilter={setFilter} onSort={setSort} />
+      {/* Requests that could not be read, once, at the top of the board in every layout (only under every request). */}
+      <RequestReadErrors readErrors={requestReadErrors} onAllDismissed={focusBoardHeading} />
 
       {requests.length === 0 && requestReadErrors.length === 0 ? (
         <Req ids={['R12.1']}>
@@ -917,25 +1110,30 @@ export function MyWork({ focusAreaId, onOpen, onReply = onOpen, onOpenFocus, onO
             </EmptyHeader>
           </Empty>
         </Req>
-      ) : visible.length === 0 && requestReadErrors.length === 0 ? (
-        <Req ids={['R12.1']}>
-          <Empty className="border bg-card/60">
-            <EmptyHeader>
-              <EmptyMedia variant="icon"><InboxIcon /></EmptyMedia>
-              <EmptyTitle>{t("Nothing here")}</EmptyTitle>
-              <EmptyDescription>{t("No requests match. New work shows up as soon as an agent writes it.")}</EmptyDescription>
-            </EmptyHeader>
-          </Empty>
-        </Req>
-      ) : view === 'cards' ? (
-        <CardsView requests={visible} grouped={sort === 'attention' && filter === 'all'} readErrors={requestReadErrors} onOpen={onOpen} onReply={onReply} onOpenFocus={onOpenFocus} />
-      ) : view === 'list' ? <ListView requests={visible} sort={sort} onSort={setSort} onOpen={onOpen} onOpenFocus={onOpenFocus} />
-        : view === 'agents' ? <ByAgentView requests={visible} onOpen={onOpen} />
-          : <TeamBoard requests={visible} onOpen={onOpen} />}
-      {view !== 'cards' && requestReadErrors.length > 0 && (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
-          {requestReadErrors.map((readError) => <RequestReadErrorCard key={readError.requestId} readError={readError} />)}
-        </div>
+      ) : (
+        // Every paged list starts on its first page again when the filter, sort or area changes (usePagedRows).
+        <PagingResetContext.Provider value={JSON.stringify([filter, sort, focusAreaId])}>
+          <div data-board-view={view} className="space-y-4">
+            {/* Nothing matches: said under the read-error card too (it was left blank there), and By agent still folds
+                its agents with their count (G4: folded, never gone). */}
+            {visible.length === 0 && (
+              <Req ids={['R12.1']}>
+                <Empty className="border bg-card/60">
+                  <EmptyHeader>
+                    <EmptyMedia variant="icon"><InboxIcon /></EmptyMedia>
+                    <EmptyTitle>{t("Nothing here")}</EmptyTitle>
+                    <EmptyDescription>{t("No requests match. New work shows up as soon as an agent writes it.")}</EmptyDescription>
+                  </EmptyHeader>
+                </Empty>
+              </Req>
+            )}
+            {view === 'agents' ? <ByAgentView requests={visible} grouped={filter === 'all'} onOpen={onOpen} />
+              : visible.length === 0 ? null
+                : view === 'cards' ? <CardsView requests={visible} grouped={grouped} onOpen={onOpen} onReply={onReply} onOpenFocus={onOpenFocus} />
+                  : view === 'list' ? <ListView requests={visible} grouped={grouped} sort={sort} onSort={setSort} onOpen={onOpen} onOpenFocus={onOpenFocus} />
+                    : <TeamBoard requests={visible} grouped={grouped} onOpen={onOpen} />}
+          </div>
+        </PagingResetContext.Provider>
       )}
       {unlinkedWorkCount > 0 && (
         <p className="text-xs text-muted-foreground">{interpolate(unlinkedWorkCount === 1 ? t("{count} work record isn't linked to a request yet.") : t("{count} work records aren't linked to a request yet."), { count: unlinkedWorkCount })}</p>

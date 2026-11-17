@@ -171,10 +171,29 @@ beforeAll(async () => {
       .map((element) => ({ name: nameOf(element).slice(0, 40), height: element.getBoundingClientRect().height, width: element.getBoundingClientRect().width }));
     window.popoverText = () => document.querySelector('[data-slot="popover-content"]')?.textContent ?? null;
     // The sample-data strip above the header (G7): its switch items, Use my data and its close.
+    const strip = () => document.querySelector('[data-slot="work-shell"] > header')?.previousElementSibling;
     window.stripControls = () => {
-      const strip = document.querySelector('[data-slot="work-shell"] > header')?.previousElementSibling;
-      return strip ? [...strip.querySelectorAll('button, a[href]')].filter(visible).map((element) => ({ name: nameOf(element).slice(0, 40), height: element.getBoundingClientRect().height, width: element.getBoundingClientRect().width })) : null;
+      const element = strip();
+      return element ? [...element.querySelectorAll('button, a[href]')].filter(visible).map((control) => ({ name: nameOf(control).slice(0, 40), height: control.getBoundingClientRect().height, width: control.getBoundingClientRect().width })) : null;
     };
+    // The strip slides in when the page loads (aceternity/sticky-banner.tsx: y -100 to 0 over 0.3s, its close button
+    // scaling up with a spring), and a box read while it moves goes through the transform: Chrome maps it in 32-bit
+    // floats, so a 44px control read 43.999996px on Linux CI (PR #6210 watch, 2026-11-17). Resolves once the strip and
+    // every control in it have carried no transform for two frames in a row, the strip at rest as a person sees it.
+    window.stripAtRest = () => new Promise((resolve, reject) => {
+      const started = performance.now();
+      let still = 0;
+      (function check() {
+        const element = strip();
+        const moving = !element || [element, ...element.querySelectorAll('button, a[href]')].some((node) => getComputedStyle(node).transform !== 'none');
+        still = moving ? 0 : still + 1;
+        if (still >= 2) return resolve(true);
+        // The slide ends 0.3s after load and the spring in well under a second (2026-11-17); 8s covers a runner several
+        // times slower, as headerAtRest's does.
+        if (performance.now() - started > 8000) return reject(new Error('the sample strip did not come to rest in 8s'));
+        requestAnimationFrame(check);
+      })();
+    });
     // Row heights are layout heights: the menu opens with a short zoom, and a box read mid-zoom is scaled down.
     window.menu = () => {
       const menu = document.querySelector('[role="menu"]');
@@ -466,7 +485,8 @@ async function tabTo(match: (focus: any) => boolean, what: string, limit = 12) {
     expect(await page!.evaluate('document.documentElement.scrollWidth')).toBe(390);
     const controls: { name: string; height: number; width: number }[] = await page!.evaluate('window.headerControls()');
     expect(controls.filter((control) => control.height < 44 || control.width < 44)).toEqual([]);
-    // G7: with sample data the strip says so, and its controls are 44px on touch too.
+    // G7: with sample data the strip says so, and its controls are 44px on touch too, measured at rest (stripAtRest).
+    await page!.evaluate('window.stripAtRest()');
     const strip: { name: string; height: number; width: number }[] = await page!.evaluate('window.stripControls()');
     // (The switch items' "· localhost:37777" and "· cmem.ai" are drawn from 768px up only.)
     expect(strip.map((control) => control.name.split('·')[0].trim())).toEqual(['At home', 'On the go', 'Use my data', 'Hide banner']);

@@ -1,1 +1,0 @@
-import{W as e,g as t,gn as n,h as r,m as i}from"./ui-message-1Bt55nfF.js";var a=n();function o({cause:n}){let{t:o}=e();return(0,a.jsxs)(i,{children:[(0,a.jsx)(t,{className:`text-xs`,children:o(`Details`)}),(0,a.jsx)(r,{children:(0,a.jsx)(`p`,{className:`mt-2 rounded-md bg-muted px-3 py-2 font-mono text-xs break-words text-foreground/80`,children:n})})]})}export{o as t};

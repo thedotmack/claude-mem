@@ -352,6 +352,69 @@ test('a subagent shows Finished only on a recorded stop, and quiet otherwise; ma
   assert.equal(toAgent({ ...base, isSubagent: true, canMarkFinished: true, presence: { status: 'recent' } }).status, 'working')
 })
 
+test('a subagent nests under the one main agent of its recorded session, and under none when the session does not say which', async () => {
+  const { subagentParents, toAgent } = await import('./to-work-model.ts')
+  const agent = (id: string, contentSessionId: string | null, isSubagent = false, platformSource = 'claude') =>
+    ({ id, label: 'Claude Code', platformSource, sessionTitle: null, project: 'repo', contentSessionId, isSubagent, presence: { status: 'quiet' } })
+  const parents = subagentParents([
+    agent('main-a', 'session-a'), agent('sub-a1', 'session-a', true), agent('sub-a2', 'session-a', true),
+    // A subagent whose session's main agent recorded nothing has no parent to sit under.
+    agent('sub-lonely', 'session-b', true),
+    // The same session seen twice: which main agent launched the subagent is not recorded, so it is not guessed.
+    agent('main-c1', 'session-c'), agent('main-c2', 'session-c'), agent('sub-c', 'session-c', true),
+    // The same session id on another platform is another conversation.
+    agent('main-d', 'session-d', false, 'codex'), agent('sub-d', 'session-d', true),
+    // Folders and titles say nothing about who launched whom: an unrelated main agent in the same folder.
+    agent('main-same-folder', 'session-e'),
+  ])
+  assert.deepEqual([...parents], [['sub-a1', 'main-a'], ['sub-a2', 'main-a']])
+  assert.equal(toAgent(agent('sub-a1', 'session-a', true), parents.get('sub-a1')).parentId, 'main-a')
+  assert.equal('parentId' in toAgent(agent('sub-lonely', 'session-b', true), parents.get('sub-lonely')), false)
+  // A main agent never carries a parent, even when one is passed.
+  assert.equal('parentId' in toAgent(agent('main-a', 'session-a'), 'main-x'), false)
+  // The model the screens read (and the worker's overview) carries the link.
+  const model = toWorkModel({ ...baseSnapshot, agents: [agent('main-a', 'session-a'), agent('sub-a1', 'session-a', true), agent('sub-lonely', 'session-b', true)] }, snapshotTime(baseSnapshot))
+  assert.deepEqual(model.agents.filter((entry) => entry.id.startsWith('sub-')).map(({ id, parentId }) => ({ id, parentId })), [{ id: 'sub-a1', parentId: 'main-a' }, { id: 'sub-lonely', parentId: undefined }])
+})
+
+test('a subagent is known by its typed status, keeps its own role, its launch title (never the whole task) and its stop time; a main agent keeps its session', async () => {
+  const { agentOwnRole, SUBAGENT_ROLE_PREFIX, toAgent } = await import('./to-work-model.ts')
+  const { isSubagent } = await import('../data.ts')
+  const base = { id: 'g', label: 'Claude Code', platformSource: 'claude', sessionTitle: null, project: '/work/claude-mem', contentSessionId: 'f75ded15-17fa-437a-afc3-58020cabf452' }
+  const main = toAgent(base)
+  assert.equal(isSubagent(main), false)
+  assert.equal(main.role, 'claude-mem')
+  const task = toAgent({ ...base, isSubagent: true, canMarkFinished: false, presence: { status: 'finished', finishedAt: '2026-10-23T18:12:50Z' },
+    launch: { description: 'Phase 4 verify', prompt: 'You are verifying Phase 4. Read the plan first, then…' } } as Parameters<typeof toAgent>[0])
+  assert.equal(isSubagent(task), true)
+  // The role is the agent's own; "Subagent" is worded from the status (lib/agent-words.ts), not written into the role.
+  assert.equal(task.role, 'claude-mem')
+  assert.equal(task.launchDescription, 'Phase 4 verify')
+  assert.equal(task.finishedAtIso, '2026-10-23T18:12:50.000Z')
+  // No launch title recorded, or only the whole task text: nothing to show but its state.
+  assert.equal('launchDescription' in toAgent({ ...base, isSubagent: true, presence: { status: 'quiet' }, launch: { description: null } }), false)
+  assert.equal('launchDescription' in toAgent({ ...base, isSubagent: true, presence: { status: 'quiet' }, launch: { prompt: 'The whole task text' } } as Parameters<typeof toAgent>[0]), false)
+  // A 15.19.0 worker's subagent role carries the old prefix: its own role reads without it, once, here.
+  assert.equal(agentOwnRole({ role: `${SUBAGENT_ROLE_PREFIX}claude-mem`, status: 'quiet' }), 'claude-mem')
+  assert.equal(agentOwnRole({ role: task.role, status: task.status }), 'claude-mem')
+  // A main agent's title is its own words, even one that starts the same way.
+  assert.equal(agentOwnRole({ role: `${SUBAGENT_ROLE_PREFIX}notes` }), `${SUBAGENT_ROLE_PREFIX}notes`)
+})
+
+test('two sessions in one folder carry the start of their sessions, and only they: the one fact that tells their cards apart', () => {
+  const agent = (id: string, project: string, contentSessionId: string, isSubagent = false) =>
+    ({ id, label: 'Claude Code', platformSource: 'claude', sessionTitle: null, project, contentSessionId, isSubagent, presence: { status: 'quiet' } })
+  const model = toWorkModel({ ...baseSnapshot, agents: [
+    agent('one', '/work/claude-mem', 'f75ded15-17fa-437a-afc3-58020cabf452'), agent('two', '/work/claude-mem', '30809f06-dcd1-44d2-84a9-b1cbe7cb9829'),
+    agent('elsewhere', '/work/claude-mem-pro', 'c16fbb54-ce5a-4dac-b809-3da17ad4f5d9'),
+    // A subagent works in its parent's session: it is told apart by its task, never by a session.
+    agent('sub', '/work/claude-mem', 'f75ded15-17fa-437a-afc3-58020cabf452', true),
+  ] }, snapshotTime(baseSnapshot))
+  // (The fixture's requests name agents this list leaves out, so the mapper adds its "Agent not recorded" stand-in too.)
+  const sessions = Object.fromEntries(model.agents.filter((entry) => ['one', 'two', 'elsewhere', 'sub'].includes(entry.id)).map((entry) => [entry.id, entry.sessionShortId ?? null]))
+  assert.deepEqual(sessions, { one: 'f75ded15', two: '30809f06', elsewhere: null, sub: null })
+})
+
 test('a bucket copy keeps its deliverable mark for the front of the card; other products carry none, and a gone copy is left out', async () => {
   const { isCardDeliverable } = await import('../lib/deliverables.ts')
   const { request } = mapOne({ workProduct: [

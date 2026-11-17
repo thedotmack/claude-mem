@@ -129,6 +129,15 @@ beforeAll(async () => {
       }
       window.setChanges = (count) => { const now = Date.now(); useStore.setState((state) => { state.work.recentChanges = Array.from({ length: count }, (_, index) => (
         { kind: 'new', requestId: ['r1', 'r2', 'r3', 'r4', 'r5'][index % 5] + (index < 5 ? '' : '-' + index), title: 'Change ' + (index + 1), at: now - index * 60000 })); }); };
+      // Live models one after another, each with one more request, through the store as the feed delivers them: every
+      // one is a change the screen saw (live/update-queue.ts), merged the way the store merges them.
+      window.mergeNewRequests = (count) => {
+        useStore.setState((state) => { state.work.recentChanges = []; });
+        for (let index = 1; index <= count; index++) {
+          const model = useStore.getState().work.load.model;
+          useStore.getState().receiveWorkModel({ ...model, requests: [...model.requests, { ...SAMPLE_REQUESTS[0], id: 'merged-' + index, title: 'Merged request ' + index, contentFingerprint: 'merged-' + index }] });
+        }
+      };
       // The feed's evidence, as live/local-source.ts gathers it (times on the page's own clock), on a model this
       // computer's worker serves (the sample's model is always live).
       window.setConnection = (evidence) => useStore.setState((state) => {
@@ -426,6 +435,19 @@ const pressTryAgain = (name: string) => page!.evaluate(`[...window.lineOf(${JSON
     await waitFor(`document.querySelector('[data-ticker]').innerText.includes('2 older changes')`, 'the count of older changes');
     // Five position dots, one per change it cycles (the mockup's five).
     expect(await page!.evaluate(`[...document.querySelectorAll('[data-ticker] span')].filter((dot) => dot.classList.contains('size-1.5') && dot.classList.contains('rounded-full')).length`)).toBe(5);
+    expect(fixtureErrors).toEqual([]);
+  } finally { await closeFixture(); }
+  // About 1s here (2026-11-16); 60s for a slow CI runner.
+}, 60_000);
+
+(chromeExecutablePath ? it : it.skip)('no change the screen saw is dropped: after 17 new requests in a row the ticker shows five and counts the other 12', async () => {
+  await openFixture('source=sample&view=ticker', { width: 1200, height: 600 });
+  try {
+    // The 13th change used to fall off a cap of 12 without a word, and the ticker counted 7 older changes.
+    await page!.evaluate('window.mergeNewRequests(17)');
+    await waitFor(`document.querySelector('[data-ticker]').innerText.includes('12 older changes')`, 'every older change counted', 5_000, `document.querySelector('[data-ticker]').innerText`);
+    // The newest shows first, once the one it replaces has slid out (0.4s, TICKER_SLIDE).
+    await waitFor(`window.tickerTitle() === 'Merged request 17'`, 'the newest change first', 5_000, 'window.tickerTitle()');
     expect(fixtureErrors).toEqual([]);
   } finally { await closeFixture(); }
   // About 1s here (2026-11-16); 60s for a slow CI runner.

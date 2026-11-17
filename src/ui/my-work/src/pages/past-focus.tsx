@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import { ManualRefreshButton, RefreshButton, RefreshStatus } from '@/components/bits'
+import { RefreshButton, RefreshStatus } from '@/components/bits'
 import { ErrorDetails } from '@/components/error-details'
 import { Quotes } from '@/components/focus-header'
 import { clockDay } from '@/lib/display-time'
@@ -262,17 +262,15 @@ export function PastFocus({ onOpenFocus }: { onOpenFocus: (focusAreaId: string) 
                 {goalsReadError ? t('claude-mem could not read your saved months. It rewrites them on its next automatic refresh.') : t("claude-mem reads your recent prompts and fills this in automatically.")}
               </EmptyDescription>
             </EmptyHeader>
-            <EmptyContent>
-              {goalsReadError && <MonthsReadFailure cause={goalsReadError} />}
-              <RefreshStatus refresh={refresh} run={null} ids={['R16.7']} />
-            </EmptyContent>
+            {goalsReadError && <EmptyContent><MonthsReadFailure cause={goalsReadError} /></EmptyContent>}
           </Empty>
         )}
-        {/* The shared refresh line, at the foot of the page (page-09 M4); its plain-words version comes with Phase 3. */}
+        {/* The shared refresh line, at the foot of the page (page-09 M4), and the page's one refresh control: "Refresh
+            now", or "Try again" after a failed refresh. It sat beside its own Refresh now (two buttons for one failure),
+            and the empty months repeated the line (two alerts); the foot is right below them. */}
         <div className="min-w-0 border-t pt-3 [overflow-wrap:anywhere]">
           {sourceKind === 'sample' ? <RefreshButton run={SAMPLE_RUNS.goals} ids={['R14.10']} />
-            : sourceKind === 'local' ? <div className="flex flex-wrap items-center justify-between gap-3"><RefreshStatus refresh={refresh} run={lastRuns.goals} ids={['R14.10']} /><ManualRefreshButton ids={['R14.10']} running={refresh?.state === 'running'} /></div>
-            : <RefreshStatus refresh={refresh} run={lastRuns.goals} ids={['R14.10']} />}
+            : <RefreshStatus refresh={refresh} run={lastRuns.goals} ids={['R14.10']} canStartRefresh={sourceKind === 'local'} />}
         </div>
       </div>
     </Req>
