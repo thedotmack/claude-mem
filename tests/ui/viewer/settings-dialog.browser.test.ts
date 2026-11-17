@@ -392,6 +392,10 @@ const previewOf = (project: string, rows: number) => [
     page = await connectLoadedSettings(chrome, server.url.href);
     const { evaluate, settle, send } = page;
     await send('Emulation.setFocusEmulationEnabled', { enabled: true });
+    // A chosen tab's label is bold, so wider than before it was chosen. Placed by its old width, its end sat 2px under
+    // the fade on Linux CI ("Backups" and "AI provider", job 133787605151) and 0.4px on a Mac's system font, inside the
+    // 1px allowed below. Arial puts those same two tabs there on a Mac, so the tabs are drawn in Arial here.
+    await evaluate(`document.head.insertAdjacentHTML('beforeend', '<style>.settings-nav, .settings-nav * { font-family: Arial, sans-serif !important; }</style>')`);
     const row = `document.querySelector('.settings-nav')`;
     const look = () => evaluate(`(() => {
       const nav = ${row}; const style = getComputedStyle(nav);

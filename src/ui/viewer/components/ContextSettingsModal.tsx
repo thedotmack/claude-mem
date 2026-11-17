@@ -400,16 +400,22 @@ export function ContextSettingsModal({
     return () => window.removeEventListener('keydown', handleEsc);
   }, [isOpen, requestClose]);
 
+  // The tab a key chose, brought into view once it is drawn as chosen: its bold label is wider, so placing it before
+  // that render leaves its end under the row's edge fade (2px on Linux CI). A new object each time, so pressing the
+  // key for the tab already chosen still brings it back.
+  const [tabToReveal, setTabToReveal] = useState<{ section: SettingsSection } | null>(null);
   const selectSection = useCallback((section: SettingsSection, focus = false) => {
     setActiveSection(section);
     if (columnRef.current) columnRef.current.scrollTop = 0;
     if (!focus) return;
-    const tab = tabRefs.current.get(section);
-    tab?.focus({ preventScroll: true });
+    tabRefs.current.get(section)?.focus({ preventScroll: true });
+    setTabToReveal({ section });
+  }, []);
+  useLayoutEffect(() => {
     // In the sideways row (1100px and below) the tab comes clear of the row's edge fade: scrollIntoView keeps the
     // row's scroll-padding (.scroll-more-before/after, 56px), which focus's own scrolling does not.
-    tab?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-  }, []);
+    if (tabToReveal) tabRefs.current.get(tabToReveal.section)?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [tabToReveal]);
 
   /** The section list is a tab list, a column or a row (tabsOrientation): any arrow, Home and End move and choose. */
   const onTabKeyDown = (event: React.KeyboardEvent, section: SettingsSection) => {
