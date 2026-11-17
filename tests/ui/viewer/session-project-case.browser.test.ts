@@ -33,28 +33,30 @@ failOnCiWithoutChrome('CI requires Chrome for the session project-case regressio
         await pause();
       }
     }
-    const ids = () => [...document.querySelectorAll('.session-card-id')].map(node => node.textContent).sort();
+    // The row shows a short id chip; its full id is on data-session-id (and in its title).
+    const ids = () => [...document.querySelectorAll('.session-card-id')].map(node => node.getAttribute('data-session-id')).sort();
     (async () => {
       try {
-        await until(() => document.querySelectorAll('.session-card').length === 2
-          && document.querySelector('select[aria-label="Filter memories by project"] option[value="Widget"]'));
-        const select = document.querySelector('select[aria-label="Filter memories by project"]');
-        select.value = 'Widget'; select.dispatchEvent(new Event('change', { bubbles: true }));
+        const option = value => document.querySelector('.project-picker [role="option"][data-value="' + CSS.escape(value) + '"]');
+        // The header's searchable Project filter: open it and choose the option.
+        const choose = value => { const target = option(value); document.querySelector('.project-picker-trigger').click(); target.click(); };
+        await until(() => document.querySelectorAll('.session-card').length === 2 && option('Widget'));
+        choose('Widget');
         await until(() => selectedPages >= 1 && !document.body.textContent.includes('Loading sessions'));
         await pause();
         const fetched = ids();
         await fetch('/emit?project=wIdGeT&id=live-case');
-        await until(() => document.querySelector('option[value="wIdGeT"]'));
+        await until(() => option('wIdGeT'));
         const live = ids();
         await fetch('/emit?project=Widget-other&id=unrelated');
-        await until(() => document.querySelector('option[value="Widget-other"]'));
+        await until(() => option('Widget-other'));
         const unrelated = ids();
-        select.value = 'Äpp'; select.dispatchEvent(new Event('change', { bubbles: true }));
+        choose('Äpp');
         await until(() => selectedPages >= 2 && !document.body.textContent.includes('Loading sessions'));
         await fetch('/emit?project=%C3%A4pp&id=unicode-other');
-        await until(() => document.querySelector('option[value="äpp"]'));
+        await until(() => option('äpp'));
         await fetch('/result', { method: 'POST', body: JSON.stringify({ fetched, live, unrelated,
-          unicode: ids(), selected: select.value }) });
+          unicode: ids(), selected: document.querySelector('.project-picker-value').textContent }) });
       } catch (error) { await fetch('/result', { method: 'POST', body: JSON.stringify({ failure: String(error) }) }); }
     })();
   `);

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import { saveMemory } from '../../src/services/memory/save-memory.js';
+import { LOOKUP_ONLY_ALTERNATIVE_FINGERPRINT_KEY } from '../../src/shared/memory-save-replay.js';
 
 function session(store: SessionStore, id = 1, project = 'Project', platform = 'claude') {
   store.db.query(`INSERT INTO sdk_sessions
@@ -105,6 +106,45 @@ describe('native memory replay lookup', () => {
       expect(replay(store, 'existing')).toEqual(expected(1));
       expect(store.db.query('SELECT id, project, title, metadata FROM observations ORDER BY id').all()).toEqual(before);
     } finally { store?.close(); rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  it('finds a note saved under the lookup-only alternative fingerprint, in the same project and platform only, and never saves it twice', () => {
+    const store = new SessionStore(':memory:');
+    const manager = { getConnection: () => store.db, getSessionStore: () => store, getCloudSync: () => null, getChromaSync: () => null };
+    const count = () => (store.db.query('SELECT count(*) AS n FROM observations').get() as { n: number }).n;
+    // What `claude-mem import` sends for a Supermemory document: its stable fingerprint, and the
+    // whole-row one 15.19.0 saved for it, for the lookup only.
+    const upgraded = (project = 'Project', platformSource?: string) => saveMemory(manager as any, project, {
+      text: 'Replayed source text', title: 'Supermemory document d1 (new)', project,
+      metadata: { sourceFingerprint: 'import:supermemory:new', [LOOKUP_ONLY_ALTERNATIVE_FINGERPRINT_KEY]: 'import:supermemory:old', platformSource },
+    });
+    try {
+      session(store); session(store, 2, 'Project', 'codex'); session(store, 3, 'Other');
+      // As 15.19.0 saved it: the old fingerprint is the note's own sourceFingerprint.
+      observation(store, 10, '{"sourceFingerprint":"import:supermemory:old"}');
+      expect(upgraded()).toEqual(expected(10));
+      expect(upgraded('Project', 'claude')).toEqual(expected(10));
+      expect(count()).toBe(1);
+
+      // Scoped like sourceFingerprint: another platform or project saved under the old
+      // fingerprint is not this note, so it is saved once there, without the alternative.
+      observation(store, 20, '{"sourceFingerprint":"import:supermemory:old"}', 3, 'Other');
+      const codex = upgraded('Project', 'codex');
+      expect(codex.duplicate).toBeUndefined();
+      expect(count()).toBe(3);
+      const stored = JSON.parse((store.db.query('SELECT metadata FROM observations WHERE id = ?').get(codex.id) as { metadata: string }).metadata);
+      expect(stored).toEqual({ sourceFingerprint: 'import:supermemory:new', platformSource: 'codex' });
+      expect(upgraded('Project', 'codex')).toMatchObject({ id: codex.id, duplicate: true });
+      expect(count()).toBe(3);
+
+      // sourceFingerprint wins over the alternative when both match.
+      observation(store, 40, '{"sourceFingerprint":"import:supermemory:new"}');
+      expect(upgraded()).toEqual(expected(40));
+      // The alternative alone, without a sourceFingerprint, is no replay key, and is not stored.
+      const plain = saveMemory(manager as any, 'Project', { text: 'Unrelated note', metadata: { [LOOKUP_ONLY_ALTERNATIVE_FINGERPRINT_KEY]: 'import:supermemory:old' } });
+      expect(plain.duplicate).toBeUndefined();
+      expect((store.db.query('SELECT metadata FROM observations WHERE id = ?').get(plain.id) as { metadata: string }).metadata).toBe('{}');
+    } finally { store.close(); }
   });
 
   it('seeks by project and fingerprint in the actual saveMemory query', () => {

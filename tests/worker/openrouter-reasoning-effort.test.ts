@@ -241,7 +241,9 @@ describe('resolveOpenRouterConfig reads the reasoning effort', () => {
 
 describe('the viewer reasoning-effort select', () => {
   const modal = readFileSync('src/ui/viewer/components/ContextSettingsModal.tsx', 'utf-8');
-  const select = modal.slice(modal.indexOf('label="Reasoning effort"'), modal.indexOf('</select>', modal.indexOf('label="Reasoning effort"')));
+  // The field's label, as the dialog's FormField takes it.
+  const label = modal.indexOf("label={t('Reasoning effort')}");
+  const select = modal.slice(label, modal.indexOf('</select>', label));
 
   it('offers exactly the accepted values, defaulting to reasoning off', () => {
     const values = [...select.matchAll(/<option value="([^"]*)"/g)].map(match => match[1]);
@@ -249,9 +251,10 @@ describe('the viewer reasoning-effort select', () => {
   });
 
   it('is hidden for the claude-mem observer, which sets its own reasoning policy', () => {
-    const gate = modal.lastIndexOf('{!observerManagesBaseUrl && (', modal.indexOf('label="Reasoning effort"'));
+    expect(label).toBeGreaterThan(-1);
+    const gate = modal.lastIndexOf('{!observerManagesBaseUrl && (', label);
     expect(gate).toBeGreaterThan(-1);
-    expect(modal.indexOf('label="Reasoning effort"') - gate).toBeLessThan(200);
+    expect(label - gate).toBeLessThan(200);
   });
 });
 

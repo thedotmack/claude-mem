@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { formatMcpPayload, formatWorkerMcpResponse, formatWorkStateMcpResponse, mcpTextResult, workerFailureText } from '../../src/servers/mcp-text-format.js';
+import { MEMORY_SAVE_REFUSAL_REASONS } from '../../src/shared/memory-save-refusal.js';
 
 describe('complete work-state read guidance', () => {
   it('marks a shortened read and points to the complete export within the UTF-8 limit', () => {
@@ -25,6 +26,21 @@ describe('purpose-specific model responses', () => {
     expect(result).not.toHaveProperty('structuredContent');
     expect(JSON.stringify(result)).not.toContain('PRIVATE_');
     expect(formatMcpPayload('save', { duplicate: true, id: 42 }).content[0].text).toContain('already saved');
+  });
+  it('words every save refusal the worker can send, and names a reason it does not know', () => {
+    for (const reason of MEMORY_SAVE_REFUSAL_REASONS) {
+      const result = formatMcpPayload('save', { success: false, skipped: true, reason });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toStartWith('Not saved: ');
+      // Worded for the reader, not the raw reason id.
+      expect(result.content[0].text).not.toContain(reason);
+    }
+    // The words, unchanged since they were a literal comparison; a new reason fails here until it is worded.
+    expect(MEMORY_SAVE_REFUSAL_REASONS.map(reason => formatMcpPayload('save', { success: false, skipped: true, reason }).content[0].text))
+      .toEqual(['Not saved: this checkout is excluded by CLAUDE_MEM_EXCLUDED_PROJECTS.']);
+    expect(formatMcpPayload('save', { success: false, skipped: true, reason: 'a_reason_this_version_does_not_know' }).content[0].text)
+      .toBe('Not saved: a_reason_this_version_does_not_know.');
+    expect(formatMcpPayload('save', { success: false }).content[0].text).toBe('Not saved.');
   });
   it('returns only a title index for a search, then curated details for explicitly selected rows', () => {
     const row = { id: 8, title: 'Auth redirect decision', project: 'p', narrative: 'SELECTED_NARRATIVE', facts: '["A useful fact"]', metadata: 'PRIVATE_METADATA', sdk_session_id: 'PRIVATE_SESSION', token_usage: 91234 };

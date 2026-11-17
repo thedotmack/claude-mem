@@ -2,10 +2,12 @@ import { createHash, randomUUID } from 'crypto';
 import { logger } from '../../utils/logger.js';
 import { redactSyncDiagnostic } from './diagnostic-redaction.js';
 import { MEDIA_METADATA_NAMESPACE, MediaError, validateMediaManifest } from '../../shared/media-contract.js';
+import { CONTENT_BODY_MAX_BYTES, ORIGIN_DEVICE_ID_MAX_BYTES } from '../../shared/cloud-sync-limits.js';
 
 export const CONTENT_BODY_SCHEMA_VERSION = 1 as const;
 export const CONTENT_PAYLOAD_SCHEMA_VERSION = 2 as const;
-export const CONTENT_BODY_MAX_BYTES = 256_000;
+// One definition, shared with clients that check a record before writing it.
+export { CONTENT_BODY_MAX_BYTES };
 export const MUTATION_FIELD_MAX_BYTES = 4_096;
 
 export type ContentKind = 'observation' | 'summary' | 'prompt' | 'work_state';
@@ -482,8 +484,8 @@ export function validateCanonicalMutation(value: unknown): asserts value is Cano
 }
 
 function assertDeviceId(value: unknown): string {
-  if (typeof value !== 'string' || value.length === 0 || Buffer.byteLength(value, 'utf8') > 128) {
-    return jsonError('origin_device_id must be a non-empty string of at most 128 UTF-8 bytes');
+  if (typeof value !== 'string' || value.length === 0 || Buffer.byteLength(value, 'utf8') > ORIGIN_DEVICE_ID_MAX_BYTES) {
+    return jsonError(`origin_device_id must be a non-empty string of at most ${ORIGIN_DEVICE_ID_MAX_BYTES} UTF-8 bytes`);
   }
   return value;
 }
