@@ -1,6 +1,6 @@
 import { readFileSync, readdirSync, mkdirSync, renameSync, writeFileSync, unlinkSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readLedger } from './request-groups.mjs';
 import { activitySignature, buildAgentView, readAgentRecords } from './agent-view.mjs';
 import { reduceWorkState } from './work-state-reduce.mjs';
@@ -28,9 +28,9 @@ function load(path) {
 
 function rawWrite(path, value) {
   mkdirSync(join(path, '..'), { recursive: true });
-  const temp = `${path}.${process.pid}.shared.tmp`;
+  const temp = `${path}.${randomUUID()}.shared.tmp`;
   try {
-    writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+    writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
     renameSync(temp, path);
   } finally { try { unlinkSync(temp); } catch { /* Renamed or never created. */ } }
 }
