@@ -59,7 +59,7 @@ export const SAMPLE_FOCUS_AREAS: FocusArea[] = [
   area({ id: 'fa-growth', name: 'Growth', goal: 'Community updates, the homepage and a launch event.', status: 'suggested', source: 'clustering',
     evidence: 'Requests in Other read as steps of something larger.' }),
   area({ id: 'fa-fixes', name: 'Plugin fixes', goal: 'Small plugin fixes you kept asking for again.', status: 'done', source: 'owner-goals', priorityRank: 8, timesAsked: 3, latestAt: '10-16 19:18',
-    quotes: [{ at: '10-16 19:18', quote: 'please fix it' }] }),
+    quotes: [{ at: '10-16 19:18', quote: 'please fix it' }], savedAt: '2026-10-17T16:05:00' }),
 ]
 
 /** Asks the run could not place in an area. They show under Other. */

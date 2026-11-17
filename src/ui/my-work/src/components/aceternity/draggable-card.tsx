@@ -8,13 +8,22 @@ import {
   animate,
   useVelocity,
   useAnimationControls,
+  useReducedMotion,
 } from "motion/react";
+
+/**
+ * Local addition (c-aceternity-draggable-card M3): a card that decides on release stays on screen. It follows the
+ * finger at half speed inside zero constraints, so a 96px decide swipe moves it about 48px and a long one never
+ * pushes its buttons past the screen edge (they were cut off at 390px). Free cards keep the demo's half-window range.
+ */
+export const DECIDE_DRAG_ELASTIC = 0.5;
 
 export const DraggableCardBody = ({
   className,
   children,
   dragAxis,
   onDragRelease,
+  onDragMove,
   disabled = false,
 }: {
   className?: string;
@@ -23,9 +32,16 @@ export const DraggableCardBody = ({
   dragAxis?: "x" | "y";
   /** Local addition: called on release with how far the card moved from where the drag started; the card springs back. */
   onDragRelease?: (offset: { x: number; y: number }) => void;
+  /** Local addition: called while dragging with how far the finger moved, so the caller can show what letting go does. */
+  onDragMove?: (offset: { x: number; y: number }) => void;
   /** Local addition: the card does not drag (a save is in flight, so a swipe would be refused). */
   disabled?: boolean;
 }) => {
+  // Local fix (plan rule 8), checked here and not only by MotionConfig: under reduced motion nothing on the card
+  // animates. No tilt, fade, glare or hover zoom; a deciding card stays in place while dragged (no elastic pull, no
+  // momentum, no spring back on release), while the caller shows what letting go does; a free card is not thrown.
+  const reduceMotion = useReducedMotion() ?? false;
+  const decides = onDragRelease !== undefined;
   const mouseX = useMotionValue(0);
   const mouseY = useMotionValue(0);
   const cardRef = useRef<HTMLDivElement>(null);
@@ -116,14 +132,20 @@ export const DraggableCardBody = ({
     <motion.div
       ref={cardRef}
       drag={disabled ? false : (dragAxis ?? true)}
-      dragConstraints={constraints}
-      dragSnapToOrigin={onDragRelease !== undefined}
+      dragConstraints={decides ? { top: 0, left: 0, right: 0, bottom: 0 } : constraints}
+      dragElastic={decides ? (reduceMotion ? 0 : DECIDE_DRAG_ELASTIC) : undefined}
+      dragMomentum={!reduceMotion}
+      dragSnapToOrigin={decides && !reduceMotion}
+      onDrag={(_event, info) => onDragMove?.(info.offset)}
       onDragStart={() => {
         document.body.style.cursor = "grabbing";
       }}
       onDragEnd={(_event, info) => {
         document.body.style.cursor = "default";
+        onDragMove?.({ x: 0, y: 0 });
         onDragRelease?.(info.offset);
+        // The tilt reset and the throw below are animations.
+        if (reduceMotion) return;
 
         controls.start({
           rotateX: 0,
@@ -162,28 +184,28 @@ export const DraggableCardBody = ({
           mass: 0.8,
         });
       }}
-      style={{
+      style={reduceMotion ? { willChange: "transform" } : {
         rotateX,
         rotateY,
         opacity,
         willChange: "transform",
       }}
       animate={controls}
-      whileHover={{ scale: 1.02 }}
-      onMouseMove={handleMouseMove}
-      onMouseLeave={handleMouseLeave}
+      whileHover={reduceMotion ? undefined : { scale: 1.02 }}
+      onMouseMove={reduceMotion ? undefined : handleMouseMove}
+      onMouseLeave={reduceMotion ? undefined : handleMouseLeave}
       className={cn(
         "relative min-h-96 w-80 overflow-hidden rounded-md bg-neutral-100 p-6 shadow-2xl transform-3d dark:bg-neutral-900",
         className,
       )}
     >
       {children}
-      <motion.div
+      {!reduceMotion && <motion.div
         style={{
           opacity: glareOpacity,
         }}
         className="pointer-events-none absolute inset-0 bg-white select-none"
-      />
+      />}
     </motion.div>
   );
 };

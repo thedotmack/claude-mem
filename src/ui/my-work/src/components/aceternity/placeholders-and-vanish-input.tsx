@@ -1,6 +1,10 @@
-import { AnimatePresence, motion } from "motion/react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
+
+// Local fix (plan rule 5): how long each example shows before the next. The demo's 3 s: an example of up to about ten
+// words reads in 2.5 s at 238 words a minute, the average adult silent reading rate (Brysbaert 2019).
+const PLACEHOLDER_SHOWN_MS = 3000;
 
 export function PlaceholdersAndVanishInput({
   placeholders,
@@ -21,14 +25,17 @@ export function PlaceholdersAndVanishInput({
   className?: string;
 }) {
   const [currentPlaceholder, setCurrentPlaceholder] = useState(0);
+  // Local fix (plan rule 8): under reduced motion nothing moves, checked here and not only by MotionConfig: the first
+  // example stays (no rotation, no slide), the arrow is drawn whole, and Enter clears the field without particles.
+  const reduceMotion = useReducedMotion() ?? false;
 
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const startAnimation = () => {
     // Local fix: with fewer than two placeholders there is nothing to rotate (and % 0 is NaN).
-    if (placeholders.length < 2) return;
+    if (placeholders.length < 2 || reduceMotion) return;
     intervalRef.current = setInterval(() => {
       setCurrentPlaceholder((prev) => (prev + 1) % placeholders.length);
-    }, 3000);
+    }, PLACEHOLDER_SHOWN_MS);
   };
   const handleVisibilityChange = () => {
     if (document.visibilityState !== "visible" && intervalRef.current) {
@@ -49,7 +56,7 @@ export function PlaceholdersAndVanishInput({
       }
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [placeholders]);
+  }, [placeholders, reduceMotion]);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const newDataRef = useRef<any[]>([]);
@@ -159,7 +166,7 @@ export function PlaceholdersAndVanishInput({
   const vanishAndSubmit = () => {
     const value = inputRef.current?.value || "";
     // Local fix: reduced motion clears the field without the particle animation.
-    if (value && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    if (value && reduceMotion) {
       setValue("");
       return;
     }
@@ -185,7 +192,7 @@ export function PlaceholdersAndVanishInput({
   return (
     <form
       className={cn(
-        "w-full relative max-w-xl mx-auto bg-white dark:bg-zinc-800 h-12 rounded-full overflow-hidden shadow-[0px_2px_3px_-1px_rgba(0,0,0,0.1),_0px_1px_0px_0px_rgba(25,28,33,0.02),_0px_0px_0px_1px_rgba(25,28,33,0.08)] transition duration-200",
+        "w-full relative max-w-xl mx-auto bg-white dark:bg-zinc-800 h-12 rounded-full overflow-hidden shadow-[0px_2px_3px_-1px_rgba(0,0,0,0.1),_0px_1px_0px_0px_rgba(25,28,33,0.02),_0px_0px_0px_1px_rgba(25,28,33,0.08)] motion-safe:transition motion-safe:duration-200",
         value && "bg-gray-50",
         className
       )}
@@ -218,7 +225,7 @@ export function PlaceholdersAndVanishInput({
       <button
         disabled={!value}
         type="submit"
-        className="absolute right-2 top-1/2 z-50 -translate-y-1/2 h-8 w-8 rounded-full disabled:bg-gray-100 bg-black dark:bg-zinc-900 dark:disabled:bg-zinc-800 transition duration-200 flex items-center justify-center"
+        className="absolute right-2 top-1/2 z-50 -translate-y-1/2 h-8 w-8 rounded-full disabled:bg-gray-100 bg-black dark:bg-zinc-900 dark:disabled:bg-zinc-800 motion-safe:transition motion-safe:duration-200 flex items-center justify-center"
       >
         <motion.svg
           xmlns="http://www.w3.org/2000/svg"
@@ -243,7 +250,7 @@ export function PlaceholdersAndVanishInput({
               strokeDashoffset: value ? 0 : "50%",
             }}
             transition={{
-              duration: 0.3,
+              duration: reduceMotion ? 0 : 0.3,
               ease: "linear",
             }}
           />
@@ -256,7 +263,7 @@ export function PlaceholdersAndVanishInput({
         <AnimatePresence mode="wait">
           {!value && (
             <motion.p
-              initial={{
+              initial={reduceMotion ? false : {
                 y: 5,
                 opacity: 0,
               }}
@@ -265,12 +272,12 @@ export function PlaceholdersAndVanishInput({
                 y: 0,
                 opacity: 1,
               }}
-              exit={{
+              exit={reduceMotion ? undefined : {
                 y: -15,
                 opacity: 0,
               }}
               transition={{
-                duration: 0.3,
+                duration: reduceMotion ? 0 : 0.3,
                 ease: "linear",
               }}
               className="dark:text-zinc-500 text-sm sm:text-base font-normal text-neutral-500 pl-4 sm:pl-12 text-left w-[calc(100%-2rem)] truncate"

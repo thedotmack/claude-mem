@@ -58,10 +58,17 @@ export function resolveFocusAreaId(focusAreaId: string | null | undefined, areas
   return createFocusAreaResolver(areas)(focusAreaId)
 }
 
+/**
+ * What a person decided on a Suggested card: kept it, merged it into another area, or dismissed it. The one definition:
+ * the page's words and looks are Records over it, and tests take the values from this list (in this order).
+ */
+export const SUGGESTION_DECISIONS = ['kept', 'merged', 'dismissed'] as const
+export type SuggestionDecision = (typeof SUGGESTION_DECISIONS)[number]
+
 /** What a Suggested card shows for an edit saved from its Rename / Merge dialog. A merge decides the suggestion: the card
  * says "Merged" and has its own Undo. A rename or a new goal leaves it undecided, so the shared change bar shows it,
  * with Undo back to the old name or goal. */
-export const suggestionEditDecision = (change: FocusChange): 'merged' | null => change.action === 'merge' ? 'merged' : null
+export const suggestionEditDecision = (change: FocusChange): Extract<SuggestionDecision, 'merged'> | null => change.action === 'merge' ? 'merged' : null
 
 /** What an area chip reads: the area's name, "Other", or "Sorting…" when the request has no placement yet. */
 export function focusAreaLabel(focusAreaId: string | undefined, areas: readonly FocusArea[]): string {
@@ -84,7 +91,7 @@ export function toFocusModel(raw: readonly WorkViewFocusArea[] | undefined, mine
   const areas: FocusArea[] = (raw ?? []).map((area) => ({
     id: area.focusAreaId, name: area.name, goal: area.goal, about: area.about ?? null, status: area.status,
     ownerRank: area.ownerRank, priorityRank: area.priorityRank, source: area.source,
-    mergedInto: area.mergedInto, evidence: area.evidence,
+    mergedInto: area.mergedInto, evidence: area.evidence, savedAt: area.savedAt ?? null,
     timesAsked: null, latestAt: null, quotes: [], asks: [],
   })).sort(byFocusPriority)
   const resolveArea = createFocusAreaResolver(areas)

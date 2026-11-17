@@ -54,3 +54,14 @@ test('a rule in an unlisted scope or from an unknown source empties My Rules wit
   assert.match(mapRules({ rules: [ownRule], ruleScopes: [scopes[0]] }).rulesReadError!, /scope the worker did not list/)
   assert.match(mapRules({ rules: [{ ...suggestion, source: 'somewhere' }], ruleScopes: scopes }).rulesReadError!, /unknown source/)
 })
+
+test('each record says what it is, so My Rules words it in the reader’s language and shows a prompt in full', () => {
+  const said = 'they wilt if you wait until the afternoon sun is on them, so water the tomatoes before noon every day'
+  const model = mapRules({ rules: [{ ...suggestion, quotes: [{ at: '2026-10-18T10:00:00Z', quote: said, kind: 'correction' }], savedAt: '2026-10-19T08:00:00Z' }, ownRule], ruleScopes: scopes })
+  const [learned, own] = model.rules
+  assert.deepEqual(learned.records.map((record) => record.fact), ['your-prompt', 'build-story', 'saved-here'])
+  assert.equal(learned.records[0].said, said)
+  // The English label stays for screens that read it, cut as before; the words for `fact` replace it on My Rules.
+  assert.ok(learned.records[0].label.length < said.length)
+  assert.deepEqual(own.records.map((record) => record.fact), ['written-here'])
+})
