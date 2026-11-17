@@ -575,7 +575,7 @@ async function buildHooks() {
         // Its C sources are compiled and loaded whenever a Pascal file is parsed,
         // so a new version must arrive as a reviewed bump, never through a range.
         'tree-sitter-delphi': '0.1.0',
-        'shell-quote': '1.9.0',
+        'shell-quote': '1.11.0',
       },
       // The server's embedder, about 300 MB, which only server mode runs. The
       // plugin install omits optional dependencies (installPluginDependencies),
