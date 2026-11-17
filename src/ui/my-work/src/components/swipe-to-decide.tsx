@@ -2,11 +2,11 @@
 // the finger is down: a coloured strip with the action's word and icon behind the card, and under it a line that
 // fills toward the decide distance and then says "Let go to …". The card's own buttons do the same thing.
 import { useState, type ReactNode } from 'react'
-import { useReducedMotion } from 'motion/react'
 import type { LucideIcon } from 'lucide-react'
 import { ArrowLeftRightIcon } from 'lucide-react'
 import { DECIDE_DRAG_ELASTIC, DraggableCardBody } from '@/components/aceternity/draggable-card'
 import { swipeDirection, swipeProgress, swipeToDecide, type DragOffset, type SwipeDirection } from '@/lib/swipe-to-decide'
+import { usePrefersReducedMotion } from '@/lib/use-media'
 import { cn } from '@/lib/utils'
 
 /**
@@ -58,8 +58,9 @@ export function SwipeToDecide({ right, left, disabled = false, children }: {
   // How far the card gives way: it follows the finger at DECIDE_DRAG_ELASTIC, and the side it moves toward gives up the
   // same width, so the card narrows instead of sliding past the screen's edge and every button stays in view (M3). The
   // gap opens on the side the strip shows its word. Under reduced motion the card does not move (draggable-card.tsx),
-  // so the side the strip shows its word gives up the width instead: the label is never under the card.
-  const reduceMotion = useReducedMotion() ?? false
+  // so the side the strip shows its word gives up the width instead: the label is never under the card. Both read the
+  // setting live from the same hook, so they agree even when it changes while the page is open.
+  const reduceMotion = usePrefersReducedMotion()
   const cardShift = direction ? Math.abs(offset.x) * DECIDE_DRAG_ELASTIC : 0
   const stripWordSide = direction === 'right' ? 'left' : direction === 'left' ? 'right' : null
   const narrowedSide = stripWordSide === null ? null : reduceMotion ? stripWordSide : direction

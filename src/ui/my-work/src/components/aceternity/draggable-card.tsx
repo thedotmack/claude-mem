@@ -8,8 +8,8 @@ import {
   animate,
   useVelocity,
   useAnimationControls,
-  useReducedMotion,
 } from "motion/react";
+import { usePrefersReducedMotion } from "@/lib/use-media";
 
 /**
  * Local addition (c-aceternity-draggable-card M3): a card that decides on release stays on screen. It follows the
@@ -40,7 +40,8 @@ export const DraggableCardBody = ({
   // Local fix (plan rule 8), checked here and not only by MotionConfig: under reduced motion nothing on the card
   // animates. No tilt, fade, glare or hover zoom; a deciding card stays in place while dragged (no elastic pull, no
   // momentum, no spring back on release), while the caller shows what letting go does; a free card is not thrown.
-  const reduceMotion = useReducedMotion() ?? false;
+  // Read live, from the same hook as SwipeToDecide, so the card and the strip behind it agree (lib/use-media.ts).
+  const reduceMotion = usePrefersReducedMotion();
   const decides = onDragRelease !== undefined;
   const mouseX = useMotionValue(0);
   const mouseY = useMotionValue(0);
