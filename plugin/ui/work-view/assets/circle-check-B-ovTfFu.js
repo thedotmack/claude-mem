@@ -1,0 +1,1 @@
+import{Q as e}from"./ui-message-D2N8FwKQ.js";var t={name:`circle-check`,size:24,node:[[`circle`,{cx:`12`,cy:`12`,r:`10`,key:`1mglay`}],[`path`,{d:`m16 9-5.5 5.5L8 12`,key:`xofnsj`}]],aliases:[`check-circle-2`]};t.node;var n=e(t);export{n as t};

@@ -54,8 +54,8 @@ import { readHistoryCounts, type HistoryImport } from '../../../setup/history-im
 import { createSetupTelemetry } from '../../../setup/telemetry.js';
 import { createSetupInstallerResumer } from '../../../setup/resume-installer.js';
 import { hasActiveSetupSession, hasProConfiguration, readSetupState, setupStatePath, writeSetupState, type SetupStateFile, type SetupStateView } from '../../../../shared/setup-state.js';
-import { SETUP_BRANCHES, SETUP_INSTALLER_STAGES, SETUP_MEMORY_BILLINGS } from '../../../../shared/setup-funnel.js';
-import { hasPendingInstallSetup, SETUP_INSTALL_STATUSES } from '../../../../shared/setup-install.js';
+import { historyImportRunning, SETUP_BRANCHES, SETUP_INSTALLER_STAGES, SETUP_MEMORY_BILLINGS } from '../../../../shared/setup-funnel.js';
+import { hasPendingInstallSetup, SETUP_DSH_PROFILE_MAX_CHARACTERS, SETUP_INSTALL_NOTE_MAX_CHARACTERS, SETUP_INSTALL_STATUSES } from '../../../../shared/setup-install.js';
 import {
   CONTINUABLE_PLATFORMS, CONVERSATION_SESSION_UUID_PATTERN, OPEN_IN_APP_CLICK_ID_PATTERN, type ConversationContinuation, type ConversationContinuationNotice,
   type ConversationOpenedInApp,
@@ -324,7 +324,7 @@ interface WorkViewOptions {
   setupTelemetry?: ReturnType<typeof createSetupTelemetry>;
   /** Read for `alreadyPro`; defaults to ~/.claude-mem/settings.json. */
   settingsPath?: string;
-  /** Finish Setup's history upload to CMEM Pro. Without it POST /api/setup/import answers 503. */
+  /** Finish Setup's history upload to CMEM Pro. Without it POST /api/setup/import and /api/setup/import/stop answer 503. */
   historyImport?: HistoryImport | null;
   /** Setup extraction only. Ongoing automatic refresh continues to use the local agent runner. */
   hostedIntent?: Pick<HostedIntent, 'run' | 'state'> | null;
@@ -348,7 +348,8 @@ const setupScanConsentBody = z.object({ upload: z.boolean(), agents: z.array(z.e
 const setupScanPreferencesBody = z.object({ improveProduct: z.boolean() }).strict();
 // Request-size and abuse caps on loopback writes, set about twice what the installer offers today (measured
 // 2026-11-11: 19 agents in ide-detection.ts, 30 bundled skills, the longest id 17 characters). The email cap is RFC 5321's 254-character path
-// limit; the note and error caps match the setup page's textarea and the installer's other setup errors.
+// limit; the note's is SETUP_INSTALL_NOTE_MAX_CHARACTERS (setup-install.ts, which the setup page's box takes too), the
+// same 2,000 characters as the installer's error reports below.
 const setupInstallId = z.string().min(1).max(80);
 const setupInstallSelectionBody = z.object({
   agents: z.array(setupInstallId).min(1).max(40),
@@ -357,10 +358,10 @@ const setupInstallSelectionBody = z.object({
   disableAutoMemory: z.boolean(),
   telemetryEnabled: z.boolean(),
   email: z.union([z.literal(''), z.email().max(254)]).optional(),
-  note: z.string().max(2000).optional(),
+  note: z.string().max(SETUP_INSTALL_NOTE_MAX_CHARACTERS).optional(),
   emailProvided: z.boolean().optional(),
   claudeModel: z.string().trim().min(1).max(200).optional(),
-  dshProfile: z.string().trim().min(1).max(200).optional(),
+  dshProfile: z.string().trim().min(1).max(SETUP_DSH_PROFILE_MAX_CHARACTERS).optional(),
 }).strict();
 const setupInstallCatalogBody = z.object({
   agents: z.array(z.object({ id: setupInstallId, label: z.string().max(200), hint: z.string().max(1000), detected: z.boolean() }).strict()).min(1).max(40),
@@ -953,6 +954,8 @@ export class WorkViewRoutes extends BaseRouteHandler {
     app.post('/api/setup/installer', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupInstallerBody), this.wrapHandler(this.saveInstallerStage));
     app.post('/api/setup/checkout', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupCheckoutBody), this.wrapHandler(this.requestCheckout));
     app.post('/api/setup/import', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupImportBody), this.wrapHandler(this.startHistoryImport));
+    // Finish Setup's "Stop import": the same guards. It only ends a run; the person's own POST above starts one again.
+    app.post('/api/setup/import/stop', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupImportBody), this.wrapHandler(this.stopHistoryImport));
     app.post('/api/setup/complete', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupCompleteBody), this.wrapHandler(this.completeSetup));
   }
 
@@ -983,7 +986,8 @@ export class WorkViewRoutes extends BaseRouteHandler {
     const scanning = !['idle', 'done', 'failed'].includes(scanPhase)
       && (countScanWaitingForUploadAnswer || scanPhase !== 'awaiting-consent');
     if (scanning || (refresh?.state === 'running' && processIsAlive(Number((refresh as { pid?: number }).pid)))) backgroundWorkRunning.push('extraction');
-    if (this.historyImport?.state().state === 'running') backgroundWorkRunning.push('history-import');
+    const importState = this.historyImport?.state().state;
+    if (importState && historyImportRunning(importState)) backgroundWorkRunning.push('history-import');
     return backgroundWorkRunning;
   }
 
@@ -1018,6 +1022,19 @@ export class WorkViewRoutes extends BaseRouteHandler {
     } catch (error) {
       res.status(409).json({ error: error instanceof Error ? error.message : String(error) });
     }
+  };
+
+  /**
+   * Finish Setup's "Stop import" (HistoryImport.stop): the upload ends at once and no request to cmem.ai starts after
+   * this answers. 200 with the stopped run (what was sent, and the batch whose answer never came); 409 with a sentence
+   * when no upload is running. What already reached cmem.ai stays there; nothing is deleted on either side.
+   */
+  private stopHistoryImport = (_req: Request, res: Response): void => {
+    if (!this.historyImport) { res.status(503).json({ error: 'Bringing your memory is unavailable on this worker.' }); return; }
+    const stopped = this.historyImport.stop();
+    if (!stopped) { res.status(409).json({ error: 'No import is running, so there is nothing to stop.' }); return; }
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(stopped);
   };
 
   private saveSetupState(state: SetupStateFile, res: Response): void {

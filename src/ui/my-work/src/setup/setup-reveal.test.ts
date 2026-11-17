@@ -2,7 +2,8 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { readFileSync } from 'node:fs'
-import { promptStamp, revealFromSnapshot, type SnapshotWithSetup, type WorkerExtraction } from './setup-reveal.ts'
+import { promptStamp, recordedNextStepText, revealFromSnapshot, type SnapshotWithSetup, type WorkerExtraction } from './setup-reveal.ts'
+import { NEXT_STEP_NOT_RECORDED, NO_WORK_YET } from '../live/to-work-model.ts'
 import type { WorkViewFocusArea } from '../live/work-view-api-types.ts'
 
 const extraction = (state: WorkerExtraction['state']): WorkerExtraction => ({ state, reason: 'setup-scan', step: null, agent: null, startedAt: null, finishedAt: null, error: null })
@@ -97,5 +98,40 @@ describe('the Reveal from the live snapshot', () => {
     ] })
     assert.equal(reveal.requestReadErrorCount, 1)
     assert.deepEqual(reveal.requests?.map((request) => request.id), ['readable'])
+  })
+})
+
+describe('recordedNextStepText', () => {
+  // The reader's words: English here, as t() answers with no catalog for the language.
+  const english = (text: string) => text
+  it('prints a recorded next step and leaves out the filler for a missing one (G3)', () => {
+    assert.equal(recordedNextStepText({ next: { who: 'human', text: '  Write the release notes ' } }, english), 'Write the release notes')
+    assert.equal(recordedNextStepText({ next: { who: 'bot', text: NEXT_STEP_NOT_RECORDED } }, english), null)
+    assert.equal(recordedNextStepText({ next: { who: 'bot', text: '   ' } }, english), null)
+  })
+  it('leaves out the filler of a request that has only asks: it is not a next step either (G3)', () => {
+    assert.equal(recordedNextStepText({ next: { who: 'bot', text: NO_WORK_YET } }, english), null)
+    // As the Reveal gets it: the mapper writes the missing value for a request with no agent work (G3, never the
+    // English filler), and the Reveal drops it.
+    const fixture = JSON.parse(readFileSync(new URL('../../test-fixtures/work-view-snapshot.trimmed.json', import.meta.url), 'utf8')) as SnapshotWithSetup
+    const asksOnly = { ...fixture.humanRequests[0], id: 'asks-only', items: [], activity: [], progress: null, humanCopy: null }
+    const [request] = revealFromSnapshot({ ...fixture, humanRequests: [asksOnly] }).requests ?? []
+    assert.equal(request?.next?.missing, 'no-agent-work')
+    assert.equal(request?.next?.text, undefined)
+    assert.equal(recordedNextStepText(request, english), null)
+  })
+  it('asks the one rule My Work asks (nextStepShown): every missing value and older filler is left out, and a checked or blocked request prints its step in the reader’s words', () => {
+    assert.equal(recordedNextStepText({ next: { who: 'bot', missing: 'not-recorded' } }, english), null)
+    assert.equal(recordedNextStepText({ next: { who: 'bot', missing: 'no-agent-work' } }, english), null)
+    assert.equal(recordedNextStepText({ next: { who: 'human', kind: 'unblock', missing: 'not-recorded' } }, english), null)
+    assert.equal(recordedNextStepText({ next: { who: 'human', text: `Unblock: ${NO_WORK_YET}` } }, english), null)
+    assert.equal(recordedNextStepText({ next: { who: 'human', kind: 'ship' } }, english), 'Ship it')
+    assert.equal(recordedNextStepText({ next: { who: 'human', kind: 'unblock', text: 'Grant the deploy token' } }, english), 'Unblock: Grant the deploy token')
+    // What older workers wrote for the same two steps reads the same (G19).
+    assert.equal(recordedNextStepText({ next: { who: 'human', text: 'Ship it' } }, english), 'Ship it')
+    assert.equal(recordedNextStepText({ next: { who: 'human', text: 'Unblock: Grant the deploy token' } }, english), 'Unblock: Grant the deploy token')
+    const french = (text: string) => ({ 'Ship it': 'À publier', 'Unblock: {step}': 'Débloquer : {step}' } as Record<string, string>)[text] ?? text
+    assert.equal(recordedNextStepText({ next: { who: 'human', kind: 'ship' } }, french), 'À publier')
+    assert.equal(recordedNextStepText({ next: { who: 'human', kind: 'unblock', text: 'Grant the deploy token' } }, french), 'Débloquer : Grant the deploy token')
   })
 })

@@ -44,6 +44,9 @@ export function useSessionCatalog() {
   const [refreshFailed, setRefreshFailed] = useState(false);
   const sessionsRef = useRef(sessions);
   sessionsRef.current = sessions;
+  // Whether the worker's pages carry summary_title (16.0+). Read from the pages themselves, never from rows a
+  // live summary titled, so an older worker's new live session keeps its 15.x title (G19).
+  const workerSendsTitlesRef = useRef(false);
   // Live changes made while a page request is in flight, re-applied to its
   // response so a refresh never hides a new session or restores a deleted one.
   const journalRef = useRef<CatalogJournal>(emptyCatalogJournal());
@@ -96,6 +99,7 @@ export function useSessionCatalog() {
           const page = await response.json() as { sessions: SessionCatalogEntry[]; hasMore?: boolean; offsetCapReached?: unknown; maxOffset?: unknown };
           if (requestSeq !== requestSeqRef.current) return;
           if (!Array.isArray(page.sessions)) throw new Error('Invalid session page');
+          if (page.sessions.length) workerSendsTitlesRef.current = page.sessions.some(row => row.summary_title !== undefined);
           const pageStart = sessions.length;
           sessions.push(...page.sessions);
           hasMore = page.hasMore === true;
@@ -136,6 +140,8 @@ export function useSessionCatalog() {
           // Their current entries supply counts; old count mutations reset.
           added: journal.added.filter(entry => !journal.removed.has(sessionKey(catalogEntryRef(entry)))),
           removed: new Set(journal.removed),
+          // The confirming page can be read before a live summary is stored, too.
+          retitled: new Map(journal.retitled),
         };
       }
     } catch (error) {
@@ -184,6 +190,8 @@ export function useSessionCatalog() {
       journalRef.current.recreated.add(key);
     }
     journalRef.current.touched.add(key);
+    // A page in flight may have been read before this summary was stored; mergeCatalogPage puts this title back on it.
+    if (item.summaryTitle) journalRef.current.retitled.set(key, item.summaryTitle);
     setSessions(prev => {
       const index = prev.findIndex(entry => sameSession(catalogEntryRef(entry), item.session));
       if (index === -1) {
@@ -194,6 +202,9 @@ export function useSessionCatalog() {
           platform_source: item.session.platformSource,
           // Live rows don't carry custom_title; the next catalog fetch does.
           custom_title: null,
+          // A worker that sends summary titles means "no summary yet" by null; an older one sends none, and
+          // the row keeps its 15.x title until a live summary names it (G19).
+          summary_title: item.summaryTitle ?? (workerSendsTitlesRef.current ? null : undefined),
           started_at_epoch: item.createdAtEpoch,
           item_count: 1,
         };
@@ -201,7 +212,12 @@ export function useSessionCatalog() {
         return [entry, ...prev];
       }
       const next = [...prev];
-      next[index] = { ...next[index], item_count: next[index].item_count + 1 };
+      next[index] = {
+        ...next[index],
+        item_count: next[index].item_count + 1,
+        // A live summary is the session's newest: its request is the title from now on.
+        ...(item.summaryTitle ? { summary_title: item.summaryTitle } : {}),
+      };
       return next;
     });
   }, []);

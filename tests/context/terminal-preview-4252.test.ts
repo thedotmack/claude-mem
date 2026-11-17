@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, it } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { previewFacts } from '../../src/ui/viewer/utils/settings-preview';
 
 // Exercise the production entry point in a child to isolate settings and mode
 // state from the process-global mocks in other context tests.
@@ -109,6 +110,12 @@ describe('terminal preview shares the model selection (#4252)', () => {
     }
     expect(model.text).not.toContain('Terminal preview truncated');
     expect(fullPreview.text).not.toContain('Terminal preview truncated');
+    // The classic viewer's Settings preview reads this worker's note by the same words (context-preview-note.ts):
+    // it moves it out of the text and says older observations were left out.
+    const facts = previewFacts(preview.text);
+    expect(facts.shortened).toBe('observations');
+    expect(facts.plainText).not.toContain('Terminal preview truncated');
+    expect(previewFacts(fullPreview.text).shortened).toBeNull();
   }, 15_000);
 
   it('shows the whole selected set with no disclaimer when the preview fits', () => {
@@ -211,5 +218,6 @@ describe('terminal preview shares the model selection (#4252)', () => {
     expect(preview.text).toContain('PRIOR_MESSAGE');
     expect(preview.text).not.toContain('m'.repeat(9_300));
     expect(preview.stats).toEqual(model.stats);
+    expect(previewFacts(preview.text).shortened).toBe('text');
   }, 15_000);
 });

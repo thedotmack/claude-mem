@@ -2,7 +2,8 @@
 // then work (request groups), then rules (the build story's preferences). Nothing is invented: a set the run has not
 // reached yet is `null` (placeholders), and a finished run leaves an empty set empty.
 import type { WorkViewRefreshState, WorkViewSnapshot } from '../live/work-view-api-types.ts'
-import { toWorkModel } from '../live/to-work-model.ts'
+import { nextStepShown, toWorkModel } from '../live/to-work-model.ts'
+import { nextStepWords } from '../live/next-step-words.ts'
 import type { FocusArea, Request } from '../data.ts'
 
 /** data.ts AgentTool, spelled out so this file (and its node test) needs no app alias. */
@@ -97,4 +98,17 @@ export function revealFromSnapshot(snapshot: SnapshotWithSetup): RevealSets {
     goals: goals ?? (finished ? [] : null), work: work ?? (finished ? [] : null), rules: rules ?? (finished ? [] : null),
     focusAreas, requests: workModel.requests, requestReadErrorCount: workModel.requestReadErrors.length,
   }
+}
+
+/**
+ * A request's next step as the Reveal prints it, in the reader's words, or null when none is recorded. It asks the one
+ * rule My Work's cards, the focus board and the shared page ask (live/to-work-model.ts nextStepShown, decision G3), so
+ * the mapper's missing value is not a step ("no-agent-work" for a request with only asks, "not-recorded" otherwise), and
+ * neither are the English fillers older workers send in its place (NEXT_STEP_NOT_RECORDED and NO_WORK_YET, also after
+ * "Unblock: "; G19). A step reads as My Work words it (live/next-step-words.ts): the recorded text, "Unblock: …" for a
+ * blocked request and "Ship it" for a checked one, which the mapper wrote in English before 16.0.0 and the Reveal printed.
+ */
+export function recordedNextStepText(request: Pick<Request, 'next'>, t: (text: string) => string): string | null {
+  const shown = nextStepShown(request.next)
+  return shown.kind === 'step' ? nextStepWords(shown, t) : null
 }

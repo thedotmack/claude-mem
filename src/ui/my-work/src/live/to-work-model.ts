@@ -47,8 +47,9 @@ export function agentOwnRole(agent: Pick<Agent, 'role' | 'status'>): string {
 export const NEXT_STEP_NOT_RECORDED = 'Next step not recorded'
 /**
  * The same filler for a request with only asks, before any agent recorded work (the `no-agent-work` value now). Like
- * NEXT_STEP_NOT_RECORDED it is not a step: nextStepShown reads it as missing, and the shared page still words that
- * value with it (live/to-shared-focus.ts).
+ * NEXT_STEP_NOT_RECORDED it is not a step: nextStepShown reads it as missing, so My Work's cards and setup's Reveal
+ * (setup/setup-reveal.ts) leave the line out (decision G3), and the shared page still words that value with it
+ * (live/to-shared-focus.ts).
  */
 export const NO_WORK_YET = 'No agent work recorded yet'
 /**
