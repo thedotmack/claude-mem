@@ -28,7 +28,7 @@ import {
   type ContextCacheKeys,
 } from '../../../../shared/context-cache.js';
 import type { ContextCacheService, ContextVariantRender } from '../../ContextCacheService.js';
-import type { ContextReadWorkerClient } from '../../../context/ContextReadWorkerClient.js';
+import { ContextReadTimeoutError, type ContextReadWorkerClient } from '../../../context/ContextReadWorkerClient.js';
 import type { WorkStateEntry } from '../../../sqlite/work-state.js';
 
 interface ContextInjectRender {
@@ -469,6 +469,17 @@ export class SearchRoutes extends BaseRouteHandler {
         outcome: 'error',
         duration_ms: Date.now() - injectStartedAt,
       });
+      // The reader deadline (#5374) is expected on a slow database, and the
+      // client already opened a new reader. Record which read was slow and how
+      // long it waited behind other reads, without an error-tracking exception.
+      if (normalizedError instanceof ContextReadTimeoutError) {
+        const { method, queuedMs, runningMs } = normalizedError;
+        captureEvent('context_read_timed_out', { read_method: method, queue_wait_ms: queuedMs, duration_ms: runningMs });
+        logger.warn('HTTP', 'Context injection failed: a context read ran past the deadline',
+          { projects, platformSource, full, method, queuedMs, runningMs }, normalizedError);
+        res.status(500).json({ error: normalizedError.message });
+        return;
+      }
       logger.error('HTTP', 'Context injection failed', { projects, platformSource, full }, normalizedError);
       throw error;
     }

@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'bun:test';
 import type { ContextReadReply, ContextReadRequest } from '../../src/services/context/ContextReadProtocol.ts';
-import { ContextReadWorkerClient } from '../../src/services/context/ContextReadWorkerClient.ts';
+import { ContextReadTimeoutError, ContextReadWorkerClient } from '../../src/services/context/ContextReadWorkerClient.ts';
 
 /**
  * A context-read thread stand-in. `silent` accepts a message and never
- * answers. `terminateSettles` false is a terminate() that never resolves,
+ * answers until the test calls answer(). `terminateSettles` false is a terminate() that never resolves,
  * the shape of a reader stuck inside SQLite (#5374).
  */
 class ScriptedWorker {
@@ -19,8 +19,11 @@ class ScriptedWorker {
 
   postMessage(message: ContextReadRequest): void {
     this.messages.push(message);
-    if (this.behavior !== 'reply') return;
-    const reply: ContextReadReply = { id: message.id, ok: true, result: ['replaced'] };
+    if (this.behavior === 'reply') this.answer(message.id);
+  }
+
+  answer(id: number): void {
+    const reply: ContextReadReply = { id, ok: true, result: ['replaced'] };
     for (const listener of this.messageListeners) listener(reply);
   }
 
@@ -79,6 +82,37 @@ describe('context reader deadlines', () => {
 
     await reader.close();
     expect(workers[1].terminateCalls).toBe(1);
+  });
+
+  it('names the read that ran past the deadline and the time it waited behind an earlier read', async () => {
+    const workers: ScriptedWorker[] = [];
+    const reader = new ContextReadWorkerClient({
+      requestTimeoutMs: 300,
+      terminateTimeoutMs: 40,
+      createWorker: () => {
+        const worker = new ScriptedWorker('silent', true);
+        workers.push(worker);
+        return worker;
+      },
+    });
+
+    const earlier = reader.readKeys(['a']);
+    const stuck = rejectionOf(reader.workState(['a']));
+    await new Promise(resolve => setTimeout(resolve, 150));
+    workers[0].answer(workers[0].messages[0].id);
+    await expect(earlier).resolves.toEqual(['replaced']);
+
+    const error = await stuck;
+    expect(error).toBeInstanceOf(ContextReadTimeoutError);
+    const timeout = error as ContextReadTimeoutError;
+    expect(timeout.message).toBe('Context reader timed out after 300ms');
+    expect(timeout.method).toBe('workState');
+    expect(timeout.queuedMs).toBeGreaterThanOrEqual(100);
+    expect(timeout.runningMs).toBeGreaterThanOrEqual(100);
+    expect(timeout.queuedMs + timeout.runningMs).toBeGreaterThanOrEqual(290);
+    expect(workers[0].terminateCalls).toBe(1);
+
+    await reader.close();
   });
 
   it('returns from close() when terminate() never settles', async () => {

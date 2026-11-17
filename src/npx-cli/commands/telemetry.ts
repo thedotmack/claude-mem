@@ -106,6 +106,7 @@ const EVENT_NAMES = [
   'usage_limit_hit',
   'observer_turn_rollup',
   'context_injected_rollup',
+  'context_read_timed_out',
   'work_state_usage_rollup',
   'search_performed',
   'skill_invoked',
