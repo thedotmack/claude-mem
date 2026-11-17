@@ -1707,9 +1707,10 @@ export class WorkerService implements WorkerRef {
       restartHandoff: {
         port: getWorkerPort(),
         portFreeTimeoutMs: getPlatformTimeout(5000),
-        // Prefer the marketplace-installed script so the successor boots the
-        // freshly-synced plugin, falling back to this script for dev trees /
-        // CI where no marketplace copy exists.
+        // Resolve the successor through the shared oracle — the highest
+        // version with a complete dependency closure, cache before
+        // marketplace — falling back to this script for dev trees / CI
+        // where no installed copy exists.
         resolveSuccessorScript: () => resolveWorkerScriptPath() ?? __filename,
         waitForPortFree,
         // Owner-or-dead guarded (Phase 5): the dying worker may delete the
@@ -2146,9 +2147,10 @@ export async function main() {
       const restartFreed = handoffSawLiveWorker
         ? false
         : await waitForPortFree(port, getPlatformTimeout(15000));
-      // Prefer the marketplace-installed script so restart boots the
-      // freshly-synced plugin, falling back to this script for dev trees /
-      // CI where no marketplace copy exists.
+      // Resolve the restart target through the shared oracle — the highest
+      // version with a complete dependency closure, cache before
+      // marketplace — falling back to this script for dev trees / CI where
+      // no installed copy exists.
       const restartScript = resolveWorkerScriptPath() ?? __filename;
       let spawnedScript = 'none (port still bound — nothing spawned)';
       let spawnLockHeld = false;
