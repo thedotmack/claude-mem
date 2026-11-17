@@ -10,8 +10,13 @@ import { getConnectionStatus, type ConnectionStatus } from './connection-status.
 import { browserHostname, browserVisibility, isServedFromCloud, type PageVisibility } from './served-from.ts'
 import { conflictReason, readReviewResponse, readSaveReceipt, type ReviewResult } from './review-response.ts'
 import { toWorkModel } from './to-work-model.ts'
-import type { MappedWorkModel, RuleSaveResult, WorkDataSource, WorkModel } from './work-data-source.ts'
-import { SaveRefusedError } from '../data.ts'
+import type { ConversationContinuationEvent, MappedWorkModel, RuleSaveResult, WorkDataSource, WorkModel } from './work-data-source.ts'
+import { applySseFrame } from './parse-sse-frame.ts'
+import {
+  conversationRouteFailureSentence, readConversationContinuationAnswer, readConversationContinuationNotice, readConversationExchangeAnswer,
+  readOpenedInAppAnswer, unreachableWorkerSentence, unreadableAnswerSentence,
+} from './conversation-continuation.ts'
+import { RefreshNotStartedError, SaveRefusedError } from '../data.ts'
 import type { Request as WorkRequest } from '../data.ts'
 import type { WorkViewSnapshot, WorkViewSource } from './work-view-api-types.ts'
 import { expandWorkViewOverview, type WorkViewOverview, type WorkViewOverviewModel, type WorkViewRequestDetail } from './work-view-overview.ts'
@@ -28,7 +33,18 @@ export interface LocalSourceOptions {
   activityOptions?: Omit<ViewerActivityOptions, 'fetchImpl' | 'enabled'>
   /** Whether the tab is on screen (default `document`). Only a cloud page reads it; see subscribeToLiveUpdates. */
   visibility?: PageVisibility
+  /** Where the browser says the page is being unloaded, with 'pagehide' (default `window`). See openConversationInApp. */
+  pageUnload?: PageUnload
 }
+
+/** What fires 'pagehide' as this page is unloaded: a reload, a closed tab, or a navigation away. */
+export interface PageUnload {
+  addEventListener(type: 'pagehide', listener: () => void): void
+  removeEventListener(type: 'pagehide', listener: () => void): void
+}
+
+/** This page's `window`; undefined outside a browser. */
+const browserWindow = () => (globalThis as { window?: PageUnload }).window
 
 /** Separate instances make the actual transport/race behavior testable without shared browser globals. */
 export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSource {
@@ -49,6 +65,11 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
   const WORK_VIEW_LOAD_RULES_URL = '/api/work-view/rules/load-in-claude-code'
   const WORK_VIEW_REFRESH_URL = '/api/work-view/refresh'
   const WORK_VIEW_MARK_AGENT_FINISHED_URL = '/api/work-view/agents/mark-finished'
+  const WORK_VIEW_CONVERSATION_CONTINUATION_URL = '/api/work-view/conversations/continuation'
+  const WORK_VIEW_CONTINUE_CONVERSATION_URL = '/api/work-view/conversations/continue'
+  const WORK_VIEW_STOP_CONVERSATION_CONTINUATION_URL = '/api/work-view/conversations/stop'
+  const WORK_VIEW_OPEN_CONVERSATION_IN_APP_URL = '/api/work-view/conversations/open-in-app'
+  const WORK_VIEW_STOP_OPENING_CONVERSATION_IN_APP_URL = '/api/work-view/conversations/open-in-app/stop'
   const CONTENT_FINGERPRINT_PATTERN = /^[a-f0-9]{64}$/
   const CONNECTION_TICK_MS = 1000
   const SOURCE_KIND = isServedFromCloud(options.hostname ?? browserHostname() ?? 'localhost') ? 'cloud' : 'local'
@@ -60,6 +81,7 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
   // timed request. The page on this computer never reads visibility: its behaviour does not change.
   const visibility = SOURCE_KIND === 'cloud' ? options.visibility ?? browserVisibility() : undefined
   const pageHidden = () => visibility?.visibilityState === 'hidden'
+  const pageUnload = options.pageUnload ?? browserWindow()
 
   /** The evidence getConnectionStatus reads. Times are performance.now(); see connection-status.ts. */
   const connectionEvidence = {
@@ -256,8 +278,90 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
     return { model: receipt, savedRuleId: typeof savedRuleId === 'string' ? savedRuleId : null, ...(save ? { save } : {}) }
   }
 
+  /** Rows showing a continued conversation (subscribeToConversationContinuations), one entry per subscription. */
+  const conversationContinuationListeners = new Set<(event: ConversationContinuationEvent) => void>()
+  /**
+   * Tells every row, even when one before it throws: a row that missed a 'replied' notice or a reopened stream would
+   * show 'Working…' until the stream next reopens. The throw is reported as that listener's own error, so it never reads
+   * as an unreadable frame (applySseFrame catches what its callback throws) and never escapes the stream's open handler.
+   */
+  const tellConversationContinuationListeners = (event: ConversationContinuationEvent) => {
+    for (const listener of [...conversationContinuationListeners]) {
+      try {
+        listener(event)
+      } catch (error) {
+        console.error('[work-view] A conversation-continuation listener threw. The other listeners are still told.', error)
+      }
+    }
+  }
+  /**
+   * Set once the event stream has opened. A notice sent while the stream was closed is lost, so after every open but the
+   * first (the browser reconnecting it, or a new stream), each row showing a continued conversation reads it again.
+   */
+  let eventStreamHasOpened = false
+
+  /**
+   * One call to a conversation route, answered as `readAnswer` reads it. Every failure rejects with one plain sentence
+   * the row shows as it is (conversation-continuation.ts). No deadline: giving up on a start would not stop the worker
+   * from starting the turn, and the read answers from the worker's memory.
+   */
+  async function callConversationRoute<Answer>(url: string, init: RequestInit, attemptedAction: string, readAnswer: (body: unknown) => Answer | null): Promise<Answer> {
+    let response: Response
+    try {
+      response = await fetchImpl(url, init)
+    } catch (error) {
+      throw new Error(unreachableWorkerSentence(attemptedAction, error))
+    }
+    let body: unknown = null
+    try { body = await response.json() } catch { /* Not JSON, such as Express's own error page: the status is worded instead. */ }
+    if (!response.ok) throw new Error(conversationRouteFailureSentence(response, body, attemptedAction))
+    const answer = readAnswer(body)
+    if (answer === null) throw new Error(unreadableAnswerSentence(response.status))
+    return answer
+  }
+  const postToConversationRoute = (body: object): RequestInit => ({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+
+  // Only the page this computer's worker serves can continue a conversation: a cloud-served page has no CLI here.
+  const conversationContinuation: Pick<WorkDataSource, 'loadConversationContinuation' | 'continueConversation' | 'stopConversationContinuation'
+    | 'subscribeToConversationContinuations' | 'openConversationInApp'> = SOURCE_KIND !== 'local' ? {} : {
+    loadConversationContinuation: (platform, conversationSessionId) => callConversationRoute(
+      `${WORK_VIEW_CONVERSATION_CONTINUATION_URL}?${new URLSearchParams({ platform, conversationSessionId })}`,
+      { cache: 'no-store' }, 'read this conversation', readConversationContinuationAnswer),
+    continueConversation: (platform, conversationSessionId, ownerMessage) => callConversationRoute(WORK_VIEW_CONTINUE_CONVERSATION_URL,
+      postToConversationRoute({ platform, conversationSessionId, ownerMessage }), 'send your message', readConversationExchangeAnswer),
+    stopConversationContinuation: (platform, conversationSessionId) => callConversationRoute(WORK_VIEW_STOP_CONVERSATION_CONTINUATION_URL,
+      postToConversationRoute({ platform, conversationSessionId }), 'stop this turn', readConversationExchangeAnswer),
+    subscribeToConversationContinuations(listener) {
+      // Wrapped, so one function subscribed twice is two subscriptions, and each unsubscribe ends only its own.
+      const subscription = (event: ConversationContinuationEvent) => listener(event)
+      conversationContinuationListeners.add(subscription)
+      return () => { conversationContinuationListeners.delete(subscription) }
+    },
+    async openConversationInApp(platform, conversationSessionId) {
+      // This click's own id (OPEN_IN_APP_CLICK_ID_PATTERN), sent with the open and with its stop, so the worker stops only
+      // the open this click started: not one another tab's click started, and not a newer one.
+      const clickedOpen = { platform, conversationSessionId, openInAppClickId: crypto.randomUUID() }
+      // The worker cannot see this request go away: Bun's node:http, which serves it, gives a POST whose page has gone no
+      // sign at all. So when the page is unloaded while the open still runs (a reload, a closed tab), the page asks the
+      // worker to stop the open's command. keepalive lets that request outlive the page.
+      const stopTheOpenAsThePageGoes = () => {
+        fetchImpl(WORK_VIEW_STOP_OPENING_CONVERSATION_IN_APP_URL, { ...postToConversationRoute(clickedOpen), keepalive: true }).catch((error: unknown) => {
+          console.error('[work-view] Could not ask the worker to stop opening a conversation in its app as this page closed.', error)
+        })
+      }
+      pageUnload?.addEventListener('pagehide', stopTheOpenAsThePageGoes)
+      try {
+        return await callConversationRoute(WORK_VIEW_OPEN_CONVERSATION_IN_APP_URL, postToConversationRoute(clickedOpen),
+          'open this conversation in its app', readOpenedInAppAnswer)
+      } finally {
+        pageUnload?.removeEventListener('pagehide', stopTheOpenAsThePageGoes)
+      }
+    },
+  }
+
   const localSource: WorkDataSource = {
     sourceKind: SOURCE_KIND,
+    ...conversationContinuation,
 
     /** app.js `refresh`: when an SSE snapshot arrived while this read was in flight, the event's newer model wins. */
     async loadWorkModel() {
@@ -393,9 +497,9 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
     async refreshWork() {
       const response = await fetchImpl(WORK_VIEW_REFRESH_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
       if (!response.ok) {
-        let reason = `the worker answered ${response.status}`
-        try { const body = await response.json() as { error?: unknown }; if (typeof body.error === 'string') reason = body.error } catch { /* Keep the status as the reason. */ }
-        throw new Error(`Refresh could not start: ${reason}`)
+        let workerReason: string | null = null
+        try { const body = await response.json() as { error?: unknown }; if (typeof body.error === 'string') workerReason = body.error } catch { /* Keep the status as the reason. */ }
+        throw new RefreshNotStartedError(response.status, workerReason)
       }
       return await response.json() as { state: string }
     },
@@ -433,6 +537,10 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
           connectionEvidence.transportConnected = true
           connectionEvidence.reconnecting = false
           reportConnection()
+          const reopened = eventStreamHasOpened
+          eventStreamHasOpened = true
+          // Notices may have been missed while the stream was closed, so every row showing a continued conversation reads it again.
+          if (reopened) tellConversationContinuationListeners('live-updates-reconnected')
         }
         stream.addEventListener('work-view', (event) => {
           if (!current()) return
@@ -475,6 +583,15 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
           // A sync diagnostic is not evidence that the work projection was read successfully.
           recordSync(status.sync)
           reportConnection()
+        })
+        // An exchange sent from My Work started or ended. The notice names it and its state only: the row it concerns
+        // reads the rest through the guarded read. Like a sync diagnostic, it is no evidence about the work projection.
+        stream.addEventListener('conversation-continuation', (event) => {
+          if (!current()) return
+          applySseFrame('conversation-continuation', (event as MessageEvent).data, (frame: Record<string, unknown>) => {
+            const notice = readConversationContinuationNotice(frame)
+            if (notice) tellConversationContinuationListeners(notice)
+          }, (frame) => readConversationContinuationNotice(frame) !== null)
         })
         stream.onerror = () => {
           if (!current()) return

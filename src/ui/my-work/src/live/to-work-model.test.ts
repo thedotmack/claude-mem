@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import { assertConsistentRequest } from '../data.ts'
-import { toWorkModel } from './to-work-model.ts'
+import { NEXT_STEP_NOT_RECORDED, toWorkModel } from './to-work-model.ts'
 import type { WorkViewHumanRequest, WorkViewSnapshot } from './work-view-api-types.ts'
 
 const appRoot = new URL('../../', import.meta.url)
@@ -38,6 +38,17 @@ for (const url of SNAPSHOT_FILES) {
       assert.equal(request.askedBy, raw.requestedBy ?? 'You')
       if (!raw.focusAreaId) assert.equal(request.focusAreaId, undefined, 'a request reads "Sorting…" until the focus step places it')
     }
+  })
+
+  test(`${name}: every conversation row names the platform and session id of its conversation key`, () => {
+    let rows = 0
+    for (const request of model.requests) {
+      const keys = rawById.get(request.id)!.conversationKeys.map((key) => JSON.parse(key) as string[])
+      assert.deepEqual(request.conversations.map(({ platform, conversationSessionId }) => ({ platform, conversationSessionId })),
+        keys.map(([, platform, conversationSessionId]) => ({ platform, conversationSessionId })))
+      rows += keys.length
+    }
+    assert.ok(rows > 0, 'the real data has conversation rows')
   })
 
   test(`${name}: titles come from generated records or human copy, never raw prompts`, () => {
@@ -142,6 +153,18 @@ test('looks up conversation titles by platform and content-session identity', ()
   }))
   const [request] = toWorkModel(snapshotWith([raw], { agents }), Date.now()).requests
   assert.deepEqual(request.conversations.map(item => item.title), ['claude session', 'codex session'])
+})
+
+test('each conversation row carries the platform and session id its key records, for Claude Code and for Codex', () => {
+  const raw = syntheticRequest()
+  const claudeSessionId = '0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d'
+  const codexSessionId = '9f8e7d6c-5b4a-4c3d-8e2f-1a0b9c8d7e6f'
+  raw.conversationKeys = [JSON.stringify(['conversation', 'claude', claudeSessionId]), JSON.stringify(['conversation', 'codex', codexSessionId])]
+  const [request] = toWorkModel(snapshotWith([raw]), Date.now()).requests
+  assert.deepEqual(request.conversations.map(({ tool, platform, conversationSessionId }) => ({ tool, platform, conversationSessionId })), [
+    { tool: 'Claude Code', platform: 'claude', conversationSessionId: claudeSessionId },
+    { tool: 'Codex', platform: 'codex', conversationSessionId: codexSessionId },
+  ])
 })
 
 test('maps shared decision versions and keeps an origin-only file visible without a link', () => {
@@ -337,7 +360,7 @@ for (const state of ['in-progress', 'stalled', 'shipped'] as const) {
     const request = model.requests[0]
     assert.equal(request.title, 'Cards')
     assert.equal(request.summary, raw.progress.summary)
-    assert.equal(request.next.text, 'Next step not recorded')
+    assert.equal(request.next.text, NEXT_STEP_NOT_RECORDED)
     assert.equal(request.progress.percent, raw.progress.percent)
     assert.equal(request.state, state === 'shipped' ? 'shipped' : 'idle')
   })
@@ -386,7 +409,7 @@ test('reopening a shipped group does not display its older completion summary', 
 test('recorded observations without work-state items do not claim no agent work exists', () => {
   const raw: WorkViewHumanRequest = { ...syntheticRequest(), activity: [{ id: 'observation-42', kind: 'observation', title: 'Cards built', detail: 'Ready for review', atEpoch: Date.parse('2026-10-21T12:00:00Z'), url: '/api/work-view/evidence/observation/42' }] }
   const model = toWorkModel(snapshotWith([raw]), Date.parse('2026-10-22T12:00:00Z'))
-  assert.equal(model.requests[0].next.text, 'Next step not recorded')
+  assert.equal(model.requests[0].next.text, NEXT_STEP_NOT_RECORDED)
 })
 
 for (const status of ['shipped', 'blocked']) {

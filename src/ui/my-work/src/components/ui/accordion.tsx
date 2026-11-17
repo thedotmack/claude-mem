@@ -1,7 +1,7 @@
 import * as React from "react"
 import { cn } from "cn"
 import { Accordion as AccordionPrimitive } from "radix-ui"
-import { ChevronDownIcon, ChevronUpIcon } from "lucide-react"
+import { FOLD_TRIGGER_CLASS_NAME, FoldTriggerParts } from "@/components/ui/collapsible"
 
 function Accordion({
   className,
@@ -29,6 +29,10 @@ function AccordionItem({
   )
 }
 
+/**
+ * The shared fold row (D b1 F 28, decision G5): 44px or taller, chevron on the left, no hover underline, the Button
+ * focus ring. No page draws an Accordion today; the row matches Collapsible's so one can be added without a new look.
+ */
 function AccordionTrigger({
   className,
   children,
@@ -38,20 +42,16 @@ function AccordionTrigger({
     <AccordionPrimitive.Header className="flex">
       <AccordionPrimitive.Trigger
         data-slot="accordion-trigger"
-        className={cn(
-          "group/accordion-trigger relative flex flex-1 items-start justify-between rounded-lg border border-transparent py-2.5 text-left text-sm font-medium transition-all outline-none hover:underline focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:after:border-ring disabled:pointer-events-none disabled:opacity-50 **:data-[slot=accordion-trigger-icon]:ml-auto **:data-[slot=accordion-trigger-icon]:size-4 **:data-[slot=accordion-trigger-icon]:text-muted-foreground",
-          className
-        )}
+        className={cn(FOLD_TRIGGER_CLASS_NAME, "flex-1 border-transparent", className)}
         {...props}
       >
-        {children}
-        <ChevronDownIcon data-slot="accordion-trigger-icon" className="pointer-events-none shrink-0 group-aria-expanded/accordion-trigger:hidden" />
-        <ChevronUpIcon data-slot="accordion-trigger-icon" className="pointer-events-none hidden shrink-0 group-aria-expanded/accordion-trigger:inline" />
+        <FoldTriggerParts>{children}</FoldTriggerParts>
       </AccordionPrimitive.Trigger>
     </AccordionPrimitive.Header>
   )
 }
 
+/** Keeps the height animation (D b1 K 31), only when motion is allowed. */
 function AccordionContent({
   className,
   children,
@@ -60,7 +60,7 @@ function AccordionContent({
   return (
     <AccordionPrimitive.Content
       data-slot="accordion-content"
-      className="overflow-hidden text-sm data-open:animate-accordion-down data-closed:animate-accordion-up"
+      className="overflow-hidden text-sm motion-safe:data-open:animate-accordion-down motion-safe:data-closed:animate-accordion-up"
       {...props}
     >
       <div

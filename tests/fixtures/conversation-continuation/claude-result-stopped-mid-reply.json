@@ -1,0 +1,9 @@
+[
+  { "type": "system", "subtype": "init", "cwd": "/work/example", "session_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7" },
+  { "type": "system", "subtype": "thinking_tokens", "session_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7" },
+  { "type": "system", "subtype": "thinking_tokens", "session_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7" },
+  { "type": "assistant", "message": { "role": "assistant", "content": [{ "type": "thinking", "thinking": "" }] }, "session_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7" },
+  { "type": "assistant", "message": { "role": "assistant", "content": [{ "type": "text", "text": "1\n2\n3\n4\n5" }] }, "session_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7" },
+  { "type": "user", "message": { "role": "user", "content": [{ "type": "text", "text": "[Request interrupted by user]" }] }, "session_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7" },
+  { "type": "result", "subtype": "error_during_execution", "is_error": true, "permission_denials": [], "errors": ["[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null"], "session_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7" }
+]

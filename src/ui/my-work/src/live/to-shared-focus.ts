@@ -11,6 +11,7 @@
 import { OTHER_FOCUS_AREA_ID, type FocusArea, type Request } from '../data.ts'
 import { repeatsOwnerWords } from './prompt-echo.ts'
 import { resolveFocusAreaId } from './to-focus-model.ts'
+import { NEXT_STEP_NOT_RECORDED } from './to-work-model.ts'
 import type { WorkModel } from './work-data-source.ts'
 
 export const SHARED_REQUESTS_MAX = 200
@@ -103,7 +104,7 @@ export function toSharedFocusPage(model: Pick<WorkModel, 'requests' | 'focusArea
       stage: request.stage,
       percent: request.progress.percent,
       next: { who: request.next.who, text: request.nextRepeatsPrompt || titleQuotesPrompt(request.next.text, request.prompts)
-        ? 'Next step not recorded' : clip(request.next.text.trim() || 'Next step not recorded', 300) },
+        ? NEXT_STEP_NOT_RECORDED : clip(request.next.text.trim() || NEXT_STEP_NOT_RECORDED, 300) },
       agent: clip(agentName(request), 80),
       startedAt: clip(request.startedAt, 60),
       runningFor: clip(request.runningFor, 60),

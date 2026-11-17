@@ -1,0 +1,6 @@
+[
+  { "type": "system", "subtype": "init", "cwd": "/work/example", "session_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7" },
+  { "type": "assistant", "session_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7" },
+  { "type": "rate_limit_event", "session_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7" },
+  { "type": "result", "subtype": "success", "is_error": false, "result": "marmalade", "permission_denials": [], "session_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7" }
+]

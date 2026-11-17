@@ -135,6 +135,22 @@ describe('reading work', () => {
     assert.equal(refreshes, 1)
   })
 
+  it('hands a conversation row the active source only when it can continue a conversation from this page', () => {
+    const { store } = testStore()
+    const { source } = fakeSource({
+      loadConversationContinuation: () => Promise.reject(new Error('not used')),
+      continueConversation: () => Promise.reject(new Error('not used')),
+      stopConversationContinuation: () => Promise.reject(new Error('not used')),
+      subscribeToConversationContinuations: () => () => {},
+    })
+    const stopLocal = store.getState().startWorkSource(source)
+    assert.equal(store.getState().conversationContinuationSource(), source)
+    stopLocal()
+    const stopSample = store.getState().startWorkSource(sampleSource)
+    assert.equal(store.getState().conversationContinuationSource(), null, 'sample data cannot run a CLI on this computer')
+    stopSample()
+  })
+
   it('shows the first read, and a live model that arrived during the read wins over it', async () => {
     const { store } = testStore()
     const { source, feed, reads } = fakeSource()

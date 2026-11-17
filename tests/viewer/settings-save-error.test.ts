@@ -1,8 +1,7 @@
 import { describe, it, expect, jest, spyOn } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { saveStatusClass } from '../../src/ui/viewer/components/ContextSettingsModal';
-import { saveSettings, submitSettings } from '../../src/ui/viewer/hooks/useSettings';
+import { NO_SAVE_STATUS, SAVE_OUTCOMES, saveSettings, submitSettings, type SaveStatus } from '../../src/ui/viewer/hooks/useSettings';
 import { describeSaveFailure, SAVE_ERROR_MAX_CHARS } from '../../src/ui/viewer/utils/save-error';
 
 const REPRO_PATH = join(import.meta.dir, '../fixtures/settings-save-error-repro.json');
@@ -159,7 +158,7 @@ describe('describeSaveFailure', () => {
   });
 
   it('runs the production submitSettings failure branch with a mocked fetch', async () => {
-    const statuses: string[] = [];
+    const statuses: SaveStatus[] = [];
     let saving = true;
     await submitSettings({} as never, {
       fetchImpl: async () => new Response(reproRaw, { status: 400, statusText: 'Bad Request' }),
@@ -167,31 +166,31 @@ describe('describeSaveFailure', () => {
       setSaveStatus: status => statuses.push(status),
       setIsSaving: value => { saving = value; },
     });
-    expect(statuses).toEqual([
-      '\u2717 Error: CLAUDE_MEM_GEMINI_MODEL must be one of: gemini-flash-latest, gemini-flash-lite-latest, gemini-3.5-flash, gemini-3.1-flash-lite, gemini-3-flash-preview',
-    ]);
+    expect(statuses).toEqual([{
+      outcome: 'failed',
+      reason: '\u2717 Error: CLAUDE_MEM_GEMINI_MODEL must be one of: gemini-flash-latest, gemini-flash-lite-latest, gemini-3.5-flash, gemini-3.1-flash-lite, gemini-3-flash-preview',
+    }]);
     expect(saving).toBe(false);
   });
 
   it('keeps the production success and 2xx-error branches separate from the extractor', async () => {
-    const statuses: string[] = [];
+    const statuses: SaveStatus[] = [];
     let saved = false;
     const deps = {
       fetchImpl: async () => new Response(JSON.stringify({ success: true }), { status: 200 }),
       setSettings: () => { saved = true; },
-      setSaveStatus: (status: string) => statuses.push(status),
+      setSaveStatus: (status: SaveStatus) => statuses.push(status),
       setIsSaving: () => {},
-      setStatusTimeout: (callback: () => void) => callback(),
     };
     await submitSettings({} as never, deps);
-    expect(statuses).toEqual(['\u2713 Saved', '']);
+    expect(statuses).toEqual([{ outcome: 'saved', reason: null }]);
     expect(saved).toBe(true);
 
     await submitSettings({} as never, {
       ...deps,
       fetchImpl: async () => new Response(JSON.stringify({ success: false, error: 'boom' }), { status: 200 }),
     });
-    expect(statuses).toEqual(['\u2713 Saved', '', '\u2717 Error: boom']);
+    expect(statuses).toEqual([{ outcome: 'saved', reason: null }, { outcome: 'failed', reason: '\u2717 Error: boom' }]);
   });
 
   it('never POSTs the file-only CLAUDE_CODE_PATH, even when GET echoed it into local state', async () => {
@@ -204,7 +203,6 @@ describe('describeSaveFailure', () => {
       setSettings: () => {},
       setSaveStatus: () => {},
       setIsSaving: () => {},
-      setStatusTimeout: () => {},
     });
     expect(JSON.parse(postedBody)).toEqual({ CLAUDE_MEM_MODEL: 'haiku' });
   });
@@ -226,7 +224,6 @@ describe('describeSaveFailure', () => {
       setSettings: (settings: unknown) => { saved = settings; },
       setSaveStatus: () => {},
       setIsSaving: () => {},
-      setStatusTimeout: () => {},
     } as never;
 
     const edited = { ...loaded, CLAUDE_MEM_CONTEXT_OBSERVATIONS: '80' };
@@ -239,7 +236,7 @@ describe('describeSaveFailure', () => {
   });
 
   it('keeps a rejected production fetch inside the outer saveSettings catch', async () => {
-    const statuses: string[] = [];
+    const statuses: SaveStatus[] = [];
     let saving = false;
     await saveSettings({} as never, {
       fetchImpl: async () => { throw new Error('network down'); },
@@ -247,13 +244,27 @@ describe('describeSaveFailure', () => {
       setSaveStatus: status => statuses.push(status),
       setIsSaving: value => { saving = value; },
     });
-    expect(statuses).toEqual(['Saving...', '✗ Error: network down']);
+    // A new save starts from no outcome, then ends failed with the network's reason.
+    expect(statuses).toEqual([NO_SAVE_STATUS, { outcome: 'failed', reason: '✗ Error: network down' }]);
     expect(saving).toBe(false);
   });
 
-  it('error styling wins when an error message contains the success glyph', () => {
-    expect(saveStatusClass('\u2717 Error: value \u2713 rejected')).toBe('error');
-    expect(saveStatusClass('\u2713 Saved')).toBe('success');
+  it('decides saved or failed by the outcome it writes, never by a glyph in the words', async () => {
+    // The outcome used to be read from a ✓ or ✗ inside the (translated) status text.
+    expect([...SAVE_OUTCOMES].sort()).toEqual(['failed', 'none', 'saved']);
+    const outcomes: SaveStatus[] = [];
+    const deps = (response: () => Response) => ({
+      fetchImpl: async () => response(),
+      setSettings: () => {},
+      setSaveStatus: (status: SaveStatus) => outcomes.push(status),
+      setIsSaving: () => {},
+    });
+    await submitSettings({} as never, deps(() => Response.json({ error: 'value \u2713 rejected' }, { status: 400, statusText: 'Bad Request' })));
+    await submitSettings({} as never, deps(() => Response.json({ success: false, error: 'no glyph here' })));
+    await submitSettings({} as never, deps(() => Response.json({ success: true })));
+    expect(outcomes.map(status => status.outcome)).toEqual(['failed', 'failed', 'saved']);
+    expect(outcomes[0].reason).toContain('value \u2713 rejected');
+    expect(outcomes[2].reason).toBeNull();
   });
 
   it('clamps on code points not code units: surrogate pair at boundary is not split', async () => {
