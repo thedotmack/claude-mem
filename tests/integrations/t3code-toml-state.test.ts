@@ -33,6 +33,8 @@ describe('T3 Code removal reads native TOML boolean settings', () => {
     `[ "plugins" . "claude-mem@claude-mem-local" ] # selected plugin\n"enabled" = true\n`,
     `[plugins."claude-mem@claude-mem-local"]\n'enabled' = true\n`,
     `[plugins."claude-mem@claude-mem-local"]\n"en\\u0061bled" = true\n`,
+    `plugins."claude-mem@claude-mem-local".enabled = true\n`,
+    `[plugins]\n"claude-mem@claude-mem-local".enabled = true\n`,
   ])('disables an enabled plugin written with valid equivalent keys: %s', content => {
     expect((Bun.TOML.parse(content) as any).plugins['claude-mem@claude-mem-local'].enabled).toBe(true);
     writeFileSync(configPath, content + '\n[plugins.other]\nenabled = true\n');

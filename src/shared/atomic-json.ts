@@ -180,7 +180,7 @@ export function resolveSymlinkWriteTarget(filePath: string): string {
   return resolved;
 }
 
-const WINDOWS_RENAME_RETRY_CODES = new Set(['EPERM', 'EBUSY', 'EACCES']);
+export const WINDOWS_RENAME_RETRY_CODES = new Set(['EPERM', 'EBUSY', 'EACCES']);
 /** About 0.6 s in total, the same order as graceful-fs's Windows rename retry. */
 const WINDOWS_RENAME_RETRY_DELAYS_MS = [10, 20, 40, 80, 160, 320];
 
@@ -253,7 +253,10 @@ function writeBufferAtomic(
 
   let fd: number | undefined;
   try {
-    fd = mode !== undefined ? openSync(tmpPath, 'w', mode) : openSync(tmpPath, 'w');
+    // Exclusive create (see #5145): the random name keeps a planted symlink
+    // from targeting the temp path, and 'wx' keeps an existing file there from
+    // being followed at all.
+    fd = mode !== undefined ? openSync(tmpPath, 'wx', mode) : openSync(tmpPath, 'wx');
     // open(2) masks the mode with the umask (0660 under 022 lands as 0640), so
     // set it exactly before the first byte: the rename must keep the file's mode.
     if (mode !== undefined && !IS_WINDOWS_PLATFORM) fchmodSync(fd, mode);

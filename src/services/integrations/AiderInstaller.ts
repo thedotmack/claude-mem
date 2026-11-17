@@ -168,14 +168,21 @@ function readKeyRest(line: string): string | null {
 /** `rest` with a trailing `# comment` removed (a `#` inside quotes is kept). */
 function stripYamlComment(rest: string): string {
   let quote: string | null = null;
+  let scalarStart = true;
+  const flow = rest.trimStart().startsWith('[');
   for (let i = 0; i < rest.length; i++) {
     const ch = rest[i];
     if (quote) {
-      if (ch === quote) quote = null;
+      if ((quote === '"' && ch === '\\') || (quote === "'" && ch === "'" && rest[i + 1] === "'")) i++;
+      else if (ch === quote) quote = null;
       continue;
     }
-    if (ch === "'" || ch === '"') quote = ch;
-    else if (ch === '#' && (i === 0 || /\s/.test(rest[i - 1]))) return rest.slice(0, i);
+    if (ch === '#' && (i === 0 || /\s/.test(rest[i - 1]))) return rest.slice(0, i);
+    // Quotes inside a plain path (docs/user's-guide.md) are literal. Only
+    // the first character of a scalar can open a quoted YAML string.
+    if (scalarStart && (ch === "'" || ch === '"')) quote = ch;
+    if (flow && (ch === '[' || ch === ',')) scalarStart = true;
+    else if (!/\s/.test(ch)) scalarStart = false;
   }
   return rest;
 }
@@ -218,29 +225,39 @@ function parseFlowList(rest: string): string[] | null {
   const trimmed = stripYamlComment(rest).trim();
   if (!trimmed.startsWith('[') || !trimmed.endsWith(']')) return null;
   const inner = trimmed.slice(1, -1);
-  if (inner.includes('[') || inner.includes(']')) return null;
   const items: string[] = [];
   let current = '';
   let quote: string | null = null;
+  let scalarStart = true;
   for (let i = 0; i < inner.length; i++) {
     const ch = inner[i];
     if (quote) {
       current += ch;
-      if (ch === quote) quote = null;
+      if ((quote === '"' && ch === '\\') || (quote === "'" && ch === "'" && inner[i + 1] === "'")) {
+        if (i + 1 < inner.length) current += inner[++i];
+      } else if (ch === quote) quote = null;
       continue;
     }
-    if (ch === "'" || ch === '"') {
+    // Nested flow lists remain unsupported; brackets inside quotes are paths.
+    if (ch === '[' || ch === ']') return null;
+    if (scalarStart && (ch === "'" || ch === '"')) {
       quote = ch;
       current += ch;
+      scalarStart = false;
     } else if (ch === ',') {
       items.push(current.trim());
       current = '';
+      scalarStart = true;
     } else {
       current += ch;
+      if (!/\s/.test(ch)) scalarStart = false;
     }
   }
   if (quote) return null;
   if (current.trim() !== '') items.push(current.trim());
+  // Keep unsupported YAML escapes out of the text-level rewrite: treating
+  // an undecoded quoted scalar as a path would add literal quotes on removal.
+  if (items.some(item => /^['"]/.test(item) && unquoteYamlScalar(item) === null)) return null;
   return items
     .map((item) => (item === '' ? null : (unquoteYamlScalar(item) ?? item)))
     .filter((item): item is string => item !== null);
@@ -257,7 +274,8 @@ type AiderReadForm =
  * docs]` and put the new entry in the comment instead of the list.
  */
 function flowListCloseIndex(line: string): number {
-  return stripYamlComment(line).lastIndexOf(']');
+  const rest = readKeyRest(line)!;
+  return line.length - rest.length + stripYamlComment(rest).lastIndexOf(']');
 }
 
 /**

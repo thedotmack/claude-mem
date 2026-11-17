@@ -135,10 +135,10 @@ describe('Stop hook deliverables capture', () => {
     const result = await summarizeHandler.execute(stopInput());
 
     expect(result.continue).toBe(true);
-    expect(spooledEntries('deliverables')).toHaveLength(0);
+    expect(await spooledEntries('deliverables')).toHaveLength(0);
     expect(existsSync(resolveDeliverablesDir())).toBe(false);
     expect(readFileSync(path)).toEqual(before);
-    expect(spooledEntries('summarize')).toHaveLength(1);
+    expect(await spooledEntries('summarize')).toHaveLength(1);
   });
 
   it('attributes the copied file to its confirmed revision when a later edit never returns', async () => {
@@ -158,7 +158,7 @@ describe('Stop hook deliverables capture', () => {
 
     await summarizeHandler.execute(stopInput());
 
-    const entries = spooledEntries('deliverables');
+    const entries = (await spooledEntries('deliverables'));
     expect(entries).toHaveLength(1);
     const payload = entries[0].payload as SpooledDeliverablesPayload;
     expect(payload.files).toHaveLength(1);
@@ -173,9 +173,9 @@ describe('Stop hook deliverables capture', () => {
     const result = await summarizeHandler.execute(stopInput());
     expect(result.continue).toBe(true);
 
-    const entries = spooledEntries('deliverables');
+    const entries = (await spooledEntries('deliverables'));
     expect(entries).toHaveLength(1);
-    expect(spooledEntries('summarize')).toHaveLength(1);
+    expect(await spooledEntries('summarize')).toHaveLength(1);
     const payload = entries[0].payload as SpooledDeliverablesPayload;
     expect(payload.contentSessionId).toBe('session-deliverables-1');
     expect(payload.platformSource).toBe('claude');
@@ -209,16 +209,16 @@ describe('Stop hook deliverables capture', () => {
 
     process.env.CLAUDE_MEM_DELIVERABLES_ENABLED = 'false';
     await summarizeHandler.execute(stopInput());
-    expect(spooledEntries('deliverables')).toHaveLength(0);
+    expect(await spooledEntries('deliverables')).toHaveLength(0);
     expect(existsSync(resolveDeliverablesDir())).toBe(false);
-    expect(spooledEntries('summarize')).toHaveLength(1);
+    expect(await spooledEntries('summarize')).toHaveLength(1);
 
     delete process.env.CLAUDE_MEM_DELIVERABLES_ENABLED;
     writeFileSync(transcriptPath, [user('Thanks'), assistant([{ type: 'text', text: 'You are welcome.' }]), ''].join('\n'));
     tempSpool.restore();
     tempSpool = useTempHookSpoolDataDir();
     await summarizeHandler.execute(stopInput());
-    expect(spooledEntries('deliverables')).toHaveLength(0);
+    expect(await spooledEntries('deliverables')).toHaveLength(0);
   });
 
   it.skipIf(process.platform === 'win32')('copies the declared literal filename instead of its trimmed neighbor', async () => {
@@ -239,7 +239,7 @@ describe('Stop hook deliverables capture', () => {
 
     await summarizeHandler.execute(stopInput());
 
-    const [entry] = spooledEntries('deliverables');
+    const [entry] = (await spooledEntries('deliverables'));
     const payload = entry.payload as SpooledDeliverablesPayload;
     expect(payload.files).toHaveLength(1);
     expect(payload.files[0].sourcePath).toBe(source);
@@ -263,7 +263,7 @@ describe('Stop hook deliverables capture', () => {
 
     // The literal extension is not a recognized work-product kind. Its .html
     // neighbor was not written this turn and must not be copied in its place.
-    expect(spooledEntries('deliverables')).toHaveLength(0);
+    expect(await spooledEntries('deliverables')).toHaveLength(0);
     expect(existsSync(resolveDeliverablesDir())).toBe(false);
   });
 
@@ -280,8 +280,8 @@ describe('Stop hook deliverables capture', () => {
 
     await subagentStopHandler.execute(input);
 
-    expect(spooledEntries('subagent_stop')).toHaveLength(1);
-    const [entry] = spooledEntries('deliverables');
+    expect(await spooledEntries('subagent_stop')).toHaveLength(1);
+    const [entry] = (await spooledEntries('deliverables'));
     const payload = entry.payload as SpooledDeliverablesPayload;
     expect(payload.agentId).toBe('agent-7');
     expect(payload.files.map(file => file.title).sort()).toEqual(['Launch notes', 'report.html', 'slides.pdf']);
@@ -291,7 +291,7 @@ describe('Stop hook deliverables capture', () => {
     makeTurn({ prompt: '<private>Make me a launch report about the layoffs</private>' });
     const { summarizeHandler } = await import('../../../src/cli/handlers/summarize.js');
     await summarizeHandler.execute(stopInput());
-    expect(spooledEntries('deliverables')).toHaveLength(0);
+    expect(await spooledEntries('deliverables')).toHaveLength(0);
     expect(existsSync(resolveDeliverablesDir())).toBe(false);
 
     // The session's current prompt is private; the subagent's own transcript is scanned only when it is not.
@@ -305,8 +305,8 @@ describe('Stop hook deliverables capture', () => {
     });
     input.platform = 'claude-code';
     await subagentStopHandler.execute(input);
-    expect(spooledEntries('subagent_stop')).toHaveLength(1);
-    expect(spooledEntries('deliverables')).toHaveLength(0);
+    expect(await spooledEntries('subagent_stop')).toHaveLength(1);
+    expect(await spooledEntries('deliverables')).toHaveLength(0);
     expect(existsSync(resolveDeliverablesDir())).toBe(false);
   });
 
@@ -329,7 +329,7 @@ describe('Stop hook deliverables capture', () => {
 
     await summarizeHandler.execute(stopInput());
 
-    const [entry] = spooledEntries('deliverables');
+    const [entry] = (await spooledEntries('deliverables'));
     const payload = entry.payload as SpooledDeliverablesPayload;
     expect(payload.files.map(file => file.title)).toEqual(['Report']);
     const refused = (logger.warn as unknown as { mock: { calls: unknown[][] } }).mock.calls
@@ -347,8 +347,8 @@ describe('Stop hook deliverables capture', () => {
     });
     input.platform = 'claude-code';
     await subagentStopHandler.execute(input);
-    expect(spooledEntries('subagent_stop')).toHaveLength(1);
-    expect(spooledEntries('deliverables')).toHaveLength(0);
+    expect(await spooledEntries('subagent_stop')).toHaveLength(1);
+    expect(await spooledEntries('deliverables')).toHaveLength(0);
     expect(existsSync(resolveDeliverablesDir())).toBe(false);
   });
 
@@ -357,9 +357,9 @@ describe('Stop hook deliverables capture', () => {
     workerHostForTest = 'memory.example.net';
     const { summarizeHandler } = await import('../../../src/cli/handlers/summarize.js');
     await summarizeHandler.execute(stopInput());
-    expect(spooledEntries('deliverables')).toHaveLength(0);
+    expect(await spooledEntries('deliverables')).toHaveLength(0);
     expect(existsSync(resolveDeliverablesDir())).toBe(false);
-    expect(spooledEntries('summarize')).toHaveLength(1);
+    expect(await spooledEntries('summarize')).toHaveLength(1);
   });
 
   it('copies the first 50 files of an over-full turn and reports the rest within the remote schema\'s bound', async () => {
@@ -379,7 +379,7 @@ describe('Stop hook deliverables capture', () => {
 
     await summarizeHandler.execute(stopInput());
 
-    const [entry] = spooledEntries('deliverables');
+    const [entry] = (await spooledEntries('deliverables'));
     const payload = entry.payload as SpooledDeliverablesPayload;
     expect(payload.files).toHaveLength(50);
     expect(payload.files.map(file => file.title)).toEqual(Array.from({ length: 50 }, (_, i) => `slide-${String(i).padStart(3, '0')}.png`));

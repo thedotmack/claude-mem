@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'fs';
 import { homedir } from 'os';
-import { join } from 'path';
+import { join, sep } from 'path';
 import { resolveDataDir } from './data-dir.js';
 import { CLAUDE_CONFIG_DIR } from './paths.js';
 
@@ -29,15 +29,25 @@ export function userClaudeInstructionsPath(): string {
   return join(CLAUDE_CONFIG_DIR, 'CLAUDE.md');
 }
 
-/** A path as a person types it: `~/…` under the home folder, else absolute. */
-export function homeRelativePath(filePath: string): string {
-  const home = homedir();
-  return filePath === home || filePath.startsWith(`${home}/`) ? `~${filePath.slice(home.length)}` : filePath;
+/**
+ * A path with `/` separators. Claude Code does not resolve an `@` import whose
+ * separators are `\` (Windows `path.join` output): it skips the file without a
+ * word. `C:/Users/…` and `~/…` both load on Windows.
+ */
+export function forwardSlashPath(filePath: string, separator: string = sep): string {
+  return separator === '\\' ? filePath.replaceAll('\\', '/') : filePath;
+}
+
+/** A path as a person types it: `~/…` under the home folder, else absolute, with `/` separators. */
+export function homeRelativePath(filePath: string, home: string = homedir(), separator: string = sep): string {
+  const path = forwardSlashPath(filePath, separator);
+  const root = forwardSlashPath(home, separator);
+  return path === root || path.startsWith(`${root}/`) ? `~${path.slice(root.length)}` : path;
 }
 
 /** The `@path` line that makes Claude Code load a file. Claude Code ends @path at an unescaped space; quoting it is not an import. */
-export function claudeCodeImportLine(filePath: string): string {
-  return `@${homeRelativePath(filePath).replaceAll(' ', '\\ ')}`;
+export function claudeCodeImportLine(filePath: string, home: string = homedir(), separator: string = sep): string {
+  return `@${homeRelativePath(filePath, home, separator).replaceAll(' ', '\\ ')}`;
 }
 
 export function rulesAndToolsPointerLine(filePath: string = rulesAndToolsFilePath()): string {
@@ -52,10 +62,23 @@ function readIfPresent(filePath: string): string | null {
   }
 }
 
-/** Claude Code loads `@~/…` and `@/absolute/…` alike, so either spelling counts as the import. */
-function hasImportLine(text: string | null, importedPath: string): boolean {
-  const accepted = new Set([claudeCodeImportLine(importedPath), `@${importedPath.replaceAll(' ', '\\ ')}`]);
-  return text !== null && text.split('\n').some(candidate => accepted.has(candidate.trim()));
+/** Claude Code loads `@~/…` and `@/absolute/…` alike, so either spelling counts as the import. A `\`-separated line loads nothing, so it never counts. */
+export function hasImportLine(text: string | null, importedPath: string): boolean {
+  const accepted = new Set([claudeCodeImportLine(importedPath), `@${forwardSlashPath(importedPath).replaceAll(' ', '\\ ')}`]);
+  if (text === null) return false;
+  // Claude Code does not evaluate imports in fenced code examples. Only a
+  // matching marker at least as long, with no trailing text, closes a fence.
+  let fence: string | null = null;
+  for (const candidate of text.split(/\r\n?|\n/)) {
+    const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(candidate);
+    if (fence) {
+      if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length && !marker[2].trim()) fence = null;
+      continue;
+    }
+    if (marker && !(marker[1][0] === '`' && marker[2].includes('`'))) { fence = marker[1]; continue; }
+    if (accepted.has(candidate.trim())) return true;
+  }
+  return false;
 }
 
 export interface RulesImportPaths {

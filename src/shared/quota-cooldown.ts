@@ -37,6 +37,7 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'fs';
+import { randomUUID } from 'crypto';
 import { dirname, join } from 'path';
 import { paths } from './paths.js';
 import { logger } from '../utils/logger.js';
@@ -174,10 +175,17 @@ function persistToDisk(filePath: string = defaultCooldownFilePath()): void {
       if (existsSync(filePath)) unlinkSync(filePath);
       return;
     }
-    const tmp = `${filePath}.${process.pid}.tmp`;
-    writeFileSync(tmp, JSON.stringify(rows, null, 2), 'utf-8');
-    // Atomic swap, so a reader never sees a half-written ledger.
-    renameSync(tmp, filePath);
+    const tmp = `${filePath}.${randomUUID()}.tmp`;
+    try {
+      writeFileSync(tmp, JSON.stringify(rows, null, 2), { encoding: 'utf-8', flag: 'wx' });
+      // Atomic swap, so a reader never sees a half-written ledger.
+      renameSync(tmp, filePath);
+    } catch (error) {
+      // A failed write or rename (Windows EPERM/EBUSY while the target is held)
+      // would otherwise leave this randomly named temp behind on every attempt.
+      try { unlinkSync(tmp); } catch { /* the temp may not exist */ }
+      throw error;
+    }
   } catch (err) {
     logger.warn('SESSION', 'Failed to write quota-cooldown file', { filePath }, err as Error);
   }

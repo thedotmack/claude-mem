@@ -1,7 +1,7 @@
 import { expect, it } from 'bun:test';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
-import ts from 'typescript';
+import ts from 'typescript-compiler-api';
 
 /**
  * G14: My Work's own pages and components use `Button` (variant="bare" for whole-card and title buttons), so the

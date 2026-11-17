@@ -304,6 +304,11 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     writeFileSync(claudeSettingsPath(), JSON.stringify({ env: { CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1', OTHER_SETTING: 'keep' } }));
     const installing = runInstallCommand({});
     const waiting = await waitForInstall('waiting');
+    const skillSource = readFileSync(join(import.meta.dir, '..', '..', 'plugin', 'skills', 'mem-search', 'SKILL.md'), 'utf8');
+    const frontmatter = skillSource.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+    const metadata = Bun.YAML.parse(frontmatter![1]) as { description: string };
+    expect(waiting.install.catalog.skills.find((skill: { id: string }) => skill.id === 'mem-search')?.description)
+      .toBe(metadata.description);
     expect(waiting.install.catalog.defaults.disableAutoMemory).toBe(true);
     expect(offeredTasks).not.toContain('Claude Code: registering plugin');
     expect((await browserPost('/api/setup/install', { ...waiting.install.catalog.defaults, agents: ['claude-code'], disableAutoMemory: false })).status).toBe(200);

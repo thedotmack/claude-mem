@@ -152,7 +152,7 @@ describe('Stop hook advisor-call capture', () => {
     await summarizeHandler.execute(stopInput());
 
     expect(workerCalls).toHaveLength(0);
-    expect(spooledEntries().map(entry => entry.kind)).toEqual(['summarize']);
+    expect((await spooledEntries()).map(entry => entry.kind)).toEqual(['summarize']);
   });
 
   it('records the turn\'s advisor calls before queueing the summary when enabled', async () => {
@@ -161,7 +161,7 @@ describe('Stop hook advisor-call capture', () => {
     await summarizeHandler.execute(stopInput());
 
     expect(workerCalls).toHaveLength(0);
-    const entries = spooledEntries();
+    const entries = (await spooledEntries());
     expect(entries.map(entry => entry.kind)).toEqual(['advisor_calls', 'summarize']);
     const body = entries[0].payload as any;
     expect(body.contentSessionId).toBe('advisor-stop-session');
@@ -183,7 +183,7 @@ describe('Stop hook advisor-call capture', () => {
 
     await summarizeHandler.execute(stopInput());
 
-    expect(spooledEntries('advisor_calls')).toEqual([]);
+    expect(await spooledEntries('advisor_calls')).toEqual([]);
     expect(workerCalls).toHaveLength(0);
   });
 
@@ -195,7 +195,7 @@ describe('Stop hook advisor-call capture', () => {
 
     await summarizeHandler.execute(stopInput());
 
-    const entries = spooledEntries('advisor_calls');
+    const entries = (await spooledEntries('advisor_calls'));
     expect(entries).toHaveLength(1);
     expect(workerCalls).toHaveLength(0);
     const { SessionStore } = await import('../../../src/services/sqlite/SessionStore.js');
@@ -219,7 +219,7 @@ describe('Stop hook advisor-call capture', () => {
     await summarizeHandler.execute(stopInput());
 
     expect(workerCalls).toHaveLength(0);
-    expect(spooledEntries()).toHaveLength(0);
+    expect(await spooledEntries()).toHaveLength(0);
     expect(serverEvents).toHaveLength(1);
   });
 });

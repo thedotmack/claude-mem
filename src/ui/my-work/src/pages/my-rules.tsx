@@ -1375,6 +1375,14 @@ export function NoRulesYet({ onAdd, readError, refresh }: { onAdd: () => void; r
           {/* Waiting for an agent, or failed: the shared refresh line, with Try again after a failure, as the page with
               rules shows it (a first refresh that failed left this page with no word of it). */}
           {!readError && (waiting || refreshLineState(refresh) === 'failed') && <RefreshStatus refresh={refresh} run={null} ids={['R14.13']} />}
+          {/* Waiting for an agent: where to set My Work up to refresh through an API provider instead (#6214). */}
+          {!readError && waiting && (
+            <EmptyDescription>
+              <a href="https://docs.claude-mem.ai/configuration#my-work-refresh-models" target="_blank" rel="noopener noreferrer">
+                {t('Configure My Work to use an API provider')}
+              </a>
+            </EmptyDescription>
+          )}
         </EmptyHeader>
         <EmptyContent className="items-center gap-3">
           {readError

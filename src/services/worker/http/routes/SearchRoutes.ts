@@ -28,7 +28,7 @@ import {
   type ContextCacheKeys,
 } from '../../../../shared/context-cache.js';
 import type { ContextCacheService, ContextVariantRender } from '../../ContextCacheService.js';
-import type { ContextReadWorkerClient } from '../../../context/ContextReadWorkerClient.js';
+import { ContextReadTimeoutError, type ContextReadWorkerClient } from '../../../context/ContextReadWorkerClient.js';
 import type { WorkStateEntry } from '../../../sqlite/work-state.js';
 
 interface ContextInjectRender {
@@ -387,6 +387,20 @@ export class SearchRoutes extends BaseRouteHandler {
     res.send(contextText);
   });
 
+  /**
+   * The reader deadline (#5374) is expected on a slow database, and the client
+   * already opened a new reader: answer 500 with a warning, not an
+   * error-tracking exception. Returns false for any other error.
+   */
+  private answerContextReadTimeout(res: Response, error: unknown, context: Record<string, unknown>): boolean {
+    if (!(error instanceof ContextReadTimeoutError)) return false;
+    const { method, queuedMs, runningMs } = error;
+    logger.warn('HTTP', 'Context injection failed: a context read ran past the deadline',
+      { ...context, method, queuedMs, runningMs }, error);
+    res.status(500).json({ error: error.message });
+    return true;
+  }
+
   private handleContextInject = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     // `cwd` below is resolved through getProjectContext, which runs `git` in it
     // (findGitRepoRoot), so another browser page must not choose it, even with
@@ -421,9 +435,15 @@ export class SearchRoutes extends BaseRouteHandler {
     // A host that cannot run the project resolver itself (the OMP hook) sends
     // its cwd instead: read the keys the CLI context hook sends for that checkout.
     if (!projectsParam && hostCwd.trim()) {
-      const resolvedProjects = this.contextReader
-        ? await this.contextReader.projectsForCwd(hostCwd)
-        : getProjectContext(hostCwd).allProjects;
+      let resolvedProjects: string[];
+      try {
+        resolvedProjects = this.contextReader
+          ? await this.contextReader.projectsForCwd(hostCwd)
+          : getProjectContext(hostCwd).allProjects;
+      } catch (error) {
+        if (this.answerContextReadTimeout(res, error, {})) return;
+        throw error;
+      }
       projectsParam = resolvedProjects.length > 0 ? resolvedProjects : undefined;
     }
     const forHuman = req.query.colors === 'true';
@@ -469,6 +489,7 @@ export class SearchRoutes extends BaseRouteHandler {
         outcome: 'error',
         duration_ms: Date.now() - injectStartedAt,
       });
+      if (this.answerContextReadTimeout(res, normalizedError, { projects, platformSource, full })) return;
       logger.error('HTTP', 'Context injection failed', { projects, platformSource, full }, normalizedError);
       throw error;
     }

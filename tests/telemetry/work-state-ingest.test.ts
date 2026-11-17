@@ -140,7 +140,7 @@ describe('work-state capture boundary', () => {
           expect(metrics.some(row => row.captured_write_ok_count === 1 && row.platform === 'codex' && row.agent_role === 'main')).toBe(true);
           expect(metrics.some(row => row.captured_prompt_count === 1 && row.instruction_state === 'returned')).toBe(true);
           expect(queue).not.toHaveBeenCalled();
-          expect(new HookSpool().entries()).toEqual([]);
+          expect((await new HookSpool().entries())).toEqual([]);
         } finally { request.mockRestore(); }
       });
     } finally {

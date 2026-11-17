@@ -81,7 +81,7 @@ describe('sessionEndHandler', () => {
     expect(result.suppressOutput).toBe(true);
     expect(workerCallLog).toHaveLength(0);
     expect(nudgeLog).toEqual(['/api/spool/nudge']);
-    expect(spooledEntries()).toEqual([{
+    expect(await spooledEntries()).toEqual([{
       kind: 'session_end',
       payload: { contentSessionId: 'session-end-123', platformSource: 'claude' },
       enqueuedAtEpochMs: expect.any(Number),
@@ -96,7 +96,7 @@ describe('sessionEndHandler', () => {
     await sessionEndHandler.execute({ ...input, reason: 'logout' });
 
     expect(workerCallLog).toHaveLength(0);
-    expect(spooledEntries('session_end')).toHaveLength(1);
+    expect(await spooledEntries('session_end')).toHaveLength(1);
   });
 
   it('does not call the worker in server runtime', async () => {
@@ -113,7 +113,7 @@ describe('sessionEndHandler', () => {
     expect(result.continue).toBe(true);
     expect(result.suppressOutput).toBe(true);
     expect(workerCallLog).toHaveLength(0);
-    expect(spooledEntries()).toHaveLength(0);
+    expect(await spooledEntries()).toHaveLength(0);
   });
 
   it('does not spool a SessionEnd from an untracked session that was never registered', async () => {
@@ -138,7 +138,7 @@ describe('sessionEndHandler', () => {
 
     expect(observerResult.continue).toBe(true);
     expect(observerResult.suppressOutput).toBe(true);
-    expect(spooledEntries('session_end')).toHaveLength(0);
+    expect(await spooledEntries('session_end')).toHaveLength(0);
     expect(nudgeLog).toHaveLength(0);
   });
 });

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import ts from 'typescript';
+import ts from 'typescript-compiler-api';
 import { buildSync } from 'esbuild';
 import { interpolate } from '../src/ui/i18n/locale.ts';
 import { myworkZh } from '../src/ui/i18n/mywork-zh.ts';

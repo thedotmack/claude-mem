@@ -5,17 +5,17 @@
 
     "xml_title_placeholder": "[**title**: Ana eylemi veya konuyu özetleyen kısa başlık]",
     "xml_subtitle_placeholder": "[**subtitle**: Tek cümlelik açıklama (maksimum 24 kelime)]",
-    "xml_fact_placeholder": "[Kısa ve bağımsız ifade]",
+    "xml_fact_placeholder": "[Tek başına anlaşılabilen kısa bir olgu ifadesi]",
     "xml_narrative_placeholder": "[**narrative**: Tam bağlam: ne yapıldı, nasıl çalışıyor, neden önemli]",
     "xml_concept_placeholder": "[bilgi-türü-kategorisi]",
     "xml_file_placeholder": "[dosya/yolu]",
 
-    "xml_summary_request_placeholder": "[Kullanıcının talebini ve tartışılan/yapılan şeyin özünü özetleyen kısa başlık]",
+    "xml_summary_request_placeholder": "[Kullanıcının isteğini ve konuşulan ya da yapılan işin özünü özetleyen kısa başlık]",
     "xml_summary_investigated_placeholder": "[Şu ana kadar ne araştırıldı? Ne incelendi?]",
-    "xml_summary_learned_placeholder": "[İşlerin nasıl çalıştığı hakkında ne öğrendiniz?]",
-    "xml_summary_completed_placeholder": "[Şu ana kadar hangi iş tamamlandı? Ne gönderildi veya değiştirildi?]",
-    "xml_summary_next_steps_placeholder": "[Bu oturumda aktif olarak üzerinde çalıştığınız veya çalışmayı planladığınız şey nedir?]",
-    "xml_summary_notes_placeholder": "[Mevcut ilerleme hakkında ek görüşler veya gözlemler]",
+    "xml_summary_learned_placeholder": "[İncelenen sistemin işleyişi hakkında neler öğrenildi?]",
+    "xml_summary_completed_placeholder": "[Şu ana kadar hangi işler tamamlandı? Neler teslim edildi veya değiştirildi?]",
+    "xml_summary_next_steps_placeholder": "[Bu oturumda şu anda hangi iş üzerinde çalışılıyor veya sırada hangi iş var?]",
+    "xml_summary_notes_placeholder": "[Şu ana kadarki ilerlemeye ilişkin ek bilgiler veya gözlemler]",
 
     "continuation_instruction": "IMPORTANT: Continue generating observations from tool use messages using the XML structure above.\n\nLANGUAGE REQUIREMENTS: Please write the observation data in Türkçe",
 

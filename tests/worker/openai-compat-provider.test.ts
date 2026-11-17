@@ -98,6 +98,7 @@ describe('resolveOpenAICompatConfig', () => {
     ['iflytek', 'https://maas-api.cn-huabei-1.xf-yun.com/v2', 'spark-x2.5'],
     ['minimax', 'https://api.minimax.io/v1', 'MiniMax-M3'],
     ['minimax-cn', 'https://api.minimaxi.com/v1', 'MiniMax-M3'],
+    ['modelgo', 'https://api.modelgo.ai/v1', ''],
     ['obscurify-ai', 'https://obscurify.ai/v1', 'deepseek/deepseek-v4-flash'],
     ['opencode-go', 'https://opencode.ai/zen/go/v1', 'kimi-k3'],
     ['opencode-zen', 'https://opencode.ai/zen/v1', ''],

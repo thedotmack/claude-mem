@@ -1,7 +1,7 @@
 import type express from 'express';
 import type { Request, Response, NextFunction } from 'express';
-import { createHash, randomBytes } from 'node:crypto';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, extname, join } from 'node:path';
 import { z } from 'zod';
@@ -20,7 +20,7 @@ import { FILE_CONTENT_TYPES } from '../../../work-view/work-product.mjs';
 import { isInsideDeliverablesDir } from '../../../../shared/deliverables.js';
 import { contentFingerprint, priorContentFingerprint, LocalReviewStore } from '../../../work-view/review-store.js';
 import { MY_RULES_LIST, renderRulesFile, ruleRowFields, type SavedRule } from '../../../work-view/my-rules.mjs';
-import { claudeCodeImportLine, homeRelativePath, RULES_AND_TOOLS_FILENAME } from '../../../../shared/claude-code-rules-import.js';
+import { claudeCodeImportLine, hasImportLine, homeRelativePath, RULES_AND_TOOLS_FILENAME } from '../../../../shared/claude-code-rules-import.js';
 import { ensureRulesAndToolsFile } from '../../../context/RulesAndToolsFile.js';
 import { focusAreaRowFields, MY_FOCUS_LIST, navWordIn, OTHER_FOCUS_AREA_ID, ownerGoalsAreaRows, placementRowFields, PROPOSAL_KINDS, readFocus, routerFocusRows, seedFocusRows, seedUndoRows, type FocusArea, type RouterFocusBody } from '../../../work-view/my-focus.mjs';
 import { MAX_WORK_STATE_FIELDS_JSON_CHARS } from '../../../work-view/work-state-limits.mjs';
@@ -1323,7 +1323,8 @@ export class WorkViewRoutes extends BaseRouteHandler {
       path: homeRelativePath(this.rulesFilePath),
       instructionsPath: homeRelativePath(this.claudeInstructionsPath),
       approvedCount: renderRulesFile(rules).approvedCount,
-      loadedInClaudeCode: instructions.split('\n').some(line => line.trim() === myRulesImportLine(this.rulesFilePath)),
+      // Any spelling Claude Code loads counts (`@~/…` or an absolute `/` path), not only the one this worker writes.
+      loadedInClaudeCode: hasImportLine(instructions, this.rulesFilePath),
     };
   }
 
@@ -1356,9 +1357,16 @@ export class WorkViewRoutes extends BaseRouteHandler {
     // The import must never point at a missing file: Claude Code skips it without a word. SessionStart
     // keeps its text current (mode, runtime, settings), so only a missing file is written here.
     if (!existsSync(this.rulesAndToolsPath)) ensureRulesAndToolsFile(true, this.rulesAndToolsPath);
-    const temp = join(dirname(this.rulesFilePath), `.MY-RULES.md.${process.pid}.tmp`);
-    writeFileSync(temp, this.renderRulesMarkdown(rules), { mode: 0o644 });
-    renameSync(temp, this.rulesFilePath);
+    const temp = join(dirname(this.rulesFilePath), `.MY-RULES.md.${randomUUID()}.tmp`);
+    try {
+      writeFileSync(temp, this.renderRulesMarkdown(rules), { mode: 0o644, flag: 'wx' });
+      renameSync(temp, this.rulesFilePath);
+    } catch (error) {
+      // A failed write or rename (Windows EPERM/EBUSY while the target is held)
+      // would otherwise leave this randomly named temp behind on every attempt.
+      try { unlinkSync(temp); } catch { /* the temp may not exist */ }
+      throw error;
+    }
   }
 
   private saveRule = async (req: Request, res: Response): Promise<void> => {

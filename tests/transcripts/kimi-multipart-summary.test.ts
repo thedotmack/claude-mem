@@ -93,7 +93,7 @@ describe('Kimi multipart assistant summaries', () => {
     expect(input.transcriptPath).toBe(wirePath);
     const result = await summarizeHandler.execute(input);
     expect(result.exitCode).toBe(0);
-    const summaries = spooledEntries('summarize');
+    const summaries = (await spooledEntries('summarize'));
     expect(summaries).toHaveLength(1);
     expect(summaries[0].payload).toMatchObject({
       contentSessionId: 'session_multipart', platformSource: 'kimi',

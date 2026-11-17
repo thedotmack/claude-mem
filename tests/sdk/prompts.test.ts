@@ -102,6 +102,8 @@ describe('buildObservationPrompt', () => {
     }, summaryMode);
 
     expect(prompt).toContain('reply with exactly <skip_summary reason="nothing durable" /> instead of an empty response or prose');
+    expect(prompt).toContain('at least one of <investigated>, <learned>, <completed>, or <notes>');
+    expect(prompt).toContain('Do not invent progress to fill fields; notes-only summaries are accepted.');
   });
 });
 

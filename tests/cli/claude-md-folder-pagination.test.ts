@@ -42,6 +42,57 @@ describe('CLAUDE.md direct-child pagination', () => {
     // Spawns Bun and runs every migration on a fresh database: well past the
     // 5s default on a slow runner.
   }, 30_000);
+  it('pages every folder on its own from the one shared scan', () => {
+    // src/a and lib/a share a bucket; src's only row is older than both pages.
+    const project = generateIn({ files: ['src/a/x.ts', 'lib/a/y.ts', 'src/z.ts'], settings: { CLAUDE_MEM_CONTEXT_OBSERVATIONS: '1' },
+      seed: `
+      [['Old src edit', 'src/z.ts'], ['Old src/a edit', 'src/a/x.ts'], ['New lib/a edit', 'lib/a/y.ts'], ['New src/a edit', 'src/a/x.ts']]
+        .forEach(([title, file], i) => {
+          const memory = 'memory-' + i;
+          const id = store.createSDKSession('content-' + i, project, 'prompt');
+          store.ensureMemorySessionIdRegistered(id, memory);
+          store.storeObservation(memory, project, {
+            type: 'discovery', title, subtitle: null, narrative: 'native fixture', facts: [], concepts: [],
+            files_read: [file], files_modified: []
+          }, 1, 0, 100 + i);
+        });
+      `,
+    });
+    const srcA = readFileSync(join(project, 'src', 'a', 'CLAUDE.md'), 'utf8');
+    expect(srcA).toContain('New src/a edit');
+    expect(srcA).not.toContain('Old src/a edit');
+    expect(srcA).not.toContain('lib/a');
+    const libA = readFileSync(join(project, 'lib', 'a', 'CLAUDE.md'), 'utf8');
+    expect(libA).toContain('New lib/a edit');
+    expect(libA).not.toContain('src/a edit');
+    expect(readFileSync(join(project, 'src', 'CLAUDE.md'), 'utf8')).toContain('Old src edit');
+    expect(existsSync(join(project, 'lib', 'CLAUDE.md'))).toBe(false);
+  }, 30_000);
+  it('keeps relative evidence for a same-named top-level folder out of a nested folder', () => {
+    // src/auth and auth share a bucket. The newest row names relative
+    // auth/login.ts, which belongs to auth only; it must not take src/auth's
+    // one slot from the older src/auth edit.
+    const project = generateIn({ files: ['src/auth/x.ts', 'auth/login.ts'], settings: { CLAUDE_MEM_CONTEXT_OBSERVATIONS: '1' },
+      seed: `
+      [['Older src/auth edit', 'src/auth/x.ts'], ['Newer top-level auth edit', 'auth/login.ts']]
+        .forEach(([title, file], i) => {
+          const memory = 'memory-' + i;
+          const id = store.createSDKSession('content-' + i, project, 'prompt');
+          store.ensureMemorySessionIdRegistered(id, memory);
+          store.storeObservation(memory, project, {
+            type: 'discovery', title, subtitle: null, narrative: 'native fixture', facts: [], concepts: [],
+            files_read: [file], files_modified: []
+          }, 1, 0, 100 + i);
+        });
+      `,
+    });
+    const srcAuth = readFileSync(join(project, 'src', 'auth', 'CLAUDE.md'), 'utf8');
+    expect(srcAuth).toContain('Older src/auth edit');
+    expect(srcAuth).not.toContain('Newer top-level auth edit');
+    const auth = readFileSync(join(project, 'auth', 'CLAUDE.md'), 'utf8');
+    expect(auth).toContain('Newer top-level auth edit');
+    expect(auth).not.toContain('Older src/auth edit');
+  }, 30_000);
   it('includes direct children recorded as absolute tool paths', () => {
     // Read/Edit/Write tool inputs store absolute file paths, while generate
     // looks folders up by their project-relative path.
