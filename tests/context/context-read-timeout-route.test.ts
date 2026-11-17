@@ -1,15 +1,13 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import express from 'express';
 import type { AddressInfo } from 'node:net';
-import { postHogCaptureCalls } from '../preload.js';
 import { ContextReadTimeoutError } from '../../src/services/context/ContextReadWorkerClient.js';
 import { SearchRoutes } from '../../src/services/worker/http/routes/SearchRoutes.js';
 import { ContextCacheService } from '../../src/services/worker/ContextCacheService.js';
 import { contextCacheKeys } from '../../src/shared/context-cache.js';
-import { __resetTelemetryForTests } from '../../src/services/telemetry/telemetry.js';
 import { logger } from '../../src/utils/logger.js';
 
-async function inject(contextReader: unknown): Promise<{ status: number; body: unknown }> {
+async function inject(contextReader: unknown, query = 'projects=app'): Promise<{ status: number; body: unknown }> {
   const routes = new SearchRoutes({ getSessionStore: () => ({ getLocalSyncDeviceId: () => '' }) } as any, undefined, null, contextReader as any);
   const app = express();
   routes.setupRoutes(app);
@@ -17,7 +15,7 @@ async function inject(contextReader: unknown): Promise<{ status: number; body: u
   await new Promise(resolve => server.once('listening', resolve));
   try {
     const port = (server.address() as AddressInfo).port;
-    const response = await fetch(`http://127.0.0.1:${port}/api/context/inject?projects=app`);
+    const response = await fetch(`http://127.0.0.1:${port}/api/context/inject?${query}`);
     return { status: response.status, body: await response.json() };
   } finally {
     server.closeAllConnections();
@@ -38,17 +36,16 @@ describe('context injection when a context read runs past the deadline', () => {
     sunk.length = 0;
   });
 
-  it('answers 500 and records the slow read without an error-tracking exception', async () => {
-    __resetTelemetryForTests();
-    postHogCaptureCalls.length = 0;
+  it.each([
+    ['projects', 'projects=app'],
+    ['cwd only', 'cwd=%2Ftmp%2Fapp'],
+  ])('answers 500 without an error-tracking exception when the request names %s', async (_label, query) => {
     logger.setErrorSink(error => sunk.push(error));
 
-    const result = await inject(readerThatFails(new ContextReadTimeoutError(120_000, 'render', 80_000, 40_000)));
+    const result = await inject(readerThatFails(new ContextReadTimeoutError(120_000, 'render', 80_000, 40_000)), query);
 
     expect(result).toEqual({ status: 500, body: { error: 'Context reader timed out after 120000ms' } });
     expect(sunk).toHaveLength(0);
-    const timedOut = postHogCaptureCalls.find(call => call.event === 'context_read_timed_out');
-    expect(timedOut?.properties).toMatchObject({ read_method: 'render', queue_wait_ms: 80_000, duration_ms: 40_000 });
   });
 
   it('still reports any other reader failure to error tracking', async () => {

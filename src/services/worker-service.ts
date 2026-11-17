@@ -1312,6 +1312,9 @@ export class WorkerService implements WorkerRef {
       }
       const searchRecencyWindowMs = parsedRecencyWindowMs ?? SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
       const contextReader = getContextReadWorker();
+      contextReader.setTimeoutListener(({ method, queuedMs, runningMs }) => {
+        captureEvent('context_read_timed_out', { read_method: method, queue_wait_ms: queuedMs, duration_ms: runningMs });
+      });
       const searchManager = new SearchManager(
         this.dbManager.getSessionSearch(),
         this.dbManager.getSessionStore(),

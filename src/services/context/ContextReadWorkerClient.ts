@@ -77,6 +77,7 @@ export class ContextReadWorkerClient {
   private readonly pending = new Map<number, PendingRead>();
   private nextId = 0;
   private closed = false;
+  private timeoutListener: ((error: ContextReadTimeoutError) => void) | null = null;
   private readonly requestTimeoutMs: number;
   private readonly terminateTimeoutMs: number;
   private readonly openWorker: () => ContextReadWorkerHandle;
@@ -121,6 +122,11 @@ export class ContextReadWorkerClient {
 
   async searchUserPrompts(query: string | undefined, options: SearchOptions): Promise<UserPromptSearchResult[]> {
     return this.request('searchUserPrompts', { query, options });
+  }
+
+  /** Called once each time a read runs past the deadline and retires the reader. */
+  setTimeoutListener(listener: ((error: ContextReadTimeoutError) => void) | null): void {
+    this.timeoutListener = listener;
   }
 
   async close(): Promise<void> {
@@ -184,9 +190,8 @@ export class ContextReadWorkerClient {
           if (this.pending.get(id) !== pending) return;
           const now = Date.now();
           const startedAt = pending.startedAt ?? now;
-          this.retireWorker(worker, new ContextReadTimeoutError(
-            this.requestTimeoutMs, method, startedAt - queuedAt, now - startedAt,
-          ));
+          const error = new ContextReadTimeoutError(this.requestTimeoutMs, method, startedAt - queuedAt, now - startedAt);
+          if (this.retireWorker(worker, error)) this.timeoutListener?.(error);
         }, this.requestTimeoutMs),
       };
       unrefTimer(pending.timer);
@@ -207,10 +212,11 @@ export class ContextReadWorkerClient {
     this.detachWorker(worker, error);
   }
 
-  private retireWorker(worker: ContextReadWorkerHandle, error: Error): void {
-    if (!this.detachWorker(worker, error)) return;
+  private retireWorker(worker: ContextReadWorkerHandle, error: Error): boolean {
+    if (!this.detachWorker(worker, error)) return false;
     worker.unref();
     void this.boundedTerminate(worker);
+    return true;
   }
 
   /** Drop this thread from the client. A later read opens a replacement. */

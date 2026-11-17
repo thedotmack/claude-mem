@@ -96,6 +96,8 @@ describe('context reader deadlines', () => {
       },
     });
 
+    const reported: ContextReadTimeoutError[] = [];
+    reader.setTimeoutListener(error => reported.push(error));
     const earlier = reader.readKeys(['a']);
     const stuck = rejectionOf(reader.workState(['a']));
     await new Promise(resolve => setTimeout(resolve, 150));
@@ -111,6 +113,7 @@ describe('context reader deadlines', () => {
     expect(timeout.runningMs).toBeGreaterThanOrEqual(100);
     expect(timeout.queuedMs + timeout.runningMs).toBeGreaterThanOrEqual(290);
     expect(workers[0].terminateCalls).toBe(1);
+    expect(reported).toEqual([timeout]);
 
     await reader.close();
   });
