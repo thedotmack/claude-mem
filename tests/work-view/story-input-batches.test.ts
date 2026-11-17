@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildRefreshTask } from '../../src/services/work-view/refresh-task.js';
 import { boundedStoryPreferences, storyPreferenceEvidence } from '../../src/services/work-view/story-batches.js';
 import { readLedger, runCli, storyInput } from '../../src/services/work-view/request-groups.mjs';
+import { AutoRefreshWorker } from '../../src/services/work-view/auto-refresh-worker.mjs';
+import { readStoryCache, storyFingerprint, writeStoryCache } from '../../src/services/work-view/story-cache.js';
+import { registerSharedFileWriter } from '../../src/services/work-view/shared-file-hooks.mjs';
 import { everyRequestInOther, focusWriter } from '../helpers/fake-focus-writer.js';
 
 const NOW = Date.parse('2026-11-16T10:00:00.000Z');
@@ -47,7 +50,7 @@ function fixture(count = 32) {
   const task = () => buildRefreshTask({ localDeviceId: () => '', needs: { due: 0, ungrouped: 0, goalsStale: false, unplaced: count, otherChanged: false, needed: true },
     reason: 'manual', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, now: () => now,
     openDatabase: () => ({ prepare: database.prepare.bind(database), close() {} }), saveFocus: focusWriter(database).save });
-  return { dir, ids: cli(['story-input']).reviews.map((review: any) => review.groupId), cli, task,
+  return { dir, database, ids: cli(['story-input']).reviews.map((review: any) => review.groupId), cli, task,
     advance() { now += 1000; }, close() { database.close(); rmSync(dir, { recursive: true, force: true }); } };
 }
 
@@ -63,6 +66,12 @@ function preferenceFile(prompt: string) {
   expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(INPUT_BYTES);
   expect(Buffer.byteLength(prompt, 'utf8')).toBeLessThan(320 * 1024);
   return JSON.parse(text) as { values: Array<{ id: number; evidence: Record<string, any> }> };
+}
+
+function canonicalAnswer(input: { values: Array<{ id: number; evidence: Record<string, any> }> },
+  target: (value: { id: number; evidence: Record<string, any> }) => string = value => value.evidence.preference) {
+  return { assignments: input.values.map(value => ({ id: value.id,
+    key: { action: 'apply', target: target(value), condition: '', polarity: 'require' } })) };
 }
 
 function largePreferences(f: ReturnType<typeof fixture>) {
@@ -128,14 +137,15 @@ describe('bounded story inputs', () => {
   it('leaves reviews changed during the story run due for the next refresh', async () => {
     const f = fixture(1);
     try {
-      await f.task().run(async prompt => {
+      await expect(f.task().run(async prompt => {
         if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
         f.advance();
         const groupId = f.ids[0];
         const review = readLedger(f.dir).progress[groupId];
         f.cli(['record-progress'], { ...review, percent: 60, reviewBasis: f.cli(['show', groupId]).reviewBasis });
         return JSON.stringify({ narrative: 'The snapshot showed 40 percent.', preferences: [] });
-      }, 'api');
+      }, 'api')).rejects.toThrow('review evidence, or local device changed');
+      expect(readLedger(f.dir).story).toBeNull();
       expect(f.cli(['story-input']).reviews.map((review: any) => review.percent)).toEqual([60]);
     } finally { f.close(); }
   });
@@ -162,7 +172,7 @@ describe('bounded story inputs', () => {
         expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(INPUT_BYTES);
         expect(input.preferenceEvidence).toEqual({
           values: [first, last],
-          requests: [{ groupId: f.ids[0], preferences: [0] }, { groupId: f.ids.at(-1), preferences: [1] }],
+          requests: f.ids.map(groupId => ({ groupId, preferences: groupId === f.ids[0] ? [0] : groupId === f.ids.at(-1) ? [1] : [] })),
         });
         expect(input.previousStory.preferences).toEqual([savedPreference]);
         expect(input.reviews.every((review: any) => !Object.hasOwn(review, 'preferences'))).toBe(true);
@@ -193,7 +203,8 @@ describe('bounded story inputs', () => {
       const expected = new Set([JSON.stringify(savedPreference), ...original.flat().map((value: any) => JSON.stringify(value))]);
       expect(Buffer.byteLength(JSON.stringify([...expected]), 'utf8')).toBeGreaterThan(INPUT_BYTES);
       const evidenceSeen = new Set<string>(), reviewsSeen: string[] = [];
-      let comparisons = 0, crossPageMatch = false;
+      let comparisons = 0;
+      const pages = new Map<string, number>();
       await f.task().run(async prompt => {
         if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
         expect(readLedger(f.dir).story).toEqual(saved);
@@ -205,10 +216,9 @@ describe('bounded story inputs', () => {
             expect(expected.has(encoded)).toBe(true);
             evidenceSeen.add(encoded);
           }
-          const matches = input.values.filter(value => [first.preference, sameRequest.preference, last.preference].includes(value.evidence.preference));
-          if (matches.some(value => value.evidence.preference === first.preference) && matches.some(value => value.evidence.preference === last.preference)) crossPageMatch = true;
-          const rest = input.values.filter(value => !matches.includes(value)).map(value => [value.id]);
-          return JSON.stringify({ groups: [...rest, ...(matches.length ? [matches.map(value => value.id)] : [])] });
+          for (const value of input.values) pages.set(value.evidence.preference, comparisons);
+          return JSON.stringify(canonicalAnswer(input, value => [first.preference, sameRequest.preference, last.preference].includes(value.evidence.preference)
+            ? 'run tests before committing' : value.evidence.preference));
         }
         const { input, text } = storyFile(prompt);
         expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(INPUT_BYTES);
@@ -217,10 +227,10 @@ describe('bounded story inputs', () => {
         reviewsSeen.push(...input.reviews.map((review: any) => review.groupId));
         return JSON.stringify({ narrative: reviewsSeen.join(', '), preferences: [] });
       }, 'api');
-      // 319 distinct new values plus one saved preference occupy four pages.
+      // 319 distinct new values plus one saved preference need five linear pages.
       expect(expected.size).toBe(320);
-      expect(comparisons).toBe(6);
-      expect(crossPageMatch).toBe(true);
+      expect(comparisons).toBe(5);
+      expect(pages.get(first.preference)).not.toBe(pages.get(last.preference));
       expect(evidenceSeen).toEqual(expected);
       expect(reviewsSeen).toEqual(f.ids);
       expect(readLedger(f.dir).story.preferences).toEqual([savedPreference, {
@@ -242,9 +252,11 @@ describe('bounded story inputs', () => {
         preferences: [{ kind: 'directive', preference: 'Make each change focused.', quote: `Keep ${groupId} to one concern.`, at: null }],
         reviewBasis: f.cli(['show', groupId]).reviewBasis });
       const input = f.cli(['story-input']);
-      const preferences = await boundedStoryPreferences(input, storyPreferenceEvidence(input), async (comparison, validate) => {
-        return validate({ groups: [comparison.values.map(value => value.id)] });
+      const { preferences, provenance } = await boundedStoryPreferences(input, storyPreferenceEvidence(input), async (comparison, validate) => {
+        return validate(canonicalAnswer(comparison, () => 'keep changes focused'));
       });
+      expect(provenance[0].legacySupportCount).toBe(3);
+      expect(provenance[0].requestIds).toHaveLength(2);
       expect(preferences).toHaveLength(1);
       expect(preferences[0].preference).toBe(savedPreference.preference);
       expect(preferences[0].supportCount).toBe(3);
@@ -259,15 +271,13 @@ describe('bounded story inputs', () => {
       preference: `Preference ${id}`, quote: `Original quote ${id}`, at: null }));
     const requests = values.map((_, id) => ({ groupId: id === 0 || id === 128 ? 'same-request' : `request-${id}`, preferences: [id] }));
     let comparisons = 0;
-    const preferences = await boundedStoryPreferences(storyInput(256, [], null), { values, requests }, async (input, validate) => {
+    const { preferences } = await boundedStoryPreferences(storyInput(256, [], null), { values, requests }, async (input, validate) => {
       comparisons++;
       expect(Buffer.byteLength(JSON.stringify(input, null, 2), 'utf8')).toBeLessThanOrEqual(INPUT_BYTES);
-      const ids = input.values.map(value => value.id);
-      const bridge = ids.includes(128) ? ids.filter(id => [0, 128, 256].includes(id)) : [];
-      const groups = ids.filter(id => !bridge.includes(id)).map(id => [id]);
-      return validate({ groups: [...groups, ...(bridge.length ? [bridge] : [])] });
+      // The same three source members retain their equivalence across distant pages.
+      return validate(canonicalAnswer(input, value => [0, 128, 256].includes(value.id) ? 'bridge preference' : value.evidence.preference));
     });
-    expect(comparisons).toBe(3);
+    expect(comparisons).toBe(5);
     expect(preferences).toEqual([{ preference: 'Preference 0', kind: 'directive', supportCount: 2,
       quotes: [0, 128, 256].map(id => ({ quote: `Original quote ${id}`, at: null })),
     }]);
@@ -286,7 +296,8 @@ describe('bounded story inputs', () => {
         if (invalid === 'missing') ids.pop();
         if (invalid === 'duplicate') ids.push(ids[0]);
         if (invalid === 'unknown') ids[0] = 999_999;
-        return JSON.stringify({ groups: ids.map(id => [id]) });
+        const answer = canonicalAnswer(input);
+        return JSON.stringify({ assignments: ids.map(id => ({ id, key: answer.assignments[0].key })) });
       }, 'api')).rejects.toThrow('preference id');
       expect(comparisons).toBe(2);
       expect(readLedger(f.dir).story).toBeNull();
@@ -305,12 +316,241 @@ describe('bounded story inputs', () => {
         if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
         const input = preferenceFile(prompt);
         if (++comparisons === 2) throw new Error('Provider stopped during preference comparison');
-        return JSON.stringify({ groups: input.values.map(value => [value.id]) });
+        return JSON.stringify(canonicalAnswer(input));
       }, 'api')).rejects.toThrow('Provider stopped during preference comparison');
       expect(comparisons).toBe(2);
       expect(readLedger(f.dir).story).toEqual(saved);
       expect(f.cli(['story-input']).reviews.map((review: any) => review.groupId)).toEqual(f.ids);
     } finally { f.close(); }
+  });
+
+  it('resumes checked preference pages and narrative drafts on a fresh task without replaying them', async () => {
+    const f = fixture();
+    try {
+      largePreferences(f);
+      let pages = 0;
+      await expect(f.task().run(async prompt => {
+        if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
+        const input = preferenceFile(prompt);
+        if (++pages === 3) throw new Error('Preference provider stopped');
+        return JSON.stringify(canonicalAnswer(input));
+      }, 'api')).rejects.toThrow('Preference provider stopped');
+      const cachePath = join(f.dir, 'story-preferences', 'state.json');
+      expect(Object.keys(JSON.parse(readFileSync(cachePath, 'utf8')).canonical)).toHaveLength(128);
+      const priorReadAt = JSON.parse(readFileSync(cachePath, 'utf8')).checkpoint.readAt;
+      f.advance();
+      let remainingPages = 0, narrativeCalls = 0;
+      let checkedFirstBatch: string[] = [];
+      await expect(f.task().run(async prompt => {
+        if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
+        if (prompt.includes('`preference-input`')) {
+          remainingPages++;
+          return JSON.stringify(canonicalAnswer(preferenceFile(prompt)));
+        }
+        const { input } = storyFile(prompt);
+        if (++narrativeCalls === 2) throw new Error('Narrative provider stopped');
+        checkedFirstBatch = input.reviews.map((review: any) => review.groupId);
+        return JSON.stringify({ narrative: checkedFirstBatch.join(', '), preferences: [] });
+      }, 'api')).rejects.toThrow('Narrative provider stopped');
+      expect(remainingPages).toBe(3);
+      expect(readLedger(f.dir).story).toBeNull();
+      f.advance();
+      const resumed: string[] = [];
+      await f.task().run(async prompt => {
+        if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
+        expect(prompt).not.toContain('`preference-input`');
+        const { input } = storyFile(prompt);
+        expect(input.reviews.every((review: any) => !checkedFirstBatch.includes(review.groupId))).toBe(true);
+        resumed.push(...input.reviews.map((review: any) => review.groupId));
+        return JSON.stringify({ narrative: `${input.previousStory.narrative}, ${input.reviews.map((review: any) => review.groupId).join(', ')}`, preferences: [] });
+      }, 'api');
+      expect([...checkedFirstBatch, ...resumed]).toEqual(f.ids);
+      expect(readLedger(f.dir).story.writtenAt).toBe(new Date(priorReadAt).toISOString());
+      expect(f.cli(['story-input']).reviews).toEqual([]);
+    } finally { f.close(); }
+  });
+
+  it('saves a fully checked story after a storage failure without another model call', async () => {
+    const f = fixture();
+    let unregister = () => {};
+    try {
+      largePreferences(f);
+      unregister = registerSharedFileWriter(f.dir, (name: string) => {
+        if (name === 'story.json') throw new Error('Story storage unavailable');
+        return null;
+      });
+      await expect(f.task().run(async prompt => {
+        if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
+        if (prompt.includes('`preference-input`')) return JSON.stringify(canonicalAnswer(preferenceFile(prompt)));
+        const { input } = storyFile(prompt);
+        return JSON.stringify({ narrative: `${input.previousStory?.narrative ?? ''}checked batch.`, preferences: [] });
+      }, 'api')).rejects.toThrow('Story storage unavailable');
+      expect(readLedger(f.dir).story).toBeNull();
+      unregister();
+      unregister = () => {};
+      await f.task().run(async prompt => { throw new Error(`Already checked: ${prompt.slice(-80)}`); }, 'api');
+      expect(readLedger(f.dir).story.narrative).toContain('checked batch.');
+      expect(f.cli(['story-input']).reviews).toEqual([]);
+    } finally { unregister(); f.close(); }
+  });
+
+  it('reuses immutable preference keys after source changes while invalidating narrative drafts', async () => {
+    const f = fixture();
+    try {
+      largePreferences(f);
+      let narratives = 0;
+      await expect(f.task().run(async prompt => {
+        if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
+        if (prompt.includes('`preference-input`')) return JSON.stringify(canonicalAnswer(preferenceFile(prompt)));
+        if (++narratives === 2) throw new Error('Stop after a checked narrative');
+        return JSON.stringify({ narrative: 'Old source snapshot.', preferences: [] });
+      }, 'api')).rejects.toThrow('Stop after a checked narrative');
+      f.advance();
+      const groupId = f.ids[0], review = readLedger(f.dir).progress[groupId];
+      const preferences = [...review.preferences];
+      preferences[0] = { ...preferences[0], quote: 'One changed immutable quote.' };
+      f.cli(['record-progress'], { ...review, preferences, reviewBasis: f.cli(['show', groupId]).reviewBasis });
+      let changedValues = 0, firstNarrative = true;
+      await f.task().run(async prompt => {
+        if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
+        if (prompt.includes('`preference-input`')) {
+          const input = preferenceFile(prompt);
+          changedValues += input.values.length;
+          expect(input.values.map(value => value.evidence.quote)).toEqual(['One changed immutable quote.']);
+          return JSON.stringify(canonicalAnswer(input));
+        }
+        const { input } = storyFile(prompt);
+        if (firstNarrative) { expect(input.previousStory).toBeNull(); firstNarrative = false; }
+        return JSON.stringify({ narrative: 'Updated source snapshot.', preferences: [] });
+      }, 'api');
+      expect(changedValues).toBe(1);
+      expect(readLedger(f.dir).story.narrative).toBe('Updated source snapshot.');
+    } finally { f.close(); }
+  });
+
+  it('invalidates canonical answers when the selected story model changes', async () => {
+    const f = fixture();
+    try {
+      largePreferences(f);
+      let calls = 0;
+      await expect(f.task().run(async prompt => {
+        if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
+        const input = preferenceFile(prompt);
+        if (++calls === 2) throw new Error('Stop after checked keys');
+        return JSON.stringify(canonicalAnswer(input));
+      }, 'api')).rejects.toThrow('Stop after checked keys');
+      writeFileSync(join(f.dir, 'settings.json'), JSON.stringify({ CLAUDE_MEM_WORK_VIEW_API_MODEL: 'changed-model' }));
+      let pages = 0;
+      await f.task().run(async prompt => {
+        if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
+        if (prompt.includes('`preference-input`')) { pages++; return JSON.stringify(canonicalAnswer(preferenceFile(prompt))); }
+        return JSON.stringify({ narrative: 'Checked using the new model.', preferences: [] });
+      }, 'api');
+      expect(pages).toBe(5);
+    } finally { f.close(); }
+  });
+
+  it('stores request provenance privately and counts three old plus two new supporting requests exactly once', async () => {
+    const f = fixture();
+    try {
+      largePreferences(f);
+      const support = { kind: 'directive', preference: 'Keep changes focused.', quote: 'Keep each change focused.', at: null };
+      const addSupport = (ids: string[]) => {
+        for (const groupId of ids) {
+          const review = readLedger(f.dir).progress[groupId];
+          f.cli(['record-progress'], { ...review, preferences: [support, ...review.preferences.slice(1)],
+            reviewBasis: f.cli(['show', groupId]).reviewBasis });
+        }
+      };
+      const ask = async (prompt: string) => {
+        if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
+        if (prompt.includes('`preference-input`')) return JSON.stringify(canonicalAnswer(preferenceFile(prompt)));
+        const { input, text } = storyFile(prompt);
+        expect(text).not.toContain('requestIds');
+        expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(INPUT_BYTES);
+        return JSON.stringify({ narrative: 'Checked evidence.', preferences: [] });
+      };
+      addSupport(f.ids.slice(0, 3));
+      await f.task().run(ask, 'api');
+      expect(readLedger(f.dir).story.preferences[0].supportCount).toBe(3);
+      f.advance();
+      addSupport(f.ids.slice(3, 5));
+      await f.task().run(ask, 'api');
+      expect(readLedger(f.dir).story.preferences[0].supportCount).toBe(5);
+      f.advance();
+      for (const groupId of f.ids.slice(0, 2)) {
+        const review = readLedger(f.dir).progress[groupId];
+        f.cli(['record-progress'], { ...review, percent: 50, reviewBasis: f.cli(['show', groupId]).reviewBasis });
+      }
+      await f.task().run(ask, 'api');
+      const story = readLedger(f.dir).story;
+      expect(story.preferences[0].supportCount).toBe(5);
+      expect(JSON.stringify(story)).not.toContain('requestIds');
+      const cache = JSON.parse(readFileSync(join(f.dir, 'story-preferences', 'state.json'), 'utf8'));
+      const proof = cache.proofs.find((value: any) => value.storyHash === storyFingerprint(story));
+      expect(proof.preferences[0].requestIds).toEqual([...f.ids.slice(0, 5)].sort());
+      expect(proof.preferences[0].legacySupportCount).toBeUndefined();
+    } finally { f.close(); }
+  });
+
+  it('keeps a 1100-request support set out of the shared story and all model inputs', async () => {
+    const f = fixture(1);
+    try {
+      const raw = { preference: 'Run tests before committing.', kind: 'directive', quote: 'Run tests before committing.', at: null };
+      const source = storyInput(1100, Array.from({ length: 1100 }, (_, id) => ({ groupId: `request-${id}`, preferences: [raw] })), null);
+      const canonical: Record<string, any> = {};
+      const resolved = await boundedStoryPreferences(source, storyPreferenceEvidence(source), async (input, validate) => {
+        expect(JSON.stringify(input)).not.toContain('requestIds');
+        expect(Buffer.byteLength(JSON.stringify(input, null, 2), 'utf8')).toBeLessThanOrEqual(INPUT_BYTES);
+        return validate(canonicalAnswer(input));
+      }, { saveCanonical: entries => Object.assign(canonical, entries) });
+      f.cli(['record-story'], { narrative: 'All source requests retained.', preferences: resolved.preferences });
+      const story = readLedger(f.dir).story;
+      expect(story.preferences[0].supportCount).toBe(1100);
+      expect(Buffer.byteLength(JSON.stringify(story), 'utf8')).toBeLessThan(48000);
+      expect(JSON.stringify(story)).not.toContain('request-');
+      const path = join(f.dir, 'story-preferences', 'state.json');
+      writeStoryCache(path, { version: 1, context: 'shared-size-check', canonical, proofs: [{ storyHash: storyFingerprint(story), preferences: resolved.provenance }] });
+      expect(readStoryCache(path, 'shared-size-check').proofs[0].preferences[0].requestIds).toHaveLength(1100);
+    } finally { f.close(); }
+  });
+
+  it('a failed story stays due through the existing worker admission path, and cached answers alone stay idle', async () => {
+    const f = fixture();
+    let worker: AutoRefreshWorker | undefined;
+    try {
+      f.database.prepare('INSERT INTO work_state_entries (project, list_name, fields, created_at_epoch) VALUES (?, ?, ?, ?)')
+        .run('owner', 'owner-goals', JSON.stringify({ human_summary: 'Current goals.', generated_at: new Date(NOW).toISOString() }), NOW);
+      let first = true;
+      await expect(f.task().run(async prompt => {
+        if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
+        if (!first) throw new Error('Narrative interrupted');
+        first = false;
+        return JSON.stringify({ narrative: 'A checked prefix.', preferences: [] });
+      }, 'api')).rejects.toThrow('Narrative interrupted');
+      const cachePath = join(f.dir, 'story-preferences', 'state.json');
+      const beforeAdmission = readFileSync(cachePath, 'utf8');
+      let admitted = false, jobs = 0;
+      worker = new AutoRefreshWorker({ dir: f.dir, localDeviceId: () => '', now: () => NOW,
+        openDatabase: () => ({ prepare: f.database.prepare.bind(f.database), close() {} }),
+        runJob: async () => {
+          jobs++;
+          if (!admitted) return { state: 'waiting-for-agent', agent: null, result: null, error: 'Authentication required' };
+          return { state: 'ok', agent: 'api', error: null, result: await f.task().run(async prompt => {
+            if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
+            return JSON.stringify({ narrative: 'Finished after admission.', preferences: [] });
+          }, 'api') };
+        } });
+      expect(worker.readNeeds()).toMatchObject({ due: 0, ungrouped: 0, goalsStale: false, unplaced: 0, otherChanged: false, needed: true });
+      expect(await worker.runNow({ reason: 'manual' })).toBe('waiting-for-agent');
+      expect(readFileSync(cachePath, 'utf8')).toBe(beforeAdmission);
+      expect(readLedger(f.dir).story).toBeNull();
+      admitted = true;
+      expect(await worker.runNow({ reason: 'manual' })).toBe('ok');
+      expect(existsSync(cachePath)).toBe(true);
+      expect(await worker.runNow({ reason: 'manual' })).toBe('idle');
+      expect(jobs).toBe(2);
+    } finally { worker?.close(); f.close(); }
   });
 
   it('does not save a partial story when a later draft is refused twice', async () => {

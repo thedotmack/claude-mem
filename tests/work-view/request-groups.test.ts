@@ -702,7 +702,7 @@ describe('overall requests and progress reviews', () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-  it('a refresh is needed for due reviews, stale goals or unplaced requests, and not otherwise', async () => {
+  it('a refresh remains needed until saved review facts have a completed story', async () => {
   const dir = ledgerDir();
   try {
     const database = fixtureDatabase();
@@ -720,7 +720,15 @@ describe('overall requests and progress reviews', () => {
     // Two requests newly in Other: the proposal pass is due until it has looked at them.
     expect(refreshNeeds({ dir, database, now: NOW - 2 * DAY + 1000, localDeviceId: '' })).toMatchObject({ otherChanged: true, needed: true });
     await run(['record-focus', '--other', write('other.json', { placements: [], proposals: [] })]);
+    expect(refreshNeeds({ dir, database, now: NOW - 2 * DAY + 1000, localDeviceId: '' })).toEqual({ due: 0, ungrouped: 0, goalsStale: false, unplaced: 0, otherChanged: false, needed: true });
+    // Reviews have been saved, but a failed story has not advanced its watermark.
+    expect(run(['story-input']).reviews).toHaveLength(2);
+    run(['record-story', write('story-answer.json', { narrative: 'Both requests are under way.', preferences: [] })], NOW + 1000);
     expect(refreshNeeds({ dir, database, now: NOW - 2 * DAY + 1000, localDeviceId: '' })).toEqual({ due: 0, ungrouped: 0, goalsStale: false, unplaced: 0, otherChanged: false, needed: false });
+    expect(run(['refresh-needs'], NOW - 2 * DAY + 1000).needed).toBe(false);
+    // A checked-answer file alone never makes a completed source snapshot due.
+    mkdirSync(join(dir, 'story-preferences'), { recursive: true });
+    writeFileSync(join(dir, 'story-preferences', 'state.json'), JSON.stringify({ narrative: 'Cached output.' }));
     expect(run(['refresh-needs'], NOW - 2 * DAY + 1000).needed).toBe(false);
     const before = ledgerSignature(dir);
     writeFileSync(join(dir, 'refresh.json'), JSON.stringify({ state: 'running' }));

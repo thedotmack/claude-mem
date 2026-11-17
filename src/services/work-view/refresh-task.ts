@@ -17,12 +17,14 @@ import { join } from 'path';
 import type { AgentTask, AnswerSchema, AskAgent, StepModels, TaskAgentId } from '../agent-runner/run.js';
 import type { UsableAgentId } from '../agent-runner/detect.js';
 import { runCommand } from '../agent-runner/detect.js';
+import { resolveApiTarget } from '../agent-runner/api-agent.js';
 import { writeOwnerPromptsFile, type OwnerPromptsFile } from '../prompt-import/owner-prompts-file.js';
 import { resolvePythonCommand } from './python.js';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { logger } from '../../utils/logger.js';
-import { FOCUS_BATCH, readGoals, readLedger, runCli, validateFocusAnswer, validateGroupingAnswer, validateStory, type FocusInput, type LedgerDatabase, type RefreshNeeds, type StoryDraft, type StoryInput } from './request-groups.mjs';
+import { FOCUS_BATCH, pendingStoryReviews, readGoals, readLedger, runCli, storyInput as makeStoryInput, validateFocusAnswer, validateGroupingAnswer, validateStory, type FocusInput, type LedgerDatabase, type RefreshNeeds, type StoryDraft, type StoryInput } from './request-groups.mjs';
 import { boundedStoryPreferences, nextStoryBatch, storyPreferenceEvidence } from './story-batches.js';
+import { readStoryCache, storyFingerprint, writeStoryCache, type PreferenceProvenance, type StoryCache } from './story-cache.js';
 import { FOCUS_AUTO_PLACE_THRESHOLD, judgeFocusBatch, placesAlone, type FocusJudge, type FocusJudgement } from './focus-judge.mjs';
 import { isWithdrawnArea, ownerGoalsAreaRows, ownerGoalsSaveKey, PROPOSAL_KINDS, readFocusAreas, type FocusArea, type RouterFocusBody } from './my-focus.mjs';
 import { NAV_LABELS } from './nav-words.mjs';
@@ -37,6 +39,14 @@ const PLUGIN_MCP_PREFIX = 'mcp__plugin_claude-mem_mcp-search__';
 const REVIEW_BATCH = 8;
 /** save_goals.py's FAILED_AFTER_WRITING_EXIT: it failed after its first write, so the goals step must not ask again. */
 const SAVE_GOALS_FAILED_AFTER_WRITING_EXIT = 3;
+/** Independent semantic keys let the worker join checked evidence without all-pairs calls.
+ * This is a model judgement contract, not a guarantee of arbitrary synonym recall. */
+const PREFERENCE_CANONICAL_INSTRUCTIONS = [
+  'For each complete preference and its verbatim quotes, return a stable semantic key: {"assignments":[{"id":0,"key":{"action":"run","target":"tests","condition":"before committing","polarity":"require"}}]}.',
+  'Return every supplied id exactly once, including singletons. Use only supplied evidence. Never invent, shorten, rewrite, or return quotes. The worker retains the original evidence and counts distinct requests.',
+  'Derive each key independently of the page, ids, ordering, support counts, and other statements. Use short, canonical English words; semantically equivalent actionable preferences must get the same action, target, condition, and polarity across calls. Different wording or kinds can express the same preference.',
+  'Preserve scope, exceptions, and conditions in condition; use an empty condition only for an unconditional preference. polarity is require or avoid. Distinguish negative instructions from positive ones and conditional rules from unconditional ones. Preserve case-sensitive identifiers, file paths, and meaningful whitespace or Unicode distinctions. Contradictory, narrower, or unrelated preferences must have different keys. Do not impose the final 30-preference limit.',
+].join('\n\n');
 /**
  * Review batches running at the same time. Each batch is one agent process, so this follows the
  * owner's cap on concurrent agent subprocesses, CLAUDE_MEM_MAX_CONCURRENT_AGENTS (default 2), rather
@@ -820,42 +830,106 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
         if (placed || proposed) done.push([...(placed ? [`${placed} requests placed`] : []), ...(proposed ? [`${proposed} focus areas suggested`] : [])].join(', '));
       } catch (error) { focusError = error; }
 
-      // Only reviews whose facts (state, percent, dates, milestones, preferences, outcome) moved since the last story; none means the story still holds.
-      const storyReadAt = now();
-      const storyInput: StoryInput = cli(['story-input']);
+      // Full saved reviews rebuild preference provenance, including unchanged reviews and
+      // singletons below the display cut. Only changed facts enter narrative batches.
+      const storyLedger = readLedger(ledgerDir);
+      const storyInput: StoryInput = makeStoryInput(Object.keys(storyLedger.groups.groups).length,
+        pendingStoryReviews(storyLedger), storyLedger.story);
       if (storyInput.reviews.length) {
-        let preferenceEvidence: ReturnType<typeof storyPreferenceEvidence> | null = storyPreferenceEvidence(storyInput);
+        const cachePath = join(ledgerDir, 'story-preferences', 'state.json');
+        const target = agent === 'api' ? resolveApiTarget(join(dataDir, 'settings.json')).target : null;
+        const context = storyFingerprint({ plan: 'independent-semantic-keys-v1', deviceId: localDeviceId,
+          agent, model: stepModels.story[agent] ?? {},
+          api: target && { provider: target.provider, url: target.url, model: target.model },
+          instructions: PREFERENCE_CANONICAL_INSTRUCTIONS, readOnly, language: languageRule() });
+        let cache = readStoryCache(cachePath, context);
+        const sourceFingerprint = (ledger: ReturnType<typeof readLedger>) => storyFingerprint({
+          groups: ledger.groups.groups, reviews: ledger.progress, story: ledger.story });
+        const sourceHash = sourceFingerprint(storyLedger);
+        const baseStoryHash = storyFingerprint(storyLedger.story);
+        const identity = storyFingerprint({ context, sourceHash, narrativePlan: 1, requestProgress });
+        // No pending input or failed provider call is persisted. A first checked answer
+        // creates this checkpoint; later authorized refreshes scan the facts again.
+        const checkpoint = cache.checkpoint?.identity === identity ? cache.checkpoint
+          : { identity, readAt: now(), drafts: {} };
+        cache = { ...cache, checkpoint };
+        const saveCache = (next: StoryCache) => { writeStoryCache(cachePath, next); cache = next; };
+        const storyReadAt = checkpoint.readAt;
+        const allReviews = pendingStoryReviews({ ...storyLedger, story: null });
+        let preferenceEvidence: ReturnType<typeof storyPreferenceEvidence> | null = storyPreferenceEvidence({ ...storyInput, reviews: allReviews });
         let resolvedPreferences: StoryDraft['preferences'] | undefined;
+        let provenance: PreferenceProvenance[] | undefined;
         let previous = storyInput.previousStory;
         let draft: StoryDraft;
+        // Once a backlog uses canonical keys, even a small later update reuses those
+        // checked keys and request IDs. A changed source invalidates narrative drafts,
+        // while unchanged immutable preference evidence does not need another paid call.
+        let separatePreferences = Object.keys(cache.canonical).length > 0 || cache.proofs.length > 0;
         for (let offset = 0; offset < storyInput.reviews.length;) {
           let input: ReturnType<typeof nextStoryBatch>;
-          try { input = nextStoryBatch(storyInput, offset, previous, preferenceEvidence); }
-          catch (error) {
-            if (!preferenceEvidence) throw error;
-            // Do not spend on preference comparisons when the narrative review
-            // itself cannot fit. Nothing is saved until both passes finish.
-            nextStoryBatch(storyInput, offset, previous, null);
-            resolvedPreferences = await boundedStoryPreferences(storyInput, preferenceEvidence, (comparison, validate) => step('story', [
-              readOnly,
-              `The \`preference-input\` output is in ${writeInput('preference-input', comparison)}. Group its evidence ids by the same actionable preference, reading each complete statement and its verbatim quotes. Reply only with {"groups": [[<equivalent ids>], ...]}.`,
-              'Use only the supplied evidence. Every supplied id must occur exactly once. Keep singleton groups: another comparison may supply their supporting requests. Do not apply the final story\'s 30-preference limit or drop one-off remarks here. Do not invent, shorten, or rewrite evidence; return only ids. A saved preference has quotes and a supportCount; a per-request preference has a quote. Different wording or kinds can express the same preference; contradictory or unrelated statements must stay separate.',
-            ].join('\n\n'), validate));
-            preferenceEvidence = null;
+          try {
+            input = nextStoryBatch(storyInput, offset, previous, separatePreferences ? null : preferenceEvidence);
+          } catch (error) {
+            if (!preferenceEvidence || separatePreferences) throw error;
+            // Refuse an oversized indivisible narrative before spending on preferences.
             input = nextStoryBatch(storyInput, offset, previous, null);
+            separatePreferences = true;
           }
-          draft = await step('story', [
-            requestProgress, '---', readOnly,
-            `Do only section 4 (${input.update ? 'update' : 'write'} the build story). The \`story-input\` output is in ${writeInput('story-input', input)}. Reply with only the JSON that \`record-story\` takes ({"narrative": "...", "preferences": [...]}).`,
-            preferenceEvidence
-              ? 'The reviews are one narrative batch. For preferences, use preferenceEvidence: it holds every preference from every request in this refresh, including requests in other batches. Each request lists indices into values; count distinct groupIds when merging equivalent statements and retain their verbatim quotes. Reconcile with previousStory.preferences, which always contains the saved story\'s preferences, not the previous batch\'s answer.'
-              : 'The reviews are one narrative batch. Preference reconciliation has finished separately against the complete evidence. Write only the narrative and return "preferences": []; the worker attaches the checked preferences without counting narrative drafts again.',
-          ].join('\n\n'), answer => validateStory(resolvedPreferences !== undefined ? { ...answer, preferences: resolvedPreferences } : answer));
+          if (separatePreferences && preferenceEvidence) {
+            const resolved = await boundedStoryPreferences(storyInput, preferenceEvidence,
+              (comparison, validate) => step('story', [readOnly,
+                `The \`preference-input\` output is in ${writeInput('preference-input', comparison)}.`,
+                PREFERENCE_CANONICAL_INSTRUCTIONS,
+              ].join('\n\n'), validate), {
+                canonical: cache.canonical,
+                saveCanonical: entries => saveCache({ ...cache, canonical: { ...cache.canonical, ...entries } }),
+                previous: cache.proofs.find(proof => proof.storyHash === baseStoryHash)?.preferences,
+              });
+            resolvedPreferences = resolved.preferences;
+            provenance = resolved.provenance;
+            preferenceEvidence = null;
+          }
+          const draftKey = storyFingerprint({ input, preferences: resolvedPreferences ?? null });
+          const savedDraft = checkpoint.drafts[draftKey];
+          if (savedDraft) {
+            draft = validateStory(savedDraft);
+          } else {
+            draft = await step('story', [
+              requestProgress, '---', readOnly,
+              `Do only section 4 (${input.update ? 'update' : 'write'} the build story). The \`story-input\` output is in ${writeInput('story-input', input)}. Reply with only the JSON that \`record-story\` takes ({"narrative": "...", "preferences": [...]}).`,
+              preferenceEvidence
+                ? 'The reviews are one narrative batch. For preferences, use preferenceEvidence: it holds every preference from the full saved review history, including unchanged reviews and requests in other batches. Each request lists indices into values; count distinct groupIds when merging equivalent statements and retain their verbatim quotes. Reconcile with previousStory.preferences, which always contains the saved story\'s preferences, not the previous batch\'s answer.'
+                : 'The reviews are one narrative batch. Preference reconciliation has finished separately against the complete saved evidence. Write only the narrative and return "preferences": []; the worker attaches the checked preferences without counting narrative drafts again.',
+            ].join('\n\n'), answer => {
+              const checked = validateStory(resolvedPreferences !== undefined ? { ...answer, preferences: resolvedPreferences } : answer);
+              const nextCheckpoint = { ...checkpoint, drafts: { ...checkpoint.drafts, [draftKey]: checked } };
+              saveCache({ ...cache, checkpoint: nextCheckpoint });
+              // Advance in-memory progress only after the checked answer is durable.
+              checkpoint.drafts = nextCheckpoint.drafts;
+              return checked;
+            });
+          }
           previous = { ...draft, writtenAt: new Date(storyReadAt).toISOString() };
           offset += input.reviews.length;
         }
-        // Commit only after every batch succeeds. The timestamp covers the snapshot,
-        // so a review changed during the calls remains due for the next refresh.
+        // These synchronous checks protect the scanned snapshot; the shared ledger's
+        // existing expectedHash transaction still arbitrates shared story writes.
+        const current = readLedger(ledgerDir);
+        if (sourceFingerprint(current) !== sourceHash || options.localDeviceId() !== localDeviceId) {
+          throw batchFailure('Saved story, review evidence, or local device changed while writing the story. Checked answers are retained; no newer facts were acknowledged or overwritten.');
+        }
+        if (provenance) {
+          const story = { ...draft!, preferences: [...draft!.preferences,
+            ...(current.story?.preferences ?? []).filter((value: Record<string, any>) => value?.source === 'owner-goals')],
+          writtenAt: new Date(storyReadAt).toISOString() };
+          const proof = { storyHash: storyFingerprint(story), preferences: provenance.map((value, index) => ({ ...value, preference: draft!.preferences[index] })) };
+          // Keep the baseline proof until record-story succeeds. A crash between these
+          // writes can resume without losing either the old or prospective provenance.
+          saveCache({ ...cache, proofs: [...cache.proofs.filter(value => value.storyHash === baseStoryHash && value.storyHash !== proof.storyHash), proof] });
+        }
+        // Commit only after all preference and narrative batches have validated. The
+        // original snapshot time remains unchanged on retries; cache files never make
+        // work due and do not bypass the runner's quota/auth admission or backoff.
         cli(['record-story'], draft!, { now: storyReadAt });
         done.push(storyInput.update ? 'story updated' : 'story written');
       }

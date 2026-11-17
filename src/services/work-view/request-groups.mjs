@@ -565,6 +565,15 @@ export function storyInput(groups, reviews, story) {
     previousStory: story && { ...story, preferences: (story.preferences ?? []).filter((preference) => preference?.source !== OWNER_GOALS_LIST) } };
 }
 
+/** The saved facts, not the existence of a private checked-answer cache, make a story due. */
+export function pendingStoryReviews(ledger) {
+  const reviews = Object.values(ledger.progress).sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt))
+    || a.groupId.localeCompare(b.groupId));
+  const writtenAt = Date.parse(ledger.story?.writtenAt ?? '');
+  return Number.isFinite(writtenAt)
+    ? reviews.filter((review) => Date.parse(review.changedAt ?? review.checkedAt) > writtenAt) : reviews;
+}
+
 /** Suggestions still waiting for the owner: the judge's mid-band picks (request-judge.mjs) whose
  * request still exists and whose conversation is not in it yet. */
 export function openSuggestions(ledger) {
@@ -859,7 +868,8 @@ export function refreshNeeds({ dir = LEDGER_DIR, database, now = Date.now(), day
   const queued = focusDue(ledger, focus, localDeviceId, requests);
   const otherHash = otherPassHash(ledger, routerOther(ledger, focus, new Set(queued)), requests);
   const otherChanged = otherHash !== null && otherHash !== focus.otherPassHash;
-  return { due: due.length, ungrouped, goalsStale, unplaced: queued.length, otherChanged, needed: Boolean(due.length || ungrouped || goalsStale || queued.length || otherChanged) };
+  return { due: due.length, ungrouped, goalsStale, unplaced: queued.length, otherChanged,
+    needed: Boolean(due.length || ungrouped || goalsStale || queued.length || otherChanged || pendingStoryReviews(ledger).length) };
 }
 
 function readInput(source) {
@@ -1077,12 +1087,8 @@ export function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now
     return print({ recorded: entry.groupId, state: entry.state, percent: entry.percent, readings: entry.readings.length, ...(coercedFields.size ? { coercedFields: [...coercedFields] } : {}) });
   }
   if (command === 'story-input') {
-    const { groups, progress, story } = readLedger(dir);
-    const reviews = Object.values(progress).sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)));
-    // With a previous story, only reviews whose facts changed after it was written.
-    const writtenAt = Date.parse(story?.writtenAt ?? '');
-    return print(storyInput(Object.keys(groups.groups).length,
-      Number.isFinite(writtenAt) ? reviews.filter((review) => Date.parse(review.changedAt ?? review.checkedAt) > writtenAt) : reviews, story));
+    const ledger = readLedger(dir);
+    return print(storyInput(Object.keys(ledger.groups.groups).length, pendingStoryReviews(ledger), ledger.story));
   }
   if (command === 'record-story') {
     const validated = validateStory(readInput(args[0] ?? '-'));

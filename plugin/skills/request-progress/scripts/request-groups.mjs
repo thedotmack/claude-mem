@@ -5384,6 +5384,11 @@ function storyInput(groups, reviews, story) {
     previousStory: story && { ...story, preferences: (story.preferences ?? []).filter((preference2) => preference2?.source !== OWNER_GOALS_LIST) }
   };
 }
+function pendingStoryReviews(ledger) {
+  const reviews = Object.values(ledger.progress).sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)) || a.groupId.localeCompare(b.groupId));
+  const writtenAt = Date.parse(ledger.story?.writtenAt ?? "");
+  return Number.isFinite(writtenAt) ? reviews.filter((review) => Date.parse(review.changedAt ?? review.checkedAt) > writtenAt) : reviews;
+}
 function readLedger(dir = LEDGER_DIR) {
   const groups = readJson(join11(dir, "request-groups.json"), emptyGroups());
   const progress = {};
@@ -5591,7 +5596,14 @@ function refreshNeeds({ dir = LEDGER_DIR, database, now = Date.now(), days = 14,
   const queued = focusDue(ledger, focus, localDeviceId2, requests);
   const otherHash = otherPassHash(ledger, routerOther(ledger, focus, new Set(queued)), requests);
   const otherChanged = otherHash !== null && otherHash !== focus.otherPassHash;
-  return { due: due.length, ungrouped, goalsStale, unplaced: queued.length, otherChanged, needed: Boolean(due.length || ungrouped || goalsStale || queued.length || otherChanged) };
+  return {
+    due: due.length,
+    ungrouped,
+    goalsStale,
+    unplaced: queued.length,
+    otherChanged,
+    needed: Boolean(due.length || ungrouped || goalsStale || queued.length || otherChanged || pendingStoryReviews(ledger).length)
+  };
 }
 function readInput(source) {
   return JSON.parse(readFileSync9(source === "-" ? 0 : source, "utf8"));
@@ -5734,14 +5746,8 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
     return print2({ recorded: entry.groupId, state: entry.state, percent: entry.percent, readings: entry.readings.length, ...coercedFields.size ? { coercedFields: [...coercedFields] } : {} });
   }
   if (command2 === "story-input") {
-    const { groups, progress, story } = readLedger(dir);
-    const reviews = Object.values(progress).sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)));
-    const writtenAt = Date.parse(story?.writtenAt ?? "");
-    return print2(storyInput(
-      Object.keys(groups.groups).length,
-      Number.isFinite(writtenAt) ? reviews.filter((review) => Date.parse(review.changedAt ?? review.checkedAt) > writtenAt) : reviews,
-      story
-    ));
+    const ledger = readLedger(dir);
+    return print2(storyInput(Object.keys(ledger.groups.groups).length, pendingStoryReviews(ledger), ledger.story));
   }
   if (command2 === "record-story") {
     const validated = validateStory(readInput(args[0] ?? "-"));

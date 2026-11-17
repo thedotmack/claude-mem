@@ -1,97 +1,152 @@
 import { storyInput, type StoryDraft, type StoryInput } from './request-groups.mjs';
+import { storyFingerprint, validateCanonicalPreferenceKey, type CanonicalPreferenceKey, type PreferenceProvenance } from './story-cache.js';
 
 /** Leave room for the skill, a checked story draft and a refused answer. This is a UTF-8
  * input budget, not a tokenizer or a claim about any provider's context limit. */
 export const STORY_INPUT_BYTES = 256 * 1024;
 
-interface PreferenceEvidence {
+export interface PreferenceEvidence {
   values: Array<Record<string, any>>;
+  /** Include reviewed requests with no preferences, so a withdrawn preference loses its old vote. */
   requests: Array<{ groupId: string; preferences: number[] }>;
 }
 
-interface PreferenceComparison {
+export interface PreferenceComparison {
   values: Array<{ id: number; evidence: Record<string, any> }>;
 }
 
-/** Only the overflow path needs separate semantic comparisons. Keep the original
- * values and request references until every comparison finishes, including
- * singletons: a later page can supply their second supporting request. */
+export interface PreferenceAssignment { id: number; key: CanonicalPreferenceKey }
+
+export interface PreferenceOptions {
+  /** The caller scopes this checked cache to the canonicalization contract. */
+  canonical?: Record<string, CanonicalPreferenceKey>;
+  saveCanonical?: (entries: Record<string, CanonicalPreferenceKey>) => void;
+  previous?: PreferenceProvenance[];
+}
+
+/** Canonicalize every distinct complete value, including singletons, in bounded pages.
+ * Equal complete semantic keys join across all pages; different conditions or polarities
+ * stay separate. The model must assign keys independently of page membership. This is a
+ * semantic indexing contract, not a guarantee that every possible paraphrase is recalled. */
 export async function boundedStoryPreferences(source: StoryInput, evidence: PreferenceEvidence,
-  compare: (input: PreferenceComparison, validate: (answer: unknown) => number[][]) => Promise<number[][]>): Promise<StoryDraft['preferences']> {
+  canonicalize: (input: PreferenceComparison, validate: (answer: unknown) => PreferenceAssignment[]) => Promise<PreferenceAssignment[]>,
+  options: PreferenceOptions = {}): Promise<{ preferences: StoryDraft['preferences']; provenance: PreferenceProvenance[] }> {
   const saved = source.previousStory?.preferences ?? [];
   const values = [...saved, ...evidence.values].map((value, id) => ({ id, evidence: value }));
+  const reviewed = new Set<string>();
+  for (const request of evidence.requests) {
+    if (typeof request.groupId !== 'string' || !request.groupId) throw new TypeError('Preference evidence needs a request id.');
+    reviewed.add(request.groupId);
+    for (const index of request.preferences) {
+      if (!Number.isInteger(index) || index < 0 || index >= evidence.values.length) throw new TypeError('Preference request references an unknown evidence index.');
+    }
+  }
+  const hashes = values.map(value => storyFingerprint(value.evidence));
+  let canonical: Record<string, CanonicalPreferenceKey> = { ...options.canonical };
   const pages: PreferenceComparison['values'][] = [];
   let page: PreferenceComparison['values'] = [];
+  const emptyBytes = Buffer.byteLength(JSON.stringify({ values: [] }, null, 2), 'utf8');
+  let pageBytes = emptyBytes;
+  const pending = new Set<string>();
   for (const value of values) {
-    // Two pages must fit together. The item cap also bounds the answer's id list.
-    if (page.length && (page.length >= 128 || Buffer.byteLength(JSON.stringify({ values: [...page, value] }, null, 2), 'utf8') > (STORY_INPUT_BYTES - 64) / 2)) {
-      pages.push(page); page = [];
+    const hash = hashes[value.id];
+    if (Object.hasOwn(canonical, hash)) {
+      canonical[hash] = validateCanonicalPreferenceKey(canonical[hash]);
+      continue;
     }
-    if (Buffer.byteLength(JSON.stringify({ values: [value] }, null, 2), 'utf8') > (STORY_INPUT_BYTES - 64) / 2) {
-      throw Object.assign(new Error('A single preference exceeds the comparison input budget. No story was saved and no evidence was skipped.'), { retryable: false, answerRefused: true });
+    if (pending.has(hash)) continue;
+    pending.add(hash);
+    const itemBytes = Buffer.byteLength(JSON.stringify(value, null, 2).replace(/^/gm, '    '), 'utf8');
+    if (emptyBytes + itemBytes + 4 > STORY_INPUT_BYTES) {
+      throw Object.assign(new Error('A single preference exceeds the canonicalization input budget. No story was saved and no evidence was skipped.'), { retryable: false, answerRefused: true });
     }
+    if (page.length && (page.length >= 64 || pageBytes + itemBytes + 2 > STORY_INPUT_BYTES)) {
+      pages.push(page); page = []; pageBytes = emptyBytes;
+    }
+    pageBytes += itemBytes + (page.length ? 2 : 4);
     page.push(value);
   }
   if (page.length) pages.push(page);
 
-  const parent = values.map(value => value.id);
-  const root = (id: number): number => {
-    while (parent[id] !== id) { parent[id] = parent[parent[id]]; id = parent[id]; }
-    return id;
-  };
-  // Every pair of pages meets. A bounded shortlist or a summary of a singleton
-  // could lose the only evidence that matches a later page. For P pages this
-  // requires P*(P-1)/2 comparisons (one for a single page), only on overflow.
-  for (let left = 0; left < pages.length; left++) {
-    for (let right = pages.length === 1 ? left : left + 1; right < pages.length; right++) {
-      const input = { values: left === right ? pages[left] : [...pages[left], ...pages[right]] };
-      const groups = await compare(input, answer => {
-        const groups = (answer as { groups?: unknown })?.groups;
-        if (!Array.isArray(groups)) throw new TypeError('Preference comparison needs groups of evidence ids, including singletons.');
-        const remaining = new Set(input.values.map(value => value.id));
-        for (const group of groups) {
-          if (!Array.isArray(group) || !group.length) throw new TypeError('Every preference group must contain at least one evidence id.');
-          for (const id of group) {
-            if (!Number.isInteger(id) || !remaining.delete(id)) throw new TypeError('Every supplied preference id must occur exactly once; unknown or duplicate ids are refused.');
-          }
+  for (const page of pages) {
+    const input = { values: page };
+    const validate = (answer: unknown): PreferenceAssignment[] => {
+      const assignments = (answer as { assignments?: unknown } | null)?.assignments;
+      if (!Array.isArray(assignments)) throw new TypeError('Preference canonicalization needs assignments for every evidence id, including singletons.');
+      const remaining = new Set(page.map(value => value.id));
+      const checked = assignments.map(assignment => {
+        if (assignment === null || typeof assignment !== 'object' || Array.isArray(assignment)
+          || !Number.isInteger(assignment.id) || !remaining.delete(assignment.id)) {
+          throw new TypeError('Every supplied preference id must occur exactly once; unknown or duplicate ids are refused.');
         }
-        if (remaining.size) throw new TypeError('Every supplied preference id must occur exactly once; missing evidence ids are refused.');
-        return groups as number[][];
+        return { id: assignment.id, key: validateCanonicalPreferenceKey(assignment.key) };
       });
-      for (const group of groups) for (const id of group.slice(1)) parent[root(id)] = root(group[0]);
-    }
+      if (remaining.size) throw new TypeError('Every supplied preference id must occur exactly once; missing evidence ids are refused.');
+      return checked;
+    };
+    const checked = validate({ assignments: await canonicalize(input, validate) });
+    const next = { ...canonical };
+    for (const assignment of checked) next[hashes[assignment.id]] = assignment.key;
+    // A failed write must not make an answer look durably checked to this invocation.
+    await options.saveCanonical?.(next);
+    canonical = next;
   }
 
-  const groups = new Map<number, number[]>();
+  const groups = new Map<string, number[]>();
+  const groupKeys = values.map(value => storyFingerprint(canonical[hashes[value.id]]));
   for (const value of values) {
-    const id = root(value.id);
-    if (!groups.has(id)) groups.set(id, []);
-    groups.get(id)!.push(value.id);
+    const key = groupKeys[value.id];
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(value.id);
   }
-  const requests = new Map<number, Set<string>>();
+  const proofs = new Map<string, PreferenceProvenance[]>();
+  for (const previous of options.previous ?? []) {
+    const hash = storyFingerprint(previous.preference);
+    if (!proofs.has(hash)) proofs.set(hash, []);
+    proofs.get(hash)!.push(previous);
+  }
+  const requests = new Map<string, Set<string>>();
   for (const request of evidence.requests) for (const index of request.preferences) {
-    const id = root(saved.length + index);
-    if (!requests.has(id)) requests.set(id, new Set());
-    requests.get(id)!.add(request.groupId);
+    const key = groupKeys[saved.length + index];
+    if (!requests.has(key)) requests.set(key, new Set());
+    requests.get(key)!.add(request.groupId);
   }
-  return [...groups.entries()].map(([id, members]) => {
-    const previous = members.filter(index => index < saved.length).map(index => saved[index]);
-    const support = requests.get(id)?.size ?? 0;
-    // Saved counts have no request ids. Adding them would count re-reviewed
-    // requests again; retain the known lower bound instead.
-    const supportCount = Math.max(support, ...previous.map(value => value.supportCount ?? 1));
+  const resolved = [...groups.entries()].map(([key, members]) => {
+    const savedMembers = members.filter(index => index < saved.length);
+    const requestIds = new Set(requests.get(key));
+    let legacySupportCount = 0;
+    for (const index of savedMembers) {
+      const matched = proofs.get(hashes[index]);
+      if (matched?.length) {
+        for (const proof of matched) {
+          for (const id of proof.requestIds) if (!reviewed.has(id)) requestIds.add(id);
+          legacySupportCount = Math.max(legacySupportCount, proof.legacySupportCount ?? 0);
+        }
+      } else {
+        // Old stories did not record request ids. Do not invent them or add an
+        // anonymous count to requests that might already be included in it.
+        legacySupportCount = Math.max(legacySupportCount, saved[index].supportCount ?? 1);
+      }
+    }
+    const supportCount = Math.max(requestIds.size, legacySupportCount);
     const quotes = new Map<string, { quote: string; at: string | null }>();
     for (const index of members) {
       const value = values[index].evidence;
       for (const quote of index < saved.length ? value.quotes ?? [] : [{ quote: value.quote, at: value.at ?? null }]) {
-        quotes.set(JSON.stringify(quote), quote);
+        quotes.set(storyFingerprint(quote), quote);
       }
     }
     const first = values[members[0]].evidence;
-    return { preference: first.preference, kind: first.kind, supportCount,
-      quotes: [...quotes.values()].slice(0, 3), keep: previous.length > 0 || support >= 2 };
-  }).filter(value => value.keep).sort((a, b) => b.supportCount - a.supportCount).slice(0, 30)
-    .map(({ keep: _keep, ...preference }) => preference);
+    const preference = { preference: first.preference, kind: first.kind, supportCount, quotes: [...quotes.values()].slice(0, 3) };
+    const provenance: PreferenceProvenance = { preference, requestIds: [...requestIds].sort(),
+      ...(legacySupportCount ? { legacySupportCount } : {}) };
+    return { preference, provenance, keep: savedMembers.length > 0 || supportCount >= 2 };
+  }).filter(value => value.preference.supportCount > 0);
+  const selected = resolved.filter(value => value.keep).sort((a, b) => b.preference.supportCount - a.preference.supportCount).slice(0, 30);
+  return {
+    preferences: selected.map(value => value.preference),
+    provenance: selected.map(value => value.provenance),
+  };
 }
 
 /** Retain every preference and its request, including one-off statements that can
@@ -108,7 +163,7 @@ export function storyPreferenceEvidence(source: StoryInput): PreferenceEvidence 
       if (index === undefined) { index = values.length; indices.set(key, index); values.push(preference); }
       preferences.add(index);
     }
-    if (preferences.size) requests.push({ groupId: review.groupId, preferences: [...preferences] });
+    requests.push({ groupId: review.groupId, preferences: [...preferences] });
   }
   return { values, requests };
 }

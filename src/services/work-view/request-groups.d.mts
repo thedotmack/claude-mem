@@ -32,6 +32,7 @@ export interface StoryInput {
 }
 export function validateStory(story: unknown): StoryDraft;
 export function storyInput(groups: number, reviews: Array<Record<string, any>>, story: StoryInput['previousStory']): StoryInput;
+export function pendingStoryReviews(ledger: Record<string, any>): Array<Record<string, any>>;
 export function readCandidates(database: LedgerDatabase, options: { sinceEpoch?: number; conversationKeys?: string[] | null; fullAsks?: boolean; excludedPromptIds?: Set<number> | null }): any[];
 export function ledgerSignature(dir?: string): string;
 /** The decisions `apply` takes, merged into `stored` with projects and first asks read from the database; not written. */
