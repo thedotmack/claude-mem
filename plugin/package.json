@@ -6,7 +6,7 @@
   "type": "module",
   "dependencies": {
     "sharp": "0.35.5",
-    "zod": "^4.4.3",
+    "zod": "^4.6.6",
     "better-auth": "^1.6.16",
     "@better-auth/api-key": "^1.6.16",
     "tree-sitter-cli": "0.26.9",
@@ -42,7 +42,8 @@
   "overrides": {
     "tree-sitter": "^0.25.0",
     "onnxruntime-node": "1.23.2",
-    "onnxruntime-web": "npm:onnxruntime-common@1.23.2"
+    "onnxruntime-web": "npm:onnxruntime-common@1.23.2",
+    "adm-zip": "^0.6.1"
   },
   "trustedDependencies": [
     "tree-sitter-cli"
