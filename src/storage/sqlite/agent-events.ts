@@ -33,12 +33,13 @@ function parseStoredPayload(raw: string, eventId: string): unknown {
   try {
     return JSON.parse(raw) as unknown;
   } catch (error) {
-    logger.warn(
-      'DB',
-      'Unreadable agent event payload; reading it as an empty object',
-      { eventId },
-      error instanceof Error ? error : new Error(String(error))
-    );
+    // Only the error's name is logged: JSON.parse messages can quote a token
+    // of the input (`Unexpected identifier "..."`), and the payload holds
+    // captured tool input.
+    logger.warn('DB', 'Unreadable agent event payload; reading it as an empty object', {
+      eventId,
+      errorName: error instanceof Error ? error.name : 'unknown',
+    });
     return {};
   }
 }
