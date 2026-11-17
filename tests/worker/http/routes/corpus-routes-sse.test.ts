@@ -338,14 +338,14 @@ describe('CorpusRoutes when every Claude CLI is too old', () => {
     Object.assign(claudeResolver, {
       platform: () => 'linux',
       loadSettings: () => ({}),
-      execSync: () => '/old/claude\n',
+      exec: async () => ({ stdout: '/old/claude\n', stderr: '' }),
       existsSync: () => false,
       realpathSync: (path: string) => path,
-      execFileSync: (_file: string, args: string[]) => {
+      execFile: async (_file: string, args: string[]) => {
         if (args.includes('dontAsk')) {
-          throw Object.assign(new Error('Command failed'), { status: 1, stderr: "error: argument 'dontAsk' is invalid" });
+          throw Object.assign(new Error('Command failed'), { code: 1, stderr: "error: argument 'dontAsk' is invalid" });
         }
-        return '1.0.0 (Claude Code)';
+        return { stdout: '1.0.0 (Claude Code)', stderr: '' };
       },
     });
     errorSink = mock(() => {});
@@ -394,7 +394,7 @@ describe('CorpusRoutes when every Claude CLI is too old', () => {
     // The file is on disk but the OS cannot launch it: no exit status, no signal.
     Object.assign(claudeResolver, {
       existsSync: () => true,
-      execFileSync: () => {
+      execFile: async () => {
         throw Object.assign(new Error('spawn /stale/claude ENOENT'), { code: 'ENOENT' });
       },
     });

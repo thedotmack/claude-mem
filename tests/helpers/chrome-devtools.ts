@@ -25,6 +25,16 @@ export function failOnCiWithoutChrome(message: string): void {
 /** Keeps a page's timers and rAF on schedule on a loaded runner. */
 export const UNTHROTTLED_TIMER_FLAGS = ['--disable-background-timer-throttling', '--disable-renderer-backgrounding'];
 
+/**
+ * Tells Chrome it has a mouse, so a desktop walk runs on the desktop it describes on every platform. Headless Chrome on
+ * Linux finds no pointing device: it reports `(hover: none)` and `(pointer: none)`, so styles kept inside
+ * `@media (hover: hover)` or `(pointer: fine)` never apply, and a CDP mouse move gives a button `:hover` without its
+ * hover looks (CI on PRs 6210 and 6233; Chrome 157 and Chromium 156 on Linux, 2026-11-16). Chrome on macOS reports a
+ * mouse already. The values are Blink's hover type "hover" (2) and pointer type "fine" (4), the setting Playwright 1.66
+ * passes to every headless Chromium it launches.
+ */
+export const DESKTOP_MOUSE_FLAGS = ['--blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4'];
+
 const esbuildBinary = createRequire(import.meta.url).resolve(
   `@esbuild/${process.platform}-${process.arch}/${process.platform === 'win32' ? 'esbuild.exe' : 'bin/esbuild'}`,
 );
@@ -32,12 +42,14 @@ const esbuildBinary = createRequire(import.meta.url).resolve(
 /**
  * Bundles TSX fixture source (resolved from the repository root) into one
  * browser IIFE. The one-shot compiler exits before Chrome starts, so no shared
- * esbuild service handle stays alive while the browser runs.
+ * esbuild service handle stays alive while the browser runs. A fixture that
+ * mounts a whole page passes `extraEsbuildArguments` for the page's own asset
+ * imports (for example `--loader:.webp=empty`).
  */
-export function compileBrowserFixture(fixtureSource: string): string {
+export function compileBrowserFixture(fixtureSource: string, extraEsbuildArguments: readonly string[] = []): string {
   return execFileSync(esbuildBinary, [
     '--bundle', '--loader=tsx', '--platform=browser', '--format=iife',
-    '--define:process.env.NODE_ENV="production"', '--log-level=error',
+    '--define:process.env.NODE_ENV="production"', '--log-level=error', ...extraEsbuildArguments,
   ], { cwd: REPOSITORY_ROOT, input: fixtureSource, encoding: 'utf8', timeout: 20000, maxBuffer: 8 * 1024 * 1024 });
 }
 

@@ -9,6 +9,8 @@ import { join } from 'path';
 import {
   claudeCodeAlreadyLoadsInstructions,
   claudeCodeImportLine,
+  forwardSlashPath,
+  hasImportLine,
   rulesAndToolsLoadedByClaudeCode,
   rulesAndToolsPointerLine,
   withoutLoadedRulesPointer,
@@ -55,7 +57,33 @@ describe('Claude Code rules import chain', () => {
   });
 
   it('escapes spaces in the import line', () => {
-    expect(claudeCodeImportLine(paths.myRulesPath)).toBe(`@${paths.myRulesPath.replaceAll(' ', '\\ ')}`);
+    expect(claudeCodeImportLine('/home/me/rules dir/MY-RULES.md', '/elsewhere', '/')).toBe('@/home/me/rules\\ dir/MY-RULES.md');
+  });
+
+  // Claude Code skips an @import whose separators are backslashes; C:/… and ~/… load on Windows.
+  it('writes Windows paths with forward slashes', () => {
+    expect(claudeCodeImportLine('C:\\Users\\me\\.claude-mem\\MY-RULES.md', 'C:\\Users\\me', '\\')).toBe('@~/.claude-mem/MY-RULES.md');
+    expect(claudeCodeImportLine('D:\\Data Dir\\MY-RULES.md', 'C:\\Users\\me', '\\')).toBe('@D:/Data\\ Dir/MY-RULES.md');
+  });
+
+  it('leaves POSIX paths alone, backslashes included', () => {
+    expect(claudeCodeImportLine('/home/me/.claude-mem/MY-RULES.md', '/home/me', '/')).toBe('@~/.claude-mem/MY-RULES.md');
+    expect(claudeCodeImportLine('/tmp/odd\\name.md', '/home/me', '/')).toBe('@/tmp/odd\\name.md');
+  });
+
+  it('counts the home-relative and the absolute forward-slash spellings as the import', () => {
+    const absolute = `@${forwardSlashPath(paths.myRulesPath).replaceAll(' ', '\\ ')}`;
+    expect(hasImportLine(`# Mine\n${claudeCodeImportLine(paths.myRulesPath)}\n`, paths.myRulesPath)).toBe(true);
+    expect(hasImportLine(`# Mine\n${absolute}\n`, paths.myRulesPath)).toBe(true);
+    expect(hasImportLine('# Mine\n', paths.myRulesPath)).toBe(false);
+  });
+
+  it('does not count a backslash-separated import line as loaded', () => {
+    const backslashed = (filePath: string) => `@${filePath.replaceAll('/', '\\').replaceAll(' ', '\\ ')}`;
+    writeFileSync(paths.claudeInstructionsPath, `# Mine\n${backslashed(paths.myRulesPath)}\n`);
+    writeFileSync(paths.myRulesPath, `# My Rules\n\n${backslashed(paths.rulesAndToolsPath)}\n`);
+    writeFileSync(paths.rulesAndToolsPath, `# Claude-Mem Rules + Tools\n\n${INSTRUCTIONS}\n`);
+    expect(rulesAndToolsLoadedByClaudeCode(paths)).toBe(false);
   });
 });
 

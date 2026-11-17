@@ -4,7 +4,7 @@ import type { Server } from 'node:http';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { defaultAutoRefresh, WorkViewRoutes } from '../../../../src/services/worker/http/routes/WorkViewRoutes.js';
-import type { SetupInstallCatalog } from '../../../../src/shared/setup-install.js';
+import { SETUP_DSH_PROFILE_MAX_CHARACTERS, SETUP_INSTALL_NOTE_MAX_CHARACTERS, type SetupInstallCatalog } from '../../../../src/shared/setup-install.js';
 
 const FIXTURE_HOME = join(import.meta.dir, '..', '..', '..', 'fixtures', 'prompt-import', 'home');
 // Project-local scratch (gitignored), never the system temp folder.
@@ -138,6 +138,24 @@ describe('setup state endpoints', () => {
     expect(onDisk().email).toBeUndefined();
     expect(onDisk().note).toBeUndefined();
     for (const body of [await served(), ...frames]) expect(body).not.toContain(signup.email);
+  });
+
+  it('takes a DeepSeek Harness profile up to the one limit the setup page uses too', async () => {
+    await start();
+    await post('/api/setup/install/installer', { status: 'waiting', catalog });
+    expect((await post('/api/setup/install', { ...catalog.defaults, dshProfile: 'p'.repeat(SETUP_DSH_PROFILE_MAX_CHARACTERS + 1) })).status).toBe(400);
+    expect((await post('/api/setup/install', { ...catalog.defaults, dshProfile: 'p'.repeat(SETUP_DSH_PROFILE_MAX_CHARACTERS) })).status).toBe(200);
+    expect((await state()).install.selection.dshProfile).toHaveLength(SETUP_DSH_PROFILE_MAX_CHARACTERS);
+  });
+
+  it('takes a signup note up to the one limit the setup page uses too', async () => {
+    await start();
+    await post('/api/setup/install/installer', { status: 'waiting', catalog });
+    const withNote = (length: number) => ({ ...catalog.defaults, email: 'person@example.com', note: 'n'.repeat(length) });
+    expect((await post('/api/setup/install', withNote(SETUP_INSTALL_NOTE_MAX_CHARACTERS + 1))).status).toBe(400);
+    expect((await post('/api/setup/install', withNote(SETUP_INSTALL_NOTE_MAX_CHARACTERS))).status).toBe(200);
+    // The note is kept for the installer only (the state view never serves it), at its full length.
+    expect(JSON.parse(readFileSync(statePath, 'utf8')).install.selection.note).toHaveLength(SETUP_INSTALL_NOTE_MAX_CHARACTERS);
   });
 
   it('a retry that unticks the email drops the stored one', async () => {

@@ -146,6 +146,8 @@ export function extractTranscriptFileActivityFromJsonl(content: string, options:
           }
         }
       }
+      // Process acknowledgements above, but do not let automatic notices replace the user's privacy scope.
+      if (entry.isMeta === true) continue;
       const text = stripSystemReminderBlocks(textFromContent(msgContent)).trim();
       // Tool results are user-role records too, but do not start a turn; a prompt with only an image or document does.
       const hasMedia = Array.isArray(msgContent) && msgContent.some(block =>

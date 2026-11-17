@@ -69,9 +69,9 @@ function errorFromUnsuccessfulResult(
  * to error tracking. An unspawnable CLI stays a server fault: only a worker
  * restart fixes it.
  */
-function findClaudeExecutableForKnowledge(): string {
+async function findClaudeExecutableForKnowledge(): Promise<string> {
   try {
-    return findClaudeExecutable('WORKER');
+    return await findClaudeExecutable('WORKER');
   } catch (error) {
     if (isClaudeExecutableUnspawnable(error) || !(error instanceof Error)) throw error;
     throw new AppError(error.message, 424, 'CLAUDE_CLI_SETUP_REQUIRED');
@@ -103,7 +103,7 @@ export class KnowledgeAgent {
       'Acknowledge what you\'ve received. Summarize the key themes and topics you can answer questions about.'
     ].join('\n');
 
-    const claudePath = findClaudeExecutableForKnowledge();
+    const claudePath = await findClaudeExecutableForKnowledge();
     const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
 
     const queryResult = query({
@@ -208,7 +208,7 @@ export class KnowledgeAgent {
   }
 
   private async executeQuery(corpus: CorpusFile, question: string, callOptions: KnowledgeAgentCallOptions): Promise<QueryResult> {
-    const claudePath = findClaudeExecutableForKnowledge();
+    const claudePath = await findClaudeExecutableForKnowledge();
     const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
 
     const queryResult = query({

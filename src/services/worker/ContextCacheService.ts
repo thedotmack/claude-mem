@@ -43,6 +43,7 @@ import {
 import { writeJsonFileAtomic } from '../../shared/atomic-json.js';
 import { onContextInvalidation, type ContextInvalidation } from '../../shared/context-invalidation.js';
 import { isSessionStartWorkStateList } from '../context/sections/WorkStateRenderer.js';
+import { ContextReadTimeoutError } from '../context/ContextReadWorkerClient.js';
 import { logger } from '../../utils/logger.js';
 
 export const CONTEXT_CACHE_RENDER_DEBOUNCE_MS = 2_000;
@@ -376,8 +377,14 @@ export class ContextCacheService {
         this.persistRender(variant, variant.keys, { ...render, readKeys: render.readKeys ?? readKeys }, renderedAtEpochMs, renderSequenceAtStart);
       } catch (error) {
         // The old file would now be wrong; remove it so the hook takes the live path.
-        logger.error('CONTEXT_CACHE', 'Context re-render failed; removing the cached block', { variantId, keys: variant.keys },
-          error instanceof Error ? error : new Error(String(error)));
+        const failure = error instanceof Error ? error : new Error(String(error));
+        if (failure instanceof ContextReadTimeoutError) {
+          const { method, queuedMs, runningMs } = failure;
+          logger.warn('CONTEXT_CACHE', 'Context re-render failed: a context read ran past the deadline; removing the cached block',
+            { variantId, keys: variant.keys, method, queuedMs, runningMs }, failure);
+        } else {
+          logger.error('CONTEXT_CACHE', 'Context re-render failed; removing the cached block', { variantId, keys: variant.keys }, failure);
+        }
         // A newer render may already have written a good file; the failed one
         // removes it only when nothing that started later reached the file.
         if (this.variants.get(variantId) === variant && this.claimRenderSequence(variant, renderSequenceAtStart)) {

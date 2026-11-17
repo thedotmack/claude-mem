@@ -90,11 +90,19 @@ jobs:
       - name: Test (fast lane)
         run: bun scripts/test-lanes.ts fast
 
-      - name: Install Claude Code for the auto-clear engine test
+      # tests/integration/hooks-module-engine.test.ts runs the hooks module on
+      # two Claude Codes. 2.1.326 is the first that runs every mod's engine
+      # checks: the session-start card's need `$.process.hookEnv`, which came in
+      # it. 2.1.287 is the first with mods at all: the same bundle must load
+      # there, and the card must leave SessionStart alone. Its test kit has no
+      # `mock.session`, so auto-clear's checks are not run on it.
+      - name: Install Claude Code for the hooks module engine test
         if: ${{ !cancelled() }}
         run: |
-          npm install --global @anthropic-ai/claude-code@2.1.321 --no-audit --no-fund
+          npm install --global @anthropic-ai/claude-code@2.1.326 --no-audit --no-fund
           claude --version
+          npm install --prefix "$RUNNER_TEMP/claude-code-2.1.287" @anthropic-ai/claude-code@2.1.287 --no-audit --no-fund
+          "$RUNNER_TEMP/claude-code-2.1.287/node_modules/.bin/claude" --version
 
       # connectToPage allows a browser 10 s to start, and the runner's first
       # Chrome launch takes about that long (a measured 10.9 s, almost all of
@@ -111,7 +119,8 @@ jobs:
         if: ${{ !cancelled() }}
         env:
           CLAUDE_MEM_TEST_PGVECTOR: '1'
-          CLAUDE_MEM_TEST_AUTO_CLEAR_ENGINE: '1'
+          CLAUDE_MEM_TEST_HOOKS_MODULE_ENGINE: '1'
+          CLAUDE_MEM_TEST_HOOKS_MODULE_OLDER_CLAUDE: ${{ runner.temp }}/claude-code-2.1.287/node_modules/.bin/claude
         run: bun scripts/test-lanes.ts integration
 
       # openclaw's suite lives outside tests/ (openclaw/src/index.test.ts), so

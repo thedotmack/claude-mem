@@ -58,7 +58,7 @@ export async function runMemoryCommand(subcommand: string | undefined, args: str
       // Dry-run is pure parse + count — no worker, no spend — so run it here.
       if (hasFlag(args, '--dry-run')) {
         try {
-          console.log(formatMemoryDryRunReport(dryRunMemorySource(source, { all })));
+          console.log(formatMemoryDryRunReport(await dryRunMemorySource(source, { all })));
           return 0;
         } catch (error) {
           console.error(error instanceof Error ? error.message : String(error));

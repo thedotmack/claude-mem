@@ -1113,7 +1113,7 @@ export class WorkerService implements WorkerRef {
       ModeManager.getInstance().loadMode(modeId);
       logger.info('SYSTEM', `Mode loaded: ${modeId}`);
 
-      const dependencyHealth = runWorkerDependencyPreflight({
+      const dependencyHealth = await runWorkerDependencyPreflight({
         settings,
         classifyClaudeError,
       });
@@ -1312,6 +1312,9 @@ export class WorkerService implements WorkerRef {
       }
       const searchRecencyWindowMs = parsedRecencyWindowMs ?? SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
       const contextReader = getContextReadWorker();
+      contextReader.setTimeoutListener(({ method, queuedMs, runningMs }) => {
+        captureEvent('context_read_timed_out', { read_method: method, queue_wait_ms: queuedMs, duration_ms: runningMs });
+      });
       const searchManager = new SearchManager(
         this.dbManager.getSessionSearch(),
         this.dbManager.getSessionStore(),
@@ -1785,7 +1788,7 @@ export class WorkerService implements WorkerRef {
 }
 
 export async function ensureWorkerStarted(port: number): Promise<WorkerStartResult> {
-  return ensureWorkerStartedShared(port, __filename);
+  return ensureWorkerStartedShared(port, resolveWorkerScriptPath() ?? __filename);
 }
 
 export type ParsedWorkerCommand = {

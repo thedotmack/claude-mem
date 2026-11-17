@@ -165,6 +165,8 @@ export function extractAdvisorCallsFromJsonl(
     const msgContent = entry?.message?.content;
 
     if (entryType === 'user') {
+      // Automatic notices and scheduled prompts retain the originating user's turn.
+      if (entry.isMeta === true) continue;
       const text = stripSystemReminderBlocks(textFromContent(msgContent))
         .replace(/\n{3,}/g, '\n\n')
         .trim();

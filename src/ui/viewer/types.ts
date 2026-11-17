@@ -94,6 +94,11 @@ export interface SessionCatalogEntry {
   project: string;
   platform_source: string;
   custom_title: string | null;
+  /**
+   * What the session was about: the request of its newest summary (GET /api/sessions, 16.0+). `null` when the
+   * session has no summary yet. Missing (undefined) from an older worker, so the row keeps its 15.x title (G19).
+   */
+  summary_title?: string | null;
   started_at_epoch: number;
   item_count: number;
 }

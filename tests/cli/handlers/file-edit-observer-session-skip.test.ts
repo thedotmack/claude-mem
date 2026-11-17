@@ -86,7 +86,7 @@ describe('fileEditHandler internal observer sessions', () => {
     expect(result.suppressOutput).toBe(true);
     expect(result.exitCode).toBe(0);
     expect(workerCallLog).toEqual([]);
-    expect(spooledEntries()).toEqual([]);
+    expect(await spooledEntries()).toEqual([]);
     expect(nudgeLog).toEqual([]);
   });
 
@@ -104,7 +104,7 @@ describe('fileEditHandler internal observer sessions', () => {
     expect(result.continue).toBe(true);
     expect(workerCallLog).toEqual([]);
     expect(nudgeLog).toEqual([]);
-    expect(spooledEntries()).toEqual([{
+    expect(await spooledEntries()).toEqual([{
       kind: 'file_edit',
       payload: {
         contentSessionId: 'user-session-file-edit',

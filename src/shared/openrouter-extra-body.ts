@@ -6,8 +6,9 @@
  * or `{"thinking":{"type":"disabled"}}` for a reasoning model that otherwise
  * spends the output budget thinking and answers with nothing (#2995).
  *
- * Shared by the worker (OpenRouterProvider) and the server runtime
- * (OpenRouterObservationProvider), so the two apply the same rules:
+ * Shared by the worker (OpenRouterProvider, and the api agent for
+ * CLAUDE_MEM_API_AGENT_EXTRA_BODY) and the server runtime
+ * (OpenRouterObservationProvider), so they all apply the same rules:
  *  - it is a JSON object, or it is ignored with a warning — it is read during
  *    status polling, so a typo must never throw;
  *  - it never replaces the fields that carry the conversation, the model
@@ -47,9 +48,9 @@ export interface ParsedExtraBody {
 /**
  * Parse the setting: an object written straight into settings.json, or a
  * string holding one (an environment variable is always a string). Never
- * throws.
+ * throws. `setting` is the name a warning gives the value.
  */
-export function parseOpenRouterExtraBody(raw: unknown): ParsedExtraBody {
+export function parseOpenRouterExtraBody(raw: unknown, setting: string = 'CLAUDE_MEM_OPENROUTER_EXTRA_BODY'): ParsedExtraBody {
   let parsed: unknown = raw;
   if (raw === undefined || raw === null) return {};
   if (typeof raw === 'string') {
@@ -58,11 +59,11 @@ export function parseOpenRouterExtraBody(raw: unknown): ParsedExtraBody {
     try {
       parsed = JSON.parse(text);
     } catch {
-      return { warning: 'CLAUDE_MEM_OPENROUTER_EXTRA_BODY is not valid JSON; ignoring it' };
+      return { warning: `${setting} is not valid JSON; ignoring it` };
     }
   }
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return { warning: 'CLAUDE_MEM_OPENROUTER_EXTRA_BODY must be a JSON object; ignoring it' };
+    return { warning: `${setting} must be a JSON object; ignoring it` };
   }
   const entries = Object.entries(parsed as Record<string, unknown>);
   const dropped = entries.map(([key]) => key).filter(key => PROTECTED_EXTRA_BODY_KEYS.includes(key));
@@ -70,7 +71,7 @@ export function parseOpenRouterExtraBody(raw: unknown): ParsedExtraBody {
   return {
     ...(Object.keys(extraBody).length > 0 ? { extraBody } : {}),
     ...(dropped.length > 0
-      ? { warning: `CLAUDE_MEM_OPENROUTER_EXTRA_BODY cannot set ${dropped.join(', ')}; ignoring ${dropped.length === 1 ? 'that field' : 'those fields'}` }
+      ? { warning: `${setting} cannot set ${dropped.join(', ')}; ignoring ${dropped.length === 1 ? 'that field' : 'those fields'}` }
       : {}),
   };
 }

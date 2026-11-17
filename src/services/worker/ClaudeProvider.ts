@@ -397,7 +397,7 @@ export class ClaudeProvider {
     // Find and validate Claude executable (shared utility, closes #2222)
     let claudePath: string;
     try {
-      claudePath = findClaudeExecutable('SDK');
+      claudePath = await findClaudeExecutable('SDK');
       clearDependencyStatus('claude_cli');
       clearClaudeCliSelfHealAttempts();
     } catch (error) {
@@ -1218,7 +1218,7 @@ export class ClaudeProvider {
     input: TelegramWrapupFormatterInput,
     activeModelId?: string,
   ): Promise<string> {
-    const claudePath = findClaudeExecutable('SDK');
+    const claudePath = await findClaudeExecutable('SDK');
     const modelId = activeModelId ?? this.getSummaryModelId();
     const text = await this.runStandaloneObserverPrompt(
       buildTelegramWrapupPrompt(input.summaryText),

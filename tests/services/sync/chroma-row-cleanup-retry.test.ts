@@ -119,7 +119,7 @@ function makeStore(options: { existingRows?: Array<{ table: string; id: number }
   return {
     db: {
       prepare(query: string) {
-        if (query.includes('SELECT DISTINCT project FROM')) {
+        if (query.includes('observation_projects')) {
           return { all: () => [] };
         }
         if (query.includes('SELECT 1 AS found FROM')) {

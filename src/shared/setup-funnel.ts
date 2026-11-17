@@ -45,13 +45,39 @@ export type SetupStatus = 'pending' | 'complete';
 export type SetupScanPhase = 'idle' | 'reading' | 'checking' | 'saving' | 'awaiting-consent' | 'uploading' | 'done' | 'failed';
 
 /**
- * The history upload (services/setup/history-import.ts, the only writer): idle → running → done | failed.
- * A start after `done` or `failed` runs it again; one that cannot read the database fails without running.
+ * The history upload (services/setup/history-import.ts, the only writer):
+ *
+ *   idle → running ─┬→ done
+ *                   ├→ failed    (a batch could not be sent, or cmem.ai refused or did not acknowledge it)
+ *                   └→ stopped   (the person pressed Stop: no request starts after it)
+ *   done, failed, stopped → running   (only the person's next start; nothing restarts it by itself)
+ *
+ * A start that cannot read the database goes to `failed` without running.
  */
-export type HistoryImportRunState = 'idle' | 'running' | 'done' | 'failed';
+export const HISTORY_IMPORT_RUN_STATES = ['idle', 'running', 'stopped', 'done', 'failed'] as const;
+export type HistoryImportRunState = (typeof HISTORY_IMPORT_RUN_STATES)[number];
+
+/**
+ * The rule callers ask: whether the upload is running, so it can still send to cmem.ai. The installer holds a worker
+ * restart for it, and the setup page keeps its import screen up for it.
+ */
+export function historyImportRunning(state: HistoryImportRunState): boolean {
+  return state === 'running';
+}
+
+/**
+ * Observations in one request of the history upload, the most a request carries: small enough for one cmem.ai
+ * serverless request each (the reason history-import.ts has given since the funnel shipped). One definition for the
+ * upload and for setup's sample, which reports Stop's batch on its way the way the upload does.
+ */
+export const HISTORY_IMPORT_BATCH = 100;
+/** Owner-approved cap on setup's one hosted upload: the largest measured export was 262 KB, and all exports fit one
+ * 1M-context call. Cloud enforces this against both compressed and uncompressed bytes, plus its offline 400k-token
+ * budget. One definition for the worker's refusal (hosted-intent.ts) and the consent step's warning. */
+export const INTENT_MAX_UPLOAD_BYTES = 2 * 1024 * 1024;
 export const SETUP_ACTIONS = ['choose_memory', 'choice_committed', 'open_checkout', 'start_import', 'skip_import', 'retry_scan', 'upload_allowed', 'upload_skipped'] as const;
 export type SetupAction = (typeof SETUP_ACTIONS)[number];
-export const SETUP_ERRORS = ['scan_failed', 'scan_retry_failed', 'upload_consent_failed', 'usage_preference_failed', 'choice_failed', 'checkout_failed', 'installer_failed', 'import_failed', 'complete_failed'] as const;
+export const SETUP_ERRORS = ['scan_failed', 'scan_retry_failed', 'upload_consent_failed', 'upload_too_large', 'usage_preference_failed', 'choice_failed', 'checkout_failed', 'installer_failed', 'import_failed', 'complete_failed'] as const;
 export type SetupError = (typeof SETUP_ERRORS)[number];
 export type SetupEventName = 'setup_step_viewed' | 'setup_step_transitioned' | 'setup_step_action' | 'setup_step_error' | 'setup_page_hidden' | 'setup_completed';
 export interface SetupEvent {

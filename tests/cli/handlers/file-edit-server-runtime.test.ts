@@ -115,18 +115,18 @@ describe('fileEditHandler — observer capture off', () => {
 
     expect(result.continue).toBe(true);
     expect(recordEventLog).toEqual([]);
-    expect(spooledEntries()).toEqual([]);
+    expect(await spooledEntries()).toEqual([]);
   });
 
   it('sees the toggle change in a long-lived process such as the transcript watcher', async () => {
     const { fileEditHandler } = await import('../../../src/cli/handlers/file-edit.js');
 
     await fileEditHandler.execute(cursorInput());
-    expect(spooledEntries()).toEqual([]);
+    expect(await spooledEntries()).toEqual([]);
 
     settingsSpy.mockImplementation(() => SettingsDefaultsManager.getAllDefaults());
     await fileEditHandler.execute(cursorInput());
-    expect(spooledEntries()).toHaveLength(1);
+    expect(await spooledEntries()).toHaveLength(1);
   });
 });
 
@@ -141,7 +141,7 @@ describe('fileEditHandler — server runtime (data-loss fix)', () => {
     expect(result.suppressOutput).toBe(true);
     // The edit reached the server, not the local spool.
     expect(recordEventLog).toHaveLength(1);
-    expect(spooledEntries()).toEqual([]);
+    expect(await spooledEntries()).toEqual([]);
     expect(nudgeLog).toEqual([]);
     expect(awaitedWorkerCallLog).toEqual([]);
 
@@ -169,7 +169,7 @@ describe('fileEditHandler — server runtime (data-loss fix)', () => {
 
     expect(result.continue).toBe(true);
     expect(recordEventLog).toHaveLength(0);
-    expect(spooledEntries()).toEqual([]);
+    expect(await spooledEntries()).toEqual([]);
   });
 
   it('falls back to the worker spool when the server call is fallback-eligible', async () => {
@@ -185,7 +185,7 @@ describe('fileEditHandler — server runtime (data-loss fix)', () => {
     const result = await fileEditHandler.execute(cursorInput());
 
     expect(result.continue).toBe(true);
-    expect(spooledEntries('file_edit')).toHaveLength(1);
+    expect(await spooledEntries('file_edit')).toHaveLength(1);
   });
 
   it('does not spool when the server call is a non-recoverable client error', async () => {
@@ -202,7 +202,7 @@ describe('fileEditHandler — server runtime (data-loss fix)', () => {
 
     expect(result.continue).toBe(true);
     expect(result.exitCode).toBe(0);
-    expect(spooledEntries()).toEqual([]);
+    expect(await spooledEntries()).toEqual([]);
   });
 
   it('strips <private> sections from the edit before the event leaves the hook (outgoing HTTP body)', async () => {
@@ -234,7 +234,7 @@ describe('fileEditHandler — server runtime (data-loss fix)', () => {
       expect(outgoingBodies[0]).not.toContain('<private>');
       const body = JSON.parse(outgoingBodies[0]);
       expect(body.payload.tool_input.edits).toEqual([{ oldText: 'const a = 1;', newText: 'const a = 2;' }]);
-      expect(spooledEntries()).toEqual([]);
+      expect(await spooledEntries()).toEqual([]);
     } finally {
       globalThis.fetch = originalFetch;
     }

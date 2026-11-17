@@ -25,8 +25,15 @@ for (const scenario of ['held', 'failed'] as const) {
         const observations = () => [...document.querySelectorAll('.form-field')]
           .find(field => field.textContent.startsWith('Observations'))?.querySelector('input');
         const status = () => document.querySelector('.save-status').textContent;
-        const snapshot = () => ({ saveDisabled: save().disabled, inputDisabled: observations().matches(':disabled'),
-          observations: observations().value, status: status() });
+        // A failed load: the plain words first, the raw cause folded under Details (G17).
+        const failure = () => {
+          const line = document.querySelector('.save-status .error');
+          const details = line?.querySelector('details');
+          return line ? { plain: line.firstChild?.textContent ?? null, cause: details?.querySelector('pre')?.textContent ?? null,
+            folded: details ? !details.open : null } : null;
+        };
+        const snapshot = () => ({ saveDisabled: save().disabled, saveDimmed: save().getAttribute('aria-disabled'),
+          inputDisabled: observations().matches(':disabled'), observations: observations().value, status: status(), failure: failure() });
         let blocked;
         (async () => {
           try {
@@ -46,6 +53,12 @@ for (const scenario of ['held', 'failed'] as const) {
             await until(() => !save().disabled && observations().value === '7', 'Settings load');
             await settle();
             const loaded = snapshot();
+            // Nothing changed yet: Save is dimmed ("No changes to save.") and a click on it posts nothing.
+            save().click(); await settle();
+            const field = observations();
+            Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(field, '8');
+            field.dispatchEvent(new Event('input', { bubbles: true }));
+            await settle();
             save().click();
             await until(() => status().includes('Saved'), 'Save');
             await fetch('/result', { method: 'POST', body: JSON.stringify({ blocked, loaded }) });
@@ -87,18 +100,20 @@ for (const scenario of ['held', 'failed'] as const) {
       // Before the load: the form and Save are disabled, and a Save click
       // posts nothing (it would have posted the defaults).
       expect({ ...reported.blocked, postsBeforeLoad: posts.slice(0, postsWhenLoaded ?? posts.length) }).toEqual({
-        saveDisabled: true, inputDisabled: true, observations: '50',
-        status: scenario === 'held' ? 'Loading settings…' : 'Could not load settings: HTTP 500 Retry',
+        saveDisabled: true, saveDimmed: 'true', inputDisabled: true, observations: '50',
+        status: scenario === 'held' ? 'Loading settings…' : 'Could not load settings.DetailsHTTP 500Retry',
+        failure: scenario === 'held' ? null : { plain: 'Could not load settings.', cause: 'HTTP 500', folded: true },
         retry: scenario === 'failed', postsBeforeLoad: [],
       });
       expect(reported.failure).toBeUndefined();
-      expect(reported.loaded).toEqual({ saveDisabled: false, inputDisabled: false, observations: '7', status: '' });
+      expect(reported.loaded).toEqual({ saveDisabled: false, saveDimmed: 'true', inputDisabled: false, observations: '7', status: '', failure: null });
       expect(loads).toBe(scenario === 'failed' ? 2 : 1);
-      // The one POST comes after the load. Nothing was edited, so it carries
-      // nothing to write: neither the defaults nor an echo of the loaded values
-      // that could put back a change made elsewhere since (#4597).
+      // The one POST comes after the load and after an edit: the dimmed Save
+      // before it posted nothing, and it carries only the edited key, neither
+      // the defaults nor an echo of the loaded values that could put back a
+      // change made elsewhere since (#4597).
       expect(postsWhenLoaded).toBe(0);
-      expect(posts).toEqual([{}]);
+      expect(posts).toEqual([{ CLAUDE_MEM_CONTEXT_OBSERVATIONS: '8' }]);
     } finally {
       releaseLoad(); await chrome?.close(); server.stop(true);
     }

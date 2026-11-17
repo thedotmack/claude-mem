@@ -103,17 +103,17 @@ const baseInput = {
   transcriptPath: '/tmp/fake.jsonl',
 };
 
-function spooledSummarize(): any {
+async function spooledSummarize(): Promise<any> {
   expect(awaitedWorkerCallLog).toHaveLength(0);
   expect(nudgeLog).toEqual([]);
-  const entries = spooledEntries('summarize');
+  const entries = (await spooledEntries('summarize'));
   expect(entries).toHaveLength(1);
   return entries[0].payload;
 }
 
-function nothingSpooled(): void {
+async function nothingSpooled(): Promise<void> {
   expect(awaitedWorkerCallLog).toHaveLength(0);
-  expect(spooledEntries()).toHaveLength(0);
+  expect(await spooledEntries()).toHaveLength(0);
 }
 
 describe('summarizeHandler — privacy tag stripping', () => {
@@ -128,7 +128,7 @@ describe('summarizeHandler — privacy tag stripping', () => {
 
     expect(result.continue).toBe(true);
     expect(extractCallCount).toBe(0);
-    const body = spooledSummarize();
+    const body = (await spooledSummarize());
     expect(body.lastAssistantMessage).toBe('Codex answer');
     expect(body.platformSource).toBe('codex');
   });
@@ -154,7 +154,7 @@ describe('summarizeHandler — privacy tag stripping', () => {
 
     expect(result.continue).toBe(true);
     expect(extractCallCount).toBe(1);
-    expect(spooledSummarize().lastAssistantMessage).toBe('Finished the work the other plugin asked for');
+    expect((await spooledSummarize()).lastAssistantMessage).toBe('Finished the work the other plugin asked for');
   });
 
   it('short-circuits Codex stop hook re-entry', async () => {
@@ -171,7 +171,7 @@ describe('summarizeHandler — privacy tag stripping', () => {
     expect(result.suppressOutput).toBe(true);
     expect(result.exitCode).toBe(0);
     expect(extractCallCount).toBe(0);
-    nothingSpooled();
+    (await nothingSpooled());
   });
 
   it('strips <private> tags and their content from last_assistant_message', async () => {
@@ -182,7 +182,7 @@ describe('summarizeHandler — privacy tag stripping', () => {
 
     expect(result.continue).toBe(true);
     expect(extractCallCount).toBe(1);
-    const body = spooledSummarize();
+    const body = (await spooledSummarize());
     expect(body.lastAssistantMessage).not.toContain('SECRET-VALUE-42');
     expect(body.lastAssistantMessage).not.toContain('<private>');
     expect(body.lastAssistantMessage).toBe('Hello  world');
@@ -196,6 +196,6 @@ describe('summarizeHandler — privacy tag stripping', () => {
 
     expect(result.continue).toBe(true);
     expect(result.suppressOutput).toBe(true);
-    nothingSpooled();
+    (await nothingSpooled());
   });
 });

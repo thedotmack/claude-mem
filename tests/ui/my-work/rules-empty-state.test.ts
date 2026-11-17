@@ -49,6 +49,8 @@ describe('empty Rules page (#5535)', () => {
     const html = renderNoRules(null, { state: 'waiting-for-agent', finishedAt: null, error: NO_AGENT });
     expect(html).toContain('Rule learning is waiting for an agent.');
     expect(html).toContain(`Waiting to refresh: ${NO_AGENT}`);
+    expect(html).toContain('Configure My Work to use an API provider');
+    expect(html).toContain('https://docs.claude-mem.ai/configuration#my-work-refresh-models');
     expect(html).toContain('Add rule');
     expect(html).not.toContain('on its own');
   });
@@ -58,6 +60,7 @@ describe('empty Rules page (#5535)', () => {
     expect(html).toContain(LEARNS_ON_ITS_OWN);
     expect(html).toContain('Add rule');
     expect(html).not.toContain('Waiting to refresh');
+    expect(html).not.toContain('Configure My Work to use an API provider');
   });
 
   it('shows only the read error when rules cannot be read', () => {
@@ -65,6 +68,7 @@ describe('empty Rules page (#5535)', () => {
     expect(html).toContain('Can’t read your rules right now');
     expect(html).not.toContain('Add rule');
     expect(html).not.toContain('Waiting to refresh');
+    expect(html).not.toContain('Configure My Work to use an API provider');
   });
 });
 
