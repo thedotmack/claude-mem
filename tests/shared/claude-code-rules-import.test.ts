@@ -55,7 +55,26 @@ describe('Claude Code rules import chain', () => {
   });
 
   it('escapes spaces in the import line', () => {
-    expect(claudeCodeImportLine(paths.myRulesPath)).toBe(`@${paths.myRulesPath.replaceAll(' ', '\\ ')}`);
+    expect(claudeCodeImportLine('/home/me/rules dir/MY-RULES.md', '/elsewhere', '/')).toBe('@/home/me/rules\\ dir/MY-RULES.md');
+  });
+
+  // Claude Code skips an @import whose separators are backslashes; C:/… and ~/… load on Windows.
+  it('writes Windows paths with forward slashes', () => {
+    expect(claudeCodeImportLine('C:\\Users\\me\\.claude-mem\\MY-RULES.md', 'C:\\Users\\me', '\\')).toBe('@~/.claude-mem/MY-RULES.md');
+    expect(claudeCodeImportLine('D:\\Data Dir\\MY-RULES.md', 'C:\\Users\\me', '\\')).toBe('@D:/Data\\ Dir/MY-RULES.md');
+  });
+
+  it('leaves POSIX paths alone, backslashes included', () => {
+    expect(claudeCodeImportLine('/home/me/.claude-mem/MY-RULES.md', '/home/me', '/')).toBe('@~/.claude-mem/MY-RULES.md');
+    expect(claudeCodeImportLine('/tmp/odd\\name.md', '/home/me', '/')).toBe('@/tmp/odd\\name.md');
+  });
+
+  it('does not count a backslash-separated import line as loaded', () => {
+    const backslashed = (filePath: string) => `@${filePath.replaceAll('/', '\\').replaceAll(' ', '\\ ')}`;
+    writeFileSync(paths.claudeInstructionsPath, `# Mine\n${backslashed(paths.myRulesPath)}\n`);
+    writeFileSync(paths.myRulesPath, `# My Rules\n\n${backslashed(paths.rulesAndToolsPath)}\n`);
+    writeFileSync(paths.rulesAndToolsPath, `# Claude-Mem Rules + Tools\n\n${INSTRUCTIONS}\n`);
+    expect(rulesAndToolsLoadedByClaudeCode(paths)).toBe(false);
   });
 });
 
