@@ -6,6 +6,12 @@ import type { RulesSlice } from '../store-types.ts'
 
 const messageOf = (error: unknown) => error instanceof Error ? error.message : String(error)
 
+/**
+ * The store's own refusal of a stale Undo. It is written for people, so My Rules shows it as it is, in the reader's
+ * language; any other save error is a raw cause it folds under Details (G17).
+ */
+export const RULE_CHANGED_SINCE_EDIT = 'This rule changed since your edit. Review its current version before changing it again.'
+
 export const createRulesSlice: SliceCreator<RulesSlice> = (set, get) => ({
   rules: { savedDecisions: {}, history: [], changedIds: [], saving: false, saveError: null },
 
@@ -41,7 +47,7 @@ export const createRulesSlice: SliceCreator<RulesSlice> = (set, get) => ({
     const load = get().work.load
     const shownRules = load.state === 'loaded' ? load.model.rules : []
     if (!ruleUndoIsCurrent(last.ruleId, last.expectedVersion, shownRules)) {
-      set((state) => { state.rules.saveError = 'This rule changed since your edit. Review its current version before changing it again.' })
+      set((state) => { state.rules.saveError = RULE_CHANGED_SINCE_EDIT })
       return
     }
     const { ruleId, undo } = last

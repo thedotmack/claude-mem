@@ -16,8 +16,10 @@ import ts from 'typescript';
  * Phase 4's.
  * Phase 3 fix round (2026-11-16): `motion.button` counts too, since it skips the primitive just as `<button>` does (the
  * change ticker's line was one, 38px on touch); the ticker now animates a Button: still 27 in 8 files, 0 of them motion.
+ * Phase 7 (2026-11-16): My Rules (10 tags) and Past focus (2) moved onto Button: 27 in 7 files.
+ * Phases 3 and 7 merged (2026-11-16): 15 in 6 files.
  */
-const RAW_BUTTON_CEILING = 27;
+const RAW_BUTTON_CEILING = 15;
 
 const MY_WORK_SOURCE = resolve(import.meta.dir, '../../../src/ui/my-work/src');
 const SCANNED_FOLDERS = ['pages', 'components'];

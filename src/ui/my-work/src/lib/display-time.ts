@@ -39,6 +39,22 @@ export function displayRecordedDate(value: string, writtenAtIso: string | null |
   return displayTime(storyHeadingInReaderClock(value, writtenAtIso, now) ?? value)
 }
 
+/**
+ * A recorded day (an ISO time) as a short date in the reader's language (G9, plan rule 9): "Oct 30", with the year when
+ * it is not this year's, and the full stamp for a tooltip or a screen reader. Null when the value is not an ISO time.
+ */
+export function clockDay(iso: string, now: number = Date.now()): { short: string; full: string } | null {
+  const at = Date.parse(iso)
+  if (!/^\d{4}-\d{2}-\d{2}T/.test(iso) || !Number.isFinite(at)) return null
+  const locale = getLocale()
+  const date = new Date(at)
+  const sameYear = new Date(now).getFullYear() === date.getFullYear()
+  return {
+    short: new Intl.DateTimeFormat(locale, { month: 'short', day: 'numeric', ...(sameYear ? {} : { year: 'numeric' }) }).format(date),
+    full: new Intl.DateTimeFormat(locale, { dateStyle: 'full', timeStyle: 'long' }).format(date),
+  }
+}
+
 /** Localize recorded display dates without changing model timestamps or their sort keys. */
 export function displayTime(value: string): string {
   const locale = getLocale()

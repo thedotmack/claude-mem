@@ -113,7 +113,40 @@ function applySampleFocusChange({ action, focusAreaId, name, goal, intoFocusArea
   }
 }
 
-const loadSampleWorkModel = async (): Promise<WorkModel> => ({
+/**
+ * Sample states the fixtures never reach on their own, chosen with `&sample-state=` on a `?source=sample` address, so
+ * every state a page draws can be seen and shot (plan rule 10). The one definition of them:
+ * - `rules-unreadable`: My Rules cannot read the saved rules (NoRulesYet's read failure, with Try again);
+ * - `refresh-failed`: the last learning run failed, as refresh.json reports it (My Rules' learning-run box);
+ * - `rule-saves-fail`: every rule save and "Load my rules into Claude Code" fails, as a refusing worker answers (the
+ *   failure lines on My Rules, and where focus stays after a failed decision);
+ * - `months-unreadable`: Past focus cannot read the saved months (its read failure, with Try again).
+ */
+export const SAMPLE_STATES = ['rules-unreadable', 'refresh-failed', 'rule-saves-fail', 'months-unreadable'] as const
+export type SampleState = (typeof SAMPLE_STATES)[number]
+/**
+ * Read on every load, so a test can switch states with history.replaceState. Node tests have no address (and this file
+ * also compiles without the DOM types), so there it is none.
+ */
+function sampleStateFromAddress(): SampleState | null {
+  const search = (globalThis as { location?: { search?: string } }).location?.search
+  if (search === undefined) return null
+  const asked = new URLSearchParams(search).get('sample-state')
+  return SAMPLE_STATES.find((state) => state === asked) ?? null
+}
+// Shaped like the real failures (to-work-model's unreadable rule, auto-refresh-worker's failed run); neutral words.
+const SAMPLE_RULES_READ_ERROR = 'Rule "Keep scratch files inside the project." is in a scope the worker did not list: project:retired-repo'
+const SAMPLE_FAILED_REFRESH = {
+  state: 'failed' as const,
+  finishedAt: 'Oct 20 at 2:11 pm',
+  error: 'Claude Code: story (raw answer: ~/.claude-mem/failed-answers/2026-10-20T21-11-12.521Z-story-claude-code.txt): preferences[3].preference is 229 characters; it must be 1–200.',
+}
+// Shaped like local-source's refused save (postForWorkModel) and a failed CLAUDE.md write; neutral words.
+const SAMPLE_RULE_SAVE_REFUSAL = 'The rule change was not saved: SQLITE_BUSY: database is locked (work_state.write rules/autonomy)'
+const SAMPLE_RULES_LOAD_REFUSAL = 'Loading the rules was not saved: EACCES: permission denied, open \'~/.claude/CLAUDE.md\''
+const SAMPLE_GOALS_READ_ERROR = 'owner-goals/2026-10-18 is unreadable: Unexpected token \'}\' in JSON at position 2214'
+
+const sampleModel = (sampleState: SampleState | null): WorkModel => ({
   sourceKind: 'sample',
   requests: [...SAMPLE_REQUESTS],
   requestReadErrors: [],
@@ -123,10 +156,10 @@ const loadSampleWorkModel = async (): Promise<WorkModel> => ({
   unlinkedWorkCount: 0,
   focusAreas: sampleFocusAreas,
   otherAsks: SAMPLE_OTHER_ASKS,
-  currentPeriod: SAMPLE_CURRENT_PERIOD,
-  pastPeriods: SAMPLE_PAST_PERIODS,
-  goalsReadError: null,
-  rules: sampleRules,
+  currentPeriod: sampleState === 'months-unreadable' ? null : SAMPLE_CURRENT_PERIOD,
+  pastPeriods: sampleState === 'months-unreadable' ? [] : SAMPLE_PAST_PERIODS,
+  goalsReadError: sampleState === 'months-unreadable' ? SAMPLE_GOALS_READ_ERROR : null,
+  rules: sampleState === 'rules-unreadable' ? [] : sampleRules,
   ruleScopes: sampleRuleScopes,
   rulesLearning: SAMPLE_RULES_LEARNING,
   buildStory: {
@@ -134,17 +167,20 @@ const loadSampleWorkModel = async (): Promise<WorkModel> => ({
     paragraphs: ['Monday started with the work viewer: cards came back, live updates landed, and the list gained sorting. Midweek went to cloud sync, after write stalls traced back to vector indexes…'],
     writtenAt: SAMPLE_RUNS.progress.lastRunAt,
   },
-  rulesFile: { path: '~/.claude-mem/MY-RULES.md', approvedCount: sampleRules.filter((rule) => rule.status === 'on').length, loadedInClaudeCode: true },
-  rulesReadError: null,
+  // With failing saves, the rules are not loaded yet, so "Load my rules into Claude Code" shows (and fails).
+  rulesFile: { path: '~/.claude-mem/MY-RULES.md', approvedCount: sampleRules.filter((rule) => rule.status === 'on').length, loadedInClaudeCode: sampleState !== 'rule-saves-fail' },
+  rulesReadError: sampleState === 'rules-unreadable' ? SAMPLE_RULES_READ_ERROR : null,
   lastRuns: {
     goals: { label: SAMPLE_RUNS.goals.label, lastRunAt: SAMPLE_RUNS.goals.lastRunAt, deviceName: sampleDeviceName(SAMPLE_RUNS.goals.deviceId) },
     progress: { label: SAMPLE_RUNS.progress.label, lastRunAt: SAMPLE_RUNS.progress.lastRunAt, deviceName: sampleDeviceName(SAMPLE_RUNS.progress.deviceId) },
   },
-  refresh: null,
+  refresh: sampleState === 'refresh-failed' ? SAMPLE_FAILED_REFRESH : null,
   sourceHealth: { connected: true, error: null },
   // Sample mode demonstrates the indicator (LiveIndicator labels it a demonstration); nothing streams.
   connection: getConnectionStatus({ now: 0 }),
 })
+
+const loadSampleWorkModel = async (): Promise<WorkModel> => sampleModel(sampleStateFromAddress())
 
 export const sampleSource: WorkDataSource = {
   sourceKind: 'sample',
@@ -153,6 +189,7 @@ export const sampleSource: WorkDataSource = {
   subscribeToLiveUpdates: () => () => {},
 
   async saveRuleChange(change) {
+    if (sampleStateFromAddress() === 'rule-saves-fail') throw new Error(SAMPLE_RULE_SAVE_REFUSAL)
     applySampleRuleChange(change)
     return { model: await loadSampleWorkModel(), savedRuleId: null }
   },
@@ -161,7 +198,10 @@ export const sampleSource: WorkDataSource = {
     return loadSampleWorkModel()
   },
   // The sample file is always loaded; there is no CLAUDE.md to change.
-  loadRulesInClaudeCode: loadSampleWorkModel,
+  async loadRulesInClaudeCode() {
+    if (sampleStateFromAddress() === 'rule-saves-fail') throw new Error(SAMPLE_RULES_LOAD_REFUSAL)
+    return loadSampleWorkModel()
+  },
   refreshWork: async () => ({ state: 'idle' }),
   // Sample agents are fixtures with no recorded state to change.
   markAgentFinished: () => Promise.reject(new Error('Sample agents have no recorded state to change.')),

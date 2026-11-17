@@ -151,3 +151,10 @@ test('a Suggested card owns the Undo for a merge only; a rename or a new goal go
   assert.equal(suggestionEditDecision({ action: 'rename', focusAreaId: 'fa_old', name: 'Shipping' }), null)
   assert.equal(suggestionEditDecision({ action: 'edit-goal', focusAreaId: 'fa_old', goal: 'Ship weekly.' }), null)
 })
+
+test('a done area carries the time of its last save, the day Past focus prints as when it was marked done (savedAt)', () => {
+  const model = mapFocus([area('fa_done', { status: 'done', savedAt: '2026-10-17T16:05:00Z' }), area('fa_old_worker')], [])
+  assert.equal(model.focusAreas.find((entry) => entry.id === 'fa_done')!.savedAt, '2026-10-17T16:05:00Z')
+  // An area saved before workers kept the time has none, so Past focus prints no date (G19), never a made-up one.
+  assert.equal(model.focusAreas.find((entry) => entry.id === 'fa_old_worker')!.savedAt, null)
+})

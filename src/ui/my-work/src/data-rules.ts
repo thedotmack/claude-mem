@@ -22,8 +22,18 @@ export const SAMPLE_RULE_SCOPES: RuleScope[] = [
 
 /** A dated quote. `kind` is the request-progress preference kind; instruction-file lines are directives. */
 export interface RuleQuote { at: string; quote: string; kind: 'directive' | 'correction' | 'praise' | 'frustration'; where: 'prompt' | 'CLAUDE.md' }
-/** The records a rule was built from: prompts, request-progress reviews, owner-goals runs, instruction files. */
-export interface RuleRecord { kind: 'Prompt' | 'Review' | 'Goals run' | 'Instructions'; label: string; at: string }
+/**
+ * What a record mapped from the worker's rules is, as a value the screen words in the reader's language (Phase 0: no
+ * English mapper text shown as data): a prompt you typed (its words in full in `said`), the build story
+ * request-progress wrote, or My Rules on this computer, where you wrote or saved the rule.
+ */
+export type RuleRecordFact = 'your-prompt' | 'build-story' | 'written-here' | 'saved-here'
+/**
+ * The records a rule was built from: prompts, request-progress reviews, owner-goals runs, instruction files. `label`
+ * is the record in English; the screen shows the words for `fact` when the record has one, and the label otherwise
+ * (sample records, and workers before 16.0.0, which send no `fact`: G19).
+ */
+export interface RuleRecord { kind: 'Prompt' | 'Review' | 'Goals run' | 'Instructions'; label: string; at: string; fact?: RuleRecordFact; said?: string }
 
 export type RuleStatus = WorkViewRule['status']
 export interface OwnerRule {

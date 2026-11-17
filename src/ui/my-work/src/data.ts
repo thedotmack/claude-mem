@@ -165,6 +165,8 @@ export interface FocusArea {
   quotes: Quote[]
   /** Owner-goals asks in this area. None is linked to a request, so each reads "Not started". */
   asks: FocusAsk[]
+  /** When the area's record was last saved (ISO). Past focus shows it as a done area's date. Older workers leave it out. */
+  savedAt?: string | null
 }
 
 /** One owner change to My Focus, as POST /api/work-view/focus takes it (WorkViewRoutes.ts focusBody). */

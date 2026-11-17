@@ -430,10 +430,12 @@ function toOwnerRule(rule: WorkViewRule, now: number): OwnerRule {
     return { at: Number.isFinite(at) ? formatDateTime(at) : 'Time not recorded', quote: quote.quote, kind: QUOTE_KINDS.includes(quote.kind as RuleQuote['kind']) ? quote.kind as RuleQuote['kind'] : 'directive', where: 'prompt' }
   })
   const savedAt = Date.parse(rule.savedAt ?? '')
+  // Each record also says what it is (`fact`), so My Rules words it in the reader's language and shows a prompt in
+  // full; `label` stays the English line older screens read.
   const records: RuleRecord[] = [
-    ...quotes.map((quote) => ({ kind: 'Prompt' as const, label: `Your prompt: “${cleanText(quote.quote, 60)}”`, at: quote.at })),
-    ...(source === 'request-progress' ? [{ kind: 'Review' as const, label: 'request-progress · build story', at: Number.isFinite(latest) ? formatDateTime(latest) : 'Time not recorded' }] : []),
-    ...(Number.isFinite(savedAt) ? [{ kind: 'Instructions' as const, label: source === 'you' ? 'Written in My Rules on this computer' : 'Saved in My Rules on this computer', at: formatDateTime(savedAt) }] : []),
+    ...quotes.map((quote): RuleRecord => ({ kind: 'Prompt', label: `Your prompt: “${cleanText(quote.quote, 60)}”`, at: quote.at, fact: 'your-prompt', said: quote.quote })),
+    ...(source === 'request-progress' ? [{ kind: 'Review', label: 'request-progress · build story', at: Number.isFinite(latest) ? formatDateTime(latest) : 'Time not recorded', fact: 'build-story' } satisfies RuleRecord] : []),
+    ...(Number.isFinite(savedAt) ? [{ kind: 'Instructions', label: source === 'you' ? 'Written in My Rules on this computer' : 'Saved in My Rules on this computer', at: formatDateTime(savedAt), fact: source === 'you' ? 'written-here' : 'saved-here' } satisfies RuleRecord] : []),
   ]
   const replacedAt = Date.parse(rule.replacedAt ?? '')
   return {
