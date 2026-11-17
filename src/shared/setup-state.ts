@@ -1,6 +1,6 @@
 // The install funnel's state, shared by the worker (which the setup page talks to) and the installer (which waits
 // on it). One file per machine: the funnel shows until `status` is `complete`, for new installs and upgrades alike.
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { isCmemGatewayUrl } from './cmem-gateway.js';
 import { resolveDataDir } from './paths.js';
@@ -122,8 +122,15 @@ export function writeSetupState(state: SetupStateFile, path: string = setupState
 function writeJsonAtomically(path: string, value: unknown): void {
   mkdirSync(dirname(path), { recursive: true });
   const temp = `${path}.${randomUUID()}.tmp`;
-  writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
-  renameSync(temp, path);
+  try {
+    writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+    renameSync(temp, path);
+  } catch (error) {
+    // A failed write or rename (Windows EPERM/EBUSY while the target is held)
+    // would otherwise leave this randomly named temp behind on every attempt.
+    try { unlinkSync(temp); } catch { /* the temp may not exist */ }
+    throw error;
+  }
 }
 
 const filled = (value: unknown): boolean => typeof value === 'string' && value.trim().length > 0;

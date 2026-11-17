@@ -8,7 +8,7 @@
  * changed since the last publish is not sent again.
  */
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 export interface FocusShareEntry {
@@ -218,8 +218,15 @@ export class FocusShares {
   private write(registry: Registry): void {
     mkdirSync(dirname(this.options.registryPath), { recursive: true });
     const temp = `${this.options.registryPath}.${randomUUID()}.tmp`;
-    writeFileSync(temp, `${JSON.stringify(registry, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
-    renameSync(temp, this.options.registryPath);
+    try {
+      writeFileSync(temp, `${JSON.stringify(registry, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+      renameSync(temp, this.options.registryPath);
+    } catch (error) {
+      // A failed write or rename (Windows EPERM/EBUSY while the target is held)
+      // would otherwise leave this randomly named temp behind on every attempt.
+      try { unlinkSync(temp); } catch { /* the temp may not exist */ }
+      throw error;
+    }
   }
 
   /** Forgets the area's share, but only the share `token` names: a late answer about an old link never drops a newer one. */

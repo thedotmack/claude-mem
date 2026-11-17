@@ -176,9 +176,16 @@ function persistToDisk(filePath: string = defaultCooldownFilePath()): void {
       return;
     }
     const tmp = `${filePath}.${randomUUID()}.tmp`;
-    writeFileSync(tmp, JSON.stringify(rows, null, 2), { encoding: 'utf-8', flag: 'wx' });
-    // Atomic swap, so a reader never sees a half-written ledger.
-    renameSync(tmp, filePath);
+    try {
+      writeFileSync(tmp, JSON.stringify(rows, null, 2), { encoding: 'utf-8', flag: 'wx' });
+      // Atomic swap, so a reader never sees a half-written ledger.
+      renameSync(tmp, filePath);
+    } catch (error) {
+      // A failed write or rename (Windows EPERM/EBUSY while the target is held)
+      // would otherwise leave this randomly named temp behind on every attempt.
+      try { unlinkSync(tmp); } catch { /* the temp may not exist */ }
+      throw error;
+    }
   } catch (err) {
     logger.warn('SESSION', 'Failed to write quota-cooldown file', { filePath }, err as Error);
   }

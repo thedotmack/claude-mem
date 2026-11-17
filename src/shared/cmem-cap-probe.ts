@@ -57,8 +57,15 @@ export function noteCmemCapExhausted(now = Date.now()): void {
   try {
     mkdirSync(dirname(path), { recursive: true });
     const tmp = `${path}.${randomUUID()}.tmp`;
-    writeFileSync(tmp, JSON.stringify({ exhaustedAtMs: now } satisfies CapProbeFile), { flag: 'wx' });
-    renameSync(tmp, path);
+    try {
+      writeFileSync(tmp, JSON.stringify({ exhaustedAtMs: now } satisfies CapProbeFile), { flag: 'wx' });
+      renameSync(tmp, path);
+    } catch (error) {
+      // A failed write or rename (Windows EPERM/EBUSY while the target is held)
+      // would otherwise leave this randomly named temp behind on every attempt.
+      try { unlinkSync(tmp); } catch { /* the temp may not exist */ }
+      throw error;
+    }
   } catch (error) {
     logger.warn('SESSION', 'cmem cap probe file could not be written', undefined, error instanceof Error ? error : new Error(String(error)));
   }

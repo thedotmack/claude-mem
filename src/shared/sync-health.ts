@@ -138,8 +138,15 @@ export function writeSyncHealth(state: SyncHealthState, filePath: string = defau
     const dir = join(filePath, '..');
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
     const tmp = `${filePath}.${randomUUID()}.tmp`;
-    writeFileSync(tmp, JSON.stringify(state, null, 2), { encoding: 'utf-8', mode: 0o600, flag: 'wx' });
-    renameSync(tmp, filePath);
+    try {
+      writeFileSync(tmp, JSON.stringify(state, null, 2), { encoding: 'utf-8', mode: 0o600, flag: 'wx' });
+      renameSync(tmp, filePath);
+    } catch (error) {
+      // A failed write or rename (Windows EPERM/EBUSY while the target is held)
+      // would otherwise leave this randomly named temp behind on every attempt.
+      try { unlinkSync(tmp); } catch { /* the temp may not exist */ }
+      throw error;
+    }
     // The sync banner rides inside the SessionStart block.
     emitContextInvalidation('all', 'sync-health');
   } catch (error) {

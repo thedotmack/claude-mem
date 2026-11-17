@@ -312,8 +312,15 @@ function persist(): void {
     // be pre-planted as a symlink, and the write would then land on the link's
     // target while the rename only replaced the link.
     const tmp = `${filePath}.${randomUUID()}.tmp`;
-    writeFileSync(tmp, JSON.stringify(payload, null, 2), { mode: 0o600, flag: 'wx' });
-    renameSync(tmp, filePath);
+    try {
+      writeFileSync(tmp, JSON.stringify(payload, null, 2), { mode: 0o600, flag: 'wx' });
+      renameSync(tmp, filePath);
+    } catch (error) {
+      // A failed write or rename (Windows EPERM/EBUSY while the target is held)
+      // would otherwise leave this randomly named temp behind on every attempt.
+      try { unlinkSync(tmp); } catch { /* the temp may not exist */ }
+      throw error;
+    }
   } catch (err) {
     // Losing the window costs one extra doomed request after a restart. It is
     // not worth failing an observation over.
