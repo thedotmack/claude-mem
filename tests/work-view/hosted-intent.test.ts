@@ -493,6 +493,30 @@ describe('hosted setup extraction', () => {
     expect(requests).toEqual(['https://cloud.example/api/installer/intent']);
   });
 
+  it('refuses an over-cap history as hosted-too-large before any Cloud call, with nothing sent', async () => {
+    let calls = 0;
+    const counting = (async () => { calls++; return Response.json(answer()); }) as typeof fetch;
+    const preflight = (async () => { calls++; return Response.json({ available: true }); }) as typeof fetch;
+    const { run } = fixture(counting, { token: 'setup-token', userId: 'owner' }, preflight);
+    const big = prompts.map((prompt, index) => index === 0 ? { ...prompt, text: 'a'.repeat(INTENT_MAX_UPLOAD_BYTES) } : prompt);
+    await expect(run.run(big, true)).rejects.toMatchObject({ code: 'hosted-too-large', sent: false,
+      message: 'Hosted setup exceeds the 2 MiB upload cap. No prompts were truncated or uploaded.' });
+    expect(calls).toBe(0);
+    expect(run.state()).toMatchObject({ state: 'failed', error: expect.stringContaining('2 MiB upload cap') });
+  });
+
+  it('uploads a history whose body is exactly at the cap', async () => {
+    let uploads = 0;
+    const { run } = fixture((async () => { uploads++; return Response.json(answer()); }) as typeof fetch);
+    const sized = prompts.map(prompt => ({ ...prompt }));
+    const bodyBytes = () => Buffer.byteLength(JSON.stringify({ ownerPrompts: sized, improveProduct: true, timezoneOffsetMinutes: 420 }));
+    sized[0].text += 'a'.repeat(INTENT_MAX_UPLOAD_BYTES - bodyBytes());
+    expect(bodyBytes()).toBe(INTENT_MAX_UPLOAD_BYTES);
+    await run.run(sized, true);
+    expect(uploads).toBe(1);
+    expect(run.state()).toMatchObject({ state: 'ok', error: null });
+  });
+
   it('rejects an invalid explicit install credential even when account credentials exist', async () => {
     let calls = 0;
     const test = fixture((async () => { calls++; return Response.json(answer()); }) as typeof fetch);

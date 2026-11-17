@@ -84,6 +84,17 @@ export const OPENAI_COMPAT_PRESETS: readonly OpenAICompatPreset[] = [
     hint: 'API Route key; select a chat-completions model from your account catalog. Model ids are passed verbatim.',
   },
   {
+    id: 'modelgo',
+    label: 'ModelGo (modelgo.ai)',
+    baseUrl: 'https://api.modelgo.ai/v1',
+    // ModelGo keys expose the logical models enabled for that account. Do not
+    // guess one here: users should choose a chat-completions model returned by
+    // their authenticated GET /v1/models request.
+    defaultModel: '',
+    requiresApiKey: true,
+    hint: 'mgk_ key from console.modelgo.ai; choose a logical chat-completions model returned by api.modelgo.ai/v1/models.',
+  },
+  {
     id: 'opper',
     label: 'Opper (opper.ai)',
     baseUrl: 'https://api.opper.ai/v3/compat',

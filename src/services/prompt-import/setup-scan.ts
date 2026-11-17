@@ -61,7 +61,7 @@ export interface SetupScanState {
   usage: SetupTokenUsage | null;
   /** Why the token totals could not be read; the prompt scan itself still finished. */
   usageError: string | null;
-  /** Set when hosted extraction was unavailable (budget/rate limit) and setup finished locally without it. */
+  /** Set when hosted extraction did not run (budget/rate limit, or the history exceeds the hosted upload cap) and setup finished locally without it. */
   hostedNotice: string | null;
   /** The owner's newest typed prompts, newest first, quoted as typed (the Reveal shows them while no agent can extract). */
   recentPrompts: SetupRecentPrompt[];
@@ -246,15 +246,20 @@ export class SetupScan {
       await this.extract!(selected, this.current.improveProduct);
       this.finish(pending.summary, pending.startedAt);
     } catch (error) {
-      if ((error as { code?: string } | null)?.code === 'hosted-unavailable') {
-        // Preserve setup progress if automatic organization cannot run right now.
+      const code = (error as { code?: string } | null)?.code;
+      if (code === 'hosted-unavailable' || code === 'hosted-too-large') {
+        // Preserve setup progress if automatic organization cannot run right now, or can never take a
+        // history over the upload cap: retrying that scan would fail the same way, so finish locally.
         logger.warn('IMPORT', 'Hosted setup unavailable; continuing locally', { reason: (error as Error).message });
         try {
           await this.extract!([], this.current.improveProduct);
           // A refusal of the upload itself arrives after the request was sent; a preflight or cooldown refusal sent nothing.
           const sent = (error as { sent?: boolean }).sent !== false;
           if (!sent) this.current = { ...this.current, uploadedAgents: [] };
-          this.finish({ ...pending.summary, hostedNotice: 'Automatic organization is temporarily unavailable. You can continue setting up Claude-Mem.' }, pending.startedAt);
+          const hostedNotice = code === 'hosted-too-large'
+            ? 'Your recent work is larger than the hosted setup limit, so automatic organization did not run. You can continue setting up Claude-Mem.'
+            : 'Automatic organization is temporarily unavailable. You can continue setting up Claude-Mem.';
+          this.finish({ ...pending.summary, hostedNotice }, pending.startedAt);
           return this.state();
         } catch { /* fall through to the failure below */ }
       }

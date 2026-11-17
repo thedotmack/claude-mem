@@ -124,6 +124,13 @@ export function detectInstalledIDEs(): IDEInfo[] {
       hint: 'MCP-based integration',
     },
     {
+      id: 'copilot-vscode',
+      label: 'Copilot in VS Code',
+      // Both entries share ~/.copilot, so only offer VS Code as detected when the CLI is not.
+      detected: !isCommandInPath('copilot') && existsSync(process.env.COPILOT_HOME || join(home, '.copilot')),
+      hint: 'MCP-based integration',
+    },
+    {
       id: 'antigravity',
       label: 'Antigravity',
       detected: existsSync(join(home, '.gemini', 'antigravity')) || isCommandInPath('agy'),

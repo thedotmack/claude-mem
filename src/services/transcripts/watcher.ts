@@ -1,6 +1,6 @@
 import { createHash } from 'crypto';
 import { closeSync, existsSync, fstatSync, openSync, readSync, statSync, watch as fsWatch } from 'fs';
-import { open } from 'fs/promises';
+import { open, stat as statAsync } from 'fs/promises';
 import { basename, join, resolve as resolvePath, sep as pathSep } from 'path';
 import { logger } from '../../utils/logger.js';
 import { expandHomePath } from './config.js';
@@ -63,6 +63,23 @@ const RESUME_SCAN_BYTES_PER_STEP = 16 * 1024 * 1024;
  * milliseconds can raise no event on it.
  */
 const WATCH_ROOT_SETTLE_MS = 100;
+
+/**
+ * How often already-tailed transcripts are checked for bytes fs.watch did not
+ * report. Bun on macOS delivers no fs.watch event while another process
+ * appends to a file it keeps open (Codex Desktop holds a rollout open for the
+ * life of the thread), and the recursive root watch stays quiet until that
+ * process closes the file, so poke-on-root-event (#2192) never runs.
+ * Only files that already have a tailer are visited. Nothing is scanned into
+ * existence, and bytes already covered by readOffset are not read again.
+ *
+ * Why 3000 ms: #6283 asks for appended lines to be processed "within seconds",
+ * as under Node. The reporter's 15 s chmod workaround measured an 8.3 s lag, so
+ * the poll must run well under that; 3 s keeps the worst-case lag near 3 s.
+ * Each tick awaits one stat at a time (see pollTailedAppends), so a large
+ * history of tailed files lengthens the tick without blocking the event loop.
+ */
+const TAILED_APPEND_POLL_MS = 3000;
 
 // A bulk backfill can walk hundreds of files and tens of thousands of lines on
 // the Bun event loop that also serves the worker's HTTP API. Awaiting line
@@ -292,6 +309,15 @@ class FileTailer {
 
   poke(): void {
     this.requestRead();
+  }
+
+  /** True when the file ends past the bytes already read. A missing file does not. */
+  async hasBytesPastReadOffset(): Promise<boolean> {
+    try {
+      return (await statAsync(this.filePath)).size > this.tailState.readOffset;
+    } catch {
+      return false;
+    }
   }
 
   private requestRead(): void {
@@ -541,11 +567,16 @@ export class TranscriptWatcher {
   private startingTailers = new Set<string>();
   /** Set by stop(): a tailer still awaiting its start offset then never starts. */
   private stopped = false;
+  /** Re-reads already-tailed files when fs.watch misses an append (TAILED_APPEND_POLL_MS). */
+  private appendPollTimer: ReturnType<typeof setInterval> | null = null;
+  /** True while a poll tick is still awaiting stats; the next tick is skipped, never stacked. */
+  private appendPollInFlight = false;
 
   constructor(
     private config: TranscriptWatchConfig,
     private statePath: string,
-    observationTransport: TranscriptObservationTransport = 'in-process'
+    observationTransport: TranscriptObservationTransport = 'in-process',
+    private appendPollIntervalMs = TAILED_APPEND_POLL_MS,
   ) {
     this.processor = new TranscriptEventProcessor(observationTransport);
     this.state = loadWatchState(statePath);
@@ -562,6 +593,7 @@ export class TranscriptWatcher {
     for (const file of Object.keys(this.state.pendingTools ?? {})) {
       if (!this.tailers.has(file)) this.scheduleRetirementCheck(file);
     }
+    this.startAppendPoll();
   }
 
   stop(): void {
@@ -579,6 +611,38 @@ export class TranscriptWatcher {
     if (this.retirementTimer) clearTimeout(this.retirementTimer);
     this.retirementTimer = null;
     this.retirementCandidates.clear();
+    if (this.appendPollTimer) clearInterval(this.appendPollTimer);
+    this.appendPollTimer = null;
+  }
+
+  private startAppendPoll(): void {
+    if (this.appendPollTimer !== null || this.appendPollIntervalMs <= 0) return;
+    this.appendPollTimer = setInterval(() => {
+      void this.pollTailedAppends();
+    }, this.appendPollIntervalMs);
+    this.appendPollTimer.unref?.();
+  }
+
+  /**
+   * Already-tailed files only. Stats are awaited one at a time, so a user with
+   * thousands of historical rollouts never blocks hook or HTTP handling on a
+   * synchronous stat loop, and the poll holds at most one stat in flight. A
+   * tick still running when the next one fires makes that one a no-op. stop()
+   * ends the tick at the next file, and a tailer removed meanwhile is skipped.
+   */
+  private async pollTailedAppends(): Promise<void> {
+    if (this.stopped || this.appendPollInFlight) return;
+    this.appendPollInFlight = true;
+    try {
+      for (const [file, tailer] of [...this.tailers]) {
+        if (this.stopped) return;
+        const unread = await tailer.hasBytesPastReadOffset();
+        if (this.stopped) return;
+        if (unread && this.tailers.get(file) === tailer) tailer.poke();
+      }
+    } finally {
+      this.appendPollInFlight = false;
+    }
   }
 
   private async setupWatch(watch: WatchTarget): Promise<void> {

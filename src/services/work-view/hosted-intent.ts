@@ -45,6 +45,13 @@ export class HostedUnavailableError extends Error {
   /** `sent` is true once this call began its upload; false when a preflight or cooldown stopped it first. */
   constructor(message: string, readonly retryAfter: number, readonly sent = true) { super(message); }
 }
+/** The history itself is over Cloud's upload cap, so this run can never be accepted: retrying the same scan
+ * fails the same way, and no cooldown applies. Nothing was sent; setup continues locally without the extraction. */
+export class HostedTooLargeError extends Error {
+  readonly code = 'hosted-too-large';
+  readonly sent = false;
+  constructor(message: string) { super(message); }
+}
 /** Retry-After is either delay-seconds or an HTTP date (every form starts with the day name). Returns an epoch ms deadline,
  * `now` when the wait has already elapsed, or null when absent or unreadable. */
 function retryDeadline(header: string | null | undefined, now: number): number | null {
@@ -187,9 +194,9 @@ export class HostedIntent {
       const keys = conversationKeys(ownerPrompts);
       const timezoneOffsetMinutes = this.options.timezoneOffsetMinutes?.() ?? new Date().getTimezoneOffset();
       const json = Buffer.from(JSON.stringify({ ownerPrompts, improveProduct, timezoneOffsetMinutes }));
-      if (json.byteLength > INTENT_MAX_UPLOAD_BYTES) throw new Error('Hosted setup exceeds the 2 MiB upload cap. No prompts were truncated or uploaded.');
+      if (json.byteLength > INTENT_MAX_UPLOAD_BYTES) throw new HostedTooLargeError('Hosted setup exceeds the 2 MiB upload cap. No prompts were truncated or uploaded.');
       const body = gzipSync(json);
-      if (body.byteLength > INTENT_MAX_UPLOAD_BYTES) throw new Error('Hosted setup exceeds the 2 MiB compressed upload cap. No prompts were truncated or uploaded.');
+      if (body.byteLength > INTENT_MAX_UPLOAD_BYTES) throw new HostedTooLargeError('Hosted setup exceeds the 2 MiB compressed upload cap. No prompts were truncated or uploaded.');
       const origin = this.options.origin().replace(/\/$/, '');
       // Keep the proved install after sign-in so Cloud can bind its run and consent to the account.
       // Existing signed-in installations without an install credential retain their account-only path.
@@ -224,6 +231,7 @@ export class HostedIntent {
       const reason = error instanceof Error ? error.message : String(error);
       this.current = { ...this.current, state: 'failed', step: null, finishedAt: this.iso(), error: reason };
       if (error instanceof HostedUnavailableError) throw error;
+      if (error instanceof HostedTooLargeError) throw error;
       throw Object.assign(new Error(reason), { sent: !stoppedBeforeUpload });
     }
   }

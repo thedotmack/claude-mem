@@ -19,8 +19,9 @@ describe('viewer header TeamBrain link', () => {
         showTeamBrainLink={true}
       />,
     );
-    expect(html).toContain('class="teambrain-cta"');
+    // The link lives in the header's "…" menu (kept in the page, hidden while the menu is closed).
+    expect(html).toMatch(/class="[^"]*\bteambrain-cta\b/);
     expect(html).toContain(`href="${TEAMBRAIN_START_URL}"`);
-    expect(html).toContain('>TeamBrain</a>');
+    expect(html).toContain('>TeamBrain</span></a>');
   });
 });
