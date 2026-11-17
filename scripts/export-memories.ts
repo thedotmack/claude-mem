@@ -69,15 +69,18 @@ export async function exportMemories(query: string, outputFile: string, project?
   try {
     const target = statSync(outputFile);
     streamTarget = target.isCharacterDevice() || target.isFIFO();
-    const descriptors = streamTarget
-      ? [process.stdout.fd, process.stderr.fd]
-      : [standardStreamDescriptor(outputFile)];
-    for (const fd of descriptors) {
-      if (fd === undefined) continue;
-      const stream = fstatSync(fd);
-      if (target.dev === stream.dev && target.ino === stream.ino) {
-        stdioTarget = fd;
-        break;
+    // An explicit stdio alias names this process's own descriptor, so use it as named.
+    // Its inode cannot confirm it: macOS devfs reports other dev/inode numbers for
+    // /dev/fd/N than fstat does for the same socket or pipe.
+    stdioTarget = standardStreamDescriptor(outputFile);
+    // Any other stream (a named FIFO) may still be the one stdout or stderr has open.
+    if (stdioTarget === undefined && streamTarget) {
+      for (const fd of [process.stdout.fd, process.stderr.fd]) {
+        const stream = fstatSync(fd);
+        if (target.dev === stream.dev && target.ino === stream.ino) {
+          stdioTarget = fd;
+          break;
+        }
       }
     }
   } catch (error) {
