@@ -1311,12 +1311,6 @@ var init_SettingsDefaultsManager = __esm({
         // Streamed request idle window (streamed-chat-completion.ts): silence that ends a stream. Self-hosted backends queue behind a load balancer, and the queue wait reads as idle (#4737) — raise it there. Literal because shared cannot import from the worker; a drift test pins it to the shipped constant
         CLAUDE_MEM_WORKER_HEARTBEAT_STALE_MS: "120000",
         // A silent worker whose liveness heartbeat is younger than this is slow, not dead (10000-3600000).
-        // Observation TV remote broadcast. EMPTY = OFF: the read-only guard is not
-        // mounted and the worker behaves exactly as before. Set (with a non-loopback
-        // CLAUDE_MEM_WORKER_HOST) to expose ONLY /tv, /tv.html, /stream and
-        // GET /api/observations to holders of this secret. Mint with:
-        //   node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
-        CLAUDE_MEM_TV_TOKEN: "",
         CLAUDE_MEM_LOCAL_API_TOKEN: "",
         // Local API token. Empty = off. See the declaration above.
         // claude-mem sign-in funnel state: all empty until the installer's

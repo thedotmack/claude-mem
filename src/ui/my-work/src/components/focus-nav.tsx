@@ -67,7 +67,7 @@ function Count({ count, className }: { count: number; className?: string }) {
  * c-shell-focus-nav Keep: rows 38–54px, as at HEAD. At the 17px root a one-line row is the 38.25px minimum and a
  * two-line one 51.6px (two 20.6px lines, 4.25px padding top and bottom, the Button's 1px edge).
  */
-const RAIL_ROW_CLASS_NAME = 'relative flex min-h-9 w-full items-center gap-2 rounded-[10px] px-2 py-1 text-[0.88rem] leading-snug transition-colors'
+const RAIL_ROW_CLASS_NAME = 'relative flex w-full items-center gap-2 rounded-[10px] px-2 py-1 text-[0.88rem] leading-snug transition-colors md:not-pointer-coarse:min-h-9'
 
 /**
  * "All N": every focus area on the home page's board, shown whole (`/#focus-areas`). Its name is its visible words, so
