@@ -1035,12 +1035,16 @@ describe('#6319: a stored login the observer cannot use is loud', () => {
   async function spawnWith(store: oauthToken.OAuthTokenResult, standIn?: 'subscription') {
     const warnSpy = spyOn(logger, 'warn');
     const oauthSpy = spyOn(oauthToken, 'readClaudeOAuthToken').mockResolvedValue(store);
+    // An expired result writes the stale-login marker; keep it out of the
+    // shared data dir, where later SessionStart tests would read it.
+    const dataDirSpy = spyOn(paths, 'dataDir').mockImplementation(() => TEST_DATA_DIR);
     try {
       let unusableLogin: string | null = null;
       const env = await buildIsolatedEnvWithFreshOAuth(true, { standIn, onUnusableLogin: reason => { unusableLogin = reason; } });
       const warnings = warnSpy.mock.calls.map(call => String(call[1]));
       return { env, warnings, unusableLogin };
     } finally {
+      dataDirSpy.mockRestore();
       oauthSpy.mockRestore();
       warnSpy.mockRestore();
     }
