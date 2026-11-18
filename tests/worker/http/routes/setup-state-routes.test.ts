@@ -1,9 +1,10 @@
-import { afterAll, afterEach, describe, expect, it, setSystemTime, spyOn } from 'bun:test';
+import { afterAll, afterEach, describe, expect, it, spyOn } from 'bun:test';
 import express from 'express';
 import type { Server } from 'node:http';
 import * as fs from 'node:fs';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { logger } from '../../../../src/utils/logger.js';
 import { defaultAutoRefresh, WorkViewRoutes } from '../../../../src/services/worker/http/routes/WorkViewRoutes.js';
 import { SETUP_DSH_PROFILE_MAX_CHARACTERS, SETUP_INSTALL_NOTE_MAX_CHARACTERS, type SetupInstallCatalog } from '../../../../src/shared/setup-install.js';
 
@@ -328,29 +329,38 @@ describe('setup state endpoints', () => {
     for (phase of ['idle', 'done', 'failed', 'awaiting-consent']) expect(testRoutes.setupIsActive()).toBe(false);
   });
 
-  it('keeps local work paused without an error while the machine has no free file descriptors, and reads again later', async () => {
+  it('keeps local work paused without an error while the machine has no free file descriptors, and reads again on every tick', async () => {
     await start();
     writeFileSync(statePath, JSON.stringify({ status: 'pending' }));
     const testRoutes = routes as unknown as { setupIsActive: () => boolean };
     let code = 'EMFILE';
     const read = spyOn(fs, 'readFileSync').mockImplementation(() => { throw Object.assign(new Error(`${code}: too many open files`), { code }); });
+    const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+    const exhaustionWarnings = () => warn.mock.calls.filter(([, message]) => String(message).includes('no file descriptors are free')).length;
     try {
-      setSystemTime(new Date('2026-11-18T00:00:00Z'));
       expect(testRoutes.setupIsActive()).toBe(true);
-      expect(testRoutes.setupIsActive()).toBe(true);
-      expect(read).toHaveBeenCalledTimes(1);
-      code = 'ENFILE';
-      setSystemTime(new Date('2026-11-18T00:00:06Z'));
       expect(testRoutes.setupIsActive()).toBe(true);
       expect(read).toHaveBeenCalledTimes(2);
+      code = 'ENFILE';
+      expect(testRoutes.setupIsActive()).toBe(true);
+      expect(read).toHaveBeenCalledTimes(3);
+      expect(exhaustionWarnings()).toBe(1);
       code = 'EACCES';
-      setSystemTime(new Date('2026-11-18T00:00:12Z'));
       expect(() => testRoutes.setupIsActive()).toThrow('EACCES');
       read.mockRestore();
       expect(testRoutes.setupIsActive()).toBe(false);
+      // A new episode after a successful read warns again.
+      code = 'EMFILE';
+      const readAgain = spyOn(fs, 'readFileSync').mockImplementation(() => { throw Object.assign(new Error(`${code}: too many open files`), { code }); });
+      try {
+        expect(testRoutes.setupIsActive()).toBe(true);
+        expect(exhaustionWarnings()).toBe(2);
+      } finally {
+        readAgain.mockRestore();
+      }
     } finally {
       read.mockRestore();
-      setSystemTime();
+      warn.mockRestore();
     }
   });
 

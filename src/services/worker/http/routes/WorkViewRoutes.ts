@@ -530,8 +530,6 @@ export function defaultAutoRefresh(ledgerDir: string, settingsPath = USER_SETTIN
  * measurement as the regression check. Work-state, title-cache and ledger changes always bypass it.
  */
 const ACTIVITY_REFRESH_WINDOW_MS = 120_000;
-// Out of file descriptors, the setup files are read again only after this wait, not on every one-second tick.
-const SETUP_READ_RETRY_MS = 5_000;
 
 export class WorkViewRoutes extends BaseRouteHandler {
   private readonly saveSharedReview: WorkViewOptions['saveSharedReview'];
@@ -570,7 +568,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
   private claudeInstructionsPath: string;
   private setupScan: SetupScan | null;
   private setupStatePath: string;
-  private setupReadRetryAt = 0;
+  private setupReadExhausted = false;
   private setupTelemetry: ReturnType<typeof createSetupTelemetry> | null = null;
   private settingsPath: string;
   private unsubscribeSetupScan: (() => void) | null = null;
@@ -700,18 +698,18 @@ export class WorkViewRoutes extends BaseRouteHandler {
     // Waiting for the upload answer is not active: a closed tab never answers, and that must not hold local work
     // paused. The installer's session below still covers a setup in progress; reopening the page rejoins the question.
     if (!['idle', 'done', 'failed', 'awaiting-consent'].includes(scanPhase)) return true;
-    if (Date.now() < this.setupReadRetryAt) return true;
     try {
       const state = readSetupState(statePath);
       const active = hasPendingInstallSetup(state) || (state.status !== 'complete' && hasActiveSetupSession(statePath));
-      this.setupReadRetryAt = 0;
+      this.setupReadExhausted = false;
       return active;
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== 'EMFILE' && code !== 'ENFILE') throw error;
       // The machine is out of file descriptors, not the setup files. Unknown setup keeps local paid work paused.
-      if (this.setupReadRetryAt === 0) logger.warn('WORKER', 'Could not read setup state: no file descriptors are free. Local work stays paused until a read succeeds.', { code });
-      this.setupReadRetryAt = Date.now() + SETUP_READ_RETRY_MS;
+      // A failed open holds no descriptor, so every tick reads again; the warning is logged once per episode.
+      if (!this.setupReadExhausted) logger.warn('WORKER', 'Could not read setup state: no file descriptors are free. Local work stays paused until a read succeeds.', { code });
+      this.setupReadExhausted = true;
       return true;
     }
   }
