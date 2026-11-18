@@ -1,5 +1,5 @@
 import React, { useEffect, useId, useRef, useState } from "react";
-import { AnimatePresence, motion } from "motion/react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { cn } from "@/lib/utils";
 
 export type NotchOption = {
@@ -63,9 +63,16 @@ export interface NotchProps {
   itemClassName?: string;
   /** Classes applied to the options panel. */
   panelClassName?: string;
+  /**
+   * Local addition: anchor the bar to the screen edge, full width, with the safe-area inset inside it, instead of
+   * floating `offset` px above the edge (c-shell-notch: the floating bar covered content and sat 17px up).
+   */
+  pinned?: boolean;
 }
 
 const SHELL_SPRING = { type: "spring" as const, stiffness: 380, damping: 34 };
+/** Local fix (plan rule 8): under reduced motion every change of the bar and its panel lands at once. */
+const INSTANT = { duration: 0 };
 
 const LIST_VARIANTS = {
   hidden: {},
@@ -111,9 +118,12 @@ export const Notch = ({
   className,
   itemClassName,
   panelClassName,
+  pinned = false,
 }: NotchProps) => {
   const shellRef = useRef<HTMLDivElement>(null);
   const shellLayoutId = useId();
+  // Checked here, not only through the app's MotionConfig, which leaves the fades running (plan rule 8).
+  const reduceMotion = useReducedMotion();
   const [openItemId, setOpenItemId] = useState<string | null>(null);
   const [internalSelected, setInternalSelected] = useState<
     Record<string, string>
@@ -179,13 +189,13 @@ export const Notch = ({
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      transition={{ duration: 0.15 }}
+      transition={reduceMotion ? INSTANT : { duration: 0.15 }}
       className={cn("w-fit", panelClassName)}
     >
       <motion.div
         className="flex flex-col gap-1.5 p-2"
         variants={LIST_VARIANTS}
-        initial="hidden"
+        initial={reduceMotion ? false : "hidden"}
         animate="visible"
       >
         {openItem.options.map((option) => {
@@ -238,8 +248,8 @@ export const Notch = ({
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      transition={{ duration: 0.15 }}
-      className="flex w-fit items-center gap-1 p-1"
+      transition={reduceMotion ? INSTANT : { duration: 0.15 }}
+      className={cn("flex w-fit items-center gap-1 p-1", pinned && "w-full justify-around")}
     >
       {items.map((item, index) => {
         const selected = getSelectedOption(item);
@@ -283,14 +293,16 @@ export const Notch = ({
   return (
     <div
       className={cn(
-        "pointer-events-none fixed inset-x-0 z-100 flex translate-z-0 px-4",
+        "pointer-events-none fixed inset-x-0 z-100 flex translate-z-0",
+        !pinned && "px-4",
         position === "top" ? "top-0" : "bottom-0",
         alignClass,
       )}
       style={
-        position === "top"
-          ? { paddingTop: `max(${offset}px, env(safe-area-inset-top))` }
-          : { paddingBottom: `max(${offset}px, env(safe-area-inset-bottom))` }
+        pinned ? undefined
+          : position === "top"
+            ? { paddingTop: `max(${offset}px, env(safe-area-inset-top))` }
+            : { paddingBottom: `max(${offset}px, env(safe-area-inset-bottom))` }
       }
     >
       <motion.div
@@ -298,12 +310,14 @@ export const Notch = ({
         layoutId={shellLayoutId}
         layout
         initial={
-          reveal ? { opacity: 0, y: edgeOffset, filter: "blur(6px)" } : false
+          reveal && !reduceMotion ? { opacity: 0, y: edgeOffset, filter: "blur(6px)" } : false
         }
         animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
-        transition={SHELL_SPRING}
+        // Also the layout animation: a change of the bar's size lands at once under reduced motion.
+        transition={reduceMotion ? INSTANT : SHELL_SPRING}
         className={cn(
           "pointer-events-auto flex w-fit flex-col overflow-hidden rounded-xl border border-white/10 bg-neutral-950/95 shadow-[0_12px_40px_-8px_rgba(0,0,0,0.55)] ring-1 ring-neutral-800 backdrop-blur-2xl ring-inset",
+          pinned && (position === "top" ? "w-full rounded-none pt-[env(safe-area-inset-top)]" : "w-full rounded-none pb-[env(safe-area-inset-bottom)]"),
           className,
         )}
       >

@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'bun:test';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { reduceWorkState } from '../../src/services/work-view/data-source.mjs';
+import { doneAtAfterChange } from '../../src/services/work-view/focus-done-date.mjs';
 import {
   anchorConversationKeyFor, buildFocusAreas, focusAreaRowFields, MY_FOCUS_LIST, navWordIn, ownerGoalsAreaRows, placeRequests, placementRowFields, routerFocusRows,
 } from '../../src/services/work-view/my-focus.mjs';
@@ -31,6 +34,41 @@ describe('buildFocusAreas', () => {
     ]);
     expect(result.focusAreas).toHaveLength(1);
     expect(areaById(result, 'fa_viewer')).toMatchObject({ name: 'My Work viewer', status: 'kept', decidedBy: 'owner', source: 'seed' });
+  });
+
+  it('dates a done area by the row that marked it done: a rename or goal edit on a later day keeps that day', () => {
+    const day = (date: string) => Date.parse(`${date}T12:00:00Z`);
+    const result = focus([
+      { fields: area('fa_fixes', { name: 'Plugin fixes', status: 'kept', decidedBy: 'owner' }), at: day('2026-10-10') },
+      { fields: area('fa_fixes', { name: 'Plugin fixes', status: 'done', decidedBy: 'owner' }), at: day('2026-10-17') },
+      // Past focus offers Rename and Edit goal on a done area: each owner row repeats the whole area, still done.
+      { fields: area('fa_fixes', { name: 'Small plugin fixes', status: 'done', decidedBy: 'owner' }), at: day('2026-10-20') },
+      { fields: area('fa_fixes', { name: 'Small plugin fixes', goal: 'Fixes people asked for twice.', status: 'done', decidedBy: 'owner' }), at: day('2026-10-22') },
+    ]);
+    expect(areaById(result, 'fa_fixes')).toMatchObject({ name: 'Small plugin fixes', status: 'done', doneAt: '2026-10-17T12:00:00.000Z', savedAt: '2026-10-22T12:00:00.000Z' });
+  });
+
+  it('clears the done date when the area goes back in focus, and dates it anew when it is marked done again', () => {
+    const day = (date: string) => Date.parse(`${date}T12:00:00Z`);
+    const rows = [
+      { fields: area('fa_fixes', { status: 'done', decidedBy: 'owner' }), at: day('2026-10-17') },
+      { fields: area('fa_fixes', { status: 'kept', decidedBy: 'owner' }), at: day('2026-10-18') },
+    ];
+    expect(areaById(focus(rows), 'fa_fixes')).toMatchObject({ status: 'kept', doneAt: null });
+    const again = focus([...rows, { fields: area('fa_fixes', { status: 'done', decidedBy: 'owner' }), at: day('2026-10-25') }]);
+    expect(areaById(again, 'fa_fixes')).toMatchObject({ status: 'done', doneAt: '2026-10-25T12:00:00.000Z' });
+  });
+
+  // Phase 6 fix AP-L7: one definition of the done date, which My Work's sample (standing in for the worker) takes too.
+  it('dates a done area by one rule, the one My Work\'s sample takes', () => {
+    const at = '2026-10-25T12:00:00.000Z';
+    expect(doneAtAfterChange({ statusBefore: 'kept', doneAtBefore: null, statusAfter: 'done', changedAt: at })).toBe(at);
+    expect(doneAtAfterChange({ statusBefore: undefined, doneAtBefore: null, statusAfter: 'done', changedAt: at })).toBe(at);
+    expect(doneAtAfterChange({ statusBefore: 'done', doneAtBefore: '2026-10-17T12:00:00.000Z', statusAfter: 'done', changedAt: at })).toBe('2026-10-17T12:00:00.000Z');
+    expect(doneAtAfterChange({ statusBefore: 'done', doneAtBefore: '2026-10-17T12:00:00.000Z', statusAfter: 'kept', changedAt: at })).toBeNull();
+    // The sample applies its changes with this rule instead of a copy of it.
+    const sample = readFileSync(resolve(import.meta.dir, '../../src/ui/my-work/src/live/sample-source.ts'), 'utf8');
+    expect({ imports: /import \{ doneAtAfterChange \} from '[^']*focus-done-date\.mjs'/.test(sample), calls: sample.includes('doneAt: doneAtAfterChange(') }).toEqual({ imports: true, calls: true });
   });
 
   it('never lets a system row override an area the owner decided, so a dismissed area stays dismissed', () => {

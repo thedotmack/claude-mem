@@ -48,8 +48,25 @@ export function focusOverview(areas: readonly FocusArea[], requests: readonly Re
   }
   const ordered = [...areas].filter((area) => !area.mergedInto).sort(byFocusPriority)
   return {
-    areas: ordered.filter((area) => area.status === 'kept').map(row),
+    areas: keptFocusAreas(areas).map(row),
     suggested: ordered.filter((area) => area.status === 'suggested').map(row),
     other, sorting,
   }
+}
+
+/**
+ * Every kept area not merged away, in owner order: the areas the focus board lists, and what the rail's and the chip
+ * row's "All N" counts (live/focus-nav.ts), so that link always opens as many areas as it says.
+ */
+export function keptFocusAreas(areas: readonly FocusArea[]): FocusArea[] {
+  return areas.filter((area) => area.status === 'kept' && !area.mergedInto).sort(byFocusPriority)
+}
+
+/**
+ * The board's order (c-focus-overview, page-01): areas that need the owner first, then the rest, each part keeping the
+ * owner's saved order. Display only: the saved order (ownerRank) is unchanged, so the area menu's "Move up" still
+ * counts in it (Phase 6).
+ */
+export function needsOwnerFirst(rows: readonly FocusOverviewRow[]): FocusOverviewRow[] {
+  return [...rows.filter((row) => row.needsYou > 0), ...rows.filter((row) => row.needsYou === 0)]
 }

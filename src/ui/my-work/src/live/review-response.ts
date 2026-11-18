@@ -12,22 +12,25 @@ export function readSaveReceipt(body: unknown): SaveReceipt | undefined {
     ? { scope: save.scope!, state: save.state!, ...(save.localMaterialization === 'pending' ? { localMaterialization: 'pending' } : {}) } : undefined
 }
 
-/** What the review POST answered. Anything else throws: a failed save is never silent. */
+/**
+ * What the review POST answered. Anything else throws: a failed save is never silent. `serverMessage`: the worker's own
+ * reason, or null when it gave none; the drawer words each outcome itself and folds this under Details (G17).
+ */
 export type ReviewResponse =
   | { kind: 'saved'; snapshot: unknown; save?: SaveReceipt }
   /** 409: the fingerprint is stale, or the request is not reported complete. The latest model tells which. */
-  | { kind: 'conflict'; serverMessage: string; snapshot?: unknown }
+  | { kind: 'conflict'; serverMessage: string | null; snapshot?: unknown }
   /** 503: the worker can't read local work or its review storage right now. */
-  | { kind: 'unavailable'; serverMessage: string }
+  | { kind: 'unavailable'; serverMessage: string | null }
 
 /** What the person is told after pressing Check or Undo. */
 export type ReviewResult =
   | { outcome: 'saved'; model: WorkModel; save?: SaveReceipt }
   /** The version on screen is not the latest one; the latest is shown now and nothing was saved. */
-  | { outcome: 'changed-while-reading'; model: WorkModel; serverMessage?: string }
+  | { outcome: 'changed-while-reading'; model: WorkModel; serverMessage: string | null }
   /** The latest version was refused as it is (409 "not reported complete"); nothing was saved. */
-  | { outcome: 'refused'; serverMessage: string; model: WorkModel }
-  | { outcome: 'unavailable'; serverMessage: string }
+  | { outcome: 'refused'; serverMessage: string | null; model: WorkModel }
+  | { outcome: 'unavailable'; serverMessage: string | null }
 
 export const CHANGED_WHILE_READING_MESSAGE = 'This work changed while you were reading. Review the latest version before checking.'
 export const CHECKED_LOCALLY_MESSAGE = 'Checked locally.'
@@ -47,9 +50,9 @@ export function readReviewResponse(status: number, body: unknown): ReviewRespons
   }
   if (status === 409) {
     const snapshot = (body as { snapshot?: unknown } | null)?.snapshot
-    return { kind: 'conflict', serverMessage: serverErrorText(body) ?? 'This work changed. Read the latest result before checking it.', ...(snapshot ? { snapshot } : {}) }
+    return { kind: 'conflict', serverMessage: serverErrorText(body), ...(snapshot ? { snapshot } : {}) }
   }
-  if (status === 503) return { kind: 'unavailable', serverMessage: serverErrorText(body) ?? 'Local work is unavailable right now (503).' }
+  if (status === 503) return { kind: 'unavailable', serverMessage: serverErrorText(body) }
   throw new Error(`The local review could not be saved (${status}): ${serverErrorText(body) ?? 'the worker gave no reason'}`)
 }
 

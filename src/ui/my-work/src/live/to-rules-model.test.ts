@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
-import { toWorkModel } from './to-work-model.ts'
+import { recordedTime, toWorkModel } from './to-work-model.ts'
 import type { WorkViewRule, WorkViewSnapshot } from './work-view-api-types.ts'
 
 const appRoot = new URL('../../', import.meta.url)
@@ -53,4 +53,29 @@ test('keeps saved-quote omissions visible even when local evidence is still avai
 test('a rule in an unlisted scope or from an unknown source empties My Rules with the reason', () => {
   assert.match(mapRules({ rules: [ownRule], ruleScopes: [scopes[0]] }).rulesReadError!, /scope the worker did not list/)
   assert.match(mapRules({ rules: [{ ...suggestion, source: 'somewhere' }], ruleScopes: scopes }).rulesReadError!, /unknown source/)
+})
+
+test('each record says what it is, so My Rules words it in the reader’s language and shows a prompt in full', () => {
+  const said = 'they wilt if you wait until the afternoon sun is on them, so water the tomatoes before noon every day'
+  const model = mapRules({ rules: [{ ...suggestion, quotes: [{ at: '2026-10-18T10:00:00Z', quote: said, kind: 'correction' }], savedAt: '2026-10-19T08:00:00Z' }, ownRule], ruleScopes: scopes })
+  const [learned, own] = model.rules
+  assert.deepEqual(learned.records.map((record) => record.fact), ['your-prompt', 'build-story', 'saved-here'])
+  assert.equal(learned.records[0].said, said)
+  // The English label stays for screens that read it, cut as before; the words for `fact` replace it on My Rules.
+  assert.ok(learned.records[0].label.length < said.length)
+  assert.deepEqual(own.records.map((record) => record.fact), ['written-here'])
+})
+
+test('a rule\'s quote, record and latest times that are not recorded are null, never English words as data', () => {
+  const model = mapRules({ rules: [{ ...suggestion, latestAt: null, quotes: [{ at: null, quote: 'they wilt if you wait', kind: 'correction' }] }], ruleScopes: scopes })
+  const [rule] = model.rules
+  assert.equal(rule.quotes[0].at, null)
+  assert.equal(rule.latestAt, null)
+  assert.deepEqual(rule.records.map((record) => [record.kind, record.at]), [['Prompt', null], ['Review', null]])
+  assert.ok(!JSON.stringify(rule).includes('not recorded'), 'no English for a missing time rides the model')
+})
+
+test('an older worker\'s English for a rule time that is not recorded reads as not recorded (G19); a recorded time stays', () => {
+  for (const words of ['Time not recorded', 'not recorded', 'a date not recorded', '', null, undefined]) assert.equal(recordedTime(words), null, String(words))
+  assert.equal(recordedTime('Oct 18, 10:00 am'), 'Oct 18, 10:00 am')
 })

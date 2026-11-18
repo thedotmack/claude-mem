@@ -61,8 +61,9 @@ export interface ConversationContinuation {
 export type ConversationContinuationNotice = Pick<ConversationContinuation, 'exchangeId' | 'platform' | 'conversationSessionId' | 'state'>;
 
 /**
- * Whether a conversation can be continued from here and where its turn would run. A refusal is one sentence the page
- * shows as it is. The fields the other branch lacks are typed `undefined`, so a reader may check any of them unnarrowed.
+ * Whether a conversation can be continued from here and where its turn would run. A refusal is the worker's own English
+ * sentence: My Work shows a plain sentence in the reader's language and keeps this text under Details (G17). The fields
+ * the other branch lacks are typed `undefined`, so a reader may check any of them unnarrowed.
  */
 export type ConversationContinuationTarget =
   | {

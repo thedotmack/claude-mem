@@ -1,9 +1,31 @@
 import type { Request } from '../data.ts'
 
-/** Current card/status fields win, while a complete detail keeps the evidence omitted from its overview. */
+type Suggestion = NonNullable<Request['suggestion']>
+
+/** The same "may be part of" suggestion: the conversation it is about, the request it points to, and its version. */
+const sameSuggestion = (a: Suggestion, b: Suggestion) =>
+  a.conversationKey === b.conversationKey && a.requestId === b.requestId && (a.expectedSuggestionHash ?? null) === (b.expectedSuggestionHash ?? null)
+
+/**
+ * The suggestion the drawer shows: the card's, which says whether one is still open (an answered one leaves the
+ * overview while its request's detail version stays the same, so an older detail can still hold it), with the judge's
+ * score from the detail when it is the same suggestion. The overview leaves the score out of its cards
+ * (src/services/work-view/overview.ts cardSuggestion); only the drawer words it.
+ */
+function suggestionOnScreen(summary: Request['suggestion'], detail: Request['suggestion']): Request['suggestion'] {
+  if (!summary || !detail || detail.confidence === undefined || !sameSuggestion(summary, detail)) return summary
+  return { ...summary, confidence: detail.confidence }
+}
+
+/**
+ * Current card/status fields win, while a complete detail keeps the evidence omitted from its overview. The detail's
+ * own suggestion never outlives the card's (suggestionOnScreen).
+ */
 export function mergeRequestDetail(summary: Request, detail: Request): Request {
+  const { suggestion: _detailSuggestion, ...detailWithoutSuggestion } = detail
+  const suggestion = suggestionOnScreen(summary.suggestion, detail.suggestion)
   return {
-    ...detail,
+    ...detailWithoutSuggestion,
     ...summary,
     terminal: detail.terminal,
     workstreams: detail.workstreams,
@@ -14,6 +36,7 @@ export function mergeRequestDetail(summary: Request, detail: Request): Request {
     story: detail.story,
     storyNarrative: detail.storyNarrative,
     evidence: detail.evidence,
+    ...(suggestion ? { suggestion } : {}),
     detailLoaded: true,
   }
 }

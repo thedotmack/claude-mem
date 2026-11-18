@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import type { Request } from '../data.ts'
-import { freshlyUpdatedRequestIds, mergeRecentChanges, RECENT_CHANGES_KEPT, requestChanges } from './update-queue.ts'
+import { freshlyUpdatedRequestIds, mergeRecentChanges, requestChanges } from './update-queue.ts'
 
 const request = (id: string, contentFingerprint: string) => ({ id, contentFingerprint }) as Request
 
@@ -51,11 +51,20 @@ describe('requestChanges', () => {
 describe('mergeRecentChanges', () => {
   const change = (requestId: string, at: number) => ({ kind: 'new' as const, requestId, title: requestId, at })
 
-  it('puts the newest first, keeps one entry per request, and caps the list', () => {
+  it('puts the newest first and keeps one entry per request', () => {
     const recent = [change('a', 1), change('b', 1)]
     assert.deepEqual(mergeRecentChanges(recent, [change('b', 2)]).map((entry) => `${entry.requestId}${entry.at}`), ['b2', 'a1'])
-    const many = Array.from({ length: RECENT_CHANGES_KEPT + 5 }, (_, index) => change(`r${index}`, 3))
-    assert.equal(mergeRecentChanges(recent, many).length, RECENT_CHANGES_KEPT)
+  })
+
+  it('drops no change: thirteen and more are all kept, newest first, so the ticker can count every one it does not show', () => {
+    // One model at a time, as the store merges them: the 13th change used to fall off a cap of 12 without a word.
+    let recent: ReturnType<typeof mergeRecentChanges> = []
+    for (let index = 0; index < 17; index++) recent = mergeRecentChanges(recent, [change(`r${index}`, index)])
+    assert.equal(recent.length, 17)
+    assert.deepEqual(recent.slice(0, 2).map((entry) => entry.requestId), ['r16', 'r15'])
+    assert.equal(recent.at(-1)!.requestId, 'r0')
+    // Seventeen changing at once, too.
+    assert.equal(mergeRecentChanges([], Array.from({ length: 17 }, (_, index) => change(`s${index}`, 1))).length, 17)
   })
 
   it('returns the same list when nothing changed', () => {

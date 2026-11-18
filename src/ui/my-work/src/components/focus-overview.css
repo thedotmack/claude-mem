@@ -1,23 +1,32 @@
 .focus-overview { container-type: inline-size; padding-bottom: 1.5rem; border-bottom: 1px solid var(--border); text-align: left; }
 .focus-area-grid { display: grid; align-items: start; gap: 1rem; }
-.focus-area-card { overflow: hidden; border: 1px solid var(--border); border-radius: 12px; background: var(--card); box-shadow: none; animation: focus-area-arrive .35s ease-out; }
+.focus-area-card { position: relative; overflow: hidden; border: 1px solid var(--border); border-radius: 12px; background: var(--card); box-shadow: none; transition: background-color .15s; }
+/* An area that needs the owner: a brighter edge in its attention colour (c-focus-overview). */
+.focus-area-card.needs-owner { border-color: color-mix(in oklab, var(--attention-foreground) 70%, transparent); }
+/* The whole card opens the area: the name's button stretches over it (one Tab stop per card); the card's other
+   controls sit above it (.focus-area-above). Its focus ring is the card's edge. */
+.focus-area-target::after { content: ''; position: absolute; inset: 0; border-radius: 12px; }
+.focus-area-target:focus-visible::after { outline: 3px solid color-mix(in oklab, var(--ring) 70%, transparent); outline-offset: -3px; }
+.focus-area-card:has(.focus-area-target:hover) { background: var(--surface); }
+.focus-area-above { position: relative; z-index: 1; }
+.focus-area-chevron { position: absolute; top: 50%; right: .9rem; transform: translateY(-50%); color: var(--muted-foreground); }
 .focus-area-card svg { width: 16px; height: 16px; flex-shrink: 0; }
-.focus-area-signals { display: flex; flex-wrap: wrap; gap: .75rem; padding-block: .75rem; font-size: .7rem; font-variant-numeric: tabular-nums; }
+.focus-area-signals { display: flex; flex-wrap: wrap; gap: .5rem; padding-block: .6rem; font-size: .75rem; font-variant-numeric: tabular-nums; }
 .focus-signal-attention { color: var(--attention-foreground); }
 .focus-signal-working { color: var(--working-foreground); }
-.focus-area-evidence-toggle { display: flex; align-items: center; gap: .5rem; font-size: .75rem; min-height: 44px; cursor: pointer; }
 .focus-area-evidence { width: 100%; margin-top: .8rem; border-top: 1px solid var(--border); padding-top: .75rem; font-size: .82rem; line-height: 1.6; }
 .focus-area-evidence blockquote { border-left: 2px solid var(--border); padding-left: .75rem; }
 .focus-area-evidence cite { display: block; color: var(--muted-foreground); font-size: .7rem; font-style: normal; }
 .focus-area-evidence li { border-top: 1px solid var(--border); }
-.focus-area-evidence li button { display: flex; gap: .5rem; align-items: center; min-height: 44px; text-align: left; cursor: pointer; }
-.focus-area-card button:focus-visible { outline: 2px solid var(--ring); outline-offset: 4px; border-radius: 3px; }
+/* The small button's 36px at desktop from its padding; on touch the Button's own rule makes it 44px (plan rule 6), so no
+   min-height here (a page min-height outranks the primitive's touch rule). */
+.focus-area-evidence li button { display: flex; gap: .5rem; align-items: center; padding-block: .5rem; text-align: left; cursor: pointer; }
+.focus-area-card .focus-area-above:focus-visible, .focus-area-evidence button:focus-visible { outline: 2px solid var(--ring); outline-offset: 4px; border-radius: 3px; }
 .focus-area-empty, .focus-area-loading { border: 1px dashed var(--border); border-radius: 12px; padding: 1.5rem; color: var(--muted-foreground); font-size: .85rem; }
-.focus-area-skeleton { height: 80px; background: var(--muted); margin-top: 1rem; }
-.focus-area-open { display: inline-flex; min-height: 44px; align-items: center; gap: .5rem; color: var(--background); background: var(--foreground); border: 1px solid var(--foreground); border-radius: 8px; padding-inline: .9rem; font-size: .73rem; font-weight: 600; cursor: pointer; }
+.focus-area-empty { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .75rem; }
+.focus-area-loading .focus-area-grid { margin-top: 1rem; }
 .focus-area-next { font-size: .8rem; font-weight: 550; }
-.focus-area-next button { display: inline-flex; align-items: center; text-align: left; gap: .5rem; min-height: 44px; cursor: pointer; text-decoration: underline; text-underline-offset: 4px; }
-.focus-area-open:hover { background: var(--primary-deep); color: var(--primary-foreground); }
+.focus-area-next button { display: inline-flex; align-items: center; text-align: left; gap: .5rem; padding-block: .5rem; cursor: pointer; text-decoration: underline; text-underline-offset: 4px; }
 .focus-area-signals span { border: 1px solid var(--border); border-radius: 5px; padding: .15rem .4rem; }
 .focus-area-signals .focus-signal-attention { background: var(--attention); border-color: var(--attention-border); }
 .focus-area-signals .focus-signal-working { background: var(--working); border-color: var(--working-border); }
@@ -26,24 +35,36 @@
 .focus-artwork figcaption { position: absolute; bottom: .5rem; right: .6rem; color: #5d5049; background: #fff9; border-radius: 4px; padding: .1rem .35rem; font-size: .6rem; }
 .dark .focus-artwork { background: #463d36; }
 .focus-overview-heading { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: end; gap: 1rem; margin-bottom: 1.25rem; }
-.focus-artwork-control { display: inline-flex; align-items: center; gap: .5rem; color: var(--muted-foreground); font-size: .75rem; }
-/* Native controls carry the ≥3:1 control edge (G12): --border measured 1.53:1 dark and 1.14:1 light on the page. */
-.focus-artwork-control select { min-height: 44px; padding-inline: .5rem; background: var(--card); color: var(--foreground); border: 1px solid var(--control-edge); border-radius: 7px; }
+.focus-overview-controls { display: flex; flex-wrap: wrap; align-items: end; gap: .75rem 1.25rem; }
 .focus-area-body { display: flex; flex-direction: column; align-items: start; min-width: 0; padding: 1.15rem; }
 .focus-area-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem; margin-top: auto; padding-top: .75rem; }
 .focus-area-evidence > * + * { margin-top: .75rem; }
 .focus-area-evidence li { padding-block: .3rem; }
 .focus-area-evidence li + li { margin-top: .35rem; }
 .focus-area-next { margin-bottom: .25rem; }
-.focus-area-card:has(.focus-area-evidence-toggle[aria-expanded=true]) .focus-area-evidence-toggle svg { transform: rotate(180deg); }
-.artwork-compact .focus-area-card { display: grid; grid-template-columns: 80px minmax(0, 1fr); }
-.artwork-compact .focus-artwork { height: 80px; width: 80px; margin: 1rem 0 0 1rem; border-radius: 8px; }
+/* Compact and Off: one row, 72px tall, a 56px square picture in Compact (c-focus-overview, c-focus-artwork). The name,
+   one line of goal and the counts; the chevron says the row opens. */
+.artwork-compact .focus-area-card, .artwork-off .focus-area-card { display: flex; align-items: center; gap: .9rem; min-height: 72px; padding: .5rem 2.5rem .5rem .5rem; }
+.artwork-off .focus-area-card { padding-left: 1rem; }
+.artwork-compact .focus-artwork { flex: none; width: 56px; height: 56px; aspect-ratio: 1; border-radius: 8px; }
+.artwork-compact .focus-artwork img { object-fit: cover; }
 .artwork-compact .focus-artwork figcaption { display: none; }
-.artwork-compact .focus-area-body { padding-left: 1.5rem; }
+.artwork-compact .focus-area-body, .artwork-off .focus-area-body { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: .75rem; padding: 0; }
+.artwork-compact .focus-area-card h3, .artwork-off .focus-area-card h3 { margin-top: 0; font-size: 1.02rem; }
+.artwork-compact .focus-area-goal, .artwork-off .focus-area-goal { grid-column: 1; margin-top: .1rem; font-size: .8rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.artwork-compact .focus-area-signals, .artwork-off .focus-area-signals { grid-column: 2; grid-row: 1 / span 2; justify-content: end; padding-block: 0; }
+.artwork-compact .focus-area-evidence, .artwork-off .focus-area-evidence { grid-column: 1 / -1; }
+/* Full: the picture fills its box edge to edge (it sat in a brown band, 60% empty), and its caption is normal small text
+   under it at ≥12px and ≥4.5:1 (it was 10.2px at 3.65:1 over the picture). */
+.artwork-full .focus-area-card .focus-artwork { display: flex; flex-direction: column; background: var(--card); }
+.artwork-full .focus-area-card .focus-artwork img { flex: 1; min-height: 0; object-fit: cover; }
+.artwork-full .focus-area-card .focus-artwork figcaption { position: static; background: none; color: var(--muted-foreground); font-size: .75rem; padding: .35rem .6rem; }
+.artwork-full .focus-area-card { padding-right: 0; }
+.artwork-full .focus-area-chevron { top: 1.4rem; transform: none; }
 @container (min-width: 900px) {
   .focus-area-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .artwork-full .focus-area-card { display: grid; grid-template-columns: 32% minmax(0, 1fr); }
-  .artwork-full .focus-artwork { height: 100%; min-height: 260px; aspect-ratio: auto; }
+  .artwork-full .focus-area-card .focus-artwork { height: 100%; aspect-ratio: auto; }
 }
 .reveal-supporting { max-width: 900px; margin: 1.5rem auto; padding: 1rem; border-top: 1px solid var(--border); color: var(--muted-foreground); font-size: .85rem; }
 .reveal-supporting summary { min-height: 44px; cursor: pointer; }
@@ -52,25 +73,26 @@
 .focus-overview-heading p:not(.section-label) { color: var(--muted-foreground); font-size: .87rem; line-height: 1.6; margin-top: .5rem; }
 .focus-area-card h3 { margin-top: .35rem; font-size: 1.32rem; font-weight: 580; line-height: 1.25; letter-spacing: -.025em; overflow-wrap: anywhere; }
 .focus-area-goal { margin-top: .35rem; color: var(--muted-foreground); font-size: .85rem; line-height: 1.55; }
-.focus-area-eyebrow { color: var(--muted-foreground); font-size: .65rem; font-weight: 500; letter-spacing: .025em; }
-.focus-area-evidence-toggle, .focus-area-open { font-size: .73rem; }
+.focus-area-eyebrow { color: var(--muted-foreground); font-size: .75rem; font-weight: 500; letter-spacing: .025em; }
 .focus-reveal-notice { color: var(--foreground); border: 1px solid var(--border); padding: 1rem; border-radius: 8px; margin-bottom: 1rem; font-size: .9rem; line-height: 1.6; }
+/* Setup's reveal shows the areas arriving, once. In My Work an area card is simply there: re-placed by a live change (an
+   area that comes to need you moves first), its slide ran again, a moving thing on top of the board's (plan rule 8,
+   Phase 6 verify V2). Reduced motion: no slide, here in the component's own stylesheet. */
 @keyframes focus-area-arrive { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+.cmem-setup .focus-area-card { animation: focus-area-arrive .35s ease-out; }
+@media (prefers-reduced-motion: reduce) { .cmem-setup .focus-area-card { animation: none; } }
 .focus-header-intro { display: grid; grid-template-columns: minmax(100px, 180px) minmax(0, 1fr); align-items: start; gap: 1.25rem; }
 .focus-header-intro > .focus-artwork { aspect-ratio: 1.5; border-radius: 8px; }
 .focus-header-intro.artwork-off { display: block; }
 .focus-header-intro.artwork-compact { grid-template-columns: 80px minmax(0, 1fr); }
 .focus-header-intro.artwork-compact .focus-artwork { width: 80px; height: 80px; margin: 0; }
 .cmem-setup .focus-overview { --foreground: var(--ink); --background: #fff; --card: #fff; --muted: #f1f0f6; --muted-foreground: var(--metadata); --border: var(--line); --primary: var(--violet); --primary-deep: #3e399e; --primary-foreground: #fff; }
-.cmem-setup .focus-area-open { color: #fff; }
 .focus-overview-footer { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1.5rem; color: var(--muted-foreground); font-size: .75rem; margin-top: 1rem; }
-.focus-overview-footer button { display: inline-flex; align-items: center; gap: .5rem; min-height: 44px; cursor: pointer; text-decoration: underline; text-underline-offset: 4px; }
 .focus-overview-footer svg { width: 14px; height: 14px; }
 .cmem-setup .focus-reveal-continue { position: sticky; bottom: 1rem; justify-content: flex-end; pointer-events: none; }
 .focus-reveal-continue button { pointer-events: auto; box-shadow: 0 3px 12px #30236b24; }
-.focus-area-search { display: block; margin-bottom: 1rem; max-width: 24rem; }
-.focus-area-search input { width: 100%; min-height: 44px; padding: .6rem .8rem; border: 1px solid var(--control-edge); border-radius: 8px; background: var(--card); color: var(--foreground); font-size: .85rem; }
-.focus-area-search input:focus-visible, .focus-artwork-control select:focus-visible, .focus-overview-footer button:focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
+.focus-area-search { display: grid; gap: .35rem; width: min(100%, 20rem); }
+.focus-area-filtering { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem 1rem; margin-bottom: .75rem; color: var(--muted-foreground); font-size: .85rem; }
 @media (max-width: 480px) {
   .focus-header-intro { grid-template-columns: 80px minmax(0, 1fr); gap: .75rem; }
   .focus-header-intro > .focus-artwork { aspect-ratio: 1; }

@@ -1,30 +1,27 @@
-import { lazy, Suspense, useEffect, type ReactNode } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from 'react'
 import { MotionConfig } from 'motion/react'
-import { CreditCardIcon, InboxIcon, ListChecksIcon, UsersIcon } from 'lucide-react'
-import { LOCALES, LOCALE_NAMES, useI18n, type Locale } from '@/lib/i18n'
-import { Badge } from '@/components/ui/badge'
+import { CreditCardIcon, CrosshairIcon, FlaskConicalIcon, InboxIcon, ListChecksIcon } from 'lucide-react'
+import { interpolate, useI18n } from '@/lib/i18n'
+import { useAppliedTheme } from '@/lib/use-applied-theme'
 import { Button } from '@/components/ui/button'
-import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/hover-card'
-import { Label } from '@/components/ui/label'
-import { Switch } from '@/components/ui/switch'
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
+import { RequestDrawerLoading, RequestDrawerSheet } from '@/components/request-drawer'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import { TooltipProvider } from '@/components/ui/tooltip'
-import { ActivePill, ClassicViewerLink, DeviceFreshness, FeedbackLink, GitHubStars, LiveIndicator } from '@/components/bits'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+import { ActivePill, ClassicViewerLink, DeviceFreshness, LiveIndicator, ReadAfterSaveNotice } from '@/components/bits'
+import { AppBrand, ShellGrid, ShellLoading, ShellReadError } from '@/components/app-shell'
+import { HeaderMenu } from '@/components/header-menu'
 import { Navbar, NavBody } from '@/components/aceternity/resizable-navbar'
 import { Notch } from '@/components/aceternity/notch'
 import { StickyBanner } from '@/components/aceternity/sticky-banner'
-import { CmemMark } from '@/components/brand'
 import { FocusChipRow, FocusRail, PastFocusLink, SIDE_NAV_PILL } from '@/components/focus-nav'
 import { cn } from '@/lib/utils'
 import { MyWork } from '@/pages/my-work'
 import { Req } from '@/spec/req'
-import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
 import { Spinner } from '@/components/ui/spinner'
 import { needsYou, OTHER_FOCUS_AREA_ID } from '@/data'
 import { ACTIVE_SOURCE, useStore, useWorkModel, useWorkspace, type FocusSelection, type NavPage } from '@/store'
-import { shownFocusAreaId } from '@/store/slices/view-slice'
-import { useFocusSharesLoader } from '@/live/focus-shares'
+import { shownFocusAreaId, themeChoiceInUse } from '@/store/slices/view-slice'
+import { focusSharesAreADemonstration, useFocusSharesLoader } from '@/live/focus-shares'
 import { isServedFromCloud } from '@/live/served-from'
 import { MediaSourceContext } from '@/components/observation-media/ObsMedia'
 import { SAMPLE_MEDIA_SOURCE } from '@/components/observation-media/sample-media'
@@ -38,79 +35,61 @@ const NAV_SECTIONS = [...new Set(PAGES.map((entry) => entry.section))]
 /** Billing, cancel, card and synced devices live on cmem.ai; viewer accounts land here and have no other way there. */
 const ACCOUNT_AND_BILLING_URL = 'https://cmem.ai/account'
 
-
-/** Wireframe-only theme switch: starts from ?theme=dark|light, else the system preference. */
-function useDarkMode() {
-  const dark = useStore((state) => state.view.dark)
-  useEffect(() => { document.documentElement.classList.toggle('dark', dark) }, [dark])
-  return dark
-}
-
-/** Small rounded icon tile behind each nav icon, after the fly.io sidebar: a hairline with a soft tile shadow. */
+/**
+ * Small rounded icon tile behind each nav icon. Its edge shows in every state at ≥3:1 (c-shell-nav-tile: the hairline
+ * was 1.66:1): the control edge at rest, the accent text colour when selected. No tile shadow of its own, so cards and
+ * panels keep the only two shadows (F elevation-consistent).
+ */
 function NavTile({ icon: Icon, active }: { icon: typeof InboxIcon; active: boolean }) {
   return (
-    <span className={cn('relative flex size-7 shrink-0 items-center justify-center rounded-lg border shadow-tile', active ? 'border-accent-border bg-card text-primary' : 'bg-card/60 text-muted-foreground')}>
+    <span className={cn('relative flex size-7 shrink-0 items-center justify-center rounded-lg border bg-card', active ? 'border-accent-foreground text-primary' : 'border-control-edge text-muted-foreground')}>
       <Icon className="size-4" />
     </span>
   )
 }
 
-/** Bottom of the rail, cloud viewer only (R18.1). Same row markup as the pages above it; local My Work has no cmem.ai account to manage. */
+/**
+ * A page row of the rail. 46.75px tall where the rail shows only tiles (768–1023px): a 44px hit area
+ * (c-shell-nav-tile); on touch the Button's own rule keeps every row at 44px or more.
+ */
+const RAIL_PAGE_ROW_CLASS_NAME = 'relative flex h-11 w-full items-center gap-2.5 rounded-[10px] px-1.5 text-[0.9rem] transition-colors lg:h-10'
+
+/**
+ * Bottom of the rail, cloud viewer only (R18.1); local My Work has no cmem.ai account to manage. The same row as the
+ * pages above it: its name stays where the rail shows only the tile, and a tooltip names it there on hover and focus.
+ */
 function AccountAndBillingLink() {
+  const { t } = useI18n()
   if (!isServedFromCloud(window.location.hostname)) return null
   return (
     <Req ids={['R18.1']}>
-      <a href={ACCOUNT_AND_BILLING_URL} title="Account & billing" className="relative flex h-10 w-full items-center gap-2.5 rounded-[10px] px-1.5 text-left text-[0.9rem] text-foreground/85 transition-colors hover:bg-card/70">
-        <NavTile icon={CreditCardIcon} active={false} />
-        <span className="relative hidden lg:inline">Account &amp; billing</span>
-      </a>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button asChild variant="bare" className={cn(RAIL_PAGE_ROW_CLASS_NAME, 'text-foreground/85 hover:bg-card/70')}>
+            <a href={ACCOUNT_AND_BILLING_URL}>
+              <NavTile icon={CreditCardIcon} active={false} />
+              <span className="relative hidden lg:inline">{t('Account & billing')}</span>
+              <span className="sr-only lg:hidden">{t('Account & billing')}</span>
+            </a>
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="right" className="lg:hidden">{t('Account & billing')}</TooltipContent>
+      </Tooltip>
     </Req>
   )
 }
 
-/** The header bar: full width at the top of the page, a floating pill once the page scrolls (`Navbar` passes `visible`). */
-function HeaderBody({ visible, children }: { visible?: boolean; children: ReactNode }) {
+/**
+ * The header bar: full width at the top of the page, a floating pill once the page scrolls (`Navbar` passes
+ * `visible`). The pill holds the logo, the page name, Live, how many need you, the machines and the menu, and nothing
+ * sticks out of it at any width (c-shell-resizable-navbar). `children` draws for the bar or the pill.
+ */
+function HeaderBody({ visible, children }: { visible?: boolean; children: (pill: boolean) => ReactNode }) {
   return (
     // Phones: the pill is 2rem narrower than the bar, so it trims its padding and gaps, and the page title gives way first.
     <NavBody visible={visible} className={cn('flex h-14 max-w-[1440px] gap-3 bg-card/95 px-4 py-0 md:px-6', visible ? 'header-pill gap-1.5 border border-border/70 px-2.5 md:gap-3 md:px-6' : 'rounded-none border-b border-border/70')}>
-      {children}
+      {children(!!visible)}
     </NavBody>
-  )
-}
-
-/** TeamBrain is a switch on the same GUI; turning it on is where the team plan is bought (§9). */
-function TeamSwitch({ team, onChange }: { team: boolean; onChange: (team: boolean) => void }) {
-  const { t } = useI18n()
-  return (
-    <Req ids={['R9.1', 'R9.4']}>
-      <HoverCard openDelay={100}>
-        <HoverCardTrigger asChild>
-          <Button variant={team ? 'secondary' : 'ghost'} size="sm" className={cn('px-2 text-xs', team && 'bg-accent text-accent-foreground hover:bg-accent')} onClick={() => onChange(!team)}><UsersIcon />{t('Team')}</Button>
-        </HoverCardTrigger>
-        <HoverCardContent className="w-64 space-y-2 text-xs">
-          <p className="font-medium">TeamBrain</p>
-          <p className="text-muted-foreground">{t('See everyone’s requests on one board, with who asked and where work collides.')}</p>
-          {!team && <Button size="sm" className="w-full">{t('Start team plan')}</Button>}
-        </HoverCardContent>
-      </HoverCard>
-    </Req>
-  )
-}
-
-function LanguageSelector() {
-  const { t, locale, setLocale } = useI18n()
-  return (
-    <div className="flex items-center">
-      <select
-        aria-label={t('Language')}
-        value={locale}
-        onChange={(e) => setLocale(e.target.value as Locale)}
-        // The control edge, ≥3:1 on the header in both themes (G12; --border measured 1.53:1 dark, 1.26:1 light).
-        className="h-7 rounded-md border border-control-edge bg-card px-2 text-xs text-muted-foreground transition-colors hover:text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
-      >
-        {LOCALES.map((code) => <option key={code} value={code}>{LOCALE_NAMES[code]}</option>)}
-      </select>
-    </div>
   )
 }
 
@@ -128,25 +107,24 @@ function PageLoading({ label }: { label: string }) {
   </section>
 }
 
-/** Opening a request responds immediately, including focus trapping and a working close control. */
+/**
+ * Opening a request responds immediately, including focus trapping and a working close control: the drawer's own frame
+ * and loading shape (components/request-drawer.tsx), while its code arrives. It keeps what opened the drawer, so focus
+ * goes back there when the drawer closes (F 344).
+ */
 function RequestDetailLoading({ title, onClose }: { title: string; onClose: () => void }) {
-  const { t } = useI18n()
-  return <Sheet open onOpenChange={(open) => { if (!open) onClose() }}>
-    <SheetContent>
-      <SheetHeader className="gap-3 border-b p-5 pr-14 md:p-6 md:pr-14">
-        <SheetTitle className="text-xl leading-snug">{title}</SheetTitle>
-        <SheetDescription>{t('Request details')}</SheetDescription>
-      </SheetHeader>
-      <p role="status" className="flex items-center gap-2 p-5 text-sm text-muted-foreground md:p-6"><Spinner className="size-4" />{t('Loading request detail…')}</p>
-    </SheetContent>
-  </Sheet>
+  return <RequestDrawerSheet onClose={onClose}><RequestDrawerLoading title={title} /></RequestDrawerSheet>
 }
 
 export default function App() {
   // An agent may leave setup for the person's first visit. Only a persisted
   // install handoff opens it automatically; old installations and cloud readers keep My Work.
   const page = useStore((state) => state.view.page)
+  // A `?theme=` address for this visit, else the person's saved choice (G8); the address one is never saved.
+  const theme = useStore((state) => themeChoiceInUse(state.view))
   const finishSetup = useStore.use.finishSetup()
+  // G8: one theme for every screen, the loading and failed ones included; setup keeps its own light canvas.
+  useAppliedTheme(theme, page === 'setup')
   // Once per mount, read from the store at effect time. Depending on the action
   // identity re-posted an open whenever that function was replaced.
   useEffect(() => { useStore.getState().reportOpen() }, [])
@@ -163,56 +141,76 @@ export default function App() {
   return <MotionConfig reducedMotion="user"><Suspense fallback={null}><SetupPage onComplete={finishSetup} /></Suspense></MotionConfig>
 }
 
-/** Reads the active source once and follows its live feed, then renders the app. A failed load says so plainly instead of showing anything made up. */
+/**
+ * Reads the active source once and follows its live feed, then renders the app. While the first read is open the
+ * page shows its own shape; a failed read says so plainly instead of showing anything made up (page-06).
+ */
 function WorkApp() {
-  const { t } = useI18n()
   const load = useStore((state) => state.work.load)
   const startWorkSource = useStore.use.startWorkSource()
   const retryWorkRead = useStore.use.retryWorkRead()
+  // "Try again" leaves the page with the failed screen, so the screen that answers the retry takes focus: the next
+  // failed screen's Try again, or the loaded page's main content. Without it focus fell to the page body (WCAG 2.4.3).
+  const [retried, setRetried] = useState(false)
   useEffect(() => startWorkSource(ACTIVE_SOURCE), [startWorkSource])
-  if (load.state === 'loaded') return <LoadedApp />
-  return (
-    <div className="flex min-h-svh items-center justify-center p-4 text-foreground">
-      <Empty className="max-w-md border bg-card/60">
-        {/* While reading, the header is the one status region, so "Reading local work…" is announced once (the ring
-            beside it says nothing, D b18 M 372). */}
-        <EmptyHeader role={load.state === 'loading' ? 'status' : undefined}>
-          {load.state === 'loading' ? <><Spinner /><EmptyTitle>{t('Reading local work…')}</EmptyTitle></> : (
-            <>
-              <EmptyTitle>{t("Can't read local work right now")}</EmptyTitle>
-              <EmptyDescription>{load.error}</EmptyDescription>
-              <Button size="sm" variant="outline" className="mt-2 self-center" onClick={() => void retryWorkRead()}>{t('Retry')}</Button>
-            </>
-          )}
-        </EmptyHeader>
-      </Empty>
-    </div>
-  )
+  if (load.state === 'loaded') return <LoadedApp focusMainOnMount={retried} />
+  if (load.state === 'loading') return <ShellLoading />
+  return <ShellReadError cause={load.error} focusRetry={retried} onRetry={() => { setRetried(true); void retryWorkRead() }} />
 }
 
-function LoadedApp() {
+/** The same page without `?source=sample`: the person's own work. */
+function ownDataHref(): string {
+  const url = new URL(window.location.href)
+  url.searchParams.delete('source')
+  return url.href
+}
+
+/** `focusMainOnMount`: the page loaded after the person pressed Try again, so focus starts at its main content. */
+function LoadedApp({ focusMainOnMount = false }: { focusMainOnMount?: boolean }) {
   const { t } = useI18n()
+  const mainRef = useRef<HTMLElement>(null)
+  useEffect(() => { if (focusMainOnMount) mainRef.current?.focus({ preventScroll: true }) }, [focusMainOnMount])
   const { sourceKind, requests, focusAreas } = useWorkModel()
-  // Which areas are shared, for their Shared mark. The worker keeps the pages current (R17.3).
-  useFocusSharesLoader(sourceKind === 'local')
+  // Which areas are shared, for their Shared mark. The worker keeps the pages current (R17.3). The sample page reads
+  // them only in its sharing demonstration (`sample-state=area-shared`), answered in the page.
+  useFocusSharesLoader(sourceKind === 'local' || focusSharesAreADemonstration())
   const sample = sourceKind === 'sample'
   const view = useStore((state) => state.view.section)
   const focusChoice = useStore((state) => state.view.focusChoice)
   const openRequest = useStore((state) => state.view.openRequest)
-  const showSpec = useStore((state) => state.view.showSpec)
+  const homeAnchor = useStore((state) => state.view.homeAnchor)
+  const homeAnchorRequest = useStore((state) => state.view.homeAnchorRequest)
   const workspace = useWorkspace()
-  const dark = useDarkMode()
-  const { goToPage, goToFocus, selectFocus, openRequestDrawer, closeRequestDrawer, setWorkspace, setShowSpec, setDark, playSampleDemo } = useStore.getState()
+  const { goToPage, goToFocus, goToHome, selectFocus, openRequestDrawer, closeRequestDrawer, setWorkspace, playSampleDemo } = useStore.getState()
   const focusAreaId = shownFocusAreaId({ section: 'work', focusChoice }, focusAreas)
   const yourMoveCount = requests.filter(needsYou).length
   // The drawer always shows the current record of today's requests; an older goal-only request shows as it was passed.
   const liveOpenRequest = openRequest ? requests.find((request) => request.id === openRequest.id) ?? (openRequest.fromLiveFeed === false ? openRequest.fallback : null) : null
   // The demo flip is sample data; it never runs against real requests.
   useEffect(() => (sample ? playSampleDemo() : undefined), [sample, playSampleDemo])
+  // Each ask for a home anchor scrolls to it once the page has drawn it (an address opened with one, or a link to it).
+  // Back and Forward restore the scroll position themselves and do not count as an ask.
+  useEffect(() => {
+    if (!homeAnchorRequest) return
+    const target = document.getElementById(homeAnchorRequest.anchor)
+    if (!target) { console.warn(`[my-work] home anchor #${homeAnchorRequest.anchor} is not on the page`); return }
+    target.scrollIntoView({ block: 'start' })
+  }, [homeAnchorRequest])
   const selected: FocusSelection = view === 'suggested' || view === 'past-focus' ? { kind: view } : view === 'work' && focusAreaId ? { kind: 'area', focusAreaId } : null
   const pageActive = (id: NavPage) => view === id && !(id === 'work' && focusAreaId)
+  const onHome = view === 'work' && !focusAreaId
   const focusTitle = focusAreaId === OTHER_FOCUS_AREA_ID ? t('Other') : focusAreas.find((area) => area.id === focusAreaId)?.name
   const heading = view === 'suggested' ? t('Suggested') : view === 'past-focus' ? t('Past focus') : view === 'work' && focusTitle ? focusTitle : t(PAGES.find((entry) => entry.id === view)!.label)
+  // A rail or bottom-bar page entry: My Work goes to every request on the home page (`/#all-requests`), so it has an
+  // address apart from "Focus overview" (`/`, page-02 deep-linking).
+  const openPage = (id: NavPage) => id === 'work' ? goToHome('all-requests') : goToPage(id)
+  const showAllAreas = () => goToHome('focus-areas')
+  // The bottom bar's three places. Focus covers the focus views and the home page's focus board.
+  const bottomItems = [
+    { id: 'work', label: 'My Work', icon: InboxIcon, current: onHome && homeAnchor !== 'focus-areas', open: () => openPage('work'), count: yourMoveCount },
+    { id: 'focus', label: 'Focus', icon: CrosshairIcon, current: selected !== null || (onHome && homeAnchor === 'focus-areas'), open: showAllAreas, count: 0 },
+    { id: 'rules', label: 'My Rules', icon: ListChecksIcon, current: view === 'rules', open: () => openPage('rules'), count: 0 },
+  ]
 
   return (
     <MotionConfig reducedMotion="user">
@@ -220,66 +218,87 @@ function LoadedApp() {
       <MediaSourceContext.Provider value={sample ? SAMPLE_MEDIA_SOURCE : workerMediaSource}>
         <TooltipProvider delayDuration={150}>
           <Req ids={['R10.3', 'R10.2']} className="min-h-svh">
-            <div className="min-h-svh pb-[calc(6rem+env(safe-area-inset-bottom))] text-foreground md:pb-0">
-              {/* Wireframe controls: not part of the product. */}
-              <StickyBanner hideOnScroll className="min-h-0 flex-wrap justify-start gap-x-3 gap-y-1 border-b border-border/70 bg-card/85 px-4 py-1.5 pr-12 text-xs whitespace-nowrap backdrop-blur-md md:px-6 md:pr-10">
-                {sample && <Badge variant="outline" className="font-normal">{t('Wireframe · sample data')}</Badge>}
-                {sample && <Req ids={['R13.1']}>
-                  <ToggleGroup type="single" size="sm" variant="outline" spacing={1} className="flex-nowrap" value={workspace.mode} onValueChange={(mode) => mode && setWorkspace({ mode: mode as 'home' | 'web', connected: mode === 'web' || workspace.connected })}>
-                    <ToggleGroupItem value="home" className="h-7 text-xs">{t('At home')}<span className="hidden md:inline">{t('· localhost:37777')}</span></ToggleGroupItem>
-                    <ToggleGroupItem value="web" className="h-7 text-xs">{t('On the go')}<span className="hidden md:inline">{t('· cmem.ai')}</span></ToggleGroupItem>
-                  </ToggleGroup>
-                </Req>}
-                <div className="ml-auto flex items-center gap-3">
-                  <div className="flex items-center gap-1.5">
-                    <Switch id="dark-mode" checked={dark} onCheckedChange={setDark} />
-                    <Label htmlFor="dark-mode" className="text-xs">{t('Dark')}</Label>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <Switch id="spec-overlay" checked={showSpec} onCheckedChange={setShowSpec} />
-                    <Label htmlFor="spec-overlay" className="text-xs">{t('Spec IDs')}</Label>
-                  </div>
-                </div>
-              </StickyBanner>
+            {/* `data-slot="work-shell"` turns on the scroll padding in index.css that keeps a focused control clear of the
+                header and the phone's bottom bar (c-shell-resizable-navbar, c-shell-notch F focus-not-obscured). */}
+            <div data-slot="work-shell" className="min-h-svh pb-[calc(6rem+env(safe-area-inset-bottom))] text-foreground md:pb-0">
+              {/* The first Tab stop (c-shell-resizable-navbar F skip-links), as in setup (setup-page.tsx). */}
+              <a href="#main-content" className="sr-only rounded-lg border border-control-edge bg-card px-4 py-2.5 text-sm font-medium text-foreground shadow-popover outline-none focus:not-sr-only focus:fixed focus:top-3 focus:left-4 focus:z-[200] focus-visible:ring-3 focus-visible:ring-ring/50">
+                {t('Skip to content')}
+              </a>
+              {/* G7: the strip shows only with sample data, says so, and keeps its At home / On the go switch. Theme and
+                  Show spec IDs moved to the header menu, so real data has no strip at all. */}
+              {sample && (
+                <StickyBanner hideOnScroll className="min-h-0 flex-wrap justify-start gap-x-3 gap-y-1.5 border-b border-border/70 bg-card/85 px-4 py-1.5 pr-12 text-xs whitespace-nowrap backdrop-blur-md md:px-6 md:pr-10">
+                  <span className="inline-flex items-center gap-1.5 font-medium"><FlaskConicalIcon aria-hidden="true" className="size-4 text-muted-foreground" />{t('Sample data · not your work')}</span>
+                  <Req ids={['R13.1']}>
+                    <ToggleGroup type="single" size="sm" variant="outline" spacing={1} className="flex-nowrap" value={workspace.mode} onValueChange={(mode) => mode && setWorkspace({ mode: mode as 'home' | 'web', connected: mode === 'web' || workspace.connected })}>
+                      <ToggleGroupItem value="home" className="text-xs">{t('At home')}<span className="hidden md:inline">{t('· localhost:37777')}</span></ToggleGroupItem>
+                      <ToggleGroupItem value="web" className="text-xs">{t('On the go')}<span className="hidden md:inline">{t('· cmem.ai')}</span></ToggleGroupItem>
+                    </ToggleGroup>
+                  </Req>
+                  <Button asChild variant="outline" size="sm" className="text-xs"><a href={ownDataHref()}>{t('Use my data')}</a></Button>
+                </StickyBanner>
+              )}
 
               <header className="contents">
                 <Navbar className="top-0 z-30">
                   <HeaderBody>
-                    <Req ids={['R10.4']}>
-                      <span className="flex shrink-0 items-center gap-2">
-                        <CmemMark className="size-8 text-[#D86441]" />
-                        <span className="sr-only md:not-sr-only md:text-[0.95rem] md:font-semibold md:tracking-tight">claude-mem</span>
-                      </span>
-                    </Req>
-                    <h1 className="min-w-0 truncate text-lg font-semibold tracking-tight whitespace-nowrap md:hidden [.header-pill_&]:text-base">{heading}</h1>
-                    <div className="ml-auto flex shrink-0 items-center gap-0.5 md:gap-2">
-                      <TeamSwitch team={workspace.team} onChange={(team) => setWorkspace({ team })} />
-                      <DeviceFreshness />
-                      <LiveIndicator />
-                      <LanguageSelector />
-                      <ClassicViewerLink />
-                      <FeedbackLink />
-                      <GitHubStars />
-                    </div>
+                    {(pill) => (
+                      <>
+                        <Req ids={['R10.4']}><AppBrand /></Req>
+                        {/* The page's one h1, visible at every width (page-02 F heading-hierarchy: it was hidden from md up). */}
+                        <h1 className="min-w-0 truncate text-lg font-semibold tracking-tight whitespace-nowrap md:border-l md:border-border/70 md:pl-3 md:text-[0.95rem] [.header-pill_&]:text-base md:[.header-pill_&]:text-[0.95rem]">{heading}</h1>
+                        <div className="ml-auto flex shrink-0 items-center gap-1 md:gap-2">
+                          <LiveIndicator />
+                          {/* The pill says how many need you (c-shell-resizable-navbar M); the top of the page shows them. */}
+                          {pill && yourMoveCount > 0 && (
+                            <span className="hidden items-center gap-1.5 text-xs text-muted-foreground md:inline-flex">
+                              <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-[11px] font-semibold text-primary-foreground tabular">{yourMoveCount}</span>
+                              {t('need you')}
+                            </span>
+                          )}
+                          <DeviceFreshness />
+                          {!pill && <ClassicViewerLink />}
+                          <HeaderMenu classicViewerInBar={!pill} />
+                        </div>
+                      </>
+                    )}
                   </HeaderBody>
                 </Navbar>
               </header>
 
-              <div className="mx-auto max-w-[1440px] gap-6 px-4 py-4 md:grid md:grid-cols-[52px_minmax(0,1fr)] md:px-6 md:py-6 lg:grid-cols-[184px_minmax(0,1fr)] lg:gap-8">
+              {/* The loading and failed screens draw the same grid (app-shell.tsx), so the page keeps its shape. */}
+              <ShellGrid>
                 <Req ids={['R16.1']} className="hidden md:block">
                   <nav aria-label={t('Pages')} className="sticky top-20 hidden max-h-[calc(100svh-6rem)] space-y-5 self-start overflow-y-auto md:block">
-                    <div className="hidden lg:block"><FocusRail selected={selected} onSelect={selectFocus} /></div>
+                    <div className="hidden lg:block"><FocusRail selected={selected} onSelect={selectFocus} onShowAllAreas={showAllAreas} /></div>
                     {NAV_SECTIONS.map((section) => (
                       <div key={section} className="space-y-0.5">
                         <p className="section-label hidden px-2 pb-1 lg:block">{t(section)}</p>
-                        {PAGES.filter((entry) => entry.section === section).map(({ id, label, icon }) => (
-                          <button key={id} type="button" onClick={() => goToPage(id)} aria-current={pageActive(id) ? 'page' : undefined} title={t(label)} className={cn('relative flex h-10 w-full items-center gap-2.5 rounded-[10px] px-1.5 text-left text-[0.9rem] transition-colors', pageActive(id) ? 'font-medium text-accent-foreground' : 'text-foreground/85 hover:bg-card/70')}>
-                            {pageActive(id) && <ActivePill layoutId={SIDE_NAV_PILL} />}
-                            <NavTile icon={icon} active={pageActive(id)} />
-                            <span className="relative hidden lg:inline">{t(label)}</span>
-                            {id === 'work' && yourMoveCount > 0 && <span className="absolute top-0.5 right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground lg:relative lg:top-auto lg:right-auto lg:ml-auto lg:h-5 lg:min-w-5 lg:text-[11px]">{yourMoveCount}<span className="sr-only"> {t('need you')}</span></span>}
-                          </button>
-                        ))}
+                        {PAGES.filter((entry) => entry.section === section).map(({ id, label, icon }) => {
+                          const count = id === 'work' ? yourMoveCount : 0
+                          return (
+                            <Tooltip key={id}>
+                              <TooltipTrigger asChild>
+                                <Button variant="bare" onClick={() => openPage(id)} aria-current={pageActive(id) ? 'page' : undefined}
+                                  className={cn(RAIL_PAGE_ROW_CLASS_NAME, pageActive(id) ? 'font-medium text-accent-foreground' : 'text-foreground/85 hover:bg-card/70')}>
+                                  {pageActive(id) && <ActivePill layoutId={SIDE_NAV_PILL} look="rail" />}
+                                  <NavTile icon={icon} active={pageActive(id)} />
+                                  <span className="relative hidden lg:inline">{t(label)}</span>
+                                  {/* Where the rail shows only tiles, the page's name is still the button's name. */}
+                                  <span className="sr-only lg:hidden">{t(label)}</span>
+                                  {/* A compact count, as the tile mockup draws it: the 184px rail has no room for words beside
+                                      "My Work" (the focus rows above carry them). */}
+                                  {count > 0 && <span className="absolute top-0.5 right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground tabular lg:relative lg:top-auto lg:right-auto lg:ml-auto lg:h-5 lg:min-w-5 lg:text-[11px]">{count}<span className="sr-only"> {t('need you')}</span></span>}
+                                </Button>
+                              </TooltipTrigger>
+                              {/* Where the rail shows only tiles, the tooltip names the page with its count. */}
+                              <TooltipContent side="right" className="lg:hidden">
+                                {t(label)}{count > 0 && <> · {interpolate(t('{count} need you'), { count })}</>}
+                              </TooltipContent>
+                            </Tooltip>
+                          )
+                        })}
                       </div>
                     ))}
                     <div className="hidden border-t border-border/70 pt-3 lg:block"><PastFocusLink selected={selected} onSelect={selectFocus} /></div>
@@ -287,38 +306,42 @@ function LoadedApp() {
                   </nav>
                 </Req>
 
-                <main className="min-w-0 space-y-4 md:space-y-5">
-                  <FocusChipRow selected={selected} onSelect={selectFocus} />
+                <main ref={mainRef} id="main-content" tabIndex={-1} className="min-w-0 space-y-4 outline-none md:space-y-5">
+                  <FocusChipRow selected={selected} onSelect={selectFocus} onShowAllAreas={showAllAreas} />
+                  {/* A save whose follow-up read failed, on whichever page made it (store work.readAfterSaveFailure). */}
+                  <ReadAfterSaveNotice />
                   <Suspense fallback={<PageLoading label={heading} />}>
-                    {view === 'work' && <MyWork focusAreaId={focusAreaId} onOpen={openRequestDrawer} onOpenFocus={goToFocus} onOpenRules={() => goToPage('rules')} />}
+                    {view === 'work' && <MyWork focusAreaId={focusAreaId} onOpen={openRequestDrawer} onReply={(request) => openRequestDrawer(request, { reply: true })} onOpenFocus={goToFocus} onOpenRules={() => goToPage('rules')} />}
                     {view === 'suggested' && <SuggestedAreas onOpenFocus={goToFocus} />}
                     {view === 'past-focus' && <PastFocus onOpenFocus={goToFocus} />}
                     {view === 'rules' && <MyRules />}
                   </Suspense>
                 </main>
-              </div>
+              </ShellGrid>
 
+              {/* Phones: pinned to the bottom edge with the safe area inside it, so the page (its 6rem bottom padding) ends
+                  above it; labels 12px; and a third place, Focus (c-shell-notch). */}
               <Req ids={['R11.1']} className="md:hidden">
                 <nav aria-label={t('Pages')} className="relative z-30 md:hidden">
                   <Notch
+                    pinned
                     reveal={false}
                     showSelectedValue={false}
                     showDividers={false}
-                    offset={12}
-                    className="rounded-2xl border-border/70 bg-card/95 shadow-panel ring-border/60"
-                    itemClassName="relative h-[60px] min-w-24 flex-col justify-center gap-1 rounded-xl px-3 text-[11px] text-muted-foreground hover:bg-accent/40 hover:text-foreground"
-                    items={PAGES.map(({ id, label, icon }) => ({
+                    className="border-x-0 border-t border-b-0 border-border/70 bg-card/95 shadow-none ring-0"
+                    itemClassName="relative h-[60px] min-w-24 flex-1 flex-col justify-center gap-1 rounded-xl px-3 text-xs text-muted-foreground outline-none hover:bg-accent/40 hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50"
+                    items={bottomItems.map(({ id, label, icon: Icon, current, open, count }) => ({
                       id,
-                      currentPage: pageActive(id),
+                      currentPage: current,
                       options: [{ id, label: t(label) }],
-                      onChange: () => goToPage(id),
+                      onChange: open,
                       label: (
                         <>
-                          {pageActive(id) && <ActivePill layoutId="bottom-nav-active-pill" className="rounded-xl" />}
-                          <span className={cn('relative flex flex-col items-center gap-1', pageActive(id) ? 'font-semibold text-accent-foreground' : 'text-muted-foreground')}>
-                            <NavTile icon={icon} active={pageActive(id)} />{t(label)}
+                          {current && <ActivePill layoutId="bottom-nav-active-pill" look="outline" className="rounded-xl" />}
+                          <span className={cn('relative flex flex-col items-center gap-1', current ? 'font-semibold text-accent-foreground' : 'text-muted-foreground')}>
+                            <NavTile icon={Icon} active={current} />{t(label)}
                           </span>
-                          {id === 'work' && yourMoveCount > 0 && <span className="absolute top-1.5 left-[calc(50%+6px)] flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground">{yourMoveCount}<span className="sr-only"> {t('need you')}</span></span>}
+                          {count > 0 && <span className="absolute top-1.5 left-[calc(50%+6px)] flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground tabular">{count}<span className="sr-only"> {t('need you')}</span></span>}
                         </>
                       ),
                     }))}

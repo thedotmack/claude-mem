@@ -15,6 +15,7 @@ import {
   type ConversationOpenedInApp,
 } from '../../../../shared/conversation-continuation.ts'
 import type { Request } from '../data.ts'
+import { legacyUntitledConversationTitle } from './to-work-model.ts'
 import type { ConversationContinuationEvent, ConversationContinuationRead, ConversationContinuationSource, WorkDataSource } from './work-data-source.ts'
 
 /**
@@ -45,16 +46,114 @@ export function continuationEventConcernsConversation(event: ConversationContinu
     || (event.platform === conversation.platform && event.conversationSessionId === conversation.conversationSessionId)
 }
 
+/** A conversation's key among the conversations a request lists: its platform and session id. */
+export const conversationKey = (conversation: ConversationIdentity) => JSON.stringify([conversation.platform, conversation.conversationSessionId])
+
+/**
+ * Which conversation the reply card answers when it opens (c-conversation-continue; plan decision G19): the first listed
+ * that this page can offer to continue, else the first listed. The plan's choice is the latest by activity time where
+ * the data has one; no worker sends a conversation's activity time yet (a request carries its conversation keys alone,
+ * work-view-api-types.ts WorkViewHumanRequest), so the order the worker lists them in decides.
+ */
+export function defaultReplyConversation<Conversation extends ConversationIdentity>(conversations: readonly Conversation[]): Conversation | undefined {
+  return conversations.find((conversation) => isContinuableConversation(conversation)) ?? conversations[0]
+}
+
+/** How a conversation is named on its row and in the reply card's picker (conversationNaming). */
+export interface ConversationNaming {
+  /** The recorded title; null when none is recorded, and the row says "{tool} conversation" instead. */
+  recordedTitle: string | null
+  tool: string
+  /** The small monospace chip that tells it from the others: the session id's first eight characters, or "…" and its last eight. */
+  idChip: string
+}
+
+/**
+ * How a conversation is named (c-conversation-continue, page-05): its recorded title, or, where none is recorded (most
+ * conversations on real data: the mapper sends null, and workers before 16.0.0 sent "Conversation 258113dd", read the
+ * same way, G19), the tool's words "{tool} conversation"; and its id as a small chip (conversationIdChip), first eight
+ * characters or, when another listed conversation starts with the same eight, "…" and its last eight. The plan leads a
+ * row with the last thing the owner said in it where the data has that (G19); no worker records which prompt belongs to
+ * which conversation yet, so the title leads. Every place that names a conversation takes its name from here (its row,
+ * the picker, and the controls that act on it, conversationControlNames), so a screen reader hears the row's words.
+ */
+export function conversationNaming(
+  conversation: Pick<Request['conversations'][number], 'tool' | 'title' | 'conversationSessionId'>,
+  listed: readonly Pick<Request['conversations'][number], 'conversationSessionId'>[],
+): ConversationNaming {
+  const { conversationSessionId, title } = conversation
+  const firstEight = conversationSessionId.slice(0, 8)
+  const sharesItsStart = listed.some((other) => other.conversationSessionId !== conversationSessionId && other.conversationSessionId.slice(0, 8) === firstEight)
+  return {
+    recordedTitle: title === null || title === legacyUntitledConversationTitle(conversationSessionId) ? null : title,
+    tool: conversation.tool,
+    idChip: conversationIdChip(conversationSessionId, sharesItsStart),
+  }
+}
+
+/**
+ * The small monospace chip that tells a conversation from the others listed with it: the session id's first eight
+ * characters, as the old title showed them, or "…" and its last eight when `anotherStartsTheSame` (Codex ids started
+ * within a minute share their first eight; SESSION_ID_END says why the last eight tell them apart).
+ */
+export const conversationIdChip = (conversationSessionId: string, anotherStartsTheSame: boolean) =>
+  anotherStartsTheSame ? `…${sessionIdEndOf(conversationSessionId)}` : conversationSessionId.slice(0, 8)
+
 // ---- What a row shows
 
 /** Words for the owner: `english` is the sentence and its i18n catalog key, and `values` fill its {placeholders}. */
 export interface ContinuationWords { english: string; values: Record<string, string | number> }
 
-/** How each state of an exchange is worded. A new state fails the typecheck here until it has words. */
-export const CONTINUATION_STATE_WORDS: Record<ConversationContinuationState, string> = {
+/**
+ * What the reply card shows (c-conversation-continue: one card per request answers one conversation at a time). Its one
+ * writer is replyCardState, from the card's read of the conversation it answers and the card's own Send:
+ *   reading → idle | cannot-continue | read-failure    the first read answers, or fails
+ *   read-failure → reading's outcomes                  "Try again" reads it again, until something has been read
+ *   idle → sending → turn-running → idle               Send with words; the worker runs the turn; the turn ends
+ *   idle | turn-running → cannot-continue              a later read says it can no longer be continued from here
+ * A read that fails after one answered leaves the card as that read left it, with the failure and "Try again" under it
+ * (conversationReadFailureView), as a conversation's row does.
+ */
+export const REPLY_CARD_STATES = ['reading', 'idle', 'sending', 'turn-running', 'cannot-continue', 'read-failure'] as const
+export type ReplyCardState = typeof REPLY_CARD_STATES[number]
+
+/**
+ * How each state is worded, in one table: an exchange's state (ConversationContinuationState) as its row shows it, and
+ * the reply card's (ReplyCardState) as the line under its box. A new state of either fails the typecheck here until it
+ * has words. 'read-failure' has no line of its own: the read's own words show there (why the read failed, whole).
+ */
+export const CONTINUATION_STATE_WORDS: Record<ConversationContinuationState | Exclude<ReplyCardState, 'read-failure'>, string> & Record<'read-failure', null> = {
   running: 'Working…',
   replied: 'Replied',
   failed: 'Did not finish',
+  reading: 'Reading the conversation…',
+  // Shown while the box is empty: why Send waits (G16: a dimmed primary says what it waits for).
+  idle: 'Write a reply, then send it.',
+  sending: 'Sending your reply…',
+  'turn-running': 'You can send again when this turn ends.',
+  // Also where the worker gave its own reason: that reason is its words, folded under Details beside these (G17, fix
+  // round R1; ConversationContinuationView refusalText).
+  'cannot-continue': 'This conversation can’t be continued from here.',
+  'read-failure': null,
+}
+
+/**
+ * The reply card's state (ReplyCardState), its one writer: the card's box for the conversation it answers calls it once
+ * per render and draws what it returns (components/conversation-continue.tsx ConversationComposer). `conversationIsContinuable`:
+ * the conversation can be offered at all (isContinuableConversation), and one that cannot is never read; `read`: the
+ * last read that answered, if any; `readFailed`: the newest read failed; `sending`: the card's Send is on its way.
+ */
+export function replyCardState({ conversationIsContinuable, read, readFailed, sending }: {
+  conversationIsContinuable: boolean
+  read: Pick<ConversationContinuationRead, 'target' | 'exchanges'> | null
+  readFailed: boolean
+  sending: boolean
+}): ReplyCardState {
+  if (!conversationIsContinuable) return 'cannot-continue'
+  if (read === null) return readFailed ? 'read-failure' : 'reading'
+  if (!read.target.canContinue) return 'cannot-continue'
+  if (sending) return 'sending'
+  return read.exchanges.some((exchange) => exchange.state === 'running') ? 'turn-running' : 'idle'
 }
 
 /** Codex can finish (exit 0) and print nothing, so an empty success says so instead of showing nothing. */
@@ -103,7 +202,11 @@ export interface ConversationExchangeView {
 
 /** One conversation row, as its worker read and the message typed in its box make it. */
 export interface ConversationContinuationView {
-  /** The worker's sentence when this conversation can't be continued from here. The row shows it muted, and no box. */
+  /**
+   * The worker's sentence when this conversation can't be continued from here, whole. The row and the card show no box,
+   * the state's words ("This conversation can’t be continued from here."), and this sentence folded under Details: it
+   * is the worker's English, never the visible text (G17, fix round R1).
+   */
   refusalText: string | null
   /** Shown above the box, before anything is sent, when the recorded folder is gone: where the turn will run instead. */
   folderGoneNotice: ContinuationWords | null
@@ -161,9 +264,25 @@ function exchangeView(exchange: ConversationContinuation, exchangeAStopWasSentFo
   }
 }
 
-/** A failed read of the conversation, as its row shows it: why, whole, and the button that reads it again. */
+/**
+ * The calls a conversation's card and row make, as their failures are told to people (G17, plan Phase 5 fix round M1):
+ * one plain sentence per call, in the page's language, shown; why it failed (local-source.ts's sentence: the worker's
+ * own words, the status it answered, or the browser's error) folded under Details, whole. A turn that did not finish is
+ * not a call that failed: its exchange says so with its state's words, and what the CLI printed is its Details.
+ */
+export type ConversationCall = 'read' | 'send' | 'stop' | 'open-in-app'
+export const CONVERSATION_CALL_FAILURE_WORDS: Record<ConversationCall, string> = {
+  read: 'Could not read this conversation.',
+  send: 'Your reply was not sent.',
+  stop: 'Could not stop this turn.',
+  'open-in-app': 'Could not open this conversation in its app.',
+}
+
+/** A failed read of the conversation, as its row shows it: why, and the button that reads it again. */
 export interface ConversationReadFailureView {
-  /** The worker's sentence, or why the worker could not be reached, as it is. */
+  /** What shows: the plain sentence for a failed read (CONVERSATION_CALL_FAILURE_WORDS), the catalog's key. */
+  sentence: string
+  /** The worker's sentence, or why the worker could not be reached, as it is: folded under Details. */
   failureText: string
   /** The button's words: the drawer's own "Try again". */
   tryAgainLabel: string
@@ -188,7 +307,7 @@ export interface ConversationReadFailureView {
  * failed shows its own reason, with "Try again" again.
  */
 export function conversationReadFailureView(readFailure: string | null, isTryingAgain: boolean): ConversationReadFailureView | null {
-  return readFailure === null ? null : { failureText: readFailure, tryAgainLabel: 'Try again', tryingAgainLabel: 'Trying again…', isTryingAgain }
+  return readFailure === null ? null : { sentence: CONVERSATION_CALL_FAILURE_WORDS.read, failureText: readFailure, tryAgainLabel: 'Try again', tryingAgainLabel: 'Trying again…', isTryingAgain }
 }
 
 // ---- What a row's controls are called, and where focus goes after Send or Stop
@@ -204,36 +323,24 @@ export function conversationReadFailureView(readFailure: string | null, isTrying
 const SESSION_ID_END = /.{8}$/
 const sessionIdEndOf = (conversationSessionId: string) => conversationSessionId.match(SESSION_ID_END)?.[0] ?? conversationSessionId
 
-/** What a row's message box, Send and Stop are called for a screen reader. */
-export interface ConversationControlNames { messageBox: ContinuationWords; sendButton: ContinuationWords; stopButton: ContinuationWords }
+/** What a conversation's message box, Send, Stop and "Reply here" are called for a screen reader. */
+export interface ConversationControlNames { messageBox: ContinuationWords; sendButton: ContinuationWords; stopButton: ContinuationWords; replyHere: ContinuationWords }
 
 /**
- * What a row's message box, Send and Stop are called for a screen reader. A request can list several conversations, each
- * with its own Send and Stop, so their names say which conversation they act on: its tool and title, as its line shows
- * them. Each name starts with the word its button shows, "Send" or "Stop", which stays as it is. Codex session ids are
- * time-ordered, so conversations started within a minute share their first characters and the title made from them:
- * when another row shows the same title, each name adds the last eight characters of this session id. The box's label
- * names the tool only, as before.
+ * What a conversation's message box, Send, Stop and "Reply here" are called for a screen reader (fix round L6, Q13). A
+ * request can list several conversations, each with its own box, Send, Stop and row, so each name says which one it
+ * acts on, the way its row names it: `conversationName` is conversationNaming's name in the page's language (the
+ * recorded title, or "{tool} conversation") and its id chip, which tells it from every other listed conversation, so two
+ * names never read alike. Each name starts with the words its control shows ("Your reply", "Send", "Stop", "Reply
+ * here"), which stay as they are (WCAG 2.5.3, label in name).
  */
-export function conversationControlNames(conversation: {
-  toolName: string
-  conversationTitle: string
-  conversationSessionId: string
-  anotherConversationHasTheSameTitle: boolean
-}): ConversationControlNames {
-  const { toolName: tool, conversationTitle: title } = conversation
-  if (!conversation.anotherConversationHasTheSameTitle) {
-    return {
-      messageBox: { english: 'Continue this {tool} conversation', values: { tool } },
-      sendButton: { english: 'Send to the {tool} conversation “{title}”', values: { tool, title } },
-      stopButton: { english: 'Stop the turn in the {tool} conversation “{title}”', values: { tool, title } },
-    }
-  }
-  const sessionIdEnd = sessionIdEndOf(conversation.conversationSessionId)
+export function conversationControlNames(conversationName: string): ConversationControlNames {
+  const values = { conversation: conversationName }
   return {
-    messageBox: { english: 'Continue this {tool} conversation (…{sessionIdEnd})', values: { tool, sessionIdEnd } },
-    sendButton: { english: 'Send to the {tool} conversation “{title}” (…{sessionIdEnd})', values: { tool, title, sessionIdEnd } },
-    stopButton: { english: 'Stop the turn in the {tool} conversation “{title}” (…{sessionIdEnd})', values: { tool, title, sessionIdEnd } },
+    messageBox: { english: 'Your reply to {conversation}', values },
+    sendButton: { english: 'Send to {conversation}', values },
+    stopButton: { english: 'Stop the turn in {conversation}', values },
+    replyHere: { english: 'Reply here to {conversation}', values },
   }
 }
 
@@ -262,9 +369,10 @@ export function focusAfterSendOrStop(
 export interface ConversationAppActionsView {
   /**
    * "Open in {app}" and its button's name, when the worker says it can open the conversation in an app on this computer
-   * (the target's opensInAppNamed) and this page can ask it to.
+   * (the target's opensInAppNamed) and this page can ask it to. `app`: that app's name, for the line the row shows once
+   * it has opened there ("Opened in {app}.", fix round R1).
    */
-  openInApp: { label: ContinuationWords; buttonName: ContinuationWords } | null
+  openInApp: { app: string; label: ContinuationWords; buttonName: ContinuationWords } | null
   copyResumeCommand: {
     /** What the button copies: fixed words and the session id (resumeCommandFor). The folder is never part of it. */
     command: string
@@ -285,32 +393,27 @@ export interface ConversationAppActionsView {
  * on this computer (the target's opensInAppNamed: only a Claude Code conversation, and only on macOS) and the page can ask
  * it to, and "Copy resume command" wherever the row shows Send. Null where the row shows no Send, because its
  * conversation can't be continued from here. The buttons are named like Send and Stop (conversationControlNames): the
- * words each shows, then the conversation it acts on, and the end of its session id when another row shows the same title.
+ * words each shows, then the conversation it acts on as its row names it (`conversationName`).
  */
 export function conversationAppActions(
-  conversation: Parameters<typeof conversationControlNames>[0] & { platform: ContinuablePlatform },
+  conversation: { platform: ContinuablePlatform; conversationSessionId: string; conversationName: string },
   target: ConversationContinuationTarget,
   sourceCanOpenInApp: boolean,
 ): ConversationAppActionsView | null {
   const command = resumeCommandFor(conversation.platform, conversation.conversationSessionId)
   if (!target.canContinue || command === null) return null
-  const { toolName: tool, conversationTitle: title } = conversation
-  const sessionIdEnd = conversation.anotherConversationHasTheSameTitle ? sessionIdEndOf(conversation.conversationSessionId) : null
-  /** `english`, or, when another row shows the same title, `withSessionIdEnd` with the end of this session id. */
-  const named = (english: string, withSessionIdEnd: string, values: Record<string, string>): ContinuationWords =>
-    sessionIdEnd === null ? { english, values } : { english: withSessionIdEnd, values: { ...values, sessionIdEnd } }
+  const named = { conversation: conversation.conversationName }
   const app = target.opensInAppNamed
   return {
     openInApp: app === null || !sourceCanOpenInApp ? null : {
+      app,
       label: { english: 'Open in {app}', values: { app } },
-      buttonName: named('Open in {app}: the {tool} conversation “{title}”', 'Open in {app}: the {tool} conversation “{title}” (…{sessionIdEnd})', { app, tool, title }),
+      buttonName: { english: 'Open in {app}: {conversation}', values: { app, ...named } },
     },
     copyResumeCommand: {
       command,
-      buttonName: named('Copy resume command for the {tool} conversation “{title}”',
-        'Copy resume command for the {tool} conversation “{title}” (…{sessionIdEnd})', { tool, title }),
-      copiedButtonName: named('Copied the resume command for the {tool} conversation “{title}”',
-        'Copied the resume command for the {tool} conversation “{title}” (…{sessionIdEnd})', { tool, title }),
+      buttonName: { english: 'Copy resume command for {conversation}', values: named },
+      copiedButtonName: { english: 'Copied the resume command for {conversation}', values: named },
     },
     runsInFolderNotice: target.recordedFolderIsGone ? null : { english: 'Runs in {folder}', values: { folder: target.runsInFolder } },
   }
@@ -331,6 +434,26 @@ export function folderPathForDisplay(folder: string): FolderPathForDisplay {
   // negative start as 0, so a path of one character is looked at apart.
   const nameStartsAt = folder.length < 2 ? 0 : Math.max(folder.lastIndexOf('/', folder.length - 2), folder.lastIndexOf('\\', folder.length - 2)) + 1
   return { parentWithSeparator: folder.slice(0, nameStartsAt), folderName: folder.slice(nameStartsAt) }
+}
+
+/**
+ * A folder path cut at its folder boundaries, longest first, for a line too narrow for it (page-05: paths were cut in
+ * the middle of a folder's name): the path whole, then with the folders after its root giving way to "…" one at a
+ * time, down to the root, "…" and the folder's own name ("/Users/…/use-plan-build-auto"). The row shows the first that
+ * fits its line, and the whole path on a press. Each keeps the path's own separator; a path that ends in one keeps it
+ * on its name, as folderPathForDisplay does. A path with no folder between its root and its name has nothing to cut.
+ */
+export function folderPathsCutAtFolders(folder: string): string[] {
+  const separator = folder.includes('/') || !folder.includes('\\') ? '/' : '\\'
+  const trailingSeparator = folder.length > 1 && folder.endsWith(separator) ? separator : ''
+  const parts = (trailingSeparator ? folder.slice(0, -1) : folder).split(separator)
+  // parts[0] is the root ('' before a leading separator, "~", "C:"); the last part is the folder's own name.
+  if (parts.length < 3) return [folder]
+  const cut: string[] = [folder]
+  for (let foldersGivenWay = 1; foldersGivenWay <= parts.length - 2; foldersGivenWay++) {
+    cut.push([parts[0], '…', ...parts.slice(1 + foldersGivenWay)].join(separator) + trailingSeparator)
+  }
+  return cut
 }
 
 /** A sentence that names a folder, as its row lays it out: the words before the folder, the folder, the words after it. */
@@ -366,13 +489,13 @@ export function buttonLabelsKeepingTheirWidth(label: string, workingLabel: strin
 }
 
 /**
- * What the row says when the clipboard did not take the resume command, as two lines above the command shown to copy by
- * hand: why, then where to copy it from. The reason is the browser's, whole, and ends its line as it is: a reason often
- * ends with its own full stop ("Write permission denied."), so nothing is put after it.
+ * What the row says when the clipboard did not take the resume command, beside its plain sentence ("Could not copy the
+ * command.", which the row words itself): the browser's reason, whole, for Details, since it is the browser's words and
+ * never the visible text (G17, fix round R1), and the line over the command shown to copy by hand.
  */
-export function resumeCommandCopyFailureWords(reason: string): { why: ContinuationWords; copyItFromHere: ContinuationWords } {
+export function resumeCommandCopyFailureWords(reason: string): { details: string; copyItFromHere: ContinuationWords } {
   return {
-    why: { english: 'Could not copy the command: {reason}', values: { reason } },
+    details: reason,
     copyItFromHere: { english: 'Copy it from here:', values: {} },
   }
 }

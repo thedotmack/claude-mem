@@ -1,12 +1,24 @@
 import React, { useEffect, useRef, useState } from "react";
 import {
   motion,
+  useReducedMotion,
   useTransform,
   useScroll,
   useSpring,
 } from "motion/react";
 import { cn } from "@/lib/utils";
 
+/*
+ * Local changes (c-aceternity-tracing-beam): the rail and its light use the page's own colours (the vendor's emerald
+ * dot and cyan-to-violet gradient were not this palette), the rail follows the content's height as entries open and
+ * close (it was measured once), and under reduced motion the light and the dot stay still, here in the component
+ * (plan rule 8). The caller marks the entry being read on the rail (pages/my-work.tsx StorySheet), so the rail stays on
+ * one line, 19px from the left, to its end: the vendor's path jogged back to x=1 for its last fifth, where the newest
+ * entry's mark then sat 18px off the line.
+ */
+
+/** The rail: one vertical line at x=19 (the vendor's start above the top is kept, out of view). */
+const RAIL_PATH = (height: number) => `M 1 0V -36 l 18 24 V ${height}`
 export const TracingBeam = ({
   children,
   className,
@@ -18,6 +30,7 @@ export const TracingBeam = ({
   scrollContainer?: React.RefObject<HTMLElement | null>;
 }) => {
   const ref = useRef<HTMLDivElement>(null);
+  const reduceMotion = useReducedMotion();
   const { scrollYProgress } = useScroll({
     target: ref,
     container: scrollContainer,
@@ -26,12 +39,20 @@ export const TracingBeam = ({
 
   const contentRef = useRef<HTMLDivElement>(null);
   const [svgHeight, setSvgHeight] = useState(0);
+  const [scrolled, setScrolled] = useState(false);
 
+  // The rail is as tall as the content, also after a folded entry opens or closes.
   useEffect(() => {
-    if (contentRef.current) {
-      setSvgHeight(contentRef.current.offsetHeight);
-    }
+    const content = contentRef.current;
+    if (!content) return;
+    const measure = () => setSvgHeight(content.offsetHeight);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(content);
+    return () => observer.disconnect();
   }, []);
+
+  useEffect(() => scrollYProgress.on("change", (progress) => setScrolled(progress > 0)), [scrollYProgress]);
 
   const y1 = useSpring(
     useTransform(scrollYProgress, [0, 0.8], [50, svgHeight]),
@@ -54,32 +75,16 @@ export const TracingBeam = ({
       className={cn("relative mx-auto h-full w-full max-w-4xl", className)}
     >
       {/* Local fix: md:-left-20 put the beam outside a narrow container (a sheet); the caller pads the content instead. */}
-      <div className="absolute top-3 -left-4">
-        <motion.div
-          transition={{
-            duration: 0.2,
-            delay: 0.5,
-          }}
-          animate={{
-            boxShadow:
-              scrollYProgress.get() > 0
-                ? "none"
-                : "rgba(0, 0, 0, 0.24) 0px 3px 8px",
-          }}
-          className="border-netural-200 ml-[27px] flex h-4 w-4 items-center justify-center rounded-full border shadow-sm"
-        >
-          <motion.div
-            transition={{
-              duration: 0.2,
-              delay: 0.5,
-            }}
-            animate={{
-              backgroundColor: scrollYProgress.get() > 0 ? "white" : "#10b981",
-              borderColor: scrollYProgress.get() > 0 ? "white" : "#059669",
-            }}
-            className="h-2 w-2 rounded-full border border-neutral-300 bg-white"
+      <div className="absolute top-3 -left-4" aria-hidden="true">
+        <div className="ml-[27px] flex h-4 w-4 items-center justify-center rounded-full border border-control-edge bg-card">
+          <div
+            className={cn(
+              "h-2 w-2 rounded-full border",
+              !reduceMotion && "transition-colors duration-200",
+              scrolled ? "border-control-edge bg-card" : "border-primary-deep bg-primary",
+            )}
           />
-        </motion.div>
+        </div>
         <svg
           viewBox={`0 0 20 ${svgHeight}`}
           width="20"
@@ -87,38 +92,33 @@ export const TracingBeam = ({
           className="ml-4 block"
           aria-hidden="true"
         >
-          <motion.path
-            d={`M 1 0V -36 l 18 24 V ${svgHeight * 0.8} l -18 24V ${svgHeight}`}
+          <path
+            d={RAIL_PATH(svgHeight)}
             fill="none"
-            stroke="#9091A0"
-            strokeOpacity="0.16"
-            transition={{
-              duration: 10,
-            }}
-          ></motion.path>
-          <motion.path
-            d={`M 1 0V -36 l 18 24 V ${svgHeight * 0.8} l -18 24V ${svgHeight}`}
-            fill="none"
-            stroke="url(#gradient)"
-            strokeWidth="1.25"
-            className="motion-reduce:hidden"
-            transition={{
-              duration: 10,
-            }}
-          ></motion.path>
+            style={{ stroke: "var(--control-edge)" }}
+            strokeOpacity="0.6"
+          ></path>
+          {!reduceMotion && (
+            <motion.path
+              d={RAIL_PATH(svgHeight)}
+              fill="none"
+              stroke="url(#tracing-beam-gradient)"
+              strokeWidth="1.25"
+            ></motion.path>
+          )}
           <defs>
             <motion.linearGradient
-              id="gradient"
+              id="tracing-beam-gradient"
               gradientUnits="userSpaceOnUse"
               x1="0"
               x2="0"
               y1={y1} // set y1 for gradient
               y2={y2} // set y2 for gradient
             >
-              <stop stopColor="#18CCFC" stopOpacity="0"></stop>
-              <stop stopColor="#18CCFC"></stop>
-              <stop offset="0.325" stopColor="#6344F5"></stop>
-              <stop offset="1" stopColor="#AE48FF" stopOpacity="0"></stop>
+              <stop style={{ stopColor: "var(--primary)" }} stopOpacity="0"></stop>
+              <stop style={{ stopColor: "var(--primary)" }}></stop>
+              <stop offset="0.325" style={{ stopColor: "var(--primary-bright)" }}></stop>
+              <stop offset="1" style={{ stopColor: "var(--accent-foreground)" }} stopOpacity="0"></stop>
             </motion.linearGradient>
           </defs>
         </svg>

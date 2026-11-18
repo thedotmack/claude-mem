@@ -3,13 +3,15 @@ import { cn } from "cn"
 
 import { Button } from "@/components/ui/button"
 import { interpolate, useI18n } from "@/lib/i18n"
+import { LINE_ROWS_PER_PAGE } from "@/live/card-groups"
 import { actionableElementInside } from "./interaction-behavior"
 
 /**
- * How many rows a long list draws at a time (decision G4): UI UX Pro Max `virtualize-lists` draws at most 50 rows at
- * once. TablePageFooter says how many are shown and offers the next page.
+ * How many rows a long list draws at a time (decision G4): the one 50-row page, live/card-groups.ts LINE_ROWS_PER_PAGE
+ * (UI UX Pro Max `virtualize-lists` draws at most 50 rows at once), under the name the table's callers know.
+ * TablePageFooter says how many are shown and offers the next page.
  */
-export const LIST_ROWS_PER_PAGE = 50
+export const LIST_ROWS_PER_PAGE = LINE_ROWS_PER_PAGE
 
 function Table({ className, ...props }: React.ComponentProps<"table">) {
   return (

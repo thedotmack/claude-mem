@@ -624,7 +624,7 @@ describe('compact local source', () => {
       return original(() => {}, 1_000_000)
     }) as typeof setInterval
     const next = overview()
-    next.model.requests[0].runningFor = '2 hours'
+    next.model.requests[0].runningForMs = 2 * 3_600_000
     let gets = 0
     const { local, streams } = harness(async () => { gets++; return json(next) })
     const shown: WorkModel[] = []
@@ -638,7 +638,7 @@ describe('compact local source', () => {
       await settle()
       assert.equal(gets, 0)
       streams[0].emit('work-view-overview', next)
-      assert.equal(shown.at(-1)?.requests[0].runningFor, '2 hours')
+      assert.equal(shown.at(-1)?.requests[0].runningForMs, 2 * 3_600_000)
     } finally { stop?.() }
   })
 

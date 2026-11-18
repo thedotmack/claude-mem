@@ -204,23 +204,45 @@ export const TerminalContent = ({
   return (
     <div
       className={cn(
-        "max-h-96 overflow-auto p-4 font-mono text-sm leading-relaxed",
+        "max-h-96 overflow-auto p-4 font-terminal text-sm leading-relaxed",
         className
       )}
       ref={containerRef}
       {...props}
     >
       {children ?? (
-        <pre className="whitespace-pre-wrap break-words">
+        <pre className="whitespace-pre-wrap break-words font-terminal">
           <Ansi>{output}</Ansi>
           {isStreaming && (
-            <span className="ml-0.5 inline-block h-4 w-2 animate-pulse bg-terminal-foreground" />
+            // The cursor blinks only when motion is allowed, here in the component (plan rule 8).
+            <span className="ml-0.5 inline-block h-4 w-2 bg-terminal-foreground motion-safe:animate-pulse" />
           )}
         </pre>
       )}
     </div>
   );
 };
+
+/**
+ * The agent's own lines, a command and what it printed (c-ai-terminal M): a line marked as a command (`$ …`) is drawn
+ * in the full text colour, its output in the terminal's quieter one (10.2:1 on the terminal fill, the review's measure),
+ * and long lines wrap. Plain text: the card's lines are recorded output, never ANSI.
+ *
+ * Only the sample marks commands (data.ts writes its demo's lines as `$ …`). No worker records which recorded line was a
+ * command: the mapper writes each line as its record's kind and words (live/to-work-model.ts: "work-state …",
+ * "observation …", "ask …"), so on real data every line draws as output and nothing here guesses (G19, V10).
+ */
+export const TerminalLines = ({ lines, className }: { lines: readonly string[]; className?: string }) => (
+  // The face is set on the <pre> itself: the base styles give <pre> the default monospace, which no parent overrides.
+  <pre className={cn("whitespace-pre-wrap break-words font-terminal", className)}>
+    {lines.map((line, index) => (
+      <span key={index} data-terminal-line={line.trimStart().startsWith("$") ? "command" : "output"}
+        className={cn("block", line.trimStart().startsWith("$") ? "text-foreground" : "text-terminal-foreground")}>
+        {line}
+      </span>
+    ))}
+  </pre>
+);
 
 export type TerminalProps = HTMLAttributes<HTMLDivElement> & {
   output: string;
@@ -247,7 +269,7 @@ export const Terminal = ({
     <TerminalContext.Provider value={contextValue}>
       <div
         className={cn(
-          "flex flex-col overflow-hidden rounded-xl border border-terminal-border bg-terminal font-mono text-terminal-foreground",
+          "flex flex-col overflow-hidden rounded-xl border border-terminal-border bg-terminal font-terminal text-terminal-foreground",
           className
         )}
         {...props}
