@@ -248,8 +248,13 @@ export class SearchOrchestrator {
   }> {
     const options = this.normalizeParams(args);
 
-    if (this.hybridStrategy) {
-      return await this.hybridStrategy.findByFile(filePath, options);
+    if (this.hybridStrategy && this.chromaSync?.isCollectionAvailable()) {
+      try {
+        const result = await this.hybridStrategy.findByFile(filePath, options);
+        if (this.chromaSync.isCollectionAvailable()) return result;
+      } catch (error) {
+        if (this.chromaSync.isCollectionAvailable()) throw error;
+      }
     }
 
     // The keys the hybrid strategy scopes its file lookup by, so turning

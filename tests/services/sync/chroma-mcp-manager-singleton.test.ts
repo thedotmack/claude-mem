@@ -842,6 +842,23 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     await Promise.all([firstMutation, secondMutation]);
   });
 
+  it('never replays a collection delete when the transport loses its acknowledgment', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+    let deletes = 0;
+    callToolImpl = async request => {
+      if (request?.name === 'chroma_delete_collection') {
+        deletes++;
+        throw new Error('Connection closed after delete');
+      }
+      return { content: [{ type: 'text', text: '{}' }] };
+    };
+    await expect(mgr.callTool('chroma_delete_collection', { collection_name: 'test' }))
+      .rejects.toThrow('unconfirmed');
+    expect(deletes).toBe(1);
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+    expect(deletes).toBe(1);
+  });
+
   it('kills the prior subprocess tree before a reconnect spawn', async () => {
     const mgr = ChromaMcpManager.getInstance();
 

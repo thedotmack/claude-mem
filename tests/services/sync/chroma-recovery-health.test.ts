@@ -1,5 +1,6 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, unlinkSync } from 'fs';
+import fs from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { ChromaRecoveryHealth } from '../../../src/services/sync/ChromaRecoveryHealth.js';
@@ -113,6 +114,28 @@ describe('journal-loss and interprocess transition safety', () => {
       cm__beta: { state: 'DROP_PENDING', since: Date.now() },
     } });
     expect(ChromaRecoveryHealth.isAvailable('cm__beta')).toBe(false);
+  });
+
+  it('sees a competing publication immediately after releasing the journal lock', () => {
+    const unlink = fs.unlinkSync;
+    let published = false;
+    // Force the interprocess ordering at the unlock boundary, without sleeps.
+    const unlock = spyOn(fs, 'unlinkSync').mockImplementation(path => {
+      unlink(path);
+      if (path !== journal() + '.lock') return;
+      const snapshot = JSON.parse(readFileSync(journal(), 'utf8'));
+      snapshot.collections.cm__beta = { state: 'QUARANTINED', since: 1, reason: 'lost reply' };
+      writeFileSync(journal() + '.next', JSON.stringify(snapshot));
+      fs.renameSync(journal() + '.next', journal());
+      published = true;
+    });
+    try {
+      ChromaRecoveryHealth.beginDrop('cm__alpha');
+      expect(published).toBe(true);
+      expect(ChromaRecoveryHealth.get('cm__beta')).toBe('QUARANTINED');
+    } finally {
+      unlock.mockRestore();
+    }
   });
 
   it('keeps other collection entries when a separate transition commits', () => {

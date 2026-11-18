@@ -37,7 +37,7 @@ describe('SearchManager Chroma date window', () => {
     const manager = new SearchManager(
       { searchObservations, searchSessions: mock(() => []), searchUserPrompts: mock(() => []) } as any,
       { getObservationsByIds, getSessionSummariesByIds: mock(() => []), getUserPromptsByIds: mock(() => []) } as any,
-      { queryChroma } as any,
+      { queryChroma, isCollectionAvailable: () => true } as any,
       {} as any,
       {} as any,
     );

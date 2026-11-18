@@ -8,6 +8,8 @@ describe('date-ordered file lookup does not depend on semantic search availabili
   let store: SessionStore;
   let search: SearchOrchestrator;
   let calls: number;
+  let available: boolean;
+  let quarantineDuringRank: boolean;
   const unavailable = new Error('Chroma connection lost');
 
   function seed(epoch: number, project = 'project', source = 'claude') {
@@ -28,10 +30,19 @@ describe('date-ordered file lookup does not depend on semantic search availabili
   beforeEach(() => {
     store = new SessionStore(':memory:');
     calls = 0;
+    available = true;
+    quarantineDuringRank = false;
     for (const epoch of [100, 200, 300]) seed(epoch);
     seed(400, 'other-project');
     seed(250, 'project', 'codex');
-    const chroma = { queryChroma: async () => { calls++; throw unavailable; } };
+    const chroma = {
+      isCollectionAvailable: () => available,
+      queryChroma: async () => {
+        calls++;
+        if (quarantineDuringRank) available = false;
+        throw unavailable;
+      },
+    };
     search = new SearchOrchestrator(new SessionSearch(store.db), store, chroma as unknown as ChromaSync);
   });
 
@@ -70,6 +81,19 @@ describe('date-ordered file lookup does not depend on semantic search availabili
     expect(result.sessions.map(row => row.created_at_epoch)).toEqual([250]);
     expect(calls).toBe(0);
   });
+
+  for (const during of [false, true]) {
+    it(`returns scoped SQLite rows when quarantine begins ${during ? 'during' : 'before'} ranking`, async () => {
+      available = during;
+      quarantineDuringRank = during;
+      const result = await search.findByFile('src/file.ts', {
+        project: 'project', platformSource: 'codex', orderBy: 'relevance', limit: 1,
+      });
+      expect(result.observations.map(row => row.created_at_epoch)).toEqual([250]);
+      expect(result.usedChroma).toBe(false);
+      expect(calls).toBe(during ? 1 : 0);
+    });
+  }
 
   for (const orderBy of [undefined, 'relevance'] as const) {
     it(`still reports semantic failures for ${orderBy ?? 'default'} ordering`, async () => {

@@ -40,7 +40,7 @@ function fixture() {
   add('private/feature', 'unadopted-child', 'private');
   add('private/deep', 'unadopted-grandchild', 'private/feature');
   const search = new SessionSearch(store.db);
-  const chroma = { queryChroma: async () => ({
+  const chroma = { isCollectionAvailable: () => true, queryChroma: async () => ({
     ids: rows.map(row => row.id), distances: rows.map(() => 0.1),
     metadatas: rows.map(row => ({ ...row, sqlite_id: row.id, doc_type: 'observation' })),
   }) } as unknown as ChromaSync;

@@ -32,6 +32,7 @@ function fixture(options: {
     getUserPromptsByIds: () => [],
     getProjectReadKeys: (projects: string[]) => projects,
   } as any, {
+    isCollectionAvailable: () => true,
     async queryChroma() {
       if (options.chromaFailure) throw options.chromaFailure;
       return options.semanticMatch === false

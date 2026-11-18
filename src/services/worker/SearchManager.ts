@@ -593,35 +593,12 @@ export class SearchManager {
         };
         logger.warn('SEARCH', 'ChromaDB semantic search failed, falling back to FTS5 keyword search', {}, errorObject);
         chromaFailed = true;
-
-        // As on the Chroma-less path below: a keyword search that fails too
-        // leaves an empty answer, not a failed request.
-        try {
-          if (searchObservations) {
-            observations = this.contextReader
-              ? await this.contextReader.searchObservations(query, { ...options, type: effectiveObsType, concepts, files })
-              : this.sessionSearch.searchObservations(query, { ...options, type: effectiveObsType, concepts, files });
-          }
-          if (searchSessions) {
-            sessions = this.contextReader
-              ? await this.contextReader.searchSessions(query, options)
-              : this.sessionSearch.searchSessions(query, options);
-          }
-          if (searchPrompts) {
-            prompts = this.contextReader
-              ? await this.contextReader.searchUserPrompts(query, options)
-              : this.sessionSearch.searchUserPrompts(query, options);
-          }
-        } catch (ftsError) {
-          const ftsErrorObject = ftsError instanceof Error ? ftsError : new Error(String(ftsError));
-          logger.error('WORKER', 'FTS5 fallback search failed after a Chroma error', {}, ftsErrorObject);
-        }
       }
 
       // Only a failed semantic search should trigger the Chroma fallback.
       // A SQLite refill failure must escape, just as in SearchOrchestrator;
       // retrying it as a Chroma failure can silently discard semantic matches.
-      if (chromaResult) {
+      if (chromaResult && !chromaFailed) {
         // Same fallback policy as the orchestrator pipeline: SQLite refills every requested
         // category Chroma left empty, or answers alone when Chroma left them all empty.
         const supplemented = await this.orchestrator.supplementEmptyCategories(
@@ -637,31 +614,11 @@ export class SearchManager {
           },
           chromaResult
         );
-        if (!this.chromaSync?.isCollectionAvailable()) {
-          // Rebuild/quarantine may begin while SQLite supplements a Chroma
-          // result. Never publish a semantic answer from that generation.
-          chromaFailed = true;
-          chromaFailureReason = { message: 'quarantined during search', isConnectionError: false };
-          try {
-            if (searchObservations) observations = this.contextReader
-              ? await this.contextReader.searchObservations(query, { ...options, type: effectiveObsType, concepts, files })
-              : this.sessionSearch.searchObservations(query, { ...options, type: effectiveObsType, concepts, files });
-            if (searchSessions) sessions = this.contextReader
-              ? await this.contextReader.searchSessions(query, options)
-              : this.sessionSearch.searchSessions(query, options);
-            if (searchPrompts) prompts = this.contextReader
-              ? await this.contextReader.searchUserPrompts(query, options)
-              : this.sessionSearch.searchUserPrompts(query, options);
-          } catch (ftsError) {
-            logger.error('WORKER', 'FTS5 search failed after quarantine', {}, ftsError instanceof Error ? ftsError : new Error(String(ftsError)));
-          }
-        } else {
-          ({ observations, sessions, prompts } = supplemented.results);
-          chromaSupplementStrategy = supplemented.strategy;
-        }
+        ({ observations, sessions, prompts } = supplemented.results);
+        chromaSupplementStrategy = supplemented.strategy;
       }
 
-      if (!chromaFailed && (options.orderBy === 'date_desc' || options.orderBy === 'date_asc')) {
+      if (!chromaFailed && this.chromaSync?.isCollectionAvailable() && (options.orderBy === 'date_desc' || options.orderBy === 'date_asc')) {
         ({ observations, sessions, prompts } = await this.mergeKeywordMatchesByDate(
           query,
           options.orderBy,
@@ -672,6 +629,10 @@ export class SearchManager {
         ));
       }
 
+      if (!this.chromaSync?.isCollectionAvailable()) {
+        chromaFailed = true;
+        chromaFailureReason = { message: 'quarantined during search', isConnectionError: false };
+      }
       if (!chromaFailed) {
         const end = limit === undefined ? undefined : offset + limit;
         observations = observations.slice(offset, end);
@@ -679,9 +640,12 @@ export class SearchManager {
         prompts = prompts.slice(offset, end);
       }
     }
-    // PATH 3: FTS5 KEYWORD SEARCH (Chroma not initialized)
-    else if (query) {
-      logger.debug('SEARCH', 'ChromaDB not initialized — falling back to FTS5 keyword search', {});
+    // SQLite is authoritative after quarantine, including a transition during
+    // the asynchronous date merge. Drop every semantic row before fallback.
+    if (query && (!chromaInitiallyAvailable || chromaFailed)) {
+      observations = [];
+      sessions = [];
+      prompts = [];
       try {
         if (searchObservations) {
           observations = this.contextReader

@@ -98,7 +98,7 @@ describe('CorpusBuilder recency window', () => {
     const searchOrchestrator = new SearchOrchestrator(
       { searchObservations: mock(() => []), searchSessions: mock(() => []), searchUserPrompts: mock(() => []) } as any,
       sessionStore as any,
-      { queryChroma } as any,
+      { queryChroma, isCollectionAvailable: () => true } as any,
     );
     const builder = new CorpusBuilder(sessionStore as any, searchOrchestrator, { write: mock(() => undefined) } as any);
 

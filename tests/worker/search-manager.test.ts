@@ -1091,6 +1091,33 @@ describe('SearchManager quarantine FTS5 routing', () => {
     expect(telemetry.fallback_reason).toBe('chroma_quarantined');
   });
 
+  it('discards semantic rows when quarantine starts in the date merge', async () => {
+    let available = true;
+    const semantic = observationRow(88);
+    const keyword = observationRow(99);
+    const searchObservations = mock(() => {
+      available = false;
+      return [keyword];
+    });
+    const manager = makeSearchManager({
+      search: { searchObservations },
+      store: { getObservationsByIds: () => [semantic] },
+      chroma: {
+        isCollectionAvailable: () => available,
+        queryChroma: async () => ({ ids: [88], distances: [0.1], metadatas: [
+          { sqlite_id: 88, doc_type: 'observation', created_at_epoch: semantic.created_at_epoch },
+        ] }),
+      },
+    });
+    const telemetry: any = {};
+    const result = await manager.search({
+      query: 'date merge', orderBy: 'date_desc', type: 'observations', format: 'json',
+    }, telemetry);
+    expect(searchObservations).toHaveBeenCalledTimes(2);
+    expect(result.observations.map((row: any) => row.id)).toEqual([99]);
+    expect(telemetry.fallback_reason).toBe('chroma_quarantined');
+  });
+
   it('does not publish a successful Chroma reply after quarantine activates', async () => {
     let healthy = true;
     const observation = observationRow(999, { title: 'authoritative fallback result' });

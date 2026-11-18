@@ -18,7 +18,7 @@ describe('file search preserves explicit date ordering with Chroma', () => {
   function setup(ranking: 'newest' | 'oldest') {
     store = new SessionStore(':memory:');
     const ids = [seed(100), seed(200), seed(300)];
-    const chroma = { queryChroma: async () => ({
+    const chroma = { isCollectionAvailable: () => true, queryChroma: async () => ({
       ids: ranking === 'newest' ? [...ids].reverse() : ids,
       distances: [0.1, 0.2, 0.3], metadatas: [],
     }) };
@@ -57,7 +57,7 @@ describe('file search preserves explicit date ordering with Chroma', () => {
         const ids = [seed(100, 'first'), seed(100, 'second'), seed(100, 'third')];
         const expected = (orderBy === 'date_asc' ? ids : [...ids].reverse()).slice(0, limit);
         for (const ranked of [[], ids, [...ids].reverse()]) {
-          const chroma = { queryChroma: async () => ({ ids: ranked, distances: ranked.map(() => 0.1), metadatas: [] }) };
+          const chroma = { isCollectionAvailable: () => true, queryChroma: async () => ({ ids: ranked, distances: ranked.map(() => 0.1), metadatas: [] }) };
           const search = new SearchOrchestrator(new SessionSearch(store.db), store, chroma as any);
           const result = await search.findByFile('src/file.ts', { project: 'project', limit, orderBy });
           expect(result.observations.map(row => row.id)).toEqual(expected);

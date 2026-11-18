@@ -97,7 +97,7 @@ describe('raw-tool search is an explicit deeper tier', () => {
 
   it('surfaces a SQLite failure in the Chroma-empty supplement instead of probing raw evidence', async () => {
     spyOn(search, 'searchObservations').mockImplementation(() => { throw new Error('fixture read failure'); });
-    manager = new SearchManager(search, store, { queryChroma: async () => ({ ids: [], distances: [], metadatas: [] }) } as any,
+    manager = new SearchManager(search, store, { isCollectionAvailable: () => true, queryChroma: async () => ({ ids: [], distances: [], metadatas: [] }) } as any,
       new FormattingService(), {} as any);
     const probe = spyOn(search, 'searchToolUses');
     await expect(manager.search(args)).rejects.toThrow('fixture read failure');
@@ -105,7 +105,7 @@ describe('raw-tool search is an explicit deeper tier', () => {
   });
 
   it('does not treat a Chroma failure followed by empty keyword results as cleanly empty', async () => {
-    manager = new SearchManager(search, store, { queryChroma: async () => { throw new Error('fixture Chroma unavailable'); } } as any,
+    manager = new SearchManager(search, store, { isCollectionAvailable: () => true, queryChroma: async () => { throw new Error('fixture Chroma unavailable'); } } as any,
       new FormattingService(), {} as any);
     const probe = spyOn(search, 'searchToolUses');
     expect((await manager.search(args)).deep.status).toBe('observation_error');

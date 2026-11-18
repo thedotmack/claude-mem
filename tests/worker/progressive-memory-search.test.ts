@@ -137,6 +137,7 @@ describe('worker Dumb search with real SQLite fixtures', () => {
       .map((title, i) => seed(target, title, `CANDIDATE_BODY_${i}`, recent + i));
     const exactId = ids[5];
     const chroma = {
+      isCollectionAvailable: () => true,
       queryChroma: async () => ({
         ids: ids.map(Number),
         distances: ids.map((_, i) => 0.1 + i * 0.01),

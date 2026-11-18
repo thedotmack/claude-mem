@@ -1,4 +1,4 @@
-import { closeSync, mkdirSync, openSync, statSync, unlinkSync } from 'fs';
+import fs from 'fs';
 import { dirname, join } from 'path';
 import { readJsonFileWithBom, writeJsonFileAtomic } from '../../shared/atomic-json.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
@@ -35,7 +35,7 @@ function emptyEntries(): Record<string, RecoveryHealth> {
 }
 function pathStat(path: string): { exists: boolean; stamp: string } {
   try {
-    const stat = statSync(path);
+    const stat = fs.statSync(path);
     if (!stat.isFile()) throw new Error('Recovery journal component is not a regular file');
     return { exists: true, stamp: `${stat.ino}:${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}` };
   } catch (error) {
@@ -108,6 +108,9 @@ function getCache(): Cache {
   const next: Cache = { path, entries: emptyEntries(), unreadable: false, diskSignature: currentSignature };
   try {
     next.entries = loadFromDisk(path);
+    if (signature(path) !== currentSignature) {
+      throw new Error('Recovery journal changed during read');
+    }
   } catch (error) {
     next.unreadable = true;
     logger.error('CHROMA_SYNC', 'Recovery journal unreadable or transition lock held; refusing Chroma operations',
@@ -124,14 +127,14 @@ function getCache(): Cache {
  * operator verifies the collection and repairs the journal.
  */
 function withJournalLock(path: string, action: () => void): void {
-  mkdirSync(dirname(path), { recursive: true });
+  fs.mkdirSync(dirname(path), { recursive: true });
   const lockPath = path + '.lock';
-  const handle = openSync(lockPath, 'wx', 0o600);
+  const handle = fs.openSync(lockPath, 'wx', 0o600);
   try {
     action();
   } finally {
-    closeSync(handle);
-    unlinkSync(lockPath);
+    fs.closeSync(handle);
+    fs.unlinkSync(lockPath);
   }
 }
 function writeJournal(path: string, entries: Record<string, RecoveryHealth>): void {
@@ -163,19 +166,19 @@ function transition(collection: string, value: RecoveryHealth | null): void {
       if (value) onDisk[collection] = value;
       else delete onDisk[collection];
       writeJournal(current.path, onDisk);
-      current.entries = onDisk;
+      // The next reader must load the committed generation. A competing
+      // worker can publish again as soon as we release the lock.
+      cache = null;
     });
   } catch (error) {
     // Never assume the on-disk state is safe after a failed journal
     // transaction; even a successful delete may now be unconfirmed to us.
     current.unreadable = true;
+    try { current.diskSignature = signature(current.path); } catch { current.diskSignature = ''; }
+    cache = current;
     logger.error('CHROMA_SYNC', 'Recovery transition failed; vector operations blocked',
       { collection, state: value?.state ?? 'READY' }, error instanceof Error ? error : new Error(String(error)));
     throw error;
-  } finally {
-    // A subsequent reader (including another worker) reloads the published
-    // journal state rather than carrying a stale snapshot indefinitely.
-    try { current.diskSignature = signature(current.path); } catch { current.diskSignature = ''; }
   }
   logger.warn('CHROMA_SYNC', 'Collection recovery state transition', {
     collection, from: before, to: value?.state ?? 'READY',

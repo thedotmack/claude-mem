@@ -18,7 +18,7 @@ describe('folder pages count direct children', () => {
     it(`forwards URL pagination through actual ${withChroma ? 'hybrid' : 'SQLite'} orchestration`, async () => {
       store = new SessionStore(':memory:'); const search = new SessionSearch(store.db);
       const second = seed('src/second.ts', 100); seed('src/nested/file.ts', 101); seed('src/first.ts', 102);
-      const chroma = withChroma ? { queryChroma: async () => ({ ids: [], distances: [], metadatas: [] }) } : null;
+      const chroma = withChroma ? { isCollectionAvailable: () => true, queryChroma: async () => ({ ids: [], distances: [], metadatas: [] }) } : null;
       const orchestrator = new SearchOrchestrator(search, store, chroma as any);
       const page = await orchestrator.findByFile('src', { project: 'project', isFolder: true, limit: '1', offset: '1' });
       expect(page.observations.map(row => row.id)).toEqual([second.observation]);

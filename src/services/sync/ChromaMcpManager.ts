@@ -1525,7 +1525,7 @@ export class ChromaMcpManager {
         throw new ChromaUnavailableError(message, cause);
       }
 
-      logger.warn('CHROMA_MCP', `Transport error during "${toolName}", reconnecting and retrying once`, {
+      logger.warn('CHROMA_MCP', `Transport error during "${toolName}", disposing disconnected transport`, {
         error: transportError instanceof Error ? transportError.message : String(transportError)
       });
       // A lost transport is a connection failure even when this call's retry
@@ -1546,6 +1546,13 @@ export class ChromaMcpManager {
         await this.waitForUnexpectedCloseCleanup();
       } else {
         await this.disposeCurrentSubprocess();
+      }
+
+      // The server may already have deleted this collection. Let recovery
+      // quarantine the uncertain outcome instead of replaying the request.
+      if (toolName === 'chroma_delete_collection') {
+        throw new ChromaUnavailableError('Collection deletion outcome is unconfirmed after transport loss',
+          transportError instanceof Error ? transportError : undefined);
       }
 
       try {

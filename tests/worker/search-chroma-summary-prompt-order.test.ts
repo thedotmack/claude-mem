@@ -9,6 +9,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 function chromaRanking(ids: number[], docType: string, epochOf: (id: number) => number) {
   return {
+    isCollectionAvailable: () => true,
     async queryChroma() {
       return {
         ids,

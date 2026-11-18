@@ -27,7 +27,7 @@ for (const filter of ['concepts', 'files'] as const) {
       const object = store.importObservation({ ...row, title: 'Object metadata',
         concepts: '{"tag":"problem-solution"}', files_read: '{"path":"src/auth.ts"}', created_at_epoch: epoch - 1000 }).id;
       const ids = [object, malformed, legacyConcept, good];
-      const chroma = { queryChroma: async () => ({ ids, distances: ids.map(() => 0.1),
+      const chroma = { isCollectionAvailable: () => true, queryChroma: async () => ({ ids, distances: ids.map(() => 0.1),
         metadatas: ids.map(sqlite_id => ({sqlite_id, doc_type: 'observation', project: 'project', platform_source: 'claude', created_at_epoch: epoch})),
       }) } as unknown as ChromaSync;
       const sqlite = new SessionSearch(store.db);

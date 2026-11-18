@@ -172,6 +172,7 @@ describe('SearchManager keyword-read delegation', () => {
       created_at: new Date().toISOString(), created_at_epoch: Date.now(),
     };
     const chromaSync = {
+      isCollectionAvailable: () => true,
       queryChroma: mock(() => Promise.resolve({
         ids: [observation.id], distances: [0.1],
         metadatas: [{ sqlite_id: observation.id, doc_type: 'observation', project: 'searchproj', created_at_epoch: observation.created_at_epoch }],

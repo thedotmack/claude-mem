@@ -61,7 +61,7 @@ describe('semantic search identities across SQLite tables', () => {
       type: 'discovery', title: 'A current semantic finding', subtitle: null,
       narrative: 'Meaning-related fact', facts: [], concepts: [], files_read: [], files_modified: [],
     }, 1, 0, epoch);
-    const chroma = { queryChroma: async () => ({ ids: [observation.id, observation.id], distances: [0.1, 0.2], metadatas: [
+    const chroma = { isCollectionAvailable: () => true, queryChroma: async () => ({ ids: [observation.id, observation.id], distances: [0.1, 0.2], metadatas: [
       { sqlite_id: observation.id, doc_type: 'user_prompt', created_at_epoch: epoch - 180 * 86400000 },
       { sqlite_id: observation.id, doc_type: 'observation', created_at_epoch: epoch },
     ] }) } as unknown as ChromaSync;
