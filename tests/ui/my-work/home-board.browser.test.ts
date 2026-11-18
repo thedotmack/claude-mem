@@ -148,10 +148,12 @@ beforeAll(async () => {
       // Twelve kept areas: past the board's search threshold (eight) and its first four.
       const areas = Array.from({ length: 12 }, (_, index) => ({ id: 'fa-' + index, name: (index % 2 ? 'Viewer ' : 'Docs ') + index, goal: null,
         status: 'kept', ownerRank: index + 1, priorityRank: null, source: 'owner', mergedInto: null, evidence: null, timesAsked: null, latestAt: null, quotes: [], asks: [] }));
+      // Every area a press opened, in order, so a test can tell a press that opened its card from one that did nothing.
+      window.openedAreas = [];
       function Board() {
         const [expandAllOn, setExpandAllOn] = React.useState(0);
         window.showAllAreas = () => setExpandAllOn((value) => value + 1);
-        return <FocusOverview areas={areas} requests={[]} onOpenArea={ignore} artwork={new URLSearchParams(location.search).get('artwork') ?? 'compact'} onArtworkChange={ignore} expandAllOn={expandAllOn} />;
+        return <FocusOverview areas={areas} requests={[]} onOpenArea={(id) => window.openedAreas.push(id)} artwork={new URLSearchParams(location.search).get('artwork') ?? 'compact'} onArtworkChange={ignore} expandAllOn={expandAllOn} />;
       }
       root.render(<Providers><main style={{ padding: 16, maxWidth: 1200 }}><Board /></main></Providers>);
     } else if (view === 'suggested') {
@@ -222,11 +224,18 @@ beforeAll(async () => {
   `, ['--loader:.webp=empty', '--loader:.css=empty']);
   // The stylesheet's @font-face rules ask for ./files/<name>.woff2 (Geist and Geist Mono); widths depend on the font,
   // so the real files are served (myWorkFontResponse).
+  // The focus board's own stylesheet (plain CSS, no Tailwind), after the app's as pages/my-work.tsx imports it after
+  // main.tsx's index.css. Only the board view loads it: it lays out the whole card and its stretched button, which the
+  // board's press test needs, while the other views measure the page without it.
+  const boardStyles = readFileSync(resolve(app, 'src/components/focus-overview.css'), 'utf8');
   server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (path === '/') return htmlResponse('<meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/app.css"><div id="root"></div><script src="/fixture.js"></script>');
+    const url = new URL(request.url);
+    const path = url.pathname;
+    const boardStylesheet = url.searchParams.get('view') === 'board' ? '<link rel="stylesheet" href="/focus-overview.css">' : '';
+    if (path === '/') return htmlResponse(`<meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/app.css">${boardStylesheet}<div id="root"></div><script src="/fixture.js"></script>`);
     if (path === '/fixture.js') return scriptResponse(bundle);
     if (path === '/app.css') return new Response(styles, { headers: { 'Content-Type': 'text/css' } });
+    if (path === '/focus-overview.css') return new Response(boardStyles, { headers: { 'Content-Type': 'text/css' } });
     const font = myWorkFontResponse(path);
     if (font) return font;
     if (path === '/fixture-ready') { markReady(); return new Response('ready'); }
@@ -694,4 +703,47 @@ const pressTryAgain = (name: string) => page!.evaluate(`[...window.lineOf(${JSON
     expect(fixtureErrors).toEqual([]);
   } finally { await closeFixture(); }
   // About 1s here (2026-11-16); 60s for a slow CI runner.
+}, 60_000);
+
+/**
+ * A real mouse press (pointer down, then up, at one point, as a person clicks) on the middle of the first focus card's
+ * part `part`; false when the card does not draw that part. A press, not element.click(): the page's styles change
+ * between down and up (:active), and the click only reaches the card's button when both land on it.
+ */
+async function pressFirstCard(part: string): Promise<boolean> {
+  const point = await page!.evaluate(`(() => {
+    const element = document.querySelector('.focus-area-card ${part}');
+    if (!element) return null;
+    const box = element.getBoundingClientRect();
+    return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+  })()`);
+  if (!point) return false;
+  await page!.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y, button: 'none', buttons: 0 });
+  await page!.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', buttons: 1, clickCount: 1 });
+  await page!.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', buttons: 0, clickCount: 1 });
+  await page!.settle();
+  return true;
+}
+
+(chromeExecutablePath ? it : it.skip)('a press anywhere on a focus card opens its area: the name, its goal, its counts, its picture and its arrow, at each artwork size', async () => {
+  for (const artwork of ['compact', 'off', 'full'] as const) {
+    await openFixture(`source=sample&view=board&artwork=${artwork}`, { width: 1200, height: 900 });
+    try {
+      const firstArea = await page!.evaluate(`document.querySelector('.focus-area-card .focus-area-target').textContent`);
+      expect(firstArea).toBe('Docs 0');
+      const pressed: Record<string, string[]> = {};
+      for (const part of ['.focus-area-target', '.focus-area-goal', '.focus-area-signals span', '.focus-artwork', '.focus-area-chevron']) {
+        const before = await page!.evaluate('window.openedAreas.length');
+        if (!await pressFirstCard(part)) continue;
+        pressed[part] = await page!.evaluate(`window.openedAreas.slice(${before})`);
+      }
+      // Every part the card draws opened its area, once per press; Off draws no picture.
+      const parts = artwork === 'off'
+        ? ['.focus-area-target', '.focus-area-goal', '.focus-area-signals span', '.focus-area-chevron']
+        : ['.focus-area-target', '.focus-area-goal', '.focus-area-signals span', '.focus-artwork', '.focus-area-chevron'];
+      expect({ artwork, pressed }).toEqual({ artwork, pressed: Object.fromEntries(parts.map((part) => [part, ['fa-0']])) });
+      expect(fixtureErrors).toEqual([]);
+    } finally { await closeFixture(); }
+  }
+  // About 3s here, three artwork sizes (2026-11-18); 60s for a slow CI runner.
 }, 60_000);
