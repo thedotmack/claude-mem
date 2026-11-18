@@ -121,7 +121,8 @@ function InstallOptions({ install, onInstall }: { install: SetupInstallState; on
 
         <Collapsible className="panel install-options">
           <CollapsibleFoldTrigger count={summary}>{t('Skills and preferences')}</CollapsibleFoldTrigger>
-          <CollapsibleContent className="install-options-body">
+          {/* Kept in the markup while folded, as the closed <details> did. */}
+          <CollapsibleContent forceMount className="install-options-body">
             <fieldset disabled={sending || catalog.skillsLocked}>
               <legend>{t('Bundled skills')}</legend>
               <p className="install-help">{t('Choose which claude-mem skills your agents can discover. You can change these later.')}</p>
