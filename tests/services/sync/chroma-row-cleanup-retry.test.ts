@@ -182,7 +182,10 @@ afterEach(() => {
   ChromaSyncState.resetCacheForTests();
   if (previousDataDir === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
   else process.env.CLAUDE_MEM_DATA_DIR = previousDataDir;
-  rmSync(dataDir, { recursive: true, force: true });
+  // SQLite statement finalizers may retain Windows file handles until GC.
+  // Force finalization before removing the isolated test directory.
+  if (process.platform === 'win32') Bun.gc(true);
+  rmSync(dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 describe('post-delete Chroma cleanup retry (#5664)', () => {

@@ -222,6 +222,11 @@ mock.module('../../../src/utils/logger.js', () => ({
 
 // Track tree-kill invocations and the transport whose subprocess was killed.
 const killTreeCalls: number[] = [];
+// On Windows tree termination uses taskkill (not process.kill); the fake-PID
+// harness can assert the manager delegated to killProcessTree, while the
+// kill-process-tree unit tests validate taskkill and PID identity separately.
+const observedKillRequests = (): number[] => process.platform === 'win32'
+  ? killProcessTreeCalls.map(call => call.pid) : killTreeCalls;
 const deadPids = new Set<number>();
 let execSyncCalls = 0;
 const prewarmSpawnCalls: Array<{
@@ -862,7 +867,7 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     expect(transportInstances.length).toBe(2);
     // The first transport's pid must have been signaled by killProcessTree
     // before the second transport spawned.
-    expect(killTreeCalls).toContain(firstPid);
+    expect(observedKillRequests()).toContain(firstPid);
   });
 
   it('sweeps orphaned chroma-mcp data-dir holders under the writer lock on every connect (#4608)', async () => {
@@ -964,7 +969,7 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
 
     // After stop(), every internal handle should be cleared and the prior
     // subprocess tree must have been signaled.
-    expect(killTreeCalls).toContain(subprocessPid);
+    expect(observedKillRequests()).toContain(subprocessPid);
 
     // A subsequent ensureConnected must spawn a fresh transport (not reuse
     // a stale one).
@@ -1129,7 +1134,7 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     await expect(pendingCall).rejects.toThrow('connection cancelled during shutdown');
     await stopPromise;
 
-    expect(killTreeCalls).toContain(prewarmChild.pid);
+    expect(observedKillRequests()).toContain(prewarmChild.pid);
     expect(prewarmChild.killed).toBe(true);
     expect(transportInstances.length).toBe(0);
     expect(transportCount).toBe(0);
@@ -1285,7 +1290,7 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     expect(prewarmSpawnCalls[0].args).toContain('--help');
     expect(transportInstances.length).toBe(0);
     expect(transportCount).toBe(0);
-    expect(killTreeCalls).toContain(prewarmSpawnCalls[0].child.pid);
+    expect(observedKillRequests()).toContain(prewarmSpawnCalls[0].child.pid);
 
     const warning = logEntries.find(entry => entry.message === 'chroma-mcp uvx prewarm failed');
     expect(warning?.meta).toMatchObject({
