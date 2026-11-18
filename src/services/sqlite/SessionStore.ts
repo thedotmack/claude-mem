@@ -388,7 +388,7 @@ export class SessionStore {
       if (typeof filePath === 'string' && filePath.length > 0) paths.add(filePath);
     }
     if (paths.size === 0) return;
-    const insert = this.db.prepare(
+    const insert = this.cachedStatement(
       'INSERT OR IGNORE INTO observation_files(path, observation_id) VALUES (?, ?)',
     );
     for (const filePath of paths) insert.run(filePath, observationId);
@@ -2382,7 +2382,7 @@ export class SessionStore {
     toolUseIds: string[];
   }): void {
     if (!input.contentSessionId) throw new Error('Committed tool uses require a content session');
-    const insert = this.db.prepare(`
+    const insert = this.cachedStatement(`
       INSERT OR IGNORE INTO committed_observation_tool_uses
       (platform_source, content_session_id, tool_use_id, committed_at_epoch_ms)
       VALUES (?, ?, ?, ?)
@@ -4465,7 +4465,7 @@ export class SessionStore {
     // Context is platform-scoped, so Tier-0 must be too: a Codex observation
     // merged into a Claude row would vanish from Codex context.
     const sessionPlatform = normalizePlatformSource(
-      (this.db.prepare('SELECT platform_source FROM sdk_sessions WHERE memory_session_id = ? LIMIT 1')
+      (this.cachedStatement('SELECT platform_source FROM sdk_sessions WHERE memory_session_id = ? LIMIT 1')
         .get(memorySessionId) as { platform_source: string | null } | undefined)?.platform_source
     );
 
@@ -4474,7 +4474,7 @@ export class SessionStore {
       const mergedIntoExisting: boolean[] = [];
       const insertedObservationIds: number[] = [];
 
-      const obsStmt = this.db.prepare(`
+      const obsStmt = this.cachedStatement(`
         INSERT INTO observations
         (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
          files_read, files_modified, prompt_number, discovery_tokens, agent_type, agent_id, content_hash, created_at, created_at_epoch,
@@ -4483,7 +4483,7 @@ export class SessionStore {
         ON CONFLICT(memory_session_id, content_hash) DO NOTHING
         RETURNING id
       `);
-      const lookupExistingStmt = this.db.prepare(
+      const lookupExistingStmt = this.cachedStatement(
         'SELECT id, type, subtitle, facts, concepts FROM observations WHERE memory_session_id = ? AND content_hash = ?'
       );
       type ExistingObservation = ObservationDetails & { id: number };
@@ -4502,7 +4502,7 @@ export class SessionStore {
           const previousDetailsHash = computeObservationDetailsHash(previousHash, observation);
           // Both old hashes are ambiguous. Reuse only a complete content match,
           // never restore an old base hash that could select another variant.
-          const previous = (this.db.prepare(`SELECT id, type, subtitle, facts, concepts FROM observations
+          const previous = (this.cachedStatement(`SELECT id, type, subtitle, facts, concepts FROM observations
             WHERE memory_session_id = ? AND content_hash IN (?, ?)
               AND title IS ? AND COALESCE(narrative, '') = ?
             ORDER BY content_hash = ? DESC`)
@@ -4555,7 +4555,7 @@ export class SessionStore {
           // They still dedupe exact content, but must not collapse by title alone.
           const canonical = options.skipTitleDedup ? null : findTier0Canonical(this.db, project, titleNormKey, observation.title);
           if (canonical) {
-            this.db.prepare('UPDATE observations SET occurrence_count = occurrence_count + 1 WHERE id = ?').run(canonical.id);
+            this.cachedStatement('UPDATE observations SET occurrence_count = occurrence_count + 1 WHERE id = ?').run(canonical.id);
             reinforceObservation(this.db, canonical.id, reconfirmedOn);
             observationIds.push(canonical.id);
             mergedIntoExisting.push(true);
@@ -4628,7 +4628,7 @@ export class SessionStore {
         const filesEdited = summary.files_edited ?? rolledUp.files_edited;
 
         const existingSummary = promptNumber
-          ? (this.db.prepare(
+          ? (this.cachedStatement(
               `SELECT id, request, investigated, learned, completed, next_steps,
                       files_read, files_edited, notes, discovery_tokens, sync_rev
                FROM session_summaries
@@ -4664,7 +4664,7 @@ export class SessionStore {
           const mergedTokens = Math.max(existingSummary.discovery_tokens ?? 0, discoveryTokens);
           const nextRev = incrementCanonicalDecimal(existingSummary.sync_rev || '0');
 
-          this.db.prepare(`
+          this.cachedStatement(`
             UPDATE session_summaries SET
               request = ?, investigated = ?, learned = ?, completed = ?, next_steps = ?,
               files_read = ?, files_edited = ?, notes = ?, discovery_tokens = ?,
@@ -4699,7 +4699,7 @@ export class SessionStore {
           summaryId = existingSummary.id;
           summaryUpdated = true;
         } else {
-          const summaryStmt = this.db.prepare(`
+          const summaryStmt = this.cachedStatement(`
             INSERT INTO session_summaries
             (memory_session_id, project, request, investigated, learned, completed,
              next_steps, files_read, files_edited, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
@@ -5233,7 +5233,8 @@ export class SessionStore {
    * requeuePromptSync bumps and enqueues once per prompt of a session on every
    * registration. A fresh `prepare()` per call made a native statement that
    * lived until GC finalized it, and on long sessions they piled up until
-   * prepare() itself ran out of memory (#3537). bun's own `db.query()` cache is
+   * prepare() itself ran out of memory (#3537). storeObservations runs once
+   * per observer turn, so its statements are cached too. bun's own `db.query()` cache is
    * shared by every caller on the connection and bounded
    * (Database.MAX_QUERY_CACHE_SIZE, 20 by default), so whether a statement
    * stays cached there depends on what else ran.

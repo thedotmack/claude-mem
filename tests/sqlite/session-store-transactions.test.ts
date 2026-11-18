@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 
 function obs(overrides: Partial<Parameters<SessionStore['storeObservations']>[2][number]> = {}) {
@@ -358,5 +358,29 @@ describe('SessionStore.storeObservations', () => {
 
     const row = store.db.prepare('SELECT files_read FROM session_summaries WHERE id = ?').get(first.summaryId) as any;
     expect(JSON.parse(row.files_read)).toEqual(['legacy/path.ts', 'b.ts']);
+  });
+
+  it('prepares a turn\'s statements once, not on every stored turn', () => {
+    const mem = session('mem-cached-statements');
+    const turn = (promptNumber: number, title: string, toolUseId: string) => store.storeObservations(
+      mem, 'project', [obs({ title, narrative: title, files_read: ['a.ts'] })], summary(), promptNumber, 0,
+      undefined, undefined, {
+        committedToolUses: { platformSource: 'claude', contentSessionId: 'content-mem-cached-statements', toolUseIds: [toolUseId] },
+      });
+    // A first and a repeated stop reach the summary insert and the summary update.
+    turn(1, 'First', 'toolu_1');
+    turn(1, 'First', 'toolu_2');
+
+    const prepareSpy = spyOn(store.db, 'prepare');
+    try {
+      turn(2, 'Second', 'toolu_3');
+      turn(2, 'Third', 'toolu_4');
+      const turnSql = prepareSpy.mock.calls.map(([sql]) => String(sql)).filter(sql =>
+        /committed_observation_tool_uses|observation_files|session_summaries|INSERT INTO observations|FROM sdk_sessions/.test(sql));
+      expect(turnSql).toEqual([]);
+    } finally {
+      prepareSpy.mockRestore();
+    }
+    expect(store.hasCommittedToolUse('claude', 'content-mem-cached-statements', 'toolu_4')).toBe(true);
   });
 });
