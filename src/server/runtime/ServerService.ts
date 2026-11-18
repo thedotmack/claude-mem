@@ -83,12 +83,18 @@ class ServerRuntimeInfoRoutes implements RouteHandler {
     // count, last embedding error).
     app.get('/v1/info', async (_req, res) => {
       const queueLanes = await collectQueueLaneMetrics(this.graph);
-      const vectorSearch = await getVectorSearchStatus(this.graph.postgres.pool).catch(() => ({
-        available: false,
-        model: '',
-        observationsWithoutVectors: null,
-        lastEmbedError: null,
-      }));
+      const vectorSearch = await getVectorSearchStatus(this.graph.postgres.pool).catch((error: unknown) => {
+        // The response stays free of the driver error text (see above); the
+        // cause goes to the server log, where the operator can read it.
+        const err = error instanceof Error ? error : new Error(String(error));
+        logger.warn('SYSTEM', 'Vector search status could not be read for /v1/info', {}, err);
+        return {
+          available: false,
+          model: '',
+          observationsWithoutVectors: null,
+          lastEmbedError: null,
+        };
+      });
       res.json({
         name: 'claude-mem-server',
         runtime: SERVER_RUNTIME,

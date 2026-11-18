@@ -144,8 +144,10 @@ export function registerAutoClear(on: On): void {
       // Judge the result by the row as kept: a later hook in the chain may have changed its content.
       const note = await controller.onToolCallEnd(toolCallEnd({ ...e, message: stored.message }));
       if (note) await $.session.append({ message: { type: 'user', content: [{ type: 'text', text: note }] } });
-    } catch {
-      // Auto-clear never gets in the way of a tool result being kept.
+    } catch (error) {
+      // Auto-clear never gets in the way of a tool result being kept, but it
+      // says why Claude may not have been asked to save, so the clear may not happen.
+      $.ui.log(`claude-mem auto-clear could not check this tool result or hand Claude its request to save the work state, so this clear may not happen: ${error instanceof Error ? error.message : String(error)}`);
     }
     return stored;
   }).catch(async ($, e, next) => next(e));

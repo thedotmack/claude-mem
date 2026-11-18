@@ -109,6 +109,29 @@ describe('ServerService', () => {
     expect(body.vectorSearch.error).toBeUndefined();
   });
 
+  it('logs why /v1/info could not read vector search, while the response leaves the error out', async () => {
+    service = new ServerService({
+      graph: createStubGraph(),
+      port: 0,
+      host: '127.0.0.1',
+      persistRuntimeState: false,
+    });
+    await service.start();
+    const address = service.getRuntimeState();
+
+    // The stub pool refuses every query, so the vector search probe fails.
+    const info = await fetch(`http://127.0.0.1:${address.port}/v1/info`);
+    expect(info.status).toBe(200);
+    const body = await info.json();
+    expect(body.vectorSearch.available).toBe(false);
+    expect(JSON.stringify(body)).not.toContain('stub pool');
+    const vectorWarnings = (logger.warn as unknown as ReturnType<typeof spyOn>).mock.calls
+      .filter(call => call[1] === 'Vector search status could not be read for /v1/info');
+    expect(vectorWarnings).toHaveLength(1);
+    expect(vectorWarnings[0][0]).toBe('SYSTEM');
+    expect((vectorWarnings[0][3] as Error).message).toContain('stub pool: query not supported in this test');
+  });
+
   // Phase 4 integration test: Postgres-backed v1 events route must enforce
   // auth, write the event row, create the outbox row, and respond with both
   // event and generationJob. Skipped when no test Postgres URL is set so the
