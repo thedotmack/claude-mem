@@ -14,8 +14,8 @@ export interface SetupInstallSelection {
   email?: string;
   note?: string;
   /**
-   * Served views never carry the email or note (the worker's localhost reads are not private).
-   * True there when one is stored; the page sends it back to keep that stored email on a retry.
+   * Older browser installs could save an email and note. The worker redacts both from localhost reads.
+   * The page can send this flag back to keep the previously entered signup on a retry.
    */
   emailProvided?: boolean;
   claudeModel?: string;
@@ -33,10 +33,10 @@ export interface SetupInstallSelection {
 export const SETUP_DSH_PROFILE_MAX_CHARACTERS = 200;
 
 /**
- * The longest note ("Anything you'd like us to know?", sent with the product-updates signup) the install takes: one
- * definition for the worker's install check (WorkViewRoutes.ts `setupInstallSelectionBody`) and the setup page's box,
- * which cuts a longer paste to it and says so. A request-size and abuse cap on a loopback write, the same 2,000
- * characters the install route allows its other free text (the installer's error reports).
+ * Maximum length of a note submitted by an older browser installer.
+ * A pending install can still carry its original email and note after a worker update.
+ * The worker keeps them private during a retry and clears them from setup state
+ * once the installer reports success.
  */
 export const SETUP_INSTALL_NOTE_MAX_CHARACTERS = 2000;
 
@@ -48,7 +48,7 @@ export interface SetupInstallCatalog {
   telemetryLocked?: boolean;
   skillsLocked?: boolean;
   emailEnabled?: boolean;
-  /** An email signup is already saved in settings; its address is never put in the catalog. */
+  /** Older catalogs indicated that a signup was saved. Fresh catalogs disable email and omit this flag. */
   signupSaved?: boolean;
 }
 

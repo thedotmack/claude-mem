@@ -868,11 +868,10 @@ export function browserInstallCatalog(options: InstallOptions, reinstall: boolea
       claudeModel,
       ...(options.dshProfile ? { dshProfile: options.dshProfile } : {}),
     },
-    // The catalog is served to localhost pages, so it says only that a signup exists, never its address.
-    signupSaved: readStoredSignup() !== null,
     telemetryLocked: !!process.env.CI || consent.source === 'DO_NOT_TRACK' || consent.source === 'env',
     skillsLocked: process.env.CLAUDE_MEM_SKILLS_DISABLED !== undefined,
-    emailEnabled: !process.env.CI && String(process.env.CLAUDE_MEM_ONLINE_OPTIN ?? '').trim().toLowerCase() !== 'false',
+    // Older setup pages also honor this flag. The terminal owns the signup.
+    emailEnabled: false,
   };
 }
 
@@ -881,7 +880,8 @@ function browserModelChoice(selection: SetupInstallSelection, catalog: SetupInst
   return selection.claudeModel && selection.claudeModel !== catalog.defaults.claudeModel ? selection.claudeModel : current;
 }
 
-async function applyBrowserEmail(selection: SetupInstallSelection, version: string): Promise<void> {
+/** Finish an opt-in already entered into a pending setup from an older installer. */
+async function applyLegacyBrowserEmail(selection: SetupInstallSelection, version: string): Promise<void> {
   const email = selection.email?.trim();
   if (!email) return;
   const note = selection.note?.trim() ?? '';
@@ -3298,8 +3298,8 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   });
   const resumedState = resumeSetup ? readSetupState() : null;
   if (resumeSetup && !resumedState?.install) throw new Error('There is no deferred setup to resume.');
+  if (!options.update && !deferSetup && !resumeSetup) await promptEmailOptIn(version);
   const installCatalog = resumedState?.install?.catalog ?? (browserSetup ? browserInstallCatalog(options, alreadyInstalled) : null);
-  if (!browserSetup && !options.update) await promptEmailOptIn(version);
 
   if (alreadyInstalled && !browserSetup && !options.update) {
     if (process.stdin.isTTY) {
@@ -3604,7 +3604,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
                 if (!selection.disableAutoMemory) enableClaudeAutoMemory();
               }
               if (!installCatalog!.telemetryLocked) recordTelemetryDecision(selection.telemetryEnabled);
-              if (installCatalog!.emailEnabled) await applyBrowserEmail(selection, version);
+              if (resumedState?.install?.catalog.emailEnabled) await applyLegacyBrowserEmail(selection, version);
             },
           },
           applyChoice: async (choice, state) => {

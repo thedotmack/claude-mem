@@ -348,7 +348,7 @@ const setupScanConsentBody = z.object({ upload: z.boolean(), agents: z.array(z.e
 const setupScanPreferencesBody = z.object({ improveProduct: z.boolean() }).strict();
 // Request-size and abuse caps on loopback writes, set about twice what the installer offers today (measured
 // 2026-11-11: 19 agents in ide-detection.ts, 30 bundled skills, the longest id 17 characters). The email cap is RFC 5321's 254-character path
-// limit; the note's is SETUP_INSTALL_NOTE_MAX_CHARACTERS (setup-install.ts, which the setup page's box takes too), the
+// limit; the legacy signup note's is SETUP_INSTALL_NOTE_MAX_CHARACTERS (setup-install.ts), the
 // same 2,000 characters as the installer's error reports below.
 const setupInstallId = z.string().min(1).max(80);
 const setupInstallSelectionBody = z.object({
