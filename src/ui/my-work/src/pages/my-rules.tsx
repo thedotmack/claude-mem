@@ -540,7 +540,7 @@ function QueueRow({ rule, onOpen }: { rule: OwnerRule; onOpen: () => void }) {
   const strength = strengthOf(rule)
   return (
     <Button variant="bare" onClick={onOpen} data-slot="queue-row" data-rule-id={rule.id}
-      className="flex min-h-9 w-full items-center gap-3 rounded-md px-2 py-1 text-sm hover-enabled:bg-surface">
+      className="flex w-full items-center gap-3 rounded-md px-2 py-1 text-sm hover-enabled:bg-surface md:not-pointer-coarse:min-h-9">
       <span className={cn('flex', strength === 'strong' ? 'text-foreground' : 'text-muted-foreground')}><StrengthBars rule={rule} /></span>
       <span className="min-w-0 flex-1 truncate">{ruleLine(rule)}</span>
       <span aria-hidden="true" className="mono-number shrink-0 text-xs text-muted-foreground">{interpolate(t('{count}×'), { count: rule.timesSeen })}</span>
@@ -943,7 +943,9 @@ function ScopeChips({ countsByScope, waiting }: { countsByScope: Map<string, Sco
       <nav aria-label={t("Scopes")} data-slot="rule-scope-chips" className="sticky top-[76px] z-20 -mx-4 border-b bg-background/95 py-2 backdrop-blur lg:hidden">
         <div ref={rowRef} className={cn('flex gap-2 overflow-x-auto px-4 [scrollbar-width:none]', scrollCueMask(cue))} data-more-before={cue.before || undefined} data-more-after={cue.after || undefined}>
         {waiting > 0 && (
-          <Button variant="outline" className="shrink-0 rounded-full border-attention-border text-attention-foreground" onClick={() => scrollToId('decide')}>
+          // The edge is the attention words' own colour: --attention-border is a soft tint (1.4-1.8:1), under the 3:1
+          // a control edge needs (rule 7, G12).
+          <Button variant="outline" className="shrink-0 rounded-full border-attention-foreground text-attention-foreground" onClick={() => scrollToId('decide')}>
             <span aria-hidden="true" className="size-1.5 rounded-full bg-attention-foreground" />{interpolate(t('Decide · {count}'), { count: waiting })}
           </Button>
         )}
