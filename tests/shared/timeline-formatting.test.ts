@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach } from 'bun:test';
+import path from 'node:path';
 
 import {
   extractFirstFile,
@@ -17,6 +18,13 @@ describe('toRelativePath', () => {
 
   it('keeps files inside the project relative to it', () => {
     expect(toRelativePath(`${cwd}/src/index.ts`, cwd, home)).toBe('src/index.ts');
+  });
+
+  it('uses forward slashes for native nested project paths on every OS', () => {
+    const root = path.parse(process.cwd()).root;
+    const project = path.join(root, 'Users', 'test', 'project');
+    const file = path.join(project, 'src', 'components', 'Card.tsx');
+    expect(toRelativePath(file, project, path.join(root, 'Users', 'test'))).toBe('src/components/Card.tsx');
   });
 
   it('labels files outside the project but under home as ~/...', () => {
@@ -46,6 +54,13 @@ describe('extractFirstFile', () => {
     const result = extractFirstFile(filesModified, cwd);
 
     expect(result).toBe('src/app.ts');
+  });
+
+  it('normalizes nested modified-file labels for timeline display', () => {
+    const root = path.parse(process.cwd()).root;
+    const project = path.join(root, 'Users', 'test', 'project');
+    const file = path.join(project, 'src', 'components', 'Card.tsx');
+    expect(extractFirstFile(JSON.stringify([file]), project)).toBe('src/components/Card.tsx');
   });
 
   it('should fall back to files_read when modified is empty', () => {

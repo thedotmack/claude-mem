@@ -163,7 +163,9 @@ export function toRelativePath(filePath: string, cwd: string, homeDir: string = 
   }
   const fromCwd = path.relative(cwd, filePath);
   if (isInside(fromCwd)) {
-    return fromCwd;
+    // Timeline labels are display text, not filesystem paths. Keep them stable
+    // across Windows and POSIX, where path.relative uses different separators.
+    return fromCwd.split(path.sep).join('/');
   }
   if (homeDir) {
     const fromHome = path.relative(homeDir, filePath);
