@@ -739,9 +739,12 @@ function focusRequestIndex(ledger) {
  * live area (Other and done areas included) is the owner's and never queued; once its area is dismissed it no longer
  * binds (buildFocusAreas), and the router's placement must stand on its own. A router basis is compared only on the
  * device that wrote it: another device decided on its own copy of the request, and comparing would re-place every
- * request on every device in turn. Placements written without a basis (a seed) count as current, and so does one whose
- * request has changed only from its placeholder title to a written one: a name from section 3 is not a change, and
- * treating it as one placed every named request again (133 of 136 on a copy of a real ledger, Nov 18). */
+ * request on every device in turn. Placements written without a basis (a seed) count as current, and so does one made
+ * while the request showed the placeholder placeholderTitleFromAsk gives (the judge's title): naming it is not a change,
+ * and treating it as one placed every named request again (133 of 136 on a copy of a real ledger, Nov 18). A copy
+ * worded another way ("Figure it out." for "figure it out") was hashed as written, and once it is named nothing holds
+ * those words (a placement keeps only the hash; sync replaces each request with its portable fields), so that request
+ * is placed once more after naming. None of the 136 was one. */
 function focusDue(ledger, focus, localDeviceId, requests) {
   return Object.keys(ledger.groups.groups).filter((groupId) => {
     const placement = focus.placementsByAnchor.get(ledger.groups.groups[groupId].anchor);
