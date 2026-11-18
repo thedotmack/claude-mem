@@ -987,3 +987,61 @@ it.skipIf(!chromeExecutablePath)('a scope’s “review above” shows the rule 
     await closePage();
   }
 }, TEST_LIMIT_MS);
+
+/** WCAG contrast of two computed `rgb(r, g, b)` colours: the formula token-contrast.test.ts measures tokens with. */
+function contrastOfComputed(first: string, second: string) {
+  const luminance = (css: string) => {
+    const channels = (css.match(/[\d.]+/g) ?? []).slice(0, 3).map(Number);
+    if (channels.length !== 3) throw new Error(`not an rgb() colour: ${css}`);
+    const linear = (channel: number) => { const value = channel / 255; return value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4; };
+    return 0.2126 * linear(channels[0]) + 0.7152 * linear(channels[1]) + 0.0722 * linear(channels[2]);
+  };
+  const [lighter, darker] = [luminance(first), luminance(second)].sort((a, b) => b - a);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+it.skipIf(!chromeExecutablePath)('on a phone the Decide chip’s edge is ≥3:1 in both themes, Up next rows and quote chips are ≥44px, and section labels ≥12px (Phase 12)', async () => {
+  try {
+    await openPage('&view=rules');
+    await phone();
+    await waitFor('document.querySelector("#decide [data-slot=queue-row]") && document.querySelector("#decide blockquote [aria-haspopup=dialog]")', 'Up next and a quote chip');
+    for (const theme of ['dark', 'light'] as const) {
+      await page!.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: theme }] });
+      await waitFor(`document.documentElement.classList.contains("dark") === ${theme === 'dark'}`, `the ${theme} theme`);
+      // The chip row is the page background at 95%, so the edge is read against --background itself.
+      const colours = await page!.evaluate(`(() => {
+        const chip = [...document.querySelectorAll("[data-slot=rule-scope-chips] button")].find((button) => /^Decide/.test(window.nameOf(button)));
+        // The Button eases colour changes (transition-all): read the edge at the end of the theme change.
+        chip?.getAnimations().forEach((animation) => animation.finish());
+        const probe = document.createElement("div");
+        probe.style.backgroundColor = "var(--background)";
+        document.body.append(probe);
+        const background = getComputedStyle(probe).backgroundColor;
+        probe.remove();
+        return { edge: chip ? getComputedStyle(chip).borderTopColor : null, background };
+      })()`) as { edge: string | null; background: string };
+      expect(colours.edge).not.toBeNull();
+      const ratio = contrastOfComputed(colours.edge!, colours.background);
+      expect({ theme, passes: ratio >= 3, ratio: Number(ratio.toFixed(2)) }).toEqual({ theme, passes: true, ratio: Number(ratio.toFixed(2)) });
+    }
+    // Touch size (rule 6): the Button primitive's 44px holds; a page's own min-h must not shrink it on a phone.
+    const heights = await page!.evaluate(`[...document.querySelectorAll("#decide [data-slot=queue-row], #decide blockquote [aria-haspopup=dialog]")]
+      .map((element) => ({ name: window.nameOf(element).slice(0, 40), height: element.getBoundingClientRect().height }))`) as Array<{ name: string; height: number }>;
+    expect(heights.length).toBeGreaterThan(1);
+    expect(heights.filter((target) => target.height < 44)).toEqual([]);
+    // The review's Keep line "card text ≥12px", at the 16px phone root.
+    expect(await page!.evaluate('parseFloat(getComputedStyle(document.querySelector("#decide .section-label")).fontSize)')).toBeGreaterThanOrEqual(12);
+    // A touch screen as wide as a desktop shows the rail: its rows keep the 44px touch size too; a mouse keeps 36px rows.
+    const pastFocusRow = '[...document.querySelectorAll("button")].find((button) => window.nameOf(button) === "Past focus" && button.getBoundingClientRect().height > 0)';
+    await desktop();
+    expect(await page!.evaluate(`${pastFocusRow}.getBoundingClientRect().height`)).toBeLessThan(44);
+    await page!.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+    await page!.settle();
+    expect(await page!.evaluate('matchMedia("(pointer: coarse)").matches')).toBe(true);
+    expect(await page!.evaluate(`${pastFocusRow}.getBoundingClientRect().height`)).toBeGreaterThanOrEqual(44);
+    expect(fixtureErrors).toEqual([]);
+  } finally {
+    await page?.send('Emulation.setEmulatedMedia', { features: [] });
+    await closePage();
+  }
+}, TEST_LIMIT_MS);

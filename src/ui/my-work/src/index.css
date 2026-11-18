@@ -353,7 +353,8 @@
 
 /* Small caps section label, as in the fly.io sidebar (BUILD, MONITOR). */
 @utility section-label {
-  font-size: 0.7rem;
+  /* 12px at the 16px phone root, 12.75px at the 17px desktop root: the review's Keep line "card text ≥12px". */
+  font-size: 0.75rem;
   font-weight: 500;
   letter-spacing: 0.08em;
   text-transform: uppercase;
