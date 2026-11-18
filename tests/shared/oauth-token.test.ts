@@ -829,3 +829,51 @@ describe('readClaudeOAuthToken (plan-19) — a usable env token beats an expired
     expect(result).toMatchObject({ kind: 'present', token: 'sk-ant-oat01-env', source: 'env-fallback' });
   });
 });
+
+/**
+ * #6319 — "Keychain payload has no claudeAiOauth.accessToken field" covered
+ * three different stores: one that holds only other logins (MCP), one whose
+ * Claude Code login has ENDED (the CLI blanks both tokens and records
+ * `loginEnded`), and one that really lacks the token. The user saw one
+ * reason, without the keychain item it came from, and could not tell them
+ * apart.
+ */
+describe('stored-login shapes the CLI writes, and which item was read (#6319)', () => {
+  const keychainHolds = (payload: unknown) =>
+    mock(() => Promise.resolve({ stdout: JSON.stringify(payload), stderr: '' })) as any;
+
+  it('a store holding only other logins (MCP) is absent, and says it holds no Claude Code login', async () => {
+    const result = await readMacOsKeychain('Claude Code-credentials', keychainHolds({ mcpOAuth: {} }), 'finn');
+    expect(result.kind).toBe('absent');
+    expect(result.kind === 'absent' && result.reason).toContain('no Claude Code login');
+  });
+
+  it('a login the CLI ended (blank tokens, loginEnded) is expired and names why it ended', async () => {
+    const result = await readMacOsKeychain('Claude Code-credentials', keychainHolds({
+      mcpOAuth: {},
+      claudeAiOauth: { accessToken: '', refreshToken: '', expiresAt: 0, loginEnded: 'time_limit' },
+    }), 'finn');
+    expect(result).toMatchObject({ kind: 'expired', loginEnded: 'time_limit' });
+    expect(result.kind === 'expired' && result.reason).toContain('has ended (loginEnded=time_limit)');
+  });
+
+  it('blank tokens without a loginEnded value still read as an ended login', () => {
+    writeCredentialsFile(JSON.stringify({ claudeAiOauth: { accessToken: '', refreshToken: '', expiresAt: 0 } }));
+    const result = readClaudeCredentialsFile(isolatedConfigDir());
+    expect(result.kind).toBe('expired');
+    expect(result.kind === 'expired' && result.loginEnded).toBeTruthy();
+  });
+
+  it('a keychain miss of any shape names the service and account it read', async () => {
+    for (const payload of [{ mcpOAuth: {} }, { claudeAiOauth: { refreshToken: 'r' } }, { claudeAiOauth: { accessToken: '', refreshToken: '', loginEnded: 'logout' } }]) {
+      const result = await readMacOsKeychain('Claude Code-credentials-1a2b3c4d', keychainHolds(payload), 'finn');
+      expect(result.kind).not.toBe('present');
+      expect(result.kind !== 'present' && result.reason).toContain('service "Claude Code-credentials-1a2b3c4d", account=finn');
+    }
+  });
+
+  it('an empty keychain value names the account too', async () => {
+    const result = await readMacOsKeychain('Claude Code-credentials', storeReturns('  \n'), 'finn');
+    expect(result.kind === 'absent' && result.reason).toContain('account=finn');
+  });
+});

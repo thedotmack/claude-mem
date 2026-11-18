@@ -1000,3 +1000,96 @@ describe('Issue #5400: observer spawn inherits proxy env from Claude settings', 
     expect(fromDotenv.ANTHROPIC_API_KEY).toBe('sk-ant-key');
   });
 });
+
+/**
+ * #6319 — when the credential store held no usable login, the read was logged
+ * only at DEBUG, so the INFO log went quiet while every observer call answered
+ * "Not logged in". It is a WARN now whenever the child will run on the CLI's
+ * own login, and the spawn notes why for the session notice.
+ */
+describe('#6319: a stored login the observer cannot use is loud', () => {
+  const UNREADABLE = 'No Claude Code login could be read for the observer';
+  const absentStore: oauthToken.OAuthTokenResult = { kind: 'absent', reason: 'The credential store holds no Claude Code login (macOS keychain service "Claude Code-credentials", account=finn)' };
+  const endedStore: oauthToken.OAuthTokenResult = { kind: 'expired', reason: 'The Claude Code login stored in this credential store has ended (loginEnded=time_limit)', loginEnded: 'time_limit' };
+
+  beforeAll(() => {
+    fs.mkdirSync(TEST_DATA_DIR, { recursive: true, mode: 0o700 });
+    process.env.CLAUDE_MEM_ENV_FILE = TEST_ENV_FILE;
+  });
+
+  afterAll(() => {
+    if (ORIGINAL_ENV_FILE === undefined) delete process.env.CLAUDE_MEM_ENV_FILE;
+    else process.env.CLAUDE_MEM_ENV_FILE = ORIGINAL_ENV_FILE;
+  });
+
+  beforeEach(() => {
+    clearEnvFile();
+    clearAnthropicEnv();
+  });
+
+  afterEach(() => {
+    clearEnvFile();
+    restoreOriginalEnv();
+  });
+
+  async function spawnWith(store: oauthToken.OAuthTokenResult, standIn?: 'subscription') {
+    const warnSpy = spyOn(logger, 'warn');
+    const oauthSpy = spyOn(oauthToken, 'readClaudeOAuthToken').mockResolvedValue(store);
+    // An expired result writes the stale-login marker; keep it out of the
+    // shared data dir, where later SessionStart tests would read it.
+    const dataDirSpy = spyOn(paths, 'dataDir').mockImplementation(() => TEST_DATA_DIR);
+    try {
+      let unusableLogin: string | null = null;
+      const env = await buildIsolatedEnvWithFreshOAuth(true, { standIn, onUnusableLogin: reason => { unusableLogin = reason; } });
+      const warnings = warnSpy.mock.calls.map(call => String(call[1]));
+      return { env, warnings, unusableLogin };
+    } finally {
+      dataDirSpy.mockRestore();
+      oauthSpy.mockRestore();
+      warnSpy.mockRestore();
+    }
+  }
+
+  it('an absent login is a WARN with the reason and the setup-token remedy, and is noted for the notice', async () => {
+    const { env, warnings, unusableLogin } = await spawnWith(absentStore);
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+    const warning = warnings.find(message => message.includes(UNREADABLE));
+    expect(warning).toContain(absentStore.reason);
+    expect(warning).toContain('claude setup-token');
+    expect(warning).toContain('CLAUDE_CODE_OAUTH_TOKEN');
+    expect(unusableLogin).toBe(absentStore.reason);
+  });
+
+  it('no such WARN when the .env API key stands in for the missing login', async () => {
+    fs.writeFileSync(TEST_ENV_FILE, 'ANTHROPIC_API_KEY=sk-ant-standin\n', { mode: 0o600 });
+    const { env, warnings, unusableLogin } = await spawnWith(absentStore, 'subscription');
+    expect(env.ANTHROPIC_API_KEY).toBe('sk-ant-standin');
+    expect(warnings.some(message => message.includes(UNREADABLE))).toBe(false);
+    expect(unusableLogin).toBeNull();
+  });
+
+  it('an ended login is noted too, and keeps the .env key a subscription stand-in can use', async () => {
+    const alone = await spawnWith(endedStore);
+    expect(alone.env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+    expect(alone.unusableLogin).toBe(endedStore.reason);
+
+    // An ended login has no refresh token left, so the CLI cannot renew it
+    // the way it renews a lapsed one: the key it would have billed stays.
+    fs.writeFileSync(TEST_ENV_FILE, 'ANTHROPIC_API_KEY=sk-ant-standin\n', { mode: 0o600 });
+    const standIn = await spawnWith(endedStore, 'subscription');
+    expect(standIn.env.ANTHROPIC_API_KEY).toBe('sk-ant-standin');
+    expect(standIn.unusableLogin).toBeNull();
+  });
+
+  it('a spawn that finds the login reports nothing', async () => {
+    const { env, warnings, unusableLogin } = await spawnWith({ kind: 'present', token: 'store-token', source: 'keychain' });
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe('store-token');
+    expect(warnings.some(message => message.includes(UNREADABLE))).toBe(false);
+    expect(unusableLogin).toBeNull();
+  });
+
+  it('a lapsed (not ended) login is left to the CLI refresh and is not reported', async () => {
+    const { unusableLogin } = await spawnWith({ kind: 'expired', reason: 'The Claude Code login in the credential store has expired', expiresAt: 1 });
+    expect(unusableLogin).toBeNull();
+  });
+});

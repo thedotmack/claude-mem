@@ -480,6 +480,13 @@ export function isAmbiguousQuotaRecord(state: ObserverHealthState): boolean {
   return isQuotaFailure(state) && state.lastErrorMessage === AMBIGUOUS_QUOTA_MESSAGE;
 }
 
+/**
+ * lastErrorCode of a signed-out Claude observer whose spawn found no login it
+ * could use (#6319): claude-mem could not read one, so the CLI's own "/login"
+ * advice may not apply. Booked by GeneratorRunner, worded below.
+ */
+export const CLAUDE_LOGIN_UNREADABLE_CODE = 'claude_login_unreadable';
+
 /** True when the current outage is the provider refusing the observer's credential. */
 export function isAuthFailure(state: ObserverHealthState): boolean {
   return state.lastErrorKind === 'auth_invalid';
@@ -917,12 +924,15 @@ export function renderObserverHealthWarning(state: ObserverHealthState, nowMs: n
     // provider-errors' CODEX_AUTH_FROM_EXIT_TEXT_CODE: our reading of an exited
     // process's stderr, which can be wrong, not a refusal the provider sent.
     const readFromExitText = state.lastErrorCode === 'codex_auth_from_exit_text';
+    const loginUnreadable = state.lastErrorCode === CLAUDE_LOGIN_UNREADABLE_CODE;
     return [
       "⚠️ Heads up: claude-mem can't save memories right now.",
       '',
       readFromExitText
         ? `The memory observer has been paused ${sinceText}: the ${provider} process exited with output that looks like a refused login.`
-        : `The memory observer's credentials have been refused by ${provider} ${sinceText}.`,
+        : loginUnreadable
+          ? `The memory observer has been signed out ${sinceText}: claude-mem could not read your Claude Code login.`
+          : `The memory observer's credentials have been refused by ${provider} ${sinceText}.`,
       '',
       ...renderFailureDetailLines(state, action),
       '',
@@ -931,6 +941,8 @@ export function renderObserverHealthWarning(state: ObserverHealthState, nowMs: n
       ...(readFromExitText ? [
         'This comes from the exited process\'s output, not a reply from the provider, so it may be wrong.',
         'Run `codex login status` to check. If the login is fine, the next captured event or an operator retry can trigger another attempt after the cooldown ends.',
+      ] : loginUnreadable ? [
+        'Restarting will NOT help here: the worker reads the same credential store again.',
       ] : [
         'Restarting will NOT help here: the provider refused the credentials, so nothing is broken to restart.',
       ]),
