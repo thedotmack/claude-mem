@@ -299,7 +299,7 @@ describe('only new opening prompts are checked', () => {
           const shows = JSON.parse(readFileSync(/is in (\S+\.json)/.exec(question)![1], 'utf8'));
           return JSON.stringify({ reviews: shows.map((show: any) => ({ groupId: show.groupId, state: 'in-progress', percent: 10, summary: 'Started.', reviewBasis: show.reviewBasis })) });
         }
-        if (question.includes('Do only section 3')) return everyRequestInOther(question);
+        if (question.includes('Do only section 4')) return everyRequestInOther(question);
         return JSON.stringify({ narrative: 'Under way.', preferences: [] });
       };
       expect(await task.run(ask as any, 'codex')).toMatch(/^2 new conversations grouped/);

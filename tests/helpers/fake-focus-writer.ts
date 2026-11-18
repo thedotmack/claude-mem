@@ -19,7 +19,7 @@ export function focusWriter(database: Database, { firstEpoch = 1000 } = {}) {
 }
 
 /** The focus-input inlined in a focus-step prompt. */
-export const focusInputFrom = (prompt: string) => JSON.parse(/```json\n([\s\S]*?)\n```/.exec(prompt.slice(prompt.indexOf('Do only section 3')))![1]);
+export const focusInputFrom = (prompt: string) => JSON.parse(/```json\n([\s\S]*?)\n```/.exec(prompt.slice(prompt.indexOf('Do only section 4')))![1]);
 
 /** A focus-step answer placing every asked request in Other, proposing nothing (and, for the Other pass, nothing at all). */
 export function everyRequestInOther(prompt: string): string {
@@ -29,4 +29,4 @@ export function everyRequestInOther(prompt: string): string {
 }
 
 /** The focus step's second question: propose areas from Other. */
-export const isOtherPass = (prompt: string) => prompt.includes('Do only section 3, step 3');
+export const isOtherPass = (prompt: string) => prompt.includes('Do only section 4, step 3');

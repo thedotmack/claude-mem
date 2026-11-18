@@ -22,6 +22,8 @@ describe('My Work skills write in the owner\'s language', () => {
     expect(review).toMatch(/^> .*in <owner's language>/m);
     // The automatic refresh names the language in each question (refresh-task.ts); a step told nothing decides it alone.
     expect(review).toContain('if this task names none');
+    // Card titles are named in the owner's language too.
+    expect(section(text, '## 3. Name each request', '## 4.')).toContain('in the owner\'s language');
     expect(text).toContain('names it in each question: `CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE` when it is set, otherwise the language its grouping step found in the asks');
   });
 
@@ -30,7 +32,7 @@ describe('My Work skills write in the owner\'s language', () => {
     // My Rules ids hash the preference text, so a translated statement would
     // detach the owner's decision from it.
     expect(text).toContain('every preference statement carried over from the previous story');
-    expect(section(text, '## 4. Write the build story', '```bash'))
+    expect(section(text, '## 5. Write the build story', '```bash'))
       .toContain('Preference statements carried over from the previous story keep their wording');
   });
 

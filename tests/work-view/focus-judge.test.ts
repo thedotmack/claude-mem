@@ -130,7 +130,7 @@ function refresh(dir: string, database: Database, options: Record<string, unknow
   const focusPrompts: any[] = [];
   const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: 3, ungrouped: 0, goalsStale: false, unplaced: 3, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, saveFocus: writer.save, ...options });
   const ask = async (prompt: string) => {
-    if (prompt.includes('Do only section 3')) {
+    if (prompt.includes('Do only section 4')) {
       if (!isOtherPass(prompt)) focusPrompts.push({ input: focusInputFrom(prompt), current: runFocusInput(dir, database) });
       return everyRequestInOther(prompt);
     }

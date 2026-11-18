@@ -32,7 +32,7 @@ let localDeviceId = settings.CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID ?? '';
 let sharedDatabase = null;
 let stopSharedWriter = null;
 const command = process.argv[2];
-const writesLedger = ['apply', 'record-progress', 'record-story'].includes(command) || (command === 'judge' && process.argv.includes('--apply'));
+const writesLedger = ['apply', 'record-progress', 'record-titles', 'record-story'].includes(command) || (command === 'judge' && process.argv.includes('--apply'));
 if (settings.CLAUDE_MEM_WORK_VIEW_SHARED_STATE === 'true' && writesLedger && existsSync(join(resolveDataDir(), 'claude-mem.db'))) {
   sharedDatabase = new Database(join(resolveDataDir(), 'claude-mem.db'), { readwrite: true, create: false });
   localDeviceId = ensureLocalDeviceIdentity(sharedDatabase, join(resolveDataDir(), 'settings.json'), localDeviceId);

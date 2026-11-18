@@ -230,7 +230,7 @@ describe('the My Work refresh on an API provider', () => {
           const [show] = JSON.parse(prompt.split(`--- ${/is in (.+?\.json)/.exec(prompt)?.[1]} ---\n`)[1] ?? '[]');
           return JSON.stringify({ reviews: [{ groupId: show.groupId, state: 'in-progress', percent: 10, summary: 'Started.', reviewBasis: show.reviewBasis }] });
         }
-        if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
+        if (prompt.includes('Do only section 4')) return everyRequestInOther(prompt);
         return JSON.stringify({ narrative: 'Started.', preferences: [] });
       };
       expect(await task.run(ask, 'api')).toBe('1 new conversations grouped, 1 requests reviewed, 1 requests placed, story written.');

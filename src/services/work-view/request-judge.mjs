@@ -18,8 +18,7 @@ import { isCmemGatewayUrl, isKeyAllowedForEndpoint } from '../../shared/cmem-gat
 import { isOpenRouterApiUrl, resolveOpenRouterChatCompletionsUrl } from '../../shared/openrouter-base-url.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
-import { applyDecisions, groupIdFor, groupingInput, LEDGER_DIR, readCandidates, readLedger, writeJsonAtomic } from './request-groups.mjs';
-import { humanRequestTitle, requestText } from './request-projection.mjs';
+import { applyDecisions, groupIdFor, groupingInput, LEDGER_DIR, placeholderTitleFromAsk, readCandidates, readLedger, writeJsonAtomic } from './request-groups.mjs';
 
 const DAY_MS = 86400000;
 const iso = (epoch) => new Date(epoch).toISOString();
@@ -211,19 +210,16 @@ export async function judgeConversation(conversation, openRequests, judge) {
   };
 }
 
-/** The title a request of one conversation starts with: the goal from its opening ask, as the card shows it. */
-function ownTitle(openingAsk) {
-  return humanRequestTitle(openingAsk) || requestText(openingAsk, 120) || 'Untitled request';
-}
-
 /** Route every undecided conversation of the window, earliest first, one project root at a time:
  * `rules` first, then `judge` (Jev) when the install has one. A join writes the conversation into the
  * request through the same decisions `apply` takes, with a `judge` link whose evidence names the judge
  * and its score, and records the request's root; a suggestion makes the conversation its own request
- * and keeps the pick in the ledger's `suggestions` for the owner; `new` makes it its own request. A
- * conversation no judge can place (no code link and no Jev, a refused or failed call) stays undecided
- * for the grouping agent. With `apply` the ledger is written after every decision; otherwise this is
- * the plan, decided as if each earlier decision had been written. */
+ * and keeps the pick in the ledger's `suggestions` for the owner; `new` makes it its own request. A request
+ * started here is titled with the placeholder copied from its opening ask until the refresh's naming step
+ * writes its title (request-groups.mjs placeholderTitleFromAsk). A conversation no judge can place (no
+ * code link and no Jev, a refused or failed call) stays undecided for the grouping agent. With `apply` the
+ * ledger is written after every decision; otherwise this is the plan, decided as if each earlier decision
+ * had been written. */
 export async function routeUndecided({ dir = LEDGER_DIR, database, judge = null, now = Date.now(), days = 14, apply = false }) {
   const judges = [rulesJudge, ...(judge ? [judge] : [])];
   const ledger = readLedger(dir);
@@ -284,7 +280,7 @@ export async function routeUndecided({ dir = LEDGER_DIR, database, judge = null,
         skip.add(key);
         continue;
       }
-      const title = ownTitle(conversation.openingAsk);
+      const title = placeholderTitleFromAsk(conversation.openingAsk);
       const decisions = target
         ? { groups: [{ title: target.title, conversations: [target.anchor, key], links: [{ kind: 'judge', conversations: [target.anchor, key], evidence: verdict.evidence }], ...(typeof root === 'string' && root ? { projectRoot: root } : {}) }] }
         : { groups: [{ title, conversations: [key] }] };
@@ -347,7 +343,7 @@ export function decideSuggestion({ dir, database, conversationKey, action, now =
     if (groups.conversations[conversationKey]) next = structuredClone(groups);
     else {
       const [candidate] = readCandidates(database, { conversationKeys: [conversationKey], excludedPromptIds: ledger.agentWrittenPromptIds });
-      next = applyDecisions(groups, { groups: [{ title: ownTitle(candidate?.firstAsk ?? ''), conversations: [conversationKey] }] }, { database, now, excludedPromptIds: ledger.agentWrittenPromptIds, enrichGroupIds: resolution?.groupKeys ?? null });
+      next = applyDecisions(groups, { groups: [{ title: placeholderTitleFromAsk(candidate?.firstAsk ?? ''), conversations: [conversationKey] }] }, { database, now, excludedPromptIds: ledger.agentWrittenPromptIds, enrichGroupIds: resolution?.groupKeys ?? null });
     }
     next.suggestions = { ...(next.suggestions ?? {}), [conversationKey]: { ...suggestion, status: 'declined', resolvedAt: iso(now), evidence: `Owner declined: not part of "${request?.title ?? suggestion.requestId}". ${suggestion.evidence}` } };
     next.updatedAt = iso(now);

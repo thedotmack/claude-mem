@@ -13,6 +13,8 @@
 //   bun request-groups.mjs pending [--days 14] [--limit 48]   groups needing a progress review
 //   bun request-groups.mjs show <groupId>           one group's asks, work lists and dates (only new asks when amending)
 //   bun request-groups.mjs record-progress <file|-> persist one progress review
+//   bun request-groups.mjs title-input [--limit 20]  requests still titled with a copy of their opening ask
+//   bun request-groups.mjs record-titles <file|->   persist written titles for those requests
 //   bun request-groups.mjs story-input              reviews whose facts changed since the last story (all without one)
 //   bun request-groups.mjs record-story <file|->    persist the build story and preferences
 //   bun request-groups.mjs focus-input [--limit 20]  focus areas + one batch of requests still to place
@@ -25,7 +27,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { conversationKey, isConversationKey, isHumanActionRequest, originalFor, requestText } from './request-projection.mjs';
+import { conversationKey, humanRequestTitle, isConversationKey, isHumanActionRequest, originalFor, requestText } from './request-projection.mjs';
 import { GOAL_KINDS, goalKindOf, OWNER_GOALS_LIST } from './owner-goals.mjs';
 import { NO_PROJECT, projectRoot, upgradedGroupRoot, withDerivedProjects } from './session-project.mjs';
 import { isOwnerDismissedArea, isPlaceableArea, OTHER_FOCUS_AREA_ID, PROPOSAL_KINDS, readFocus } from './my-focus.mjs';
@@ -691,9 +693,9 @@ const records = (database, ledger, groupIds, requests) => {
   return groupIds.map((groupId) => requestRecord(ledger, groupId, asks, requests.conversations(groupId)));
 };
 
-function basisForConversations(ledger, groupId, conversations) {
+function basisForConversations(ledger, groupId, conversations, title = ledger.groups.groups[groupId].title) {
   const group = ledger.groups.groups[groupId];
-  return createHash('sha256').update(JSON.stringify({ title: group.title, firstAsk: group.anchorAsk?.text ?? null, conversations })).digest('hex').slice(0, 16);
+  return createHash('sha256').update(JSON.stringify({ title, firstAsk: group.anchorAsk?.text ?? null, conversations })).digest('hex').slice(0, 16);
 }
 
 /** What decides a request's area: its title, its first ask and its conversations. Its review (state, percent, summary)
@@ -725,6 +727,10 @@ function focusRequestIndex(ledger) {
       if (!bases.has(groupId)) bases.set(groupId, basisForConversations(ledger, groupId, conversations(groupId)));
       return bases.get(groupId);
     },
+    /** The basis the request had while it showed the placeholder copied from its ask. Naming (section 3) replaces only
+     * that title, so a placement made under the placeholder still stands once the request is named (focusDue). */
+    placeholderBasis: (groupId) => basisForConversations(ledger, groupId, conversations(groupId),
+      placeholderTitleFromAsk(ledger.groups.groups[groupId].anchorAsk?.text ?? null)),
   };
 }
 
@@ -733,14 +739,17 @@ function focusRequestIndex(ledger) {
  * live area (Other and done areas included) is the owner's and never queued; once its area is dismissed it no longer
  * binds (buildFocusAreas), and the router's placement must stand on its own. A router basis is compared only on the
  * device that wrote it: another device decided on its own copy of the request, and comparing would re-place every
- * request on every device in turn. Placements written without a basis (a seed) count as current. */
+ * request on every device in turn. Placements written without a basis (a seed) count as current, and so does one whose
+ * request has changed only from its placeholder title to a written one: a name from section 3 is not a change, and
+ * treating it as one placed every named request again (133 of 136 on a copy of a real ledger, Nov 18). */
 function focusDue(ledger, focus, localDeviceId, requests) {
   return Object.keys(ledger.groups.groups).filter((groupId) => {
     const placement = focus.placementsByAnchor.get(ledger.groups.groups[groupId].anchor);
     if (placement?.owner && focus.resolveFocusAreaId(placement.owner.focusAreaId)) return false;
     const router = placement?.router;
     if (!router || !focus.resolveFocusAreaId(router.focusAreaId)) return true;
-    return router.device === localDeviceId && router.basis != null && router.basis !== requests.basis(groupId);
+    return router.device === localDeviceId && router.basis != null && router.basis !== requests.basis(groupId)
+      && router.basis !== requests.placeholderBasis(groupId);
   });
 }
 
@@ -861,6 +870,72 @@ export function validateFocusAnswer(answer, input, ledger, { other = false } = {
   };
 }
 
+/** The title a request starts with when code, not a model, starts it (the judge, or the owner declining a suggestion):
+ * the first sentence of its opening ask as the refresh reads that ask (the FOCUS_ASK_CHARS that grouping-input shows,
+ * which is also what the judge titles from), copied. Section 3 of the request-progress skill replaces it with a
+ * written one. */
+export function placeholderTitleFromAsk(askText) {
+  const ask = requestText(askText ?? null, FOCUS_ASK_CHARS);
+  return humanRequestTitle(ask) || requestText(ask, 120) || 'Untitled request';
+}
+
+/** A title or an ask as two are compared: link targets and markdown marks dropped, lower case, spaces collapsed (line
+ * breaks too), closing punctuation trimmed. */
+function comparableWords(text) {
+  return String(text ?? '').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').replace(/[*_`#]/g, '')
+    .toLowerCase().replace(/\s+/g, ' ').trim().replace(/[\s.!?…:;,]+$/u, '');
+}
+
+/** Whether a title copies its request's opening ask: the placeholder code cuts from the ask, or words the ask starts
+ * with (a first sentence a grouping answer copied as typed, a trimmed copy). The one rule for both a title still owed
+ * (hasPlaceholderTitle) and a written title refused (writtenTitle), so no title it accepts is owed again next run. */
+export function copiesOpeningAsk(title, askText) {
+  const words = comparableWords(title);
+  if (words === comparableWords(placeholderTitleFromAsk(askText))) return true;
+  return words.length > 0 && comparableWords(requestText(askText ?? null, FOCUS_ASK_CHARS)).startsWith(words);
+}
+
+/** Whether a request still shows a title copied from its opening ask, whoever copied it. */
+export function hasPlaceholderTitle(group) {
+  return copiesOpeningAsk(group.title, group.anchorAsk?.text ?? null);
+}
+
+/** A written title as the ledger keeps it: 1–120 characters (applyGroupDecisions' title contract) that do not copy the
+ * request's opening ask, which would leave the request owed a title on every later run. */
+function writtenTitle(value, askText, label) {
+  const title = boundedText(value, 120, label);
+  if (copiesOpeningAsk(title, askText)) throw new TypeError(`${label} repeats the owner's ask ("${placeholderTitleFromAsk(askText)}"). Name the task in about 5 to 7 words of your own, not words the ask starts with.`);
+  return title;
+}
+
+/** title-input: one batch of requests still titled with the placeholder copied from their ask, in ledger order, each as
+ * the focus step reads it (its asks, and its review's state and summary when it has one), so a vague ask ("figure it
+ * out") is named from what the work turned out to be. `remaining` counts the requests left for later batches. */
+export function titleInput(ledger, database, { limit = TITLE_BATCH } = {}) {
+  const owed = Object.keys(ledger.groups.groups).filter((groupId) => hasPlaceholderTitle(ledger.groups.groups[groupId]));
+  return { requests: records(database, ledger, owed.slice(0, limit), focusRequestIndex(ledger)), remaining: Math.max(0, owed.length - limit) };
+}
+
+/** A naming answer checked against the batch it answers: every listed request named exactly once, by its groupId.
+ * With `coerce` (the refresh's one retry), a title this check refuses and a request left unnamed are dropped instead;
+ * such a request keeps its placeholder until a later run asks again. */
+export function validateTitleAnswer(answer, input, { coerce = false } = {}) {
+  if (!Array.isArray(answer?.titles)) throw new TypeError('The answer needs a titles array.');
+  const listed = new Map(input.requests.map((request) => [request.groupId, request]));
+  const named = new Map();
+  for (const [index, entry] of answer.titles.entries()) {
+    const label = `titles[${index}]`;
+    try {
+      if (!listed.has(entry?.groupId)) throw new TypeError(`${label} names ${JSON.stringify(entry?.groupId)}, which was not asked about.`);
+      if (named.has(entry.groupId)) throw new TypeError(`${label} names ${entry.groupId} a second time; give each request one title.`);
+      named.set(entry.groupId, writtenTitle(entry.title, listed.get(entry.groupId).firstAsk, `${label}.title`));
+    } catch (error) { if (!coerce || !(error instanceof TypeError)) throw error; }
+  }
+  const missing = [...listed.keys()].filter((groupId) => !named.has(groupId));
+  if (missing.length && !coerce) throw new TypeError(`Name every request asked about; missing ${missing.join(', ')}.`);
+  return { titles: [...named].map(([groupId, title]) => ({ groupId, title })) };
+}
+
 const requireDeviceId = (localDeviceId) => {
   if (typeof localDeviceId !== 'string') throw new TypeError('My Focus needs the worker\'s sync device id ("" when cloud sync never started).');
   return localDeviceId;
@@ -925,6 +1000,10 @@ export const GROUPING_BATCH = 20;
 /** Requests placed per focus answer: GROUPING_BATCH, the per-answer size the same light model (STEP_MODELS) already
  * decides "every listed item exactly once" for in grouping. Reused, not measured for placement itself. */
 export const FOCUS_BATCH = GROUPING_BATCH;
+/** Requests named per title answer, measured: on a copy of a real ledger (Nov 18) haiku, the light model (STEP_MODELS),
+ * named all 20 requests of a 20-request batch (a 55 KB title-input) in one answer, and validateTitleAnswer accepted
+ * every title. It is the size grouping and focus already ask that model to answer for, one item each. */
+export const TITLE_BATCH = GROUPING_BATCH;
 const CLOSED_STATES = new Set(['shipped', 'abandoned']);
 
 /** One grouping question: only conversations the ledger has not decided,
@@ -1133,6 +1212,23 @@ export function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now
     return print({ recorded: entry.groupId, state: entry.state, percent: entry.percent, readings: entry.readings.length, ...(coercedFields.size ? { coercedFields: [...coercedFields] } : {}),
       ...(droppedPreferences.size ? { droppedPreferences: [...droppedPreferences] } : {}) });
   }
+  if (command === 'title-input') return print(titleInput(readLedger(dir), db(), { limit: option(args, 'limit', TITLE_BATCH) }));
+  if (command === 'record-titles') {
+    const { groups } = readLedger(dir);
+    const answer = readInput(args[0] ?? '-');
+    if (!Array.isArray(answer?.titles)) throw new TypeError('The answer needs a titles array.');
+    let titled = 0;
+    // Every title is checked before the ledger is written. Only a placeholder is replaced: a title written meanwhile
+    // (a grouping answer, another device) stays.
+    for (const [index, entry] of answer.titles.entries()) {
+      const group = groups.groups[entry?.groupId];
+      if (!group) throw new TypeError(`titles[${index}] names unknown group ${entry?.groupId}.`);
+      const title = writtenTitle(entry.title, group.anchorAsk?.text ?? null, `titles[${index}].title`);
+      if (hasPlaceholderTitle(group)) { group.title = title; titled++; }
+    }
+    if (titled) { groups.updatedAt = iso(now); writeJsonAtomic(join(dir, 'request-groups.json'), groups); }
+    return print({ titled, kept: answer.titles.length - titled });
+  }
   if (command === 'story-input') {
     const { groups, progress, story } = readLedger(dir);
     const reviews = Object.values(progress).sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)));
@@ -1167,5 +1263,5 @@ export function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now
     return Promise.resolve(saveFocus(body)).then((saved) => print({ placed: saved.placed, proposed: saved.focusAreaIds.length, focusAreaIds: saved.focusAreaIds }));
   }
   if (command === 'refresh-needs') return print(refreshNeeds({ dir, database: db(), now, days: option(args, 'days', 14), localDeviceId }));
-  throw new TypeError('Usage: request-groups.mjs candidates|grouping-input|judge|apply|pending|show|record-progress|story-input|record-story|focus-input|record-focus|refresh-needs (see file header).');
+  throw new TypeError('Usage: request-groups.mjs candidates|grouping-input|judge|apply|pending|show|record-progress|title-input|record-titles|story-input|record-story|focus-input|record-focus|refresh-needs (see file header).');
 }
