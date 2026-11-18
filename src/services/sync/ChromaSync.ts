@@ -178,6 +178,9 @@ interface BackfillPacing {
 }
 
 const BACKFILL_PAUSE_RATIO_SETTING = 'CLAUDE_MEM_CHROMA_BACKFILL_PAUSE_RATIO';
+// Max 10: bulk writes then take at most 1/11 of a rebuild's wall time, so a
+// rebuild runs up to 11x slower. A larger ratio only stretches a full rebuild
+// into days without lowering the live path's cost, which is never paced.
 const BACKFILL_PAUSE_RATIO_BOUNDS = { min: 0, max: 10, integer: false } as const;
 const DEFAULT_BACKFILL_PAUSE_RATIO = 1;
 
