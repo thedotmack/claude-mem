@@ -86,7 +86,9 @@ import {
   recordQuotaExhausted,
   resetQuotaCooldownsForTesting,
 } from '../../../../src/shared/quota-cooldown.js';
-import { OBSERVER_HEALTH_FILENAME, readObserverHealth } from '../../../../src/shared/observer-health.js';
+import { CLAUDE_LOGIN_UNREADABLE_CODE, OBSERVER_HEALTH_FILENAME, readObserverHealth } from '../../../../src/shared/observer-health.js';
+import { noteUnreadableClaudeLogin } from '../../../../src/shared/oauth-token.js';
+import { RELAYED_TEXT_MAX_CHARS } from '../../../../src/shared/relayed-text.js';
 import { observerHealthWarning } from '../../../../src/services/context/ContextBuilder.js';
 import { PRO_FALLBACK_NOTICE_MARKER } from '../../../../src/shared/cmem-gateway.js';
 import { proTrialUrl } from '../../../../src/shared/pro-promo.js';
@@ -1044,6 +1046,9 @@ describe('SessionRoutes — cmem gateway integrity', () => {
   });
 
   describe('a signed-out Claude observer (#4150)', () => {
+    // The spawn-time note is worker memory; another file's spawn may have left one.
+    beforeEach(() => noteUnreadableClaudeLogin(null));
+
     /**
      * What ResponseProcessor does with the CLI's "Not logged in · Please run
      * /login": the batch goes back to pending and the run pauses without
@@ -1081,6 +1086,43 @@ describe('SessionRoutes — cmem gateway integrity', () => {
       const notice = observerHealthWarning();
       expect(notice).toContain('What to do: Run /login in Claude Code');
       expect(notice).toContain('If you are already signed in, check the worker log for OAUTH credential-store lookup errors');
+      expect(notice).toContain('credentials have been refused');
+      expect(notice).not.toContain('npx claude-mem restart');
+    });
+
+    it('when claude-mem could not read the login, says so and names the item instead of sending the user to /login (#6319)', async () => {
+      const id = 924006;
+      const reason = 'The credential store holds no Claude Code login (no claudeAiOauth entry) (macOS keychain service "Claude Code-credentials", account=finn); No credentials file at ~/.claude/.credentials.json';
+      seedSettings({ CLAUDE_MEM_PROVIDER: 'claude' });
+      const { routes, claudeAgent, discards } = makeHarness([id]);
+      claudeAgent.startSession.mockImplementationOnce((s: ActiveSession) => {
+        // What the spawn noted when it read the store (EnvManager).
+        noteUnreadableClaudeLogin(reason);
+        return answerSignedOut(s);
+      });
+      try {
+        await routes.ensureGeneratorRunning(id, 'observation');
+        await settle(id);
+      } finally {
+        noteUnreadableClaudeLogin(null);
+      }
+
+      const health = readObserverHealth();
+      expect(health?.lastErrorKind).toBe('auth_invalid');
+      expect(health?.lastErrorCode).toBe(CLAUDE_LOGIN_UNREADABLE_CODE);
+      expect(discards.map(d => d.sessionDbId)).toEqual([id]);
+      // The remedy is relayed whole, never cut at the relay bound.
+      expect(Array.from(health?.lastErrorAction ?? '').length).toBeLessThanOrEqual(RELAYED_TEXT_MAX_CHARS);
+
+      const notice = observerHealthWarning();
+      expect(notice).toContain('claude-mem could not read your Claude Code login');
+      expect(notice).toContain('service "Claude Code-credentials", account=finn');
+      expect(notice).toContain('claude auth status');
+      expect(notice).toContain('CLAUDE_SECURESTORAGE_CONFIG_DIR');
+      expect(notice).toContain('`claude setup-token`');
+      expect(notice).toContain('~/.claude-mem/.env as CLAUDE_CODE_OAUTH_TOKEN');
+      expect(notice).not.toContain('credentials have been refused');
+      expect(notice).not.toContain('Run /login in Claude Code');
       expect(notice).not.toContain('npx claude-mem restart');
     });
 

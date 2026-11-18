@@ -25,7 +25,8 @@ import {
 } from './response-pacer.js';
 import { telemetryBuffer } from '../../telemetry/buffer.js';
 import { observerUsageLogFields } from '../observer-usage.js';
-import { AMBIGUOUS_QUOTA_MESSAGE, recordObserverFailure, type ObserverQuotaReason } from '../../../shared/observer-health.js';
+import { AMBIGUOUS_QUOTA_MESSAGE, CLAUDE_LOGIN_UNREADABLE_CODE, recordObserverFailure, type ObserverQuotaReason } from '../../../shared/observer-health.js';
+import { readUnreadableClaudeLoginReason } from '../../../shared/oauth-token.js';
 import { explainQuotaAbort, globalRateLimitStore } from '../RateLimitStore.js';
 import {
   CODEX_CLI_SETUP_REMEDIATION,
@@ -468,8 +469,17 @@ export async function startGeneratorWithProvider(
       // waiting out the failure threshold and then offering a restart. The same
       // prose appears when the worker cannot read a credential that exists
       // (#5250), so the notice names that as the next check after /login.
+      // When the spawn already knew it had found no usable login (#6319),
+      // the notice says that, with the item it read, instead: /login cannot
+      // help a user whose terminal is already signed in to another profile.
+      const unreadableLoginReason = reason === 'auth:observer_text' ? readUnreadableClaudeLoginReason() : null;
       if (reason === 'auth:observer_text' && provider === 'claude' && !failureBooked) {
-        recordObserverFailure(provider, {
+        recordObserverFailure(provider, unreadableLoginReason ? {
+          message: `claude-mem could not read your Claude Code login: ${unreadableLoginReason}`,
+          kind: 'auth_invalid',
+          code: CLAUDE_LOGIN_UNREADABLE_CODE,
+          action: 'If `claude auth status` says you are logged out, run /login. If it says you are logged in, your terminal uses another credential profile (CLAUDE_CONFIG_DIR / CLAUDE_SECURESTORAGE_CONFIG_DIR): run `claude setup-token` and put the token in ~/.claude-mem/.env as CLAUDE_CODE_OAUTH_TOKEN',
+        } : {
           message: 'Claude Code could not authenticate the observer',
           kind: 'auth_invalid',
           action: 'Run /login in Claude Code (or `claude auth login` in a terminal) to refresh the observer credentials. If you are already signed in, check the worker log for OAUTH credential-store lookup errors',

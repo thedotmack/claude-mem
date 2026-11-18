@@ -150,7 +150,12 @@ const EXPIRY_GRACE_MS = 60_000;
 
 export type OAuthTokenResult =
   | { kind: 'present'; token: string; source: 'keychain' | 'env-fallback' | 'credentials-file'; expiresAt?: number }
-  | { kind: 'expired'; reason: string; expiresAt?: number }
+  /**
+   * `loginEnded` is set when the CLI ended the stored login itself (it blanks
+   * both tokens and records why, #6319). Unlike a lapsed expiry, the child
+   * has no refresh token left to renew it with.
+   */
+  | { kind: 'expired'; reason: string; expiresAt?: number; loginEnded?: string }
   | { kind: 'absent'; reason: string };
 
 interface ClaudeKeychainPayload {
@@ -159,6 +164,8 @@ interface ClaudeKeychainPayload {
     refreshToken?: string;
     expiresAt?: number;
     scopes?: string[];
+    /** Written by the CLI when a login ends ('time_limit', …), next to blanked tokens. */
+    loginEnded?: string;
   };
 }
 
@@ -279,11 +286,15 @@ export async function readMacOsKeychain(
       };
     }
   }
+  // #6319: name the item that was read, so a user whose terminal reads a
+  // different profile can see that from the reason alone.
+  const item = `macOS keychain service "${serviceName}", account=${account}`;
   const raw = stdout.trim();
   if (!raw) {
-    return { kind: 'absent', reason: `macOS keychain returned empty value for "${serviceName}"` };
+    return { kind: 'absent', reason: `macOS keychain returned an empty value (${item})` };
   }
-  return parseKeychainPayload(raw);
+  const result = parseKeychainPayload(raw);
+  return result.kind === 'present' ? result : { ...result, reason: `${result.reason} (${item})` };
 }
 
 function getSecurityCommandDiagnostic(error: unknown): {
@@ -552,8 +563,26 @@ function parseKeychainPayload(raw: string): OAuthTokenResult {
   }
   const payload = parsed as ClaudeKeychainPayload;
 
-  const accessToken = payload.claudeAiOauth?.accessToken;
-  const expiresAt = payload.claudeAiOauth?.expiresAt;
+  const login = payload.claudeAiOauth;
+  if (!login || typeof login !== 'object') {
+    return { kind: 'absent', reason: 'The credential store holds no Claude Code login (no claudeAiOauth entry)' };
+  }
+  const accessToken = login.accessToken;
+  const expiresAt = login.expiresAt;
+
+  // #6319: when a login ends, the CLI keeps the entry but blanks both tokens
+  // and records why. /login is the right remedy for that, so it is expired,
+  // not a missing field.
+  const loginEnded = typeof login.loginEnded === 'string' && login.loginEnded
+    ? login.loginEnded
+    : accessToken === '' && login.refreshToken === '' ? 'tokens cleared' : undefined;
+  if (loginEnded) {
+    return {
+      kind: 'expired',
+      reason: `The Claude Code login stored in this credential store has ended (loginEnded=${loginEnded})`,
+      loginEnded,
+    };
+  }
 
   if (typeof accessToken !== 'string' || !accessToken) {
     return { kind: 'absent', reason: 'Keychain payload has no claudeAiOauth.accessToken field' };
@@ -699,6 +728,25 @@ export async function readClaudeOAuthToken(
   if (storedResult.kind === 'expired') return storedResult;
   if (envResult.kind === 'expired') return envResult;
   return storedResult;
+}
+
+/**
+ * #6319 — why the last spawn-time read left the Claude child with no login it
+ * can use: the store held none, or the CLI had ended it, and no explicit
+ * credential stood in. Null when the child got a credential. The child then
+ * answers "Not logged in · Please run /login", and the session notice uses
+ * this to say claude-mem could not read the login instead of sending the user
+ * to a /login that may already be done. Worker memory only: the read and the
+ * failure it explains happen in the same process.
+ */
+let unreadableClaudeLoginReason: string | null = null;
+
+export function noteUnreadableClaudeLogin(reason: string | null): void {
+  unreadableClaudeLoginReason = reason;
+}
+
+export function readUnreadableClaudeLoginReason(): string | null {
+  return unreadableClaudeLoginReason;
 }
 
 /**
