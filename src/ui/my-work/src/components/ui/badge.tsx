@@ -7,10 +7,14 @@ import { interpolate, useI18n } from "@/lib/i18n"
 /*
  * A chip never cuts its words off (D b3 M71): in a wrapping row it moves to the next line first, and only a label
  * longer than the whole row wraps inside the pill. A badge drawn as a link or button (asChild) shows the hand
- * cursor and takes presses across 44×44px without growing (expanded-hit-area).
+ * cursor and takes presses across 44×44px without growing on a desktop (expanded-hit-area); on touch it is a
+ * control, so it is at least 44×44px itself (touch-target-size, plan rule 6), and a badge that only labels keeps its
+ * size. The primitive owns that rule: a plain min-h utility, this base's min-h-6 or a caller's, comes after
+ * touch-target-size in the stylesheet and would beat it, and the [a]: and [button]: forms (`:is(a)`, `:is(button)`)
+ * outrank a plain utility, so no caller adds its own 44px (fix round R3).
  */
 const badgeVariants = cva(
-  "group/badge inline-flex min-h-6 w-fit max-w-full shrink-0 items-center justify-center gap-1.5 rounded-full border border-transparent px-2.5 py-0.5 text-center text-xs font-medium whitespace-normal wrap-anywhere transition-all outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 has-data-[icon=inline-end]:pr-1.5 has-data-[icon=inline-start]:pl-1.5 aria-invalid:border-destructive aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 [a]:relative [a]:cursor-pointer [a]:expanded-hit-area [button]:relative [button]:cursor-pointer [button]:expanded-hit-area [&>svg]:pointer-events-none [&>svg]:size-3!",
+  "group/badge inline-flex min-h-6 w-fit max-w-full shrink-0 items-center justify-center gap-1.5 rounded-full border border-transparent px-2.5 py-0.5 text-center text-xs font-medium whitespace-normal wrap-anywhere transition-all outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 has-data-[icon=inline-end]:pr-1.5 has-data-[icon=inline-start]:pl-1.5 aria-invalid:border-destructive aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 [a]:relative [a]:cursor-pointer [a]:expanded-hit-area [a]:touch-target-size [button]:relative [button]:cursor-pointer [button]:expanded-hit-area [button]:touch-target-size [&>svg]:pointer-events-none [&>svg]:size-3!",
   {
     variants: {
       variant: {

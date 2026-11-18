@@ -36,6 +36,8 @@ import { SyncConflictRecovery, initializeConflictRecoverySchema } from '../src/s
 
 
 const SYNC_API_DIR = resolve(import.meta.dir, '../services/sync-api');
+/** The hosted My Work page's event stream is open: its Live chip says so (components/bits.tsx LiveIndicator). */
+const HOSTED_FEED_IS_LIVE = `document.querySelector('[data-live-chip]')?.dataset.connectionState === 'live'`;
 const SYNC_API_ENTRY = resolve(SYNC_API_DIR, 'src/index.ts');
 const USER_ID = `matrix-user-${crypto.randomUUID()}`;
 const TOKEN = `matrix-token-${crypto.randomUUID()}`;
@@ -690,11 +692,13 @@ async function runViewerMatrix(a: Device, b: Device, c: Device, viewers: MatrixV
     console.log(`  POLLING_VISIBILITY ${JSON.stringify({ cadenceMs: 30_000, acceptedToVisibleMs: Math.round(visibleAfterMs), forcedPull: false, manualNotification: false })}`);
     for (const page of [pages.local, pages.hosted, pages.classic]) await page.evaluate('window.matrixNavigationSentinel = Math.random()');
     const sentinel = await pages.hosted.evaluate('window.matrixNavigationSentinel');
-    await browserWait(pages.hosted, `document.querySelector('[data-sync-state]')?.parentElement?.dataset.connectionState === 'live'`, 'hosted SSE live');
+    // My Work's Live chip carries the feed's own state (components/bits.tsx LiveIndicator, data-connection-state); the
+    // status line beside it carries the cloud copy's (data-sync-state). Read the chip itself, not a neighbour's parent.
+    await browserWait(pages.hosted, HOSTED_FEED_IS_LIVE, 'hosted SSE live');
     c.gate.pullsOnline = false;
     await c.client.pullOnce({ force: true }); await hosted.notify();
     await browserWait(pages.hosted, `document.querySelector('[data-sync-state="offline"]') !== null`, 'offline cloud status');
-    check(await pages.hosted.evaluate(`document.querySelector('[data-sync-state]')?.parentElement?.dataset.connectionState === 'live'`),
+    check(await pages.hosted.evaluate(HOSTED_FEED_IS_LIVE),
       'browser distinguishes an open SSE stream from an offline cloud pull');
     local.shared.saveFile(`progress/${groupId}.json`, progressEntry(80, 'Recovered progress after offline pull.'));
     const second = a.store.storeObservation(sessions[0].memory, 'matrix-view', observation('MATRIX_FEED_RECOVERED', 'Arrived without reload'), 2, 0);

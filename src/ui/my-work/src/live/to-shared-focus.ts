@@ -8,10 +8,11 @@
 // area takes it off the page. Closed requests stay off, as they do on My Work. The owner's own words (quotes,
 // prompts, and any title, summary, next step, ask or goal that repeats them), terminal lines, evidence links, work product,
 // conversations and machine names never leave.
-import { OTHER_FOCUS_AREA_ID, type FocusArea, type Request } from '../data.ts'
+import { OTHER_FOCUS_AREA_ID, type FocusArea, type NextStepKind, type NextStepMissing, type Request } from '../data.ts'
 import { repeatsOwnerWords } from './prompt-echo.ts'
+import { durationIn, type DurationUnit } from './running-time.ts'
 import { resolveFocusAreaId } from './to-focus-model.ts'
-import { NEXT_STEP_NOT_RECORDED } from './to-work-model.ts'
+import { LEGACY_SHIP_STEP, LEGACY_START_NOT_RECORDED, LEGACY_UNBLOCK_PREFIX, NEXT_STEP_NOT_RECORDED, NO_WORK_YET, nextStepShown, recordedStart } from './to-work-model.ts'
 import type { WorkModel } from './work-data-source.ts'
 
 export const SHARED_REQUESTS_MAX = 200
@@ -65,6 +66,63 @@ function sharedTitle(request: Request): string {
 
 const ownWords = (area: FocusArea) => [...area.quotes, ...area.asks.flatMap((ask) => ask.quotes)].map((quote) => quote.quote)
 
+/**
+ * The shared page's words for a request with no recorded step. My Work leaves the line out (decision G3), but the page
+ * cmem.ai draws needs a line of text there: its snapshot schema takes `next.text` as at least one character
+ * (claude-mem-pro src/lib/focus-share/snapshot.ts, sharedRequestSchema), and that page reads in English. So the shared
+ * page words the model's missing value here, with the same words it showed before 16.0.0.
+ */
+const SHARED_MISSING_NEXT_STEP_WORDS: Record<NextStepMissing, string> = {
+  'not-recorded': NEXT_STEP_NOT_RECORDED,
+  'no-agent-work': NO_WORK_YET,
+}
+
+/**
+ * Each step kind (data.ts NextStepKind) in the English the shared page has published since before 16.0.0: the step as
+ * recorded, "Unblock: " before a blocked request's step, and "Ship it". Word for word as the mapper wrote it then, so
+ * the published payload stays the one it was.
+ */
+const SHARED_STEP_WORDS: Record<NextStepKind, (words: string) => string> = {
+  recorded: (words) => words,
+  unblock: (words) => `${LEGACY_UNBLOCK_PREFIX}${words}`,
+  ship: () => LEGACY_SHIP_STEP,
+}
+
+/** A request's next step as the shared page words it; with none recorded, its filler, as a blocked one's step. */
+function sharedNextStepText(next: Request['next']): string {
+  const shown = nextStepShown(next)
+  if (shown.kind === 'step') return SHARED_STEP_WORDS[shown.step](shown.text ?? '')
+  return SHARED_STEP_WORDS[next.kind === 'unblock' ? 'unblock' : 'recorded'](SHARED_MISSING_NEXT_STEP_WORDS[shown.missing])
+}
+
+/** The step the shared page shows, unless it repeats the owner's words, which stay on this computer (as before 16.0.0). */
+function sharedNextStep(request: Request): SharedRequest['next'] {
+  const text = sharedNextStepText(request.next)
+  const repeatsTheOwnersWords = request.nextRepeatsPrompt || titleQuotesPrompt(text, request.prompts)
+  return { who: request.next.who, text: repeatsTheOwnersWords ? NEXT_STEP_NOT_RECORDED : clip(text.trim() || NEXT_STEP_NOT_RECORDED, 300) }
+}
+
+/**
+ * Each duration unit (live/running-time.ts) in the shared page's English, as the card wrote it before 16.0.0. The
+ * shared page asks durationIn without `finishedRun`, so its payload stays the one it was ("Just started" under a
+ * minute); `under-a-minute` has its English here for the day it does.
+ */
+const SHARED_DURATION_WORDS: Record<DurationUnit, (count: number) => string> = {
+  'just-started': () => 'Just started',
+  'under-a-minute': () => 'under a minute',
+  minutes: (count) => `${count} min`,
+  hours: (count) => `${count} hr`,
+  days: (count) => `${count} day${count === 1 ? '' : 's'}`,
+}
+
+/** How long a request has run, in the shared page's English; an older model's own text when it carried no value. */
+function sharedRunningFor(request: Request): string {
+  if (request.runningForMs === undefined) return request.runningFor ?? 'Not recorded'
+  if (request.runningForMs === null) return 'Not recorded'
+  const { unit, count } = durationIn(request.runningForMs)
+  return SHARED_DURATION_WORDS[unit](count)
+}
+
 /** The requests in an area, as My Work lists them when the area is selected. */
 export function requestsInArea(model: Pick<WorkModel, 'requests' | 'focusAreas'>, focusAreaId: string): Request[] {
   return model.requests.filter((request) => resolveFocusAreaId(request.focusAreaId, model.focusAreas) === focusAreaId)
@@ -103,11 +161,11 @@ export function toSharedFocusPage(model: Pick<WorkModel, 'requests' | 'focusArea
       state: request.state,
       stage: request.stage,
       percent: request.progress.percent,
-      next: { who: request.next.who, text: request.nextRepeatsPrompt || titleQuotesPrompt(request.next.text, request.prompts)
-        ? NEXT_STEP_NOT_RECORDED : clip(request.next.text.trim() || NEXT_STEP_NOT_RECORDED, 300) },
+      next: sharedNextStep(request),
       agent: clip(agentName(request), 80),
-      startedAt: clip(request.startedAt, 60),
-      runningFor: clip(request.runningFor, 60),
+      // The published page keeps its words from before 16.0.0 for a start that is not recorded (cmem.ai shows them).
+      startedAt: clip(recordedStart(request.startedAt) ?? LEGACY_START_NOT_RECORDED, 60),
+      runningFor: clip(sharedRunningFor(request), 60),
       completedAt: request.progress.completedAt ? clip(request.progress.completedAt, 60) : null,
     })),
     notStarted: area.asks.slice(0, SHARED_ASKS_MAX).map((ask) => ({ id: ask.id, title: clip(repeatsOwnerWords(ask.title, ask.quotes.map((quote) => quote.quote)) ? PRIVATE_ASK : ask.title, 200), timesAsked: ask.timesAsked, latestAt: ask.latestAt || null })),

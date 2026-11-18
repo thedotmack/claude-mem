@@ -24,12 +24,13 @@ export interface SyncPresentation {
    * the delivery mode, and the changes still to sync. presentSync always sets it;
    * it is optional only for presentations built elsewhere (My Work's tests).
    */
-  detailParts?: { sentence: string; mode: SyncDeliveryMode | null; remaining: string | null };
+  detailParts?: SyncDetailParts;
   tone: 'neutral' | 'positive' | 'warning';
   isCurrent: boolean;
 }
 
 type SyncDeliveryMode = Exclude<SyncStatusForDisplay['mode'], 'disabled'>;
+type SyncDetailParts = { sentence: string; mode: SyncDeliveryMode | null; remaining: string | null };
 
 /** The sentence after the state sentence that says how updates arrive. */
 export const SYNC_MODE_SENTENCES: Record<SyncDeliveryMode, string> = {
@@ -46,6 +47,34 @@ export const SYNC_VIEWER_SENTENCES = {
   stale: 'The last confirmed cloud check is old; the live connection does not prove the replica is current.',
   unconfirmed: 'Cloud freshness has not been confirmed.',
 } as const;
+
+/** The short label for each sync state (the classic viewer's header and My Work's connection chip word it by t()). */
+export const SYNC_STATE_LABELS: Record<SyncStatusForDisplay['state'], string> = {
+  unconfigured: 'Cloud sync off', unknown: 'Cloud freshness unknown', current: 'Cloud data current',
+  'catching-up': 'Cloud catching up', paused: 'Cloud sync paused', offline: 'Cloud sync unavailable',
+  partial: 'Cloud sync incomplete', stale: 'Cloud freshness stale',
+};
+/** The label for a partial sync whose only gap is local history left out of the chosen scope. */
+export const SYNC_LIMITED_SCOPE_LABEL = 'Limited sync scope';
+
+/** The detail's sentences joined, each said by `t`: the state sentence, the delivery mode, the changes still to sync. */
+function joinSyncDetail(parts: SyncDetailParts, t: (english: string) => string): string {
+  const remaining = parts.remaining;
+  return [
+    t(parts.sentence),
+    parts.mode ? t(SYNC_MODE_SENTENCES[parts.mode]) : '',
+    remaining !== null ? t(SYNC_REMAINING_SENTENCE).replace(/\{count\}/g, () => remaining) : '',
+  ].filter(Boolean).join(' ');
+}
+
+/**
+ * The sync state's full words in the reader's language (`t`): the one rule for them, which the classic viewer's
+ * header and My Work's connection chip both take, as presentSync takes it for the English `detail`. A presentation
+ * built without its parts (detailParts) keeps its English detail as it is.
+ */
+export function syncDetailWords(sync: Pick<SyncPresentation, 'detail' | 'detailParts'>, t: (english: string) => string): string {
+  return sync.detailParts ? joinSyncDetail(sync.detailParts, t) : sync.detail;
+}
 
 export const SYNC_EVIDENCE_STALE_MS = 60_000;
 
@@ -68,10 +97,10 @@ export function isSyncStatus(value: unknown): value is SyncStatusForDisplay {
 export function presentSync(status: SyncStatusForDisplay | null, receivedAt: number | null, now: number): SyncPresentation {
   if (!status) {
     const sentence = SYNC_VIEWER_SENTENCES.notReported;
-    return { state: 'unknown', label: 'Cloud freshness unknown', detail: sentence, detailParts: { sentence, mode: null, remaining: null }, tone: 'neutral', isCurrent: false };
+    return { state: 'unknown', label: SYNC_STATE_LABELS.unknown, detail: sentence, detailParts: { sentence, mode: null, remaining: null }, tone: 'neutral', isCurrent: false };
   }
   if (!status.configured) {
-    return { state: 'unconfigured', label: 'Cloud sync off', detail: status.message,
+    return { state: 'unconfigured', label: SYNC_STATE_LABELS.unconfigured, detail: status.message,
       detailParts: { sentence: status.message, mode: null, remaining: null }, tone: 'neutral', isCurrent: false };
   }
   const checked = status.checkedAt;
@@ -86,11 +115,6 @@ export function presentSync(status: SyncStatusForDisplay | null, receivedAt: num
     if (ageAtReceipt === null || elapsed === null || ageAtReceipt < 0 || elapsed < 0 || !Number.isFinite(ageAtReceipt + elapsed)) state = 'unknown';
     else if (ageAtReceipt + elapsed > SYNC_EVIDENCE_STALE_MS) state = 'stale';
   }
-  const labels: Record<SyncStatusForDisplay['state'], string> = {
-    unconfigured: 'Cloud sync off', unknown: 'Cloud freshness unknown', current: 'Cloud data current',
-    'catching-up': 'Cloud catching up', paused: 'Cloud sync paused', offline: 'Cloud sync unavailable',
-    partial: 'Cloud sync incomplete', stale: 'Cloud freshness stale',
-  };
   const limitedHistory = state === 'partial' && status.completeness.scope === 'local-history-excluded'
     && status.completeness.pushQuarantine === 0 && status.completeness.pullQuarantine === 0;
   const sentence = state !== status.state
@@ -98,9 +122,8 @@ export function presentSync(status: SyncStatusForDisplay | null, receivedAt: num
     : status.message;
   const mode = status.mode === 'disabled' ? null : status.mode;
   const remaining = state === 'catching-up' ? status.projection.remaining : null;
-  let detail = sentence;
-  if (mode) detail += ` ${SYNC_MODE_SENTENCES[mode]}`;
-  if (remaining !== null) detail += ` ${SYNC_REMAINING_SENTENCE.replace('{count}', () => remaining)}`;
-  return { state, label: limitedHistory ? 'Limited sync scope' : labels[state], detail, detailParts: { sentence, mode, remaining },
+  const detailParts = { sentence, mode, remaining };
+  const detail = joinSyncDetail(detailParts, (english) => english);
+  return { state, label: limitedHistory ? SYNC_LIMITED_SCOPE_LABEL : SYNC_STATE_LABELS[state], detail, detailParts,
     tone: state === 'current' ? 'positive' : limitedHistory || state === 'unknown' ? 'neutral' : 'warning', isCurrent: state === 'current' };
 }

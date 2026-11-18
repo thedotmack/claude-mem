@@ -5,9 +5,15 @@ import { canContinueConversations } from '../../live/conversation-continuation.t
 import { freshlyUpdatedRequestIds, mergeRecentChanges, requestChanges } from '../../live/update-queue.ts'
 import type { WorkDataSource, WorkModel } from '../../live/work-data-source.ts'
 import type { SliceCreator } from '../create-store.ts'
-import type { WorkSlice } from '../store-types.ts'
+import type { WorkReadResult, WorkSlice } from '../store-types.ts'
 
-/** How long a changed request's card shows "Just updated". */
+/**
+ * How long a changed request shows "Just updated": past the glow a layout may still play, twice at 1.6s (index.css
+ * .just-updated, 3.2s; My Work's own cards and rows show the still mark instead), and past the List's split-flap riffle
+ * into a new status (components/request-rows.tsx ListStatus; the longest label, "Done, not checked", lands after 23
+ * flaps of 55ms, 1.3s), so the tiles rest on the word before the badge returns. Cards and the List, By agent and Team
+ * rows show their still mark for the same time.
+ */
 const FRESHLY_UPDATED_FOR_MS = 4000
 /** The sample demo: the wireframe agent finishes this long after the page opens, so the status flip can be seen. */
 const SAMPLE_DEMO_FLIP_AFTER_MS = 7000
@@ -50,17 +56,24 @@ export const createWorkSlice: SliceCreator<WorkSlice> = (set, get) => {
     return source
   }
 
-  /** Reads the model. A live model that arrived during the read is newer and wins; a failure never replaces shown work. */
-  const read = async () => {
+  /**
+   * Reads the model. A live model that arrived during the read is newer and wins; a failure never replaces shown work.
+   * Answers whether it read, so a screen's Try again can say so (components/request-read-errors.tsx).
+   */
+  const read = async (): Promise<WorkReadResult> => {
     const reading = activeSource('read work from')
     const thisSession = session
     const shownBefore = modelsShown
     try {
       const model = await reading.loadWorkModel()
-      if (session === thisSession && modelsShown === shownBefore) showModel(model)
+      if (session !== thisSession) return { read: true }
+      if (modelsShown === shownBefore) showModel(model)
+      // The screen now shows what the worker holds, so a save's failed follow-up read no longer leaves it behind.
+      if (get().work.readAfterSaveFailure !== null) set((state) => { state.work.readAfterSaveFailure = null })
+      return { read: true }
     } catch (error) {
-      if (session !== thisSession || get().work.load.state === 'loaded') return
-      set((state) => { state.work.load = { state: 'failed', error: messageOf(error) } })
+      if (session === thisSession && get().work.load.state !== 'loaded') set((state) => { state.work.load = { state: 'failed', error: messageOf(error) } })
+      return { read: false, error: messageOf(error) }
     }
   }
 
@@ -71,7 +84,7 @@ export const createWorkSlice: SliceCreator<WorkSlice> = (set, get) => {
   const showSaved = async (saved: WorkModel, shownBeforeSave: number) => {
     if (modelsShown === shownBeforeSave) {
       showModel(saved)
-      set((state) => { state.work.refreshError = null })
+      set((state) => { state.work.readAfterSaveFailure = null })
       return
     }
     const thisSession = session
@@ -80,10 +93,10 @@ export const createWorkSlice: SliceCreator<WorkSlice> = (set, get) => {
       const model = await activeSource('read work from').loadWorkModel()
       if (session !== thisSession) return
       if (modelsShown === shownBeforeRead) showModel(model)
-      set((state) => { state.work.refreshError = null })
+      set((state) => { state.work.readAfterSaveFailure = null })
     } catch (error) {
       if (session !== thisSession) return
-      set((state) => { state.work.refreshError = `Saved. Reading the latest work after it failed: ${messageOf(error)}` })
+      set((state) => { state.work.readAfterSaveFailure = messageOf(error) })
     }
   }
 
@@ -105,7 +118,7 @@ export const createWorkSlice: SliceCreator<WorkSlice> = (set, get) => {
   }
 
   return {
-    work: { load: { state: 'loading' }, connection: null, freshlyUpdatedIds: new Set(), recentChanges: [], sourceKind: null, refreshError: null },
+    work: { load: { state: 'loading' }, connection: null, freshlyUpdatedIds: new Set(), recentChanges: [], sourceKind: null, readAfterSaveFailure: null },
 
     startWorkSource: (nextSource) => {
       const thisSession = ++session
@@ -127,7 +140,7 @@ export const createWorkSlice: SliceCreator<WorkSlice> = (set, get) => {
 
     retryWorkRead: async () => {
       if (get().work.load.state === 'failed') set((state) => { state.work.load = { state: 'loading' } })
-      await read()
+      return read()
     },
 
     loadRequestDetail: (request, options) => {
@@ -136,7 +149,12 @@ export const createWorkSlice: SliceCreator<WorkSlice> = (set, get) => {
       return reading.loadRequestDetail(request.id, request.detailRevision ?? request.contentFingerprint, options)
     },
 
-    receiveWorkModel: showModel,
+    // A model from the live feed that arrives after a save's follow-up read failed is the worker's newer work, past the
+    // save, so the screen is no longer behind and the notice goes (bits.tsx ReadAfterSaveNotice).
+    receiveWorkModel: (model) => {
+      showModel(model)
+      if (get().work.readAfterSaveFailure !== null) set((state) => { state.work.readAfterSaveFailure = null })
+    },
 
     // A heartbeat that changes nothing re-renders nothing.
     receiveConnection: (connection) => {

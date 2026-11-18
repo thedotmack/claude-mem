@@ -43,6 +43,7 @@ import { logger } from '../../utils/logger.js';
 import { runtimeReadRoots } from './runtime-read-roots.js';
 import { detectUsableAgents, GEMINI_NO_MCP_SERVERS, runCommand, type CommandResult, type UsableAgent, type UsableAgentId } from './detect.js';
 import { ApiProviderError, askApiTarget, resolveApiTarget } from './api-agent.js';
+import { WAITING_FOR_AGENT_REASON } from '../../shared/work-view-refresh-reasons.js';
 
 /** The model one step runs on: a Claude Code alias, a Codex model id (with reasoning effort) or a Gemini alias.
  * A missing entry or field leaves that CLI's own default. */
@@ -395,7 +396,7 @@ export async function runAgentTask(task: AgentTask, overrides: Partial<AgentRunn
   if (autoApprovedFileTools.length) throw new Error(`Agent task ${task.reason} auto-approves ${autoApprovedFileTools.join(', ')}, which would read anywhere on disk; name readableFolders instead.`);
   const dependencies = { ...defaultDependencies, ...overrides };
   if (task.allowedAgents?.length === 0) {
-    return { state: 'waiting-for-agent', agent: null, result: null, error: 'No agent is allowed to run this task.', attempts: [] };
+    return { state: 'waiting-for-agent', agent: null, result: null, error: WAITING_FOR_AGENT_REASON.noAgentAllowed, attempts: [] };
   }
   // The API agent is not a local CLI. Detecting one probes this machine's Claude Code, Codex and
   // Gemini installs, which an API-only task has no use for.
@@ -420,7 +421,7 @@ export async function runAgentTask(task: AgentTask, overrides: Partial<AgentRunn
       ? `The selected API provider cannot run this task: ${api.reason}`
       : task.allowedAgents
         ? `None of the allowed agents (${task.allowedAgents.map(agent => agentNames[agent]).join(', ')}) is logged in on this computer.`
-        : 'No logged-in Claude Code, Codex or Gemini on this computer yet.';
+        : WAITING_FOR_AGENT_REASON.noLoggedInAgent;
     return { state: 'waiting-for-agent', agent: null, result: null, error, attempts: [] };
   }
   const attempts: AgentAttempt[] = [];

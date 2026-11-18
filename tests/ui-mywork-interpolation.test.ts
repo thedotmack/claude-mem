@@ -194,23 +194,62 @@ function pageMessage(file: URL, template: string, values: Record<string, unknown
   visit(source);
   assert.ok(expression, `${file}: missing complete message ${template}`);
   const t = (text: string) => language === 'en' ? text : myworkZh[text] ?? text;
-  return new Function('t', 'interpolate', 'displayTime', ...Object.keys(values), `return ${expression.getText(source)};`)(t, interpolate, (value: string) => value, ...Object.values(values));
+  // The time formatters are held to the recorded words here: this checks the sentence around them (lib/display-time.ts
+  // has its own tests).
+  return new Function('t', 'interpolate', 'displayTime', 'recordedTimeWords', ...Object.keys(values), `return ${expression.getText(source)};`)(
+    t, interpolate, (value: string) => value, (_iso: unknown, words: string) => words, ...Object.values(values));
 }
 
 for (const language of ['en', 'zh-CN']) {
   test(`request metadata and conditional rules use complete sentences (${language})`, () => {
     const request = { askedBy: '$& {time}', startedAt: 'Nov 3', runningFor: '2 min', stage: 'Building' };
-    const metadata = pageMessage(new URL('request-detail.tsx', components), 'Asked by {name} · started {time} · {duration} · {stage}', { request }, language);
+    // The duration is worded by live-motion.tsx durationWords; an older worker's text shows as it is, as here.
+    const durationWords = (milliseconds: number | undefined, olderWorkerText: string) => milliseconds === undefined ? olderWorkerText : String(milliseconds);
+    // `started` is the recorded start (live/to-work-model.ts recordedStart); a run's finish is live/running-time.ts's.
+    const scope = { request, durationWords, started: request.startedAt, isFinishedRun: () => false };
+    const metadata = pageMessage(new URL('request-detail.tsx', components), 'Asked by {name} · started {time} · {duration} · {stage}', scope, language);
     const stage = language === 'en' ? request.stage : myworkZh[request.stage] ?? request.stage;
     assert.equal(metadata, language === 'en' ? `Asked by ${request.askedBy} · started Nov 3 · 2 min · ${stage}` : `由 ${request.askedBy} 发起 · 开始于 Nov 3 · 2 min · ${stage}`);
+    // A start that was never recorded is its own sentence, in the reader's language (it was the mapper's English).
+    const unrecorded = pageMessage(new URL('request-detail.tsx', components), 'Asked by {name} · start not recorded · {duration} · {stage}', { ...scope, started: null }, language);
+    assert.equal(unrecorded, language === 'en' ? `Asked by ${request.askedBy} · start not recorded · 2 min · ${stage}` : `由 ${request.askedBy} 发起 · 未记录开始时间 · 2 min · ${stage}`);
+    // After a check the drawer says when, then where, as sentences of their own (c-request-detail-check-action).
     const checked = { ...request, checkedAt: '$& {checked}' };
-    assert.equal(pageMessage(new URL('request-detail.tsx', components), '{checked} Shipping is still your call. ', { request: checked, notice: null }, language),
-      language === 'en' ? 'Checked $& {checked}. Shipping is still your call. ' : '已于 $& {checked} 检查。 是否交付仍由您决定。 ');
+    assert.equal(pageMessage(new URL('request-detail.tsx', components), 'Checked {checkedAt}.', { request: checked }, language),
+      language === 'en' ? 'Checked $& {checked}.' : '已于 $& {checked} 检查。');
     const rule = { when: '$& {then}', then: '$$ {when}' };
     assert.equal(pageMessage(new URL('my-work.tsx', pages), 'When {when}: {then}', { rule }, language),
       language === 'en' ? `When ${rule.when}: ${rule.then}` : `当 ${rule.when} 时：${rule.then}`);
     assert.equal(pageMessage(new URL('suggested-areas.tsx', pages), 'Why it’s suggested: {reason}', {
       area: { quotes: [], evidence: '$& {reason}' }, SOURCE_TEXT: {},
     }, language), language === 'en' ? 'Why it’s suggested: $& {reason}' : '建议原因：$& {reason}');
+  });
+}
+
+// FeedbackLink and GitHubStars (components/bits.tsx) keep their aria-labels, and each name must hold the words the
+// button shows (label in name, WCAG 2.5.3): French named them without the visible "Commentaires" and "Ajouter aux favoris".
+test('the Star and Feedback buttons are named with their visible words in every language', async () => {
+  const { myworkKo } = await import('../src/ui/i18n/mywork-ko.ts');
+  const { myworkTr } = await import('../src/ui/i18n/mywork-tr.ts');
+  const { myworkFr } = await import('../src/ui/i18n/mywork-fr.ts');
+  for (const [locale, catalog] of Object.entries({ zh: myworkZh, ko: myworkKo, tr: myworkTr, fr: myworkFr })) {
+    for (const [visible, name] of [['Star', 'Star claude-mem on GitHub'], ['Feedback', 'Send feedback about My Work on GitHub']]) {
+      const shown = catalog[visible].toLocaleLowerCase(locale);
+      assert.ok(catalog[name].toLocaleLowerCase(locale).includes(shown), `${locale}: "${catalog[name]}" does not hold "${catalog[visible]}"`);
+    }
+  }
+});
+
+// Phase 6 fix AP-L10: "Shared" and its comment count are one sentence, one key, in the Sharing row and on the mark; the
+// row joined two translations with a fixed " · " outside t().
+for (const language of ['en', 'zh-CN']) {
+  test(`a shared area's comment count is one sentence with "Shared" (${language})`, () => {
+    const commentsWords = (count: number) => count === 1 ? '1 comment' : `${count} comments`;
+    const row = pageMessage(new URL('share-focus.tsx', components), 'Shared · {comments}', { commentsWords, count: 2 }, language);
+    assert.equal(row, language === 'en' ? 'Shared · 2 comments' : '已分享 · 2 comments');
+    const source = readFileSync(new URL('share-focus.tsx', components), 'utf8');
+    // The mark says the same sentence around its count's own element (its accessible description).
+    assert.match(source, /sentenceWith\(t\('Shared · \{comments\}'\), 'comments',/);
+    assert.doesNotMatch(source, /\$\{t\('Shared'\)\} ·/);
   });
 }

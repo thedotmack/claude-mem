@@ -6,7 +6,7 @@ import { FocusShares } from '../../src/services/work-view/focus-share.js';
 import { FocusSharePublisher } from '../../src/services/work-view/focus-share-publisher.js';
 import { sampleSource } from '../../src/ui/my-work/src/live/sample-source.ts';
 import { toSharedFocusPage } from '../../src/ui/my-work/src/live/to-shared-focus.ts';
-import { NEXT_STEP_NOT_RECORDED, toWorkModel } from '../../src/ui/my-work/src/live/to-work-model.ts';
+import { NEXT_STEP_NOT_RECORDED, NO_WORK_YET, toWorkModel } from '../../src/ui/my-work/src/live/to-work-model.ts';
 
 const cleanups: Array<() => void> = [];
 afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); });
@@ -66,4 +66,45 @@ test('independently written summaries and next steps remain useful on the shared
   const shared = toSharedFocusPage({ ...model, requests: [request] }, 'fa-viewer', NOW)!.requests[0];
   expect(shared.summary).toBe(request.summary);
   expect(shared.next).toEqual(request.next);
+});
+
+// Decision G3: the model carries a missing step as a value, and My Work leaves the line out. The page cmem.ai draws still
+// needs a line (its snapshot schema takes next.text as at least one character), so the shared page words the value with
+// the same English it showed before 16.0.0, and an older worker's filler reads the same way.
+test('a request with no recorded step publishes the shared page\'s words for why, never an empty line', async () => {
+  const model = await sampleSource.loadWorkModel();
+  const cases = [
+    [{ who: 'bot' as const, missing: 'not-recorded' as const }, NEXT_STEP_NOT_RECORDED],
+    [{ who: 'human' as const, missing: 'no-agent-work' as const }, NO_WORK_YET],
+    [{ who: 'bot' as const, text: NEXT_STEP_NOT_RECORDED }, NEXT_STEP_NOT_RECORDED],
+    [{ who: 'bot' as const, text: NO_WORK_YET }, NO_WORK_YET],
+  ] as const;
+  for (const [next, words] of cases) {
+    const request = { ...model.requests[0], next };
+    const shared = toSharedFocusPage({ ...model, requests: [request] }, 'fa-viewer', NOW)!.requests[0];
+    expect(shared.next).toEqual({ who: next.who, text: words });
+  }
+});
+
+// The model now carries step kinds and durations as values (data.ts NextStepKind, Request.runningForMs). The shared page
+// still publishes the English the mapper wrote before 16.0.0, word for word, so its payload is the one it was. The
+// blocked request with no step is the case a check found changed ("Unblock: " had been dropped).
+test('the shared page publishes the step kinds and durations in the same English as before 16.0.0', async () => {
+  const model = await sampleSource.loadWorkModel();
+  const steps = [
+    [{ who: 'human' as const, kind: 'ship' as const }, 'Ship it'],
+    [{ who: 'human' as const, kind: 'unblock' as const, text: 'Pick which forecast to keep' }, 'Unblock: Pick which forecast to keep'],
+    [{ who: 'human' as const, kind: 'unblock' as const, missing: 'not-recorded' as const }, `Unblock: ${NEXT_STEP_NOT_RECORDED}`],
+    [{ who: 'bot' as const, text: 'Finish the My Rules screens' }, 'Finish the My Rules screens'],
+  ] as const;
+  for (const [next, words] of steps) {
+    const shared = toSharedFocusPage({ ...model, requests: [{ ...model.requests[0], next }] }, 'fa-viewer', NOW)!.requests[0];
+    expect(shared.next).toEqual({ who: next.who, text: words });
+  }
+  const minute = 60_000;
+  const durations = [[30_000, 'Just started'], [42 * minute, '42 min'], [2 * 60 * minute, '2 hr'], [24 * 60 * minute, '1 day'], [3 * 24 * 60 * minute, '3 days'], [null, 'Not recorded']] as const;
+  for (const [runningForMs, words] of durations) {
+    const shared = toSharedFocusPage({ ...model, requests: [{ ...model.requests[0], runningForMs }] }, 'fa-viewer', NOW)!.requests[0];
+    expect(shared.runningFor).toBe(words);
+  }
 });

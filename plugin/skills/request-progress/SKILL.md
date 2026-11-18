@@ -145,7 +145,7 @@ Run `$CLI story-input`. Without a previous story it returns every review; with o
 
 Write:
 
-- `narrative` (markdown, about 8000 chars and never over 12000, blocks separated by blank lines, `## ` headings for chapters): a chronological build story. Lead with a short paragraph on shipping velocity (My Work shows it as the recap), then what was set out, what shipped and when, how long ask-to-ship took, where work stalled or was reworked, and what that teaches. Use only the dated facts in the reviews. Refer to the person as "the owner" or "they"; never guess pronouns.
+- `narrative` (markdown, about 8000 chars and never over 12000, blocks separated by blank lines, `## ` headings for chapters): a chronological build story. Lead with a short paragraph on shipping velocity (My Work shows it as the recap), then what was set out, what shipped and when, how long ask-to-ship took, where work stalled or was reworked, and what that teaches. Use only the dated facts in the reviews. Refer to the person as "the owner" or "they"; never guess pronouns. A heading that starts with a date writes it as `show` and `story-input` give it, in UTC, like `## Nov 16 01:56: …` (My Work shows it in the reader's own time).
 - `preferences` (≤30): merge the per-request preferences into distinct, actionable statements of how the owner likes to work with agents. `supportCount` is how many requests showed it; keep up to 3 verbatim quotes with dates. Drop one-off remarks.
 
 ```bash

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { SAMPLE_REQUESTS, type FocusArea, type Request } from '../data.ts'
-import { focusOverview } from './focus-overview.ts'
+import { focusOverview, needsOwnerFirst } from './focus-overview.ts'
 
 const area = (id: string, fields: Partial<FocusArea> = {}): FocusArea => ({
   id, name: id, goal: null, status: 'kept', ownerRank: null, priorityRank: null, source: 'owner',
@@ -48,4 +48,11 @@ test('requests with matching titles remain unsorted and done work does not becom
   assert.deepEqual(overview.areas[0].requests, [])
   assert.deepEqual(overview.sorting.map((entry) => entry.id), ['unplaced'])
   assert.deepEqual(overview.other, [])
+})
+
+test('the board puts areas that need the owner first, each part in the saved order, and leaves the saved order alone', () => {
+  const areas = [area('a', { ownerRank: 1 }), area('b', { ownerRank: 2 }), area('c', { ownerRank: 3 }), area('d', { ownerRank: 4 })]
+  const overview = focusOverview(areas, [request('waits-on-d', 'd', { state: 'your-move' }), request('waits-on-b', 'b', { state: 'needs-check' }), request('moving-in-a', 'a', { state: 'working' })])
+  assert.deepEqual(needsOwnerFirst(overview.areas).map((row) => row.area.id), ['b', 'd', 'a', 'c'])
+  assert.deepEqual(overview.areas.map((row) => row.area.id), ['a', 'b', 'c', 'd'], 'the overview itself keeps the saved order')
 })

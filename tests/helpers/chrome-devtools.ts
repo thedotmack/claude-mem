@@ -54,6 +54,84 @@ export function compileBrowserFixture(fixtureSource: string, extraEsbuildArgumen
 }
 
 export const FIXTURE_PAGE_HTML = '<div id="root"></div><script src="/fixture.js"></script>';
+
+/**
+ * My Work's font files for a fixture page that loads the app's compiled stylesheet. Its @font-face rules ask for
+ * `./files/<face>-<subset>-wght-<style>.woff2`, from each package index.css imports: Geist for the text and Geist Mono
+ * for the terminal lines; the file name says which. Null for any other path, so the server can answer it.
+ */
+export function myWorkFontResponse(path: string): Response | null {
+  const font = /^\/files\/((geist-mono|geist)-[a-z0-9-]+\.woff2)$/.exec(path);
+  if (!font) return null;
+  const file = join(REPOSITORY_ROOT, 'src/ui/my-work/node_modules/@fontsource-variable', font[2], 'files', font[1]);
+  return new Response(Bun.file(file), { headers: { 'Content-Type': 'font/woff2' } });
+}
+/**
+ * A classic scrollbar, 15px wide, for a fixture page whose address asks for one (`scrollbar=classic`): Chrome on Linux
+ * (CI) and Windows draws one in every box that scrolls, and headless Chrome on a Mac draws none (overlay scrollbars).
+ * One rule before the app's stylesheet gave CI's exact widths on a Mac (PR #6210 watch, 2026-11-17: 753 at a 768px
+ * window; the List's title column 175.5px at 1366; the drawer's reply row 509px at 1440). Width-sensitive tests run
+ * with and without it, so a Mac run shows what CI and Windows show.
+ */
+export const CLASSIC_SCROLLBAR_STYLE = '<style>::-webkit-scrollbar{width:15px;height:15px}</style>';
+/**
+ * No scrollbar, for a fixture page whose address asks for none (`scrollbar=none`). Leaving CLASSIC_SCROLLBAR_STYLE out
+ * is not enough: Chrome on Linux and Windows then draws its own 15px one (PR #6210 CI, 2026-11-17: a "no scrollbar" run
+ * that only left the style out had the List's table from 1380px, as with a scrollbar, where a Mac had it at 1366).
+ */
+export const NO_SCROLLBAR_STYLE = '<style>::-webkit-scrollbar{width:0;height:0}</style>';
+/** The style for the scrollbar the fixture page's address asks for (`scrollbar=classic` or `none`); nothing when it asks for none of them. */
+export function scrollbarStyleFor(requestUrl: string): string {
+  const scrollbar = new URL(requestUrl).searchParams.get('scrollbar');
+  if (scrollbar === null) return '';
+  if (scrollbar === 'classic') return CLASSIC_SCROLLBAR_STYLE;
+  if (scrollbar === 'none') return NO_SCROLLBAR_STYLE;
+  throw new Error(`scrollbar=${scrollbar} is neither classic nor none`);
+}
+/**
+ * The two scrollbars each width-sensitive test runs with, the same on every machine: none (headless Chrome on a Mac
+ * draws overlay ones) and a classic 15px one (Chrome on Linux CI and on Windows). `query` goes on the fixture's address.
+ */
+export const SCROLLBAR_MODES = [
+  { label: 'no scrollbar', query: '&scrollbar=none', classic: false },
+  { label: 'a classic 15px scrollbar', query: '&scrollbar=classic', classic: true },
+] as const;
+/** The width a classic scrollbar takes from the page: CLASSIC_SCROLLBAR_STYLE's, and Chrome's own on Linux and Windows. */
+export const CLASSIC_SCROLLBAR_PX = 15;
+/**
+ * The page's clock pinned to one instant, as bun:test's setSystemTime pins the test process's, for a fixture page whose
+ * address asks for it (`clock=<an ISO instant>`): Date.now() and new Date() read that instant (dates built from parts,
+ * Date.parse and Date.UTC are as they were; timers and performance.now() run on). For a test whose words depend on the
+ * day: My Work says a time from another day of this year "Oct 20, 1:17 pm" and one from another year "Oct 20, 2026,
+ * 1:17 pm" (display-time.ts clockTime), so a test of fixed instants that reads the real clock passes only in the year it
+ * was written. Serve it first in the page, before any script reads the time. Nothing when the address does not ask.
+ */
+export function pinnedClockFor(requestUrl: string): string {
+  const instant = new URL(requestUrl).searchParams.get('clock');
+  if (instant === null) return '';
+  const pinned = Date.parse(instant);
+  if (!Number.isFinite(pinned)) throw new Error(`clock=${instant} is not an ISO instant`);
+  return `<script>(() => { const RealDate = Date; function PinnedDate(...parts) { if (!new.target) return new RealDate(${pinned}).toString(); return parts.length ? new RealDate(...parts) : new RealDate(${pinned}); }
+    PinnedDate.prototype = RealDate.prototype; PinnedDate.now = () => ${pinned}; PinnedDate.parse = RealDate.parse; PinnedDate.UTC = RealDate.UTC; window.Date = PinnedDate; })();</script>`;
+}
+/**
+ * For "nothing scrolls sideways, at the width the test names": the window's width (`window`), the page's (`page`, the
+ * window less a scrollbar where one is drawn) and how wide the page's content runs (`scrolled`). Read it with
+ * `page.evaluate(PAGE_WIDTHS)` and check it with pageFitsTheWindow, so the run proves the width it claims as well as
+ * no sideways scroll (Phase 6 fix AP-L6: comparing the page with its own width alone proved no width at all).
+ */
+export const PAGE_WIDTHS = '({ window: innerWidth, page: document.documentElement.clientWidth, scrolled: document.documentElement.scrollWidth })';
+/**
+ * What PAGE_WIDTHS should read at a `width` window: the window that wide, the page that wide or a classic scrollbar
+ * narrower (a touch phone draws overlay scrollbars, so there it is the window's width), and nothing past the page.
+ * Answers the reading as found, with each check true or false, so a failure shows the numbers.
+ */
+export function pageFitsTheWindow(reading: { window: number; page: number; scrolled: number }, width: number, { touch = false } = {}) {
+  const pageWidths = touch ? [width] : [width, width - CLASSIC_SCROLLBAR_PX];
+  return { ...reading, windowIsTheWidth: reading.window === width, pageIsTheWindowLessAScrollbar: pageWidths.includes(reading.page), nothingSideways: reading.scrolled === reading.page };
+}
+/** What pageFitsTheWindow answers when the page fits. */
+export const FITS_THE_WINDOW = { windowIsTheWidth: true, pageIsTheWindowLessAScrollbar: true, nothingSideways: true };
 export const htmlResponse = (html: string) => new Response(html, { headers: { 'Content-Type': 'text/html' } });
 export const scriptResponse = (script: string) => new Response(script, { headers: { 'Content-Type': 'application/javascript' } });
 

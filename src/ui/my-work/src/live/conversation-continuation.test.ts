@@ -14,9 +14,11 @@ import {
   conversationReadFailureView, buttonLabelsKeepingTheirWidth, conversationControlNames, conversationRouteFailureSentence, focusAfterSendOrStop, folderPathForDisplay, isContinuableConversation,
   sentenceAroundFolder, readConversationContinuationAnswer, readConversationContinuationNotice, readConversationExchangeAnswer, readOpenedInAppAnswer,
   resumeCommandCopyFailureWords, unreachableWorkerSentence, unreadableAnswerSentence, type ButtonLabelInPlace, type ContinuationWords,
+  CONVERSATION_CALL_FAILURE_WORDS, REPLY_CARD_STATES, conversationIdChip, conversationKey, conversationNaming, defaultReplyConversation, folderPathsCutAtFolders, replyCardState,
 } from './conversation-continuation.ts'
+import { legacyUntitledConversationTitle } from './to-work-model.ts'
 import { createLocalSource } from './local-source.ts'
-import { sampleSource } from './sample-source.ts'
+import { SAMPLE_STATES, sampleSource, sampleSourceAtThisAddress } from './sample-source.ts'
 
 const SESSION = '0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d'
 const OTHER_SESSION = '9f8e7d6c-5b4a-4c3d-8e2f-1a0b9c8d7e6f'
@@ -206,8 +208,9 @@ describe('what a row shows when a read of its conversation failed', () => {
     buttonLabelsKeepingTheirWidth(view.tryAgainLabel, view.tryingAgainLabel, view.isTryingAgain)
 
   it('the reason, whole, and "Try again", for the first read and any later one alike', () => {
+    // The plain sentence is what shows; the reason, whole, is folded under Details (G17, fix round M1).
     assert.deepEqual(conversationReadFailureView(unreachable, false), {
-      failureText: unreachable, tryAgainLabel: 'Try again', tryingAgainLabel: 'Trying again…', isTryingAgain: false,
+      sentence: CONVERSATION_CALL_FAILURE_WORDS.read, failureText: unreachable, tryAgainLabel: 'Try again', tryingAgainLabel: 'Trying again…', isTryingAgain: false,
     })
     assert.equal(conversationReadFailureView(LONG_TEXT, false)?.failureText.length, LONG_TEXT.length)
   })
@@ -243,46 +246,62 @@ describe('what a row shows when a read of its conversation failed', () => {
   })
 })
 
-describe('what a row\'s message box, Send and Stop are called for a screen reader', () => {
+describe('what a conversation\'s message box, Send, Stop and "Reply here" are called for a screen reader', () => {
   const inEnglish = (words: ContinuationWords) => interpolate(words.english, words.values)
-  const namesFor = (fields: Partial<Parameters<typeof conversationControlNames>[0]> = {}) => conversationControlNames({
-    toolName: 'Claude Code', conversationTitle: 'Fix the login flow', conversationSessionId: SESSION, anotherConversationHasTheSameTitle: false, ...fields,
-  })
+  // As the row names a conversation (conversationNaming, worded in the page's language): its name, then its id chip.
+  const untitled = 'Claude Code conversation 0a1b2c3d'
+  const titled = 'Fix the login flow 9f8e7d6c'
 
-  it('names the conversation each Send and Stop acts on, so a request with several does not read "Send, Send, Send"', () => {
-    const first = namesFor()
-    const second = namesFor({ conversationTitle: 'Write the release notes', conversationSessionId: OTHER_SESSION })
-    assert.equal(inEnglish(first.sendButton), 'Send to the Claude Code conversation “Fix the login flow”')
-    assert.equal(inEnglish(first.stopButton), 'Stop the turn in the Claude Code conversation “Fix the login flow”')
-    assert.notEqual(inEnglish(first.sendButton), inEnglish(second.sendButton))
-    assert.notEqual(inEnglish(first.stopButton), inEnglish(second.stopButton))
-    // The box keeps the label it had: the tool only.
-    assert.equal(inEnglish(first.messageBox), 'Continue this Claude Code conversation')
-  })
-
-  it('adds the end of each session id when another row shows the same title', () => {
-    // Codex session ids are time-ordered: conversations started within a minute share the title made from their start.
-    const title = 'Conversation abcd0123'
-    const first = namesFor({ toolName: 'Codex', conversationTitle: title, conversationSessionId: 'abcd0123-4e5f-7a6b-8c7d-9e0f1a2b3c4d', anotherConversationHasTheSameTitle: true })
-    const second = namesFor({ toolName: 'Codex', conversationTitle: title, conversationSessionId: 'abcd0123-77aa-7bcd-8e2f-1a0b9c8d7e6f', anotherConversationHasTheSameTitle: true })
-    assert.equal(inEnglish(first.messageBox), 'Continue this Codex conversation (…1a2b3c4d)')
-    assert.equal(inEnglish(first.sendButton), 'Send to the Codex conversation “Conversation abcd0123” (…1a2b3c4d)')
-    assert.equal(inEnglish(second.stopButton), 'Stop the turn in the Codex conversation “Conversation abcd0123” (…9c8d7e6f)')
-    for (const control of ['messageBox', 'sendButton', 'stopButton'] as const) {
+  it('names the conversation each control acts on as its row does, so a request with several does not read "Send, Send, Send" (L6, Q13)', () => {
+    const first = conversationControlNames(untitled)
+    const second = conversationControlNames(titled)
+    assert.equal(inEnglish(first.messageBox), 'Your reply to Claude Code conversation 0a1b2c3d')
+    assert.equal(inEnglish(first.sendButton), 'Send to Claude Code conversation 0a1b2c3d')
+    assert.equal(inEnglish(first.stopButton), 'Stop the turn in Claude Code conversation 0a1b2c3d')
+    assert.equal(inEnglish(first.replyHere), 'Reply here to Claude Code conversation 0a1b2c3d')
+    for (const control of ['messageBox', 'sendButton', 'stopButton', 'replyHere'] as const) {
       assert.notEqual(inEnglish(first[control]), inEnglish(second[control]), control)
+      // The mapper's English for an untitled conversation never names a control (rule 4).
+      assert.doesNotMatch(inEnglish(first[control]), /“Conversation /, control)
     }
   })
 
-  it('has Chinese, Korean and Turkish words for every name, and each button\'s name holds the word it shows', () => {
-    for (const names of [namesFor(), namesFor({ anotherConversationHasTheSameTitle: true })]) {
-      // Someone who speaks to their computer says the word they see, so a name holds it (WCAG 2.5.3, label in name).
-      assert.ok(names.sendButton.english.startsWith('Send '))
-      assert.ok(names.stopButton.english.startsWith('Stop '))
-      for (const [locale, catalog] of Object.entries({ 'zh-CN': myworkZh, ko: myworkKo, tr: myworkTr })) {
-        for (const words of Object.values(names)) assert.ok(catalog[words.english]?.trim(), `${locale} has no words for ${words.english}`)
-        const lower = (text: string) => text.toLocaleLowerCase(locale)
-        assert.ok(lower(catalog[names.sendButton.english]).includes(lower(catalog['Send'])), `${locale}: ${catalog[names.sendButton.english]}`)
-        assert.ok(lower(catalog[names.stopButton.english]).includes(lower(catalog['Stop'])), `${locale}: ${catalog[names.stopButton.english]}`)
+  it('two conversations whose ids start alike (Codex ids started within a minute) get different names, by the end of their ids', () => {
+    const name = (id: string, others: string[]) => `Codex conversation ${conversationNaming({ tool: 'Codex', title: null, conversationSessionId: id }, [id, ...others].map((conversationSessionId) => ({ conversationSessionId }))).idChip}`
+    const first = 'abcd0123-4e5f-7a6b-8c7d-9e0f1a2b3c4d'
+    const second = 'abcd0123-77aa-7bcd-8e2f-1a0b9c8d7e6f'
+    assert.equal(inEnglish(conversationControlNames(name(first, [second])).sendButton), 'Send to Codex conversation …1a2b3c4d')
+    assert.equal(inEnglish(conversationControlNames(name(second, [first])).stopButton), 'Stop the turn in Codex conversation …9c8d7e6f')
+    // The exported box for one conversation has no list beside it: its caller says another row reads the same.
+    assert.equal(conversationIdChip(first, true), '…1a2b3c4d')
+    assert.equal(conversationIdChip(first, false), 'abcd0123')
+  })
+
+  it('has words in every language My Work speaks for every name, and each name holds the words its control shows', () => {
+    const names = conversationControlNames(untitled)
+    // Someone who speaks to their computer says the words they see, so a name holds them (WCAG 2.5.3, label in name).
+    const shown: Array<[label: string, name: ContinuationWords]> = [
+      ['Your reply', names.messageBox], ['Send', names.sendButton], ['Stop', names.stopButton], ['Reply here', names.replyHere],
+    ]
+    for (const [label, name] of shown) assert.ok(name.english.startsWith(`${label} `), name.english)
+    for (const [locale, catalog] of Object.entries({ 'zh-CN': myworkZh, ko: myworkKo, tr: myworkTr, fr: myworkFr })) {
+      const lower = (text: string) => text.toLocaleLowerCase(locale)
+      for (const [label, name] of shown) {
+        assert.ok(catalog[name.english]?.trim(), `${locale} has no words for ${name.english}`)
+        assert.ok(lower(catalog[name.english]).includes(lower(catalog[label])), `${locale}: ${catalog[name.english]}`)
+      }
+    }
+  })
+})
+
+describe('a call that failed, in plain words (G17, fix round M1)', () => {
+  it('one plain sentence per call, in every language My Work speaks; why it failed is the Details', () => {
+    for (const [call, sentence] of Object.entries(CONVERSATION_CALL_FAILURE_WORDS)) {
+      assert.ok(sentence.trim(), call)
+      // A sentence for people: no status code, no code word, no raw cause.
+      assert.doesNotMatch(sentence, /\d{3}|Error|:/, call)
+      for (const [language, catalog] of Object.entries({ zh: myworkZh, ko: myworkKo, tr: myworkTr, fr: myworkFr })) {
+        assert.ok(catalog[sentence]?.trim(), `${language} has words for the failed ${call}: ${sentence}`)
       }
     }
   })
@@ -290,20 +309,22 @@ describe('what a row\'s message box, Send and Stop are called for a screen reade
 
 describe('what a row offers beside Send', () => {
   const inEnglish = (words: ContinuationWords) => interpolate(words.english, words.values)
-  const claudeRow = { platform: 'claude' as const, conversationSessionId: SESSION, toolName: 'Claude Code', conversationTitle: 'Fix the login flow', anotherConversationHasTheSameTitle: false }
-  const codexRow = { ...claudeRow, platform: 'codex' as const, toolName: 'Codex', conversationTitle: 'Write the release notes' }
+  // Each row named as conversationNaming names it, worded in the page's language: its name, then its id chip.
+  const claudeRow = { platform: 'claude' as const, conversationSessionId: SESSION, conversationName: 'Fix the login flow 0a1b2c3d' }
+  const codexRow = { ...claudeRow, platform: 'codex' as const, conversationName: 'Write the release notes 0a1b2c3d' }
 
   it('a Claude Code conversation: Open in Claude, the command that resumes it, and the folder its turn runs in', () => {
     const actions = conversationAppActions(claudeRow, runsInRecordedFolder, true)
     assert.deepEqual(actions, {
       openInApp: {
+        app: 'Claude',
         label: { english: 'Open in {app}', values: { app: 'Claude' } },
-        buttonName: { english: 'Open in {app}: the {tool} conversation “{title}”', values: { app: 'Claude', tool: 'Claude Code', title: 'Fix the login flow' } },
+        buttonName: { english: 'Open in {app}: {conversation}', values: { app: 'Claude', conversation: 'Fix the login flow 0a1b2c3d' } },
       },
       copyResumeCommand: {
         command: `claude --resume ${SESSION}`,
-        buttonName: { english: 'Copy resume command for the {tool} conversation “{title}”', values: { tool: 'Claude Code', title: 'Fix the login flow' } },
-        copiedButtonName: { english: 'Copied the resume command for the {tool} conversation “{title}”', values: { tool: 'Claude Code', title: 'Fix the login flow' } },
+        buttonName: { english: 'Copy resume command for {conversation}', values: { conversation: 'Fix the login flow 0a1b2c3d' } },
+        copiedButtonName: { english: 'Copied the resume command for {conversation}', values: { conversation: 'Fix the login flow 0a1b2c3d' } },
       },
       runsInFolderNotice: { english: 'Runs in {folder}', values: { folder: RECORDED_FOLDER } },
     })
@@ -315,7 +336,7 @@ describe('what a row offers beside Send', () => {
     const actions = conversationAppActions(codexRow, opensInNoAppHere, true)
     assert.equal(actions?.openInApp, null)
     assert.equal(actions?.copyResumeCommand.command, `codex resume ${SESSION}`)
-    assert.equal(inEnglish(actions!.copyResumeCommand.buttonName), 'Copy resume command for the Codex conversation “Write the release notes”')
+    assert.equal(inEnglish(actions!.copyResumeCommand.buttonName), 'Copy resume command for Write the release notes 0a1b2c3d')
     assert.deepEqual(actions?.runsInFolderNotice, { english: 'Runs in {folder}', values: { folder: RECORDED_FOLDER } }, 'where to cd before the command')
   })
 
@@ -326,9 +347,10 @@ describe('what a row offers beside Send', () => {
     assert.deepEqual(actions?.runsInFolderNotice, { english: 'Runs in {folder}', values: { folder: RECORDED_FOLDER } })
   })
 
-  it('names the Open button after the app the worker says opens it', () => {
+  it('names the Open button after the app the worker says opens it, and gives that app for the line saying it opened there (R1)', () => {
     const actions = conversationAppActions(claudeRow, { ...runsInRecordedFolder, opensInAppNamed: 'Claude Desktop' }, true)
     assert.equal(inEnglish(actions!.openInApp!.label), 'Open in Claude Desktop')
+    assert.equal(actions!.openInApp!.app, 'Claude Desktop')
   })
 
   it('no Open when the page cannot ask the worker to open it; the command can still be copied', () => {
@@ -356,20 +378,19 @@ describe('what a row offers beside Send', () => {
     assert.equal(String(actions?.runsInFolderNotice?.values.folder).length, oddFolder.length, 'the folder is shown whole, beside the command')
   })
 
-  it('names each button for the conversation it acts on, with the end of its session id when another row shows the same title', () => {
-    const title = 'Conversation abcd0123'
-    const first = conversationAppActions({ ...claudeRow, conversationTitle: title, conversationSessionId: 'abcd0123-4e5f-7a6b-8c7d-9e0f1a2b3c4d', anotherConversationHasTheSameTitle: true }, runsInRecordedFolder, true)!
-    const second = conversationAppActions({ ...claudeRow, conversationTitle: title, conversationSessionId: 'abcd0123-77aa-7bcd-8e2f-1a0b9c8d7e6f', anotherConversationHasTheSameTitle: true }, runsInRecordedFolder, true)!
-    assert.equal(inEnglish(first.openInApp!.buttonName), 'Open in Claude: the Claude Code conversation “Conversation abcd0123” (…1a2b3c4d)')
-    assert.equal(inEnglish(first.copyResumeCommand.buttonName), 'Copy resume command for the Claude Code conversation “Conversation abcd0123” (…1a2b3c4d)')
-    assert.equal(inEnglish(second.copyResumeCommand.copiedButtonName), 'Copied the resume command for the Claude Code conversation “Conversation abcd0123” (…9c8d7e6f)')
+  it('names each button for the conversation it acts on, as its row names it, so two that read alike are told apart by their id chips', () => {
+    const first = conversationAppActions({ ...claudeRow, conversationName: 'Claude Code conversation …1a2b3c4d', conversationSessionId: 'abcd0123-4e5f-7a6b-8c7d-9e0f1a2b3c4d' }, runsInRecordedFolder, true)!
+    const second = conversationAppActions({ ...claudeRow, conversationName: 'Claude Code conversation …9c8d7e6f', conversationSessionId: 'abcd0123-77aa-7bcd-8e2f-1a0b9c8d7e6f' }, runsInRecordedFolder, true)!
+    assert.equal(inEnglish(first.openInApp!.buttonName), 'Open in Claude: Claude Code conversation …1a2b3c4d')
+    assert.equal(inEnglish(first.copyResumeCommand.buttonName), 'Copy resume command for Claude Code conversation …1a2b3c4d')
+    assert.equal(inEnglish(second.copyResumeCommand.copiedButtonName), 'Copied the resume command for Claude Code conversation …9c8d7e6f')
     for (const names of [(actions: typeof first) => actions.openInApp!.buttonName, (actions: typeof first) => actions.copyResumeCommand.buttonName, (actions: typeof first) => actions.copyResumeCommand.copiedButtonName]) {
       assert.notEqual(inEnglish(names(first)), inEnglish(names(second)))
     }
   })
 
-  it('has Chinese, Korean and Turkish words for each, and each button\'s name holds the words it shows', () => {
-    for (const actions of [conversationAppActions(claudeRow, runsInRecordedFolder, true)!, conversationAppActions({ ...claudeRow, anotherConversationHasTheSameTitle: true }, runsInRecordedFolder, true)!]) {
+  it('has words in every language My Work speaks for each, and each button\'s name holds the words it shows', () => {
+    for (const actions of [conversationAppActions(claudeRow, runsInRecordedFolder, true)!]) {
       const { openInApp, copyResumeCommand, runsInFolderNotice } = actions
       // Someone who speaks to their computer says the words they see, so a name holds them (WCAG 2.5.3, label in name).
       const buttons: Array<[label: string, name: ContinuationWords]> = [
@@ -377,8 +398,8 @@ describe('what a row offers beside Send', () => {
       ]
       for (const [label, name] of buttons) assert.ok(name.english.startsWith(`${label}`), name.english)
       const words = [openInApp!.label.english, ...buttons.map(([label, name]) => [label, name.english]).flat(), runsInFolderNotice!.english,
-        'Opening…', 'Could not copy the command: {reason}', 'Copy it from here:']
-      for (const [locale, catalog] of Object.entries({ 'zh-CN': myworkZh, ko: myworkKo, tr: myworkTr })) {
+        'Opening…', 'Copy it from here:']
+      for (const [locale, catalog] of Object.entries({ 'zh-CN': myworkZh, ko: myworkKo, tr: myworkTr, fr: myworkFr })) {
         for (const english of words) assert.ok(catalog[english]?.trim(), `${locale} has no words for ${english}`)
         const lower = (text: string) => text.toLocaleLowerCase(locale)
         for (const [label, name] of buttons) assert.ok(lower(catalog[name.english]).includes(lower(catalog[label])), `${locale}: ${catalog[name.english]}`)
@@ -449,18 +470,17 @@ describe('the buttons beside the message box keep their width while their label 
 })
 
 describe('what the row says when the clipboard does not take the command', () => {
-  const inLanguage = (catalog: Record<string, string> | null, words: ContinuationWords) => interpolate(catalog ? catalog[words.english] : words.english, words.values)
   // Reasons browsers give, with and without a full stop of their own.
   const reasons = ['Write permission denied.', 'Document is not focused.', "Cannot read properties of undefined (reading 'writeText')", 'NotAllowedError']
 
-  it('ends the first line with the browser\'s reason, whole, so a reason that has its own full stop never gets a second one', () => {
-    for (const [language, catalog] of [['en', null], ['zh-CN', myworkZh], ['ko', myworkKo], ['tr', myworkTr]] as const) {
-      for (const reason of reasons) {
-        const words = resumeCommandCopyFailureWords(reason)
-        const why = inLanguage(catalog, words.why)
-        assert.ok(why.endsWith(reason), `${language}: ${why}`)
-        assert.doesNotMatch(why, /[.。][)）]?[.。]/, `${language}: ${why}`)
-        assert.ok(inLanguage(catalog, words.copyItFromHere).trim(), `${language} has words for ${words.copyItFromHere.english}`)
+  it('keeps the browser\'s reason whole for Details, never in the words the row shows, and says where to copy it from in every language (G17, fix round R1)', () => {
+    for (const reason of reasons) {
+      const words = resumeCommandCopyFailureWords(reason)
+      assert.equal(words.details, reason)
+      assert.ok(!words.copyItFromHere.english.includes(reason), words.copyItFromHere.english)
+      assert.deepEqual(words.copyItFromHere.values, {}, 'no value of the browser\'s is put in the words shown')
+      for (const [language, catalog] of [['zh-CN', myworkZh], ['ko', myworkKo], ['tr', myworkTr], ['fr', myworkFr]] as const) {
+        assert.ok(catalog[words.copyItFromHere.english]?.trim(), `${language} has words for ${words.copyItFromHere.english}`)
       }
     }
   })
@@ -575,5 +595,145 @@ describe('a call that failed, as one plain sentence', () => {
   it('no answer at all, and an answer this page cannot read', () => {
     assert.equal(unreachableWorkerSentence('stop this turn', new TypeError('fetch failed')), 'Could not stop this turn: the worker could not be reached (fetch failed).')
     assert.equal(unreadableAnswerSentence(202), 'The worker answered 202, but this page cannot read its answer.')
+  })
+})
+
+// ---- The reply card (c-conversation-continue, page-05): one card per request answers one conversation at a time
+
+describe('the reply card', () => {
+  const read = (target: ConversationContinuationTarget, exchanges: ConversationContinuation[] = []) => ({ target, exchanges })
+  // The states from their one definition (state-machines.md): a state renamed or added fails these tests, not a copy.
+  const [READING, IDLE, SENDING, TURN_RUNNING, CANNOT_CONTINUE, READ_FAILURE] = REPLY_CARD_STATES
+
+  it('says what it is doing in each state, from the one table of words, in every catalog', () => {
+    // 'read-failure' has no line of its own: the read's own sentence shows there.
+    for (const state of REPLY_CARD_STATES) {
+      const words = CONTINUATION_STATE_WORDS[state]
+      if (state === READ_FAILURE) { assert.equal(words, null); continue }
+      assert.ok(words?.trim(), state)
+      for (const [language, catalog] of Object.entries({ zh: myworkZh, ko: myworkKo, tr: myworkTr, fr: myworkFr })) {
+        assert.ok(catalog[words!]?.trim(), `${language} has words for the reply card's ${state} line: ${words}`)
+      }
+    }
+  })
+
+  it('reads, then takes a reply; sends; runs the turn; and comes back to idle when the turn ends', () => {
+    const continuable = { conversationIsContinuable: true, readFailed: false, sending: false }
+    assert.equal(replyCardState({ ...continuable, read: null }), READING)
+    assert.equal(replyCardState({ ...continuable, read: read(runsInRecordedFolder) }), IDLE)
+    assert.equal(replyCardState({ ...continuable, read: read(runsInRecordedFolder), sending: true }), SENDING)
+    assert.equal(replyCardState({ ...continuable, read: read(runsInRecordedFolder, [exchange()]) }), TURN_RUNNING)
+    assert.equal(replyCardState({ ...continuable, read: read(runsInRecordedFolder, [replied()]) }), IDLE)
+  })
+
+  it('cannot continue: a tool or id it cannot resume, or the worker saying so, with or without a turn still running', () => {
+    assert.equal(replyCardState({ conversationIsContinuable: false, read: null, readFailed: false, sending: false }), CANNOT_CONTINUE)
+    assert.equal(replyCardState({ conversationIsContinuable: true, read: read(cannotContinue), readFailed: false, sending: false }), CANNOT_CONTINUE)
+    assert.equal(replyCardState({ conversationIsContinuable: true, read: read(cannotContinue, [exchange()]), readFailed: false, sending: false }), CANNOT_CONTINUE)
+  })
+
+  it('a failed read is the card\'s state only while nothing has been read; after one answered, the card keeps that read', () => {
+    assert.equal(replyCardState({ conversationIsContinuable: true, read: null, readFailed: true, sending: false }), READ_FAILURE)
+    assert.equal(replyCardState({ conversationIsContinuable: true, read: read(runsInRecordedFolder), readFailed: true, sending: false }), IDLE)
+  })
+
+  it('answers the first conversation it can continue, else the first listed (G19: no worker sends activity times yet)', () => {
+    const gemini = { tool: 'Gemini', at: 'Oct 20', title: 'Forecast', platform: 'gemini', conversationSessionId: SESSION }
+    const claude = { tool: 'Claude Code', at: 'Oct 20', title: 'Fix it', platform: 'claude', conversationSessionId: OTHER_SESSION }
+    assert.equal(defaultReplyConversation([gemini, claude]), claude)
+    assert.equal(defaultReplyConversation([gemini]), gemini)
+    assert.equal(defaultReplyConversation([]), undefined)
+    assert.equal(conversationKey(claude), JSON.stringify(['claude', OTHER_SESSION]))
+  })
+
+  it('names a conversation by its recorded title, or by its tool when none is recorded (the mapper sends null), with its id as a chip', () => {
+    const untitled = { tool: 'Claude Code', title: null, conversationSessionId: SESSION }
+    assert.deepEqual(conversationNaming(untitled, [untitled]), { recordedTitle: null, tool: 'Claude Code', idChip: SESSION.slice(0, 8) })
+    const titled = { tool: 'Codex', title: 'Fix the login flow', conversationSessionId: OTHER_SESSION }
+    assert.deepEqual(conversationNaming(titled, [untitled, titled]), { recordedTitle: 'Fix the login flow', tool: 'Codex', idChip: OTHER_SESSION.slice(0, 8) })
+  })
+
+  it('reads the English title workers before 16.0.0 wrote for an untitled conversation as none recorded (G19, fix round R2)', () => {
+    // What a 15.19.0 worker sends: "Conversation" and the first eight characters of the conversation's own session id.
+    assert.equal(legacyUntitledConversationTitle(SESSION), `Conversation ${SESSION.slice(0, 8)}`)
+    const fromAnOlderWorker = { tool: 'Claude Code', title: legacyUntitledConversationTitle(SESSION), conversationSessionId: SESSION }
+    assert.equal(conversationNaming(fromAnOlderWorker, [fromAnOlderWorker]).recordedTitle, null)
+    // Only its own id's filler is read so: a recorded title that names another id's is the conversation's own words.
+    const recorded = { tool: 'Codex', title: legacyUntitledConversationTitle(OTHER_SESSION), conversationSessionId: SESSION }
+    assert.equal(conversationNaming(recorded, [recorded]).recordedTitle, legacyUntitledConversationTitle(OTHER_SESSION))
+  })
+
+  it('two ids that start alike (Codex ids started within a minute) are told apart by the end of the id', () => {
+    const first = { tool: 'Codex', title: null, conversationSessionId: '019a2b3c-0000-7000-8000-00000000aaaa' }
+    const second = { tool: 'Codex', title: null, conversationSessionId: '019a2b3c-1111-7000-8000-00000000bbbb' }
+    assert.equal(conversationNaming(first, [first, second]).idChip, '…0000aaaa')
+    assert.equal(conversationNaming(second, [first, second]).idChip, '…0000bbbb')
+  })
+})
+
+describe('a folder path cut at its folder boundaries (page-05: paths were cut inside a folder name)', () => {
+  it('gives the whole path, then the folders after the root giving way to "…" one at a time, the name always whole', () => {
+    assert.deepEqual(folderPathsCutAtFolders('/Users/owner/work/use-plan-build-auto'), [
+      '/Users/owner/work/use-plan-build-auto', '/…/owner/work/use-plan-build-auto', '/…/work/use-plan-build-auto', '/…/use-plan-build-auto',
+    ])
+    assert.deepEqual(folderPathsCutAtFolders('~/.paradev/worktrees/CM-OSS'), ['~/.paradev/worktrees/CM-OSS', '~/…/worktrees/CM-OSS', '~/…/CM-OSS'])
+  })
+
+  it('keeps a trailing separator on the name, and the separator a Windows path uses', () => {
+    assert.deepEqual(folderPathsCutAtFolders('/work/example/'), ['/work/example/', '/…/example/'])
+    assert.deepEqual(folderPathsCutAtFolders('C:\\Users\\owner\\project'), ['C:\\Users\\owner\\project', 'C:\\…\\owner\\project', 'C:\\…\\project'])
+  })
+
+  it('has nothing to cut when no folder sits between the root and the name', () => {
+    for (const folder of ['/', '/work', 'work/example', 'example']) assert.deepEqual(folderPathsCutAtFolders(folder), [folder])
+  })
+})
+
+// ---- The sample page's reply card (plan rule 10: sample cases for states the real data lacks; fix round V5)
+
+describe('the sample page shows the reply card\'s states under ?sample-state=reply-card, and sends nothing', () => {
+  const REPLY_CARD_SAMPLE_STATE = SAMPLE_STATES.find((state) => state === 'reply-card')
+  /** Runs `check` with the page's address set to `search`, as the sample source reads it on every call. */
+  async function atAddress(search: string, check: () => Promise<void>) {
+    Object.defineProperty(globalThis, 'location', { value: { search }, configurable: true })
+    try { await check() } finally { Reflect.deleteProperty(globalThis, 'location') }
+  }
+
+  it('offers to continue its demonstration conversations only in that state', async () => {
+    assert.ok(REPLY_CARD_SAMPLE_STATE)
+    assert.equal(sampleSourceAtThisAddress(), sampleSource, 'sample data cannot run a CLI on this computer')
+    assert.equal(canContinueConversations(sampleSource), false)
+    await atAddress(`?source=sample&sample-state=${REPLY_CARD_SAMPLE_STATE}`, async () => {
+      assert.equal(canContinueConversations(sampleSourceAtThisAddress()), true)
+    })
+    await atAddress('?source=sample&sample-state=rule-saves-fail', async () => {
+      assert.equal(sampleSourceAtThisAddress(), sampleSource)
+    })
+  })
+
+  it('answers each conversation of the your-move request with one of the card\'s states; Send and Stop write nothing', async () => {
+    const [, IDLE, , TURN_RUNNING, CANNOT_CONTINUE, READ_FAILURE] = REPLY_CARD_STATES
+    await atAddress(`?source=sample&sample-state=${REPLY_CARD_SAMPLE_STATE}`, async () => {
+      const source = sampleSourceAtThisAddress()
+      const model = await source.loadWorkModel()
+      const request = model.requests.find((entry) => entry.state === 'your-move')
+      assert.ok(request)
+      const states: string[] = []
+      for (const conversation of request.conversations) {
+        const continuable = isContinuableConversation(conversation)
+        let read = null
+        let readFailed = false
+        if (continuable) {
+          try { read = await source.loadConversationContinuation!(conversation.platform, conversation.conversationSessionId) } catch { readFailed = true }
+        }
+        states.push(replyCardState({ conversationIsContinuable: continuable, read, readFailed, sending: false }))
+      }
+      assert.deepEqual(states, [TURN_RUNNING, CANNOT_CONTINUE, READ_FAILURE, IDLE])
+      const running = request.conversations[0]
+      const before = JSON.stringify(await source.loadConversationContinuation!('claude', running.conversationSessionId))
+      await assert.rejects(source.continueConversation!('claude', running.conversationSessionId, 'Carry on'), /nothing was sent/)
+      await source.stopConversationContinuation!('claude', running.conversationSessionId)
+      assert.equal(JSON.stringify(await source.loadConversationContinuation!('claude', running.conversationSessionId)), before, 'the demonstration turn is as it was')
+    })
   })
 })

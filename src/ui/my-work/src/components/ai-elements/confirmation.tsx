@@ -54,10 +54,18 @@ export type ConfirmationProps = ComponentProps<typeof Alert> & {
   state: ToolUIPart["state"];
 };
 
+/**
+ * Local fix (D b2 M49, c-ai-confirmation): a decision is a card, not an alert. It used to render an Alert, so a page of
+ * 47 waiting rules was 47 status regions announcing themselves. It keeps ConfirmationProps (Alert's props), and `role`
+ * is only what the caller passes. A caller that names Alert's `variant` gets that kind's look, icon and spoken word
+ * from the Alert itself (as before this fix), still with no role of its own: the prop is never accepted and dropped.
+ */
 export const Confirmation = ({
   className,
   approval,
   state,
+  variant,
+  role,
   ...props
 }: ConfirmationProps) => {
   const contextValue = useMemo(() => ({ approval, state }), [approval, state]);
@@ -68,7 +76,25 @@ export const Confirmation = ({
 
   return (
     <ConfirmationContext.Provider value={contextValue}>
-      <Alert className={cn("flex flex-col gap-2", className)} {...props} />
+      {variant ? (
+        // role="none": the Alert would otherwise make the card a status region; a card has no role (D b2).
+        <Alert
+          variant={variant}
+          role={role ?? "none"}
+          data-slot="confirmation"
+          data-state={state}
+          className={cn("flex flex-col gap-2", className)}
+          {...props}
+        />
+      ) : (
+        <div
+          data-slot="confirmation"
+          data-state={state}
+          role={role}
+          className={cn("flex flex-col gap-2 rounded-xl border border-control-edge/55 bg-card text-sm text-card-foreground", className)}
+          {...props}
+        />
+      )}
     </ConfirmationContext.Provider>
   );
 };
@@ -164,6 +190,7 @@ export const ConfirmationActions = ({
 
 export type ConfirmationActionProps = ComponentProps<typeof Button>;
 
+/** Local fix (c-rules-suggestion-card F4): the Button's own sizes, 44px at desktop, instead of the demo's 32px. */
 export const ConfirmationAction = (props: ConfirmationActionProps) => (
-  <Button className="h-8 px-3 text-sm" type="button" {...props} />
+  <Button type="button" {...props} />
 );

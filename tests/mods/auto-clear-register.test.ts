@@ -79,7 +79,7 @@ function harness() {
   const start = () => hooks.get('session.start')!($, {}, passThrough);
   const turnDone = () => hooks.get('turn.complete')!($, { turnId: 't1', isAborted: false, reason: 'answer' }, passThrough);
 
-  return { record, settle, toolResult, toolUse, responseStoredAs, start, turnDone };
+  return { $, record, settle, toolResult, toolUse, responseStoredAs, start, turnDone };
 }
 
 const BLANKS = { continuation_recently_completed_task: 'wire the login route', continuation_overarching_goal: 'ship passwordless login' };
@@ -176,5 +176,17 @@ describe('auto-clear register (session.append)', () => {
     await start();
     const kept = await toolResult('Bash', 'from the event', 'as stored');
     expect(kept.message.content[0].content).toBe('as stored');
+  });
+
+  it('says so in the transcript when the save request cannot be handed to Claude, and still keeps the row', async () => {
+    const { $, record, toolResult, start } = harness();
+    await start();
+    $.session.append = async () => { throw new Error('append refused'); };
+    // Context is past the threshold, so this result is where auto-clear asks Claude to save.
+    const kept = await toolResult('Bash', 'ok');
+    expect(kept.message.content[0].content).toBe('ok');
+    expect(record.appended).toEqual([]);
+    expect(record.notes.at(-1) ?? '').toContain('could not check this tool result or hand Claude its request to save the work state');
+    expect(record.notes.at(-1) ?? '').toContain('append refused');
   });
 });

@@ -1,9 +1,12 @@
 // A status label on split-flap tiles, one tile per character and exactly as wide as the label: a line on a
 // departures board (decision 2, R4.4). When the label changes (and when it first shows) each tile riffles through
 // a few letters, left to right, and lands; then it stops. The riffle writes the tiles' text directly, without
-// re-rendering React, so a hundred labels flipping at once stay cheap. Reduced motion: the tiles show the label.
+// re-rendering React, so a hundred labels flipping at once stay cheap. Reduced motion: the tiles show the label, read
+// as it is now (lib/use-media.ts usePrefersReducedMotion), so a setting changed mid-riffle lands the letters at once.
+// A word never breaks; a label too long for its line (Turkish's "Done, not checked") wraps between words, as the
+// status pill's word does at rest.
 import { useEffect, useRef } from 'react'
-import { useReducedMotion } from 'motion/react'
+import { usePrefersReducedMotion } from '@/lib/use-media'
 import { cn } from '@/lib/utils'
 
 const FLAP_LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
@@ -17,8 +20,20 @@ const TILE_STAGGER_FLAPS = 1
 const FOLD: Keyframe[] = [{ transform: 'rotateX(70deg)' }, { transform: 'rotateX(0deg)' }]
 const FOLD_TIMING: KeyframeAnimationOptions = { duration: FLAP_MS, easing: 'ease-in' }
 
+/** The label's words, each with where it starts among the letters (a space has no tile). */
+function wordsOf(letters: string[]): { start: number; word: string[] }[] {
+  const words: { start: number; word: string[] }[] = []
+  letters.forEach((letter, index) => {
+    if (letter === ' ') return
+    const last = words.at(-1)
+    if (last && last.start + last.word.length === index) last.word.push(letter)
+    else words.push({ start: index, word: [letter] })
+  })
+  return words
+}
+
 export function SplitFlapText({ text, className, tileClassName }: { text: string; className?: string; tileClassName?: string }) {
-  const reduceMotion = useReducedMotion()
+  const reduceMotion = usePrefersReducedMotion()
   const tiles = useRef<(HTMLSpanElement | null)[]>([])
   const letters = text.toUpperCase().split('')
   useEffect(() => {
@@ -47,13 +62,16 @@ export function SplitFlapText({ text, className, tileClassName }: { text: string
     return () => clearInterval(timer)
   }, [text, reduceMotion])
   return (
-    <span className={cn('inline-flex', className)}>
+    <span className={cn('inline-flex min-w-0', className)}>
       <span className="sr-only">{text}</span>
-      <span aria-hidden="true" className="inline-flex gap-px">
-        {letters.map((letter, index) => (
-          <span key={index} ref={(element) => { tiles.current[index] = element }}
-            className={cn('split-flap-tile', letter === ' ' && 'split-flap-gap', tileClassName)}>
-            {letter === ' ' ? ' ' : reduceMotion ? letter : ' '}
+      <span aria-hidden="true" className="inline-flex min-w-0 flex-wrap gap-x-[0.3em] gap-y-0.5">
+        {wordsOf(letters).map(({ start, word }) => (
+          <span key={start} className="inline-flex">
+            {word.map((letter, offset) => (
+              <span key={offset} ref={(element) => { tiles.current[start + offset] = element }} className={cn('split-flap-tile', tileClassName)}>
+                {reduceMotion ? letter : '\u00A0'}
+              </span>
+            ))}
           </span>
         ))}
       </span>

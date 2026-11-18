@@ -16,9 +16,6 @@ export type RequestChange =
   | { kind: 'state'; requestId: string; title: string; from: LiveState; to: LiveState; at: number }
   | { kind: 'progress'; requestId: string; title: string; from: number | null; to: number; at: number }
 
-/** How many changes My Work keeps to show. */
-export const RECENT_CHANGES_KEPT = 12
-
 const titleOf = (request: Request) => request.title ?? request.resolvesTo?.title ?? 'New request, title being written'
 
 /**
@@ -49,9 +46,14 @@ export function requestChanges(shown: Request[], next: Request[], at: number): R
   return changes
 }
 
-/** Adds the newest changes in front, keeping one entry per request (its newest) and at most RECENT_CHANGES_KEPT. */
+/**
+ * Adds the newest changes in front, keeping one entry per request (its newest). Nothing is cut: one entry per request
+ * already bounds the list by the requests in the model (the store also drops a change whose request left it), and the
+ * ticker shows the newest few and counts every older one (components/live-motion.tsx). A cap of 12 here dropped the
+ * 13th change without saying so, and the ticker's "older changes" count came out short.
+ */
 export function mergeRecentChanges(recent: RequestChange[], latest: RequestChange[]): RequestChange[] {
   if (latest.length === 0) return recent
   const latestIds = new Set(latest.map((change) => change.requestId))
-  return [...latest, ...recent.filter((change) => !latestIds.has(change.requestId))].slice(0, RECENT_CHANGES_KEPT)
+  return [...latest, ...recent.filter((change) => !latestIds.has(change.requestId))]
 }

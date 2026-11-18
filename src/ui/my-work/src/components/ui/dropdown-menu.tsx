@@ -71,18 +71,25 @@ function DropdownMenuTrigger({
   )
 }
 
+/**
+ * `rowSize` (D b9): `default`, rows 40px tall on a desktop pointer (M 191); `lg`, rows at least as tall as a default
+ * Button on every pointer (44px at the 16px root), for a menu whose page asks for 44px rows (page-03's area menu). On
+ * touch every row is 44px or more either way (touch-target-size).
+ */
 function DropdownMenuContent({
   className,
   align = "start",
   sideOffset = 4,
+  rowSize = "default",
   ref,
   ...props
-}: React.ComponentProps<typeof DropdownMenuPrimitive.Content>) {
+}: React.ComponentProps<typeof DropdownMenuPrimitive.Content> & { rowSize?: "default" | "lg" }) {
   const setContent = useMenuContentRef(ref)
   return (
     <DropdownMenuPrimitive.Portal>
       <DropdownMenuPrimitive.Content
         data-slot="dropdown-menu-content"
+        data-row-size={rowSize}
         ref={setContent}
         sideOffset={sideOffset}
         align={align}
@@ -99,10 +106,11 @@ function DropdownMenuContent({
  * --muted-foreground. The fill alone is 1.41:1 (light) and 1.51:1 (dark) against the menu, where the old accent fill
  * was 1.09:1; the edge is the mark, ≥5.3:1 against the menu and ≥3.7:1 against the fill in both themes (token contrast
  * test, rule 7). Text on the fill is ≥9:1, and a row's hint turns to the text colour with it. Disabled rows keep
- * pointer events so the not-allowed cursor shows (G16).
+ * pointer events so the not-allowed cursor shows (G16). In a menu whose content asks for `lg` rows (DropdownMenuContent
+ * rowSize), each row is at least a default Button's height on a desktop pointer too.
  */
 const MENU_ROW_CLASS_NAME =
-  "relative flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-2.5 text-sm outline-hidden select-none touch-target-size focus:bg-input focus:text-foreground focus:inset-ring focus:inset-ring-muted-foreground data-inset:pl-7 data-disabled:cursor-not-allowed data-disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4"
+  "relative flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-2.5 text-sm outline-hidden select-none touch-target-size in-data-[row-size=lg]:min-h-11 focus:bg-input focus:text-foreground focus:inset-ring focus:inset-ring-muted-foreground data-inset:pl-7 data-disabled:cursor-not-allowed data-disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4"
 
 function DropdownMenuGroup({
   ...props
@@ -112,7 +120,11 @@ function DropdownMenuGroup({
   )
 }
 
-/** `hint`: one short line saying what the action does ("moves to Past focus"), at the row's right end (D b9 M 193). */
+/**
+ * `hint`: one short line saying what the action does ("moves to Past focus"), at the row's right end (D b9 M 193).
+ * With `asChild` (a link row) the row is its one child, so a hint goes inside that child instead: a second child
+ * would break the slot, which is why an item without a hint passes its children alone.
+ */
 function DropdownMenuItem({
   className,
   inset,
@@ -125,6 +137,8 @@ function DropdownMenuItem({
   variant?: "default" | "destructive"
   hint?: React.ReactNode
 }) {
+  const hasHint = hint !== undefined && hint !== null
+  if (hasHint && props.asChild) throw new Error("DropdownMenuItem: put the hint inside the asChild element")
   return (
     <DropdownMenuPrimitive.Item
       data-slot="dropdown-menu-item"
@@ -137,12 +151,14 @@ function DropdownMenuItem({
       )}
       {...props}
     >
-      {children}
-      {hint !== undefined && hint !== null && (
-        <span data-slot="dropdown-menu-item-hint" className="ml-auto pl-4 text-xs text-muted-foreground">
-          {hint}
-        </span>
-      )}
+      {hasHint ? (
+        <>
+          {children}
+          <span data-slot="dropdown-menu-item-hint" className="ml-auto pl-4 text-xs text-muted-foreground">
+            {hint}
+          </span>
+        </>
+      ) : children}
     </DropdownMenuPrimitive.Item>
   )
 }

@@ -1,34 +1,153 @@
 // The one pure mapper from a WorkViewSnapshot (local worker today, cmem.ai later) to the WorkModel the screens use.
 // It follows the plan's mapping table. Where the snapshot has no value, the field takes the table's "missing" value;
 // nothing is estimated or made up (spec §12). Relative imports with .ts extensions so `node --test` can load it.
-import { assertConsistentRequest, type WorkProductKind, type Agent, type AgentTool, type CurrentPeriod, type Device, type PastPeriod, type Request, type SkillRun } from '../data.ts'
+import { assertConsistentRequest, EVIDENCE_KINDS, type WorkProductKind, type Agent, type AgentTool, type CurrentPeriod, type Device, type EvidenceKind, type NextStep, type NextStepMissing, type PastPeriod, type Request, type SkillRun } from '../data.ts'
 import { createFocusAreaResolver, toFocusModel, type MinedGoalItem } from './to-focus-model.ts'
 import { normalizeRequestStatus, presentStatus, STALE_AFTER_MS, type NormalizedStatus } from './status-normalization.ts'
 import type { MappedWorkModel, RequestReadError } from './work-data-source.ts'
 import type { OwnerRule, RuleQuote, RuleRecord } from '../data-rules.ts'
-import type { AutoRefresh, BuildStory } from './work-data-source.ts'
+import type { AutoRefresh, BuildStory, StoryChapter } from './work-data-source.ts'
 import { measuredEstimate } from './measured-estimate.ts'
 import { repeatsOwnerWords } from './prompt-echo.ts'
 import { SOLO_REQUESTER } from './work-view-overview.ts'
 import type { WorkViewAgent, WorkViewBuildStory, WorkViewGoalItem, WorkViewGoalList, WorkViewHumanRequest, WorkViewProgress, WorkViewRefresh, WorkViewRule, WorkViewSnapshot, WorkViewWorkProduct } from './work-view-api-types.ts'
 
 export const THIS_COMPUTER: Device = { id: 'this-computer', name: 'This computer', syncedMinutesAgo: 0, online: true }
-/** Stands in when a request names no agent the snapshot knows: the card then names the machine (§13.2). */
-const UNRECORDED_AGENT: Agent = { id: 'agent-not-recorded', tool: 'other', name: 'Agent not recorded', role: 'Recorded work', deviceId: THIS_COMPUTER.id }
 /**
- * The English filler written in place of a next step when none is recorded, here and by older workers. Its one
- * definition: the UI (components/bits.tsx) and the shared page (to-shared-focus.ts) import it, and the UI treats it as
- * a missing step (decision G3). Phase 3 of the pro-max-v16 plan stops writing it.
+ * Stands in when a request names no agent the snapshot knows: the card then names the machine (§13.2). The UI words
+ * its name in the reader's language and draws its tile dashed (components/bits.tsx AgentIcon).
+ */
+export const UNRECORDED_AGENT: Agent = { id: 'agent-not-recorded', tool: 'other', name: 'Agent not recorded', role: 'Recorded work', deviceId: THIS_COMPUTER.id }
+/**
+ * The mapper's English words for the role of a session with no title and no project folder (toAgent). The UI words it
+ * in the reader's language (lib/agent-words.ts); a session title or folder name is the agent's own and stays as
+ * written.
+ */
+export const RECORDED_SESSION_ROLE = 'Recorded session'
+/**
+ * What workers before 16.0.0 wrote before a subagent's role ("Subagent · repo"). The mapper no longer writes it: a
+ * subagent is known by its typed status (data.ts isSubagent), and its role is its own. agentOwnRole reads an older
+ * worker's role without it (G19: the 15.19.0 worker still sends it).
+ */
+export const SUBAGENT_ROLE_PREFIX = 'Subagent · '
+
+/**
+ * An agent's own role: its session title, folder or "Recorded session". A subagent mapped by a worker before 16.0.0
+ * carries SUBAGENT_ROLE_PREFIX before it, which is read off here, in this one place, as nextStepShown reads an older
+ * worker's fillers (G19). Whether the agent is a subagent comes from its typed status, never from these words.
+ */
+export function agentOwnRole(agent: Pick<Agent, 'role' | 'status'>): string {
+  return agent.status !== undefined && agent.role.startsWith(SUBAGENT_ROLE_PREFIX) ? agent.role.slice(SUBAGENT_ROLE_PREFIX.length) : agent.role
+}
+/**
+ * The English filler workers before 16.0.0 wrote in place of a next step when none was recorded. The mapper now
+ * writes the missing value instead (NextStepMissing, decision G3); this stays so nextStepShown can read an older
+ * worker's payload (G19: the 15.19.0 worker still sends it), and as the shared page's English for that value.
  */
 export const NEXT_STEP_NOT_RECORDED = 'Next step not recorded'
 /**
- * The English filler written in place of a next step when a request has only asks (no agent has recorded work yet).
- * Like NEXT_STEP_NOT_RECORDED it is not a step: setup's Reveal imports it and leaves the line out (decision G3).
+ * The same filler for a request with only asks, before any agent recorded work (the `no-agent-work` value now). Like
+ * NEXT_STEP_NOT_RECORDED it is not a step: nextStepShown reads it as missing, so My Work's cards and setup's Reveal
+ * (setup/setup-reveal.ts) leave the line out (decision G3), and the shared page still words that value with it
+ * (live/to-shared-focus.ts).
  */
 export const NO_WORK_YET = 'No agent work recorded yet'
+/**
+ * What the mapper writes for a conversation's or a prompt's time when none is recorded. The drawer's conversation rows
+ * and its prompts leave it out (components/conversation-continue.tsx ConversationRow): it tells one conversation from no
+ * other. A saved rule's times are null when not recorded instead (recordedTime); workers before 16.0.0 wrote this text
+ * there too.
+ */
+export const TIME_NOT_RECORDED = 'Time not recorded'
+/**
+ * The English workers before 16.0.0 wrote in place of a saved rule's time that is not recorded: a quote's or a record's
+ * time, the latest time it was seen, and when it was replaced. The mapper now writes null; recordedTime reads both as
+ * not recorded (G19: the 15.19.0 worker still sends the words), so My Rules words them in the reader's language.
+ */
+const LEGACY_RULE_TIMES_NOT_RECORDED: ReadonlySet<string> = new Set([TIME_NOT_RECORDED, 'not recorded', 'a date not recorded'])
+/** A rule's recorded time as the mapper words it, or null when none is recorded (or an older worker's words say so). */
+export const recordedTime = (at: string | null | undefined): string | null => at && !LEGACY_RULE_TIMES_NOT_RECORDED.has(at) ? at : null
+/**
+ * What workers before 16.0.0 wrote for a request whose start is not recorded. The mapper now writes null
+ * (Request.startedAt); recordedStart reads both as not recorded (G19), and the shared page keeps writing these words, as
+ * it did before 16.0.0 (live/to-shared-focus.ts).
+ */
+export const LEGACY_START_NOT_RECORDED = 'Start not recorded'
+/** When a request started, as the mapper words it, or null when it is not recorded. */
+export const recordedStart = (startedAt: string | null | undefined): string | null => startedAt && startedAt !== LEGACY_START_NOT_RECORDED ? startedAt : null
+/**
+ * What workers before 16.0.0 wrote for a workstream with no recorded title and a task with no recorded name. The mapper
+ * now writes null; recordedWorkstreamTitle and recordedTaskName read both as not recorded (G19), and the drawer words
+ * that in the reader's language.
+ */
+const LEGACY_WORKSTREAM_TITLE = 'Supporting work'
+const LEGACY_TASK_NAME = 'Untitled task'
+export const recordedWorkstreamTitle = (title: string | null | undefined): string | null => title && title !== LEGACY_WORKSTREAM_TITLE ? title : null
+export const recordedTaskName = (name: string | null | undefined): string | null => name && name !== LEGACY_TASK_NAME ? name : null
+/**
+ * The English title workers before 16.0.0 wrote for a conversation whose title is not recorded: "Conversation" and the
+ * first eight characters of its session id. The mapper now writes null instead, so no English rides the model as a title
+ * (fix round R2, rule 4); the screens read this filler as not recorded too (live/conversation-continuation.ts
+ * conversationNaming), so a page reading an older worker, such as the live 15.19.0 worker behind the preview, names the
+ * conversation the same way, in the reader's language (G19).
+ */
+export const legacyUntitledConversationTitle = (conversationSessionId: string) => `Conversation ${conversationSessionId.slice(0, 8)}`
+/**
+ * The English that workers before 16.0.0 wrote for the step kinds that are not recorded words (data.ts NextStepKind):
+ * a checked result's "Ship it", and "Unblock: " before a blocked request's step. nextStepShown reads them as their
+ * kinds (G19), and the shared page still writes them, so its words stay as they were (live/to-shared-focus.ts).
+ */
+export const LEGACY_SHIP_STEP = 'Ship it'
+export const LEGACY_UNBLOCK_PREFIX = 'Unblock: '
+/** The fillers an older worker may send, and the missing value each one stands for. */
+const LEGACY_MISSING_NEXT_STEP: ReadonlyMap<string, NextStepMissing> = new Map([
+  [NEXT_STEP_NOT_RECORDED, 'not-recorded'],
+  [`${LEGACY_UNBLOCK_PREFIX}${NEXT_STEP_NOT_RECORDED}`, 'not-recorded'],
+  [NO_WORK_YET, 'no-agent-work'],
+  [`${LEGACY_UNBLOCK_PREFIX}${NO_WORK_YET}`, 'no-agent-work'],
+])
+
+/** What a next-step line shows (decision G3): a step of one kind (data.ts NextStepKind), or why none is recorded. */
+export type ShownNextStep =
+  | { kind: 'step'; who: NextStep['who']; step: 'recorded' | 'unblock'; text: string }
+  | { kind: 'step'; who: NextStep['who']; step: 'ship'; text?: undefined }
+  | { kind: 'missing'; who: NextStep['who'] | null; missing: NextStepMissing }
+
+/**
+ * What a request's next-step line shows (decision G3): its step and the step's kind, or why none is recorded. Reads
+ * the values this mapper writes and the English older workers wrote in their place (fillers, "Ship it", "Unblock: …";
+ * G19), so every screen and the shared page decide it in this one place. An empty text counts as not recorded.
+ */
+export function nextStepShown(next: Partial<NextStep> | null | undefined): ShownNextStep {
+  const who = next?.who ?? null
+  if (next?.missing) return { kind: 'missing', who, missing: next.missing }
+  if (next?.kind === 'ship' && who) return { kind: 'step', who, step: 'ship' }
+  const text = next?.text?.trim() ?? ''
+  const legacy = LEGACY_MISSING_NEXT_STEP.get(text)
+  if (!text || legacy || !who) return { kind: 'missing', who, missing: legacy ?? 'not-recorded' }
+  if (text === LEGACY_SHIP_STEP) return { kind: 'step', who, step: 'ship' }
+  if (text.startsWith(LEGACY_UNBLOCK_PREFIX)) {
+    const step = text.slice(LEGACY_UNBLOCK_PREFIX.length).trim()
+    return step ? { kind: 'step', who, step: 'unblock', text: step } : { kind: 'missing', who, missing: 'not-recorded' }
+  }
+  return { kind: 'step', who, step: next?.kind === 'unblock' ? 'unblock' : 'recorded', text }
+}
 const KNOWN_TOOLS: AgentTool[] = ['claude', 'codex', 'gemini']
 const PLATFORM_LABEL: Record<string, string> = { claude: 'Claude Code', codex: 'Codex', gemini: 'Gemini' }
-const EVIDENCE_URL = /^\/api\/work-view\/evidence\/(work-state|observation|prompt|summary|session)\/\d+$/
+/**
+ * The tool a conversation names when its platform has no name of its own above: the catalog word "Agent". A tool's
+ * own name is a name and shows as written; this word the screens say in the reader's language (conversationToolWords).
+ */
+export const UNNAMED_TOOL = 'Agent'
+/** A conversation's tool as the screens show it: its own name, or "Agent" in the reader's language (`t`). */
+export const conversationToolWords = (tool: string, t: (english: string) => string) => tool === UNNAMED_TOOL ? t(UNNAMED_TOOL) : tool
+/**
+ * Where the worker serves a source record: /api/work-view/evidence/<kind>/<id> (WorkViewRoutes). A link of any other
+ * shape is not a record the drawer can open, so it is not listed as one.
+ */
+const EVIDENCE_URL = /^\/api\/work-view\/evidence\/([\w-]+)\/\d+$/
+/** The kinds the evidence route serves: every EvidenceKind (data.ts, the one list) but `record`, which names no route. */
+const EVIDENCE_ROUTE_KINDS: readonly EvidenceKind[] = EVIDENCE_KINDS.filter((kind) => kind !== 'record')
 // work-product.mjs kinds onto the drawer's kinds; anything unknown is a plain link.
 const WORK_PRODUCT_KIND: Record<string, WorkProductKind> = {
   'pull-request': 'PR', commit: 'Commit', branch: 'Branch', artifact: 'Page', page: 'Page', deployment: 'Page',
@@ -45,7 +164,35 @@ function mapWorkProduct(products: WorkViewWorkProduct[] | undefined): Request['w
     ...(product.availability === 'origin-only' ? { availability: 'origin-only' as const } : {}),
   }))
 }
-const EVIDENCE_KIND_LABEL: Record<string, string> = { 'work-state': 'Work state', observation: 'Observation', prompt: 'Your prompt', summary: 'Session summary', session: 'Session' }
+/**
+ * A source record's kind from its evidence link (/api/work-view/evidence/<kind>/<id>), or null for a link that is not
+ * one. A kind the one list does not name throws, as the mapper does for other values it cannot read: the request then
+ * shows as one that could not be read, with the link in its reason. It never becomes `record` unsaid.
+ */
+function evidenceKindOf(href: string): EvidenceKind | null {
+  if (!EVIDENCE_URL.test(href)) return null
+  const kind = routeKindOf(href)
+  if (!kind) throw new Error(`A source record links to an evidence kind this page does not know: ${href}`)
+  return kind
+}
+/** The kind an evidence link names, when it is one of the route's kinds; undefined for any other link. */
+function routeKindOf(href: string): EvidenceKind | undefined {
+  const named = EVIDENCE_URL.exec(href)?.[1]
+  return EVIDENCE_ROUTE_KINDS.find((known) => known === named)
+}
+/**
+ * The English workers before 16.0.0 wrote in front of each source record's title for its kind ("Observation: …"), and no
+ * `kind`. The mapper now sends the kind as a value; evidenceShown reads an older worker's words as their kind (G19).
+ */
+const LEGACY_EVIDENCE_PREFIX: Record<EvidenceKind, string> = { 'work-state': 'Work state', observation: 'Observation', prompt: 'Your prompt', summary: 'Session summary', session: 'Session', record: 'Record' }
+/** A source record as the drawer shows it: its kind (null for an older worker's title with no kind it names) and title. */
+export function evidenceShown(source: Request['evidence'][number]): { kind: EvidenceKind | null; title: string } {
+  if (source.kind) return { kind: source.kind, title: source.title }
+  for (const [kind, prefix] of Object.entries(LEGACY_EVIDENCE_PREFIX) as [EvidenceKind, string][]) {
+    if (source.title.startsWith(`${prefix}: `)) return { kind, title: source.title.slice(prefix.length + 2) }
+  }
+  return { kind: null, title: source.title }
+}
 
 // cleanText is copied from claude-mem v15.0.1 plugin/ui/work-view/view-model.js:6-20: it drops injected
 // instructions, code fences, markup and markdown from recorded text, then shortens at a word boundary.
@@ -66,6 +213,11 @@ function cleanText(value: unknown, max = 150): string {
   return `${cut.slice(0, boundary > max * 0.65 ? boundary : max - 1).replace(/[,:;\-\s]+$/, '')}…`
 }
 
+/**
+ * The instant beside each time below, which the screens word in the reader's language and clock (lib/display-time.ts,
+ * Phase 6 fix V3). The English words stay for the shared page, older readers and the sort; no screen shows them.
+ */
+const isoOf = (epoch: number) => new Date(epoch).toISOString()
 const lowercaseMeridiem = (text: string) => text.replace(/\s?(AM|PM)$/, (_, meridiem: string) => ` ${meridiem.toLowerCase()}`)
 /** "Oct 20, 1:16 pm", like the fixtures. */
 const formatDateTime = (epoch: number) => lowercaseMeridiem(new Date(epoch).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }))
@@ -80,17 +232,6 @@ function formatPromptStamp(epoch: number) {
   const two = (value: number) => String(value).padStart(2, '0')
   return `${two(date.getMonth() + 1)}-${two(date.getDate())} ${two(date.getHours())}:${two(date.getMinutes())}`
 }
-/** How long a request has been going, as the card shows it. Exported so the card can keep an open request's time current. */
-export function formatDuration(milliseconds: number) {
-  const minutes = Math.max(0, Math.floor(milliseconds / 60000))
-  if (minutes < 1) return 'Just started'
-  if (minutes < 60) return `${minutes} min`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours} hr`
-  const days = Math.floor(hours / 24)
-  return `${days} day${days === 1 ? '' : 's'}`
-}
-
 const lastPathSegment = (path: string | null) => path?.split('/').filter(Boolean).at(-1) ?? null
 /** Conversation and agent keys are JSON arrays: ["conversation", "<platform>", "<session uuid>"]. */
 function parseRecordKey(key: string): string[] {
@@ -99,34 +240,100 @@ function parseRecordKey(key: string): string[] {
   return parsed.map(String)
 }
 
-export function toAgent(agent: WorkViewAgent): Agent {
+/**
+ * One agent as the screens show it. A subagent carries its recorded status (which is what marks it as one, data.ts
+ * isSubagent), its stop's time, its parent where the recorded session links them, and the short task title its
+ * launch recorded (`launch.description`; never `launch.prompt`, the whole task text). A main agent's session start is
+ * added by toWorkModel only where two main agents would read the same (sessionsThatTellAgentsApart).
+ */
+export function toAgent(agent: WorkViewAgent, parentId?: string): Agent {
   const tool = KNOWN_TOOLS.includes(agent.platformSource as AgentTool) ? agent.platformSource as AgentTool : 'other'
-  const mapped: Agent = { id: agent.id, tool, name: agent.label, role: agent.sessionTitle ?? lastPathSegment(agent.project) ?? 'Recorded session', deviceId: THIS_COMPUTER.id }
+  const mapped: Agent = { id: agent.id, tool, name: agent.label, role: agent.sessionTitle ?? lastPathSegment(agent.project) ?? RECORDED_SESSION_ROLE, deviceId: THIS_COMPUTER.id }
   if (!agent.isSubagent) return mapped
   const finished = agent.presence?.status === 'finished'
   const finishedAt = finished && agent.presence?.finishedAt ? Date.parse(agent.presence.finishedAt) : NaN
+  // The worker cuts it to 160 characters (agent-view.mjs readAgentLaunches); the screens cut it to one line.
+  const launchDescription = cleanText(agent.launch?.description, 160)
   return {
     ...mapped,
-    role: `Subagent · ${mapped.role}`,
     status: finished ? 'finished' : agent.presence?.status === 'recent' ? 'working' : 'quiet',
-    ...(Number.isFinite(finishedAt) ? { finishedAt: formatDateTime(finishedAt) } : {}),
+    ...(Number.isFinite(finishedAt) ? { finishedAt: formatDateTime(finishedAt), finishedAtIso: new Date(finishedAt).toISOString() } : {}),
     canMarkFinished: agent.canMarkFinished === true,
+    ...(parentId ? { parentId } : {}),
+    ...(launchDescription ? { launchDescription } : {}),
   }
 }
 
-function nextTextFor(status: NormalizedStatus, recordedNext: string) {
-  if (status === 'checked') return 'Ship it'
-  if (status === 'blocked') return `Unblock: ${recordedNext}`
-  return recordedNext
+/**
+ * How much of a session id tells two sessions apart: its first 8 characters, a UUID's first block, as a conversation
+ * with no title is named ("Conversation 1a2b3c4d", toRequest). Only the short form rides the overview, which has a
+ * 300 KiB budget for 140 requests (docs/development/viewer-sync-recovery.md).
+ */
+const SESSION_SHORT_ID_CHARS = 8
+
+/**
+ * The start of each main agent's session, by agent id, for the main agents whose card would read the same as another's:
+ * the same name and role on the same machine (several sessions in one folder; By agent's card header shows those).
+ * Every other agent gets none, so the overview carries the fact only where it tells cards apart.
+ */
+export function sessionsThatTellAgentsApart(raw: WorkViewAgent[], mapped: Agent[]): Map<string, string> {
+  const headerOf = (agent: Agent) => JSON.stringify([agent.name, agent.role, agent.deviceId])
+  const mains = mapped.filter((agent) => agent.status === undefined)
+  const counts = new Map<string, number>()
+  for (const agent of mains) counts.set(headerOf(agent), (counts.get(headerOf(agent)) ?? 0) + 1)
+  const sessions = new Map(raw.map((agent) => [agent.id, agent.contentSessionId]))
+  const shortIds = new Map<string, string>()
+  for (const agent of mains) {
+    const session = sessions.get(agent.id)
+    if (counts.get(headerOf(agent))! > 1 && session) shortIds.set(agent.id, session.slice(0, SESSION_SHORT_ID_CHARS))
+  }
+  return shortIds
 }
 
-/** The review's milestones, oldest first, as build-story steps. Every milestone already happened. */
+/**
+ * Each subagent's parent, by agent id: the main agent of the conversation the subagent ran in (agent-view.mjs: a
+ * subagent works inside its parent's conversation, and its group carries that conversation's platform and session).
+ * Linked only when exactly one main agent of that platform and session is in the snapshot; with none, or with two
+ * (a session seen twice), the subagent has no parent here. Read from the recorded session only, never from names,
+ * folders or roles, which several unrelated agents can share.
+ */
+export function subagentParents(agents: WorkViewAgent[]): Map<string, string> {
+  const sessionKey = (agent: WorkViewAgent) => JSON.stringify([agent.platformSource, agent.contentSessionId])
+  const mainsBySession = new Map<string, string[]>()
+  for (const agent of agents) {
+    if (agent.isSubagent || !agent.contentSessionId) continue
+    mainsBySession.set(sessionKey(agent), [...(mainsBySession.get(sessionKey(agent)) ?? []), agent.id])
+  }
+  const parents = new Map<string, string>()
+  for (const agent of agents) {
+    if (!agent.isSubagent || !agent.contentSessionId) continue
+    const mains = mainsBySession.get(sessionKey(agent)) ?? []
+    if (mains.length === 1) parents.set(agent.id, mains[0])
+  }
+  return parents
+}
+
+/**
+ * The next step a request carries, as values the screens word (data.ts NextStepKind): a checked result is the owner's
+ * to ship; a blocked one puts its recorded step on them as one that unblocks it; with no recorded step it carries why
+ * (decision G3). Never English text.
+ */
+function nextStepFor(status: NormalizedStatus, who: NextStep['who'], recordedNext: string | null, missing: NextStepMissing): NextStep {
+  if (status === 'checked') return { who, kind: 'ship' }
+  const kind = status === 'blocked' ? { kind: 'unblock' as const } : {}
+  return recordedNext === null ? { who, ...kind, missing } : { who, ...kind, text: recordedNext }
+}
+
+/**
+ * The review's milestones, oldest first, as build-story steps. Every milestone already happened. A step's time is a
+ * value: the formatted time, or null when the review recorded none, which the drawer words (never English here).
+ */
 function storySteps(progress: WorkViewProgress, now: number): Request['story'] {
   return [...(progress.milestones ?? [])]
     .sort((a, b) => (Date.parse(a.at ?? '') || 0) - (Date.parse(b.at ?? '') || 0))
     .map((milestone) => {
       const at = Date.parse(milestone.at ?? '')
-      return { label: cleanText(milestone.text, 200), description: Number.isFinite(at) ? formatRecordTime(at, now) : 'Date not recorded', status: 'complete' as const }
+      return { label: cleanText(milestone.text, 200), at: Number.isFinite(at) ? formatRecordTime(at, now) : null, ...(Number.isFinite(at) ? { atIso: isoOf(at) } : {}), status: 'complete' as const }
     })
     .filter((step) => step.label)
 }
@@ -138,7 +345,7 @@ function reviewIsNewerThanLifecycle(review: Pick<WorkViewProgress, 'checkedAt'>,
   return Number.isFinite(reviewedAt) && reviewedAt >= lifecycle.atEpoch
 }
 
-/** One human request → one Request. Its area follows merges; a placement in no live area reads "Sorting…" (absent).
+/** One human request → one Request. Its area follows merges; a placement in no live area reads "Not sorted yet" (absent).
  * Throws when the result breaks the lifecycle rules; the caller turns that into a read-error card. */
 function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: number, resolveArea: ReturnType<typeof createFocusAreaResolver>): Request {
   const copy = raw.humanCopy
@@ -158,17 +365,25 @@ function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: numb
   const { state, stage, who } = presentStatus(status, now - updatedAt <= STALE_AFTER_MS)
   const recordedNext = (copyReady && cleanText(copy.next, 240))
     || cleanText(raw.items.find((item) => item.nextStep?.text)?.nextStep?.text, 140)
-    || (raw.items.length || raw.activity.length || recordedReview ? NEXT_STEP_NOT_RECORDED : NO_WORK_YET)
+    || null
+  // With no step recorded: did any agent record work (items, activity or a review), or are there only asks?
+  const missingNext: NextStepMissing = raw.items.length || raw.activity.length || recordedReview ? 'not-recorded' : 'no-agent-work'
   const agentId = agents.some((agent) => agent.id === raw.agentIds[0]) ? raw.agentIds[0] : UNRECORDED_AGENT.id
   const started = raw.startedAtEpoch
   const reviewedAt = review ? Date.parse(review.checkedAt ?? '') : NaN
   const readings = review?.readings ?? []
   // A recorded ship completes the request at 100%; review readings that stopped short of it are not its trace.
   const readingsStopShort = status === 'shipped' && !!review && review.percent < 100
-  const evidence = [
-    ...(raw.original.url ? [{ title: `${EVIDENCE_KIND_LABEL.prompt}: ${cleanText(raw.original.text, 80)}`, href: raw.original.url }] : []),
-    ...raw.items.map((item) => ({ title: `${EVIDENCE_KIND_LABEL[item.url.split('/')[4]] ?? 'Record'}: ${cleanText(item.title, 80)}`, href: item.url })),
-  ].filter((source, index, all) => EVIDENCE_URL.test(source.href) && all.findIndex((other) => other.href === source.href) === index)
+  // Each source with its kind as a value, which the drawer words in the reader's language (no English kind in its title).
+  // The owner's own words come first, as their prompt, whichever record holds them (a prompt, a summary's or a session's
+  // request); then each item's record by its kind.
+  const evidence: Request['evidence'] = [
+    ...(raw.original.url && evidenceKindOf(raw.original.url) ? [{ kind: 'prompt' as const, title: cleanText(raw.original.text, 80), href: raw.original.url }] : []),
+    ...raw.items.flatMap((item) => {
+      const kind = evidenceKindOf(item.url)
+      return kind ? [{ kind, title: cleanText(item.title, 80), href: item.url }] : []
+    }),
+  ].filter((source, index, all) => all.findIndex((other) => other.href === source.href) === index)
   const focusAreaId = resolveArea(raw.focusAreaId)
   const title = generatedTitle ? raw.title.trim() || null : copyReady && copy.title?.trim() ? copy.title.trim() : null
   // Checked against the full prompts here, since the card's quotes are cut to 400 characters.
@@ -176,9 +391,9 @@ function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: numb
   const titleRepeatsPrompt = !!title && repeatsOwnerWords(title, ownerWords)
   const summary = raw.groupId && recordedReview ? (reviewCounts ? recordedReview.summary?.trim() || null : null) : copyReady && copy.summary?.trim() ? copy.summary.trim() : null
   const summaryRepeatsPrompt = !!summary && repeatsOwnerWords(summary, ownerWords)
-  // Check the recorded text before a blocked request adds its "Unblock:" label.
-  // Checked requests use a fixed next step instead of this recorded text.
-  const nextRepeatsPrompt = status !== 'checked' && repeatsOwnerWords(recordedNext, ownerWords)
+  // Checked against the recorded text alone, whatever kind of step it is (a blocked request's included).
+  // A checked request's step is the owner's ship, not this recorded text.
+  const nextRepeatsPrompt = status !== 'checked' && recordedNext !== null && repeatsOwnerWords(recordedNext, ownerWords)
 
   return assertConsistentRequest({
     id: raw.id,
@@ -194,9 +409,10 @@ function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: numb
     canMoveFocus: !!raw.anchorConversationKey,
     askedBy: raw.requestedBy ?? SOLO_REQUESTER,
     agentId,
-    startedAt: started ? formatDateTime(started) : 'Start not recorded',
+    // Not recorded is null, which the screens word (never English text as data).
+    startedAt: started ? formatDateTime(started) : null,
     startedAtIso: started ? new Date(started).toISOString() : undefined,
-    runningFor: started ? formatDuration((completedEpoch ?? now) - started) : 'Not recorded',
+    runningForMs: started ? (completedEpoch ?? now) - started : null,
     // Counts up only while the request is open: not closed, and not completed by a recorded time or a lifecycle that
     // says complete (the projection's own rule, even when the lifecycle carries no time).
     runningLive: started && completedEpoch === null && status !== 'closed' && raw.lifecycle?.complete !== true ? true : undefined,
@@ -208,40 +424,46 @@ function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: numb
       percent: status === 'shipped' ? 100 : review ? review.percent : null,
       readings: review ? Math.max(1, readings.length) : 0,
       reviewedAt: Number.isFinite(reviewedAt) ? formatRecordTime(reviewedAt, now) : 'Not reviewed yet',
+      ...(Number.isFinite(reviewedAt) ? { reviewedAtIso: isoOf(reviewedAt) } : {}),
       // A current progress record is one assessment, not an invented historical reading.
       history: readingsStopShort || (review && readings.length === 0) ? undefined : readings.map((reading) => reading.percent),
       completedAt: status === 'shipped' && completedEpoch ? formatDateTime(completedEpoch) : undefined,
+      ...(status === 'shipped' && completedEpoch ? { completedAtIso: isoOf(completedEpoch) } : {}),
     },
-    estimate: measuredEstimate(readings, status === 'shipped'),
-    next: { who, text: nextTextFor(status, recordedNext) },
+    estimate: measuredEstimate(readings, status === 'shipped', now),
+    next: nextStepFor(status, who, recordedNext, missingNext),
     // No agent activity yet: the card shows the human's own asks instead.
     terminal: raw.activity.length
       ? raw.activity.slice(0, 4).reverse().map((activity) => cleanText(`${activity.kind} ${activity.title}${activity.detail ? `: ${activity.detail}` : ''}`, 160)).filter(Boolean)
       : [raw.original, ...raw.scopeUpdates].slice(-4).map((prompt) => cleanText(`ask ${prompt.text}`, 160)).filter(Boolean),
     activityWord: copyReady ? 'Working' : 'Translating',
+    // A title or name that is not recorded is null, which the drawer words (never English text as data).
     workstreams: raw.workstreams.map((stream) => ({
-      title: cleanText(copy?.workstreams?.find((entry) => entry.id === stream.id)?.title, 115) || 'Supporting work',
-      tasks: stream.items.filter((item) => item.kind === 'work-state').map((item) => ({ name: cleanText(item.title, 160) || 'Untitled task', done: ['done', 'completed'].includes(item.status) })),
+      title: cleanText(copy?.workstreams?.find((entry) => entry.id === stream.id)?.title, 115) || null,
+      tasks: stream.items.filter((item) => item.kind === 'work-state').map((item) => ({ name: cleanText(item.title, 160) || null, done: ['done', 'completed'].includes(item.status) })),
     })),
     granular: raw.activity.map((activity) => ({
       kind: activity.kind === 'observation' ? 'memory' as const : 'work' as const,
       text: cleanText(activity.detail ? `${activity.title}: ${activity.detail}` : activity.title, 200),
       at: formatRecordTime(activity.atEpoch, now),
+      atIso: isoOf(activity.atEpoch),
       ...(activity.media ? { media: activity.media } : {}),
     })).filter((record) => record.text),
     conversations: raw.conversationKeys.map((key) => {
       const [, platform, sessionId] = parseRecordKey(key)
       const session = agents.find((agent) => agent.platformSource === platform && agent.contentSessionId === sessionId && agent.sessionTitle)
       return {
-        tool: PLATFORM_LABEL[platform] ?? 'Agent',
-        at: key === raw.id && raw.original.atEpoch ? formatDateTime(raw.original.atEpoch) : 'Time not recorded',
-        title: session?.sessionTitle ?? `Conversation ${sessionId.slice(0, 8)}`,
+        tool: PLATFORM_LABEL[platform] ?? UNNAMED_TOOL,
+        at: key === raw.id && raw.original.atEpoch ? formatDateTime(raw.original.atEpoch) : TIME_NOT_RECORDED,
+        ...(key === raw.id && raw.original.atEpoch ? { atIso: isoOf(raw.original.atEpoch) } : {}),
+        // Its session's own title, or null when none is recorded: the screens word that ("{tool} conversation", R2).
+        title: session?.sessionTitle ?? null,
         platform,
         conversationSessionId: sessionId,
       }
     }),
     prompts: [raw.original, ...raw.scopeUpdates]
-      .map((prompt) => ({ at: prompt.atEpoch ? formatPromptStamp(prompt.atEpoch) : 'Time not recorded', quote: cleanText(prompt.text, 400) }))
+      .map((prompt) => ({ at: prompt.atEpoch ? formatPromptStamp(prompt.atEpoch) : TIME_NOT_RECORDED, quote: cleanText(prompt.text, 400) }))
       .filter((prompt) => prompt.quote),
     workProduct: mapWorkProduct(raw.workProduct),
     ...(raw.media ? { media: raw.media } : {}),
@@ -250,13 +472,15 @@ function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: numb
     storyNarrative: review?.narrative?.trim() || undefined,
     evidence,
     checkedAt: raw.review?.checked && raw.review.checkedAtEpoch ? formatDateTime(raw.review.checkedAtEpoch) : undefined,
+    ...(raw.review?.checked && raw.review.checkedAtEpoch ? { checkedAtIso: isoOf(raw.review.checkedAtEpoch) } : {}),
     ...(raw.review?.mode ? { review: { mode: raw.review.mode, hash: raw.review.hash ?? null,
       available: raw.review.available, version: raw.review.version, conflict: raw.review.conflict,
       legacy: raw.review.legacy, pending: raw.review.pending, message: raw.review.message } } : {}),
     ...(raw.suggestion ? { suggestion: { conversationKey: raw.suggestion.conversationKey,
       requestId: raw.suggestion.requestId, requestTitle: cleanText(raw.suggestion.requestTitle, 200),
-      evidence: cleanText(raw.suggestion.evidence, 500), expectedSuggestionHash: raw.suggestion.expectedSuggestionHash,
-      sharedConflict: raw.suggestion.sharedConflict } } : {}),
+      evidence: cleanText(raw.suggestion.evidence, 500),
+      ...(Number.isFinite(raw.suggestion.confidence) ? { confidence: raw.suggestion.confidence } : {}),
+      expectedSuggestionHash: raw.suggestion.expectedSuggestionHash, sharedConflict: raw.suggestion.sharedConflict } } : {}),
   })
 }
 
@@ -360,7 +584,7 @@ function toGoalsModel(goals: WorkViewGoalList | null | undefined, goalHistory: W
       currentPeriod,
       pastPeriods: (goalHistory ?? []).map((list) => toPastPeriod(list, generatedYear)),
       goalsReadError: null,
-      goalsRun: { label: OWNER_GOALS_SKILL, lastRunAt: formatDateTime(generatedAt), deviceName: THIS_COMPUTER.name.toLowerCase() },
+      goalsRun: { label: OWNER_GOALS_SKILL, lastRunAt: formatDateTime(generatedAt), lastRunAtIso: isoOf(generatedAt), deviceName: THIS_COMPUTER.name.toLowerCase() },
     }
   } catch (error) {
     return { ...NO_GOALS, goalsReadError: error instanceof Error ? error.message : String(error) }
@@ -378,15 +602,18 @@ function toOwnerRule(rule: WorkViewRule, now: number): OwnerRule {
   const source = RULE_SOURCES[rule.source]
   if (!source) throw new Error(`Rule "${rule.then}" has an unknown source: ${rule.source}`)
   const latest = Date.parse(rule.latestAt ?? '')
+  // A time that is not recorded is null, which My Rules words in the reader's language (never English text as data).
   const quotes = rule.quotes.map((quote): RuleQuote => {
     const at = Date.parse(quote.at ?? '')
-    return { at: Number.isFinite(at) ? formatDateTime(at) : 'Time not recorded', quote: quote.quote, kind: QUOTE_KINDS.includes(quote.kind as RuleQuote['kind']) ? quote.kind as RuleQuote['kind'] : 'directive', where: 'prompt' }
+    return { at: Number.isFinite(at) ? formatDateTime(at) : null, ...(Number.isFinite(at) ? { atIso: isoOf(at) } : {}), quote: quote.quote, kind: QUOTE_KINDS.includes(quote.kind as RuleQuote['kind']) ? quote.kind as RuleQuote['kind'] : 'directive', where: 'prompt' }
   })
   const savedAt = Date.parse(rule.savedAt ?? '')
+  // Each record also says what it is (`fact`), so My Rules words it in the reader's language and shows a prompt in
+  // full; `label` stays the English line older screens read.
   const records: RuleRecord[] = [
-    ...quotes.map((quote) => ({ kind: 'Prompt' as const, label: `Your prompt: “${cleanText(quote.quote, 60)}”`, at: quote.at })),
-    ...(source === 'request-progress' ? [{ kind: 'Review' as const, label: 'request-progress · build story', at: Number.isFinite(latest) ? formatDateTime(latest) : 'Time not recorded' }] : []),
-    ...(Number.isFinite(savedAt) ? [{ kind: 'Instructions' as const, label: source === 'you' ? 'Written in My Rules on this computer' : 'Saved in My Rules on this computer', at: formatDateTime(savedAt) }] : []),
+    ...quotes.map((quote): RuleRecord => ({ kind: 'Prompt', label: `Your prompt: “${cleanText(quote.quote, 60)}”`, at: quote.at, ...(quote.atIso ? { atIso: quote.atIso } : {}), fact: 'your-prompt', said: quote.quote })),
+    ...(source === 'request-progress' ? [{ kind: 'Review', label: 'request-progress · build story', at: Number.isFinite(latest) ? formatDateTime(latest) : null, ...(Number.isFinite(latest) ? { atIso: isoOf(latest) } : {}), fact: 'build-story' } satisfies RuleRecord] : []),
+    ...(Number.isFinite(savedAt) ? [{ kind: 'Instructions', label: source === 'you' ? 'Written in My Rules on this computer' : 'Saved in My Rules on this computer', at: formatDateTime(savedAt), atIso: isoOf(savedAt), fact: source === 'you' ? 'written-here' : 'saved-here' } satisfies RuleRecord] : []),
   ]
   const replacedAt = Date.parse(rule.replacedAt ?? '')
   return {
@@ -398,12 +625,13 @@ function toOwnerRule(rule: WorkViewRule, now: number): OwnerRule {
     quotes,
     quotesOmitted: rule.quotesOmitted ?? 0,
     timesSeen: rule.timesSeen,
-    latestAt: Number.isFinite(latest) ? formatRecordTime(latest, now) : 'not recorded',
+    latestAt: Number.isFinite(latest) ? formatRecordTime(latest, now) : null,
+    ...(Number.isFinite(latest) ? { latestAtIso: isoOf(latest) } : {}),
     // Only orders rules by strength; an unrecorded date counts as a year old rather than as recent.
     latestDaysAgo: Number.isFinite(latest) ? Math.max(0, (now - latest) / DAY_MS) : 365,
     source,
     status: rule.status,
-    replacedBy: rule.replacedBy ? { ruleId: rule.replacedBy, at: Number.isFinite(replacedAt) ? formatRecordTime(replacedAt, now) : 'a date not recorded' } : undefined,
+    replacedBy: rule.replacedBy ? { ruleId: rule.replacedBy, at: Number.isFinite(replacedAt) ? formatRecordTime(replacedAt, now) : null, ...(Number.isFinite(replacedAt) ? { atIso: isoOf(replacedAt) } : {}) } : undefined,
     records,
   }
 }
@@ -414,7 +642,7 @@ type MappedRules = Pick<MappedWorkModel, 'rules' | 'ruleScopes' | 'rulesLearning
 function toRulesModel(snapshot: Pick<WorkViewSnapshot, 'rules' | 'ruleScopes' | 'rulesLearning' | 'rulesFile'>, now: number): MappedRules {
   const learning = snapshot.rulesLearning ?? null
   const writtenAt = Date.parse(learning?.writtenAt ?? '')
-  const progressRun = Number.isFinite(writtenAt) ? { label: REQUEST_PROGRESS_SKILL, lastRunAt: formatDateTime(writtenAt), deviceName: THIS_COMPUTER.name.toLowerCase() } : null
+  const progressRun = Number.isFinite(writtenAt) ? { label: REQUEST_PROGRESS_SKILL, lastRunAt: formatDateTime(writtenAt), lastRunAtIso: isoOf(writtenAt), deviceName: THIS_COMPUTER.name.toLowerCase() } : null
   const base = {
     ruleScopes: snapshot.ruleScopes ?? [],
     rulesLearning: learning ? { preferencesFound: learning.preferencesFound, newSuggestions: learning.newSuggestions, reviewsRead: learning.reviewsRead } : null,
@@ -435,7 +663,12 @@ function toRulesModel(snapshot: Pick<WorkViewSnapshot, 'rules' | 'ruleScopes' | 
 function toAutoRefresh(raw: WorkViewRefresh | null): AutoRefresh | null {
   if (!raw) return null
   const finished = Date.parse(raw.finishedAt ?? '')
-  return { state: raw.state, finishedAt: Number.isFinite(finished) ? formatDateTime(finished) : null, error: raw.state === 'failed' || raw.state === 'waiting-for-agent' ? raw.error?.trim() || null : null }
+  return {
+    state: raw.state,
+    finishedAt: Number.isFinite(finished) ? formatDateTime(finished) : null,
+    error: raw.state === 'failed' || raw.state === 'waiting-for-agent' ? raw.error?.trim() || null : null,
+    ...(Number.isFinite(finished) ? { finishedAtIso: new Date(finished).toISOString() } : {}),
+  }
 }
 
 /** The build story request-progress wrote: its first paragraph is My Work's recap. No story, no recap. */
@@ -445,8 +678,17 @@ function toBuildStory(story: WorkViewBuildStory | null, now: number): BuildStory
   const recap = blocks.find((block) => !block.startsWith('#'))
   if (!recap) return null
   const paragraphs = blocks.map((block) => block.replace(/^#+\s*/, ''))
+  // Which blocks were headings: the sheet draws them as headings over their paragraphs (c-work-story-sheet).
+  const chapters: StoryChapter[] = []
+  for (const block of blocks) {
+    if (block.startsWith('#')) chapters.push({ heading: block.replace(/^#+\s*/, ''), paragraphs: [] })
+    else if (chapters.length) chapters[chapters.length - 1].paragraphs.push(block)
+    else chapters.push({ heading: null, paragraphs: [block] })
+  }
   const writtenAt = Date.parse(story?.writtenAt ?? '')
-  return { recap, paragraphs, writtenAt: Number.isFinite(writtenAt) ? formatRecordTime(writtenAt, now) : null }
+  // The ISO time too: it dates the headings' UTC days and times, which the page shows in the reader's own clock.
+  const written = Number.isFinite(writtenAt)
+  return { recap, paragraphs, writtenAt: written ? formatRecordTime(writtenAt, now) : null, ...(written ? { writtenAtIso: new Date(writtenAt).toISOString() } : {}), chapters }
 }
 
 export function toWorkModel(snapshot: WorkViewSnapshot, now: number): MappedWorkModel {
@@ -466,12 +708,16 @@ export function toWorkModel(snapshot: WorkViewSnapshot, now: number): MappedWork
         requestId: raw.id,
         title: raw.humanCopy?.title?.trim() || null,
         reason: error instanceof Error ? error.message : String(error),
-        evidenceHref: raw.original?.url && EVIDENCE_URL.test(raw.original.url) ? raw.original.url : null,
+        // Linked only to a record the evidence route serves (one of its kinds), so the card never links a route that is not there.
+        evidenceHref: raw.original?.url && routeKindOf(raw.original.url) ? raw.original.url : null,
       })
     }
   }
   const { progressRun, ...rulesModel } = toRulesModel(snapshot, now)
-  const agents = snapshot.agents.map(toAgent)
+  const parents = subagentParents(snapshot.agents)
+  const mappedAgents = snapshot.agents.map((agent) => toAgent(agent, parents.get(agent.id)))
+  const sessionShortIds = sessionsThatTellAgentsApart(snapshot.agents, mappedAgents)
+  const agents = mappedAgents.map((agent) => sessionShortIds.has(agent.id) ? { ...agent, sessionShortId: sessionShortIds.get(agent.id)! } : agent)
   if (requests.some((request) => request.agentId === UNRECORDED_AGENT.id)) agents.push(UNRECORDED_AGENT)
   return {
     sourceKind: 'local',

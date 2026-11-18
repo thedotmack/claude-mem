@@ -1169,7 +1169,7 @@ var init_SettingsDefaultsManager = __esm({
         CLAUDE_MEM_WORK_STATE_ENABLED: "true",
         // 'false' = no work-state section at SessionStart and no work_state_* MCP tools, for hosts that track work their own way
         CLAUDE_MEM_AUTO_CLEAR_ENABLED: "false",
-        // Claude Code mod (plugin/hooks/auto-clear.js): at CLAUDE_MEM_AUTO_CLEAR_PERCENT of the context window, Claude saves its work state, then /clear runs and a continuation prompt built from that save is sent ("continue" when the save left its blanks out). Off unless set to 'true'. Needs work state on
+        // Claude Code mod (src/mods/auto-clear, in plugin/hooks/hooks-module.js): at CLAUDE_MEM_AUTO_CLEAR_PERCENT of the context window, Claude saves its work state, then /clear runs and a continuation prompt built from that save is sent ("continue" when the save left its blanks out). Off unless set to 'true'. Needs work state on
         CLAUDE_MEM_AUTO_CLEAR_PERCENT: "40",
         // Context window use (1-95) that starts the auto-clear. 40: the maintainer's choice (raised from 33 on 2026-11-17); src/mods/auto-clear/settings.ts keeps the same value
         CLAUDE_MEM_FILE_READ_GATE_ENABLED: "true",
@@ -1311,12 +1311,6 @@ var init_SettingsDefaultsManager = __esm({
         // Streamed request idle window (streamed-chat-completion.ts): silence that ends a stream. Self-hosted backends queue behind a load balancer, and the queue wait reads as idle (#4737) — raise it there. Literal because shared cannot import from the worker; a drift test pins it to the shipped constant
         CLAUDE_MEM_WORKER_HEARTBEAT_STALE_MS: "120000",
         // A silent worker whose liveness heartbeat is younger than this is slow, not dead (10000-3600000).
-        // Observation TV remote broadcast. EMPTY = OFF: the read-only guard is not
-        // mounted and the worker behaves exactly as before. Set (with a non-loopback
-        // CLAUDE_MEM_WORKER_HOST) to expose ONLY /tv, /tv.html, /stream and
-        // GET /api/observations to holders of this secret. Mint with:
-        //   node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
-        CLAUDE_MEM_TV_TOKEN: "",
         CLAUDE_MEM_LOCAL_API_TOKEN: "",
         // Local API token. Empty = off. See the declaration above.
         // claude-mem sign-in funnel state: all empty until the installer's
@@ -4210,6 +4204,17 @@ var init_nav_words = __esm({
   }
 });
 
+// src/services/work-view/focus-done-date.mjs
+function doneAtAfterChange({ statusBefore, doneAtBefore, statusAfter, changedAt }) {
+  if (statusAfter !== "done") return null;
+  return statusBefore === "done" ? doneAtBefore : changedAt;
+}
+var init_focus_done_date = __esm({
+  "src/services/work-view/focus-done-date.mjs"() {
+    "use strict";
+  }
+});
+
 // src/services/work-view/my-focus.mjs
 function applyPatch(target, fields) {
   for (const [key, value] of Object.entries(fields)) {
@@ -4235,11 +4240,13 @@ function buildFocusAreas(state, { localDeviceId: localDeviceId2 = null } = {}) {
       if (focusAreaId === OTHER_FOCUS_AREA_ID) throw new Error(`A my-focus area row uses the reserved id "${OTHER_FOCUS_AREA_ID}".`);
       const decidedBy = event.fields.decided_by;
       if (!FOCUS_AREA_DECIDED_BY.includes(decidedBy)) throw new Error(`Focus area ${focusAreaId} has an unknown writer: ${decidedBy}`);
-      const area = areas.get(focusAreaId) ?? { fields: {}, ownerDecided: false, savedAt: null };
+      const area = areas.get(focusAreaId) ?? { fields: {}, ownerDecided: false, savedAt: null, doneAt: null };
       if (area.ownerDecided && decidedBy === "system") continue;
+      const statusBefore = area.fields.status;
       applyPatch(area.fields, event.fields);
       if (decidedBy !== "system") area.ownerDecided = decidedBy === "owner";
       area.savedAt = event.at;
+      area.doneAt = doneAtAfterChange({ statusBefore, doneAtBefore: area.doneAt, statusAfter: area.fields.status, changedAt: event.at });
       areas.set(focusAreaId, area);
     } else if (event.task.startsWith(PLACEMENT_TASK_PREFIX)) {
       const anchor = text2(event.fields.anchor_conversation_key) || event.task.slice(PLACEMENT_TASK_PREFIX.length);
@@ -4252,7 +4259,7 @@ function buildFocusAreas(state, { localDeviceId: localDeviceId2 = null } = {}) {
       placements.set(anchor, placement);
     }
   }
-  const focusAreas = [...areas].map(([focusAreaId, { fields, savedAt }]) => {
+  const focusAreas = [...areas].map(([focusAreaId, { fields, savedAt, doneAt }]) => {
     if (!text2(fields.name)) throw new Error(`Focus area ${focusAreaId} has no name.`);
     if (!FOCUS_AREA_STATUSES.includes(fields.status)) throw new Error(`Focus area ${focusAreaId} has an unknown status: ${fields.status}`);
     if (!FOCUS_AREA_SOURCES.includes(fields.source)) throw new Error(`Focus area ${focusAreaId} has an unknown source: ${fields.source}`);
@@ -4268,7 +4275,8 @@ function buildFocusAreas(state, { localDeviceId: localDeviceId2 = null } = {}) {
       mergedInto: text2(fields.merged_into) || null,
       evidence: text2(fields.evidence) || null,
       decidedBy: fields.decided_by,
-      savedAt
+      savedAt,
+      doneAt
     };
   }).sort((a, b) => (a.ownerRank ?? Infinity) - (b.ownerRank ?? Infinity) || (a.priorityRank ?? Infinity) - (b.priorityRank ?? Infinity) || a.name.localeCompare(b.name));
   const byId = new Map(focusAreas.map((area) => [area.focusAreaId, area]));
@@ -4315,6 +4323,7 @@ var init_my_focus = __esm({
     init_work_state_limits();
     init_work_state_reduce();
     init_nav_words();
+    init_focus_done_date();
     MY_FOCUS_LIST = "my-focus";
     OTHER_FOCUS_AREA_ID = "other";
     FOCUS_AREA_TASK_PREFIX = "Focus area: ";

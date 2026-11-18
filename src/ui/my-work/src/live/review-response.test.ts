@@ -35,6 +35,13 @@ test('503 shows the worker error text', () => {
   assert.deepEqual(readReviewResponse(503, { error: 'Local review storage is unavailable. Your source work is unchanged.' }), { kind: 'unavailable', serverMessage: 'Local review storage is unavailable. Your source work is unchanged.' })
 })
 
+// The drawer words each outcome itself (G17, fix round M1): with no reason from the worker there is nothing to fold under
+// Details, and no English is made up in its place.
+test('a 409 or a 503 without the worker\'s reason carries none', () => {
+  assert.deepEqual(readReviewResponse(409, {}), { kind: 'conflict', serverMessage: null })
+  assert.deepEqual(readReviewResponse(503, null), { kind: 'unavailable', serverMessage: null })
+})
+
 test('every other status throws with the status and the worker error, never silently', () => {
   assert.throws(() => readReviewResponse(403, { error: 'Review changes must come from the local work viewer.' }), /\(403\): Review changes must come from the local work viewer\./)
   assert.throws(() => readReviewResponse(404, { error: 'Request is outside the loaded work.' }), /\(404\): Request is outside the loaded work\./)

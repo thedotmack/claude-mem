@@ -5,7 +5,7 @@ import { THEME_PREFERENCES, type ThemePreference } from '../hooks/useTheme';
 import { useSpinningFavicon } from '../hooks/useSpinningFavicon';
 import { formatStarCount, useGitHubStars } from '../hooks/useGitHubStars';
 import { PRO_TRIAL_PITCH, PRO_TRIAL_SHORT, PRO_TRIAL_URL, TEAMBRAIN_PITCH, TEAMBRAIN_START_URL } from '../constants/promo';
-import { SYNC_MODE_SENTENCES, SYNC_REMAINING_SENTENCE, type SyncPresentation } from '../utils/sync-presentation';
+import { syncDetailWords, type SyncPresentation } from '../utils/sync-presentation';
 import { formatCount } from '../utils/formatters';
 import { ProjectPicker } from './ProjectPicker';
 import { MenuButton, MenuGroup, MenuItem, MenuLink, MenuRadioItem, MenuSeparator } from './MenuButton';
@@ -29,19 +29,6 @@ interface HeaderProps {
   showTeamBrainLink?: boolean;
   /** Opens the memory logs; offered in the "…" menu where the floating logs button is hidden (narrow screens). */
   onOpenLogs?: () => void;
-}
-
-type Translate = (english: string) => string;
-
-/** The sync state's full words in the reader's language: the state sentence, the delivery mode, the changes left. */
-function syncDetailWords(syncStatus: SyncPresentation, t: Translate): string {
-  const parts = syncStatus.detailParts;
-  if (!parts) return syncStatus.detail;
-  return [
-    t(parts.sentence),
-    parts.mode ? t(SYNC_MODE_SENTENCES[parts.mode]) : '',
-    parts.remaining !== null ? interpolate(t(SYNC_REMAINING_SENTENCE), { count: parts.remaining }) : '',
-  ].filter(Boolean).join(' ');
 }
 
 const syncTone = (syncStatus: SyncPresentation, isConnected: boolean) => isConnected ? syncStatus.tone : 'warning';

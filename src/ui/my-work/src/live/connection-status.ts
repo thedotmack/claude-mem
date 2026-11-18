@@ -37,6 +37,8 @@ export interface ConnectionStatus {
   eventAgeMs: number | null
   sourceAgeMs: number | null
   lastSuccessfulCheckAt: string | null
+  /** When the saved activity was last inspected (an ISO time), for the Live popover's details; null when unknown. */
+  activityCheckedAt: string | null
   clockSkew: boolean
   staleAfterMs: number
   tooltip: string
@@ -136,6 +138,6 @@ export function getConnectionStatus({
     + (clockSkew ? 'Source and browser clocks differ; freshness uses received heartbeats. ' : '')
     + 'Connection status does not indicate an agent is running.'
   return { state, label, detail, tone, isLive: state === 'live', eventAgeMs, sourceAgeMs,
-    lastSuccessfulCheckAt: successfulCheckAt, clockSkew, staleAfterMs: threshold, tooltip,
+    lastSuccessfulCheckAt: successfulCheckAt, activityCheckedAt: checkTime(activityCheckedAt), clockSkew, staleAfterMs: threshold, tooltip,
     sync: presentSync(sync, syncReceivedAt, now) }
 }
