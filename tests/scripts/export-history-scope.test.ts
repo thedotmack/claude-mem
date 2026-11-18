@@ -47,6 +47,7 @@ const fixture = String.raw`
   // Only the external semantic transport is faked. Its candidates still pass
   // through production recency filtering, SQLite hydration and project scope.
   const chroma = process.env.EXPORT_CASE === 'semantic' ? {
+    isCollectionAvailable: () => true,
     queryChroma: async () => ({
       ids, distances: ids.map(() => 0.1),
       metadatas: rows.map(row => ({ sqlite_id: row.id, doc_type: 'observation',
