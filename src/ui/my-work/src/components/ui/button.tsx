@@ -13,7 +13,7 @@ import { useI18n } from "@/lib/i18n"
  * hover-enabled / active-enabled variants, which skip disabled, aria-disabled and busy buttons.
  */
 const buttonVariants = cva(
-  "group/button inline-flex shrink-0 cursor-pointer items-center justify-center rounded-lg border border-transparent bg-clip-padding text-sm font-medium whitespace-nowrap transition-all outline-none select-none touch-target-size focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 active-enabled:not-aria-[haspopup]:translate-y-px disabled:cursor-not-allowed disabled:opacity-50 aria-disabled:cursor-not-allowed aria-disabled:opacity-50 aria-busy:cursor-progress aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+  "group/button inline-flex shrink-0 cursor-pointer items-center justify-center rounded-lg border border-transparent bg-clip-padding text-sm font-medium whitespace-nowrap transition-all outline-none select-none touch-target-size focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 active-enabled:not-aria-[haspopup]:not-data-[variant=bare]:translate-y-px disabled:cursor-not-allowed disabled:opacity-50 aria-disabled:cursor-not-allowed aria-disabled:opacity-50 aria-busy:cursor-progress aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
   {
     variants: {
       variant: {
@@ -31,7 +31,10 @@ const buttonVariants = cva(
         // uses the darker accent text (≥4.5:1, checked by the token contrast test).
         link: "text-accent-foreground underline underline-offset-4 hover-enabled:decoration-2 dark:text-primary",
         // Whole-card and title buttons (G14): no fill, padding, height or gap, and the text reads like the content
-        // around it. Keeps the focus ring, the cursors, the disabled look and the touch rule from the base.
+        // around it. Keeps the focus ring, the cursors, the disabled look and the touch rule from the base, but not the
+        // base's 1px press nudge: a whole-card button's hit area is its ::after stretched over the card, and a translate
+        // makes the button that ::after's containing block while pressed, so the hit area shrinks to the button's own
+        // text, the release lands outside it and the click never fires (focus cards opened only from their name).
         bare: "shrink justify-start text-left whitespace-normal",
       },
       size: {
