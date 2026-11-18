@@ -33,7 +33,13 @@ RUN mkdir -p /usr/local/share/npm-global \
 ENV NPM_CONFIG_PREFIX=/usr/local/share/npm-global
 ENV PATH="/usr/local/share/npm-global/bin:${PATH}"
 
-ARG CLAUDE_CODE_VERSION=latest
+# Pinned like BUN_VERSION and UV_VERSION above: the same commit must build the
+# same image, and `latest` hands the build whatever the registry serves at that
+# moment. 2.1.326 is the CLI version CI installs and runs the hooks-module
+# engine test against, so the image ships the CLI this repository tests.
+# Override for a deliberate upgrade:
+#   docker build --build-arg CLAUDE_CODE_VERSION=2.1.327 docker/claude-mem
+ARG CLAUDE_CODE_VERSION=2.1.326
 USER node
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
