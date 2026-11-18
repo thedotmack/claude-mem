@@ -95,7 +95,11 @@ export class AutoRefreshWorker {
    */
   replaceableStatus() {
     try { return this.status(); }
-    catch (error) { this.log('warn', 'Work view refresh status could not be read; a new status replaces it', { error: String(error?.message ?? error) }); return null; }
+    catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+      this.log('warn', 'Work view refresh status could not be read; a new status replaces it', { error: String(error.message) });
+      return null;
+    }
   }
 
   write(status) { writeJsonAtomic(this.path(), status); }

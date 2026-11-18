@@ -600,9 +600,10 @@ export function openSuggestions(ledger) {
     }));
 }
 
-/** The automatic refresh's status, or null when it cannot be read: the next refresh check writes a new one. */
+/** The automatic refresh's status, or null when its bytes are not JSON: the next refresh check writes a new one. */
 function readRefreshStatus(dir) {
-  try { return readJson(join(dir, 'refresh.json'), null); } catch { return null; }
+  try { return readJson(join(dir, 'refresh.json'), null); }
+  catch (error) { if (error instanceof SyntaxError) return null; throw error; }
 }
 
 /** Everything the monitor needs, read without touching the database. */

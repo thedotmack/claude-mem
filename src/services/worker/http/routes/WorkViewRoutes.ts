@@ -1258,9 +1258,10 @@ export class WorkViewRoutes extends BaseRouteHandler {
     return this.getSyncStatus ? { ...result, sync: this.getSyncStatus() } : result;
   }
 
-  /** refresh.json, or null when it cannot be read, so a view shows no run; the next scheduled check replaces the file. */
+  /** refresh.json, or null when its bytes are not JSON, so a view shows no run; the next scheduled check replaces the file. */
   private readableRefreshStatus() {
-    try { return this.autoRefresh?.status() ?? null; } catch { return null; }
+    try { return this.autoRefresh?.status() ?? null; }
+    catch (error) { if (error instanceof SyntaxError) return null; throw error; }
   }
 
   /**
