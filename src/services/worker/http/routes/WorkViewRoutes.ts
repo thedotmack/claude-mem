@@ -975,14 +975,18 @@ export class WorkViewRoutes extends BaseRouteHandler {
   private setupStateView(state: SetupStateFile = readSetupState(this.setupStatePath)): SetupStateView {
     const settings = SettingsDefaultsManager.loadFromFile(this.settingsPath, true, { readOnly: true }) as unknown as Record<string, unknown>;
     const historyImport = this.historyImport?.state() ?? null;
-    return { ...state, install: redactSetupInstall(state.install), alreadyPro: hasProConfiguration(settings), history: this.historyCounts(), historyImport, backgroundWorkRunning: this.backgroundWorkRunning({ countScanWaitingForUploadAnswer: true }) };
+    return { ...state, install: redactSetupInstall(state.install), alreadyPro: hasProConfiguration(settings), history: this.historyCounts(), historyImport, backgroundWorkRunning: this.backgroundWorkRunning({ countScanWaitingForUploadAnswer: true, failOnUnreadableRefresh: false }) };
   }
 
   /**
    * Long work this worker is doing now that a restart would kill (SetupStateView.backgroundWorkRunning): the
    * extraction run and the history import. GET /api/setup/state reports it, and the installer waits for it before
    * any restart (browser-setup.ts waitForBackgroundWorkToFinish); the auto-updater counts it as busy
-   * (worker-service.ts runningBackgroundJobNames). Reads refresh.json; throws when that file cannot be read.
+   * (worker-service.ts runningBackgroundJobNames). Reads refresh.json.
+   *
+   * failOnUnreadableRefresh: what a refresh.json that cannot be read means. The auto-updater throws, so its quiet
+   * check counts the unknown run as busy. The setup state view reads it as no run: a throw there failed every setup
+   * state request, the installer's and My Work's, until the file was replaced. The next scheduled check replaces it.
    *
    * countScanWaitingForUploadAnswer: whether a setup scan held at the "upload your prompts?" question
    * ('awaiting-consent') counts as the extraction run. The installer's view counts it, as it always has. The
@@ -990,9 +994,9 @@ export class WorkViewRoutes extends BaseRouteHandler {
    * answers), and a restart drops it anyway, so counting it would read busy until the worker restarts.
    * setupIsActive leaves that phase out for the same reason.
    */
-  backgroundWorkRunning({ countScanWaitingForUploadAnswer }: { countScanWaitingForUploadAnswer: boolean }): NonNullable<SetupStateView['backgroundWorkRunning']> {
+  backgroundWorkRunning({ countScanWaitingForUploadAnswer, failOnUnreadableRefresh }: { countScanWaitingForUploadAnswer: boolean; failOnUnreadableRefresh: boolean }): NonNullable<SetupStateView['backgroundWorkRunning']> {
     const backgroundWorkRunning: NonNullable<SetupStateView['backgroundWorkRunning']> = [];
-    const refresh = this.autoRefresh?.status() ?? null;
+    const refresh = failOnUnreadableRefresh ? this.autoRefresh?.status() ?? null : this.readableRefreshStatus();
     // A 'running' record whose process is gone was cut off; only a live run counts.
     // The setup scan counts too: when it finishes it starts the extraction run.
     const scanPhase = this.setupScan?.state().phase ?? 'idle';
@@ -1267,6 +1271,12 @@ export class WorkViewRoutes extends BaseRouteHandler {
     return this.getSyncStatus ? { ...result, sync: this.getSyncStatus() } : result;
   }
 
+  /** refresh.json, or null when its bytes are not JSON, so a view shows no run; the next scheduled check replaces the file. */
+  private readableRefreshStatus() {
+    try { return this.autoRefresh?.status() ?? null; }
+    catch (error) { if (error instanceof SyntaxError) return null; throw error; }
+  }
+
   /**
    * The funnel's view of setup: the scan and the extraction run (the automatic refresh's status). `step` is what is
    * being extracted now, read from what has landed: goals first, then work (request groups), then rules (the story).
@@ -1274,7 +1284,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
   private setupView(snapshot: WorkViewSnapshot) {
     const hosted = this.hostedIntent?.state();
     if (hosted && hosted.state !== 'idle') return { scan: this.setupScan?.state() ?? null, work: this.setupWork(), extraction: hosted };
-    const refresh = this.autoRefresh?.status() ?? null;
+    const refresh = this.readableRefreshStatus();
     const view = snapshot as unknown as { goals?: unknown; story?: { groups?: number; story?: unknown } | null };
     const step = refresh?.state !== 'running' ? null : !view.goals ? 'goals' : !view.story?.groups ? 'work' : 'rules';
     return {

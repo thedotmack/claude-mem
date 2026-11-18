@@ -26,6 +26,19 @@ function load(path) {
   } catch (error) { if (error.code === 'ENOENT') return undefined; throw error; }
 }
 
+/**
+ * The observed hash of the file a staged write is about to replace. A file whose bytes are not JSON hashes its raw
+ * bytes instead, a stable marker of that damaged file, so the write that replaces it can proceed (a damaged
+ * refresh.json otherwise blocked every refresh check). Every other read error still throws.
+ */
+function observedFileHash(path) {
+  try { return digest(load(path)); }
+  catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    return `unparsed:${createHash('sha256').update(readFileSync(path)).digest('hex')}`;
+  }
+}
+
 function rawWrite(path, value) {
   mkdirSync(join(path, '..'), { recursive: true });
   const temp = `${path}.${randomUUID()}.shared.tmp`;
@@ -90,7 +103,7 @@ export class SharedLedgerAdapter {
     this.db.prepare(`INSERT INTO my_work_file_state(name, observed_hash, bases, keys_json, pending_json, pending_delete) VALUES(?, ?, ?, ?, ?, ?)
       ON CONFLICT(name) DO UPDATE SET observed_hash=excluded.observed_hash, bases=excluded.bases,
       keys_json=excluded.keys_json, pending_json=excluded.pending_json, pending_delete=excluded.pending_delete`)
-      .run(name, pending ? prior.observed_hash ?? digest(load(join(this.directory, name))) : digest(value), JSON.stringify(bases), JSON.stringify(keys), pending ? JSON.stringify(value) : null, Number(pending && pendingDelete));
+      .run(name, pending ? prior.observed_hash ?? observedFileHash(join(this.directory, name)) : digest(value), JSON.stringify(bases), JSON.stringify(keys), pending ? JSON.stringify(value) : null, Number(pending && pendingDelete));
   }
 
   localLedger() {

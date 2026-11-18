@@ -823,7 +823,7 @@ export class WorkerService implements WorkerRef {
     if (this.corpusRoutes == null) {
       throw new Error('The corpus routes are not registered (background initialization has not reached them, or failed before it did), so a corpus build cannot be read');
     }
-    const running: string[] = [...this.workViewRoutes.backgroundWorkRunning({ countScanWaitingForUploadAnswer: false })];
+    const running: string[] = [...this.workViewRoutes.backgroundWorkRunning({ countScanWaitingForUploadAnswer: false, failOnUnreadableRefresh: true })];
     if (this.workViewRoutes.cardWordingRequestsRunning() > 0) running.push('my-work-card-wording');
     if (this.corpusRoutes.corpusBuildsRunning() > 0) running.push('corpus-build');
     if (this.sessionManager.getSessionWrapupsInFlight() > 0) running.push('telegram-session-wrapup');

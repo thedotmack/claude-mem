@@ -385,6 +385,19 @@ describe('setup state endpoints', () => {
     expect((await state()).backgroundWorkRunning).toEqual([]);
   });
 
+  it('report no extraction run, and still answer, when refresh.json cannot be read', async () => {
+    await start({ status: () => { throw new SyntaxError('JSON Parse error: Unrecognized token'); }, start() {}, close() {}, async runNow() { return 'idle'; } });
+    const response = await fetch(`${origin}/api/setup/state`);
+    expect(response.status).toBe(200);
+    expect((await response.json()).backgroundWorkRunning).toEqual([]);
+  });
+
+  it('fail the setup state request when refresh.json cannot be opened for a reason other than unreadable bytes', async () => {
+    await start({ status: () => { throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' }); }, start() {}, close() {}, async runNow() { return 'idle'; } });
+    const response = await fetch(`${origin}/api/setup/state`);
+    expect(response.status).toBe(500);
+  });
+
   it('report an existing CMEM Pro configuration so On The Go is pre-selected', async () => {
     writeFileSync(settingsPath, JSON.stringify({ env: {
       CLAUDE_MEM_CLOUD_SYNC_TOKEN: 'token', CLAUDE_MEM_CLOUD_SYNC_USER_ID: 'user', CLAUDE_MEM_CLOUD_SYNC_HUB_URL: 'https://hub.example',
