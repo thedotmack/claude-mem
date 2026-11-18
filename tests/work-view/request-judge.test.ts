@@ -322,18 +322,29 @@ describe('the request judge', () => {
       const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: 0, ungrouped: 3, goalsStale: false, unplaced: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), judge: alwaysPlaces, now: () => NOW, saveFocus: focusWriter(database).save });
       const ask = async (prompt: string) => {
         if (prompt.includes('Do only section 1')) throw new Error('the judge placed every conversation; no grouping batch may be asked');
-        if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
+        if (prompt.includes('Do only section 4')) return everyRequestInOther(prompt);
+        if (prompt.includes('Do only section 3')) {
+          // Only the request the judge started still shows its ask as its title, and it comes with its review's summary.
+          const input = JSON.parse(/```json\n([\s\S]*?)\n```/.exec(prompt)![1]);
+          expect(input.requests.map((request: any) => [request.groupId, request.title, request.summary])).toEqual([[groupIdFor(key('d')), 'Set up the blog', 'Under way.']]);
+          return JSON.stringify({ titles: [{ groupId: groupIdFor(key('d')), title: 'Launch the team blog site' }] });
+        }
         if (prompt.includes('Do only section 2')) {
           const shows = JSON.parse((await import('node:fs')).readFileSync(/is in (\S+\.json)/.exec(prompt)![1], 'utf8'));
           return JSON.stringify({ reviews: shows.map((show: any) => ({ groupId: show.groupId, state: 'in-progress', percent: 30, summary: 'Under way.', reviewBasis: show.reviewBasis })) });
         }
         return JSON.stringify({ narrative: 'Two requests under way.', preferences: [] });
       };
-      expect(await task.run(ask, 'codex')).toBe('3 new conversations judged (2 joined, 0 suggested, 1 new), 2 requests reviewed, 2 requests placed, story written.');
+      expect(await task.run(ask, 'codex')).toBe('3 new conversations judged (2 joined, 0 suggested, 1 new), 2 requests reviewed, 1 requests named, 2 requests placed, story written.');
       expect(task.steps[0]).toMatchObject({ step: 'judge', agent: 'codex', groups: 3 });
+      // Named after the reviews (so a vague ask is named from what was found) and before focus (so it is placed once).
+      expect(task.steps.map(step => step.step)).toEqual(['judge', 'review', 'titles', 'focus', 'focus', 'story']);
       const ledger = readLedger(dir);
       expect(ledger.groups.conversations).toEqual({ [key('a')]: groupId, [key('b')]: groupId, [key('c')]: groupId, [key('d')]: groupIdFor(key('d')) });
       expect(ledger.groups.groups[groupId].links.map((link: any) => link.evidence)).toEqual(['stub scored 0.90', 'stub scored 0.90']);
+      // The open request keeps its written title; the judge's placeholder was replaced.
+      expect(ledger.groups.groups[groupId].title).toBe('Release cards');
+      expect(ledger.groups.groups[groupIdFor(key('d'))].title).toBe('Launch the team blog site');
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 

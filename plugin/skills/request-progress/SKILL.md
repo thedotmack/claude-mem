@@ -5,7 +5,7 @@ description: Group recent conversations into overall requests, review each one's
 
 # Request Progress
 
-My Work shows one card per **human request**, built from the human's own prompts: a conversation's first substantive ask owns its follow-ups, and agent work, activity and progress sit beneath it, even before any work is recorded. People rarely finish a goal in one conversation, though. They `/clear`, switch worktrees, hand off to Codex, come back the next day. This skill checks each new conversation's opening ask against the open requests in its project to join those conversations into one **overall request**, then reviews each request from memory and writes the build story.
+My Work shows one card per **human request**, built from the human's own prompts: a conversation's first substantive ask owns its follow-ups, and agent work, activity and progress sit beneath it, even before any work is recorded. People rarely finish a goal in one conversation, though. They `/clear`, switch worktrees, hand off to Codex, come back the next day. This skill checks each new conversation's opening ask against the open requests in its project to join those conversations into one **overall request**, then reviews each request from memory, names it, and writes the build story.
 
 `${CLAUDE_SKILL_DIR}` is the folder holding this file. Every step runs one CLI:
 
@@ -23,7 +23,7 @@ Default window: 14 days. Use the window the user asks for.
 
 A human request is the top level of My Work: every conversation's opening ask either starts a request or continues one. Grouping decides **once per conversation**, from its opening substantive ask, and decisions already in the ledger are kept. Requests stay inside one project root (the project key before its first `/`, so worktrees of one repo share requests): `apply` refuses a group whose conversations come from different roots unless the decision names the request's `projectRoot`, in which case every conversation it lists joins that request and the request records that root.
 
-Before any batch reaches you, the worker's judge files each new conversation on its own (`$CLI judge --days 14` shows what it would do; `--apply` writes it). A code link (the conversation wrote to the same work-state list, or recorded the same `request_id`, as one open request) joins at once. On a CMEM Pro or OpenRouter install, Jev then checks the opening ask against the root's open requests: a check score of 0.8 or more joins the request (a `judge` link whose evidence names the judge and its score, and the request records its root), 0.5 to 0.8 makes the conversation its own request with a suggestion the owner accepts or declines on its card in My Work ("Looks like part of …"), and below 0.5 it starts its own request. Only conversations the judge could not place (no code link and no Jev, or a refused or failed call) come to `grouping-input`.
+Before any batch reaches you, the worker's judge files each new conversation on its own (`$CLI judge --days 14` shows what it would do; `--apply` writes it). A code link (the conversation wrote to the same work-state list, or recorded the same `request_id`, as one open request) joins at once. On a CMEM Pro or OpenRouter install, Jev then checks the opening ask against the root's open requests: a check score of 0.8 or more joins the request (a `judge` link whose evidence names the judge and its score, and the request records its root), 0.5 to 0.8 makes the conversation its own request with a suggestion the owner accepts or declines on its card in My Work ("Looks like part of …"), and below 0.5 it starts its own request. A request the judge starts is titled with its opening ask's first sentence, copied, until section 3 names it. Only conversations the judge could not place (no code link and no Jev, or a refused or failed call) come to `grouping-input`.
 
 ```bash
 $CLI grouping-input --days 14
@@ -56,7 +56,7 @@ $CLI apply - <<'JSON'
       "conversations": ["[\"conversation\",\"claude\",\"<earliest>\"]", "[\"conversation\",\"codex\",\"<later>\"]"],
       "links": [{ "kind": "agent-judgment", "conversations": ["…", "…"], "evidence": "Oct 16 ask: \"this is excellent work, can you now add request cards\" continues the Oct 15 build" }]
     },
-    { "title": "Pricing page copy", "conversations": ["[\"conversation\",\"claude\",\"<id>\"]"] }
+    { "title": "Rewrite the pricing page copy", "conversations": ["[\"conversation\",\"claude\",\"<id>\"]"] }
   ],
   "ignored": [{ "conversation": "[\"conversation\",\"codex\",\"<id>\"]", "reason": "Automated workspace naming prompt" }]
 }
@@ -67,7 +67,7 @@ The command fails fast; fix the input and rerun. Its rules:
 
 - List `conversations` **earliest first**. The first one anchors the group id, so reviews survive later merges.
 - A group of more than one conversation needs at least one link (`shared-work-list`, `shared-request-id` or `agent-judgment`) with evidence text. Quote the human's words where you can.
-- `title` is the goal in plain words (≤120 chars), not the process.
+- `title` names the task in about 5 to 7 plain words: what is being built, fixed, investigated, decided or explained, and what it is on ("Live My Work request cards", not "this is excellent work, can you now add request cards"). Never copy or trim the owner's ask, and never describe the process ("Follow-up on…", "Conversation about…"). When the opening ask does not say what the task is ("figure it out", "check the status"), use its first sentence as typed: section 3 names the request once its review shows what the work was. At most 120 characters.
 - Every conversation in a group comes from one project root, unless the group gives an explicit `projectRoot` (a root as `grouping-input` reports it), which lets conversations from other roots join and is recorded on the request.
 
 Then run `$CLI pending --days 14 --limit 48`. `ungroupedConversations` should be 0; `groups` lists the overall requests due for a review (new, or active since their last review).
@@ -97,9 +97,33 @@ Split the due groups into batches of about 8 and give each batch to a subagent, 
 >
 > Return the groups you recorded and any you could not, with the reason.
 
-## 3. Sort each request into a focus area
+## 3. Name each request
 
-A **focus area** is a part of the owner's work you could ask for things inside of. Every request sits in exactly one area, or in **Other** when it fits none. Run this yourself after the reviews. Areas are only ever proposed: the owner keeps, renames, merges or dismisses them.
+A card's title is how the owner tells requests apart at a glance, so it names the task, not the owner's words. A request the judge started, or one a grouping answer titled with its ask, still shows its opening ask's first sentence as a placeholder ("figure it out", "check the status"). Name those after the reviews, so a vague ask is named from what the work turned out to be.
+
+```bash
+$CLI title-input
+```
+
+It returns `requests`: one batch of up to 20 requests still titled with their placeholder, each with its `groupId`, the placeholder `title`, its `firstAsk`, every conversation's opening ask (`conversationAsks`) and its review's `state` and `summary` when it has one; and `remaining`, the requests left for later batches. If `requests` is empty, go to section 4.
+
+Write one title per request:
+
+- About 5 to 7 words that say what the task is: the thing built, fixed, investigated, decided or explained, and what it is on. Read the summary first, since an ask can be as vague as "figure it out": write "Fix the checkout page loading error", not "figure it out", and "One-page digest of the setup docs", not "Make a one-page digest of the setup docs in digest.md in this folder."
+- Name the task, not its progress or the conversation: no "Shipped…", "Still working on…", "Follow-up on…" or "Conversation about…". A finished request keeps its task title.
+- Never copy or trim the owner's ask. Keep product, repository and feature names as written. Plain words, no closing period, at most 120 characters, in the owner's language.
+
+```bash
+$CLI record-titles - <<'JSON'
+{"titles": [{"groupId": "g_…", "title": "Fix the checkout page loading error"}]}
+JSON
+```
+
+`record-titles` refuses a title that repeats the placeholder or is the words the ask starts with; fix it and rerun. It replaces only a placeholder, so a title written meanwhile stays. Run `title-input` again until `requests` is empty.
+
+## 4. Sort each request into a focus area
+
+A **focus area** is a part of the owner's work you could ask for things inside of. Every request sits in exactly one area, or in **Other** when it fits none. Run this yourself after section 3. Areas are only ever proposed: the owner keeps, renames, merges or dismisses them.
 
 1. Run `$CLI focus-input`. It returns:
    - `areas`: the owner's kept and suggested focus areas (`focusAreaId`, `name`, `goal`, `about`).
@@ -133,7 +157,7 @@ Every proposal has `kind`, `name` (a short label, about 60 chars and never over 
 
 My Work shows each request's area, Other, or "Sorting…" until this step places it. Proposed areas wait under Suggested for the owner.
 
-## 4. Write the build story
+## 5. Write the build story
 
 Run `$CLI story-input`. Without a previous story it returns every review; with one (`update: true`) it returns only the reviews whose facts (state, percent, dates, milestones, preferences or outcome) changed since that story was written. If it lists no reviews, skip this step: the story still holds. Aim for about `narrativeTarget` characters. `narrativeLimit` is a hard cap: a longer story is refused. When updating, `previousParts` lists the previous story's recap and chapters, each with its length in characters and words (`chars`, `words`), a budget counted for you (`budgetChars`, `budgetWords`) and how far it is over that budget (`overBudgetChars`).
 
@@ -154,4 +178,4 @@ $CLI record-story - <<'JSON'
 JSON
 ```
 
-Finish by telling the user how many requests were reviewed, how many were placed in focus areas and which areas were proposed, the shipping velocity in two sentences, and the five strongest preferences.
+Finish by telling the user how many requests were reviewed, how many were named, how many were placed in focus areas and which areas were proposed, the shipping velocity in two sentences, and the five strongest preferences.
