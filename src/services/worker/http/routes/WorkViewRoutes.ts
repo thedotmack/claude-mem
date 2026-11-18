@@ -568,6 +568,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
   private claudeInstructionsPath: string;
   private setupScan: SetupScan | null;
   private setupStatePath: string;
+  private setupReadExhausted = false;
   private setupTelemetry: ReturnType<typeof createSetupTelemetry> | null = null;
   private settingsPath: string;
   private unsubscribeSetupScan: (() => void) | null = null;
@@ -697,8 +698,20 @@ export class WorkViewRoutes extends BaseRouteHandler {
     // Waiting for the upload answer is not active: a closed tab never answers, and that must not hold local work
     // paused. The installer's session below still covers a setup in progress; reopening the page rejoins the question.
     if (!['idle', 'done', 'failed', 'awaiting-consent'].includes(scanPhase)) return true;
-    const state = readSetupState(statePath);
-    return hasPendingInstallSetup(state) || (state.status !== 'complete' && hasActiveSetupSession(statePath));
+    try {
+      const state = readSetupState(statePath);
+      const active = hasPendingInstallSetup(state) || (state.status !== 'complete' && hasActiveSetupSession(statePath));
+      this.setupReadExhausted = false;
+      return active;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'EMFILE' && code !== 'ENFILE') throw error;
+      // The machine is out of file descriptors, not the setup files. Unknown setup keeps local paid work paused.
+      // A failed open holds no descriptor, so every tick reads again; the warning is logged once per episode.
+      if (!this.setupReadExhausted) logger.warn('WORKER', 'Could not read setup state: no file descriptors are free. Local work stays paused until a read succeeds.', { code });
+      this.setupReadExhausted = true;
+      return true;
+    }
   }
 
   private scheduleRulesFileRebuild(): void {
