@@ -41,12 +41,22 @@ describe('handleTaskkillFailure', () => {
     ));
   });
 
+  it('treats the root\'s own live parent as outside the tree (the event this fix is for)', async () => {
+    // The worker spawns the root, so taskkill names the live worker as the root's parent.
+    const root = exitedPid();
+
+    await handleTaskkillFailure(root, taskkillError(
+      255,
+      `ERRO: o processo com PID ${root} (processo filho de PID ${process.pid}) não pôde ser finalizado.\r\nRazão: Não há ocorrência da tarefa em execução.\r\n`,
+    ));
+  });
+
   it('still throws on exit 255 when a named PID is alive (access denied)', async () => {
     const root = exitedPid();
 
     const handled = handleTaskkillFailure(root, taskkillError(
       255,
-      `ERRO: o processo com PID ${process.pid} (processo filho do PID ${root}) não pôde ser finalizado.\r\nMotivo: Acesso negado.\r\n`,
+      `ERRO: o processo com PID ${process.pid} (processo filho de PID ${root}) não pôde ser finalizado.\r\nMotivo: Acesso negado.\r\n`,
     ));
 
     await expect(handled).rejects.toBeInstanceOf(ProcessTreeKillError);
