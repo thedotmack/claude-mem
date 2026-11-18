@@ -9,7 +9,8 @@
 .focus-area-target:focus-visible::after { outline: 3px solid color-mix(in oklab, var(--ring) 70%, transparent); outline-offset: -3px; }
 .focus-area-card:has(.focus-area-target:hover) { background: var(--surface); }
 .focus-area-above { position: relative; z-index: 1; }
-.focus-area-chevron { position: absolute; top: 50%; right: .9rem; transform: translateY(-50%); color: var(--muted-foreground); }
+/* The arrow is drawn over the name's stretched button, so a press on it passes through to that button. */
+.focus-area-chevron { position: absolute; top: 50%; right: .9rem; transform: translateY(-50%); color: var(--muted-foreground); pointer-events: none; }
 .focus-area-card svg { width: 16px; height: 16px; flex-shrink: 0; }
 .focus-area-signals { display: flex; flex-wrap: wrap; gap: .5rem; padding-block: .6rem; font-size: .75rem; font-variant-numeric: tabular-nums; }
 .focus-signal-attention { color: var(--attention-foreground); }
