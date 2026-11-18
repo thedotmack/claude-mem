@@ -29,22 +29,38 @@ export type AgentHeaderProps = ComponentProps<"div"> & {
   /** What this agent is doing, so several agents of one tool can be told apart. */
   role?: string;
   model?: string;
+  /** A short label beside the name, such as "Subagent". */
+  tag?: ReactNode;
+  /** How much the agent holds ("3 requests"), at the header's right end. */
+  count?: ReactNode;
+  /**
+   * The one fact that tells this agent from others whose name, role and machine are the same, under the name: a
+   * subagent's task, a session's short id (c-work-by-agent-view F truncation-strategy). Left out, the header is as before.
+   */
+  detail?: ReactNode;
 };
 
+/**
+ * The agent's name on the first line, then the fact that tells it apart (`detail`), then what it is doing and where,
+ * both wrapping instead of ending in an ellipsis (c-ai-agent M, F truncation-strategy: the cut part of a worktree id
+ * was what told two agents apart), and its count at the right (F number-tabular: the header had none).
+ */
 export const AgentHeader = memo(
-  ({ className, name, icon, role, model, ...props }: AgentHeaderProps) => (
+  ({ className, name, icon, role, model, tag, count, detail, ...props }: AgentHeaderProps) => (
     <div
       className={cn(
-        "flex w-full min-w-0 items-center gap-3 px-5 pt-5 pb-3",
+        "flex w-full min-w-0 items-start gap-3 px-5 pt-5 pb-3",
         className
       )}
       {...props}
     >
       <span className="flex size-9 shrink-0 items-center justify-center rounded-[10px] border bg-surface">{icon ?? <BotIcon className="size-4" />}</span>
-      <div className="min-w-0">
-        <p className="truncate font-medium text-[0.94rem] leading-tight">{name}{role && <span className="font-normal text-muted-foreground"> · {role}</span>}</p>
-        {model && <p className="truncate text-muted-foreground text-xs">{model}</p>}
+      <div className="min-w-0 flex-1 space-y-0.5">
+        <p className="flex flex-wrap items-center gap-x-2 gap-y-1 font-medium text-[0.94rem] leading-tight [overflow-wrap:anywhere]">{name}{tag}</p>
+        {detail !== undefined && detail !== null && <div data-slot="agent-header-detail" className="min-w-0 text-sm">{detail}</div>}
+        {(role || model) && <p className="text-muted-foreground text-xs [overflow-wrap:anywhere]">{[role, model].filter(Boolean).join(" · ")}</p>}
       </div>
+      {count !== undefined && count !== null && <span className="shrink-0 pt-0.5 text-muted-foreground text-xs tabular">{count}</span>}
     </div>
   )
 );

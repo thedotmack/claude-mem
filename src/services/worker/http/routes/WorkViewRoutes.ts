@@ -38,6 +38,7 @@ import { FocusSharePublisher } from '../../../work-view/focus-share-publisher.js
 import { cmemProOrigin } from '../../../../shared/cmem-gateway.js';
 import { isOpenRouterApiUrl } from '../../../../shared/openrouter-base-url.js';
 import { FOCUS_CHANGED_MESSAGE, focusChangeVersion } from '../../../../shared/focus-change-version.js';
+import { REFRESH_START_REFUSAL } from '../../../../shared/work-view-refresh-reasons.js';
 import { runAgentTask } from '../../../agent-runner/run.js';
 import { ledgerSignature, readLedger } from '../../../work-view/request-groups.mjs';
 import { configuredJudge, decideSuggestion, jevClientFromSettings } from '../../../work-view/request-judge.mjs';
@@ -347,7 +348,7 @@ const setupScanConsentBody = z.object({ upload: z.boolean(), agents: z.array(z.e
 const setupScanPreferencesBody = z.object({ improveProduct: z.boolean() }).strict();
 // Request-size and abuse caps on loopback writes, set about twice what the installer offers today (measured
 // 2026-11-11: 19 agents in ide-detection.ts, 30 bundled skills, the longest id 17 characters). The email cap is RFC 5321's 254-character path
-// limit; the note's is SETUP_INSTALL_NOTE_MAX_CHARACTERS (setup-install.ts, which the setup page's box takes too), the
+// limit; the legacy signup note's is SETUP_INSTALL_NOTE_MAX_CHARACTERS (setup-install.ts), the
 // same 2,000 characters as the installer's error reports below.
 const setupInstallId = z.string().min(1).max(80);
 const setupInstallSelectionBody = z.object({
@@ -567,6 +568,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
   private claudeInstructionsPath: string;
   private setupScan: SetupScan | null;
   private setupStatePath: string;
+  private setupReadExhausted = false;
   private setupTelemetry: ReturnType<typeof createSetupTelemetry> | null = null;
   private settingsPath: string;
   private unsubscribeSetupScan: (() => void) | null = null;
@@ -696,8 +698,20 @@ export class WorkViewRoutes extends BaseRouteHandler {
     // Waiting for the upload answer is not active: a closed tab never answers, and that must not hold local work
     // paused. The installer's session below still covers a setup in progress; reopening the page rejoins the question.
     if (!['idle', 'done', 'failed', 'awaiting-consent'].includes(scanPhase)) return true;
-    const state = readSetupState(statePath);
-    return hasPendingInstallSetup(state) || (state.status !== 'complete' && hasActiveSetupSession(statePath));
+    try {
+      const state = readSetupState(statePath);
+      const active = hasPendingInstallSetup(state) || (state.status !== 'complete' && hasActiveSetupSession(statePath));
+      this.setupReadExhausted = false;
+      return active;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'EMFILE' && code !== 'ENFILE') throw error;
+      // The machine is out of file descriptors, not the setup files. Unknown setup keeps local paid work paused.
+      // A failed open holds no descriptor, so every tick reads again; the warning is logged once per episode.
+      if (!this.setupReadExhausted) logger.warn('WORKER', 'Could not read setup state: no file descriptors are free. Local work stays paused until a read succeeds.', { code });
+      this.setupReadExhausted = true;
+      return true;
+    }
   }
 
   private scheduleRulesFileRebuild(): void {
@@ -1718,7 +1732,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
 
   /** Starts an on-demand refresh and answers before the run ends, which can take many minutes. */
   private startManualRefresh = async (_req: Request, res: Response): Promise<void> => {
-    if (!this.autoRefresh) { res.status(503).json({ error: 'Refresh is unavailable on this worker.' }); return; }
+    if (!this.autoRefresh) { res.status(503).json({ error: REFRESH_START_REFUSAL.unavailable }); return; }
     const started = this.autoRefresh.runNow({ reason: 'manual' });
     // runNow decides before its first await: busy now means a run started, and any other answer is already settled.
     if (this.autoRefresh.busy) {
@@ -1727,8 +1741,8 @@ export class WorkViewRoutes extends BaseRouteHandler {
       return;
     }
     const state = await started;
-    if (state === 'setup-running') { res.status(409).json({ error: 'Refresh is unavailable until setup finishes.' }); return; }
-    if (state === 'closed') { res.status(503).json({ error: 'This worker is shutting down.' }); return; }
+    if (state === 'setup-running') { res.status(409).json({ error: REFRESH_START_REFUSAL.setupRunning }); return; }
+    if (state === 'closed') { res.status(503).json({ error: REFRESH_START_REFUSAL.shuttingDown }); return; }
     res.status(state === 'running' ? 202 : 200).json({ state });
   };
 

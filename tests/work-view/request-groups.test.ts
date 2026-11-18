@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { appendReading, applyGroupDecisions, groupIdFor, ledgerSignature, linkBackwards, MAX_READINGS, readCandidates, readGoals, readLedger, refreshNeeds, runCli, storyChaptersToMerge, storyParts, textTarget, validateProgress, validateStory } from '../../src/services/work-view/request-groups.mjs';
+import { appendReading, applyGroupDecisions, groupIdFor, hasPlaceholderTitle, ledgerSignature, linkBackwards, MAX_READINGS, placeholderTitleFromAsk, readCandidates, readGoals, readLedger, refreshNeeds, runCli, storyChaptersToMerge, storyParts, textTarget, validateProgress, validateStory, validateTitleAnswer } from '../../src/services/work-view/request-groups.mjs';
 import { readFocus, readFocusAreas } from '../../src/services/work-view/data-source.mjs';
 import { focusAreaRowFields, placementRowFields, routerFocusRows, type RouterFocusBody } from '../../src/services/work-view/my-focus.mjs';
 import { buildHumanRequests } from '../../src/services/work-view/request-projection.mjs';
@@ -769,6 +769,76 @@ describe('overall requests and progress reviews', () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+});
+
+describe('request titles', () => {
+  it('a title is still the placeholder when it is the opening ask copied, in any case or with a closing period', () => {
+    expect(placeholderTitleFromAsk('figure it out')).toBe('figure it out');
+    expect(placeholderTitleFromAsk(null)).toBe('Untitled request');
+    expect(hasPlaceholderTitle({ title: 'Figure it out.', anchorAsk: { text: 'figure it out' } })).toBe(true);
+    expect(hasPlaceholderTitle({ title: 'Fix the checkout page loading error', anchorAsk: { text: 'figure it out' } })).toBe(false);
+    // Words the ask starts with are a copy too, wherever a grouping answer ended its first sentence, with or without markdown.
+    expect(hasPlaceholderTitle({ title: 'check the status; the deploy looked stuck', anchorAsk: { text: 'check the status; the deploy looked stuck since noon' } })).toBe(true);
+    expect(hasPlaceholderTitle({ title: 'look at `refresh-task.ts` and figure it out', anchorAsk: { text: 'look at `refresh-task.ts` and figure it out' } })).toBe(true);
+    expect(hasPlaceholderTitle({ title: 'hmm let us look at the refresh', anchorAsk: { text: 'hmm\nlet us look at the refresh task' } })).toBe(true);
+    expect(hasPlaceholderTitle({ title: 'Release cards for the launch page', anchorAsk: { text: 'Build the release cards' } })).toBe(false);
+    // The judge titles from the ask as grouping-input shows it (400 characters), so a GOAL line past that is not the placeholder.
+    const longAsk = `${'Context about the release. '.repeat(16)}\nGOAL: ship the release cards`;
+    expect(placeholderTitleFromAsk(longAsk)).toBe('Context about the release.');
+    expect(hasPlaceholderTitle({ title: 'Context about the release.', anchorAsk: { text: longAsk } })).toBe(true);
+  });
+
+  it('naming round trip: only requests still titled with their ask are listed, with their review, and each is named once', () => {
+    const dir = ledgerDir();
+    try {
+      const database = fixtureDatabase();
+      let output: any;
+      const run = (argv: string[]) => { runCli(argv, { dir, database, now: NOW, print: (value: unknown) => { output = value; }, localDeviceId: '' }); return output; };
+      const write = (name: string, value: unknown) => { const path = join(dir, name); writeFileSync(path, JSON.stringify(value)); return path; };
+      // The card request has a written title; the pricing request still shows its ask, as the judge leaves it.
+      run(['apply', write('decisions.json', { groups: [
+        { title: 'Release cards', conversations: [key('a'), key('b')], links: [{ kind: 'shared-work-list', conversations: [key('a'), key('b')], evidence: 'work list "release-cards"' }] },
+        { title: placeholderTitleFromAsk('Write the pricing page'), conversations: [key('c')] },
+      ] })]);
+      const pricing = groupIdFor(key('c'));
+      run(['record-progress', write('review.json', { groupId: pricing, state: 'in-progress', percent: 40, summary: 'Pricing page drafted with three plans.', reviewBasis: run(['show', pricing]).reviewBasis })]);
+
+      const input = run(['title-input']);
+      expect(input).toMatchObject({ remaining: 0, requests: [{ groupId: pricing, title: 'Write the pricing page', summary: 'Pricing page drafted with three plans.', conversationAsks: ['Write the pricing page'] }] });
+      expect(input.requests).toHaveLength(1);
+
+      // The ask copied again, or a request the ledger does not hold, is refused before anything is written.
+      const before = readFileSync(join(dir, 'request-groups.json'), 'utf8');
+      expect(() => run(['record-titles', write('titles.json', { titles: [{ groupId: pricing, title: 'write the pricing page.' }] })])).toThrow(/repeats the owner's ask/);
+      expect(() => run(['record-titles', write('titles.json', { titles: [{ groupId: pricing, title: 'Write the pricing' }] })])).toThrow(/repeats the owner's ask/);
+      expect(() => run(['record-titles', write('titles.json', { titles: [{ groupId: 'g_000000000000', title: 'Pricing page with three plans' }] })])).toThrow(/unknown group/);
+      expect(readFileSync(join(dir, 'request-groups.json'), 'utf8')).toBe(before);
+
+      expect(run(['record-titles', write('titles.json', { titles: [{ groupId: pricing, title: 'Pricing page with three plans' }] })])).toEqual({ titled: 1, kept: 0 });
+      expect(readLedger(dir).groups.groups[pricing].title).toBe('Pricing page with three plans');
+      expect(run(['title-input']).requests).toEqual([]);
+      // A late answer for a request named meanwhile (another device, a second run) keeps the written title.
+      expect(run(['record-titles', write('titles.json', { titles: [{ groupId: pricing, title: 'Three-plan pricing page' }] })])).toEqual({ titled: 0, kept: 1 });
+      expect(readLedger(dir).groups.groups[pricing].title).toBe('Pricing page with three plans');
+      expect(readLedger(dir).groups.groups[groupIdFor(key('a'))].title).toBe('Release cards');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('a naming answer names every listed request once; the refresh\'s retry drops what it would refuse', () => {
+    const input = { requests: [{ groupId: 'g_000000000001', title: 'figure it out', firstAsk: 'figure it out' }, { groupId: 'g_000000000002', title: 'check the status', firstAsk: 'check the status' }] };
+    const named = (title1: string, title2: string) => ({ titles: [{ groupId: 'g_000000000001', title: title1 }, { groupId: 'g_000000000002', title: title2 }] });
+    expect(validateTitleAnswer(named('Fix the checkout page loading error', 'Status of the v16 release'), input).titles.map((entry) => entry.title))
+      .toEqual(['Fix the checkout page loading error', 'Status of the v16 release']);
+    expect(() => validateTitleAnswer({ titles: [{ groupId: 'g_000000000001', title: 'Fix the checkout page loading error' }] }, input)).toThrow(/missing g_000000000002/);
+    expect(() => validateTitleAnswer(named('Figure it out.', 'Status of the v16 release'), input)).toThrow(/titles\[0\]\.title repeats the owner's ask/);
+    expect(() => validateTitleAnswer(named('Figure it', 'Status of the v16 release'), input)).toThrow(/titles\[0\]\.title repeats the owner's ask/);
+    expect(() => validateTitleAnswer({ titles: [...named('A', 'B').titles, { groupId: 'g_000000000003', title: 'C' }] }, input)).toThrow(/not asked about/);
+    expect(() => validateTitleAnswer({ titles: [...named('A', 'B').titles, { groupId: 'g_000000000001', title: 'C' }] }, input)).toThrow(/a second time/);
+    expect(() => validateTitleAnswer(named('x'.repeat(121), 'B'), input)).toThrow(/must be 1–120/);
+    // On the retry a refused title is dropped and its request keeps the placeholder until a later run.
+    expect(validateTitleAnswer(named('figure it out', 'Status of the v16 release'), input, { coerce: true }))
+      .toEqual({ titles: [{ groupId: 'g_000000000002', title: 'Status of the v16 release' }] });
+  });
 });
 
 function saveGoals(database: Database, generatedAt: string) {

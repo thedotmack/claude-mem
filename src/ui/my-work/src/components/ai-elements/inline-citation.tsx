@@ -1,6 +1,6 @@
 "use client";
 
-import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import type { CarouselApi } from "@/components/ui/carousel";
 import {
   Carousel,
@@ -8,12 +8,13 @@ import {
   CarouselItem,
 } from "@/components/ui/carousel";
 import {
-  HoverCard,
-  HoverCardContent,
-  HoverCardTrigger,
-} from "@/components/ui/hover-card";
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { useI18n } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
-import { ArrowLeftIcon, ArrowRightIcon } from "lucide-react";
+import { ArrowLeftIcon, ArrowRightIcon, ChevronDownIcon, Link2Icon } from "lucide-react";
 import type { ComponentProps } from "react";
 import {
   createContext,
@@ -47,47 +48,61 @@ export const InlineCitationText = ({
   />
 );
 
-export type InlineCitationCardProps = ComponentProps<typeof HoverCard>;
+/*
+ * Local fix (c-ai-inline-citation M1-M2, G10): the sources open on press, not on hover only. The card is a Popover: a
+ * real button with a focus ring and a chevron opens it by click, tap, Enter or Space, and Escape or the panel's own
+ * close button shuts it. The demo's HoverCard could not be reached with Tab or opened on a phone.
+ */
+export type InlineCitationCardProps = ComponentProps<typeof Popover>;
 
 export const InlineCitationCard = (props: InlineCitationCardProps) => (
-  <HoverCard closeDelay={0} openDelay={0} {...props} />
+  <Popover {...props} />
 );
 
-export type InlineCitationCardTriggerProps = ComponentProps<typeof Badge> & {
+export type InlineCitationCardTriggerProps = ComponentProps<typeof Button> & {
   sources: string[];
 };
 
 export const InlineCitationCardTrigger = ({
   sources,
   className,
+  children,
   ...props
-}: InlineCitationCardTriggerProps) => (
-  <HoverCardTrigger asChild>
-    <Badge
-      className={cn("ml-1 rounded-full", className)}
-      variant="secondary"
-      {...props}
-    >
-      {sources[0] ? (
-        <>
-          {/* Owner quotes cite a prompt time, not a URL. */}
-          {URL.canParse(sources[0]) ? new URL(sources[0]).hostname : sources[0]}{" "}
-          {sources.length > 1 && `+${sources.length - 1}`}
-        </>
-      ) : (
-        "unknown"
-      )}
-    </Badge>
-  </HoverCardTrigger>
-);
+}: InlineCitationCardTriggerProps) => {
+  // Local fix (plan rule 4): the demo's English words go through the reader's catalog.
+  const { t } = useI18n();
+  return (
+    <PopoverTrigger asChild>
+      <Button
+        className={cn("group/citation ml-1 h-auto gap-1 rounded-full px-2 py-0.5 align-baseline text-xs font-normal md:not-pointer-coarse:min-h-6", className)}
+        size="xs"
+        variant="outline"
+        {...props}
+      >
+        <Link2Icon aria-hidden="true" className="size-3 text-muted-foreground" />
+        {sources[0] ? (
+          <>
+            {/* Owner quotes cite a prompt time, not a URL. */}
+            {URL.canParse(sources[0]) ? new URL(sources[0]).hostname : sources[0]}
+            {sources.length > 1 && ` +${sources.length - 1}`}
+          </>
+        ) : (
+          t("unknown")
+        )}
+        {children}
+        <ChevronDownIcon aria-hidden="true" className="size-3 text-muted-foreground motion-safe:transition-transform group-aria-expanded/citation:rotate-180" />
+      </Button>
+    </PopoverTrigger>
+  );
+};
 
-export type InlineCitationCardBodyProps = ComponentProps<"div">;
+export type InlineCitationCardBodyProps = ComponentProps<typeof PopoverContent>;
 
 export const InlineCitationCardBody = ({
   className,
   ...props
 }: InlineCitationCardBodyProps) => (
-  <HoverCardContent className={cn("relative w-80 p-0", className)} {...props} />
+  <PopoverContent className={cn("relative w-80 p-0", className)} {...props} />
 );
 
 const CarouselApiContext = createContext<CarouselApi | undefined>(undefined);
@@ -201,6 +216,7 @@ export const InlineCitationCarouselPrev = ({
   ...props
 }: InlineCitationCarouselPrevProps) => {
   const api = useCarouselApi();
+  const { t } = useI18n();
 
   const handleClick = useCallback(() => {
     if (api) {
@@ -210,7 +226,7 @@ export const InlineCitationCarouselPrev = ({
 
   return (
     <button
-      aria-label="Previous"
+      aria-label={t("Previous")}
       className={cn("shrink-0", className)}
       onClick={handleClick}
       type="button"
@@ -228,6 +244,7 @@ export const InlineCitationCarouselNext = ({
   ...props
 }: InlineCitationCarouselNextProps) => {
   const api = useCarouselApi();
+  const { t } = useI18n();
 
   const handleClick = useCallback(() => {
     if (api) {
@@ -237,7 +254,7 @@ export const InlineCitationCarouselNext = ({
 
   return (
     <button
-      aria-label="Next"
+      aria-label={t("Next")}
       className={cn("shrink-0", className)}
       onClick={handleClick}
       type="button"

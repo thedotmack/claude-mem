@@ -1,0 +1,1 @@
+var e=`max-w-[32em]`;export{e as t};

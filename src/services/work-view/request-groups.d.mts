@@ -51,6 +51,18 @@ export interface FocusInput { areas: FocusAreaRecord[]; dismissed: FocusAreaReco
 export interface OtherInput { areas: FocusAreaRecord[]; dismissed: FocusAreaRecord[]; other: FocusRequestRecord[]; due: boolean }
 export const GROUPING_BATCH: number;
 export const FOCUS_BATCH: number;
+export const TITLE_BATCH: number;
+/** The title code gives a request it starts (the judge, a declined suggestion): the first sentence of its opening ask,
+ * cut as grouping-input shows the ask, copied. */
+export function placeholderTitleFromAsk(askText: string | null | undefined): string;
+/** Whether a title copies the opening ask: its placeholder, or words the ask starts with. */
+export function copiesOpeningAsk(title: string, askText: string | null | undefined): boolean;
+/** Whether a request still shows a title copied from its opening ask. */
+export function hasPlaceholderTitle(group: { title: string; anchorAsk?: { text?: string | null } | null }): boolean;
+/** title-input: requests still titled with their placeholder, as the focus step reads them, one batch at a time. */
+export function titleInput(ledger: Record<string, any>, database: LedgerDatabase, options?: { limit?: number }): { requests: FocusRequestRecord[]; remaining: number };
+/** coerce: the refresh's one retry drops a refused title or an unnamed request instead of refusing the whole answer. */
+export function validateTitleAnswer(answer: unknown, input: { requests: Array<Pick<FocusRequestRecord, 'groupId' | 'title' | 'firstAsk'>> }, options?: { coerce?: boolean }): { titles: Array<{ groupId: string; title: string }> };
 export function focusBasis(ledger: Record<string, any>, groupId: string): string;
 export function focusInput(ledger: Record<string, any>, focus: ReturnType<typeof import('./my-focus.mjs').buildFocusAreas>, localDeviceId: string, database: LedgerDatabase, options?: { limit?: number }): FocusInput;
 export function otherInput(ledger: Record<string, any>, focus: ReturnType<typeof import('./my-focus.mjs').buildFocusAreas>, localDeviceId: string, database: LedgerDatabase): OtherInput;

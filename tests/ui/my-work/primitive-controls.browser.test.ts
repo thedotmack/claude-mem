@@ -30,7 +30,12 @@ failOnCiWithoutChrome('CI requires Chrome for the My Work primitive size, cursor
   const { compile } = appRequire('@tailwindcss/node');
   const { Scanner } = appRequire('@tailwindcss/oxide');
   const css = await compile(readFileSync(resolve(app, 'src/index.css'), 'utf8'), { base: app, onDependency() {} });
-  const scanner = new Scanner({ sources: [{ base: resolve(app, 'src'), pattern: '**/*.{ts,tsx}', negated: false }] });
+  // The fixture's own caller classes too (the Team button's `hover:bg-accent`): a caller class no app file happens to
+  // use would otherwise not be compiled, and the test would measure a class that does not exist.
+  const scanner = new Scanner({ sources: [
+    { base: resolve(app, 'src'), pattern: '**/*.{ts,tsx}', negated: false },
+    { base: import.meta.dir, pattern: 'primitive-controls.browser.test.ts', negated: false },
+  ] });
   // Plus the one class only this fixture uses (a caller's own pressed look); no app file has an active: background yet.
   const styles = css.build([...scanner.scan(), 'active:bg-accent']);
   const bundle = compileBrowserFixture(`
@@ -114,7 +119,8 @@ failOnCiWithoutChrome('CI requires Chrome for the My Work primitive size, cursor
           <div style={{ width: 320 }}><Command label="Move to"><CommandInput data-test="command-input" placeholder="Move to…" /></Command></div>
         </Row>
         <Row>
-          {/* App.tsx TeamSwitch with Team on: the caller's own hover tint must win over the primitive's hover look. */}
+          {/* A toggled-on button that draws its own hover tint (the look of the old header Team switch, now a menu row):
+              the caller's own hover tint must win over the primitive's hover look. */}
           <Button data-test="team-on" variant="secondary" size="sm" className="bg-accent text-accent-foreground hover:bg-accent">Team</Button>
           <Button data-test="secondary-plain" variant="secondary" size="sm">Plain</Button>
           <Button data-test="press-override" variant="outline" className="active:bg-accent">Pressed</Button>

@@ -70,6 +70,17 @@ describe('empty Rules page (#5535)', () => {
     expect(html).not.toContain('Waiting to refresh');
     expect(html).not.toContain('Configure My Work to use an API provider');
   });
+
+  // G17 and c-rules-no-rules-yet: plain words, then Try again, then the raw cause folded under Details.
+  it('says what happened in plain words, offers Try again, and folds the raw cause under Details', () => {
+    const raw = 'Rule "Keep scratch files" is in a scope the worker did not list: project:gone';
+    const html = renderNoRules(raw, null);
+    expect(html).toContain('My Rules could not read your saved rules.');
+    expect(html).toContain('Try again');
+    expect(html).toContain('Details');
+    // Folded: the worker's own words are not on screen until Details opens.
+    expect(html).not.toContain('project:gone');
+  });
 });
 
 describe('saved rule evidence budget', () => {

@@ -1,7 +1,9 @@
-import React, { type SVGProps, useState } from "react";
-import { motion, useMotionValueEvent, useScroll } from "motion/react";
+import React, { type SVGProps, useRef, useState } from "react";
+import { motion, useMotionValueEvent, useReducedMotion, useScroll } from "motion/react";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
+import { tabStopAfter } from "@/lib/tab-order";
+import { buttonVariants } from "@/components/ui/button";
 
 export const StickyBanner = ({
   className,
@@ -14,9 +16,16 @@ export const StickyBanner = ({
 }) => {
   const { t } = useI18n();
   const [open, setOpen] = useState(true);
+  // Local fix (c-shell-sticky-banner F state-preservation): closed with its button, the strip stays closed. Before,
+  // scrolling back to the top opened it again whatever was pressed.
+  const [dismissed, setDismissed] = useState(false);
+  const bannerRef = useRef<HTMLDivElement>(null);
+  // Local fix (plan rule 8): under reduced motion the strip and its close button appear, slide and fade at once.
+  const reduceMotion = useReducedMotion();
   const { scrollY } = useScroll();
 
   useMotionValueEvent(scrollY, "change", (latest) => {
+    // 40px: about the strip's own height, so it slides away once the page has scrolled past it.
     if (hideOnScroll && latest > 40) {
       setOpen(false);
     } else {
@@ -24,13 +33,26 @@ export const StickyBanner = ({
     }
   });
 
+  // Local fix: closing it from the keyboard moves focus on to where Tab would have gone next (the header), instead of
+  // dropping it on the page body when the strip leaves the page.
+  const dismiss = () => {
+    const banner = bannerRef.current;
+    if (banner?.contains(document.activeElement)) tabStopAfter(banner)?.focus();
+    setDismissed(true);
+  };
+
+  if (dismissed) return null;
+
   return (
     <motion.div
+      ref={bannerRef}
+      // Local fix: while slid away its controls leave the Tab order, so focus never lands on something off screen.
+      inert={!open}
       className={cn(
         "sticky inset-x-0 top-0 z-40 flex min-h-14 w-full items-center justify-center bg-transparent px-4 py-1",
         className,
       )}
-      initial={{
+      initial={reduceMotion ? false : {
         y: -100,
         opacity: 0,
       }}
@@ -38,7 +60,7 @@ export const StickyBanner = ({
         y: open ? 0 : -100,
         opacity: open ? 1 : 0,
       }}
-      transition={{
+      transition={reduceMotion ? { duration: 0 } : {
         duration: 0.3,
         ease: "easeInOut",
       }}
@@ -46,19 +68,24 @@ export const StickyBanner = ({
       {children}
 
       <motion.button
-        initial={{
+        initial={reduceMotion ? false : {
           scale: 0,
         }}
         animate={{
           scale: 1,
         }}
-        // Local fix: labelled, thumb-sized, and in the text color (white was invisible on light surfaces).
+        transition={reduceMotion ? { duration: 0 } : undefined}
+        // Local fix: labelled, thumb-sized (the Button's own touch rule), the Button's focus ring and cursor, and in
+        // the text color (white was invisible on light surfaces). Centred with margins, not a transform, so the
+        // Button's press nudge does not move it. right-1.5, not right-1: its 44px hit area (expanded-hit-area) is 5px
+        // wider each side than the 34px button, and 4.25px from the edge it reached past the page, which then scrolled
+        // 1px sideways on every sample page at 1440 and 1366 (Phase 6 verify V4).
         type="button"
         aria-label={t('Hide banner')}
-        className="absolute top-1/2 right-1 flex size-11 -translate-y-1/2 cursor-pointer items-center justify-center text-muted-foreground hover:text-foreground md:size-8"
-        onClick={() => setOpen(!open)}
+        className={cn(buttonVariants({ variant: "ghost", size: "icon-sm" }), "absolute inset-y-0 right-1.5 my-auto size-8 rounded-lg text-muted-foreground")}
+        onClick={dismiss}
       >
-        <CloseIcon className="h-5 w-5" />
+        <CloseIcon className="size-5" />
       </motion.button>
     </motion.div>
   );

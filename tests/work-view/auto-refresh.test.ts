@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AutoRefreshWorker, refreshIntervalMs } from '../../src/services/work-view/auto-refresh-worker.mjs';
-import { buildRefreshTask, decidedTextLanguage, FOCUS_ANSWER_SCHEMA, GROUPING_ANSWER_SCHEMA, resolveRefreshAgents, resolveStepModels, reviewConcurrency, STEP_MODEL_SETTINGS, STEP_MODELS } from '../../src/services/work-view/refresh-task.js';
+import { buildRefreshTask, decidedTextLanguage, FOCUS_ANSWER_SCHEMA, GROUPING_ANSWER_SCHEMA, resolveRefreshAgents, resolveStepModels, reviewConcurrency, STEP_MODEL_SETTINGS, STEP_MODELS, TITLE_ANSWER_SCHEMA } from '../../src/services/work-view/refresh-task.js';
 import { logger } from '../../src/utils/logger.js';
 import { groupIdFor, readLedger, runCli } from '../../src/services/work-view/request-groups.mjs';
 import { scratchDir } from '../helpers/scratch-dir.js';
@@ -64,8 +64,8 @@ function reviewAll(prompt: string) {
 function defaultAnswer(prompt: string) {
   if (prompt.includes('Do only section 1')) return JSON.stringify({ groups: [{ title: 'Release cards', conversations: [key('a')] }] });
   if (prompt.includes('Do only section 2')) return reviewAll(prompt);
-  if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
-  if (prompt.includes('Do only section 4')) return JSON.stringify({ narrative: 'Started.', preferences: [] });
+  if (prompt.includes('Do only section 4')) return everyRequestInOther(prompt);
+  if (prompt.includes('Do only section 5')) return JSON.stringify({ narrative: 'Started.', preferences: [] });
   throw new Error(`Unexpected prompt: ${prompt.slice(-200)}`);
 }
 
@@ -362,8 +362,8 @@ describe('refresh task', () => {
           expect(prompt).toMatch(/milestones has 13 items/);
           return JSON.stringify({ reviews: [oversizedReview(show)] });
         }
-        if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
-        if (prompt.includes('Do only section 4')) return JSON.stringify({ narrative: 'One request is under way.', preferences: [] });
+        if (prompt.includes('Do only section 4')) return everyRequestInOther(prompt);
+        if (prompt.includes('Do only section 5')) return JSON.stringify({ narrative: 'One request is under way.', preferences: [] });
         throw new Error(`Unexpected prompt: ${prompt.slice(-200)}`);
       };
       expect(await task.run(ask, 'gemini')).toBe('1 new conversations grouped, 1 requests reviewed (6 oversized fields trimmed after retry), 1 requests placed, story written.');
@@ -410,8 +410,8 @@ describe('refresh task', () => {
         const [show] = JSON.parse(prompt.split(`--- ${file} ---\n`)[1]);
         return JSON.stringify({ reviews: [answerReview(show, reviewAttempts++)] });
       }
-      if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
-      if (prompt.includes('Do only section 4')) return JSON.stringify({ narrative: 'One request is under way.', preferences: [] });
+      if (prompt.includes('Do only section 4')) return everyRequestInOther(prompt);
+      if (prompt.includes('Do only section 5')) return JSON.stringify({ narrative: 'One request is under way.', preferences: [] });
       throw new Error(`Unexpected prompt: ${prompt.slice(-200)}`);
     }, 'gemini');
   };
@@ -598,7 +598,7 @@ describe('focus step', () => {
           expect(other.other.map((request: any) => request.anchor)).toEqual([key('b'), key('c')]);
           return JSON.stringify({ placements: [], proposals: [{ kind: 'new', name: 'Polish', goal: 'The release looks finished.', about: 'Spacing and copy fixes.', anchors: [key('b'), key('c')], sameAs: null, evidence: 'Both are steps of finishing the release.' }] });
         }
-        if (prompt.includes('Do only section 3')) {
+        if (prompt.includes('Do only section 4')) {
           const input = focusInputFrom(prompt);
           expect(JSON.parse(readFileSync(/also saved in (.+?\.json)/.exec(prompt)![1], 'utf8'))).toEqual(input);
           expect(input.areas.map((area: any) => area.focusAreaId)).toEqual(['fa_cards0000001']);
@@ -612,10 +612,10 @@ describe('focus step', () => {
         return JSON.stringify({ narrative: 'Started.', preferences: [] });
       };
       expect(await task.run(ask, 'codex')).toBe('3 requests reviewed, 3 requests placed, 1 focus areas suggested, story written.');
-      const focusSteps = steps.filter(step => step.prompt.includes('Do only section 3'));
+      const focusSteps = steps.filter(step => step.prompt.includes('Do only section 4'));
       expect(focusSteps).toHaveLength(3);
       for (const step of focusSteps) { expect(step.models).toBe(STEP_MODELS.focus); expect(step.schema).toBe(FOCUS_ANSWER_SCHEMA); }
-      expect(steps.map(step => /Do only section (\d)/.exec(step.prompt)?.[1] ?? 'review')).toEqual(['2', '3', '3', '3', '4']);
+      expect(steps.map(step => /Do only section (\d)/.exec(step.prompt)?.[1] ?? 'review')).toEqual(['2', '4', '4', '4', '5']);
       expect(task.steps.map(timing => timing.step)).toEqual(['review', 'focus', 'focus', 'story']);
       // Only accepted answers reached the worker's write: the placement batch and the Other pass.
       expect(writer.bodies).toHaveLength(2);
@@ -643,7 +643,7 @@ describe('focus step', () => {
       const ask = async (prompt: string) => {
         if (prompt.includes('Do only section 2')) return reviewAll(prompt);
         if (isOtherPass(prompt)) return JSON.stringify({ placements: [], proposals: [] });
-        if (prompt.includes('Do only section 3')) {
+        if (prompt.includes('Do only section 4')) {
           const input = focusInputFrom(prompt);
           batches.push(input.requests.length);
           // The second batch's answers keep leaving a request out.
@@ -679,7 +679,7 @@ describe('focus step', () => {
         if (prompt.includes('Do only section 2')) return reviewAll(prompt);
         if (isOtherPass(prompt)) return JSON.stringify({ placements: [], proposals: [] });
         // Every focus answer leaves requests out, so focus is refused twice.
-        if (prompt.includes('Do only section 3')) return JSON.stringify({ placements: [], proposals: [] });
+        if (prompt.includes('Do only section 4')) return JSON.stringify({ placements: [], proposals: [] });
         // The story's agent call itself crashes, which on its own would let the runner try the next agent.
         throw new Error('Claude Code stopped: socket hang up');
       };
@@ -745,8 +745,8 @@ describe('story repair', () => {
           const [show] = JSON.parse(readFileSync(/is in (.+?\.json)/.exec(prompt)![1], 'utf8'));
           return JSON.stringify({ reviews: [{ groupId: show.groupId, state: 'in-progress', percent: 40, summary: 'Release cards are being built.', reviewBasis: show.reviewBasis }] });
         }
-        if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
-        expect(prompt).toContain('Do only section 4');
+        if (prompt.includes('Do only section 4')) return everyRequestInOther(prompt);
+        expect(prompt).toContain('Do only section 5');
         if (storyAttempts++ === 0) return rejected;
         expect(prompt).toContain('Your previous answer was refused:');
         expect(prompt).toContain('12000');
@@ -812,8 +812,8 @@ describe('story in parts (#6226)', () => {
   function storyAskRecorder() {
     const asks: Array<{ bytes: number; input: any }> = [];
     const ask = async (prompt: string) => {
-      if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
-      if (prompt.includes('Do only section 4')) {
+      if (prompt.includes('Do only section 4')) return everyRequestInOther(prompt);
+      if (prompt.includes('Do only section 5')) {
         const file = /output is in (.+?\.json)/.exec(prompt)![1];
         const input = JSON.parse(prompt.split(`--- ${file} ---\n`)[1]);
         asks.push({ bytes: Buffer.byteLength(prompt, 'utf8'), input });
@@ -891,7 +891,7 @@ describe('story in parts (#6226)', () => {
       const { asks, ask } = storyAskRecorder();
       const task = storyTask(database, dir, 50, () => clock);
       expect(await task.run(async prompt => {
-        if (prompt.includes('Do only section 4') && asks.length === 1) {
+        if (prompt.includes('Do only section 5') && asks.length === 1) {
           // Part 2 is being written: time passes and one review's facts move.
           clock = LATER;
           let show: any;
@@ -919,8 +919,8 @@ describe('story in parts (#6226)', () => {
       const before = readFileSync(join(dir, 'story.json'), 'utf8');
       let storyAsks = 0;
       const error = await storyTask(database, dir, 50).run(async prompt => {
-        if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
-        if (prompt.includes('Do only section 4')) {
+        if (prompt.includes('Do only section 4')) return everyRequestInOther(prompt);
+        if (prompt.includes('Do only section 5')) {
           storyAsks++;
           // Part 1 answers well; part 2 answers without a narrative, on its first try and on its retry.
           return JSON.stringify(storyAsks === 1 ? { narrative: 'Part 1 only.', preferences: [] } : { preferences: [] });
@@ -974,8 +974,8 @@ describe('story in parts (#6226)', () => {
       let storyAsked = 0;
       const task = storyTask(database, dir, 1);
       const error = await task.run(async prompt => {
-        if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
-        if (prompt.includes('Do only section 4')) { storyAsked++; return JSON.stringify({ narrative: 'Never saved.', preferences: [] }); }
+        if (prompt.includes('Do only section 4')) return everyRequestInOther(prompt);
+        if (prompt.includes('Do only section 5')) { storyAsked++; return JSON.stringify({ narrative: 'Never saved.', preferences: [] }); }
         throw new Error(`Unexpected prompt: ${prompt.slice(-200)}`);
       }, 'api').then(() => null, failure => failure as Error & { answerRefused?: boolean });
       expect(error?.message).toContain('One moved review and the story question around it exceed the input budget');
@@ -1000,8 +1000,8 @@ describe('review repair', () => {
       const oversized = 'Retain the evidence while shortening this review. ' + 'x'.repeat(1257);
       let attempts = 0, rejectedReview: any, acceptedId = '';
       const ask = async (prompt: string) => {
-        if (prompt.includes('Do only section 4')) return JSON.stringify({ narrative: 'Work continues.' });
-        if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
+        if (prompt.includes('Do only section 5')) return JSON.stringify({ narrative: 'Work continues.' });
+        if (prompt.includes('Do only section 4')) return everyRequestInOther(prompt);
         const shows = JSON.parse(readFileSync(/is in (.+?\.json)/.exec(prompt)![1], 'utf8'));
         attempts++;
         if (attempts === 1) {
@@ -1064,6 +1064,75 @@ describe('grouping repair', () => {
   });
 });
 
+describe('naming step', () => {
+  it('names each request still titled with its ask after the reviews, on the light model; a title refused twice waits for the next run', async () => {
+    const dir = scratchDir('auto-refresh-naming');
+    const database = fixtureDatabase();
+    try {
+      for (const [index, session] of ['b', 'c'].entries()) {
+        database.prepare('INSERT INTO sdk_sessions VALUES (?, ?, ?, ?, ?, ?, ?)').run(index + 2, 'claude', session, `m${index + 2}`, 'repo/tree', `figure out ${session}`, NOW - 2 * DAY);
+        database.prepare('INSERT INTO user_prompts (session_db_id, prompt_number, prompt_text, created_at_epoch) VALUES (?, ?, ?, ?)').run(index + 2, 1, `figure out ${session}`, NOW - 2 * DAY);
+      }
+      // Three requests titled with their asks, as the judge leaves the requests it starts.
+      const decisions = join(dir, 'decisions.json');
+      writeFileSync(decisions, JSON.stringify({ groups: ['a', 'b', 'c'].map(session => ({ title: session === 'a' ? 'Build the release cards' : `figure out ${session}`, conversations: [key(session)] })) }));
+      runCli(['apply', decisions], { dir, database, now: NOW - DAY, print: () => {} });
+      const namings: Array<{ prompt: string; models: unknown; schema: unknown }> = [];
+      const ask = async (prompt: string, models: unknown, schema?: unknown) => {
+        if (!prompt.includes('Do only section 3')) return defaultAnswer(prompt);
+        namings.push({ prompt, models, schema });
+        const input = JSON.parse(/```json\n([\s\S]*?)\n```/.exec(prompt)![1]);
+        // Named from each request's review, which ran first.
+        expect(input.requests.map((request: any) => [request.title, request.summary])).toEqual([['Build the release cards', 'Started.'], ['figure out b', 'Started.'], ['figure out c', 'Started.']]);
+        // The third title is the ask again on both tries.
+        return JSON.stringify({ titles: [
+          { groupId: groupIdFor(key('a')), title: 'Release cards for the launch page' },
+          { groupId: groupIdFor(key('b')), title: 'Fix the checkout page loading error' },
+          { groupId: groupIdFor(key('c')), title: 'Figure out c' },
+        ] });
+      };
+      const options = { localDeviceId: () => '', needs: { due: 3, ungrouped: 0, goalsStale: false, unplaced: 3, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, saveFocus: focusWriter(database).save };
+      expect(await buildRefreshTask(options).run(ask, 'codex')).toBe('3 requests reviewed, 2 requests named (1 still titled with their ask until the next refresh), 3 requests placed, story written.');
+      expect(namings).toHaveLength(2);
+      expect(namings[1].prompt).toContain('Your previous answer was refused: titles[2].title repeats the owner\'s ask ("figure out c")');
+      for (const naming of namings) { expect(naming.models).toBe(STEP_MODELS.titles); expect(naming.schema).toBe(TITLE_ANSWER_SCHEMA); }
+      expect(STEP_MODELS.titles).toBe(STEP_MODELS.grouping);
+      const { groups } = readLedger(dir);
+      expect(['a', 'b', 'c'].map(session => groups.groups[groupIdFor(key(session))].title)).toEqual(['Release cards for the launch page', 'Fix the checkout page loading error', 'figure out c']);
+
+      // The next run names c. Its placement, made while it showed its ask, still stands: focus is not asked to place it again.
+      const later: string[] = [];
+      expect(await buildRefreshTask(options).run(async (prompt: string) => {
+        later.push(prompt);
+        if (prompt.includes('Do only section 3')) return JSON.stringify({ titles: [{ groupId: groupIdFor(key('c')), title: 'Fix the checkout page for c' }] });
+        return defaultAnswer(prompt);
+      }, 'codex')).toBe('1 requests named.');
+      expect(readLedger(dir).groups.groups[groupIdFor(key('c'))].title).toBe('Fix the checkout page for c');
+      expect(later.filter(prompt => prompt.includes('Do only section 4, steps 1–2'))).toEqual([]);
+    } finally { database.close(); rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('a naming step refused twice still lets focus and the story run; the run then fails with its error', async () => {
+    const dir = scratchDir('auto-refresh-naming-failure');
+    const database = fixtureDatabase();
+    try {
+      const decisions = join(dir, 'decisions.json');
+      writeFileSync(decisions, JSON.stringify({ groups: [{ title: 'Build the release cards', conversations: [key('a')] }] }));
+      runCli(['apply', decisions], { dir, database, now: NOW - DAY, print: () => {} });
+      const prompts: string[] = [];
+      const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: 1, ungrouped: 0, goalsStale: false, unplaced: 1, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, saveFocus: focusWriter(database).save });
+      await expect(task.run(async (prompt: string) => {
+        prompts.push(prompt);
+        return prompt.includes('Do only section 3') ? 'No JSON in this answer.' : defaultAnswer(prompt);
+      }, 'codex')).rejects.toThrow(/^titles \(raw answer: /);
+      expect(prompts.filter(prompt => prompt.includes('Do only section 3'))).toHaveLength(2);
+      expect(prompts.filter(prompt => prompt.includes('Do only section 4, steps 1–2'))).toHaveLength(1);
+      expect(readLedger(dir).story?.narrative).toBe('Started.');
+      expect(readLedger(dir).groups.groups[groupIdFor(key('a'))].title).toBe('Build the release cards');
+    } finally { database.close(); rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
 describe('focus proposal repair', () => {
   /** Requests a–d, one conversation each, and a refresh whose focus step answers with `focusAnswer`. */
   function refreshWithFocusAnswers(dir: string, database: Database, focusAnswer: (prompt: string) => string) {
@@ -1077,7 +1146,7 @@ describe('focus proposal repair', () => {
     const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: 4, ungrouped: 0, goalsStale: false, unplaced: 4, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, saveFocus: focusWriter(database).save });
     return task.run(async (prompt: string) => {
       if (prompt.includes('Do only section 2')) return reviewAll(prompt);
-      if (prompt.includes('Do only section 3')) return focusAnswer(prompt);
+      if (prompt.includes('Do only section 4')) return focusAnswer(prompt);
       return JSON.stringify({ narrative: 'Started.', preferences: [] });
     }, 'api');
   }
@@ -1152,7 +1221,7 @@ describe('My Work text language setting (CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE)', (
     for (const settings of [null, { CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE: '' }]) {
       const prompts = await runWith(settings);
       // Grouping, review, the two focus passes and the story: nothing spent on deciding a language.
-      expect(sections(prompts)).toEqual(['1', '2', '3', '3', '4']);
+      expect(sections(prompts)).toEqual(['1', '2', '4', '4', '5']);
       expect(prompts.some(prompt => prompt.includes(RULE))).toBe(false);
     }
   });
@@ -1161,7 +1230,7 @@ describe('My Work text language setting (CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE)', (
     let recorded = '';
     const prompts = await runWith(null, { groupingLanguage: 'English', keepDir: dir => { recorded = readFileSync(join(dir, 'text-language.json'), 'utf8'); } });
     // Still one question per section: the language rides on the grouping question it already asks.
-    expect(sections(prompts)).toEqual(['1', '2', '3', '3', '4']);
+    expect(sections(prompts)).toEqual(['1', '2', '4', '4', '5']);
     expect(prompts[0]).toContain('"language": the human language most of the owner\'s asks are written in');
     for (const prompt of prompts.slice(1)) expect(prompt).toContain(`${RULE} is English.`);
     expect(JSON.parse(recorded).language).toBe('English');
@@ -1189,7 +1258,7 @@ describe('My Work text language setting (CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE)', (
 
   it('set, every grouping, review, focus and story question names it, with no extra call', async () => {
     const prompts = await runWith({ CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE: 'Turkish' });
-    expect(sections(prompts)).toEqual(['1', '2', '3', '3', '4']);
+    expect(sections(prompts)).toEqual(['1', '2', '4', '4', '5']);
     for (const prompt of prompts) expect(prompt).toContain(`${RULE} is Turkish.`);
   });
 
@@ -1218,8 +1287,8 @@ describe('parallel reviews', () => {
       let lastPrompt = '';
       const ask = async (prompt: string) => {
         lastPrompt = prompt;
-        if (prompt.includes('Do only section 4')) return JSON.stringify({ narrative: 'Ten features under way.' });
-        if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
+        if (prompt.includes('Do only section 5')) return JSON.stringify({ narrative: 'Ten features under way.' });
+        if (prompt.includes('Do only section 4')) return everyRequestInOther(prompt);
         const shows = JSON.parse(readFileSync(/is in (.+?\.json)/.exec(prompt)![1], 'utf8'));
         most = Math.max(most, ++inFlight);
         if (most === 2) bothAsked.resolve();
@@ -1281,8 +1350,8 @@ describe('parallel reviews', () => {
       let inFlight = 0, most = 0;
       const lanesFull = deferred<void>();
       const ask = async (prompt: string) => {
-        if (prompt.includes('Do only section 4')) return JSON.stringify({ narrative: 'Forty features under way.' });
-        if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
+        if (prompt.includes('Do only section 5')) return JSON.stringify({ narrative: 'Forty features under way.' });
+        if (prompt.includes('Do only section 4')) return everyRequestInOther(prompt);
         const shows = JSON.parse(readFileSync(/is in (.+?\.json)/.exec(prompt)![1], 'utf8'));
         most = Math.max(most, ++inFlight);
         if (inFlight === lanes) lanesFull.resolve();

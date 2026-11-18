@@ -1,7 +1,7 @@
 import { uiMessage, renderUiMessage, type UiMessage } from '../../../ui-message'
 import { OTHER_FOCUS_AREA_ID, type FocusArea, type FocusChange, type Request } from '../data'
 import type { FocusChangeRecord } from '../store/store-types'
-import { focusAreaLabel, resolveFocusAreaId } from '../live/to-focus-model'
+import { NOT_SORTED_YET_LABEL, focusAreaLabel, resolveFocusAreaId } from '../live/to-focus-model'
 
 type MessageRecord = FocusChangeRecord & { message?: UiMessage }
 
@@ -44,8 +44,9 @@ export function describeFocusChange(change: FocusChange, areas: FocusArea[], req
     case 'move-request': {
       const request = requests.find((entry) => entry.id === change.requestId)
       const from = request ? resolveFocusAreaId(request.focusAreaId, areas) : null
-      const toLabel = focusAreaLabel(change.focusAreaId, areas)
-      const toArea = resolveFocusAreaId(change.focusAreaId, areas) === OTHER_FOCUS_AREA_ID ? uiMessage('Other') : toLabel
+      // Other and the unplaced case are words in the reader's language; an area's name is its own.
+      const toPlaced = resolveFocusAreaId(change.focusAreaId, areas)
+      const toArea = toPlaced === OTHER_FOCUS_AREA_ID ? uiMessage('Other') : toPlaced === null ? uiMessage(NOT_SORTED_YET_LABEL) : focusAreaLabel(change.focusAreaId, areas)
       return record({ message: uiMessage('Moved “{title}” to {area}', { title: request?.title ?? uiMessage('the request'), area: toArea }), undo: request && from ? [{ action: 'move-request', requestId: request.id, focusAreaId: from }] : null })
     }
     case 'restore-suggestion': return record({ message: uiMessage('Put “{name}” back in Suggested', { name }), undo: null })

@@ -16,7 +16,7 @@ import { pathToFileURL } from 'url';
 import type { Database } from 'bun:sqlite';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { buildWorkerUrl, getWorkerPort, getWorkerHost, fetchWithTimeout, isWorkerScriptOutsideRoot, resolvePluginRoot, resolveWorkerScriptPath } from '../shared/worker-utils.js';
+import { buildWorkerUrl, getWorkerPort, getWorkerHost, fetchWithTimeout, isWorkerScriptOutsideRoot, workerHttpRequest, resolvePluginRoot, resolveWorkerScriptPath } from '../shared/worker-utils.js';
 import { InvalidWorkerUrlError, normalizeWorkerBaseUrl } from '../shared/worker-url.js';
 import { getCurrentWorkerPid, verifyRestartedWorker } from './restart-verify.js';
 import { runShutdownSequence, WORKER_GRACEFUL_SHUTDOWN_DEADLINE_BASE_MS, type WorkerShutdownReason } from './worker-shutdown.js';
@@ -2226,8 +2226,12 @@ export async function main() {
         if (typeof health.uptime === 'number') {
           console.log(`  Uptime: ${health.uptime}s`);
         }
-        if (typeof health.workerPath === 'string') {
-          console.log(`  Worker path: ${health.workerPath}`);
+        // /api/health publishes probe state only. The install path and the
+        // queue's address live on the loopback-only doctor route, which fails
+        // for a remote --worker-url; there the two lines are simply omitted.
+        const details = await fetchWorkerDoctor(getPlatformTimeout(3000));
+        if (typeof details?.health?.workerPath === 'string' && details.health.workerPath) {
+          console.log(`  Worker path: ${details.health.workerPath}`);
           // A worker rooted outside the resolved plugin root — the
           // leftover-alias case of #6228 — runs a copy whose dependencies
           // and updates the install does not control, and nothing else
@@ -2235,7 +2239,7 @@ export async function main() {
           // Skipped for an explicit worker URL: that worker's path belongs
           // to another machine, so the local resolved root says nothing.
           const resolvedRoot = explicitWorkerUrl ? null : resolvePluginRoot();
-          if (resolvedRoot && isWorkerScriptOutsideRoot(health.workerPath, resolvedRoot.root)) {
+          if (resolvedRoot && isWorkerScriptOutsideRoot(details.health.workerPath, resolvedRoot.root)) {
             console.log(`  Warning: the worker is running from outside the resolved plugin root (${resolvedRoot.root}) — \`claude-mem restart\` boots the resolved install instead.`);
           }
         }
@@ -2243,7 +2247,7 @@ export async function main() {
         if (dependencyHint) {
           console.log(dependencyHint);
         }
-        printQueueStatusIfBullMq(health);
+        printQueueStatusIfBullMq(details);
         process.exit(0);
       }
       if (explicitWorkerUrl) {
@@ -2621,16 +2625,32 @@ export interface WorkerHealthSnapshot {
   pid?: unknown;
   version?: unknown;
   uptime?: unknown;
-  workerPath?: unknown;
   dependencies?: DependencyHealthSnapshot;
+  /** The probe answer: the queue engine, Redis's status and the per-lane counts, never its address. */
   queue?: {
-    redis?: {
-      status?: string;
-      host?: string;
-      port?: number;
-      mode?: string;
-      prefix?: string;
-      error?: string;
+    engine?: string;
+    redis?: { status?: string };
+    lanes?: unknown[];
+  };
+}
+
+/**
+ * The loopback-only `/api/admin/doctor` detail that `/api/health` keeps off its
+ * unauthenticated answer: the worker's install path and the queue backend's
+ * address. `status` reads it here, on the machine that runs the worker.
+ */
+export interface WorkerDoctorSnapshot {
+  health?: {
+    workerPath?: unknown;
+    queue?: {
+      redis?: {
+        status?: string;
+        host?: string;
+        port?: number;
+        mode?: string;
+        prefix?: string;
+        error?: string;
+      };
     };
   };
 }
@@ -2667,18 +2687,33 @@ async function fetchWorkerHealth(timeoutMs: number): Promise<WorkerHealthSnapsho
 }
 
 /**
- * Print BullMQ queue detail from an already-fetched /api/health snapshot.
- * A degraded worker answers 503 but still includes the queue block, and
- * `status` already treats that worker as running — so this must not
- * re-fetch and bail on a non-2xx response (which hid the queue detail
- * behind "BullMQ health unavailable (HTTP 503)"). Reusing the snapshot in
- * hand keeps the output consistent with what `status` just reported.
+ * Fetch the loopback-only detail `status` prints beside the probe answer.
+ * Returns null when the route is unreachable or refuses a remote `--worker-url`
+ * (it is localhost-only), so `status` keeps working against a remote worker.
+ * `workerHttpRequest` carries the local API token when the operator set one.
  */
-function printQueueStatusIfBullMq(health: WorkerHealthSnapshot): void {
+async function fetchWorkerDoctor(timeoutMs: number): Promise<WorkerDoctorSnapshot | null> {
+  try {
+    const response = await workerHttpRequest('/api/admin/doctor', { timeoutMs });
+    if (!response.ok) return null;
+    return await response.json() as WorkerDoctorSnapshot;
+  } catch {
+    // [ANTI-PATTERN IGNORED]: an optional detail fetch — any failure means the two detail lines are omitted, and every `status` run already logs what it has.
+    return null;
+  }
+}
+
+/**
+ * Print BullMQ queue detail from the loopback-only doctor snapshot. The queue
+ * address is part of the deployment, not probe state, so `/api/health` no
+ * longer carries it; `/api/admin/doctor` is reachable from the machine that
+ * runs `status`, and a remote `--worker-url` simply omits the line.
+ */
+function printQueueStatusIfBullMq(doctor: WorkerDoctorSnapshot | null): void {
   if (SettingsDefaultsManager.get('CLAUDE_MEM_QUEUE_ENGINE').trim().toLowerCase() !== 'bullmq') {
     return;
   }
-  const redis = health.queue?.redis;
+  const redis = doctor?.health?.queue?.redis;
   if (!redis) {
     return;
   }

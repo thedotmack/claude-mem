@@ -1,6 +1,11 @@
 import type { OwnerRule, RuleDraft, RuleScope } from '../data-rules.ts'
 
-export type RuleDecision = 'approved' | 'rejected'
+/**
+ * What a person decided on a waiting rule. The one definition: the queue's words and looks are Records over it, and
+ * tests take the values from this list (approve first, then reject) instead of typing them again.
+ */
+export const RULE_DECISIONS = ['approved', 'rejected'] as const
+export type RuleDecision = (typeof RULE_DECISIONS)[number]
 export interface SavedRuleDecision { decision: RuleDecision; version: string }
 
 /** Ignore display clocks, but invalidate local receipts when saved rule content changes. */

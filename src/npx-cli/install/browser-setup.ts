@@ -24,7 +24,7 @@ export interface BrowserCheckout {
 /**
  * GUI mode: a person at a terminal, with nothing on the command line that already answers the setup questions.
  * Non-TTY (agent-run) installs, `--provider`, `--no-auto-start` and the server runtime keep the terminal flow, and
- * a plain interactive reinstall also opens setup so all choices remain in the GUI. `npx claude-mem update` on a
+ * a plain interactive reinstall also opens the GUI after the optional terminal signup. `npx claude-mem update` on a
  * machine keeps the terminal: it reuses installed choices and asks only for missing configuration there.
  */
 export function shouldUseBrowserSetup(input: {

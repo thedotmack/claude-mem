@@ -1,6 +1,6 @@
 /**
  * The job My Work's automatic refresh hands the agent runner: refresh the
- * owner's goals when they are stale, then group, review, sort into focus areas and retell
+ * owner's goals when they are stale, then group, review, name, sort into focus areas and retell
  * every request that is due. No day window beyond the skill's own default,
  * no group cap and no time limit (owner rule, Oct 22).
  *
@@ -21,7 +21,7 @@ import { writeOwnerPromptsFile, type OwnerPromptsFile } from '../prompt-import/o
 import { resolvePythonCommand } from './python.js';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { logger } from '../../utils/logger.js';
-import { FOCUS_BATCH, readGoals, readLedger, runCli, storyInput as buildStoryInput, validateFocusAnswer, validateGroupingAnswer, validateStory, type FocusInput, type LedgerDatabase, type RefreshNeeds } from './request-groups.mjs';
+import { FOCUS_BATCH, readGoals, readLedger, runCli, storyInput as buildStoryInput, TITLE_BATCH, validateFocusAnswer, validateGroupingAnswer, validateStory, validateTitleAnswer, type FocusInput, type FocusRequestRecord, type LedgerDatabase, type RefreshNeeds } from './request-groups.mjs';
 import { FOCUS_AUTO_PLACE_THRESHOLD, judgeFocusBatch, placesAlone, type FocusJudge, type FocusJudgement } from './focus-judge.mjs';
 import { isWithdrawnArea, ownerGoalsAreaRows, ownerGoalsSaveKey, PROPOSAL_KINDS, readFocusAreas, routerFocusRows, type FocusArea, type RouterFocusBody } from './my-focus.mjs';
 import { NAV_LABELS } from './nav-words.mjs';
@@ -50,12 +50,12 @@ export function reviewConcurrency(dataDir: string): number {
     ?? parseInt(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_MAX_CONCURRENT_AGENTS, 10);
 }
 
-/** The model each step runs on. Small, fast models match conversations and goals; stronger ones judge
- * progress, write the story and pick verbatim quotes. Codex's careful steps use its CLI default model.
- * Ids checked against claude --help (aliases), codex-cli 0.163.0 models_cache.json and gemini 0.49.0 aliases. */
+/** The model each step runs on. Small, fast models match conversations and goals and name requests from their
+ * reviews; stronger ones judge progress, write the story and pick verbatim quotes. Codex's careful steps use its CLI
+ * default model. Ids checked against claude --help (aliases), codex-cli 0.163.0 models_cache.json and gemini 0.49.0 aliases. */
 const LIGHT: StepModels = { 'claude-code': { model: 'haiku' }, codex: { model: 'gpt-6-luna', reasoningEffort: 'low' }, gemini: { model: 'flash-lite' } };
 const CAREFUL: StepModels = { 'claude-code': { model: 'sonnet' }, codex: {}, gemini: { model: 'flash' } };
-export const STEP_MODELS = { goals: CAREFUL, grouping: LIGHT, review: CAREFUL, focus: LIGHT, story: CAREFUL } as const;
+export const STEP_MODELS = { goals: CAREFUL, grouping: LIGHT, review: CAREFUL, titles: LIGHT, focus: LIGHT, story: CAREFUL } as const;
 type Step = keyof typeof STEP_MODELS;
 
 /** The setting that puts every step of one agent on a single model (#5164), e.g. `haiku` to keep the refresh
@@ -166,6 +166,11 @@ export const GROUPING_ANSWER_SCHEMA: AnswerSchema = strictObject({
     links: { type: 'array', items: strictObject({ kind: { type: 'string', enum: ['shared-work-list', 'shared-request-id', 'agent-judgment'] }, conversations: stringArray, evidence: { type: 'string' } }) },
   }) },
   ignored: { type: 'array', items: strictObject({ conversation: { type: 'string' }, reason: { type: 'string' } }) },
+});
+
+/** The answer `record-titles` takes: one written title per request of the batch, by its groupId. */
+export const TITLE_ANSWER_SCHEMA: AnswerSchema = strictObject({
+  titles: { type: 'array', items: strictObject({ groupId: { type: 'string' }, title: { type: 'string' } }) },
 });
 
 /** The answer `record-focus` takes: every request placed by area id (or "other"), and areas proposed from Other.
@@ -437,7 +442,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       finally { steps.push({ step: name, agent, startedAt, finishedAt: new Date(now()).toISOString(), ...extra }); }
     };
     /**
-     * The owner's language for this run is named in every step's question: grouping, review, focus, story and goals.
+     * The owner's language for this run is named in every step's question: grouping, review, naming, focus, story and goals.
      * Those run as separate agents that each see only their own input (a review batch in "amend" mode sees only its
      * later asks; a goals batch in an initial mapping sees only its slice of the prompts, and a goals-only run has no
      * grouping at all), so left to the skill's rule they could each pick a different language (#5660, #6185). It is
@@ -778,6 +783,31 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
         ...(droppedPreferences.size ? [`${droppedPreferences.size} preferences without a quote or text dropped after retry`] : [])];
       if (reviewed) done.push(`${reviewed} requests reviewed${reviewRepairs.length ? ` (${reviewRepairs.join(', ')})` : ''}`);
 
+      // Names: a request the judge started (or whose title a grouping answer copied) still shows its opening ask word for
+      // word as its title. After the reviews, so a vague ask ("figure it out") is named from what its review found; before
+      // focus, so a new request is placed while it shows its written title (a request named after it was placed keeps its
+      // placement: focusDue). Every owed title is read once (no group cap, as for the reviews: the owner rule at the top of
+      // this file) and asked batch by batch, so a request whose title is refused twice keeps its placeholder until the next
+      // run instead of being asked again here. Focus and the story do not depend on the names, so a failed naming step is
+      // reported after they have run.
+      let namingError: unknown = null;
+      try {
+        const owedTitles: FocusRequestRecord[] = cli(['title-input', '--limit', '1000000']).requests;
+        let named = 0, unnamed = 0;
+        for (let index = 0; index < owedTitles.length; index += TITLE_BATCH) {
+          const input = { requests: owedTitles.slice(index, index + TITLE_BATCH) };
+          const saved = await step('titles', [
+            requestProgress, '---', readOnly,
+            // Inline with every groupId named, like grouping and focus.
+            `Do only section 3 (name each request) for this batch of \`title-input\` requests (also saved in ${writeInput('title-input', input)}):\n\n\`\`\`json\n${JSON.stringify(input, null, 2)}\n\`\`\``,
+            `Write one title for each of these ${input.requests.length} requests, by its "groupId": ${input.requests.map(request => request.groupId).join(', ')}. Reply with only the JSON that \`record-titles\` takes ({"titles": [{"groupId": "...", "title": "..."}]}).`,
+          ].join('\n\n'), (answer, retry) => cli(['record-titles'], validateTitleAnswer(answer, input, { coerce: retry })), TITLE_ANSWER_SCHEMA);
+          named += saved.titled;
+          unnamed += input.requests.length - saved.titled - saved.kept;
+        }
+        if (named || unnamed) done.push(`${named} requests named${unnamed ? ` (${unnamed} still titled with their ask until the next refresh)` : ''}`);
+      } catch (error) { namingError = error; }
+
       // Focus: place the requests not placed yet (changed since, or whose area is gone) in batches, each saved before the
       // next is read, then propose areas from Other when the router-placed Other requests changed since the last pass.
       // The story does not depend on it, so a failed focus step is reported after the story has run.
@@ -826,7 +856,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
           if (anchors.join('\n') === previousBatch) throw new Error(`focus: the placed requests are still queued (${anchors.length} starting ${anchors[0]}).`);
           previousBatch = anchors.join('\n');
           const saved = await step('focus', sorting([
-            `Do only section 3, steps 1–2 (place each request in a focus area, promoting one that holds several separate asks) for this batch, the \`focus-input\` output (also saved in ${writeInput('focus-input', input)}):\n\n\`\`\`json\n${JSON.stringify(input, null, 2)}\n\`\`\``,
+            `Do only section 4, steps 1–2 (place each request in a focus area, promoting one that holds several separate asks) for this batch, the \`focus-input\` output (also saved in ${writeInput('focus-input', input)}):\n\n\`\`\`json\n${JSON.stringify(input, null, 2)}\n\`\`\``,
             `Place each of these ${anchors.length} requests exactly once, by its "anchor": ${anchors.join(', ')}. Reply with only the JSON that \`record-focus\` takes ({"placements": [...], "proposals": [...]}).`,
           ].join('\n\n')), (answer, retry) => recordFocus(['--limit', String(FOCUS_BATCH)], retry ? withoutRefusedProposals(answer, input) : answer), FOCUS_ANSWER_SCHEMA);
           placed += saved.placed; proposed += saved.proposed;
@@ -839,7 +869,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
         const other = cli(['focus-input', '--other']);
         if (other.due) {
           const saved = await step('focus', sorting(
-            `Do only section 3, step 3 (propose focus areas from Other) for the \`focus-input --other\` output (also saved in ${writeInput('focus-input-other', other)}):\n\n\`\`\`json\n${JSON.stringify(other, null, 2)}\n\`\`\`\n\nPlace nothing ("placements": []). Reply with only the JSON that \`record-focus --other\` takes ({"placements": [], "proposals": [...]}), proposing nothing when nothing qualifies.`,
+            `Do only section 4, step 3 (propose focus areas from Other) for the \`focus-input --other\` output (also saved in ${writeInput('focus-input-other', other)}):\n\n\`\`\`json\n${JSON.stringify(other, null, 2)}\n\`\`\`\n\nPlace nothing ("placements": []). Reply with only the JSON that \`record-focus --other\` takes ({"placements": [], "proposals": [...]}), proposing nothing when nothing qualifies.`,
           ), (answer, retry) => recordFocus(['--other'], retry ? withoutRefusedProposals(answer, other, { other: true }) : answer), FOCUS_ANSWER_SCHEMA);
           proposed += saved.proposed;
         }
@@ -866,7 +896,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
         const batchPath = writeInput('story-input', '');
         const storyQuestion = (input: any) => [
           requestProgress, '---', readOnly,
-          `Do only section 4 (${input.update ? 'update' : 'write'} the build story). The \`story-input\` output is in ${batchPath}. Reply with only the JSON that \`record-story\` takes ({"narrative": "...", "preferences": [...]}).`,
+          `Do only section 5 (${input.update ? 'update' : 'write'} the build story). The \`story-input\` output is in ${batchPath}. Reply with only the JSON that \`record-story\` takes ({"narrative": "...", "preferences": [...]}).`,
         ].join('\n\n');
         // The first part answers story-input as read; each later part updates the story the part before returned,
         // shaped as story-input reads a recorded one back.
@@ -923,7 +953,10 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
         }
         done.push(`${storyInput.update ? 'story updated' : 'story written'}${parts > 1 ? ` in ${parts} parts` : ''}`);
       }
-      if (focusError) throw focusError;
+      // Held so focus and the story still ran. When both failed, the run's error names both.
+      const heldFailures = [namingError, focusError].filter(error => error != null);
+      if (heldFailures.length > 1) throw new AggregateError(heldFailures, heldFailures.map(error => error instanceof Error ? error.message : String(error)).join(' · '));
+      if (heldFailures.length) throw heldFailures[0];
       return done.length ? `${done.join(', ')}.` : 'Nothing was due.';
     } catch (error) {
       if (!answerWasRefused) throw error;

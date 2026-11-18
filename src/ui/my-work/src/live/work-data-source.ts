@@ -60,10 +60,24 @@ export interface WorkModel {
 }
 
 /** What the automatic refresh is doing. `finishedAt` is display text. */
-export interface AutoRefresh { state: WorkViewRefreshState; finishedAt: string | null; error: string | null }
+export interface AutoRefresh {
+  state: WorkViewRefreshState
+  finishedAt: string | null
+  error: string | null
+  /** `finishedAt` as an ISO time, for the reader's own clock (G9). Workers before 16.0.0 leave it out (G19). */
+  finishedAtIso?: string
+}
 
 /** The last build story request-progress wrote. `writtenAt` is display text; null when not recorded. */
-export interface BuildStory { recap: string; paragraphs: string[]; writtenAt: string | null }
+/** One chapter of the build story: its heading (null for the opening, before any heading) and its paragraphs. */
+export interface StoryChapter { heading: string | null; paragraphs: string[] }
+/**
+ * The build story request-progress wrote. `paragraphs` are its blocks with heading marks removed; `chapters` keep which
+ * block was a heading (from 16.0.0; older workers leave it out, G19, and live/build-story.ts storyChapters reads them).
+ * `writtenAtIso` is `writtenAt` as an ISO time: it dates the headings' UTC days and times, which the page shows in the
+ * reader's own clock (lib/display-time.ts displayRecordedDate). Workers before 16.0.0 leave it out (G19).
+ */
+export interface BuildStory { recap: string; paragraphs: string[]; writtenAt: string | null; writtenAtIso?: string; chapters?: StoryChapter[] }
 
 /** A saved rule change: the model right after it, and the rule it saved (null from workers that don't say). */
 export interface RuleSaveResult { model: WorkModel; savedRuleId: string | null; save?: SaveReceipt }

@@ -26,9 +26,14 @@ interface State {
   loaded: boolean
   connected: boolean
   shares: Record<string, FocusShare>
+  /**
+   * How many comments each shared area's page has, from the last comments read that answered (the shared mark's count,
+   * c-share-focus M3). An area missing here has had no read answer yet, so its mark shows no number.
+   */
+  commentCounts: Record<string, number>
 }
 
-let state: State = { loaded: false, connected: false, shares: {} }
+let state: State = { loaded: false, connected: false, shares: {}, commentCounts: {} }
 /** Bumped by every share, stop or forget, so a list read that started earlier never overwrites what they did. */
 let changes = 0
 let nextListRead = 0
@@ -54,7 +59,24 @@ export function useFocusShares(): State {
   return useSyncExternalStore(subscribe, focusSharesNow)
 }
 
+/**
+ * What answers these calls in the page instead of the worker: the sample's sharing demonstration
+ * (live/sample-source.ts, `?source=sample&sample-state=area-shared`), which writes nothing and reaches no worker. Null on
+ * the person's own work, where every call goes to the worker.
+ */
+export type FocusShareAnswerInPage = (url: string, init?: { method: 'POST'; body: unknown }) => Promise<unknown>
+let answerInPage: FocusShareAnswerInPage | null = null
+
+/** The sample demonstration answers the calls from now on (sample-source.ts); `null` gives them back to the worker. */
+export function answerFocusShareCallsInPage(answer: FocusShareAnswerInPage | null): void {
+  answerInPage = answer
+}
+
+/** Whether the sharing calls are the sample's demonstration: sharing then works on the sample page too. */
+export const focusSharesAreADemonstration = (): boolean => answerInPage !== null
+
 async function call<T>(url: string, init?: { method: 'POST'; body: unknown }): Promise<T> {
+  if (answerInPage) return await answerInPage(url, init) as T
   const response = await fetch(url, init ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(init.body) } : undefined)
   let answer: unknown = null
   try { answer = await response.json() } catch { /* the status says enough */ }
@@ -88,7 +110,8 @@ export async function loadFocusShares(): Promise<void> {
 function forget(focusAreaId: string) {
   changes++
   const { [focusAreaId]: _gone, ...shares } = state.shares
-  set({ shares })
+  const { [focusAreaId]: _count, ...commentCounts } = state.commentCounts
+  set({ shares, commentCounts })
 }
 
 /** Shares the area: the worker builds the page, cmem.ai answers with its link, and the page goes up at once. */
@@ -110,13 +133,26 @@ export function stopSharingFocusArea(focusAreaId: string): Promise<void> {
 }
 
 export async function readFocusShareComments(focusAreaId: string): Promise<FocusShareComment[]> {
-  const startedAt = changes
+  // The link this read asks about. Sharing again after a stop makes a new link (the worker's focus-share.ts stop), so
+  // an answer speaks for the area only while the area still has this link.
+  const readLink = state.shares[focusAreaId]?.url
+  const stillTheLinkRead = () => readLink !== undefined && state.shares[focusAreaId]?.url === readLink
   try {
     const answer = await call<{ comments: FocusShareComment[] }>(`/api/work-view/focus/share/comments?focusAreaId=${encodeURIComponent(focusAreaId)}`)
+    // The mark beside the area's name counts them. A read that answered after a stop leaves no count behind, and one
+    // that answered after a stop and a new share leaves the new link's mark alone.
+    if (stillTheLinkRead()) set({ commentCounts: { ...state.commentCounts, [focusAreaId]: answer.comments.length } })
     return answer.comments
   } catch (error) {
-    // A link stopped and shared again while this read was out is a new link: the old one's 410 leaves it alone.
-    if ((error as { status?: number }).status === 410 && startedAt === changes) forget(focusAreaId)
+    if (stillTheLinkRead()) {
+      // cmem.ai says this link stopped working (stopped on another machine or on cmem.ai): it is forgotten here too.
+      if ((error as { status?: number }).status === 410) forget(focusAreaId)
+      // The count is not known now: the mark drops its number rather than show an old one as if it were current.
+      else if (focusAreaId in state.commentCounts) {
+        const { [focusAreaId]: _unknown, ...commentCounts } = state.commentCounts
+        set({ commentCounts })
+      }
+    }
     throw error
   }
 }
@@ -128,6 +164,35 @@ export async function postFocusShareComment(focusAreaId: string, body: string): 
 
 /** How often My Work re-reads which areas are shared: a failed read, or cloud sync connected from Setup, catches up. */
 export const SHARES_REFRESH_MS = 60_000
+
+/**
+ * How often the shared mark re-reads its comment count. Each read is one request the worker signs and sends to cmem.ai,
+ * a hosted service outside this computer, so a glance at a count asks it once a minute per shared area on screen (load
+ * on the outside service, kept as low as the shares list's own read, SHARES_REFRESH_MS); the open dialog reads every
+ * 20 s for someone who is following the comments (share-focus.tsx COMMENTS_REFRESH_MS).
+ */
+export const COMMENT_COUNT_REFRESH_MS = 60_000
+
+/**
+ * The number of comments on a shared area's page, for its mark (c-share-focus M3): read when the mark first shows and
+ * every COMMENT_COUNT_REFRESH_MS, and by every read the open dialog makes. Null until a read answers, and again after a
+ * read fails (readFocusShareComments drops the count it cannot vouch for); the dialog's comments section says why, with
+ * Try again.
+ */
+export function useFocusShareCommentCount(focusAreaId: string, shared: boolean): number | null {
+  const count = useFocusShares().commentCounts[focusAreaId]
+  useEffect(() => {
+    if (!shared) return
+    // The mark has no room to say why; the console does, and the dialog shows it with Try again (share-focus.tsx).
+    const read = () => void readFocusShareComments(focusAreaId).catch((error: unknown) => {
+      console.warn(`[my-work] Could not count the comments on the shared page of focus area ${focusAreaId}; its mark shows no number until a read answers:`, error)
+    })
+    const first = setTimeout(read, 0)
+    const timer = setInterval(read, COMMENT_COUNT_REFRESH_MS)
+    return () => { clearTimeout(first); clearInterval(timer) }
+  }, [focusAreaId, shared])
+  return count ?? null
+}
 
 /** Reads which areas are shared while My Work shows live work, for the Shared mark beside each area's name. */
 export function useFocusSharesLoader(live: boolean): void {

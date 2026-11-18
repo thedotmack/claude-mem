@@ -8,7 +8,9 @@ failOnCiWithoutChrome('CI requires Chrome or Chromium for the conversation row r
 
 // The conversation row in a real page, with a data source whose every read the fixture answers by hand: the first read
 // fails, "Try again" is pressed and its read never answers, it is pressed again and that read fails too, and the next read
-// brings the conversation back.
+// brings the conversation back. A failed read says so in plain words, with the raw reason folded under Details (G17,
+// fix round M1); the reason is read there, Details open. Once the box shows, Send stays outlined until words are typed
+// (L1: this export mounts one box under each row, so a list of them is not a column of orange).
 (chromeExecutablePath ? it : it.skip)('keeps a failed read\'s reason and "Try again" on screen while it reads again, until a read answers', async () => {
   const bundle = compileBrowserFixture(`
     import React from './src/ui/my-work/node_modules/react';
@@ -53,7 +55,11 @@ failOnCiWithoutChrome('CI requires Chrome or Chromium for the conversation row r
         await until(() => reads.length === 1);
         reads[0].reject(new Error('FIRST_READ_FAILED'));
         phase = 'first-failure';
-        await until(() => text().includes('FIRST_READ_FAILED') && shownLabel() === 'Try again');
+        await until(() => text().includes('Could not read this conversation.') && shownLabel() === 'Try again');
+        const reasonFolded = !text().includes('FIRST_READ_FAILED');
+        [...document.querySelectorAll('[data-slot="collapsible-fold-trigger"]')].find(row => row.textContent === 'Details').click();
+        phase = 'details-opened';
+        await until(() => text().includes('FIRST_READ_FAILED'));
 
         tryAgainButton().click();
         phase = 'trying-again';
@@ -73,7 +79,9 @@ failOnCiWithoutChrome('CI requires Chrome or Chromium for the conversation row r
         // it, React would draw it in its next scheduler task after this promise job, well within this wait.
         reads[1].resolve({ target: { canContinue: false, refusalText: 'LATE_STALE_ANSWER', recordedFolder: null }, exchanges: [] });
         await new Promise(resolve => setTimeout(resolve, 50));
-        const lateAnswerIgnored = !text().includes('LATE_STALE_ANSWER') && text().includes('SECOND_READ_FAILED');
+        // Taken, it would show the plain words for a conversation that cannot be continued, with its reason under Details
+        // (fix round R1), and the failure would be gone.
+        const lateAnswerIgnored = !text().includes('LATE_STALE_ANSWER') && !text().includes('can’t be continued from here') && text().includes('SECOND_READ_FAILED');
 
         tryAgainButton().click();
         phase = 'answered';
@@ -84,8 +92,17 @@ failOnCiWithoutChrome('CI requires Chrome or Chromium for the conversation row r
         });
         await until(() => document.querySelector('textarea') !== null);
         const afterTheAnswer = { reasonGone: !text().includes('SECOND_READ_FAILED'), tryAgainGone: tryAgainButton() === undefined };
+        // Send: outlined while the box is empty, solid once it has words (HEAD's rule for this export).
+        const send = () => document.querySelector('button[aria-keyshortcuts]');
+        const sendWhileEmpty = send().dataset.variant;
+        const box = document.querySelector('textarea');
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(box, 'Carry on');
+        box.dispatchEvent(new Event('input', { bubbles: true }));
+        phase = 'typed';
+        await until(() => send().getAttribute('aria-disabled') === null);
+        const sendWithWords = send().dataset.variant;
         stop();
-        await fetch('/result', { method: 'POST', body: JSON.stringify({ whileTryingAgain, afterTheNewFailure, lateAnswerIgnored, afterTheAnswer, reads: reads.length }) });
+        await fetch('/result', { method: 'POST', body: JSON.stringify({ reasonFolded, whileTryingAgain, afterTheNewFailure, lateAnswerIgnored, afterTheAnswer, sendWhileEmpty, sendWithWords, reads: reads.length }) });
       } catch (error) {
         await fetch('/result', { method: 'POST', body: JSON.stringify({ error: String(error) }) });
       }
@@ -104,10 +121,13 @@ failOnCiWithoutChrome('CI requires Chrome or Chromium for the conversation row r
   try {
     chrome = launchChrome(server.url.href, { profilePrefix: 'claude-mem-conversation-retry-', extraFlags: UNTHROTTLED_TIMER_FLAGS });
     expect(await withTimeout(result, 30000, 'Conversation row browser did not report')).toEqual({
+      reasonFolded: true,
       whileTryingAgain: { reason: true, button: 'Trying again…' },
       afterTheNewFailure: { oldReasonGone: true, button: 'Try again' },
       lateAnswerIgnored: true,
       afterTheAnswer: { reasonGone: true, tryAgainGone: true },
+      sendWhileEmpty: 'outline',
+      sendWithWords: 'default',
       reads: 4,
     });
   } finally {

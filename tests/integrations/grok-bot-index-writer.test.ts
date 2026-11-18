@@ -320,7 +320,7 @@ describe('path guards', () => {
   it('targets zz-claude-mem-inject.md and refuses profile.md', () => {
     const root = '/home/box/agent-data';
     const filePath = injectLogPath(root, PRIORITIZER);
-    expect(filePath).toBe(`/home/box/agent-data/agents/${PRIORITIZER}/memory/log/zz-claude-mem-inject.md`);
+    expect(filePath).toBe(path.join(root, 'agents', PRIORITIZER, 'memory', 'log', 'zz-claude-mem-inject.md'));
     expect(AGENT_ID_RE.test(PRIORITIZER)).toBe(true);
     expect(() => assertSafeInjectPath(root, PRIORITIZER, path.join(root, 'agents', PRIORITIZER, 'memory', 'log', 'profile.md')))
       .toThrow(/profile\.md/);

@@ -17,7 +17,11 @@ jobs:
   build:
     name: typecheck · build · test · bundle-size
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # 35 minutes: the slowest full run measured, plus a quarter for a slower runner. PR #6210's run on 8816dd441
+    # (2026-11-17) took 27.6 minutes (npm install 4.2, fast lane 7.6, integration lane 14.2); My Work's browser
+    # tests add about 5 minutes to the integration lane. At 25 the run before it was cancelled with 32 files left.
+    # The deadline only stops a hung run.
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
 

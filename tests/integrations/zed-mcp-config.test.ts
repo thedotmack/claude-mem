@@ -29,7 +29,9 @@ describe('Zed MCP config', () => {
     appdata = path.join(tmp, 'appdata');
     plugin = path.join(tmp, 'plugin');
     serverPath = path.join(plugin, 'scripts', 'mcp-server.cjs');
-    configPath = path.join(home, '.config', 'zed', 'settings.json');
+    configPath = process.platform === 'win32'
+      ? path.join(appdata, 'Zed', 'settings.json')
+      : path.join(home, '.config', 'zed', 'settings.json');
     mkdirSync(home);
     mkdirSync(path.join(tmp, 'project'));
     mkdirSync(path.dirname(serverPath), { recursive: true });
@@ -74,7 +76,8 @@ describe('Zed MCP config', () => {
     expect(config).not.toHaveProperty('mcpServers');
   });
 
-  it('writes settings.json under the directory XDG_CONFIG_HOME names', () => {
+  // The installer ignores XDG_CONFIG_HOME on win32: getZedSettingsPath always resolves %APPDATA%\Zed.
+  it.skipIf(process.platform === 'win32')('writes settings.json under the directory XDG_CONFIG_HOME names', () => {
     const configHome = path.join(tmp, 'xdg home');
 
     expect(install({ XDG_CONFIG_HOME: configHome }).exitCode).toBe(0);
@@ -127,7 +130,8 @@ describe('Zed MCP config', () => {
 
     expect(install().exitCode).toBe(0);
     expect(readFileSync(backupPath, 'utf-8')).toBe(original);
-    expect(statSync(backupPath).mode & 0o777).toBe(0o600);
+    // Windows has no POSIX permission bits: stat reports 0o666 for a writable file.
+    if (process.platform !== 'win32') expect(statSync(backupPath).mode & 0o777).toBe(0o600);
 
     // A second install the same day does not overwrite the backup.
     writeFileSync(configPath, JSON.stringify({ theme: 'Solarized Dark' }, null, 2) + '\n');
@@ -392,9 +396,13 @@ describe('Zed MCP config', () => {
     mkdirSync(path.dirname(spacedServer), { recursive: true });
     writeFileSync(spacedServer, '');
     try {
-      const result = run(`MCP_IDE_INSTALLERS['zed']()`, { HOME: spacedHome, USERPROFILE: spacedHome, CLAUDE_PLUGIN_ROOT: spacedPlugin });
+      const spacedAppdata = path.join(spacedHome, 'appdata');
+      const result = run(`MCP_IDE_INSTALLERS['zed']()`, { HOME: spacedHome, USERPROFILE: spacedHome, APPDATA: spacedAppdata, CLAUDE_PLUGIN_ROOT: spacedPlugin });
       expect(result.exitCode).toBe(0);
-      expect(readConfig(path.join(spacedHome, '.config', 'zed', 'settings.json')).context_servers['claude-mem'].args)
+      const spacedConfig = process.platform === 'win32'
+        ? path.join(spacedAppdata, 'Zed', 'settings.json')
+        : path.join(spacedHome, '.config', 'zed', 'settings.json');
+      expect(readConfig(spacedConfig).context_servers['claude-mem'].args)
         .toEqual([spacedServer]);
     } finally {
       rmSync(spacedTmp, { recursive: true, force: true });
@@ -442,7 +450,7 @@ describe('getZedSettingsPath', () => {
 
   it('honours XDG_CONFIG_HOME on Linux', () => {
     expect(getZedSettingsPath('linux', { XDG_CONFIG_HOME: '/home/alex/.config-custom' }))
-      .toBe('/home/alex/.config-custom/zed/settings.json');
+      .toBe(path.join('/home/alex/.config-custom', 'zed', 'settings.json'));
   });
 
   it('uses %APPDATA%\\Zed on Windows', () => {
@@ -466,10 +474,12 @@ describe('getZedSettingsPath', () => {
 // run in a child process so the installer import chain (telemetry, prompts)
 // never touches this test process.
 describe('Zed installer wiring', () => {
+  // On Windows each CLI check spawns where.exe, and makeIDETask calls detectInstalledIDEs() again, so the child runs about two dozen where.exe lookups and can exceed bun's 5 s default.
   it('detects Zed from its settings directory and dispatches install --ide zed', () => {
     const tmpHome = mkdtempSync(path.join(tmpdir(), 'zed-wiring-'));
     try {
-      mkdirSync(path.join(tmpHome, '.config', 'zed'), { recursive: true });
+      const zedDir = process.platform === 'win32' ? path.join(tmpHome, 'appdata', 'Zed') : path.join(tmpHome, '.config', 'zed');
+      mkdirSync(zedDir, { recursive: true });
       const detectionTs = path.resolve(import.meta.dir, '../../src/npx-cli/commands/ide-detection.ts');
       const installTs = path.resolve(import.meta.dir, '../../src/npx-cli/commands/install.ts');
       const reporterTs = path.resolve(import.meta.dir, '../../src/npx-cli/install/error-reporter.ts');
@@ -491,5 +501,5 @@ describe('Zed installer wiring', () => {
     } finally {
       rmSync(tmpHome, { recursive: true, force: true });
     }
-  });
+  }, 60_000);
 });

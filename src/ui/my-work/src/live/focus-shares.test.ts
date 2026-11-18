@@ -36,6 +36,19 @@ test('a comment read that answers 410 for the old link leaves the new share on s
   assert.equal(shares().shares['area-2']?.url, 'https://cmem.ai/focus/bbbb')
 }))
 
+test('a comment count read for the old link never lands on the new link', withHeldFetch(async () => {
+  const comments = (count: number) => ({ comments: Array.from({ length: count }, (_, index) => ({ id: `c${index}` })) })
+  const shared = shareFocusArea('area-3'); await tick(); next().release({ status: 200, body: SHARE }); await shared
+  const oldRead = readFocusShareComments('area-3'); await tick(); const oldCall = next()
+  const stopped = stopSharingFocusArea('area-3'); await tick(); next().release({ status: 200, body: { stopped: true } }); await stopped
+  const again = shareFocusArea('area-3'); await tick(); next().release({ status: 200, body: { ...SHARE, url: 'https://cmem.ai/focus/cccc' } }); await again
+  oldCall.release({ status: 200, body: comments(3) }); await oldRead
+  assert.equal(shares().commentCounts['area-3'], undefined)
+  // A read of the new link still counts.
+  const newRead = readFocusShareComments('area-3'); await tick(); next().release({ status: 200, body: comments(1) }); await newRead
+  assert.equal(shares().commentCounts['area-3'], 1)
+}))
+
 test('a late share response cannot bring back the link a later stop removed', withHeldFetch(async () => {
   const shared = shareFocusArea('ordered-stop'); await tick(); const shareCall = next()
   const stopped = stopSharingFocusArea('ordered-stop'); await tick()

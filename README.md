@@ -59,7 +59,7 @@
     <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
-    <img src="https://img.shields.io/badge/version-15.21.0-green.svg" alt="Version">
+    <img src="https://img.shields.io/badge/version-16.0.0-green.svg" alt="Version">
   </a>
   <a href="package.json">
     <img src="https://img.shields.io/badge/node-%5E20.19%20%7C%7C%20%3E%3D22.12-brightgreen.svg" alt="Node">
@@ -134,7 +134,7 @@
 
 ## Quick Start
 
-**Installing for someone as an AI agent?** If the user is available, run `npx claude-mem install --setup browser` on their computer and keep it running. It prepares the local runtime, then opens setup in their browser; if the page doesn't open, give them the printed URL. Every choice (agents, integrations, skills, model, usage analytics, the optional email) is made by the user on that page, so there are no terminal questions to relay. If the user is away, run `npx claude-mem install --setup defer`: it prepares the runtime and leaves setup waiting for their first visit, and their next session shows them the link. Don't make their choices for them.
+**Installing for someone as an AI agent?** If the user is available, run `npx claude-mem install --setup browser` on their computer and keep it running. In an interactive terminal, they can enter a work email and an optional message, or press Enter to skip. An unattended terminal skips both prompts. The installer prepares the local runtime, then opens the browser for the user to choose agents, integrations, skills, model, and usage analytics. If the page doesn't open, give them the printed URL. If the user is away, run `npx claude-mem install --setup defer` to prepare the runtime and leave setup waiting for their first visit. Their next session shows them the link. Don't make their choices for them.
 
 ```bash
 npx claude-mem install

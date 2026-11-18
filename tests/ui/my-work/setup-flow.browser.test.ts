@@ -8,7 +8,7 @@ import {
 } from '../../helpers/chrome-devtools';
 import { CONTENT_BODY_MAX_BYTES } from '../../../src/shared/cloud-sync-limits';
 import { HISTORY_IMPORT_BATCH } from '../../../src/shared/setup-funnel';
-import { SETUP_DSH_PROFILE_MAX_CHARACTERS, SETUP_INSTALL_NOTE_MAX_CHARACTERS } from '../../../src/shared/setup-install';
+import { SETUP_DSH_PROFILE_MAX_CHARACTERS } from '../../../src/shared/setup-install';
 
 failOnCiWithoutChrome('CI requires Chrome for the setup flow touch-size, type-size and Back regressions.');
 
@@ -23,7 +23,8 @@ failOnCiWithoutChrome('CI requires Chrome for the setup flow touch-size, type-si
  * - the Reveal's pictures stay 64px on a phone, and "Skip the scan" does nothing while "Try again" runs;
  * - "Stop import" ends the upload and returns to Finish Setup, and only the person's press starts it again (E9);
  * - the launch hands over to the workspace when it did before Phase 8, and plays once;
- * - the DeepSeek Harness profile and the signup note keep the worker's limits and say when a paste is cut.
+ * - the DeepSeek Harness profile keeps the worker's limit and says when a paste is cut;
+ * - setup offers installation preferences and submits them without collecting a signup.
  * Two walks use the page's own source against a fake worker in this process instead (`fakeWorker`): a run found running
  * after a reload, Stop and Continue through the real data path, telemetry, and the event stream's reconnect.
  */
@@ -54,7 +55,7 @@ async function compileSetupPage() {
       const install = { status: 'waiting', selection: null, error: null, catalog: {
         agents: [{ id: 'dsh', label: 'DeepSeek Harness', hint: 'Plugin integration', detected: true }],
         skills: [{ id: 'how-it-works', label: 'How it works', description: 'Understand how claude-mem remembers your work.', required: true }],
-        defaults, reinstall: false } };
+        defaults, reinstall: false, emailEnabled: true } };
       // In the page's own frame, so setup's stylesheet sizes it as on the page. Every install it sends is recorded.
       window.installs = [];
       createRoot(host).render(<div className="cmem-setup"><main className="setup-main step-install"><InstallScreen install={install} onInstall={async (selection) => { window.installs.push(selection); }} onContinue={() => {}} /></main></div>);
@@ -613,15 +614,14 @@ async function toFinishSetup(page: SetupWalk) {
 // About 10s: three launches of up to 2.2s and one with an update; 60s allows a slow shared runner.
 }, 60_000);
 
-(chromeExecutablePath ? it : it.skip)('the DeepSeek Harness profile and the signup note keep the worker\'s limits, and say when a paste is cut', async () => {
+(chromeExecutablePath ? it : it.skip)('the DeepSeek Harness profile keeps the worker\'s limit and says when a paste is cut', async () => {
   const seen: Record<string, any> = {};
   await withSetupPage('', { width: 390, height: 844, phone: true }, async (page) => {
     await page.browser.evaluate('window.mountInstall()');
     await page.until(`!!document.querySelector('#install-fixture .install-host input[type=text]')`, 'the profile field');
     // A paste: the value set as the browser sets it, then the input event React listens for.
     const paste = (selector: string, length: number) => page.browser.evaluate(`(() => { const box = document.querySelector(${JSON.stringify(selector)});
-      const prototype = box instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-      Object.getOwnPropertyDescriptor(prototype, 'value').set.call(box, 'p'.repeat(${length}));
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(box, 'p'.repeat(${length}));
       box.dispatchEvent(new Event('input', { bubbles: true })); })()`);
     const field = (selector: string) => page.browser.evaluate(`(() => { const box = document.querySelector(${JSON.stringify(selector)});
       const line = document.getElementById(box.getAttribute('aria-describedby') ?? '');
@@ -634,58 +634,27 @@ async function toFinishSetup(page: SetupWalk) {
     await paste(profile, SETUP_DSH_PROFILE_MAX_CHARACTERS + 50);
     await page.browser.settle();
     seen.profileCut = await field(profile);
-
-    // The note shows once "Email me product updates" is ticked, in the folded "Skills and preferences".
-    await page.press('#install-fixture .install-options button', 'Skills and preferences');
-    await page.browser.evaluate(`[...document.querySelectorAll('#install-fixture label')].find((label) => label.textContent.includes('Email me product updates')).querySelector('input').click()`);
-    await page.until(`!!document.querySelector('#install-fixture .install-email textarea')`, 'the note box');
-    const note = '#install-fixture .install-email textarea';
-    await paste(note, SETUP_INSTALL_NOTE_MAX_CHARACTERS + 500);
-    await page.browser.settle();
-    seen.noteCut = await field(note);
   });
   expect(seen.profileWithin).toEqual({ kept: SETUP_DSH_PROFILE_MAX_CHARACTERS, line: null, role: null, size: null });
   expect(seen.profileCut).toEqual({ kept: SETUP_DSH_PROFILE_MAX_CHARACTERS, line: `Only the first ${SETUP_DSH_PROFILE_MAX_CHARACTERS} characters are kept.`, role: 'status', size: 15 });
-  expect(seen.noteCut).toEqual({ kept: SETUP_INSTALL_NOTE_MAX_CHARACTERS, line: `Only the first ${SETUP_INSTALL_NOTE_MAX_CHARACTERS.toLocaleString('en-US')} characters are kept.`, role: 'status', size: 15 });
-// About 3s: one page load and three pastes; 60s allows a slow shared runner.
 }, 60_000);
 
-(chromeExecutablePath ? it : it.skip)('Install opens "Skills and preferences" when the email folded inside it fails the browser\'s check, so the press is never silent', async () => {
-  const seen: Record<string, any> = {};
+(chromeExecutablePath ? it : it.skip)('the GUI submits installation preferences without asking for the terminal signup', async () => {
   await withSetupPage('', { width: 1440, height: 900, phone: false }, async (page) => {
     await page.browser.evaluate('window.mountInstall()');
     await page.until(`!!document.querySelector('#install-fixture .install-options')`, 'the install fixture');
-    // A person's press (mouse input through DevTools), not a script click(): the browser runs its form checks for it.
-    const pressInstall = async () => {
-      const { x, y } = await page.browser.evaluate(`(() => { const button = document.querySelector('#install-fixture button[type=submit]');
-        button.scrollIntoView({ block: 'center' }); const box = button.getBoundingClientRect(); return { x: box.x + box.width / 2, y: box.y + box.height / 2 }; })()`);
-      await page.browser.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
-      await page.browser.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 });
-      await page.browser.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
-      await page.browser.settle();
-    };
-    const look = `(() => { const body = document.querySelector('#install-fixture [data-slot=collapsible-content]');
-      const email = document.querySelector('#install-fixture .install-email input[type=email]');
-      return { fold: body.dataset.state, emailShown: !!email && getComputedStyle(body).display !== 'none' && email.getClientRects().length > 0,
-        emailFocused: !!email && document.activeElement === email, installs: window.installs.length }; })()`;
-    // Opt in to product emails, leave the address empty, then fold the row again.
     await page.press('#install-fixture .install-options button', 'Skills and preferences');
-    await page.browser.evaluate(`[...document.querySelectorAll('#install-fixture label')].find((label) => label.textContent.includes('Email me product updates')).querySelector('input').click()`);
-    await page.until(`!!document.querySelector('#install-fixture .install-email input[type=email]')`, 'the email field');
-    await page.press('#install-fixture .install-options button', 'Skills and preferences');
-    seen.folded = await page.browser.evaluate(look);
-    await pressInstall();
-    seen.afterPress = await page.browser.evaluate(look);
-    // The person types the address where the browser pointed, and Install sends it.
-    await page.browser.send('Input.insertText', { text: 'person@example.com' });
-    await page.browser.settle();
-    await pressInstall();
-    seen.sent = await page.browser.evaluate('window.installs.map((selection) => selection.email)');
+    await page.until(`!!document.querySelector('#install-fixture .install-model select')`, 'the expanded preferences');
+    const form = '#install-fixture form';
+    expect(await page.browser.evaluate(`document.querySelector('${form}').textContent`)).not.toMatch(/email|product updates|anything you’d like us to know/i);
+    expect(await page.browser.evaluate(`document.querySelectorAll('${form} input[type=email], ${form} textarea').length`)).toBe(0);
+    await page.press('#install-fixture button[type=submit]', 'Install and continue');
+    const submitted = await page.browser.evaluate('window.installs');
+    expect(submitted).toHaveLength(1);
+    expect(submitted[0]).toMatchObject({ agents: ['dsh'], skills: ['how-it-works'], telemetryEnabled: true });
+    expect(submitted[0]).not.toHaveProperty('email');
+    expect(submitted[0]).not.toHaveProperty('note');
   });
-  expect(seen.folded).toEqual({ fold: 'closed', emailShown: false, emailFocused: false, installs: 0 });
-  expect(seen.afterPress).toEqual({ fold: 'open', emailShown: true, emailFocused: true, installs: 0 });
-  expect(seen.sent).toEqual(['person@example.com']);
-// About 3s: one page load and two presses; 60s allows a slow shared runner.
 }, 60_000);
 
 (chromeExecutablePath ? it : it.skip)('after a reload during a run, Finish Setup stops it without the tick box, and a reconnect starts nothing again', async () => {

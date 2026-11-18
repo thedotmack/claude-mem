@@ -4,7 +4,7 @@ import Particles, { initParticlesEngine } from "@tsparticles/react";
 import type { Container, SingleOrMultiple } from "@tsparticles/engine";
 import { loadSlim } from "@tsparticles/slim";
 import { cn } from "@/lib/utils";
-import { motion, useAnimation } from "motion/react";
+import { motion, useAnimation, useReducedMotion } from "motion/react";
 
 type ParticlesProps = {
   id?: string;
@@ -37,13 +37,16 @@ export const SparklesCore = (props: ParticlesProps) => {
     });
   }, []);
   const controls = useAnimation();
+  // Local fix (plan rule 8, c-aceternity-sparkles): under reduced motion the field is drawn still, checked here and not
+  // only by MotionConfig: no fade-in, no twinkle and no drift, so nothing on the screen moves.
+  const reduceMotion = useReducedMotion() ?? false;
 
   const particlesLoaded = async (container?: Container) => {
     if (container) {
       controls.start({
         opacity: 1,
         transition: {
-          duration: 1,
+          duration: reduceMotion ? 0 : 1,
         },
       });
     }
@@ -182,7 +185,7 @@ export const SparklesCore = (props: ParticlesProps) => {
                 distance: {},
                 direction: "none",
                 drift: 0,
-                enable: true,
+                enable: !reduceMotion,
                 gravity: {
                   acceleration: 9.81,
                   enable: false,
@@ -238,7 +241,7 @@ export const SparklesCore = (props: ParticlesProps) => {
                 },
                 animation: {
                   count: 0,
-                  enable: true,
+                  enable: !reduceMotion,
                   speed: speed || 4,
                   decay: 0,
                   delay: 0,

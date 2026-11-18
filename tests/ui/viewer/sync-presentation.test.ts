@@ -1,11 +1,16 @@
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import {
-  isSyncStatus, presentSync, SYNC_MODE_SENTENCES, SYNC_REMAINING_SENTENCE, SYNC_VIEWER_SENTENCES, type SyncStatusForDisplay,
+  isSyncStatus, presentSync, syncDetailWords, SYNC_LIMITED_SCOPE_LABEL, SYNC_MODE_SENTENCES, SYNC_REMAINING_SENTENCE, SYNC_STATE_LABELS, SYNC_VIEWER_SENTENCES,
+  type SyncStatusForDisplay,
 } from '../../../src/ui/viewer/utils/sync-presentation.ts';
 import { viewerZh } from '../../../src/ui/i18n/viewer-zh.ts';
 import { viewerKo } from '../../../src/ui/i18n/viewer-ko.ts';
 import { viewerFr } from '../../../src/ui/i18n/viewer-fr.ts';
+import { myworkZh } from '../../../src/ui/i18n/mywork-zh.ts';
+import { myworkKo } from '../../../src/ui/i18n/mywork-ko.ts';
+import { myworkTr } from '../../../src/ui/i18n/mywork-tr.ts';
+import { myworkFr } from '../../../src/ui/i18n/mywork-fr.ts';
 
 export const current = (): SyncStatusForDisplay => ({
   configured: true, state: 'current', mode: 'polling', observedAt: 100_000, checkedAt: 99_000,
@@ -79,14 +84,52 @@ describe('sync evidence presentation', () => {
     expect(presentSync(status, 5000, 6000).detail).toBe('Cloud updates are being synchronized. Mode: realtime with HTTP recovery. Changes remaining: 42.');
     expect(presentSync(null, null, 1).detailParts).toEqual({ sentence: SYNC_VIEWER_SENTENCES.notReported, mode: null, remaining: null });
   });
+  // One rule joins the detail's sentences (Phase 6 fix AP-M2: My Work had copied the classic viewer's line for line).
+  test('syncDetailWords says each sentence of the detail in the reader\'s words, and both headers take it from here', () => {
+    const status = current();
+    status.state = 'catching-up';
+    status.mode = 'realtime';
+    status.projection.remaining = '42';
+    status.message = 'Cloud updates are being synchronized.';
+    const shown = presentSync(status, 5000, 6000);
+    const marked = (english: string) => `«${english}»`;
+    expect(syncDetailWords(shown, marked)).toBe('«Cloud updates are being synchronized.» «Mode: realtime with HTTP recovery.» «Changes remaining: 42.»');
+    // English is the same rule with no translation: the presentation's own detail.
+    expect(syncDetailWords(shown, (english) => english)).toBe(shown.detail);
+    // A translation keeps the count wherever its language puts it.
+    expect(syncDetailWords(shown, (english) => english === SYNC_REMAINING_SENTENCE ? '還有 {count} 項變更。' : english)).toContain('還有 42 項變更。');
+    // Built elsewhere without its parts: the English detail as it is.
+    expect(syncDetailWords({ detail: 'As written.' }, marked)).toBe('As written.');
+    // Neither header keeps a copy of the rule.
+    for (const path of ['../../../src/ui/viewer/components/Header.tsx', '../../../src/ui/my-work/src/components/bits.tsx']) {
+      const source = readFileSync(new URL(path, import.meta.url), 'utf8');
+      expect({ path, copy: /function syncDetailWords\b/.test(source), imports: /import \{[^}]*\bsyncDetailWords\b[^}]*\} from '[^']*sync-presentation'/.test(source) })
+        .toEqual({ path, copy: false, imports: true });
+    }
+  });
   test('every sentence the sync detail can hold has a translation in each viewer catalog', () => {
-    // The worker writes its sentences in src/shared/viewer-sync-status.ts: the default message and each state('…', '…').
-    const worker = readFileSync(new URL('../../../src/shared/viewer-sync-status.ts', import.meta.url), 'utf8');
-    const workerSentences = [...worker.matchAll(/state\('[\w-]+', '([^']+)'\)|message: '([^']+)'/g)].map(match => match[1] ?? match[2]);
-    expect(workerSentences.length).toBeGreaterThanOrEqual(12);
-    const sentences = [...workerSentences, ...Object.values(SYNC_VIEWER_SENTENCES), ...Object.values(SYNC_MODE_SENTENCES), SYNC_REMAINING_SENTENCE];
     for (const catalog of [viewerZh, viewerKo, viewerFr]) {
-      expect(sentences.filter(sentence => !(sentence in catalog))).toEqual([]);
+      expect(syncSentences().filter(sentence => !(sentence in catalog))).toEqual([]);
+    }
+  });
+  // My Work's connection chip words the label and each detail sentence by t() (components/bits.tsx LiveIndicator), and
+  // Turkish reads My Work's catalog alone, so each My Work catalog holds them all, in the classic viewer's words.
+  test('every label and sentence of the sync detail has a translation in each My Work catalog, the same as the viewer’s', () => {
+    const words = [...Object.values(SYNC_STATE_LABELS), SYNC_LIMITED_SCOPE_LABEL, ...syncSentences()];
+    for (const [name, catalog] of Object.entries({ myworkZh, myworkKo, myworkTr, myworkFr })) {
+      expect({ name, missing: words.filter(sentence => !(sentence in catalog)) }).toEqual({ name, missing: [] });
+    }
+    for (const [mywork, viewer] of [[myworkZh, viewerZh], [myworkKo, viewerKo], [myworkFr, viewerFr]]) {
+      expect(words.filter(sentence => mywork[sentence] !== viewer[sentence])).toEqual([]);
     }
   });
 });
+
+/** Every sentence the sync detail can hold: the worker's own (src/shared/viewer-sync-status.ts: the default message and
+ * each state('…', '…')), then this file's state, mode and remaining sentences. */
+function syncSentences(): string[] {
+  const worker = readFileSync(new URL('../../../src/shared/viewer-sync-status.ts', import.meta.url), 'utf8');
+  const workerSentences = [...worker.matchAll(/state\('[\w-]+', '([^']+)'\)|message: '([^']+)'/g)].map(match => match[1] ?? match[2]);
+  expect(workerSentences.length).toBeGreaterThanOrEqual(12);
+  return [...workerSentences, ...Object.values(SYNC_VIEWER_SENTENCES), ...Object.values(SYNC_MODE_SENTENCES), SYNC_REMAINING_SENTENCE];
+}
