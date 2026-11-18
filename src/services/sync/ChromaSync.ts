@@ -1,5 +1,6 @@
 
 import { ChromaMcpManager } from './ChromaMcpManager.js';
+import { ChromaRecoveryHealth, type RecoveryStatus } from './ChromaRecoveryHealth.js';
 import { ChromaSyncState, ProjectWatermarks, type PendingRowDelete } from './ChromaSyncState.js';
 import { isQueuedChromaRowDelete, runOnChromaRowCleanupLane } from './chroma-row-cleanup.js';
 import { parseStringListField } from './string-list-field.js';
@@ -497,15 +498,11 @@ export class ChromaSync {
    */
   private static droppedCollections = new Set<string>();
 
-  /**
-   * Drop attempts whose delete call rejected, per collection, in this process.
-   * A rejection can follow a delete that committed (a request deadline) or a
-   * delete that never reached chroma-mcp (no connection yet), so a few are
-   * retried. Each one restarts the backfill sweep; once the budget is spent the
-   * collection counts as dropped, so a delete that keeps failing cannot loop.
+  /** Diagnostic counter for rejected delete requests in this worker process.
+   * A failed reply is ambiguous, so the first rejected delete quarantines
+   * immediately; this counter does not authorize automatic retry.
    */
   private static failedDropAttempts = new Map<string, number>();
-  private static readonly MAX_FAILED_DROP_ATTEMPTS = 3;
 
   private static lastCollectionDrop: ChromaCollectionDrop | null = null;
 
@@ -520,6 +517,23 @@ export class ChromaSync {
   /** Public: cmem-sdk reuses the per-tenant collection name for raw queries. */
   public getCollectionName(): string {
     return this.collectionName;
+  }
+
+  /** READY means dispatch is permitted; index convergence is tracked separately. */
+  public getCollectionRecoveryStatus(): RecoveryStatus {
+    return ChromaRecoveryHealth.get(this.collectionName);
+  }
+
+  public isCollectionAvailable(): boolean {
+    return ChromaRecoveryHealth.isAvailable(this.collectionName);
+  }
+
+  private assertCollectionAvailable(): void {
+    if (!this.isCollectionAvailable()) {
+      throw new ChromaUnavailableError(
+        `Chroma collection ${this.collectionName} is ${this.getCollectionRecoveryStatus()}; use SQLite/FTS5`
+      );
+    }
   }
 
   static registerBackfillStore(store: SessionStore): void {
@@ -600,6 +614,7 @@ export class ChromaSync {
 
   // Public: cmem-sdk requires Chroma at construction. Plan §3 line 192.
   public async ensureCollectionExists(): Promise<void> {
+    this.assertCollectionAvailable();
     if (this.collectionEnsuredGeneration === ChromaSync.collectionGeneration) {
       return;
     }
@@ -624,6 +639,7 @@ export class ChromaSync {
       );
     }
     try {
+      this.assertCollectionAvailable();
       await chromaMcp.callTool('chroma_create_collection', {
         collection_name: this.collectionName,
         embedding_function_name: embeddingFunction
@@ -658,6 +674,13 @@ export class ChromaSync {
    * the batch counts as an ordinary failed write.
    */
   private async handleCorruptSegmentFailure(batch: ChromaDocument[], error: unknown): Promise<void> {
+    // A write that was already dispatched before recovery began must not start
+    // another recovery attempt after the durable quarantine gate activates.
+    if (!this.isCollectionAvailable()) {
+      const inFlight = ChromaSync.inFlightCollectionDrops.get(this.collectionName);
+      if (inFlight) await inFlight;
+      return;
+    }
     const cause = error instanceof Error ? error : new Error(String(error));
     const failedBatches = ChromaSync.corruptSegmentBatches.get(this.collectionName) ?? new Set<string>();
     failedBatches.add(batch[0]?.id ?? '');
@@ -700,19 +723,18 @@ export class ChromaSync {
    * still reject the call (a request deadline on a large collection). Booked
    * afterwards, a rejection left the watermarks claiming every row the
    * dropped collection took with it, and semantic search lost them silently.
-   * A rejected delete is retried on a later failing batch, since it may never
-   * have reached chroma-mcp, but only MAX_FAILED_DROP_ATTEMPTS times, so a
-   * delete that keeps failing cannot restart the backfill sweep forever.
-   * chroma-mcp serves requests one at a time, so the rebuild's writes only
-   * run after a slow delete has finished.
+   * A rejected delete has an ambiguous outcome, so the recovery journal
+   * quarantines immediately and prevents subsequent write/rebuild dispatch.
+   * Manual verification is required before retrying the destructive operation.
+   * chroma-mcp serves requests one at a time; successful deletes may rebuild.
    *
    * A drop runs at most once per collection at a time (#6113): the backfill
    * sweep writes projects in parallel, so many batches can confirm the same
    * corrupt segment while the first delete is still in flight. Those callers
    * join the in-flight drop here instead of queueing a delete each — on a
    * large collection the queued deletes were what drove chroma-mcp to a
-   * 312 GB footprint. The entry is cleared as the drop settles, so a batch
-   * that fails later can still retry a delete that never landed.
+   * 312 GB footprint. The in-flight entry clears when the drop settles, but
+   * ambiguous failures remain durably quarantined until operator recovery.
    */
   private async dropCorruptCollection(cause: Error): Promise<void> {
     const inFlight = ChromaSync.inFlightCollectionDrops.get(this.collectionName);
@@ -731,6 +753,9 @@ export class ChromaSync {
   }
 
   private async performCorruptCollectionDrop(cause: Error): Promise<void> {
+    // No await before the durable gate: concurrent writers immediately see
+    // recovery pending, including while the diagnostic count is in flight.
+    ChromaRecoveryHealth.beginDrop(this.collectionName);
     const chromaMcp = ChromaMcpManager.getInstance();
     let documentCount: number | null = null;
     try {
@@ -752,11 +777,15 @@ export class ChromaSync {
       chromaDataDir: settings.CLAUDE_MEM_CHROMA_MODE === 'remote' ? undefined : paths.chroma()
     }, cause);
 
+    // Rebuild intent is persisted independently of the recovery journal, so a
+    // confirmed delete followed by a crash cannot strand stale watermarks.
     ChromaSyncState.markAllForRebuild();
+    let deleteConfirmed = false;
     try {
       await chromaMcp.callTool('chroma_delete_collection', {
         collection_name: this.collectionName
       });
+      deleteConfirmed = true;
       ChromaSync.droppedCollections.add(this.collectionName);
       ChromaSync.corruptSegmentBatches.delete(this.collectionName);
       ChromaSync.lastCollectionDrop = {
@@ -765,16 +794,35 @@ export class ChromaSync {
         documentCount,
         error: cause.message
       };
+      // A failed journal clear leaves DROP_PENDING and prevents a rebuild.
+      // It is not a failed delete: never count it as another destructive attempt.
+      ChromaRecoveryHealth.completeConfirmedDrop(this.collectionName);
     } catch (error) {
-      const failedAttempts = (ChromaSync.failedDropAttempts.get(this.collectionName) ?? 0) + 1;
-      ChromaSync.failedDropAttempts.set(this.collectionName, failedAttempts);
-      if (failedAttempts >= ChromaSync.MAX_FAILED_DROP_ATTEMPTS) {
+      if (!deleteConfirmed) {
+        const attempts = (ChromaSync.failedDropAttempts.get(this.collectionName) ?? 0) + 1;
+        ChromaSync.failedDropAttempts.set(this.collectionName, attempts);
         ChromaSync.droppedCollections.add(this.collectionName);
+        // Ambiguous delete outcome is quarantined immediately, not after three
+        // further attempts. Controlled verification/retry belongs to PR 2.
+        try {
+          ChromaRecoveryHealth.quarantine(this.collectionName, error);
+        } catch (persistError) {
+          logger.error('CHROMA_SYNC', 'Quarantine journal update failed; durable DROP_PENDING remains', {
+            collection: this.collectionName
+          }, persistError instanceof Error ? persistError : new Error(String(persistError)));
+        }
+        logger.error('CHROMA_SYNC', 'Collection delete unconfirmed; vector mutations suspended', {
+          collection: this.collectionName, attempts
+        }, error instanceof Error ? error : new Error(String(error)));
       }
       throw error;
     } finally {
       ChromaSync.collectionGeneration += 1;
-      this.startRebuildSweep();
+      // Confirmed deletion alone permits the existing durable backfill process.
+      // ChromaSyncState.rebuildPending, not the recovery journal, tracks parity.
+      if (deleteConfirmed && this.isCollectionAvailable()) {
+        this.startRebuildSweep();
+      }
     }
   }
 
@@ -1010,6 +1058,9 @@ export class ChromaSync {
 
     let written = 0;
     for (let i = 0; i < safeDocuments.length; i += this.BATCH_SIZE) {
+      // No await between this gate and the dispatch below. Concurrent writes
+      // already handed to chroma-mcp may finish; no *new* batch is sent.
+      if (!this.isCollectionAvailable()) return written;
       const batch = safeDocuments.slice(i, i + this.BATCH_SIZE);
 
       const cleanMetadatas = batch.map(d =>
@@ -1019,6 +1070,7 @@ export class ChromaSync {
       );
 
       try {
+        if (!this.isCollectionAvailable()) return written;
         await chromaMcp.callTool('chroma_add_documents', {
           collection_name: this.collectionName,
           ids: batch.map(d => d.id),
@@ -1071,6 +1123,7 @@ export class ChromaSync {
             );
 
             if (toUpdate.length > 0) {
+              if (!this.isCollectionAvailable()) return written;
               await chromaMcp.callTool('chroma_update_documents', {
                 collection_name: this.collectionName,
                 ids: toUpdate.map(d => d.id),
@@ -1081,6 +1134,7 @@ export class ChromaSync {
             }
 
             if (unchanged.length > 0) {
+              if (!this.isCollectionAvailable()) return written;
               await chromaMcp.callTool('chroma_update_documents', {
                 collection_name: this.collectionName,
                 ids: unchanged.map(d => d.id),
@@ -1090,6 +1144,7 @@ export class ChromaSync {
             }
 
             if (toAdd.length > 0) {
+              if (!this.isCollectionAvailable()) return written;
               await chromaMcp.callTool('chroma_add_documents', {
                 collection_name: this.collectionName,
                 ids: toAdd.map(d => d.id),
@@ -1180,6 +1235,7 @@ export class ChromaSync {
       .filter(id => !currentIds.has(id));
     const manager = ChromaMcpManager.getInstance();
     for (let i = 0; i < obsolete.length; i += this.BATCH_SIZE) {
+      this.assertCollectionAvailable();
       await manager.callTool('chroma_delete_documents', { collection_name: this.collectionName, ids: obsolete.slice(i, i + this.BATCH_SIZE) });
     }
   }
@@ -1203,7 +1259,8 @@ export class ChromaSync {
       const doomed = await this.lookupRowFragmentIds(docType, sqliteId);
       const manager = ChromaMcpManager.getInstance();
       for (let i = 0; i < doomed.length; i += this.BATCH_SIZE) {
-        await manager.callTool('chroma_delete_documents', { collection_name: this.collectionName, ids: doomed.slice(i, i + this.BATCH_SIZE) });
+        this.assertCollectionAvailable();
+      await manager.callTool('chroma_delete_documents', { collection_name: this.collectionName, ids: doomed.slice(i, i + this.BATCH_SIZE) });
       }
       return doomed.length;
     } finally {
@@ -2739,6 +2796,7 @@ export class ChromaSync {
         });
         if (staleIds.length === 0) continue;
 
+        this.assertCollectionAvailable();
         await chromaMcp.callTool('chroma_update_documents', {
           collection_name: this.collectionName,
           ids: staleIds,

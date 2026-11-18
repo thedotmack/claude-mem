@@ -16,7 +16,7 @@ function makeSearchManager({
       getObservationsByIds: mock(() => []), getSessionSummariesByIds: mock(() => []), getUserPromptsByIds: mock(() => []),
       getProjectReadKeys: (projects: string[]) => projects, ...store,
     } as any,
-    chroma as any, formatter as any, timeline as any, recencyWindowMs,
+    (chroma ? { isCollectionAvailable: () => true, ...chroma } : null) as any, formatter as any, timeline as any, recencyWindowMs,
   );
 }
 
@@ -891,7 +891,7 @@ describe('SearchManager per-category SQLite supplement (unified /api/search path
     }
 
     function managerWithChroma(queryChroma: ReturnType<typeof mock>): SearchManager {
-      return new SearchManager(new SessionSearch(db), store, { queryChroma } as any, {} as any, {} as any);
+      return new SearchManager(new SessionSearch(db), store, { queryChroma, isCollectionAvailable: () => true } as any, {} as any, {} as any);
     }
 
     beforeEach(() => {
@@ -1068,5 +1068,49 @@ describe('SearchManager recency window wiring (#4770)', () => {
     const custom = makeManager(30 * DAY_MS);
     const customResult = await custom.manager.getOrchestrator().search({ query: 'memory', type: 'observations' });
     expect(keptIds(customResult.results.observations)).toEqual([101]);
+  });
+});
+
+describe('SearchManager quarantine FTS5 routing', () => {
+  it('bypasses Chroma and reports FTS5 provenance when collection is quarantined', async () => {
+    const queryChroma = mock(() => Promise.reject(new Error('MUST_NOT_QUERY_CHROMA')));
+    const observation = observationRow(999, { title: 'quarantine keyword result' });
+    const searchObservations = mock(() => [observation]);
+    const manager = makeSearchManager({
+      search: { searchObservations },
+      chroma: { queryChroma, isCollectionAvailable: () => false },
+    });
+    const telemetry: any = {};
+    const result = await manager.search({
+      query: 'quarantine keyword result', type: 'observations', format: 'json',
+    }, telemetry);
+    expect(result.observations).toEqual([observation]);
+    expect(queryChroma).not.toHaveBeenCalled();
+    expect(telemetry.search_strategy).toBe('fts');
+    expect(telemetry.chroma_available).toBe(false);
+    expect(telemetry.fallback_reason).toBe('chroma_quarantined');
+  });
+
+  it('does not publish a successful Chroma reply after quarantine activates', async () => {
+    let healthy = true;
+    const observation = observationRow(999, { title: 'authoritative fallback result' });
+    const queryChroma = mock(async () => {
+      healthy = false;
+      return { ids: [1], distances: [0.1], metadatas: [
+        { sqlite_id: 1, doc_type: 'observation', created_at_epoch: Date.now() },
+      ] };
+    });
+    const manager = makeSearchManager({
+      search: { searchObservations: mock(() => [observation]) },
+      chroma: { queryChroma, isCollectionAvailable: () => healthy },
+    });
+    const telemetry: any = {};
+    const result = await manager.search({
+      query: 'authoritative fallback result', type: 'observations', format: 'json',
+    }, telemetry);
+    expect(result.observations).toEqual([observation]);
+    expect(queryChroma).toHaveBeenCalledTimes(1);
+    expect(telemetry.search_strategy).toBe('fts');
+    expect(telemetry.fallback_reason).toBe('chroma_quarantined');
   });
 });

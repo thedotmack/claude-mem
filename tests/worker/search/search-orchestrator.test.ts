@@ -65,7 +65,7 @@ describe('SearchOrchestrator Chroma zero fallback', () => {
         getUserPromptsByIds: mock(() => []),
         getProjectReadKeys: (projects: string[]) => projects,
       } as any,
-      { queryChroma } as any,
+      { queryChroma, isCollectionAvailable: () => true } as any,
     );
 
     const result = await orchestrator.search({
@@ -112,7 +112,7 @@ describe('SearchOrchestrator Chroma zero fallback', () => {
         getUserPromptsByIds: mock(() => []),
         getProjectReadKeys: (projects: string[]) => projects,
       } as any,
-      { queryChroma } as any,
+      { queryChroma, isCollectionAvailable: () => true } as any,
     );
 
     const result = await orchestrator.search({
@@ -232,7 +232,7 @@ describe('SearchOrchestrator per-category SQLite supplement', () => {
         getUserPromptsByIds: mocks.getUserPromptsByIds ?? mock(() => []),
         getProjectReadKeys: (projects: string[]) => projects,
       } as any,
-      { queryChroma: mocks.queryChroma } as any,
+      { queryChroma: mocks.queryChroma, isCollectionAvailable: () => true } as any,
     );
   }
 
@@ -327,5 +327,67 @@ describe('SearchOrchestrator per-category SQLite supplement', () => {
     expect(searchObservations).toHaveBeenCalledWith('テスト', expect.objectContaining({
       dateRange,
     }));
+  });
+});
+
+describe('SearchOrchestrator quarantine FTS5 routing', () => {
+  it('bypasses Chroma and records SQLite provenance while a collection is quarantined', async () => {
+    const queryChroma = mock(() => Promise.reject(new Error('MUST_NOT_QUERY_CHROMA')));
+    const searchObservations = mock(() => [observation]);
+    const orchestrator = new SearchOrchestrator(
+      { searchObservations, searchSessions: mock(() => []), searchUserPrompts: mock(() => []) } as any,
+      { getProjectReadKeys: (projects: string[]) => projects } as any,
+      { queryChroma, isCollectionAvailable: () => false } as any,
+    );
+    const result = await orchestrator.search({
+      query: 'cursor sqlite fallback', searchType: 'observations', limit: 5,
+    });
+    expect(result.strategy).toBe('sqlite');
+    expect(result.usedChroma).toBe(false);
+    expect(result.results.observations).toEqual([observation]);
+    expect(queryChroma).not.toHaveBeenCalled();
+  });
+
+  it('falls back if quarantine activates during a Chroma query', async () => {
+    let healthy = true;
+    const queryChroma = mock(async () => {
+      healthy = false;
+      throw new Error('collection dropped during query');
+    });
+    const orchestrator = new SearchOrchestrator(
+      { searchObservations: mock(() => [observation]), searchSessions: mock(() => []),
+        searchUserPrompts: mock(() => []) } as any,
+      { getProjectReadKeys: (projects: string[]) => projects } as any,
+      { queryChroma, isCollectionAvailable: () => healthy } as any,
+    );
+    const result = await orchestrator.search({
+      query: 'cursor sqlite fallback', searchType: 'observations', limit: 5,
+    });
+    expect(result.strategy).toBe('sqlite');
+    expect(result.usedChroma).toBe(false);
+    expect(queryChroma).toHaveBeenCalledTimes(1);
+  });
+
+  it('discards a successful semantic result if quarantine activates during the query', async () => {
+    let healthy = true;
+    const queryChroma = mock(async () => {
+      healthy = false;
+      return { ids: [99], distances: [0.1], metadatas: [
+        { sqlite_id: 99, doc_type: 'observation', created_at_epoch: Date.now() },
+      ] };
+    });
+    const orchestrator = new SearchOrchestrator(
+      { searchObservations: mock(() => [observation]), searchSessions: mock(() => []),
+        searchUserPrompts: mock(() => []) } as any,
+      { getProjectReadKeys: (projects: string[]) => projects } as any,
+      { queryChroma, isCollectionAvailable: () => healthy } as any,
+    );
+    const result = await orchestrator.search({
+      query: 'quarantine mid-search', searchType: 'observations', limit: 5,
+    });
+    expect(result.strategy).toBe('sqlite');
+    expect(result.usedChroma).toBe(false);
+    expect(result.results.observations).toEqual([observation]);
+    expect(queryChroma).toHaveBeenCalledTimes(1);
   });
 });

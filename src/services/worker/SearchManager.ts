@@ -48,7 +48,7 @@ export interface SearchTelemetryEnvelope {
   result_count?: number;
   search_strategy?: 'chroma' | 'fts' | 'hybrid' | 'filter_only';
   chroma_available?: boolean;
-  fallback_reason?: 'none' | 'chroma_connection' | 'chroma_error' | 'chroma_not_initialized' | 'chroma_zero_results';
+  fallback_reason?: 'none' | 'chroma_connection' | 'chroma_error' | 'chroma_not_initialized' | 'chroma_zero_results' | 'chroma_quarantined';
 }
 
 type ObservationSearchState = { status: 'not_requested' | 'success_empty' | 'success_nonempty' | 'error' };
@@ -515,6 +515,7 @@ export class SearchManager {
     let sessions: SessionSummarySearchResult[] = [];
     let prompts: UserPromptSearchResult[] = [];
     let chromaFailed = false;
+    const chromaInitiallyAvailable = this.chromaSync?.isCollectionAvailable() === true;
     let chromaSupplementStrategy: StrategySearchResult['strategy'] = 'chroma';
     let chromaFailureReason: { message: string; isConnectionError: boolean } | null = null;
 
@@ -555,7 +556,7 @@ export class SearchManager {
       }
     }
     // PATH 2: CHROMA SEMANTIC SEARCH (query text + Chroma available)
-    else if (this.chromaSync) {
+    else if (chromaInitiallyAvailable) {
       let chromaResult: StrategySearchResult | undefined;
       logger.debug('SEARCH', 'Using ChromaDB semantic search', { typeFilter: category || 'all' });
 
@@ -581,6 +582,9 @@ export class SearchManager {
           // Omitted-limit JSON searches historically expose the ranked window.
           limit: candidateOptions.limit ?? SEARCH_CONSTANTS.CHROMA_BATCH_SIZE,
         });
+        if (!this.chromaSync?.isCollectionAvailable()) {
+          throw new ChromaUnavailableError('Chroma collection quarantined during query');
+        }
       } catch (chromaError) {
         const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
         chromaFailureReason = {
@@ -633,8 +637,28 @@ export class SearchManager {
           },
           chromaResult
         );
-        ({ observations, sessions, prompts } = supplemented.results);
-        chromaSupplementStrategy = supplemented.strategy;
+        if (!this.chromaSync?.isCollectionAvailable()) {
+          // Rebuild/quarantine may begin while SQLite supplements a Chroma
+          // result. Never publish a semantic answer from that generation.
+          chromaFailed = true;
+          chromaFailureReason = { message: 'quarantined during search', isConnectionError: false };
+          try {
+            if (searchObservations) observations = this.contextReader
+              ? await this.contextReader.searchObservations(query, { ...options, type: effectiveObsType, concepts, files })
+              : this.sessionSearch.searchObservations(query, { ...options, type: effectiveObsType, concepts, files });
+            if (searchSessions) sessions = this.contextReader
+              ? await this.contextReader.searchSessions(query, options)
+              : this.sessionSearch.searchSessions(query, options);
+            if (searchPrompts) prompts = this.contextReader
+              ? await this.contextReader.searchUserPrompts(query, options)
+              : this.sessionSearch.searchUserPrompts(query, options);
+          } catch (ftsError) {
+            logger.error('WORKER', 'FTS5 search failed after quarantine', {}, ftsError instanceof Error ? ftsError : new Error(String(ftsError)));
+          }
+        } else {
+          ({ observations, sessions, prompts } = supplemented.results);
+          chromaSupplementStrategy = supplemented.strategy;
+        }
       }
 
       if (!chromaFailed && (options.orderBy === 'date_desc' || options.orderBy === 'date_asc')) {
@@ -695,13 +719,15 @@ export class SearchManager {
         // PATH 1: filter-only SQLite (no query text; Chroma never consulted)
         searchStrategy = 'filter_only';
         fallbackReason = 'none';
-      } else if (this.chromaSync) {
+      } else if (chromaInitiallyAvailable) {
         // PATH 2: Chroma semantic search. FTS5 answers alone on a Chroma error
         // or when Chroma left every requested category empty; 'hybrid' means
         // SQLite refilled only the categories Chroma left empty.
         if (chromaFailed) {
           searchStrategy = 'fts';
-          fallbackReason = chromaFailureReason?.isConnectionError ? 'chroma_connection' : 'chroma_error';
+          fallbackReason = this.chromaSync?.isCollectionAvailable() === false
+            ? 'chroma_quarantined'
+            : chromaFailureReason?.isConnectionError ? 'chroma_connection' : 'chroma_error';
         } else if (chromaSupplementStrategy === 'sqlite') {
           searchStrategy = 'fts';
           fallbackReason = 'chroma_zero_results';
@@ -713,13 +739,14 @@ export class SearchManager {
           fallbackReason = 'none';
         }
       } else {
-        // PATH 3: FTS5 keyword search (Chroma not initialized)
+        // PATH 3: FTS5 search (Chroma off or recovery journal blocks it).
         searchStrategy = 'fts';
-        fallbackReason = 'chroma_not_initialized';
+        fallbackReason = this.chromaSync ? 'chroma_quarantined' : 'chroma_not_initialized';
       }
       telemetryOut.result_count = totalResults;
       telemetryOut.search_strategy = searchStrategy;
-      telemetryOut.chroma_available = this.chromaSync !== null && !chromaFailed;
+      telemetryOut.chroma_available = chromaInitiallyAvailable && !chromaFailed
+        && (this.chromaSync?.isCollectionAvailable() === true);
       telemetryOut.fallback_reason = fallbackReason;
     }
 

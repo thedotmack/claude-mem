@@ -101,6 +101,9 @@ export class SearchOrchestrator {
   /** Shared semantic candidate selection; callers retain their own fallback/formatting. */
   async searchChroma(options: StrategySearchOptions): Promise<StrategySearchResult> {
     if (!this.chromaStrategy) throw new Error('Chroma is not configured');
+    if (!this.chromaSync?.isCollectionAvailable()) {
+      throw new ChromaUnavailableError('Chroma collection quarantined; use SQLite/FTS5');
+    }
     return await this.chromaStrategy.search(options);
   }
 
@@ -116,7 +119,7 @@ export class SearchOrchestrator {
       return await this.sqliteStrategy.search(sqliteOptions);
     }
 
-    if (this.chromaStrategy) {
+    if (this.chromaStrategy && this.chromaSync?.isCollectionAvailable()) {
       logger.debug('SEARCH', 'Orchestrator: Using Chroma semantic search', {});
       // Supplement genuinely empty categories before paging; an exhausted
       // semantic page must not switch to a different keyword result set.
@@ -127,13 +130,26 @@ export class SearchOrchestrator {
       try {
         chromaResult = await this.searchChroma(candidateOptions);
       } catch (error) {
+        // A quarantine can activate while the Chroma query is awaited.
+        // Use the same SQLite fallback as the pre-query availability check.
+        if (!this.chromaSync?.isCollectionAvailable()) {
+          return await this.sqliteStrategy.search(sqliteOptions);
+        }
         const errorObj = error instanceof Error ? error : new Error(String(error));
         throw new ChromaUnavailableError(
           `Chroma query failed: ${errorObj.message}`,
           errorObj
         );
       }
+      // The query can resolve successfully after another writer has entered
+      // DROP_PENDING. Discard its potentially stale semantic matches.
+      if (!this.chromaSync?.isCollectionAvailable()) {
+        return await this.sqliteStrategy.search(sqliteOptions);
+      }
       const supplemented = await this.supplementEmptyCategories({ ...sqliteOptions, offset: 0, limit: offset + limit }, chromaResult);
+      if (!this.chromaSync?.isCollectionAvailable()) {
+        return await this.sqliteStrategy.search(sqliteOptions);
+      }
       return {
         ...supplemented,
         results: {
@@ -148,7 +164,7 @@ export class SearchOrchestrator {
     // Answer from SQLite/FTS5, as SearchManager.search() does without Chroma,
     // instead of an empty result that reads as "no matches" (#4284). Knowledge
     // corpus builds with a query filter reach this path.
-    logger.debug('SEARCH', 'Orchestrator: Chroma not configured, falling back to SQLite', {});
+    logger.debug('SEARCH', 'Orchestrator: Chroma not configured or collection quarantined; using SQLite', {});
     return await this.sqliteStrategy.search(sqliteOptions);
   }
 
