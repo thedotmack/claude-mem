@@ -15,6 +15,8 @@ import { FOCUS_BATCH } from '../../src/services/work-view/request-groups.mjs';
 import { readFocus } from '../../src/services/work-view/data-source.mjs';
 import { OWNER_GOALS_QUESTION_BYTES } from '../../src/services/work-view/owner-goals-batches.js';
 import { registerSharedFileWriter } from '../../src/services/work-view/shared-file-hooks.mjs';
+import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
+import { SharedLedgerAdapter } from '../../src/services/work-view/shared-ledger-adapter.mjs';
 
 const DAY = 86400000, NOW = 100 * DAY;
 afterEach(() => setFakeSpawn(null));
@@ -127,6 +129,68 @@ describe('automatic refresh scheduler', () => {
       writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations: {}, groups: {}, ignored: {} }));
       expect(await worker.runNow({ reason: 'setup-scan' })).toBe('ok');
       expect(ran).toBe(true);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('the scheduled check replaces a refresh.json that cannot be read, whether or not something is due', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-'));
+    try {
+      const database = fixtureDatabase();
+      saveGoals(database, new Date(NOW).toISOString());
+      writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations: {}, groups: {}, ignored: { [key('a')]: 'not a goal' } }));
+      const notJson = Buffer.from([0xef, 0xbf, 0xbd, 0xff, 0x00]);
+      writeFileSync(join(dir, 'refresh.json'), notJson);
+      const logs: string[] = [];
+      let runs = 0;
+      const worker = new AutoRefreshWorker({ localDeviceId: () => '', dir, openDatabase: handle(database), now: () => NOW, log: (_level: string, message: string) => { logs.push(message); }, runJob: async () => { runs++; return { state: 'ok', agent: null, result: null, error: null }; } });
+      expect(worker.status).toThrow();
+      expect(await worker.check()).toBe('idle');
+      expect(worker.status()).toMatchObject({ state: 'idle', needs: { needed: false } });
+      expect(logs).toContain('Work view refresh status could not be read; a new status replaces it');
+
+      // Something due: the run starts and writes its own status over the bad file.
+      writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations: {}, groups: {}, ignored: {} }));
+      writeFileSync(join(dir, 'refresh.json'), notJson);
+      expect(await worker.check()).toBe('ok');
+      expect(runs).toBe(1);
+      expect(worker.status()).toMatchObject({ state: 'ok' });
+      expect(worker.status().failures).toBeUndefined();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('the scheduled check also replaces an unreadable refresh.json while Shared My Work stages every write', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-shared-'));
+    const directory = join(dir, 'work-view');
+    mkdirSync(directory);
+    const store = new SessionStore(join(dir, 'memory.db'));
+    store.setLocalSyncDeviceId('device-a');
+    const adapter = new SharedLedgerAdapter(store.db, { directory, deviceId: 'device-a' });
+    const unregister = registerSharedFileWriter(directory, (name: string, value: unknown) => adapter.beforeWrite(name, value));
+    try {
+      const database = fixtureDatabase();
+      saveGoals(database, new Date(NOW).toISOString());
+      writeFileSync(join(directory, 'request-groups.json'), JSON.stringify({ version: 1, conversations: {}, groups: {}, ignored: { [key('a')]: 'not a goal' } }));
+      // No my_work_file_state row for refresh.json yet, so staging must read the damaged file's observed hash.
+      expect(store.db.prepare('SELECT 1 FROM my_work_file_state WHERE name = ?').get('refresh.json')).toBeNull();
+      writeFileSync(join(directory, 'refresh.json'), Buffer.from([0xef, 0xbf, 0xbd, 0xff, 0x00]));
+      const worker = new AutoRefreshWorker({ localDeviceId: () => 'device-a', dir: directory, openDatabase: handle(database), now: () => NOW, log: () => {}, runJob: async () => ({ state: 'ok', agent: null, result: null, error: null }) });
+      expect(await worker.check()).toBe('idle');
+      expect(worker.status()).toMatchObject({ state: 'idle', needs: { needed: false } });
+    } finally {
+      unregister();
+      store.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a refresh.json that cannot be opened (not a parse error) still fails the scheduled check loudly', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-'));
+    try {
+      const database = fixtureDatabase();
+      saveGoals(database, new Date(NOW).toISOString());
+      const worker = new AutoRefreshWorker({ localDeviceId: () => '', dir, openDatabase: handle(database), now: () => NOW, log: () => {}, runJob: async () => ({ state: 'ok', agent: null, result: null, error: null }) });
+      spyOn(worker, 'status').mockImplementation(() => { throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' }); });
+      await expect(worker.check()).rejects.toThrow('EACCES');
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
