@@ -21,9 +21,9 @@ import { isPidAlive } from '../../supervisor/process-registry.js';
 import { ENV_PREFIXES, ENV_EXACT_MATCHES } from '../../supervisor/env-sanitizer.js';
 import { flushResponseThen } from './flushResponseThen.js';
 import { getUptimeSeconds } from '../../shared/uptime.js';
-import { snapshotDependencyHealth, type DependencyHealthSnapshot, type DependencyStatus } from '../../shared/dependency-health.js';
+import { dependencyStatusLabels, snapshotDependencyHealth, type DependencyHealthSnapshot, type DependencyStatus } from '../../shared/dependency-health.js';
 import { globalRateLimitStore } from '../worker/RateLimitStore.js';
-import type { ObservationQueueHealth } from '../../server/queue/queue-health-types.js';
+import type { ObservationQueueHealth, ObservationQueueHealthLaneSnapshot } from '../../server/queue/queue-health-types.js';
 import type { ChromaCrashState } from '../sync/ChromaMcpManager.js';
 import { clearWindowsListenSocketInherit } from '../../shared/windows-listen-socket.js';
 import { TERMINAL_INIT_PHASES, type InitPhaseSource, type InitPhaseState } from './init-phase.js';
@@ -184,18 +184,43 @@ export function applySecurityHeaders(res: Response): void {
  * (shared/local-api-token.ts). So it publishes the state a probe reads, not
  * the deployment's internals. #6195 drew the same line for `/v1/info`; here
  * the internals are the provider auth method (whether authentication is
- * configured at all), the queue backend's address and key namespace, and the
- * absolute paths of the worker and each dependency's resolved executable.
+ * configured at all), the queue backend's address and key namespace, error
+ * text, and the absolute paths of the worker and each dependency's resolved
+ * executable.
  * Those stay on the loopback-only `/api/admin/doctor`.
+ */
+/**
+ * The queue answer a probe reads: the engine, Redis's up/down status (the
+ * probe answers 503 when Redis is down, so a prober needs to see that Redis is
+ * the cause) and the per-lane counts. Never the backend's host, port, mode or
+ * key prefix, and never error text, which can quote the address: a Redis
+ * error and a lane's `unavailableReason` both stay on the doctor route.
  */
 function probeQueueHealth(
   queue: ObservationQueueHealth | null,
-): { engine: 'bullmq'; lanes?: ObservationQueueHealth['lanes'] } | null {
+): {
+  engine: 'bullmq';
+  redis: { status: ObservationQueueHealth['redis']['status'] };
+  lanes?: Array<Omit<ObservationQueueHealthLaneSnapshot, 'unavailableReason'>>;
+} | null {
   if (!queue) return null;
-  return queue.lanes ? { engine: queue.engine, lanes: queue.lanes } : { engine: queue.engine };
+  return {
+    engine: queue.engine,
+    redis: { status: queue.redis.status },
+    ...(queue.lanes
+      ? { lanes: queue.lanes.map(({ unavailableReason: _unavailableReason, ...lane }) => lane) }
+      : {}),
+  };
 }
 
-/** The dependency rows a probe reads, without the resolved executable and its fingerprint. */
+/**
+ * The dependency rows a probe reads. `message` is the fixed public label for
+ * the status (the words `claude-mem status` prints), not the recorded error:
+ * that text can quote a path, such as a CLAUDE_CODE_PATH that points at a
+ * missing file. The recorded message, the resolved executable and its
+ * fingerprint stay on `/api/admin/doctor`, where `claude-mem doctor` reads them.
+ * `remediation` is one of the fixed remedies in dependency-health.ts.
+ */
 function probeDependencies(
   snapshot: DependencyHealthSnapshot,
 ): { degraded: boolean; statuses: Array<Omit<DependencyStatus, 'executablePath' | 'executableFingerprint'>> } {
@@ -204,7 +229,8 @@ function probeDependencies(
     statuses: snapshot.statuses.map(status => ({
       dependency: status.dependency,
       kind: status.kind,
-      message: status.message,
+      message: dependencyStatusLabels(status.dependency, status.kind)?.statusCommandHint
+        ?? `${status.dependency}: ${status.kind}`,
       ...(status.remediation !== undefined ? { remediation: status.remediation } : {}),
       recordedAtMs: status.recordedAtMs,
     })),

@@ -208,9 +208,75 @@ describe('Server', () => {
       expect(response.status).toBe(503);
       expect(body.status).toBe('degraded');
       expect(body.queue.engine).toBe('bullmq');
-      // The unauthenticated probe does not publish the queue backend's address
-      // or key namespace; the loopback-only doctor route does (next test).
-      expect(body.queue.redis).toBeUndefined();
+      // A prober sees that Redis is why the answer is 503, but not the queue
+      // backend's address, key namespace or error text; the loopback-only
+      // doctor route keeps those (below).
+      expect(body.queue.redis).toEqual({ status: 'error' });
+      expect(body.queue.redis.host).toBeUndefined();
+      expect(body.queue.redis.port).toBeUndefined();
+      expect(body.queue.redis.prefix).toBeUndefined();
+      expect(JSON.stringify(body)).not.toContain('connection refused');
+    });
+
+    it('keeps error text that can quote the queue address off the probe', async () => {
+      server = new Server({
+        ...mockOptions,
+        getQueueHealth: () => ({
+          engine: 'bullmq',
+          redis: { status: 'ok', mode: 'external', host: 'valkey.internal', port: 6379, prefix: 'claude_mem' },
+          lanes: [{
+            kind: 'observation',
+            name: 'observation',
+            waiting: 2,
+            active: 0,
+            completed: 5,
+            failed: 0,
+            delayed: 0,
+            stalled: 0,
+            unavailable: true,
+            unavailableReason: 'connect ECONNREFUSED valkey.internal:6379',
+          }],
+        }),
+      });
+      const testPort = await listenOnEphemeralPort(server);
+
+      const probe = await (await fetch(`http://127.0.0.1:${testPort}/api/health`)).json();
+      expect(probe.queue.lanes[0]).toMatchObject({ kind: 'observation', waiting: 2, unavailable: true });
+      expect(probe.queue.lanes[0].unavailableReason).toBeUndefined();
+      expect(JSON.stringify(probe)).not.toContain('valkey.internal');
+
+      const doctor = await (await fetch(`http://127.0.0.1:${testPort}/api/admin/doctor`)).json();
+      expect(doctor.health.queue.lanes[0].unavailableReason).toBe('connect ECONNREFUSED valkey.internal:6379');
+    });
+
+    it('publishes the dependency label, not a recorded message that quotes a path', async () => {
+      const dependencyHealth = {
+        degraded: true,
+        statuses: [{
+          dependency: 'claude_cli' as const,
+          kind: 'setup_required' as const,
+          message: 'Claude executable not found at /home/node/.local/bin/claude (CLAUDE_CODE_PATH)',
+          remediation: 'Install or update Claude Code CLI, then restart claude-mem.',
+          executablePath: '/home/node/.local/bin/claude',
+          executableFingerprint: 'abc123',
+          recordedAtMs: 1,
+        }],
+      };
+      server = new Server({ ...mockOptions, getDependencyHealth: () => dependencyHealth });
+      const testPort = await listenOnEphemeralPort(server);
+
+      const probe = await (await fetch(`http://127.0.0.1:${testPort}/api/health`)).json();
+      expect(probe.dependencies.degraded).toBe(true);
+      expect(probe.dependencies.statuses[0]).toMatchObject({
+        dependency: 'claude_cli',
+        kind: 'setup_required',
+        message: 'Claude CLI setup required',
+      });
+      expect(JSON.stringify(probe)).not.toContain('/home/node');
+
+      // `claude-mem doctor` reads the recorded message here for its remediation row.
+      const doctor = await (await fetch(`http://127.0.0.1:${testPort}/api/admin/doctor`)).json();
+      expect(doctor.health.dependencies.statuses[0].message).toBe(dependencyHealth.statuses[0].message);
     });
 
     it('answers the unauthenticated probe with state, not deployment internals', async () => {
@@ -242,12 +308,13 @@ describe('Server', () => {
       expect(body.status).toBe('ok');
       expect(body.queue.engine).toBe('bullmq');
       expect(body.dependencies.degraded).toBe(false);
-      expect(body.dependencies.statuses[0].message).toBe('not found');
+      expect(body.dependencies.statuses[0].message).toBe('Claude CLI setup required');
+      expect(body.queue.redis).toEqual({ status: 'ok' });
       // Deployment internals do not: the auth method, the queue's address and
       // key namespace, the install path, and each resolved executable.
       expect(body.workerPath).toBeUndefined();
       expect(body.ai.authMethod).toBeUndefined();
-      expect(body.queue.redis).toBeUndefined();
+      expect(JSON.stringify(body)).not.toContain('valkey');
       expect(body.dependencies.statuses[0].executablePath).toBeUndefined();
       expect(body.dependencies.statuses[0].executableFingerprint).toBeUndefined();
     });

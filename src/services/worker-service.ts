@@ -2614,9 +2614,10 @@ export interface WorkerHealthSnapshot {
   version?: unknown;
   uptime?: unknown;
   dependencies?: DependencyHealthSnapshot;
-  /** The probe answer: the queue engine and its per-lane counts, never its address. */
+  /** The probe answer: the queue engine, Redis's status and the per-lane counts, never its address. */
   queue?: {
     engine?: string;
+    redis?: { status?: string };
     lanes?: unknown[];
   };
 }
