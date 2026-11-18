@@ -425,7 +425,7 @@ describe('mtime-stable rewrite', () => {
         fetchInjectFn: async () => ({ url: 'http://inject', body: sampleInject(3) }),
       });
 
-      expect(result.bucketPath).toBe(`${ccsRoot}/seats/${ORIFICE}/TIMELINE.md`);
+      expect(result.bucketPath).toBe(path.join(ccsRoot, 'seats', ORIFICE, 'TIMELINE.md'));
       expect(existsSync(result.bucketPath as string)).toBe(true);
       expect(readFileSync(privatePath, 'utf8')).toBe('# keep me\n');
       expect(existsSync(path.join(ccsRoot, 'house'))).toBe(false);
@@ -443,7 +443,7 @@ describe('path guards', () => {
   it('targets the agent log folder and never profile.md', () => {
     const filePath = injectLogPath(root, ORIFICE);
     expect(filePath).toBe(
-      `/home/box/agent-data/agents/${ORIFICE}/memory/log/zz-claude-mem-inject.md`,
+      path.join(root, 'agents', ORIFICE, 'memory', 'log', 'zz-claude-mem-inject.md'),
     );
     expect(filePath.endsWith('profile.md')).toBe(false);
   });
@@ -459,18 +459,18 @@ describe('path guards', () => {
 
   it('places the editable bucket at ccs/seats/<seat-id>/TIMELINE.md', () => {
     const bucket = timelineBucketPath(ccs, ORIFICE);
-    expect(bucket).toBe(`${ccs}/seats/${ORIFICE}/TIMELINE.md`);
-    expect(seatBucketDir(ccs, ORIFICE)).toBe(`${ccs}/seats/${ORIFICE}`);
-    expect(privateBucketPath(ccs, ORIFICE)).toBe(`${ccs}/seats/${ORIFICE}/PRIVATE.md`);
+    expect(bucket).toBe(path.join(ccs, 'seats', ORIFICE, 'TIMELINE.md'));
+    expect(seatBucketDir(ccs, ORIFICE)).toBe(path.join(ccs, 'seats', ORIFICE));
+    expect(privateBucketPath(ccs, ORIFICE)).toBe(path.join(ccs, 'seats', ORIFICE, 'PRIVATE.md'));
     expect(bucket.endsWith('profile.md')).toBe(false);
     expect(bucket.endsWith('PRIVATE.md')).toBe(false);
   });
 
   it('defaults CCS under the agent-data tree (bots can edit TIMELINE.md)', () => {
     const cfg = loadConfig({ GROK_BOT_AGENT_DATA: root });
-    expect(cfg.ccsRoot).toBe(path.join(root, 'ccs'));
+    expect(cfg.ccsRoot).toBe(path.resolve(root, 'ccs'));
     expect(timelineBucketPath(cfg.ccsRoot, ORIFICE)).toBe(
-      `${root}/ccs/seats/${ORIFICE}/TIMELINE.md`,
+      path.join(path.resolve(root), 'ccs', 'seats', ORIFICE, 'TIMELINE.md'),
     );
   });
 
