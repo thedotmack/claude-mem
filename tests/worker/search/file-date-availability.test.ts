@@ -95,6 +95,35 @@ describe('date-ordered file lookup does not depend on semantic search availabili
     });
   }
 
+  it('discards a successful file ranking when quarantine starts before the reply', async () => {
+    const sqlite = new SessionSearch(store.db);
+    const options = { project: 'project', platformSource: 'claude', orderBy: 'relevance' as const, limit: 3 };
+    const page = sqlite.findByFile('src/file.ts', options);
+    const ids = page.observations.map(row => row.id);
+    const reversed = [...ids].reverse();
+    let quarantineOnReply = false;
+    const chroma = {
+      isCollectionAvailable: () => available,
+      queryChroma: async () => {
+        calls++;
+        if (quarantineOnReply) available = false;
+        return { ids: reversed };
+      },
+    };
+    const orchestrator = new SearchOrchestrator(sqlite, store, chroma as unknown as ChromaSync);
+    const healthy = await orchestrator.findByFile('src/file.ts', options);
+    expect(healthy.usedChroma).toBe(true);
+    expect(healthy.observations.map(row => row.id)).toEqual(reversed);
+    expect(reversed).not.toEqual(ids);
+
+    quarantineOnReply = true;
+    const quarantined = await orchestrator.findByFile('src/file.ts', options);
+    expect(quarantined.usedChroma).toBe(false);
+    expect(quarantined.observations.map(row => row.id)).toEqual(ids);
+    expect(quarantined.sessions.map(row => row.id)).toEqual(page.sessions.map(row => row.id));
+    expect(calls).toBe(2);
+  });
+
   for (const orderBy of [undefined, 'relevance'] as const) {
     it(`still reports semantic failures for ${orderBy ?? 'default'} ordering`, async () => {
       await expect(search.findByFile('src/file.ts', { project: 'project', orderBy }))
