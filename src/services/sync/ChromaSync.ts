@@ -13,6 +13,7 @@ import { ParsedObservation, ParsedSummary } from '../../sdk/parser.js';
 import type { SessionStore as SessionStoreType } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
 import { ChromaCorruptCollectionError, ChromaUnavailableError } from '../worker/search/errors.js';
+import { parseBoundedNumber, resolveBoundedNumber } from '../../shared/bounded-setting.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, paths } from '../../shared/paths.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
@@ -170,6 +171,25 @@ export interface CurrentRow<T> {
   row: T;
   replaceExisting: boolean;
 }
+
+interface BackfillPacing {
+  sleep: (ms: number) => Promise<void>;
+  now: () => number;
+}
+
+const BACKFILL_PAUSE_RATIO_SETTING = 'CLAUDE_MEM_CHROMA_BACKFILL_PAUSE_RATIO';
+// Max 10: bulk writes then take at most 1/11 of a rebuild's wall time, so a
+// rebuild runs up to 11x slower. A larger ratio only stretches a full rebuild
+// into days without lowering the live path's cost, which is never paced.
+const BACKFILL_PAUSE_RATIO_BOUNDS = { min: 0, max: 10, integer: false } as const;
+const DEFAULT_BACKFILL_PAUSE_RATIO = 1;
+
+const REAL_BACKFILL_PACING: BackfillPacing = {
+  sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
+  now: () => performance.now(),
+};
+/** Longest single pause slice: shutdown is noticed within this, not after a whole pause. */
+const BACKFILL_PAUSE_SLICE_MS = 1000;
 
 /**
  * Whether the worker has begun shutting down: local Chroma then refuses every
@@ -460,6 +480,57 @@ export class ChromaSync {
   /** Shared by live writes and backfills, including different sync instances. */
   private static rowWriters = new Map<string, Promise<void>>();
 
+  /**
+   * Process-wide FIFO turn for paced backfill rows. The concurrent project
+   * backfills share one pace budget, so only the turn holder writes or waits.
+   * Live writes never take it.
+   */
+  private static backfillTurn: Promise<void> = Promise.resolve();
+
+  /** Earliest time (on the pacing clock) the next paced backfill write may start. */
+  private static backfillPaceUntil = 0;
+
+  private static pacing: BackfillPacing = REAL_BACKFILL_PACING;
+  /** Last invalid ratio already warned about, so a backfill's three kinds warn once. */
+  private static lastWarnedPauseRatio: unknown;
+
+  static setBackfillPacingForTesting(hooks: BackfillPacing | null): void {
+    ChromaSync.pacing = hooks ?? REAL_BACKFILL_PACING;
+    ChromaSync.backfillTurn = Promise.resolve();
+    ChromaSync.backfillPaceUntil = 0;
+    ChromaSync.lastWarnedPauseRatio = undefined;
+  }
+
+  /** Read once per backfill; an invalid value warns once until it changes. */
+  private static readBackfillPauseRatio(): number {
+    const raw = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH)[BACKFILL_PAUSE_RATIO_SETTING];
+    if (raw === ChromaSync.lastWarnedPauseRatio && parseBoundedNumber(raw, BACKFILL_PAUSE_RATIO_BOUNDS) === null) {
+      return DEFAULT_BACKFILL_PAUSE_RATIO;
+    }
+    ChromaSync.lastWarnedPauseRatio = raw;
+    return resolveBoundedNumber('CHROMA_SYNC', BACKFILL_PAUSE_RATIO_SETTING, raw,
+      BACKFILL_PAUSE_RATIO_BOUNDS, DEFAULT_BACKFILL_PAUSE_RATIO);
+  }
+
+  /** Sleeps until `deadline` in short slices; true as soon as shutdown is seen, so a long wait never delays it. */
+  private static async waitUntilUnlessShutdown(deadline: number): Promise<boolean> {
+    for (let remaining = deadline - ChromaSync.pacing.now(); remaining > 0;
+         remaining = deadline - ChromaSync.pacing.now()) {
+      await ChromaSync.pacing.sleep(Math.min(remaining, BACKFILL_PAUSE_SLICE_MS));
+      if (shutdownBegan()) return true;
+    }
+    return shutdownBegan();
+  }
+
+  /** Joins the FIFO backfill turn; the returned function hands it to the next row. */
+  private static async acquireBackfillTurn(): Promise<() => void> {
+    const previous = ChromaSync.backfillTurn;
+    let release!: () => void;
+    ChromaSync.backfillTurn = new Promise<void>(resolve => { release = resolve; });
+    await previous;
+    return release;
+  }
+
   private async acquireRowWriter(kind: string, id: number): Promise<() => void> {
     const key = JSON.stringify([this.collectionName, kind, id]);
     const previous = ChromaSync.rowWriters.get(key);
@@ -472,6 +543,26 @@ export class ChromaSync {
       release();
       if (ChromaSync.rowWriters.get(key) === current) ChromaSync.rowWriters.delete(key);
     };
+  }
+
+  /**
+   * Takes the backfill turn (ratio > 0), waits out the shared pace holding only
+   * the turn, then takes the row writer, so live writes are never blocked by the
+   * wait. Null on shutdown. The turn is released here if anything throws.
+   */
+  private async acquirePacedRowWriter(kind: string, rowId: number, pauseRatio: number):
+      Promise<{ releaseRow: () => void; releaseTurn: () => void } | null> {
+    const releaseTurn = pauseRatio > 0 ? await ChromaSync.acquireBackfillTurn() : () => {};
+    try {
+      if (pauseRatio > 0 && await ChromaSync.waitUntilUnlessShutdown(ChromaSync.backfillPaceUntil)) {
+        releaseTurn();
+        return null;
+      }
+      return { releaseRow: await this.acquireRowWriter(kind, rowId), releaseTurn };
+    } catch (err) {
+      releaseTurn();
+      throw err;
+    }
   }
 
   /**
@@ -1795,6 +1886,7 @@ export class ChromaSync {
     // A corrupt collection dropped mid-run (#3202) took this run's writes with
     // it; nothing may be bumped after that, since every project is rebuilt.
     const generation = ChromaSync.collectionGeneration;
+    const pauseRatio = ChromaSync.readBackfillPauseRatio();
     const collectionDropped = (): BackfillKindResult | null => {
       if (ChromaSync.collectionGeneration === generation) {
         return null;
@@ -1808,7 +1900,14 @@ export class ChromaSync {
 
     for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
       const rowId = rows[rowIndex].id;
-      const release = await this.acquireRowWriter(kind, rowId);
+      const writers = await this.acquirePacedRowWriter(kind, rowId, pauseRatio);
+      if (!writers) {
+        return { writtenDocs, emptyRows, abortReason: 'shutdown', writeFailures: hadWriteFailures };
+      }
+      const { releaseRow, releaseTurn } = writers;
+      // Write time of this row's batches only; the next backfill write waits for it x ratio.
+      let rowWriteMs = 0;
+      let rowWroteDocs = false;
       try {
         // A live revision can finish while another row is being backfilled. A
         // lock around the cached documents alone would still write that older
@@ -1872,8 +1971,11 @@ export class ChromaSync {
           }
           const batch = docs.slice(i, i + this.BATCH_SIZE);
           let writtenInBatch: number;
+          const writeStartedAt = ChromaSync.pacing.now();
           try {
             writtenInBatch = await this.addDocuments(batch);
+            rowWriteMs += ChromaSync.pacing.now() - writeStartedAt;
+            rowWroteDocs = true;
           } catch (error) {
             if (error instanceof ChromaCorruptCollectionError) {
               return collectionDropped() ?? { writtenDocs, emptyRows, abortReason: 'collection_dropped', writeFailures: false };
@@ -1951,7 +2053,13 @@ export class ChromaSync {
         ChromaSyncState.clearPending(backfillProject, kind, [row.id]);
         ChromaSyncState.bump(backfillProject, kind, row.id);
       } finally {
-        release();
+        releaseRow();
+        // Set once the row writer is released and before the turn is handed on,
+        // on every exit path, so the next backfill write (any project) waits.
+        if (rowWroteDocs && pauseRatio > 0) {
+          ChromaSync.backfillPaceUntil = ChromaSync.pacing.now() + rowWriteMs * pauseRatio;
+        }
+        releaseTurn();
       }
     }
 

@@ -1900,6 +1900,184 @@ describe('ChromaMcpManager store record (refs #3012)', () => {
   });
 });
 
+describe('chroma-mcp is started at low priority via nice', () => {
+  const NICE_KEY = 'CLAUDE_MEM_CHROMA_PROCESS_NICE';
+  let niceProbeCalls: NodeJS.Platform[] = [];
+
+  beforeEach(async () => {
+    await ChromaMcpManager.reset();
+    resetState();
+    niceProbeCalls = [];
+    ChromaMcpManager.setNiceAvailabilityProbeForTesting((_env, platform) => {
+      niceProbeCalls.push(platform);
+      return true;
+    });
+  });
+
+  afterAll(() => {
+    ChromaMcpManager.setNiceAvailabilityProbeForTesting(null);
+  });
+
+  async function connect(): Promise<void> {
+    await ChromaMcpManager.getInstance().callTool('chroma_list_collections', { limit: 1 });
+  }
+
+  function expectUnwrapped(command: string, args: string[]): void {
+    expect(command).not.toBe('nice');
+    expect(args[0]).not.toBe('-n');
+    expect(path.basename(command).replace(/\.exe$/, '')).toBe('uvx');
+  }
+
+  it('7. wraps the transport spawn as `nice -n 10 uvx ...` on linux when nice is available', async () => {
+    Object.defineProperty(process, 'platform', { value: 'linux' });
+    await connect();
+    const { command, args } = transportInstances[0].opts;
+    expect(command).toBe('nice');
+    expect(args.slice(0, 3)).toEqual(['-n', '10', 'uvx']);
+    expect(args).toContain('chroma-mcp');
+  });
+
+  it('7. honours a configured niceness', async () => {
+    Object.defineProperty(process, 'platform', { value: 'linux' });
+    mockedSettings = { [NICE_KEY]: '5' };
+    await connect();
+    expect(transportInstances[0].opts.command).toBe('nice');
+    expect(transportInstances[0].opts.args.slice(0, 3)).toEqual(['-n', '5', 'uvx']);
+  });
+
+  it('8. leaves the command unchanged on win32', async () => {
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    await connect();
+    expectUnwrapped(transportInstances[0].opts.command, transportInstances[0].opts.args);
+    expectUnwrapped(prewarmSpawnCalls[0].command, prewarmSpawnCalls[0].args);
+  });
+
+  it('8. leaves the command unchanged when the setting is 0', async () => {
+    Object.defineProperty(process, 'platform', { value: 'linux' });
+    mockedSettings = { [NICE_KEY]: '0' };
+    await connect();
+    expectUnwrapped(transportInstances[0].opts.command, transportInstances[0].opts.args);
+    expectUnwrapped(prewarmSpawnCalls[0].command, prewarmSpawnCalls[0].args);
+  });
+
+  it('8. leaves the command unchanged when nice cannot be resolved', async () => {
+    Object.defineProperty(process, 'platform', { value: 'linux' });
+    ChromaMcpManager.setNiceAvailabilityProbeForTesting(() => false);
+    await connect();
+    expectUnwrapped(transportInstances[0].opts.command, transportInstances[0].opts.args);
+    expectUnwrapped(prewarmSpawnCalls[0].command, prewarmSpawnCalls[0].args);
+  });
+
+  it('9. wraps the prewarm spawn identically to the transport spawn', async () => {
+    Object.defineProperty(process, 'platform', { value: 'linux' });
+    await connect();
+    expect(prewarmSpawnCalls).toHaveLength(1);
+    const prewarm = prewarmSpawnCalls[0];
+    const transport = transportInstances[0].opts;
+    expect(prewarm.command).toBe('nice');
+    expect(prewarm.args.slice(0, 3)).toEqual(['-n', '10', 'uvx']);
+    expect(prewarm.command).toBe(transport.command);
+    expect(prewarm.args.slice(0, -1)).toEqual(transport.args.slice(0, transport.args.indexOf('chroma-mcp') + 1));
+    expect(prewarm.args.at(-1)).toBe('--help');
+  });
+
+  for (const bad of ['abc', '-1', '20', '5.5']) {
+    it(`10. falls back to niceness 10 with a warning for invalid value ${JSON.stringify(bad)}`, async () => {
+      Object.defineProperty(process, 'platform', { value: 'linux' });
+      mockedSettings = { [NICE_KEY]: bad };
+      await connect();
+      expect(transportInstances[0].opts.command).toBe('nice');
+      expect(transportInstances[0].opts.args.slice(0, 3)).toEqual(['-n', '10', 'uvx']);
+      expect(prewarmSpawnCalls[0].args.slice(0, 3)).toEqual(['-n', '10', 'uvx']);
+      const warnings = logEntries.filter(entry => entry.level === 'warn'
+        && JSON.stringify([entry.message, entry.meta]).includes(NICE_KEY));
+      expect(warnings).toHaveLength(1);
+    });
+  }
+
+  describe('real PATH probe (no injected probe)', () => {
+    const originalPath = process.env.PATH;
+    let dirs: string[] = [];
+
+    beforeEach(() => {
+      ChromaMcpManager.setNiceAvailabilityProbeForTesting(null);
+      Object.defineProperty(process, 'platform', { value: 'linux' });
+    });
+
+    afterAll(() => {
+      if (originalPath === undefined) delete process.env.PATH;
+      else process.env.PATH = originalPath;
+      for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+    });
+
+    function pathDir(niceMode?: number): string {
+      const dir = mkdtempSync(path.join(os.tmpdir(), 'chroma-nice-path-'));
+      dirs.push(dir);
+      if (niceMode !== undefined) {
+        writeFileSync(path.join(dir, 'nice'), '#!/bin/sh\n', { mode: niceMode });
+        fs.chmodSync(path.join(dir, 'nice'), niceMode);
+      }
+      return dir;
+    }
+
+    it('wraps when an executable nice is on the spawn PATH', async () => {
+      process.env.PATH = pathDir(0o755);
+      await connect();
+      expect(transportInstances[0].opts.command).toBe('nice');
+    });
+
+    it('does not wrap when PATH has no nice', async () => {
+      process.env.PATH = pathDir();
+      await connect();
+      expectUnwrapped(transportInstances[0].opts.command, transportInstances[0].opts.args);
+    });
+
+    it('does not wrap when nice exists but is not executable', async () => {
+      process.env.PATH = pathDir(0o644);
+      await connect();
+      expectUnwrapped(transportInstances[0].opts.command, transportInstances[0].opts.args);
+    });
+
+    it('does not wrap when PATH is empty', async () => {
+      process.env.PATH = '';
+      await connect();
+      expectUnwrapped(transportInstances[0].opts.command, transportInstances[0].opts.args);
+    });
+
+    it('does not wrap when PATH is absent', async () => {
+      delete process.env.PATH;
+      await connect();
+      expectUnwrapped(transportInstances[0].opts.command, transportInstances[0].opts.args);
+    });
+  });
+
+  it('accepts a JSON number niceness from settings.json', async () => {
+    Object.defineProperty(process, 'platform', { value: 'linux' });
+    mockedSettings = { [NICE_KEY]: 5 as unknown as string };
+    await connect();
+    expect(transportInstances[0].opts.command).toBe('nice');
+    expect(transportInstances[0].opts.args.slice(0, 3)).toEqual(['-n', '5', 'uvx']);
+    expect(logEntries.some(entry => entry.level === 'warn' && JSON.stringify([entry.message, entry.meta]).includes(NICE_KEY))).toBe(false);
+  });
+
+  it('accepts a JSON number prewarm timeout from settings.json', async () => {
+    Object.defineProperty(process, 'platform', { value: 'linux' });
+    mockedSettings = { CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS: 120000 as unknown as string };
+    await connect();
+    const prewarmLog = logEntries.find(entry => entry.message === 'Prewarming chroma-mcp uvx environment');
+    expect(prewarmLog?.meta).toMatchObject({ timeoutMs: 120000 });
+    expect(logEntries.some(entry => entry.level === 'warn' && JSON.stringify([entry.message, entry.meta]).includes('PREWARM_TIMEOUT'))).toBe(false);
+  });
+
+  it('10. accepts the bounds 0 and 19 without warning', async () => {
+    Object.defineProperty(process, 'platform', { value: 'linux' });
+    mockedSettings = { [NICE_KEY]: '19' };
+    await connect();
+    expect(transportInstances[0].opts.args.slice(0, 3)).toEqual(['-n', '19', 'uvx']);
+    expect(logEntries.some(entry => entry.level === 'warn' && JSON.stringify([entry.message, entry.meta]).includes(NICE_KEY))).toBe(false);
+  });
+});
+
 // Restore the real process.kill once the test module finishes evaluating any
 // late-arriving microtasks.
 process.on('exit', () => {

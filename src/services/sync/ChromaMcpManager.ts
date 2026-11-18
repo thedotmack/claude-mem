@@ -9,6 +9,7 @@ import os from 'os';
 import fs from 'fs';
 import { randomUUID } from 'crypto';
 import { logger } from '../../utils/logger.js';
+import { resolveBoundedNumber } from '../../shared/bounded-setting.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, paths } from '../../shared/paths.js';
 import { getUvxBinDirs } from '../../shared/uvx-bin-dirs.js';
@@ -29,7 +30,11 @@ const CHROMA_MCP_CLIENT_VERSION = '1.0.0';
 const MCP_CONNECTION_TIMEOUT_MS = 30_000;
 const DEFAULT_CHROMA_PREWARM_TIMEOUT_MS = 120_000;
 const CHROMA_PREWARM_TIMEOUT_SETTING = 'CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS';
-const CHROMA_PREWARM_TIMEOUT_BOUNDS = { min: 1, max: 600_000 } as const;
+// 10 is nice(1)'s own default increment; 19 is the POSIX maximum niceness.
+const DEFAULT_CHROMA_PROCESS_NICE = 10;
+const CHROMA_PROCESS_NICE_SETTING = 'CLAUDE_MEM_CHROMA_PROCESS_NICE';
+const CHROMA_PROCESS_NICE_BOUNDS = { min: 0, max: 19, integer: true } as const;
+const CHROMA_PREWARM_TIMEOUT_BOUNDS = { min: 1, max: 600_000, integer: true } as const;
 const DEFAULT_CHROMA_MUTATION_TIMEOUT_MS = 600_000;
 const CHROMA_MUTATION_TIMEOUT_BOUNDS = { min: 60_000, max: 3_600_000 } as const;
 const CHROMA_PREWARM_REAP_TIMEOUT_MS = 1_000;
@@ -304,6 +309,7 @@ export class ChromaMcpManager {
   private acceptingLocalMutations = true;
   private chromaCrashCount = 0;
   private chromaLastExit: ChromaCrashState['lastExit'] = null;
+  private static niceAvailabilityProbe: ((env: Record<string, string>, platform: NodeJS.Platform) => boolean) | null = null;
   private static uvxAvailabilityProbe: ((command: string, env: Record<string, string>, platform: NodeJS.Platform) => boolean) | null = null;
   private static exitObserveTimeoutMs = CHROMA_EXIT_OBSERVE_TIMEOUT_MS;
   private static prewarmReapTimeoutMs = CHROMA_PREWARM_REAP_TIMEOUT_MS;
@@ -458,7 +464,11 @@ export class ChromaMcpManager {
 
     const spawnEnvironment = this.getSpawnEnv(uvxPreflightEnv);
 
-    await this.prewarmChromaMcp(uvxSpawnCommand, uvxSpawnArgs, spawnEnvironment, connectionGeneration);
+    // One wrapped launch shared by the prewarm and the transport spawn.
+    const { command: launchCommand, args: launchArgs } = ChromaMcpManager.wrapWithNice(
+      uvxSpawnCommand, uvxSpawnArgs, spawnEnvironment, process.platform);
+
+    await this.prewarmChromaMcp(launchCommand, launchArgs, spawnEnvironment, connectionGeneration);
     this.assertConnectionNotCancelled(connectionGeneration);
 
     clearDependencyStatus('uvx');
@@ -493,8 +503,8 @@ export class ChromaMcpManager {
       }
 
       this.transport = new StdioClientTransport({
-        command: uvxSpawnCommand,
-        args: uvxSpawnArgs,
+        command: launchCommand,
+        args: launchArgs,
         env: spawnEnvironment,
         cwd: os.homedir(),
         stderr: 'pipe'
@@ -1081,39 +1091,11 @@ export class ChromaMcpManager {
     return [...launcherPrefix, '--help'];
   }
 
-  private static parseBoundedTimeoutMs(rawValue: string | undefined): number | null {
-    if (!rawValue) {
-      return null;
-    }
-    const parsed = Number.parseInt(rawValue, 10);
-    if (
-      Number.isFinite(parsed) &&
-      parsed >= CHROMA_PREWARM_TIMEOUT_BOUNDS.min &&
-      parsed <= CHROMA_PREWARM_TIMEOUT_BOUNDS.max
-    ) {
-      return parsed;
-    }
-    return null;
-  }
-
   private static getChromaPrewarmTimeoutMs(): number {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-    const envValue = process.env[CHROMA_PREWARM_TIMEOUT_SETTING];
-    const settingsValue = settings[CHROMA_PREWARM_TIMEOUT_SETTING];
-
-    const parsed = ChromaMcpManager.parseBoundedTimeoutMs(envValue ?? settingsValue);
-    if (parsed !== null) {
-      return parsed;
-    }
-
-    if (envValue !== undefined || settingsValue) {
-      logger.warn('CHROMA_MCP', `Invalid ${CHROMA_PREWARM_TIMEOUT_SETTING}, using default`, {
-        value: envValue ?? settingsValue,
-        min: CHROMA_PREWARM_TIMEOUT_BOUNDS.min,
-        max: CHROMA_PREWARM_TIMEOUT_BOUNDS.max
-      });
-    }
-    return DEFAULT_CHROMA_PREWARM_TIMEOUT_MS;
+    const raw = process.env[CHROMA_PREWARM_TIMEOUT_SETTING] ?? settings[CHROMA_PREWARM_TIMEOUT_SETTING];
+    return resolveBoundedNumber('CHROMA_MCP', CHROMA_PREWARM_TIMEOUT_SETTING, raw,
+      CHROMA_PREWARM_TIMEOUT_BOUNDS, DEFAULT_CHROMA_PREWARM_TIMEOUT_MS);
   }
 
   private static captureOutputTail(
@@ -2226,6 +2208,54 @@ export class ChromaMcpManager {
       }
     }
     return false;
+  }
+
+  /**
+   * Starts chroma-mcp at low priority: `nice -n N <command> ...args` on
+   * non-Windows hosts where `nice` resolves on PATH. nice execs the target, so
+   * the pid stays the same and process tracking is unaffected.
+   */
+  private static wrapWithNice(
+    command: string,
+    args: string[],
+    env: Record<string, string>,
+    platform: NodeJS.Platform,
+  ): { command: string; args: string[] } {
+    if (platform === 'win32') {
+      return { command, args };
+    }
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const niceness = resolveBoundedNumber(
+      'CHROMA_MCP', CHROMA_PROCESS_NICE_SETTING, settings[CHROMA_PROCESS_NICE_SETTING],
+      CHROMA_PROCESS_NICE_BOUNDS, DEFAULT_CHROMA_PROCESS_NICE);
+    if (niceness === 0 || !ChromaMcpManager.isNiceAvailable(env, platform)) {
+      return { command, args };
+    }
+    return { command: 'nice', args: ['-n', String(niceness), command, ...args] };
+  }
+
+  private static isNiceAvailable(env: Record<string, string>, platform: NodeJS.Platform): boolean {
+    if (ChromaMcpManager.niceAvailabilityProbe) {
+      return ChromaMcpManager.niceAvailabilityProbe(env, platform);
+    }
+    const pathKey = Object.keys(env).find(k => k.toLowerCase() === 'path') ?? 'PATH';
+    return (env[pathKey] ?? '').split(':').filter(Boolean).some(dir => {
+      const candidate = path.join(dir, 'nice');
+      try {
+        if (!fs.statSync(candidate).isFile()) return false;
+        fs.accessSync(candidate, fs.constants.X_OK);
+        return true;
+      } catch {
+        // A missing or unreadable entry just means nice is not in this dir, so false is safe.
+        return false;
+      }
+    });
+  }
+
+  static setNiceAvailabilityProbeForTesting(
+    probe: ((env: Record<string, string>, platform: NodeJS.Platform) => boolean) | null,
+  ): void {
+    ChromaMcpManager.niceAvailabilityProbe = probe;
   }
 
   static setUvxAvailabilityProbeForTesting(
