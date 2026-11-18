@@ -16,7 +16,7 @@ import { pathToFileURL } from 'url';
 import type { Database } from 'bun:sqlite';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { buildWorkerUrl, getWorkerPort, getWorkerHost, fetchWithTimeout, workerHttpRequest, resolvePluginRoot, resolveWorkerScriptPath } from '../shared/worker-utils.js';
+import { buildWorkerUrl, getWorkerPort, getWorkerHost, fetchWithTimeout, isWorkerScriptOutsideRoot, workerHttpRequest, resolvePluginRoot, resolveWorkerScriptPath } from '../shared/worker-utils.js';
 import { InvalidWorkerUrlError, normalizeWorkerBaseUrl } from '../shared/worker-url.js';
 import { getCurrentWorkerPid, verifyRestartedWorker } from './restart-verify.js';
 import { runShutdownSequence, WORKER_GRACEFUL_SHUTDOWN_DEADLINE_BASE_MS, type WorkerShutdownReason } from './worker-shutdown.js';
@@ -1707,9 +1707,10 @@ export class WorkerService implements WorkerRef {
       restartHandoff: {
         port: getWorkerPort(),
         portFreeTimeoutMs: getPlatformTimeout(5000),
-        // Prefer the marketplace-installed script so the successor boots the
-        // freshly-synced plugin, falling back to this script for dev trees /
-        // CI where no marketplace copy exists.
+        // Resolve the successor through the shared oracle — the highest
+        // version with a complete dependency closure, cache before
+        // marketplace — falling back to this script for dev trees / CI
+        // where no installed copy exists.
         resolveSuccessorScript: () => resolveWorkerScriptPath() ?? __filename,
         waitForPortFree,
         // Owner-or-dead guarded (Phase 5): the dying worker may delete the
@@ -2146,9 +2147,10 @@ export async function main() {
       const restartFreed = handoffSawLiveWorker
         ? false
         : await waitForPortFree(port, getPlatformTimeout(15000));
-      // Prefer the marketplace-installed script so restart boots the
-      // freshly-synced plugin, falling back to this script for dev trees /
-      // CI where no marketplace copy exists.
+      // Resolve the restart target through the shared oracle — the highest
+      // version with a complete dependency closure, cache before
+      // marketplace — falling back to this script for dev trees / CI where
+      // no installed copy exists.
       const restartScript = resolveWorkerScriptPath() ?? __filename;
       let spawnedScript = 'none (port still bound — nothing spawned)';
       let spawnLockHeld = false;
@@ -2230,6 +2232,16 @@ export async function main() {
         const details = await fetchWorkerDoctor(getPlatformTimeout(3000));
         if (typeof details?.health?.workerPath === 'string' && details.health.workerPath) {
           console.log(`  Worker path: ${details.health.workerPath}`);
+          // A worker rooted outside the resolved plugin root — the
+          // leftover-alias case of #6228 — runs a copy whose dependencies
+          // and updates the install does not control, and nothing else
+          // flags it: hooks and the MCP server compare versions only.
+          // Skipped for an explicit worker URL: that worker's path belongs
+          // to another machine, so the local resolved root says nothing.
+          const resolvedRoot = explicitWorkerUrl ? null : resolvePluginRoot();
+          if (resolvedRoot && isWorkerScriptOutsideRoot(details.health.workerPath, resolvedRoot.root)) {
+            console.log(`  Warning: the worker is running from outside the resolved plugin root (${resolvedRoot.root}) — \`claude-mem restart\` boots the resolved install instead.`);
+          }
         }
         const dependencyHint = formatDependencyHealthHint(health);
         if (dependencyHint) {

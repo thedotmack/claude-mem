@@ -799,6 +799,28 @@ export function pluginRootOfWorkerScript(scriptPath: string): string {
   return path.dirname(path.dirname(scriptPath));
 }
 
+function comparablePath(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return path.resolve(p);
+  }
+}
+
+/**
+ * True when a running worker's script path belongs to a different plugin
+ * root than the resolved one — the leftover-alias case of #6228, where the
+ * worker runs out of the marketplace clone while installs resolve to the
+ * cache. Realpaths are compared when they exist, so a root reached through
+ * a symlink does not warn about itself. An empty path is no answer: the
+ * server runtime reports `workerPath: ''`, and resolving '' compares the
+ * current directory, which would warn about nothing.
+ */
+export function isWorkerScriptOutsideRoot(scriptPath: string, resolvedRoot: string): boolean {
+  if (!scriptPath) return false;
+  return comparablePath(pluginRootOfWorkerScript(scriptPath)) !== comparablePath(resolvedRoot);
+}
+
 function hasCompleteDependencyClosure(candidate: WorkerScriptCandidate): boolean {
   return findMissingPluginDependencies(pluginRootOfWorkerScript(candidate.scriptPath)).length === 0;
 }

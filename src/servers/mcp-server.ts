@@ -103,11 +103,11 @@ const mcpServerDir = (() => {
     return process.cwd();
   }
 })();
-// Prefer the canonical marketplace copy of the worker bundle (same
-// marketplace-first candidates as the hook launcher) over this server's own
-// directory: an MCP server still running out of a stale plugin cache dir
-// would otherwise auto-spawn a stale worker. The own-dir resolution stays as
-// the fallback for installs without a marketplace copy.
+// Resolve the worker bundle through the shared oracle — the highest version
+// with a complete dependency closure, cache before marketplace — over this
+// server's own directory: an MCP server still running out of a stale plugin
+// cache dir would otherwise auto-spawn a stale worker. The own-dir
+// resolution stays as the fallback for installs without an installed copy.
 const WORKER_SCRIPT_PATH = resolveWorkerScriptPath() ?? resolve(mcpServerDir, 'worker-service.cjs');
 const MCP_PLUGIN_ROOT = resolve(mcpServerDir, '..');
 

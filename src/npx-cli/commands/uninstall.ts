@@ -96,14 +96,94 @@ function removeFromInstalledPlugins(): void {
   }
 }
 
-export function stripLegacyClaudeMemAlias(home: string = homedir()): void {
-  const candidateFiles = [
+const LEGACY_ALIAS_LINE_REGEX = /^\s*alias\s+claude-mem\s*=/;
+
+function legacyAliasCandidateFiles(home: string): string[] {
+  return [
     join(home, '.bashrc'),
     join(home, '.zshrc'),
     join(home, 'Documents', 'PowerShell', 'Microsoft.PowerShell_profile.ps1'),
   ];
+}
 
-  const aliasLineRegex = /^\s*alias\s+claude-mem\s*=/;
+/**
+ * The shell rc files still carrying a pre-12.4.7 `alias claude-mem=` line
+ * (#6228). The alias beats PATH, so it shadows the on-PATH launcher and runs
+ * the marketplace clone's CLI — and, through `start`, its worker — no matter
+ * what is installed. Read-only: `doctor` reports these files, while
+ * `install`/`update` strip them through stripLegacyClaudeMemAlias below.
+ * A definition that spans multiple lines is reported too: doctor's warning
+ * is the prompt to remove that one by hand, because the strip leaves such
+ * files untouched (see aliasDefinitionSpansMultipleLines).
+ * `spansMultipleLines` marks those files, so doctor can tell the user to
+ * remove that alias by hand instead of pointing at `install`.
+ * Unreadable files are skipped; the strip path reports its own read errors.
+ */
+export interface LegacyClaudeMemAliasFile {
+  filePath: string;
+  spansMultipleLines: boolean;
+}
+
+export function findLegacyClaudeMemAlias(home: string = homedir()): LegacyClaudeMemAliasFile[] {
+  const found: LegacyClaudeMemAliasFile[] = [];
+  for (const filePath of legacyAliasCandidateFiles(home)) {
+    if (!existsSync(filePath)) continue;
+    try {
+      const lines = readFileSync(filePath, 'utf-8').split('\n');
+      const aliasIndexes = legacyAliasLineIndexes(lines);
+      if (aliasIndexes.length === 0) continue;
+      found.push({
+        filePath,
+        spansMultipleLines: aliasIndexes.some((index) => aliasDefinitionSpansMultipleLines(lines, index)),
+      });
+    } catch {
+      continue;
+    }
+  }
+  return found;
+}
+
+function legacyAliasLineIndexes(lines: string[]): number[] {
+  return lines.flatMap((line, index) => (LEGACY_ALIAS_LINE_REGEX.test(line) ? [index] : []));
+}
+
+/**
+ * Whether the alias definition starting at `lines[start]` spans more than
+ * that one physical line: a quote opened in the value that does not close
+ * on the same line, or a trailing line-continuation backslash. Deleting
+ * only the opening line of such a definition would leave its remaining
+ * lines and closing quote behind and break the user's next shell, so the
+ * strip below leaves any file carrying one untouched instead.
+ */
+function aliasDefinitionSpansMultipleLines(lines: string[], start: number): boolean {
+  const line = lines[start];
+  const valueStart = line.indexOf('=');
+  const value = valueStart >= 0 ? line.slice(valueStart + 1) : line;
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+  let escaped = false;
+  for (const ch of value) {
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === '\\' && !inSingleQuote) {
+      escaped = true;
+      continue;
+    }
+    if (ch === "'" && !inDoubleQuote) inSingleQuote = !inSingleQuote;
+    else if (ch === '"' && !inSingleQuote) inDoubleQuote = !inDoubleQuote;
+  }
+  if (inSingleQuote || inDoubleQuote) return true;
+  let trailingBackslashes = 0;
+  for (let i = line.length - 1; i >= 0 && line[i] === '\\'; i--) trailingBackslashes++;
+  return trailingBackslashes % 2 === 1;
+}
+
+export function stripLegacyClaudeMemAlias(home: string = homedir()): void {
+  const candidateFiles = legacyAliasCandidateFiles(home);
+
+  const aliasLineRegex = LEGACY_ALIAS_LINE_REGEX;
 
   for (const filePath of candidateFiles) {
     if (!existsSync(filePath)) continue;
@@ -111,19 +191,24 @@ export function stripLegacyClaudeMemAlias(home: string = homedir()): void {
     try {
       content = readFileSync(filePath, 'utf-8');
     } catch (error: unknown) {
-      console.warn(`[uninstall] Could not read ${filePath}:`, error instanceof Error ? error.message : String(error));
+      console.warn(`[claude-mem] Could not read ${filePath}:`, error instanceof Error ? error.message : String(error));
       continue;
     }
     const lines = content.split('\n');
+    const aliasIndexes = legacyAliasLineIndexes(lines);
+    if (aliasIndexes.length === 0) continue;
+    if (aliasIndexes.some((index) => aliasDefinitionSpansMultipleLines(lines, index))) {
+      console.warn(`[claude-mem] Legacy claude-mem alias in ${filePath} spans multiple lines; leaving the file untouched — remove the alias manually, then open a new shell.`);
+      continue;
+    }
     const filtered = lines.filter((line) => !aliasLineRegex.test(line));
-    if (filtered.length === lines.length) continue; 
     try {
       // The user's own shell rc: a crash mid-write must leave the previous
       // contents, never a truncated file, so write through the shared helper.
       writeTextFileAtomic(filePath, filtered.join('\n'));
       console.error(`Removed legacy claude-mem alias from ${filePath}`);
     } catch (error: unknown) {
-      console.warn(`[uninstall] Could not rewrite ${filePath}:`, error instanceof Error ? error.message : String(error));
+      console.warn(`[claude-mem] Could not rewrite ${filePath}:`, error instanceof Error ? error.message : String(error));
     }
   }
 }
