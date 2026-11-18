@@ -204,6 +204,12 @@
     --control-shadow: inset 0 1px 0 rgb(255 255 255 / 0.9), 0 1px 2px rgb(74 46 20 / 0.06);
     --primary-shadow: inset 0 1px 0 rgb(255 255 255 / 0.3), inset 0 -1px 0 rgb(120 40 0 / 0.18), 0 1px 2px rgb(150 60 0 / 0.22), 0 6px 14px -6px rgb(253 101 0 / 0.45);
     --tile-shadow: inset 0 1px 0 rgb(255 255 255 / 0.85), 0 1px 1.5px rgb(74 46 20 / 0.1);
+    /*
+     * The image viewer floats highest and dims the page more than Dialog and Sheet do (0.4 light, 0.6 dark): nobody
+     * reads the page behind an image they opened, so the image gets the attention (owner, 2026-11-18).
+     */
+    --image-viewer-shadow: 0 4px 12px rgb(74 46 20 / 0.12), 0 32px 80px -24px rgb(40 24 10 / 0.55);
+    --image-viewer-backdrop: rgb(15 12 10 / 0.7);
 
     /* Canvas: warm paper with a faint peach haze and a barely-there grain. */
     --haze-a: rgb(255 196 150 / 0.42);
@@ -293,6 +299,8 @@
     --control-shadow: inset 0 1px 0 rgb(255 240 225 / 0.05), 0 1px 2px rgb(0 0 0 / 0.35);
     --primary-shadow: inset 0 1px 0 rgb(255 255 255 / 0.25), inset 0 -1px 0 rgb(80 25 0 / 0.3), 0 1px 2px rgb(0 0 0 / 0.4), 0 6px 16px -6px rgb(253 101 0 / 0.4);
     --tile-shadow: inset 0 1px 0 rgb(255 240 225 / 0.06), 0 1px 1.5px rgb(0 0 0 / 0.4);
+    --image-viewer-shadow: inset 0 1px 0 rgb(255 240 225 / 0.05), 0 4px 12px rgb(0 0 0 / 0.5), 0 32px 80px -24px rgb(0 0 0 / 0.9);
+    --image-viewer-backdrop: rgb(15 12 10 / 0.75);
 
     --haze-a: rgb(253 101 0 / 0.09);
     --haze-b: rgb(255 179 102 / 0.05);
@@ -565,7 +573,9 @@
   align-items: center;
   justify-content: center;
   padding: 16px;
-  background: rgb(20 16 12 / 0.55);
+  background: var(--image-viewer-backdrop);
+  /* Unlike Dialog and Sheet, which keep the page readable, the image viewer blurs it: only the image matters here. */
+  backdrop-filter: blur(8px);
 }
 .obs-media-gallery {
   display: flex;
@@ -578,6 +588,7 @@
   background: var(--card);
   color: var(--foreground);
   border: 1px solid var(--border);
+  box-shadow: var(--image-viewer-shadow);
   overflow: auto;
 }
 .obs-media-galleryhead { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
