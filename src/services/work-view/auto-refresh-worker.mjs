@@ -88,6 +88,16 @@ export class AutoRefreshWorker {
     catch (error) { if (error.code === 'ENOENT') return null; throw error; }
   }
 
+  /**
+   * status(), with an unreadable refresh.json (bytes that are not JSON) read as no status, for the callers that write
+   * a new status next and so replace the bad file. Before this, the scheduled check threw on such a file at every
+   * check, so the file stayed bad until the owner pressed Refresh now.
+   */
+  replaceableStatus() {
+    try { return this.status(); }
+    catch (error) { this.log('warn', 'Work view refresh status could not be read; a new status replaces it', { error: String(error?.message ?? error) }); return null; }
+  }
+
   write(status) { writeJsonAtomic(this.path(), status); }
 
   start() { this.repairInterrupted(); this.tick(); this.timer = setInterval(() => this.tick(), this.checkMs); this.timer.unref?.(); }
@@ -140,7 +150,7 @@ export class AutoRefreshWorker {
     if (!this.enabled()) return 'disabled';
     this.labelInBackground();
     if (this.busy) return 'running';
-    const previous = this.status();
+    const previous = this.replaceableStatus();
     if (this.otherWorkerIsRunning(previous)) return 'running';
     // Backing off after failed runs: wait for the time the last failure set.
     if (previous?.state === 'failed' && previous.failures && this.now() < Date.parse(previous.nextAt)) return 'backing-off';
@@ -159,8 +169,7 @@ export class AutoRefreshWorker {
     if (this.closed) return 'closed';
     if (this.busy) return 'running';
     if (this.setupRunning()) return 'setup-running';
-    let previous = null;
-    try { previous = this.status(); } catch { /* replace an unreadable old status */ }
+    const previous = this.replaceableStatus();
     if (this.otherWorkerIsRunning(previous)) return 'running';
     this.busy = true;
     const startedAt = this.iso();
@@ -188,7 +197,7 @@ export class AutoRefreshWorker {
     this.busy = true;
     try {
       // With no logged-in agent yet the job says 'waiting-for-agent', and the next ten-minute check tries again.
-      const previousFailures = this.status()?.failures ?? 0;
+      const previousFailures = this.replaceableStatus()?.failures ?? 0;
       const startedAt = this.iso();
       this.write({ state: 'running', pid: process.pid, reason, startedAt, needs, nextAt: null });
       this.log('info', `Work view refresh started (${reason})`, { needs });

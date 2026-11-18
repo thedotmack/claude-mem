@@ -600,6 +600,11 @@ export function openSuggestions(ledger) {
     }));
 }
 
+/** The automatic refresh's status, or null when it cannot be read: the next refresh check writes a new one. */
+function readRefreshStatus(dir) {
+  try { return readJson(join(dir, 'refresh.json'), null); } catch { return null; }
+}
+
 /** Everything the monitor needs, read without touching the database. */
 export function readLedger(dir = LEDGER_DIR) {
   const groups = readJson(join(dir, 'request-groups.json'), emptyGroups());
@@ -612,7 +617,7 @@ export function readLedger(dir = LEDGER_DIR) {
     if (entry?.groupId && groups.groups[entry.groupId]) progress[entry.groupId] = { ...entry, title: groups.groups[entry.groupId].title };
   }
   return {
-    groups, progress, story: readJson(join(dir, 'story.json'), null), refresh: readJson(join(dir, 'refresh.json'), null),
+    groups, progress, story: readJson(join(dir, 'story.json'), null), refresh: readRefreshStatus(dir),
     agentWrittenPromptIds: new Set(readJson(join(dir, AGENT_WRITTEN_PROMPTS_FILE), { promptIds: [] }).promptIds ?? []),
   };
 }

@@ -130,6 +130,32 @@ describe('automatic refresh scheduler', () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
+  it('the scheduled check replaces a refresh.json that cannot be read, whether or not something is due', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-'));
+    try {
+      const database = fixtureDatabase();
+      saveGoals(database, new Date(NOW).toISOString());
+      writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations: {}, groups: {}, ignored: { [key('a')]: 'not a goal' } }));
+      const notJson = Buffer.from([0xef, 0xbf, 0xbd, 0xff, 0x00]);
+      writeFileSync(join(dir, 'refresh.json'), notJson);
+      const logs: string[] = [];
+      let runs = 0;
+      const worker = new AutoRefreshWorker({ localDeviceId: () => '', dir, openDatabase: handle(database), now: () => NOW, log: (_level: string, message: string) => { logs.push(message); }, runJob: async () => { runs++; return { state: 'ok', agent: null, result: null, error: null }; } });
+      expect(worker.status).toThrow();
+      expect(await worker.check()).toBe('idle');
+      expect(worker.status()).toMatchObject({ state: 'idle', needs: { needed: false } });
+      expect(logs).toContain('Work view refresh status could not be read; a new status replaces it');
+
+      // Something due: the run starts and writes its own status over the bad file.
+      writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations: {}, groups: {}, ignored: {} }));
+      writeFileSync(join(dir, 'refresh.json'), notJson);
+      expect(await worker.check()).toBe('ok');
+      expect(runs).toBe(1);
+      expect(worker.status()).toMatchObject({ state: 'ok' });
+      expect(worker.status().failures).toBeUndefined();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it('repairs a run cut off by a restart at startup even with scheduled refresh off, so My Work never stays stuck on it', () => {
     const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-'));
     try {
