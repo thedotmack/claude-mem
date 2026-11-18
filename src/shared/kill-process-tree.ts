@@ -41,9 +41,37 @@ const TASKKILL_NOT_FOUND_EXIT = 128;
  */
 const TASKKILL_NOT_FOUND_PATTERN = /not found|no running instance|no tasks/i;
 
+/**
+ * `taskkill /T` exits 255 when one or more members of the tree could not be
+ * terminated. The reason ("no running instance" or "access denied") is in the
+ * Windows display language, so the pattern above misses it on most installs.
+ * The PIDs in each line are ASCII digits in every console code page, so the
+ * tree is checked by liveness instead of by wording.
+ */
+const TASKKILL_PARTIAL_FAILURE_EXIT = 255;
+
+/**
+ * Longest wait for the named PIDs to exit after a partial taskkill failure.
+ * `taskkill /F` ends each process with TerminateProcess, which is asynchronous,
+ * so a PID it just terminated can still answer `process.kill(pid, 0)` briefly.
+ * The wait returns as soon as every named PID is gone. No measurement backs the
+ * 1 s bound; it only has to outlast that asynchronous teardown. Hitting it
+ * throws ProcessTreeKillError, so a tree that is still running fails loudly.
+ */
+const TASKKILL_PARTIAL_FAILURE_SETTLE_MS = 1_000;
+
 /** Longest graceful-mode wait between SIGTERM and SIGKILL. */
 const GRACEFUL_SETTLE_MS = 500;
 const GRACEFUL_SETTLE_POLL_MS = 10;
+
+function isAlive(target: number): boolean {
+  try {
+    process.kill(target, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
 
 /**
  * Wait up to `maxWaitMs` for every signalled PID to be gone, returning as soon
@@ -53,14 +81,6 @@ const GRACEFUL_SETTLE_POLL_MS = 10;
  */
 async function waitForSignalledProcessesToExit(pids: number[], maxWaitMs: number): Promise<void> {
   const deadline = Date.now() + maxWaitMs;
-  const isAlive = (target: number): boolean => {
-    try {
-      process.kill(target, 0);
-      return true;
-    } catch (error) {
-      return (error as NodeJS.ErrnoException).code === 'EPERM';
-    }
-  };
   while (pids.some(isAlive)) {
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) return;
@@ -126,6 +146,43 @@ export interface KillProcessTreeOptions {
 }
 
 /**
+ * Return when a failed `taskkill /T /F` only means the tree was already gone;
+ * throw ProcessTreeKillError when it may still be running. Exported for tests.
+ */
+export async function handleTaskkillFailure(pid: number, error: unknown): Promise<void> {
+  const code = (error as { code?: number | string }).code;
+  const stderr = String((error as { stderr?: unknown }).stderr ?? '');
+  const message = error instanceof Error ? error.message : String(error);
+
+  // Already gone is the expected, tolerated case.
+  if (code === TASKKILL_NOT_FOUND_EXIT || TASKKILL_NOT_FOUND_PATTERN.test(`${stderr} ${message}`)) {
+    logger.debug('PROCESS', 'taskkill reported the process was already gone', { pid });
+    return;
+  }
+
+  // A partial failure where the root and every PID taskkill names are gone
+  // is the same tolerated case, reported in another language. A PID that
+  // is still alive (access denied) keeps it an error.
+  if (code === TASKKILL_PARTIAL_FAILURE_EXIT) {
+    const namedPids = [pid, ...pidsNamedByTaskkill(stderr)];
+    await waitForSignalledProcessesToExit(namedPids, TASKKILL_PARTIAL_FAILURE_SETTLE_MS);
+    if (!namedPids.some(isAlive)) {
+      logger.debug('PROCESS', 'taskkill exited 255, but every PID it named is gone', { pid, namedPids });
+      return;
+    }
+  }
+
+  // Anything else — access denied, a timeout, a wedged /T walk — means the
+  // tree may still be running. Surfacing it is the whole point: callers
+  // like `server stop` must not report success over a failed kill.
+  throw new ProcessTreeKillError(
+    pid,
+    `taskkill failed for PID ${pid} (exit ${String(code)}): ${stderr.trim() || message}`,
+    { cause: error }
+  );
+}
+
+/**
  * Kill a process and all its descendants (tree-kill).
  *
  * POSIX: collects the descendant set with `pgrep -P` walks and signals leaves
@@ -170,24 +227,7 @@ export async function killProcessTree(
         windowsHide: true
       });
     } catch (error) {
-      const code = (error as { code?: number | string }).code;
-      const stderr = String((error as { stderr?: unknown }).stderr ?? '');
-      const message = error instanceof Error ? error.message : String(error);
-
-      // Already gone is the expected, tolerated case.
-      if (code === TASKKILL_NOT_FOUND_EXIT || TASKKILL_NOT_FOUND_PATTERN.test(`${stderr} ${message}`)) {
-        logger.debug('PROCESS', 'taskkill reported the process was already gone', { pid });
-        return;
-      }
-
-      // Anything else — access denied, a timeout, a wedged /T walk — means the
-      // tree may still be running. Surfacing it is the whole point: callers
-      // like `server stop` must not report success over a failed kill.
-      throw new ProcessTreeKillError(
-        pid,
-        `taskkill failed for PID ${pid} (exit ${String(code)}): ${stderr.trim() || message}`,
-        { cause: error }
-      );
+      await handleTaskkillFailure(pid, error);
     }
     return;
   }
@@ -316,6 +356,19 @@ export async function killProcessTree(
       { cause: error }
     );
   }
+}
+
+/**
+ * The PID each taskkill stderr line says could not be terminated: the line's
+ * first number. The second number, in "(child process of PID N)", is that
+ * process's parent. For the root it is the root's own parent, outside the tree
+ * and often the worker itself, which is alive, so reading it as a tree member
+ * made a harmless teardown throw.
+ */
+function pidsNamedByTaskkill(stderr: string): number[] {
+  const firstNumbers = stderr.split(/\r?\n/).map(line => line.match(/\d+/)?.[0]).filter((digits): digits is string => digits !== undefined);
+  return [...new Set(firstNumbers.map(digits => Number.parseInt(digits, 10)))]
+    .filter(namedPid => Number.isSafeInteger(namedPid) && namedPid > 0);
 }
 
 /** Descendant PID paired with the start token that proves its identity. */
