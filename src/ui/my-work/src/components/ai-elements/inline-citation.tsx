@@ -74,7 +74,7 @@ export const InlineCitationCardTrigger = ({
   return (
     <PopoverTrigger asChild>
       <Button
-        className={cn("group/citation ml-1 h-auto min-h-6 gap-1 rounded-full px-2 py-0.5 align-baseline text-xs font-normal", className)}
+        className={cn("group/citation ml-1 h-auto gap-1 rounded-full px-2 py-0.5 align-baseline text-xs font-normal md:not-pointer-coarse:min-h-6", className)}
         size="xs"
         variant="outline"
         {...props}
