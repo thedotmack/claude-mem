@@ -21,7 +21,7 @@ import { isPidAlive } from '../../supervisor/process-registry.js';
 import { ENV_PREFIXES, ENV_EXACT_MATCHES } from '../../supervisor/env-sanitizer.js';
 import { flushResponseThen } from './flushResponseThen.js';
 import { getUptimeSeconds } from '../../shared/uptime.js';
-import { snapshotDependencyHealth, type DependencyHealthSnapshot } from '../../shared/dependency-health.js';
+import { snapshotDependencyHealth, type DependencyHealthSnapshot, type DependencyStatus } from '../../shared/dependency-health.js';
 import { globalRateLimitStore } from '../worker/RateLimitStore.js';
 import type { ObservationQueueHealth } from '../../server/queue/queue-health-types.js';
 import type { ChromaCrashState } from '../sync/ChromaMcpManager.js';
@@ -175,6 +175,40 @@ export function applySecurityHeaders(res: Response): void {
   res.setHeader('Origin-Agent-Cluster', '?1');
   // Helmet removes this fingerprinting header by default.
   res.removeHeader('X-Powered-By');
+}
+
+/**
+ * `/api/health` is unauthenticated on purpose: clients probe it before they
+ * know the worker is up, the installer and the port logic identify the worker
+ * by it, and it is the one route the local API token exempts
+ * (shared/local-api-token.ts). So it publishes the state a probe reads, not
+ * the deployment's internals. #6195 drew the same line for `/v1/info`; here
+ * the internals are the provider auth method (whether authentication is
+ * configured at all), the queue backend's address and key namespace, and the
+ * absolute paths of the worker and each dependency's resolved executable.
+ * Those stay on the loopback-only `/api/admin/doctor`.
+ */
+function probeQueueHealth(
+  queue: ObservationQueueHealth | null,
+): { engine: 'bullmq'; lanes?: ObservationQueueHealth['lanes'] } | null {
+  if (!queue) return null;
+  return queue.lanes ? { engine: queue.engine, lanes: queue.lanes } : { engine: queue.engine };
+}
+
+/** The dependency rows a probe reads, without the resolved executable and its fingerprint. */
+function probeDependencies(
+  snapshot: DependencyHealthSnapshot,
+): { degraded: boolean; statuses: Array<Omit<DependencyStatus, 'executablePath' | 'executableFingerprint'>> } {
+  return {
+    degraded: snapshot.degraded,
+    statuses: snapshot.statuses.map(status => ({
+      dependency: status.dependency,
+      kind: status.kind,
+      message: status.message,
+      ...(status.remediation !== undefined ? { remediation: status.remediation } : {}),
+      recordedAtMs: status.recordedAtMs,
+    })),
+  };
 }
 
 export class Server {
@@ -462,11 +496,11 @@ export class Server {
       const dependencyHealth = this.options.getDependencyHealth
         ? this.options.getDependencyHealth()
         : snapshotDependencyHealth();
+      const probeQueue = probeQueueHealth(queueHealth);
       res.status(queueDegraded ? 503 : 200).json({
         status: queueDegraded ? 'degraded' : 'ok',
         ...(this.options.runtime ? { runtime: this.options.runtime } : {}),
         version: BUILT_IN_VERSION,
-        workerPath: this.options.workerPath,
         uptime: getUptimeSeconds(this.startTime),
         managed: process.env.CLAUDE_MEM_MANAGED === 'true',
         hasIpc: typeof process.send === 'function',
@@ -474,10 +508,12 @@ export class Server {
         pid: process.pid,
         initialized: this.options.getInitializationComplete(),
         mcpReady: this.options.getMcpReady(),
-        ai: this.options.getAiStatus(),
-        dependencies: dependencyHealth,
+        // The provider's name is probe state; the auth method says whether
+        // authentication is configured at all, so it stays off this route.
+        ai: { provider: this.options.getAiStatus().provider },
+        dependencies: probeDependencies(dependencyHealth),
         rateLimits: globalRateLimitStore.getMostRecentByWindow(),
-        ...(queueHealth ? { queue: queueHealth } : {}),
+        ...(probeQueue ? { queue: probeQueue } : {}),
       });
     });
 
@@ -566,7 +602,7 @@ export class Server {
       }
     });
 
-    this.app.get('/api/admin/doctor', requireLocalhost, (_req: Request, res: Response) => {
+    this.app.get('/api/admin/doctor', requireLocalhost, async (_req: Request, res: Response) => {
       const supervisor = getSupervisor();
       const registry = supervisor.getRegistry();
       const allRecords = registry.getAll();
@@ -590,6 +626,9 @@ export class Server {
       const minutes = Math.floor((uptimeSeconds % 3600) / 60);
       const formattedUptime = hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
       const chromaCrashState = this.options.getChromaCrashState?.();
+      const queueHealth = this.options.getQueueHealth
+        ? await this.options.getQueueHealth()
+        : null;
 
       res.json({
         supervisor: {
@@ -604,6 +643,11 @@ export class Server {
           dependencies: this.options.getDependencyHealth
             ? this.options.getDependencyHealth()
             : snapshotDependencyHealth(),
+          // The detail /api/health deliberately leaves off its unauthenticated
+          // answer. This route is loopback-only, so `worker status` can read it
+          // here without publishing it to every peer on the network.
+          ...(this.options.workerPath ? { workerPath: this.options.workerPath } : {}),
+          ...(queueHealth ? { queue: queueHealth } : {}),
           ...(chromaCrashState
             ? { chroma: chromaCrashState }
             : {}),

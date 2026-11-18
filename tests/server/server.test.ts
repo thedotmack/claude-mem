@@ -207,7 +207,79 @@ describe('Server', () => {
 
       expect(response.status).toBe(503);
       expect(body.status).toBe('degraded');
-      expect(body.queue.redis.status).toBe('error');
+      expect(body.queue.engine).toBe('bullmq');
+      // The unauthenticated probe does not publish the queue backend's address
+      // or key namespace; the loopback-only doctor route does (next test).
+      expect(body.queue.redis).toBeUndefined();
+    });
+
+    it('answers the unauthenticated probe with state, not deployment internals', async () => {
+      server = new Server({
+        ...mockOptions,
+        getQueueHealth: () => ({
+          engine: 'bullmq',
+          redis: { status: 'ok', mode: 'external', host: 'valkey', port: 6379, prefix: 'claude_mem' },
+        }),
+        getDependencyHealth: () => ({
+          degraded: false,
+          statuses: [{
+            dependency: 'claude_cli',
+            kind: 'setup_required',
+            message: 'not found',
+            executablePath: '/home/node/.local/bin/claude',
+            executableFingerprint: 'abc123',
+            recordedAtMs: 1,
+          }],
+        }),
+      });
+      const testPort = await listenOnEphemeralPort(server);
+
+      const response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
+      const body = await response.json();
+
+      expect(response.status).toBe(200);
+      // What a probe reads stays.
+      expect(body.status).toBe('ok');
+      expect(body.queue.engine).toBe('bullmq');
+      expect(body.dependencies.degraded).toBe(false);
+      expect(body.dependencies.statuses[0].message).toBe('not found');
+      // Deployment internals do not: the auth method, the queue's address and
+      // key namespace, the install path, and each resolved executable.
+      expect(body.workerPath).toBeUndefined();
+      expect(body.ai.authMethod).toBeUndefined();
+      expect(body.queue.redis).toBeUndefined();
+      expect(body.dependencies.statuses[0].executablePath).toBeUndefined();
+      expect(body.dependencies.statuses[0].executableFingerprint).toBeUndefined();
+    });
+
+    it('keeps the worker path and queue address on the loopback-only doctor route', async () => {
+      server = new Server({
+        ...mockOptions,
+        getQueueHealth: () => ({
+          engine: 'bullmq',
+          redis: {
+            status: 'error',
+            mode: 'external',
+            host: '127.0.0.1',
+            port: 6379,
+            prefix: 'test_prefix',
+            error: 'connection refused',
+          },
+        }),
+      });
+      const testPort = await listenOnEphemeralPort(server);
+
+      const response = await fetch(`http://127.0.0.1:${testPort}/api/admin/doctor`);
+      const body = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(body.health.workerPath).toBe('/test/worker-service.cjs');
+      expect(body.health.queue.redis).toMatchObject({
+        status: 'error',
+        host: '127.0.0.1',
+        port: 6379,
+        prefix: 'test_prefix',
+      });
     });
   });
 
