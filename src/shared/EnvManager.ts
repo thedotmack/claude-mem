@@ -14,7 +14,6 @@ import {
   decodeJwtExpMs,
   writeStaleMarker,
   clearStaleMarker,
-  noteUnreadableClaudeLogin,
   resolveClaudeCredentialProfile,
   resolveEffectiveClaudeConfigDir,
   type ClaudeCredentialProfile,
@@ -401,8 +400,8 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
  *   - expired: do NOT inject. Log re-login message. Write stale marker so
  *     the session-start hook can surface the message to the user.
  *   - absent: proceed without the token. Worker may fall back to
- *     ANTHROPIC_API_KEY or other auth. Without one, log a WARN and note the
- *     reason for the session notice (#6319).
+ *     ANTHROPIC_API_KEY or other auth. Without one, log a WARN and pass the
+ *     reason to onUnusableLogin for the session notice (#6319).
  *   - expired because the CLI ended the login (no refresh token left): the
  *     stale marker as for expired, then the absent handling (#6319).
  *
@@ -418,7 +417,19 @@ export async function buildIsolatedEnvWithFreshOAuth(
    * Either keeps the primary credential when the other one is missing, and
    * both are ignored under ANTHROPIC_BASE_URL.
    */
-  { standIn }: { standIn?: ClaudeCredential } = {},
+  {
+    standIn,
+    onUnusableLogin,
+  }: {
+    standIn?: ClaudeCredential;
+    /**
+     * Called with the reason when this spawn leaves the child no login it can
+     * use and no explicit credential stands in (#6319): the store held none,
+     * the CLI had ended it, or the read failed. The caller keeps it on the
+     * run, so a "Not logged in" reply can be explained per session.
+     */
+    onUnusableLogin?: (reason: string) => void;
+  } = {},
 ): Promise<Record<string, string>> {
   const isolatedEnv = buildIsolatedEnv(includeCredentials);
 
@@ -427,8 +438,6 @@ export async function buildIsolatedEnvWithFreshOAuth(
   delete isolatedEnv.CLAUDE_CODE_OAUTH_TOKEN;
 
   if (!includeCredentials) return isolatedEnv;
-  // Set again below only when this spawn ends up with no login it can use.
-  noteUnreadableClaudeLogin(null);
 
   // Custom gateway: never inject OAuth (would leak the user's Anthropic OAuth
   // token to a third-party gateway). The user must explicitly configure a
@@ -509,7 +518,7 @@ export async function buildIsolatedEnvWithFreshOAuth(
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
     logger.warn('OAUTH', 'OAuth token read failed unexpectedly; proceeding without token', {}, err);
-    if (!hasExplicitCredentials) noteUnreadableClaudeLogin(`the credential store read failed: ${err.message}`);
+    if (!hasExplicitCredentials) onUnusableLogin?.(`the credential store read failed: ${err.message}`);
     return restoreExplicitCredentials('token read failed');
   }
 
@@ -555,7 +564,7 @@ export async function buildIsolatedEnvWithFreshOAuth(
       `No Claude Code login could be read for the observer (${result.reason}); the observer will rely on the CLI finding its own login. If observations fail with "Not logged in", put a \`claude setup-token\` token in ~/.claude-mem/.env as CLAUDE_CODE_OAUTH_TOKEN.`,
     );
   }
-  noteUnreadableClaudeLogin(result.reason);
+  onUnusableLogin?.(result.reason);
   return isolatedEnv;
 }
 

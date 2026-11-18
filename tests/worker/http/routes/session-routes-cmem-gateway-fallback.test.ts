@@ -87,7 +87,6 @@ import {
   resetQuotaCooldownsForTesting,
 } from '../../../../src/shared/quota-cooldown.js';
 import { CLAUDE_LOGIN_UNREADABLE_CODE, OBSERVER_HEALTH_FILENAME, readObserverHealth } from '../../../../src/shared/observer-health.js';
-import { noteUnreadableClaudeLogin } from '../../../../src/shared/oauth-token.js';
 import { RELAYED_TEXT_MAX_CHARS } from '../../../../src/shared/relayed-text.js';
 import { observerHealthWarning } from '../../../../src/services/context/ContextBuilder.js';
 import { PRO_FALLBACK_NOTICE_MARKER } from '../../../../src/shared/cmem-gateway.js';
@@ -1046,9 +1045,6 @@ describe('SessionRoutes — cmem gateway integrity', () => {
   });
 
   describe('a signed-out Claude observer (#4150)', () => {
-    // The spawn-time note is worker memory; another file's spawn may have left one.
-    beforeEach(() => noteUnreadableClaudeLogin(null));
-
     /**
      * What ResponseProcessor does with the CLI's "Not logged in · Please run
      * /login": the batch goes back to pending and the run pauses without
@@ -1096,16 +1092,12 @@ describe('SessionRoutes — cmem gateway integrity', () => {
       seedSettings({ CLAUDE_MEM_PROVIDER: 'claude' });
       const { routes, claudeAgent, discards } = makeHarness([id]);
       claudeAgent.startSession.mockImplementationOnce((s: ActiveSession) => {
-        // What the spawn noted when it read the store (EnvManager).
-        noteUnreadableClaudeLogin(reason);
+        // What ClaudeProvider keeps on the run when the spawn found no usable login.
+        s.unusableClaudeLoginReason = reason;
         return answerSignedOut(s);
       });
-      try {
-        await routes.ensureGeneratorRunning(id, 'observation');
-        await settle(id);
-      } finally {
-        noteUnreadableClaudeLogin(null);
-      }
+      await routes.ensureGeneratorRunning(id, 'observation');
+      await settle(id);
 
       const health = readObserverHealth();
       expect(health?.lastErrorKind).toBe('auth_invalid');

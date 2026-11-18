@@ -731,25 +731,6 @@ export async function readClaudeOAuthToken(
 }
 
 /**
- * #6319 — why the last spawn-time read left the Claude child with no login it
- * can use: the store held none, or the CLI had ended it, and no explicit
- * credential stood in. Null when the child got a credential. The child then
- * answers "Not logged in · Please run /login", and the session notice uses
- * this to say claude-mem could not read the login instead of sending the user
- * to a /login that may already be done. Worker memory only: the read and the
- * failure it explains happen in the same process.
- */
-let unreadableClaudeLoginReason: string | null = null;
-
-export function noteUnreadableClaudeLogin(reason: string | null): void {
-  unreadableClaudeLoginReason = reason;
-}
-
-export function readUnreadableClaudeLoginReason(): string | null {
-  return unreadableClaudeLoginReason;
-}
-
-/**
  * Marker file pattern: when a recent spawn returned `expired`, write a marker
  * at `${DATA_DIR}/oauth-stale.marker` so the session-start hook can surface a
  * clear "run /login in Claude Code" message to the user. The marker is

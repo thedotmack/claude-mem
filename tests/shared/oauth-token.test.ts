@@ -15,7 +15,6 @@ import {
   readMacOsKeychain,
   readClaudeCredentialsFile,
   sanitizeMacOsKeychainAccount,
-  noteUnreadableClaudeLogin,
 } from '../../src/shared/oauth-token.js';
 import { paths, CLAUDE_CONFIG_DIR, DEFAULT_CLAUDE_CONFIG_DIR } from '../../src/shared/paths.js';
 import { buildIsolatedEnvWithFreshOAuth } from '../../src/shared/EnvManager.js';
@@ -60,8 +59,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  // buildIsolatedEnvWithFreshOAuth notes an unusable login in worker memory (#6319).
-  noteUnreadableClaudeLogin(null);
   dataDirSpy?.mockRestore();
   settingsSpy?.mockRestore();
   settingsSpy = undefined;

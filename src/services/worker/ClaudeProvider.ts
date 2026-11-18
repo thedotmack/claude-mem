@@ -454,8 +454,10 @@ export class ClaudeProvider {
     // it in observer health.
     let responseProcessingThrew = false;
     try {
+      session.unusableClaudeLoginReason = null;
       const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth(true, {
         standIn: session.claudeAuthOverride ?? undefined,
+        onUnusableLogin: reason => { session.unusableClaudeLoginReason = reason; },
       }));
       session.observerAuth = observerCredentialOf(isolatedEnv);
       // A quota-fallback run is labelled by what it actually bills: the quota

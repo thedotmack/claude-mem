@@ -26,7 +26,6 @@ import {
 import { telemetryBuffer } from '../../telemetry/buffer.js';
 import { observerUsageLogFields } from '../observer-usage.js';
 import { AMBIGUOUS_QUOTA_MESSAGE, CLAUDE_LOGIN_UNREADABLE_CODE, recordObserverFailure, type ObserverQuotaReason } from '../../../shared/observer-health.js';
-import { readUnreadableClaudeLoginReason } from '../../../shared/oauth-token.js';
 import { explainQuotaAbort, globalRateLimitStore } from '../RateLimitStore.js';
 import {
   CODEX_CLI_SETUP_REMEDIATION,
@@ -472,7 +471,7 @@ export async function startGeneratorWithProvider(
       // When the spawn already knew it had found no usable login (#6319),
       // the notice says that, with the item it read, instead: /login cannot
       // help a user whose terminal is already signed in to another profile.
-      const unreadableLoginReason = reason === 'auth:observer_text' ? readUnreadableClaudeLoginReason() : null;
+      const unreadableLoginReason = session.unusableClaudeLoginReason ?? null;
       if (reason === 'auth:observer_text' && provider === 'claude' && !failureBooked) {
         recordObserverFailure(provider, unreadableLoginReason ? {
           message: `claude-mem could not read your Claude Code login: ${unreadableLoginReason}`,

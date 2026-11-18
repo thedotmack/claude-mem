@@ -45,6 +45,12 @@ export interface ActiveSession {
    */
   observerAuth?: ClaudeCredential;
   /**
+   * Why the latest Claude generator was spawned with no login it could use
+   * (#6319), else null. Fixed at spawn like observerAuth; GeneratorRunner
+   * words a "Not logged in" reply with it.
+   */
+  unusableClaudeLoginReason?: string | null;
+  /**
    * The credential admission runs this session on while the primary one's
    * quota breaker holds (CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD), else null.
    * Cleared on every normal admission, so a recovered primary is used again.
