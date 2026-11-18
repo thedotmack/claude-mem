@@ -190,6 +190,12 @@ describe('isWorkerScriptOutsideRoot', () => {
     expect(isWorkerScriptOutsideRoot(scriptAt(marketplaceRoot), cacheRoot)).toBe(true);
   });
 
+  it('is false for an empty worker path (the server runtime reports one)', () => {
+    const root = join(base, 'cache', 'plugin');
+    scriptAt(root);
+    expect(isWorkerScriptOutsideRoot('', root)).toBe(false);
+  });
+
   it('is false when the resolved root reaches the worker root through a symlink', () => {
     const realRoot = join(base, 'real', 'plugin');
     const script = scriptAt(realRoot);

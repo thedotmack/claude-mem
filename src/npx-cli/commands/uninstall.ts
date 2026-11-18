@@ -115,22 +115,36 @@ function legacyAliasCandidateFiles(home: string): string[] {
  * A definition that spans multiple lines is reported too: doctor's warning
  * is the prompt to remove that one by hand, because the strip leaves such
  * files untouched (see aliasDefinitionSpansMultipleLines).
+ * `spansMultipleLines` marks those files, so doctor can tell the user to
+ * remove that alias by hand instead of pointing at `install`.
  * Unreadable files are skipped; the strip path reports its own read errors.
  */
-export function findLegacyClaudeMemAlias(home: string = homedir()): string[] {
-  const found: string[] = [];
+export interface LegacyClaudeMemAliasFile {
+  filePath: string;
+  spansMultipleLines: boolean;
+}
+
+export function findLegacyClaudeMemAlias(home: string = homedir()): LegacyClaudeMemAliasFile[] {
+  const found: LegacyClaudeMemAliasFile[] = [];
   for (const filePath of legacyAliasCandidateFiles(home)) {
     if (!existsSync(filePath)) continue;
     try {
-      const hasAlias = readFileSync(filePath, 'utf-8')
-        .split('\n')
-        .some((line) => LEGACY_ALIAS_LINE_REGEX.test(line));
-      if (hasAlias) found.push(filePath);
+      const lines = readFileSync(filePath, 'utf-8').split('\n');
+      const aliasIndexes = legacyAliasLineIndexes(lines);
+      if (aliasIndexes.length === 0) continue;
+      found.push({
+        filePath,
+        spansMultipleLines: aliasIndexes.some((index) => aliasDefinitionSpansMultipleLines(lines, index)),
+      });
     } catch {
       continue;
     }
   }
   return found;
+}
+
+function legacyAliasLineIndexes(lines: string[]): number[] {
+  return lines.flatMap((line, index) => (LEGACY_ALIAS_LINE_REGEX.test(line) ? [index] : []));
 }
 
 /**
@@ -177,14 +191,14 @@ export function stripLegacyClaudeMemAlias(home: string = homedir()): void {
     try {
       content = readFileSync(filePath, 'utf-8');
     } catch (error: unknown) {
-      console.warn(`[uninstall] Could not read ${filePath}:`, error instanceof Error ? error.message : String(error));
+      console.warn(`[claude-mem] Could not read ${filePath}:`, error instanceof Error ? error.message : String(error));
       continue;
     }
     const lines = content.split('\n');
-    const aliasIndexes = lines.flatMap((line, index) => (aliasLineRegex.test(line) ? [index] : []));
+    const aliasIndexes = legacyAliasLineIndexes(lines);
     if (aliasIndexes.length === 0) continue;
     if (aliasIndexes.some((index) => aliasDefinitionSpansMultipleLines(lines, index))) {
-      console.warn(`[uninstall] Legacy claude-mem alias in ${filePath} spans multiple lines; leaving the file untouched — remove the alias manually, then open a new shell.`);
+      console.warn(`[claude-mem] Legacy claude-mem alias in ${filePath} spans multiple lines; leaving the file untouched — remove the alias manually, then open a new shell.`);
       continue;
     }
     const filtered = lines.filter((line) => !aliasLineRegex.test(line));
@@ -194,7 +208,7 @@ export function stripLegacyClaudeMemAlias(home: string = homedir()): void {
       writeTextFileAtomic(filePath, filtered.join('\n'));
       console.error(`Removed legacy claude-mem alias from ${filePath}`);
     } catch (error: unknown) {
-      console.warn(`[uninstall] Could not rewrite ${filePath}:`, error instanceof Error ? error.message : String(error));
+      console.warn(`[claude-mem] Could not rewrite ${filePath}:`, error instanceof Error ? error.message : String(error));
     }
   }
 }

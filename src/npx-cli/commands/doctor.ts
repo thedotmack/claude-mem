@@ -47,7 +47,7 @@ import { findCodexExecutablePath, isCodexOnPath } from '../install/tool-path.js'
 import { getCredential } from '../../shared/EnvManager.js';
 import { buildKeyPool } from '../../shared/api-key-pool.js';
 import { resolveOpenAICompatPreset } from '../../shared/openai-compat-presets.js';
-import { findLegacyClaudeMemAlias } from './uninstall.js';
+import { findLegacyClaudeMemAlias, type LegacyClaudeMemAliasFile } from './uninstall.js';
 import { treeSitterCliBinaryPath } from '../../services/smart-file-read/tree-sitter-cli-provision.js';
 import { checkTreeSitterCliLoadable, resolveTreeSitterBinPathFor, TREE_SITTER_CLI_PATH_WORKAROUND } from '../../services/smart-file-read/tree-sitter-bin-path.js';
 import { resolveDataDir } from '../../shared/paths.js';
@@ -362,15 +362,27 @@ const MISSING_DEPENDENCIES_SHOWN = 5;
  * clone (#6228). Doctor only reports it — `install`/`update` strip it.
  * Exported for tests.
  */
-export function legacyAliasCheck(aliasFiles: string[]): CheckResult {
+export function legacyAliasCheck(aliasFiles: LegacyClaudeMemAliasFile[]): CheckResult {
   const name = 'Legacy shell alias';
   if (aliasFiles.length === 0) {
     return { name, status: 'ok', detail: 'none', required: false };
   }
+  // install strips only single-line definitions: deleting the first line of a
+  // multiline one would break the shell rc, so those are removed by hand.
+  const strippable = aliasFiles.filter((file) => !file.spansMultipleLines).map((file) => file.filePath);
+  const byHand = aliasFiles.filter((file) => file.spansMultipleLines).map((file) => file.filePath);
+  const fixes = [
+    ...(strippable.length > 0
+      ? [`run \`npx claude-mem install\` to remove it from ${strippable.join(', ')}`]
+      : []),
+    ...(byHand.length > 0
+      ? [`remove it by hand from ${byHand.join(', ')} (it spans multiple lines, so install leaves it alone)`]
+      : []),
+  ];
   return {
     name,
     status: 'warn',
-    detail: `alias claude-mem= in ${aliasFiles.join(', ')} shadows the launcher — run \`npx claude-mem install\` to remove it, then open a new shell`,
+    detail: `alias claude-mem= in ${aliasFiles.map((file) => file.filePath).join(', ')} shadows the launcher — ${fixes.join('; ')}, then open a new shell`,
     required: false,
   };
 }

@@ -812,9 +812,12 @@ function comparablePath(p: string): string {
  * root than the resolved one — the leftover-alias case of #6228, where the
  * worker runs out of the marketplace clone while installs resolve to the
  * cache. Realpaths are compared when they exist, so a root reached through
- * a symlink does not warn about itself.
+ * a symlink does not warn about itself. An empty path is no answer: the
+ * server runtime reports `workerPath: ''`, and resolving '' compares the
+ * current directory, which would warn about nothing.
  */
 export function isWorkerScriptOutsideRoot(scriptPath: string, resolvedRoot: string): boolean {
+  if (!scriptPath) return false;
   return comparablePath(pluginRootOfWorkerScript(scriptPath)) !== comparablePath(resolvedRoot);
 }
 

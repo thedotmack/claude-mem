@@ -90,7 +90,10 @@ describe('findLegacyClaudeMemAlias', () => {
     writeFileSync(bashrc, [aliasLine, ''].join('\n'), 'utf-8');
     writeFileSync(zshrc, ['export EDITOR=vim', `  ${aliasLine}`, ''].join('\n'), 'utf-8');
 
-    expect(findLegacyClaudeMemAlias(home)).toEqual([bashrc, zshrc]);
+    expect(findLegacyClaudeMemAlias(home)).toEqual([
+      { filePath: bashrc, spansMultipleLines: false },
+      { filePath: zshrc, spansMultipleLines: false },
+    ]);
   });
 
   it('leaves the files it reads untouched', () => {
@@ -103,7 +106,7 @@ describe('findLegacyClaudeMemAlias', () => {
     expect(readFileSync(bashrc, 'utf-8')).toBe(content);
   });
 
-  it('still names a file whose alias definition spans multiple lines', () => {
+  it('still names a file whose alias definition spans multiple lines, and marks it', () => {
     const bashrc = path.join(home, '.bashrc');
     writeFileSync(bashrc, [
       "alias claude-mem='bun ~/.claude/plugins/marketplaces/",
@@ -111,7 +114,7 @@ describe('findLegacyClaudeMemAlias', () => {
       '',
     ].join('\n'), 'utf-8');
 
-    expect(findLegacyClaudeMemAlias(home)).toEqual([bashrc]);
+    expect(findLegacyClaudeMemAlias(home)).toEqual([{ filePath: bashrc, spansMultipleLines: true }]);
   });
 });
 

@@ -249,12 +249,34 @@ describe('npx doctor legacy shell alias', () => {
   });
 
   it('warns, names the files, and points at the command that strips the alias', () => {
-    const result = legacyAliasCheck(['/home/u/.bashrc', '/home/u/.zshrc']);
+    const result = legacyAliasCheck([
+      { filePath: '/home/u/.bashrc', spansMultipleLines: false },
+      { filePath: '/home/u/.zshrc', spansMultipleLines: false },
+    ]);
     expect(result.status).toBe('warn');
     expect(result.required).toBe(false);
     expect(result.detail).toContain('/home/u/.bashrc');
     expect(result.detail).toContain('/home/u/.zshrc');
     expect(result.detail).toContain('npx claude-mem install');
+  });
+
+  // install leaves a multiline definition alone (deleting its first line would
+  // break the shell rc), so pointing at install would never fix it.
+  it('tells the user to remove a multiline alias by hand, not to run install', () => {
+    const result = legacyAliasCheck([{ filePath: '/home/u/.bashrc', spansMultipleLines: true }]);
+    expect(result.status).toBe('warn');
+    expect(result.detail).toContain('/home/u/.bashrc');
+    expect(result.detail).toContain('by hand');
+    expect(result.detail).not.toContain('npx claude-mem install');
+  });
+
+  it('gives each file its own fix when only one alias spans multiple lines', () => {
+    const result = legacyAliasCheck([
+      { filePath: '/home/u/.bashrc', spansMultipleLines: true },
+      { filePath: '/home/u/.zshrc', spansMultipleLines: false },
+    ]);
+    expect(result.detail).toContain('run `npx claude-mem install` to remove it from /home/u/.zshrc');
+    expect(result.detail).toContain('remove it by hand from /home/u/.bashrc');
   });
 });
 
