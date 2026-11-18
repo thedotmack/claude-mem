@@ -112,6 +112,9 @@ function legacyAliasCandidateFiles(home: string): string[] {
  * the marketplace clone's CLI — and, through `start`, its worker — no matter
  * what is installed. Read-only: `doctor` reports these files, while
  * `install`/`update` strip them through stripLegacyClaudeMemAlias below.
+ * A definition that spans multiple lines is reported too: doctor's warning
+ * is the prompt to remove that one by hand, because the strip leaves such
+ * files untouched (see aliasDefinitionSpansMultipleLines).
  * Unreadable files are skipped; the strip path reports its own read errors.
  */
 export function findLegacyClaudeMemAlias(home: string = homedir()): string[] {
@@ -130,6 +133,39 @@ export function findLegacyClaudeMemAlias(home: string = homedir()): string[] {
   return found;
 }
 
+/**
+ * Whether the alias definition starting at `lines[start]` spans more than
+ * that one physical line: a quote opened in the value that does not close
+ * on the same line, or a trailing line-continuation backslash. Deleting
+ * only the opening line of such a definition would leave its remaining
+ * lines and closing quote behind and break the user's next shell, so the
+ * strip below leaves any file carrying one untouched instead.
+ */
+function aliasDefinitionSpansMultipleLines(lines: string[], start: number): boolean {
+  const line = lines[start];
+  const valueStart = line.indexOf('=');
+  const value = valueStart >= 0 ? line.slice(valueStart + 1) : line;
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+  let escaped = false;
+  for (const ch of value) {
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === '\\' && !inSingleQuote) {
+      escaped = true;
+      continue;
+    }
+    if (ch === "'" && !inDoubleQuote) inSingleQuote = !inSingleQuote;
+    else if (ch === '"' && !inSingleQuote) inDoubleQuote = !inDoubleQuote;
+  }
+  if (inSingleQuote || inDoubleQuote) return true;
+  let trailingBackslashes = 0;
+  for (let i = line.length - 1; i >= 0 && line[i] === '\\'; i--) trailingBackslashes++;
+  return trailingBackslashes % 2 === 1;
+}
+
 export function stripLegacyClaudeMemAlias(home: string = homedir()): void {
   const candidateFiles = legacyAliasCandidateFiles(home);
 
@@ -145,8 +181,13 @@ export function stripLegacyClaudeMemAlias(home: string = homedir()): void {
       continue;
     }
     const lines = content.split('\n');
+    const aliasIndexes = lines.flatMap((line, index) => (aliasLineRegex.test(line) ? [index] : []));
+    if (aliasIndexes.length === 0) continue;
+    if (aliasIndexes.some((index) => aliasDefinitionSpansMultipleLines(lines, index))) {
+      console.warn(`[uninstall] Legacy claude-mem alias in ${filePath} spans multiple lines; leaving the file untouched — remove the alias manually, then open a new shell.`);
+      continue;
+    }
     const filtered = lines.filter((line) => !aliasLineRegex.test(line));
-    if (filtered.length === lines.length) continue; 
     try {
       // The user's own shell rc: a crash mid-write must leave the previous
       // contents, never a truncated file, so write through the shared helper.

@@ -3292,13 +3292,6 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   const claudeCodeTooOldWarning = claudeCodeVersionTooOldWarning(detectClaudeCodeVersion());
   if (claudeCodeTooOldWarning) log.warn(claudeCodeTooOldWarning);
 
-  // A pre-12.4.7 `alias claude-mem=` in the shell rc beats PATH, so it shadows
-  // the launcher and roots the CLI — and, through `start`, the worker — in
-  // the marketplace clone (#6228). Uninstall already strips it; install and
-  // update are the commands a user carrying the alias actually runs, so strip
-  // it here too. The strip prints one line per file it rewrites.
-  stripLegacyClaudeMemAlias();
-
   const setupComplete = savedSetup.status === 'complete';
   const browserSetup = deferSetup || resumeSetup || options.setup === 'browser' || shouldUseBrowserSetup({
     interactive: isInteractive, provider: options.provider, noAutoStart: options.noAutoStart,
@@ -3322,6 +3315,15 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
       }
     }
   }
+
+  // A pre-12.4.7 `alias claude-mem=` in the shell rc beats PATH, so it shadows
+  // the launcher and roots the CLI — and, through `start`, the worker — in
+  // the marketplace clone (#6228). Uninstall already strips it; install and
+  // update are the commands a user carrying the alias actually runs, so strip
+  // it here too. The strip runs only after the overwrite confirmation above:
+  // declining or cancelling a reinstall must leave the user's shell files
+  // exactly as they were. The strip prints one line per file it rewrites.
+  stripLegacyClaudeMemAlias();
 
   let selectedIDEs: string[];
   if (options.ide) {
