@@ -2246,14 +2246,21 @@ export class ChromaSync {
 
     let results: any;
     const runQuery = async (nResults: number, where: Record<string, any> | undefined, include: string[]) => {
+      // A semantic lookup can issue multiple MCP requests (over-fetch then
+      // filtered fallback). Quarantine may begin while any one is in flight.
+      this.assertCollectionAvailable();
       const chromaMcp = ChromaMcpManager.getInstance();
-      return await chromaMcp.callTool('chroma_query_documents', {
+      const result = await chromaMcp.callTool('chroma_query_documents', {
         collection_name: this.collectionName,
         query_texts: [query],
         n_results: nResults,
         ...(where && { where }),
         include
       });
+      // Do not return results from a generation that entered recovery while
+      // the request was in flight; callers must use SQLite/FTS5 instead.
+      this.assertCollectionAvailable();
+      return result;
     };
 
     try {

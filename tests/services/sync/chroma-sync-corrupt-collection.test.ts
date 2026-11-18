@@ -474,6 +474,29 @@ describe('ChromaSync corrupt-collection handling (#3202)', () => {
 });
 
 describe('ChromaSync durable containment integration', () => {
+  it('stops semantic re-query after quarantine activates during an in-flight query', async () => {
+    let queries = 0;
+    installCallTool(async (tool) => {
+      if (tool === 'chroma_query_documents') {
+        queries += 1;
+        if (queries > 1) throw new Error('Unprotected follow-up query reached Chroma');
+        ChromaRecoveryHealth.beginDrop('cm__claude-mem');
+        return {
+          ids: [['obs_1_narrative']],
+          metadatas: [[{ sqlite_id: 1, project: 'other', doc_type: 'observation' }]],
+          distances: [[0.1]],
+        };
+      }
+      return {};
+    });
+
+    const sync = new ChromaSync('claude-mem');
+    await expect(sync.queryChroma('quarantine race', 10, { project: 'tiny' }))
+      .rejects.toBeInstanceOf(ChromaUnavailableError);
+    expect(queries).toBe(1);
+    expect(sync.getCollectionRecoveryStatus()).toBe('DROP_PENDING');
+  });
+
   const failure = async (tool: string) => {
     if (tool === 'chroma_add_documents') throw CORRUPT_SEGMENT_ERROR;
     if (tool === 'chroma_delete_collection') throw new Error('unconfirmed delete');
