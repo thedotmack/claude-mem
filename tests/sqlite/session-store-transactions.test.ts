@@ -362,25 +362,65 @@ describe('SessionStore.storeObservations', () => {
 
   it('prepares a turn\'s statements once, not on every stored turn', () => {
     const mem = session('mem-cached-statements');
-    const turn = (promptNumber: number, title: string, toolUseId: string) => store.storeObservations(
-      mem, 'project', [obs({ title, narrative: title, files_read: ['a.ts'] })], summary(), promptNumber, 0,
-      undefined, undefined, {
-        committedToolUses: { platformSource: 'claude', contentSessionId: 'content-mem-cached-statements', toolUseIds: [toolUseId] },
-      });
-    // A first and a repeated stop reach the summary insert and the summary update.
-    turn(1, 'First', 'toolu_1');
-    turn(1, 'First', 'toolu_2');
+    let toolUse = 0;
+    const turn = (promptNumber: number, observations: ReturnType<typeof obs>[]) => {
+      const stored = store.storeObservations(
+        mem, 'project', observations, summary(), promptNumber, 0,
+        undefined, undefined, {
+          committedToolUses: { platformSource: 'claude', contentSessionId: 'content-mem-cached-statements', toolUseIds: [`toolu_${++toolUse}`] },
+        });
+      store.updateDiscoveryTokens(stored.observationIds, stored.summaryId, 100 + toolUse);
+      return stored;
+    };
+    // One prompt's two stops reach every cached statement of the turn: the first inserts the observations and the
+    // summary; the repeat updates the summary, re-finds the exact observation (lookupExistingStmt), takes the old
+    // NUL-tuple hash lookup (`previous`) and merges a same-title variant into it (Tier-0 occurrence_count).
+    const stops = (promptNumber: number, title: string) => {
+      turn(promptNumber, [obs({ title, narrative: title, files_read: ['a.ts'] }), obs({ title: `${title} tuple`, narrative: 'a\x00b' })]);
+      turn(promptNumber, [obs({ title, narrative: title, files_read: ['a.ts'] }), obs({ title: `${title} tuple`, narrative: 'a\x00b' }), obs({ title, narrative: `${title} again` })]);
+    };
+    // The statements the cache owns. reinforceObservation (reinforcement_dates) and findTier0Canonical
+    // (title_norm_key) live in other modules and are left out on purpose.
+    const cachedTurnSql = [
+      /INSERT OR IGNORE INTO committed_observation_tool_uses/,
+      /INSERT OR IGNORE INTO observation_files/,
+      /FROM sdk_sessions WHERE memory_session_id/,
+      /INSERT INTO observations/,
+      /FROM observations WHERE memory_session_id = \? AND content_hash = \?/,
+      /FROM observations\s+WHERE memory_session_id = \? AND content_hash IN/,
+      /UPDATE observations SET occurrence_count/,
+      /FROM session_summaries/,
+      /UPDATE session_summaries SET\s+request/,
+      /INSERT INTO session_summaries/,
+      /UPDATE observations SET discovery_tokens/,
+      /UPDATE session_summaries SET discovery_tokens/,
+    ];
+    const preparedTurnSql = (spy: ReturnType<typeof spyOn>) => spy.mock.calls.map(([sql]) => String(sql))
+      .filter(sql => cachedTurnSql.some(pattern => pattern.test(sql)));
+
+    // Tier-0 merges run only with dedup on.
+    const savedDedup = process.env.CLAUDE_MEM_DEDUP_ENABLED;
+    process.env.CLAUDE_MEM_DEDUP_ENABLED = 'true';
+    const firstSpy = spyOn(store.db, 'prepare');
+    try {
+      stops(1, 'First');
+      // Every listed statement is reached, so the check below covers each of them.
+      const firstSql = preparedTurnSql(firstSpy);
+      expect(cachedTurnSql.filter(pattern => !firstSql.some(sql => pattern.test(sql))).map(String)).toEqual([]);
+    } finally {
+      firstSpy.mockRestore();
+    }
 
     const prepareSpy = spyOn(store.db, 'prepare');
     try {
-      turn(2, 'Second', 'toolu_3');
-      turn(2, 'Third', 'toolu_4');
-      const turnSql = prepareSpy.mock.calls.map(([sql]) => String(sql)).filter(sql =>
-        /committed_observation_tool_uses|observation_files|session_summaries|INSERT INTO observations|FROM sdk_sessions/.test(sql));
-      expect(turnSql).toEqual([]);
+      stops(2, 'Second');
+      expect(preparedTurnSql(prepareSpy)).toEqual([]);
     } finally {
       prepareSpy.mockRestore();
+      if (savedDedup === undefined) delete process.env.CLAUDE_MEM_DEDUP_ENABLED; else process.env.CLAUDE_MEM_DEDUP_ENABLED = savedDedup;
     }
-    expect(store.hasCommittedToolUse('claude', 'content-mem-cached-statements', 'toolu_4')).toBe(true);
+    expect(store.hasCommittedToolUse('claude', 'content-mem-cached-statements', `toolu_${toolUse}`)).toBe(true);
+    const merged = store.db.prepare("SELECT occurrence_count FROM observations WHERE memory_session_id = ? AND title = 'Second' ORDER BY id LIMIT 1").get(mem) as { occurrence_count: number };
+    expect(merged.occurrence_count).toBe(2);
   });
 });

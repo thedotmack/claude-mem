@@ -4755,7 +4755,7 @@ export class SessionStore {
       // The assistant row may already have synced before the result corrects
       // its usage. Mark changed payloads for the existing CloudSync snapshotter,
       // which mints their next canonical revision against the acknowledged head.
-      const observationStmt = this.db.prepare(`UPDATE observations SET discovery_tokens = ?,
+      const observationStmt = this.cachedStatement(`UPDATE observations SET discovery_tokens = ?,
         synced_at = CASE WHEN discovery_tokens IS NOT ? THEN NULL ELSE synced_at END
         WHERE id = ? AND discovery_tokens IS NOT ? RETURNING project, merged_into_project`);
       for (const id of observationIds) {
@@ -4763,7 +4763,7 @@ export class SessionStore {
         for (const row of changed) for (const project of importedRowProjects(row)) projects.add(project);
       }
       if (summaryId !== null) {
-        this.db.prepare(`UPDATE session_summaries SET discovery_tokens = MAX(COALESCE(discovery_tokens, 0), ?),
+        this.cachedStatement(`UPDATE session_summaries SET discovery_tokens = MAX(COALESCE(discovery_tokens, 0), ?),
           synced_at = CASE WHEN COALESCE(discovery_tokens, 0) < ? THEN NULL ELSE synced_at END WHERE id = ?`)
           .run(discoveryTokens, discoveryTokens, summaryId);
       }
@@ -5233,8 +5233,9 @@ export class SessionStore {
    * requeuePromptSync bumps and enqueues once per prompt of a session on every
    * registration. A fresh `prepare()` per call made a native statement that
    * lived until GC finalized it, and on long sessions they piled up until
-   * prepare() itself ran out of memory (#3537). storeObservations runs once
-   * per observer turn, so its statements are cached too. bun's own `db.query()` cache is
+   * prepare() itself ran out of memory (#3537). storeObservations and
+   * updateDiscoveryTokens run once per observer turn, so their statements are
+   * cached too. bun's own `db.query()` cache is
    * shared by every caller on the connection and bounded
    * (Database.MAX_QUERY_CACHE_SIZE, 20 by default), so whether a statement
    * stays cached there depends on what else ran.
