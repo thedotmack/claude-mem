@@ -127,7 +127,9 @@ describe('Worker API Endpoints Integration', () => {
             {
               dependency: 'uvx',
               kind: 'vector_search_unavailable',
-              message: 'uvx executable not found on effective PATH for vector search',
+              // The probe is unauthenticated, so it names the status with its
+              // fixed label; the recorded message stays on /api/admin/doctor.
+              message: 'uvx unavailable for vector search',
               remediation: 'Install uv and restart claude-mem',
             },
           ],

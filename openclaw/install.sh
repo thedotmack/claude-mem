@@ -211,7 +211,6 @@ parse_health_json() {
 
   WORKER_VERSION=""
   WORKER_AI_PROVIDER=""
-  WORKER_AI_AUTH_METHOD=""
   WORKER_INITIALIZED=""
   WORKER_REPORTED_PID=""
   WORKER_UPTIME=""
@@ -223,7 +222,6 @@ parse_health_json() {
   if command -v jq &>/dev/null; then
     WORKER_VERSION="$(echo "$raw_json" | jq -r '.version // empty' 2>/dev/null)" || true
     WORKER_AI_PROVIDER="$(echo "$raw_json" | jq -r '.ai.provider // empty' 2>/dev/null)" || true
-    WORKER_AI_AUTH_METHOD="$(echo "$raw_json" | jq -r '.ai.authMethod // empty' 2>/dev/null)" || true
     WORKER_INITIALIZED="$(echo "$raw_json" | jq -r '.initialized // empty' 2>/dev/null)" || true
     WORKER_REPORTED_PID="$(echo "$raw_json" | jq -r '.pid // empty' 2>/dev/null)" || true
     WORKER_UPTIME="$(echo "$raw_json" | jq -r '.uptime // empty' 2>/dev/null)" || true
@@ -240,14 +238,13 @@ try:
     fields = [
         str(data.get('version', '')),
         str(ai.get('provider', '')),
-        str(ai.get('authMethod', '')),
         str(data.get('initialized', '')),
         str(data.get('pid', '')),
         str(data.get('uptime', '')),
     ]
     sys.stdout.write('\n'.join(fields))
 except Exception:
-    sys.stdout.write('\n\n\n\n\n')
+    sys.stdout.write('\n\n\n\n')
 " 2>/dev/null)" || true
 
     if [[ -n "$parsed" ]]; then
@@ -255,13 +252,11 @@ except Exception:
       IFS=$'\n' read -r -d '' -a health_fields <<< "$parsed" || true
       WORKER_VERSION="${health_fields[0]:-}"
       WORKER_AI_PROVIDER="${health_fields[1]:-}"
-      WORKER_AI_AUTH_METHOD="${health_fields[2]:-}"
-      WORKER_INITIALIZED="${health_fields[3]:-}"
-      WORKER_REPORTED_PID="${health_fields[4]:-}"
-      WORKER_UPTIME="${health_fields[5]:-}"
+      WORKER_INITIALIZED="${health_fields[2]:-}"
+      WORKER_REPORTED_PID="${health_fields[3]:-}"
+      WORKER_UPTIME="${health_fields[4]:-}"
       [[ "$WORKER_VERSION" == "None" ]] && WORKER_VERSION=""
       [[ "$WORKER_AI_PROVIDER" == "None" ]] && WORKER_AI_PROVIDER=""
-      [[ "$WORKER_AI_AUTH_METHOD" == "None" ]] && WORKER_AI_AUTH_METHOD=""
       [[ "$WORKER_INITIALIZED" == "None" ]] && WORKER_INITIALIZED=""
       [[ "$WORKER_REPORTED_PID" == "None" ]] && WORKER_REPORTED_PID=""
       [[ "$WORKER_UPTIME" == "None" ]] && WORKER_UPTIME=""
@@ -277,14 +272,13 @@ except Exception:
       const fields = [
         data.version ?? '',
         ai.provider ?? '',
-        ai.authMethod ?? '',
         data.initialized != null ? String(data.initialized) : '',
         data.pid != null ? String(data.pid) : '',
         data.uptime != null ? String(data.uptime) : '',
       ];
       process.stdout.write(fields.join('\n'));
     } catch (e) {
-      process.stdout.write('\n\n\n\n\n');
+      process.stdout.write('\n\n\n\n');
     }
   " 2>/dev/null)" || true
 
@@ -293,10 +287,9 @@ except Exception:
     IFS=$'\n' read -r -d '' -a health_fields <<< "$parsed" || true
     WORKER_VERSION="${health_fields[0]:-}"
     WORKER_AI_PROVIDER="${health_fields[1]:-}"
-    WORKER_AI_AUTH_METHOD="${health_fields[2]:-}"
-    WORKER_INITIALIZED="${health_fields[3]:-}"
-    WORKER_REPORTED_PID="${health_fields[4]:-}"
-    WORKER_UPTIME="${health_fields[5]:-}"
+    WORKER_INITIALIZED="${health_fields[2]:-}"
+    WORKER_REPORTED_PID="${health_fields[3]:-}"
+    WORKER_UPTIME="${health_fields[4]:-}"
   fi
 }
 
@@ -1135,7 +1128,6 @@ find_claude_mem_install_dir() {
 WORKER_PID=""
 WORKER_VERSION=""
 WORKER_AI_PROVIDER=""
-WORKER_AI_AUTH_METHOD=""
 WORKER_INITIALIZED=""
 WORKER_REPORTED_PID=""
 WORKER_UPTIME=""
@@ -1496,11 +1488,9 @@ print_completion_summary() {
 
   echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  Memory slot configured"
 
-  if [[ -n "$WORKER_AI_AUTH_METHOD" ]]; then
-    echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  AI provider: ${COLOR_BOLD}${WORKER_AI_PROVIDER} (${WORKER_AI_AUTH_METHOD})${COLOR_RESET}"
-  else
-    echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  AI provider: ${COLOR_BOLD}${provider_display}${COLOR_RESET}"
-  fi
+  # /api/health names the provider but not its auth method (#6309), so the
+  # summary describes the provider this install configured.
+  echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  AI provider: ${COLOR_BOLD}${provider_display}${COLOR_RESET}"
 
   echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  Settings written to ~/.claude-mem/settings.json"
 

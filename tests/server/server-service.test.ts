@@ -87,7 +87,12 @@ describe('ServerService', () => {
 
     const health = await fetch(`http://127.0.0.1:${address.port}/api/health`);
     expect(health.status).toBe(200);
-    expect((await health.json()).runtime).toBe('server-beta');
+    const healthBody = await health.json();
+    expect(healthBody.runtime).toBe('server-beta');
+    // /api/health is unauthenticated over the container network, so it publishes
+    // the same probe state /v1/info does — never the auth mode or the install path.
+    expect(healthBody.ai.authMethod).toBeUndefined();
+    expect(healthBody.workerPath).toBeUndefined();
 
     const info = await fetch(`http://127.0.0.1:${address.port}/v1/info`);
     expect(info.status).toBe(200);
