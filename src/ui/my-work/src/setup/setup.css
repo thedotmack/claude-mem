@@ -130,8 +130,7 @@
 .setup-hint { display: flex; align-items: flex-start; gap: 8px; margin-top: 8px; color: var(--muted); font-size: 15px; line-height: 1.4; }
 .setup-hint svg { flex: none; width: 18px; height: 18px; margin-top: 1px; }
 
-/* A fold whose content stays in the page while closed (forceMount: the browser's form checks and the raw error words
-   keep their place) is hidden here until it opens. */
+/* Keep mounted details hidden while their fold is closed. */
 .cmem-setup [data-slot="collapsible-content"][data-state="closed"] { display: none; }
 /* The shared fold row in setup's type: 16px label, a 14px count (the primitive's 12px count is under the 14px floor). */
 .cmem-setup [data-slot="collapsible-fold-trigger"] { font-size: 16px; font-weight: 550; color: var(--ink); }
@@ -234,10 +233,8 @@
 .install-skill-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 28px; max-height: 320px; overflow-y: auto; padding: 8px 4px; }
 .install-options fieldset > .install-option { margin-top: 14px; }
 .install-model { display: grid; gap: 6px; max-width: 430px; font-size: 16px; }
-.install-model select, .install-model input, .install-email input, .install-email textarea { width: 100%; min-height: 44px; padding: 10px 12px; border: 1px solid var(--edge); border-radius: 8px; background: #fff; font: inherit; }
+.install-model select, .install-model input { width: 100%; min-height: 44px; padding: 10px 12px; border: 1px solid var(--edge); border-radius: 8px; background: #fff; font: inherit; }
 .install-model small { color: var(--muted); font-size: 14px; }
-.install-email { display: grid; gap: 16px; max-width: 520px; margin: 18px 0 0 32px; }
-.install-email label { display: grid; gap: 6px; font-size: 16px; }
 .setup-actions-start { min-width: 0; }
 .install-reinstall { align-items: center; font-size: 17px; }
 .setup-actions-start .setup-hint { margin: 0 0 0 32px; }
@@ -571,7 +568,6 @@
   .install-form .panel { padding: 18px; }
   .install-agent-options, .install-skill-options { grid-template-columns: 1fr; }
   .install-skill-options { max-height: 360px; }
-  .install-email { margin-left: 0; }
   /* The folded row's summary takes its own line under the label. */
   .install-options > [data-slot="collapsible-fold-trigger"] { flex-wrap: wrap; }
   .install-options [data-slot="fold-trigger-count"] { flex-basis: 100%; padding-left: 24px; }

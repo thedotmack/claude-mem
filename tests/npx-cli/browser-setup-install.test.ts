@@ -47,6 +47,9 @@ process.env.PATH = `${bin}:/usr/bin:/bin`;
 process.env.DO_NOT_TRACK = '1';
 // CI hides the optional email question; these cases play a person at a terminal.
 delete process.env.CI;
+delete process.env.CLAUDE_MEM_ONLINE_OPTIN;
+const signupUrl = 'https://signup.example.test/waitlist';
+process.env.CLAUDE_MEM_SIGNUP_URL = signupUrl;
 for (const key of ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_MEM_PROVIDER', 'CLAUDE_MEM_OPENROUTER_API_KEY']) delete process.env[key];
 
 // A free loopback port for the fixture worker.
@@ -89,6 +92,9 @@ mock.module('../../src/npx-cli/utils/paths.js', () => ({ ...cliPaths, readPlugin
 
 const lines: string[] = [];
 const questions: string[] = [];
+const textAnswers: string[] = [];
+const emailPrompt = 'Your work email (press Enter to skip):';
+const messagePrompt = 'Optionally: what are you working on, or how can we help you and your team? (Enter to skip)';
 const ranTasks: string[] = [];
 const offeredTasks: string[] = [];
 const providerMenus: Array<{ options: Array<{ value: string }>; initialValues: string[] }> = [];
@@ -120,8 +126,7 @@ mock.module('@clack/prompts', () => ({
     return 'claude-haiku-4-5-20251001';
   },
   confirm: async (options: { message: string }) => { questions.push(options.message); return false; },
-  // The optional email opt-in: Enter (empty) skips it, so the note question never follows.
-  text: async (options: { message: string }) => { questions.push(options.message); return ''; },
+  text: async (options: { message: string }) => { questions.push(options.message); return textAnswers.shift() ?? ''; },
   password: async (options: { message: string }) => { questions.push(options.message); return passwordAnswer; },
   // Plugin copy and dependency installs are other suites' business; IDE hooks and the worker start run for real.
   tasks: async (tasks: Array<{ title: string; task: (message: (value: string) => void) => Promise<string> }>) => {
@@ -193,12 +198,17 @@ mock.module('../../src/services/worker-spawner.js', () => ({
 const childProcess = await import('node:child_process');
 const realSpawnSync = childProcess.spawnSync;
 const opened: string[] = [];
+const questionsAtOpen: string[][] = [];
 const spawnSyncSpy = spyOn(childProcess, 'spawnSync').mockImplementation(((command: string, args: string[], options: any) => {
-  if (['open', 'xdg-open', 'cmd'].includes(command)) { opened.push(args[args.length - 1]); return { status: 0 } as any; }
+  if (['open', 'xdg-open', 'cmd'].includes(command)) {
+    opened.push(args[args.length - 1]);
+    questionsAtOpen.push([...questions]);
+    return { status: 0 } as any;
+  }
   return realSpawnSync(command, args, options);
 }) as typeof childProcess.spawnSync);
 
-// Network: loopback to the fixture worker is real; cmem.ai answers only the pairing start; anything else is a failure.
+// Loopback to the fixture worker is real. Signup and account pairing are recorded locally.
 const realFetch = globalThis.fetch;
 const { CMEM_INSTALLER_OAUTH_START_URL, CMEM_INSTALLER_OAUTH_POLL_URL } = await import('../../src/npx-cli/cmem-pro-costs.js');
 const pairingStarts: number[] = [];
@@ -210,6 +220,7 @@ const READY_BODY = {
   memory_key: 'pro-memory-key', memory_base_url: 'https://cmem.ai/api/gateway/v1', memory_model: 'cmem-memory', plan: 'trial', trial: { ends_at: '2026-11-22T00:00:00.000Z' },
 };
 const setupRequests: string[] = [];
+const signupRequests: Array<Record<string, unknown>> = [];
 const unexpected: string[] = [];
 const pairingId = 'a'.repeat(32);
 const startOrigin = new URL(CMEM_INSTALLER_OAUTH_START_URL).origin;
@@ -218,6 +229,10 @@ const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((async (input: an
   if (url.startsWith(workerBase)) {
     if (url.includes('/api/setup/')) setupRequests.push(url.slice(workerBase.length));
     return realFetch(input, init);
+  }
+  if (url === signupUrl) {
+    signupRequests.push(JSON.parse(String(init?.body)));
+    return Response.json({ ok: true });
   }
   if (url === CMEM_INSTALLER_OAUTH_POLL_URL) {
     const answer = pollAnswers.shift() ?? { status: 202, body: { status: 'pending', stage: 'awaiting_checkout' } };
@@ -246,6 +261,7 @@ beforeEach(async () => {
   rmSync(intentCredentialsPath, { force: true });
   writeFileSync(settingsPath, JSON.stringify(baseSettings, null, 2));
   lines.length = 0; questions.length = 0; ranTasks.length = 0; offeredTasks.length = 0; opened.length = 0;
+  textAnswers.length = 0; questionsAtOpen.length = 0; signupRequests.length = 0;
   pairingStarts.length = 0; pairingStartHeaders.length = 0; setupRequests.length = 0; unexpected.length = 0; workerStarts = 0; pollAnswers.length = 0;
   workerStartStates.length = 0;
   workerStartSessions.length = 0;
@@ -318,7 +334,7 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     await waitForStage('home-ready');
     await browserPost('/api/setup/complete', {});
     await installing;
-    expect(questions).toEqual([]);
+    expect(questions).toEqual([emailPrompt]);
   });
 
   it('offers the default model when the saved one is not allowed outside the gateway, and At Home still finishes', async () => {
@@ -336,19 +352,42 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     expect(readSettings().CLAUDE_MEM_MODEL).toBe('my-gateway-model');
   });
 
-  it('saves the browser email signup that the worker never serves back', async () => {
+  it('collects the work email and message in the terminal before opening setup', async () => {
+    const email = 'person@example.com';
+    const note = 'Onboarding a small team';
+    textAnswers.push(email, note);
     const installing = runInstallCommand({});
     const waiting = await waitForInstall('waiting');
-    expect(waiting.install.catalog.defaults.email).toBeUndefined();
-    const email = 'person@example.com';
-    expect((await browserPost('/api/setup/install', { ...waiting.install.catalog.defaults, agents: ['claude-code'], email, note: 'hello' })).status).toBe(200);
+    expect(waiting.install.catalog.emailEnabled).toBe(false);
+    expect(JSON.stringify(waiting)).not.toContain(email);
+    expect(JSON.stringify(waiting)).not.toContain(note);
+    expect(readSettings()).toMatchObject({ CLAUDE_MEM_ONLINE_SIGNUP_EMAIL: email, CLAUDE_MEM_ONLINE_SIGNUP_NOTE: note, CLAUDE_MEM_ONLINE_SIGNUP_SENT: 'true' });
+    const selection = { ...waiting.install.catalog.defaults, agents: ['claude-code'] };
+    expect((await browserPost('/api/setup/install', { ...selection, email, note })).status).toBe(400);
+    expect((await browserPost('/api/setup/install', selection)).status).toBe(200);
     const ready = await waitForInstall('ready');
     expect(JSON.stringify(ready)).not.toContain(email);
-    expect(readSettings()).toMatchObject({ CLAUDE_MEM_ONLINE_SIGNUP_EMAIL: email, CLAUDE_MEM_ONLINE_SIGNUP_NOTE: 'hello' });
+    expect(JSON.stringify(ready)).not.toContain(note);
     await browserPost('/api/setup/choice', { branch: 'home', memoryBilling: 'existing' });
     await waitForStage('home-ready');
     await browserPost('/api/setup/complete', {});
     await installing;
+    expect(questionsAtOpen).toEqual([[emailPrompt, messagePrompt]]);
+    expect(questions).toEqual([emailPrompt, messagePrompt]);
+    expect(signupRequests).toEqual([{ email, note, source: 'npx-installer', version: packageVersion, platform: process.platform }]);
+  });
+
+  it('keeps the work email when the person skips the message before explicit browser setup', async () => {
+    textAnswers.push('email-only@example.com', '');
+    const install = runInstallCommand({ setup: 'browser' });
+    await waitForStage('waiting-for-choice');
+    expect(questionsAtOpen).toEqual([[emailPrompt, messagePrompt]]);
+    expect(signupRequests).toHaveLength(1);
+    expect(signupRequests[0]).toMatchObject({ email: 'email-only@example.com', note: '' });
+    await browserPost('/api/setup/choice', { branch: 'home', memoryBilling: 'existing' });
+    await waitForStage('home-ready');
+    await browserPost('/api/setup/complete', {});
+    await install;
   });
 
   it('leaves all choices pending when deferred, then resumes without stopping or copying the worker', async () => {
@@ -356,6 +395,7 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     const deferred = await browserState();
     expect(deferred.status).toBe('pending');
     expect(deferred.install.status).toBe('waiting');
+    expect(deferred.install.catalog.emailEnabled).toBe(false);
     expect(deferred.install.selection).toBeNull();
     expect(questions).toEqual([]);
     expect(offeredTasks).not.toContain('Claude Code: registering plugin');
@@ -382,6 +422,26 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     expect(readSettings().CLAUDE_MEM_MODEL).toBe('sonnet');
   });
 
+  it('finishes an opt-in saved by an older installer when resuming its pending choices', async () => {
+    await runInstallCommand({ setup: 'defer' });
+    const deferred = await browserState();
+    const email = 'earlier@example.com';
+    const note = 'A message from the previous install';
+    const catalog = { ...deferred.install.catalog, emailEnabled: true };
+    const selection = { ...catalog.defaults, agents: ['claude-code'], email, note };
+    writeFileSync(statePath, JSON.stringify({ ...deferred, install: { ...deferred.install, catalog, status: 'installing', selection } }));
+    const resume = runInstallCommand({ setup: 'resume' });
+    const ready = await waitForStage('waiting-for-choice');
+    expect(JSON.stringify(ready)).not.toContain(email);
+    expect(readSettings()).toMatchObject({ CLAUDE_MEM_ONLINE_SIGNUP_EMAIL: email, CLAUDE_MEM_ONLINE_SIGNUP_NOTE: note, CLAUDE_MEM_ONLINE_SIGNUP_SENT: 'true' });
+    expect(questions).toEqual([]);
+    expect(signupRequests).toHaveLength(1);
+    await browserPost('/api/setup/choice', { branch: 'home', memoryBilling: 'existing' });
+    await waitForStage('home-ready');
+    await browserPost('/api/setup/complete', {});
+    await resume;
+  });
+
   it('At Home: starts the worker, opens the setup page, asks for no login, and finishes when the page does', async () => {
     const install = runInstallCommand({});
     await waitForStage('waiting-for-choice');
@@ -401,12 +461,10 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     // useSubscriptionAuth(): local, logged-in Claude SDK account; no claude-mem login at all.
     expect(readSettings()).toMatchObject({ CLAUDE_MEM_PROVIDER: 'claude', CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'subscription', CLAUDE_MEM_CLOUD_SYNC_TOKEN: '' });
     expect(pairingStarts).toEqual([]);
-    // Every choice is made in the browser, including email and telemetry.
-    expect(questions).toEqual([]);
-    expect(questions.filter(q => q.startsWith('Your work email'))).toHaveLength(0);
-    expect(questions.some(q => q.includes('how can we help'))).toBe(false);
-    // No provider multiselect and no model question: the browser made the choice, the model keeps its default.
-    expect(questions.filter(q => !q.startsWith('Which agents') && !q.startsWith('Which runtime') && !q.startsWith('Disable Claude Code') && !q.startsWith('Install Claude Code') && !q.startsWith('Your work email'))).toEqual([]);
+    // Enter skips signup and goes on to the browser, where the person chooses how to use memory.
+    expect(questionsAtOpen).toEqual([[emailPrompt]]);
+    expect(questions).toEqual([emailPrompt]);
+    expect(signupRequests).toEqual([]);
     expect(JSON.parse(readFileSync(statePath, 'utf8'))).toMatchObject({ status: 'complete', choice: { branch: 'home' }, installer: { stage: 'home-ready' } });
     expect(lines.join('\n')).toContain('Not required (local provider)');
     expect(lines.join('\n')).toContain('claude-mem installed successfully!');
@@ -559,12 +617,14 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     expect(lines.join('\n')).toMatch(/Account: .*CMEM Pro .*Free Trial active/);
   });
 
-  it('a machine that already finished setup reopens the GUI without terminal questions', async () => {
+  it('a machine with a saved signup reopens the GUI without repeating the terminal questions', async () => {
+    writeFileSync(settingsPath, JSON.stringify({ ...baseSettings, CLAUDE_MEM_ONLINE_SIGNUP_EMAIL: 'saved@example.com', CLAUDE_MEM_ONLINE_SIGNUP_SENT: 'true' }));
     writeFileSync(statePath, JSON.stringify({ status: 'complete', choice: { branch: 'home', memoryBilling: 'existing', chosenAt: 'x' }, installer: null, completedAt: 'x' }));
     const install = runInstallCommand({});
     const state = await waitForStage('waiting-for-choice');
     expect(state.install.status).toBe('ready');
     expect(questions).toEqual([]);
+    expect(signupRequests).toEqual([]);
     await browserPost('/api/setup/choice', { branch: 'home', memoryBilling: 'existing' });
     await waitForStage('home-ready');
     await browserPost('/api/setup/complete', {});
@@ -617,7 +677,7 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     expect(JSON.parse(readFileSync(statePath, 'utf8')).status).toBe('pending');
     expect(existsSync(sessionPath)).toBe(false);
     expect(opened).toEqual([]);
-    expect(questions).toEqual([]);
+    expect(questions).toEqual([emailPrompt]);
   });
 
   it('releases the GUI session when the browser handoff fails and propagates the server error', async () => {

@@ -1,10 +1,9 @@
 import { ArrowRightIcon, CheckIcon, InfoIcon, SearchIcon } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
-import { flushSync } from 'react-dom'
 import { Collapsible, CollapsibleContent, CollapsibleFoldTrigger } from '@/components/ui/collapsible'
 import { Spinner } from '@/components/ui/spinner'
 import { interpolate, useI18n } from '@/lib/i18n'
-import { SETUP_DSH_PROFILE_MAX_CHARACTERS, SETUP_INSTALL_NOTE_MAX_CHARACTERS, type SetupInstallSelection, type SetupInstallState, type SetupInstallStatus } from '../../../../../shared/setup-install.ts'
+import { SETUP_DSH_PROFILE_MAX_CHARACTERS, type SetupInstallSelection, type SetupInstallState, type SetupInstallStatus } from '../../../../../shared/setup-install.ts'
 import { toSetupFailure, type SetupFailure } from '../setup-data'
 import { capText } from '../format'
 import { CutNotice, PageHeading, SetupActions, SetupButton, SetupError } from './shared'
@@ -60,14 +59,9 @@ function InstallOptions({ install, onInstall }: { install: SetupInstallState; on
   const { catalog } = install
   const [selection, setSelection] = useState<SetupInstallSelection>(install.selection ?? catalog.defaults)
   const [query, setQuery] = useState('')
-  const [emailOptIn, setEmailOptIn] = useState(Boolean(selection.email || selection.emailProvided))
-  // A retry after a failed install: the worker kept the email it was given and never sends it back to this page.
-  const keepsStoredEmail = Boolean(selection.emailProvided) && !selection.email?.trim()
   const [reinstallConfirmed, setReinstallConfirmed] = useState(!catalog.reinstall)
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<SetupFailure | null>(null)
-  const [optionsOpen, setOptionsOpen] = useState(false)
-  const [noteCut, setNoteCut] = useState(false)
   const [profileCut, setProfileCut] = useState(false)
   const change = (patch: Partial<SetupInstallSelection>) => setSelection(current => ({ ...current, ...patch }))
   const toggleAgent = (id: string, checked: boolean) => change({ agents: checked ? [...selection.agents, id] : selection.agents.filter(agent => agent !== id) })
@@ -92,10 +86,7 @@ function InstallOptions({ install, onInstall }: { install: SetupInstallState; on
     setSending(true)
     setError(null)
     try {
-      await onInstall({ ...selection, installClaudeCode: claudeMissing && selection.installClaudeCode,
-        ...(emailOptIn && catalog.emailEnabled !== false
-          ? keepsStoredEmail ? { email: undefined, note: undefined, emailProvided: true } : { email: selection.email?.trim(), note: selection.note?.trim(), emailProvided: undefined }
-          : { email: undefined, note: undefined, emailProvided: undefined }) })
+      await onInstall({ ...selection, installClaudeCode: claudeMissing && selection.installClaudeCode })
     } catch (failure) { setError(toSetupFailure(failure)); setSending(false) }
   }
   return (
@@ -128,13 +119,10 @@ function InstallOptions({ install, onInstall }: { install: SetupInstallState; on
           </>}
         </fieldset>
 
-        <Collapsible className="panel install-options" open={optionsOpen} onOpenChange={setOptionsOpen}>
+        <Collapsible className="panel install-options">
           <CollapsibleFoldTrigger count={summary}>{t('Skills and preferences')}</CollapsibleFoldTrigger>
-          {/* Kept in the form while folded, as the closed <details> did: the browser's own checks still see its fields.
-              One that fails them (the email address) opens the fold, or Install would seem to do nothing: the browser
-              can't point at a hidden field. It looks right after this event, so flushSync opens the fold before the
-              handler returns; without it, a submit started by a script is checked before React renders the fold. */}
-          <CollapsibleContent forceMount className="install-options-body" onInvalid={() => flushSync(() => setOptionsOpen(true))}>
+          {/* Kept in the markup while folded, as the closed <details> did. */}
+          <CollapsibleContent forceMount className="install-options-body">
             <fieldset disabled={sending || catalog.skillsLocked}>
               <legend>{t('Bundled skills')}</legend>
               <p className="install-help">{t('Choose which claude-mem skills your agents can discover. You can change these later.')}</p>
@@ -148,16 +136,6 @@ function InstallOptions({ install, onInstall }: { install: SetupInstallState; on
               {claudeSelected && <label className="install-option"><input type="checkbox" checked={selection.disableAutoMemory} onChange={event => change({ disableAutoMemory: event.target.checked })} /><span><strong>{t('Turn off Claude Code’s built-in auto-memory')}</strong><small>{t('Use claude-mem for cross-session memory. Leave unchecked to keep both.')}</small></span></label>}
               <label className="install-option"><input type="checkbox" checked={selection.telemetryEnabled} disabled={sending || catalog.telemetryLocked} onChange={event => change({ telemetryEnabled: event.target.checked })} /><span><strong>{t('Share anonymized usage data')}</strong><small>{t('Helps improve claude-mem. No prompts, code, or memory content are included.')}</small></span></label>
             </fieldset>
-            {catalog.emailEnabled !== false && <fieldset disabled={sending}>
-              <legend>{t('Product updates')}</legend>
-              {catalog.signupSaved && <p>{t('You’re already signed up for product updates.')}</p>}
-              <label className="install-option"><input type="checkbox" checked={emailOptIn} onChange={event => setEmailOptIn(event.target.checked)} /><span><strong>{t('Email me product updates')}</strong><small>{t('Optional. You can unsubscribe at any time.')}</small></span></label>
-              {emailOptIn && keepsStoredEmail && <p>{t('Using the email you entered earlier.')}</p>}
-              {emailOptIn && <div className="install-email"><label>{t('Email address')}<input type="email" autoComplete="email" required={!keepsStoredEmail} value={selection.email ?? ''} onChange={event => change({ email: event.target.value })} /></label><label>{t('Anything you’d like us to know?')}<textarea rows={2} value={selection.note ?? ''} aria-describedby={noteCut ? 'install-note-cut' : undefined}
-                onChange={event => { const capped = capText(event.target.value, SETUP_INSTALL_NOTE_MAX_CHARACTERS); setNoteCut(capped.cut); change({ note: capped.text }) }} /></label>
-                {/* The worker's own limit (setup-install.ts): a longer paste is cut to it, and this line says so. */}
-                {noteCut && <CutNotice id="install-note-cut" max={SETUP_INSTALL_NOTE_MAX_CHARACTERS} />}</div>}
-            </fieldset>}
           </CollapsibleContent>
         </Collapsible>
         {/* The first screen has no Back, so the reinstall choice that turns Install on sits on the row's left. */}
