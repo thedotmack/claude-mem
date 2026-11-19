@@ -127,8 +127,9 @@ describe('ChromaSearchStrategy', () => {
       }],
     ])('builds the Chroma where clause for %s', async (_name, options, where) => {
       await strategy.search({ query: 'test query', ...options });
+      // The sixth argument is the shared search deadline (#6323).
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
-        'test query', 100, where, expect.any(Object), expect.any(Function)
+        'test query', 100, where, expect.any(Object), expect.any(Function), expect.any(Number)
       );
     });
 
@@ -148,7 +149,8 @@ describe('ChromaSearchStrategy', () => {
         100,
         { $or: [{ project: { $in: readKeys } }, { merged_into_project: { $in: readKeys } }] },
         expect.any(Object),
-        expect.any(Function)
+        expect.any(Function),
+        expect.any(Number)
       );
       expect(mockSessionStore.getObservationsByIds).toHaveBeenCalledWith([1], expect.objectContaining({ projects: readKeys }));
     });
