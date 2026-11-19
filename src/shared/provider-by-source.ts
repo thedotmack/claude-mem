@@ -9,11 +9,9 @@
  */
 
 import { normalizePlatformSource } from './platform-source.js';
-import type { SelectableProvider } from '../services/worker/provider-dispatch.js';
+import { SELECTABLE_PROVIDERS, type SelectableProvider } from '../ui/provider-options.js';
 
 export const PROVIDER_BY_SOURCE_SETTING = 'CLAUDE_MEM_PROVIDER_BY_SOURCE';
-export const SELECTABLE_PROVIDERS: readonly SelectableProvider[] = ['claude', 'gemini', 'openrouter', 'codex', 'openai-compatible'];
-
 export type ProviderBySourceParse =
   | { ok: true; map: Map<string, SelectableProvider> }
   | { ok: false; error: string };

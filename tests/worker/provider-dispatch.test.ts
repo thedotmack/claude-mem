@@ -1,6 +1,6 @@
 
 import { describe, it, expect, beforeEach, afterEach, afterAll, setSystemTime, spyOn } from 'bun:test';
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {
@@ -58,6 +58,7 @@ const ENV_KEYS = [
   'CLAUDE_MEM_PRO_FALLBACK_AT',
   'CLAUDE_MEM_GEMINI_API_KEY',
   'CMEM_PRO_ORIGIN',
+  'CODEX_HOME',
   'CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER',
   'CLAUDE_MEM_QUOTA_FALLBACK_MODEL',
 ] as const;
@@ -630,6 +631,40 @@ describe('provider-dispatch', () => {
         expect(getSelectedProvider()).toBe(provider);
       }
       expect(quotaFallbackLines()).toEqual([]);
+    });
+
+    it('uses ChatGPT Codex only while Claude is held and the backup can serve', () => {
+      const codexHome = mkdtempSync(join(tmpdir(), 'codex-fallback-test-'));
+      process.env.CODEX_HOME = codexHome;
+      process.env.CLAUDE_MEM_PROVIDER = 'claude';
+      process.env.CLAUDE_MEM_PROVIDER_BY_SOURCE = '';
+      process.env.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER = 'codex';
+      const authPath = join(codexHome, 'auth.json');
+      try {
+        expect(getSelectedProvider()).toBe('claude');
+        recordQuotaExhausted('claude', 'Weekly limit reached', 'seven_day');
+        expect(quotaFallbackTarget('claude')).toBeNull();
+
+        writeFileSync(authPath, JSON.stringify({ auth_mode: 'apikey' }), { mode: 0o600 });
+        expect(quotaFallbackTarget('claude')).toBeNull();
+
+        writeFileSync(authPath, JSON.stringify({ auth_mode: 'chatgpt', tokens: {} }), { mode: 0o600 });
+        expect(selectProviderForGenerator()).toEqual({
+          provider: 'codex', gatewayProbeClaimId: null, fallbackFrom: 'claude',
+        });
+        expect(quotaFallbackTarget('codex')).toBeNull();
+
+        recordQuotaExhausted('codex', 'ChatGPT limit reached');
+        expect(quotaFallbackTarget('claude')).toBeNull();
+        expect(getSelectedProvider()).toBe('claude');
+
+        clearQuotaCooldown('codex');
+        expect(getSelectedProvider()).toBe('codex');
+        clearQuotaCooldown('claude');
+        expect(getSelectedProvider()).toBe('claude');
+      } finally {
+        rmSync(codexHome, { recursive: true, force: true });
+      }
     });
 
     it('routes a holding primary to the fallback, naming what it stands in for', () => {

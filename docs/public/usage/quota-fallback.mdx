@@ -17,7 +17,7 @@ Add these to `~/.claude-mem/settings.json`, or set them in the viewer under **Se
 
 | Setting | Values | Meaning |
 |---|---|---|
-| `CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER` | `claude` (the default; `""` means the same), `gemini`, `openrouter`, `openai-compatible`, `off` | Where observation work goes while the selected provider can't serve. `off` turns the fallback off: saving pauses until the provider can serve again. |
+| `CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER` | `claude` (the default; `""` means the same), `codex`, `gemini`, `openrouter`, `openai-compatible`, `off` | Where observation work goes while the selected provider can't serve. `off` turns the fallback off: saving pauses until the provider can serve again. |
 | `CLAUDE_MEM_QUOTA_FALLBACK_MODEL` | `""` or a Claude model id or alias | The model for a **Claude** fallback run. Empty keeps `CLAUDE_MEM_MODEL` and tier routing. Ignored for every other fallback. |
 | `CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD` | `""` (the default, off), `subscription`, `api-key` | For a **Claude** observer: the other credential to run on while the primary one is held for quota. Tried before `CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER`. See below. |
 
@@ -41,7 +41,9 @@ To turn the fallback off:
 
 Settings files from earlier versions hold `""` for this setting; that now means the default, so those installs get the Anthropic-plan fallback too. Only `off` opts out.
 
-The fallback needs its own credentials: a Gemini, OpenRouter or OpenAI-compatible API key, or a Claude Code login (or Anthropic key) for Claude. A fallback without them, or any fallback that is itself on hold or has a refused key, is skipped, and saving pauses as it does without a fallback. For Claude, claude-mem checks that a login or key exists; a login that has expired fails its first fallback run and is then skipped until you log in again. When the cmem.ai gateway turns your account away (a lapsed plan, a spent allowance), it is skipped as a fallback for 15 minutes and then re-tried by a single request; the next session start tells you once, in the gateway's own words. Unattended retries on the gateway are capped the same way whether it is your provider or your fallback.
+The fallback needs its own credentials: a Gemini, OpenRouter or OpenAI-compatible API key, a local Codex CLI signed in to ChatGPT for Codex, or a Claude Code login (or Anthropic key) for Claude. A fallback without them, or any fallback that is itself on hold or has a refused key, is skipped, and saving pauses as it does without a fallback. For Claude, claude-mem checks that a login or key exists; a login that has expired fails its first fallback run and is then skipped until you log in again. When the cmem.ai gateway turns your account away (a lapsed plan, a spent allowance), it is skipped as a fallback for 15 minutes and then re-tried by a single request; the next session start tells you once, in the gateway's own words. Unattended retries on the gateway are capped the same way whether it is your provider or your fallback.
+
+Choose **Codex (uses your ChatGPT subscription)** as the quota fallback to run the observer through the local Codex CLI while the main provider is held. Sign in with `codex login` and optionally set `CLAUDE_MEM_CODEX_MODEL`. This uses the ChatGPT subscription.
 
 ## What switches, and what does not
 
