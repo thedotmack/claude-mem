@@ -435,6 +435,18 @@ function recordSkippedMediaEvents(dbManager: DatabaseManager, keys: TurnMediaEve
   if (linkResult.changedNativeRows.length > 0) dbManager.getCloudSync()?.notify();
 }
 
+/**
+ * Release the quota breaker after the provider answered a turn. Codex clears
+ * its breaker in query using the admitted cooldown identity: an earlier
+ * response here must not erase a newer failure from a concurrent pool slot.
+ * A quota-fallback run proves its own credential works, not the spent primary one.
+ */
+function releaseQuotaBreaker(session: ActiveSession): void {
+  if (session.currentProvider && session.currentProvider !== 'codex' && !session.claudeAuthOverride) {
+    clearQuotaCooldown(session.currentProvider);
+  }
+}
+
 /** End an answered turn without a memory row, keeping its source and receipts. */
 async function confirmWithoutStorage(
   session: ActiveSession,
@@ -1023,6 +1035,7 @@ export async function processAgentResponse(
     // same batch, for the same final answer, until the id appeared.
     if (parsed.summary?.skipped) {
       await confirmWithoutStorage(session, context, dbManager, sessionManager, worker);
+      releaseQuotaBreaker(session);
       return null;
     }
     logger.warn('SDK', 'memorySessionId not yet captured; deferring storage until next round', {
@@ -1235,15 +1248,15 @@ export async function processAgentResponse(
   // A store that wrote memory proves the observer pipeline works end-to-end — clear
   // the failure streak in the observer-health ledger, and release any quota
   // breaker so a re-probe that succeeds restores full speed at once rather
-  // than waiting out the remaining cooldown (#3634). Codex clears its breaker
-  // in query using the admitted cooldown identity: storing an earlier response
-  // here must not erase a newer failure from a concurrent pool slot.
+  // than waiting out the remaining cooldown (#3634). A valid <skip_summary/>
+  // writes no memory but still proves the provider is serving, so it releases
+  // the breaker too; without that a probe session that only skips re-probes
+  // forever (#6322).
   if (result.observationIds.length > 0 || result.summaryId !== null) {
     recordObserverSuccess();
-    // A quota-fallback run proves its own credential works, not the spent primary one.
-    if (session.currentProvider && session.currentProvider !== 'codex' && !session.claudeAuthOverride) {
-      clearQuotaCooldown(session.currentProvider);
-    }
+    releaseQuotaBreaker(session);
+  } else if (parsed.summary?.skipped) {
+    releaseQuotaBreaker(session);
   }
 
   // Telemetry: counts, enums, and REAL usage only (lastUsage is never an
