@@ -1,7 +1,9 @@
 # Codex Subscription Provider
 
 Use an existing ChatGPT subscription through a locally installed Codex CLI.
-No OpenAI API key is used, and failures do not fall back to another provider.
+No OpenAI API key is used. To keep your existing primary provider and use Codex
+only during its quota hold, set `CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER` to `codex`.
+See [Quota Fallback](public/usage/quota-fallback.mdx).
 
 1. Install Codex CLI and run `codex login` as the user running claude-mem.
 2. Run `npx claude-mem install --provider codex` (optionally add `--model gpt-6-luna`), or select Codex in the viewer, or set `CLAUDE_MEM_PROVIDER` to `codex` in `settings.json`.

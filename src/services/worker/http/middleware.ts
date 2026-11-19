@@ -178,11 +178,12 @@ export function createCorsMiddleware(policy?: WorkerOriginPolicy): RequestHandle
         || allowedOrigins.has(origin.toLowerCase())
         || (policy !== undefined && isSameHostOrigin(origin, req.headers.host));
       if (!allowed) {
-        // Write the response here rather than forwarding an error. The worker never
-        // calls finalizeRoutes(), so it has no terminal error handler: a
-        // forwarded error lands in Express's default handler, which returns a
-        // 500 HTML page containing a stack trace with absolute filesystem
-        // paths. Same rule as the local API token guard below.
+        // Write the response here rather than forwarding an error. The worker
+        // installs its terminal error handler only once background
+        // initialization has registered the last route; until then a forwarded
+        // error lands in Express's default handler, which returns a 500 HTML
+        // page containing a stack trace with absolute filesystem paths. Same
+        // rule as the local API token guard below.
         res.status(403).json({ error: 'Forbidden', message: 'CORS not allowed' });
         return;
       }
@@ -321,7 +322,8 @@ export function createLocalApiTokenGuard(options: LocalApiTokenOptions): Request
       method: req.method,
       path: req.path,
     });
-    // Always write the response: the worker has no terminal error handler.
+    // Always write the response: the worker has no terminal error handler
+    // until background initialization finishes.
     res.status(401).json({ error: 'Unauthorized', message: 'Missing or invalid local API token' });
   };
 }

@@ -312,6 +312,51 @@ describe('Server wiring', () => {
     }
   });
 
+  // The Host guard has to run before CORS: isSameHostOrigin and isOwnPageOrigin
+  // are safe only behind the Host check (origin-policy.ts). If CORS ran first,
+  // a rebound page would get Access-Control-Allow-Origin on the refusal, and its
+  // preflight would be answered 204 by CORS before the Host check ever ran.
+  it('refuses an untrusted Host before CORS can admit its Origin', async () => {
+    const instance = server(defaultPolicy);
+    const port = await start(instance);
+    try {
+      const reboundOrigins = [
+        `http://attacker.example:${port}`, // same host as Host: admitted by isSameHostOrigin
+        `http://127.0.0.1:${port}`,        // loopback: admitted by isLocalhostOrigin
+      ];
+      for (const origin of reboundOrigins) {
+        const refused = await request(port, {
+          path: '/api/health',
+          headers: { Host: `attacker.example:${port}`, Origin: origin },
+        });
+        expect(refused.status).toBe(403);
+        expect(JSON.parse(refused.body).error).toBe('Forbidden');
+        expect(refused.headers['access-control-allow-origin']).toBeUndefined();
+      }
+
+      const preflight = await request(port, {
+        method: 'OPTIONS',
+        path: '/api/health',
+        headers: {
+          Host: `attacker.example:${port}`,
+          Origin: `http://attacker.example:${port}`,
+          'Access-Control-Request-Method': 'DELETE',
+        },
+      });
+      expect(preflight.status).toBe(403);
+      expect(preflight.headers['access-control-allow-origin']).toBeUndefined();
+
+      const trusted = await request(port, {
+        path: '/api/health',
+        headers: { Host: `127.0.0.1:${port}`, Origin: `http://127.0.0.1:${port}` },
+      });
+      expect(trusted.status).toBe(200);
+      expect(trusted.headers['access-control-allow-origin']).toBe(`http://127.0.0.1:${port}`);
+    } finally {
+      await stop(instance);
+    }
+  });
+
   it('refuses a DELETE from another localhost page when the worker passes a policy', async () => {
     const deleted: string[] = [];
     const instance = server(defaultPolicy, app => {

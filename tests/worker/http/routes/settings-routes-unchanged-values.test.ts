@@ -48,7 +48,7 @@ describe('a viewer save is judged on what it changes', () => {
   });
 
   for (const [key, value] of [
-    ['CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER', 'codex'],
+    ['CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER', 'anthropic'],
     ['CLAUDE_MEM_CODEX_REASONING_EFFORT', 'hand-edited'],
     ['CLAUDE_MEM_OPENROUTER_REASONING_EFFORT', 'xhigh'],
     ['CLAUDE_MEM_OPENROUTER_BASE_URL', 'api.deepseek.com/v1'],
@@ -72,7 +72,7 @@ describe('a viewer save is judged on what it changes', () => {
     const routes = handlers();
     const shown = call(routes['GET /api/settings']).payload;
 
-    const saved = call(routes['POST /api/settings'], { ...shown, CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: 'codex' });
+    const saved = call(routes['POST /api/settings'], { ...shown, CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: 'anthropic' });
 
     expect(saved.status()).toBe(400);
     expect(String(saved.payload.error)).toContain('CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER');
@@ -220,7 +220,7 @@ const SETTINGS_CASES: Array<[string, unknown[], unknown[]]> = [
   ['CLAUDE_MEM_CODEX_REASONING_EFFORT', ['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'], [42, 'maximum']],
   ['CLAUDE_MEM_CLAUDE_CONFIG_DIR', ['/Users/matthewdnye/.ccs/instances/iveg50', ''], [42, '   ']],
   ['CLAUDE_MEM_FILE_READ_GATE_ENABLED', ['false'], ['maybe']],
-  ['CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER', ['claude', ''], ['anthropic']],
+  ['CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER', ['claude', '', 'codex'], ['anthropic']],
   ['CLAUDE_MEM_QUOTA_FALLBACK_MODEL', ['claude-haiku-4-5-20251001'], []],
   ['CLAUDE_MEM_PROVIDER_BY_SOURCE', ['{"codex":"codex","claude":"claude"}', { codex: 'codex' }, ''], [
     '{nope', '{"codex":"anthropic"}', '{"":"codex"}', '{"codex":"codex","Codex CLI":"claude"}', '["codex"]', 5,
@@ -294,7 +294,7 @@ describe('settings write table', () => {
       if (key.startsWith('CLAUDE_MEM_CODEX_') && value === 42) expect(saved.payload.error).toBe(`${key} must be a string`);
       if (key === 'CLAUDE_MEM_FILE_READ_GATE_ENABLED') expect(saved.payload.error).toBe(`${key} must be "true" or "false"`);
       if (Object.values(STEP_MODEL_SETTINGS).some(setting => setting === key)) expect(saved.payload.error).toBe(`${key} must be a string of at most 200 characters`);
-      if (key === 'CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER') expect(saved.payload.error).toBe('CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER must be "claude" (or empty, the default), "gemini", "openrouter", "openai-compatible", or "off"');
+      if (key === 'CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER') expect(saved.payload.error).toContain('CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER must be empty (default) or one of:');
     }
   });
 
