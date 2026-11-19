@@ -54,6 +54,11 @@ jobs:
 
       - run: npm run build
 
+      # The allowlist guards the postinstall/install scripts in plugin/ and the
+      # root manifests. Windows resolves different native packages (tree-sitter)
+      # than the Linux lane, so the same check the Linux build runs runs here.
+      - run: npm run check:postinstall-allowlist
+
       # The Linux lane runs both Python suites (ci.yml); Windows never did, which is how three POSIX
       # path assumptions in the agent-cost-report skill and two in tests/hermes went unnoticed. The
       # interpreter is pinned rather than taken from the image, and discovery matches Linux.
