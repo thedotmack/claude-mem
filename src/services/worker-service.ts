@@ -487,6 +487,12 @@ export class WorkerService implements WorkerRef {
     });
 
     this.registerRoutes();
+    // Install the terminal 404 and error handlers after every route is
+    // registered. Without this call the worker keeps only Express's default
+    // handler, which answers a thrown route error with an HTML page carrying a
+    // stack trace and absolute filesystem paths, and answers an unknown route
+    // with Express's HTML 404 instead of the JSON the rest of the API speaks.
+    this.server.finalizeRoutes();
 
     this.registerSignalHandlers();
   }
