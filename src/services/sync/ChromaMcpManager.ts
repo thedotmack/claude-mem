@@ -37,6 +37,18 @@ const CHROMA_PROCESS_NICE_BOUNDS = { min: 0, max: 19, integer: true } as const;
 const CHROMA_PREWARM_TIMEOUT_BOUNDS = { min: 1, max: 600_000, integer: true } as const;
 const DEFAULT_CHROMA_MUTATION_TIMEOUT_MS = 600_000;
 const CHROMA_MUTATION_TIMEOUT_BOUNDS = { min: 60_000, max: 3_600_000 } as const;
+/**
+ * Deadline for a read (query/get) tool call.
+ *
+ * The MCP client that asks the worker for search results gives up after the
+ * worker's 30 s API budget. The SDK's default request deadline is 60 s, so a
+ * slow Chroma query outlived the caller and the search failed even though the
+ * worker would have fallen back to SQLite/FTS5 a little later (#6323). Ending
+ * a read before that budget lets the worker take the fallback path instead of
+ * reporting "The worker could not complete this request". Reads are normally
+ * 1-3 s, so 20 s leaves room for the fallback without aborting healthy work.
+ */
+const DEFAULT_CHROMA_READ_TIMEOUT_MS = 20_000;
 const CHROMA_PREWARM_REAP_TIMEOUT_MS = 1_000;
 // Circuit breaker for a doomed prewarm (#4108). A broken host (missing uv, an
 // unresolvable dep, an NTFS hardlink ceiling) fails the same way every time, so
@@ -1460,11 +1472,10 @@ export class ChromaMcpManager {
     // that deadline as a request failure, and tearing chroma-mcp down while
     // SQLite/FTS5 may still be committing can leave the persistent index
     // malformed (a timeout is therefore never handled as a transport error,
-    // see below). Give mutations a bounded, configurable deadline while
-    // keeping read/query latency at the SDK default.
-    const requestOptions = isMutation
-      ? { timeout: this.mutationTimeoutMs }
-      : undefined;
+    // see below). Mutations get a bounded, configurable deadline; reads end
+    // below the worker's 30-second search budget so the fallback can run
+    // (#6323).
+    const requestOptions = { timeout: isMutation ? this.mutationTimeoutMs : DEFAULT_CHROMA_READ_TIMEOUT_MS };
 
     logger.debug('CHROMA_MCP', `Calling tool: ${toolName}`, {
       arguments: JSON.stringify(toolArguments).slice(0, 200),
