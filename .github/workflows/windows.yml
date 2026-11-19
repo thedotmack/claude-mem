@@ -54,6 +54,12 @@ jobs:
 
       - run: npm run build
 
+      # The allowlist guards the install scripts of plugin/package.json's direct
+      # dependencies, read from the node_modules this OS resolved. Before this step it
+      # ran only at publish (prepublishOnly) and in media-runtime.yml on dependency
+      # changes, so a Windows-only drift could reach a release unnoticed.
+      - run: npm run check:postinstall-allowlist
+
       # The Linux lane runs both Python suites (ci.yml); Windows never did, which is how three POSIX
       # path assumptions in the agent-cost-report skill and two in tests/hermes went unnoticed. The
       # interpreter is pinned rather than taken from the image, and discovery matches Linux.
