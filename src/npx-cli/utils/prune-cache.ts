@@ -11,7 +11,7 @@ import {
   type WorkerScriptCandidate,
 } from '../../shared/worker-utils.js';
 import { isPidAlive, readOwnedWorkerPidInfo } from '../../supervisor/process-registry.js';
-import { captureProcessStartToken, isSameProcessStartToken, isUtcPinnedStartToken } from '../../shared/process-identity.js';
+import { captureProcessName, captureProcessStartToken, isSameProcessStartToken, isUtcPinnedStartToken } from '../../shared/process-identity.js';
 import { readClaudeMemRegistrationEntries, readUserScopeClaudeMemInstallPaths, registeredInstallPathsOf } from '../../shared/claude-code-plugin-paths.js';
 
 /**
@@ -120,6 +120,23 @@ export interface CachePruneResult {
   /** True when pruning was skipped because a live worker's version could not be
    * determined, so every version was retained for safety. */
   retainedForLiveWorker: boolean;
+  /** Why each pruned version was pruned: it carried `.orphaned_at`, or it
+   * fell outside the retention budget. Recorded so a removal is attributable
+   * from the log alone (#6349). */
+  pruneReasons?: Record<string, 'orphaned' | 'superseded'>;
+  /** The `.in_use` records evaluated for the pruned versions that did not
+   * keep them, with the reason for each rejection (#6349). */
+  rejectedHostRecords?: RejectedHostInUseRecord[];
+}
+
+/** The prune reason for each version in `prune`: orphaned, or superseded by
+ * newer usable versions. */
+function pruneReasonsFor(root: string, prune: string[]): Record<string, 'orphaned' | 'superseded'> {
+  const reasons: Record<string, 'orphaned' | 'superseded'> = {};
+  for (const version of prune) {
+    reasons[version] = isOrphanedVersion(root, version) ? 'orphaned' : 'superseded';
+  }
+  return reasons;
 }
 
 export interface PrunePluginCacheOptions {
@@ -243,6 +260,10 @@ export interface HostProcessProbe {
   isAlive: (pid: number) => boolean;
   /** The process's current start token, or null when it cannot be read. */
   startToken: (pid: number) => string | null;
+  /** The process's executable name, or null when it cannot be read. Optional:
+   * consulted only when a start-time mismatch would otherwise condemn a live
+   * process (see isHostProcessLive). */
+  name?: (pid: number) => string | null;
 }
 
 const defaultHostProcessProbe: HostProcessProbe = {
@@ -250,7 +271,20 @@ const defaultHostProcessProbe: HostProcessProbe = {
   // The Windows read shells to PowerShell and its token has another shape, so
   // it could never be compared with a recorded start time anyway.
   startToken: pid => (process.platform === 'win32' ? null : captureProcessStartToken(pid)),
+  name: pid => captureProcessName(pid),
 };
+
+/**
+ * True when an executable name (captureProcessName's normalized shape:
+ * lowercase basename, no `.exe`) is a Claude Code host process — the CLI
+ * (`claude`, `claude-code`) or a desktop-app process (`claude helper`, …).
+ * A `.in_use` record exists because such a process loaded the plugin, so a
+ * live one at the recorded PID is the record's own subject. The plugin's own
+ * name (`claude-mem`) is not a host and does not count.
+ */
+export function isClaudeProcessName(name: string | null): boolean {
+  return name === 'claude' || name === 'claude-code' || (name !== null && name.startsWith('claude '));
+}
 
 /** Claude Code's per-version folder of `<pid>` records. */
 const HOST_IN_USE_DIRECTORY = '.in_use';
@@ -288,19 +322,85 @@ export function readHostInUseRecords(versionDirectory: string): HostInUseRecord[
   return records;
 }
 
+/** Why a recorded host process did not keep its version folder. */
+export type HostProcessRejectionReason = 'process-exited' | 'start-time-mismatch';
+
+export interface HostProcessVerdict {
+  live: boolean;
+  /** Set when `live` is false: what condemned the record. */
+  reason?: HostProcessRejectionReason;
+}
+
 /**
- * True when the recorded process is still running. A dead PID is not. A live
- * PID counts unless its start time proves the PID was reused, and that is
- * provable only where both readings are `ps lstart` (macOS/BSD). Any other
- * record keeps the folder: deleting it costs a session its hooks, keeping it
- * costs disk until the next sweep.
+ * Whether the recorded process is still running, and if not, why not.
+ *
+ * A dead PID is not live. A live PID counts unless its start time proves the
+ * PID was reused, and that is provable only where both readings are
+ * `ps lstart` (macOS/BSD). Any other record keeps the folder: deleting it
+ * costs a session its hooks, keeping it costs disk until the next sweep.
+ *
+ * Even the lstart proof is weaker than it looks (#6349): the two readings
+ * come from different producers — Claude Code wrote the record, the worker
+ * reads `ps` — and across the UTC-pin era boundary they are accepted as one
+ * instant only when they differ by an exact UTC offset. A small producer
+ * discrepancy (a few seconds between the recorded reading and the `ps`
+ * reading of the same process) is then indistinguishable from PID reuse,
+ * and the sweep deleted a live session's folder on exactly that verdict.
+ * So a mismatch alone no longer condemns the record when the live process
+ * at the PID is still a Claude Code process — the thing the record exists
+ * to describe. The reuse guard keeps its teeth where the PID now belongs
+ * to some other program, or where the name cannot be read at all.
+ */
+export function hostProcessVerdict(
+  record: HostInUseRecord,
+  probe: HostProcessProbe = defaultHostProcessProbe,
+): HostProcessVerdict {
+  if (!probe.isAlive(record.pid)) return { live: false, reason: 'process-exited' };
+  if (!record.procStart || !LSTART_SHAPE.test(record.procStart)) return { live: true };
+  const currentToken = probe.startToken(record.pid);
+  if (currentToken === null || !isUtcPinnedStartToken(currentToken)) return { live: true };
+  if (isSameProcessStartToken(currentToken, record.procStart)) return { live: true };
+  if (isClaudeProcessName(probe.name?.(record.pid) ?? null)) return { live: true };
+  return { live: false, reason: 'start-time-mismatch' };
+}
+
+/**
+ * True when the recorded process is still running. See hostProcessVerdict
+ * for the full rule, including why a start-time mismatch does not condemn a
+ * live Claude Code process (#6349).
  */
 export function isHostProcessLive(record: HostInUseRecord, probe: HostProcessProbe = defaultHostProcessProbe): boolean {
-  if (!probe.isAlive(record.pid)) return false;
-  if (!record.procStart || !LSTART_SHAPE.test(record.procStart)) return true;
-  const currentToken = probe.startToken(record.pid);
-  if (currentToken === null || !isUtcPinnedStartToken(currentToken)) return true;
-  return isSameProcessStartToken(currentToken, record.procStart);
+  return hostProcessVerdict(record, probe).live;
+}
+
+/** A `.in_use` record a sweep evaluated and rejected, with the reason. */
+export interface RejectedHostInUseRecord extends HostInUseRecord {
+  version: string;
+  reason: HostProcessRejectionReason;
+}
+
+/**
+ * The `.in_use` records under the named versions that do not keep their
+ * folder, each with the reason. Diagnostic: a prune logs these at info so a
+ * wrongful removal is attributable from the log alone (#6349 — the 16.0.1
+ * sweep deleted silently, which made the regression impossible to pin down
+ * after the fact).
+ */
+export function rejectedHostInUseRecords(
+  root: string,
+  versionDirectoryNames: string[],
+  probe: HostProcessProbe = defaultHostProcessProbe,
+): RejectedHostInUseRecord[] {
+  const sweepProbe = readOncePerPid(probe);
+  const rejected: RejectedHostInUseRecord[] = [];
+  for (const version of versionDirectoryNames) {
+    if (!isVersionDirectoryName(version)) continue;
+    for (const record of readHostInUseRecords(join(root, version))) {
+      const verdict = hostProcessVerdict(record, sweepProbe);
+      if (!verdict.live) rejected.push({ version, ...record, reason: verdict.reason! });
+    }
+  }
+  return rejected;
 }
 
 /** A probe that reads each PID once. One process is recorded under every
@@ -308,6 +408,7 @@ export function isHostProcessLive(record: HostInUseRecord, probe: HostProcessPro
 function readOncePerPid(probe: HostProcessProbe): HostProcessProbe {
   const alive = new Map<number, boolean>();
   const startTokens = new Map<number, string | null>();
+  const names = new Map<number, string | null>();
   return {
     isAlive: pid => {
       if (!alive.has(pid)) alive.set(pid, probe.isAlive(pid));
@@ -316,6 +417,10 @@ function readOncePerPid(probe: HostProcessProbe): HostProcessProbe {
     startToken: pid => {
       if (!startTokens.has(pid)) startTokens.set(pid, probe.startToken(pid));
       return startTokens.get(pid)!;
+    },
+    name: pid => {
+      if (!names.has(pid)) names.set(pid, probe.name?.(pid) ?? null);
+      return names.get(pid)!;
     },
   };
 }
@@ -373,6 +478,10 @@ export function prunePluginCache(options: PrunePluginCacheOptions = {}): CachePr
   const keepCount = options.keepCount ?? DEFAULT_CACHE_RETENTION;
 
   const { keep, prune } = planPluginCachePrune(root, keepCount, options.protectedVersions ?? []);
+  // Diagnostics are read before anything is deleted: afterwards the folders
+  // (and their `.orphaned_at` / `.in_use` evidence) are gone.
+  const pruneReasons = pruneReasonsFor(root, prune);
+  const rejectedHostRecords = rejectedHostInUseRecords(root, prune);
   const removed: string[] = [];
   const failed: { version: string; reason: string }[] = [];
   for (const version of prune) {
@@ -390,7 +499,15 @@ export function prunePluginCache(options: PrunePluginCacheOptions = {}): CachePr
       failed.push({ version, reason: error instanceof Error ? error.message : String(error) });
     }
   }
-  return { root, kept: keep, removed, failed, retainedForLiveWorker: false };
+  return {
+    root,
+    kept: keep,
+    removed,
+    failed,
+    retainedForLiveWorker: false,
+    pruneReasons,
+    rejectedHostRecords,
+  };
 }
 
 export interface PruneSupersededPluginCacheOptions {
@@ -426,6 +543,10 @@ export async function pruneSupersededPluginCache(
   ];
 
   const { keep, prune } = planPluginCachePrune(root, keepCount, protectedVersions);
+  // Diagnostics are read before anything is deleted: afterwards the folders
+  // (and their `.orphaned_at` / `.in_use` evidence) are gone.
+  const pruneReasons = pruneReasonsFor(root, prune);
+  const rejectedHostRecords = rejectedHostInUseRecords(root, prune);
   const removed: string[] = [];
   const failed: { version: string; reason: string }[] = [];
   for (const version of prune) {
@@ -447,7 +568,15 @@ export async function pruneSupersededPluginCache(
       failed.push({ version, reason: error instanceof Error ? error.message : String(error) });
     }
   }
-  return { root, kept: keep, removed, failed, retainedForLiveWorker: false };
+  return {
+    root,
+    kept: keep,
+    removed,
+    failed,
+    retainedForLiveWorker: false,
+    pruneReasons,
+    rejectedHostRecords,
+  };
 }
 
 export type LiveWorkerProbe =

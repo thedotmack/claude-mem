@@ -676,8 +676,16 @@ export class WorkerService implements WorkerRef {
         runningScriptPath: __dirname,
         additionalProtectedVersions: [packageVersion],
       }).then(result => {
-        if (result.removed.length > 0) {
-          logger.info('SYSTEM', `Pruned ${result.removed.length} stale plugin cache version(s)`, { removed: result.removed });
+        // One info line per removed folder, with the reason and the `.in_use`
+        // records that were evaluated and rejected for it: a removal that
+        // costs a live session its hooks must be attributable from the log
+        // alone (#6349, where the sweep deleted silently).
+        for (const version of result.removed) {
+          logger.info('SYSTEM', `Pruned stale plugin cache version ${version}`, {
+            version,
+            reason: result.pruneReasons?.[version] ?? 'superseded',
+            rejectedHostRecords: (result.rejectedHostRecords ?? []).filter(record => record.version === version),
+          });
         }
         for (const failure of result.failed) {
           logger.warn('SYSTEM', `Could not prune plugin cache version ${failure.version}`, { reason: failure.reason });

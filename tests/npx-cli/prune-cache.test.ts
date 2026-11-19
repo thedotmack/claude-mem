@@ -13,8 +13,11 @@ import {
   workingCacheVersions,
   isDirectChildPath,
   hostInUseCacheVersions,
+  hostProcessVerdict,
+  isClaudeProcessName,
   isHostProcessLive,
   readHostInUseRecords,
+  rejectedHostInUseRecords,
   DEFAULT_CACHE_RETENTION,
   type HostProcessProbe,
 } from '../../src/npx-cli/utils/prune-cache.js';
@@ -636,5 +639,116 @@ describe('isHostProcessLive', () => {
     expect(isHostProcessLive({ pid: 4242 }, unread)).toBe(true);
     expect(isHostProcessLive({ pid: 4242, procStart: '2026-11-11T06:05:51Z' }, unread)).toBe(true);
     expect(unread.tokenReads).toBe(0);
+  });
+});
+
+describe('a live Claude process whose recorded start time does not match (#6349)', () => {
+  const recordedStart = 'Tue Nov 17 17:51:04 2026';
+  // The reading the worker's UTC-pinned `ps` probe returns for a process that
+  // started a day after the recorded one: an unambiguous PID-reuse reading.
+  const reusedToken = 'utc:Wed Nov 18 17:51:04 2026';
+
+  function namedProbe(name: string | null): HostProcessProbe & { nameReads: number } {
+    const calls = { nameReads: 0 };
+    return Object.assign(calls, {
+      isAlive: () => true,
+      startToken: () => reusedToken,
+      name: () => { calls.nameReads += 1; return name; },
+    });
+  }
+
+  it('keeps the folder while the recorded PID is a live Claude process, whatever the start-time verdict', () => {
+    expect(isHostProcessLive({ pid: 4242, procStart: recordedStart }, namedProbe('claude'))).toBe(true);
+    expect(isHostProcessLive({ pid: 4242, procStart: recordedStart }, namedProbe('claude helper'))).toBe(true);
+    expect(isHostProcessLive({ pid: 4242, procStart: recordedStart }, namedProbe('claude-code'))).toBe(true);
+  });
+
+  it('still prunes when the PID now belongs to another program', () => {
+    expect(hostProcessVerdict({ pid: 4242, procStart: recordedStart }, namedProbe('node')))
+      .toEqual({ live: false, reason: 'start-time-mismatch' });
+    expect(hostProcessVerdict({ pid: 4242, procStart: recordedStart }, namedProbe('claude-mem')))
+      .toEqual({ live: false, reason: 'start-time-mismatch' });
+  });
+
+  it('keeps the old verdict when the process name cannot be read', () => {
+    expect(isHostProcessLive({ pid: 4242, procStart: recordedStart }, namedProbe(null))).toBe(false);
+    const noName: HostProcessProbe = { isAlive: () => true, startToken: () => reusedToken };
+    expect(isHostProcessLive({ pid: 4242, procStart: recordedStart }, noName)).toBe(false);
+  });
+
+  it('never reads a name for a process that has exited', () => {
+    const probe = namedProbe('claude');
+    const dead: HostProcessProbe = { ...probe, isAlive: () => false };
+    expect(hostProcessVerdict({ pid: 4242, procStart: recordedStart }, dead))
+      .toEqual({ live: false, reason: 'process-exited' });
+    expect(probe.nameReads).toBe(0);
+  });
+
+  it('protects the version in a full sweep plan while its Claude process lives', () => {
+    const scratch = mkdtempSync(join(tmpdir(), 'claude-mem-prune-6349-plan-'));
+    for (const version of ['15.19.0', '16.0.0', '16.0.1']) mkdirSync(join(scratch, version));
+    writeFileSync(join(scratch, '15.19.0', '.orphaned_at'), String(Date.now()));
+    writeHostInUseRecord(scratch, '15.19.0', 4242, JSON.stringify({ pid: 4242, procStart: recordedStart }));
+
+    expect(hostInUseCacheVersions(scratch, ['15.19.0', '16.0.0', '16.0.1'], namedProbe('claude')))
+      .toEqual(['15.19.0']);
+    expect(hostInUseCacheVersions(scratch, ['15.19.0', '16.0.0', '16.0.1'], namedProbe('node')))
+      .toEqual([]);
+    rmSync(scratch, { recursive: true, force: true });
+  });
+
+  it('recognizes Claude process names and rejects lookalikes', () => {
+    expect(isClaudeProcessName('claude')).toBe(true);
+    expect(isClaudeProcessName('claude helper')).toBe(true);
+    expect(isClaudeProcessName('claude-code')).toBe(true);
+    expect(isClaudeProcessName('claude-mem')).toBe(false);
+    expect(isClaudeProcessName('claudette')).toBe(false);
+    expect(isClaudeProcessName('node')).toBe(false);
+    expect(isClaudeProcessName(null)).toBe(false);
+  });
+});
+
+describe('prune diagnostics (#6349)', () => {
+  let scratch: string | undefined;
+  afterEach(() => {
+    if (scratch) rmSync(scratch, { recursive: true, force: true });
+    scratch = undefined;
+  });
+
+  it('reports why each version was pruned and which .in_use records were rejected', () => {
+    scratch = mkdtempSync(join(tmpdir(), 'claude-mem-prune-6349-diagnostics-'));
+    for (const version of ['13.24.0', '13.25.0', '13.26.0', '13.27.0']) writeCacheVersion(scratch, version, true);
+    writeFileSync(join(scratch, '13.24.0', '.orphaned_at'), String(Date.now()));
+    const dead = exitedPid();
+    writeHostInUseRecord(scratch, '13.24.0', dead, JSON.stringify({ pid: dead, procStart: 'Wed Nov 11 06:05:51 2026' }));
+
+    const result = prunePluginCache({ cacheRoot: scratch, keepCount: 2 });
+
+    expect(result.removed).toEqual(expect.arrayContaining(['13.24.0', '13.25.0']));
+    expect(result.pruneReasons?.['13.24.0']).toBe('orphaned');
+    expect(result.pruneReasons?.['13.25.0']).toBe('superseded');
+    expect(result.rejectedHostRecords).toEqual([
+      { version: '13.24.0', pid: dead, procStart: 'Wed Nov 11 06:05:51 2026', reason: 'process-exited' },
+    ]);
+  });
+
+  it('lists rejected records with their reasons, and none for a record that keeps its version', () => {
+    scratch = mkdtempSync(join(tmpdir(), 'claude-mem-prune-6349-rejections-'));
+    for (const version of ['13.24.0', '13.25.0']) mkdirSync(join(scratch, version));
+    const dead = exitedPid();
+    writeHostInUseRecord(scratch, '13.24.0', dead, JSON.stringify({ pid: dead, procStart: 'Wed Nov 11 06:05:51 2026' }));
+    writeHostInUseRecord(scratch, '13.25.0', 4242, JSON.stringify({ pid: 4242, procStart: 'Wed Nov 11 06:05:51 2026' }));
+    const probe: HostProcessProbe = {
+      isAlive: pid => pid === 4242,
+      startToken: () => 'utc:Thu Nov 12 09:41:07 2026',
+      name: () => 'node',
+    };
+
+    expect(rejectedHostInUseRecords(scratch, ['13.24.0', '13.25.0'], probe)).toEqual([
+      { version: '13.24.0', pid: dead, procStart: 'Wed Nov 11 06:05:51 2026', reason: 'process-exited' },
+      { version: '13.25.0', pid: 4242, procStart: 'Wed Nov 11 06:05:51 2026', reason: 'start-time-mismatch' },
+    ]);
+    const claudeProbe: HostProcessProbe = { ...probe, name: () => 'claude' };
+    expect(rejectedHostInUseRecords(scratch, ['13.25.0'], claudeProbe)).toEqual([]);
   });
 });
