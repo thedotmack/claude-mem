@@ -1461,7 +1461,10 @@ export class ChromaMcpManager {
     // SQLite/FTS5 may still be committing can leave the persistent index
     // malformed (a timeout is therefore never handled as a transport error,
     // see below). Give mutations a bounded, configurable deadline while
-    // keeping read/query latency at the SDK default.
+    // keeping read/query latency at the SDK default. A read past that default
+    // is treated as hung and restarts chroma-mcp, so it must stay well above
+    // a slow-but-healthy query: a search that cannot wait that long stops
+    // waiting on its own (CHROMA_SEARCH_BUDGET_MS) without cancelling the read.
     const requestOptions = isMutation
       ? { timeout: this.mutationTimeoutMs }
       : undefined;

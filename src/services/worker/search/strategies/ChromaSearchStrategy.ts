@@ -14,6 +14,7 @@ import {
   UserPromptSearchResult
 } from '../types.js';
 import { ChromaSync, type ChromaQueryProgress } from '../../../sync/ChromaSync.js';
+import { CHROMA_SEARCH_BUDGET_MS } from '../../../sync/chroma-search-budget.js';
 import { SessionStore } from '../../../sqlite/SessionStore.js';
 import { logger } from '../../../../utils/logger.js';
 import { normalizePlatformSource } from '../../../../shared/platform-source.js';
@@ -126,10 +127,14 @@ export class ChromaSearchStrategy {
       sessions: options.searchSessions,
       prompts: options.searchPrompts,
     }, sqlOptions);
+    // Every widening step and filtered retry shares one deadline, so a slow
+    // first read cannot leave a later one running past the caller's budget;
+    // when it runs out, the search falls back to SQLite/FTS5 as a whole.
+    const deadline = Date.now() + CHROMA_SEARCH_BUDGET_MS;
 
     while (true) {
       const progress: ChromaQueryProgress = {};
-      const chromaResults = await this.chromaSync.queryChroma(query, candidateLimit, whereFilter, progress, fallbackRowIds);
+      const chromaResults = await this.chromaSync.queryChroma(query, candidateLimit, whereFilter, progress, fallbackRowIds, deadline);
       const categorized = this.categorizeByDocType(chromaResults, options);
       results = {
         observations: this.hydrateCandidates(categorized.obsIds, observationCache, ids =>

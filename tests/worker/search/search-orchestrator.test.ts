@@ -82,6 +82,7 @@ describe('SearchOrchestrator Chroma zero fallback', () => {
       { $and: [{ doc_type: 'observation' }, { $or: [{ project: 'orchestrator-project' }, { merged_into_project: 'orchestrator-project' }] }, { platform_source: 'cursor' }] },
       expect.any(Object),
       expect.any(Function),
+      expect.any(Number),
     );
     expect(searchObservations).toHaveBeenCalledWith('legacy docs', expect.objectContaining({
       project: 'orchestrator-project',

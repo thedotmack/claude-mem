@@ -1,5 +1,6 @@
 
 import { ChromaMcpManager } from './ChromaMcpManager.js';
+import { withinSearchBudget } from './chroma-search-budget.js';
 import { ChromaSyncState, ProjectWatermarks, type PendingRowDelete } from './ChromaSyncState.js';
 import { isQueuedChromaRowDelete, runOnChromaRowCleanupLane } from './chroma-row-cleanup.js';
 import { parseStringListField } from './string-list-field.js';
@@ -2290,7 +2291,9 @@ export class ChromaSync {
     limit: number,
     whereFilter?: Record<string, any>,
     progress?: ChromaQueryProgress,
-    fallbackRowIds?: ChromaFallbackRowIds
+    fallbackRowIds?: ChromaFallbackRowIds,
+    /** Absolute epoch ms after which the search stops waiting on Chroma reads and falls back (CHROMA_SEARCH_BUDGET_MS). */
+    deadlineMs?: number
   ): Promise<{ ids: number[]; distances: number[]; metadatas: any[] }> {
     if (progress) progress.exhausted = false;
     await this.ensureCollectionExists();
@@ -2298,13 +2301,13 @@ export class ChromaSync {
     let results: any;
     const runQuery = async (nResults: number, where: Record<string, any> | undefined, include: string[]) => {
       const chromaMcp = ChromaMcpManager.getInstance();
-      return await chromaMcp.callTool('chroma_query_documents', {
+      return await withinSearchBudget(() => chromaMcp.callTool('chroma_query_documents', {
         collection_name: this.collectionName,
         query_texts: [query],
         n_results: nResults,
         ...(where && { where }),
         include
-      });
+      }), deadlineMs);
     };
 
     try {

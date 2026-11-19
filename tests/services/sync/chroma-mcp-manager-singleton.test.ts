@@ -631,6 +631,8 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     await mgr.callTool('chroma_add_documents', { ids: ['one'] });
     await mgr.callTool('chroma_query_documents', { query_texts: ['fast read'] });
 
+    // Reads keep the SDK's request deadline: past it chroma-mcp is restarted as
+    // hung, so a search's shorter budget (#6323) must never become this timeout.
     expect(calls).toEqual([
       { name: 'chroma_add_documents', timeout: 900000 },
       { name: 'chroma_query_documents', timeout: undefined },
