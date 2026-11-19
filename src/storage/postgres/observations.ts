@@ -177,6 +177,91 @@ export function usesWebsearchSyntax(query: string): boolean {
   return /"|(^|\s)-\S|(^|\s)or(\s|$)/i.test(query);
 }
 
+// Code-point ranges of the scripts the english text-search parser cannot
+// segment: it keeps a whole run of these as one lexeme, so a term inside the
+// run can never match by tsquery. The same ranges the server SQLite read uses
+// (src/services/sqlite/search-query.ts): Han, kana and Hangul, Thai/Lao,
+// Myanmar, Khmer and Bopomofo, with their compatibility blocks.
+const UNSEGMENTED_SCRIPT_RANGES =
+  '\\p{Script=Han}\\u31F0-\\u31FF\\uFF66-\\uFF9F\\u0E00-\\u0EFF\\u1000-\\u109F\\u1780-\\u17FF\\u3040-\\u30FF\\u3100-\\u318F\\u3400-\\u4DBF\\u4E00-\\u9FFF\\uAC00-\\uD7AF\\uF900-\\uFAFF';
+const UNSEGMENTED_SCRIPT = new RegExp(`[${UNSEGMENTED_SCRIPT_RANGES}]`, 'u');
+
+// A query token as the server SQLite read (MemoryItemsRepository.search) splits
+// one: a run of letters, numbers, symbols and underscore, with combining marks
+// allowed inside it.
+const SEARCH_TOKEN = /[\p{L}\p{N}\p{S}_][\p{L}\p{N}\p{M}\p{S}_]*/gu;
+const SEARCH_WORD_BREAK = /[^\p{L}\p{N}\p{M}_]+/u;
+
+/** One term of a keyword query, classified the way the search predicate needs it. */
+export interface PostgresSearchTerm {
+  /** The token as written in the query. */
+  literal: string;
+  /** Its word forms for websearch_to_tsquery; '' when it holds no word characters. */
+  words: string;
+  /** Whether it is written in a script the tsvector parser cannot segment. */
+  substring: boolean;
+}
+
+/**
+ * Split a keyword query into the deduplicated terms, in query order, that the
+ * search predicate ANDs. Mirrors the server SQLite read's tokenization.
+ */
+export function searchQueryTerms(query: string): PostgresSearchTerm[] {
+  const terms: PostgresSearchTerm[] = [];
+  const seen = new Set<string>();
+  for (const [literal] of query.matchAll(SEARCH_TOKEN)) {
+    if (seen.has(literal)) continue;
+    seen.add(literal);
+    terms.push({
+      literal,
+      words: literal.split(SEARCH_WORD_BREAK).filter(Boolean).join(' '),
+      substring: UNSEGMENTED_SCRIPT.test(literal)
+    });
+  }
+  return terms;
+}
+
+// A bound ILIKE pattern. The backslash is the ESCAPE character, so it is a
+// literal any time the term itself holds one.
+function likePattern(literal: string): string {
+  return `%${literal.replace(/[\\%_]/g, '\\$&')}%`;
+}
+
+/**
+ * The keyword predicate for a query holding unsegmented-script terms, bound
+ * from $firstParam on, with every parameter position in `params`.
+ *
+ * Each term is one group and the groups are ANDed, as the server SQLite read
+ * ANDs its per-term conditions. A script term matches either as a
+ * case-insensitive literal substring of `content` (the only way to find a term
+ * inside a run the parser keeps whole) or through the tsquery lexemes the term
+ * still produces. Every other term keeps its plain tsquery. A term with no
+ * word characters (punctuation only) contributes nothing, exactly as
+ * websearch_to_tsquery drops it today.
+ */
+export function buildSubstringSearchSql(
+  terms: PostgresSearchTerm[],
+  firstParam: number
+): { predicate: string; params: string[] } {
+  const params: string[] = [];
+  const groups: string[] = [];
+  for (const term of terms) {
+    const clauses: string[] = [];
+    if (term.substring) {
+      clauses.push(`observations.content ILIKE $${firstParam + params.length} ESCAPE '\\'`);
+      params.push(likePattern(term.literal));
+    }
+    if (term.words) {
+      clauses.push(`observations.content_search @@ websearch_to_tsquery('english', $${firstParam + params.length})`);
+      params.push(term.words);
+    }
+    if (clauses.length > 0) {
+      groups.push(`(${clauses.join(' OR ')})`);
+    }
+  }
+  return { predicate: groups.join(' AND '), params };
+}
+
 export class PostgresObservationRepository {
   constructor(private client: PostgresQueryable) {}
 
@@ -336,6 +421,14 @@ export class PostgresObservationRepository {
   // `queryEmbedding` (the query's vector and the model that made it, from
   // embedSearchQuery) turns a query search hybrid: see searchHybrid. Without
   // it, or without a query, the read is the keyword/recency one below.
+  //
+  // A plain query holding a term in a script the text-search parser cannot
+  // segment (CJK, kana, Hangul, Thai/Lao, Myanmar, Khmer, Bopomofo) matches that
+  // term by literal substring, because the parser keeps such a run as one
+  // lexeme (#3982). The contract is the server SQLite read's
+  // MemoryItemsRepository.search: every term matches, each by substring or by
+  // its word forms. web-search syntax and the pg_textsearch path keep the
+  // match and ranking they always had.
   async search(input: {
     projectId: string;
     teamId: string;
@@ -386,6 +479,28 @@ export class PostgresObservationRepository {
     // alternatives still mean what they say; bm25 only ranks those matches.
     // Plain words match any term on the bm25 path.
     const bm25MatchesAnyTerm = bm25 && !usesWebsearchSyntax(query);
+    // A plain query with a term in a script to_tsvector('english') keeps as one
+    // lexeme takes the substring predicate below; every other query keeps the
+    // websearch_to_tsquery predicate and ts_rank ordering it always had.
+    const scriptTerms = query !== null && !bm25 && !usesWebsearchSyntax(query)
+      ? searchQueryTerms(query)
+      : [];
+    const built = scriptTerms.some(term => term.substring)
+      ? buildSubstringSearchSql(scriptTerms, 11)
+      : null;
+    const substringSearch = built && built.predicate.length > 0 ? built : null;
+    const keywordPredicate = substringSearch
+      ? `(${substringSearch.predicate})`
+      : "($3::text IS NULL OR observations.content_search @@ websearch_to_tsquery('english', $3))";
+    // A substring match has no tsquery rank to order by, so newest first, the
+    // same shape the plain read falls back to. The leading CASE keeps $3 typed
+    // and is inert here because this path only runs with a query.
+    const keywordOrder = substringSearch
+      ? `CASE WHEN $3::text IS NULL THEN observations.created_at END DESC,
+          observations.updated_at DESC`
+      : `CASE WHEN $3::text IS NULL THEN observations.created_at END DESC,
+          ts_rank(observations.content_search, websearch_to_tsquery('english', $3)) DESC,
+          observations.updated_at DESC`;
     const result = await this.client.query<ObservationRow & { matches_query?: boolean }>(
       `
         SELECT observations.*,
@@ -399,12 +514,8 @@ export class PostgresObservationRepository {
           AND server_sessions.team_id = observations.team_id
         WHERE ${SEARCH_SCOPE_SQL}
           AND ${observationModeFilterSql('$9', '$10')}
-          ${bm25MatchesAnyTerm ? '' : "AND ($3::text IS NULL OR observations.content_search @@ websearch_to_tsquery('english', $3))"}
-        ORDER BY ${bm25
-          ? bm25Order('$3')
-          : `CASE WHEN $3::text IS NULL THEN observations.created_at END DESC,
-          ts_rank(observations.content_search, websearch_to_tsquery('english', $3)) DESC,
-          observations.updated_at DESC`}
+          ${bm25MatchesAnyTerm ? '' : `AND ${keywordPredicate}`}
+        ORDER BY ${bm25 ? bm25Order('$3') : keywordOrder}
         LIMIT $4
       `,
       [
@@ -418,6 +529,7 @@ export class PostgresObservationRepository {
         input.summary ?? null,
         input.observationTypes ?? null,
         input.observationConcepts ?? null,
+        ...(substringSearch?.params ?? [])
       ]
     );
     return result.rows.filter(row => !bm25MatchesAnyTerm || row.matches_query).map(mapObservationRow);
