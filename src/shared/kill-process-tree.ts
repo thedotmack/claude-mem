@@ -154,15 +154,11 @@ export async function handleTaskkillFailure(pid: number, error: unknown): Promis
   const stderr = String((error as { stderr?: unknown }).stderr ?? '');
   const message = error instanceof Error ? error.message : String(error);
 
-  // Already gone is the expected, tolerated case.
-  if (code === TASKKILL_NOT_FOUND_EXIT || TASKKILL_NOT_FOUND_PATTERN.test(`${stderr} ${message}`)) {
-    logger.debug('PROCESS', 'taskkill reported the process was already gone', { pid });
-    return;
-  }
-
-  // A partial failure where the root and every PID taskkill names are gone
-  // is the same tolerated case, reported in another language. A PID that
-  // is still alive (access denied) keeps it an error.
+  // A partial failure is classified by liveness, never by wording: taskkill
+  // names every member it could not end, so an already-gone child ("no running
+  // instance") can sit beside a live, access-denied one in the same stderr.
+  // Checking the English phrase first would swallow that live member and
+  // report success while it is still running.
   if (code === TASKKILL_PARTIAL_FAILURE_EXIT) {
     const namedPids = [pid, ...pidsNamedByTaskkill(stderr)];
     await waitForSignalledProcessesToExit(namedPids, TASKKILL_PARTIAL_FAILURE_SETTLE_MS);
@@ -170,6 +166,12 @@ export async function handleTaskkillFailure(pid: number, error: unknown): Promis
       logger.debug('PROCESS', 'taskkill exited 255, but every PID it named is gone', { pid, namedPids });
       return;
     }
+    // A named PID is still alive: fall through to the error below. The
+    // not-found pattern must not decide this case, whichever language it is in.
+  } else if (code === TASKKILL_NOT_FOUND_EXIT || TASKKILL_NOT_FOUND_PATTERN.test(`${stderr} ${message}`)) {
+    // Already gone is the expected, tolerated case.
+    logger.debug('PROCESS', 'taskkill reported the process was already gone', { pid });
+    return;
   }
 
   // Anything else — access denied, a timeout, a wedged /T walk — means the
