@@ -771,6 +771,20 @@ describe('CLAUDE.local.md support', () => {
     expect(callUrl).not.toContain(encodeURIComponent('/project/src/a'));
     expect(callUrl).not.toContain(encodeURIComponent('/project/src/b'));
   });
+
+  // Backslash is only a separator on Windows, where one batch can spell the same folder both ways.
+  it.skipIf(process.platform !== 'win32')('should skip a folder whose active CLAUDE.md is spelled with the other separator', async () => {
+    const fetchMock = mock(() => Promise.resolve({ ok: true, json: () => Promise.resolve({ content: [] }) } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles(
+      ['C:\\project\\src\\a\\CLAUDE.md', 'C:/project/src/a/file.ts'],
+      'test-project',
+      'C:\\project'
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });
 
 describe('skeleton CLAUDE.md deny-list (#2400)', () => {
