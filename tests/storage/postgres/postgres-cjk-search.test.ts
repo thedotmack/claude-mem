@@ -11,12 +11,23 @@ import pg from 'pg';
 import {
   bootstrapServerPostgresSchema,
   createPostgresStorageRepositories,
+  usesBm25Index,
   type PostgresPoolClient,
   type PostgresStorageRepositories,
 } from '../../../src/storage/postgres/index.js';
 import { quoteIdentifier } from '../../sdk/pg-isolation.js';
 
 const testDatabaseUrl = process.env.CLAUDE_MEM_TEST_POSTGRES_URL;
+
+// pg_textsearch deliberately answers keyword search with any-term bm25 and
+// skips the substring path, so this suite only has meaning where that
+// extension is absent (the stock pgvector image). Existing suites use the same
+// guard rather than a second database.
+function skipsOnBm25(client: PostgresPoolClient): boolean {
+  if (!usesBm25Index(client)) return false;
+  console.warn('pg_textsearch is in use here; the unsegmented-script substring path is not exercised');
+  return true;
+}
 
 describe('server beta postgres unsegmented-script keyword search (#3982)', () => {
   if (!testDatabaseUrl) {
@@ -61,6 +72,7 @@ describe('server beta postgres unsegmented-script keyword search (#3982)', () =>
   }
 
   it('finds a CJK term inside a run the tsvector parser keeps whole', async () => {
+    if (skipsOnBm25(client)) return;
     const { team, project } = await scope('cjk');
     await store(project.id, team.id, 'worker 修改了连接池配置');
 
@@ -69,6 +81,7 @@ describe('server beta postgres unsegmented-script keyword search (#3982)', () =>
   });
 
   it('finds Japanese and Korean terms inside an unsegmented run', async () => {
+    if (skipsOnBm25(client)) return;
     const { team, project } = await scope('kana');
     await store(project.id, team.id, '設定を変更しました');
     await store(project.id, team.id, '설정을변경했습니다');
@@ -78,7 +91,34 @@ describe('server beta postgres unsegmented-script keyword search (#3982)', () =>
     expect(await search(project.id, team.id, '설정')).toEqual(['설정을변경했습니다']);
   });
 
+  it('finds a decomposed Korean term by the jamo it is written with', async () => {
+    if (skipsOnBm25(client)) return;
+    const { team, project } = await scope('jamo');
+    // NFD 설정을변경했습니다, as a decomposed Korean write stores it.
+    const content = '\u1109\u1165\u11AF\u110C\u1165\u11BC\u110B\u1173\u11AF'
+      + '\u1107\u1167\u11AB\u1100\u1167\u11BC\u1112\u1166\u11BA'
+      + '\u1109\u1173\u11B7\u1102\u1175\u11AB';
+    await store(project.id, team.id, content);
+
+    // NFD 정: the term is a jamo run the parser cannot segment.
+    const term = '\u110C\u1165\u11BC';
+    expect(await search(project.id, team.id, term)).toEqual([content]);
+  });
+
+  it('drops an English stop word instead of failing the whole query', async () => {
+    if (skipsOnBm25(client)) return;
+    const { team, project } = await scope('stopword');
+    await store(project.id, team.id, 'the 設定を変更しました');
+    await store(project.id, team.id, '変更だけ');
+
+    expect(await search(project.id, team.id, 'the 設定')).toEqual(['the 設定を変更しました']);
+    // The stop word adds no condition, so the other content word still decides.
+    expect((await search(project.id, team.id, '変更 the')).sort())
+      .toEqual(['the 設定を変更しました', '変更だけ'].sort());
+  });
+
   it('keeps AND semantics across every term', async () => {
+    if (skipsOnBm25(client)) return;
     const { team, project } = await scope('and');
     await store(project.id, team.id, '连接池');
     await store(project.id, team.id, '数据库 连接池');
@@ -87,6 +127,7 @@ describe('server beta postgres unsegmented-script keyword search (#3982)', () =>
   });
 
   it('leaves plain ASCII keyword search and its AND semantics unchanged', async () => {
+    if (skipsOnBm25(client)) return;
     const { team, project } = await scope('ascii');
     await store(project.id, team.id, 'restore snapshots require tables');
     await store(project.id, team.id, 'restore only');
@@ -96,6 +137,7 @@ describe('server beta postgres unsegmented-script keyword search (#3982)', () =>
   });
 
   it('keeps project and team scope on the substring path', async () => {
+    if (skipsOnBm25(client)) return;
     const own = await scope('own');
     const foreign = await scope('foreign');
     await store(own.project.id, own.team.id, '设定 保持');

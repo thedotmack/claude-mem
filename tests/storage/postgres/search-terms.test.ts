@@ -33,6 +33,14 @@ describe('postgres keyword search terms', () => {
     ]);
   });
 
+  it('treats decomposed Korean jamo as an unsegmented run', () => {
+    // NFD 정: U+110C U+1165 U+11BC, the form a decomposed Korean write produces.
+    const jamo = '\u110C\u1165\u11BC';
+    expect(searchQueryTerms(jamo)).toEqual([
+      { literal: jamo, words: jamo, substring: true },
+    ]);
+  });
+
   it('splits on punctuation, keeps underscore inside a term, and deduplicates', () => {
     expect(searchQueryTerms('retry retry -gateway "header font"').map(term => term.literal)).toEqual([
       'retry',
@@ -56,7 +64,8 @@ describe('postgres keyword search terms', () => {
     const { predicate, params } = buildSubstringSearchSql(searchQueryTerms('worker 設定'), 11);
     expect(params).toEqual(['worker', '%設定%', '設定']);
     expect(predicate).toBe(
-      "(observations.content_search @@ websearch_to_tsquery('english', $11)) AND "
+      "((numnode(websearch_to_tsquery('english', $11)) = 0 OR "
+      + "observations.content_search @@ websearch_to_tsquery('english', $11))) AND "
       + "(observations.content ILIKE $12 ESCAPE '\\' OR "
       + "observations.content_search @@ websearch_to_tsquery('english', $13))",
     );

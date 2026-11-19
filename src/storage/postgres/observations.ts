@@ -179,11 +179,12 @@ export function usesWebsearchSyntax(query: string): boolean {
 
 // Code-point ranges of the scripts the english text-search parser cannot
 // segment: it keeps a whole run of these as one lexeme, so a term inside the
-// run can never match by tsquery. The same ranges the server SQLite read uses
-// (src/services/sqlite/search-query.ts): Han, kana and Hangul, Thai/Lao,
-// Myanmar, Khmer and Bopomofo, with their compatibility blocks.
+// run can never match by tsquery. Han, kana and Hangul, Thai/Lao, Myanmar,
+// Khmer and Bopomofo, with their compatibility blocks. The Hangul jamo blocks
+// are included so decomposed Korean (NFD, as some editors and filesystems
+// write it) takes the substring path too.
 const UNSEGMENTED_SCRIPT_RANGES =
-  '\\p{Script=Han}\\u31F0-\\u31FF\\uFF66-\\uFF9F\\u0E00-\\u0EFF\\u1000-\\u109F\\u1780-\\u17FF\\u3040-\\u30FF\\u3100-\\u318F\\u3400-\\u4DBF\\u4E00-\\u9FFF\\uAC00-\\uD7AF\\uF900-\\uFAFF';
+  '\\p{Script=Han}\\u31F0-\\u31FF\\uFF66-\\uFF9F\\u0E00-\\u0EFF\\u1000-\\u109F\\u1780-\\u17FF\\u3040-\\u30FF\\u3100-\\u318F\\u3400-\\u4DBF\\u4E00-\\u9FFF\\uAC00-\\uD7AF\\uF900-\\uFAFF\\u1100-\\u11FF\\uA960-\\uA97F\\uD7B0-\\uD7FF';
 const UNSEGMENTED_SCRIPT = new RegExp(`[${UNSEGMENTED_SCRIPT_RANGES}]`, 'u');
 
 // A query token as the server SQLite read (MemoryItemsRepository.search) splits
@@ -235,9 +236,11 @@ function likePattern(literal: string): string {
  * ANDs its per-term conditions. A script term matches either as a
  * case-insensitive literal substring of `content` (the only way to find a term
  * inside a run the parser keeps whole) or through the tsquery lexemes the term
- * still produces. Every other term keeps its plain tsquery. A term with no
- * word characters (punctuation only) contributes nothing, exactly as
- * websearch_to_tsquery drops it today.
+ * still produces. Every other term keeps its plain tsquery, except that a term
+ * the parser reduces to nothing (an English stop word such as "the") adds no
+ * condition instead of an always-false one, matching how
+ * websearch_to_tsquery drops it from the whole-query form. A term with no word
+ * characters (punctuation only) contributes nothing, as before.
  */
 export function buildSubstringSearchSql(
   terms: PostgresSearchTerm[],
@@ -252,7 +255,15 @@ export function buildSubstringSearchSql(
       params.push(likePattern(term.literal));
     }
     if (term.words) {
-      clauses.push(`observations.content_search @@ websearch_to_tsquery('english', $${firstParam + params.length})`);
+      const param = `$${firstParam + params.length}`;
+      const tsquery = `websearch_to_tsquery('english', ${param})`;
+      if (term.substring) {
+        clauses.push(`observations.content_search @@ ${tsquery}`);
+      } else {
+        // An English stop word yields an empty tsquery, which matches nothing;
+        // the whole-query parser would have dropped it instead.
+        clauses.push(`(numnode(${tsquery}) = 0 OR observations.content_search @@ ${tsquery})`);
+      }
       params.push(term.words);
     }
     if (clauses.length > 0) {
