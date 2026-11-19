@@ -14,7 +14,7 @@ import {
   UserPromptSearchResult
 } from '../types.js';
 import { ChromaSync, type ChromaQueryProgress } from '../../../sync/ChromaSync.js';
-import { CHROMA_SEARCH_BUDGET_MS } from '../../../sync/ChromaMcpManager.js';
+import { CHROMA_SEARCH_BUDGET_MS } from '../../../sync/chroma-search-budget.js';
 import { SessionStore } from '../../../sqlite/SessionStore.js';
 import { logger } from '../../../../utils/logger.js';
 import { normalizePlatformSource } from '../../../../shared/platform-source.js';

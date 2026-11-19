@@ -7,7 +7,7 @@ import { SessionSearch } from '../sqlite/SessionSearch.js';
 import { SessionStore } from '../sqlite/SessionStore.js';
 import type { ContextReadWorkerClient } from '../context/ContextReadWorkerClient.js';
 import { ChromaSync, type ChromaFallbackRowIds, type ChromaQueryProgress } from '../sync/ChromaSync.js';
-import { CHROMA_SEARCH_BUDGET_MS } from '../sync/ChromaMcpManager.js';
+import { CHROMA_SEARCH_BUDGET_MS } from '../sync/chroma-search-budget.js';
 import { FormattingService, singleLineTitle } from './FormattingService.js';
 import { TimelineService } from './TimelineService.js';
 import type { TimelineItem } from './TimelineService.js';
