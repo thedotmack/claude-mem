@@ -631,6 +631,8 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     await mgr.callTool('chroma_add_documents', { ids: ['one'] });
     await mgr.callTool('chroma_query_documents', { query_texts: ['fast read'] });
     await mgr.callTool('chroma_get_documents', { ids: ['one'] });
+    // A search passes the time its shared deadline has left, not a fresh 20 s.
+    await mgr.callTool('chroma_query_documents', { query_texts: ['later window'] }, 1500);
 
     expect(calls).toEqual([
       { name: 'chroma_add_documents', timeout: 900000 },
@@ -638,6 +640,7 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
       // worker can fall back to SQLite/FTS5 instead of failing the request.
       { name: 'chroma_query_documents', timeout: 20000 },
       { name: 'chroma_get_documents', timeout: 20000 },
+      { name: 'chroma_query_documents', timeout: 1500 },
     ]);
   });
 

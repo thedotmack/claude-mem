@@ -2290,7 +2290,9 @@ export class ChromaSync {
     limit: number,
     whereFilter?: Record<string, any>,
     progress?: ChromaQueryProgress,
-    fallbackRowIds?: ChromaFallbackRowIds
+    fallbackRowIds?: ChromaFallbackRowIds,
+    /** Absolute epoch ms a search's Chroma reads must end by; one read gets the remaining time. */
+    deadlineMs?: number
   ): Promise<{ ids: number[]; distances: number[]; metadatas: any[] }> {
     if (progress) progress.exhausted = false;
     await this.ensureCollectionExists();
@@ -2298,13 +2300,17 @@ export class ChromaSync {
     let results: any;
     const runQuery = async (nResults: number, where: Record<string, any> | undefined, include: string[]) => {
       const chromaMcp = ChromaMcpManager.getInstance();
+      const remaining = deadlineMs === undefined ? undefined : deadlineMs - Date.now();
+      if (remaining !== undefined && remaining <= 0) {
+        throw new ChromaUnavailableError('chroma-mcp search budget exhausted before another query');
+      }
       return await chromaMcp.callTool('chroma_query_documents', {
         collection_name: this.collectionName,
         query_texts: [query],
         n_results: nResults,
         ...(where && { where }),
         include
-      });
+      }, remaining);
     };
 
     try {

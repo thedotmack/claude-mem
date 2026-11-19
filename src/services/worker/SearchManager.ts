@@ -7,6 +7,7 @@ import { SessionSearch } from '../sqlite/SessionSearch.js';
 import { SessionStore } from '../sqlite/SessionStore.js';
 import type { ContextReadWorkerClient } from '../context/ContextReadWorkerClient.js';
 import { ChromaSync, type ChromaFallbackRowIds, type ChromaQueryProgress } from '../sync/ChromaSync.js';
+import { CHROMA_SEARCH_BUDGET_MS } from '../sync/ChromaMcpManager.js';
 import { FormattingService, singleLineTitle } from './FormattingService.js';
 import { TimelineService } from './TimelineService.js';
 import type { TimelineItem } from './TimelineService.js';
@@ -97,12 +98,13 @@ export class SearchManager {
     limit: number,
     whereFilter: Record<string, any> | undefined,
     progress: ChromaQueryProgress | undefined,
-    fallbackRowIds: ChromaFallbackRowIds
+    fallbackRowIds: ChromaFallbackRowIds,
+    deadlineMs?: number
   ): Promise<{ ids: number[]; distances: number[]; metadatas: any[] }> {
     if (!this.chromaSync) {
       return { ids: [], distances: [], metadatas: [] };
     }
-    return await this.chromaSync.queryChroma(query, limit, whereFilter, progress, fallbackRowIds);
+    return await this.chromaSync.queryChroma(query, limit, whereFilter, progress, fallbackRowIds, deadlineMs);
   }
 
   /**
@@ -157,10 +159,13 @@ export class SearchManager {
     const maxCandidates = 1600;
     const visited = new Set<number>();
     const hydrated = new Map<number, T>();
+    // Five widening windows share one deadline, so a slow early window cannot
+    // leave the last one running past the caller's search budget (#6323).
+    const deadline = Date.now() + CHROMA_SEARCH_BUDGET_MS;
 
     while (true) {
       const progress: ChromaQueryProgress = {};
-      const chromaResults = await this.queryChroma(query, candidateLimit, whereFilter, requiredResults ? progress : undefined, fallbackRowIds);
+      const chromaResults = await this.queryChroma(query, candidateLimit, whereFilter, requiredResults ? progress : undefined, fallbackRowIds, deadline);
       const candidateIds = chromaResults.ids.filter((_id, index) => chromaResults.metadatas[index] != null);
       // Repeated ranked prefixes reuse successful and rejected native lookups.
       // Build results in the current Chroma order, including cached matches.

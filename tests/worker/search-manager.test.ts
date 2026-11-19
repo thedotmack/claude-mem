@@ -90,7 +90,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
         { $or: [{ project: 'search-project' }, { merged_into_project: 'search-project' }] },
         { platform_source: 'cursor' },
       ],
-    }, expect.any(Object), expect.any(Function));
+    }, expect.any(Object), expect.any(Function), expect.any(Number));
     expect(getObservationsByIds).toHaveBeenCalledWith([observation.id], expect.objectContaining({
       platformSource: 'cursor',
       project: 'search-project',
@@ -171,7 +171,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       limit: 5,
     });
 
-    expect(queryChroma).toHaveBeenCalledWith('trading', 100, undefined, expect.any(Object), expect.any(Function));
+    expect(queryChroma).toHaveBeenCalledWith('trading', 100, undefined, expect.any(Object), expect.any(Function), expect.any(Number));
     expect(getObservationsByIds).toHaveBeenCalledWith([11], expect.objectContaining({ orderBy: 'date_asc' }));
     expect(getSessionSummariesByIds).toHaveBeenCalledWith([22], expect.objectContaining({ orderBy: 'date_asc' }));
     expect(getUserPromptsByIds).toHaveBeenCalledWith([33], expect.objectContaining({ orderBy: 'date_asc' }));
@@ -351,7 +351,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
         { $or: [{ project: 'search-project' }, { merged_into_project: 'search-project' }] },
         { platform_source: 'cursor' },
       ],
-    }, expect.any(Object), expect.any(Function));
+    }, expect.any(Object), expect.any(Function), expect.any(Number));
     expect(getSessionSummariesByIds).toHaveBeenCalledWith([session.id], {
       orderBy: 'relevance',
       project: 'search-project',
@@ -647,7 +647,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
         { doc_type: 'observation' },
         { $or: [{ project: spellings }, { merged_into_project: spellings }] },
       ],
-    }, expect.any(Object), expect.any(Function));
+    }, expect.any(Object), expect.any(Function), expect.any(Number));
   });
 
   // Gate P2-5: a checkout's search covers every key it reads (its current key
@@ -679,7 +679,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
         { doc_type: 'observation' },
         { $or: [{ project: keys }, { merged_into_project: keys }] },
       ],
-    }, expect.any(Object), expect.any(Function));
+    }, expect.any(Object), expect.any(Function), expect.any(Number));
     expect(getObservationsByIds).toHaveBeenCalledWith([observation.id], expect.objectContaining({
       projects: ['acme/api', 'api', 'old-folder'],
     }));
@@ -718,7 +718,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
         { doc_type: 'observation' },
         { $or: [{ project: keys }, { merged_into_project: keys }] },
       ],
-    }, expect.any(Object), expect.any(Function));
+    }, expect.any(Object), expect.any(Function), expect.any(Number));
     expect(getObservationsByIds).toHaveBeenCalledWith([observation.id], expect.objectContaining({
       projects: ['api', 'acme/api', 'old-folder'],
     }));

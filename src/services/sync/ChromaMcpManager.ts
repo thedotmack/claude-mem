@@ -49,6 +49,11 @@ const CHROMA_MUTATION_TIMEOUT_BOUNDS = { min: 60_000, max: 3_600_000 } as const;
  * 1-3 s, so 20 s leaves room for the fallback without aborting healthy work.
  */
 const DEFAULT_CHROMA_READ_TIMEOUT_MS = 20_000;
+// A search makes several reads (the strategy widens its window, and a filtered
+// query can retry), so the reads share one deadline instead of each getting a
+// fresh 20 s. The deadline is the same 20 s, which leaves the worker's 30 s
+// budget time to fall back to SQLite/FTS5 even when the last read spends it all.
+export const CHROMA_SEARCH_BUDGET_MS = DEFAULT_CHROMA_READ_TIMEOUT_MS;
 const CHROMA_PREWARM_REAP_TIMEOUT_MS = 1_000;
 // Circuit breaker for a doomed prewarm (#4108). A broken host (missing uv, an
 // unresolvable dep, an NTFS hardlink ceiling) fails the same way every time, so
@@ -1450,18 +1455,18 @@ export class ChromaMcpManager {
     return !this.serializeMutations || this.acceptingLocalMutations;
   }
 
-  async callTool(toolName: string, toolArguments: Record<string, unknown>): Promise<unknown> {
+  async callTool(toolName: string, toolArguments: Record<string, unknown>, readTimeoutMs = DEFAULT_CHROMA_READ_TIMEOUT_MS): Promise<unknown> {
     if (!this.serializeMutations || !ChromaMcpManager.isMutationTool(toolName)) {
-      return this.callToolUnqueued(toolName, toolArguments);
+      return this.callToolUnqueued(toolName, toolArguments, readTimeoutMs);
     }
     if (!this.acceptingLocalMutations) {
       throw new ChromaUnavailableError('Local Chroma mutations are unavailable after shutdown begins');
     }
 
-    return this.enqueueMutation(() => this.callToolUnqueued(toolName, toolArguments), toolName);
+    return this.enqueueMutation(() => this.callToolUnqueued(toolName, toolArguments, readTimeoutMs), toolName);
   }
 
-  private async callToolUnqueued(toolName: string, toolArguments: Record<string, unknown>): Promise<unknown> {
+  private async callToolUnqueued(toolName: string, toolArguments: Record<string, unknown>, readTimeoutMs: number): Promise<unknown> {
     const callGeneration = this.connectionGeneration;
     await this.ensureConnected();
     const callTransport = this.transport;
@@ -1475,7 +1480,7 @@ export class ChromaMcpManager {
     // see below). Mutations get a bounded, configurable deadline; reads end
     // below the worker's 30-second search budget so the fallback can run
     // (#6323).
-    const requestOptions = { timeout: isMutation ? this.mutationTimeoutMs : DEFAULT_CHROMA_READ_TIMEOUT_MS };
+    const requestOptions = { timeout: isMutation ? this.mutationTimeoutMs : Math.max(1, Math.floor(readTimeoutMs)) };
 
     logger.debug('CHROMA_MCP', `Calling tool: ${toolName}`, {
       arguments: JSON.stringify(toolArguments).slice(0, 200),
