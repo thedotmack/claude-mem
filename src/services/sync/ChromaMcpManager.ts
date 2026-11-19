@@ -1471,9 +1471,21 @@ export class ChromaMcpManager {
   private async callToolUnqueued(toolName: string, toolArguments: Record<string, unknown>): Promise<unknown> {
     // A previous read already cancelled its request. Wait for in-flight writes,
     // restart, and only then send — never write a server that can no longer read.
-    await this.prepareTransportAfterReadTimeout();
+    // The generation is taken before that wait, so a call parked there while
+    // stop() runs is cancelled instead of reconnecting after shutdown.
     const callGeneration = this.connectionGeneration;
-    await this.ensureConnected();
+    const ownsCancelledStdinProbe = await this.prepareTransportAfterReadTimeout(callGeneration);
+    try {
+      if (callGeneration !== this.connectionGeneration) {
+        throw new ChromaMcpConnectionCancelledError('chroma-mcp call cancelled during shutdown');
+      }
+      await this.ensureConnected();
+    } catch (error) {
+      if (ownsCancelledStdinProbe) {
+        this.cancelledStdinProbe = false;
+      }
+      throw error;
+    }
     const callTransport = this.transport;
     const isMutation = ChromaMcpManager.isMutationTool(toolName);
 
@@ -1593,8 +1605,11 @@ export class ChromaMcpManager {
       }
       // Drop the probe permit only after the settled restart has started, so
       // a second caller cannot write the cancelled stdin while this answer
-      // is still tearing the subprocess down.
-      this.cancelledStdinProbe = false;
+      // is still tearing the subprocess down. Only the call that took the
+      // permit releases it: an older read timing out meanwhile must not.
+      if (ownsCancelledStdinProbe) {
+        this.cancelledStdinProbe = false;
+      }
     }
 
     if (result.isError) {
@@ -1694,25 +1709,27 @@ export class ChromaMcpManager {
    * that itself timed out has no in-flight handle left and may still be
    * committing, so that one probe is still allowed through: its answer is
    * what shows the commit finished, and the restart follows the answer.
+   *
+   * Returns true when this call took that probe permit; the caller then owns
+   * it and is the only one that releases it.
    */
-  private async prepareTransportAfterReadTimeout(): Promise<void> {
+  private async prepareTransportAfterReadTimeout(callGeneration: number): Promise<boolean> {
     if (this.stdinRecovery) {
       await this.stdinRecovery;
     }
     const pending = this.readTimeoutRestart;
-    if (!pending) return;
+    if (!pending) return false;
 
     let release!: () => void;
     const recovery = new Promise<void>(resolve => {
       release = resolve;
     });
     this.stdinRecovery = recovery;
-    const generation = this.connectionGeneration;
     try {
       while (this.readTimeoutRestart === pending) {
-        if (generation !== this.connectionGeneration || !this.transport || this.transport !== pending.transport) {
+        if (callGeneration !== this.connectionGeneration || !this.transport || this.transport !== pending.transport) {
           this.readTimeoutRestart = null;
-          return;
+          return false;
         }
         if (this.mutationCallsInFlight > 0) {
           await this.mutationIdle;
@@ -1726,11 +1743,12 @@ export class ChromaMcpManager {
             );
           }
           this.cancelledStdinProbe = true;
-          return;
+          return true;
         }
-        await this.restartCancelledStdinIfSettled(generation);
-        return;
+        await this.restartCancelledStdinIfSettled(callGeneration);
+        return false;
       }
+      return false;
     } finally {
       if (this.stdinRecovery === recovery) {
         this.stdinRecovery = null;
