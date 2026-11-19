@@ -67,14 +67,22 @@ initialize: |
 maintenance: |
   if [ -n "$CLAUDE_MEM_CLOUD_SYNC_TOKEN" ]; then
   python3 - <<'PY'
-  import json, os
+  import json, os, urllib.request
   p = os.path.expanduser('~/.claude-mem/settings.json')
   s = json.load(open(p)) if os.path.exists(p) else {}
   e = os.environ
+  token = e['CLAUDE_MEM_CLOUD_SYNC_TOKEN'].strip()
+  user_id = e.get('CLAUDE_MEM_CLOUD_SYNC_USER_ID', '').strip()
+  if not user_id:
+      try:
+          req = urllib.request.Request('https://cmem.ai/api/pro/validate-setup', data=json.dumps({'setup_token': token}).encode(), headers={'Content-Type': 'application/json'})
+          user_id = json.load(urllib.request.urlopen(req, timeout=30))['config']['user_id']
+      except Exception as err:
+          print(f'claude-mem: could not look up the cmem.ai user id ({type(err).__name__}); cloud sync stays off')
   s.update({
-    'CLAUDE_MEM_CLOUD_SYNC_TOKEN': e['CLAUDE_MEM_CLOUD_SYNC_TOKEN'],
-    'CLAUDE_MEM_CLOUD_SYNC_USER_ID': e.get('CLAUDE_MEM_CLOUD_SYNC_USER_ID', ''),
-    'CLAUDE_MEM_CLOUD_SYNC_HUB_URL': e.get('CLAUDE_MEM_CLOUD_SYNC_HUB_URL', ''),
+    'CLAUDE_MEM_CLOUD_SYNC_TOKEN': token,
+    'CLAUDE_MEM_CLOUD_SYNC_USER_ID': user_id,
+    'CLAUDE_MEM_CLOUD_SYNC_HUB_URL': e.get('CLAUDE_MEM_CLOUD_SYNC_HUB_URL', '').strip() or 'https://sync.cmem.ai',
     'CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID': '',
     'CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME': 'devin-cloud',
     'CLAUDE_MEM_PRO_TRIAL_STATE': 'active',
@@ -97,16 +105,13 @@ The worker is not started during the build, so each session's worker mints its o
 
 ### 3. Connect CMEM Pro
 
-Sign in once on any machine with `npx claude-mem install` and choose **CMEM Pro** (see [CMEM Pro headless](/cmem-pro-headless)). The installer writes the connection to `~/.claude-mem/settings.json` on that machine. Save these values as **organization** secrets in Devin, with the same names:
+1. Sign in at [cmem.ai](https://cmem.ai) and start CMEM Pro (for example through `npx claude-mem install` → **CMEM Pro** on any machine).
+2. Open [cmem.ai/pro/key](https://cmem.ai/pro/key) and copy the **CMEM Pro key** (`cm_pro_…`). Click **Generate new key** if none is shown.
+3. Save it in Devin as the **organization** secret `CLAUDE_MEM_CLOUD_SYNC_TOKEN`, then rebuild the snapshot.
 
-| Org secret | Value |
-| --- | --- |
-| `CLAUDE_MEM_CLOUD_SYNC_TOKEN` | the sync token |
-| `CLAUDE_MEM_CLOUD_SYNC_USER_ID` | your cmem.ai user id |
-| `CLAUDE_MEM_CLOUD_SYNC_HUB_URL` | the SyncHub URL |
-| `CLAUDE_MEM_PRO_MEMORY_KEY` | optional: the memory key, when it differs from the sync token |
+The key is the only secret needed: the blueprint looks up your cmem.ai user id from it (`POST https://cmem.ai/api/pro/validate-setup`) and uses `https://sync.cmem.ai` as the sync hub. Organization secrets named `CLAUDE_MEM_CLOUD_SYNC_USER_ID`, `CLAUDE_MEM_CLOUD_SYNC_HUB_URL` or `CLAUDE_MEM_PRO_MEMORY_KEY` override those values.
 
-Snapshot builds only see organization and repository secrets, not personal ones. Rebuild the snapshot after adding them. Without the secrets the blueprint keeps the local provider, which needs a logged-in Claude account and has no cloud sync.
+Snapshot builds only see organization and repository secrets, not personal ones. Without the key the blueprint keeps the local provider, which needs a logged-in Claude account and has no cloud sync.
 
 ### 4. Check a new session
 
