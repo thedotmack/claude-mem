@@ -364,8 +364,8 @@ const stubbedProcessKill = ((pid: number, signal?: string | number) => {
 }) as typeof process.kill;
 process.kill = stubbedProcessKill;
 
-import { ChromaMcpManager, ChromaDeleteOutcomeUnknownError } from '../../../src/services/sync/ChromaMcpManager.js';
-import { ChromaUnavailableError } from '../../../src/services/worker/search/errors.js';
+import { ChromaMcpManager } from '../../../src/services/sync/ChromaMcpManager.js';
+import { ChromaDeleteOutcomeUnknownError, ChromaUnavailableError } from '../../../src/services/worker/search/errors.js';
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import {
   getDependencyStatus,
@@ -505,10 +505,17 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
       content: [{ type: 'text', text: 'cm__first' }, { type: 'text', text: 'cm__second' }],
     });
     expect(await mgr.callTool('chroma_list_collections', {})).toEqual(['cm__first', 'cm__second']);
-    callToolImpl = async () => ({ content: [{ type: 'text', text: '__NO_COLLECTIONS_FOUND__' }] });
-    expect(await mgr.callTool('chroma_list_collections', {})).toEqual(['__NO_COLLECTIONS_FOUND__']);
     callToolImpl = async () => ({ content: [{ type: 'text', text: '["cm__first","cm__second"]' }] });
     expect(await mgr.callTool('chroma_list_collections', {})).toEqual(['cm__first', 'cm__second']);
+  });
+
+  it('decodes the empty-database sentinel to no collections', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+    callToolImpl = async request => (request?.name === 'chroma_list_collections'
+      ? { content: [{ type: 'text', text: '__NO_COLLECTIONS_FOUND__' }] }
+      : { content: [{ type: 'text', text: '{}' }] });
+    expect(await mgr.callTool('chroma_list_collections', {})).toEqual([]);
+    expect(await mgr.probeSemanticSearch()).toMatchObject({ ok: true, collections: 0 });
   });
 
   it('serializes concurrent ensureConnected() calls into one spawn', async () => {
@@ -784,7 +791,9 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     const held = await holdWriteDuringReadTimeout(mgr);
     const sendsAtTimeout = held.sends.length;
 
-    const laterRead = mgr.callTool('chroma_list_collections', { limit: 1 });
+    // chroma_list_collections decodes to a list of names, so the later read is
+    // a document read that answers with the fixture's JSON object.
+    const laterRead = mgr.callTool('chroma_get_documents', { ids: ['later'] });
     const laterWrite = mgr.callTool('chroma_add_documents', { ids: ['next'] });
     const early = await Promise.race([
       Promise.all([laterRead, laterWrite]).then(() => 'sent', () => 'sent'),
@@ -1204,6 +1213,70 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     await expect(mgr.callTool('chroma_delete_collection', { collection_name: 'test' }))
       .rejects.toBeInstanceOf(ChromaDeleteOutcomeUnknownError);
     expect(deletes).toBe(1);
+  });
+
+  // #6338 on top of #6337: after a delete and then a read time out, the
+  // verification listing is the single probe on the cancelled stdin. Its
+  // answer decides the delete, and the restart follows it.
+  async function timeOutDeleteThenRead(mgr: ChromaMcpManager): Promise<{
+    sends: Array<{ name?: string; firstClosed: boolean }>;
+    held: Map<string, () => void>;
+  }> {
+    await mgr.callTool('chroma_get_documents', { ids: ['warm'] });
+    const first = transportInstances[0];
+    const sends: Array<{ name?: string; firstClosed: boolean }> = [];
+    const held = new Map<string, () => void>();
+    callToolImpl = async request => {
+      sends.push({ name: request?.name, firstClosed: first.closed });
+      if (request?.name === 'chroma_delete_collection' || request?.name === 'chroma_query_documents') {
+        throw new McpError(ErrorCode.RequestTimeout, 'Request timed out', { timeout: 60000 });
+      }
+      if (request?.name === 'chroma_list_collections') {
+        return { content: [{ type: 'text', text: '__NO_COLLECTIONS_FOUND__' }] };
+      }
+      await new Promise<void>(resolve => held.set(String(request?.name), resolve));
+      return { content: [{ type: 'text', text: '{}' }] };
+    };
+    await expect(mgr.callTool('chroma_delete_collection', { collection_name: 'cm__claude-mem' }))
+      .rejects.toBeInstanceOf(ChromaDeleteOutcomeUnknownError);
+    await expect(mgr.callTool('chroma_query_documents', { query_texts: ['behind-delete'] }))
+      .rejects.toBeInstanceOf(ChromaUnavailableError);
+    expect(first.closed).toBe(false);
+    return { sends, held };
+  }
+
+  it('sends the post-delete listing as the single probe, then restarts once it answers', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+    const { sends } = await timeOutDeleteThenRead(mgr);
+
+    // Absent from the listing: ChromaSync counts the delete as confirmed.
+    await expect(mgr.callTool('chroma_list_collections', {})).resolves.toEqual([]);
+    expect(sends.filter(send => send.name === 'chroma_list_collections')).toEqual([
+      { name: 'chroma_list_collections', firstClosed: false },
+    ]);
+    // The restart followed the probe's answer, before anything else was sent.
+    expect(transportInstances[0].closed).toBe(true);
+    expect(sends.map(send => send.name)).toEqual([
+      'chroma_delete_collection',
+      'chroma_query_documents',
+      'chroma_list_collections',
+    ]);
+  });
+
+  it('fails the post-delete listing fast when another call already holds the probe', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+    const { sends, held } = await timeOutDeleteThenRead(mgr);
+
+    const probe = mgr.callTool('chroma_get_documents', { ids: ['probe'] });
+    await waitForCondition(() => held.has('chroma_get_documents'));
+    const sendsBeforeList = sends.length;
+    // ChromaSync reads this as "could not verify" and counts a failed attempt.
+    await expect(mgr.callTool('chroma_list_collections', {})).rejects.toThrow('probe is already in flight');
+    expect(sends.length).toBe(sendsBeforeList);
+
+    held.get('chroma_get_documents')!();
+    await expect(probe).resolves.toEqual({});
+    expect(transportInstances[0].closed).toBe(true);
   });
 
   it('kills the prior subprocess tree before a reconnect spawn', async () => {

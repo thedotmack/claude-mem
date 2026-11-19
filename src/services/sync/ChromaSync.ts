@@ -1,5 +1,5 @@
 
-import { ChromaMcpManager, ChromaDeleteOutcomeUnknownError } from './ChromaMcpManager.js';
+import { ChromaMcpManager } from './ChromaMcpManager.js';
 import { withinSearchBudget } from './chroma-search-budget.js';
 import { ChromaSyncState, ProjectWatermarks, type PendingRowDelete } from './ChromaSyncState.js';
 import { isQueuedChromaRowDelete, runOnChromaRowCleanupLane } from './chroma-row-cleanup.js';
@@ -13,7 +13,7 @@ import { ParsedObservation, ParsedSummary } from '../../sdk/parser.js';
 // the SDK bundle externals — fix the import chain.
 import type { SessionStore as SessionStoreType } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
-import { ChromaCorruptCollectionError, ChromaUnavailableError } from '../worker/search/errors.js';
+import { ChromaCorruptCollectionError, ChromaDeleteOutcomeUnknownError, ChromaUnavailableError } from '../worker/search/errors.js';
 import { parseBoundedNumber, resolveBoundedNumber } from '../../shared/bounded-setting.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, paths } from '../../shared/paths.js';
@@ -457,8 +457,6 @@ export class ChromaSync {
    * deleted collection, and stops backfill runs that were writing into it.
    */
   private static collectionGeneration = 0;
-  // Abort an already-running sweep if a delete was not confirmed; do not restart it.
-  private static lastUnconfirmedDropGeneration = -1;
 
   /**
    * Registered at worker startup so a drop outside a backfill sweep (a live
@@ -847,37 +845,19 @@ export class ChromaSync {
     }, cause);
 
     ChromaSyncState.markAllForRebuild();
-    let deleteConfirmed = false;
     try {
       try {
         await chromaMcp.callTool('chroma_delete_collection', {
           collection_name: this.collectionName
         });
-        deleteConfirmed = true;
       } catch (error) {
+        // A lost reply or a deadline leaves the delete's outcome unknown, and
+        // the manager never replays a delete. One listing decides: gone means
+        // the delete landed. Still listed, or no usable listing, counts as a
+        // failed attempt against MAX_FAILED_DROP_ATTEMPTS below, and the
+        // restarted sweep retries the drop on the next corrupt batch.
         if (!(error instanceof ChromaDeleteOutcomeUnknownError)) throw error;
-
-        // One complete, unpaginated list on the recovered connection. The
-        // pinned chroma-mcp returns string names, or a sentinel when empty.
-        let stillPresent = false;
-        try {
-          const names = await chromaMcp.callTool('chroma_list_collections', {});
-          if (!Array.isArray(names) || names.length === 0 ||
-              !names.every((name: unknown) => typeof name === 'string') ||
-              (names.includes('__NO_COLLECTIONS_FOUND__') && names.length !== 1)) {
-            throw new Error('Unexpected chroma_list_collections response');
-          }
-          stillPresent = names.includes(this.collectionName);
-        } catch (verificationError) {
-          throw new ChromaUnavailableError(
-            'Could not verify collection deletion after an ambiguous response',
-            verificationError instanceof Error ? verificationError : undefined
-          );
-        }
-        // Still present: existing failedDropAttempts and the next corrupt
-        // batch enforce the upstream three-attempt retry budget.
-        if (stillPresent) throw error;
-        deleteConfirmed = true;
+        if (await this.isCollectionListed(chromaMcp)) throw error;
       }
 
       ChromaSync.droppedCollections.add(this.collectionName);
@@ -897,13 +877,30 @@ export class ChromaSync {
       throw error;
     } finally {
       ChromaSync.collectionGeneration += 1;
-      // An active sweep must stop, but must not restart after an unconfirmed delete.
-      if (deleteConfirmed) {
-        this.startRebuildSweep();
-      } else {
-        ChromaSync.lastUnconfirmedDropGeneration = ChromaSync.collectionGeneration;
-      }
+      this.startRebuildSweep();
     }
+  }
+
+  /**
+   * One complete, unpaginated listing after a delete whose outcome is unknown.
+   * Throws when no usable listing comes back, so the drop counts as failed.
+   */
+  private async isCollectionListed(chromaMcp: ChromaMcpManager): Promise<boolean> {
+    let names: unknown;
+    try {
+      names = await chromaMcp.callTool('chroma_list_collections', {});
+    } catch (error) {
+      throw new ChromaUnavailableError(
+        'Could not verify collection deletion after an ambiguous response',
+        error instanceof Error ? error : undefined
+      );
+    }
+    if (!Array.isArray(names) || !names.every((name: unknown) => typeof name === 'string')) {
+      throw new ChromaUnavailableError(
+        'Could not verify collection deletion after an ambiguous response: unexpected chroma_list_collections reply'
+      );
+    }
+    return names.includes(this.collectionName);
   }
 
   private startRebuildSweep(): void {
@@ -2677,12 +2674,6 @@ export class ChromaSync {
             await ChromaSync.runPendingRowDeleteDrain(store);
           }
           return completed;
-        }
-        // A failed or ambiguous deletion invalidates this sweep, but must
-        // not silently restart it into a collection that still exists.
-        if (ChromaSync.lastUnconfirmedDropGeneration > generation) {
-          logger.warn('CHROMA_SYNC', 'Backfill stopped: collection deletion was not confirmed');
-          return false;
         }
         // A corrupt collection was dropped during this sweep (#3202) and took
         // its work with it, so start over and rebuild every project. Each

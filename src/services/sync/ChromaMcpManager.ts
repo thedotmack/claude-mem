@@ -20,7 +20,7 @@ import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { getSupervisor } from '../../supervisor/index.js';
 import { captureProcessName, captureProcessStartToken, isSameProcess, isSameProcessName, isSameProcessStartToken, isPidAlive, normalizeProcessName } from '../../supervisor/process-registry.js';
 import { clearDependencyStatus, recordChromaVectorSearchUnavailable, recordUvxVectorSearchUnavailable } from '../../shared/dependency-health.js';
-import { ChromaUnavailableError } from '../worker/search/errors.js';
+import { ChromaDeleteOutcomeUnknownError, ChromaUnavailableError } from '../worker/search/errors.js';
 import type { ChromaCollectionDrop } from './ChromaSync.js';
 
 const execFileAsync = promisify(execFile);
@@ -102,6 +102,9 @@ const DEFAULT_MAX_PENDING_MUTATIONS = 5_000;
 const CHROMA_MUTATION_TOOL_PATTERN = /^chroma_(?:add|create|delete|modify|update|upsert)_/;
 
 const CHROMA_MCP_PINNED_VERSION = '0.2.6';
+// chroma-mcp 0.2.6 chroma_list_collections returns this lone name when the
+// database has no collections (chroma_mcp/server.py).
+const CHROMA_NO_COLLECTIONS_SENTINEL = '__NO_COLLECTIONS_FOUND__';
 
 // Override transitive dep resolutions for chroma-mcp 0.2.6 (issue #2371).
 //
@@ -178,14 +181,6 @@ class ChromaMcpConnectionCancelledError extends Error {
   constructor(message = 'chroma-mcp connection cancelled during shutdown') {
     super(message);
     this.name = 'ChromaMcpConnectionCancelledError';
-  }
-}
-
-/** A collection delete was sent but its final server outcome is unknown. */
-export class ChromaDeleteOutcomeUnknownError extends ChromaUnavailableError {
-  constructor(message: string, cause?: Error) {
-    super(message, cause);
-    this.name = 'ChromaDeleteOutcomeUnknownError';
   }
 }
 
@@ -1649,10 +1644,15 @@ export class ChromaMcpManager {
     // The pinned chroma-mcp sends one plain-text MCP content block per
     // collection name, not a JSON array. Preserve every name (not just the
     // first) so recovery can verify deletion against the complete listing.
+    // An empty database answers with the lone CHROMA_NO_COLLECTIONS_SENTINEL,
+    // which means no collections, not one.
     if (toolName === 'chroma_list_collections') {
       const blocks = contentArray.filter(item => item.type === 'text' && typeof item.text === 'string');
       if (blocks.length !== contentArray.length || blocks.some(item => !item.text)) {
         return null;
+      }
+      if (blocks.length === 1 && blocks[0].text === CHROMA_NO_COLLECTIONS_SENTINEL) {
+        return [];
       }
       if (blocks.length === 1) {
         try {

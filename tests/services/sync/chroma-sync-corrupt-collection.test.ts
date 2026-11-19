@@ -4,9 +4,9 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 
 import { ChromaSync } from '../../../src/services/sync/ChromaSync.js';
-import { ChromaMcpManager, ChromaDeleteOutcomeUnknownError } from '../../../src/services/sync/ChromaMcpManager.js';
+import { ChromaMcpManager } from '../../../src/services/sync/ChromaMcpManager.js';
 import { ChromaSyncState } from '../../../src/services/sync/ChromaSyncState.js';
-import { ChromaCorruptCollectionError, ChromaUnavailableError, logChromaWriteFailure } from '../../../src/services/worker/search/errors.js';
+import { ChromaCorruptCollectionError, ChromaDeleteOutcomeUnknownError, ChromaUnavailableError, logChromaWriteFailure } from '../../../src/services/worker/search/errors.js';
 import { logger } from '../../../src/utils/logger.js';
 
 // Corrupt-collection coverage (#3202).
@@ -34,7 +34,6 @@ const statics = ChromaSync as unknown as {
   backfillStore: unknown;
   backfillInProgress: boolean;
   collectionGeneration: number;
-  lastUnconfirmedDropGeneration: number;
   sweepAllProjects(store: unknown, generation: number): Promise<boolean>;
   corruptSegmentBatches: Map<string, Set<string>>;
   inFlightCollectionDrops: Map<string, Promise<void>>;
@@ -83,7 +82,6 @@ beforeEach(() => {
   backfillSweeps = 0;
   statics.backfillStore = null;
   statics.backfillInProgress = false;
-  statics.lastUnconfirmedDropGeneration = -1;
   statics.corruptSegmentBatches.clear();
   statics.inFlightCollectionDrops.clear();
   statics.droppedCollections.clear();
@@ -381,7 +379,8 @@ describe('ChromaSync corrupt-collection handling (#3202)', () => {
       if (tool === 'chroma_delete_collection') {
         throw new ChromaDeleteOutcomeUnknownError('chroma-mcp "chroma_delete_collection" timed out; the subprocess was left running');
       }
-      if (tool === 'chroma_list_collections') return ['__NO_COLLECTIONS_FOUND__'];
+      // The manager decodes chroma-mcp's empty-database sentinel to [].
+      if (tool === 'chroma_list_collections') return [];
       return {};
     });
     statics.backfillStore = {};
@@ -427,18 +426,19 @@ describe('ChromaSync corrupt-collection handling (#3202)', () => {
     const sync = new ChromaSync('claude-mem');
     await sync.addDocuments([makeDoc('d1')]);
     await expect(sync.addDocuments([makeDoc('d2')])).rejects.toBeInstanceOf(ChromaDeleteOutcomeUnknownError);
-    // Presence is NOT permission to start a rebuild into a corrupt collection.
-    expect(backfillSweeps).toBe(0);
+    // Still listed: a failed attempt, and the restarted sweep is the retry.
+    expect(backfillSweeps).toBe(1);
     expect(statics.failedDropAttempts.get('cm__claude-mem')).toBe(1);
+    expect(ChromaSync.getLastCollectionDrop()).toBeNull();
     expect(calls('chroma_delete_collection')).toBe(1);
     expect(toolCalls.find(call => call.tool === 'chroma_list_collections')?.args).toEqual({});
     await expect(sync.addDocuments([makeDoc('d3')])).rejects.toBeInstanceOf(ChromaCorruptCollectionError);
     expect(calls('chroma_delete_collection')).toBe(2);
     expect(calls('chroma_list_collections')).toBe(1);
-    expect(backfillSweeps).toBe(1);
+    expect(backfillSweeps).toBe(2);
   });
 
-  it('does not confirm deletion or start a rebuild when listing fails', async () => {
+  it('counts a failed attempt and restarts the sweep when listing fails', async () => {
     installCallTool(async (tool) => {
       if (tool === 'chroma_add_documents') throw CORRUPT_SEGMENT_ERROR;
       if (tool === 'chroma_delete_collection') {
@@ -456,25 +456,28 @@ describe('ChromaSync corrupt-collection handling (#3202)', () => {
     expect(calls('chroma_delete_collection')).toBe(1);
     expect(calls('chroma_list_collections')).toBe(1);
     expect(ChromaSync.getLastCollectionDrop()).toBeNull();
-    expect(backfillSweeps).toBe(0);
+    expect(statics.failedDropAttempts.get('cm__claude-mem')).toBe(1);
+    expect(backfillSweeps).toBe(1);
   });
 
-  it('rejects malformed or contradictory collection listings', async () => {
-    installCallTool(async (tool) => {
-      if (tool === 'chroma_add_documents') throw CORRUPT_SEGMENT_ERROR;
-      if (tool === 'chroma_delete_collection') {
-        throw new ChromaDeleteOutcomeUnknownError('delete acknowledgment lost');
-      }
-      if (tool === 'chroma_list_collections') return ['__NO_COLLECTIONS_FOUND__', 'cm__another'];
-      return {};
+  for (const [label, listing] of [['null', null], ['non-string entries', ['cm__a', 42]]] as const) {
+    it(`does not confirm a delete from a malformed listing (${label})`, async () => {
+      installCallTool(async (tool) => {
+        if (tool === 'chroma_add_documents') throw CORRUPT_SEGMENT_ERROR;
+        if (tool === 'chroma_delete_collection') {
+          throw new ChromaDeleteOutcomeUnknownError('delete acknowledgment lost');
+        }
+        if (tool === 'chroma_list_collections') return listing;
+        return {};
+      });
+      statics.backfillStore = {};
+      const sync = new ChromaSync('claude-mem');
+      await sync.addDocuments([makeDoc('d1')]);
+      await expect(sync.addDocuments([makeDoc('d2')])).rejects.toThrow('Could not verify');
+      expect(ChromaSync.getLastCollectionDrop()).toBeNull();
+      expect(statics.failedDropAttempts.get('cm__claude-mem')).toBe(1);
     });
-    statics.backfillStore = {};
-    const sync = new ChromaSync('claude-mem');
-    await sync.addDocuments([makeDoc('d1')]);
-    await expect(sync.addDocuments([makeDoc('d2')])).rejects.toThrow('Could not verify');
-    expect(ChromaSync.getLastCollectionDrop()).toBeNull();
-    expect(backfillSweeps).toBe(0);
-  });
+  }
 
   it('retries a drop whose delete never reached chroma-mcp', async () => {
     let deleteAttempts = 0;
@@ -537,64 +540,77 @@ describe('ChromaSync corrupt-collection handling (#3202)', () => {
     expect(await sync.addDocuments([makeDoc('d6')])).toBe(0);
 
     expect(calls('chroma_delete_collection')).toBe(3);
-    // None of the deletes was confirmed, so no rebuild is dispatched.
-    expect(backfillSweeps).toBe(0);
+    expect(backfillSweeps).toBe(3);
   });
 
-  it('does not restart a running sweep after an ambiguous delete confirms presence', async () => {
+  // The real backfill loop: an ambiguous delete reconciles with one listing,
+  // and the running sweep restarts the same way it does on main, so the
+  // retry and the rebuild both stay bounded by MAX_FAILED_DROP_ATTEMPTS.
+  async function runRealSweepLoop(
+    listing: () => Promise<unknown>,
+    corruptBatchesInSweep: (sweepCall: number) => string[],
+  ): Promise<{ result: boolean; sweepCalls: number; outcomes: unknown[] }> {
     installCallTool(async (tool) => {
       if (tool === 'chroma_add_documents') throw CORRUPT_SEGMENT_ERROR;
       if (tool === 'chroma_delete_collection') throw new ChromaDeleteOutcomeUnknownError('reply lost');
-      if (tool === 'chroma_list_collections') return ['cm__claude-mem'];
+      if (tool === 'chroma_list_collections') return listing();
       return {};
     });
     statics.backfillStore = {};
     const sync = new ChromaSync('claude-mem');
     let sweepCalls = 0;
+    const outcomes: unknown[] = [];
     statics.sweepAllProjects = async () => {
       sweepCalls += 1;
-      if (sweepCalls === 1) {
-        expect(await sync.addDocuments([makeDoc('d1')])).toBe(0);
-        await expect(sync.addDocuments([makeDoc('d2')])).rejects.toBeInstanceOf(ChromaDeleteOutcomeUnknownError);
-      }
-      return false;
-    };
-    statics.backfillAllProjects = realBackfillAllProjects;
-    try {
-      expect(await statics.backfillAllProjects({})).toBe(false);
-      expect(sweepCalls).toBe(1);
-      expect(calls('chroma_delete_collection')).toBe(1);
-      expect(calls('chroma_list_collections')).toBe(1);
-    } finally {
-      statics.sweepAllProjects = realSweepAllProjects;
-    }
-  });
-
-  it('restarts an existing sweep when collection deletion was confirmed', async () => {
-    installCallTool(async (tool) => {
-      if (tool === 'chroma_add_documents') throw CORRUPT_SEGMENT_ERROR;
-      return {};
-    });
-    statics.backfillStore = {};
-    const sync = new ChromaSync('claude-mem');
-    let sweepCalls = 0;
-    statics.sweepAllProjects = async () => {
-      sweepCalls += 1;
-      if (sweepCalls === 1) {
-        expect(await sync.addDocuments([makeDoc('d1')])).toBe(0);
-        await expect(sync.addDocuments([makeDoc('d2')])).rejects.toBeInstanceOf(ChromaCorruptCollectionError);
+      for (const id of corruptBatchesInSweep(sweepCalls)) {
+        outcomes.push(await sync.addDocuments([makeDoc(id)]).catch((error: unknown) => error));
       }
       return true;
     };
     statics.backfillAllProjects = realBackfillAllProjects;
     try {
-      expect(await statics.backfillAllProjects({})).toBe(true);
-      expect(sweepCalls).toBe(2);
-      expect(calls('chroma_delete_collection')).toBe(1);
+      const result = await statics.backfillAllProjects({});
+      return { result, sweepCalls, outcomes };
     } finally {
       statics.sweepAllProjects = realSweepAllProjects;
     }
+  }
+
+  it('confirms an ambiguous delete the listing no longer shows, and restarts the running sweep', async () => {
+    const run = await runRealSweepLoop(
+      async () => ['cm__other'],
+      sweepCall => (sweepCall === 1 ? ['d1', 'd2'] : []),
+    );
+    expect(run.result).toBe(true);
+    expect(run.sweepCalls).toBe(2);
+    expect(run.outcomes[1]).toBeInstanceOf(ChromaCorruptCollectionError);
+    expect(calls('chroma_delete_collection')).toBe(1);
+    expect(calls('chroma_list_collections')).toBe(1);
+    expect(statics.failedDropAttempts.get('cm__claude-mem')).toBeUndefined();
+    expect(ChromaSync.getLastCollectionDrop()).toMatchObject({ collection: 'cm__claude-mem' });
   });
+
+  for (const [label, listing] of [
+    ['still listed', async () => ['cm__claude-mem']],
+    ['the listing itself fails', async () => { throw new ChromaUnavailableError('list timed out'); }],
+  ] as const) {
+    it(`retries an ambiguous delete through the restarted sweep when ${label}, and stops after three`, async () => {
+      // Each restarted sweep meets the corrupt segment again; the first sweep
+      // needs two distinct batches to confirm it.
+      const run = await runRealSweepLoop(
+        listing,
+        sweepCall => (sweepCall === 1 ? ['d1', 'd2'] : [`d${sweepCall + 1}`]),
+      );
+      expect(run.result).toBe(true);
+      // Three failed drops each restarted the sweep; the fourth sweep finds the
+      // collection counted as dropped and sends no fourth delete.
+      expect(run.sweepCalls).toBe(4);
+      expect(calls('chroma_delete_collection')).toBe(3);
+      expect(calls('chroma_list_collections')).toBe(3);
+      expect(statics.failedDropAttempts.get('cm__claude-mem')).toBe(3);
+      expect(ChromaSync.getLastCollectionDrop()).toBeNull();
+    });
+  }
 
   it('starts a rebuild sweep when none is running, and leaves a running sweep to restart itself', async () => {
     installCallTool(async (tool) => {
