@@ -57,7 +57,7 @@ export interface PlacedRenderEvent {
    * What the surface draws into. On the terminal `isFullscreen` is always
    * there: true on the fullscreen layout, false on the main screen.
    */
-  viewport?: { isFullscreen?: boolean };
+  viewport?: { columns?: number; rows?: number; isFullscreen?: boolean };
   props: { id: string; plugin: string };
   [key: string]: unknown;
 }

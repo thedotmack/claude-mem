@@ -72,6 +72,34 @@ test('a terminal session start names a file for the banner, and the card draws w
   await ui.unmount()
 })
 
+test('the terminal fits the brand mark to the viewport and returns long history to full width', async ($, on) => {
+  const history = Array.from({ length: 20 }, (_, i) => `observation ${i + 1}`)
+  stubs(on, { banner: history.join('\n') })
+  await $.session.start(terminalSession)
+  await $.classic.SessionStart(startup)
+  await hookRowKept($)
+
+  for (const [columns, rows, markWidth, markRows] of [[63, 40, 0, 0], [100, 10, 0, 0], [64, 11, 14, 7], [100, 15, 14, 7], [100, 16, 24, 12]]) {
+    const ui = await $.ui.mount({ ...cardRow('session-start-1000'), viewport: { columns, rows, isFullscreen: true } })
+    const dots = await ui.findAll({ type: 'Text', text: /[\u2801-\u28ff]/ })
+    expect(dots.length).toBe(markRows)
+    expect(dots.every(row => row.text.length === markWidth)).toBe(true)
+    expect((await ui.find({ type: 'Text', text: /^claude-mem$/ }))?.text).toBe('claude-mem')
+    expect((await ui.find({ type: 'Text', text: /^observation 20$/ }))?.text).toBe(history[19])
+    if (markRows) {
+      const [frame, band, copy, mark] = await ui.findAll({ type: 'Box' })
+      expect(band?.props.flexDirection).toBe('row')
+      expect(mark?.props.width).toBe(markWidth)
+      expect(mark?.props.flexShrink).toBe(0)
+      expect(copy?.text).toContain('observation 15')
+      expect(band?.text.includes('observation 16')).toBe(false)
+      expect(frame?.text).toContain('observation 16')
+      expect(frame?.text).toContain('observation 20')
+    }
+    await ui.unmount()
+  }
+})
+
 test('the card waits for the last row of the SessionStart hooks, and no other row places it', async ($, on) => {
   const { record } = stubs(on)
   const session = mock.session(on)

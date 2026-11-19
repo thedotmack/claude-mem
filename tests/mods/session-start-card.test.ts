@@ -230,9 +230,10 @@ function cardInSession(options: {
       expect(relayed).toEqual(keptRow);
     },
     /** A drawing of a placed row; `isFullscreen` is what the surface's viewport says, left out where it says nothing. */
-    async render(id: string, plugin = 'claude-mem', where: { surface?: string; isFullscreen?: boolean } = {}) {
-      const viewport = where.isFullscreen === undefined ? undefined : { isFullscreen: where.isFullscreen };
-      return hooks.get('ui.render')!($, { surface: where.surface ?? 'terminal', viewport, props: { id, plugin } }, async () => 'not this card');
+    async render(id: string, plugin = 'claude-mem', where: { surface?: string; isFullscreen?: boolean; columns?: number; rows?: number } = {}) {
+      const { surface = 'terminal', ...dimensions } = where;
+      const viewport = Object.keys(dimensions).length ? dimensions : undefined;
+      return hooks.get('ui.render')!($, { surface, viewport, props: { id, plugin } }, async () => 'not this card');
     },
     advanceClock(ms: number) { clockMs += ms; },
   };
@@ -332,6 +333,53 @@ describe('session-start card: the hooks', () => {
     expect(dimRun.props).toMatchObject({ dimColor: true });
     const [, cyanRun] = lines[2].children[0] as DrawnNode[];
     expect(cyanRun.props).toMatchObject({ color: 'cyan' });
+  });
+
+  it('draws the right-hand mark at terminal widths that leave room for the banner', async () => {
+    const session = cardInSession();
+    await session.classicSessionStart('startup', slot(`first line\n\n${colors.cyan}last line${colors.reset}`));
+    await session.hookRowsKept();
+    const row = 'session-start-1000';
+    const original = await session.render(row) as DrawnNode;
+
+    for (const [columns, viewportRows, width, height] of [
+      [64, 11, 14, 7], [99, 24, 14, 7], [100, 15, 14, 7],
+      [100, 16, 24, 12], [160, undefined, 24, 12],
+    ] as const) {
+      const drawing = await session.render(row, 'claude-mem', { columns, rows: viewportRows }) as DrawnNode;
+      expect(drawing.props).toMatchObject({ flexDirection: 'column', borderStyle: 'round', borderColor: 'claude' });
+      const [header] = drawing.children as DrawnNode[];
+      expect(header.props).toMatchObject({ flexDirection: 'row', columnGap: 2 });
+      const [copy, mark] = header.children as DrawnNode[];
+      expect(copy.props).toMatchObject({ minWidth: 0, flexGrow: 1 });
+      expect(copy.children).toEqual(original.children);
+      expect(mark.props).toMatchObject({ width, flexShrink: 0, alignSelf: 'center' });
+      const [rows] = mark.children as DrawnNode[][];
+      expect(rows).toHaveLength(height);
+      for (const line of rows) {
+        expect(line.element).toBe('Text');
+        expect(line.props?.color).toBe('#D86441');
+        expect(drawnText(line)).toHaveLength(width);
+        expect(drawnText(line)).toMatch(/^[ \u2801-\u28ff]+$/u);
+      }
+    }
+    expect(await session.render(row, 'claude-mem', { columns: 63 })).toEqual(original);
+    expect(await session.render(row, 'claude-mem', { columns: 118, rows: 10 })).toEqual(original);
+    expect(await session.render(row, 'claude-mem', { columns: 120, surface: 'desktop' })).toEqual(original);
+    expect(session.record.placedRowIds).toEqual([row]);
+  });
+
+  it('keeps the mark near the top and gives the rest of a long timeline the full width', async () => {
+    const session = cardInSession();
+    const history = Array.from({ length: 80 }, (_, i) => `#${i} 🔎 追跡 · src/services/context/render.ts`);
+    await session.classicSessionStart('startup', slot(history.join('\n')));
+    await session.hookRowsKept();
+    const drawing = await session.render('session-start-1000', 'claude-mem', { columns: 80, rows: 24 }) as DrawnNode;
+    const [header, fullWidth] = drawing.children as [DrawnNode, DrawnNode[]];
+    const [copy] = header.children as DrawnNode[];
+    const [, besideMark] = copy.children as [DrawnNode, DrawnNode[]];
+    expect(besideMark.map(drawnText)).toEqual(history.slice(0, 15));
+    expect(fullWidth.map(drawnText)).toEqual(history.slice(15));
   });
 
   it('places a start\'s card once, and nothing for a start a later one overtook', async () => {

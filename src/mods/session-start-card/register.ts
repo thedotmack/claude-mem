@@ -19,12 +19,15 @@ import {
   TERMINAL_SURFACE,
   type StyledRun,
 } from './card.js';
+import { sessionStartMark } from './brand-mark.js';
 import type { ElementFactory, On } from './mod-api.js';
 
 /** The element factory: a global of a hooks module's environment. */
 declare const h: ElementFactory;
 
 const CARD_TITLE = 'claude-mem';
+// Keep the logo near the title. Longer timelines use the full card width below it.
+const MAX_LINES_BESIDE_MARK = 15;
 
 /** One session start's card: the banner's lines, and the id of the row that draws them. */
 interface Card {
@@ -173,20 +176,34 @@ export function registerSessionStartCard(on: On): void {
     // Every plugin's hook hears every placed row: draw only this plugin's latest card.
     if (!card || e.props.plugin !== $.plugin.name || e.props.id !== card.rowId) return next(e);
     const { Box, Text } = $.ui.resolve(e);
+    const frame = { flexDirection: 'column', borderStyle: 'round', borderColor: 'claude', paddingX: 1 };
+    const title = h(Text, { weight: 'bold', color: 'claude' }, CARD_TITLE);
+    const lines = card.lines.map(runs =>
+      h(
+        Text,
+        null,
+        // A Text with nothing in it takes no row; a space keeps the blank line.
+        runs.length === 0
+          ? ' '
+          : runs.map(run => h(Text, { color: run.color, dimColor: run.isDim, weight: run.isBold ? 'bold' : undefined }, run.text)),
+      ),
+    );
+    const mark = e.surface === TERMINAL_SURFACE ? sessionStartMark(e.viewport?.columns ?? 0, e.viewport?.rows) : undefined;
+    if (!mark) return h(Box, frame, title, lines);
     return h(
       Box,
-      { flexDirection: 'column', borderStyle: 'round', borderColor: 'claude', paddingX: 1 },
-      h(Text, { weight: 'bold', color: 'claude' }, CARD_TITLE),
-      card.lines.map(runs =>
+      frame,
+      h(
+        Box,
+        { flexDirection: 'row', columnGap: 2 },
+        h(Box, { flexDirection: 'column', minWidth: 0, flexGrow: 1 }, title, lines.slice(0, MAX_LINES_BESIDE_MARK)),
         h(
-          Text,
-          null,
-          // A Text with nothing in it takes no row; a space keeps the blank line.
-          runs.length === 0
-            ? ' '
-            : runs.map(run => h(Text, { color: run.color, dimColor: run.isDim, weight: run.isBold ? 'bold' : undefined }, run.text)),
+          Box,
+          { flexDirection: 'column', width: mark[0].length, flexShrink: 0, alignSelf: 'center' },
+          mark.map(row => h(Text, { color: '#D86441' }, row)),
         ),
       ),
+      lines.slice(MAX_LINES_BESIDE_MARK),
     );
   });
 }
