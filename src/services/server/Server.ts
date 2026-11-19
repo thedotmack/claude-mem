@@ -534,6 +534,10 @@ export class Server {
         pid: process.pid,
         initialized: this.options.getInitializationComplete(),
         mcpReady: this.options.getMcpReady(),
+        // True when the local API token guard is enforcing a token on this
+        // worker. A client reads it here, on the one route that never needs the
+        // token, to learn that its other calls must carry one.
+        tokenEnforced: Boolean(this.options.localApiToken?.getToken()),
         // The provider's name is probe state; the auth method says whether
         // authentication is configured at all, so it stays off this route.
         ai: { provider: this.options.getAiStatus().provider },
