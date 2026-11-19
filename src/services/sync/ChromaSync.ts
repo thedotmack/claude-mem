@@ -457,6 +457,8 @@ export class ChromaSync {
    * deleted collection, and stops backfill runs that were writing into it.
    */
   private static collectionGeneration = 0;
+  // Abort an already-running sweep if a delete was not confirmed; do not restart it.
+  private static lastUnconfirmedDropGeneration = -1;
 
   /**
    * Registered at worker startup so a drop outside a backfill sweep (a live
@@ -895,8 +897,12 @@ export class ChromaSync {
       throw error;
     } finally {
       ChromaSync.collectionGeneration += 1;
-      // Never rebuild or write to a collection whose delete is unconfirmed.
-      if (deleteConfirmed) this.startRebuildSweep();
+      // An active sweep must stop, but must not restart after an unconfirmed delete.
+      if (deleteConfirmed) {
+        this.startRebuildSweep();
+      } else {
+        ChromaSync.lastUnconfirmedDropGeneration = ChromaSync.collectionGeneration;
+      }
     }
   }
 
@@ -2671,6 +2677,12 @@ export class ChromaSync {
             await ChromaSync.runPendingRowDeleteDrain(store);
           }
           return completed;
+        }
+        // A failed or ambiguous deletion invalidates this sweep, but must
+        // not silently restart it into a collection that still exists.
+        if (ChromaSync.lastUnconfirmedDropGeneration > generation) {
+          logger.warn('CHROMA_SYNC', 'Backfill stopped: collection deletion was not confirmed');
+          return false;
         }
         // A corrupt collection was dropped during this sweep (#3202) and took
         // its work with it, so start over and rebuild every project. Each
