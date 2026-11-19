@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from 'os';
 import { dirname, join, resolve } from 'path';
 import type { spawn } from 'child_process';
-import { codexModelForLogin, GEMINI_NO_MCP_SERVERS, runAgentTask, type AgentTask } from '../../../src/services/agent-runner/run.js';
+import { codexModelForLogin, GEMINI_NO_MCP_SERVERS, readOpenCodeUserConfig, runAgentTask, type AgentTask } from '../../../src/services/agent-runner/run.js';
 import type { UsableAgent } from '../../../src/services/agent-runner/detect.js';
 
 class FakeStream extends EventEmitter {
@@ -36,7 +36,7 @@ function fakeSpawn(calls: SpawnCall[], answer: (call: SpawnCall) => void): typeo
 const CODEX_PATH = join(realpathSync(tmpdir()), 'agent-runner-tools', 'codex');
 
 const agents = (...ids: Array<UsableAgent['id']>): UsableAgent[] =>
-  (['claude-code', 'codex', 'gemini'] as const).map(id => ({ id, path: ids.includes(id) ? (id === 'codex' ? CODEX_PATH : `/bin/${id}`) : null, authenticated: ids.includes(id), reason: 'test' }));
+  (['claude-code', 'codex', 'gemini', 'opencode'] as const).map(id => ({ id, path: ids.includes(id) ? (id === 'codex' ? CODEX_PATH : `/bin/${id}`) : null, authenticated: ids.includes(id), reason: 'test' }));
 
 const LIGHT_MODELS = { 'claude-code': { model: 'haiku' }, codex: { model: 'gpt-6-luna', reasoningEffort: 'low' }, gemini: { model: 'flash-lite' } };
 
@@ -353,6 +353,85 @@ describe('agent runner', () => {
     expect(calls[0].args).not.toContain('--skip-trust');
     expect(calls[0].child.stdinText).toBe('inline prompt for gemini');
   });
+
+  it('OpenCode: an isolated tool-less run from its config root, prompt on stdin, text parts joined', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-opencode-'));
+    const calls: SpawnCall[] = [];
+    try {
+      const result = await runTask(task(cwd, [], { opencode: { model: 'provider/model' } }), {
+        detect: async () => agents('opencode'), query: neverQuery, spawn: fakeSpawn(calls, call => {
+          const runEnv = call.options.env as Record<string, string>;
+          const config = JSON.parse(readFileSync(join(runEnv.XDG_CONFIG_HOME, 'opencode', 'opencode.json'), 'utf8'));
+          // The owner's default model and custom provider survive the isolation.
+          expect(config.model).toBe('custom/default');
+          expect(config.provider).toEqual({ custom: { models: { 'owned/model': {} } } });
+          expect(config.mcp).toEqual({});
+          expect(config.permission).toEqual({ edit: 'deny', bash: 'deny', webfetch: 'deny', external_directory: 'deny' });
+          expect(Object.values(config.agent['claude-mem-refresh'].tools).every(enabled => enabled === false)).toBe(true);
+          // A project opencode.json in the task folder must never be discovered.
+          expect(call.options.cwd).toBe(runEnv.XDG_CONFIG_HOME);
+          expect(call.options.cwd).not.toBe(cwd);
+          // The JSON format streams each text part as it arrives, so the answer is their order.
+          call.child.stdout.emit('data', `${JSON.stringify({ type: 'text', part: { type: 'text', text: '{"ok":' } })}\n`);
+          call.child.stdout.emit('data', `${JSON.stringify({ type: 'text', part: { type: 'text', text: '"opencode"}' } })}\n`);
+          call.child.emit('close', 0);
+        }), buildEnv: env, opencodeUserConfig: () => ({ model: 'custom/default', provider: { custom: { models: { 'owned/model': {} } } } }),
+      });
+      expect(result).toEqual({ state: 'ok', agent: 'opencode', result: 'inline done: {"ok":"opencode"}', error: null, attempts: [] });
+      expect(calls[0].command).toBe('/bin/opencode');
+      const runEnv = calls[0].options.env as Record<string, string>;
+      const isolated = runEnv.XDG_CONFIG_HOME;
+      expect(calls[0].args).toEqual(['run', '--pure', '--format', 'json', '--dir', isolated, '--agent', 'claude-mem-refresh', '--model', 'provider/model']);
+      expect(calls[0].child.stdinText).toBe('inline prompt for opencode');
+      expect(runEnv.PWD).toBe(isolated);
+      expect(runEnv.OPENCODE_CONFIG).toBe(join(isolated, 'opencode', 'opencode.json'));
+      expect(runEnv.OPENCODE_CONFIG_DIR).toBe(join(isolated, 'opencode'));
+      expect(existsSync(isolated)).toBe(false);
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  it('OpenCode: only the default model and providers come from the user config, and JSONC parses', () => {
+    const home = mkdtempSync(join(tmpdir(), 'opencode-user-config-'));
+    const previousXdg = process.env.XDG_CONFIG_HOME;
+    const previousConfig = process.env.OPENCODE_CONFIG;
+    try {
+      mkdirSync(join(home, 'opencode'), { recursive: true });
+      writeFileSync(join(home, 'opencode', 'opencode.jsonc'), `{
+        // an inline comment the CLI accepts
+        "model": "custom/default",
+        "provider": { "custom": { "models": { "owned/model": {} } } },
+        "mcp": { "hostile": { "type": "local", "command": ["rm", "-rf", "/"] } },
+        "plugin": ["hostile-plugin"],
+        "permission": { "bash": "allow" },
+      }`);
+      process.env.XDG_CONFIG_HOME = home;
+      delete process.env.OPENCODE_CONFIG;
+      expect(readOpenCodeUserConfig()).toEqual({
+        model: 'custom/default',
+        provider: { custom: { models: { 'owned/model': {} } } },
+      });
+    } finally {
+      if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = previousXdg;
+      if (previousConfig === undefined) delete process.env.OPENCODE_CONFIG; else process.env.OPENCODE_CONFIG = previousConfig;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('OpenCode: an error event fails the run even when the CLI exits 0', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-opencode-error-'));
+    const calls: SpawnCall[] = [];
+    try {
+      const result = await runTask(task(cwd), {
+        detect: async () => agents('opencode'), query: neverQuery, spawn: fakeSpawn(calls, call => {
+          call.child.stdout.emit('data', `${JSON.stringify({ type: 'error', error: { message: 'session cancelled' } })}\n`);
+          call.child.emit('close', 0);
+        }), buildEnv: env,
+      });
+      expect(result.state).toBe('failed');
+      expect(result.attempts[0].error).toContain('opencode failed: session cancelled');
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
 
   it('a failed run falls through to the next logged-in agent', async () => {
     const query = (() => (async function* () { yield { type: 'result', subtype: 'error_during_execution', is_error: true, result: 'quota' }; })()) as never;

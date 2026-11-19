@@ -20,6 +20,8 @@
  *     schema gets it as `--output-schema`, so the final message is that JSON shape and nothing else.
  *   - Gemini: `gemini -p <line> --approval-mode plan -e none --allowed-mcp-server-names <none> -o json [-m <model>]`
  *     (gemini 0.49.0 `--help`: plan = read-only mode), prompt on stdin, no extensions or MCP servers.
+ *   - OpenCode: `opencode run --pure --format json --dir <cwd> --agent claude-mem-refresh [-m provider/model]`
+ *     (opencode 1.14 `run --help`), prompt on stdin, no MCP servers and an agent that disables every tool.
  *   - API: one chat-completions call to the selected provider (OpenRouter or an
  *     OpenAI-compatible endpoint), with the answer's schema when the step has one.
  *     No subprocess, so no local CLI is started and no Claude Code OAuth token is
@@ -33,11 +35,12 @@
  */
 
 import { randomBytes } from 'crypto';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
-import { tmpdir } from 'os';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
+import { homedir, tmpdir } from 'os';
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import { query, type CanUseTool, type Options, type SdkPluginConfig } from '@anthropic-ai/claude-agent-sdk';
 import { buildIsolatedEnvWithFreshOAuth } from '../../shared/EnvManager.js';
+import { stripJsonComments, stripUtf8Bom } from '../../shared/atomic-json.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { logger } from '../../utils/logger.js';
 import { runtimeReadRoots } from './runtime-read-roots.js';
@@ -130,6 +133,8 @@ export interface AgentRunnerDependencies {
   buildEnv: () => Promise<NodeJS.ProcessEnv>;
   /** Runtime platform, injectable so the Windows confinement gate is regression-testable. */
   platform: () => NodeJS.Platform;
+  /** The user's own OpenCode default model and custom providers, kept in an otherwise isolated run. */
+  opencodeUserConfig?: () => { model?: string; provider?: Record<string, unknown> };
 }
 
 async function defaultEnv(): Promise<NodeJS.ProcessEnv> {
@@ -143,6 +148,7 @@ const defaultDependencies: AgentRunnerDependencies = {
   query,
   buildEnv: defaultEnv,
   platform: () => process.platform,
+  opencodeUserConfig: readOpenCodeUserConfig,
 };
 
 const describeError = (error: unknown) => (error instanceof Error ? error.message : String(error)).trim() || 'unknown error';
@@ -355,6 +361,120 @@ function geminiAsk(agent: TaskAgent, task: AgentTask, dependencies: AgentRunnerD
 }
 
 /**
+ * The final assistant text of `opencode run --format json`: the CLI streams each
+ * text part as it arrives, so the answer is every part's text in order. An error
+ * event is reported even when the exit code is 0 (a cancelled session, for one).
+ */
+export function opencodeAnswer(stdout: string): string {
+  const texts: string[] = [];
+  for (const line of stdout.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    let event: { type?: unknown; part?: { text?: unknown }; error?: { message?: unknown } };
+    try { event = JSON.parse(line); }
+    catch { continue; }
+    if (event.type === 'error') {
+      throw new Error(`opencode failed: ${typeof event.error?.message === 'string' ? event.error.message : 'unknown error'}`);
+    }
+    if (event.type === 'text' && typeof event.part?.text === 'string') texts.push(event.part.text);
+  }
+  const answer = texts.join('');
+  if (!answer.trim()) throw new Error('opencode answered without text.');
+  return answer;
+}
+
+/**
+ * The parts of the user's own OpenCode config an isolated run must keep: the
+ * default model (when no step pins one) and custom provider definitions, which
+ * may be the only place a provider the owner configured is described. Tools,
+ * plugins, MCP servers and agents are deliberately not carried over; the run's
+ * own config replaces those. An unreadable or absent config yields nothing, and
+ * the CLI then falls back to its own defaults as before.
+ */
+export function readOpenCodeUserConfig(): { model?: string; provider?: Record<string, unknown> } {
+  const configDirectory = join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'opencode');
+  const candidates = [
+    process.env.OPENCODE_CONFIG,
+    join(configDirectory, 'opencode.json'),
+    join(configDirectory, 'opencode.jsonc'),
+  ].filter((path): path is string => typeof path === 'string' && path.length > 0);
+  for (const path of candidates) {
+    try {
+      if (!existsSync(path)) continue;
+      const parsed = JSON.parse(stripJsonComments(stripUtf8Bom(readFileSync(path, 'utf8')))) as Record<string, unknown>;
+      const model = typeof parsed.model === 'string' && parsed.model.trim() ? parsed.model : undefined;
+      const provider = parsed.provider && typeof parsed.provider === 'object' && !Array.isArray(parsed.provider)
+        ? parsed.provider as Record<string, unknown>
+        : undefined;
+      return { ...(model ? { model } : {}), ...(provider ? { provider } : {}) };
+    } catch { /* an unreadable user config must not fail the step */ }
+  }
+  return {};
+}
+
+/**
+ * One step through the OpenCode CLI, with the same read-only, evidence-inline
+ * boundary as Gemini: a temporary config root registers no MCP servers, and a
+ * primary agent disables every builtin tool, so the step can neither read the
+ * disk, write, run commands nor reach the web. `--pure` also keeps the user's
+ * external plugins (claude-mem's own among them) out of the run. The step runs
+ * from that config root, not the task folder: OpenCode merges a project's own
+ * `opencode.json`, which can add MCP servers, and no config key can remove one
+ * later. The prompt goes on stdin: a refresh step's evidence can exceed the
+ * Windows argv limit, and `opencode run` reads a piped stdin as its message when
+ * no message is given.
+ */
+function opencodeAsk(agent: TaskAgent, _task: AgentTask, dependencies: AgentRunnerDependencies): AskAgent {
+  return async (prompt, models) => {
+    const env = await dependencies.buildEnv();
+    const model = models.opencode?.model;
+    const userConfig = (dependencies.opencodeUserConfig ?? readOpenCodeUserConfig)();
+    const configHome = mkdtempSync(join(tmpdir(), 'claude-mem-opencode-'));
+    const configDirectory = join(configHome, 'opencode');
+    mkdirSync(configDirectory, { recursive: true });
+    writeFileSync(join(configDirectory, 'opencode.json'), JSON.stringify({
+      $schema: 'https://opencode.ai/config.json',
+      // The owner's default model and providers survive; everything else below
+      // is the run's own boundary and overrides what the user configured.
+      ...(userConfig.model ? { model: userConfig.model } : {}),
+      ...(userConfig.provider ? { provider: userConfig.provider } : {}),
+      mcp: {},
+      permission: { edit: 'deny', bash: 'deny', webfetch: 'deny', external_directory: 'deny' },
+      agent: {
+        'claude-mem-refresh': {
+          description: 'Read-only step for claude-mem My Work refresh (evidence is inline)',
+          mode: 'primary',
+          tools: {
+            bash: false, edit: false, write: false, patch: false, read: false, grep: false, glob: false,
+            list: false, webfetch: false, websearch: false, task: false, todoread: false, todowrite: false,
+            question: false,
+          },
+        },
+      },
+    }), { mode: 0o600 });
+    try {
+      const result = await runCli(agent.path!, [
+        'run', '--pure', '--format', 'json', '--dir', configHome, '--agent', 'claude-mem-refresh',
+        ...(model ? ['--model', model] : []),
+      ], prompt, {
+        cwd: configHome,
+        // XDG_CONFIG_HOME selects the isolated config root on every platform OpenCode reads it from.
+        // The step also runs from that root, so a project opencode.json (which can add MCP servers)
+        // is never discovered, and the explicit config paths neutralize the user's own overrides.
+        env: {
+          ...env,
+          XDG_CONFIG_HOME: configHome,
+          PWD: configHome,
+          OPENCODE_CONFIG: join(configDirectory, 'opencode.json'),
+          OPENCODE_CONFIG_DIR: configDirectory,
+        },
+      });
+      if (result.exitCode !== 0) throw failure('opencode', result);
+      return opencodeAnswer(result.stdout);
+    } finally { rmSync(configHome, { recursive: true, force: true }); }
+  };
+}
+
+/**
  * One chat-completions call to the selected API provider.
  *
  * The provider is resolved per step, so a key or model changed between two
@@ -389,7 +509,7 @@ function apiAsk(agent: TaskAgent, task: AgentTask, dependencies: AgentRunnerDepe
  * when a run fails, not when the agent's answer was refused, and never when the task stays on its first agent. Never throws. With no logged-in agent it returns
  * `waiting-for-agent` and runs nothing.
  */
-const agentNames: Record<TaskAgentId, string> = { 'claude-code': 'Claude Code', codex: 'Codex', gemini: 'Gemini', api: 'the selected API provider' };
+const agentNames: Record<TaskAgentId, string> = { 'claude-code': 'Claude Code', codex: 'Codex', gemini: 'Gemini', opencode: 'OpenCode', api: 'the selected API provider' };
 
 export async function runAgentTask(task: AgentTask, overrides: Partial<AgentRunnerDependencies> = {}): Promise<AgentRunResult> {
   const autoApprovedFileTools = task.claudeCode.allowedTools.filter(tool => FILE_TOOLS.includes(tool));
@@ -434,7 +554,7 @@ export async function runAgentTask(task: AgentTask, overrides: Partial<AgentRunn
   for (const agent of ordered) {
     logger.info('WORKER', `Agent run (${task.reason}) starting on ${agent.id}`);
     try {
-      const ask = { 'claude-code': claudeCodeAsk, codex: codexAsk, gemini: geminiAsk, api: apiAsk }[agent.id](agent, task, dependencies);
+      const ask = { 'claude-code': claudeCodeAsk, codex: codexAsk, gemini: geminiAsk, opencode: opencodeAsk, api: apiAsk }[agent.id](agent, task, dependencies);
       const result = await task.run(ask, agent.id);
       logger.info('WORKER', `Agent run (${task.reason}) finished on ${agent.id}`);
       return { state: 'ok', agent: agent.id, result: result.slice(0, 4000), error: null, attempts };
