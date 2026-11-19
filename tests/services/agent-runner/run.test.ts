@@ -271,7 +271,7 @@ describe('agent runner', () => {
     } finally { rmSync(home, { recursive: true, force: true }); }
   });
 
-  it('Codex: a model the login refuses at run time is retried once on the login default model (Oct 25: model_not_found)', async () => {
+  it.each(['win32', 'linux'] as const)('Codex on %s retries a refused model with the same sandbox configuration', async (platform) => {
     const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-codex-refused-'));
     try {
       const calls: SpawnCall[] = [];
@@ -286,12 +286,18 @@ describe('agent runner', () => {
       });
       // No models list in CODEX_HOME, so the step's model is sent as named and refused.
       const lightTask: AgentTask = { ...task(cwd), run: async ask => ask('prompt', LIGHT_MODELS) };
-      const result = await runTask(lightTask, { detect: async () => agents('codex'), query: neverQuery, spawn: spawnImpl, buildEnv: async () => ({ ...(await env()), CODEX_HOME: join(cwd, 'no-codex-home') }) });
+      const result = await runTask(lightTask, { detect: async () => agents('codex'), query: neverQuery, spawn: spawnImpl, platform: () => platform, buildEnv: async () => ({ ...(await env()), CODEX_HOME: join(cwd, 'no-codex-home') }) });
       expect(result.state).toBe('ok');
       expect(calls).toHaveLength(2);
       expect(calls[0].args).toContain('-m');
       expect(calls[1].args).not.toContain('-m');
       expect(calls[1].args.join(' ')).not.toContain('model_reasoning_effort');
+      for (const { args } of calls) {
+        expect(args.includes('features.prefer_mxc=true')).toBe(platform === 'win32');
+        expect(args).toContain('--ignore-user-config');
+        expect(args).toContain('permissions.claude-mem-refresh.network.enabled=false');
+        expect(args.find(arg => arg.startsWith('permissions.claude-mem-refresh.filesystem='))).toContain('":root"="deny"');
+      }
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 
