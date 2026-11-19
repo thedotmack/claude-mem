@@ -18,6 +18,7 @@ import { parseContextCountValue } from '../../../../shared/context-count.js';
 import { OPENROUTER_REASONING_EFFORTS, parseOpenRouterReasoningEffort } from '../../OpenRouterProvider.js';
 import { parseOpenAICompatReasoning } from '../../reasoning-budget.js';
 import { parseProviderBySource } from '../../../../shared/provider-by-source.js';
+import { QUOTA_FALLBACK_OPTIONS } from '../../../../ui/provider-options.js';
 import { CODEX_REASONING_EFFORTS, isCodexReasoningEffort } from '../../CodexProvider.js';
 import { emitContextInvalidation, noteUserSettingsSaved } from '../../../../shared/context-invalidation.js';
 import { WORK_VIEW_AGENT_CHOICES } from '../../../work-view/refresh-task.js';
@@ -465,10 +466,8 @@ export class SettingsRoutes extends BaseRouteHandler {
 
     // Empty is valid: it means the default, the Anthropic plan. 'off' turns it off.
     if (settings.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER) {
-      // The names provider-dispatch's QUOTA_FALLBACK_PROVIDERS accepts, plus QUOTA_FALLBACK_OFF.
-      const validFallbacks = ['claude', 'gemini', 'openrouter', 'openai-compatible', 'off'];
-      if (!validFallbacks.includes(settings.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER)) {
-        return { valid: false, error: 'CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER must be "claude" (or empty, the default), "gemini", "openrouter", "openai-compatible", or "off"' };
+      if (!(QUOTA_FALLBACK_OPTIONS as readonly string[]).includes(settings.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER)) {
+        return { valid: false, error: 'CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER must be empty (default) or one of: ' + QUOTA_FALLBACK_OPTIONS.join(', ') };
       }
     }
 
