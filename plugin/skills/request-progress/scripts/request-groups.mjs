@@ -1252,6 +1252,10 @@ var init_SettingsDefaultsManager = __esm({
         // Chroma embedding/index writes can exceed the MCP SDK's 60s default
         CLAUDE_MEM_CHROMA_MAX_PENDING_MUTATIONS: "5000",
         // Bound burst imports without changing normal live indexing
+        CLAUDE_MEM_CHROMA_BACKFILL_PAUSE_RATIO: "1",
+        // Bulk backfill sleeps (row write time x ratio) after each row: 1 = at most ~50% duty, 0 = off, max 10. Live sync is never paced
+        CLAUDE_MEM_CHROMA_PROCESS_NICE: "10",
+        // chroma-mcp starts as `nice -n N uvx ...` where `nice` exists (not Windows). 0 = off, max 19
         // Embedding function used when creating the Chroma collection. 'default' is
         // the local all-MiniLM-L6-v2 (English-tuned). The pinned chroma-mcp also
         // accepts 'openai', 'cohere', 'jina', 'voyageai' and 'roboflow'; those are
@@ -1269,7 +1273,10 @@ var init_SettingsDefaultsManager = __esm({
         // current model (search by meaning just turned on, or the model changed)
         // embeds them in the background, which can take hours on a large store.
         // That start caps the embedder at this many CPU threads until the next
-        // restart: empty is half the machine's threads, 0 is every thread.
+        // restart: empty is half the machine's threads, 0 is every thread. This
+        // applies to the hosted server only: local Chroma's embedder runs inside
+        // chroma-mcp and cannot be capped from claude-mem (see
+        // CLAUDE_MEM_CHROMA_PROCESS_NICE and CLAUDE_MEM_CHROMA_BACKFILL_PAUSE_RATIO).
         CLAUDE_MEM_EMBEDDING_BACKFILL_THREADS: "",
         // Embedding model the server's search by meaning uses: a key of
         // EMBEDDING_MODELS in src/services/vector/models.ts, which lists them and
@@ -1356,13 +1363,15 @@ var init_SettingsDefaultsManager = __esm({
         CLAUDE_MEM_WORK_VIEW_COPY_MODEL: "",
         // Optional model override for generated My Work copy; empty uses the selected provider's configured model
         CLAUDE_MEM_WORK_VIEW_AGENT: "",
-        // Which agent runs the My Work refresh: '' follows CLAUDE_MEM_PROVIDER and stays on one agent; claude-code/codex/gemini pick one; off runs none; all falls through every logged-in agent (#5189)
+        // Which agent runs the My Work refresh: '' follows CLAUDE_MEM_PROVIDER and stays on one agent; claude-code/codex/gemini/opencode pick one; off runs none; all falls through every logged-in agent (#5189)
         CLAUDE_MEM_WORK_VIEW_CLAUDE_MODEL: "",
         // #5164 — model for every My Work refresh step on Claude Code (an alias like 'haiku'); empty keeps haiku/sonnet per step
         CLAUDE_MEM_WORK_VIEW_CODEX_MODEL: "",
         // #5164 — same for Codex; empty keeps the per-step table
         CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL: "",
         // #5164 — same for Gemini; empty keeps flash-lite/flash per step
+        CLAUDE_MEM_WORK_VIEW_OPENCODE_MODEL: "",
+        // #5535 — model for every My Work refresh step on OpenCode ('provider/model'); empty uses OpenCode's configured default
         CLAUDE_MEM_WORK_VIEW_API_MODEL: "",
         // Model for every My Work refresh step on the selected API provider; empty keeps the provider's configured model
         CLAUDE_MEM_CORPUS_AGENT: "",
@@ -4762,9 +4771,6 @@ async function judgeConversation(conversation2, openRequests, judge) {
     ...band === "new" && pick2.requestId != null ? { rejected: pick2.requestId } : {}
   };
 }
-function ownTitle(openingAsk) {
-  return humanRequestTitle(openingAsk) || requestText(openingAsk, 120) || "Untitled request";
-}
 async function routeUndecided({ dir = LEDGER_DIR, database, judge = null, now = Date.now(), days = 14, apply = false }) {
   const judges = [rulesJudge, ...judge ? [judge] : []];
   const ledger = readLedger(dir);
@@ -4830,7 +4836,7 @@ async function routeUndecided({ dir = LEDGER_DIR, database, judge = null, now = 
         skip.add(key);
         continue;
       }
-      const title = ownTitle(conversation2.openingAsk);
+      const title = placeholderTitleFromAsk(conversation2.openingAsk);
       const decisions = target ? { groups: [{ title: target.title, conversations: [target.anchor, key], links: [{ kind: "judge", conversations: [target.anchor, key], evidence: verdict.evidence }], ...typeof root === "string" && root ? { projectRoot: root } : {} }] } : { groups: [{ title, conversations: [key] }] };
       working = applyDecisions(working, decisions, { database, now, excludedPromptIds: ledger.agentWrittenPromptIds });
       const suggested = verdict.band === "suggest" ? live(picked) : null;
@@ -4887,7 +4893,7 @@ function decideSuggestion({ dir, database, conversationKey: conversationKey2, ac
     if (groups.conversations[conversationKey2]) next = structuredClone(groups);
     else {
       const [candidate] = readCandidates(database, { conversationKeys: [conversationKey2], excludedPromptIds: ledger.agentWrittenPromptIds });
-      next = applyDecisions(groups, { groups: [{ title: ownTitle(candidate?.firstAsk ?? ""), conversations: [conversationKey2] }] }, { database, now, excludedPromptIds: ledger.agentWrittenPromptIds, enrichGroupIds: resolution?.groupKeys ?? null });
+      next = applyDecisions(groups, { groups: [{ title: placeholderTitleFromAsk(candidate?.firstAsk ?? ""), conversations: [conversationKey2] }] }, { database, now, excludedPromptIds: ledger.agentWrittenPromptIds, enrichGroupIds: resolution?.groupKeys ?? null });
     }
     next.suggestions = { ...next.suggestions ?? {}, [conversationKey2]: { ...suggestion, status: "declined", resolvedAt: iso2(now), evidence: `Owner declined: not part of "${request?.title ?? suggestion.requestId}". ${suggestion.evidence}` } };
     next.updatedAt = iso2(now);
@@ -4907,7 +4913,6 @@ var init_request_judge = __esm({
     init_paths();
     init_SettingsDefaultsManager();
     init_request_groups();
-    init_request_projection();
     DAY_MS = 864e5;
     iso2 = (epoch2) => new Date(epoch2).toISOString();
     JOIN_THRESHOLD = 0.8;
@@ -5417,6 +5422,14 @@ function storyInput(groups, reviews, story) {
     previousStory: story && { ...story, preferences: (story.preferences ?? []).filter((preference2) => preference2?.source !== OWNER_GOALS_LIST) }
   };
 }
+function readRefreshStatus(dir) {
+  try {
+    return readJson(join11(dir, "refresh.json"), null);
+  } catch (error) {
+    if (error instanceof SyntaxError) return null;
+    throw error;
+  }
+}
 function readLedger(dir = LEDGER_DIR) {
   const groups = readJson(join11(dir, "request-groups.json"), emptyGroups());
   const progress = {};
@@ -5434,7 +5447,7 @@ function readLedger(dir = LEDGER_DIR) {
     groups,
     progress,
     story: readJson(join11(dir, "story.json"), null),
-    refresh: readJson(join11(dir, "refresh.json"), null),
+    refresh: readRefreshStatus(dir),
     agentWrittenPromptIds: new Set(readJson(join11(dir, AGENT_WRITTEN_PROMPTS_FILE), { promptIds: [] }).promptIds ?? [])
   };
 }
@@ -5486,9 +5499,9 @@ function requestRecord(ledger, groupId, asks, conversations) {
     conversationAsks: conversations.map((key) => requestText(asks.get(key) ?? null, FOCUS_ASK_CHARS)).filter(Boolean)
   };
 }
-function basisForConversations(ledger, groupId, conversations) {
+function basisForConversations(ledger, groupId, conversations, title = ledger.groups.groups[groupId].title) {
   const group = ledger.groups.groups[groupId];
-  return createHash5("sha256").update(JSON.stringify({ title: group.title, firstAsk: group.anchorAsk?.text ?? null, conversations })).digest("hex").slice(0, 16);
+  return createHash5("sha256").update(JSON.stringify({ title, firstAsk: group.anchorAsk?.text ?? null, conversations })).digest("hex").slice(0, 16);
 }
 function focusRequestIndex(ledger) {
   let byGroup;
@@ -5509,7 +5522,15 @@ function focusRequestIndex(ledger) {
     basis: (groupId) => {
       if (!bases.has(groupId)) bases.set(groupId, basisForConversations(ledger, groupId, conversations(groupId)));
       return bases.get(groupId);
-    }
+    },
+    /** The basis the request had while it showed the placeholder copied from its ask. Naming (section 3) replaces only
+     * that title, so a placement made under the placeholder still stands once the request is named (focusDue). */
+    placeholderBasis: (groupId) => basisForConversations(
+      ledger,
+      groupId,
+      conversations(groupId),
+      placeholderTitleFromAsk(ledger.groups.groups[groupId].anchorAsk?.text ?? null)
+    )
   };
 }
 function focusDue(ledger, focus, localDeviceId2, requests) {
@@ -5518,7 +5539,7 @@ function focusDue(ledger, focus, localDeviceId2, requests) {
     if (placement?.owner && focus.resolveFocusAreaId(placement.owner.focusAreaId)) return false;
     const router = placement?.router;
     if (!router || !focus.resolveFocusAreaId(router.focusAreaId)) return true;
-    return router.device === localDeviceId2 && router.basis != null && router.basis !== requests.basis(groupId);
+    return router.device === localDeviceId2 && router.basis != null && router.basis !== requests.basis(groupId) && router.basis !== requests.placeholderBasis(groupId);
   });
 }
 function routerOther(ledger, focus, queued) {
@@ -5611,6 +5632,30 @@ function validateFocusAnswer(answer, input, ledger, { other = false } = {}) {
     proposals,
     ...other ? { otherPassHash: otherPassHash(ledger, [...listed.keys()].filter((anchor) => !held.has(anchor)).map((anchor) => listed.get(anchor).groupId), requestIndex) } : {}
   };
+}
+function placeholderTitleFromAsk(askText) {
+  const ask = requestText(askText ?? null, FOCUS_ASK_CHARS);
+  return humanRequestTitle(ask) || requestText(ask, 120) || "Untitled request";
+}
+function comparableWords(text5) {
+  return String(text5 ?? "").replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").replace(/[*_`#]/g, "").toLowerCase().replace(/\s+/g, " ").trim().replace(/[\s.!?…:;,]+$/u, "");
+}
+function copiesOpeningAsk(title, askText) {
+  const words = comparableWords(title);
+  if (words === comparableWords(placeholderTitleFromAsk(askText))) return true;
+  return words.length > 0 && comparableWords(requestText(askText ?? null, FOCUS_ASK_CHARS)).startsWith(words);
+}
+function hasPlaceholderTitle(group) {
+  return copiesOpeningAsk(group.title, group.anchorAsk?.text ?? null);
+}
+function writtenTitle(value, askText, label) {
+  const title = boundedText(value, 120, label);
+  if (copiesOpeningAsk(title, askText)) throw new TypeError(`${label} repeats the owner's ask ("${placeholderTitleFromAsk(askText)}"). Name the task in about 5 to 7 words of your own, not words the ask starts with.`);
+  return title;
+}
+function titleInput(ledger, database, { limit = TITLE_BATCH } = {}) {
+  const owed = Object.keys(ledger.groups.groups).filter((groupId) => hasPlaceholderTitle(ledger.groups.groups[groupId]));
+  return { requests: records(database, ledger, owed.slice(0, limit), focusRequestIndex(ledger)), remaining: Math.max(0, owed.length - limit) };
 }
 function refreshNeeds({ dir = LEDGER_DIR, database, now = Date.now(), days = 14, localDeviceId: localDeviceId2 }) {
   requireDeviceId(localDeviceId2);
@@ -5773,6 +5818,27 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
       ...droppedPreferences.size ? { droppedPreferences: [...droppedPreferences] } : {}
     });
   }
+  if (command2 === "title-input") return print2(titleInput(readLedger(dir), db(), { limit: option(args, "limit", TITLE_BATCH) }));
+  if (command2 === "record-titles") {
+    const { groups } = readLedger(dir);
+    const answer = readInput(args[0] ?? "-");
+    if (!Array.isArray(answer?.titles)) throw new TypeError("The answer needs a titles array.");
+    let titled = 0;
+    for (const [index, entry] of answer.titles.entries()) {
+      const group = groups.groups[entry?.groupId];
+      if (!group) throw new TypeError(`titles[${index}] names unknown group ${entry?.groupId}.`);
+      const title = writtenTitle(entry.title, group.anchorAsk?.text ?? null, `titles[${index}].title`);
+      if (hasPlaceholderTitle(group)) {
+        group.title = title;
+        titled++;
+      }
+    }
+    if (titled) {
+      groups.updatedAt = iso3(now);
+      writeJsonAtomic(join11(dir, "request-groups.json"), groups);
+    }
+    return print2({ titled, kept: answer.titles.length - titled });
+  }
   if (command2 === "story-input") {
     const { groups, progress, story } = readLedger(dir);
     const reviews = Object.values(progress).sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)));
@@ -5804,9 +5870,9 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
     return Promise.resolve(saveFocus2(body)).then((saved) => print2({ placed: saved.placed, proposed: saved.focusAreaIds.length, focusAreaIds: saved.focusAreaIds }));
   }
   if (command2 === "refresh-needs") return print2(refreshNeeds({ dir, database: db(), now, days: option(args, "days", 14), localDeviceId: localDeviceId2 }));
-  throw new TypeError("Usage: request-groups.mjs candidates|grouping-input|judge|apply|pending|show|record-progress|story-input|record-story|focus-input|record-focus|refresh-needs (see file header).");
+  throw new TypeError("Usage: request-groups.mjs candidates|grouping-input|judge|apply|pending|show|record-progress|title-input|record-titles|story-input|record-story|focus-input|record-focus|refresh-needs (see file header).");
 }
-var DATA_DIR2, LEDGER_DIR, AGENT_WRITTEN_PROMPTS_FILE, DAY_MS2, GOALS_STALE_MS, MAX_CONVERSATIONS_PER_LINKING_LIST, PROGRESS_STATES, PREFERENCE_KINDS, USAGE_LEVELS, VALUE_LEVELS, LINK_KINDS, MAX_READINGS, iso3, groupIdFor, emptyGroups, isIsoOrNull, textTarget, evidenceList, STORY_NARRATIVE_MAX, STORY_NARRATIVE_TARGET, STORY_RECAP_BUDGET, STORY_CHAPTER_MIN_BUDGET, STORY_CHARS_PER_WORD, STORY_REFUSAL_PARTS, FOCUS_ASK_CHARS, CONVERSATIONS_PER_QUERY, records, otherPassHash, focusAreaRecord, AREA_NAME_MAX, AREA_SENTENCE_MAX, requireDeviceId, GROUPING_BATCH, FOCUS_BATCH, CLOSED_STATES;
+var DATA_DIR2, LEDGER_DIR, AGENT_WRITTEN_PROMPTS_FILE, DAY_MS2, GOALS_STALE_MS, MAX_CONVERSATIONS_PER_LINKING_LIST, PROGRESS_STATES, PREFERENCE_KINDS, USAGE_LEVELS, VALUE_LEVELS, LINK_KINDS, MAX_READINGS, iso3, groupIdFor, emptyGroups, isIsoOrNull, textTarget, evidenceList, STORY_NARRATIVE_MAX, STORY_NARRATIVE_TARGET, STORY_RECAP_BUDGET, STORY_CHAPTER_MIN_BUDGET, STORY_CHARS_PER_WORD, STORY_REFUSAL_PARTS, FOCUS_ASK_CHARS, CONVERSATIONS_PER_QUERY, records, otherPassHash, focusAreaRecord, AREA_NAME_MAX, AREA_SENTENCE_MAX, requireDeviceId, GROUPING_BATCH, FOCUS_BATCH, TITLE_BATCH, CLOSED_STATES;
 var init_request_groups = __esm({
   "src/services/work-view/request-groups.mjs"() {
     "use strict";
@@ -5857,6 +5923,7 @@ var init_request_groups = __esm({
     };
     GROUPING_BATCH = 20;
     FOCUS_BATCH = GROUPING_BATCH;
+    TITLE_BATCH = GROUPING_BATCH;
     CLOSED_STATES = /* @__PURE__ */ new Set(["shipped", "abandoned"]);
   }
 });
@@ -7780,6 +7847,14 @@ function load(path4) {
     throw error;
   }
 }
+function observedFileHash(path4) {
+  try {
+    return digest(load(path4));
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    return `unparsed:${createHash8("sha256").update(readFileSync10(path4)).digest("hex")}`;
+  }
+}
 function rawWrite(path4, value) {
   mkdirSync4(join12(path4, ".."), { recursive: true });
   const temp = `${path4}.${randomUUID3()}.shared.tmp`;
@@ -7836,7 +7911,7 @@ var SharedLedgerAdapter = class {
     const bases = Object.fromEntries([...knownKeys].map((key) => [key, shared.records.get(key)?.hash ?? prior.bases[key] ?? null]));
     this.db.prepare(`INSERT INTO my_work_file_state(name, observed_hash, bases, keys_json, pending_json, pending_delete) VALUES(?, ?, ?, ?, ?, ?)
       ON CONFLICT(name) DO UPDATE SET observed_hash=excluded.observed_hash, bases=excluded.bases,
-      keys_json=excluded.keys_json, pending_json=excluded.pending_json, pending_delete=excluded.pending_delete`).run(name, pending ? prior.observed_hash ?? digest(load(join12(this.directory, name))) : digest(value), JSON.stringify(bases), JSON.stringify(keys), pending ? JSON.stringify(value) : null, Number(pending && pendingDelete));
+      keys_json=excluded.keys_json, pending_json=excluded.pending_json, pending_delete=excluded.pending_delete`).run(name, pending ? prior.observed_hash ?? observedFileHash(join12(this.directory, name)) : digest(value), JSON.stringify(bases), JSON.stringify(keys), pending ? JSON.stringify(value) : null, Number(pending && pendingDelete));
   }
   localLedger() {
     try {
@@ -8272,7 +8347,7 @@ var localDeviceId = settings.CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID ?? "";
 var sharedDatabase = null;
 var stopSharedWriter = null;
 var command = process.argv[2];
-var writesLedger = ["apply", "record-progress", "record-story"].includes(command) || command === "judge" && process.argv.includes("--apply");
+var writesLedger = ["apply", "record-progress", "record-titles", "record-story"].includes(command) || command === "judge" && process.argv.includes("--apply");
 if (settings.CLAUDE_MEM_WORK_VIEW_SHARED_STATE === "true" && writesLedger && existsSync13(join13(resolveDataDir(), "claude-mem.db"))) {
   sharedDatabase = new Database2(join13(resolveDataDir(), "claude-mem.db"), { readwrite: true, create: false });
   localDeviceId = ensureLocalDeviceIdentity(sharedDatabase, join13(resolveDataDir(), "settings.json"), localDeviceId);
