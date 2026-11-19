@@ -13,7 +13,7 @@ import { ParsedObservation, ParsedSummary } from '../../sdk/parser.js';
 // the SDK bundle externals — fix the import chain.
 import type { SessionStore as SessionStoreType } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
-import { ChromaCorruptCollectionError, ChromaUnavailableError } from '../worker/search/errors.js';
+import { ChromaCorruptCollectionError, ChromaDeleteOutcomeUnknownError, ChromaUnavailableError } from '../worker/search/errors.js';
 import { parseBoundedNumber, resolveBoundedNumber } from '../../shared/bounded-setting.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, paths } from '../../shared/paths.js';
@@ -846,9 +846,20 @@ export class ChromaSync {
 
     ChromaSyncState.markAllForRebuild();
     try {
-      await chromaMcp.callTool('chroma_delete_collection', {
-        collection_name: this.collectionName
-      });
+      try {
+        await chromaMcp.callTool('chroma_delete_collection', {
+          collection_name: this.collectionName
+        });
+      } catch (error) {
+        // A lost reply or a deadline leaves the delete's outcome unknown, and
+        // the manager never replays a delete. One listing decides: gone means
+        // the delete landed. Still listed, or no usable listing, counts as a
+        // failed attempt against MAX_FAILED_DROP_ATTEMPTS below, and the
+        // restarted sweep retries the drop on the next corrupt batch.
+        if (!(error instanceof ChromaDeleteOutcomeUnknownError)) throw error;
+        if (await this.isCollectionListed(chromaMcp)) throw error;
+      }
+
       ChromaSync.droppedCollections.add(this.collectionName);
       ChromaSync.corruptSegmentBatches.delete(this.collectionName);
       ChromaSync.lastCollectionDrop = {
@@ -868,6 +879,28 @@ export class ChromaSync {
       ChromaSync.collectionGeneration += 1;
       this.startRebuildSweep();
     }
+  }
+
+  /**
+   * One complete, unpaginated listing after a delete whose outcome is unknown.
+   * Throws when no usable listing comes back, so the drop counts as failed.
+   */
+  private async isCollectionListed(chromaMcp: ChromaMcpManager): Promise<boolean> {
+    let names: unknown;
+    try {
+      names = await chromaMcp.callTool('chroma_list_collections', {});
+    } catch (error) {
+      throw new ChromaUnavailableError(
+        'Could not verify collection deletion after an ambiguous response',
+        error instanceof Error ? error : undefined
+      );
+    }
+    if (!Array.isArray(names) || !names.every((name: unknown) => typeof name === 'string')) {
+      throw new ChromaUnavailableError(
+        'Could not verify collection deletion after an ambiguous response: unexpected chroma_list_collections reply'
+      );
+    }
+    return names.includes(this.collectionName);
   }
 
   private startRebuildSweep(): void {

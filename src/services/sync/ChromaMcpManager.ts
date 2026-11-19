@@ -20,7 +20,7 @@ import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { getSupervisor } from '../../supervisor/index.js';
 import { captureProcessName, captureProcessStartToken, isSameProcess, isSameProcessName, isSameProcessStartToken, isPidAlive, normalizeProcessName } from '../../supervisor/process-registry.js';
 import { clearDependencyStatus, recordChromaVectorSearchUnavailable, recordUvxVectorSearchUnavailable } from '../../shared/dependency-health.js';
-import { ChromaUnavailableError } from '../worker/search/errors.js';
+import { ChromaDeleteOutcomeUnknownError, ChromaUnavailableError } from '../worker/search/errors.js';
 import type { ChromaCollectionDrop } from './ChromaSync.js';
 
 const execFileAsync = promisify(execFile);
@@ -102,6 +102,9 @@ const DEFAULT_MAX_PENDING_MUTATIONS = 5_000;
 const CHROMA_MUTATION_TOOL_PATTERN = /^chroma_(?:add|create|delete|modify|update|upsert)_/;
 
 const CHROMA_MCP_PINNED_VERSION = '0.2.6';
+// chroma-mcp 0.2.6 chroma_list_collections returns this lone name when the
+// database has no collections (chroma_mcp/server.py).
+const CHROMA_NO_COLLECTIONS_SENTINEL = '__NO_COLLECTIONS_FOUND__';
 
 // Override transitive dep resolutions for chroma-mcp 0.2.6 (issue #2371).
 //
@@ -1553,10 +1556,16 @@ export class ChromaMcpManager {
           restartAfterWritesSettle: this.readTimeoutRestart?.transport === callTransport,
           error: transportError instanceof Error ? transportError.message : String(transportError)
         });
+        if (toolName === 'chroma_delete_collection') {
+          throw new ChromaDeleteOutcomeUnknownError(message, cause);
+        }
         throw new ChromaUnavailableError(message, cause);
       }
 
-      logger.warn('CHROMA_MCP', `Transport error during "${toolName}", reconnecting and retrying once`, {
+      const action = toolName === 'chroma_delete_collection'
+        ? 'leaving delete outcome unconfirmed'
+        : 'reconnecting and retrying once';
+      logger.warn('CHROMA_MCP', `Transport error during "${toolName}", ${action}`, {
         error: transportError instanceof Error ? transportError.message : String(transportError)
       });
       // A lost transport is a connection failure even when this call's retry
@@ -1577,6 +1586,15 @@ export class ChromaMcpManager {
         await this.waitForUnexpectedCloseCleanup();
       } else {
         await this.disposeCurrentSubprocess();
+      }
+
+      // Destructive deletion cannot be safely replayed after losing its reply.
+      // The caller verifies collection existence before deciding what to do next.
+      if (toolName === 'chroma_delete_collection') {
+        throw new ChromaDeleteOutcomeUnknownError(
+          'Collection deletion outcome is unconfirmed after transport loss',
+          transportError instanceof Error ? transportError : undefined
+        );
       }
 
       try {
@@ -1621,6 +1639,30 @@ export class ChromaMcpManager {
     const contentArray = result.content as Array<{ type: string; text?: string }>;
     if (!contentArray || contentArray.length === 0) {
       return null;
+    }
+
+    // The pinned chroma-mcp sends one plain-text MCP content block per
+    // collection name, not a JSON array. Preserve every name (not just the
+    // first) so recovery can verify deletion against the complete listing.
+    // An empty database answers with the lone CHROMA_NO_COLLECTIONS_SENTINEL,
+    // which means no collections, not one.
+    if (toolName === 'chroma_list_collections') {
+      const blocks = contentArray.filter(item => item.type === 'text' && typeof item.text === 'string');
+      if (blocks.length !== contentArray.length || blocks.some(item => !item.text)) {
+        return null;
+      }
+      if (blocks.length === 1 && blocks[0].text === CHROMA_NO_COLLECTIONS_SENTINEL) {
+        return [];
+      }
+      if (blocks.length === 1) {
+        try {
+          const parsed = JSON.parse(blocks[0].text!);
+          if (Array.isArray(parsed)) return parsed;
+        } catch {
+          // A raw collection name is not JSON.
+        }
+      }
+      return blocks.map(item => item.text);
     }
 
     const firstTextContent = contentArray.find(item => item.type === 'text' && item.text);

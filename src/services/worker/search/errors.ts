@@ -9,6 +9,18 @@ export class ChromaUnavailableError extends AppError {
   }
 }
 
+/**
+ * A collection delete was sent but its final server outcome is unknown. It
+ * lives here, not in ChromaMcpManager, so tests that mock that module do not
+ * have to re-export it.
+ */
+export class ChromaDeleteOutcomeUnknownError extends ChromaUnavailableError {
+  constructor(message: string, cause?: Error) {
+    super(message, cause);
+    this.name = 'ChromaDeleteOutcomeUnknownError';
+  }
+}
+
 export class ChromaCorruptCollectionError extends AppError {
   constructor(message: string, cause?: Error) {
     super(message, 500, 'CHROMA_CORRUPT_COLLECTION', cause ? { cause: cause.message } : undefined);
