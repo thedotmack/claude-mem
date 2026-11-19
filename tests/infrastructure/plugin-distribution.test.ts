@@ -111,7 +111,10 @@ describe('Plugin Distribution - Devin', () => {
     expect(manifest.mcpServers).toEqual({ paths: ['devin.mcp.json'], exclusive: true });
     const mcp = readJson('plugin/devin.mcp.json');
     expect(Object.keys(mcp.mcpServers)).toEqual(['claude-mem']);
-    expect(mcp.mcpServers['claude-mem'].args.join(' ')).toContain('scripts/mcp-server.cjs');
+    const launch = mcp.mcpServers['claude-mem'].args.join(' ');
+    expect(launch).toContain('/mcp-server.cjs');
+    expect(launch).toContain('command -v bun');
+    expect(launch).toContain('${CLAUDE_CONFIG_DIR:-$HOME/.claude}');
   });
 
   it('routes every Devin lifecycle hook to the devin adapter of the installed worker', () => {

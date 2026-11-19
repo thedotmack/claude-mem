@@ -5,7 +5,7 @@
       "hooks": [
         {
           "type": "command",
-          "command": "sh -c 'exec \"$HOME/.bun/bin/bun\" \"$HOME/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs\" start'",
+          "command": "sh -c 'B=$(command -v bun || echo \"$HOME/.bun/bin/bun\"); R=\"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/marketplaces/thedotmack/plugin/scripts\"; exec \"$B\" \"$R/worker-service.cjs\" start'",
           "timeout": 60
         }
       ]
@@ -15,7 +15,7 @@
       "hooks": [
         {
           "type": "command",
-          "command": "sh -c 'exec \"$HOME/.bun/bin/bun\" \"$HOME/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs\" hook devin context'",
+          "command": "sh -c 'B=$(command -v bun || echo \"$HOME/.bun/bin/bun\"); R=\"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/marketplaces/thedotmack/plugin/scripts\"; exec \"$B\" \"$R/worker-service.cjs\" hook devin context'",
           "timeout": 60
         }
       ]
@@ -27,7 +27,7 @@
       "hooks": [
         {
           "type": "command",
-          "command": "sh -c 'exec \"$HOME/.bun/bin/bun\" \"$HOME/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs\" hook devin context'",
+          "command": "sh -c 'B=$(command -v bun || echo \"$HOME/.bun/bin/bun\"); R=\"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/marketplaces/thedotmack/plugin/scripts\"; exec \"$B\" \"$R/worker-service.cjs\" hook devin context'",
           "timeout": 60
         }
       ]
@@ -39,7 +39,7 @@
       "hooks": [
         {
           "type": "command",
-          "command": "sh -c 'exec \"$HOME/.bun/bin/bun\" \"$HOME/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs\" hook devin session-init'",
+          "command": "sh -c 'B=$(command -v bun || echo \"$HOME/.bun/bin/bun\"); R=\"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/marketplaces/thedotmack/plugin/scripts\"; exec \"$B\" \"$R/worker-service.cjs\" hook devin session-init'",
           "timeout": 15
         }
       ]
@@ -51,7 +51,7 @@
       "hooks": [
         {
           "type": "command",
-          "command": "sh -c 'exec \"$HOME/.bun/bin/bun\" \"$HOME/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs\" hook devin observation'",
+          "command": "sh -c 'B=$(command -v bun || echo \"$HOME/.bun/bin/bun\"); R=\"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/marketplaces/thedotmack/plugin/scripts\"; exec \"$B\" \"$R/worker-service.cjs\" hook devin observation'",
           "timeout": 120
         }
       ]
@@ -63,7 +63,7 @@
       "hooks": [
         {
           "type": "command",
-          "command": "sh -c 'exec \"$HOME/.bun/bin/bun\" \"$HOME/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs\" hook devin summarize'",
+          "command": "sh -c 'B=$(command -v bun || echo \"$HOME/.bun/bin/bun\"); R=\"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/marketplaces/thedotmack/plugin/scripts\"; exec \"$B\" \"$R/worker-service.cjs\" hook devin summarize'",
           "timeout": 120
         }
       ]
@@ -75,7 +75,7 @@
       "hooks": [
         {
           "type": "command",
-          "command": "sh -c 'exec \"$HOME/.bun/bin/bun\" \"$HOME/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs\" hook devin session-end'",
+          "command": "sh -c 'B=$(command -v bun || echo \"$HOME/.bun/bin/bun\"); R=\"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/marketplaces/thedotmack/plugin/scripts\"; exec \"$B\" \"$R/worker-service.cjs\" hook devin session-end'",
           "timeout": 30
         }
       ]

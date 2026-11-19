@@ -4,7 +4,7 @@
       "command": "sh",
       "args": [
         "-c",
-        "exec \"$HOME/.bun/bin/bun\" \"$HOME/.claude/plugins/marketplaces/thedotmack/plugin/scripts/mcp-server.cjs\""
+        "B=$(command -v bun || echo \"$HOME/.bun/bin/bun\"); R=\"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/marketplaces/thedotmack/plugin/scripts\"; exec \"$B\" \"$R/mcp-server.cjs\""
       ]
     }
   }
