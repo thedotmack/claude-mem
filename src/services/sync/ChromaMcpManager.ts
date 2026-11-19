@@ -296,6 +296,9 @@ export class ChromaMcpManager {
   private pendingMutationCalls = 0;
   /** Mutation requests sent to chroma-mcp and not yet answered, in either Chroma mode. */
   private mutationCallsInFlight = 0;
+  /** Resolves when `mutationCallsInFlight` next reaches zero. Already resolved at zero. */
+  private mutationIdle: Promise<void> = Promise.resolve();
+  private resolveMutationIdle: (() => void) | null = null;
   /**
    * The transport on which a write outlived its deadline. chroma-mcp runs one
    * request at a time (its tools call the blocking Chroma client), so that
@@ -303,6 +306,16 @@ export class ChromaMcpManager {
    * the same transport; until then a read timeout never restarts it.
    */
   private timedOutWriteTransport: unknown = null;
+  /**
+   * A read timed out on this transport while a write was still in flight.
+   * The SDK had already sent `notifications/cancelled`, and chroma-mcp's
+   * stdin_reader then raises anyio.BrokenResourceError on the next message.
+   * The subprocess stays up until those writes finish — killing it mid-commit
+   * corrupts the index — and the next call restarts it before writing here.
+   */
+  private readTimeoutRestart: { transport: unknown; toolName: string } | null = null;
+  /** One wait-then-restart, so a second caller cannot write the cancelled stdin. */
+  private stdinRecovery: Promise<void> | null = null;
   private readonly maxPendingMutationCalls: number;
   private readonly mutationTimeoutMs: number;
   private readonly serializeMutations: boolean;
@@ -1450,6 +1463,9 @@ export class ChromaMcpManager {
   }
 
   private async callToolUnqueued(toolName: string, toolArguments: Record<string, unknown>): Promise<unknown> {
+    // A previous read already cancelled its request. Wait for in-flight writes,
+    // restart, and only then send — never write a server that can no longer read.
+    await this.prepareTransportAfterReadTimeout();
     const callGeneration = this.connectionGeneration;
     await this.ensureConnected();
     const callTransport = this.transport;
@@ -1462,9 +1478,11 @@ export class ChromaMcpManager {
     // malformed (a timeout is therefore never handled as a transport error,
     // see below). Give mutations a bounded, configurable deadline while
     // keeping read/query latency at the SDK default. A read past that default
-    // is treated as hung and restarts chroma-mcp, so it must stay well above
-    // a slow-but-healthy query: a search that cannot wait that long stops
-    // waiting on its own (CHROMA_SEARCH_BUDGET_MS) without cancelling the read.
+    // with no write in flight is treated as hung and restarts chroma-mcp, so
+    // it must stay well above a slow-but-healthy query: a search that cannot
+    // wait that long stops waiting on its own (CHROMA_SEARCH_BUDGET_MS)
+    // without cancelling the read. A read that does hit this deadline while
+    // a write is in flight does not restart until that write settles.
     const requestOptions = isMutation
       ? { timeout: this.mutationTimeoutMs }
       : undefined;
@@ -1476,7 +1494,7 @@ export class ChromaMcpManager {
 
     let result;
     if (isMutation) {
-      this.mutationCallsInFlight += 1;
+      this.beginMutation();
     }
     try {
       result = await this.client!.callTool({
@@ -1495,16 +1513,22 @@ export class ChromaMcpManager {
         } else if (this.mutationCallsInFlight === 0 && this.timedOutWriteTransport !== callTransport) {
           await this.restartHungSubprocess(toolName, callTransport);
           throw new ChromaUnavailableError(`chroma-mcp did not answer "${toolName}" in time and was restarted`, cause);
+        } else if (!isMutation && this.mutationCallsInFlight > 0 && callTransport) {
+          // The cancelled read poisons stdin. Do not kill the in-flight write.
+          // The next call waits for it, then restarts, and does not write here.
+          this.readTimeoutRestart = { transport: callTransport, toolName };
         }
         // A request that outlived its deadline while a write is, or may still
         // be, in flight means chroma-mcp is slow, not gone: the SDK has already
         // sent notifications/cancelled, and the write may still be committing.
         // Tree-killing it here is what leaves a persistent index malformed,
         // and a retry would repeat the same slow work, so neither happens.
-        // The caller keeps the row pending.
+        // The caller keeps the row pending. A read cancelled while a write was
+        // in flight is restarted once that write settles (see readTimeoutRestart).
         const message = `chroma-mcp "${toolName}" timed out; the subprocess was left running`;
         logger.warn('CHROMA_MCP', message, {
           timeoutMs: requestOptions?.timeout,
+          restartAfterWritesSettle: this.readTimeoutRestart?.transport === callTransport,
           error: transportError instanceof Error ? transportError.message : String(transportError)
         });
         throw new ChromaUnavailableError(message, cause);
@@ -1548,7 +1572,14 @@ export class ChromaMcpManager {
       }
     } finally {
       if (isMutation) {
-        this.mutationCallsInFlight -= 1;
+        this.endMutation();
+      }
+      // A read may have cancelled stdin while this write was the one in flight.
+      // Restart only after the write has settled, and never instead of its result.
+      // Skip the await on the common path so a call with nothing pending does
+      // not add a scheduling hop.
+      if (this.readTimeoutRestart) {
+        await this.restartCancelledStdinIfSettled(callGeneration);
       }
     }
 
@@ -1618,6 +1649,103 @@ export class ChromaMcpManager {
 
   private static isRequestTimeout(error: unknown): boolean {
     return error instanceof McpError && error.code === ErrorCode.RequestTimeout;
+  }
+
+  private beginMutation(): void {
+    this.mutationCallsInFlight += 1;
+    if (this.mutationCallsInFlight === 1) {
+      this.mutationIdle = new Promise(resolve => {
+        this.resolveMutationIdle = resolve;
+      });
+    }
+  }
+
+  private endMutation(): void {
+    if (this.mutationCallsInFlight > 0) {
+      this.mutationCallsInFlight -= 1;
+    }
+    if (this.mutationCallsInFlight === 0) {
+      const resolve = this.resolveMutationIdle;
+      this.resolveMutationIdle = null;
+      this.mutationIdle = Promise.resolve();
+      resolve?.();
+    }
+  }
+
+  /**
+   * Before sending, restart a chroma-mcp whose stdin a timed-out read already
+   * cancelled, once every in-flight write has finished.
+   *
+   * While a write is still in flight this waits and does not send. A write
+   * that itself timed out has no in-flight handle left and may still be
+   * committing, so that one probe is still allowed through: its answer is
+   * what shows the commit finished, and the restart follows the answer.
+   */
+  private async prepareTransportAfterReadTimeout(): Promise<void> {
+    if (this.stdinRecovery) {
+      await this.stdinRecovery;
+    }
+    const pending = this.readTimeoutRestart;
+    if (!pending) return;
+
+    let release!: () => void;
+    const recovery = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    this.stdinRecovery = recovery;
+    const generation = this.connectionGeneration;
+    try {
+      while (this.readTimeoutRestart === pending) {
+        if (generation !== this.connectionGeneration || !this.transport || this.transport !== pending.transport) {
+          this.readTimeoutRestart = null;
+          return;
+        }
+        if (this.mutationCallsInFlight > 0) {
+          await this.mutationIdle;
+          continue;
+        }
+        if (this.timedOutWriteTransport === pending.transport) {
+          return;
+        }
+        await this.restartCancelledStdinIfSettled(generation);
+        return;
+      }
+    } finally {
+      if (this.stdinRecovery === recovery) {
+        this.stdinRecovery = null;
+      }
+      release();
+    }
+  }
+
+  /**
+   * Restart the subprocess a timed-out read marked, now that no write is in
+   * flight and no timed-out write is still waiting for an answer. A failure
+   * here must not replace the call's own result or timeout error.
+   */
+  private async restartCancelledStdinIfSettled(callGeneration: number): Promise<void> {
+    const pending = this.readTimeoutRestart;
+    if (!pending) return;
+    if (callGeneration !== this.connectionGeneration) {
+      this.readTimeoutRestart = null;
+      return;
+    }
+    if (!this.transport || pending.transport !== this.transport) {
+      this.readTimeoutRestart = null;
+      return;
+    }
+    if (this.mutationCallsInFlight > 0 || this.timedOutWriteTransport === pending.transport) {
+      return;
+    }
+    this.readTimeoutRestart = null;
+    try {
+      await this.restartHungSubprocess(pending.toolName, pending.transport);
+    } catch (error) {
+      logger.warn('CHROMA_MCP', 'Restart after a timed-out chroma-mcp read did not finish', {
+        toolName: pending.toolName,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   /**
@@ -1840,6 +1968,9 @@ export class ChromaMcpManager {
     this.client = null;
     this.transport = null;
     this.connected = false;
+    // The subprocess this flag names is gone. A later call must not restart
+    // whatever replaced it.
+    this.readTimeoutRestart = null;
   }
 
   /**
