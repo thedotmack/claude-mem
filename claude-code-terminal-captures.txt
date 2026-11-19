@@ -1,0 +1,93 @@
+Claude Code 2.1.328 | live startup-card output
+PR bundle SHA-256: c5544c2b80202b4f4c6fdde75b842aa34f63c4e75f95d1d0e6e8faabc34ecad8
+
+An interactive Linux Claude Code host loaded the production hooks module in a fresh project and received public sample content from a SessionStart command hook. The host placed and drew the card. xterm.js replayed the terminal bytes. Excerpts below contain only the card.
+
+118 × 34 | classic | 24 × 12 cells matched the source logo at column 93.
+
+╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ claude-mem                                                                                     ⢀⣀⣰⠾⢿⣷⡄⢠⣾⡿⠿⠦        │
+│ # claude-mem status                                                                          ⢠⣾⡛⠙⠻⣧ ⢻⡇⢸⡟⢀⣤⣶⡾⠿⣷⣄    │
+│                                                                                             ⢀⡉⠛⠻⣦⡀⠘⣧⣼⡇⢸⣁⣾⠏⢁⣠⣴⣿⠟    │
+│ This project has no memory yet. This session will seed it.                                 ⣼⡿⠻⢷⣄⠈⠻⣦⠘⣿⡇⢸⣿⢃⣴⡟⠋⣁⣀⣀⣼⣧  │
+│                                                                                           ⢰⡿⢀⣀⣀⠙⠻⣦⣝⣷⣼⣧⣾⣧⡾⣋⣴⠾⠛⠛⠛⠛⠋  │
+│ Memory injection starts on your second session in a project.                              ⢈⣡⣾⠟⠛⠻⠶⣤⣽⣿⣿⣿⣿⣿⣿⣯⣥⣴⡶⠶⣶⣄⠸⣧ │
+│                                                                                           ⡿⠋⢁⣠⣤⣤⣤⣤⡶⣿⣿⣿⣿⣿⡿⣯⣤⣄⣀⡀ ⢿⣦⣿ │
+│ Live activity: http://localhost:37777                                                      ⣴⡿⠋⠁⢀⣀⣤⡾⢛⣿⢿⡿⣿⠻⣦⣌⠉⠙⢻⣆⠈⠛⠋ │
+│ How it works: `/how-it-works`                                                             ⠈⣿ ⢠⣾⠟⠋⠁⣠⣾⠃⢸⡇⠹⣦⡀⠙⢿⣦ ⠙⢿⣷  │
+│                                                                                            ⠈ ⣿⡇ ⣠⡾⠛⢁⡀⢸⡇ ⠙⢿⡄ ⢻⣧⣤⣾⠃  │
+│                                                                                              ⠹⣷⣴⣿⠁ ⣾⡇⢸⡇⢸⣇⠈⣿⡀⠈⠛⠋⠁   │
+│                                                                                                ⠉⠁⠴⠾⠟ ⠘⢷⠈⠻⠷⠿⠟⠋      │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+80 × 32 | classic | 14 × 7 cells matched the source logo at column 65.
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ claude-mem                                                                   │
+│ # claude-mem status                                             ⣀⠤⣼⠛⡇⢸⠟⣓⣤⣀   │
+│                                                                ⣀⡛⠲⣌⢣⡇⢨⡾⢉⡤⠿⢀  │
+│ This project has no memory yet. This session will seed it.    ⣸⢁⣉⠲⣌⣦⣷⣿⣴⣫⠶⠒⠚⠃ │
+│                                                               ⡴⠋⣉⣙⣒⣿⣿⣿⣿⣒⡚⠛⢦⣹ │
+│ Memory injection starts on your second session in a project.  ⢰⠟⢉⣤⠴⢫⢿⠿⡑⢮⣉⠳⣌⡋ │
+│                                                               ⠈⢠⡏⢠⡶⢋⢸ ⡙⣆⠹⣦⡼⠁ │
+│ Live activity: http://localhost:37777                           ⠙⠛⢠⠞⠘⡆⠧⣽⠶    │
+│ How it works: `/how-it-works`                                                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+60 × 32 | fullscreen | The status copy uses the full card width.
+
+╭─────────────────────────────────────────────────────────╮
+│ claude-mem                                              │
+│ # claude-mem status                                     │
+│                                                         │
+│ This project has no memory yet. This session will seed  │
+│ it.                                                     │
+│                                                         │
+│ Memory injection starts on your second session in a     │
+│ project.                                                │
+│                                                         │
+│ Live activity: http://localhost:37777                   │
+│ How it works: `/how-it-works`                           │
+╰─────────────────────────────────────────────────────────╯
+
+116 × 36 | fullscreen | 24 × 12 cells matched the source logo at column 91.
+
+110 × 10 | fullscreen | The shallow window produced no decorative characters.
+
+112 × 33 | [Screen Reader Mode: on via env] | Complete status copy; zero decorative characters.
+113 × 33 | [Screen Reader Mode: on via flag] | Complete status copy; zero decorative characters.
+114 × 33 | [Screen Reader Mode: on via settings] | Complete status copy; zero decorative characters.
+
+claude-mem
+# claude-mem status
+
+This project has no memory yet. This session will seed it.
+
+Memory injection starts on your second session in a project.
+
+Live activity: http://localhost:37777
+How it works: `/how-it-works`
+
+127 × 46 | populated sample history | The final long observation stays on one line under the two-column section.
+
+╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ claude-mem                                                                                                                  │
+│ # Sample project history                                                                                                    │
+│                                                                                                         ⢀⣀⣰⠾⢿⣷⡄⢠⣾⡿⠿⠦        │
+│ Wednesday, November 18                                                                                ⢠⣾⡛⠙⠻⣧ ⢻⡇⢸⡟⢀⣤⣶⡾⠿⣷⣄    │
+│                                                                                                      ⢀⡉⠛⠻⣦⡀⠘⣧⣼⡇⢸⣁⣾⠏⢁⣠⣴⣿⠟    │
+│ src/components/StatusCard.tsx                                                                       ⣼⡿⠻⢷⣄⠈⠻⣦⠘⣿⡇⢸⣿⢃⣴⡟⠋⣁⣀⣀⣼⣧  │
+│   #1001  9:40 AM  🟣   Add the status-card title and render the application version                 ⢰⡿⢀⣀⣀⠙⠻⣦⣝⣷⣼⣧⣾⣧⡾⣋⣴⠾⠛⠛⠛⠛⠋  │
+│   #1002  9:45 AM  🔵   Verify that a previous session can supply context                            ⢈⣡⣾⠟⠛⠻⠶⣤⣽⣿⣿⣿⣿⣿⣿⣯⣥⣴⡶⠶⣶⣄⠸⣧ │
+│                                                                                                    ⡿⠋⢁⣠⣤⣤⣤⣤⡶⣿⣿⣿⣿⣿⡿⣯⣤⣄⣀⡀ ⢿⣦⣿ │
+│ src/terminal/layout.ts                                                                              ⣴⡿⠋⠁⢀⣀⣤⡾⢛⣿⢿⡿⣿⠻⣦⣌⠉⠙⢻⣆⠈⠛⠋ │
+│   #1003  9:50 AM  🟣   Wrap content in narrow terminal splits                                       ⠈⣿ ⢠⣾⠟⠋⠁⣠⣾⠃⢸⡇⠹⣦⡀⠙⢿⣦ ⠙⢿⣷  │
+│   #1004  9:55 AM  🔵   Check right alignment on a wide terminal                                      ⠈ ⣿⡇ ⣠⡾⠛⢁⡀⢸⡇ ⠙⢿⡄ ⢻⣧⣤⣾⠃  │
+│                                                                                                       ⠹⣷⣴⣿⠁ ⣾⡇⢸⡇⢸⣇⠈⣿⡀⠈⠛⠋⠁   │
+│ docs/example.md                                                                                         ⠉⠁⠴⠾⠟ ⠘⢷⠈⠻⠷⠿⠟⠋      │
+│   #1005  10:00 AM  🟢   Record the window-size behavior                                                                      │
+│                                                                                                                             │
+│   #1006  10:05 AM  🟣   Confirm the history footer gets the full available width so this public sample sentence fits here.   │
+│   #1007  10:10 AM  🔵   End of sample timeline                                                                               │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
