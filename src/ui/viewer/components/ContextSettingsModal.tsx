@@ -1,3 +1,4 @@
+import { QUOTA_FALLBACK_OPTIONS, type QuotaFallbackOption } from '../../provider-options.js';
 import React, { useState, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 import { useI18n, interpolate, getLocale } from '../../i18n';
 import { translateSettingsStatus } from '../../i18n/errors';
@@ -707,7 +708,7 @@ export function ContextSettingsModal({
                 </>
               )}
 
-              {formState.CLAUDE_MEM_PROVIDER === 'codex' && (
+              {(formState.CLAUDE_MEM_PROVIDER === 'codex' || formState.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER === 'codex') && (
                 <FormField
                   label={t('Codex Model')}
                   help={t('Optional model available through your Codex subscription; leave empty for the Codex default. Run codex login before starting the worker.')}
@@ -886,12 +887,17 @@ export function ContextSettingsModal({
                 {control => (
                   <select {...control} value={formState.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER || 'claude'}
                     onChange={(e) => updateSetting('CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER', e.target.value)}>
-                    <option value="claude">{t(claudeProviderOptionLabel(formState.CLAUDE_MEM_CLAUDE_AUTH_METHOD))}</option>
-                    <option value="off">{t('Off (wait for the provider)')}</option>
-                    <option value="gemini">{t('Gemini (uses API key)')}</option>
-                    <option value="openrouter">{t('OpenRouter / claude-mem observer')}</option>
-                    <option value="openai-compatible">{t('OpenAI-compatible endpoint')}</option>
-                  </select>
+                    {QUOTA_FALLBACK_OPTIONS.map(provider => (
+                    <option key={provider} value={provider}>{({
+                      claude: t(claudeProviderOptionLabel(formState.CLAUDE_MEM_CLAUDE_AUTH_METHOD)),
+                      off: t('Off (wait for the provider)'),
+                      gemini: t('Gemini (uses API key)'),
+                      openrouter: t('OpenRouter / claude-mem observer'),
+                      'openai-compatible': t('OpenAI-compatible endpoint'),
+                      codex: t('Codex (uses your ChatGPT subscription)'),
+                    } satisfies Record<QuotaFallbackOption, string>)[provider]}</option>
+                  ))}
+                </select>
                 )}
               </FormField>
 
