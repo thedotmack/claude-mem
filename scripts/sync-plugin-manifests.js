@@ -12,6 +12,7 @@ const codexPluginPath = path.join(rootDir, '.codex-plugin', 'plugin.json');
 const bundledCodexPluginPath = path.join(rootDir, 'plugin', '.codex-plugin', 'plugin.json');
 const qoderPluginPath = path.join(rootDir, '.qoder-plugin', 'plugin.json');
 const bundledQoderPluginPath = path.join(rootDir, 'plugin', '.qoder-plugin', 'plugin.json');
+const bundledDevinPluginPath = path.join(rootDir, 'plugin', '.devin-plugin', 'plugin.json');
 const claudePluginPath = path.join(rootDir, '.claude-plugin', 'plugin.json');
 const bundledClaudePluginPath = path.join(rootDir, 'plugin', '.claude-plugin', 'plugin.json');
 const claudeMarketplacePath = path.join(rootDir, '.claude-plugin', 'marketplace.json');
@@ -124,6 +125,7 @@ function main() {
     bundledCodexPluginPath,
     qoderPluginPath,
     bundledQoderPluginPath,
+    bundledDevinPluginPath,
     claudePluginPath,
     bundledClaudePluginPath,
     claudeMarketplacePath,
@@ -143,6 +145,7 @@ function main() {
   const bundledCodexPlugin = readJson(bundledCodexPluginPath);
   const qoderPlugin = readJson(qoderPluginPath);
   const bundledQoderPlugin = readJson(bundledQoderPluginPath);
+  const bundledDevinPlugin = readJson(bundledDevinPluginPath);
   const claudePlugin = readJson(claudePluginPath);
   const bundledClaudePlugin = readJson(bundledClaudePluginPath);
   const claudeMarketplace = readJson(claudeMarketplacePath);
@@ -155,6 +158,7 @@ function main() {
   writeJson(bundledCodexPluginPath, syncCodexPlugin(bundledCodexPlugin, pkg));
   writeJson(qoderPluginPath, syncCursorPlugin(qoderPlugin, pkg));
   writeJson(bundledQoderPluginPath, syncCursorPlugin(bundledQoderPlugin, pkg));
+  writeJson(bundledDevinPluginPath, syncVersionOnly(bundledDevinPlugin, pkg));
   writeJson(claudePluginPath, syncClaudePlugin(claudePlugin, pkg));
   writeJson(bundledClaudePluginPath, syncClaudePlugin(bundledClaudePlugin, pkg));
   writeJson(claudeMarketplacePath, syncClaudeMarketplace(claudeMarketplace, pkg));

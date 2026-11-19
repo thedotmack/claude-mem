@@ -1,0 +1,84 @@
+{
+  "SessionStart": [
+    {
+      "matcher": "",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "sh -c 'exec \"$HOME/.bun/bin/bun\" \"$HOME/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs\" start'",
+          "timeout": 60
+        }
+      ]
+    },
+    {
+      "matcher": "",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "sh -c 'exec \"$HOME/.bun/bin/bun\" \"$HOME/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs\" hook devin context'",
+          "timeout": 60
+        }
+      ]
+    }
+  ],
+  "PostCompaction": [
+    {
+      "matcher": "",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "sh -c 'exec \"$HOME/.bun/bin/bun\" \"$HOME/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs\" hook devin context'",
+          "timeout": 60
+        }
+      ]
+    }
+  ],
+  "UserPromptSubmit": [
+    {
+      "matcher": "",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "sh -c 'exec \"$HOME/.bun/bin/bun\" \"$HOME/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs\" hook devin session-init'",
+          "timeout": 15
+        }
+      ]
+    }
+  ],
+  "PostToolUse": [
+    {
+      "matcher": "",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "sh -c 'exec \"$HOME/.bun/bin/bun\" \"$HOME/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs\" hook devin observation'",
+          "timeout": 120
+        }
+      ]
+    }
+  ],
+  "Stop": [
+    {
+      "matcher": "",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "sh -c 'exec \"$HOME/.bun/bin/bun\" \"$HOME/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs\" hook devin summarize'",
+          "timeout": 120
+        }
+      ]
+    }
+  ],
+  "SessionEnd": [
+    {
+      "matcher": "",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "sh -c 'exec \"$HOME/.bun/bin/bun\" \"$HOME/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs\" hook devin session-end'",
+          "timeout": 30
+        }
+      ]
+    }
+  ]
+}

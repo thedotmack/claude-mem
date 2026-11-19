@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "claude-mem": {
+      "command": "sh",
+      "args": [
+        "-c",
+        "exec \"$HOME/.bun/bin/bun\" \"$HOME/.claude/plugins/marketplaces/thedotmack/plugin/scripts/mcp-server.cjs\""
+      ]
+    }
+  }
+}
