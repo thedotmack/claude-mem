@@ -864,11 +864,99 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     await expect(mgr.callTool('chroma_query_documents', { query_texts: ['queued'] })).rejects.toBeInstanceOf(ChromaUnavailableError);
     expect(transportInstances[0].closed).toBe(false);
 
-    // Any answer from chroma-mcp means the write finished; a hung read then restarts it.
+    // The answering call is the one probe on the cancelled stdin. Its answer
+    // restarts the subprocess; the hung read below is on the replacement.
     answering = true;
     await mgr.callTool('chroma_list_collections', { limit: 1 });
+    expect(transportInstances[0].closed).toBe(true);
     await expect(mgr.callTool('chroma_query_documents', { query_texts: ['hung'] })).rejects.toBeInstanceOf(ChromaUnavailableError);
     expect(transportInstances[0].closed).toBe(true);
+  });
+
+  it('restarts after the probe that follows a read timeout behind a timed-out write', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+    killProcessTreeCalls.length = 0;
+    const first = transportInstances[0];
+
+    let phase: 'timeout' | 'probe' | 'next' = 'timeout';
+    const sends: Array<{ name?: string; transports: number; firstClosed: boolean }> = [];
+    callToolImpl = async request => {
+      sends.push({
+        name: request?.name,
+        transports: transportInstances.length,
+        firstClosed: first.closed,
+      });
+      if (phase === 'probe' && request?.name === 'chroma_list_collections') {
+        return { content: [{ type: 'text', text: '[]' }] };
+      }
+      if (phase === 'next' && request?.name === 'chroma_add_documents') {
+        return { content: [{ type: 'text', text: '{}' }] };
+      }
+      throw new McpError(ErrorCode.RequestTimeout, 'Request timed out', { timeout: 60000 });
+    };
+
+    await expect(mgr.callTool('chroma_add_documents', { ids: ['slow'] })).rejects.toBeInstanceOf(ChromaUnavailableError);
+    await expect(mgr.callTool('chroma_query_documents', { query_texts: ['queued'] })).rejects.toBeInstanceOf(ChromaUnavailableError);
+    // The read was cancelled behind a write that may still be committing.
+    // Do not tree-kill, and do not restart before chroma answers.
+    expect(first.closed).toBe(false);
+    expect(killProcessTreeCalls).toEqual([]);
+    expect(logEntries.some(entry =>
+      entry.message === 'chroma-mcp "chroma_query_documents" timed out; the subprocess was left running'
+      && entry.meta?.restartAfterWritesSettle === true
+    )).toBe(true);
+
+    phase = 'probe';
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+    // The probe itself is the one write to cancelled stdin. The restart
+    // follows that answer, before any later mutation.
+    expect(first.closed).toBe(true);
+    expect(sends.filter(send => send.name === 'chroma_list_collections')).toEqual([
+      { name: 'chroma_list_collections', transports: 1, firstClosed: false },
+    ]);
+
+    phase = 'next';
+    await expect(mgr.callTool('chroma_add_documents', { ids: ['next'] })).resolves.toEqual({});
+    expect(transportInstances.length).toBe(2);
+    expect(transportInstances[1].closed).toBe(false);
+    expect(sends.filter(send => send.name === 'chroma_add_documents' && send.transports === 2)).toEqual([
+      { name: 'chroma_add_documents', transports: 2, firstClosed: true },
+    ]);
+  });
+
+  it('does not send a second probe while the first is still on cancelled stdin', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+    const first = transportInstances[0];
+
+    let releaseProbe: (() => void) | null = null;
+    let phase: 'timeout' | 'probe' = 'timeout';
+    let sends = 0;
+    callToolImpl = async request => {
+      sends += 1;
+      if (phase === 'probe' && request?.name === 'chroma_list_collections') {
+        await new Promise<void>(resolve => { releaseProbe = resolve; });
+        return { content: [{ type: 'text', text: '[]' }] };
+      }
+      throw new McpError(ErrorCode.RequestTimeout, 'Request timed out', { timeout: 60000 });
+    };
+
+    await expect(mgr.callTool('chroma_add_documents', { ids: ['slow'] })).rejects.toBeInstanceOf(ChromaUnavailableError);
+    await expect(mgr.callTool('chroma_query_documents', { query_texts: ['queued'] })).rejects.toBeInstanceOf(ChromaUnavailableError);
+    expect(first.closed).toBe(false);
+
+    phase = 'probe';
+    const probe = mgr.callTool('chroma_list_collections', { limit: 1 });
+    await waitForCondition(() => releaseProbe !== null);
+    const sendsAtProbe = sends;
+    await expect(mgr.callTool('chroma_get_documents', { ids: ['second'] })).rejects.toThrow('probe is already in flight');
+    expect(sends).toBe(sendsAtProbe);
+    expect(first.closed).toBe(false);
+
+    releaseProbe!();
+    await expect(probe).resolves.toEqual([]);
+    expect(first.closed).toBe(true);
   });
 
   it('never restarts chroma-mcp on a read timeout while a remote-mode write is in flight', async () => {

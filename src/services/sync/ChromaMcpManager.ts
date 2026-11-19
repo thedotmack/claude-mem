@@ -314,6 +314,12 @@ export class ChromaMcpManager {
    * corrupts the index — and the next call restarts it before writing here.
    */
   private readTimeoutRestart: { transport: unknown; toolName: string } | null = null;
+  /**
+   * The single call allowed to write stdin after a cancelled read while a
+   * timed-out write may still be committing. Its answer is the probe that
+   * shows the commit finished; further callers wait instead of probing too.
+   */
+  private cancelledStdinProbe = false;
   /** One wait-then-restart, so a second caller cannot write the cancelled stdin. */
   private stdinRecovery: Promise<void> | null = null;
   private readonly maxPendingMutationCalls: number;
@@ -1513,9 +1519,13 @@ export class ChromaMcpManager {
         } else if (this.mutationCallsInFlight === 0 && this.timedOutWriteTransport !== callTransport) {
           await this.restartHungSubprocess(toolName, callTransport);
           throw new ChromaUnavailableError(`chroma-mcp did not answer "${toolName}" in time and was restarted`, cause);
-        } else if (!isMutation && this.mutationCallsInFlight > 0 && callTransport) {
-          // The cancelled read poisons stdin. Do not kill the in-flight write.
-          // The next call waits for it, then restarts, and does not write here.
+        } else if (!isMutation && callTransport) {
+          // Every read that did not restart immediately has already sent
+          // notifications/cancelled, including one queued behind a write that
+          // itself timed out and may still be committing. Arm the settled
+          // restart. Do not kill mid-commit; the next call waits, or sends the
+          // one probe that shows the commit finished, and the restart follows
+          // that answer.
           this.readTimeoutRestart = { transport: callTransport, toolName };
         }
         // A request that outlived its deadline while a write is, or may still
@@ -1523,8 +1533,8 @@ export class ChromaMcpManager {
         // sent notifications/cancelled, and the write may still be committing.
         // Tree-killing it here is what leaves a persistent index malformed,
         // and a retry would repeat the same slow work, so neither happens.
-        // The caller keeps the row pending. A read cancelled while a write was
-        // in flight is restarted once that write settles (see readTimeoutRestart).
+        // The caller keeps the row pending. A cancelled read is restarted once
+        // that write settles (see readTimeoutRestart).
         const message = `chroma-mcp "${toolName}" timed out; the subprocess was left running`;
         logger.warn('CHROMA_MCP', message, {
           timeoutMs: requestOptions?.timeout,
@@ -1581,6 +1591,10 @@ export class ChromaMcpManager {
       if (this.readTimeoutRestart) {
         await this.restartCancelledStdinIfSettled(callGeneration);
       }
+      // Drop the probe permit only after the settled restart has started, so
+      // a second caller cannot write the cancelled stdin while this answer
+      // is still tearing the subprocess down.
+      this.cancelledStdinProbe = false;
     }
 
     if (result.isError) {
@@ -1705,6 +1719,13 @@ export class ChromaMcpManager {
           continue;
         }
         if (this.timedOutWriteTransport === pending.transport) {
+          // One probe. A second caller must not write the cancelled stdin.
+          if (this.cancelledStdinProbe) {
+            throw new ChromaUnavailableError(
+              'chroma-mcp stdin was cancelled and a probe is already in flight',
+            );
+          }
+          this.cancelledStdinProbe = true;
           return;
         }
         await this.restartCancelledStdinIfSettled(generation);
@@ -1968,9 +1989,11 @@ export class ChromaMcpManager {
     this.client = null;
     this.transport = null;
     this.connected = false;
-    // The subprocess this flag names is gone. A later call must not restart
-    // whatever replaced it.
+    // This subprocess is gone. A later call must not treat it as still
+    // committing, and must not restart whatever replaced it.
     this.readTimeoutRestart = null;
+    this.timedOutWriteTransport = null;
+    this.cancelledStdinProbe = false;
   }
 
   /**
