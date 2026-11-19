@@ -13,6 +13,7 @@ import {
   probeWorkerDependencies,
   treeSitterCliCheck,
   workerDependencyChecks,
+  workerDoctorHealthChecks,
   type AutoUpdateDoctorSources,
 } from '../../src/npx-cli/commands/doctor.js';
 import { LAUNCHER_PROTOCOL } from '../../src/launcher/launcher-protocol.js';
@@ -1162,5 +1163,50 @@ describe('npx doctor probeWorkerDependencies (#5359)', () => {
 
     fetchSpy?.mockImplementation(async () => { throw new Error('network down'); });
     expect(await probeWorkerDependencies(WORKER_URL, true)).toEqual([]);
+  });
+});
+
+describe('npx doctor single /api/admin/doctor read', () => {
+  beforeEach(() => {
+    requestedUrls = [];
+    fetchSpy = spyOn(globalThis, 'fetch');
+  });
+
+  afterEach(() => {
+    fetchSpy?.mockRestore();
+    fetchSpy = null;
+  });
+
+  it('reads both health blocks from one request', async () => {
+    fetchSpy?.mockImplementation(async (input: RequestInfo | URL) => {
+      requestedUrls.push(String(input));
+      return new Response(JSON.stringify({
+        health: {
+          chroma: chromaState(),
+          dependencies: { degraded: true, statuses: [{ dependency: 'claude_cli', kind: 'missing', message: 'not found' }] },
+        },
+      }), { status: 200 });
+    });
+
+    const checks = await workerDoctorHealthChecks(WORKER_URL, true, true);
+
+    expect(requestedUrls).toEqual([`${WORKER_URL}/api/admin/doctor`]);
+    expect(checks.chroma.some(row => row.name === 'Chroma child exits')).toBe(true);
+    expect(checks.dependencies.length).toBeGreaterThan(0);
+  });
+
+  it('keeps the Chroma rows when the dependencies block is malformed', async () => {
+    fetchSpy?.mockImplementation(async () => new Response(JSON.stringify({
+      health: {
+        chroma: chromaState(),
+        dependencies: { degraded: true, statuses: [null] },
+      },
+    }), { status: 200 }));
+
+    const checks = await workerDoctorHealthChecks(WORKER_URL, true, true);
+    expect(checks.chroma.some(row => row.name === 'Chroma child exits')).toBe(true);
+    expect(checks.dependencies).toEqual([]);
+
+    expect(await probeWorkerDependencies(WORKER_URL)).toEqual([]);
   });
 });
