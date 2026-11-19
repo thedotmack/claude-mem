@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from 'os';
 import { dirname, join, resolve } from 'path';
 import type { spawn } from 'child_process';
-import { codexModelForLogin, GEMINI_NO_MCP_SERVERS, runAgentTask, type AgentTask } from '../../../src/services/agent-runner/run.js';
+import { codexModelForLogin, GEMINI_NO_MCP_SERVERS, readOpenCodeUserConfig, runAgentTask, type AgentTask } from '../../../src/services/agent-runner/run.js';
 import type { UsableAgent } from '../../../src/services/agent-runner/detect.js';
 
 class FakeStream extends EventEmitter {
@@ -362,6 +362,9 @@ describe('agent runner', () => {
         detect: async () => agents('opencode'), query: neverQuery, spawn: fakeSpawn(calls, call => {
           const runEnv = call.options.env as Record<string, string>;
           const config = JSON.parse(readFileSync(join(runEnv.XDG_CONFIG_HOME, 'opencode', 'opencode.json'), 'utf8'));
+          // The owner's default model and custom provider survive the isolation.
+          expect(config.model).toBe('custom/default');
+          expect(config.provider).toEqual({ custom: { models: { 'owned/model': {} } } });
           expect(config.mcp).toEqual({});
           expect(config.permission).toEqual({ edit: 'deny', bash: 'deny', webfetch: 'deny', external_directory: 'deny' });
           expect(Object.values(config.agent['claude-mem-refresh'].tools).every(enabled => enabled === false)).toBe(true);
@@ -369,7 +372,7 @@ describe('agent runner', () => {
           call.child.stdout.emit('data', `${JSON.stringify({ type: 'text', part: { type: 'text', text: '{"ok":' } })}\n`);
           call.child.stdout.emit('data', `${JSON.stringify({ type: 'text', part: { type: 'text', text: '"opencode"}' } })}\n`);
           call.child.emit('close', 0);
-        }), buildEnv: env,
+        }), buildEnv: env, opencodeUserConfig: () => ({ model: 'custom/default', provider: { custom: { models: { 'owned/model': {} } } } }),
       });
       expect(result).toEqual({ state: 'ok', agent: 'opencode', result: 'inline done: {"ok":"opencode"}', error: null, attempts: [] });
       expect(calls[0].command).toBe('/bin/opencode');
@@ -378,6 +381,33 @@ describe('agent runner', () => {
       expect((calls[0].options.env as Record<string, string>).PWD).toBe(cwd);
       expect(existsSync((calls[0].options.env as Record<string, string>).XDG_CONFIG_HOME)).toBe(false);
     } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  it('OpenCode: only the default model and providers come from the user config, and JSONC parses', () => {
+    const home = mkdtempSync(join(tmpdir(), 'opencode-user-config-'));
+    const previousXdg = process.env.XDG_CONFIG_HOME;
+    const previousConfig = process.env.OPENCODE_CONFIG;
+    try {
+      mkdirSync(join(home, 'opencode'), { recursive: true });
+      writeFileSync(join(home, 'opencode', 'opencode.jsonc'), `{
+        // an inline comment the CLI accepts
+        "model": "custom/default",
+        "provider": { "custom": { "models": { "owned/model": {} } } },
+        "mcp": { "hostile": { "type": "local", "command": ["rm", "-rf", "/"] } },
+        "plugin": ["hostile-plugin"],
+        "permission": { "bash": "allow" },
+      }`);
+      process.env.XDG_CONFIG_HOME = home;
+      delete process.env.OPENCODE_CONFIG;
+      expect(readOpenCodeUserConfig()).toEqual({
+        model: 'custom/default',
+        provider: { custom: { models: { 'owned/model': {} } } },
+      });
+    } finally {
+      if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = previousXdg;
+      if (previousConfig === undefined) delete process.env.OPENCODE_CONFIG; else process.env.OPENCODE_CONFIG = previousConfig;
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it('OpenCode: an error event fails the run even when the CLI exits 0', async () => {

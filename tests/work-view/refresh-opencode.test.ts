@@ -4,7 +4,7 @@
 // way it is pinned to Claude Code, Codex or Gemini: only that agent runs, and a
 // failure is not handed to another agent's quota.
 
-import { mkdtempSync, writeFileSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { describe, expect, it } from 'bun:test';
@@ -13,7 +13,7 @@ import { resolveRefreshAgents, WORK_VIEW_AGENT_CHOICES } from '../../src/service
 function withSettings(settings: Record<string, string>, run: (dir: string) => void): void {
   const dir = mkdtempSync(join(tmpdir(), 'refresh-opencode-'));
   writeFileSync(join(dir, 'settings.json'), JSON.stringify(settings));
-  try { run(dir); } finally { /* the directory is small and the OS reaps it */ }
+  try { run(dir); } finally { rmSync(dir, { recursive: true, force: true }); }
 }
 
 describe('My Work refresh on OpenCode', () => {

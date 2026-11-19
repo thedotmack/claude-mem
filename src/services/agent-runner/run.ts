@@ -35,11 +35,12 @@
  */
 
 import { randomBytes } from 'crypto';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
-import { tmpdir } from 'os';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
+import { homedir, tmpdir } from 'os';
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import { query, type CanUseTool, type Options, type SdkPluginConfig } from '@anthropic-ai/claude-agent-sdk';
 import { buildIsolatedEnvWithFreshOAuth } from '../../shared/EnvManager.js';
+import { stripJsonComments, stripUtf8Bom } from '../../shared/atomic-json.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { logger } from '../../utils/logger.js';
 import { runtimeReadRoots } from './runtime-read-roots.js';
@@ -132,6 +133,8 @@ export interface AgentRunnerDependencies {
   buildEnv: () => Promise<NodeJS.ProcessEnv>;
   /** Runtime platform, injectable so the Windows confinement gate is regression-testable. */
   platform: () => NodeJS.Platform;
+  /** The user's own OpenCode default model and custom providers, kept in an otherwise isolated run. */
+  opencodeUserConfig?: () => { model?: string; provider?: Record<string, unknown> };
 }
 
 async function defaultEnv(): Promise<NodeJS.ProcessEnv> {
@@ -145,6 +148,7 @@ const defaultDependencies: AgentRunnerDependencies = {
   query,
   buildEnv: defaultEnv,
   platform: () => process.platform,
+  opencodeUserConfig: readOpenCodeUserConfig,
 };
 
 const describeError = (error: unknown) => (error instanceof Error ? error.message : String(error)).trim() || 'unknown error';
@@ -379,6 +383,35 @@ export function opencodeAnswer(stdout: string): string {
 }
 
 /**
+ * The parts of the user's own OpenCode config an isolated run must keep: the
+ * default model (when no step pins one) and custom provider definitions, which
+ * may be the only place a provider the owner configured is described. Tools,
+ * plugins, MCP servers and agents are deliberately not carried over; the run's
+ * own config replaces those. An unreadable or absent config yields nothing, and
+ * the CLI then falls back to its own defaults as before.
+ */
+export function readOpenCodeUserConfig(): { model?: string; provider?: Record<string, unknown> } {
+  const configDirectory = join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'opencode');
+  const candidates = [
+    process.env.OPENCODE_CONFIG,
+    join(configDirectory, 'opencode.json'),
+    join(configDirectory, 'opencode.jsonc'),
+  ].filter((path): path is string => typeof path === 'string' && path.length > 0);
+  for (const path of candidates) {
+    try {
+      if (!existsSync(path)) continue;
+      const parsed = JSON.parse(stripJsonComments(stripUtf8Bom(readFileSync(path, 'utf8')))) as Record<string, unknown>;
+      const model = typeof parsed.model === 'string' && parsed.model.trim() ? parsed.model : undefined;
+      const provider = parsed.provider && typeof parsed.provider === 'object' && !Array.isArray(parsed.provider)
+        ? parsed.provider as Record<string, unknown>
+        : undefined;
+      return { ...(model ? { model } : {}), ...(provider ? { provider } : {}) };
+    } catch { /* an unreadable user config must not fail the step */ }
+  }
+  return {};
+}
+
+/**
  * One step through the OpenCode CLI, with the same read-only, evidence-inline
  * boundary as Gemini: a temporary config root registers no MCP servers, and a
  * primary agent disables every builtin tool, so the step can neither read the
@@ -391,11 +424,16 @@ function opencodeAsk(agent: TaskAgent, task: AgentTask, dependencies: AgentRunne
   return async (prompt, models) => {
     const env = await dependencies.buildEnv();
     const model = models.opencode?.model;
+    const userConfig = (dependencies.opencodeUserConfig ?? readOpenCodeUserConfig)();
     const configHome = mkdtempSync(join(tmpdir(), 'claude-mem-opencode-'));
     const configDirectory = join(configHome, 'opencode');
     mkdirSync(configDirectory, { recursive: true });
     writeFileSync(join(configDirectory, 'opencode.json'), JSON.stringify({
       $schema: 'https://opencode.ai/config.json',
+      // The owner's default model and providers survive; everything else below
+      // is the run's own boundary and overrides what the user configured.
+      ...(userConfig.model ? { model: userConfig.model } : {}),
+      ...(userConfig.provider ? { provider: userConfig.provider } : {}),
       mcp: {},
       permission: { edit: 'deny', bash: 'deny', webfetch: 'deny', external_directory: 'deny' },
       agent: {
