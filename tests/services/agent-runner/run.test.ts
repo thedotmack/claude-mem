@@ -354,7 +354,7 @@ describe('agent runner', () => {
     expect(calls[0].child.stdinText).toBe('inline prompt for gemini');
   });
 
-  it('OpenCode: an isolated tool-less run in the task folder, prompt on stdin, text parts joined', async () => {
+  it('OpenCode: an isolated tool-less run from its config root, prompt on stdin, text parts joined', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-opencode-'));
     const calls: SpawnCall[] = [];
     try {
@@ -368,6 +368,9 @@ describe('agent runner', () => {
           expect(config.mcp).toEqual({});
           expect(config.permission).toEqual({ edit: 'deny', bash: 'deny', webfetch: 'deny', external_directory: 'deny' });
           expect(Object.values(config.agent['claude-mem-refresh'].tools).every(enabled => enabled === false)).toBe(true);
+          // A project opencode.json in the task folder must never be discovered.
+          expect(call.options.cwd).toBe(runEnv.XDG_CONFIG_HOME);
+          expect(call.options.cwd).not.toBe(cwd);
           // The JSON format streams each text part as it arrives, so the answer is their order.
           call.child.stdout.emit('data', `${JSON.stringify({ type: 'text', part: { type: 'text', text: '{"ok":' } })}\n`);
           call.child.stdout.emit('data', `${JSON.stringify({ type: 'text', part: { type: 'text', text: '"opencode"}' } })}\n`);
@@ -376,10 +379,14 @@ describe('agent runner', () => {
       });
       expect(result).toEqual({ state: 'ok', agent: 'opencode', result: 'inline done: {"ok":"opencode"}', error: null, attempts: [] });
       expect(calls[0].command).toBe('/bin/opencode');
-      expect(calls[0].args).toEqual(['run', '--pure', '--format', 'json', '--dir', cwd, '--agent', 'claude-mem-refresh', '--model', 'provider/model']);
+      const runEnv = calls[0].options.env as Record<string, string>;
+      const isolated = runEnv.XDG_CONFIG_HOME;
+      expect(calls[0].args).toEqual(['run', '--pure', '--format', 'json', '--dir', isolated, '--agent', 'claude-mem-refresh', '--model', 'provider/model']);
       expect(calls[0].child.stdinText).toBe('inline prompt for opencode');
-      expect((calls[0].options.env as Record<string, string>).PWD).toBe(cwd);
-      expect(existsSync((calls[0].options.env as Record<string, string>).XDG_CONFIG_HOME)).toBe(false);
+      expect(runEnv.PWD).toBe(isolated);
+      expect(runEnv.OPENCODE_CONFIG).toBe(join(isolated, 'opencode', 'opencode.json'));
+      expect(runEnv.OPENCODE_CONFIG_DIR).toBe(join(isolated, 'opencode'));
+      expect(existsSync(isolated)).toBe(false);
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 

@@ -416,11 +416,14 @@ export function readOpenCodeUserConfig(): { model?: string; provider?: Record<st
  * boundary as Gemini: a temporary config root registers no MCP servers, and a
  * primary agent disables every builtin tool, so the step can neither read the
  * disk, write, run commands nor reach the web. `--pure` also keeps the user's
- * external plugins (claude-mem's own among them) out of the run. The prompt goes
- * on stdin: a refresh step's evidence can exceed the Windows argv limit, and
- * `opencode run` reads a piped stdin as its message when no message is given.
+ * external plugins (claude-mem's own among them) out of the run. The step runs
+ * from that config root, not the task folder: OpenCode merges a project's own
+ * `opencode.json`, which can add MCP servers, and no config key can remove one
+ * later. The prompt goes on stdin: a refresh step's evidence can exceed the
+ * Windows argv limit, and `opencode run` reads a piped stdin as its message when
+ * no message is given.
  */
-function opencodeAsk(agent: TaskAgent, task: AgentTask, dependencies: AgentRunnerDependencies): AskAgent {
+function opencodeAsk(agent: TaskAgent, _task: AgentTask, dependencies: AgentRunnerDependencies): AskAgent {
   return async (prompt, models) => {
     const env = await dependencies.buildEnv();
     const model = models.opencode?.model;
@@ -450,13 +453,20 @@ function opencodeAsk(agent: TaskAgent, task: AgentTask, dependencies: AgentRunne
     }), { mode: 0o600 });
     try {
       const result = await runCli(agent.path!, [
-        'run', '--pure', '--format', 'json', '--dir', task.cwd, '--agent', 'claude-mem-refresh',
+        'run', '--pure', '--format', 'json', '--dir', configHome, '--agent', 'claude-mem-refresh',
         ...(model ? ['--model', model] : []),
       ], prompt, {
-        cwd: task.cwd,
-        // XDG_CONFIG_HOME selects the isolated config root on every platform OpenCode reads it from,
-        // and PWD must not let a worker started elsewhere pick another directory than task.cwd.
-        env: { ...env, XDG_CONFIG_HOME: configHome, PWD: task.cwd },
+        cwd: configHome,
+        // XDG_CONFIG_HOME selects the isolated config root on every platform OpenCode reads it from.
+        // The step also runs from that root, so a project opencode.json (which can add MCP servers)
+        // is never discovered, and the explicit config paths neutralize the user's own overrides.
+        env: {
+          ...env,
+          XDG_CONFIG_HOME: configHome,
+          PWD: configHome,
+          OPENCODE_CONFIG: join(configDirectory, 'opencode.json'),
+          OPENCODE_CONFIG_DIR: configDirectory,
+        },
       });
       if (result.exitCode !== 0) throw failure('opencode', result);
       return opencodeAnswer(result.stdout);
