@@ -402,12 +402,12 @@ describe('updateFolderClaudeMdFiles', () => {
   });
 
   it.each<[string, () => { paths: string[]; root?: string; folder: string }]>([
-    ['should resolve relative paths using projectRoot', () => ({ paths: ['src/utils/file.ts'], root: '/home/user/my-project', folder: '/home/user/my-project/src/utils' })],
+    ['should resolve relative paths using projectRoot', () => ({ paths: ['src/utils/file.ts'], root: '/home/user/my-project', folder: join('/home/user/my-project', 'src', 'utils') })],
     ['should accept absolute paths within projectRoot and use them directly', () => ({ paths: [join(tempDir, 'absolute-path-test', 'file.ts')], root: tempDir, folder: join(tempDir, 'absolute-path-test') })],
     ['should work without projectRoot for backward compatibility', () => ({ paths: [join(tempDir, 'backward-compat-test', 'file.ts')], root: undefined, folder: join(tempDir, 'backward-compat-test') })],
-    ['should handle projectRoot with trailing slash correctly', () => ({ paths: ['src/utils/file.ts'], root: '/home/user/my-project/', folder: '/home/user/my-project/src/utils' })],
-    ['should deduplicate relative paths from same folder with projectRoot', () => ({ paths: ['src/utils/file1.ts', 'src/utils/file2.ts', 'src/utils/file3.ts'], root: '/home/user/project', folder: '/home/user/project/src/utils' })],
-    ['should handle empty string paths gracefully with projectRoot', () => ({ paths: ['', 'src/file.ts', ''], root: '/home/user/project', folder: '/home/user/project/src' })],
+    ['should handle projectRoot with trailing slash correctly', () => ({ paths: ['src/utils/file.ts'], root: '/home/user/my-project/', folder: join('/home/user/my-project', 'src', 'utils') })],
+    ['should deduplicate relative paths from same folder with projectRoot', () => ({ paths: ['src/utils/file1.ts', 'src/utils/file2.ts', 'src/utils/file3.ts'], root: '/home/user/project', folder: join('/home/user/project', 'src', 'utils') })],
+    ['should handle empty string paths gracefully with projectRoot', () => ({ paths: ['', 'src/file.ts', ''], root: '/home/user/project', folder: join('/home/user/project', 'src') })],
     ['should accept absolute paths within project root', () => ({ paths: [path.join(tempDir, 'src', 'utils', 'file.ts')], root: tempDir, folder: join(tempDir, 'src', 'utils') })],
     ['should accept absolute paths when no projectRoot is provided', () => ({ paths: ['/home/user/valid/file.ts'], root: undefined, folder: '/home/user/valid' })],
     ['should accept valid relative paths', () => ({ paths: ['src/utils/logger.ts'], root: tempDir, folder: join(tempDir, 'src', 'utils') })],
@@ -425,6 +425,16 @@ describe('updateFolderClaudeMdFiles', () => {
     const callUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
     expect(callUrl).toContain(encodeURIComponent(folder));
     expect(callUrl.replace('http://', '')).not.toContain('//');
+  });
+
+  it('should reject an absolute path that climbs out of projectRoot with ..', async () => {
+    const fetchMock = mock(() => Promise.resolve({ ok: true, json: () => Promise.resolve({ content: [] }) } as Response));
+    global.fetch = fetchMock;
+    const root = join(tempDir, 'project');
+    // Built by hand: join() would normalize the `..` away before the check sees it.
+    const climbing = [root, '..', 'outside', 'file.ts'].join(path.sep);
+    await updateFolderClaudeMdFiles([climbing], 'test-project', root);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('should fetch timeline and write CLAUDE.md', async () => {
@@ -760,6 +770,20 @@ describe('CLAUDE.local.md support', () => {
     expect(callUrl).toContain(encodeURIComponent('/project/src/c'));
     expect(callUrl).not.toContain(encodeURIComponent('/project/src/a'));
     expect(callUrl).not.toContain(encodeURIComponent('/project/src/b'));
+  });
+
+  // Backslash is only a separator on Windows, where one batch can spell the same folder both ways.
+  it.skipIf(process.platform !== 'win32')('should skip a folder whose active CLAUDE.md is spelled with the other separator', async () => {
+    const fetchMock = mock(() => Promise.resolve({ ok: true, json: () => Promise.resolve({ content: [] }) } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles(
+      ['C:\\project\\src\\a\\CLAUDE.md', 'C:/project/src/a/file.ts'],
+      'test-project',
+      'C:\\project'
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 
