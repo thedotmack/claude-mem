@@ -81,12 +81,14 @@ test('the terminal fits the brand mark to the viewport and returns long history 
 
   for (const [columns, rows, markWidth, markRows] of [[63, 40, 0, 0], [100, 10, 0, 0], [64, 11, 14, 7], [100, 15, 14, 7], [100, 16, 24, 12]]) {
     const ui = await $.ui.mount({ ...cardRow('session-start-1000'), viewport: { columns, rows, isFullscreen: true } })
-    const dots = await ui.findAll({ type: 'Text', text: /[\u2801-\u28ff]/ })
-    expect(dots.length).toBe(markRows)
-    expect(dots.every(row => row.text.length === markWidth)).toBe(true)
+    const raster = await ui.findAll({ type: 'Raster' })
+    expect(raster.length).toBe(markRows ? 1 : 0)
+    expect((await ui.findAll({ type: 'Text', text: /[\u2801-\u28ff]/ })).length).toBe(0)
     expect((await ui.find({ type: 'Text', text: /^claude-mem$/ }))?.text).toBe('claude-mem')
     expect((await ui.find({ type: 'Text', text: /^observation 20$/ }))?.text).toBe(history[19])
     if (markRows) {
+      expect(raster[0]?.props.columns).toBe(markWidth)
+      expect(raster[0]?.props.rows).toBe(markRows)
       const [frame, band, copy, mark] = await ui.findAll({ type: 'Box' })
       expect(band?.props.flexDirection).toBe('row')
       expect(mark?.props.width).toBe(markWidth)

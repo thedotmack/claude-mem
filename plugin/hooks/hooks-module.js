@@ -570,7 +570,7 @@ function sessionStartCardLines(slotFileText) {
 }
 
 // src/mods/session-start-card/brand-mark.ts
-var COMPACT_MARK = [
+var COMPACT_MARK = rasterMark([
   "  \u28C0\u2824\u28FC\u281B\u2847\u28B8\u281F\u28D3\u28E4\u28C0  ",
   " \u28C0\u285B\u2832\u28CC\u28A3\u2847\u28A8\u287E\u2889\u2864\u283F\u2880 ",
   "\u28F8\u2881\u28C9\u2832\u28CC\u28E6\u28F7\u28FF\u28F4\u28EB\u2836\u2812\u281A\u2803",
@@ -578,8 +578,8 @@ var COMPACT_MARK = [
   "\u28B0\u281F\u2889\u28E4\u2834\u28AB\u28BF\u283F\u2851\u28AE\u28C9\u2833\u28CC\u284B",
   "\u2808\u28A0\u284F\u28A0\u2876\u288B\u28B8 \u2859\u28C6\u2839\u28E6\u287C\u2801",
   "  \u2819\u281B\u28A0\u281E\u2818\u2846\u2827\u28FD\u2836   "
-];
-var LARGE_MARK = [
+]);
+var LARGE_MARK = rasterMark([
   "     \u2880\u28C0\u28F0\u283E\u28BF\u28F7\u2844\u28A0\u28FE\u287F\u283F\u2826       ",
   "   \u28A0\u28FE\u285B\u2819\u283B\u28E7 \u28BB\u2847\u28B8\u285F\u2880\u28E4\u28F6\u287E\u283F\u28F7\u28C4   ",
   "  \u2880\u2849\u281B\u283B\u28E6\u2840\u2818\u28E7\u28FC\u2847\u28B8\u28C1\u28FE\u280F\u2881\u28E0\u28F4\u28FF\u281F   ",
@@ -592,10 +592,25 @@ var LARGE_MARK = [
   " \u2808 \u28FF\u2847 \u28E0\u287E\u281B\u2881\u2840\u28B8\u2847 \u2819\u28BF\u2844 \u28BB\u28E7\u28E4\u28FE\u2803 ",
   "   \u2839\u28F7\u28F4\u28FF\u2801 \u28FE\u2847\u28B8\u2847\u28B8\u28C7\u2808\u28FF\u2840\u2808\u281B\u280B\u2801  ",
   "     \u2809\u2801\u2834\u283E\u281F \u2818\u28B7\u2808\u283B\u2837\u283F\u281F\u280B     "
-];
+]);
+function rasterMark(grid) {
+  const columns = grid[0].length;
+  const bytes = new Uint8Array(grid.length * columns * 12);
+  const cells = new DataView(bytes.buffer);
+  let offset = 0;
+  for (const line of grid) {
+    for (const glyph of line) {
+      cells.setUint32(offset, glyph.charCodeAt(0), true);
+      cells.setUint32(offset + 4, 14181441, true);
+      cells.setUint32(offset + 8, 16777216, true);
+      offset += 12;
+    }
+  }
+  return { columns, rows: grid.length, cells: btoa(String.fromCharCode(...bytes)) };
+}
 function sessionStartMark(columns, rows = Infinity) {
-  if (columns >= 100 && rows >= LARGE_MARK.length + 4) return LARGE_MARK;
-  if (columns >= 64 && rows >= COMPACT_MARK.length + 4) return COMPACT_MARK;
+  if (columns >= 100 && rows >= LARGE_MARK.rows + 4) return LARGE_MARK;
+  if (columns >= 64 && rows >= COMPACT_MARK.rows + 4) return COMPACT_MARK;
   return void 0;
 }
 
@@ -693,7 +708,7 @@ function registerSessionStartCard(on) {
   on("ui.render", { component: "Placed" }, async ($, e, next) => {
     if (e.surface === TERMINAL_SURFACE && typeof e.viewport?.isFullscreen === "boolean") isFullscreen = e.viewport.isFullscreen;
     if (!card || e.props.plugin !== $.plugin.name || e.props.id !== card.rowId) return next(e);
-    const { Box, Text } = $.ui.resolve(e);
+    const { Box, Text, Raster } = $.ui.resolve(e);
     const frame = { flexDirection: "column", borderStyle: "round", borderColor: "claude", paddingX: 1 };
     const title = h(Text, { weight: "bold", color: "claude" }, CARD_TITLE);
     const lines = card.lines.map(
@@ -715,8 +730,8 @@ function registerSessionStartCard(on) {
         h(Box, { flexDirection: "column", minWidth: 0, flexGrow: 1 }, title, lines.slice(0, MAX_LINES_BESIDE_MARK)),
         h(
           Box,
-          { flexDirection: "column", width: mark[0].length, flexShrink: 0, alignSelf: "center" },
-          mark.map((row) => h(Text, { color: "#D86441" }, row))
+          { flexDirection: "column", width: mark.columns, flexShrink: 0, alignSelf: "center" },
+          h(Raster, { key: "brand-mark", ...mark })
         )
       ),
       lines.slice(MAX_LINES_BESIDE_MARK)

@@ -198,7 +198,7 @@ function cardInSession(options: {
       },
       invalidate: () => { record.invalidations += 1; },
       log: (text: string) => { record.logs.push(text); },
-      resolve: () => ({ Box: 'Box', Text: 'Text' }),
+      resolve: () => ({ Box: 'Box', Text: 'Text', Raster: 'Raster' }),
     },
   };
 
@@ -354,14 +354,20 @@ describe('session-start card: the hooks', () => {
       expect(copy.props).toMatchObject({ minWidth: 0, flexGrow: 1 });
       expect(copy.children).toEqual(original.children);
       expect(mark.props).toMatchObject({ width, flexShrink: 0, alignSelf: 'center' });
-      const [rows] = mark.children as DrawnNode[][];
-      expect(rows).toHaveLength(height);
-      for (const line of rows) {
-        expect(line.element).toBe('Text');
-        expect(line.props?.color).toBe('#D86441');
-        expect(drawnText(line)).toHaveLength(width);
-        expect(drawnText(line)).toMatch(/^[ \u2801-\u28ff]+$/u);
+      const [raster] = mark.children as DrawnNode[];
+      expect(raster.element).toBe('Raster');
+      expect(raster.props).toMatchObject({ columns: width, rows: height, key: 'brand-mark' });
+      expect(drawnText(mark)).toBe('');
+      const bytes = Buffer.from(raster.props!.cells as string, 'base64');
+      expect(bytes.length).toBe(width * height * 12);
+      const glyphs = [];
+      for (let cell = 0; cell < bytes.length; cell += 12) {
+        glyphs.push(String.fromCharCode(bytes.readUInt32LE(cell)));
+        expect(bytes.readUInt32LE(cell + 4)).toBe(0xd86441);
+        expect(bytes.readUInt32LE(cell + 8)).toBe(0x01000000);
       }
+      expect(glyphs.join('')).toMatch(/^[ \u2801-\u28ff]+$/u);
+      expect(glyphs).toContain('⣿');
     }
     expect(await session.render(row, 'claude-mem', { columns: 63 })).toEqual(original);
     expect(await session.render(row, 'claude-mem', { columns: 118, rows: 10 })).toEqual(original);

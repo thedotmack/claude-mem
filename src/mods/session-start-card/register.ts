@@ -175,7 +175,7 @@ export function registerSessionStartCard(on: On): void {
     if (e.surface === TERMINAL_SURFACE && typeof e.viewport?.isFullscreen === 'boolean') isFullscreen = e.viewport.isFullscreen;
     // Every plugin's hook hears every placed row: draw only this plugin's latest card.
     if (!card || e.props.plugin !== $.plugin.name || e.props.id !== card.rowId) return next(e);
-    const { Box, Text } = $.ui.resolve(e);
+    const { Box, Text, Raster } = $.ui.resolve(e);
     const frame = { flexDirection: 'column', borderStyle: 'round', borderColor: 'claude', paddingX: 1 };
     const title = h(Text, { weight: 'bold', color: 'claude' }, CARD_TITLE);
     const lines = card.lines.map(runs =>
@@ -199,8 +199,8 @@ export function registerSessionStartCard(on: On): void {
         h(Box, { flexDirection: 'column', minWidth: 0, flexGrow: 1 }, title, lines.slice(0, MAX_LINES_BESIDE_MARK)),
         h(
           Box,
-          { flexDirection: 'column', width: mark[0].length, flexShrink: 0, alignSelf: 'center' },
-          mark.map(row => h(Text, { color: '#D86441' }, row)),
+          { flexDirection: 'column', width: mark.columns, flexShrink: 0, alignSelf: 'center' },
+          h(Raster, { key: 'brand-mark', ...mark }),
         ),
       ),
       lines.slice(MAX_LINES_BESIDE_MARK),

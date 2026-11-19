@@ -39,7 +39,7 @@ export interface ModApi {
     place(row: { id: string }): Promise<PlacedRowResult>;
     invalidate(event: 'ui.render'): void;
     log(text: string): void;
-    resolve(e: PlacedRenderEvent): { Box: ElementConstructor; Text: ElementConstructor };
+    resolve(e: PlacedRenderEvent): { Box: ElementConstructor; Text: ElementConstructor; Raster: ElementConstructor };
   };
 }
 
