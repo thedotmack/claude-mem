@@ -41,7 +41,7 @@ import { homedir } from 'os';
 import { join, resolve } from 'path';
 import { findClaudeExecutable } from '../../shared/find-claude-executable.js';
 import { readClaudeOAuthToken, type OAuthTokenResult } from '../../shared/oauth-token.js';
-import { hasAnthropicApiKey, hasAnthropicAuthToken, hasConfiguredClaudeOAuthToken } from '../../shared/EnvManager.js';
+import { buildOpenCodeEnv, hasAnthropicApiKey, hasAnthropicAuthToken, hasConfiguredClaudeOAuthToken } from '../../shared/EnvManager.js';
 
 import { commandInvocation, resolveVoltaShim, selectWindowsCommandCandidate, windowsWhereExecutablePath } from '../../shared/spawn.js';
 import { PROCESS_EXIT_POLL_INTERVAL_MS, processGroupHasProcessesThatHaveNotExited } from '../../supervisor/process-registry.js';
@@ -463,7 +463,8 @@ async function detectOpenCode(dependencies: AgentDetectionDependencies): Promise
   const noCredentials = '`opencode auth list` reports no credentials (run `opencode auth login`)';
 
   // OpenCode 2.x lists stored and environment connections for each integration.
-  const list = await runCommand(dependencies.spawn, path, ['auth', 'list', '--format', 'json']);
+  const env = buildOpenCodeEnv();
+  const list = await runCommand(dependencies.spawn, path, ['auth', 'list', '--format', 'json'], { env });
   if (list.exitCode === 0) {
     let integrations: unknown;
     try {
@@ -478,7 +479,7 @@ async function detectOpenCode(dependencies: AgentDetectionDependencies): Promise
   }
 
   // Older CLIs reject --format and print a credential count in the plain list.
-  const status = await runCommand(dependencies.spawn, path, ['auth', 'list']);
+  const status = await runCommand(dependencies.spawn, path, ['auth', 'list'], { env });
   const output = `${status.stdout}\n${status.stderr}`.replace(/\x1b\[[0-9;]*m/g, '');
   if (status.exitCode !== 0) {
     return { id: 'opencode', path, authenticated: false, reason: commandFailureReason('opencode auth list', status) };

@@ -39,7 +39,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { homedir, tmpdir } from 'os';
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import { query, type CanUseTool, type Options, type SdkPluginConfig } from '@anthropic-ai/claude-agent-sdk';
-import { buildIsolatedEnvWithFreshOAuth } from '../../shared/EnvManager.js';
+import { buildIsolatedEnvWithFreshOAuth, buildOpenCodeEnv } from '../../shared/EnvManager.js';
 import { stripJsonComments, stripUtf8Bom } from '../../shared/atomic-json.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { logger } from '../../utils/logger.js';
@@ -130,14 +130,15 @@ export interface AgentRunnerDependencies {
   /** Environment for the agent process: the worker's isolated credentials, never tracked by claude-mem's own hooks.
    * Built fresh for every step: a run can outlive the OAuth access token it started with (Oct 22: the Mac slept
    * 11 hours mid-run, and the token injected at the start was revoked by the time the next step asked). */
-  buildEnv: () => Promise<NodeJS.ProcessEnv>;
+  buildEnv: (agent: TaskAgentId) => Promise<NodeJS.ProcessEnv>;
   /** Runtime platform, injectable so the Windows confinement gate is regression-testable. */
   platform: () => NodeJS.Platform;
   /** The user's own OpenCode default model and custom providers, kept in an otherwise isolated run. */
   opencodeUserConfig?: () => { model?: string; provider?: Record<string, unknown> };
 }
 
-async function defaultEnv(): Promise<NodeJS.ProcessEnv> {
+async function defaultEnv(agent: TaskAgentId): Promise<NodeJS.ProcessEnv> {
+  if (agent === 'opencode') return buildOpenCodeEnv();
   // CLAUDE_MEM_INTERNAL=1 keeps claude-mem's hooks from recording this run as
   // the owner's own work, so a refresh never makes itself due again.
   return { ...sanitizeEnv(await buildIsolatedEnvWithFreshOAuth()), CLAUDE_MEM_INTERNAL: '1' };
@@ -189,7 +190,7 @@ function claudeCodeAsk(agent: TaskAgent, task: AgentTask, dependencies: AgentRun
     return { behavior: 'deny', message: `${toolName} is not available to this read-only step.` };
   };
   return async (prompt, models) => {
-    const env = await dependencies.buildEnv();
+    const env = await dependencies.buildEnv(agent.id);
     let stderr = '';
     const options: Options = {
       pathToClaudeCodeExecutable: agent.path!,
@@ -292,7 +293,7 @@ export function codexModelForLogin(step: StepModel | undefined, env: NodeJS.Proc
 
 function codexAsk(agent: TaskAgent, task: AgentTask, dependencies: AgentRunnerDependencies): AskAgent {
   return async (prompt, models, answerSchema) => {
-    const env = await dependencies.buildEnv();
+    const env = await dependencies.buildEnv(agent.id);
     const directory = join(task.cwd, 'agent-runs');
     mkdirSync(directory, { recursive: true });
     const id = randomBytes(6).toString('hex');
@@ -331,7 +332,7 @@ function codexAsk(agent: TaskAgent, task: AgentTask, dependencies: AgentRunnerDe
 
 function geminiAsk(agent: TaskAgent, task: AgentTask, dependencies: AgentRunnerDependencies): AskAgent {
   return async (prompt, models) => {
-    const env = await dependencies.buildEnv();
+    const env = await dependencies.buildEnv(agent.id);
     const model = models.gemini?.model;
     const policyDir = mkdtempSync(join(tmpdir(), 'claude-mem-gemini-policy-'));
     const policyPath = join(policyDir, 'settings.json');
@@ -425,7 +426,7 @@ export function readOpenCodeUserConfig(): { model?: string; provider?: Record<st
  */
 function opencodeAsk(agent: TaskAgent, _task: AgentTask, dependencies: AgentRunnerDependencies): AskAgent {
   return async (prompt, models) => {
-    const env = await dependencies.buildEnv();
+    const env = await dependencies.buildEnv(agent.id);
     const model = models.opencode?.model;
     const userConfig = (dependencies.opencodeUserConfig ?? readOpenCodeUserConfig)();
     const configHome = mkdtempSync(join(tmpdir(), 'claude-mem-opencode-'));

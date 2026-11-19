@@ -3,7 +3,7 @@ import { createHash } from 'crypto';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from 'fs';
 import { parseEnv } from 'util';
 import { basename, join } from 'path';
-import { ENV_PROXY_VARS } from '../supervisor/env-sanitizer.js';
+import { ENV_PROXY_VARS, sanitizeEnv } from '../supervisor/env-sanitizer.js';
 import { logger } from '../utils/logger.js';
 import { paths } from './paths.js';
 import { readJsonFileWithBom, stripUtf8Bom } from './atomic-json.js';
@@ -388,6 +388,21 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
   }
 
   return isolatedEnv;
+}
+
+/** Credentials for both the OpenCode login probe and its headless run. */
+export function buildOpenCodeEnv(): NodeJS.ProcessEnv {
+  const env = sanitizeEnv(buildIsolatedEnv());
+  const anthropic = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL'] as const;
+  // Keep an explicitly configured gateway and its credentials together. Otherwise
+  // OpenCode can use its shell login, including the endpoint that goes with it.
+  if (!anthropic.some(key => env[key]) && (process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN)) {
+    for (const key of anthropic) {
+      const value = process.env[key];
+      if (value) env[key] = value;
+    }
+  }
+  return env;
 }
 
 /**
