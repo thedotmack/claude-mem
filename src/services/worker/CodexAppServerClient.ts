@@ -1,7 +1,8 @@
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import {
   chmodSync,
-  linkSync,
+  constants as fsConstants,
+  copyFileSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -338,6 +339,56 @@ export async function sweepStaleAppServerWorkdirs(options: SweepStaleAppServerWo
   return results.flatMap(result => (result.status === 'fulfilled' ? [result.value] : []));
 }
 
+export type ScopedAuthMode = 'symlink' | 'copy';
+
+export interface ProvisionScopedAuthOptions {
+  platform?: NodeJS.Platform;
+  symlink?: (target: string, path: string, type: 'file') => void;
+  copy?: (source: string, destination: string, mode?: number) => void;
+}
+
+// Windows refuses file symlinks to an unprivileged process unless Developer
+// Mode is on. Node reports that as EPERM (or EACCES); ENOTSUP covers a
+// filesystem with no symlink support.
+const SYMLINK_UNAVAILABLE_CODES = new Set(['EPERM', 'EACCES', 'ENOTSUP']);
+
+/**
+ * Give the private Codex home the user's ChatGPT credentials.
+ *
+ * Never hard-link them. Codex saves credentials (`codex login`, token refresh)
+ * by writing a temporary file and renaming it over the original, and it refuses
+ * to do that when the file has more than one hard link (`persist_failed: atomic
+ * credential replacement does not support hard-linked files`). A hard link from
+ * this private home made the user's own `auth.json` unwritable for as long as the
+ * app-server's home existed, so signing in to Codex failed while claude-mem ran.
+ *
+ * A symlink is the supported way to share the file: Codex follows it and
+ * replaces the real file, so a refresh in either home reaches both. Where the
+ * platform cannot create one (Windows without Developer Mode or elevation) the
+ * private home gets its own copy instead. That copy is a snapshot, like the
+ * login the app-server read at start; `recycle()` starts a fresh app-server that
+ * copies the current credentials.
+ */
+export function provisionScopedAuth(
+  nativeAuth: string,
+  scopedAuth: string,
+  options: ProvisionScopedAuthOptions = {},
+): ScopedAuthMode {
+  const { platform = process.platform, symlink = symlinkSync, copy = copyFileSync } = options;
+  try {
+    symlink(nativeAuth, scopedAuth, 'file');
+    return 'symlink';
+  } catch (error) {
+    // Elsewhere symlinks always work, and a copy would quietly diverge from the
+    // user's login, so only Windows may fall back, and only for a permission
+    // problem.
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (platform !== 'win32' || code === undefined || !SYMLINK_UNAVAILABLE_CODES.has(code)) throw error;
+  }
+  copy(nativeAuth, scopedAuth, fsConstants.COPYFILE_EXCL);
+  return 'copy';
+}
+
 function createPrivateRuntime(nativeCodexHome: string): PrivateRuntime {
   if (!sweptStaleWorkdirs) {
     sweptStaleWorkdirs = true;
@@ -389,9 +440,7 @@ function createPrivateRuntime(nativeCodexHome: string): PrivateRuntime {
       throw codexSetupError('claude-mem requires Codex CLI to be logged in with ChatGPT, not an API key');
     }
 
-    const scopedAuth = join(codexHome, 'auth.json');
-    if (process.platform === 'win32') linkSync(nativeAuth, scopedAuth);
-    else symlinkSync(nativeAuth, scopedAuth, 'file');
+    provisionScopedAuth(nativeAuth, join(codexHome, 'auth.json'));
     return { root, workspace, codexHome };
   } catch (error) {
     rmSync(root, { recursive: true, force: true });
