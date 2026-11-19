@@ -1194,4 +1194,19 @@ describe('npx doctor single /api/admin/doctor read', () => {
     expect(checks.chroma.some(row => row.name === 'Chroma child exits')).toBe(true);
     expect(checks.dependencies.length).toBeGreaterThan(0);
   });
+
+  it('keeps the Chroma rows when the dependencies block is malformed', async () => {
+    fetchSpy?.mockImplementation(async () => new Response(JSON.stringify({
+      health: {
+        chroma: chromaState(),
+        dependencies: { degraded: true, statuses: [null] },
+      },
+    }), { status: 200 }));
+
+    const checks = await workerDoctorHealthChecks(WORKER_URL, true, true);
+    expect(checks.chroma.some(row => row.name === 'Chroma child exits')).toBe(true);
+    expect(checks.dependencies).toEqual([]);
+
+    expect(await probeWorkerDependencies(WORKER_URL)).toEqual([]);
+  });
 });

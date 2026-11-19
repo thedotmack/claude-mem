@@ -198,8 +198,9 @@ export interface WorkerDoctorHealth {
 /**
  * One read of /api/admin/doctor. `npx doctor` reads two blocks from it (Chroma
  * and dependency health), so it fetches once here and hands the same payload to
- * both helpers below, instead of paying the 3 s timeout twice when the worker is
- * slow or stopped.
+ * both helpers below, instead of paying the 3 s timeout twice when the worker
+ * answers /api/health but stalls on /api/admin/doctor. (A stopped worker never
+ * gets here: probeWorkerHealth fails first and the doctor skips both blocks.)
  */
 export async function fetchWorkerDoctorHealth(workerUrl: string): Promise<WorkerDoctorHealth | null> {
   try {
@@ -222,8 +223,13 @@ export async function fetchWorkerDoctorHealth(workerUrl: string): Promise<Worker
  * malformed payload yields no rows and never changes the worker's own status.
  */
 export function chromaChecksFromDoctorHealth(health: WorkerDoctorHealth | null): CheckResult[] {
-  const chroma = health?.chroma;
-  return isChromaCrashState(chroma) ? chromaDiagnosticChecks(chroma) : [];
+  try {
+    const chroma = health?.chroma;
+    return isChromaCrashState(chroma) ? chromaDiagnosticChecks(chroma) : [];
+  } catch {
+    // Diagnostics are optional and must not change worker health status.
+    return [];
+  }
 }
 
 /** Chroma warn rows, reading /api/admin/doctor in one request when called alone. */
@@ -288,11 +294,17 @@ export function dependencyChecksFromDoctorHealth(
   codexOnPath: boolean = false,
   codexPath?: string | null,
 ): CheckResult[] {
-  const deps = health?.dependencies;
-  if (!deps?.degraded || !Array.isArray(deps.statuses)) {
+  try {
+    const deps = health?.dependencies;
+    if (!deps?.degraded || !Array.isArray(deps.statuses)) {
+      return [];
+    }
+    return workerDependencyChecks(deps.statuses, codexDetected, codexOnPath, codexPath);
+  } catch {
+    // Diagnostics are optional and must not change worker health status. A
+    // malformed dependencies block must not hide the Chroma rows either.
     return [];
   }
-  return workerDependencyChecks(deps.statuses, codexDetected, codexOnPath, codexPath);
 }
 
 /** Dependency warn rows, reading /api/admin/doctor in one request when called alone. */
@@ -307,8 +319,9 @@ export async function probeWorkerDependencies(
 
 /**
  * Both /api/admin/doctor blocks from one request, in the order the command
- * shows them. The doctor command calls this so a slow or stopped worker costs a
- * single 3 s timeout instead of one per block.
+ * shows them. The doctor command calls this so a worker that answers
+ * /api/health but stalls on /api/admin/doctor costs a single 3 s timeout
+ * instead of one per block.
  */
 export async function workerDoctorHealthChecks(
   workerUrl: string,
@@ -1262,8 +1275,8 @@ export async function runDoctorCommand(): Promise<void> {
     const worker = await probeWorkerHealth(workerUrl);
     workerStatus = worker.status;
     workerDetail = worker.detail;
-    // One read of /api/admin/doctor feeds both blocks, so a slow or stopped
-    // worker costs one 3 s timeout here, not two.
+    // One read of /api/admin/doctor feeds both blocks, so a worker that answers
+    // /api/health but stalls on /api/admin/doctor costs one 3 s timeout, not two.
     const doctorChecks = await workerDoctorHealthChecks(worker.workerUrl, codexAvailable, codexOnPath, codexPath);
     chromaChecks = doctorChecks.chroma;
     dependencyChecks = doctorChecks.dependencies;
