@@ -36,7 +36,7 @@ function fakeSpawn(calls: SpawnCall[], answer: (call: SpawnCall) => void): typeo
 const CODEX_PATH = join(realpathSync(tmpdir()), 'agent-runner-tools', 'codex');
 
 const agents = (...ids: Array<UsableAgent['id']>): UsableAgent[] =>
-  (['claude-code', 'codex', 'gemini'] as const).map(id => ({ id, path: ids.includes(id) ? (id === 'codex' ? CODEX_PATH : `/bin/${id}`) : null, authenticated: ids.includes(id), reason: 'test' }));
+  (['claude-code', 'codex', 'gemini', 'opencode'] as const).map(id => ({ id, path: ids.includes(id) ? (id === 'codex' ? CODEX_PATH : `/bin/${id}`) : null, authenticated: ids.includes(id), reason: 'test' }));
 
 const LIGHT_MODELS = { 'claude-code': { model: 'haiku' }, codex: { model: 'gpt-6-luna', reasoningEffort: 'low' }, gemini: { model: 'flash-lite' } };
 
@@ -353,6 +353,48 @@ describe('agent runner', () => {
     expect(calls[0].args).not.toContain('--skip-trust');
     expect(calls[0].child.stdinText).toBe('inline prompt for gemini');
   });
+
+  it('OpenCode: an isolated tool-less run in the task folder, prompt on stdin, text parts joined', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-opencode-'));
+    const calls: SpawnCall[] = [];
+    try {
+      const result = await runTask(task(cwd, [], { opencode: { model: 'provider/model' } }), {
+        detect: async () => agents('opencode'), query: neverQuery, spawn: fakeSpawn(calls, call => {
+          const runEnv = call.options.env as Record<string, string>;
+          const config = JSON.parse(readFileSync(join(runEnv.XDG_CONFIG_HOME, 'opencode', 'opencode.json'), 'utf8'));
+          expect(config.mcp).toEqual({});
+          expect(config.permission).toEqual({ edit: 'deny', bash: 'deny', webfetch: 'deny', external_directory: 'deny' });
+          expect(Object.values(config.agent['claude-mem-refresh'].tools).every(enabled => enabled === false)).toBe(true);
+          // The JSON format streams each text part as it arrives, so the answer is their order.
+          call.child.stdout.emit('data', `${JSON.stringify({ type: 'text', part: { type: 'text', text: '{"ok":' } })}\n`);
+          call.child.stdout.emit('data', `${JSON.stringify({ type: 'text', part: { type: 'text', text: '"opencode"}' } })}\n`);
+          call.child.emit('close', 0);
+        }), buildEnv: env,
+      });
+      expect(result).toEqual({ state: 'ok', agent: 'opencode', result: 'inline done: {"ok":"opencode"}', error: null, attempts: [] });
+      expect(calls[0].command).toBe('/bin/opencode');
+      expect(calls[0].args).toEqual(['run', '--pure', '--format', 'json', '--dir', cwd, '--agent', 'claude-mem-refresh', '--model', 'provider/model']);
+      expect(calls[0].child.stdinText).toBe('inline prompt for opencode');
+      expect((calls[0].options.env as Record<string, string>).PWD).toBe(cwd);
+      expect(existsSync((calls[0].options.env as Record<string, string>).XDG_CONFIG_HOME)).toBe(false);
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  it('OpenCode: an error event fails the run even when the CLI exits 0', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-opencode-error-'));
+    const calls: SpawnCall[] = [];
+    try {
+      const result = await runTask(task(cwd), {
+        detect: async () => agents('opencode'), query: neverQuery, spawn: fakeSpawn(calls, call => {
+          call.child.stdout.emit('data', `${JSON.stringify({ type: 'error', error: { message: 'session cancelled' } })}\n`);
+          call.child.emit('close', 0);
+        }), buildEnv: env,
+      });
+      expect(result.state).toBe('failed');
+      expect(result.attempts[0].error).toContain('opencode failed: session cancelled');
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
 
   it('a failed run falls through to the next logged-in agent', async () => {
     const query = (() => (async function* () { yield { type: 'result', subtype: 'error_during_execution', is_error: true, result: 'quota' }; })()) as never;

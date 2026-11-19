@@ -20,6 +20,8 @@
  *     schema gets it as `--output-schema`, so the final message is that JSON shape and nothing else.
  *   - Gemini: `gemini -p <line> --approval-mode plan -e none --allowed-mcp-server-names <none> -o json [-m <model>]`
  *     (gemini 0.49.0 `--help`: plan = read-only mode), prompt on stdin, no extensions or MCP servers.
+ *   - OpenCode: `opencode run --pure --format json --dir <cwd> --agent claude-mem-refresh [-m provider/model]`
+ *     (opencode 1.14 `run --help`), prompt on stdin, no MCP servers and an agent that disables every tool.
  *   - API: one chat-completions call to the selected provider (OpenRouter or an
  *     OpenAI-compatible endpoint), with the answer's schema when the step has one.
  *     No subprocess, so no local CLI is started and no Claude Code OAuth token is
@@ -355,6 +357,76 @@ function geminiAsk(agent: TaskAgent, task: AgentTask, dependencies: AgentRunnerD
 }
 
 /**
+ * The final assistant text of `opencode run --format json`: the CLI streams each
+ * text part as it arrives, so the answer is every part's text in order. An error
+ * event is reported even when the exit code is 0 (a cancelled session, for one).
+ */
+export function opencodeAnswer(stdout: string): string {
+  const texts: string[] = [];
+  for (const line of stdout.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    let event: { type?: unknown; part?: { text?: unknown }; error?: { message?: unknown } };
+    try { event = JSON.parse(line); }
+    catch { continue; }
+    if (event.type === 'error') {
+      throw new Error(`opencode failed: ${typeof event.error?.message === 'string' ? event.error.message : 'unknown error'}`);
+    }
+    if (event.type === 'text' && typeof event.part?.text === 'string') texts.push(event.part.text);
+  }
+  const answer = texts.join('');
+  if (!answer.trim()) throw new Error('opencode answered without text.');
+  return answer;
+}
+
+/**
+ * One step through the OpenCode CLI, with the same read-only, evidence-inline
+ * boundary as Gemini: a temporary config root registers no MCP servers, and a
+ * primary agent disables every builtin tool, so the step can neither read the
+ * disk, write, run commands nor reach the web. `--pure` also keeps the user's
+ * external plugins (claude-mem's own among them) out of the run. The prompt goes
+ * on stdin: a refresh step's evidence can exceed the Windows argv limit, and
+ * `opencode run` reads a piped stdin as its message when no message is given.
+ */
+function opencodeAsk(agent: TaskAgent, task: AgentTask, dependencies: AgentRunnerDependencies): AskAgent {
+  return async (prompt, models) => {
+    const env = await dependencies.buildEnv();
+    const model = models.opencode?.model;
+    const configHome = mkdtempSync(join(tmpdir(), 'claude-mem-opencode-'));
+    const configDirectory = join(configHome, 'opencode');
+    mkdirSync(configDirectory, { recursive: true });
+    writeFileSync(join(configDirectory, 'opencode.json'), JSON.stringify({
+      $schema: 'https://opencode.ai/config.json',
+      mcp: {},
+      permission: { edit: 'deny', bash: 'deny', webfetch: 'deny', external_directory: 'deny' },
+      agent: {
+        'claude-mem-refresh': {
+          description: 'Read-only step for claude-mem My Work refresh (evidence is inline)',
+          mode: 'primary',
+          tools: {
+            bash: false, edit: false, write: false, patch: false, read: false, grep: false, glob: false,
+            list: false, webfetch: false, websearch: false, task: false, todoread: false, todowrite: false,
+            question: false,
+          },
+        },
+      },
+    }), { mode: 0o600 });
+    try {
+      const result = await runCli(agent.path!, [
+        'run', '--pure', '--format', 'json', '--dir', task.cwd, '--agent', 'claude-mem-refresh',
+        ...(model ? ['--model', model] : []),
+      ], prompt, {
+        cwd: task.cwd,
+        // XDG_CONFIG_HOME selects the isolated config root on every platform OpenCode reads it from,
+        // and PWD must not let a worker started elsewhere pick another directory than task.cwd.
+        env: { ...env, XDG_CONFIG_HOME: configHome, PWD: task.cwd },
+      });
+      if (result.exitCode !== 0) throw failure('opencode', result);
+      return opencodeAnswer(result.stdout);
+    } finally { rmSync(configHome, { recursive: true, force: true }); }
+  };
+}
+
+/**
  * One chat-completions call to the selected API provider.
  *
  * The provider is resolved per step, so a key or model changed between two
@@ -389,7 +461,7 @@ function apiAsk(agent: TaskAgent, task: AgentTask, dependencies: AgentRunnerDepe
  * when a run fails, not when the agent's answer was refused, and never when the task stays on its first agent. Never throws. With no logged-in agent it returns
  * `waiting-for-agent` and runs nothing.
  */
-const agentNames: Record<TaskAgentId, string> = { 'claude-code': 'Claude Code', codex: 'Codex', gemini: 'Gemini', api: 'the selected API provider' };
+const agentNames: Record<TaskAgentId, string> = { 'claude-code': 'Claude Code', codex: 'Codex', gemini: 'Gemini', opencode: 'OpenCode', api: 'the selected API provider' };
 
 export async function runAgentTask(task: AgentTask, overrides: Partial<AgentRunnerDependencies> = {}): Promise<AgentRunResult> {
   const autoApprovedFileTools = task.claudeCode.allowedTools.filter(tool => FILE_TOOLS.includes(tool));
@@ -434,7 +506,7 @@ export async function runAgentTask(task: AgentTask, overrides: Partial<AgentRunn
   for (const agent of ordered) {
     logger.info('WORKER', `Agent run (${task.reason}) starting on ${agent.id}`);
     try {
-      const ask = { 'claude-code': claudeCodeAsk, codex: codexAsk, gemini: geminiAsk, api: apiAsk }[agent.id](agent, task, dependencies);
+      const ask = { 'claude-code': claudeCodeAsk, codex: codexAsk, gemini: geminiAsk, opencode: opencodeAsk, api: apiAsk }[agent.id](agent, task, dependencies);
       const result = await task.run(ask, agent.id);
       logger.info('WORKER', `Agent run (${task.reason}) finished on ${agent.id}`);
       return { state: 'ok', agent: agent.id, result: result.slice(0, 4000), error: null, attempts };

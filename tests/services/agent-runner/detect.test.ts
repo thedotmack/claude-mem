@@ -67,9 +67,11 @@ const HOME = '/home/tester';
 const CLAUDE_PATH = '/usr/local/bin/claude';
 const CODEX_PATH = '/usr/local/bin/codex';
 const GEMINI_PATH = '/usr/local/bin/gemini';
+const OPENCODE_PATH = '/usr/local/bin/opencode';
 
 const WHICH_CODEX = { 'which codex': { exitCode: 0, stdout: `${CODEX_PATH}\n` } };
 const WHICH_GEMINI = { 'which gemini': { exitCode: 0, stdout: `${GEMINI_PATH}\n` } };
+const WHICH_OPENCODE = { 'which opencode': { exitCode: 0, stdout: `${OPENCODE_PATH}\n` } };
 
 function dependencies(overrides: Partial<AgentDetectionDependencies>): Partial<AgentDetectionDependencies> {
   return {
@@ -102,9 +104,9 @@ async function detectOne(id: UsableAgent['id'], overrides: Partial<AgentDetectio
 }
 
 describe('detectUsableAgents', () => {
-  it('reports all three agents in priority order and never throws', async () => {
+  it('reports all four agents in priority order and never throws', async () => {
     const agents = await detectUsableAgents(dependencies({}));
-    expect(agents.map(agent => agent.id)).toEqual(['claude-code', 'codex', 'gemini']);
+    expect(agents.map(agent => agent.id)).toEqual(['claude-code', 'codex', 'gemini', 'opencode']);
     expect(agents.every(agent => agent.authenticated === false && agent.path === null)).toBe(true);
   });
 
@@ -358,11 +360,47 @@ describe('detectUsableAgents', () => {
   });
 });
 
+describe('OpenCode', () => {
+  it('not installed', async () => {
+    const agent = await detectOne('opencode', {});
+    expect(agent).toEqual({ id: 'opencode', path: null, authenticated: false, reason: 'not installed: `opencode` is not on PATH' });
+  });
+
+  it('installed but no credential is stored', async () => {
+    const agent = await detectOne('opencode', {
+      spawn: fakeSpawn({ ...WHICH_OPENCODE, [`${OPENCODE_PATH} auth list`]: { exitCode: 0, stdout: '—  0 credentials\n' } }),
+    });
+    expect(agent).toEqual({
+      id: 'opencode', path: OPENCODE_PATH, authenticated: false,
+      reason: '`opencode auth list` reports no credentials (run `opencode auth login`)',
+    });
+  });
+
+  it('logged in: the credential count is read through ANSI styling, never a key', async () => {
+    const agent = await detectOne('opencode', {
+      spawn: fakeSpawn({
+        ...WHICH_OPENCODE,
+        [`${OPENCODE_PATH} auth list`]: { exitCode: 0, stdout: '\u001b[90mCredentials\u001b[0m\n•  11 \u001b[90mapi\n—  1 credentials\n' },
+      }),
+    });
+    expect(agent).toEqual({ id: 'opencode', path: OPENCODE_PATH, authenticated: true, reason: '`opencode auth list` reports 1 credential' });
+  });
+
+  it('an unreadable auth list is not treated as logged in', async () => {
+    const agent = await detectOne('opencode', {
+      spawn: fakeSpawn({ ...WHICH_OPENCODE, [`${OPENCODE_PATH} auth list`]: { exitCode: 1, stderr: 'permission denied' } }),
+    });
+    expect(agent.authenticated).toBe(false);
+    expect(agent.path).toBe(OPENCODE_PATH);
+    expect(agent.reason).toContain('`opencode auth list` exited 1');
+  });
+});
+
 describe('detectUsableAgent', () => {
   const settingsPath = join(HOME, '.gemini', 'settings.json');
   const credentialsPath = join(HOME, '.gemini', 'oauth_creds.json');
   const GEMINI_ACCOUNT_PROBE = [GEMINI_PATH, '--skip-trust', '-e', 'none', '--allowed-mcp-server-names', GEMINI_NO_MCP_SERVERS, '-o', 'json'].join(' ');
-  /** All three installed and logged in so that each check runs commands; Gemini with a Google login, so its check starts the Gemini CLI. */
+  /** All four installed and logged in so that each check runs commands; Gemini with a Google login, so its check starts the Gemini CLI. */
   const everyAgentInstalled = (calls: string[]) => dependencies({
     findClaudeExecutable: () => CLAUDE_PATH,
     readClaudeOAuthToken: async () => ({ kind: 'expired', reason: 'expired', expiresAt: 10 }),
@@ -372,6 +410,8 @@ describe('detectUsableAgent', () => {
       [`${CODEX_PATH} login status`]: { exitCode: 0, stderr: 'Logged in using ChatGPT\n' },
       ...WHICH_GEMINI,
       [GEMINI_ACCOUNT_PROBE]: { exitCode: 42, stderr: 'No input provided via stdin.\n' },
+      ...WHICH_OPENCODE,
+      [`${OPENCODE_PATH} auth list`]: { exitCode: 0, stdout: '—  1 credentials\n' },
     }, calls),
     fileExists: path => path === settingsPath || path === credentialsPath,
     readTextFile: path => JSON.stringify(path === settingsPath ? { security: { auth: { selectedType: 'oauth-personal' } } } : { refresh_token: 'refresh-1' }),
@@ -380,14 +420,15 @@ describe('detectUsableAgent', () => {
   it("runs that agent's own check alone, so no other CLI starts, and answers what detectUsableAgents answers for it", async () => {
     const everyCall: string[] = [];
     const everyAgent = await detectUsableAgents(everyAgentInstalled(everyCall));
-    // Checking all three starts the Gemini CLI for Gemini's account check.
+    // Checking all four starts the Gemini CLI for Gemini's account check.
     expect(everyCall).toContain(GEMINI_ACCOUNT_PROBE);
     const ownCommands: Record<UsableAgentId, string[]> = {
       'claude-code': [`${CLAUDE_PATH} auth status --json`],
       codex: ['which codex', `${CODEX_PATH} login status`],
       gemini: ['which gemini', GEMINI_ACCOUNT_PROBE],
+      opencode: ['which opencode', `${OPENCODE_PATH} auth list`],
     };
-    expect(everyAgent.map(agent => agent.id)).toEqual(['claude-code', 'codex', 'gemini']);
+    expect(everyAgent.map(agent => agent.id)).toEqual(['claude-code', 'codex', 'gemini', 'opencode']);
     for (const agent of everyAgent) {
       const calls: string[] = [];
       expect(await detectUsableAgent(agent.id, everyAgentInstalled(calls))).toEqual(agent);

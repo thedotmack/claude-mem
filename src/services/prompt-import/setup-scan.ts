@@ -106,7 +106,7 @@ export interface SetupScanOptions {
 }
 
 /** The agent runner's ids as the scan names those agents. */
-const RUNNER_AGENT_IDS: Record<UsableAgentId, PromptAgentId> = { 'claude-code': 'claude-code', codex: 'codex', gemini: 'gemini-cli' };
+const RUNNER_AGENT_IDS: Record<UsableAgentId, PromptAgentId> = { 'claude-code': 'claude-code', codex: 'codex', gemini: 'gemini-cli', opencode: 'opencode' };
 
 const AGENT_LABELS: Array<[PromptAgentId, string]> = [
   ['claude-code', 'Claude Code'], ['codex', 'Codex'], ['gemini-cli', 'Gemini CLI'], ['antigravity-cli', 'Antigravity CLI'], ['opencode', 'OpenCode'],
