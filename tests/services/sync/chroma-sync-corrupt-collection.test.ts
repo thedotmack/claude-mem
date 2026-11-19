@@ -4,7 +4,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 
 import { ChromaSync } from '../../../src/services/sync/ChromaSync.js';
-import { ChromaMcpManager } from '../../../src/services/sync/ChromaMcpManager.js';
+import { ChromaMcpManager, ChromaDeleteOutcomeUnknownError } from '../../../src/services/sync/ChromaMcpManager.js';
 import { ChromaSyncState } from '../../../src/services/sync/ChromaSyncState.js';
 import { ChromaCorruptCollectionError, ChromaUnavailableError, logChromaWriteFailure } from '../../../src/services/worker/search/errors.js';
 import { logger } from '../../../src/utils/logger.js';
@@ -374,8 +374,9 @@ describe('ChromaSync corrupt-collection handling (#3202)', () => {
     installCallTool(async (tool) => {
       if (tool === 'chroma_add_documents' && failAdds) throw CORRUPT_SEGMENT_ERROR;
       if (tool === 'chroma_delete_collection') {
-        throw new ChromaUnavailableError('chroma-mcp "chroma_delete_collection" timed out; the subprocess was left running');
+        throw new ChromaDeleteOutcomeUnknownError('chroma-mcp "chroma_delete_collection" timed out; the subprocess was left running');
       }
+      if (tool === 'chroma_list_collections') return ['__NO_COLLECTIONS_FOUND__'];
       return {};
     });
     statics.backfillStore = {};
@@ -386,7 +387,9 @@ describe('ChromaSync corrupt-collection handling (#3202)', () => {
     await sibling.ensureCollectionExists();
 
     await writer.addDocuments([makeDoc('d1')]);
-    await expect(writer.addDocuments([makeDoc('d2')])).rejects.toThrow('timed out');
+    await expect(writer.addDocuments([makeDoc('d2')])).rejects.toBeInstanceOf(ChromaCorruptCollectionError);
+    expect(calls('chroma_delete_collection')).toBe(1);
+    expect(calls('chroma_list_collections')).toBe(1);
 
     // The watermarks no longer claim rows the dropped collection took with it.
     expect(ChromaSyncState.isRebuildPending('alpha')).toBe(true);
@@ -398,6 +401,74 @@ describe('ChromaSync corrupt-collection handling (#3202)', () => {
     failAdds = false;
     expect(await sibling.addDocuments([makeDoc('d3')])).toBe(1);
     expect(calls('chroma_create_collection')).toBe(createsBefore + 1);
+  });
+
+  it('retries within the upstream budget when a complete list shows the collection present', async () => {
+    let deleteAttempts = 0;
+    installCallTool(async (tool) => {
+      if (tool === 'chroma_add_documents') throw CORRUPT_SEGMENT_ERROR;
+      if (tool === 'chroma_delete_collection') {
+        deleteAttempts += 1;
+        if (deleteAttempts === 1) {
+          throw new ChromaDeleteOutcomeUnknownError('delete acknowledgment lost');
+        }
+      }
+      if (tool === 'chroma_list_collections') {
+        return [...Array.from({ length: 130 }, (_, i) => `other_${i}`), 'cm__claude-mem'];
+      }
+      return {};
+    });
+    statics.backfillStore = {};
+    const sync = new ChromaSync('claude-mem');
+    await sync.addDocuments([makeDoc('d1')]);
+    await expect(sync.addDocuments([makeDoc('d2')])).rejects.toBeInstanceOf(ChromaDeleteOutcomeUnknownError);
+    // Presence is NOT permission to start a rebuild into a corrupt collection.
+    expect(backfillSweeps).toBe(0);
+    expect(statics.failedDropAttempts.get('cm__claude-mem')).toBe(1);
+    expect(calls('chroma_delete_collection')).toBe(1);
+    expect(toolCalls.find(call => call.tool === 'chroma_list_collections')?.args).toEqual({});
+    await expect(sync.addDocuments([makeDoc('d3')])).rejects.toBeInstanceOf(ChromaCorruptCollectionError);
+    expect(calls('chroma_delete_collection')).toBe(2);
+    expect(calls('chroma_list_collections')).toBe(1);
+    expect(backfillSweeps).toBe(1);
+  });
+
+  it('does not confirm deletion or start a rebuild when listing fails', async () => {
+    installCallTool(async (tool) => {
+      if (tool === 'chroma_add_documents') throw CORRUPT_SEGMENT_ERROR;
+      if (tool === 'chroma_delete_collection') {
+        throw new ChromaDeleteOutcomeUnknownError('delete acknowledgment lost');
+      }
+      if (tool === 'chroma_list_collections') {
+        throw new ChromaUnavailableError('list timed out');
+      }
+      return {};
+    });
+    statics.backfillStore = {};
+    const sync = new ChromaSync('claude-mem');
+    await sync.addDocuments([makeDoc('d1')]);
+    await expect(sync.addDocuments([makeDoc('d2')])).rejects.toThrow('Could not verify');
+    expect(calls('chroma_delete_collection')).toBe(1);
+    expect(calls('chroma_list_collections')).toBe(1);
+    expect(ChromaSync.getLastCollectionDrop()).toBeNull();
+    expect(backfillSweeps).toBe(0);
+  });
+
+  it('rejects malformed or contradictory collection listings', async () => {
+    installCallTool(async (tool) => {
+      if (tool === 'chroma_add_documents') throw CORRUPT_SEGMENT_ERROR;
+      if (tool === 'chroma_delete_collection') {
+        throw new ChromaDeleteOutcomeUnknownError('delete acknowledgment lost');
+      }
+      if (tool === 'chroma_list_collections') return ['__NO_COLLECTIONS_FOUND__', 'cm__another'];
+      return {};
+    });
+    statics.backfillStore = {};
+    const sync = new ChromaSync('claude-mem');
+    await sync.addDocuments([makeDoc('d1')]);
+    await expect(sync.addDocuments([makeDoc('d2')])).rejects.toThrow('Could not verify');
+    expect(ChromaSync.getLastCollectionDrop()).toBeNull();
+    expect(backfillSweeps).toBe(0);
   });
 
   it('retries a drop whose delete never reached chroma-mcp', async () => {
@@ -421,6 +492,26 @@ describe('ChromaSync corrupt-collection handling (#3202)', () => {
     expect(ChromaSync.getLastCollectionDrop()).toMatchObject({ collection: 'cm__claude-mem' });
   });
 
+  it('never sends a fourth delete after three ambiguous responses confirm presence', async () => {
+    installCallTool(async (tool) => {
+      if (tool === 'chroma_add_documents') throw CORRUPT_SEGMENT_ERROR;
+      if (tool === 'chroma_delete_collection') {
+        throw new ChromaDeleteOutcomeUnknownError('delete acknowledgment lost');
+      }
+      if (tool === 'chroma_list_collections') return ['cm__claude-mem'];
+      return {};
+    });
+    const sync = new ChromaSync('claude-mem');
+    await sync.addDocuments([makeDoc('d1')]);
+    for (const id of ['d2', 'd3', 'd4']) {
+      await expect(sync.addDocuments([makeDoc(id)])).rejects.toBeInstanceOf(ChromaDeleteOutcomeUnknownError);
+    }
+    expect(await sync.addDocuments([makeDoc('d5')])).toBe(0);
+    expect(calls('chroma_delete_collection')).toBe(3);
+    expect(calls('chroma_list_collections')).toBe(3);
+    expect(statics.failedDropAttempts.get('cm__claude-mem')).toBe(3);
+  });
+
   it('gives up on a delete that keeps failing after a few attempts, so it never loops', async () => {
     installCallTool(async (tool) => {
       if (tool === 'chroma_add_documents') throw CORRUPT_SEGMENT_ERROR;
@@ -441,7 +532,8 @@ describe('ChromaSync corrupt-collection handling (#3202)', () => {
     expect(await sync.addDocuments([makeDoc('d6')])).toBe(0);
 
     expect(calls('chroma_delete_collection')).toBe(3);
-    expect(backfillSweeps).toBe(3);
+    // None of the deletes was confirmed, so no rebuild is dispatched.
+    expect(backfillSweeps).toBe(0);
   });
 
   it('starts a rebuild sweep when none is running, and leaves a running sweep to restart itself', async () => {

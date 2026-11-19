@@ -181,6 +181,14 @@ class ChromaMcpConnectionCancelledError extends Error {
   }
 }
 
+/** A collection delete was sent but its final server outcome is unknown. */
+export class ChromaDeleteOutcomeUnknownError extends ChromaUnavailableError {
+  constructor(message: string, cause?: Error) {
+    super(message, cause);
+    this.name = 'ChromaDeleteOutcomeUnknownError';
+  }
+}
+
 /**
  * A child PID paired with the start token captured WHILE IT WAS ALIVE.
  *
@@ -1507,10 +1515,16 @@ export class ChromaMcpManager {
           timeoutMs: requestOptions?.timeout,
           error: transportError instanceof Error ? transportError.message : String(transportError)
         });
+        if (toolName === 'chroma_delete_collection') {
+          throw new ChromaDeleteOutcomeUnknownError(message, cause);
+        }
         throw new ChromaUnavailableError(message, cause);
       }
 
-      logger.warn('CHROMA_MCP', `Transport error during "${toolName}", reconnecting and retrying once`, {
+      const action = toolName === 'chroma_delete_collection'
+        ? 'leaving delete outcome unconfirmed'
+        : 'reconnecting and retrying once';
+      logger.warn('CHROMA_MCP', `Transport error during "${toolName}", ${action}`, {
         error: transportError instanceof Error ? transportError.message : String(transportError)
       });
       // A lost transport is a connection failure even when this call's retry
@@ -1531,6 +1545,15 @@ export class ChromaMcpManager {
         await this.waitForUnexpectedCloseCleanup();
       } else {
         await this.disposeCurrentSubprocess();
+      }
+
+      // Destructive deletion cannot be safely replayed after losing its reply.
+      // The caller verifies collection existence before deciding what to do next.
+      if (toolName === 'chroma_delete_collection') {
+        throw new ChromaDeleteOutcomeUnknownError(
+          'Collection deletion outcome is unconfirmed after transport loss',
+          transportError instanceof Error ? transportError : undefined
+        );
       }
 
       try {
@@ -1561,6 +1584,25 @@ export class ChromaMcpManager {
     const contentArray = result.content as Array<{ type: string; text?: string }>;
     if (!contentArray || contentArray.length === 0) {
       return null;
+    }
+
+    // The pinned chroma-mcp sends one plain-text MCP content block per
+    // collection name, not a JSON array. Preserve every name (not just the
+    // first) so recovery can verify deletion against the complete listing.
+    if (toolName === 'chroma_list_collections') {
+      const blocks = contentArray.filter(item => item.type === 'text' && typeof item.text === 'string');
+      if (blocks.length !== contentArray.length || blocks.some(item => !item.text)) {
+        return null;
+      }
+      if (blocks.length === 1) {
+        try {
+          const parsed = JSON.parse(blocks[0].text!);
+          if (Array.isArray(parsed)) return parsed;
+        } catch {
+          // A raw collection name is not JSON.
+        }
+      }
+      return blocks.map(item => item.text);
     }
 
     const firstTextContent = contentArray.find(item => item.type === 'text' && item.text);

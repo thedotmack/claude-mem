@@ -364,7 +364,7 @@ const stubbedProcessKill = ((pid: number, signal?: string | number) => {
 }) as typeof process.kill;
 process.kill = stubbedProcessKill;
 
-import { ChromaMcpManager } from '../../../src/services/sync/ChromaMcpManager.js';
+import { ChromaMcpManager, ChromaDeleteOutcomeUnknownError } from '../../../src/services/sync/ChromaMcpManager.js';
 import { ChromaUnavailableError } from '../../../src/services/worker/search/errors.js';
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import {
@@ -497,6 +497,18 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
   beforeEach(async () => {
     await ChromaMcpManager.reset();
     resetState();
+  });
+
+  it('decodes the pinned chroma-mcp collection-list reply across all plain-text blocks', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+    callToolImpl = async () => ({
+      content: [{ type: 'text', text: 'cm__first' }, { type: 'text', text: 'cm__second' }],
+    });
+    expect(await mgr.callTool('chroma_list_collections', {})).toEqual(['cm__first', 'cm__second']);
+    callToolImpl = async () => ({ content: [{ type: 'text', text: '__NO_COLLECTIONS_FOUND__' }] });
+    expect(await mgr.callTool('chroma_list_collections', {})).toEqual(['__NO_COLLECTIONS_FOUND__']);
+    callToolImpl = async () => ({ content: [{ type: 'text', text: '["cm__first","cm__second"]' }] });
+    expect(await mgr.callTool('chroma_list_collections', {})).toEqual(['cm__first', 'cm__second']);
   });
 
   it('serializes concurrent ensureConnected() calls into one spawn', async () => {
@@ -837,6 +849,38 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     await waitForCondition(() => mutationReleases.length === 2);
     mutationReleases[1]();
     await Promise.all([firstMutation, secondMutation]);
+  });
+
+  it('never retries a collection delete after losing the acknowledgment', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+    let deletes = 0;
+    callToolImpl = async request => {
+      if (request?.name === 'chroma_delete_collection') {
+        deletes += 1;
+        throw new Error('Connection closed after delete');
+      }
+      return { content: [{ type: 'text', text: '[]' }] };
+    };
+    await expect(mgr.callTool('chroma_delete_collection', { collection_name: 'test' }))
+      .rejects.toBeInstanceOf(ChromaDeleteOutcomeUnknownError);
+    expect(deletes).toBe(1);
+    await mgr.callTool('chroma_list_collections', {});
+    expect(deletes).toBe(1);
+  });
+
+  it('marks a timed-out collection delete as ambiguous without replaying it', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+    let deletes = 0;
+    callToolImpl = async request => {
+      if (request?.name === 'chroma_delete_collection') {
+        deletes += 1;
+        throw new McpError(ErrorCode.RequestTimeout, 'Request timed out', { timeout: 600000 });
+      }
+      return { content: [{ type: 'text', text: '[]' }] };
+    };
+    await expect(mgr.callTool('chroma_delete_collection', { collection_name: 'test' }))
+      .rejects.toBeInstanceOf(ChromaDeleteOutcomeUnknownError);
+    expect(deletes).toBe(1);
   });
 
   it('kills the prior subprocess tree before a reconnect spawn', async () => {

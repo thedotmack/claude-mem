@@ -1,5 +1,5 @@
 
-import { ChromaMcpManager } from './ChromaMcpManager.js';
+import { ChromaMcpManager, ChromaDeleteOutcomeUnknownError } from './ChromaMcpManager.js';
 import { withinSearchBudget } from './chroma-search-budget.js';
 import { ChromaSyncState, ProjectWatermarks, type PendingRowDelete } from './ChromaSyncState.js';
 import { isQueuedChromaRowDelete, runOnChromaRowCleanupLane } from './chroma-row-cleanup.js';
@@ -845,10 +845,39 @@ export class ChromaSync {
     }, cause);
 
     ChromaSyncState.markAllForRebuild();
+    let deleteConfirmed = false;
     try {
-      await chromaMcp.callTool('chroma_delete_collection', {
-        collection_name: this.collectionName
-      });
+      try {
+        await chromaMcp.callTool('chroma_delete_collection', {
+          collection_name: this.collectionName
+        });
+        deleteConfirmed = true;
+      } catch (error) {
+        if (!(error instanceof ChromaDeleteOutcomeUnknownError)) throw error;
+
+        // One complete, unpaginated list on the recovered connection. The
+        // pinned chroma-mcp returns string names, or a sentinel when empty.
+        let stillPresent = false;
+        try {
+          const names = await chromaMcp.callTool('chroma_list_collections', {});
+          if (!Array.isArray(names) || names.length === 0 ||
+              !names.every((name: unknown) => typeof name === 'string') ||
+              (names.includes('__NO_COLLECTIONS_FOUND__') && names.length !== 1)) {
+            throw new Error('Unexpected chroma_list_collections response');
+          }
+          stillPresent = names.includes(this.collectionName);
+        } catch (verificationError) {
+          throw new ChromaUnavailableError(
+            'Could not verify collection deletion after an ambiguous response',
+            verificationError instanceof Error ? verificationError : undefined
+          );
+        }
+        // Still present: existing failedDropAttempts and the next corrupt
+        // batch enforce the upstream three-attempt retry budget.
+        if (stillPresent) throw error;
+        deleteConfirmed = true;
+      }
+
       ChromaSync.droppedCollections.add(this.collectionName);
       ChromaSync.corruptSegmentBatches.delete(this.collectionName);
       ChromaSync.lastCollectionDrop = {
@@ -866,7 +895,8 @@ export class ChromaSync {
       throw error;
     } finally {
       ChromaSync.collectionGeneration += 1;
-      this.startRebuildSweep();
+      // Never rebuild or write to a collection whose delete is unconfirmed.
+      if (deleteConfirmed) this.startRebuildSweep();
     }
   }
 
