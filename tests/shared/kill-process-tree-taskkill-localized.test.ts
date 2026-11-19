@@ -68,6 +68,22 @@ describe('handleTaskkillFailure', () => {
     await expect(handled).rejects.toBeInstanceOf(ProcessTreeKillError);
   });
 
+  it('still throws on exit 255 when a live access-denied member is beside an already-gone one', async () => {
+    // The root and one child had already exited when taskkill walked the tree,
+    // so its English stderr names both reasons. The live member must keep the
+    // teardown an error even though the not-found phrase is present.
+    const root = exitedPid();
+    const child = exitedPid();
+
+    const handled = handleTaskkillFailure(root, taskkillError(
+      255,
+      `ERROR: The process with PID ${child} (child process of PID ${root}) could not be terminated.\r\nReason: There is no running instance of the task.\r\n`
+      + `ERROR: The process with PID ${process.pid} (child process of PID ${root}) could not be terminated.\r\nReason: Access is denied.\r\n`,
+    ));
+
+    await expect(handled).rejects.toBeInstanceOf(ProcessTreeKillError);
+  });
+
   it('does not apply the liveness check to other exit codes', async () => {
     const root = exitedPid();
 

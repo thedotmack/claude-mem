@@ -104,6 +104,38 @@ describe('Plugin Distribution - Required Files', () => {
   });
 });
 
+describe('Plugin Distribution - Devin', () => {
+  it('ships a Devin manifest whose only MCP source is the Devin MCP file', () => {
+    const manifest = readJson('plugin/.devin-plugin/plugin.json');
+    expect(manifest.name).toBe('claude-mem');
+    expect(manifest.mcpServers).toEqual({ paths: ['devin.mcp.json'], exclusive: true });
+    const mcp = readJson('plugin/devin.mcp.json');
+    expect(Object.keys(mcp.mcpServers)).toEqual(['claude-mem']);
+    const launch = mcp.mcpServers['claude-mem'].args.join(' ');
+    expect(launch).toContain('/mcp-server.cjs');
+    expect(launch).toContain('command -v bun');
+    expect(launch).toContain('${CLAUDE_CONFIG_DIR:-$HOME/.claude}');
+  });
+
+  it('routes every Devin lifecycle hook to the devin adapter of the installed worker', () => {
+    const hooks = readJson('plugin/hooks.json');
+    const commands: Record<string, string[]> = {};
+    for (const [event, rules] of Object.entries(hooks) as [string, any[]][]) {
+      commands[event] = rules.flatMap((rule) => rule.hooks.map((hook: any) => hook.command));
+    }
+    const suffix = (command: string) => command.match(/worker-service\.cjs" (.+)'$/)?.[1];
+    expect(Object.fromEntries(Object.entries(commands).map(([event, list]) => [event, list.map(suffix)]))).toEqual({
+      SessionStart: ['start', 'hook devin context'],
+      PostCompaction: ['hook devin context'],
+      UserPromptSubmit: ['hook devin session-init'],
+      PostToolUse: ['hook devin observation'],
+      Stop: ['hook devin summarize'],
+      SessionEnd: ['hook devin session-end'],
+    });
+    expect(Object.keys(hooks)).not.toContain('PreToolUse');
+  });
+});
+
 describe('Plugin Distribution - Qoder', () => {
   it('ships root and bundled manifests with the correct relative paths', () => {
     const root = readJson('.qoder-plugin/plugin.json');

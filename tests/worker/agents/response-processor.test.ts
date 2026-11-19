@@ -350,6 +350,28 @@ describe('ResponseProcessor', () => {
     }
   });
 
+  // #6322: a probe answered with a valid <skip_summary/> proves the provider is
+  // serving again; leaving the cooldown armed re-probes every 5 min forever.
+  it.each([
+    ['known', 'skip-probe-memory'],
+    ['not yet captured', null],
+  ] as const)('releases the quota cooldown when a probe is answered with <skip_summary/> (memory session id %s)', async (_label, memorySessionId) => {
+    const store = new SessionStore(':memory:');
+    const sessionDbId = store.createSDKSession('skip-probe-session', 'test-project', 'prompt');
+    if (memorySessionId) store.ensureMemorySessionIdRegistered(sessionDbId, memorySessionId);
+    mockDbManager = { ...mockDbManager, getSessionStore: () => store } as unknown as DatabaseManager;
+    const session = createMockSession({ sessionDbId, contentSessionId: 'skip-probe-session', memorySessionId });
+    recordQuotaExhausted('claude', 'spent allowance', 'five_hour');
+    try {
+      await processAgentResponse(
+        '<skip_summary reason="noise" />', session, mockDbManager, mockSessionManager, mockWorker, 0, null, 'TestAgent',
+      );
+      expect(getQuotaCooldown('claude')).toBeNull();
+    } finally {
+      store.close();
+    }
+  });
+
   it.each([
     ['subscription', 'api-key'],
     ['api-key', 'subscription'],

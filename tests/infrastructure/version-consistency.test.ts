@@ -73,6 +73,7 @@ describe('Version Consistency', () => {
       'openclaw/openclaw.plugin.json',
       'plugin/.claude-plugin/plugin.json',
       'plugin/.codex-plugin/plugin.json',
+      'plugin/.devin-plugin/plugin.json',
       'plugin/.qoder-plugin/plugin.json',
       'plugin/package.json',
     ]);

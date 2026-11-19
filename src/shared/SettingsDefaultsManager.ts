@@ -451,6 +451,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_WORK_VIEW_CLAUDE_MODEL: string;
   CLAUDE_MEM_WORK_VIEW_CODEX_MODEL: string;
   CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL: string;
+  CLAUDE_MEM_WORK_VIEW_OPENCODE_MODEL: string;
   CLAUDE_MEM_WORK_VIEW_API_MODEL: string;
   CLAUDE_MEM_CORPUS_AGENT: string;
   CLAUDE_MEM_API_AGENT_EXTRA_BODY: string;
@@ -779,10 +780,11 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_WORK_VIEW_SHARED_STATE: 'false', // Enable only after all local/cloud readers understand reserved My Work records.
     CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER: '', // '' uses OpenRouter only when it is the primary provider; openrouter/openai-compatible explicitly select that provider; off disables generated My Work copy
     CLAUDE_MEM_WORK_VIEW_COPY_MODEL: '', // Optional model override for generated My Work copy; empty uses the selected provider's configured model
-    CLAUDE_MEM_WORK_VIEW_AGENT: '', // Which agent runs the My Work refresh: '' follows CLAUDE_MEM_PROVIDER and stays on one agent; claude-code/codex/gemini pick one; off runs none; all falls through every logged-in agent (#5189)
+    CLAUDE_MEM_WORK_VIEW_AGENT: '', // Which agent runs the My Work refresh: '' follows CLAUDE_MEM_PROVIDER and stays on one agent; claude-code/codex/gemini/opencode pick one; off runs none; all falls through every logged-in agent (#5189)
     CLAUDE_MEM_WORK_VIEW_CLAUDE_MODEL: '', // #5164 — model for every My Work refresh step on Claude Code (an alias like 'haiku'); empty keeps haiku/sonnet per step
     CLAUDE_MEM_WORK_VIEW_CODEX_MODEL: '',  // #5164 — same for Codex; empty keeps the per-step table
     CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL: '', // #5164 — same for Gemini; empty keeps flash-lite/flash per step
+    CLAUDE_MEM_WORK_VIEW_OPENCODE_MODEL: '', // #5535 — model for every My Work refresh step on OpenCode ('provider/model'); empty uses OpenCode's configured default
     CLAUDE_MEM_WORK_VIEW_API_MODEL: '', // Model for every My Work refresh step on the selected API provider; empty keeps the provider's configured model
     CLAUDE_MEM_CORPUS_AGENT: '', // Which agent answers knowledge-corpus prime/query/reprime: '' uses the Claude Agent SDK (the Claude subscription); 'api' answers over chat completions on the selected openrouter/openai-compatible provider and spends that provider's credit
     CLAUDE_MEM_API_AGENT_EXTRA_BODY: '', // JSON object merged into every api agent request (My Work refresh, corpus), e.g. {"chat_template_kwargs":{"enable_thinking":false}} for vLLM (#6223). Parsed like CLAUDE_MEM_OPENROUTER_EXTRA_BODY; never sets reasoning or response_format. File/env only

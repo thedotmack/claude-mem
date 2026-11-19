@@ -4,7 +4,7 @@
  * every request that is due. No day window beyond the skill's own default,
  * no group cap and no time limit (owner rule, Oct 22).
  *
- * Every backend (Claude Code, Codex, Gemini, and the selected API provider)
+ * Every backend (Claude Code, Codex, Gemini, OpenCode, and the selected API provider)
  * runs the same way: the worker runs the skills' CLI and scripts, asks the
  * read-only agent one JSON question per step or batch, and saves the answer through the
  * same validators the skills' CLI uses.
@@ -64,6 +64,7 @@ export const STEP_MODEL_SETTINGS = {
   'claude-code': 'CLAUDE_MEM_WORK_VIEW_CLAUDE_MODEL',
   codex: 'CLAUDE_MEM_WORK_VIEW_CODEX_MODEL',
   gemini: 'CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL',
+  opencode: 'CLAUDE_MEM_WORK_VIEW_OPENCODE_MODEL',
   api: 'CLAUDE_MEM_WORK_VIEW_API_MODEL',
 } as const satisfies Record<TaskAgentId, keyof SettingsDefaults>;
 
@@ -84,7 +85,7 @@ export function resolveStepModels(dataDir: string): Record<Step, StepModels> {
 }
 
 /** The values CLAUDE_MEM_WORK_VIEW_AGENT accepts. The settings route validates against this same list. */
-export const WORK_VIEW_AGENT_CHOICES = ['', 'claude-code', 'codex', 'gemini', 'api', 'off', 'all'] as const;
+export const WORK_VIEW_AGENT_CHOICES = ['', 'claude-code', 'codex', 'gemini', 'opencode', 'api', 'off', 'all'] as const;
 
 export interface RefreshAgentChoice {
   /** The only agents the refresh may run on; absent means every logged-in agent. */
@@ -95,7 +96,7 @@ export interface RefreshAgentChoice {
   stayOnFirstUsableAgent: boolean;
 }
 
-const LOCAL_AGENT_IDS: readonly UsableAgentId[] = ['claude-code', 'codex', 'gemini'];
+const LOCAL_AGENT_IDS: readonly UsableAgentId[] = ['claude-code', 'codex', 'gemini', 'opencode'];
 
 /** Which agents the My Work refresh may run on (#5189). A background refresh that falls through to another
  * agent spends that agent's quota without the owner asking: a Claude Code session limit sent ~230 hidden
@@ -350,7 +351,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
     const stepModels = resolveStepModels(dataDir);
     const inlineEvidence = new Map<string, string>();
     // Count the files an agent must read when budgeting goals input, including tool-capable agents.
-    // Only Gemini and the API agent actually receive these contents inlined in the question below.
+    // Only Gemini, OpenCode and the API agent actually receive these contents inlined in the question below.
     if (needs.goalsStale) {
       for (const name of ['owner-prompts.md', 'new-owner-prompts.md']) {
         const path = join(goalsFolder, name);
@@ -367,7 +368,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
     const ask: AskAgent = (prompt, models, schema) => {
       const expanded = expandedQuestion(prompt);
       if (questionBudget && Buffer.byteLength(expanded, 'utf8') > questionBudget.bytes) throw batchFailure(questionBudget.refusal);
-      return askBackend(agent === 'gemini' || agent === 'api' ? expanded : prompt, models, schema);
+      return askBackend(agent === 'gemini' || agent === 'opencode' || agent === 'api' ? expanded : prompt, models, schema);
     };
     const writeInput = (name: string, value: unknown) => {
       const path = join(runDir, `${++fileNumber}-${name}.json`);

@@ -46,7 +46,7 @@ import { hasAnthropicApiKey, hasAnthropicAuthToken, hasConfiguredClaudeOAuthToke
 import { commandInvocation, resolveVoltaShim, selectWindowsCommandCandidate, windowsWhereExecutablePath } from '../../shared/spawn.js';
 import { PROCESS_EXIT_POLL_INTERVAL_MS, processGroupHasProcessesThatHaveNotExited } from '../../supervisor/process-registry.js';
 
-export type UsableAgentId = 'claude-code' | 'codex' | 'gemini';
+export type UsableAgentId = 'claude-code' | 'codex' | 'gemini' | 'opencode';
 
 export interface UsableAgent {
   id: UsableAgentId;
@@ -456,6 +456,26 @@ async function probeGeminiAccount(dependencies: AgentDetectionDependencies, path
   return { id: 'gemini', path, authenticated: false, reason: commandFailureReason('gemini (account check)', result) };
 }
 
+async function detectOpenCode(dependencies: AgentDetectionDependencies): Promise<UsableAgent> {
+  const resolved = await resolveOnPath(dependencies, 'opencode');
+  if (resolved.path === null) return { id: 'opencode', path: null, authenticated: false, reason: resolved.reason };
+  const path = resolved.path;
+
+  // `opencode auth list` prints one line per stored credential and a summary
+  // such as "—  1 credentials"; a fresh install prints "0 credentials". Only
+  // the count is used, never a key or token. ANSI styling is stripped first.
+  const status = await runCommand(dependencies.spawn, path, ['auth', 'list']);
+  const output = `${status.stdout}\n${status.stderr}`.replace(/\x1b\[[0-9;]*m/g, '');
+  if (status.exitCode !== 0) {
+    return { id: 'opencode', path, authenticated: false, reason: commandFailureReason('opencode auth list', status) };
+  }
+  const count = Number(/(\d+)\s+credentials?\b/i.exec(output)?.[1] ?? 0);
+  if (count > 0) {
+    return { id: 'opencode', path, authenticated: true, reason: `\`opencode auth list\` reports ${count} credential${count === 1 ? '' : 's'}` };
+  }
+  return { id: 'opencode', path, authenticated: false, reason: '`opencode auth list` reports no credentials (run `opencode auth login`)' };
+}
+
 async function runCheck(
   id: UsableAgentId,
   check: (dependencies: AgentDetectionDependencies) => Promise<UsableAgent>,
@@ -469,8 +489,8 @@ async function runCheck(
 }
 
 /**
- * Report Claude Code, Codex and Gemini in priority order, each with whether
- * it is installed (`path`) and logged in (`authenticated`). Never throws.
+ * Report Claude Code, Codex, Gemini and OpenCode in priority order, each with
+ * whether it is installed (`path`) and logged in (`authenticated`). Never throws.
  */
 export async function detectUsableAgents(
   overrides: Partial<AgentDetectionDependencies> = {},
@@ -480,6 +500,7 @@ export async function detectUsableAgents(
     runCheck('claude-code', detectClaudeCode, dependencies),
     runCheck('codex', detectCodex, dependencies),
     runCheck('gemini', detectGemini, dependencies),
+    runCheck('opencode', detectOpenCode, dependencies),
   ]);
 }
 
@@ -488,6 +509,7 @@ const AGENT_CHECKS: Record<UsableAgentId, (dependencies: AgentDetectionDependenc
   'claude-code': detectClaudeCode,
   codex: detectCodex,
   gemini: detectGemini,
+  opencode: detectOpenCode,
 };
 
 /**
