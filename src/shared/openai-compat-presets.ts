@@ -207,6 +207,16 @@ export const OPENAI_COMPAT_PRESETS: readonly OpenAICompatPreset[] = [
     hint: 'Key (ar-...) from Dashboard > API Keys at atmorouter.dev; route-prefixed model ids such as zai/glm-5.3-flash or zai/glm-5.3, listed at atmorouter.dev/v1/models.',
   },
   {
+    id: 'worldrouter',
+    label: 'WorldRouter (worldrouter.ai)',
+    baseUrl: 'https://inference-api.worldrouter.ai/v1',
+    // A cheap, fast model for the same reason as NVIDIA's default: extraction
+    // is high volume. Ids are unprefixed and passed verbatim.
+    defaultModel: 'deepseek-v4-flash',
+    requiresApiKey: true,
+    hint: 'Key from worldrouter.ai; model ids such as deepseek-v4-flash or claude-haiku-5-5, listed at worldrouter.ai/models and by GET inference-api.worldrouter.ai/v1/models for your key.',
+  },
+  {
     id: 'deepseek',
     label: 'DeepSeek',
     baseUrl: 'https://api.deepseek.com/v1',

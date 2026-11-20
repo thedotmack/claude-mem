@@ -111,6 +111,7 @@ endpoint or model you pinned yourself.
 | `hopbase` | `https://api.hop-base.com/v1` | yes |
 | `trustedrouter` | `https://api.trustedrouter.com/v1` | yes |
 | `atmorouter` | `https://atmorouter.dev/v1` | yes |
+| `worldrouter` | `https://inference-api.worldrouter.ai/v1` | yes |
 | `deepseek` | `https://api.deepseek.com/v1` | yes |
 | `opencode-go` | `https://opencode.ai/zen/go/v1` | yes |
 | `opencode-zen` | `https://opencode.ai/zen/v1` | yes |
@@ -550,6 +551,26 @@ Setup notes are in [the AtmoRouter docs](https://atmorouter.dev/docs/quickstart)
   "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "atmorouter",
   "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<your AtmoRouter key>",
   "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "zai/glm-5.3-flash"
+}
+```
+
+## WorldRouter
+
+[WorldRouter](https://www.worldrouter.ai) is an OpenAI-compatible API gateway
+for models from DeepSeek, Anthropic, OpenAI, Google, Moonshot, MiniMax, Zhipu
+and others behind one key. Model ids are unprefixed, such as `deepseek-v4-flash`
+(the preset's default) or `claude-haiku-5-5`, and are passed verbatim. The
+catalog, with prices, is at [worldrouter.ai/models](https://www.worldrouter.ai/models);
+`GET https://inference-api.worldrouter.ai/v1/models` lists the same ids for
+your key. Setup notes are in
+[the WorldRouter quickstart](https://www.worldrouter.ai/docs/quickstart).
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openai-compatible",
+  "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "worldrouter",
+  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<your WorldRouter key>",
+  "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "deepseek-v4-flash"
 }
 ```
 
