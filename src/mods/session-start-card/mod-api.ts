@@ -29,16 +29,30 @@ export interface ModApi {
   env: { get(name: string): Promise<string | undefined> };
   fs: {
     read(path: string): Promise<string>;
+    /** Writes the whole file, making it and its folders as needed. */
+    write(path: string, text: string): Promise<void>;
+    /** The entries of a folder, by name. */
+    list(path: string): Promise<Array<{ name: string }>>;
     exists(path: string): Promise<boolean>;
   };
-  session: { version(): Promise<{ version: string; base?: string }> };
+  session: {
+    version(): Promise<{ version: string; base?: string }>;
+    /** The session's id. Seen for #6314: the id the SessionStart command hooks get as `session_id`. */
+    id(): Promise<string>;
+  };
   /** The variables a command hook of this plugin gets; CLAUDE_PLUGIN_DATA is the plugin's data folder. */
   process: { hookEnv(): Promise<Record<string, string>> };
-  clock: { now(): Promise<number> };
+  clock: {
+    /** Milliseconds since the epoch. */
+    now(): Promise<number>;
+    /** Calls `fn` every `ms` milliseconds until `cancel()`. */
+    every(ms: number, fn: () => void): { cancel(): void };
+  };
   ui: {
     place(row: { id: string }): Promise<PlacedRowResult>;
     invalidate(event: 'ui.render'): void;
-    log(text: string): void;
+    /** A line in the transcript, or with `{ to: 'debug' }` in the debug log alone. */
+    log(text: string, options?: { to: 'transcript' | 'debug' }): void;
     resolve(e: PlacedRenderEvent): { Box: ElementConstructor; Text: ElementConstructor; Raster: ElementConstructor };
   };
 }
@@ -47,6 +61,14 @@ export interface ModApi {
 export interface ClassicSessionStartEvent {
   session_id: string;
   source: string;
+  [key: string]: unknown;
+}
+
+/** `session.start`: Claude Code has loaded this plugin, when the process starts or at a reload. It does not come with a `/clear` or a compaction. */
+export interface SessionStartEvent {
+  cwd: string;
+  /** Whether a person is at the prompt: false for a `-p` run and the SDK. */
+  isInteractive: boolean;
   [key: string]: unknown;
 }
 
@@ -82,6 +104,7 @@ export interface SessionStartHooksContextRowMatcher {
 }
 
 export interface On {
+  (event: 'session.start', matcher: { isInteractive: true }, hook: Hook<SessionStartEvent, unknown>): Registration<SessionStartEvent, unknown>;
   (event: 'classic.SessionStart', hook: Hook<ClassicSessionStartEvent, unknown>): Registration<ClassicSessionStartEvent, unknown>;
   /** `session.append`: one row on its way into the conversation. `next(e)` resolves once the row is kept; a hook relays what it resolves to. */
   (event: 'session.append', matcher: SessionStartHooksContextRowMatcher, hook: Hook<unknown, unknown>): Registration<unknown, unknown>;
