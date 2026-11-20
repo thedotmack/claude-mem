@@ -416,6 +416,22 @@ describe('Server', () => {
       const body = await response.json();
       expect(body.error).toBe('NotFound');
     });
+
+    // A route mounted after the terminal 404 handler could never be reached.
+    it('refuses to register routes after finalizeRoutes', () => {
+      server = new Server(mockOptions);
+      server.finalizeRoutes();
+      class LateRoutes { setupRoutes(): void {} }
+      expect(() => server.registerRoutes(new LateRoutes())).toThrow(/LateRoutes after finalizeRoutes/);
+    });
+
+    it('refuses a second finalizeRoutes call', () => {
+      server = new Server(mockOptions);
+      expect(server.routesFinalized).toBe(false);
+      server.finalizeRoutes();
+      expect(server.routesFinalized).toBe(true);
+      expect(() => server.finalizeRoutes()).toThrow(/already called/);
+    });
   });
 
   describe('request activity (idle exit)', () => {

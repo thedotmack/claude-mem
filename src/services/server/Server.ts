@@ -263,6 +263,10 @@ export class Server {
    * worker that still answers from one whose every request hangs.
    */
   private lastResponseFinishedAt: number | null = null;
+  // Set once finalizeRoutes() has mounted the terminal 404 and error handlers.
+  // A route registered after them could never be reached, so registering one
+  // then is an error, not a silent 404.
+  private routesFinalizedFlag = false;
   private readonly options: ServerOptions;
   private readonly startTime: number = Date.now();
 
@@ -375,10 +379,22 @@ export class Server {
   }
 
   registerRoutes(handler: RouteHandler): void {
+    if (this.routesFinalizedFlag) {
+      throw new Error(`Cannot register ${handler.constructor?.name ?? 'routes'} after finalizeRoutes(): the terminal 404 handler would answer every request first`);
+    }
     handler.setupRoutes(this.app);
   }
 
+  get routesFinalized(): boolean {
+    return this.routesFinalizedFlag;
+  }
+
+  /** Mount the terminal 404 and error handlers. Call once, after the last route. */
   finalizeRoutes(): void {
+    if (this.routesFinalizedFlag) {
+      throw new Error('finalizeRoutes() was already called');
+    }
+    this.routesFinalizedFlag = true;
     this.app.use(notFoundHandler);
 
     this.app.use(errorHandler);

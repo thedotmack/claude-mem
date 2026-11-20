@@ -44,7 +44,9 @@ function isValidPathForClaudeMd(filePath: string, projectRoot?: string): boolean
   if (filePath.includes('#')) return false;
 
   if (projectRoot) {
-    const resolved = path.isAbsolute(filePath) ? filePath : path.resolve(projectRoot, filePath);
+    // Resolve an absolute path too: on Windows `/repo/src/x.ts` or `C:/repo/src/x.ts`
+    // must be compared in the same normalized form as the root, `C:\repo`.
+    const resolved = path.resolve(projectRoot, filePath);
     const normalizedRoot = path.resolve(projectRoot);
     if (!resolved.startsWith(normalizedRoot + path.sep) && resolved !== normalizedRoot) {
       return false;
@@ -343,7 +345,8 @@ export async function updateFolderClaudeMdFiles(
         absoluteFilePath = path.join(projectRoot, filePath);
       }
       const folderPath = path.dirname(absoluteFilePath);
-      foldersWithActiveClaudeMd.add(folderPath);
+      // Keyed resolved: on Windows one batch can spell the same folder with `\` and `/`.
+      foldersWithActiveClaudeMd.add(path.resolve(folderPath));
       logger.debug('FOLDER_INDEX', 'Detected active context file, will skip folder', { folderPath, basename });
     }
   }
@@ -372,7 +375,7 @@ export async function updateFolderClaudeMdFiles(
         logger.debug('FOLDER_INDEX', 'Skipping unsafe directory for CLAUDE.md', { folderPath });
         continue;
       }
-      if (foldersWithActiveClaudeMd.has(folderPath)) {
+      if (foldersWithActiveClaudeMd.has(path.resolve(folderPath))) {
         logger.debug('FOLDER_INDEX', 'Skipping folder with active CLAUDE.md to avoid race condition', { folderPath });
         continue;
       }

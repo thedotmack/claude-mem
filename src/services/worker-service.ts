@@ -487,6 +487,8 @@ export class WorkerService implements WorkerRef {
     });
 
     this.registerRoutes();
+    // The terminal 404 and error handlers are installed by initializeBackground(),
+    // after the routes it registers late (search, Work View, sync, backups).
 
     this.registerSignalHandlers();
   }
@@ -1356,6 +1358,13 @@ export class WorkerService implements WorkerRef {
       this.server.registerRoutes(new BackupRoutes(this.dbManager));
       logger.info('WORKER', 'BackupRoutes registered');
 
+      // Install the terminal 404 and error handlers after the last route.
+      // Without them the worker keeps Express's default handler, which answers a
+      // forwarded error (such as a malformed JSON body) with an HTML page that
+      // carries a stack trace and absolute paths, and an unknown route with an
+      // HTML 404 instead of the JSON the rest of the API speaks.
+      this.server.finalizeRoutes();
+
       this.initializationCompleteFlag = true;
       this.resolveInitialization();
       this.initPhaseTracker.setInitPhase('ready');
@@ -1501,6 +1510,11 @@ export class WorkerService implements WorkerRef {
       // /api/ready readers must recycle.
       if (!this.initializationCompleteFlag) {
         this.initPhaseTracker.setInitPhase('failed', error instanceof Error ? error.message : String(error));
+      }
+      // A failed start still answers with JSON. Its /api and /v1 requests keep
+      // getting the init gate's 503; only unknown paths and errors reach these.
+      if (!this.server.routesFinalized) {
+        this.server.finalizeRoutes();
       }
     }
   }

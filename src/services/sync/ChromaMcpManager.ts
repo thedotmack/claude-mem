@@ -20,7 +20,7 @@ import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { getSupervisor } from '../../supervisor/index.js';
 import { captureProcessName, captureProcessStartToken, isSameProcess, isSameProcessName, isSameProcessStartToken, isPidAlive, normalizeProcessName } from '../../supervisor/process-registry.js';
 import { clearDependencyStatus, recordChromaVectorSearchUnavailable, recordUvxVectorSearchUnavailable } from '../../shared/dependency-health.js';
-import { ChromaUnavailableError } from '../worker/search/errors.js';
+import { ChromaDeleteOutcomeUnknownError, ChromaUnavailableError } from '../worker/search/errors.js';
 import type { ChromaCollectionDrop } from './ChromaSync.js';
 
 const execFileAsync = promisify(execFile);
@@ -102,6 +102,9 @@ const DEFAULT_MAX_PENDING_MUTATIONS = 5_000;
 const CHROMA_MUTATION_TOOL_PATTERN = /^chroma_(?:add|create|delete|modify|update|upsert)_/;
 
 const CHROMA_MCP_PINNED_VERSION = '0.2.6';
+// chroma-mcp 0.2.6 chroma_list_collections returns this lone name when the
+// database has no collections (chroma_mcp/server.py).
+const CHROMA_NO_COLLECTIONS_SENTINEL = '__NO_COLLECTIONS_FOUND__';
 
 // Override transitive dep resolutions for chroma-mcp 0.2.6 (issue #2371).
 //
@@ -296,6 +299,9 @@ export class ChromaMcpManager {
   private pendingMutationCalls = 0;
   /** Mutation requests sent to chroma-mcp and not yet answered, in either Chroma mode. */
   private mutationCallsInFlight = 0;
+  /** Resolves when `mutationCallsInFlight` next reaches zero. Already resolved at zero. */
+  private mutationIdle: Promise<void> = Promise.resolve();
+  private resolveMutationIdle: (() => void) | null = null;
   /**
    * The transport on which a write outlived its deadline. chroma-mcp runs one
    * request at a time (its tools call the blocking Chroma client), so that
@@ -303,6 +309,22 @@ export class ChromaMcpManager {
    * the same transport; until then a read timeout never restarts it.
    */
   private timedOutWriteTransport: unknown = null;
+  /**
+   * A read timed out on this transport while a write was still in flight.
+   * The SDK had already sent `notifications/cancelled`, and chroma-mcp's
+   * stdin_reader then raises anyio.BrokenResourceError on the next message.
+   * The subprocess stays up until those writes finish — killing it mid-commit
+   * corrupts the index — and the next call restarts it before writing here.
+   */
+  private readTimeoutRestart: { transport: unknown; toolName: string } | null = null;
+  /**
+   * The single call allowed to write stdin after a cancelled read while a
+   * timed-out write may still be committing. Its answer is the probe that
+   * shows the commit finished; further callers wait instead of probing too.
+   */
+  private cancelledStdinProbe = false;
+  /** One wait-then-restart, so a second caller cannot write the cancelled stdin. */
+  private stdinRecovery: Promise<void> | null = null;
   private readonly maxPendingMutationCalls: number;
   private readonly mutationTimeoutMs: number;
   private readonly serializeMutations: boolean;
@@ -1450,8 +1472,23 @@ export class ChromaMcpManager {
   }
 
   private async callToolUnqueued(toolName: string, toolArguments: Record<string, unknown>): Promise<unknown> {
+    // A previous read already cancelled its request. Wait for in-flight writes,
+    // restart, and only then send — never write a server that can no longer read.
+    // The generation is taken before that wait, so a call parked there while
+    // stop() runs is cancelled instead of reconnecting after shutdown.
     const callGeneration = this.connectionGeneration;
-    await this.ensureConnected();
+    const ownsCancelledStdinProbe = await this.prepareTransportAfterReadTimeout(callGeneration);
+    try {
+      if (callGeneration !== this.connectionGeneration) {
+        throw new ChromaMcpConnectionCancelledError('chroma-mcp call cancelled during shutdown');
+      }
+      await this.ensureConnected();
+    } catch (error) {
+      if (ownsCancelledStdinProbe) {
+        this.cancelledStdinProbe = false;
+      }
+      throw error;
+    }
     const callTransport = this.transport;
     const isMutation = ChromaMcpManager.isMutationTool(toolName);
 
@@ -1462,9 +1499,11 @@ export class ChromaMcpManager {
     // malformed (a timeout is therefore never handled as a transport error,
     // see below). Give mutations a bounded, configurable deadline while
     // keeping read/query latency at the SDK default. A read past that default
-    // is treated as hung and restarts chroma-mcp, so it must stay well above
-    // a slow-but-healthy query: a search that cannot wait that long stops
-    // waiting on its own (CHROMA_SEARCH_BUDGET_MS) without cancelling the read.
+    // with no write in flight is treated as hung and restarts chroma-mcp, so
+    // it must stay well above a slow-but-healthy query: a search that cannot
+    // wait that long stops waiting on its own (CHROMA_SEARCH_BUDGET_MS)
+    // without cancelling the read. A read that does hit this deadline while
+    // a write is in flight does not restart until that write settles.
     const requestOptions = isMutation
       ? { timeout: this.mutationTimeoutMs }
       : undefined;
@@ -1476,7 +1515,7 @@ export class ChromaMcpManager {
 
     let result;
     if (isMutation) {
-      this.mutationCallsInFlight += 1;
+      this.beginMutation();
     }
     try {
       result = await this.client!.callTool({
@@ -1495,22 +1534,38 @@ export class ChromaMcpManager {
         } else if (this.mutationCallsInFlight === 0 && this.timedOutWriteTransport !== callTransport) {
           await this.restartHungSubprocess(toolName, callTransport);
           throw new ChromaUnavailableError(`chroma-mcp did not answer "${toolName}" in time and was restarted`, cause);
+        } else if (!isMutation && callTransport) {
+          // Every read that did not restart immediately has already sent
+          // notifications/cancelled, including one queued behind a write that
+          // itself timed out and may still be committing. Arm the settled
+          // restart. Do not kill mid-commit; the next call waits, or sends the
+          // one probe that shows the commit finished, and the restart follows
+          // that answer.
+          this.readTimeoutRestart = { transport: callTransport, toolName };
         }
         // A request that outlived its deadline while a write is, or may still
         // be, in flight means chroma-mcp is slow, not gone: the SDK has already
         // sent notifications/cancelled, and the write may still be committing.
         // Tree-killing it here is what leaves a persistent index malformed,
         // and a retry would repeat the same slow work, so neither happens.
-        // The caller keeps the row pending.
+        // The caller keeps the row pending. A cancelled read is restarted once
+        // that write settles (see readTimeoutRestart).
         const message = `chroma-mcp "${toolName}" timed out; the subprocess was left running`;
         logger.warn('CHROMA_MCP', message, {
           timeoutMs: requestOptions?.timeout,
+          restartAfterWritesSettle: this.readTimeoutRestart?.transport === callTransport,
           error: transportError instanceof Error ? transportError.message : String(transportError)
         });
+        if (toolName === 'chroma_delete_collection') {
+          throw new ChromaDeleteOutcomeUnknownError(message, cause);
+        }
         throw new ChromaUnavailableError(message, cause);
       }
 
-      logger.warn('CHROMA_MCP', `Transport error during "${toolName}", reconnecting and retrying once`, {
+      const action = toolName === 'chroma_delete_collection'
+        ? 'leaving delete outcome unconfirmed'
+        : 'reconnecting and retrying once';
+      logger.warn('CHROMA_MCP', `Transport error during "${toolName}", ${action}`, {
         error: transportError instanceof Error ? transportError.message : String(transportError)
       });
       // A lost transport is a connection failure even when this call's retry
@@ -1533,6 +1588,15 @@ export class ChromaMcpManager {
         await this.disposeCurrentSubprocess();
       }
 
+      // Destructive deletion cannot be safely replayed after losing its reply.
+      // The caller verifies collection existence before deciding what to do next.
+      if (toolName === 'chroma_delete_collection') {
+        throw new ChromaDeleteOutcomeUnknownError(
+          'Collection deletion outcome is unconfirmed after transport loss',
+          transportError instanceof Error ? transportError : undefined
+        );
+      }
+
       try {
         if (callGeneration !== this.connectionGeneration) {
           throw new ChromaMcpConnectionCancelledError('chroma-mcp call cancelled during shutdown');
@@ -1548,7 +1612,21 @@ export class ChromaMcpManager {
       }
     } finally {
       if (isMutation) {
-        this.mutationCallsInFlight -= 1;
+        this.endMutation();
+      }
+      // A read may have cancelled stdin while this write was the one in flight.
+      // Restart only after the write has settled, and never instead of its result.
+      // Skip the await on the common path so a call with nothing pending does
+      // not add a scheduling hop.
+      if (this.readTimeoutRestart) {
+        await this.restartCancelledStdinIfSettled(callGeneration);
+      }
+      // Drop the probe permit only after the settled restart has started, so
+      // a second caller cannot write the cancelled stdin while this answer
+      // is still tearing the subprocess down. Only the call that took the
+      // permit releases it: an older read timing out meanwhile must not.
+      if (ownsCancelledStdinProbe) {
+        this.cancelledStdinProbe = false;
       }
     }
 
@@ -1561,6 +1639,30 @@ export class ChromaMcpManager {
     const contentArray = result.content as Array<{ type: string; text?: string }>;
     if (!contentArray || contentArray.length === 0) {
       return null;
+    }
+
+    // The pinned chroma-mcp sends one plain-text MCP content block per
+    // collection name, not a JSON array. Preserve every name (not just the
+    // first) so recovery can verify deletion against the complete listing.
+    // An empty database answers with the lone CHROMA_NO_COLLECTIONS_SENTINEL,
+    // which means no collections, not one.
+    if (toolName === 'chroma_list_collections') {
+      const blocks = contentArray.filter(item => item.type === 'text' && typeof item.text === 'string');
+      if (blocks.length !== contentArray.length || blocks.some(item => !item.text)) {
+        return null;
+      }
+      if (blocks.length === 1 && blocks[0].text === CHROMA_NO_COLLECTIONS_SENTINEL) {
+        return [];
+      }
+      if (blocks.length === 1) {
+        try {
+          const parsed = JSON.parse(blocks[0].text!);
+          if (Array.isArray(parsed)) return parsed;
+        } catch {
+          // A raw collection name is not JSON.
+        }
+      }
+      return blocks.map(item => item.text);
     }
 
     const firstTextContent = contentArray.find(item => item.type === 'text' && item.text);
@@ -1618,6 +1720,113 @@ export class ChromaMcpManager {
 
   private static isRequestTimeout(error: unknown): boolean {
     return error instanceof McpError && error.code === ErrorCode.RequestTimeout;
+  }
+
+  private beginMutation(): void {
+    this.mutationCallsInFlight += 1;
+    if (this.mutationCallsInFlight === 1) {
+      this.mutationIdle = new Promise(resolve => {
+        this.resolveMutationIdle = resolve;
+      });
+    }
+  }
+
+  private endMutation(): void {
+    if (this.mutationCallsInFlight > 0) {
+      this.mutationCallsInFlight -= 1;
+    }
+    if (this.mutationCallsInFlight === 0) {
+      const resolve = this.resolveMutationIdle;
+      this.resolveMutationIdle = null;
+      this.mutationIdle = Promise.resolve();
+      resolve?.();
+    }
+  }
+
+  /**
+   * Before sending, restart a chroma-mcp whose stdin a timed-out read already
+   * cancelled, once every in-flight write has finished.
+   *
+   * While a write is still in flight this waits and does not send. A write
+   * that itself timed out has no in-flight handle left and may still be
+   * committing, so that one probe is still allowed through: its answer is
+   * what shows the commit finished, and the restart follows the answer.
+   *
+   * Returns true when this call took that probe permit; the caller then owns
+   * it and is the only one that releases it.
+   */
+  private async prepareTransportAfterReadTimeout(callGeneration: number): Promise<boolean> {
+    if (this.stdinRecovery) {
+      await this.stdinRecovery;
+    }
+    const pending = this.readTimeoutRestart;
+    if (!pending) return false;
+
+    let release!: () => void;
+    const recovery = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    this.stdinRecovery = recovery;
+    try {
+      while (this.readTimeoutRestart === pending) {
+        if (callGeneration !== this.connectionGeneration || !this.transport || this.transport !== pending.transport) {
+          this.readTimeoutRestart = null;
+          return false;
+        }
+        if (this.mutationCallsInFlight > 0) {
+          await this.mutationIdle;
+          continue;
+        }
+        if (this.timedOutWriteTransport === pending.transport) {
+          // One probe. A second caller must not write the cancelled stdin.
+          if (this.cancelledStdinProbe) {
+            throw new ChromaUnavailableError(
+              'chroma-mcp stdin was cancelled and a probe is already in flight',
+            );
+          }
+          this.cancelledStdinProbe = true;
+          return true;
+        }
+        await this.restartCancelledStdinIfSettled(callGeneration);
+        return false;
+      }
+      return false;
+    } finally {
+      if (this.stdinRecovery === recovery) {
+        this.stdinRecovery = null;
+      }
+      release();
+    }
+  }
+
+  /**
+   * Restart the subprocess a timed-out read marked, now that no write is in
+   * flight and no timed-out write is still waiting for an answer. A failure
+   * here must not replace the call's own result or timeout error.
+   */
+  private async restartCancelledStdinIfSettled(callGeneration: number): Promise<void> {
+    const pending = this.readTimeoutRestart;
+    if (!pending) return;
+    if (callGeneration !== this.connectionGeneration) {
+      this.readTimeoutRestart = null;
+      return;
+    }
+    if (!this.transport || pending.transport !== this.transport) {
+      this.readTimeoutRestart = null;
+      return;
+    }
+    if (this.mutationCallsInFlight > 0 || this.timedOutWriteTransport === pending.transport) {
+      return;
+    }
+    this.readTimeoutRestart = null;
+    try {
+      await this.restartHungSubprocess(pending.toolName, pending.transport);
+    } catch (error) {
+      logger.warn('CHROMA_MCP', 'Restart after a timed-out chroma-mcp read did not finish', {
+        toolName: pending.toolName,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   /**
@@ -1840,6 +2049,11 @@ export class ChromaMcpManager {
     this.client = null;
     this.transport = null;
     this.connected = false;
+    // This subprocess is gone. A later call must not treat it as still
+    // committing, and must not restart whatever replaced it.
+    this.readTimeoutRestart = null;
+    this.timedOutWriteTransport = null;
+    this.cancelledStdinProbe = false;
   }
 
   /**
