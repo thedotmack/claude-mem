@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from 'os';
 import { dirname, join, resolve } from 'path';
 import type { spawn } from 'child_process';
-import { codexModelForLogin, GEMINI_NO_MCP_SERVERS, readOpenCodeUserConfig, runAgentTask, type AgentTask } from '../../../src/services/agent-runner/run.js';
+import { codexModelForLogin, GEMINI_NO_MCP_SERVERS, opencodeCliMajorVersion, readOpenCodeUserConfig, runAgentTask, type AgentTask } from '../../../src/services/agent-runner/run.js';
 import { detectUsableAgent, type UsableAgent } from '../../../src/services/agent-runner/detect.js';
 
 class FakeStream extends EventEmitter {
@@ -31,6 +31,49 @@ function fakeSpawn(calls: SpawnCall[], answer: (call: SpawnCall) => void): typeo
     queueMicrotask(() => answer(call));
     return call.child;
   }) as unknown as typeof spawn;
+}
+
+/**
+ * The `opencode run` flags each CLI accepts, copied from its source: OpenCode 1.19.6
+ * packages/opencode/src/cli/cmd/run.ts plus the global options in src/index.ts; OpenCode
+ * 2.3.2 packages/cli/src/commands/commands.ts (`run` params, PermissionParams, ServerFlags
+ * and the global flags). Both reject any other flag and exit 1.
+ */
+const OPENCODE_RUN_FLAGS: Record<1 | 2, { values: string[]; switches: string[] }> = {
+  1: {
+    values: ['command', 'session', 's', 'model', 'm', 'agent', 'format', 'file', 'f', 'title', 'attach', 'password', 'p',
+      'username', 'u', 'dir', 'port', 'variant', 'replay-limit', 'log-level'],
+    switches: ['continue', 'c', 'fork', 'share', 'thinking', 'mini', 'replay', 'interactive', 'i', 'auto', 'yolo',
+      'dangerously-skip-permissions', 'demo', 'print-logs', 'pure', 'help', 'h'],
+  },
+  2: {
+    values: ['session', 's', 'model', 'm', 'agent', 'format', 'file', 'f', 'title', 'server', 'log-level'],
+    switches: ['continue', 'c', 'fork', 'worktree', 'w', 'archived', 'thinking', 'auto', 'yolo', 'dangerously-skip-permissions',
+      'standalone', 'print-logs', 'help', 'h'],
+  },
+};
+
+/** A fake `opencode`: answers `--version` with `version` and parses `run` flags as that CLI does before handing the run to `onRun`. */
+function fakeOpenCodeCli(version: string, calls: SpawnCall[], onRun: (call: SpawnCall) => void): typeof spawn {
+  const major = /\bv?2\./.test(version) ? 2 : 1;
+  const flags = OPENCODE_RUN_FLAGS[major];
+  return fakeSpawn(calls, call => {
+    if (call.args[0] === '--version') { call.child.stdout.emit('data', `${version}\n`); call.child.emit('close', 0); return; }
+    if (call.args[0] !== 'run') throw new Error(`unexpected opencode command: ${call.args.join(' ')}`);
+    const unknown: string[] = [];
+    for (let index = 1; index < call.args.length; index++) {
+      const name = call.args[index].replace(/^--?/, '').split('=')[0];
+      if (!call.args[index].startsWith('-')) continue;
+      if (flags.values.includes(name)) { if (!call.args[index].includes('=')) index++; continue; }
+      if (!flags.switches.includes(name)) unknown.push(call.args[index]);
+    }
+    if (unknown.length) {
+      call.child.stderr.emit('data', unknown.map(flag => `Unrecognized flag: ${flag} in command opencode run\n`).join(''));
+      call.child.emit('close', 1);
+      return;
+    }
+    onRun(call);
+  });
 }
 
 const CODEX_PATH = join(realpathSync(tmpdir()), 'agent-runner-tools', 'codex');
@@ -360,12 +403,24 @@ describe('agent runner', () => {
     expect(calls[0].child.stdinText).toBe('inline prompt for gemini');
   });
 
-  it('OpenCode: an isolated tool-less run from its config root, prompt on stdin, text parts joined', async () => {
+  it.each([
+    { cli: 'OpenCode 1.x', version: '1.17.8', isolation: (root: string) => ['--pure', '--format', 'json', '--dir', root], policies: undefined },
+    { cli: 'OpenCode 2.x', version: 'opencode v2.3.2', isolation: () => ['--standalone', '--format', 'json'], policies: [
+      { action: 'plugin.use', resource: '*', effect: 'deny' },
+      { action: 'mcp.use', resource: '*', effect: 'deny' },
+    ] },
+  ])('$cli: an isolated tool-less run from its config root, prompt on stdin, text parts joined', async ({ version, isolation, policies }) => {
     const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-opencode-'));
     const calls: SpawnCall[] = [];
     try {
-      const result = await runTask(task(cwd, [], { opencode: { model: 'provider/model' } }), {
-        detect: async () => agents('opencode'), query: neverQuery, spawn: fakeSpawn(calls, call => {
+      const steps: string[] = [];
+      const twoSteps: AgentTask = { ...task(cwd), run: async ask => {
+        steps.push(await ask('first step', { opencode: { model: 'provider/model' } }));
+        steps.push(await ask('inline prompt for opencode', { opencode: { model: 'provider/model' } }));
+        return `inline done: ${steps[1]}`;
+      } };
+      const result = await runTask(twoSteps, {
+        detect: async () => agents('opencode'), query: neverQuery, spawn: fakeOpenCodeCli(version, calls, call => {
           const runEnv = call.options.env as Record<string, string>;
           const config = JSON.parse(readFileSync(join(runEnv.XDG_CONFIG_HOME, 'opencode', 'opencode.json'), 'utf8'));
           // The owner's default model and custom provider survive the isolation.
@@ -373,7 +428,11 @@ describe('agent runner', () => {
           expect(config.provider).toEqual({ custom: { models: { 'owned/model': {} } } });
           expect(config.mcp).toEqual({});
           expect(config.permission).toEqual({ edit: 'deny', bash: 'deny', webfetch: 'deny', external_directory: 'deny' });
-          expect(Object.values(config.agent['claude-mem-refresh'].tools).every(enabled => enabled === false)).toBe(true);
+          expect(config.policies).toEqual(policies);
+          const refreshAgent = config.agent['claude-mem-refresh'];
+          expect(Object.values(refreshAgent.tools).every(enabled => enabled === false)).toBe(true);
+          // Every tool the list does not name (`skill`, 2.x's automation and worktree tools) is denied as well.
+          expect(refreshAgent.permission).toEqual({ '*': 'deny' });
           // A project opencode.json in the task folder must never be discovered.
           expect(call.options.cwd).toBe(runEnv.XDG_CONFIG_HOME);
           expect(call.options.cwd).not.toBe(cwd);
@@ -381,19 +440,82 @@ describe('agent runner', () => {
           call.child.stdout.emit('data', `${JSON.stringify({ type: 'text', part: { type: 'text', text: '{"ok":' } })}\n`);
           call.child.stdout.emit('data', `${JSON.stringify({ type: 'text', part: { type: 'text', text: '"opencode"}' } })}\n`);
           call.child.emit('close', 0);
-        }), buildEnv: env, opencodeUserConfig: () => ({ model: 'custom/default', provider: { custom: { models: { 'owned/model': {} } } } }),
+        }), buildEnv: async () => ({ ...(await env()), OPENCODE_CONFIG_CONTENT: '{"agent":{"claude-mem-refresh":{"permission":{"*":"allow"}}}}' }),
+        opencodeUserConfig: () => ({ model: 'custom/default', provider: { custom: { models: { 'owned/model': {} } } } }),
       });
       expect(result).toEqual({ state: 'ok', agent: 'opencode', result: 'inline done: {"ok":"opencode"}', error: null, attempts: [] });
-      expect(calls[0].command).toBe('/bin/opencode');
-      const runEnv = calls[0].options.env as Record<string, string>;
+      // One version check for the run, then one `run` per step.
+      expect(calls.map(call => call.args[0])).toEqual(['--version', 'run', 'run']);
+      const runCall = calls[2];
+      expect(runCall.command).toBe('/bin/opencode');
+      const runEnv = runCall.options.env as Record<string, string>;
       const isolated = runEnv.XDG_CONFIG_HOME;
-      expect(calls[0].args).toEqual(['run', '--pure', '--format', 'json', '--dir', isolated, '--agent', 'claude-mem-refresh', '--model', 'provider/model']);
-      expect(calls[0].child.stdinText).toBe('inline prompt for opencode');
+      expect(runCall.args).toEqual(['run', ...isolation(isolated), '--agent', 'claude-mem-refresh', '--model', 'provider/model']);
+      expect(runCall.child.stdinText).toBe('inline prompt for opencode');
       expect(runEnv.PWD).toBe(isolated);
       expect(runEnv.OPENCODE_CONFIG).toBe(join(isolated, 'opencode', 'opencode.json'));
       expect(runEnv.OPENCODE_CONFIG_DIR).toBe(join(isolated, 'opencode'));
+      expect(runEnv.OPENCODE_DISABLE_PROJECT_CONFIG).toBe('1');
+      // Config content from the environment would load after the run's own file and could re-allow tools.
+      expect(runEnv.OPENCODE_CONFIG_CONTENT).toBeUndefined();
       expect(existsSync(isolated)).toBe(false);
     } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  it.each(['opencode v2.3.2', 'opencode v2.2.3', '1.17.8'])('OpenCode CLI printing "%s": every run flag is one that CLI accepts', async version => {
+    const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-opencode-flags-'));
+    const calls: SpawnCall[] = [];
+    try {
+      const result = await runTask(task(cwd, [], { opencode: { model: 'provider/model' } }), {
+        detect: async () => agents('opencode'), query: neverQuery, buildEnv: env, opencodeUserConfig: () => ({}),
+        spawn: fakeOpenCodeCli(version, calls, call => {
+          call.child.stdout.emit('data', '{"type":"text","part":{"type":"text","text":"done"}}\n');
+          call.child.emit('close', 0);
+        }),
+      });
+      expect(result).toMatchObject({ state: 'ok', agent: 'opencode', attempts: [] });
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  it('OpenCode 2.x rejects the 1.x run flags, as the 2.3.2 CLI does', async () => {
+    const calls: SpawnCall[] = [];
+    const spawn = fakeOpenCodeCli('opencode v2.3.2', calls, () => { throw new Error('the fake must reject these flags'); });
+    const child = (spawn as unknown as (command: string, args: string[], options: object) => FakeChild)(
+      '/bin/opencode', ['run', '--pure', '--format', 'json', '--dir', '/isolated', '--agent', 'claude-mem-refresh'], {},
+    );
+    let stderr = '';
+    child.stderr.on('data', (text: string) => { stderr += text; });
+    const exitCode = await new Promise(resolve => child.on('close', resolve));
+    expect(exitCode).toBe(1);
+    expect(stderr).toBe('Unrecognized flag: --pure in command opencode run\nUnrecognized flag: --dir in command opencode run\n');
+    expect(calls).toHaveLength(1);
+  });
+
+  it.each([
+    { version: 'opencode v2.2.2', reason: 'OpenCode 2.2.2 cannot keep external plugins out of the refresh step; update OpenCode to 2.2.3 or newer.' },
+    { version: 'opencode v2.0.0', reason: 'OpenCode 2.0.0 cannot keep external plugins out of the refresh step; update OpenCode to 2.2.3 or newer.' },
+    { version: 'opencode v3.0.0', reason: 'OpenCode 3.0.0 is newer than the 1.x and 2.x releases claude-mem knows how to isolate, so the refresh step does not run on it.' },
+    { version: 'unknown', reason: 'opencode --version printed no version (unknown), so its run flags are unknown.' },
+  ])('OpenCode CLI printing "$version": the step is refused without starting a run', async ({ version, reason }) => {
+    const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-opencode-refused-'));
+    const calls: SpawnCall[] = [];
+    try {
+      const result = await runTask(task(cwd), {
+        detect: async () => agents('opencode'), query: neverQuery, buildEnv: env, opencodeUserConfig: () => ({}),
+        spawn: fakeOpenCodeCli(version, calls, () => { throw new Error('a refused version must not run'); }),
+      });
+      expect(result).toMatchObject({ state: 'failed', agent: 'opencode', attempts: [{ agent: 'opencode', error: reason }] });
+      expect(calls.map(call => call.args)).toEqual([['--version']]);
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  it('opencodeCliMajorVersion reads both CLIs\' version lines', () => {
+    expect(opencodeCliMajorVersion('1.17.8\n')).toBe(1);
+    expect(opencodeCliMajorVersion('1.19.6')).toBe(1);
+    expect(opencodeCliMajorVersion('opencode v2.3.2\n')).toBe(2);
+    expect(opencodeCliMajorVersion('opencode v2.2.3')).toBe(2);
+    expect(opencodeCliMajorVersion('opencode v2.10.0')).toBe(2);
+    expect(() => opencodeCliMajorVersion('opencode v2.2.2')).toThrow('update OpenCode to 2.2.3 or newer');
   });
 
   it.each([
@@ -419,6 +541,8 @@ describe('agent runner', () => {
         if (args[0] === 'auth') {
           if (legacy && args.includes('--format')) { child.emit('close', 1); return; }
           child.stdout.emit('data', legacy ? '1 credential' : '[{"connections":[{"type":"env","name":"ANTHROPIC_API_KEY"}]}]');
+        } else if (args[0] === '--version') {
+          child.stdout.emit('data', legacy ? '1.17.8\n' : 'opencode v2.3.2\n');
         } else if (args[0] === 'run') {
           child.stdout.emit('data', '{"type":"text","part":{"type":"text","text":"done"}}');
         } else {
@@ -432,7 +556,9 @@ describe('agent runner', () => {
       });
       expect(result.state).toBe('ok');
       const commands = calls.filter(call => call.command === '/bin/opencode');
-      expect(commands.map(call => call.args[0])).toEqual(legacy ? ['auth', 'auth', 'run'] : ['auth', 'run']);
+      expect(commands.map(call => call.args[0])).toEqual(legacy ? ['auth', 'auth', '--version', 'run'] : ['auth', '--version', 'run']);
+      // The CLI the probe found is the one whose run flags are used.
+      expect(commands.at(-1)!.args[1]).toBe(legacy ? '--pure' : '--standalone');
       for (const call of commands) {
         const env = (call.options.env as NodeJS.ProcessEnv | undefined) ?? process.env;
         expect(env.ANTHROPIC_API_KEY).toBe(key);
@@ -480,7 +606,7 @@ describe('agent runner', () => {
     const calls: SpawnCall[] = [];
     try {
       const result = await runTask(task(cwd), {
-        detect: async () => agents('opencode'), query: neverQuery, spawn: fakeSpawn(calls, call => {
+        detect: async () => agents('opencode'), query: neverQuery, spawn: fakeOpenCodeCli('opencode v2.3.2', calls, call => {
           call.child.stdout.emit('data', `${JSON.stringify({ type: 'error', error: { message: 'session cancelled' } })}\n`);
           call.child.emit('close', 0);
         }), buildEnv: env,
