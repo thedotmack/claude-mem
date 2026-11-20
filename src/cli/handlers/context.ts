@@ -44,7 +44,7 @@ import { hasPendingInstallSetup } from '../../shared/setup-install.js';
 import { projectsQueryString } from '../../shared/project-list.js';
 import { CONTEXT_OUTPUT_LIMIT } from '../../services/context/ContextBudget.js';
 import { consumeTelemetryNotice } from '../../services/telemetry/consent.js';
-import { sessionStartCardSlotForRequest, writeSessionStartCardSlot } from '../session-start-card-slot-writer.js';
+import { awaitSessionStartCardSlotForRequest, writeSessionStartCardSlot } from '../session-start-card-slot-writer.js';
 import {
   fetchTeamBrief,
   formatTeamBrief,
@@ -651,9 +651,11 @@ export const contextHandler: EventHandler = {
     // Where the card's SessionStart hook is passed over (a Team or Enterprise
     // account, #6314) the event names no file. The hook then names the slot
     // itself, and only while the card's request file says it is looking for
-    // one: without a request the whole banner goes in the hook message.
+    // one: without a request the whole banner goes in the hook message. The
+    // card writes that request while this hook runs, so the hook waits a
+    // bounded time for it where a card has asked before.
     const sessionStartCardFile = showsBanner && additionalContext !== ''
-      ? input.sessionStartCardFile ?? sessionStartCardSlotForRequest(input.sessionId, input.sessionSource)
+      ? input.sessionStartCardFile ?? await awaitSessionStartCardSlotForRequest(input.sessionId, input.sessionSource)
       : undefined;
     const cardDrawsBanner = sessionStartCardFile !== undefined
       && writeSessionStartCardSlot(

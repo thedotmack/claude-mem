@@ -17,7 +17,9 @@
  * when the Claude Code process starts. So the card also asks with a request
  * file in the slot folder. The context hook, seeing no key and a request of
  * its session that has not run out, names the slot itself, and the card looks
- * for that slot until the request runs out.
+ * for that slot until the request runs out. The card writes its request while
+ * the hook runs, so a hook that finds none yet waits a bounded time for it
+ * (awaitSessionStartCardSlotForRequest, src/cli/session-start-card-slot-writer.ts).
  */
 
 /** The key the card adds to the SessionStart event; the command hooks get it on stdin. */

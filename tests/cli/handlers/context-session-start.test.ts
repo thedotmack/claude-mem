@@ -747,6 +747,9 @@ describe('contextHandler SessionStart path', () => {
     const slotsOf = (sessionId: string) => (existsSync(slotFolder) ? readdirSync(slotFolder) : [])
       .filter(fileName => sessionStartCardSlotClockOf(fileName, sessionId) !== null);
     const allSlots = () => (existsSync(slotFolder) ? readdirSync(slotFolder) : []).filter(fileName => fileName.endsWith('.json'));
+    /** The hook's limit on its wait for a request, read where the handler reads it. */
+    const hookWaitMs = async () =>
+      (await import('../../../src/cli/session-start-card-slot-writer.js')).SESSION_START_CARD_REQUEST_HOOK_WAIT_MS;
 
     beforeEach(async () => {
       pluginDataDirectory = mkdtempSync(path.join(tmpdir(), 'session-start-card-request-context-'));
@@ -783,6 +786,32 @@ describe('contextHandler SessionStart path', () => {
       expect(result.hookSpecificOutput).toEqual(whole.hookSpecificOutput);
     });
 
+    // The order measured on a Team account: the card writes its request while the hook runs, and in 3 of
+    // 8 starts the hook listed the slot folder first (by 5, 21 and 86 ms).
+    it('waits for a request the card writes after the hook has listed the folder, and sends one line', async () => {
+      const whole = await start('request-off');
+      // An earlier session's request: a card has asked from this plugin data folder before.
+      cardAsks('an-earlier-session', Date.now() - 60_000);
+
+      const startedAt = Date.now();
+      const requestIsLateByMs = 86;
+      let askedAt = 0;
+      const cardWritesLate = setTimeout(() => { askedAt = cardAsks('request-late'); }, requestIsLateByMs);
+      const result = await start('request-late');
+      clearTimeout(cardWritesLate);
+
+      // The hook was waiting when the request came: it returned after it, and within its limit.
+      expect(askedAt).toBeGreaterThanOrEqual(startedAt);
+      expect(Date.now() - startedAt).toBeLessThan(await hookWaitMs());
+      expect(result.systemMessage).toMatch(/^View Observations Live @ \S+ · 2 lines$/);
+      const [slotFileName, ...others] = slotsOf('request-late');
+      expect(others).toEqual([]);
+      // The card's look takes this slot: it is named at or after the request.
+      expect(sessionStartCardSlotClockOf(slotFileName, 'request-late')).toBeGreaterThanOrEqual(askedAt);
+      const { text } = JSON.parse(readFileSync(path.join(slotFolder, slotFileName), 'utf-8')) as { text: string };
+      expect(`${text}\n\n${result.systemMessage}`).toBe(whole.systemMessage!);
+    });
+
     it('keeps the whole banner as the hook message unless a card of this start asked for it', async () => {
       const whole = await start('request-off');
       // The control: a request that stands is answered with one line.
@@ -790,8 +819,12 @@ describe('contextHandler SessionStart path', () => {
       expect((await start('request-control')).systemMessage).not.toBe(whole.systemMessage!);
       expect(slotsOf('request-control')).toHaveLength(1);
 
-      // No request: the hooks module did not load, so nothing would draw a slot.
+      // No request of this session. A card asked from this folder before (the control's), so the hook waits
+      // its limit for one, and then sends the whole banner: nothing would draw a slot.
+      const waitStartedAt = Date.now();
       expect((await start('request-none')).systemMessage).toBe(whole.systemMessage!);
+      // Nine tenths of the limit: a timer may fire a fraction of a millisecond early.
+      expect(Date.now() - waitStartedAt).toBeGreaterThanOrEqual((await hookWaitMs()) * 0.9);
       // Another session's request.
       cardAsks('request-of-another-session');
       expect((await start('request-not-mine')).systemMessage).toBe(whole.systemMessage!);
