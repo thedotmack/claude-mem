@@ -386,6 +386,69 @@ describe('OpenCode', () => {
     expect(agent).toEqual({ id: 'opencode', path: OPENCODE_PATH, authenticated: true, reason: '`opencode auth list` reports 1 credential' });
   });
 
+  it('logged in on OpenCode 2.x: a stored connection row counts, though no line says "credential"', async () => {
+    const agent = await detectOne('opencode', {
+      spawn: fakeSpawn({
+        ...WHICH_OPENCODE,
+        [`${OPENCODE_PATH} auth list`]: { exitCode: 0, stdout: 'Anthropic  default                     stored\n' },
+      }),
+    });
+    expect(agent).toEqual({ id: 'opencode', path: OPENCODE_PATH, authenticated: true, reason: '`opencode auth list` reports 1 connected provider' });
+  });
+
+  it('logged in on OpenCode 2.x: an environment connection row counts too', async () => {
+    const agent = await detectOne('opencode', {
+      spawn: fakeSpawn({
+        ...WHICH_OPENCODE,
+        [`${OPENCODE_PATH} auth list`]: { exitCode: 0, stdout: 'Anthropic  ANTHROPIC_API_KEY           environment\n' },
+      }),
+    });
+    expect(agent).toMatchObject({ authenticated: true, reason: '`opencode auth list` reports 1 connected provider' });
+  });
+
+  it('logged in on OpenCode 2.x: every connection row is counted, through ANSI styling', async () => {
+    const agent = await detectOne('opencode', {
+      spawn: fakeSpawn({
+        ...WHICH_OPENCODE,
+        [`${OPENCODE_PATH} auth list`]: {
+          exitCode: 0,
+          stdout: '\u001b[90mAnthropic\u001b[0m  default  stored\nOpenAI  OPENAI_API_KEY  environment\n',
+        },
+      }),
+    });
+    expect(agent).toMatchObject({ authenticated: true, reason: '`opencode auth list` reports 2 connected providers' });
+  });
+
+  it('not logged in on OpenCode 2.x: an empty list at exit 0 reports no credentials', async () => {
+    const agent = await detectOne('opencode', {
+      spawn: fakeSpawn({ ...WHICH_OPENCODE, [`${OPENCODE_PATH} auth list`]: { exitCode: 0, stdout: '' } }),
+    });
+    expect(agent).toEqual({
+      id: 'opencode', path: OPENCODE_PATH, authenticated: false,
+      reason: '`opencode auth list` reports no credentials (run `opencode auth login`)',
+    });
+  });
+
+  it('a provider named with the word credential and digits is read as a row, not a count', async () => {
+    const agent = await detectOne('opencode', {
+      spawn: fakeSpawn({
+        ...WHICH_OPENCODE,
+        [`${OPENCODE_PATH} auth list`]: { exitCode: 0, stdout: 'Credentials 360  default  stored\n' },
+      }),
+    });
+    expect(agent).toMatchObject({ authenticated: true, reason: '`opencode auth list` reports 1 connected provider' });
+  });
+
+  it('stderr prose ending in a connection word is not a connection row', async () => {
+    const agent = await detectOne('opencode', {
+      spawn: fakeSpawn({
+        ...WHICH_OPENCODE,
+        [`${OPENCODE_PATH} auth list`]: { exitCode: 0, stdout: '', stderr: 'check your environment\n' },
+      }),
+    });
+    expect(agent).toMatchObject({ authenticated: false });
+  });
+
   it('an unreadable auth list is not treated as logged in', async () => {
     const agent = await detectOne('opencode', {
       spawn: fakeSpawn({ ...WHICH_OPENCODE, [`${OPENCODE_PATH} auth list`]: { exitCode: 1, stderr: 'permission denied' } }),

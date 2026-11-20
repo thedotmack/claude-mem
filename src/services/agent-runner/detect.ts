@@ -461,19 +461,41 @@ async function detectOpenCode(dependencies: AgentDetectionDependencies): Promise
   if (resolved.path === null) return { id: 'opencode', path: null, authenticated: false, reason: resolved.reason };
   const path = resolved.path;
 
-  // `opencode auth list` prints one line per stored credential and a summary
-  // such as "—  1 credentials"; a fresh install prints "0 credentials". Only
-  // the count is used, never a key or token. ANSI styling is stripped first.
+  // Two `opencode auth list` formats exist. The older one prints one line per
+  // stored credential and a summary such as "—  1 credentials"; a fresh install
+  // prints "0 credentials". OpenCode 2.x dropped the summary: it prints one row
+  // per connection — provider, label, then "stored" or "environment" — and no
+  // row at all when nothing is connected, and no line says "credential". Only
+  // counts are used, never a key or token. ANSI styling is stripped first.
   const status = await runCommand(dependencies.spawn, path, ['auth', 'list']);
   const output = `${status.stdout}\n${status.stderr}`.replace(/\x1b\[[0-9;]*m/g, '');
   if (status.exitCode !== 0) {
     return { id: 'opencode', path, authenticated: false, reason: commandFailureReason('opencode auth list', status) };
   }
-  const count = Number(/(\d+)\s+credentials?\b/i.exec(output)?.[1] ?? 0);
-  if (count > 0) {
-    return { id: 'opencode', path, authenticated: true, reason: `\`opencode auth list\` reports ${count} credential${count === 1 ? '' : 's'}` };
+  const noCredentials = '`opencode auth list` reports no credentials (run `opencode auth login`)';
+  const summary = /(\d+)\s+credentials?\b/i.exec(output);
+  if (summary !== null) {
+    const count = Number(summary[1]);
+    if (count > 0) {
+      return { id: 'opencode', path, authenticated: true, reason: `\`opencode auth list\` reports ${count} credential${count === 1 ? '' : 's'}` };
+    }
+    return { id: 'opencode', path, authenticated: false, reason: noCredentials };
   }
-  return { id: 'opencode', path, authenticated: false, reason: '`opencode auth list` reports no credentials (run `opencode auth login`)' };
+  // No summary line: count the 2.x connection rows. Rows are read from stdout
+  // only — stderr is diagnostics and never lists a connection.
+  const connections = status.stdout
+    .replace(/\x1b\[[0-9;]*m/g, '')
+    .split('\n')
+    .filter(line => {
+      const fields = line.trim().split(/\s+/);
+      const kind = fields[fields.length - 1]?.toLowerCase();
+      return fields.length >= 3 && (kind === 'stored' || kind === 'environment');
+    })
+    .length;
+  if (connections > 0) {
+    return { id: 'opencode', path, authenticated: true, reason: `\`opencode auth list\` reports ${connections} connected provider${connections === 1 ? '' : 's'}` };
+  }
+  return { id: 'opencode', path, authenticated: false, reason: noCredentials };
 }
 
 async function runCheck(
