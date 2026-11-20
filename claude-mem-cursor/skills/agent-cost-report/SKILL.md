@@ -1,5 +1,5 @@
 ---
-name: Agent Cost Report
+name: agent-cost-report
 description: >-
   Believable agent cost report for any period, default the last 7 full days PT, not counting today.
   Measured tokens from Claude Code transcripts priced at OpenRouter list prices (ESTIMATED), measured
