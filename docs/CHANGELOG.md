@@ -4,6 +4,41 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [16.0.2] - 2026-11-20
+
+## Critical fix
+
+- **An auto-update no longer deletes the plugin version a running Claude Code session was loaded from** (#6352, thanks @0xABCD01, closes #6349 reported by @justindrp). The cache sweep keeps a version folder while the Claude Code process recorded in its `.in_use` file is alive. On macOS and BSD, a few seconds of difference between the start time Claude Code recorded and the one `ps` reports was read as PID reuse, so the sweep deleted the folder from under a live session and every hook failed for the rest of that session. A start-time mismatch no longer removes the folder while the process at that PID is still Claude Code. A PID that now belongs to another program is still pruned as before.
+- **Every cache prune now logs why and who.** The worker writes one log line per removed version with its reason (orphaned or superseded) and the `.in_use` records it rejected and why (process exited or start-time mismatch), so any removal can be traced from the log alone.
+
+## Fixes
+
+- **The session-start card is drawn on Team and Enterprise accounts** (#6353, thanks @KeithMoc, closes #6314 reported by @TimoWestland). When an organization plugin runs first and the card's usual hooks never fire, the card now asks for itself from the `session.start` hook and the context hook answers it.
+- **My Work detects OpenCode 2.x connections** (#6340, thanks @ZedingZhang, closes #6339 reported by @Realauster). The login probe reads OpenCode's JSON output, so a connected provider is no longer reported as logged out on OpenCode 2.3.2.
+- **My Work refresh prefers MXC for isolated Codex launches on Windows** (#6348, thanks @QuantScorpus, refs #5163). The refresh no longer picks the unelevated sandbox and fails before the agent starts.
+- **Both host-observer probes give a slow observer the same 1 s** (#6359, thanks @rtmalikian, closes #6358). The async probe used 400 ms and the install-time probe 1 s, so one called a valid observer "occupied" and the other did not.
+- **Chroma collection deletes that lose their reply are checked before a rebuild** (#6338, thanks @POWDER-RANGER). The worker lists collections once instead of replaying the delete, and only rebuilds once the delete is confirmed.
+- **chroma-mcp restarts after a cancelled read once in-flight writes settle** (#6337, thanks @MaxWang007). The next call no longer goes to a server that can no longer read its input.
+- **Worker errors and unknown paths answer in JSON** (#6341, thanks @DeryFerd). The worker now installs its 404 and error handlers, so it no longer returns Express's HTML error page with local file paths in the stack trace.
+- **CLAUDE.md placement resolves absolute paths before the project check** (#6336, thanks @LeviReisJs). Forward-slash paths on Windows are no longer dropped, and paths that climb out of the project with `..` are refused.
+- **`npx claude-mem doctor` reads the worker's doctor endpoint once** (#6344, thanks @DeryFerd), so a slow worker costs one timeout instead of two.
+- **The Agent Cost Report skill uses a spec-compliant name** (#6356, thanks @LuckVd, refs #6355), so agents that check skill names load it.
+
+## New
+
+- **Codex as an observer quota fallback** (#6326, thanks @QuantScorpus). When Claude hits its quota guard, the observer can use the local Codex CLI signed in with ChatGPT and return to Claude through the existing recovery path.
+- **WorldRouter preset for the OpenAI-compatible provider** (#6357, thanks @Opgeek-1).
+- **The startup card shows the Claude-Mem mark** in a right column when the terminal is wide enough (#6333).
+
+## Tests, CI and docs
+
+- A DNS-rebinding test pins the worker's Host guard ahead of CORS (#6345, thanks @DeryFerd).
+- The Windows build runs the postinstall allowlist guard (#6343, thanks @DeryFerd).
+- Devin cloud needs one org secret to connect CMEM Pro (#6335).
+- The Docker pinning example says to build from the repository root (#6346, thanks @DeryFerd).
+
+**Full changelog**: https://github.com/thedotmack/claude-mem/compare/v16.0.1...v16.0.2
+
 ## [16.0.1] - 2026-11-19
 
 ## Critical fixes
