@@ -6,7 +6,8 @@
  * A plugin has one hooks module (Claude Code refuses a second path under
  * `modules`), so every claude-mem mod registers its hooks through this file.
  * It also allows one hook per event without a matcher: auto-clear has
- * `session.start`, so another mod that needs it registers under a matcher.
+ * `session.start`, so another mod that needs it registers under a matcher,
+ * as the session-start card does.
  *
  * Claude Code reads what a hooks module hooks and calls off its source, so
  * `register` is a function declaration, every hook is `on("<event>", hook)`,

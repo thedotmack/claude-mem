@@ -1,10 +1,15 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 
 import { PRO_FALLBACK_NOTICE_MARKER } from '../../../src/shared/cmem-gateway.js';
-import { sessionStartCardSlotPath } from '../../../src/shared/session-start-card-slot.js';
+import {
+  SESSION_START_CARD_REQUEST_WAIT_MS,
+  sessionStartCardRequestPath,
+  sessionStartCardSlotClockOf,
+  sessionStartCardSlotPath,
+} from '../../../src/shared/session-start-card-slot.js';
 import { TEAMBRAIN_DISCOVERY_LINE, TEAMBRAIN_DISCOVERY_NOTICE_MARKER } from '../../../src/shared/teambrain.js';
 import { paths } from '../../../src/shared/paths.js';
 import {
@@ -716,6 +721,152 @@ describe('contextHandler SessionStart path', () => {
       expect(result.systemMessage).toContain(timeline);
       expect(result.systemMessage).toMatch(/\n\nView Observations Live @ \S+ · 2 lines$/);
       expect(existsSync(path.join(pluginDataDirectory, 'session-start-card'))).toBe(false);
+    });
+  });
+
+  // A Team or Enterprise account (#6314): the organization's plugin sends the
+  // SessionStart event past the hooks module, so the event names no file. The
+  // card asked with a request file when the Claude Code process started.
+  describe('session-start card (the event names no file, and the card asked with a request file)', () => {
+    const timeline = '\x1b[2mAccess Claude-Mem Rules + Tools: ~/.claude-mem/RULES-AND-TOOLS.md\x1b[0m\n\n'
+      + '  \x1b[2m#101\x1b[0m  11:55a  first row\n  \x1b[2m#102\x1b[0m          newest row';
+    const savedPluginData = process.env.CLAUDE_PLUGIN_DATA;
+    const savedEntrypoint = process.env.CLAUDE_CODE_ENTRYPOINT;
+    let pluginDataDirectory: string;
+    let slotFolder: string;
+    const start = async (sessionId: string, sessionSource: 'startup' | 'clear' | 'compact' = 'startup', sessionStartCardFile?: string) => {
+      const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+      return contextHandler.execute({ sessionId, cwd: '/tmp/repo', platform: 'claude-code', sessionSource, sessionStartCardFile });
+    };
+    /** The request as the card writes it when the process starts. */
+    const cardAsks = (sessionId: string, askedAtEpochMs: number = Date.now()) => {
+      mkdirSync(slotFolder, { recursive: true });
+      writeFileSync(sessionStartCardRequestPath(pluginDataDirectory, sessionId, askedAtEpochMs), '');
+      return askedAtEpochMs;
+    };
+    const slotsOf = (sessionId: string) => (existsSync(slotFolder) ? readdirSync(slotFolder) : [])
+      .filter(fileName => sessionStartCardSlotClockOf(fileName, sessionId) !== null);
+    const allSlots = () => (existsSync(slotFolder) ? readdirSync(slotFolder) : []).filter(fileName => fileName.endsWith('.json'));
+    /** The hook's limit on its wait for a request, read where the handler reads it. */
+    const hookWaitMs = async () =>
+      (await import('../../../src/cli/session-start-card-slot-writer.js')).SESSION_START_CARD_REQUEST_HOOK_WAIT_MS;
+
+    beforeEach(async () => {
+      pluginDataDirectory = mkdtempSync(path.join(tmpdir(), 'session-start-card-request-context-'));
+      slotFolder = path.join(pluginDataDirectory, 'session-start-card');
+      process.env.CLAUDE_PLUGIN_DATA = pluginDataDirectory;
+      process.env.CLAUDE_CODE_ENTRYPOINT = 'cli';
+      showTerminalOutput = true;
+      workerContext = timeline;
+      // Once-only lines (the TeamBrain discovery line, the telemetry notice) are used up here.
+      await start('request-prime');
+    });
+    afterEach(() => {
+      rmSync(pluginDataDirectory, { recursive: true, force: true });
+      if (savedPluginData === undefined) delete process.env.CLAUDE_PLUGIN_DATA;
+      else process.env.CLAUDE_PLUGIN_DATA = savedPluginData;
+      if (savedEntrypoint === undefined) delete process.env.CLAUDE_CODE_ENTRYPOINT;
+      else process.env.CLAUDE_CODE_ENTRYPOINT = savedEntrypoint;
+      showTerminalOutput = false;
+    });
+
+    it('names the slot itself, writes the banner there and sends one line', async () => {
+      const whole = await start('request-off');
+      const askedAt = cardAsks('request-on');
+      const result = await start('request-on');
+
+      expect(result.systemMessage).toMatch(/^View Observations Live @ \S+ · 2 lines$/);
+      const [slotFileName, ...others] = slotsOf('request-on');
+      expect(others).toEqual([]);
+      // Named by the hook's clock, at or after the request: the card takes no earlier slot for its answer.
+      expect(sessionStartCardSlotClockOf(slotFileName, 'request-on')).toBeGreaterThanOrEqual(askedAt);
+      const { text } = JSON.parse(readFileSync(path.join(slotFolder, slotFileName), 'utf-8')) as { text: string };
+      // Card and message together are the banner a session without the card gets.
+      expect(`${text}\n\n${result.systemMessage}`).toBe(whole.systemMessage!);
+      expect(result.hookSpecificOutput).toEqual(whole.hookSpecificOutput);
+    });
+
+    // The order measured on a Team account: the card writes its request while the hook runs, and in 3 of
+    // 8 starts the hook listed the slot folder first (by 5, 21 and 86 ms).
+    it('waits for a request the card writes after the hook has listed the folder, and sends one line', async () => {
+      const whole = await start('request-off');
+      // An earlier session's request: a card has asked from this plugin data folder before.
+      cardAsks('an-earlier-session', Date.now() - 60_000);
+
+      const startedAt = Date.now();
+      const requestIsLateByMs = 86;
+      let askedAt = 0;
+      const cardWritesLate = setTimeout(() => { askedAt = cardAsks('request-late'); }, requestIsLateByMs);
+      const result = await start('request-late');
+      clearTimeout(cardWritesLate);
+
+      // The hook was waiting when the request came: it returned after it, and within its limit.
+      expect(askedAt).toBeGreaterThanOrEqual(startedAt);
+      expect(Date.now() - startedAt).toBeLessThan(await hookWaitMs());
+      expect(result.systemMessage).toMatch(/^View Observations Live @ \S+ · 2 lines$/);
+      const [slotFileName, ...others] = slotsOf('request-late');
+      expect(others).toEqual([]);
+      // The card's look takes this slot: it is named at or after the request.
+      expect(sessionStartCardSlotClockOf(slotFileName, 'request-late')).toBeGreaterThanOrEqual(askedAt);
+      const { text } = JSON.parse(readFileSync(path.join(slotFolder, slotFileName), 'utf-8')) as { text: string };
+      expect(`${text}\n\n${result.systemMessage}`).toBe(whole.systemMessage!);
+    });
+
+    it('keeps the whole banner as the hook message unless a card of this start asked for it', async () => {
+      const whole = await start('request-off');
+      // The control: a request that stands is answered with one line.
+      cardAsks('request-control');
+      expect((await start('request-control')).systemMessage).not.toBe(whole.systemMessage!);
+      expect(slotsOf('request-control')).toHaveLength(1);
+
+      // No request of this session. A card asked from this folder before (the control's), so the hook waits
+      // its limit for one, and then sends the whole banner: nothing would draw a slot.
+      const waitStartedAt = Date.now();
+      expect((await start('request-none')).systemMessage).toBe(whole.systemMessage!);
+      // Nine tenths of the limit: a timer may fire a fraction of a millisecond early.
+      expect(Date.now() - waitStartedAt).toBeGreaterThanOrEqual((await hookWaitMs()) * 0.9);
+      // Another session's request.
+      cardAsks('request-of-another-session');
+      expect((await start('request-not-mine')).systemMessage).toBe(whole.systemMessage!);
+      // A request that has run out: the card has stopped looking.
+      cardAsks('request-run-out', Date.now() - SESSION_START_CARD_REQUEST_WAIT_MS);
+      expect((await start('request-run-out')).systemMessage).toBe(whole.systemMessage!);
+      // A /clear and a compaction: session.start does not come with them, so no card looks for their banner.
+      cardAsks('request-clear');
+      expect((await start('request-clear', 'clear')).systemMessage).toBe(whole.systemMessage!);
+      cardAsks('request-compact');
+      expect((await start('request-compact', 'compact')).systemMessage).toBe(whole.systemMessage!);
+      // Not the terminal's own screen.
+      cardAsks('request-print-mode');
+      process.env.CLAUDE_CODE_ENTRYPOINT = 'sdk-cli';
+      expect((await start('request-print-mode')).systemMessage).toBe(whole.systemMessage!);
+
+      expect(allSlots()).toEqual(slotsOf('request-control'));
+    });
+
+    it('writes only the file the event names when the SessionStart hook did run: one start, one slot', async () => {
+      // The control: a request alone is answered with a slot the hook names.
+      cardAsks('request-control');
+      await start('request-control');
+      expect(slotsOf('request-control')).toHaveLength(1);
+
+      cardAsks('request-and-named');
+      const namedSlotFile = sessionStartCardSlotPath(pluginDataDirectory, 'request-and-named', 1794888786050);
+      const result = await start('request-and-named', 'startup', namedSlotFile);
+      expect(result.systemMessage).toMatch(/^View Observations Live @ \S+ · 2 lines$/);
+      expect(slotsOf('request-and-named')).toEqual([path.basename(namedSlotFile)]);
+    });
+
+    it('answers no request when there is no banner to draw', async () => {
+      // The control: with a banner, this request is answered.
+      cardAsks('request-control');
+      await start('request-control');
+      expect(slotsOf('request-control')).toHaveLength(1);
+
+      showTerminalOutput = false;
+      cardAsks('request-banner-off');
+      expect((await start('request-banner-off')).systemMessage).toBeUndefined();
+      expect(slotsOf('request-banner-off')).toEqual([]);
     });
   });
 

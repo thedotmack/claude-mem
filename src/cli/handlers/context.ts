@@ -44,7 +44,7 @@ import { hasPendingInstallSetup } from '../../shared/setup-install.js';
 import { projectsQueryString } from '../../shared/project-list.js';
 import { CONTEXT_OUTPUT_LIMIT } from '../../services/context/ContextBudget.js';
 import { consumeTelemetryNotice } from '../../services/telemetry/consent.js';
-import { writeSessionStartCardSlot } from '../session-start-card-slot-writer.js';
+import { awaitSessionStartCardSlotForRequest, writeSessionStartCardSlot } from '../session-start-card-slot-writer.js';
 import {
   fetchTeamBrief,
   formatTeamBrief,
@@ -648,9 +648,18 @@ export const contextHandler: EventHandler = {
     // unwritten and the whole banner goes in the hook message.
     // The card can still fail to draw, so what is shown only once (the
     // notices, the TeamBrain discovery line) stays in the hook message.
-    const cardDrawsBanner = showsBanner && additionalContext !== '' && input.sessionStartCardFile !== undefined
+    // Where the card's SessionStart hook is passed over (a Team or Enterprise
+    // account, #6314) the event names no file. The hook then names the slot
+    // itself, and only while the card's request file says it is looking for
+    // one: without a request the whole banner goes in the hook message. The
+    // card writes that request while this hook runs, so the hook waits a
+    // bounded time for it where a card has asked before.
+    const sessionStartCardFile = showsBanner && additionalContext !== ''
+      ? input.sessionStartCardFile ?? await awaitSessionStartCardSlotForRequest(input.sessionId, input.sessionSource)
+      : undefined;
+    const cardDrawsBanner = sessionStartCardFile !== undefined
       && writeSessionStartCardSlot(
-        input.sessionStartCardFile,
+        sessionStartCardFile,
         input.sessionId,
         sessionStartCardText(displayContent, sessionStartBannerHeader(trialDaysLine, null, settings.CLAUDE_MEM_PRO_PLAN)),
       );
