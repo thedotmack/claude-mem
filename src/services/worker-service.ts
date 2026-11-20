@@ -676,8 +676,29 @@ export class WorkerService implements WorkerRef {
         runningScriptPath: __dirname,
         additionalProtectedVersions: [packageVersion],
       }).then(result => {
-        if (result.removed.length > 0) {
-          logger.info('SYSTEM', `Pruned ${result.removed.length} stale plugin cache version(s)`, { removed: result.removed });
+        // One info line per removed folder: who pruned it (this worker's PID
+        // and version), what it protected, the plan's reason and the
+        // `.in_use` verdicts that failed to keep it. A removal that costs a
+        // live session its hooks must be attributable from the log alone
+        // (#6349).
+        const sweeper = { source: 'worker-sweep', workerPid: process.pid, workerVersion: packageVersion };
+        for (const version of result.removed) {
+          logger.info('SYSTEM', `Pruned stale plugin cache version ${version}`, {
+            ...sweeper,
+            version,
+            reason: result.pruneReasons[version],
+            rejectedHostRecords: result.rejectedHostRecords.filter(record => record.version === version),
+            ...result.protection,
+          });
+        }
+        // The process-name override keeps a folder that a start-time mismatch
+        // would have condemned. Log each, so the override never hides the
+        // evidence of a mismatch (#6349).
+        for (const record of result.keptByProcessNameOverride) {
+          logger.info('SYSTEM', `Kept plugin cache version ${record.version}: its recorded process is still a Claude process though its start time differs`, {
+            ...sweeper,
+            ...record,
+          });
         }
         for (const failure of result.failed) {
           logger.warn('SYSTEM', `Could not prune plugin cache version ${failure.version}`, { reason: failure.reason });

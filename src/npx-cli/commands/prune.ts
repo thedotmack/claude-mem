@@ -23,6 +23,8 @@ import { styleText } from 'node:util';
 import { pluginCacheRootDirectory } from '../utils/paths.js';
 import {
   DEFAULT_CACHE_RETENTION,
+  describeProcessNameOverride,
+  describePrunedVersion,
   planPluginCachePrune,
   prunePluginCacheSafely,
   resolvePruneProtection,
@@ -82,12 +84,16 @@ export async function runPruneCommand(argv: string[] = []): Promise<void> {
       console.log(styleText('dim', '\nDry run — nothing was deleted.'));
       return;
     }
-    const { keep, prune } = planPluginCachePrune(root, keepCount, protectedVersions);
+    const plan = planPluginCachePrune(root, keepCount, protectedVersions);
+    const { keep, prune } = plan;
     if (protectedVersions.length > 0) {
       console.log(`  ${styleText('dim', 'Protected:')} ${protectedVersions.join(', ')} (live worker / registered install)`);
     }
     console.log(`  ${styleText('dim', 'Keep:')}      ${keep.length > 0 ? keep.join(', ') : '(none)'}`);
-    console.log(`  ${styleText('yellow', 'Would remove:')} ${prune.length > 0 ? prune.join(', ') : '(none)'}`);
+    console.log(`  ${styleText('yellow', 'Would remove:')} ${prune.length > 0 ? prune.map(version => describePrunedVersion(version, plan)).join(', ') : '(none)'}`);
+    for (const record of plan.keptByProcessNameOverride) {
+      console.log(`  ${styleText('dim', describeProcessNameOverride(record))}`);
+    }
     console.log(styleText('dim', '\nDry run — nothing was deleted.'));
     return;
   }
@@ -99,9 +105,12 @@ export async function runPruneCommand(argv: string[] = []): Promise<void> {
   }
   console.log(`  ${styleText('dim', 'Kept:')}      ${result.kept.length > 0 ? result.kept.join(', ') : '(none)'}`);
   if (result.removed.length > 0) {
-    console.log(`  ${styleText('green', 'Removed:')}   ${result.removed.join(', ')}`);
+    console.log(`  ${styleText('green', 'Removed:')}   ${result.removed.map(version => describePrunedVersion(version, result)).join(', ')}`);
   } else {
     console.log(`  ${styleText('dim', 'Removed:')}   (none)`);
+  }
+  for (const record of result.keptByProcessNameOverride) {
+    console.log(`  ${styleText('dim', describeProcessNameOverride(record))}`);
   }
   for (const failure of result.failed) {
     console.log(`  ${styleText('yellow', '!')} Could not remove ${failure.version}: ${failure.reason}`);

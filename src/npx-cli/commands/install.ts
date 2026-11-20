@@ -167,7 +167,7 @@ import {
   readPluginVersion,
   writeJsonFileAtomic,
 } from '../utils/paths.js';
-import { prunePluginCacheSafely } from '../utils/prune-cache.js';
+import { describeProcessNameOverride, describePrunedVersion, prunePluginCacheSafely } from '../utils/prune-cache.js';
 import { isUserScopeRegistration } from '../../shared/claude-code-plugin-paths.js';
 import { readJsonSafe } from '../../utils/json-utils.js';
 import { clearClaudeAutoMemoryOverride } from '../utils/claude-auto-memory.js';
@@ -1029,7 +1029,10 @@ export async function copyPluginToCache(version: string): Promise<void> {
     if (pruned.retainedForLiveWorker) {
       log.info('Skipped cache prune: a worker is running but its version could not be read; retaining all versions.');
     } else if (pruned.removed.length > 0) {
-      log.info(`Pruned ${pruned.removed.length} stale plugin cache version(s): ${pruned.removed.join(', ')}`);
+      log.info(`Pruned ${pruned.removed.length} stale plugin cache version(s): ${pruned.removed.map(removed => describePrunedVersion(removed, pruned)).join(', ')}`);
+    }
+    for (const record of pruned.keptByProcessNameOverride) {
+      log.info(describeProcessNameOverride(record));
     }
     for (const failure of pruned.failed) {
       log.warn(`Could not prune cache version ${failure.version}: ${failure.reason}`);

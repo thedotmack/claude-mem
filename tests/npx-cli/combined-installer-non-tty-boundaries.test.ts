@@ -102,7 +102,9 @@ mock.module('../../src/launcher/install-launcher.js', () => ({
   ...launcher, ensureLauncherOnPath: () => ({ status: 'bun-not-found' }),
 }));
 mock.module('../../src/npx-cli/utils/prune-cache.js', () => ({
-  prunePluginCacheSafely: async () => ({ removed: [], failed: [], retainedForLiveWorker: false }),
+  prunePluginCacheSafely: async () => ({ removed: [], failed: [], retainedForLiveWorker: false, keptByProcessNameOverride: [] }),
+  describePrunedVersion: (version: string) => version,
+  describeProcessNameOverride: () => '',
 }));
 mock.module('@clack/prompts', () => ({
   ...prompts,
