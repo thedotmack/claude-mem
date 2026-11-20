@@ -483,11 +483,37 @@ var SESSION_START_CARD_FILE_KEY = "claude_mem_session_start_card_file";
 var SESSION_START_CARD_FOLDER = "session-start-card";
 var SESSION_START_CARD_SOURCES = ["startup", "clear", "compact"];
 var FILE_NAME_SAFE_SESSION_ID = /^[A-Za-z0-9_-]+$/;
+var SLOT_FILE_NAME = /^[A-Za-z0-9_-]+\.\d+\.json$/;
 function isFileNameSafeSessionId(sessionId) {
   return typeof sessionId === "string" && FILE_NAME_SAFE_SESSION_ID.test(sessionId);
 }
+function isSessionStartCardSlotFileName(fileName) {
+  return SLOT_FILE_NAME.test(fileName);
+}
+function isSessionStartCardSlotFileNameOf(fileName, sessionId) {
+  return isFileNameSafeSessionId(sessionId) && isSessionStartCardSlotFileName(fileName) && fileName.startsWith(`${sessionId}.`) && /^\d+\.json$/.test(fileName.slice(sessionId.length + 1));
+}
 function sessionStartCardSlotPath(pluginDataDirectory, sessionId, startedAtEpochMs) {
   return `${pluginDataDirectory.replace(/[\\/]+$/, "")}/${SESSION_START_CARD_FOLDER}/${sessionId}.${startedAtEpochMs}.json`;
+}
+function sessionStartCardSlotClockOf(fileName, sessionId) {
+  if (!isSessionStartCardSlotFileNameOf(fileName, sessionId)) return null;
+  const clockEpochMs = Number(fileName.slice(sessionId.length + 1, -".json".length));
+  return Number.isSafeInteger(clockEpochMs) ? clockEpochMs : null;
+}
+var SESSION_START_CARD_REQUEST_LOOK_EVERY_MS = 200;
+var SESSION_START_CARD_REQUEST_WAIT_MS = 8e3;
+function sessionStartCardRequestPath(pluginDataDirectory, sessionId, askedAtEpochMs) {
+  return `${pluginDataDirectory.replace(/[\\/]+$/, "")}/${SESSION_START_CARD_FOLDER}/${sessionId}.${askedAtEpochMs}.request`;
+}
+function newestSessionStartCardSlotSince(fileNames, sessionId, notBeforeEpochMs) {
+  let newest = null;
+  for (const fileName of fileNames) {
+    const clockEpochMs = sessionStartCardSlotClockOf(fileName, sessionId);
+    if (clockEpochMs === null || clockEpochMs < notBeforeEpochMs) continue;
+    if (newest === null || clockEpochMs > newest.clockEpochMs) newest = { fileName, clockEpochMs };
+  }
+  return newest;
 }
 
 // src/mods/session-start-card/card.ts
@@ -569,8 +595,55 @@ function sessionStartCardLines(slotFileText) {
   return parseAnsiLines(slot.text);
 }
 
+// src/mods/session-start-card/brand-mark.ts
+var COMPACT_MARK = rasterMark([
+  "  \u28C0\u2824\u28FC\u281B\u2847\u28B8\u281F\u28D3\u28E4\u28C0  ",
+  " \u28C0\u285B\u2832\u28CC\u28A3\u2847\u28A8\u287E\u2889\u2864\u283F\u2880 ",
+  "\u28F8\u2881\u28C9\u2832\u28CC\u28E6\u28F7\u28FF\u28F4\u28EB\u2836\u2812\u281A\u2803",
+  "\u2874\u280B\u28C9\u28D9\u28D2\u28FF\u28FF\u28FF\u28FF\u28D2\u285A\u281B\u28A6\u28F9",
+  "\u28B0\u281F\u2889\u28E4\u2834\u28AB\u28BF\u283F\u2851\u28AE\u28C9\u2833\u28CC\u284B",
+  "\u2808\u28A0\u284F\u28A0\u2876\u288B\u28B8 \u2859\u28C6\u2839\u28E6\u287C\u2801",
+  "  \u2819\u281B\u28A0\u281E\u2818\u2846\u2827\u28FD\u2836   "
+]);
+var LARGE_MARK = rasterMark([
+  "     \u2880\u28C0\u28F0\u283E\u28BF\u28F7\u2844\u28A0\u28FE\u287F\u283F\u2826       ",
+  "   \u28A0\u28FE\u285B\u2819\u283B\u28E7 \u28BB\u2847\u28B8\u285F\u2880\u28E4\u28F6\u287E\u283F\u28F7\u28C4   ",
+  "  \u2880\u2849\u281B\u283B\u28E6\u2840\u2818\u28E7\u28FC\u2847\u28B8\u28C1\u28FE\u280F\u2881\u28E0\u28F4\u28FF\u281F   ",
+  " \u28FC\u287F\u283B\u28B7\u28C4\u2808\u283B\u28E6\u2818\u28FF\u2847\u28B8\u28FF\u2883\u28F4\u285F\u280B\u28C1\u28C0\u28C0\u28FC\u28E7 ",
+  "\u28B0\u287F\u2880\u28C0\u28C0\u2819\u283B\u28E6\u28DD\u28F7\u28FC\u28E7\u28FE\u28E7\u287E\u28CB\u28F4\u283E\u281B\u281B\u281B\u281B\u280B ",
+  "\u2888\u28E1\u28FE\u281F\u281B\u283B\u2836\u28E4\u28FD\u28FF\u28FF\u28FF\u28FF\u28FF\u28FF\u28EF\u28E5\u28F4\u2876\u2836\u28F6\u28C4\u2838\u28E7",
+  "\u287F\u280B\u2881\u28E0\u28E4\u28E4\u28E4\u28E4\u2876\u28FF\u28FF\u28FF\u28FF\u28FF\u287F\u28EF\u28E4\u28C4\u28C0\u2840 \u28BF\u28E6\u28FF",
+  " \u28F4\u287F\u280B\u2801\u2880\u28C0\u28E4\u287E\u289B\u28FF\u28BF\u287F\u28FF\u283B\u28E6\u28CC\u2809\u2819\u28BB\u28C6\u2808\u281B\u280B",
+  "\u2808\u28FF \u28A0\u28FE\u281F\u280B\u2801\u28E0\u28FE\u2803\u28B8\u2847\u2839\u28E6\u2840\u2819\u28BF\u28E6 \u2819\u28BF\u28F7 ",
+  " \u2808 \u28FF\u2847 \u28E0\u287E\u281B\u2881\u2840\u28B8\u2847 \u2819\u28BF\u2844 \u28BB\u28E7\u28E4\u28FE\u2803 ",
+  "   \u2839\u28F7\u28F4\u28FF\u2801 \u28FE\u2847\u28B8\u2847\u28B8\u28C7\u2808\u28FF\u2840\u2808\u281B\u280B\u2801  ",
+  "     \u2809\u2801\u2834\u283E\u281F \u2818\u28B7\u2808\u283B\u2837\u283F\u281F\u280B     "
+]);
+function rasterMark(grid) {
+  const columns = grid[0].length;
+  const bytes = new Uint8Array(grid.length * columns * 12);
+  const cells = new DataView(bytes.buffer);
+  let offset = 0;
+  for (const line of grid) {
+    for (const glyph of line) {
+      cells.setUint32(offset, glyph.charCodeAt(0), true);
+      cells.setUint32(offset + 4, 14181441, true);
+      cells.setUint32(offset + 8, 16777216, true);
+      offset += 12;
+    }
+  }
+  return { columns, rows: grid.length, cells: btoa(String.fromCharCode(...bytes)) };
+}
+function sessionStartMark(columns, rows = Infinity) {
+  if (columns >= 100 && rows >= LARGE_MARK.rows + 4) return LARGE_MARK;
+  if (columns >= 64 && rows >= COMPACT_MARK.rows + 4) return COMPACT_MARK;
+  return void 0;
+}
+
 // src/mods/session-start-card/register.ts
 var CARD_TITLE = "claude-mem";
+var MAX_LINES_BESIDE_MARK = 15;
+var NO_BANNER_FOUND_LINE = `claude-mem: the session-start card found no banner in the ${SESSION_START_CARD_REQUEST_WAIT_MS / 1e3} s after the session started, and stopped looking`;
 function cardNotShownLine(error) {
   return `claude-mem: the session-start card is not shown: ${error instanceof Error ? error.message : String(error)}`;
 }
@@ -578,6 +651,7 @@ function registerSessionStartCard(on) {
   let card = null;
   let isFullscreen = null;
   let waitingForHookRows = null;
+  let sessionWithNamedSlot = null;
   on("classic.SessionStart", async ($, e, next) => {
     waitingForHookRows = null;
     if (!drawsSessionStartCard(e.source, isFullscreen) || !isFileNameSafeSessionId(e.session_id)) return next(e);
@@ -602,6 +676,7 @@ function registerSessionStartCard(on) {
       result = await next(e);
     } else {
       const slotFile = slotPath;
+      sessionWithNamedSlot = e.session_id;
       result = await next({ ...e, [SESSION_START_CARD_FILE_KEY]: slotFile });
       try {
         if (await $.fs.exists(slotFile)) {
@@ -659,22 +734,116 @@ function registerSessionStartCard(on) {
       return keptRow;
     }
   );
+  on("session.start", { isInteractive: true }, async ($, e, next) => {
+    try {
+      if (await $.env.get("CLAUDE_CODE_ENTRYPOINT") === TERMINAL_ENTRYPOINT) {
+        const engine = await $.session.version();
+        if (supportsSessionStartCard(engine.base ?? engine.version)) {
+          const sessionId = await $.session.id();
+          const pluginDataDirectory = (await $.process.hookEnv()).CLAUDE_PLUGIN_DATA;
+          if (pluginDataDirectory && isFileNameSafeSessionId(sessionId) && sessionWithNamedSlot !== sessionId) {
+            const slotFolder = `${pluginDataDirectory.replace(/[\\/]+$/, "")}/${SESSION_START_CARD_FOLDER}`;
+            const askedAtEpochMs = await $.clock.now();
+            await $.fs.write(sessionStartCardRequestPath(pluginDataDirectory, sessionId, askedAtEpochMs), "");
+            let isLooking = false;
+            let hasStoppedLooking = false;
+            const stopLooking = () => {
+              hasStoppedLooking = true;
+              looks.cancel();
+            };
+            const looks = $.clock.every(SESSION_START_CARD_REQUEST_LOOK_EVERY_MS, async () => {
+              if (hasStoppedLooking) return;
+              try {
+                const isWaitOver = await $.clock.now() - askedAtEpochMs >= SESSION_START_CARD_REQUEST_WAIT_MS;
+                if (hasStoppedLooking) return;
+                if (isLooking) {
+                  if (!isWaitOver) return;
+                  stopLooking();
+                  $.ui.log(NO_BANNER_FOUND_LINE, { to: "debug" });
+                  return;
+                }
+                isLooking = true;
+                try {
+                  if (sessionWithNamedSlot === sessionId) {
+                    stopLooking();
+                    return;
+                  }
+                  const slot = newestSessionStartCardSlotSince(
+                    (await $.fs.list(slotFolder)).map((entry) => entry.name),
+                    sessionId,
+                    askedAtEpochMs
+                  );
+                  if (sessionWithNamedSlot === sessionId) {
+                    stopLooking();
+                    return;
+                  }
+                  if (slot === null) {
+                    if (!isWaitOver || hasStoppedLooking) return;
+                    stopLooking();
+                    $.ui.log(NO_BANNER_FOUND_LINE, { to: "debug" });
+                    return;
+                  }
+                  stopLooking();
+                  const slotFile = `${slotFolder}/${slot.fileName}`;
+                  const lines = sessionStartCardLines(await $.fs.read(slotFile));
+                  if (!lines) throw new Error(`${slotFile} holds no banner`);
+                  const requestedCard = { rowId: `session-start-${slot.clockEpochMs}`, lines };
+                  const cardBeforeThisStart = card;
+                  card = requestedCard;
+                  try {
+                    const placed = await $.ui.place({ id: requestedCard.rowId });
+                    if (!placed.isPlaced && placed.requestId === void 0) throw new Error(placed.reason);
+                    $.ui.invalidate("ui.render");
+                  } catch (error) {
+                    card = cardBeforeThisStart;
+                    throw error;
+                  }
+                } finally {
+                  isLooking = false;
+                }
+              } catch (error) {
+                stopLooking();
+                $.ui.log(cardNotShownLine(error));
+              }
+            });
+          }
+        }
+      }
+    } catch (error) {
+      $.ui.log(cardNotShownLine(error), { to: "debug" });
+    }
+    return next(e);
+  });
   on("ui.render", { component: "Placed" }, async ($, e, next) => {
     if (e.surface === TERMINAL_SURFACE && typeof e.viewport?.isFullscreen === "boolean") isFullscreen = e.viewport.isFullscreen;
     if (!card || e.props.plugin !== $.plugin.name || e.props.id !== card.rowId) return next(e);
-    const { Box, Text } = $.ui.resolve(e);
+    const { Box, Text, Raster } = $.ui.resolve(e);
+    const frame = { flexDirection: "column", borderStyle: "round", borderColor: "claude", paddingX: 1 };
+    const title = h(Text, { weight: "bold", color: "claude" }, CARD_TITLE);
+    const lines = card.lines.map(
+      (runs) => h(
+        Text,
+        null,
+        // A Text with nothing in it takes no row; a space keeps the blank line.
+        runs.length === 0 ? " " : runs.map((run) => h(Text, { color: run.color, dimColor: run.isDim, weight: run.isBold ? "bold" : void 0 }, run.text))
+      )
+    );
+    const mark = e.surface === TERMINAL_SURFACE ? sessionStartMark(e.viewport?.columns ?? 0, e.viewport?.rows) : void 0;
+    if (!mark) return h(Box, frame, title, lines);
     return h(
       Box,
-      { flexDirection: "column", borderStyle: "round", borderColor: "claude", paddingX: 1 },
-      h(Text, { weight: "bold", color: "claude" }, CARD_TITLE),
-      card.lines.map(
-        (runs) => h(
-          Text,
-          null,
-          // A Text with nothing in it takes no row; a space keeps the blank line.
-          runs.length === 0 ? " " : runs.map((run) => h(Text, { color: run.color, dimColor: run.isDim, weight: run.isBold ? "bold" : void 0 }, run.text))
+      frame,
+      h(
+        Box,
+        { flexDirection: "row", columnGap: 2 },
+        h(Box, { flexDirection: "column", minWidth: 0, flexGrow: 1 }, title, lines.slice(0, MAX_LINES_BESIDE_MARK)),
+        h(
+          Box,
+          { flexDirection: "column", width: mark.columns, flexShrink: 0, alignSelf: "center" },
+          h(Raster, { key: "brand-mark", ...mark })
         )
-      )
+      ),
+      lines.slice(MAX_LINES_BESIDE_MARK)
     );
   });
 }

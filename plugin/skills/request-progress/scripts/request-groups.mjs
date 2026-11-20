@@ -1128,7 +1128,7 @@ var init_SettingsDefaultsManager = __esm({
         CLAUDE_MEM_OPENAI_COMPAT_OBSERVATION_BATCH_SIZE: "1",
         // Queued same-context events per observer prompt (1-32); opt-in.
         CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: "claude",
-        // 'claude' (the Anthropic plan; '' means this too) | 'gemini' | 'openrouter' | 'openai-compatible' | 'off': where observer work goes while the selected provider cannot serve (spent allowance, rate limit or over capacity past its retries, outage, repeated unusable replies). Claude is used only when a Claude login or key exists
+        // 'claude' (the Anthropic plan; '' means this too) | 'codex' (the local Codex CLI's ChatGPT login) | 'gemini' | 'openrouter' | 'openai-compatible' | 'off': where observer work goes while the selected provider cannot serve (spent allowance, rate limit or over capacity past its retries, outage, repeated unusable replies). Claude is used only when a Claude login or key exists; Codex only when a ChatGPT login exists. Values: QUOTA_FALLBACK_OPTIONS in src/ui/provider-options.ts
         CLAUDE_MEM_QUOTA_FALLBACK_MODEL: "",
         // Claude model for a Claude fallback run; '' = CLAUDE_MEM_MODEL and tier routing. Ignored for other fallbacks (only ClaudeProvider reads modelOverride)
         CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD: "",
