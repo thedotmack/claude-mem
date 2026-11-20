@@ -84,19 +84,22 @@ it('reads an in-place append when fs.watch does not fire', async () => {
   silenceFilesystemWatches(watcher);
   await delay(WATCH_FLUSH_MS);
 
-  const internal = watcher as any;
-  let pollSawUnreadBytes = false;
-  const originalPoll = internal.pollTailedAppends.bind(watcher);
-  internal.pollTailedAppends = async () => {
-    const tailer = internal.tailers.get(file);
-    if (await tailer?.hasBytesPastReadOffset()) pollSawUnreadBytes = true;
-    return originalPoll();
+  // With every fs.watch closed, the append poll is the only caller left of
+  // this tailer's poke(). Counting pokes, rather than re-checking for unread
+  // bytes in a wrapper around the poll, also counts a poll tick that was
+  // already in flight and one that sees the bytes before the wrapper does.
+  const tailer = (watcher as any).tailers.get(file);
+  let pokedByPoll = false;
+  const originalPoke = tailer.poke.bind(tailer);
+  tailer.poke = () => {
+    pokedByPoll = true;
+    return originalPoke();
   };
 
   // appendFileSync writes into the existing inode; it does not replace the file.
   appendFileSync(file, second);
   await waitFor(() => loadWatchState(statePath).cwds?.[file] === '/second');
-  expect(pollSawUnreadBytes).toBe(true);
+  expect(pokedByPoll).toBe(true);
   expect(loadWatchState(statePath).offsets[file]).toBe(statSync(file).size);
   expect(statSync(file).size).toBe(Buffer.byteLength(first + second));
 });
