@@ -62,7 +62,7 @@ function runInstaller(missingKey: boolean) {
         ensureLauncherOnPath: () => ({ status: 'already-current', binaryPath: '/fixture/claude-mem' }),
         ensureLocalBinOnShellPath: () => ({ alreadyOnPath: true }),
       }));
-      mock.module(at('npx-cli/utils/prune-cache.js'), () => ({ prunePluginCacheSafely: async () => ({ removed: [], failed: [] }) }));
+      mock.module(at('npx-cli/utils/prune-cache.js'), () => ({ prunePluginCacheSafely: async () => ({ removed: [], failed: [], keptByProcessNameOverride: [] }), describePrunedVersion: version => version, describeProcessNameOverride: () => '' }));
       mock.module(at('npx-cli/install/usage-summary.js'), () => ({ readUsageSummary: async () => null, formatUsageSummaryLines: () => [] }));
       mock.module(at('npx-cli/install/claude-code-version.js'), () => ({ detectClaudeCodeVersion: () => undefined, claudeCodeVersionTooOldWarning: () => null }));
       mock.module(at('shared/worker-spawn-gate.js'), () => ({ holdSpawnLock: async () => () => {}, SPAWN_LOCK_STALE_MS: 1 }));

@@ -17,7 +17,9 @@ import {
   isClaudeProcessName,
   isHostProcessLive,
   readHostInUseRecords,
-  rejectedHostInUseRecords,
+  evaluateHostInUseRecords,
+  describePrunedVersion,
+  describeProcessNameOverride,
   DEFAULT_CACHE_RETENTION,
   type HostProcessProbe,
 } from '../../src/npx-cli/utils/prune-cache.js';
@@ -558,7 +560,9 @@ describe('a version a running host session is loaded from (#5970)', () => {
     for (const version of ['13.24.0', '13.25.0', '13.26.0', '13.27.0']) mkdirSync(join(scratch, version));
     writeHostInUseRecord(scratch, '13.24.0', process.pid);
 
-    expect(planPluginCachePrune(scratch, 2)).toEqual({ keep: ['13.27.0', '13.26.0', '13.24.0'], prune: ['13.25.0'] });
+    const plan = planPluginCachePrune(scratch, 2);
+    expect(plan.keep).toEqual(['13.27.0', '13.26.0', '13.24.0']);
+    expect(plan.prune).toEqual(['13.25.0']);
 
     const result = prunePluginCache({ cacheRoot: scratch, keepCount: 2 });
 
@@ -744,11 +748,123 @@ describe('prune diagnostics (#6349)', () => {
       name: () => 'node',
     };
 
-    expect(rejectedHostInUseRecords(scratch, ['13.24.0', '13.25.0'], probe)).toEqual([
+    expect(evaluateHostInUseRecords(scratch, ['13.24.0', '13.25.0'], probe).rejectedRecords).toEqual([
       { version: '13.24.0', pid: dead, procStart: 'Wed Nov 11 06:05:51 2026', reason: 'process-exited' },
       { version: '13.25.0', pid: 4242, procStart: 'Wed Nov 11 06:05:51 2026', reason: 'start-time-mismatch' },
     ]);
     const claudeProbe: HostProcessProbe = { ...probe, name: () => 'claude' };
-    expect(rejectedHostInUseRecords(scratch, ['13.25.0'], claudeProbe)).toEqual([]);
+    expect(evaluateHostInUseRecords(scratch, ['13.25.0'], claudeProbe).rejectedRecords).toEqual([]);
+  });
+
+  it('reports the verdict the plan used, reading each process once (Greptile P2 on #6352)', () => {
+    scratch = mkdtempSync(join(tmpdir(), 'claude-mem-prune-6349-one-pass-'));
+    for (const version of ['13.24.0', '13.26.0', '13.27.0']) mkdirSync(join(scratch, version));
+    writeHostInUseRecord(scratch, '13.24.0', 4242, JSON.stringify({ pid: 4242, procStart: 'Wed Nov 11 06:05:51 2026' }));
+    // The process is alive at the first read and gone at any later one. A
+    // second diagnostic pass would report process-exited, though the plan
+    // pruned on a start-time mismatch.
+    const reads = { alive: 0, startToken: 0, name: 0 };
+    const probe: HostProcessProbe = {
+      isAlive: () => { reads.alive += 1; return reads.alive === 1; },
+      startToken: () => { reads.startToken += 1; return 'utc:Thu Nov 12 09:41:07 2026'; },
+      name: () => { reads.name += 1; return 'node'; },
+    };
+
+    const plan = planPluginCachePrune(scratch, 2, [], probe);
+
+    expect(plan.prune).toEqual(['13.24.0']);
+    expect(plan.pruneReasons).toEqual({ '13.24.0': 'superseded' });
+    expect(plan.rejectedHostRecords).toEqual([
+      { version: '13.24.0', pid: 4242, procStart: 'Wed Nov 11 06:05:51 2026', reason: 'start-time-mismatch' },
+    ]);
+    expect(reads).toEqual({ alive: 1, startToken: 1, name: 1 });
+  });
+
+  it('names a version kept only because the process-name check beat a start-time mismatch', () => {
+    scratch = mkdtempSync(join(tmpdir(), 'claude-mem-prune-6349-override-'));
+    for (const version of ['15.18.0', '15.19.0', '16.0.0', '16.0.1']) mkdirSync(join(scratch, version));
+    writeFileSync(join(scratch, '15.19.0', '.orphaned_at'), String(Date.now()));
+    const recordedStart = 'Tue Nov 17 17:51:04 2026';
+    // 15.19.0: only the override keeps it. 15.18.0: a matching record keeps it
+    // as well. 16.0.1: retention keeps it anyway.
+    writeHostInUseRecord(scratch, '15.19.0', 4242, JSON.stringify({ pid: 4242, procStart: recordedStart }));
+    writeHostInUseRecord(scratch, '15.18.0', 4242, JSON.stringify({ pid: 4242, procStart: recordedStart }));
+    writeHostInUseRecord(scratch, '15.18.0', 5151, JSON.stringify({ pid: 5151, procStart: recordedStart }));
+    writeHostInUseRecord(scratch, '16.0.1', 4242, JSON.stringify({ pid: 4242, procStart: recordedStart }));
+    const probe: HostProcessProbe = {
+      isAlive: () => true,
+      startToken: pid => (pid === 5151 ? `utc:${recordedStart}` : 'utc:Wed Nov 18 17:51:04 2026'),
+      name: () => 'claude',
+    };
+
+    const plan = planPluginCachePrune(scratch, 2, [], probe);
+
+    expect(plan.prune).toEqual([]);
+    expect(plan.keptByProcessNameOverride).toEqual([{
+      version: '15.19.0',
+      pid: 4242,
+      procStart: recordedStart,
+      currentStartToken: 'utc:Wed Nov 18 17:51:04 2026',
+      processName: 'claude',
+    }]);
+    expect(describeProcessNameOverride(plan.keptByProcessNameOverride[0])).toBe(
+      'Kept 15.19.0: pid 4242 is still a Claude process (claude), though its start time '
+      + 'utc:Wed Nov 18 17:51:04 2026 differs from the .in_use record (Tue Nov 17 17:51:04 2026)',
+    );
+  });
+
+  it('describes each pruned version with its reason and rejected records', () => {
+    const evidence = {
+      pruneReasons: { '13.24.0': 'orphaned', '13.25.0': 'superseded' } as const,
+      rejectedHostRecords: [
+        { version: '13.24.0', pid: 11, reason: 'process-exited' as const },
+        { version: '13.24.0', pid: 12, procStart: 'Wed Nov 11 06:05:51 2026', reason: 'start-time-mismatch' as const },
+      ],
+    };
+    expect(describePrunedVersion('13.24.0', evidence))
+      .toBe('13.24.0 (orphaned; .in_use pid 11 process-exited; .in_use pid 12 start-time-mismatch)');
+    expect(describePrunedVersion('13.25.0', evidence)).toBe('13.25.0 (superseded)');
+    expect(() => describePrunedVersion('13.26.0', evidence)).toThrow(/No prune reason/);
+  });
+
+  it('npx claude-mem prune prints the reason for each version it removes or would remove', () => {
+    scratch = mkdtempSync(join(tmpdir(), 'claude-mem-prune-6349-command-'));
+    const root = join(scratch, 'cache');
+    for (const version of ['13.20.0', '13.24.0', '13.25.0', '13.26.0']) mkdirSync(join(root, version), { recursive: true });
+    writeFileSync(join(root, '13.20.0', '.orphaned_at'), String(Date.now()));
+    const dead = exitedPid();
+    writeHostInUseRecord(root, '13.20.0', dead);
+    const run = (args: string[]): string => {
+      const script = `
+        import { mock } from 'bun:test';
+        const paths = await import(${JSON.stringify(join(import.meta.dir, '../../src/npx-cli/utils/paths.ts'))});
+        const registry = await import(${JSON.stringify(join(import.meta.dir, '../../src/supervisor/process-registry.ts'))});
+        mock.module(${JSON.stringify(join(import.meta.dir, '../../src/npx-cli/utils/paths.ts'))}, () => ({
+          ...paths,
+          pluginCacheRootDirectory: () => ${JSON.stringify(root)},
+          installedPluginsPath: () => ${JSON.stringify(join(scratch!, 'missing-registry.json'))},
+        }));
+        mock.module(${JSON.stringify(join(import.meta.dir, '../../src/supervisor/process-registry.ts'))}, () => ({
+          ...registry, readOwnedWorkerPidInfo: () => null,
+        }));
+        globalThis.fetch = async () => { throw new Error('ECONNREFUSED'); };
+        const { runPruneCommand } = await import(${JSON.stringify(join(import.meta.dir, '../../src/npx-cli/commands/prune.ts'))});
+        await runPruneCommand(${JSON.stringify(args)});
+      `;
+      const child = spawnSync(process.execPath, ['--eval', script], {
+        env: { ...process.env, CLAUDE_MEM_DATA_DIR: join(scratch!, 'data'), CLAUDE_CONFIG_DIR: join(scratch!, 'claude'), NO_COLOR: '1' },
+        encoding: 'utf8', timeout: 10_000,
+      });
+      expect(child.status, child.stderr).toBe(0);
+      return child.stdout.replace(/\u001b\[[0-9;]*m/g, '');
+    };
+
+    const preview = run(['--dry-run']);
+    expect(preview).toContain(`Would remove: 13.24.0 (superseded), 13.20.0 (orphaned; .in_use pid ${dead} process-exited)`);
+    expect(existsSync(join(root, '13.20.0'))).toBe(true);
+
+    const removal = run([]);
+    expect(removal).toContain(`Removed:   13.24.0 (superseded), 13.20.0 (orphaned; .in_use pid ${dead} process-exited)`);
+    expect(existsSync(join(root, '13.20.0'))).toBe(false);
   });
 });

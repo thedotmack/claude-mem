@@ -36,6 +36,16 @@ const emptyPrune = {
   removed: [] as string[],
   failed: [] as { version: string; reason: string }[],
   retainedForLiveWorker: false,
+  pruneReasons: {} as Record<string, 'orphaned' | 'superseded'>,
+  rejectedHostRecords: [] as pruneCache.RejectedHostInUseRecord[],
+  keptByProcessNameOverride: [] as pruneCache.ProcessNameOverrideRecord[],
+  protection: {
+    runningVersion: null as string | null,
+    registeredVersions: [] as string[],
+    additionalProtectedVersions: [] as string[],
+    workingVersions: [] as string[],
+    hostInUseVersions: [] as string[],
+  },
 };
 
 function workerWithFakeTimers() {
@@ -65,9 +75,9 @@ function workerWithFakeTimers() {
   spyOn(globalThis, 'clearTimeout').mockImplementation((() => { cleared.timeouts += 1; }) as unknown as typeof clearTimeout);
   spyOn(globalThis, 'clearInterval').mockImplementation((() => { cleared.intervals += 1; }) as unknown as typeof clearInterval);
   const prune = spyOn(pruneCache, 'pruneSupersededPluginCache').mockResolvedValue(emptyPrune);
-  spyOn(logger, 'info').mockImplementation(() => {});
+  const info = spyOn(logger, 'info').mockImplementation(() => {});
   spyOn(logger, 'warn').mockImplementation(() => {});
-  return { worker, timeouts, intervals, unrefs, cleared, prune };
+  return { worker, timeouts, intervals, unrefs, cleared, prune, info };
 }
 
 describe('WorkerService plugin cache prune', () => {
@@ -111,5 +121,48 @@ describe('WorkerService plugin cache prune', () => {
     const workerDir = path.dirname(fileURLToPath(new URL('../../src/services/worker-service.ts', import.meta.url)));
     expect(options.runningScriptPath).toBe(workerDir);
     expect(options.additionalProtectedVersions).toEqual(['0.0.0-dev']);
+  });
+
+  it('logs who pruned each version, why, and what it protected, plus each folder only the process-name check kept (#6349)', async () => {
+    const fixture = workerWithFakeTimers();
+    const protection = {
+      runningVersion: '16.0.1',
+      registeredVersions: ['16.0.1'],
+      additionalProtectedVersions: ['0.0.0-dev'],
+      workingVersions: ['16.0.1'],
+      hostInUseVersions: ['16.0.0'],
+    };
+    const overrideRecord = {
+      version: '16.0.0',
+      pid: 4242,
+      procStart: 'Tue Nov 17 17:51:04 2026',
+      currentStartToken: 'utc:Wed Nov 18 17:51:04 2026',
+      processName: 'claude',
+    };
+    fixture.prune.mockResolvedValue({
+      ...emptyPrune,
+      removed: ['15.19.0'],
+      pruneReasons: { '15.19.0': 'orphaned' },
+      rejectedHostRecords: [{ version: '15.19.0', pid: 777, reason: 'process-exited' }],
+      keptByProcessNameOverride: [overrideRecord],
+      protection,
+    });
+    fixture.worker.startPluginCachePrune();
+    fixture.timeouts[0].callback();
+    for (let turn = 0; turn < 20; turn++) await Promise.resolve();
+
+    const sweeper = { source: 'worker-sweep', workerPid: process.pid, workerVersion: '0.0.0-dev' };
+    expect(fixture.info).toHaveBeenCalledWith('SYSTEM', 'Pruned stale plugin cache version 15.19.0', {
+      ...sweeper,
+      version: '15.19.0',
+      reason: 'orphaned',
+      rejectedHostRecords: [{ version: '15.19.0', pid: 777, reason: 'process-exited' }],
+      ...protection,
+    });
+    expect(fixture.info).toHaveBeenCalledWith(
+      'SYSTEM',
+      'Kept plugin cache version 16.0.0: its recorded process is still a Claude process though its start time differs',
+      { ...sweeper, ...overrideRecord },
+    );
   });
 });

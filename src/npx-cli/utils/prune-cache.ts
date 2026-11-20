@@ -53,6 +53,10 @@ export interface CachePrunePlan {
   prune: string[];
 }
 
+/** Why a version was pruned: it carried `.orphaned_at`, or it fell outside
+ * the retention budget behind newer usable versions. */
+export type CachePruneReason = 'orphaned' | 'superseded';
+
 export interface PlanCachePruneOptions {
   /** Versions never pruned (for example the live worker's version). */
   protectedVersions?: Iterable<string>;
@@ -120,23 +124,14 @@ export interface CachePruneResult {
   /** True when pruning was skipped because a live worker's version could not be
    * determined, so every version was retained for safety. */
   retainedForLiveWorker: boolean;
-  /** Why each pruned version was pruned: it carried `.orphaned_at`, or it
-   * fell outside the retention budget. Recorded so a removal is attributable
-   * from the log alone (#6349). */
-  pruneReasons?: Record<string, 'orphaned' | 'superseded'>;
-  /** The `.in_use` records evaluated for the pruned versions that did not
-   * keep them, with the reason for each rejection (#6349). */
-  rejectedHostRecords?: RejectedHostInUseRecord[];
-}
-
-/** The prune reason for each version in `prune`: orphaned, or superseded by
- * newer usable versions. */
-function pruneReasonsFor(root: string, prune: string[]): Record<string, 'orphaned' | 'superseded'> {
-  const reasons: Record<string, 'orphaned' | 'superseded'> = {};
-  for (const version of prune) {
-    reasons[version] = isOrphanedVersion(root, version) ? 'orphaned' : 'superseded';
-  }
-  return reasons;
+  /** Why each pruned version was pruned, from the plan that pruned it (#6349). */
+  pruneReasons: Record<string, CachePruneReason>;
+  /** The `.in_use` records under the pruned versions that did not keep them,
+   * each with the verdict the plan reached (#6349). */
+  rejectedHostRecords: RejectedHostInUseRecord[];
+  /** Records that kept a version only because the process-name check
+   * overrode a start-time mismatch (#6349). */
+  keptByProcessNameOverride: ProcessNameOverrideRecord[];
 }
 
 export interface PrunePluginCacheOptions {
@@ -329,6 +324,9 @@ export interface HostProcessVerdict {
   live: boolean;
   /** Set when `live` is false: what condemned the record. */
   reason?: HostProcessRejectionReason;
+  /** Set when `live` is true only because the process is still a Claude
+   * Code process although its start time does not match the record. */
+  processNameOverride?: { currentStartToken: string; processName: string };
 }
 
 /**
@@ -360,7 +358,10 @@ export function hostProcessVerdict(
   const currentToken = probe.startToken(record.pid);
   if (currentToken === null || !isUtcPinnedStartToken(currentToken)) return { live: true };
   if (isSameProcessStartToken(currentToken, record.procStart)) return { live: true };
-  if (isClaudeProcessName(probe.name?.(record.pid) ?? null)) return { live: true };
+  const processName = probe.name?.(record.pid) ?? null;
+  if (processName !== null && isClaudeProcessName(processName)) {
+    return { live: true, processNameOverride: { currentStartToken: currentToken, processName } };
+  }
   return { live: false, reason: 'start-time-mismatch' };
 }
 
@@ -379,28 +380,63 @@ export interface RejectedHostInUseRecord extends HostInUseRecord {
   reason: HostProcessRejectionReason;
 }
 
+/** A `.in_use` record a live Claude Code process kept only through the
+ * process-name check: its start time did not match the record (#6349). */
+export interface ProcessNameOverrideRecord extends HostInUseRecord {
+  version: string;
+  currentStartToken: string;
+  processName: string;
+}
+
+/** Every `.in_use` verdict of one sweep, read once per PID. */
+export interface HostInUseEvaluation {
+  /** Versions a live recorded process keeps, in the order given. */
+  inUseVersions: string[];
+  /** The subset of `inUseVersions` that only a process-name override keeps. */
+  processNameOverrideOnlyVersions: string[];
+  /** Records that did not keep their version, with the reason. */
+  rejectedRecords: RejectedHostInUseRecord[];
+  /** Records kept by the process-name override. */
+  processNameOverrideRecords: ProcessNameOverrideRecord[];
+}
+
 /**
- * The `.in_use` records under the named versions that do not keep their
- * folder, each with the reason. Diagnostic: a prune logs these at info so a
- * wrongful removal is attributable from the log alone (#6349 — the 16.0.1
- * sweep deleted silently, which made the regression impossible to pin down
- * after the fact).
+ * Evaluate every `.in_use` record under the named versions in one pass. The
+ * plan protects versions from this result and the logs report from the same
+ * result, so a log line states the verdict that actually drove a deletion
+ * (#6349).
  */
-export function rejectedHostInUseRecords(
+export function evaluateHostInUseRecords(
   root: string,
-  versionDirectoryNames: string[],
+  versionDirectoryNames: string[] = readCacheVersionDirectories(root),
   probe: HostProcessProbe = defaultHostProcessProbe,
-): RejectedHostInUseRecord[] {
+): HostInUseEvaluation {
   const sweepProbe = readOncePerPid(probe);
-  const rejected: RejectedHostInUseRecord[] = [];
+  const evaluation: HostInUseEvaluation = {
+    inUseVersions: [],
+    processNameOverrideOnlyVersions: [],
+    rejectedRecords: [],
+    processNameOverrideRecords: [],
+  };
   for (const version of versionDirectoryNames) {
     if (!isVersionDirectoryName(version)) continue;
+    let keptByStartTime = false;
+    let keptByProcessName = false;
     for (const record of readHostInUseRecords(join(root, version))) {
       const verdict = hostProcessVerdict(record, sweepProbe);
-      if (!verdict.live) rejected.push({ version, ...record, reason: verdict.reason! });
+      if (!verdict.live) {
+        evaluation.rejectedRecords.push({ version, ...record, reason: verdict.reason! });
+      } else if (verdict.processNameOverride) {
+        keptByProcessName = true;
+        evaluation.processNameOverrideRecords.push({ version, ...record, ...verdict.processNameOverride });
+      } else {
+        keptByStartTime = true;
+      }
     }
+    if (keptByStartTime || keptByProcessName) evaluation.inUseVersions.push(version);
+    if (keptByProcessName && !keptByStartTime) evaluation.processNameOverrideOnlyVersions.push(version);
   }
-  return rejected;
+  return evaluation;
 }
 
 /** A probe that reads each PID once. One process is recorded under every
@@ -440,27 +476,85 @@ export function hostInUseCacheVersions(
   versionDirectoryNames: string[] = readCacheVersionDirectories(root),
   probe: HostProcessProbe = defaultHostProcessProbe,
 ): string[] {
-  const sweepProbe = readOncePerPid(probe);
-  return versionDirectoryNames.filter(name =>
-    isVersionDirectoryName(name)
-    && readHostInUseRecords(join(root, name)).some(record => isHostProcessLive(record, sweepProbe)));
+  return evaluateHostInUseRecords(root, versionDirectoryNames, probe).inUseVersions;
+}
+
+/** A plan for one cache root, with the evidence behind each decision. */
+export interface PluginCachePrunePlan extends CachePrunePlan {
+  /** Why each version in `prune` is pruned. */
+  pruneReasons: Record<string, CachePruneReason>;
+  /** `.in_use` records under the pruned versions, each with the verdict that
+   * failed to keep it. */
+  rejectedHostRecords: RejectedHostInUseRecord[];
+  /** Records under versions that only the process-name override keeps: without
+   * it these versions would be in `prune`. */
+  keptByProcessNameOverride: ProcessNameOverrideRecord[];
+  /** Versions kept because the worker resolver needs them (workingCacheVersions). */
+  workingVersions: string[];
+  /** Versions kept because a recorded host process is alive. */
+  hostInUseVersions: string[];
 }
 
 /** Read the version names and their `.orphaned_at` state, then plan the prune.
  * Read-only — use for a dry-run preview that matches what `prunePluginCache`
  * would delete. The working versions (workingCacheVersions) and the versions a
- * running host session is loaded from (hostInUseCacheVersions) are always kept. */
+ * running host session is loaded from (hostInUseCacheVersions) are always kept.
+ * Each `.in_use` record is evaluated once, and the reasons returned are the
+ * verdicts this plan used. */
 export function planPluginCachePrune(
   root: string,
   keepCount: number,
   protectedVersions: Iterable<string> = [],
-): CachePrunePlan {
+  probe: HostProcessProbe = defaultHostProcessProbe,
+): PluginCachePrunePlan {
   const names = readCacheVersionDirectories(root);
   const orphanedVersions = names.filter(name => isVersionDirectoryName(name) && isOrphanedVersion(root, name));
-  return planCachePrune(names, keepCount, {
-    protectedVersions: [...protectedVersions, ...workingCacheVersions(root), ...hostInUseCacheVersions(root, names)],
+  const workingVersions = workingCacheVersions(root);
+  const hostInUse = evaluateHostInUseRecords(root, names, probe);
+  const keptByStartTime = hostInUse.inUseVersions.filter(version => !hostInUse.processNameOverrideOnlyVersions.includes(version));
+  const protectedWithoutOverride = [...protectedVersions, ...workingVersions, ...keptByStartTime];
+  const plan = planCachePrune(names, keepCount, {
+    protectedVersions: [...protectedWithoutOverride, ...hostInUse.processNameOverrideOnlyVersions],
     orphanedVersions,
   });
+  // The versions the override alone saved: the same plan without the override
+  // would have pruned them.
+  const prunedWithoutOverride = new Set(planCachePrune(names, keepCount, {
+    protectedVersions: protectedWithoutOverride,
+    orphanedVersions,
+  }).prune);
+  const orphaned = new Set(orphanedVersions);
+  const pruned = new Set(plan.prune);
+  return {
+    ...plan,
+    pruneReasons: Object.fromEntries(plan.prune.map(version => [version, orphaned.has(version) ? 'orphaned' : 'superseded'])),
+    rejectedHostRecords: hostInUse.rejectedRecords.filter(record => pruned.has(record.version)),
+    keptByProcessNameOverride: hostInUse.processNameOverrideRecords.filter(record =>
+      prunedWithoutOverride.has(record.version) && !pruned.has(record.version)),
+    workingVersions,
+    hostInUseVersions: hostInUse.inUseVersions,
+  };
+}
+
+/** One line for a pruned version: its reason, then each rejected `.in_use`
+ * record and why it did not keep the folder. Printed by the installer and
+ * `npx claude-mem prune` so a removal names its cause (#6349). */
+export function describePrunedVersion(
+  version: string,
+  evidence: Pick<PluginCachePrunePlan, 'pruneReasons' | 'rejectedHostRecords'>,
+): string {
+  const reason = evidence.pruneReasons[version];
+  if (!reason) throw new Error(`No prune reason recorded for cache version ${version}`);
+  const rejected = evidence.rejectedHostRecords
+    .filter(record => record.version === version)
+    .map(record => `.in_use pid ${record.pid} ${record.reason}`);
+  return `${version} (${[reason, ...rejected].join('; ')})`;
+}
+
+/** One line for a version kept only by the process-name override (#6349). */
+export function describeProcessNameOverride(record: ProcessNameOverrideRecord): string {
+  return `Kept ${record.version}: pid ${record.pid} is still a Claude process (${record.processName}), `
+    + `though its start time ${record.currentStartToken} differs from the .in_use record (${record.procStart ?? 'none'})`;
 }
 
 /**
@@ -477,11 +571,8 @@ export function prunePluginCache(options: PrunePluginCacheOptions = {}): CachePr
   const root = options.cacheRoot ?? pluginCacheRootDirectory();
   const keepCount = options.keepCount ?? DEFAULT_CACHE_RETENTION;
 
-  const { keep, prune } = planPluginCachePrune(root, keepCount, options.protectedVersions ?? []);
-  // Diagnostics are read before anything is deleted: afterwards the folders
-  // (and their `.orphaned_at` / `.in_use` evidence) are gone.
-  const pruneReasons = pruneReasonsFor(root, prune);
-  const rejectedHostRecords = rejectedHostInUseRecords(root, prune);
+  const { keep, prune, pruneReasons, rejectedHostRecords, keptByProcessNameOverride } =
+    planPluginCachePrune(root, keepCount, options.protectedVersions ?? []);
   const removed: string[] = [];
   const failed: { version: string; reason: string }[] = [];
   for (const version of prune) {
@@ -507,6 +598,7 @@ export function prunePluginCache(options: PrunePluginCacheOptions = {}): CachePr
     retainedForLiveWorker: false,
     pruneReasons,
     rejectedHostRecords,
+    keptByProcessNameOverride,
   };
 }
 
@@ -521,6 +613,20 @@ export interface PruneSupersededPluginCacheOptions {
   registryPath?: string;
 }
 
+/** Every version the worker sweep protected, by source, so its log line says
+ * who pruned and what was kept out of reach (#6349). */
+export interface SupersededCachePruneProtection {
+  runningVersion: string | null;
+  registeredVersions: string[];
+  additionalProtectedVersions: string[];
+  workingVersions: string[];
+  hostInUseVersions: string[];
+}
+
+export interface SupersededCachePruneResult extends CachePruneResult {
+  protection: SupersededCachePruneProtection;
+}
+
 /**
  * Remove superseded plugin cache versions without asking the live worker.
  * The worker calls this on itself: a health probe against its own port can
@@ -531,7 +637,7 @@ export interface PruneSupersededPluginCacheOptions {
  */
 export async function pruneSupersededPluginCache(
   options: PruneSupersededPluginCacheOptions = {},
-): Promise<CachePruneResult> {
+): Promise<SupersededCachePruneResult> {
   const root = options.cacheRoot ?? pluginCacheRootDirectory();
   const keepCount = options.keepCount ?? DEFAULT_CACHE_RETENTION;
   const registered = readRegisteredCacheVersions(options.registryPath);
@@ -542,11 +648,8 @@ export async function pruneSupersededPluginCache(
     ...(options.additionalProtectedVersions ?? []),
   ];
 
-  const { keep, prune } = planPluginCachePrune(root, keepCount, protectedVersions);
-  // Diagnostics are read before anything is deleted: afterwards the folders
-  // (and their `.orphaned_at` / `.in_use` evidence) are gone.
-  const pruneReasons = pruneReasonsFor(root, prune);
-  const rejectedHostRecords = rejectedHostInUseRecords(root, prune);
+  const plan = planPluginCachePrune(root, keepCount, protectedVersions);
+  const { keep, prune } = plan;
   const removed: string[] = [];
   const failed: { version: string; reason: string }[] = [];
   for (const version of prune) {
@@ -574,8 +677,16 @@ export async function pruneSupersededPluginCache(
     removed,
     failed,
     retainedForLiveWorker: false,
-    pruneReasons,
-    rejectedHostRecords,
+    pruneReasons: plan.pruneReasons,
+    rejectedHostRecords: plan.rejectedHostRecords,
+    keptByProcessNameOverride: plan.keptByProcessNameOverride,
+    protection: {
+      runningVersion,
+      registeredVersions: registered,
+      additionalProtectedVersions: [...(options.additionalProtectedVersions ?? [])],
+      workingVersions: plan.workingVersions,
+      hostInUseVersions: plan.hostInUseVersions,
+    },
   };
 }
 
@@ -696,7 +807,16 @@ export async function prunePluginCacheSafely(
 
   if (retainAll) {
     const kept = readCacheVersionDirectories(root).filter(isVersionDirectoryName);
-    return { root, kept, removed: [], failed: [], retainedForLiveWorker: true };
+    return {
+      root,
+      kept,
+      removed: [],
+      failed: [],
+      retainedForLiveWorker: true,
+      pruneReasons: {},
+      rejectedHostRecords: [],
+      keptByProcessNameOverride: [],
+    };
   }
 
   return prunePluginCache({
