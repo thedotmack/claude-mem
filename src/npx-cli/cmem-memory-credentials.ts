@@ -7,6 +7,15 @@ import { CMEM_PRO_BASE_URL, CMEM_PRO_MODEL } from './cmem-pro-costs.js';
 export const HOST_OBSERVER_DEFAULT_PORT = '37777';
 export const HOST_OBSERVER_DUMMY_API_KEY = 'host-observer-local';
 
+/**
+ * Per-request budget shared by the two host-observer probes. The async probe
+ * (fetch) and the install-time sync probe (curl -m) must agree about the
+ * same server: a slow-but-valid observer answering after the old 400 ms
+ * async limit was "occupied" to one probe and "observer" to the other.
+ */
+export const HOST_OBSERVER_PROBE_TIMEOUT_MS = 1_000;
+const HOST_OBSERVER_PROBE_CURL_MAX_TIME = String(HOST_OBSERVER_PROBE_TIMEOUT_MS / 1000);
+
 export type HostObserverPortStatus = 'observer' | 'occupied' | 'free';
 
 export type HostObserverPortProbe = (port: number) => HostObserverPortStatus;
@@ -99,7 +108,7 @@ async function fetchLoopback(path: string, port: number, init?: RequestInit): Pr
   try {
     const response = await fetch(`http://127.0.0.1:${port}${path}`, {
       ...init,
-      signal: init?.signal ?? AbortSignal.timeout(400),
+      signal: init?.signal ?? AbortSignal.timeout(HOST_OBSERVER_PROBE_TIMEOUT_MS),
     });
     const body = await response.text();
     return { ok: response.ok, status: response.status, body };
@@ -140,7 +149,7 @@ export async function probeHostObserverPort(port: number): Promise<HostObserverP
 export function probeHostObserverPortSync(port: number): HostObserverPortStatus {
   const auth = `Authorization: Bearer ${HOST_OBSERVER_DUMMY_API_KEY}`;
   const models = spawnSync('curl', [
-    '-sS', '-m', '1', '-w', '\n%{http_code}', '-H', auth,
+    '-sS', '-m', HOST_OBSERVER_PROBE_CURL_MAX_TIME, '-w', '\n%{http_code}', '-H', auth,
     `http://127.0.0.1:${port}/v1/models`,
   ], {
     encoding: 'utf8',
@@ -150,7 +159,7 @@ export function probeHostObserverPortSync(port: number): HostObserverPortStatus 
   if (modelsResponse?.ok && looksLikeOpenAISuccess(modelsResponse.body)) return 'observer';
 
   const completions = spawnSync('curl', [
-    '-sS', '-m', '1', '-w', '\n%{http_code}', '-H', auth, '-H', 'Content-Type: application/json',
+    '-sS', '-m', HOST_OBSERVER_PROBE_CURL_MAX_TIME, '-w', '\n%{http_code}', '-H', auth, '-H', 'Content-Type: application/json',
     '-d', '{"model":"host-observer-probe","messages":[{"role":"user","content":"ping"}],"max_tokens":1}',
     `http://127.0.0.1:${port}/v1/chat/completions`,
   ], { encoding: 'utf8', timeout: 2000 });

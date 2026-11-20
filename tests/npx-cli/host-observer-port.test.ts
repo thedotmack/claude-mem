@@ -7,6 +7,7 @@ import {
   HostObserverUnavailableError,
   hostObserverCandidatePorts,
   probeHostObserverPort,
+  probeHostObserverPortSync,
   resolveHostObserverPort,
 } from '../../src/npx-cli/cmem-memory-credentials.js';
 
@@ -93,6 +94,51 @@ describe('host observer port resolution', () => {
       CLAUDE_MEM_OPENROUTER_MODEL: 'grok-bot',
       CLAUDE_MEM_OPENROUTER_API_KEY: 'host-observer-local',
     });
+  });
+
+  it('classifies a slow-but-valid observer the same way in both probes', async () => {
+    // The async probe used to time out after 400 ms while the sync probe
+    // waits 1 s (curl -m 1), so a server answering after ~600 ms was
+    // "occupied" to one probe and "observer" to the other. Both probes share
+    // HOST_OBSERVER_PROBE_TIMEOUT_MS now, so they must agree.
+    // spawnSync(curl) blocks this process, so the slow listener must live
+    // in a child. Otherwise the install-time probe never sees HTTP status.
+    const child = spawn(process.execPath, ['-e', `
+      const http = require('http');
+      const server = http.createServer((_req, res) => {
+        setTimeout(() => {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ object: 'list', data: [{ id: 'grok-bot', object: 'model' }] }));
+        }, 600);
+      });
+      server.listen(0, '127.0.0.1', () => {
+        process.stdout.write(String(server.address().port));
+      });
+    `], { stdio: ['ignore', 'pipe', 'pipe'] });
+
+    try {
+      const port = await new Promise<number>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('slow observer child did not start')), 5000);
+        child.once('error', (error) => {
+          clearTimeout(timer);
+          reject(error);
+        });
+        child.stdout.once('data', (chunk) => {
+          clearTimeout(timer);
+          const parsed = Number(String(chunk).trim());
+          if (!Number.isInteger(parsed) || parsed <= 0) {
+            reject(new Error(`invalid child port: ${String(chunk)}`));
+            return;
+          }
+          resolve(parsed);
+        });
+      });
+
+      expect(await probeHostObserverPort(port)).toBe('observer');
+      expect(probeHostObserverPortSync(port)).toBe('observer');
+    } finally {
+      child.kill('SIGTERM');
+    }
   });
 
   it('classifies a real OpenAI-compatible listener as observer and an unrelated listener as occupied', async () => {
