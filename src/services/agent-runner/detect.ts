@@ -41,7 +41,7 @@ import { homedir } from 'os';
 import { join, resolve } from 'path';
 import { findClaudeExecutable } from '../../shared/find-claude-executable.js';
 import { readClaudeOAuthToken, type OAuthTokenResult } from '../../shared/oauth-token.js';
-import { hasAnthropicApiKey, hasAnthropicAuthToken, hasConfiguredClaudeOAuthToken } from '../../shared/EnvManager.js';
+import { buildOpenCodeEnv, hasAnthropicApiKey, hasAnthropicAuthToken, hasConfiguredClaudeOAuthToken } from '../../shared/EnvManager.js';
 
 import { commandInvocation, resolveVoltaShim, selectWindowsCommandCandidate, windowsWhereExecutablePath } from '../../shared/spawn.js';
 import { PROCESS_EXIT_POLL_INTERVAL_MS, processGroupHasProcessesThatHaveNotExited } from '../../supervisor/process-registry.js';
@@ -460,11 +460,26 @@ async function detectOpenCode(dependencies: AgentDetectionDependencies): Promise
   const resolved = await resolveOnPath(dependencies, 'opencode');
   if (resolved.path === null) return { id: 'opencode', path: null, authenticated: false, reason: resolved.reason };
   const path = resolved.path;
+  const noCredentials = '`opencode auth list` reports no credentials (run `opencode auth login`)';
 
-  // `opencode auth list` prints one line per stored credential and a summary
-  // such as "—  1 credentials"; a fresh install prints "0 credentials". Only
-  // the count is used, never a key or token. ANSI styling is stripped first.
-  const status = await runCommand(dependencies.spawn, path, ['auth', 'list']);
+  // OpenCode 2.x lists stored and environment connections for each integration.
+  const env = buildOpenCodeEnv();
+  const list = await runCommand(dependencies.spawn, path, ['auth', 'list', '--format', 'json'], { env });
+  if (list.exitCode === 0) {
+    let integrations: unknown;
+    try {
+      integrations = JSON.parse(list.stdout);
+    } catch {
+      return { id: 'opencode', path, authenticated: false, reason: '`opencode auth list --format json` returned invalid JSON' };
+    }
+    const authenticated = Array.isArray(integrations) && integrations.some(
+      integration => Array.isArray(integration?.connections) && integration.connections.length > 0,
+    );
+    return { id: 'opencode', path, authenticated, reason: authenticated ? '`opencode auth list` reports a connected provider' : noCredentials };
+  }
+
+  // Older CLIs reject --format and print a credential count in the plain list.
+  const status = await runCommand(dependencies.spawn, path, ['auth', 'list'], { env });
   const output = `${status.stdout}\n${status.stderr}`.replace(/\x1b\[[0-9;]*m/g, '');
   if (status.exitCode !== 0) {
     return { id: 'opencode', path, authenticated: false, reason: commandFailureReason('opencode auth list', status) };
@@ -473,7 +488,7 @@ async function detectOpenCode(dependencies: AgentDetectionDependencies): Promise
   if (count > 0) {
     return { id: 'opencode', path, authenticated: true, reason: `\`opencode auth list\` reports ${count} credential${count === 1 ? '' : 's'}` };
   }
-  return { id: 'opencode', path, authenticated: false, reason: '`opencode auth list` reports no credentials (run `opencode auth login`)' };
+  return { id: 'opencode', path, authenticated: false, reason: noCredentials };
 }
 
 async function runCheck(

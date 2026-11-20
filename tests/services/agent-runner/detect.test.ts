@@ -361,6 +361,43 @@ describe('detectUsableAgents', () => {
 });
 
 describe('OpenCode', () => {
+  const jsonList = `${OPENCODE_PATH} auth list --format json`;
+  const plainList = `${OPENCODE_PATH} auth list`;
+
+  it.each([
+    { connection: { type: 'credential', method: 'key', id: 'cred_test', label: 'default' }, row: 'Anthropic  default                     stored' },
+    { connection: { type: 'env', name: 'ANTHROPIC_API_KEY' }, row: 'Anthropic  ANTHROPIC_API_KEY           environment' },
+  ])('recognizes an OpenCode 2.x connection listed as "$row"', async ({ connection, row }) => {
+    const calls: string[] = [];
+    const stdout = JSON.stringify([{ id: 'anthropic', name: 'Anthropic', connections: [connection] }]);
+    const agent = await detectUsableAgent('opencode', dependencies({
+      spawn: fakeSpawn({
+        ...WHICH_OPENCODE,
+        [jsonList]: { exitCode: 0, stdout },
+        [plainList]: { exitCode: 0, stdout: row + '\n' },
+      }, calls),
+    }));
+    expect(agent).toEqual({
+      id: 'opencode', path: OPENCODE_PATH, authenticated: true,
+      reason: '`opencode auth list` reports a connected provider',
+    });
+    expect(calls).toEqual(['which opencode', jsonList]);
+  });
+
+  it.each(['[]', '[{"id":"anthropic","connections":[]}]'])('reports no login for %s', async stdout => {
+    const agent = await detectOne('opencode', {
+      spawn: fakeSpawn({ ...WHICH_OPENCODE, [jsonList]: { exitCode: 0, stdout } }),
+    });
+    expect(agent).toMatchObject({ authenticated: false, reason: '`opencode auth list` reports no credentials (run `opencode auth login`)' });
+  });
+
+  it('rejects malformed JSON without echoing provider data', async () => {
+    const agent = await detectOne('opencode', {
+      spawn: fakeSpawn({ ...WHICH_OPENCODE, [jsonList]: { exitCode: 0, stdout: '[{"name":"private provider"' } }),
+    });
+    expect(agent).toMatchObject({ authenticated: false, reason: '`opencode auth list --format json` returned invalid JSON' });
+  });
+
   it('not installed', async () => {
     const agent = await detectOne('opencode', {});
     expect(agent).toEqual({ id: 'opencode', path: null, authenticated: false, reason: 'not installed: `opencode` is not on PATH' });
@@ -376,14 +413,17 @@ describe('OpenCode', () => {
     });
   });
 
-  it('logged in: the credential count is read through ANSI styling, never a key', async () => {
-    const agent = await detectOne('opencode', {
+  it('reads the ANSI-styled credential count when the CLI rejects --format', async () => {
+    const calls: string[] = [];
+    const agent = await detectUsableAgent('opencode', dependencies({
       spawn: fakeSpawn({
         ...WHICH_OPENCODE,
-        [`${OPENCODE_PATH} auth list`]: { exitCode: 0, stdout: '\u001b[90mCredentials\u001b[0m\n•  11 \u001b[90mapi\n—  1 credentials\n' },
-      }),
-    });
+        [jsonList]: { exitCode: 1, stdout: 'opencode auth list\n\nlist providers' },
+        [plainList]: { exitCode: 0, stdout: '\u001b[90mCredentials\u001b[0m\n•  11 \u001b[90mapi\n—  1 credentials\n' },
+      }, calls),
+    }));
     expect(agent).toEqual({ id: 'opencode', path: OPENCODE_PATH, authenticated: true, reason: '`opencode auth list` reports 1 credential' });
+    expect(calls).toEqual(['which opencode', jsonList, plainList]);
   });
 
   it('an unreadable auth list is not treated as logged in', async () => {
@@ -411,7 +451,7 @@ describe('detectUsableAgent', () => {
       ...WHICH_GEMINI,
       [GEMINI_ACCOUNT_PROBE]: { exitCode: 42, stderr: 'No input provided via stdin.\n' },
       ...WHICH_OPENCODE,
-      [`${OPENCODE_PATH} auth list`]: { exitCode: 0, stdout: '—  1 credentials\n' },
+      [`${OPENCODE_PATH} auth list --format json`]: { exitCode: 0, stdout: '[{"connections":[{"type":"env","name":"ANTHROPIC_API_KEY"}]}]' },
     }, calls),
     fileExists: path => path === settingsPath || path === credentialsPath,
     readTextFile: path => JSON.stringify(path === settingsPath ? { security: { auth: { selectedType: 'oauth-personal' } } } : { refresh_token: 'refresh-1' }),
@@ -426,7 +466,7 @@ describe('detectUsableAgent', () => {
       'claude-code': [`${CLAUDE_PATH} auth status --json`],
       codex: ['which codex', `${CODEX_PATH} login status`],
       gemini: ['which gemini', GEMINI_ACCOUNT_PROBE],
-      opencode: ['which opencode', `${OPENCODE_PATH} auth list`],
+      opencode: ['which opencode', `${OPENCODE_PATH} auth list --format json`],
     };
     expect(everyAgent.map(agent => agent.id)).toEqual(['claude-code', 'codex', 'gemini', 'opencode']);
     for (const agent of everyAgent) {

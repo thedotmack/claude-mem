@@ -5,6 +5,7 @@ import { join } from 'path';
 import {
   envFilePath,
   buildIsolatedEnv,
+  buildOpenCodeEnv,
   buildIsolatedEnvWithFreshOAuth,
   loadClaudeMemEnv,
   saveClaudeMemEnv,
@@ -120,6 +121,22 @@ describe('Issue #2375: ANTHROPIC_BASE_URL env-var isolation', () => {
     const result = buildIsolatedEnv();
 
     expect(result.ANTHROPIC_BASE_URL).toBeUndefined();
+  });
+
+  it('keeps a shell gateway with its OpenCode key and out of the Claude Code environment', () => {
+    process.env.ANTHROPIC_API_KEY = 'shell-key';
+    process.env.ANTHROPIC_BASE_URL = 'https://shell.example';
+    const openCode = buildOpenCodeEnv();
+    expect(openCode.ANTHROPIC_API_KEY).toBe('shell-key');
+    expect(openCode.ANTHROPIC_BASE_URL).toBe('https://shell.example');
+    const claude = buildIsolatedEnv();
+    expect(claude.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(claude.ANTHROPIC_BASE_URL).toBeUndefined();
+
+    fs.writeFileSync(TEST_ENV_FILE, 'ANTHROPIC_API_KEY=file-key\n');
+    const configured = buildOpenCodeEnv();
+    expect(configured.ANTHROPIC_API_KEY).toBe('file-key');
+    expect(configured.ANTHROPIC_BASE_URL).toBeUndefined();
   });
 
   it('~/.claude-mem/.env BASE_URL + AUTH_TOKEN reaches isolatedEnv', () => {
