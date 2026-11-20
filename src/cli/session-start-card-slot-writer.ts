@@ -130,7 +130,7 @@ export function writeSessionStartCardSlot(
  * The hook process started 11 to 17 ms after the event was passed over, so a
  * hook that listed the folder the moment it started would still find the
  * latest request measured within 258 ms. The wait is 1.9 times that.
- * Not measured: a machine slower than this one. A request later than the wait
+ * A machine slower than this one was not measured. A request later than the wait
  * loses that start's card and never the banner.
  */
 export const SESSION_START_CARD_REQUEST_HOOK_WAIT_MS = 500;

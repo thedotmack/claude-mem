@@ -90,16 +90,17 @@ export function sessionStartCardSlotClockOf(fileName: string, sessionId: string)
 export const SESSION_START_CARD_REQUEST_LOOK_EVERY_MS = 200;
 
 /**
- * How long a request file stands. It bounds the looks of one start to 40
- * listings. The 0.3 s measured for #6314 is 1/26 of it. Not measured: how long
- * a context hook takes that has to start the worker first. A context hook that
+ * How long a request file stands, and how long the card looks. The card reads
+ * its clock at each tick of its timer, and the first tick that comes this long
+ * after it asked is its last: it looks once more there, or stops at once when
+ * a listing is still pending. So one start makes 40 listings at most, and its
+ * timer ends by the clock, however long a listing takes. The 0.3 s measured
+ * for #6314 is 1/26 of the wait. How long a context hook takes that has to
+ * start the worker first was not measured. A context hook that
  * takes longer than this finds the request run out and sends the whole banner
  * as its message, so a slow start loses the card and never the banner.
  */
 export const SESSION_START_CARD_REQUEST_WAIT_MS = 8_000;
-
-/** How many looks fit into the wait. The last one is made no sooner than the wait after the request. */
-export const SESSION_START_CARD_REQUEST_LOOKS = SESSION_START_CARD_REQUEST_WAIT_MS / SESSION_START_CARD_REQUEST_LOOK_EVERY_MS;
 
 /** One session's request file: `<session id>.<the card's clock when it asked, in ms>.request`. */
 const REQUEST_FILE_NAME = /^[A-Za-z0-9_-]+\.\d+\.request$/;
@@ -128,6 +129,10 @@ export function sessionStartCardRequestClockOf(fileName: string, sessionId: stri
  * after it asked. A request is answered only up to one look before that.
  * This counts on the context hook's folder listing and file write, between this
  * check and the finished slot, taking less than one look. That was not measured.
+ * It also counts on each listing of the card settling within one look. When a
+ * listing is still pending the wait after the card asked, the card stops
+ * there, and that listing is its last look: it can have started before the
+ * slot was finished. How long a listing of the card takes was not measured.
  * A request from the future (a clock set back) is not answered.
  */
 export function isSessionStartCardRequestStanding(askedAtEpochMs: number, nowEpochMs: number): boolean {

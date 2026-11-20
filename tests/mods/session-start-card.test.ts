@@ -17,7 +17,6 @@ import {
   newestSessionStartCardSlotSince,
   SESSION_START_CARD_FILE_KEY,
   SESSION_START_CARD_REQUEST_LOOK_EVERY_MS,
-  SESSION_START_CARD_REQUEST_LOOKS,
   SESSION_START_CARD_REQUEST_WAIT_MS,
   SESSION_START_CARD_SOURCES,
   sessionStartCardRequestClockOf,
@@ -161,7 +160,7 @@ describe('session-start card: which sessions get one', () => {
   });
 
   it('lets a request stand for 8 seconds less one look, so the card\'s last look still finds the slot', () => {
-    expect([SESSION_START_CARD_REQUEST_LOOK_EVERY_MS, SESSION_START_CARD_REQUEST_WAIT_MS, SESSION_START_CARD_REQUEST_LOOKS]).toEqual([200, 8_000, 40]);
+    expect([SESSION_START_CARD_REQUEST_LOOK_EVERY_MS, SESSION_START_CARD_REQUEST_WAIT_MS]).toEqual([200, 8_000]);
     const askedAt = 1_000_000;
     for (const ageMs of [0, 300, 7_800]) expect([ageMs, isSessionStartCardRequestStanding(askedAt, askedAt + ageMs)]).toEqual([ageMs, true]);
     // Past the last look's margin, and a request from a clock that was set back.
@@ -213,6 +212,8 @@ function cardInSession(options: {
   writeFails?: boolean;
   /** Holds every folder listing until `releaseListings()`. */
   holdsListings?: boolean;
+  /** Every folder listing settles this long after it was asked for, by the session's clock. */
+  listingTakesMs?: number;
 } = {}) {
   const hooks = new Map<string, Hook>();
   const matchers = new Map<string, unknown>();
@@ -239,6 +240,11 @@ function cardInSession(options: {
   /** The `$.clock.every` timers that are not cancelled. */
   const timers = new Set<{ everyMs: number; dueAt: number; fn: () => void }>();
   const heldListings: Array<() => void> = [];
+  /** While true, every reading of the clock is held until `releaseClockReadings()`. */
+  let holdsClockReadings = false;
+  const heldClockReadings: Array<() => void> = [];
+  /** The listings that take time (`listingTakesMs`) and have not settled yet. */
+  const slowListings: Array<{ settlesAt: number; settle: () => void }> = [];
   /** Lets every promise chain a timer started run as far as it can. */
   const settle = () => new Promise<void>(resolve => setTimeout(resolve, 0));
   const $ = {
@@ -254,6 +260,10 @@ function cardInSession(options: {
       list: async (folder: string) => {
         record.listings += 1;
         if (options.holdsListings) await new Promise<void>(resolve => heldListings.push(resolve));
+        if (options.listingTakesMs !== undefined) {
+          const settlesAt = clockMs + options.listingTakesMs;
+          await new Promise<void>(resolve => slowListings.push({ settlesAt, settle: resolve }));
+        }
         return [...files.keys()].filter(filePath => filePath.startsWith(`${folder}/`)).map(filePath => ({ name: filePath.slice(folder.length + 1) }));
       },
     },
@@ -275,7 +285,10 @@ function cardInSession(options: {
       },
     },
     clock: {
-      now: async () => clockMs,
+      now: async () => {
+        if (holdsClockReadings) await new Promise<void>(resolve => heldClockReadings.push(resolve));
+        return clockMs;
+      },
       every: (everyMs: number, fn: () => void) => {
         const timer = { everyMs, dueAt: clockMs + everyMs, fn };
         timers.add(timer);
@@ -335,18 +348,43 @@ function cardInSession(options: {
     /** Time passes: every timer that comes due on the way runs, in order, and what it started settles. */
     async passTime(ms: number) {
       const until = clockMs + ms;
+      /** Settles the slow listings that are due by `byMs`, each at its own time. */
+      const settleSlowListingsDue = async (byMs: number) => {
+        for (;;) {
+          const due = slowListings.filter(listing => listing.settlesAt <= byMs).sort((a, b) => a.settlesAt - b.settlesAt)[0];
+          if (!due) break;
+          slowListings.splice(slowListings.indexOf(due), 1);
+          clockMs = Math.max(clockMs, due.settlesAt);
+          due.settle();
+          await settle();
+        }
+      };
       for (;;) {
         const next = [...timers].sort((a, b) => a.dueAt - b.dueAt)[0];
         if (!next || next.dueAt > until) break;
+        // A listing that settles at the time of a tick has settled when the tick runs.
+        await settleSlowListingsDue(next.dueAt);
+        // Settling a listing can cancel the timer.
+        if (!timers.has(next)) continue;
         clockMs = next.dueAt;
         next.dueAt += next.everyMs;
         next.fn();
         await settle();
       }
+      await settleSlowListingsDue(until);
       clockMs = until;
     },
     async releaseListings() {
       for (const release of heldListings.splice(0)) release();
+      await settle();
+    },
+    /** From here on a reading of the clock stays pending until `releaseClockReadings()`. */
+    holdClockReadings() {
+      holdsClockReadings = true;
+    },
+    async releaseClockReadings() {
+      holdsClockReadings = false;
+      for (const release of heldClockReadings.splice(0)) release();
       await settle();
     },
     /** The context hook names a slot by its own clock and writes the banner there. */
@@ -686,7 +724,7 @@ describe('session-start card: a start whose SessionStart event never reaches the
     session.files.set('/data/claude-mem/session-start-card/session-2.1500.json', slot('the banner of another session'));
     await session.sessionStart();
     await session.passTime(SESSION_START_CARD_REQUEST_WAIT_MS);
-    expect([session.record.listings, session.record.placedRowIds, session.record.logs]).toEqual([SESSION_START_CARD_REQUEST_LOOKS, [], []]);
+    expect([session.record.listings, session.record.placedRowIds, session.record.logs]).toEqual([SESSION_START_CARD_REQUEST_WAIT_MS / SESSION_START_CARD_REQUEST_LOOK_EVERY_MS, [], []]);
     expect(await session.render('session-start-999')).toBe('not this card');
 
     // With this start's slot beside the earlier one, this start's is drawn.
@@ -765,6 +803,107 @@ describe('session-start card: a start whose SessionStart event never reaches the
     expect([session.record.listings, session.record.placedRowIds, session.record.debugLogs.length]).toEqual([40, [], 1]);
     // The transcript stays as it is: a resumed session ends here on every start.
     expect(session.record.logs).toEqual([]);
+  });
+
+  const noBannerFoundLine = 'claude-mem: the session-start card found no banner in the 8 s after the session started, and stopped looking';
+
+  it('stops at 8 seconds by its clock when a listing is still pending, and says so once', async () => {
+    // The first listing takes 9 seconds: it is pending at every tick up to the end of the wait.
+    const session = cardInSession({ listingTakesMs: 9_000 });
+    await session.sessionStart();
+    await session.passTime(SESSION_START_CARD_REQUEST_WAIT_MS - SESSION_START_CARD_REQUEST_LOOK_EVERY_MS);
+    expect([session.record.listings, session.timerCount(), session.record.debugLogs]).toEqual([1, 1, []]);
+
+    // The tick 8 seconds after the card asked ends the looks, with the listing still pending.
+    await session.passTime(SESSION_START_CARD_REQUEST_LOOK_EVERY_MS);
+    expect([session.record.listings, session.timerCount(), session.record.debugLogs]).toEqual([1, 0, [noBannerFoundLine]]);
+
+    // The listing settles after that and shows no slot: nothing more is said, and nothing looks again.
+    await session.passTime(60_000);
+    expect([session.record.listings, session.timerCount(), session.record.placedRowIds]).toEqual([1, 0, []]);
+    expect([session.record.debugLogs, session.record.logs]).toEqual([[noBannerFoundLine], []]);
+  });
+
+  it('still places the card when the listing that was pending at 8 seconds shows the slot', async () => {
+    const session = cardInSession({ listingTakesMs: 9_000 });
+    await session.sessionStart();
+    await session.passTime(300);
+    // The context hook answered the request in time, and sent its one-line message.
+    session.contextHookWritesSlot(slot('banner'));
+    await session.passTime(SESSION_START_CARD_REQUEST_WAIT_MS - 300);
+    expect([session.timerCount(), session.record.placedRowIds, session.record.debugLogs]).toEqual([0, [], [noBannerFoundLine]]);
+
+    // The pending listing is the last look: the banner is not lost with it.
+    await session.passTime(2_000);
+    expect(session.record.placedRowIds).toEqual(['session-start-1300']);
+    expect([session.record.listings, session.record.debugLogs, session.record.logs]).toEqual([1, [noBannerFoundLine], []]);
+  });
+
+  it('stops at 8 seconds by its clock when a listing never settles, and says so once', async () => {
+    const session = cardInSession({ holdsListings: true });
+    await session.sessionStart();
+    await session.passTime(SESSION_START_CARD_REQUEST_WAIT_MS - SESSION_START_CARD_REQUEST_LOOK_EVERY_MS);
+    expect([session.record.listings, session.timerCount(), session.record.debugLogs]).toEqual([1, 1, []]);
+
+    await session.passTime(SESSION_START_CARD_REQUEST_LOOK_EVERY_MS);
+    expect([session.record.listings, session.timerCount(), session.record.debugLogs]).toEqual([1, 0, [noBannerFoundLine]]);
+
+    // No tick comes for the rest of the session.
+    await session.passTime(3_600_000);
+    expect([session.record.listings, session.timerCount(), session.record.placedRowIds]).toEqual([1, 0, []]);
+    expect([session.record.debugLogs, session.record.logs]).toEqual([[noBannerFoundLine], []]);
+  });
+
+  it('stops by its clock when every listing takes longer than the time between two looks', async () => {
+    // A listing of 500 ms keeps two ticks of three from looking: 40 such listings would take 24 seconds.
+    const session = cardInSession({ listingTakesMs: 500 });
+    await session.sessionStart();
+    await session.passTime(SESSION_START_CARD_REQUEST_WAIT_MS - SESSION_START_CARD_REQUEST_LOOK_EVERY_MS);
+    expect([session.record.listings, session.timerCount(), session.record.debugLogs]).toEqual([13, 1, []]);
+
+    // No listing is pending at the tick 8 seconds after the card asked, so the card looks once more there.
+    await session.passTime(SESSION_START_CARD_REQUEST_LOOK_EVERY_MS);
+    expect([session.record.listings, session.record.debugLogs]).toEqual([14, []]);
+    // That last look is pending at the next tick, which ends the looks.
+    await session.passTime(SESSION_START_CARD_REQUEST_LOOK_EVERY_MS);
+    expect([session.record.listings, session.timerCount(), session.record.debugLogs]).toEqual([14, 0, [noBannerFoundLine]]);
+
+    await session.passTime(60_000);
+    expect([session.record.listings, session.record.placedRowIds, session.record.debugLogs, session.record.logs]).toEqual([14, [], [noBannerFoundLine], []]);
+  });
+
+  it('makes its last look 8 seconds after it asked, so a slot the context hook wrote one look before is drawn', async () => {
+    const session = cardInSession();
+    await session.sessionStart();
+    // The latest answer the context hook gives: 7.8 seconds after the card asked (isSessionStartCardRequestStanding).
+    await session.passTime(SESSION_START_CARD_REQUEST_WAIT_MS - SESSION_START_CARD_REQUEST_LOOK_EVERY_MS);
+    expect(isSessionStartCardRequestStanding(1_000, 8_800)).toBe(true);
+    session.contextHookWritesSlot(slot('banner'));
+    await session.passTime(SESSION_START_CARD_REQUEST_LOOK_EVERY_MS);
+    expect([session.record.listings, session.record.placedRowIds, session.timerCount()]).toEqual([40, ['session-start-8800'], 0]);
+
+    await session.passTime(60_000);
+    expect([session.record.debugLogs, session.record.logs]).toEqual([[], []]);
+  });
+
+  it('says nothing about the wait, and does not look again, once a card is placed while a tick was reading the clock', async () => {
+    const session = cardInSession({ listingTakesMs: 300 });
+    await session.sessionStart();
+    // The first tick's listing is under way, and settles at 1500.
+    await session.passTime(SESSION_START_CARD_REQUEST_LOOK_EVERY_MS);
+    // The second tick is still reading the clock when that listing shows the slot.
+    session.holdClockReadings();
+    await session.passTime(SESSION_START_CARD_REQUEST_LOOK_EVERY_MS);
+    session.contextHookWritesSlot(slot('banner'));
+    await session.passTime(SESSION_START_CARD_REQUEST_LOOK_EVERY_MS);
+    expect([session.record.listings, session.record.placedRowIds, session.timerCount()]).toEqual([1, ['session-start-1400'], 0]);
+
+    // The clock answers the second tick 9 seconds after the card asked: the looks have stopped, so it does nothing.
+    await session.passTime(SESSION_START_CARD_REQUEST_WAIT_MS);
+    await session.releaseClockReadings();
+    await session.passTime(60_000);
+    expect([session.record.listings, session.record.placedRowIds]).toEqual([1, ['session-start-1400']]);
+    expect([session.record.debugLogs, session.record.logs]).toEqual([[], []]);
   });
 
   it('asks for nothing where the card cannot draw', async () => {
