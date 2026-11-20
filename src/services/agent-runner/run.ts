@@ -248,8 +248,11 @@ function failure(name: string, result: CommandResult): Error {
  * `--ignore-user-config` skips that file, so the run has no MCP tools; auth
  * still comes from CODEX_HOME. Every save goes through the worker's validators.
  */
-const CODEX_EXEC_ARGS = (executable: string, cwd: string, answerPath: string, schemaPath: string | null, { model, reasoningEffort }: StepModel = {}) => [
-  'exec', '--strict-config', '-c', 'default_permissions="claude-mem-refresh"',
+const CODEX_EXEC_ARGS = (executable: string, cwd: string, answerPath: string, schemaPath: string | null, platform: NodeJS.Platform, { model, reasoningEffort }: StepModel = {}) => [
+  'exec', '--strict-config',
+  // The isolated launch ignores user config, including its Windows sandbox preference.
+  ...(platform === 'win32' ? ['-c', 'features.prefer_mxc=true'] : []),
+  '-c', 'default_permissions="claude-mem-refresh"',
   '-c', `permissions.claude-mem-refresh.filesystem={":root"="deny",":minimal"="read",":workspace_roots"={"."="read"},${runtimeReadRoots(executable).map(path => `${JSON.stringify(path)}="read"`).join(',')}}`,
   '-c', 'permissions.claude-mem-refresh.network.enabled=false', '--ephemeral', '--ignore-user-config', '--skip-git-repo-check', '-C', cwd, '-o', answerPath,
   ...(schemaPath ? ['--output-schema', schemaPath] : []), ...(model ? ['-m', model] : []), ...(reasoningEffort ? ['-c', `model_reasoning_effort="${reasoningEffort}"`] : []), '-',
@@ -306,17 +309,18 @@ function codexAsk(agent: TaskAgent, task: AgentTask, dependencies: AgentRunnerDe
       // macOS sandbox-exec must reopen the actual binary, not its PATH symlink.
       const executable = realPath(agent.path!);
       const model = codexModelForLogin(models.codex, env);
-      let result = await runCli(executable, CODEX_EXEC_ARGS(executable, task.cwd, answerPath, schemaPath, model), prompt, { cwd: task.cwd, env });
+      const platform = dependencies.platform();
+      let result = await runCli(executable, CODEX_EXEC_ARGS(executable, task.cwd, answerPath, schemaPath, platform, model), prompt, { cwd: task.cwd, env });
       // The models list can be missing or stale, so a login can still refuse the step's model. Then the
       // step runs once more on the login's default model instead of failing (Oct 25: gpt-6-luna).
       if (result.exitCode !== 0 && model?.model && CODEX_MODEL_REFUSED.test(`${result.stderr}\n${result.stdout}`)) {
         logger.warn('WORKER', `Codex refused ${model.model} for this login; retrying on its default model`);
-        result = await runCli(executable, CODEX_EXEC_ARGS(executable, task.cwd, answerPath, schemaPath, {}), prompt, { cwd: task.cwd, env });
+        result = await runCli(executable, CODEX_EXEC_ARGS(executable, task.cwd, answerPath, schemaPath, platform), prompt, { cwd: task.cwd, env });
       }
       if (result.exitCode !== 0) {
         // Recognize the actual capability refusal rather than disabling Codex
         // on every Windows machine: elevated/MXC installations may support it.
-        if (dependencies.platform() === 'win32'
+        if (platform === 'win32'
           && /unelevated restricted-token sandbox cannot enforce split filesystem read restrictions/i.test(`${result.stderr}\n${result.stdout}`)) {
           throw new Error('Codex refused this refresh because its Windows unelevated sandbox cannot enforce the required read restrictions. Use an administrator-provisioned elevated sandbox or a supported MXC sandbox. The existing provider fallback remains available; filesystem restrictions were preserved.');
         }
