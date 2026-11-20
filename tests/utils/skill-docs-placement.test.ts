@@ -1,6 +1,15 @@
+import { createHash } from 'crypto';
 import { describe, it, expect } from 'bun:test';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
+
+const AGENT_COST_REPORT_DIRS = [
+  'plugin/skills/agent-cost-report',
+  'claude-mem-cursor/skills/agent-cost-report',
+  'claude-mem-grok-bot/skills/agent-cost-report',
+  'cowork/skills/agent-cost-report',
+  'openclaw/skills/agent-cost-report',
+].map((path) => join(import.meta.dir, '../../', path));
 
 const SKILLS_DIR = join(import.meta.dir, '../../plugin/skills');
 
@@ -64,6 +73,33 @@ describe('skill docs placement (#1651)', () => {
     expect(content).toContain('GET /v1/sync/status');
     expect(content).toContain('never appends or advances');
     expect(content).not.toContain('/api/pro/sync/status');
+  });
+
+  it('agent-cost-report uses a spec-compliant name in every bundled copy', () => {
+    const names = AGENT_COST_REPORT_DIRS.map((dir) => {
+      const content = readFileSync(join(dir, 'SKILL.md'), 'utf-8');
+      const frontmatter = content.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+      expect(frontmatter).not.toBeNull();
+
+      const metadata = Bun.YAML.parse(frontmatter![1]) as { name: string };
+      expect(metadata.name.length).toBeGreaterThan(0);
+      expect(metadata.name.length).toBeLessThanOrEqual(64);
+      expect(metadata.name).toMatch(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
+      expect(metadata.name).toBe('agent-cost-report');
+      return metadata.name;
+    });
+
+    expect(new Set(names).size).toBe(1);
+  });
+
+  it('agent-cost-report SKILL.md checksum is current in every bundled copy', () => {
+    for (const dir of AGENT_COST_REPORT_DIRS) {
+      const skill = readFileSync(join(dir, 'SKILL.md'));
+      const checksums = readFileSync(join(dir, 'CHECKSUMS.txt'), 'utf-8');
+      const skillChecksum = checksums.match(/^([a-f0-9]{64})  SKILL\.md$/m);
+      expect(skillChecksum).not.toBeNull();
+      expect(createHash('sha256').update(skill).digest('hex')).toBe(skillChecksum![1]);
+    }
   });
 
 });
