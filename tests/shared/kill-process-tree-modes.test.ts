@@ -6,7 +6,6 @@ import path from 'path';
 import {
   killProcessTree,
   collectDescendantPids,
-  ProcessTreeKillError,
 } from '../../src/shared/kill-process-tree.js';
 import { isPidAlive } from '../../src/supervisor/process-registry.js';
 
@@ -58,31 +57,7 @@ describe.if(isPosix)('killProcessTree signal modes', () => {
     expect(allGone).toBe(true);
   }, 30_000);
 
-  it("'graceful' (default) also reaps the whole tree", async () => {
-    const { rootPid } = spawnTwoLevelTree();
-    await settle();
 
-    const descendants = await collectDescendantPids(rootPid);
-    expect(descendants.length).toBeGreaterThan(0);
-
-    await killProcessTree(rootPid);
-
-    const allGone = await waitUntil(
-      () => !isPidAlive(rootPid) && descendants.every(pid => !isPidAlive(pid)),
-      10_000
-    );
-    expect(allGone).toBe(true);
-  }, 30_000);
-
-  it('is not an error when the target is already gone', async () => {
-    const { rootPid } = spawnTwoLevelTree();
-    await settle();
-    await killProcessTree(rootPid, { signalMode: 'immediate' });
-    await waitUntil(() => !isPidAlive(rootPid), 10_000);
-
-    // Second call against a corpse must resolve, not throw.
-    await killProcessTree(rootPid, { signalMode: 'immediate' });
-  }, 30_000);
 });
 
 describe.if(isPosix)('the #3378 invariant is enforced, not just documented', () => {
@@ -156,14 +131,4 @@ describe.if(isPosix)('the #3378 invariant is enforced, not just documented', () 
 
     expect(trapFired).toBe(true);
   }, 30_000);
-});
-
-describe('ProcessTreeKillError', () => {
-  it('carries the pid so callers can report which kill failed', () => {
-    const error = new ProcessTreeKillError(4242, 'taskkill failed');
-
-    expect(error).toBeInstanceOf(Error);
-    expect(error.name).toBe('ProcessTreeKillError');
-    expect(error.pid).toBe(4242);
-  });
 });

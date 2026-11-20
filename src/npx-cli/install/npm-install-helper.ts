@@ -1,7 +1,7 @@
 /**
  * npm install helpers for the marketplace dependency step.
  *
- * Strategy (see plans/04-installer-transparency.md Phase 4):
+ * Strategy:
  *  1. Run `npm install --omit=dev --ignore-scripts` STRICTLY first.
  *  2. If it fails WITHOUT an ERESOLVE token in stderr, that's a real bug — ABORT,
  *     never retry (retrying a non-ERESOLVE failure just hides it).
@@ -14,10 +14,47 @@
  * `trustedDependencies` (Bun-only), so we suppress scripts at the CLI level.
  */
 
-import { spawn } from 'child_process';
+import { execFile, spawn } from 'child_process';
+import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { IS_WINDOWS } from '../utils/paths.js';
 
 const TIMEOUT_MS = 5 * 60 * 1000;
+const TERMINATION_GRACE_MS = 1000;
+
+type TerminatePosixGroup = (signal: NodeJS.Signals) => void;
+const activePosixGroups = new Set<TerminatePosixGroup>();
+const parentSignalHandlers = new Map<NodeJS.Signals, () => void>();
+const terminateActivePosixGroups = (signal: NodeJS.Signals) => {
+  for (const terminate of [...activePosixGroups]) terminate(signal);
+};
+const onParentExit = () => terminateActivePosixGroups('SIGKILL');
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
+  parentSignalHandlers.set(signal, () => {
+    terminateActivePosixGroups(signal);
+    const ownHandler = parentSignalHandlers.get(signal)!;
+    // Prepending lets an existing once-listener retain control too: it has
+    // not removed itself yet. Do not replace the installer's own cancellation.
+    if (process.listeners(signal).some(listener => listener !== ownHandler)) return;
+    onParentExit();
+    process.off(signal, ownHandler);
+    process.kill(process.pid, signal);
+  });
+}
+
+function trackPosixGroup(terminate: TerminatePosixGroup): () => void {
+  if (activePosixGroups.size === 0) {
+    process.on('exit', onParentExit);
+    for (const [signal, handler] of parentSignalHandlers) process.prependListener(signal, handler);
+  }
+  activePosixGroups.add(terminate);
+  return () => {
+    activePosixGroups.delete(terminate);
+    if (activePosixGroups.size === 0) {
+      process.off('exit', onParentExit);
+      for (const [signal, handler] of parentSignalHandlers) process.off(signal, handler);
+    }
+  };
+}
 
 export interface NpmResult {
   code: number;
@@ -48,6 +85,27 @@ export function extractEresolveBlock(stderr: string): string {
   return stderr.slice(start).trim();
 }
 
+/** npm's own error code from its stderr (`npm error code X` / `npm ERR! code X`), or null. */
+export function npmErrorCode(stderr: string): string | null {
+  return /npm (?:error|ERR!) code (\w+)/.exec(stderr)?.[1] ?? null;
+}
+
+// npm 11.16+ refuses an `allow-scripts` value from the command line in a
+// project-scoped install (EALLOWSCRIPTS), and it counts the environment as the
+// command line. npx (npm 11.16 through 12.1) exports a user's `allow-scripts=`
+// line from ~/.npmrc to this process as npm_config_allow_scripts, so every
+// child npm aborted before reading any manifest (#3697, #3835, #3774). The child
+// still reads ~/.npmrc itself, where the setting is allowed. npm accepts `-` or
+// `_` in the name, and Windows env names are case-insensitive.
+const INHERITED_ALLOW_SCRIPTS_ENV = /^npm_config_allow[-_]scripts$/i;
+
+/** The env for a child npm: the parent's, minus an inherited allow-scripts setting. */
+export function npmChildEnv(parentEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return Object.fromEntries(
+    Object.entries(parentEnv).filter(([name]) => !INHERITED_ALLOW_SCRIPTS_ENV.test(name)),
+  );
+}
+
 // Async (spawn, not spawnSync) so the installer's clack spinner keeps
 // animating during a multi-minute npm install — a blocked event loop freezes
 // the spinner mid-frame and the install looks stalled.
@@ -55,19 +113,66 @@ export function runNpmStrict(cwd: string, flags: string[]): Promise<NpmResult> {
   return new Promise((resolve) => {
     const child = spawn('npm', flags, {
       cwd,
+      env: npmChildEnv(sanitizeEnv(process.env)),
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
-      ...(IS_WINDOWS ? { shell: process.env.ComSpec ?? 'cmd.exe' } : {}),
+      // Own a POSIX process group so a timeout includes npm's children, such
+      // as git processes that inherited the captured output pipes.
+      ...(IS_WINDOWS ? { shell: process.env.ComSpec ?? 'cmd.exe' } : { detached: true }),
     });
 
     let stdout = '';
     let stderr = '';
     let timedOut = false;
     let spawnError: Error | null = null;
+    let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
+    const terminatePosixGroup = (signal: NodeJS.Signals) => {
+      if (child.pid !== undefined) {
+        try {
+          process.kill(-child.pid, signal);
+          return;
+        } catch (error) {
+          // ESRCH is expected if the group already exited. Keep other failures
+          // visible and still try the direct child before releasing the pipes.
+          if ((error as NodeJS.ErrnoException).code !== 'ESRCH') {
+            stderr += `\nFailed to terminate npm process group: ${error instanceof Error ? error.message : String(error)}`;
+          }
+        }
+      }
+      child.kill(signal);
+    };
+    const untrackGroup = IS_WINDOWS ? () => {} : trackPosixGroup(terminatePosixGroup);
 
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill('SIGTERM');
+      if (IS_WINDOWS) {
+        // Kill the shell and npm together before terminating their parent shell.
+        forceKillTimer = setTimeout(() => {
+          child.kill('SIGKILL');
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          settle(124);
+        }, TERMINATION_GRACE_MS);
+        // An already-exited shell's numeric PID may have been reused.
+        if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) {
+          execFile('taskkill', ['/PID', String(child.pid), '/T', '/F'], {
+            timeout: TERMINATION_GRACE_MS,
+            windowsHide: true,
+            shell: false,
+            env: sanitizeEnv(process.env),
+          }, (error) => {
+            if (error && !settled) stderr += `\nFailed to terminate npm process tree: ${error.message}`;
+          });
+        }
+      } else {
+        forceKillTimer = setTimeout(() => {
+          terminatePosixGroup('SIGKILL');
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          settle(124);
+        }, TERMINATION_GRACE_MS);
+        terminatePosixGroup('SIGTERM');
+      }
     }, resolveInstallTimeoutMs());
 
     child.stdout?.on('data', (d: Buffer) => { stdout += d.toString(); });
@@ -77,8 +182,10 @@ export function runNpmStrict(cwd: string, flags: string[]): Promise<NpmResult> {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (forceKillTimer !== undefined) clearTimeout(forceKillTimer);
+      untrackGroup();
       resolve({
-        code: typeof code === 'number' ? code : (timedOut ? 124 : 1),
+        code: timedOut ? 124 : (typeof code === 'number' ? code : 1),
         stdout,
         stderr: stderr || (spawnError ? String(spawnError.message) : ''),
         timedOut,
@@ -88,6 +195,11 @@ export function runNpmStrict(cwd: string, flags: string[]): Promise<NpmResult> {
     // 'close' never fires when the process fails to spawn (ENOENT), so the
     // error handler must settle too.
     child.on('error', (error) => { spawnError = error; settle(null); });
-    child.on('close', (code) => { settle(code); });
+    child.on('close', (code) => {
+      // Even if npm exits first, finish the grace-period cleanup for any child
+      // that ignored SIGTERM (including children that closed their own pipes).
+      if (!IS_WINDOWS && timedOut && forceKillTimer !== undefined) return;
+      settle(code);
+    });
   });
 }

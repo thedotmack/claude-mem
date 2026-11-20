@@ -1,8 +1,8 @@
 import * as p from '@clack/prompts';
 import { styleText } from 'node:util';
-import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, readdirSync, rmSync } from 'fs';
 import { homedir } from 'os';
-import { join } from 'path';
+import { join, posix } from 'path';
 import {
   claudeSettingsPath,
   installedPluginsPath,
@@ -13,17 +13,25 @@ import {
   writeJsonFileAtomic,
 } from '../utils/paths.js';
 import { readJsonSafe } from '../../utils/json-utils.js';
-import { readFlatSettings } from '../utils/settings.js';
+import { clearClaudeAutoMemoryOverride } from '../utils/claude-auto-memory.js';
+import { writeTextFileAtomic } from '../../shared/atomic-json.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
-import { USER_SETTINGS_PATH } from '../../shared/paths.js';
-import { writeJsonFileAtomic as writeSettingsJsonAtomic } from '../../shared/atomic-json.js';
-import { shutdownWorkerAndWait } from '../../services/install/shutdown-helper.js';
+import { USER_SETTINGS_PATH, resolveDataDir } from '../../shared/paths.js';
+import { updateSettingsDocument } from '../../shared/settings-document.js';
+import { shutdownWorkerAndWait, type ShutdownResult } from '../../services/install/shutdown-helper.js';
+import { getWorkerPort } from '../../shared/worker-utils.js';
 import {
   normalizeRuntimeFlag,
   SERVER_RUNTIME_SETTINGS_KEYS,
   type InstallRuntimeId,
 } from './server-runtime-setup.js';
 import { captureCliEvent } from '../../services/telemetry/cli-telemetry.js';
+import {
+  currentLauncherHostEnvironment,
+  removeInstalledLauncher,
+  resolveLauncherBinaryPath,
+  type LauncherRemovalResult,
+} from '../../launcher/install-launcher.js';
 
 // #2568 — read the runtime the operator installed so uninstall can dispatch to
 // the matching teardown. The worker path is the default and is unchanged: only
@@ -39,29 +47,19 @@ function readSelectedRuntime(): InstallRuntimeId {
   }
 }
 
-function clearServerRuntimeSettings(keys: readonly string[]): void {
-  let flat: Record<string, unknown> | null;
-  try {
-    flat = readFlatSettings(USER_SETTINGS_PATH);
-  } catch (error: unknown) {
-    console.warn('[uninstall] Could not read settings for server runtime cleanup:', error instanceof Error ? error.message : String(error));
-    return;
+export function clearServerRuntimeSettings(
+  keys: readonly string[],
+  settingsPath: string = USER_SETTINGS_PATH,
+): boolean {
+  if (!existsSync(settingsPath)) return true;
+  const result = updateSettingsDocument(settingsPath, {}, {}, document => {
+    for (const key of keys) delete document[key];
+  });
+  if (result.status === 'refused') {
+    console.warn('[uninstall] Could not write settings during server runtime cleanup:', result.error instanceof Error ? result.error.message : String(result.error));
+    return false;
   }
-  if (!flat) return;
-  let changed = false;
-  for (const key of keys) {
-    if (key in flat) {
-      delete flat[key];
-      changed = true;
-    }
-  }
-  if (changed) {
-    try {
-      writeSettingsJsonAtomic(USER_SETTINGS_PATH, flat);
-    } catch (error: unknown) {
-      console.warn('[uninstall] Could not write settings during server runtime cleanup:', error instanceof Error ? error.message : String(error));
-    }
-  }
+  return true;
 }
 
 function removeMarketplaceDirectory(): boolean {
@@ -98,15 +96,94 @@ function removeFromInstalledPlugins(): void {
   }
 }
 
-function stripLegacyClaudeMemAlias(): void {
-  const home = homedir();
-  const candidateFiles = [
+const LEGACY_ALIAS_LINE_REGEX = /^\s*alias\s+claude-mem\s*=/;
+
+function legacyAliasCandidateFiles(home: string): string[] {
+  return [
     join(home, '.bashrc'),
     join(home, '.zshrc'),
     join(home, 'Documents', 'PowerShell', 'Microsoft.PowerShell_profile.ps1'),
   ];
+}
 
-  const aliasLineRegex = /^\s*alias\s+claude-mem\s*=/;
+/**
+ * The shell rc files still carrying a pre-12.4.7 `alias claude-mem=` line
+ * (#6228). The alias beats PATH, so it shadows the on-PATH launcher and runs
+ * the marketplace clone's CLI — and, through `start`, its worker — no matter
+ * what is installed. Read-only: `doctor` reports these files, while
+ * `install`/`update` strip them through stripLegacyClaudeMemAlias below.
+ * A definition that spans multiple lines is reported too: doctor's warning
+ * is the prompt to remove that one by hand, because the strip leaves such
+ * files untouched (see aliasDefinitionSpansMultipleLines).
+ * `spansMultipleLines` marks those files, so doctor can tell the user to
+ * remove that alias by hand instead of pointing at `install`.
+ * Unreadable files are skipped; the strip path reports its own read errors.
+ */
+export interface LegacyClaudeMemAliasFile {
+  filePath: string;
+  spansMultipleLines: boolean;
+}
+
+export function findLegacyClaudeMemAlias(home: string = homedir()): LegacyClaudeMemAliasFile[] {
+  const found: LegacyClaudeMemAliasFile[] = [];
+  for (const filePath of legacyAliasCandidateFiles(home)) {
+    if (!existsSync(filePath)) continue;
+    try {
+      const lines = readFileSync(filePath, 'utf-8').split('\n');
+      const aliasIndexes = legacyAliasLineIndexes(lines);
+      if (aliasIndexes.length === 0) continue;
+      found.push({
+        filePath,
+        spansMultipleLines: aliasIndexes.some((index) => aliasDefinitionSpansMultipleLines(lines, index)),
+      });
+    } catch {
+      continue;
+    }
+  }
+  return found;
+}
+
+function legacyAliasLineIndexes(lines: string[]): number[] {
+  return lines.flatMap((line, index) => (LEGACY_ALIAS_LINE_REGEX.test(line) ? [index] : []));
+}
+
+/**
+ * Whether the alias definition starting at `lines[start]` spans more than
+ * that one physical line: a quote opened in the value that does not close
+ * on the same line, or a trailing line-continuation backslash. Deleting
+ * only the opening line of such a definition would leave its remaining
+ * lines and closing quote behind and break the user's next shell, so the
+ * strip below leaves any file carrying one untouched instead.
+ */
+function aliasDefinitionSpansMultipleLines(lines: string[], start: number): boolean {
+  const line = lines[start];
+  const valueStart = line.indexOf('=');
+  const value = valueStart >= 0 ? line.slice(valueStart + 1) : line;
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+  let escaped = false;
+  for (const ch of value) {
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === '\\' && !inSingleQuote) {
+      escaped = true;
+      continue;
+    }
+    if (ch === "'" && !inDoubleQuote) inSingleQuote = !inSingleQuote;
+    else if (ch === '"' && !inSingleQuote) inDoubleQuote = !inDoubleQuote;
+  }
+  if (inSingleQuote || inDoubleQuote) return true;
+  let trailingBackslashes = 0;
+  for (let i = line.length - 1; i >= 0 && line[i] === '\\'; i--) trailingBackslashes++;
+  return trailingBackslashes % 2 === 1;
+}
+
+export function stripLegacyClaudeMemAlias(home: string = homedir()): void {
+  const candidateFiles = legacyAliasCandidateFiles(home);
+
+  const aliasLineRegex = LEGACY_ALIAS_LINE_REGEX;
 
   for (const filePath of candidateFiles) {
     if (!existsSync(filePath)) continue;
@@ -114,17 +191,24 @@ function stripLegacyClaudeMemAlias(): void {
     try {
       content = readFileSync(filePath, 'utf-8');
     } catch (error: unknown) {
-      console.warn(`[uninstall] Could not read ${filePath}:`, error instanceof Error ? error.message : String(error));
+      console.warn(`[claude-mem] Could not read ${filePath}:`, error instanceof Error ? error.message : String(error));
       continue;
     }
     const lines = content.split('\n');
+    const aliasIndexes = legacyAliasLineIndexes(lines);
+    if (aliasIndexes.length === 0) continue;
+    if (aliasIndexes.some((index) => aliasDefinitionSpansMultipleLines(lines, index))) {
+      console.warn(`[claude-mem] Legacy claude-mem alias in ${filePath} spans multiple lines; leaving the file untouched — remove the alias manually, then open a new shell.`);
+      continue;
+    }
     const filtered = lines.filter((line) => !aliasLineRegex.test(line));
-    if (filtered.length === lines.length) continue; 
     try {
-      writeFileSync(filePath, filtered.join('\n'));
+      // The user's own shell rc: a crash mid-write must leave the previous
+      // contents, never a truncated file, so write through the shared helper.
+      writeTextFileAtomic(filePath, filtered.join('\n'));
       console.error(`Removed legacy claude-mem alias from ${filePath}`);
     } catch (error: unknown) {
-      console.warn(`[uninstall] Could not rewrite ${filePath}:`, error instanceof Error ? error.message : String(error));
+      console.warn(`[claude-mem] Could not rewrite ${filePath}:`, error instanceof Error ? error.message : String(error));
     }
   }
 }
@@ -151,26 +235,15 @@ export function removeFromClaudeSettings(): void {
   // (ANTHROPIC_AUTH_TOKEN, AWS_REGION, etc.) are preserved. If the env
   // block becomes empty as a result, the block itself is dropped to keep
   // settings.json tidy.
-  if (settings.env && typeof settings.env === 'object' && !Array.isArray(settings.env)) {
-    if (
-      Object.prototype.hasOwnProperty.call(settings.env, 'CLAUDE_CODE_DISABLE_AUTO_MEMORY') &&
-      settings.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY === '1'
-    ) {
-      delete settings.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY;
-      dirty = true;
-      if (Object.keys(settings.env).length === 0) {
-        delete settings.env;
-      }
-    }
-  }
+  if (clearClaudeAutoMemoryOverride(settings)) dirty = true;
 
   if (dirty) {
     writeJsonFileAtomic(claudeSettingsPath(), settings);
   }
 }
 
-function removeStrayClaudeMemPaths(): number {
-  const home = homedir();
+/** Exported for tests; `home` is injectable so tests never touch the real home directory. */
+export function removeStrayClaudeMemPaths(home: string = homedir()): number {
   let removedCount = 0;
 
   const npxRoot = join(home, '.npm', '_npx');
@@ -223,7 +296,7 @@ function removeStrayClaudeMemPaths(): number {
     }
   }
 
-  const pluginDataDir = join(home, '.claude', 'plugins', 'data', 'claude-mem-thedotmack');
+  const pluginDataDir = join(pluginsDirectory(), 'data', 'claude-mem-thedotmack');
   if (existsSync(pluginDataDir)) {
     try {
       rmSync(pluginDataDir, { recursive: true, force: true });
@@ -234,6 +307,69 @@ function removeStrayClaudeMemPaths(): number {
   }
 
   return removedCount;
+}
+
+/**
+ * What uninstall says about the worker stop. Uninstall never blocks on it —
+ * cleanup always continues — but a worker that is still running is named by
+ * PID so the user can end it. Exported for tests.
+ */
+export function uninstallShutdownNotice(result: ShutdownResult): { level: 'info' | 'warn'; message: string } | null {
+  if (result.stopped) return result.workerWasRunning ? { level: 'info', message: 'Worker service stopped.' } : null;
+  switch (result.blocker.kind) {
+    case 'port-held-by-other-process':
+      return { level: 'info', message: 'The worker port is held by another process, not a claude-mem worker; nothing to stop.' };
+    case 'port-rebound': {
+      const owner = result.blocker.ownerPid === null ? 'another process' : `another claude-mem worker (PID ${result.blocker.ownerPid})`;
+      return { level: 'warn', message: `Worker service stopped, but ${owner} took its port again; continuing uninstall cleanup.` };
+    }
+    case 'worker-still-running':
+      return { level: 'warn', message: `Worker service (PID ${result.blocker.pid}) did not confirm shutdown; continuing uninstall cleanup.` };
+  }
+}
+
+/** PowerShell ends a single-quoted string at any of these; doubling one keeps it. */
+const POWERSHELL_SINGLE_QUOTES = /['‘’‚‛]/g;
+
+/**
+ * Where the data directory that uninstall keeps is, and a command that removes
+ * it. The directory honors CLAUDE_MEM_DATA_DIR. Windows shells have no
+ * `rm -rf`: PowerShell reads `-rf` as an unknown parameter and cmd has no `rm`.
+ * Windows gets a PowerShell command with the path in single quotes, where
+ * PowerShell expands nothing. Wrapping it in `powershell -c "…"` would let the
+ * shell it is pasted into expand `$name` or `$(…)` in the path, and a
+ * `…\$archive` directory would then remove its parent. Exported for tests.
+ */
+export function preservedDataDirectoryHint(
+  dataDirectory: string = resolveDataDir(),
+  platform: NodeJS.Platform = process.platform,
+  home: string = homedir(),
+): { location: string; removeCommand: string; shell: 'PowerShell' | 'sh' } {
+  if (platform === 'win32') {
+    const quoted = `'${dataDirectory.replace(POWERSHELL_SINGLE_QUOTES, (quote) => quote + quote)}'`;
+    return { location: dataDirectory, removeCommand: `Remove-Item -LiteralPath ${quoted} -Recurse -Force`, shell: 'PowerShell' };
+  }
+  if (dataDirectory === posix.join(home, '.claude-mem')) {
+    return { location: '~/.claude-mem', removeCommand: 'rm -rf ~/.claude-mem', shell: 'sh' };
+  }
+  // `--` because a relative CLAUDE_MEM_DATA_DIR such as `-memory` would otherwise be read as options.
+  return { location: dataDirectory, removeCommand: `rm -rf -- '${dataDirectory.replaceAll("'", "'\\''")}'`, shell: 'sh' };
+}
+
+/**
+ * `install --ide cursor` adds claude-mem's hooks to ~/.cursor/hooks.json and
+ * its server to ~/.cursor/mcp.json. uninstallCursorHooks() also removes hooks
+ * and scripts by the legacy script names alone, which the user's own hooks can
+ * share, so it runs only when one of claude-mem's entries is there. Exported
+ * for tests.
+ */
+export async function removeCursorIntegration(): Promise<number> {
+  const { hasCursorIntegration, uninstallCursorHooks } = await import('../../services/integrations/CursorHooksInstaller.js');
+  if (!hasCursorIntegration('user')) {
+    console.log('  Cursor hooks + MCP not installed; nothing to remove.');
+    return 0;
+  }
+  return uninstallCursorHooks('user');
 }
 
 export async function runUninstallCommand(): Promise<void> {
@@ -268,14 +404,11 @@ export async function runUninstallCommand(): Promise<void> {
     }
   }
 
-  const workerPort = SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_PORT');
+  const workerPort = getWorkerPort();
   try {
-    const result = await shutdownWorkerAndWait(workerPort, 10000);
-    if (result.workerWasRunning && result.stopped) {
-      p.log.info('Worker service stopped.');
-    } else if (result.workerWasRunning) {
-      p.log.warn('Worker service did not confirm shutdown; continuing uninstall cleanup.');
-    }
+    const notice = uninstallShutdownNotice(await shutdownWorkerAndWait(workerPort, 10000));
+    if (notice?.level === 'warn') p.log.warn(notice.message);
+    else if (notice) p.log.info(notice.message);
   } catch (error: unknown) {
     console.warn('[uninstall] Worker shutdown attempt failed:', error instanceof Error ? error.message : String(error));
   }
@@ -295,14 +428,39 @@ export async function runUninstallCommand(): Promise<void> {
     } else {
       p.log.info('Server runtime detected (externally managed stack — leaving Docker/pg/redis untouched).');
     }
-    clearServerRuntimeSettings(SERVER_RUNTIME_SETTINGS_KEYS);
-    p.log.info('Server runtime settings cleared from ~/.claude-mem/settings.json.');
+    if (clearServerRuntimeSettings(SERVER_RUNTIME_SETTINGS_KEYS)) {
+      p.log.info('Server runtime settings cleared from ~/.claude-mem/settings.json.');
+    } else {
+      p.log.error('Could not clear server runtime settings from ~/.claude-mem/settings.json. Repair the file and rerun uninstall.');
+    }
   }
 
+  // DSH may link the local package. Remove it while the marketplace package
+  // and its bundle manifest still exist; never leave a dangling host plugin.
+  // A failure here does not stop the unrelated cleanup below. It keeps the DSH
+  // record and the marketplace directory, so a re-run can finish the removal.
+  let deepSeekHarnessCleanupFailed = false;
+  try {
+    const { uninstallDeepSeekHarness } = await import('../../services/integrations/DeepSeekHarnessInstaller.js');
+    deepSeekHarnessCleanupFailed = await uninstallDeepSeekHarness() !== 0;
+  } catch (error) {
+    deepSeekHarnessCleanupFailed = true;
+    p.log.error('DeepSeek Harness cleanup failed: ' + String(error));
+  }
+  if (deepSeekHarnessCleanupFailed) {
+    p.log.error('DeepSeek Harness cleanup failed. Its plugin record and the marketplace directory were kept; repair DSH and re-run uninstall to finish. Other integrations are still removed.');
+    process.exitCode = 1;
+  }
+
+  // Shell rc files and the Windows user Path are left alone; the hint names the line to remove.
+  const launcherRemovalOutcome: { result: LauncherRemovalResult | null } = { result: null };
   await p.tasks([
     {
       title: 'Removing marketplace directory',
       task: async () => {
+        if (deepSeekHarnessCleanupFailed) {
+          return `Marketplace directory kept for DeepSeek Harness ${styleText('yellow', '!')}`;
+        }
         const removed = removeMarketplaceDirectory();
         return removed
           ? `Marketplace directory removed ${styleText('green', 'OK')}`
@@ -347,6 +505,25 @@ export async function runUninstallCommand(): Promise<void> {
       },
     },
     {
+      title: 'Removing the claude-mem hook launcher',
+      task: async () => {
+        let launcherRemoval: LauncherRemovalResult;
+        try {
+          launcherRemoval = removeInstalledLauncher();
+        } catch (error: unknown) {
+          // [ANTI-PATTERN IGNORED]: reported as this task's result so the remaining
+          // uninstall tasks still run; on Windows a running claude-mem.exe cannot be deleted.
+          const launcherBinaryPath = resolveLauncherBinaryPath(currentLauncherHostEnvironment());
+          const failureMessage = error instanceof Error ? error.message : String(error);
+          return `Hook launcher in use; remove ${launcherBinaryPath} after closing Claude Code (${failureMessage}) ${styleText('yellow', 'WARN')}`;
+        }
+        launcherRemovalOutcome.result = launcherRemoval;
+        return launcherRemoval.removedBinaryPath
+          ? `Hook launcher removed (${launcherRemoval.removedBinaryPath}) ${styleText('green', 'OK')}`
+          : `Hook launcher not found ${styleText('dim', 'skipped')}`;
+      },
+    },
+    {
       title: 'Removing stray claude-mem caches and logs',
       task: async () => {
         const removed = removeStrayClaudeMemPaths();
@@ -358,9 +535,38 @@ export async function runUninstallCommand(): Promise<void> {
   ]);
 
   const ideCleanups: Array<{ label: string; fn: () => Promise<number> | number }> = [
+    { label: 'T3 Code provider plugins', fn: async () => {
+      const { uninstallT3Code } = await import('../../services/integrations/T3CodeInstaller.js');
+      return uninstallT3Code();
+    }},
+    { label: 'Hermes Agent memory provider', fn: async () => {
+      const { uninstallHermesIntegration } = await import('../../services/integrations/HermesInstaller.js');
+      return uninstallHermesIntegration();
+    }},
+    { label: 'Pi memory', fn: async () => {
+      const { uninstallPiExtension } = await import('../../services/integrations/PiInstaller.js');
+      return uninstallPiExtension();
+    }},
+    { label: 'Cursor hooks + MCP', fn: removeCursorIntegration },
     { label: 'Windsurf hooks', fn: async () => {
       const { uninstallWindsurfHooks } = await import('../../services/integrations/WindsurfHooksInstaller.js');
       return uninstallWindsurfHooks();
+    }},
+    { label: 'Goose MCP extension', fn: async () => {
+      const { uninstallGooseMcpIntegration } = await import('../../services/integrations/McpIntegrations.js');
+      return uninstallGooseMcpIntegration();
+    }},
+    { label: 'Copilot CLI MCP server', fn: async () => {
+      const { uninstallCopilotCliMcpIntegration } = await import('../../services/integrations/McpIntegrations.js');
+      return uninstallCopilotCliMcpIntegration();
+    }},
+    { label: 'Warp MCP server', fn: async () => {
+      const { uninstallWarpMcpIntegration } = await import('../../services/integrations/McpIntegrations.js');
+      return uninstallWarpMcpIntegration();
+    }},
+    { label: 'Zed MCP server', fn: async () => {
+      const { uninstallZedMcpIntegration } = await import('../../services/integrations/McpIntegrations.js');
+      return uninstallZedMcpIntegration();
     }},
     { label: 'OpenCode plugin', fn: async () => {
       const { uninstallOpenCodePlugin } = await import('../../services/integrations/OpenCodeInstaller.js');
@@ -378,6 +584,22 @@ export async function runUninstallCommand(): Promise<void> {
       const { uninstallAntigravityCliHooks } = await import('../../services/integrations/AntigravityCliHooksInstaller.js');
       return uninstallAntigravityCliHooks();
     }},
+    { label: 'Gemini CLI hooks', fn: async () => {
+      const { uninstallGeminiHooks } = await import('../../services/integrations/GeminiHooksInstaller.js');
+      return uninstallGeminiHooks();
+    }},
+    { label: 'Kimi Code hooks + MCP', fn: async () => {
+      const { uninstallKimiHooks } = await import('../../services/integrations/KimiHooksInstaller.js');
+      return uninstallKimiHooks();
+    }},
+    { label: 'Devin hooks + MCP', fn: async () => {
+      const { uninstallDevinHooks } = await import('../../services/integrations/DevinHooksInstaller.js');
+      return uninstallDevinHooks();
+    }},
+    { label: 'OMP hooks', fn: async () => {
+      const { uninstallOmpHooks } = await import('../../services/integrations/OmpHooksInstaller.js');
+      return uninstallOmpHooks();
+    }},
   ];
 
   for (const { label, fn } of ideCleanups) {
@@ -391,10 +613,17 @@ export async function runUninstallCommand(): Promise<void> {
     }
   }
 
+  if (launcherRemovalOutcome.result?.pathCleanupHint) {
+    p.log.info(launcherRemovalOutcome.result.pathCleanupHint);
+  }
+
+  const dataDirectory = preservedDataDirectoryHint();
   p.note(
     [
-      `Your data directory at ${styleText('cyan', '~/.claude-mem')} was preserved.`,
-      'To remove it manually: rm -rf ~/.claude-mem',
+      `Your data directory at ${styleText('cyan', dataDirectory.location)} was preserved.`,
+      dataDirectory.shell === 'PowerShell'
+        ? `To remove it manually, in PowerShell: ${dataDirectory.removeCommand}`
+        : `To remove it manually: ${dataDirectory.removeCommand}`,
     ].join('\n'),
     'Note',
   );
@@ -403,5 +632,7 @@ export async function runUninstallCommand(): Promise<void> {
   // install ID still live in ~/.claude-mem, which uninstall preserves.
   await captureCliEvent('uninstall_completed', {}, { person: true });
 
-  p.outro(styleText('green', 'claude-mem has been uninstalled.'));
+  p.outro(deepSeekHarnessCleanupFailed
+    ? styleText('yellow', 'claude-mem has been uninstalled, except for DeepSeek Harness.')
+    : styleText('green', 'claude-mem has been uninstalled.'));
 }

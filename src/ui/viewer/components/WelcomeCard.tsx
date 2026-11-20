@@ -1,7 +1,12 @@
 import React, { useEffect } from 'react';
+import { useI18n } from '../../i18n';
+import { useDialogFocus } from '../hooks/useDialogFocus';
+import { withLocalApiTokenQuery } from '../../local-api-token-client';
 
 interface WelcomeCardProps {
   onDismiss: () => void;
+  /** "Open Settings" on the Tune it tile closes the welcome card and opens Settings. */
+  onOpenSettings?: () => void;
 }
 
 const STORAGE_KEY = 'claude-mem-welcome-dismissed-v3';
@@ -30,13 +35,14 @@ export function setStoredWelcomeDismissed(dismissed: boolean): void {
 }
 
 function DismissButton({ onClick }: { onClick: () => void }) {
+  const { t } = useI18n();
   return (
     <button
       type="button"
       className="welcome-modal-dismiss"
       onClick={onClick}
-      aria-label="Close welcome"
-      title="Close (Esc)"
+      aria-label={t('Close welcome')}
+      title={t('Close (Esc)')}
     >
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <line x1="18" y1="6" x2="6" y2="18"></line>
@@ -136,6 +142,8 @@ interface Feature {
   illustration: React.ReactNode;
   title: string;
   description: string;
+  /** A tile that names an action offers it as a button. */
+  action?: 'settings';
 }
 
 const FEATURES: Feature[] = [
@@ -149,17 +157,20 @@ const FEATURES: Feature[] = [
     kind: 'tune',
     illustration: <TuneIllustration />,
     title: 'Tune it',
-    description: 'The gear in the top-right tunes memory injection.',
+    description: 'Open Settings to choose the context your next session receives.',
+    action: 'settings',
   },
   {
     kind: 'recall',
     illustration: <RecallIllustration />,
     title: 'Recall it',
-    description: 'Ask Claude or run /mem-search to find past work.',
+    description: 'Ask your assistant or run /mem-search to find past work.',
   },
 ];
 
-export function WelcomeCard({ onDismiss }: WelcomeCardProps) {
+export function WelcomeCard({ onDismiss, onOpenSettings }: WelcomeCardProps) {
+  const { t } = useI18n();
+  const dialogRef = useDialogFocus(true);
   const handleDismiss = () => {
     setStoredWelcomeDismissed(true);
     onDismiss();
@@ -176,7 +187,9 @@ export function WelcomeCard({ onDismiss }: WelcomeCardProps) {
 
   return (
     <div className="welcome-modal-backdrop" onClick={handleDismiss}>
-      <article
+      <div
+        ref={dialogRef}
+        tabIndex={-1}
         className="welcome-modal"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
@@ -187,8 +200,8 @@ export function WelcomeCard({ onDismiss }: WelcomeCardProps) {
 
         <header className="welcome-modal-header">
           <img className="welcome-modal-logo" src="claude-mem-logo-stylized.png" alt="" width="96" height="96" />
-          <h2 id="welcome-modal-title">Welcome to claude-mem</h2>
-          <p>Persistent memory for Claude Code.</p>
+          <h2 id="welcome-modal-title">{t('Welcome to claude-mem')}</h2>
+          <p>{t('Keep useful context across your coding sessions.')}</p>
         </header>
 
         <div className="welcome-modal-grid">
@@ -196,23 +209,32 @@ export function WelcomeCard({ onDismiss }: WelcomeCardProps) {
             <div key={feature.kind} className={`welcome-modal-feature welcome-modal-feature-${feature.kind}`}>
               <div className="welcome-modal-feature-inner">
                 {feature.illustration}
-                <h3 className="welcome-modal-feature-title">{feature.title}</h3>
-                <p className="welcome-modal-feature-desc">{feature.description}</p>
+                <h3 className="welcome-modal-feature-title">{t(feature.title)}</h3>
+                <p className="welcome-modal-feature-desc">{t(feature.description)}</p>
+                {feature.action === 'settings' && onOpenSettings && (
+                  <button type="button" className="link-button welcome-modal-feature-action" onClick={() => { handleDismiss(); onOpenSettings(); }}>
+                    {t('Open Settings')}
+                  </button>
+                )}
               </div>
             </div>
           ))}
         </div>
 
         <footer className="welcome-modal-footer">
-          <a href={EXPLAINER_URL} target="_blank" rel="noopener noreferrer">
-            How it works
-          </a>
-          <span className="welcome-modal-footer-sep">{'·'}</span>
-          <a href={DOCS_URL} target="_blank" rel="noopener noreferrer">
-            Read the docs
-          </a>
+          <span className="welcome-modal-footer-links">
+            <a href={withLocalApiTokenQuery(EXPLAINER_URL)} target="_blank" rel="noopener noreferrer">
+              {t('How it works')}
+            </a>
+            <a href={DOCS_URL} target="_blank" rel="noopener noreferrer">
+              {t('Read the docs')}
+            </a>
+          </span>
+          <button type="button" className="btn-primary welcome-modal-continue" onClick={handleDismiss}>
+            {t('Show my timeline')}
+          </button>
         </footer>
-      </article>
+      </div>
     </div>
   );
 }

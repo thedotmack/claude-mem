@@ -109,6 +109,10 @@ export class ServerJobQueue<TPayload extends object = object> {
     this.workerFactory = options.workerFactory;
   }
 
+  getLockDurationMs(): number {
+    return this.lockDurationMs;
+  }
+
   private getQueue(): NonNullable<typeof this.queue> {
     if (this.queue) {
       return this.queue;
@@ -304,7 +308,10 @@ export class ServerJobQueue<TPayload extends object = object> {
       });
       w.on('stalled', (jobId: string) => this.notifyStalled(jobId, 'worker'));
     }
-    worker.run();
+    // run() can reject while opening its connections before the main loop
+    // emits an error event. Observe that promise too: an event listener alone
+    // does not prevent an unhandled rejection from terminating the server.
+    void Promise.resolve(worker.run()).catch(error => this.notifyQueueError(error, 'worker'));
     this.worker = worker;
 
     // QueueEvents subscribes to Redis pub/sub for cross-process events

@@ -12,69 +12,26 @@ describe('SessionStore.*ByIds — orderBy: "relevance" preserves caller ID order
     store.close();
   });
 
+  function seed(suffix: string, count: number): number[] {
+    const sdkId = store.createSDKSession(`content-${suffix}`, 'p', 'prompt');
+    store.updateMemorySessionId(sdkId, `session-${suffix}`);
+    return Array.from({ length: count }, (_, i) => store.storeObservations(
+      `session-${suffix}`, 'p', [{
+        type: 'test', title: `obs-${i}`, subtitle: null, facts: [`fact ${i}`],
+        narrative: null, concepts: [], files_read: [], files_modified: [],
+      }], null, i, 0, 1_700_000_000_000 + i * 1000,
+    ).observationIds[0]);
+  }
+
   it('getObservationsByIds returns rows in caller-provided ID order when orderBy is "relevance"', () => {
-    const sdkId = store.createSDKSession('content-relevance', 'p', 'prompt');
-    store.updateMemorySessionId(sdkId, 'session-relevance');
-
-    const baseTs = 1_700_000_000_000;
-    const inserted: number[] = [];
-    for (let i = 0; i < 5; i++) {
-      const result = store.storeObservations(
-        'session-relevance',
-        'p',
-        [{
-          type: 'test',
-          title: `obs-${i}`,
-          subtitle: null,
-          facts: [`fact ${i}`],
-          narrative: null,
-          concepts: [],
-          files_read: [],
-          files_modified: [],
-        }],
-        null,
-        i,
-        0,
-        baseTs + i * 1000,
-      );
-      inserted.push(result.observationIds[0]);
-    }
-
-    const callerOrder = [...inserted].reverse();
+    const callerOrder = seed('relevance', 5).reverse();
     const results = store.getObservationsByIds(callerOrder, { orderBy: 'relevance' });
-
     expect(results.map(r => r.id)).toEqual(callerOrder);
   });
 
   it('getObservationsByIds still respects date_desc when orderBy defaults', () => {
-    const sdkId = store.createSDKSession('content-date', 'p', 'prompt');
-    store.updateMemorySessionId(sdkId, 'session-date');
-    const baseTs = 1_700_000_000_000;
-    const inserted: number[] = [];
-    for (let i = 0; i < 3; i++) {
-      const result = store.storeObservations(
-        'session-date',
-        'p',
-        [{
-          type: 'test',
-          title: `obs-${i}`,
-          subtitle: null,
-          facts: [`fact ${i}`],
-          narrative: null,
-          concepts: [],
-          files_read: [],
-          files_modified: [],
-        }],
-        null,
-        i,
-        0,
-        baseTs + i * 1000,
-      );
-      inserted.push(result.observationIds[0]);
-    }
-
-    const callerOrder = [...inserted].reverse();
-    const results = store.getObservationsByIds(callerOrder);
+    const inserted = seed('date', 3);
+    const results = store.getObservationsByIds(inserted);
     expect(results.map(r => r.id)).toEqual([...inserted].reverse());
   });
 

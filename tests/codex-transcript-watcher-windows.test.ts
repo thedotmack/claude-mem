@@ -1,29 +1,35 @@
-import { describe, it, expect } from 'bun:test';
-import { readFileSync } from 'fs';
+import { afterEach, describe, it, expect } from 'bun:test';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
 import { join } from 'path';
+import { TranscriptWatcher } from '../src/services/transcripts/watcher.js';
 
-const watcherSource = readFileSync(
-  join(__dirname, '..', 'src', 'services', 'transcripts', 'watcher.ts'),
-  'utf-8',
-);
+const roots: string[] = [];
+afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+
+function newWatcher(): TranscriptWatcher {
+  const root = mkdtempSync(join(tmpdir(), 'cm-codex-watcher-windows-'));
+  roots.push(root);
+  return new TranscriptWatcher({ version: 1, watches: [] }, join(root, 'state.json'));
+}
 
 describe('Codex transcript ingestion on Windows (#2192)', () => {
-  it('normalizes backslashes to forward slashes before passing the path to scanGlob', () => {
-    expect(watcherSource).toContain('normalizeGlobPattern');
-    expect(watcherSource).toContain("inputPath.replace(/\\\\/g, '/')");
-    expect(watcherSource).toMatch(/scanGlob\(this\.normalizeGlobPattern\(/);
+  it('turns backslashes into forward slashes before a path is used as a glob', () => {
+    const watcher = newWatcher() as any;
+    expect(watcher.normalizeGlobPattern('C:\\Users\\me\\.codex\\sessions\\**\\*.jsonl'))
+      .toBe('C:/Users/me/.codex/sessions/**/*.jsonl');
   });
 
-  it('exposes a public poke() on the file tailer so the recursive root watcher can prod it', () => {
-    expect(watcherSource).toMatch(/\bpoke\(\): void\b/);
-  });
+  it('pokes an already-tailed file on a root-watcher event instead of returning early', () => {
+    const watcher = newWatcher() as any;
+    const watchRoot = roots[0];
+    const filePath = join(watchRoot, 'rollout.jsonl');
+    writeFileSync(filePath, '');
+    let pokes = 0;
+    watcher.tailers.set(filePath.replace(/\\/g, '/'), { poke: () => { pokes++; }, close: () => {} });
 
-  it('pokes an existing tailer on root-watcher events instead of returning early', () => {
-    expect(watcherSource).toMatch(/existingTailer\.poke\(\)/);
-  });
+    watcher.handleRootWatchEvent(watchRoot, join(watchRoot, '*.jsonl'), {}, {}, 'rollout.jsonl');
 
-  it('normalizes the resolved path to forward slashes before tailer-map lookup', () => {
-    expect(watcherSource).toMatch(/resolvePath\(watchRoot, name\)\.replace\(\/\\\\\/g, '\/'\)/);
+    expect(pokes).toBe(1);
   });
-
 });

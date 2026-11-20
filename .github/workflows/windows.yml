@@ -6,6 +6,8 @@ on:
       - 'src/**'
       - 'tests/**'
       - 'plugin/scripts/**'
+      - 'plugin/skills/**'
+      - 'hermes/**'
       - 'scripts/**'
       - 'tests/scripts/**'
       - 'package.json'
@@ -13,6 +15,14 @@ on:
       - '.github/workflows/windows.yml'
   push:
     branches: [main]
+
+
+# A newer push to the same branch or PR cancels the older run: its result is
+# already out of date. 174 of 224 CI push runs on main (Nov 1-7) were superseded
+# yet ran to the end.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -30,22 +40,122 @@ jobs:
           node-version: '22'
 
       - name: Install Bun (worker runtime)
-        run: |
-          irm bun.sh/install.ps1 | iex
         shell: pwsh
+        run: |
+          # bun.sh/install.ps1 is not a versioned artifact, so pin the release it downloads with
+          # -Version instead of piping the script into iex and taking whatever "latest" is that day.
+          # The explicit check keeps the later steps' USERPROFILE path honest.
+          & ([scriptblock]::Create((irm https://bun.sh/install.ps1))) -Version 1.4.4
+          $bun = Join-Path $env:USERPROFILE '.bun\bin\bun.exe'
+          if (-not (Test-Path $bun)) { throw "Bun 1.4.4 was not installed to $bun" }
+          & $bun --version
 
       - run: npm install --no-audit --no-fund
 
       - run: npm run build
 
+      # The allowlist guards the install scripts of plugin/package.json's direct
+      # dependencies, read from the node_modules this OS resolved. Before this step it
+      # ran only at publish (prepublishOnly) and in media-runtime.yml on dependency
+      # changes, so a Windows-only drift could reach a release unnoticed.
+      - run: npm run check:postinstall-allowlist
+
+      # The Linux lane runs both Python suites (ci.yml); Windows never did, which is how three POSIX
+      # path assumptions in the agent-cost-report skill and two in tests/hermes went unnoticed. The
+      # interpreter is pinned rather than taken from the image, and discovery matches Linux.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Python suites (agent-cost-report skill, Hermes provider)
+        shell: pwsh
+        run: |
+          # The cost-report package opens America/Los_Angeles through zoneinfo at import time, and
+          # Windows ships no IANA database, so the tzdata package has to provide it.
+          python -m pip install --disable-pip-version-check --quiet tzdata
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -B -m unittest discover -s plugin/skills/agent-cost-report/scripts/tests -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -B -m unittest discover -s tests/hermes -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Hook compatibility with Git Bash and Windows overrides
+        shell: pwsh
+        run: |
+          $bun = Join-Path $env:USERPROFILE '.bun\bin\bun.exe'
+          & $bun test tests/infrastructure/hook-shell.test.ts
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $bun test tests/infrastructure/plugin-distribution.test.ts --test-name-pattern 'Codex Windows payload dependency check'
+
+      - name: Path and executable assertions
+        shell: pwsh
+        run: |
+          $bun = Join-Path $env:USERPROFILE '.bun\bin\bun.exe'
+          & $bun test tests/services/smart-file-read/path-search.test.ts tests/services/agent-runner/detect.test.ts tests/services/integrations/spawn-contract-windows.test.ts tests/antigravity-cli-compat.test.ts --timeout 120000
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $bun test tests/work-view/request-first.test.ts --test-name-pattern 'built request-progress skill'
+
+      - name: Launcher and uninstall Windows behavior
+        shell: pwsh
+        env:
+          CLAUDE_MEM_TEST_WINDOWS_PATH: '1'
+        run: |
+          $bun = Join-Path $env:USERPROFILE '.bun\bin\bun.exe'
+          & $bun test tests/launcher/install-launcher.test.ts tests/launcher/claude-mem-launcher.test.ts tests/launcher/windows-user-path.test.ts tests/npx-cli/uninstall-data-dir-hint.test.ts --timeout 60000
+
+      # These suites either skip on non-Windows or only exercise their real
+      # branch under win32: file-context symlink/stat boundaries, clearing the
+      # inherited listen-socket handle, npm tree termination, and HOME vs
+      # USERPROFILE resolution. Linux CI cannot cover those paths, and none of
+      # these files ran in this workflow before.
+      - name: Windows-only host behavior
+        shell: pwsh
+        run: |
+          $bun = Join-Path $env:USERPROFILE '.bun\\bin\\bun.exe'
+          & $bun test tests/hooks/file-context.test.ts tests/cli/adapters/shell-tilde-context.test.ts tests/shared/windows-listen-socket.test.ts tests/npm-install-windows-timeout.test.ts tests/scripts/resolve-data-dir-parity.test.ts --timeout 60000
+
+      - name: Context reader responsiveness and packaging
+        shell: pwsh
+        run: |
+          $bun = Join-Path $env:USERPROFILE '.bun\bin\bun.exe'
+          & $bun test tests/context/context-read-responsiveness.test.ts tests/context/context-read-results.test.ts tests/context/context-read-worker-lifecycle.test.ts tests/context/context-read-routes.test.ts tests/context/context-work-state-order.test.ts tests/infrastructure/context-reader-packaging.test.ts --timeout 60000
+
+      - name: Deep search subprocess lifecycle and release artifacts
+        shell: pwsh
+        run: |
+          $bun = Join-Path $env:USERPROFILE '.bun\bin\bun.exe'
+          & $bun test tests/worker/deep-search-client.test.ts tests/worker/deep-search-snapshot.test.ts tests/integration/deep-search-guard-faults.test.ts tests/integration/deep-search-process.test.ts tests/integration/deep-search-packaging.test.ts tests/integration/deep-search-release-e2e.test.ts tests/integration/context-bundle-environment.test.ts tests/integration/worker-binary-build.test.ts --timeout 120000
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       # Covers the Windows-only bun resolver path that Linux CI skips, plus the
       # scripts that replaced rsync and tail: mirror pattern matching, --delete
       # protection and -a metadata reconciliation against real NTFS paths, and
       # the bounded log tail under a constrained heap.
-      - shell: pwsh
+      - name: Windows bun resolver and rsync-replacement scripts
+        shell: pwsh
         run: |
           $bun = Join-Path $env:USERPROFILE '.bun\\bin\\bun.exe'
-          & $bun test tests/bun-runner.test.ts tests/scripts/mirror-dir.test.ts tests/scripts/worker-logs.test.ts
+          & $bun test tests/bun-runner.test.ts tests/scripts/mirror-dir.test.ts tests/scripts/worker-logs.test.ts --timeout 120000
+
+      # Bun's Glob returns backslash paths on Windows. The lane split must still
+      # send tests/integration and smart-file-read files to the integration lane.
+      - name: Test-lane split on Windows paths
+        shell: pwsh
+        run: |
+          $bun = Join-Path $env:USERPROFILE '.bun\\bin\\bun.exe'
+          & $bun test tests/scripts/test-lanes.test.ts
+
+      # The installer's refusal boundaries: non-TTY and TTY cases that require
+      # exit 1, require --runtime worker, untouched settings (mode included) and
+      # zero bootstrap/HTTP/task calls. They only ran on Linux (the test-lanes
+      # check gate) until the 0o600 mode assertion and fixture caps were fixed
+      # for Windows; run them here so installer regressions ship unseen on no
+      # lane. The Pi+DSH detection describe stays skipped (needs real installs).
+      - name: Combined-installer boundary suites
+        shell: pwsh
+        run: |
+          $bun = Join-Path $env:USERPROFILE '.bun\\bin\\bun.exe'
+          & $bun test tests/npx-cli/combined-installer-non-tty-boundaries.test.ts tests/npx-cli/combined-installer-boundaries.test.ts --timeout 30000
 
       # The step that used to be impossible on Windows: sync-marketplace shelled
       # out to rsync. Runs the real script against a scratch USERPROFILE (Node's
@@ -76,8 +186,8 @@ jobs:
           if (-not (Test-Path (Join-Path $dep 'index.js'))) {
             throw 'sync deleted installed deps that --delete protected'
           }
-          if (Test-Path (Join-Path $marketplace 'workers')) {
-            throw 'sync copied the excluded workers/ tree'
+          if (Test-Path (Join-Path $marketplace 'services/sync-hub')) {
+            throw 'sync copied the excluded services/sync-hub tree'
           }
 
       # worker:logs replaced `tail -n 50` + `date +%F`, neither of which exists
@@ -89,8 +199,8 @@ jobs:
           $env:USERPROFILE = Join-Path $env:RUNNER_TEMP 'log-home'
           $logs = Join-Path $env:USERPROFILE '.claude-mem\logs'
           New-Item -ItemType Directory -Force -Path $logs | Out-Null
-          $stamp = Get-Date -Format 'yyyy-MM-dd'
-          Set-Content -Path (Join-Path $logs "worker-$stamp.log") -Value (1..60 | ForEach-Object { "line $_" })
+          $stamp = [DateTime]::UtcNow.ToString('yyyy-MM-dd')
+          Set-Content -Path (Join-Path $logs "claude-mem-$stamp.log") -Value (1..60 | ForEach-Object { "line $_" })
 
           $out = node scripts/worker-logs.cjs
           if ($out.Count -ne 50) { throw "expected 50 lines, got $($out.Count)" }
@@ -125,9 +235,15 @@ jobs:
           node-version: '22'
 
       - name: Install Bun (worker runtime + test runner)
-        run: |
-          irm bun.sh/install.ps1 | iex
         shell: pwsh
+        run: |
+          # bun.sh/install.ps1 is not a versioned artifact, so pin the release it downloads with
+          # -Version instead of piping the script into iex and taking whatever "latest" is that day.
+          # The explicit check keeps the later steps' USERPROFILE path honest.
+          & ([scriptblock]::Create((irm https://bun.sh/install.ps1))) -Version 1.4.4
+          $bun = Join-Path $env:USERPROFILE '.bun\bin\bun.exe'
+          if (-not (Test-Path $bun)) { throw "Bun 1.4.4 was not installed to $bun" }
+          & $bun --version
 
       # Caching uv's downloads AND its managed Python keeps a cold chromadb
       # resolve off the critical path; without it this job pays ~10 minutes on
@@ -200,19 +316,6 @@ jobs:
         run: |
           $bun = Join-Path $env:USERPROFILE '.bun\\bin\\bun.exe'
           & $bun test tests/integration/worker-recycle-orphans.test.ts --timeout 600000
-
-      # Ghost-listener recovery gate (plan-15 #3603). Fails on main: a worker
-      # killed OUT-OF-BAND (taskkill /F without /T) leaves its chroma sidecar
-      # chain holding the inherited listening socket, and no launcher reclaims
-      # the port — ensureWorkerStarted returns 'dead' forever. Passes once the
-      # spawn path reclaims the dead owner's sidecar descendants and starts.
-      - name: Ghost-listener recovery gate (#3603)
-        shell: pwsh
-        env:
-          CLAUDE_MEM_DATA_DIR: ${{ runner.temp }}\claude-mem-ghost-data
-        run: |
-          $bun = Join-Path $env:USERPROFILE '.bun\\bin\\bun.exe'
-          & $bun test tests/integration/worker-ghost-port-recovery.test.ts --timeout 600000
 
       # Diagnostic only — never fails the job. Ancestry/identity filtering is
       # done inside the tests; this is just a human-readable postmortem for

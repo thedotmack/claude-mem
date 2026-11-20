@@ -1,13 +1,17 @@
 
-import { existsSync, readFileSync, writeFileSync, renameSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, renameSync, unlinkSync } from 'fs';
+import { randomUUID } from 'crypto';
 import path from 'path';
 import { logger } from './logger.js';
+import { ensureDirectoryExists, resolveSymlinkWriteTarget } from '../shared/atomic-json.js';
 import { formatDate, groupByDate } from '../shared/timeline-formatting.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { workerHttpRequest } from '../shared/worker-utils.js';
 import { paths } from '../shared/paths.js';
 import { matchesAnyGlob } from './project-filter.js';
 import { toBmpSafe } from './bmp-safe.js';
+import { parseContextCountValue } from '../shared/context-count.js';
+import { CONTEXT_TAG_CLOSE, CONTEXT_TAG_OPEN, findContextBlockRange } from './context-injection.js';
 
 const SETTINGS_PATH = paths.settings();
 
@@ -40,13 +44,18 @@ function isValidPathForClaudeMd(filePath: string, projectRoot?: string): boolean
   if (filePath.includes('#')) return false;
 
   if (projectRoot) {
-    const resolved = path.isAbsolute(filePath) ? filePath : path.resolve(projectRoot, filePath);
+    // Resolve an absolute path too: on Windows `/repo/src/x.ts` or `C:/repo/src/x.ts`
+    // must be compared in the same normalized form as the root, `C:\repo`.
+    const resolved = path.resolve(projectRoot, filePath);
     const normalizedRoot = path.resolve(projectRoot);
     if (!resolved.startsWith(normalizedRoot + path.sep) && resolved !== normalizedRoot) {
       return false;
     }
 
-    if (hasConsecutiveDuplicateSegments(resolved)) {
+    // Start at the project folder's own name, so a doubled prefix like
+    // frontend/frontend still matches (#814) but a project checked out at
+    // ~/code/app/app does not reject every path.
+    if (hasConsecutiveDuplicateSegments(path.relative(path.dirname(normalizedRoot), resolved))) {
       return false;
     }
   }
@@ -55,23 +64,21 @@ function isValidPathForClaudeMd(filePath: string, projectRoot?: string): boolean
 }
 
 export function replaceTaggedContent(existingContent: string, newContent: string): string {
-  const startTag = '<claude-mem-context>';
-  const endTag = '</claude-mem-context>';
+  const wrappedContent = `${CONTEXT_TAG_OPEN}\n${newContent}\n${CONTEXT_TAG_CLOSE}`;
 
   if (!existingContent) {
-    return `${startTag}\n${newContent}\n${endTag}`;
+    return wrappedContent;
   }
 
-  const startIdx = existingContent.indexOf(startTag);
-  const endIdx = existingContent.indexOf(endTag);
+  const block = findContextBlockRange(existingContent);
 
-  if (startIdx !== -1 && endIdx !== -1) {
-    return existingContent.substring(0, startIdx) +
-      `${startTag}\n${newContent}\n${endTag}` +
-      existingContent.substring(endIdx + endTag.length);
+  if (block) {
+    return existingContent.substring(0, block.start) +
+      wrappedContent +
+      existingContent.substring(block.end);
   }
 
-  return existingContent + `\n\n${startTag}\n${newContent}\n${endTag}`;
+  return existingContent + `\n\n${wrappedContent}`;
 }
 
 export function writeClaudeMdToFolder(folderPath: string, newContent: string, targetFilename?: string): void {
@@ -81,7 +88,6 @@ export function writeClaudeMdToFolder(folderPath: string, newContent: string, ta
 
   const filename = targetFilename ?? getTargetFilename();
   const claudeMdPath = path.join(folderPath, filename);
-  const tempFile = `${claudeMdPath}.tmp`;
 
   if (!existsSync(folderPath)) {
     logger.debug('FOLDER_INDEX', 'Skipping non-existent folder', { folderPath });
@@ -97,8 +103,21 @@ export function writeClaudeMdToFolder(folderPath: string, newContent: string, ta
   // context — a Claude Code truncation can split a pair and brick the session.
   const finalContent = replaceTaggedContent(existingContent, toBmpSafe(newContent));
 
-  writeFileSync(tempFile, finalContent);
-  renameSync(tempFile, claudeMdPath);
+  // A symlinked CLAUDE.md stays a symlink: write onto its final target. A
+  // symlink loop or an unwritable target throws, as any write failure does.
+  const writeTarget = resolveSymlinkWriteTarget(claudeMdPath);
+  ensureDirectoryExists(path.dirname(writeTarget));
+  // Random name + exclusive create: a predictable `.tmp` sibling can be
+  // shipped inside a checkout as a symlink, and a following write would then
+  // clobber whatever it points at (the rename only replaces the link itself).
+  const tempFile = `${writeTarget}.${randomUUID()}.tmp`;
+  writeFileSync(tempFile, finalContent, { flag: 'wx' });
+  try {
+    renameSync(tempFile, writeTarget);
+  } catch (error) {
+    try { unlinkSync(tempFile); } catch { /* best effort */ }
+    throw error;
+  }
 }
 
 interface ParsedObservation {
@@ -132,7 +151,9 @@ export function formatTimelineForClaudeMd(timelineText: string): string {
       continue;
     }
 
-    const match = line.match(/^\|\s*(#[S]?\d+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|/);
+    // The title cell is written verbatim and may itself contain `|`, so it runs
+    // up to the Read cell (`~N`, or `-` for sessions) instead of the next pipe.
+    const match = line.match(/^\|\s*(#[S]?\d+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*(.+?)\s*\|\s*(~\d+|-)\s*\|/);
     if (match) {
       const [, id, timeStr, typeEmoji, title, tokens] = match;
 
@@ -172,7 +193,8 @@ export function formatTimelineForClaudeMd(timelineText: string): string {
     return '';
   }
 
-  const byDate = groupByDate(observations, obs => new Date(obs.epoch).toISOString());
+  // Same newest-first day order the by-file route renders; rows inside a day keep the route's order.
+  const byDate = groupByDate(observations, obs => new Date(obs.epoch).toISOString(), { order: 'desc' });
 
   for (const [day, dayObs] of byDate) {
     lines.push(`### ${day}`);
@@ -201,8 +223,10 @@ const EXCLUDED_UNSAFE_DIRECTORIES = new Set([
   '__pycache__'
 ]);
 
-function isExcludedUnsafeDirectory(folderPath: string): boolean {
-  const normalized = path.normalize(folderPath);
+function isExcludedUnsafeDirectory(folderPath: string, projectRoot?: string): boolean {
+  // Only directories inside the project count: a project checked out under
+  // ~/build or ~/res is not itself an unsafe directory.
+  const normalized = path.normalize(projectRoot ? path.relative(projectRoot, folderPath) : folderPath);
   const segments = normalized.split(path.sep);
   return segments.some(segment => EXCLUDED_UNSAFE_DIRECTORIES.has(segment));
 }
@@ -224,14 +248,66 @@ function isExcludedFolder(folderPath: string, excludePaths: string[]): boolean {
   return false;
 }
 
+// Folders whose CLAUDE.md mirror update failed and has not succeeded since,
+// keyed by project. In-memory only — nothing is persisted or replayed: the
+// next observation that touches the folder runs the update again through the
+// normal path, and a successful write removes the entry. The set exists so a
+// failure is visible state, not only a log line, and so the retry is logged
+// as a retry. The set is capped per project: a folder that is never touched
+// again would otherwise stay marked for the worker's lifetime. Dropping the
+// oldest mark loses only its retry log line — a later observation for that
+// folder still runs the update through the normal path.
+const MAX_FAILED_FOLDER_CLAUDE_MD_UPDATES_PER_PROJECT = 100;
+const failedFolderClaudeMdUpdates = new Map<string, Set<string>>();
+
+function markFolderClaudeMdUpdateFailed(project: string, folderPath: string): void {
+  let folders = failedFolderClaudeMdUpdates.get(project);
+  if (!folders) {
+    folders = new Set<string>();
+    failedFolderClaudeMdUpdates.set(project, folders);
+  }
+  folders.add(folderPath);
+  while (folders.size > MAX_FAILED_FOLDER_CLAUDE_MD_UPDATES_PER_PROJECT) {
+    const oldest = folders.values().next().value;
+    if (oldest === undefined) break;
+    folders.delete(oldest);
+  }
+}
+
+function clearFolderClaudeMdUpdateFailure(project: string, folderPath: string): void {
+  const folders = failedFolderClaudeMdUpdates.get(project);
+  if (!folders) return;
+  folders.delete(folderPath);
+  if (folders.size === 0) failedFolderClaudeMdUpdates.delete(project);
+}
+
+// Folder updates are independent, so a few run at once. The bound keeps a
+// large batch from flooding the worker that also serves live requests.
+const FOLDER_UPDATE_CONCURRENCY = 8;
+
+async function runWithConcurrency<T>(
+  items: T[],
+  limit: number,
+  task: (item: T) => Promise<void>
+): Promise<void> {
+  let next = 0;
+  const runNext = async (): Promise<void> => {
+    while (next < items.length) {
+      await task(items[next++]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, runNext));
+}
+
 export async function updateFolderClaudeMdFiles(
   filePaths: string[],
   project: string,
-  _port: number,
   projectRoot?: string
 ): Promise<void> {
   const settings = SettingsDefaultsManager.loadFromFile(SETTINGS_PATH);
-  const limit = parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10) || 50;
+  const limit = parseContextCountValue(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS) ?? 50;
+  // A count of 0 means the user wants no observations, so no folder file is fetched or written.
+  if (limit === 0) return;
   const targetFilename = getTargetFilename(settings);
 
   let folderMdExcludePaths: string[] = [];
@@ -269,7 +345,8 @@ export async function updateFolderClaudeMdFiles(
         absoluteFilePath = path.join(projectRoot, filePath);
       }
       const folderPath = path.dirname(absoluteFilePath);
-      foldersWithActiveClaudeMd.add(folderPath);
+      // Keyed resolved: on Windows one batch can spell the same folder with `\` and `/`.
+      foldersWithActiveClaudeMd.add(path.resolve(folderPath));
       logger.debug('FOLDER_INDEX', 'Detected active context file, will skip folder', { folderPath, basename });
     }
   }
@@ -294,11 +371,11 @@ export async function updateFolderClaudeMdFiles(
         logger.debug('FOLDER_INDEX', 'Skipping project root CLAUDE.md', { folderPath });
         continue;
       }
-      if (isExcludedUnsafeDirectory(folderPath)) {
+      if (isExcludedUnsafeDirectory(folderPath, projectRoot)) {
         logger.debug('FOLDER_INDEX', 'Skipping unsafe directory for CLAUDE.md', { folderPath });
         continue;
       }
-      if (foldersWithActiveClaudeMd.has(folderPath)) {
+      if (foldersWithActiveClaudeMd.has(path.resolve(folderPath))) {
         logger.debug('FOLDER_INDEX', 'Skipping folder with active CLAUDE.md to avoid race condition', { folderPath });
         continue;
       }
@@ -312,12 +389,11 @@ export async function updateFolderClaudeMdFiles(
 
   if (folderPaths.size === 0) return;
 
-  logger.debug('FOLDER_INDEX', 'Updating CLAUDE.md files', {
-    project,
-    folderCount: folderPaths.size
-  });
+  const updateFolder = async (folderPath: string): Promise<void> => {
+    if (failedFolderClaudeMdUpdates.get(project)?.has(folderPath)) {
+      logger.warn('FOLDER_INDEX', 'Retrying CLAUDE.md update for folder whose previous update failed', { folderPath, project });
+    }
 
-  for (const folderPath of folderPaths) {
     let response: Response;
     try {
       response = await workerHttpRequest(
@@ -331,42 +407,69 @@ export async function updateFolderClaudeMdFiles(
         errorMessage: message,
         errorStack: stack
       });
-      continue;
+      markFolderClaudeMdUpdateFailed(project, folderPath);
+      return;
     }
 
     if (!response.ok) {
       logger.error('FOLDER_INDEX', 'Failed to fetch timeline', { folderPath, status: response.status });
-      continue;
+      markFolderClaudeMdUpdateFailed(project, folderPath);
+      return;
     }
 
-    const result = await response.json() as { content?: Array<{ text?: string }> };
-    if (!result.content?.[0]?.text) {
-      logger.debug('FOLDER_INDEX', 'No content for folder', { folderPath });
-      continue;
+    // Parsing and writing are per-folder steps: a failure here (bad payload,
+    // unwritable folder) must not reject the whole update and skip the
+    // remaining folders. Log it with the folder, remember the folder, and
+    // let the next observation for it retry through the normal path.
+    try {
+      const result = await response.json() as { content?: Array<{ text?: string }> };
+      if (!result.content?.[0]?.text) {
+        logger.debug('FOLDER_INDEX', 'No content for folder', { folderPath });
+        return;
+      }
+
+      const formatted = formatTimelineForClaudeMd(result.content[0].text);
+
+      const claudeMdPath = path.join(folderPath, targetFilename);
+      const hasNoActivity = formatted.includes('*No recent activity*');
+      const isEmptyOrSkeleton = formatted.trim() === '' || hasNoActivity;
+      const fileExists = existsSync(claudeMdPath);
+
+      // #2400 — when the generated content is empty/skeleton AND the folder
+      // matches the user's deny-list, never inject (skip even if the file exists,
+      // so we don't pollute non-content dirs with empty skeletons).
+      if (isEmptyOrSkeleton && matchesAnyGlob(folderPath, skeletonDenylistPatterns)) {
+        logger.debug('FOLDER_INDEX', 'Skipping skeleton CLAUDE.md in deny-listed folder', { folderPath, targetFilename });
+        return;
+      }
+
+      if (isEmptyOrSkeleton && !fileExists) {
+        logger.debug('FOLDER_INDEX', 'Skipping empty context file creation', { folderPath, targetFilename });
+        return;
+      }
+
+      writeClaudeMdToFolder(folderPath, formatted, targetFilename);
+      clearFolderClaudeMdUpdateFailure(project, folderPath);
+
+      logger.debug('FOLDER_INDEX', 'Updated context file', { folderPath, targetFilename });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      const stack = error instanceof Error ? error.stack : undefined;
+      logger.error('FOLDER_INDEX', `Failed to update ${targetFilename}; will retry on the next observation for this folder`, {
+        folderPath,
+        project,
+        errorMessage: message,
+        errorStack: stack
+      });
+      markFolderClaudeMdUpdateFailed(project, folderPath);
     }
+  };
 
-    const formatted = formatTimelineForClaudeMd(result.content[0].text);
-
-    const claudeMdPath = path.join(folderPath, targetFilename);
-    const hasNoActivity = formatted.includes('*No recent activity*');
-    const isEmptyOrSkeleton = formatted.trim() === '' || hasNoActivity;
-    const fileExists = existsSync(claudeMdPath);
-
-    // #2400 — when the generated content is empty/skeleton AND the folder
-    // matches the user's deny-list, never inject (skip even if the file exists,
-    // so we don't pollute non-content dirs with empty skeletons).
-    if (isEmptyOrSkeleton && matchesAnyGlob(folderPath, skeletonDenylistPatterns)) {
-      logger.debug('FOLDER_INDEX', 'Skipping skeleton CLAUDE.md in deny-listed folder', { folderPath, targetFilename });
-      continue;
-    }
-
-    if (isEmptyOrSkeleton && !fileExists) {
-      logger.debug('FOLDER_INDEX', 'Skipping empty context file creation', { folderPath, targetFilename });
-      continue;
-    }
-
-    writeClaudeMdToFolder(folderPath, formatted, targetFilename);
-
-    logger.debug('FOLDER_INDEX', 'Updated context file', { folderPath, targetFilename });
-  }
+  const startedAt = Date.now();
+  await runWithConcurrency([...folderPaths], FOLDER_UPDATE_CONCURRENCY, updateFolder);
+  logger.debug('FOLDER_INDEX', 'Finished CLAUDE.md updates', {
+    project,
+    folderCount: folderPaths.size,
+    durationMs: Date.now() - startedAt
+  });
 }

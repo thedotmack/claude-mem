@@ -1,0 +1,10 @@
+{
+  "name": "claude-mem-vercel-chat-example",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "chat": "4.44.0",
+    "@chat-adapter/web": "4.44.0",
+    "@chat-adapter/state-memory": "4.44.0"
+  }
+}

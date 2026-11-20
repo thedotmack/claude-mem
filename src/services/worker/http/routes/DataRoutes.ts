@@ -4,6 +4,7 @@ import { z } from 'zod';
 import path from 'path';
 import { readFileSync, statSync, existsSync } from 'fs';
 import { logger } from '../../../../utils/logger.js';
+import { logChromaWriteFailure } from '../../search/errors.js';
 import { getPackageRoot, paths } from '../../../../shared/paths.js';
 import { getWorkerPort } from '../../../../shared/worker-utils.js';
 import { PaginationHelper } from '../../PaginationHelper.js';
@@ -13,19 +14,38 @@ import { SSEBroadcaster } from '../../SSEBroadcaster.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
+import { requireLocalhost } from '../middleware.js';
+import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
+import { mergeProjectInto } from '../../../infrastructure/ProjectMerge.js';
 import { normalizePlatformSource } from '../../../../shared/platform-source.js';
 import { getObservationsByFilePath } from '../../../sqlite/observations/get.js';
 import { getFirstObservationCreatedAt } from '../../../sqlite/observations/recent.js';
 import { getParkedSlotWaiterCount } from '../../../../supervisor/process-registry.js';
 import { getUptimeSeconds } from '../../../../shared/uptime.js';
+import { readObserverHealth } from '../../../../shared/observer-health.js';
 import { assertCanonicalDecimal, type ContentKind } from '../../../sync/CanonicalContent.js';
+import type { CloudSync } from '../../../sync/CloudSync.js';
+import { emitContextInvalidation } from '../../../../shared/context-invalidation.js';
+import { parseProjectList } from '../../../../shared/project-list.js';
+import { LISTING_OFFSET_CAP_MESSAGE, MAX_LISTING_OFFSET, capListingPage } from '../../../../shared/listing-offset-cap.js';
+import { parseStringListField } from '../../../sync/string-list-field.js';
+import { projectReadKeysFor } from '../../search/project-where-filter.js';
+import { scheduleChromaRowCleanup, type IndexedRowKind } from '../../../sync/chroma-row-cleanup.js';
+import { withObservationMedia } from '../../../media/feed.js';
+import type { StoredSummary, StoredUserPrompt } from '../../../sync/ChromaSync.js';
+import { ChromaSyncState } from '../../../sync/ChromaSyncState.js';
+
+// The MCP get_observations schema advertises `number | string` ids, so array
+// elements may arrive as numeric strings; non-numeric strings stay invalid.
+const numericStringToNumber = (item: unknown): unknown =>
+  typeof item === 'string' && /^\d+$/.test(item.trim()) ? Number(item.trim()) : item;
 
 const integerArrayLike = z.preprocess((value) => {
-  if (Array.isArray(value)) return value;
+  if (Array.isArray(value)) return value.map(numericStringToNumber);
   if (typeof value === 'string') {
     try {
       const parsed = JSON.parse(value);
-      if (Array.isArray(parsed)) return parsed;
+      if (Array.isArray(parsed)) return parsed.map(numericStringToNumber);
     } catch {
       // not JSON, fall through to comma split
     }
@@ -48,17 +68,27 @@ const stringArrayLike = z.preprocess((value) => {
   return value;
 }, z.array(z.string()));
 
+// Layer 3 of progressive disclosure: selected records by explicit id. The id
+// array is bounded because every id is a full row (narrative, facts, concepts,
+// file lists) on the way back — an unbounded list is a way to page the whole
+// table in one request. 100 matches the ceiling the adapters already advertise
+// (`pi-extension` maxItems, `recall-mcp-server` maxItems) and the server
+// `/v1/observations/batch` schema.
+const OBSERVATIONS_BATCH_MAX_IDS = 100;
+
 const observationsBatchSchema = z.object({
-  ids: integerArrayLike,
+  ids: integerArrayLike.pipe(z.array(z.number().int()).max(OBSERVATIONS_BATCH_MAX_IDS)),
   orderBy: z.enum(['date_desc', 'date_asc']).optional(),
   limit: z.number().int().positive().optional(),
   project: z.string().optional(),
+  projects: stringArrayLike.optional(),
   platformSource: z.string().optional(),
   platform_source: z.string().optional(),
 }).passthrough();
 
 const sdkSessionsBatchSchema = z.object({
   memorySessionIds: stringArrayLike,
+  promptIds: z.array(z.number().int().positive().safe()).optional(),
 }).passthrough();
 
 // Layer 4 of progressive disclosure: raw tool bodies, by explicit id only.
@@ -66,6 +96,13 @@ const sdkSessionsBatchSchema = z.object({
 // caller may hold either (search/list hands back the former, a transcript or an
 // observation ref the latter). Required and non-empty on purpose — this route
 // must never be a way to page the whole table of raw payloads.
+//
+// The array is capped for the same reason: each id is a separate lookup, and
+// `limit` only trims the rows that come back (`getToolUsesByIds` applies its own
+// default when `limit` is omitted). 100 matches the observation batch ceiling
+// and the adapters' advertised `maxItems`.
+const TOOL_USES_BATCH_MAX_IDS = 100;
+
 const toolUsesBatchSchema = z.object({
   ids: z.preprocess((value) => {
     if (Array.isArray(value)) return value;
@@ -79,20 +116,105 @@ const toolUsesBatchSchema = z.object({
       return value.split(',').map((part) => part.trim()).filter(Boolean);
     }
     return value;
-  }, z.array(z.union([z.number().int(), z.string()]))),
+  }, z.array(z.union([z.number().int(), z.string()])).max(TOOL_USES_BATCH_MAX_IDS)),
   limit: z.number().int().positive().max(200).optional(),
   project: z.string().optional(),
+  projects: stringArrayLike.optional(),
   contentSessionId: z.string().optional(),
   platformSource: z.string().optional(),
   platform_source: z.string().optional(),
 }).passthrough();
 
+// The cloud/export shape (CloudSync `toCloud`) carries columns that are stored
+// locally as JSON strings — facts, concepts, files_read/modified, metadata — as
+// arrays or objects. Re-stringify them at the boundary so downstream consumers
+// (the SQLite binding layer and the ChromaDB `JSON.parse` path alike) receive
+// their canonical JSON-string shape. Object metadata otherwise fails the store's
+// string-column validation, rejecting an otherwise valid cloud observation.
+const OBSERVATION_JSON_FIELDS = ['facts', 'concepts', 'files_read', 'files_modified', 'metadata'] as const;
+const SUMMARY_JSON_FIELDS = ['files_read', 'files_edited'] as const;
+
+const jsonStringifyFields = (fields: readonly string[]) =>
+  (value: unknown): unknown => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+    const record = value as Record<string, unknown>;
+    let normalized: Record<string, unknown> | undefined;
+    for (const field of fields) {
+      const fieldValue = record[field];
+      if (fieldValue !== null && typeof fieldValue === 'object') {
+        normalized ??= { ...record };
+        normalized[field] = JSON.stringify(fieldValue);
+      }
+    }
+    return normalized ?? record;
+  };
+
+const projectMergeSchema = z.object({
+  from: z.string().refine(value => value.trim().length > 0, 'Project must not be blank'),
+  into: z.string().refine(value => value.trim().length > 0, 'Project must not be blank'),
+  dryRun: z.boolean().optional(),
+});
+
 const importSchema = z.object({
   sessions: z.array(z.unknown()).optional(),
-  summaries: z.array(z.unknown()).optional(),
-  observations: z.array(z.unknown()).optional(),
+  summaries: z.array(z.preprocess(jsonStringifyFields(SUMMARY_JSON_FIELDS), z.unknown())).optional(),
+  observations: z.array(z.preprocess(jsonStringifyFields(OBSERVATION_JSON_FIELDS), z.unknown())).optional(),
   prompts: z.array(z.unknown()).optional(),
 }).passthrough();
+
+// Per-row checks for /api/import: the columns each table requires (NOT NULL,
+// no default), with session ids as non-empty strings. A row that fails is
+// rejected with a named reason. Anything else the insert refuses (a foreign
+// key to a session that is not in the database, an unbindable value) is caught
+// per row in handleImport. Either way one bad row from a legacy or hand-edited
+// export is reported instead of aborting the rest of the batch.
+const importedSessionIdText = z.string().trim().min(1, 'expected a non-empty string');
+const importedRequiredValue = z.custom<unknown>(
+  (value) => value !== null && value !== undefined,
+  { message: 'required' },
+);
+const importRowSchemas = {
+  sessions: z.object({
+    content_session_id: importedSessionIdText,
+    project: importedRequiredValue,
+    started_at: importedRequiredValue,
+    started_at_epoch: importedRequiredValue,
+  }).passthrough(),
+  summaries: z.object({
+    memory_session_id: importedSessionIdText,
+    project: importedRequiredValue,
+    created_at: importedRequiredValue,
+    created_at_epoch: importedRequiredValue,
+  }).passthrough(),
+  observations: z.object({
+    memory_session_id: importedSessionIdText,
+    project: importedRequiredValue,
+    type: importedRequiredValue,
+    created_at: importedRequiredValue,
+    created_at_epoch: importedRequiredValue,
+  }).passthrough(),
+  prompts: z.object({
+    content_session_id: importedSessionIdText,
+    prompt_number: importedRequiredValue,
+    prompt_text: importedRequiredValue,
+    created_at: importedRequiredValue,
+    created_at_epoch: importedRequiredValue,
+  }).passthrough(),
+};
+
+type ImportRowKind = keyof typeof importRowSchemas;
+
+interface ImportRowRejection {
+  /** Position of the row in the request's array for its kind. */
+  index: number;
+  reason: string;
+}
+
+function describeImportRowIssues(error: z.ZodError): string {
+  return error.issues
+    .map(issue => `${issue.path.length > 0 ? issue.path.join('.') : 'row'}: ${issue.message}`)
+    .join('; ');
+}
 
 export class DataRoutes extends BaseRouteHandler {
   constructor(
@@ -125,6 +247,9 @@ export class DataRoutes extends BaseRouteHandler {
 
     app.get('/api/stats', this.handleGetStats.bind(this));
     app.get('/api/projects', this.handleGetProjects.bind(this));
+    app.post('/api/projects/merge', requireLocalhost, validateBody(projectMergeSchema), this.handleProjectMerge.bind(this));
+    app.get('/api/sessions', this.handleGetSessions.bind(this));
+    app.delete('/api/sessions/:platformSource/:contentSessionId', this.handleDeleteSession.bind(this));
 
     app.get('/api/processing-status', this.handleGetProcessingStatus.bind(this));
 
@@ -132,21 +257,24 @@ export class DataRoutes extends BaseRouteHandler {
   }
 
   private handleGetObservations = this.wrapHandler((req: Request, res: Response): void => {
-    const { offset, limit, project, platformSource } = this.parsePaginationParams(req);
-    const result = this.paginationHelper.getObservations(offset, limit, project, platformSource);
-    res.json(result);
+    const page = this.parsePaginationParams(req, res);
+    if (!page) return;
+    const { offset, limit, project, platformSource, contentSessionId } = page;
+    res.json(capListingPage(this.paginationHelper.getObservations(offset, limit, project, platformSource, contentSessionId), offset, limit));
   });
 
   private handleGetSummaries = this.wrapHandler((req: Request, res: Response): void => {
-    const { offset, limit, project, platformSource } = this.parsePaginationParams(req);
-    const result = this.paginationHelper.getSummaries(offset, limit, project, platformSource);
-    res.json(result);
+    const page = this.parsePaginationParams(req, res);
+    if (!page) return;
+    const { offset, limit, project, platformSource, contentSessionId } = page;
+    res.json(capListingPage(this.paginationHelper.getSummaries(offset, limit, project, platformSource, contentSessionId), offset, limit));
   });
 
   private handleGetPrompts = this.wrapHandler((req: Request, res: Response): void => {
-    const { offset, limit, project, platformSource } = this.parsePaginationParams(req);
-    const result = this.paginationHelper.getPrompts(offset, limit, project, platformSource);
-    res.json(result);
+    const page = this.parsePaginationParams(req, res);
+    if (!page) return;
+    const { offset, limit, project, platformSource, contentSessionId } = page;
+    res.json(capListingPage(this.paginationHelper.getPrompts(offset, limit, project, platformSource, contentSessionId), offset, limit));
   });
 
   private handleGetObservationById = this.wrapHandler((req: Request, res: Response): void => {
@@ -162,7 +290,8 @@ export class DataRoutes extends BaseRouteHandler {
       return;
     }
 
-    res.json(observation);
+    // Same media projection as the paged feed and SSE (media/feed.ts).
+    res.json(withObservationMedia(observation, true));
   });
 
   private handleGetObservationsByFile = this.wrapHandler((req: Request, res: Response): void => {
@@ -178,8 +307,8 @@ export class DataRoutes extends BaseRouteHandler {
       return;
     }
 
-    const projectsParam = req.query.projects as string | undefined;
-    const projects = projectsParam ? projectsParam.split(',').filter(Boolean) : undefined;
+    const listedProjects = parseProjectList(req.query.projects);
+    const projects = listedProjects.length > 0 ? listedProjects : undefined;
     const parsedLimit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
     const limit = Number.isFinite(parsedLimit) && parsedLimit! > 0 ? parsedLimit : undefined;
     const platformSource = this.getOptionalPlatformSourceFromRequest(req);
@@ -191,7 +320,7 @@ export class DataRoutes extends BaseRouteHandler {
   });
 
   private handleGetObservationsByIds = this.wrapHandler((req: Request, res: Response): void => {
-    const { ids, orderBy, limit, project } = req.body as z.infer<typeof observationsBatchSchema>;
+    const { ids, orderBy, limit, project, projects } = req.body as z.infer<typeof observationsBatchSchema>;
 
     if (ids.length === 0) {
       res.json([]);
@@ -200,9 +329,10 @@ export class DataRoutes extends BaseRouteHandler {
 
     const store = this.dbManager.getSessionStore();
     const platformSource = this.getOptionalPlatformSourceFromRequest(req);
-    const observations = store.getObservationsByIds(ids, { orderBy, limit, project, platformSource });
+    const readKeys = projectReadKeysFor(store, project, projects);
+    const observations = store.getObservationsByIds(ids, { orderBy, limit, project, projects: readKeys, platformSource });
 
-    res.json(observations);
+    res.json(observations.map(observation => withObservationMedia(observation, true)));
   });
 
   /**
@@ -224,8 +354,18 @@ export class DataRoutes extends BaseRouteHandler {
 
     const toolName = asString(req.query.tool_name ?? req.query.toolName);
 
-    const rows = store.queryToolUses({
-      project: asString(req.query.project),
+    const requestedOffset = asNumber(req.query.offset);
+    if (requestedOffset !== undefined && (!Number.isSafeInteger(requestedOffset) || requestedOffset < 0)) {
+      this.badRequest(res, 'offset must be a non-negative integer');
+      return;
+    }
+    if (requestedOffset !== undefined && requestedOffset > MAX_LISTING_OFFSET) {
+      this.badRequest(res, LISTING_OFFSET_CAP_MESSAGE);
+      return;
+    }
+
+    const rows = store.queryToolUseIndex({
+      project: BaseRouteHandler.firstString(req.query.project),
       contentSessionId: asString(req.query.session ?? req.query.contentSessionId),
       memorySessionId: asString(req.query.memorySessionId),
       toolName: toolName ? toolName.split(',').map(part => part.trim()).filter(Boolean) : undefined,
@@ -234,7 +374,7 @@ export class DataRoutes extends BaseRouteHandler {
       dateStart: asNumber(req.query.dateStart),
       dateEnd: asNumber(req.query.dateEnd),
       limit: asNumber(req.query.limit),
-      offset: asNumber(req.query.offset),
+      offset: requestedOffset,
       orderBy: req.query.orderBy === 'date_asc' ? 'date_asc' : 'date_desc',
     });
 
@@ -257,14 +397,14 @@ export class DataRoutes extends BaseRouteHandler {
         created_at: row.created_at,
         created_at_epoch: row.created_at_epoch,
         // Size hints so a caller can budget tokens before disclosing a body.
-        tool_input_bytes: row.tool_input ? Buffer.byteLength(row.tool_input, 'utf8') : 0,
-        tool_response_bytes: row.tool_response ? Buffer.byteLength(row.tool_response, 'utf8') : 0,
+        tool_input_bytes: row.tool_input_bytes,
+        tool_response_bytes: row.tool_response_bytes,
       })),
     });
   });
 
   private handleGetToolUsesByIds = this.wrapHandler((req: Request, res: Response): void => {
-    const { ids, limit, project, contentSessionId } = req.body as z.infer<typeof toolUsesBatchSchema>;
+    const { ids, limit, project, projects, contentSessionId } = req.body as z.infer<typeof toolUsesBatchSchema>;
 
     if (ids.length === 0) {
       res.json([]);
@@ -273,7 +413,8 @@ export class DataRoutes extends BaseRouteHandler {
 
     const store = this.dbManager.getSessionStore();
     const platformSource = this.getOptionalPlatformSourceFromRequest(req);
-    res.json(store.getToolUsesByIds(ids, { limit, project, contentSessionId, platformSource }));
+    const readKeys = projectReadKeysFor(store, project, projects);
+    res.json(store.getToolUsesByIds(ids, { limit, project, ...(readKeys.length ? { projects: readKeys } : {}), contentSessionId, platformSource }));
   });
 
   private handleGetSessionById = this.wrapHandler((req: Request, res: Response): void => {
@@ -294,10 +435,12 @@ export class DataRoutes extends BaseRouteHandler {
   });
 
   private handleGetSdkSessionsByIds = this.wrapHandler((req: Request, res: Response): void => {
-    const { memorySessionIds } = req.body as z.infer<typeof sdkSessionsBatchSchema>;
+    const { memorySessionIds, promptIds } = req.body as z.infer<typeof sdkSessionsBatchSchema>;
 
     const store = this.dbManager.getSessionStore();
-    const sessions = store.getSdkSessionsBySessionIds(memorySessionIds);
+    const sessions = promptIds === undefined
+      ? store.getSdkSessionsBySessionIds(memorySessionIds)
+      : store.getSdkSessionsBySessionIds(memorySessionIds, promptIds);
     res.json(sessions);
   });
 
@@ -330,11 +473,75 @@ export class DataRoutes extends BaseRouteHandler {
     this.deleteSyncedContent(req, res, 'prompt', 'user_prompts');
   });
 
-  /** Production deletion surface: tombstone enqueue and row delete are one transaction. */
+  /** Pure safety check: can this row be deleted right now without stranding a replica? No mutation. */
+  private assertRowDeletable(
+    cloudSync: CloudSync | null,
+    store: ReturnType<DatabaseManager['getSessionStore']>,
+    kind: ContentKind,
+    originLocalId: string,
+  ): { ok: true } | { ok: false; status: number; error: string } {
+    if (cloudSync?.isConfigured()) {
+      if (!cloudSync.status().deviceId) {
+        return { ok: false, status: 503, error: 'cloud sync identity unavailable; refusing an unreplicated delete' };
+      }
+      return { ok: true };
+    }
+    // A row with an acknowledged entity head must never be silently deleted
+    // while its sync identity is unavailable: that would strand replicas.
+    const acknowledged = store.db.prepare(`
+      SELECT 1 AS found FROM sync_entity_heads
+      WHERE kind = ? AND origin_local_id = ? LIMIT 1
+    `).get(kind, originLocalId) as { found: number } | undefined;
+    if (acknowledged) {
+      return { ok: false, status: 503, error: 'cloud sync unavailable; refusing an unreplicated delete' };
+    }
+    return { ok: true };
+  }
+
+  /** Mutation only — caller must have already called assertRowDeletable for this row. */
+  private commitRowDelete(
+    cloudSync: CloudSync | null,
+    store: ReturnType<DatabaseManager['getSessionStore']>,
+    kind: ContentKind,
+    table: 'observations' | 'session_summaries' | 'user_prompts',
+    originLocalId: string,
+  ): string | null {
+    if (cloudSync?.isConfigured()) {
+      return cloudSync.queueDelete(kind, originLocalId);
+    }
+    store.db.prepare(
+      `DELETE FROM ${table} WHERE id = ? AND origin_device_id IS NULL`
+    ).run(originLocalId);
+    return null;
+  }
+
+  private chromaCleanupTail: Promise<void> = Promise.resolve();
+
+  /**
+   * Rows are committed gone — drop their fragments from the vector index too
+   * (#4805). Backfill only walks SQLite rows, so nothing else would reclaim
+   * them. Best-effort and in the background: rows are cleaned one at a time so
+   * a large session delete doesn't flood chroma-mcp, and a Chroma failure is
+   * logged per row and never blocks or undoes the delete.
+   *
+   * The cleanups also serialize process-wide (#5495): a delete burst used to
+   * start one unawaited loop per request, and thousands of concurrent
+   * `chroma_get_documents` reads piled up on chroma-mcp's single stdio
+   * channel — live sync, health checks and search all waited behind them for
+   * hours. Each request still returns immediately; the cleanups themselves
+   * take turns on one tail, so exactly one batch is ever in flight.
+   */
+  private scheduleChromaRowCleanup(rows: ReadonlyArray<{ kind: IndexedRowKind; id: string }>): void {
+    const chromaSync = this.dbManager.getChromaSync();
+    if (!chromaSync || rows.length === 0) return;
+    this.chromaCleanupTail = scheduleChromaRowCleanup(chromaSync, rows);
+  }
+
+  /** Production deletion surface: safety check and row delete for a single content row. */
   private deleteSyncedContent(
     req: Request,
     res: Response,
-    kind: ContentKind,
+    kind: IndexedRowKind,
     table: 'observations' | 'session_summaries' | 'user_prompts',
   ): void {
     let originLocalId: string;
@@ -356,29 +563,19 @@ export class DataRoutes extends BaseRouteHandler {
     }
 
     const cloudSync = this.dbManager.getCloudSync();
-    let entityRev: string | null = null;
-    if (cloudSync?.isConfigured()) {
-      if (!cloudSync.status().deviceId) {
-        res.status(503).json({ error: 'cloud sync identity unavailable; refusing an unreplicated delete' });
-        return;
-      }
-      entityRev = cloudSync.queueDelete(kind, originLocalId);
-    } else {
-      // A row with an acknowledged entity head must never be silently deleted
-      // while its sync identity is unavailable: that would strand replicas.
-      const acknowledged = store.db.prepare(`
-        SELECT 1 AS found FROM sync_entity_heads
-        WHERE kind = ? AND origin_local_id = ? LIMIT 1
-      `).get(kind, originLocalId) as { found: number } | undefined;
-      if (acknowledged) {
-        res.status(503).json({ error: 'cloud sync unavailable; refusing an unreplicated delete' });
-        return;
-      }
-      store.db.prepare(
-        `DELETE FROM ${table} WHERE id = ? AND origin_device_id IS NULL`
-      ).run(originLocalId);
+    const check = this.assertRowDeletable(cloudSync, store, kind, originLocalId);
+    if (!check.ok) {
+      res.status(check.status).json({ error: check.error });
+      return;
     }
 
+    const entityRev = this.commitRowDelete(cloudSync, store, kind, table, originLocalId);
+
+    this.scheduleChromaRowCleanup([{ kind, id: originLocalId }]);
+    emitContextInvalidation('all', `delete-${kind}`, 'removal');
+
+    // Only after the delete committed: open viewer tabs drop the row live.
+    this.sseBroadcaster.broadcast({ type: 'item_deleted', itemType: kind, id: Number(originLocalId) });
     res.json({ success: true, id: originLocalId, kind, entity_rev: entityRev });
   }
 
@@ -441,25 +638,219 @@ export class DataRoutes extends BaseRouteHandler {
     res.json(store.getProjectCatalog());
   });
 
+  private handleGetSessions = this.wrapHandler((req: Request, res: Response): void => {
+    const store = this.dbManager.getSessionStore();
+    const project = BaseRouteHandler.firstString(req.query.project);
+    const requestedLimit = Number(BaseRouteHandler.firstString(req.query.limit));
+    const requestedOffset = Number(BaseRouteHandler.firstString(req.query.offset));
+    if (Number.isFinite(requestedOffset) && requestedOffset > MAX_LISTING_OFFSET) {
+      this.badRequest(res, LISTING_OFFSET_CAP_MESSAGE);
+      return;
+    }
+    const offset = Number.isFinite(requestedOffset) && requestedOffset > 0 ? requestedOffset : undefined;
+    // { sessions, hasMore }: the viewer pages through older sessions with offset.
+    const catalog = store.getSessionCatalog({
+      project,
+      platformSource: this.getOptionalPlatformSourceFromRequest(req),
+      limit: Number.isFinite(requestedLimit) && requestedLimit > 0 ? requestedLimit : undefined,
+      offset,
+    });
+    // The store clamps the limit; a page with more after it is exactly that long.
+    res.json(capListingPage(catalog, offset ?? 0, catalog.sessions.length));
+  });
+
+  /**
+   * Delete one session and its indexed rows. Bucket copies are retained here:
+   * another session may have copied one before its database row is recorded.
+   * A session is identified
+   * by (platform_source, content_session_id): the same content id can exist
+   * under two hosts. Sync-safe like the per-row deletes: every local child row
+   * is tombstoned for cloud sync, and the session row is removed only after its
+   * children are gone, so the FK cascade never drops a replicated row.
+   */
+  private handleDeleteSession = this.wrapHandler((req: Request, res: Response): void => {
+    const rawPlatformSource = this.toStringParam(req.params.platformSource);
+    const contentSessionId = this.toStringParam(req.params.contentSessionId);
+    if (!rawPlatformSource || !contentSessionId) {
+      this.badRequest(res, 'platformSource and contentSessionId are required');
+      return;
+    }
+    const platformSource = normalizePlatformSource(rawPlatformSource);
+
+    const store = this.dbManager.getSessionStore();
+    // Claim the SQLite writer lock before reading children. Otherwise another
+    // connection can add a remote child after preflight and the session DELETE
+    // would cascade it without a sync tombstone.
+    const deleted = store.db.transaction(() => {
+      const sessionRow = store.db.prepare(`
+        SELECT id, memory_session_id
+        FROM sdk_sessions
+        WHERE content_session_id = ? AND COALESCE(platform_source, 'claude') = ?
+      `).get(contentSessionId, platformSource) as { id: number; memory_session_id: string | null } | undefined;
+
+      if (!sessionRow) {
+        this.notFound(res, `Session ${platformSource}/${contentSessionId} not found`);
+        return;
+      }
+
+      // Deleting a live session would cascade its pending work out from under
+      // the running generator.
+      if (this.sessionManager.getSession(sessionRow.id)) {
+        res.status(409).json({ error: 'session is still active; delete it after it ends' });
+        return;
+      }
+
+      // Rows synced from another device belong to that device: the FK cascade
+      // would drop them here without a tombstone. Refuse instead.
+      const remoteChildren = store.db.prepare(`
+        SELECT
+          (SELECT COUNT(*) FROM observations WHERE memory_session_id = ? AND origin_device_id IS NOT NULL)
+          + (SELECT COUNT(*) FROM session_summaries WHERE memory_session_id = ? AND origin_device_id IS NOT NULL)
+          + (SELECT COUNT(*) FROM user_prompts WHERE session_db_id = ? AND origin_device_id IS NOT NULL) AS n
+      `).get(sessionRow.memory_session_id, sessionRow.memory_session_id, sessionRow.id) as { n: number };
+      if (remoteChildren.n > 0) {
+        res.status(409).json({
+          error: 'session holds memories synced from another device; delete those on that device first',
+          remoteItemCount: remoteChildren.n,
+        });
+        return;
+      }
+
+      type ChildRow = { kind: IndexedRowKind; table: 'observations' | 'session_summaries' | 'user_prompts'; id: string };
+      const childRows: ChildRow[] = [];
+
+      if (sessionRow.memory_session_id) {
+        const observations = store.db.prepare(
+          `SELECT CAST(id AS TEXT) AS id FROM observations WHERE memory_session_id = ? AND origin_device_id IS NULL`
+        ).all(sessionRow.memory_session_id) as Array<{ id: string }>;
+        childRows.push(...observations.map(row => ({ kind: 'observation' as const, table: 'observations' as const, id: row.id })));
+
+        const summaries = store.db.prepare(
+          `SELECT CAST(id AS TEXT) AS id FROM session_summaries WHERE memory_session_id = ? AND origin_device_id IS NULL`
+        ).all(sessionRow.memory_session_id) as Array<{ id: string }>;
+        childRows.push(...summaries.map(row => ({ kind: 'summary' as const, table: 'session_summaries' as const, id: row.id })));
+      }
+
+      const prompts = store.db.prepare(
+        `SELECT CAST(id AS TEXT) AS id FROM user_prompts WHERE session_db_id = ? AND origin_device_id IS NULL`
+      ).all(sessionRow.id) as Array<{ id: string }>;
+      childRows.push(...prompts.map(row => ({ kind: 'prompt' as const, table: 'user_prompts' as const, id: row.id })));
+
+      const cloudSync = this.dbManager.getCloudSync();
+
+      // Pre-flight: validate every row can be safely deleted BEFORE mutating any of them.
+      for (const row of childRows) {
+        const check = this.assertRowDeletable(cloudSync, store, row.kind, row.id);
+        if (!check.ok) {
+          res.status(check.status).json({ error: check.error });
+          return;
+        }
+      }
+
+      const deletedCounts = { observations: 0, summaries: 0, prompts: 0, toolUses: 0 };
+      // queueDelete's own transaction nests as a savepoint, so a failure
+      // part-way rolls back every tombstone and row delete.
+      for (const row of childRows) {
+        this.commitRowDelete(cloudSync, store, row.kind, row.table, row.id);
+        if (row.kind === 'observation') deletedCounts.observations++;
+        else if (row.kind === 'summary') deletedCounts.summaries++;
+        else deletedCounts.prompts++;
+      }
+      // The raw tool I/O backup is device-local (never synced); a deleted
+      // session must not leave its captured tool inputs and outputs behind.
+      store.db.prepare(
+        `DELETE FROM tool_uses WHERE session_db_id = ? OR (content_session_id = ? AND platform_source = ?)`
+      ).run(sessionRow.id, contentSessionId, platformSource);
+      // Count base rows, excluding FTS shadow writes performed by triggers.
+      deletedCounts.toolUses = (store.db.query('SELECT changes() AS n').get() as { n: number }).n;
+      const deliverableReferencesRemoved = store.db.prepare(`
+        SELECT COUNT(*) AS n FROM deliverables
+        WHERE content_session_id = ? AND platform_source = ?
+      `).get(contentSessionId, platformSource) as { n: number };
+      store.db.prepare(`
+        DELETE FROM deliverables WHERE content_session_id = ? AND platform_source = ?
+      `).run(contentSessionId, platformSource);
+      store.db.prepare(`
+        DELETE FROM committed_observation_tool_uses
+        WHERE content_session_id = ? AND platform_source = ?
+      `).run(contentSessionId, platformSource);
+      store.markSessionDeleted(platformSource, contentSessionId, sessionRow.memory_session_id);
+      store.db.prepare(`DELETE FROM sdk_sessions WHERE id = ?`).run(sessionRow.id);
+      return { childRows, deletedCounts, deliverableReferencesRemoved: deliverableReferencesRemoved.n };
+    }).immediate();
+    if (!deleted) return;
+    emitContextInvalidation('all', 'delete-session', 'removal');
+    this.scheduleChromaRowCleanup(deleted.childRows);
+
+    // Only after the delete committed: open viewer tabs drop the session live.
+    this.sseBroadcaster.broadcast({ type: 'session_deleted', platformSource, contentSessionId });
+    res.json({ success: true, platformSource, contentSessionId, deletedCounts: deleted.deletedCounts, deliverableReferencesRemoved: deleted.deliverableReferencesRemoved });
+  });
+
   private handleGetProcessingStatus = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const isProcessing = await this.sessionManager.isAnySessionProcessing();
     const queueDepth = await this.sessionManager.getTotalActiveWork();
     // #2756 — additive: sessions currently parked in waitForSlot, never a
     // breaking change to existing isProcessing/queueDepth consumers.
     const parkedSessions = getParkedSlotWaiterCount();
-    res.json({ isProcessing, queueDepth, parkedSessions });
+    // #5374 — additive: the observer health ledger's last successful store,
+    // so a silently stalled pipeline is visible while isProcessing and
+    // /api/health keep reporting green (one installation went 26 h with no
+    // saves behind an "ok" health check).
+    const lastSuccessfulStoreAt = readObserverHealth()?.lastSuccessAt ?? null;
+    // #5405 — additive: sessions the response-stall pacer abandoned, with the
+    // messages they hold, so a stuck-looking queue can be told apart from a
+    // busy one. Reporting only — nothing here resumes or discards them.
+    const abandonedStallSessions = this.sessionManager.getAbandonedStallSessions();
+    res.json({ isProcessing, queueDepth, parkedSessions, lastSuccessfulStoreAt, abandonedStallSessions });
   });
 
-  private parsePaginationParams(req: Request): { offset: number; limit: number; project?: string; platformSource?: string } {
-    const offset = parseInt(req.query.offset as string, 10) || 0;
-    const limit = Math.min(parseInt(req.query.limit as string, 10) || 20, 100); 
+  private parsePaginationParams(req: Request, res: Response): { offset: number; limit: number; project?: string; platformSource?: string; contentSessionId?: string } | null {
+    const requestedOffset = parseInt(req.query.offset as string, 10) || 0;
+    const requestedLimit = parseInt(req.query.limit as string, 10) || 20;
+    const offset = Math.max(Number.isSafeInteger(requestedOffset) ? requestedOffset : 0, 0);
+    // Same ceiling as the server plane's feeds and the jobs listing: a deep
+    // OFFSET makes SQLite scan and discard every skipped row on the shared
+    // connection (#5495 showed how one caller can starve the rest).
+    if (offset > MAX_LISTING_OFFSET) {
+      this.badRequest(res, LISTING_OFFSET_CAP_MESSAGE);
+      return null;
+    }
+    // SQLite interprets a negative LIMIT as unbounded, including limit + 1
+    // used by PaginationHelper to detect whether another page exists.
+    const limit = Math.min(Math.max(requestedLimit, 1), 100);
     const project = req.query.project as string | undefined;
     const platformSource = this.getOptionalPlatformSourceFromRequest(req);
+    const contentSessionId = req.query.contentSessionId as string | undefined;
 
-    return { offset, limit, project, platformSource };
+    return { offset, limit, project, platformSource, contentSessionId };
   }
 
+  /**
+   * `claude-mem project merge <from> <into>` runs here so its Chroma patch can
+   * land: this process holds the Chroma writer lock, and a merge run in the CLI
+   * process was refused by it (gate P2-4). The merge re-keys memory on every
+   * synced device, so other localhost pages may not trigger it.
+   */
+  private handleProjectMerge = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    if (isForeignLoopbackBrowserWrite(req)) {
+      res.status(403).json({ error: 'Project merges from a different localhost origin are not allowed' });
+      return;
+    }
+    const { from, into, dryRun } = req.body as z.infer<typeof projectMergeSchema>;
+    const mergeResult = await mergeProjectInto({ from, into, dryRun: dryRun ?? false });
+    if (!dryRun) emitContextInvalidation('all', 'project-merge', 'removal');
+    res.json(mergeResult);
+  });
+
   private handleImport = this.wrapHandler((req: Request, res: Response): void => {
+    // An import writes arbitrary sessions, summaries, observations and
+    // prompts, so other localhost pages may not trigger it. Origin-less
+    // clients (the CLI import) keep the existing loopback-trust model.
+    if (isForeignLoopbackBrowserWrite(req)) {
+      res.status(403).json({ error: 'Imports from a different localhost origin are not allowed' });
+      return;
+    }
     const { sessions, summaries, observations, prompts } = req.body;
 
     const stats = {
@@ -474,6 +865,15 @@ export class DataRoutes extends BaseRouteHandler {
     };
 
     const store = this.dbManager.getSessionStore();
+    const chromaSync = this.dbManager.getChromaSync();
+    const chromaJobs: Array<() => Promise<void>> = [];
+    const importedSummaryIds: number[] = [];
+    const importedPrompts: Array<{ id: number; platformSource: string }> = [];
+    const importedMemorySessionIds = new Map<string, string>();
+    const remapImportedMemorySession = <T extends { memory_session_id: string }>(row: T): T => {
+      const memorySessionId = importedMemorySessionIds.get(row.memory_session_id);
+      return memorySessionId === undefined ? row : { ...row, memory_session_id: memorySessionId };
+    };
     const sessionContextByKey = new Map<string, { id: number; platformSource: string }>();
     const sessionContextsByContentId = new Map<string, Array<{ id: number; platformSource: string }>>();
     const sessionContextKey = (platformSource: string, contentSessionId: string): string =>
@@ -490,54 +890,83 @@ export class DataRoutes extends BaseRouteHandler {
       sessionContextsByContentId.set(session.content_session_id, existing);
     };
 
-    if (Array.isArray(sessions)) {
-      for (const session of sessions) {
-        const result = store.importSdkSession(session);
-        rememberSessionContext(session, result.id);
-        if (result.imported) {
-          stats.sessionsImported++;
-        } else {
-          stats.sessionsSkipped++;
+    // Rows that could not be imported, by kind. "Skipped" above means the row
+    // was already present; "rejected" means it failed validation or the insert
+    // refused it. Reported back so a partial import is never silent.
+    const rejected: Record<ImportRowKind, ImportRowRejection[]> = {
+      sessions: [],
+      summaries: [],
+      observations: [],
+      prompts: [],
+    };
+    const importEachRow = (kind: ImportRowKind, rows: unknown, importOne: (row: any) => void): void => {
+      if (!Array.isArray(rows)) return;
+      rows.forEach((row, index) => {
+        const checked = importRowSchemas[kind].safeParse(row);
+        if (!checked.success) {
+          rejected[kind].push({ index, reason: describeImportRowIssues(checked.error) });
+          return;
         }
-      }
-    }
-
-    if (Array.isArray(summaries)) {
-      for (const summary of summaries) {
-        const result = store.importSessionSummary(summary);
-        if (result.imported) {
-          stats.summariesImported++;
-        } else {
-          stats.summariesSkipped++;
+        try {
+          importOne(row);
+        } catch (error: unknown) {
+          rejected[kind].push({ index, reason: error instanceof Error ? error.message : String(error) });
         }
-      }
-    }
+      });
+    };
 
-    const importedObservations: Array<{ id: number; obs: typeof observations[0] }> = [];
+    importEachRow('sessions', sessions, (session) => {
+      const result = store.importSdkSession(session);
+      if (typeof session.memory_session_id === 'string' && session.memory_session_id.trim() !== '') {
+        // An existing content session may already have a different observer id.
+        // Keep its registered identity and attach the imported children to it;
+        // register the exported id only when the local session has none yet.
+        const memorySessionId = store.ensureMemorySessionIdRegistered(result.id, session.memory_session_id);
+        importedMemorySessionIds.set(session.memory_session_id, memorySessionId);
+      }
+      rememberSessionContext(session, result.id);
+      if (result.imported) {
+        stats.sessionsImported++;
+      } else {
+        stats.sessionsSkipped++;
+      }
+    });
+
+    importEachRow('summaries', summaries, (summary) => {
+      const result = store.importSessionSummary(remapImportedMemorySession(summary));
+      if (result.imported) {
+        stats.summariesImported++;
+        importedSummaryIds.push(result.id);
+      } else {
+        stats.summariesSkipped++;
+      }
+    });
+
+    const importedObservations: Array<{ id: number; obs: any }> = [];
     if (Array.isArray(observations)) {
-      for (const obs of observations) {
-        const result = store.importObservation(obs);
+      importEachRow('observations', observations, (obs) => {
+        const observation = remapImportedMemorySession(obs);
+        const result = store.importObservation(observation);
         if (result.imported) {
           stats.observationsImported++;
-          importedObservations.push({ id: result.id, obs });
+          importedObservations.push({ id: result.id, obs: observation });
         } else {
           stats.observationsSkipped++;
         }
-      }
+      });
 
-      if (stats.observationsImported > 0) {
-        store.rebuildObservationsFTSIndex();
-      }
-
-      const chromaSync = this.dbManager.getChromaSync();
       if (chromaSync && importedObservations.length > 0) {
-        const CHROMA_SYNC_CONCURRENCY = 8;
         const safeParseJson = (val: string | null): string[] => {
           if (!val) return [];
           try { return JSON.parse(val); } catch { return []; }
         };
 
         const syncOne = async ({ id, obs }: { id: number; obs: any }) => {
+          // Index the canonical string columns SQLite actually saved, including
+          // accepted numeric/boolean legacy values coerced by its TEXT affinity.
+          const lists = store.db.prepare('SELECT text, facts, concepts FROM observations WHERE id = ?')
+            .get(id) as { text: string | null; facts: string | null; concepts: string | null } | undefined;
+          if (!lists) return;
           const sourceRow = store.db.prepare(`
             SELECT COALESCE(NULLIF(platform_source, ''), 'claude') as platform_source
             FROM sdk_sessions
@@ -548,14 +977,18 @@ export class DataRoutes extends BaseRouteHandler {
             ? normalizePlatformSource(obs.platform_source)
             : normalizePlatformSource(sourceRow?.platform_source);
           const parsedObs = {
+            text: lists.text,
             type: obs.type || 'discovery',
             title: obs.title || null,
             subtitle: obs.subtitle || null,
-            facts: safeParseJson(obs.facts),
+            facts: parseStringListField(lists.facts, 'facts', id),
             narrative: obs.narrative || null,
-            concepts: safeParseJson(obs.concepts),
+            concepts: parseStringListField(lists.concepts, 'concepts', id),
             files_read: safeParseJson(obs.files_read),
             files_modified: safeParseJson(obs.files_modified),
+            // Keep the merge target so target-scoped semantic search finds the row.
+            merged_into_project: typeof obs.merged_into_project === 'string' && obs.merged_into_project
+              ? obs.merged_into_project : null,
           };
 
           await chromaSync.syncObservation(
@@ -567,69 +1000,145 @@ export class DataRoutes extends BaseRouteHandler {
             obs.created_at_epoch,
             platformSource
           ).catch(err => {
-            logger.error('CHROMA', 'Import ChromaDB sync failed', { id }, err as Error);
+            logChromaWriteFailure('CHROMA', 'Import ChromaDB sync failed', { id }, err);
           });
         };
 
-        (async () => {
-          for (let i = 0; i < importedObservations.length; i += CHROMA_SYNC_CONCURRENCY) {
-            const batch = importedObservations.slice(i, i + CHROMA_SYNC_CONCURRENCY);
-            await Promise.all(batch.map(syncOne));
+        for (const row of importedObservations) chromaJobs.push(() => syncOne(row));
+      }
+    }
+
+    importEachRow('prompts', prompts, (prompt) => {
+      let promptToImport = prompt;
+      if (prompt && typeof prompt === 'object' && !Array.isArray(prompt)) {
+        const promptRecord = prompt as Record<string, unknown>;
+        const contentSessionId = typeof promptRecord.content_session_id === 'string'
+          ? promptRecord.content_session_id
+          : undefined;
+        const explicitPlatformSource = typeof promptRecord.platform_source === 'string'
+          ? normalizePlatformSource(promptRecord.platform_source)
+          : undefined;
+
+        if (contentSessionId) {
+          let sessionContext: { id: number; platformSource: string } | undefined;
+          if (explicitPlatformSource) {
+            sessionContext = sessionContextByKey.get(sessionContextKey(explicitPlatformSource, contentSessionId));
+          } else {
+            const candidates = sessionContextsByContentId.get(contentSessionId) ?? [];
+            sessionContext = candidates.length === 1 ? candidates[0] : undefined;
           }
-        })().catch(err => {
-          logger.error('CHROMA', 'Import ChromaDB batch sync failed', {}, err as Error);
+
+          if (sessionContext) {
+            promptToImport = {
+              ...promptRecord,
+              session_db_id: sessionContext.id,
+              platform_source: explicitPlatformSource ?? sessionContext.platformSource,
+            };
+          } else if (explicitPlatformSource) {
+            promptToImport = {
+              ...promptRecord,
+              platform_source: explicitPlatformSource,
+            };
+          }
+        }
+      }
+
+      const result = store.importUserPrompt(promptToImport as any);
+      if (result.imported) {
+        stats.promptsImported++;
+        importedPrompts.push({ id: result.id, platformSource: normalizePlatformSource(promptToImport.platform_source) });
+      } else {
+        stats.promptsSkipped++;
+      }
+    });
+
+    if (chromaSync) {
+      const pending = new Map<string, { summaries: number[]; prompts: number[] }>();
+      const notePending = (project: string, kind: 'summaries' | 'prompts', id: number): void => {
+        let ids = pending.get(project);
+        if (!ids) { ids = { summaries: [], prompts: [] }; pending.set(project, ids); }
+        ids[kind].push(id);
+      };
+      // Read committed SQLite values, including TEXT affinity and the local
+      // session chosen during restore. Exported row/session IDs are not local IDs.
+      const loadSummary = (id: number): StoredSummary | undefined => store.db.query(`
+        SELECT ss.*, COALESCE(ss.prompt_number, 0) AS prompt_number,
+          COALESCE(NULLIF(s.platform_source, ''), 'claude') AS platform_source
+        FROM session_summaries ss LEFT JOIN sdk_sessions s ON s.memory_session_id = ss.memory_session_id
+        WHERE ss.id = ?
+      `).get(id) as StoredSummary | undefined;
+      const loadPrompt = (id: number, platformSource: string): StoredUserPrompt | undefined => store.db.query(`
+        SELECT up.*, COALESCE(s.memory_session_id, up.content_session_id) AS memory_session_id,
+          COALESCE(s.project, 'unknown') AS project,
+          COALESCE(NULLIF(s.platform_source, ''), ?) AS platform_source
+        FROM user_prompts up LEFT JOIN sdk_sessions s ON s.id = up.session_db_id
+        WHERE up.id = ?
+      `).get(platformSource, id) as StoredUserPrompt | undefined;
+
+      for (const id of importedSummaryIds) {
+        const row = loadSummary(id);
+        if (!row) continue;
+        // A later live write can advance the watermark while an import waits
+        // or fails. Keep every accepted row retryable until its write succeeds.
+        notePending(row.project, 'summaries', id);
+        chromaJobs.push(async () => {
+          const current = loadSummary(id);
+          if (!current) return;
+          await chromaSync.syncSummary(id, current.memory_session_id, current.project, current,
+            current.prompt_number, current.created_at_epoch, normalizePlatformSource(current.platform_source), false,
+            () => { const row = loadSummary(id); return row && { row, replaceExisting: false }; }
+          ).catch(err => logChromaWriteFailure('CHROMA', 'Imported summary ChromaDB sync failed', { id }, err));
         });
       }
-    }
-
-    if (Array.isArray(prompts)) {
-      for (const prompt of prompts) {
-        let promptToImport = prompt;
-        if (prompt && typeof prompt === 'object' && !Array.isArray(prompt)) {
-          const promptRecord = prompt as Record<string, unknown>;
-          const contentSessionId = typeof promptRecord.content_session_id === 'string'
-            ? promptRecord.content_session_id
-            : undefined;
-          const explicitPlatformSource = typeof promptRecord.platform_source === 'string'
-            ? normalizePlatformSource(promptRecord.platform_source)
-            : undefined;
-
-          if (contentSessionId) {
-            let sessionContext: { id: number; platformSource: string } | undefined;
-            if (explicitPlatformSource) {
-              sessionContext = sessionContextByKey.get(sessionContextKey(explicitPlatformSource, contentSessionId));
-            } else {
-              const candidates = sessionContextsByContentId.get(contentSessionId) ?? [];
-              sessionContext = candidates.length === 1 ? candidates[0] : undefined;
-            }
-
-            if (sessionContext) {
-              promptToImport = {
-                ...promptRecord,
-                session_db_id: sessionContext.id,
-                platform_source: explicitPlatformSource ?? sessionContext.platformSource,
-              };
-            } else if (explicitPlatformSource) {
-              promptToImport = {
-                ...promptRecord,
-                platform_source: explicitPlatformSource,
-              };
-            }
-          }
-        }
-
-        const result = store.importUserPrompt(promptToImport as any);
-        if (result.imported) {
-          stats.promptsImported++;
-        } else {
-          stats.promptsSkipped++;
-        }
+      for (const { id, platformSource } of importedPrompts) {
+        const row = loadPrompt(id, platformSource);
+        if (!row) continue;
+        notePending(row.project, 'prompts', id);
+        chromaJobs.push(async () => {
+          const current = loadPrompt(id, platformSource);
+          if (!current) return;
+          await chromaSync.syncUserPrompt(id, current.memory_session_id, current.project, current.prompt_text,
+            current.prompt_number, current.created_at_epoch, current.platform_source,
+            () => loadPrompt(id, platformSource)
+          ).catch(err => logChromaWriteFailure('CHROMA', 'Imported prompt ChromaDB sync failed', { id }, err));
+        });
       }
+      // Persist each project's batch once, not once per imported row.
+      for (const [project, ids] of pending) {
+        if (ids.summaries.length) ChromaSyncState.markPending(project, 'summaries', ids.summaries);
+        if (ids.prompts.length) ChromaSyncState.markPending(project, 'prompts', ids.prompts);
+      }
+      // Share the observation import's existing bound across all three kinds.
+      const CHROMA_SYNC_CONCURRENCY = 8;
+      void (async () => {
+        for (let i = 0; i < chromaJobs.length; i += CHROMA_SYNC_CONCURRENCY) {
+          await Promise.all(chromaJobs.slice(i, i + CHROMA_SYNC_CONCURRENCY).map(job => job()));
+        }
+      })().catch(err => logger.error('CHROMA', 'Import ChromaDB batch sync failed', {}, err as Error));
     }
 
+    const rejectedCounts = {
+      sessionsRejected: rejected.sessions.length,
+      summariesRejected: rejected.summaries.length,
+      observationsRejected: rejected.observations.length,
+      promptsRejected: rejected.prompts.length,
+    };
+    if (Object.values(rejectedCounts).some(count => count > 0)) {
+      logger.warn('HTTP', 'Import rejected rows', rejectedCounts);
+    }
+
+    // 'removal': an import can re-key or replace rows a cached block shows.
+    emitContextInvalidation('all', 'import', 'removal');
     res.json({
       success: true,
-      stats
+      stats: { ...stats, ...rejectedCounts },
+      rejected,
+      // A multi-request file import must attach later children to these local
+      // parents, just as a single-request import does above.
+      sessionIdentities: {
+        memorySessionIds: [...importedMemorySessionIds],
+        contentSessionIds: [...sessionContextsByContentId],
+      },
     });
   });
 

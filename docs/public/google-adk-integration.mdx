@@ -1,0 +1,209 @@
+---
+title: Google ADK
+description: Run a Google ADK agent that recalls a project observation and saves an explicit handoff through the existing local MCP server.
+icon: robot
+---
+
+The [Google ADK example](https://github.com/thedotmack/claude-mem/tree/main/examples/google-adk)
+uses a real ADK `Runner`, a custom `BaseAgent`, and `McpToolset` to read a known
+Claude-Mem observation and save a handoff. The agent follows a fixed workflow;
+it does not need a Gemini key or call a model.
+
+## Capabilities and verified versions
+
+| Capability | This example |
+| --- | --- |
+| Recall | Project-scoped search, timeline, and selected observation details |
+| Explicit save | Saves the handoff text supplied by the caller after recall succeeds |
+| ADK session | Creates a local in-memory ADK session using the caller's run ID; records its ID as note metadata |
+| Claude-Mem attribution | Existing manual session for the project and `google-adk` platform |
+| Automatic conversation capture | Not provided |
+| Automatic context injection | Not provided; recalled text is returned to the application |
+| Cloud plan | No Google Cloud or CMEM Pro account is needed for this local workflow |
+
+Verified on Linux with Python **3.12.14**, Google ADK **2.14.0**, MCP Python SDK
+**2.3.0**, and Claude-Mem **15.16.1**. macOS, Windows, ADK Web, Google Cloud
+deployment, hosted-runtime authentication, and a model choosing tool calls were
+not verified. Use the official ADK deployment guidance when adding those parts.
+
+## Connect to the local worker
+
+You need Node.js, Python 3.11 or later, an installed Claude-Mem MCP script, and a
+running worker. From a Claude-Mem checkout:
+
+```bash
+python -m venv .venv-adk-memory
+. .venv-adk-memory/bin/activate
+python -m pip install -r examples/google-adk/requirements.txt
+export CLAUDE_MEM_MCP_SERVER="/absolute/path/to/claude-mem/plugin/scripts/mcp-server.cjs"
+npm run worker:status
+```
+
+Use your trusted installed MCP script, or the shipped script in this checkout.
+Start the worker with `npm run worker:start` if it is stopped. If your worker uses
+custom `CLAUDE_MEM_DATA_DIR` or `CLAUDE_MEM_WORKER_PORT` values, set the same values
+for the example. Paths are passed as individual process arguments.
+
+The example selects local worker mode and disables autostart in its MCP child.
+It preserves saved worker settings, registers no hooks, and writes no new MCP
+configuration. Repeating setup does not create duplicate installation entries.
+
+## Run a known-note handoff
+
+Choose an observation already present in the project. For a reproducible local
+demonstration, explicitly save this harmless note first:
+
+```bash
+WORKER_PORT="${CLAUDE_MEM_WORKER_PORT:-$(jq -r .CLAUDE_MEM_WORKER_PORT "${CLAUDE_MEM_DATA_DIR:-$HOME/.claude-mem}/settings.json")}"
+curl --fail-with-body "http://127.0.0.1:$WORKER_PORT/api/memory/save" \
+  -H 'Content-Type: application/json' \
+  -d '{"project":"shop-api","title":"Scheduler timezone","text":"The quokkaharbor scheduler writes dates in UTC."}'
+```
+
+Use the returned observation ID in the workflow:
+
+```bash
+python examples/google-adk/memory_workflow.py \
+  --project shop-api \
+  --query quokkaharbor \
+  --observation-id 123 \
+  --run-id scheduler-handoff-1 \
+  --note "Next run: keep the scheduler export in UTC."
+```
+
+The ADK runner invokes `MemoryAgent`. Its MCP toolset discovers only `search`,
+`timeline`, `get_observations`, and `save_memory`. Every call receives the fixed
+project selected by the caller. The agent checks the selected ID against that
+project's first 20 search results, fetches its timeline and details, and then
+saves the supplied handoff. Narrow the query if your chosen ID is outside the
+first page.
+
+Successful output contains the recalled observation, a confirmed saved ID, and
+the ADK session ID. An unrelated project's ID fails before the save. Recalled
+text cannot change the project, choose a tool, or authorize another action.
+
+## Native ADK tool wiring
+
+The example constructs the toolset inside the custom agent's run and closes it
+in that same run's `finally` block:
+
+```python
+toolset = McpToolset(
+    connection_params=StdioConnectionParams(
+        server_params=StdioServerParameters(
+            command="node", args=[script], env=worker_env,
+        ),
+        timeout=10,
+    ),
+    tool_filter=["search", "timeline", "get_observations", "save_memory"],
+)
+try:
+    tools = await toolset.get_tools(readonly_context=ReadonlyContext(context))
+    # Call native ADK tools with ToolContext(context).
+finally:
+    await toolset.close()
+```
+
+ADK returns MCP results as dictionaries and can return a graceful error dictionary
+for a transport failure. The example rejects either form of failure before using
+content. A normal Python return is not proof that memory was saved.
+
+`InMemoryRunner` supplies a real ADK session and invocation context. The session's
+`user_id` is a local example identity, not authentication to a remote account.
+Claude-Mem stores the handoff through its manual-save contract with
+`platformSource: "google-adk"`, `runId`, and `adkSessionId` metadata. The in-memory
+ADK session is discarded after the run; the explicitly saved note remains in the
+worker. No transcript or native tool-event capture is claimed.
+
+## Worktree project boundaries
+
+Reads send both the selected `project` and an explicit `projects=json.dumps([project])`
+list. This prevents the MCP server from automatically widening a worktree's
+read scope to its parent checkout. `save_memory` receives only the selected
+`project`.
+
+The native tests create a real Git repository and linked worktree, seed matching
+observations in the parent and child projects, and run the SDK from that
+worktree. The chosen project's results exclude the parent record. A parent ID
+cannot authorize a handoff save, and SQLite verifies that rejected recalls add
+no observation.
+
+The project list is encoded as a JSON string so the GET query path preserves
+literal commas and JSON-looking keys. Nonempty project names retain their exact
+outer whitespace. Native checks seed separate split/trimmed-key projects and
+confirm they stay out of search, timeline, and recalled details.
+
+## Repeated runs and failures
+
+The example fingerprints the integration, project, run ID, and note text using
+the existing worker `sourceFingerprint` contract. A deliberate repeat with the
+same inputs returns the same saved ID. Changing the note represents a new save.
+It does not retry writes automatically. If a timeout leaves the outcome unclear,
+inspect the viewer or rerun with the same run ID and text.
+
+Each MCP request has a 10-second timeout (`--timeout` selects another positive
+number of seconds). The outer deadline is eight times that value, 80 seconds
+by default, and covers the runner, connection setup, calls, and cleanup.
+Missing configuration, a missing script, a stopped worker, a rejected tool call,
+or a deadline returns a nonzero CLI exit. Expected failures have distinct,
+content-free reasons; unrecognized native errors are not echoed with their
+arguments or response data.
+No successful save is assumed from an error response. Check the worker status,
+script path, project key, and selected ID before retrying.
+
+## Real-client verification
+
+With Bun and Node.js available, run:
+
+```bash
+(
+  unset CLAUDE_MEM_CLOUD_SYNC_TOKEN CLAUDE_MEM_CLOUD_SYNC_USER_ID CLAUDE_MEM_CLOUD_SYNC_HUB_URL
+  export CLAUDE_MEM_MEDIA_CAPTURE_ENABLED=false
+  python examples/google-adk/test_workflow.py
+)
+```
+
+This verification uses fresh worker settings and a restricted child-process
+environment. It imports the shipped `WorkerService` and calls `start()` directly,
+so the CLI startup path does not run host hook-configuration repairs. The
+subshell also clears inherited cloud-sync credentials; it does not change your
+normal worker's settings or saved memory.
+
+The nine native integration checks start the shipped worker and a fresh SQLite
+database, with optional capture, sync, and telemetry disabled for the fixture.
+They run the actual ADK runner, agent, toolset, and MCP transport. Checks cover
+known-note recall and save, repeated-run deduplication, project isolation, platform
+and manual-session attribution, the actual ADK session ID, blank project input,
+a stopped worker, and a controlled slow HTTP response. Actual CLI checks cover
+missing configuration, a nonexistent script, an unavailable selected ID, and a
+timeout without printing the supplied note. The timeout fixture is the
+only substituted endpoint; successful storage and recall use the real worker.
+
+The verified run recalled ID `1`, saved ID `3`, and returned `3` on repeat. Its
+ADK session ID was `verification-1`, and the disposable data path contained spaces.
+No model key or model request was used.
+
+## Data and disconnect
+
+Only explicit project queries, selected IDs, handoff text, and provenance metadata
+enter the existing local memory path. The script does not send notes to Gemini
+or another model. Existing worker sync and export settings still apply to saved
+notes. If you add a model or tracing to your own ADK application, review where it
+sends the recalled content.
+
+Use your own trusted local worker. Project filtering is not multiuser account
+authorization. Save only text intended for retention. This example does not
+collect excluded project transcripts, import prior conversations, or change
+privacy settings.
+
+Stop running the script or remove it from your application to disconnect. The
+agent closes its MCP toolset and the runner is closed after the workflow. You may
+remove the dedicated virtual environment; no worker configuration or memory is
+deleted.
+
+## Official references
+
+- [ADK MCP tools and timeout configuration](https://adk.dev/tools-custom/mcp-tools/)
+- [Custom agents and native run methods](https://adk.dev/agents/custom-agents/)
+- [Google ADK 2.14.0 release](https://github.com/google/adk-python/releases/tag/v2.14.0)
+- [Claude-Mem search workflow](/usage/search-tools)

@@ -1,73 +1,54 @@
 import React from 'react';
+import { useI18n } from '../../i18n';
 import { ThemePreference } from '../hooks/useTheme';
+import { MonitorIcon, MoonIcon, SunIcon } from './icons';
+
+/**
+ * The words for each theme choice in the header's "…" menu. "Light mode" rather
+ * than "Light": the shared catalogs already give "Light" another meaning.
+ */
+export const THEME_LABELS: Record<ThemePreference, string> = {
+  system: 'System',
+  light: 'Light mode',
+  dark: 'Dark mode',
+};
+
+const THEME_ICONS: Record<ThemePreference, React.ReactNode> = {
+  system: <MonitorIcon size={16} />,
+  light: <SunIcon size={16} />,
+  dark: <MoonIcon size={16} />,
+};
+
+const CYCLE_TITLES: Record<ThemePreference, string> = {
+  system: 'Theme: System (click for Light)',
+  light: 'Theme: Light (click for Dark)',
+  dark: 'Theme: Dark (click for System)',
+};
+
+const NEXT_THEME: Record<ThemePreference, ThemePreference> = { system: 'light', light: 'dark', dark: 'system' };
 
 interface ThemeToggleProps {
   preference: ThemePreference;
   onThemeChange: (theme: ThemePreference) => void;
 }
 
+/**
+ * One icon button that cycles System, Light and Dark, with its choice in the
+ * tooltip and the accessible name. The header offers the three choices as words
+ * in its "…" menu; this button stays mountable for layouts that want it on the bar.
+ */
 export function ThemeToggle({ preference, onThemeChange }: ThemeToggleProps) {
-  const cycleTheme = () => {
-    const cycle: ThemePreference[] = ['system', 'light', 'dark'];
-    const currentIndex = cycle.indexOf(preference);
-    const nextIndex = (currentIndex + 1) % cycle.length;
-    onThemeChange(cycle[nextIndex]);
-  };
-
-  const getIcon = () => {
-    switch (preference) {
-      case 'light':
-        return (
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="12" cy="12" r="5"></circle>
-            <line x1="12" y1="1" x2="12" y2="3"></line>
-            <line x1="12" y1="21" x2="12" y2="23"></line>
-            <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
-            <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
-            <line x1="1" y1="12" x2="3" y2="12"></line>
-            <line x1="21" y1="12" x2="23" y2="12"></line>
-            <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
-            <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
-          </svg>
-        );
-      case 'dark':
-        return (
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
-          </svg>
-        );
-      case 'system':
-      default:
-        return (
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
-            <line x1="8" y1="21" x2="16" y2="21"></line>
-            <line x1="12" y1="17" x2="12" y2="21"></line>
-          </svg>
-        );
-    }
-  };
-
-  const getTitle = () => {
-    switch (preference) {
-      case 'light':
-        return 'Theme: Light (click for Dark)';
-      case 'dark':
-        return 'Theme: Dark (click for System)';
-      case 'system':
-      default:
-        return 'Theme: System (click for Light)';
-    }
-  };
-
+  const { t } = useI18n();
+  const title = t(CYCLE_TITLES[preference]);
   return (
     <button
+      type="button"
       className="theme-toggle-btn"
-      onClick={cycleTheme}
-      title={getTitle()}
-      aria-label={getTitle()}
+      onClick={() => onThemeChange(NEXT_THEME[preference])}
+      title={title}
+      aria-label={title}
     >
-      {getIcon()}
+      {THEME_ICONS[preference]}
     </button>
   );
 }

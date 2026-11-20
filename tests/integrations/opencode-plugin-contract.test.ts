@@ -1,14 +1,13 @@
 import { describe, it, expect } from "bun:test";
-import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  ClaudeMemPlugin,
-  parseSearchResponse,
-  REGISTERED_OPENCODE_HOOKS,
-  REAL_OPENCODE_EVENT_TYPES,
-} from "../../src/integrations/opencode-plugin/index";
+import { pathToFileURL } from "node:url";
+import ClaudeMemPlugin from "../../src/integrations/opencode-plugin/index";
+import { parseSearchResponse } from "../../src/integrations/opencode-plugin/contract";
 import { normalizePlatformSource } from "../../src/shared/platform-source";
+import { isConnectionRefusedError } from "../../src/shared/connection-errors";
+import { ingestObservation, setIngestContext } from "../../src/services/worker/http/shared";
 
 /**
  * Regression guard for plan-08 (OpenCode event-contract correctness).
@@ -28,6 +27,9 @@ const REAL_OPENCODE_HOOK_NAMES = new Set<string>([
   "chat.message",
   "event",
   "experimental.session.compacting",
+  // (input: { sessionID?, model }, output: { system: string[] }) in OpenCode's
+  // plugin Hooks type (packages/plugin/src/index.ts).
+  "experimental.chat.system.transform",
   "tool.execute.before",
   "permission.ask",
   "auth",
@@ -35,14 +37,6 @@ const REAL_OPENCODE_HOOK_NAMES = new Set<string>([
   // `tool` is the custom-tool registration map, part of the plugin return shape.
   "tool",
 ]);
-
-// Bus event names the old code used that DO NOT exist in OpenCode's contract.
-const PHANTOM_BUS_EVENT_NAMES = [
-  "session.created",
-  "message.updated",
-  "session.compacted",
-  "file.edited",
-];
 
 const pluginCtx = {
   client: {},
@@ -54,14 +48,43 @@ const pluginCtx = {
 };
 
 describe("OpenCode plugin event contract", () => {
-  it("reads the worker port from persisted settings without importing worker-utils", () => {
-    const source = readFileSync(
-      "src/integrations/opencode-plugin/index.ts",
-      "utf8",
-    );
+  it("shipped bundle exports only a default definition with id + server + setup", async () => {
+    // Regression guard for #4197, coordinated with #3803: opencode's loader
+    // imports the plugin file and treats EVERY named export as a plugin. If a
+    // named export (e.g. the contract constants) leaks into the bundle, the
+    // whole plugin fails to load with "Plugin export is not a function".
+    //
+    // This must exercise the GENERATED bundle (the file users receive), not
+    // the TypeScript entry: importing the entry cannot catch exports the
+    // bundler itself introduces or leaks. It builds with the options
+    // scripts/build-hooks.js uses (scripts/opencode-plugin-build-options.js),
+    // into a temp dir so the test stays self-contained.
+    //
+    // The default export is an OBJECT, not a function: OpenCode V2 validates
+    // the module with Schema.Struct({ id, effect }) / Schema.Struct({ id,
+    // setup }) and rejects a bare plugin factory with "Plugin must export a
+    // default definition with an id and an effect or setup function". V1
+    // (1.3.4+) reads `server`, V2 reads `id` + `setup`.
+    const { buildSync } = await import("esbuild");
+    const { OPENCODE_PLUGIN_BUILD_OPTIONS } = await import("../../scripts/opencode-plugin-build-options.js");
+    const dir = mkdtempSync(join(tmpdir(), "claude-mem-opencode-bundle-"));
+    const outfile = join(dir, "index.js");
+    try {
+      const build = buildSync({ ...OPENCODE_PLUGIN_BUILD_OPTIONS, outfile, metafile: true });
+      expect(Object.keys(build.metafile!.inputs)).not.toContain("src/shared/worker-utils.ts");
+      expect(Object.keys(build.metafile!.inputs)).toContain("src/shared/connection-errors.ts");
+      const bundle = await import(pathToFileURL(outfile).href);
+      const exportNames = Object.keys(bundle).sort();
+      expect(exportNames).toEqual(["default"]);
 
-    expect(source).not.toContain('from "../../shared/worker-utils.js"');
-    expect(source).toContain('SettingsDefaultsManager.loadFromFile(settingsPath).CLAUDE_MEM_WORKER_PORT');
+      const definition = bundle.default as Record<string, unknown>;
+      expect(typeof definition).toBe("object");
+      expect(definition.id).toBe("claude-mem");
+      expect(typeof definition.server).toBe("function");
+      expect(typeof definition.setup).toBe("function");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("uses the persisted worker port in OpenCode worker requests", async () => {
@@ -83,14 +106,19 @@ describe("OpenCode plugin event contract", () => {
     }) as typeof fetch;
 
     try {
-      const { ClaudeMemPlugin: ReloadedPlugin } = await import(
-        `../../src/integrations/opencode-plugin/index.ts?opencode-settings-${Date.now()}`
+      // The worker URL is resolved when core.ts loads, so the cache-buster has
+      // to land on core.ts (a buster on the entry module would reuse the
+      // already-loaded core).
+      const { createCore } = await import(
+        `../../src/integrations/opencode-plugin/core.ts?opencode-settings-${Date.now()}`
       );
-      const plugin = await ReloadedPlugin(pluginCtx);
-      await plugin["tool.execute.after"](
-        { tool: "read", sessionID: "ses_45678", callID: "c1" },
-        { title: "Read", output: "file contents", metadata: {}, args: { path: "/a" } },
-      );
+      const core = createCore({ directory: "/tmp/x" });
+      await core.captureTool({
+        tool: "read",
+        sessionID: "ses_45678",
+        args: { path: "/a" },
+        output: "file contents",
+      });
 
       expect(seenUrls.some((url) => url.startsWith("http://127.0.0.1:45678/"))).toBe(true);
     } finally {
@@ -103,8 +131,223 @@ describe("OpenCode plugin event contract", () => {
     }
   });
 
+  it("strips a private block that straddles the 1,000-char tool_response cap", async () => {
+    // Capping first would sever `</private>`, and the worker's balanced
+    // stripper keeps an unclosed block verbatim, so the private prefix shipped.
+    const originalFetch = globalThis.fetch;
+    const bodies: Array<Record<string, unknown>> = [];
+    globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>);
+      return new Response(JSON.stringify({ status: "queued" }), { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const { createCore } = await import("../../src/integrations/opencode-plugin/core.ts");
+      const core = createCore({ directory: "/tmp/x" });
+      await core.captureTool({
+        tool: "read",
+        sessionID: "ses_private_cap",
+        args: { path: "/a" },
+        output: `${"a".repeat(990)}<private>${"TOKEN".repeat(10)}</private>tail`,
+      });
+
+      const observation = bodies.find((body) => "tool_response" in body);
+      expect(observation?.tool_response).toBe(`${"a".repeat(990)}tail`);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("scopes injected context to OpenCode's own memory by default", async () => {
+    // The worker filters observations by the platform that recorded them, so
+    // the source parameter decides what a session can see. OpenCode must ask
+    // for its own source unless the user opted into every source.
+    //
+    // A temp data dir with an explicit settings file keeps this independent
+    // of the developer's own settings, and the env var is cleared so a
+    // developer who enabled the switch locally does not fail this test.
+    const dataDir = mkdtempSync(join(tmpdir(), "claude-mem-opencode-scope-"));
+    const originalDataDir = process.env.CLAUDE_MEM_DATA_DIR;
+    const originalAllSources = process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
+    process.env.CLAUDE_MEM_DATA_DIR = dataDir;
+    delete process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
+    writeFileSync(join(dataDir, "settings.json"), JSON.stringify({}));
+
+    const originalFetch = globalThis.fetch;
+    const seenUrls: string[] = [];
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      seenUrls.push(String(url));
+      return new Response("# memory context", { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const { createCore } = await import(
+        `../../src/integrations/opencode-plugin/core.ts?opencode-source-scope-${Date.now()}`
+      );
+      const core = createCore({ directory: "/tmp/x" });
+      await core.memoryContext("ses_scope_default");
+
+      const inject = seenUrls.find((url) => url.includes("/api/context/inject"));
+      expect(inject).toBeDefined();
+      expect(new URL(inject!).searchParams.get("platformSource")).toBe("opencode");
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalDataDir === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
+      else process.env.CLAUDE_MEM_DATA_DIR = originalDataDir;
+      if (originalAllSources === undefined) delete process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
+      else process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES = originalAllSources;
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("injects context from every source when CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES is true", async () => {
+    // The Claude Code hook path honors this switch (#4251); the OpenCode
+    // plugin must honor it too. Without it, a user who moves between
+    // harnesses sees their earlier memories disappear and the setting
+    // silently does nothing for OpenCode.
+    const dataDir = mkdtempSync(join(tmpdir(), "claude-mem-opencode-all-sources-"));
+    const originalDataDir = process.env.CLAUDE_MEM_DATA_DIR;
+    const originalAllSources = process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
+    process.env.CLAUDE_MEM_DATA_DIR = dataDir;
+    // The file is the switch under test; clear the env var so a developer
+    // who set it locally does not decide this test's outcome.
+    delete process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
+    writeFileSync(
+      join(dataDir, "settings.json"),
+      JSON.stringify({ CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES: "true" }),
+    );
+
+    const originalFetch = globalThis.fetch;
+    const seenUrls: string[] = [];
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      seenUrls.push(String(url));
+      return new Response("# memory context", { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      // core.ts is imported with a cache-buster so it re-reads the settings
+      // file for the data dir set above.
+      const { createCore } = await import(
+        `../../src/integrations/opencode-plugin/core.ts?opencode-all-sources-${Date.now()}`
+      );
+      const core = createCore({ directory: "/tmp/x" });
+      await core.memoryContext("ses_all_sources");
+
+      const inject = seenUrls.find((url) => url.includes("/api/context/inject"));
+      expect(inject).toBeDefined();
+      // No source parameter at all: the worker then returns every source,
+      // which is how the Claude Code hook path asks for it too.
+      expect(new URL(inject!).searchParams.get("platformSource")).toBeNull();
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalDataDir === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
+      else process.env.CLAUDE_MEM_DATA_DIR = originalDataDir;
+      if (originalAllSources === undefined) delete process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
+      else process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES = originalAllSources;
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("picks up a source-scope change between sessions without a restart", async () => {
+    // The switch is read per request so that changing it does not require an
+    // OpenCode restart. Two different session IDs on the same core instance
+    // prove the read is not frozen at module load; the per-session context
+    // cache is a separate contract and is left alone.
+    const dataDir = mkdtempSync(join(tmpdir(), "claude-mem-opencode-live-switch-"));
+    const originalDataDir = process.env.CLAUDE_MEM_DATA_DIR;
+    const originalAllSources = process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
+    process.env.CLAUDE_MEM_DATA_DIR = dataDir;
+    delete process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
+    const settingsPath = join(dataDir, "settings.json");
+    writeFileSync(settingsPath, JSON.stringify({}));
+
+    const originalFetch = globalThis.fetch;
+    const seenUrls: string[] = [];
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      seenUrls.push(String(url));
+      return new Response("# memory context", { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const { createCore } = await import(
+        `../../src/integrations/opencode-plugin/core.ts?opencode-live-switch-${Date.now()}`
+      );
+      const core = createCore({ directory: "/tmp/x" });
+
+      await core.memoryContext("ses_live_before");
+      writeFileSync(
+        settingsPath,
+        JSON.stringify({ CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES: "true" }),
+      );
+      await core.memoryContext("ses_live_after");
+
+      const injects = seenUrls.filter((url) => url.includes("/api/context/inject"));
+      expect(injects).toHaveLength(2);
+      expect(new URL(injects[0]).searchParams.get("platformSource")).toBe("opencode");
+      expect(new URL(injects[1]).searchParams.get("platformSource")).toBeNull();
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalDataDir === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
+      else process.env.CLAUDE_MEM_DATA_DIR = originalDataDir;
+      if (originalAllSources === undefined) delete process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
+      else process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES = originalAllSources;
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reads the source scope without writing to the settings file", async () => {
+    // The plugin READS this switch on every context request. loadFromFile
+    // migrates a retired default in place, so the per-request read must be
+    // readOnly: rendering context must never rewrite the user's settings.
+    //
+    // The snapshot is taken AFTER the import because core.ts already reads
+    // the file (writably) when it resolves the worker URL, which is
+    // pre-existing behavior this test does not cover. What is guarded here is
+    // the per-request read: it must not change the file again.
+    const dataDir = mkdtempSync(join(tmpdir(), "claude-mem-opencode-readonly-"));
+    const originalDataDir = process.env.CLAUDE_MEM_DATA_DIR;
+    const originalAllSources = process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
+    process.env.CLAUDE_MEM_DATA_DIR = dataDir;
+    delete process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
+    const settingsPath = join(dataDir, "settings.json");
+    const original = JSON.stringify({
+      CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES: "true",
+      CLAUDE_MEM_OPENROUTER_MODEL: "xiaomi/mimo-v2-flash:free",
+    });
+    writeFileSync(settingsPath, original);
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response("# memory context", { status: 200 })) as typeof fetch;
+
+    try {
+      const { createCore } = await import(
+        `../../src/integrations/opencode-plugin/core.ts?opencode-readonly-${Date.now()}`
+      );
+      const core = createCore({ directory: "/tmp/x" });
+
+      // Re-seed the retired default AFTER the import: core.ts already reads
+      // the file (writably) when it resolves the worker URL, which is
+      // pre-existing behavior this test does not cover. What is guarded here
+      // is the per-request read, so the file is put back into a
+      // migration-triggering state right before the context request.
+      writeFileSync(settingsPath, original);
+      await core.memoryContext("ses_readonly");
+
+      // Rendering context must not have rewritten the file: a writable read
+      // would have migrated the retired default away.
+      expect(readFileSync(settingsPath, "utf8")).toBe(original);
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalDataDir === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
+      else process.env.CLAUDE_MEM_DATA_DIR = originalDataDir;
+      if (originalAllSources === undefined) delete process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
+      else process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES = originalAllSources;
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it("only registers hooks that are part of OpenCode's real contract", async () => {
-    const plugin = await ClaudeMemPlugin(pluginCtx);
+    const plugin = await ClaudeMemPlugin.server(pluginCtx);
     const hookKeys = Object.keys(plugin);
 
     for (const key of hookKeys) {
@@ -114,34 +357,11 @@ describe("OpenCode plugin event contract", () => {
       ).toBe(true);
     }
 
-    // The exported allowlist of hooks we bind to must itself be real.
-    for (const hook of REGISTERED_OPENCODE_HOOKS) {
-      expect(REAL_OPENCODE_HOOK_NAMES.has(hook)).toBe(true);
-    }
-
     // The capture-critical hooks must be present.
     expect(hookKeys).toContain("tool.execute.after");
     expect(hookKeys).toContain("chat.message");
     expect(hookKeys).toContain("experimental.session.compacting");
     expect(hookKeys).toContain("event");
-  });
-
-  it("does not register the phantom bus event names as hooks", async () => {
-    const plugin = await ClaudeMemPlugin(pluginCtx);
-    const hookKeys = Object.keys(plugin);
-    for (const phantom of PHANTOM_BUS_EVENT_NAMES) {
-      expect(hookKeys).not.toContain(phantom);
-    }
-  });
-
-  it("only reacts to real bus event types", () => {
-    // session.idle / session.deleted are real OpenCode bus events; the phantom
-    // names must never appear in the reacted-to allowlist.
-    expect(REAL_OPENCODE_EVENT_TYPES).toContain("session.idle");
-    expect(REAL_OPENCODE_EVENT_TYPES).toContain("session.deleted");
-    for (const phantom of PHANTOM_BUS_EVENT_NAMES) {
-      expect(REAL_OPENCODE_EVENT_TYPES as readonly string[]).not.toContain(phantom);
-    }
   });
 
   it("posts observations to the worker via tool.execute.after", async () => {
@@ -156,7 +376,7 @@ describe("OpenCode plugin event contract", () => {
     }) as typeof fetch;
 
     try {
-      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const plugin = await ClaudeMemPlugin.server(pluginCtx);
       const toolAfter = plugin["tool.execute.after"];
       await toolAfter(
         {
@@ -171,15 +391,58 @@ describe("OpenCode plugin event contract", () => {
 
       const initPost = posts.find((p) => p.url.includes("/api/sessions/init"));
       const obsPost = posts.find((p) => p.url.includes("/api/sessions/observations"));
-      expect(initPost, "tool.execute.after should lazily init the session").toBeTruthy();
+      expect(initPost, "tool.execute.after must not manufacture a user prompt").toBeUndefined();
       expect(obsPost, "tool.execute.after should POST an observation").toBeTruthy();
       const obsBody = obsPost!.body as Record<string, unknown>;
-      expect(obsBody.tool_name).toBe("read");
+      expect(obsBody.tool_name).toBe("Read");
       expect(obsBody.tool_input).toEqual({ path: "/a" });
       expect(obsBody.tool_response).toBe("file contents");
+      expect(obsBody.tool_use_id).toBe("c1");
+      expect(obsBody.telemetryToolEpochMs).toEqual(expect.any(Number));
       expect(obsBody.platformSource).toBe(normalizePlatformSource("opencode"));
+      expect(obsBody.platform_source).toBe("opencode");
     } finally {
       globalThis.fetch = originalFetch;
+    }
+  });
+
+  // #5666: OpenCode names its shell tool `bash`, and the worker only applies
+  // CLAUDE_MEM_SKIP_BASH_PATTERNS to `Bash`, so no command was ever skipped.
+  it("sends bash as Bash so CLAUDE_MEM_SKIP_BASH_PATTERNS applies", async () => {
+    const results: unknown[] = [];
+    const originalFetch = globalThis.fetch;
+    const prevPattern = process.env.CLAUDE_MEM_SKIP_BASH_PATTERNS;
+    process.env.CLAUDE_MEM_SKIP_BASH_PATTERNS = "scripts/write_memory\\.py";
+    setIngestContext({ sessionManager: {} as any, dbManager: {} as any, eventBroadcaster: {} as any });
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url).includes("/api/sessions/observations")) {
+        const body = JSON.parse(String(init!.body));
+        results.push(await ingestObservation({
+          contentSessionId: body.contentSessionId,
+          toolName: body.tool_name,
+          toolInput: body.tool_input,
+          toolResponse: body.tool_response,
+        }));
+      }
+      return new Response(JSON.stringify({ status: "queued" }), { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const plugin = await ClaudeMemPlugin.server(pluginCtx);
+      await plugin["tool.execute.after"](
+        {
+          tool: "bash",
+          sessionID: "ses_bash_skip",
+          callID: "c1",
+          args: { command: "python3 scripts/write_memory.py --x", description: "Write memory" },
+        },
+        { title: "bash", output: "ok", metadata: {} },
+      );
+      expect(results).toEqual([{ ok: true, status: "skipped", reason: "bash_pattern_excluded" }]);
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (prevPattern === undefined) delete process.env.CLAUDE_MEM_SKIP_BASH_PATTERNS;
+      else process.env.CLAUDE_MEM_SKIP_BASH_PATTERNS = prevPattern;
     }
   });
 
@@ -198,7 +461,7 @@ describe("OpenCode plugin event contract", () => {
     }) as typeof fetch;
 
     try {
-      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const plugin = await ClaudeMemPlugin.server(pluginCtx);
       const expectedPlatformSource = normalizePlatformSource("opencode");
 
       const postHookInvocations: Record<string, () => Promise<void>> = {
@@ -213,29 +476,32 @@ describe("OpenCode plugin event contract", () => {
             parts: [{ type: "text", text: "assistant output" }],
           },
         ),
+        "chat.message (user)": () => plugin["chat.message"](
+          {},
+          { message: { role: "user", sessionID: "ses_contract_user" }, parts: [{ type: "text", text: "hi" }] },
+        ),
         "experimental.session.compacting": () => plugin["experimental.session.compacting"]({ sessionID: "ses_contract_compact" }),
         event: () => plugin.event({ event: { type: "session.idle", properties: { sessionID: "ses_contract_idle" } } }),
+        // Reads context (a GET); it writes nothing.
+        "experimental.chat.system.transform": () => plugin["experimental.chat.system.transform"](
+          { sessionID: "ses_contract_system" },
+          { system: [] },
+        ),
       };
-      for (const hook of REGISTERED_OPENCODE_HOOKS) {
-        const invoke = postHookInvocations[hook];
-        expect(invoke, `registered hook "${hook}" must have a POST contract case`).toBeDefined();
-        await invoke!();
-      }
+      for (const invoke of Object.values(postHookInvocations)) await invoke();
 
       const posts = requests.filter((request) => request.method === "POST");
-      expect(posts).toHaveLength(8);
+      expect(posts).toHaveLength(5);
       expect(posts.map((request) => request.url)).toEqual([
-        expect.stringContaining("/api/sessions/init"),
         expect.stringContaining("/api/sessions/observations"),
-        expect.stringContaining("/api/sessions/init"),
         expect.stringContaining("/api/sessions/observations"),
         expect.stringContaining("/api/sessions/init"),
         expect.stringContaining("/api/sessions/summarize"),
-        expect.stringContaining("/api/sessions/init"),
         expect.stringContaining("/api/sessions/summarize"),
       ]);
       for (const post of posts) {
         expect(post.body?.platformSource).toBe(expectedPlatformSource);
+        expect(post.body?.platform_source).toBe("opencode");
       }
 
       const postCountBeforeSearchAndDeletion = posts.length;
@@ -250,7 +516,19 @@ describe("OpenCode plugin event contract", () => {
     }
   });
 
-  it("prefers input args when both hook payloads contain arguments", async () => {
+  it.each([
+    ["prefers input args", "write", "ses_precedence", "c2", { path: "/input" }, { path: "/output" }, "ok", { tool_input: { path: "/input" } }],
+    ["ignores output args", "read", "ses_output_fallback", "c3", undefined, { path: "/fallback" }, "ok", { tool_input: {} }],
+    ["defaults missing args", "list", "ses_empty_fallback", "c4", undefined, undefined, "ok", { tool_input: {}, tool_name: "list", tool_response: "ok", cwd: pluginCtx.directory }],
+    ["keeps empty input args", "read", "ses_empty_input", "c5", {}, { path: "/output" }, "ok", { tool_input: {} }],
+    ["reads hook input args (#3678)", "edit", "ses_args", "c2", { filePath: "/a/b.ts" }, undefined, "applied", { tool_input: { filePath: "/a/b.ts" } }],
+    ["normalizes read evidence", "read", "ses_read", "c6", { filePath: "/a", offset: 1, limit: 3 }, undefined, "old\n", { tool_name: "Read", tool_input: { filePath: "/a", offset: 1, limit: 3 } }],
+    ["normalizes write evidence", "write", "ses_write", "c7", { filePath: "/a", content: "new\n" }, undefined, "new\n", { tool_name: "Write", tool_input: { filePath: "/a", content: "new\n" } }],
+    ["normalizes edit evidence", "edit", "ses_edit", "c8", { filePath: "/a", oldString: "old", newString: "new" }, undefined, "new\n", { tool_name: "Edit", tool_input: { filePath: "/a", oldString: "old", newString: "new" } }],
+    ["normalizes patch evidence", "apply_patch", "ses_patch", "c9", { patchText: "*** Begin Patch\n*** Update File: src/owned.ts\n@@\n-old\n+new\n*** End Patch" }, undefined, "new\n", { tool_name: "apply_patch", tool_input: { patch: "*** Begin Patch\n*** Update File: src/owned.ts\n@@\n-old\n+new\n*** End Patch" } }],
+    ["preserves legacy Read evidence", "Read", "ses_legacy", "c10", { filePath: "/a", offset: 1, limit: 3 }, undefined, "old\n", { tool_name: "Read", tool_input: { filePath: "/a", offset: 1, limit: 3 } }],
+    ["leaves custom tool evidence unchanged", "read_custom", "ses_custom", "c11", { filePath: "/a", offset: 1, limit: 3 }, undefined, "old\n", { tool_name: "read_custom", tool_input: { filePath: "/a", offset: 1, limit: 3 } }],
+  ] as const)("%s", async (_label, tool, sessionID, callID, inputArgs, outputArgs, output, expected) => {
     const posts: Array<{ url: string; body: unknown }> = [];
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
@@ -259,85 +537,95 @@ describe("OpenCode plugin event contract", () => {
     }) as typeof fetch;
 
     try {
-      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const plugin = await ClaudeMemPlugin.server(pluginCtx);
+      const originalInput = JSON.stringify(inputArgs);
       await plugin["tool.execute.after"](
-        { tool: "write", sessionID: "ses_precedence", callID: "c2", args: { path: "/input" } },
-        { title: "Write", output: "ok", metadata: {}, args: { path: "/output" } },
+        { tool, sessionID, callID, ...(inputArgs === undefined ? {} : { args: inputArgs }) },
+        { title: tool, output, metadata: {}, ...(outputArgs === undefined ? {} : { args: outputArgs }) },
       );
-
       const obsPost = posts.find((p) => p.url.includes("/api/sessions/observations"));
-      expect((obsPost!.body as Record<string, unknown>).tool_input).toEqual({ path: "/input" });
+      expect(obsPost, "observation should POST").toBeTruthy();
+      const body = obsPost!.body as Record<string, unknown>;
+      const { tool_input, ...expectedFields } = expected;
+      expect(body.tool_input).toEqual(tool_input);
+      expect(body).toMatchObject(expectedFields);
+      expect(JSON.stringify(inputArgs)).toBe(originalInput);
     } finally {
       globalThis.fetch = originalFetch;
     }
   });
+});
 
-  it("retains output args as the fallback when input args are absent", async () => {
-    const posts: Array<{ url: string; body: unknown }> = [];
-    const originalFetch = globalThis.fetch;
+describe("OpenCode plugin attribution contract", () => {
+  const posts: Array<{ url: string; body: Record<string, unknown> }> = [];
+  const originalFetch = globalThis.fetch;
+
+  const captureFetch = () => {
+    posts.length = 0;
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
-      posts.push({ url: String(url), body: init?.body ? JSON.parse(String(init.body)) : null });
-      return new Response("{}", { status: 200 });
+      posts.push({
+        url: String(url),
+        body: init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {},
+      });
+      return new Response(JSON.stringify({ status: "queued" }), { status: 200 });
     }) as typeof fetch;
+  };
 
+  const restoreFetch = () => {
+    globalThis.fetch = originalFetch;
+  };
+
+  it("sends the checkout for the worker to key, never project.name", async () => {
+    // project.name is "opencode" for every project. The worker keys the
+    // session from the checkout with the same resolver it applies to the
+    // plugin's observations (tests/worker/http/routes/session-routes-init-checkout.test.ts).
+    captureFetch();
     try {
-      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const plugin = await ClaudeMemPlugin.server({
+        ...pluginCtx,
+        project: { name: "opencode", path: "/tmp/x" },
+        directory: "/tmp/my-repo/sub/dir",
+        worktree: "/tmp/my-repo",
+      });
       await plugin["tool.execute.after"](
-        { tool: "read", sessionID: "ses_output_fallback", callID: "c3" },
-        { title: "Read", output: "ok", metadata: {}, args: { path: "/fallback" } },
+        { tool: "read", sessionID: "ses_proj", callID: "c1", args: { path: "/a" } },
+        { title: "Read", output: "x", metadata: {} },
       );
-
+      await plugin["chat.message"](
+        {},
+        {
+          message: { role: "user", sessionID: "ses_proj" },
+          parts: [{ type: "text", text: "remember this project" }],
+        },
+      );
+      const initPost = posts.find((p) => p.url.includes("/api/sessions/init"));
       const obsPost = posts.find((p) => p.url.includes("/api/sessions/observations"));
-      expect((obsPost!.body as Record<string, unknown>).tool_input).toEqual({ path: "/fallback" });
+      expect(initPost, "a real user prompt should initialize the session").toBeTruthy();
+      expect(initPost!.body.project).toBeUndefined();
+      expect(initPost!.body.cwd).toBe("/tmp/my-repo/sub/dir");
+      expect(initPost!.body.cwd).toBe(obsPost!.body.cwd);
     } finally {
-      globalThis.fetch = originalFetch;
+      restoreFetch();
     }
   });
 
-  it("uses an empty object when neither hook payload contains args", async () => {
-    const posts: Array<{ url: string; body: unknown }> = [];
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
-      posts.push({ url: String(url), body: init?.body ? JSON.parse(String(init.body)) : null });
-      return new Response("{}", { status: 200 });
-    }) as typeof fetch;
-
+  it("records the real user prompt at session init instead of [media prompt]", async () => {
+    captureFetch();
     try {
-      const plugin = await ClaudeMemPlugin(pluginCtx);
-      await plugin["tool.execute.after"](
-        { tool: "list", sessionID: "ses_empty_fallback", callID: "c4" },
-        { title: "List", output: "ok", metadata: {} },
+      const plugin = await ClaudeMemPlugin.server(pluginCtx);
+      await plugin["chat.message"](
+        {},
+        {
+          message: { role: "user", sessionID: "ses_prompt" },
+          parts: [{ type: "text", text: "investigate the flaky test" }],
+        },
       );
-
-      const obsPost = posts.find((p) => p.url.includes("/api/sessions/observations"));
-      expect((obsPost!.body as Record<string, unknown>).tool_input).toEqual({});
-      expect((obsPost!.body as Record<string, unknown>).tool_name).toBe("list");
-      expect((obsPost!.body as Record<string, unknown>).tool_response).toBe("ok");
-      expect((obsPost!.body as Record<string, unknown>).cwd).toBe("/tmp/x");
+      const initPost = posts.find((p) => p.url.includes("/api/sessions/init"));
+      expect(initPost, "chat.message(user) should lazily init the session").toBeTruthy();
+      expect(initPost!.body.prompt).toBe("investigate the flaky test");
+      expect(initPost!.body.telemetryPromptEpochMs).toEqual(expect.any(Number));
     } finally {
-      globalThis.fetch = originalFetch;
-    }
-  });
-
-  it("keeps the selected empty input object when output args are also present", async () => {
-    const posts: Array<{ url: string; body: unknown }> = [];
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
-      posts.push({ url: String(url), body: init?.body ? JSON.parse(String(init.body)) : null });
-      return new Response("{}", { status: 200 });
-    }) as typeof fetch;
-
-    try {
-      const plugin = await ClaudeMemPlugin(pluginCtx);
-      await plugin["tool.execute.after"](
-        { tool: "read", sessionID: "ses_empty_input", callID: "c5", args: {} },
-        { title: "Read", output: "ok", metadata: {}, args: { path: "/output" } },
-      );
-
-      const obsPost = posts.find((p) => p.url.includes("/api/sessions/observations"));
-      expect((obsPost!.body as Record<string, unknown>).tool_input).toEqual({});
-    } finally {
-      globalThis.fetch = originalFetch;
+      restoreFetch();
     }
   });
 });
@@ -380,5 +668,391 @@ describe("OpenCode search client response-shape contract", () => {
     });
     const rendered = parseSearchResponse(emptyResponse, "zzz");
     expect(rendered).toContain("No observations found");
+  });
+});
+
+describe("OpenCode plugin prompt and worktree contract (#3803)", () => {
+  const posts: Array<{ url: string; body: Record<string, unknown> }> = [];
+  const originalFetch = globalThis.fetch;
+
+  const captureFetch = () => {
+    posts.length = 0;
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      posts.push({
+        url: String(url),
+        body: init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {},
+      });
+      return new Response(JSON.stringify({ status: "queued" }), { status: 200 });
+    }) as typeof fetch;
+  };
+
+  const restoreFetch = () => {
+    globalThis.fetch = originalFetch;
+  };
+
+  it("records the real user prompt even when a tool ran before it", async () => {
+    captureFetch();
+    try {
+      const plugin = await ClaudeMemPlugin.server(pluginCtx);
+      await plugin["tool.execute.after"](
+        { tool: "read", sessionID: "ses_toolfirst", callID: "c1" },
+        { title: "Read", output: "x", metadata: {}, args: {} },
+      );
+      await plugin["chat.message"](
+        {},
+        {
+          message: { role: "user", sessionID: "ses_toolfirst" },
+          parts: [{ type: "text", text: "the real prompt" }],
+        },
+      );
+      const initPosts = posts.filter((p) => p.url.includes("/api/sessions/init"));
+      expect(initPosts.length, "only the real user prompt may post init").toBe(1);
+      expect(initPosts[0]!.body.prompt).toBe("the real prompt");
+      expect(posts.some((p) => p.body.prompt === "")).toBe(false);
+    } finally {
+      restoreFetch();
+    }
+  });
+
+  it("does not initialize consecutive activity-only calls", async () => {
+    captureFetch();
+    try {
+      const plugin = await ClaudeMemPlugin.server(pluginCtx);
+      await plugin["tool.execute.after"](
+        { tool: "read", sessionID: "ses_lazy", callID: "c1" },
+        { title: "Read", output: "x", metadata: {}, args: {} },
+      );
+      await plugin["tool.execute.after"](
+        { tool: "read", sessionID: "ses_lazy", callID: "c2" },
+        { title: "Read", output: "y", metadata: {}, args: {} },
+      );
+      const initPosts = posts.filter((p) => p.url.includes("/api/sessions/init"));
+      const observationPosts = posts.filter((p) => p.url.includes("/api/sessions/observations"));
+      expect(initPosts.length, "activity-only paths must not post init").toBe(0);
+      expect(observationPosts.length, "activity-only paths must still post observations").toBe(2);
+    } finally {
+      restoreFetch();
+    }
+  });
+
+  it("does not initialize an empty user message", async () => {
+    captureFetch();
+    try {
+      const plugin = await ClaudeMemPlugin.server(pluginCtx);
+      await plugin["chat.message"](
+        {},
+        {
+          message: { role: "user", sessionID: "ses_empty_prompt" },
+          parts: [{ type: "image" }, { type: "text", text: "" }],
+        },
+      );
+      const initPosts = posts.filter((p) => p.url.includes("/api/sessions/init"));
+      expect(initPosts.length, "empty user messages must not post init").toBe(0);
+    } finally {
+      restoreFetch();
+    }
+  });
+
+  it("summarizes compaction and idle events without initializing a prompt", async () => {
+    captureFetch();
+    try {
+      const plugin = await ClaudeMemPlugin.server(pluginCtx);
+      await plugin["experimental.session.compacting"]({ sessionID: "ses_summarize_only" });
+      await plugin.event({
+        event: { type: "session.idle", properties: { sessionID: "ses_summarize_only" } },
+      });
+      const initPosts = posts.filter((p) => p.url.includes("/api/sessions/init"));
+      const summarizePosts = posts.filter((p) => p.url.includes("/api/sessions/summarize"));
+      expect(initPosts.length, "summarize-only paths must not post init").toBe(0);
+      expect(summarizePosts.length, "both events must post summarize").toBe(2);
+    } finally {
+      restoreFetch();
+    }
+  });
+
+  it("initializes each separate user prompt", async () => {
+    captureFetch();
+    try {
+      const plugin = await ClaudeMemPlugin.server(pluginCtx);
+      await plugin["chat.message"](
+        {},
+        {
+          message: { role: "user", sessionID: "ses_two_prompts" },
+          parts: [{ type: "text", text: "first prompt" }],
+        },
+      );
+      await plugin["chat.message"](
+        {},
+        {
+          message: { role: "user", sessionID: "ses_two_prompts" },
+          parts: [{ type: "text", text: "second prompt" }],
+        },
+      );
+      const initPosts = posts.filter((p) => p.url.includes("/api/sessions/init"));
+      expect(initPosts.length).toBe(2);
+      expect(initPosts.map((p) => p.body.prompt)).toEqual(["first prompt", "second prompt"]);
+    } finally {
+      restoreFetch();
+    }
+  });
+
+});
+
+describe("isConnectionRefusedError (worker-down warning suppression)", () => {
+  // The plugin stays quiet when the worker is simply not running. OpenCode
+  // hosts plugins under Bun, whose fetch rejects a refused connection with
+  // code 'ConnectionRefused' and no 'ECONNREFUSED' anywhere in the message;
+  // Node's undici puts ECONNREFUSED only on error.cause. A regression to
+  // message-only matching would spam a warning on every event while the
+  // worker is down.
+  it("recognizes Bun's ConnectionRefused shape", () => {
+    const bunRefusal = Object.assign(
+      new Error("Unable to connect. Is the computer able to access the url?"),
+      { code: "ConnectionRefused" }
+    );
+    expect(isConnectionRefusedError(bunRefusal)).toBe(true);
+  });
+
+  it("recognizes undici's fetch failed with cause ECONNREFUSED", () => {
+    const undiciRefusal = new TypeError("fetch failed");
+    (undiciRefusal as { cause?: unknown }).cause = Object.assign(
+      new Error("connect ECONNREFUSED 127.0.0.1:37777"),
+      { code: "ECONNREFUSED" }
+    );
+    expect(isConnectionRefusedError(undiciRefusal)).toBe(true);
+  });
+
+  it("recognizes a legacy message-embedded ECONNREFUSED", () => {
+    expect(isConnectionRefusedError(new Error("connect ECONNREFUSED 127.0.0.1:37777"))).toBe(true);
+  });
+
+  it("recognizes a refusal nested in an AggregateError (happy-eyeballs dual-stack connect)", () => {
+    const aggregate = new AggregateError(
+      [
+        Object.assign(new Error("connect ECONNRESET ::1:37777"), { code: "ECONNRESET" }),
+        Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:37777"), { code: "ECONNREFUSED" }),
+      ],
+      "all attempts failed",
+    );
+    const wrapped = new TypeError("fetch failed");
+    (wrapped as { cause?: unknown }).cause = aggregate;
+    expect(isConnectionRefusedError(wrapped)).toBe(true);
+  });
+
+  it("does not swallow unrelated failures", () => {
+    expect(isConnectionRefusedError(new Error("TLS handshake exploded"))).toBe(false);
+    expect(isConnectionRefusedError(new Error("Unable to connect. Is the computer able to access the url?"))).toBe(false);
+    expect(isConnectionRefusedError("string error")).toBe(false);
+  });
+
+  it("stays quiet on a Bun-shaped refusal but still warns on a real failure", async () => {
+    const originalFetch = globalThis.fetch;
+    const originalWarn = console.warn;
+    const warnings: string[] = [];
+    console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(" ")); };
+    try {
+      const plugin = await ClaudeMemPlugin.server(pluginCtx);
+      const runTool = () => plugin["tool.execute.after"](
+        { tool: "read", sessionID: "ses_refused", callID: "c1" },
+        { title: "Read", output: "file contents", metadata: {}, args: { path: "/a" } },
+      );
+
+      globalThis.fetch = (async () => {
+        throw Object.assign(
+          new Error("Unable to connect. Is the computer able to access the url?"),
+          { code: "ConnectionRefused" },
+        );
+      }) as typeof fetch;
+      await runTool();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(warnings).toEqual([]);
+
+      globalThis.fetch = (async () => {
+        throw new Error("TLS handshake exploded");
+      }) as typeof fetch;
+      await runTool();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(warnings.some((line) => line.includes("TLS handshake exploded"))).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+      console.warn = originalWarn;
+    }
+  });
+});
+
+describe("OpenCode plugin lifecycle (#3208)", () => {
+  type Request = { method: string; url: URL; body: Record<string, unknown> | null; signal: unknown };
+
+  function captureRequests(
+    requests: Request[],
+    reply: (url: URL) => Response = () => new Response("{}", { status: 200 }),
+  ): void {
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input));
+      requests.push({
+        method: init?.method || "GET",
+        url,
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+        signal: init?.signal,
+      });
+      return reply(url);
+    }) as typeof fetch;
+  }
+
+  it("injects memory context into the system prompt once per session, keyed by the checkout", async () => {
+    const originalFetch = globalThis.fetch;
+    const requests: Request[] = [];
+    captureRequests(requests, (url) =>
+      url.pathname === "/api/context/inject" ? new Response("# memory context", { status: 200 }) : new Response("{}"));
+    try {
+      const plugin = await ClaudeMemPlugin.server(pluginCtx);
+      const transform = plugin["experimental.chat.system.transform"];
+
+      const firstTurn = { system: ["base prompt"] };
+      await transform({ sessionID: "ses_ctx_a" }, firstTurn);
+      const secondTurn = { system: ["base prompt"] };
+      await transform({ sessionID: "ses_ctx_a" }, secondTurn);
+      await transform({ sessionID: "ses_ctx_b" }, { system: [] });
+
+      expect(firstTurn.system).toEqual(["base prompt", "# memory context"]);
+      expect(secondTurn.system).toEqual(["base prompt", "# memory context"]);
+      const injects = requests.filter((request) => request.url.pathname === "/api/context/inject");
+      expect(injects).toHaveLength(2);
+      expect(injects[0].url.searchParams.get("cwd")).toBe(pluginCtx.directory);
+      expect(injects[0].url.searchParams.get("projects")).toBeNull();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("remembers a failed context fetch for a minute, then tries again (R5-7)", async () => {
+    // A hung or failing worker must cost one bounded request a minute, not the
+    // full request timeout on every system prompt OpenCode builds.
+    const originalFetch = globalThis.fetch;
+    const originalWarn = console.warn;
+    const originalNow = Date.now;
+    console.warn = () => {};
+    const requests: Request[] = [];
+    let workerUp = false;
+    let now = 1_000_000;
+    Date.now = () => now;
+    captureRequests(requests, () => (workerUp ? new Response("# late context") : new Response("down", { status: 503 })));
+    const injects = () => requests.filter((request) => request.url.pathname === "/api/context/inject").length;
+    try {
+      const plugin = await ClaudeMemPlugin.server(pluginCtx);
+      const transform = plugin["experimental.chat.system.transform"];
+
+      const failed = { system: [] as string[] };
+      await transform({ sessionID: "ses_ctx_retry" }, failed);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      workerUp = true;
+
+      now += 59_000;
+      const withinTheMinute = { system: [] as string[] };
+      await transform({ sessionID: "ses_ctx_retry" }, withinTheMinute);
+      expect(injects()).toBe(1);
+
+      now += 2_000;
+      const afterTheMinute = { system: [] as string[] };
+      await transform({ sessionID: "ses_ctx_retry" }, afterTheMinute);
+
+      expect(failed.system).toEqual([]);
+      expect(withinTheMinute.system).toEqual([]);
+      expect(afterTheMinute.system).toEqual(["# late context"]);
+      expect(injects()).toBe(2);
+    } finally {
+      globalThis.fetch = originalFetch;
+      console.warn = originalWarn;
+      Date.now = originalNow;
+    }
+  });
+
+  it("keeps the cached memory across an idle summary and drops it on compaction", async () => {
+    // Only compaction rewrites the conversation, so only compaction needs a
+    // fresh memory fetch. An idle summary that dropped the cache would add a
+    // context request to every turn and bypass the failed-fetch cooldown.
+    const originalFetch = globalThis.fetch;
+    const requests: Request[] = [];
+    captureRequests(requests, (url) =>
+      url.pathname === "/api/context/inject" ? new Response("# memory context", { status: 200 }) : new Response("{}"));
+    const injects = () => requests.filter((request) => request.url.pathname === "/api/context/inject").length;
+    try {
+      const plugin = await ClaudeMemPlugin.server(pluginCtx);
+      const transform = plugin["experimental.chat.system.transform"];
+
+      await transform({ sessionID: "ses_ctx_idle" }, { system: [] });
+      await plugin.event({ event: { type: "session.idle", properties: { sessionID: "ses_ctx_idle" } } });
+      const afterIdle = { system: [] as string[] };
+      await transform({ sessionID: "ses_ctx_idle" }, afterIdle);
+      expect(afterIdle.system).toEqual(["# memory context"]);
+      expect(injects()).toBe(1);
+
+      await plugin["experimental.session.compacting"]({ sessionID: "ses_ctx_idle" });
+      await transform({ sessionID: "ses_ctx_idle" }, { system: [] });
+      expect(injects()).toBe(2);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("sends the latest completed assistant reply when the session idles or compacts", async () => {
+    const originalFetch = globalThis.fetch;
+    const requests: Request[] = [];
+    captureRequests(requests);
+    const listed: unknown[] = [];
+    const client = {
+      session: {
+        async messages(options: { path: { id: string } }) {
+          listed.push(options);
+          return {
+            data: [
+              { info: { role: "user", time: { completed: 1 } }, parts: [{ type: "text", text: "fix the bug" }] },
+              { info: { role: "assistant", time: { completed: 2 } }, parts: [{ type: "text", text: "first reply" }] },
+              { info: { role: "assistant", time: { completed: 3 } }, parts: [{ type: "text", text: "final reply" }] },
+              { info: { role: "assistant", summary: true, time: { completed: 4 } }, parts: [{ type: "text", text: "a compaction summary" }] },
+              { info: { role: "assistant", time: {} }, parts: [{ type: "text", text: "still streaming" }] },
+            ],
+          };
+        },
+      },
+    };
+    try {
+      const plugin = await ClaudeMemPlugin.server({ ...pluginCtx, client });
+      await plugin.event({ event: { type: "session.idle", properties: { sessionID: "ses_reply" } } });
+      await plugin["experimental.session.compacting"]({ sessionID: "ses_reply" });
+
+      const summaries = requests.filter((request) => request.url.pathname === "/api/sessions/summarize");
+      expect(summaries.map((request) => request.body?.last_assistant_message)).toEqual(["final reply", "final reply"]);
+      // The checkout rides along so the worker can skip an excluded one (R5-1).
+      expect(summaries.map((request) => request.body?.cwd)).toEqual([pluginCtx.directory, pluginCtx.directory]);
+      expect(listed).toEqual([
+        { path: { id: "ses_reply" }, query: { directory: pluginCtx.directory } },
+        { path: { id: "ses_reply" }, query: { directory: pluginCtx.directory } },
+      ]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("bounds every worker request with a timeout signal", async () => {
+    const originalFetch = globalThis.fetch;
+    const requests: Request[] = [];
+    captureRequests(requests);
+    try {
+      const plugin = await ClaudeMemPlugin.server(pluginCtx);
+      await plugin["tool.execute.after"](
+        { tool: "read", sessionID: "ses_bounded", callID: "c1", args: {} },
+        { title: "Read", output: "x", metadata: {} },
+      );
+      await plugin["experimental.chat.system.transform"]({ sessionID: "ses_bounded" }, { system: [] });
+      await plugin.tool.claude_mem_search.execute({ query: "auth" });
+
+      expect(requests.length).toBeGreaterThanOrEqual(3);
+      for (const request of requests) {
+        expect(request.signal).toBeInstanceOf(AbortSignal);
+      }
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });

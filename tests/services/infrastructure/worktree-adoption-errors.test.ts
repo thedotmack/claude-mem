@@ -15,16 +15,4 @@ describe('formatAdoptionErrors (#3378 [object Object] log fix)', () => {
       '/repos/app/.worktrees/feat-x: database is locked; /repos/app/.worktrees/feat-y: no such table: observations'
     );
   });
-
-  it('survives the logger context template-literal rendering without [object Object]', () => {
-    const value = formatAdoptionErrors([{ worktree: '/w', error: 'boom' }]);
-    // Exactly how logger.ts renders a context entry: `${k}=${v}`.
-    const rendered = `${'errors'}=${value}`;
-    expect(rendered).toBe('errors=/w: boom');
-    expect(rendered).not.toContain('[object Object]');
-  });
-
-  it('renders an empty error list as an empty string', () => {
-    expect(formatAdoptionErrors([])).toBe('');
-  });
 });

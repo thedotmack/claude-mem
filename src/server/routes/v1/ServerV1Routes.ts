@@ -5,7 +5,7 @@ import type { Database } from 'bun:sqlite';
 import { z, type ZodTypeAny } from 'zod';
 import type { RouteHandler } from '../../../services/server/Server.js';
 import { CreateAgentEventSchema } from '../../../core/schemas/agent-event.js';
-import { CreateMemoryItemSchema } from '../../../core/schemas/memory-item.js';
+import { CreateMemoryItemSchema, UpdateMemoryItemSchema, type MemoryItem } from '../../../core/schemas/memory-item.js';
 import { CreateProjectSchema } from '../../../core/schemas/project.js';
 import { CreateServerSessionSchema } from '../../../core/schemas/session.js';
 import {
@@ -16,16 +16,21 @@ import {
   ServerSessionsRepository,
 } from '../../../storage/sqlite/index.js';
 import { requireServerAuth } from '../../middleware/auth.js';
+import { isMemorySearchQueryWithinLimit, MAX_MEMORY_SEARCH_TERMS, sanitizeMemoryItemContent } from '../../../storage/sqlite/memory-items.js';
 
 declare const __DEFAULT_PACKAGE_VERSION__: string;
 const BUILT_IN_VERSION = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined'
   ? __DEFAULT_PACKAGE_VERSION__
   : 'development';
 
+function hasText(value: string | null | undefined): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
 /**
  * Write-path contract guard (#2684): a memory_items row is only useful if at
  * least one of its searchable columns is non-empty, because the FTS trigger
- * indexes exactly those columns. Returns true if the create body would produce
+ * indexes exactly those columns. Returns true if the supplied values produce
  * a searchable row.
  */
 function hasSearchableContent(body: {
@@ -36,8 +41,6 @@ function hasSearchableContent(body: {
   facts?: string[];
   concepts?: string[];
 }): boolean {
-  const hasText = (value: string | null | undefined): boolean =>
-    typeof value === 'string' && value.trim().length > 0;
   return (
     hasText(body.title) ||
     hasText(body.subtitle) ||
@@ -46,6 +49,17 @@ function hasSearchableContent(body: {
     (Array.isArray(body.facts) && body.facts.some(hasText)) ||
     (Array.isArray(body.concepts) && body.concepts.some(hasText))
   );
+}
+
+function renderMemoryContext(memory: MemoryItem): string {
+  return [
+    memory.narrative,
+    memory.text,
+    memory.title,
+    memory.subtitle,
+    memory.facts.filter(hasText).join('\n'),
+    memory.concepts.filter(hasText).join(', '),
+  ].find(hasText) ?? '';
 }
 
 export interface ServerV1RoutesOptions {
@@ -187,7 +201,7 @@ export class ServerV1Routes implements RouteHandler {
       // A row with NONE of the searchable text columns populated is invisible to
       // search — it looks "frozen". Reject it LOUDLY here instead of silently
       // persisting an unsearchable record.
-      if (!hasSearchableContent(body)) {
+      if (!hasSearchableContent(sanitizeMemoryItemContent(body))) {
         res.status(400).json({
           error: 'ValidationError',
           message: 'memory_items requires at least one searchable text field (narrative, text, title, subtitle, facts, or concepts) so the FTS index is populated; refusing to persist an empty record',
@@ -211,7 +225,7 @@ export class ServerV1Routes implements RouteHandler {
       res.json({ memory });
     });
 
-    app.patch('/v1/memories/:id', writeAuth, this.handleCreate(CreateMemoryItemSchema.partial(), (req, res, body) => {
+    app.patch('/v1/memories/:id', writeAuth, this.handleCreate(UpdateMemoryItemSchema, (req, res, body) => {
       const id = this.routeParam(req.params.id);
       const repo = new MemoryItemsRepository(this.options.getDatabase());
       const existing = repo.getById(id);
@@ -224,6 +238,16 @@ export class ServerV1Routes implements RouteHandler {
         res.status(400).json({ error: 'ValidationError', message: 'projectId cannot be changed' });
         return;
       }
+      // PATCH omission preserves stored values, while explicit null/[] clears
+      // them. Reject losing searchable content, while allowing unrelated edits
+      // to existing empty records that predate the public creation check.
+      if (hasSearchableContent(existing) && !hasSearchableContent(sanitizeMemoryItemContent({ ...existing, ...body }))) {
+        res.status(400).json({
+          error: 'ValidationError',
+          message: 'memory_items requires at least one searchable text field; refusing to clear the last searchable field',
+        });
+        return;
+      }
       const memory = repo.update(id, body);
       this.audit(req, 'memory.update', id, existing.projectId);
       res.json({ memory });
@@ -231,7 +255,7 @@ export class ServerV1Routes implements RouteHandler {
 
     app.post('/v1/search', readAuth, this.handleCreate(z.object({
       projectId: z.string().min(1),
-      query: z.string().min(1),
+      query: z.string().min(1).refine(isMemorySearchQueryWithinLimit, `Search supports at most ${MAX_MEMORY_SEARCH_TERMS} distinct terms`),
       limit: z.number().int().positive().max(100).optional(),
     }), (req, res, body) => {
       if (!this.ensureProjectAllowed(req, res, body.projectId)) return;
@@ -240,15 +264,43 @@ export class ServerV1Routes implements RouteHandler {
       res.json({ memories });
     }));
 
+    app.post('/v1/timeline', readAuth, this.handleCreate(z.object({
+      projectId: z.string().trim().min(1),
+      anchorId: z.string().trim().min(1).max(256),
+      depthBefore: z.number().int().min(0).max(20).optional(),
+      depthAfter: z.number().int().min(0).max(20).optional(),
+    }).strict(), (req, res, body) => {
+      if (!this.ensureProjectAllowed(req, res, body.projectId)) return;
+      const memories = new MemoryItemsRepository(this.options.getDatabase())
+        .timelineAround(body.projectId, body.anchorId, body.depthBefore, body.depthAfter);
+      this.audit(req, 'memory.timeline', body.anchorId, body.projectId);
+      res.json({ observations: memories });
+    }));
+
+    app.post('/v1/observations/batch', readAuth, this.handleCreate(z.object({
+      projectId: z.string().trim().min(1),
+      ids: z.array(z.string().trim().min(1).max(256)).min(1).max(100),
+    }).strict(), (req, res, body) => {
+      if (!this.ensureProjectAllowed(req, res, body.projectId)) return;
+      const memories = new MemoryItemsRepository(this.options.getDatabase()).getManyForProject(body.projectId, body.ids);
+      this.audit(req, 'memory.selected', null, body.projectId);
+      res.json({ observations: memories });
+    }));
+
     app.post('/v1/context', readAuth, this.handleCreate(z.object({
       projectId: z.string().min(1),
-      query: z.string().min(1),
+      // Optional: a context request with no query asks for the most RECENT
+      // items, which is what a session-start block actually wants.
+      query: z.string().min(1).refine(isMemorySearchQueryWithinLimit, `Search supports at most ${MAX_MEMORY_SEARCH_TERMS} distinct terms`).optional(),
       limit: z.number().int().positive().max(50).optional(),
     }), (req, res, body) => {
       if (!this.ensureProjectAllowed(req, res, body.projectId)) return;
-      const memories = new MemoryItemsRepository(this.options.getDatabase()).search(body.projectId, body.query, body.limit ?? 10);
+      const repo = new MemoryItemsRepository(this.options.getDatabase());
+      const memories = body.query
+        ? repo.search(body.projectId, body.query, body.limit ?? 10)
+        : repo.listByProject(body.projectId, body.limit ?? 10);
       this.audit(req, 'memory.context', null, body.projectId);
-      res.json({ memories, context: memories.map(memory => memory.narrative ?? memory.text ?? memory.title).filter(Boolean).join('\n\n') });
+      res.json({ memories, context: memories.map(renderMemoryContext).filter(Boolean).join('\n\n') });
     }));
 
     app.get('/v1/audit', readAuth, (req, res) => {

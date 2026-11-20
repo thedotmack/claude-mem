@@ -4,7 +4,8 @@ import { exec } from "child_process";
 import { promisify } from "util";
 import * as os from "os";
 import { SettingsDefaultsManager } from "../../src/shared/SettingsDefaultsManager.js";
-import { USER_SETTINGS_PATH } from "../../src/shared/paths.js";
+import { DATA_DIR, USER_SETTINGS_PATH } from "../../src/shared/paths.js";
+import { formatHostForUrl } from "../../src/shared/worker-url.js";
 
 const execAsync = promisify(exec);
 
@@ -110,7 +111,7 @@ async function getOsVersion(): Promise<string> {
 
 async function checkWorkerHealth(host: string, port: number): Promise<any> {
   try {
-    const response = await fetch(`http://${host}:${port}/api/health`, {
+    const response = await fetch(`http://${formatHostForUrl(host)}:${port}/api/health`, {
       signal: AbortSignal.timeout(2000),
     });
     return await response.json();
@@ -121,7 +122,7 @@ async function checkWorkerHealth(host: string, port: number): Promise<any> {
 
 async function getWorkerStats(host: string, port: number): Promise<any> {
   try {
-    const response = await fetch(`http://${host}:${port}/api/stats`, {
+    const response = await fetch(`http://${formatHostForUrl(host)}:${port}/api/stats`, {
       signal: AbortSignal.timeout(2000),
     });
     return await response.json();
@@ -207,7 +208,9 @@ export async function collectDiagnostics(
   options: { includeLogs?: boolean } = {}
 ): Promise<SystemDiagnostics> {
   const homeDir = os.homedir();
-  const dataDir = path.join(homeDir, ".claude-mem");
+  // The worker's own data directory (CLAUDE_MEM_DATA_DIR from the environment
+  // or settings), the same directory USER_SETTINGS_PATH points into.
+  const dataDir = DATA_DIR;
   const pluginPath = path.join(
     homeDir,
     ".claude",
@@ -275,7 +278,7 @@ export async function collectDiagnostics(
 
   if (options.includeLogs !== false) {
     const today = new Date().toISOString().split("T")[0];
-    const workerLogPath = path.join(dataDir, "logs", `worker-${today}.log`);
+    const workerLogPath = path.join(dataDir, "logs", `claude-mem-${today}.log`);
     const silentLogPath = path.join(dataDir, "silent.log");
 
     [workerLog, silentLog] = await Promise.all([

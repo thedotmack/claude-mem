@@ -11,7 +11,7 @@
 // runOneTimeCwdRemap against a real pending_messages fixture — both open the
 // DB file themselves, exactly as in production.
 
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
@@ -42,6 +42,13 @@ function gitOutput(cwd: string, ...args: string[]): string {
   });
   if (r.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${r.stderr}`);
   return r.stdout.trim();
+}
+
+// Adopted summaries are Chroma targets, so with Chroma enabled adoption starts a
+// real chroma-mcp subprocess (uvx) that can outlast the test timeout under load.
+// Vector search is not under test here; the SQL remap and outbox op are.
+function disableChromaFor(dataDir: string): void {
+  writeFileSync(join(dataDir, 'settings.json'), JSON.stringify({ CLAUDE_MEM_CHROMA_ENABLED: 'false' }));
 }
 
 interface OutboxRow {
@@ -174,6 +181,23 @@ describe('mutation sites', () => {
           content_session_id: 'sess-1',
           platform_source: 'claude',
         });
+      }
+    });
+
+    it('prepares the repair statements once per store, not once per prompt (#3537)', () => {
+      store.updateMemorySessionId(1, 'mem-a');
+      const prepare = spyOn(db, 'prepare');
+      try {
+        // Re-registration re-runs the whole repair: per prompt a rev bump, a
+        // supersede DELETE and an INSERT.
+        store.updateMemorySessionId(1, 'mem-b');
+        const repairPrepares = prepare.mock.calls
+          .map(([sql]) => String(sql))
+          .filter(sql => /sync_outbox|FROM user_prompts|SET sync_rev = \?/.test(sql));
+        expect(repairPrepares).toEqual([]);
+        expect(outboxRows(db).map(op => op.body.fields.memory_session_id)).toEqual(['mem-b', 'mem-b']);
+      } finally {
+        prepare.mockRestore();
       }
     });
 
@@ -350,6 +374,7 @@ describe('mutation sites', () => {
 
     const dataDir = join(tempDir, 'data');
     mkdirSync(dataDir);
+    disableChromaFor(dataDir);
     const dbPath = join(dataDir, 'claude-mem.db');
     const store = new SessionStore(dbPath);
     store.db.prepare(`
@@ -385,7 +410,7 @@ describe('mutation sites', () => {
     } finally {
       db.close();
     }
-  });
+  }, 30000);
 
     it('adopts branched and detached worktrees proven by a remote commit while preserving negative space', async () => {
     const bareOrigin = join(tempDir, 'origin.git');
@@ -427,6 +452,7 @@ describe('mutation sites', () => {
     try {
       const dataDir = join(tempDir, 'data');
       mkdirSync(dataDir);
+      disableChromaFor(dataDir);
       const dbPath = join(dataDir, 'claude-mem.db');
       const store = new SessionStore(dbPath);
       for (const [memorySessionId, project] of [
@@ -482,7 +508,7 @@ describe('mutation sites', () => {
     }
   }, 30000);
 
-  it('keeps failed merge-base probes unproven', () => {
+  it('keeps failed merge-base probes unproven', async () => {
     const repo = join(tempDir, 'provenance-repo');
     const unrelated = join(tempDir, 'unrelated-repo');
     mkdirSync(repo);
@@ -498,8 +524,8 @@ describe('mutation sites', () => {
 
     const head = gitOutput(repo, 'rev-parse', 'HEAD');
     const unrelatedHead = gitOutput(unrelated, 'rev-parse', 'HEAD');
-    expect(hasProvenAncestry(repo, head, new Set([unrelatedHead]))).toBe(false);
-    expect(hasProvenAncestry(repo, 'not-a-commit', new Set([head]))).toBe(false);
+    expect(await hasProvenAncestry(repo, head, new Set([unrelatedHead]))).toBe(false);
+    expect(await hasProvenAncestry(repo, 'not-a-commit', new Set([head]))).toBe(false);
   });
 
   // ---------------------------------------------------------------------------

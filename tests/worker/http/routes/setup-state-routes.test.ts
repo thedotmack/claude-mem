@@ -1,0 +1,485 @@
+import { afterAll, afterEach, describe, expect, it, spyOn } from 'bun:test';
+import express from 'express';
+import type { Server } from 'node:http';
+import * as fs from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { logger } from '../../../../src/utils/logger.js';
+import { defaultAutoRefresh, WorkViewRoutes } from '../../../../src/services/worker/http/routes/WorkViewRoutes.js';
+import { SETUP_DSH_PROFILE_MAX_CHARACTERS, SETUP_INSTALL_NOTE_MAX_CHARACTERS, type SetupInstallCatalog } from '../../../../src/shared/setup-install.js';
+
+const FIXTURE_HOME = join(import.meta.dir, '..', '..', '..', 'fixtures', 'prompt-import', 'home');
+// Project-local scratch (gitignored), never the system temp folder.
+const scratchRoot = join(import.meta.dir, '..', '..', '..', '..', '.scratch', 'test-runs');
+mkdirSync(scratchRoot, { recursive: true });
+const dir = mkdtempSync(join(scratchRoot, 'setup-state-routes-'));
+const statePath = join(dir, 'setup-state.json');
+const sessionPath = join(dir, 'setup-session.json');
+const settingsPath = join(dir, 'settings.json');
+
+let server: Server;
+let routes: WorkViewRoutes;
+let origin: string;
+
+async function start(autoRefresh: unknown = null, resumeSetup: () => Promise<void> = async () => {}) {
+  routes = new WorkViewRoutes({
+    databasePath: join(FIXTURE_HOME, 'no-work-state.db'), reviewPath: ':memory:', pollIntervalMs: 20,
+    humanCopy: null, ledgerDir: null, setupScan: null, setupStatePath: statePath, settingsPath, autoRefresh: autoRefresh as never, resumeSetup,
+  });
+  const app = express();
+  app.use(express.json());
+  routes.setupRoutes(app);
+  await new Promise<void>(resolve => { server = app.listen(0, '127.0.0.1', resolve); });
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('No test port');
+  origin = `http://127.0.0.1:${address.port}`;
+}
+
+afterEach(async () => {
+  routes.close();
+  await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  rmSync(statePath, { force: true });
+  rmSync(sessionPath, { force: true });
+  rmSync(settingsPath, { force: true });
+});
+afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+const state = async () => (await fetch(`${origin}/api/setup/state`)).json();
+const catalog: SetupInstallCatalog = {
+  agents: [{ id: 'codex-cli', label: 'Codex CLI', hint: 'native hooks', detected: true }],
+  skills: [{ id: 'mem-search', label: 'Memory search', description: 'Recall earlier work', required: true }, { id: 'make-plan', label: 'Make plan', description: 'Plan work' }],
+  defaults: { agents: ['codex-cli'], skills: ['mem-search', 'make-plan'], installClaudeCode: false, disableAutoMemory: false, telemetryEnabled: false },
+  reinstall: false,
+};
+function post(path: string, body: unknown, headers: Record<string, string> = { 'Content-Type': 'application/json', Origin: origin }) {
+  return fetch(`${origin}${path}`, { method: 'POST', headers, body: JSON.stringify(body) });
+}
+
+describe('setup state endpoints', () => {
+  it('does not start local paid refresh while deferred onboarding has no live installer', async () => {
+    await start();
+    await post('/api/setup/install/installer', { status: 'waiting', catalog });
+    const refresh = defaultAutoRefresh(dir, settingsPath, statePath, () => false, () => '', () => ({ placed: 0, focusAreaIds: [] }));
+    try {
+      expect((refresh as unknown as { enabled: () => boolean }).enabled()).toBe(false);
+      expect(await refresh.runNow({ reason: 'manual' })).toBe('setup-running');
+      expect((routes as unknown as { setupIsActive: () => boolean }).setupIsActive()).toBe(true);
+      await post('/api/setup/install', catalog.defaults);
+      await post('/api/setup/install/installer', { status: 'ready' });
+      await post('/api/setup/choice', { branch: 'home', memoryBilling: 'existing' });
+      await post('/api/setup/installer', { stage: 'home-ready' });
+      await post('/api/setup/complete', {});
+      expect((refresh as unknown as { enabled: () => boolean }).enabled()).toBe(true);
+    } finally { refresh.close(); }
+  });
+
+  it('accepts only offered agents and skills, then reports installation before storage or completion', async () => {
+    await start();
+    expect((await post('/api/setup/install', catalog.defaults)).status).toBe(409);
+    expect((await post('/api/setup/install/installer', { status: 'waiting', catalog })).status).toBe(200);
+    expect((await post('/api/setup/choice', { branch: 'home', memoryBilling: 'existing' })).status).toBe(409);
+    expect((await post('/api/setup/complete', {})).status).toBe(409);
+    expect((await post('/api/setup/install', { ...catalog.defaults, agents: ['unknown'] })).status).toBe(400);
+    expect((await post('/api/setup/install', { ...catalog.defaults, agents: ['codex-cli', 'codex-cli'] })).status).toBe(400);
+    expect((await post('/api/setup/install', { ...catalog.defaults, skills: [] })).status).toBe(400);
+    expect((await post('/api/setup/install', { ...catalog.defaults, skills: ['mem-search'], email: 'test@example.com', note: 'Optional signup' })).status).toBe(200);
+    expect((await state()).install).toMatchObject({ status: 'installing', selection: { skills: ['mem-search'] } });
+    expect((await post('/api/setup/install', catalog.defaults)).status).toBe(409);
+    expect((await post('/api/setup/install/installer', { status: 'ready' })).status).toBe(200);
+    expect((await state()).install.selection.email).toBeUndefined();
+    expect((await state()).install.selection.note).toBeUndefined();
+    expect((await post('/api/setup/choice', { branch: 'home', memoryBilling: 'existing' })).status).toBe(200);
+    expect((await post('/api/setup/complete', { tools: ['codex-cli'] })).status).toBe(409);
+    await post('/api/setup/installer', { stage: 'failed', error: 'Provider unavailable' });
+    expect((await post('/api/setup/complete', { tools: ['codex-cli'] })).status).toBe(409);
+    await post('/api/setup/installer', { stage: 'home-ready' });
+    expect((await post('/api/setup/complete', { tools: ['codex-cli'] })).status).toBe(200);
+  });
+
+  it('requires the selected provider and paid checkout to finish On The Go setup', async () => {
+    await start();
+    await post('/api/setup/choice', { branch: 'go', memoryBilling: 'hosted' });
+    for (const stage of ['waiting-for-choice', 'failed', 'home-ready', 'go-awaiting-checkout']) {
+      await post('/api/setup/installer', { stage });
+      // waiting-for-choice resets the choice, so submit it again when needed.
+      if (!(await state()).choice) await post('/api/setup/choice', { branch: 'go', memoryBilling: 'hosted' });
+      expect((await post('/api/setup/complete', {})).status).toBe(409);
+    }
+    await post('/api/setup/installer', { stage: 'go-awaiting-checkout', checkout: 'paid' });
+    expect((await post('/api/setup/complete', {})).status).toBe(200);
+  });
+
+  it('never serves the signup email or note, and keeps them on disk for a retry until the install is ready', async () => {
+    await start();
+    const frames: string[] = [];
+    (routes as unknown as { broadcast: (event: string, value: unknown) => void }).broadcast = (event, value) => {
+      if (event === 'setup-state') frames.push(JSON.stringify(value));
+    };
+    const signup = { email: 'person@example.com', note: 'private note' };
+    const onDisk = () => JSON.parse(readFileSync(statePath, 'utf8')).install.selection;
+    const served = async () => JSON.stringify(await state());
+    await post('/api/setup/install/installer', { status: 'waiting', catalog: { ...catalog, signupSaved: true } });
+    expect((await state()).install.catalog.signupSaved).toBe(true);
+    expect((await post('/api/setup/install', { ...catalog.defaults, ...signup })).status).toBe(200);
+    // installing: the installer reads the file; the page and every event frame see only that one exists.
+    expect(onDisk()).toMatchObject(signup);
+    expect((await state()).install.selection.emailProvided).toBe(true);
+    for (const body of [await served(), ...frames]) {
+      expect(body).not.toContain(signup.email);
+      expect(body).not.toContain(signup.note);
+    }
+    // failed: still on disk, so the explicit retry can use it without the page ever holding it.
+    await post('/api/setup/install/installer', { status: 'failed', error: 'Could not write configuration' });
+    expect(onDisk()).toMatchObject(signup);
+    expect(await served()).not.toContain(signup.email);
+    expect((await post('/api/setup/install', { ...catalog.defaults, emailProvided: true })).status).toBe(200);
+    expect(onDisk()).toMatchObject(signup);
+    expect(onDisk().emailProvided).toBeUndefined();
+    // ready: the signup was applied, so it leaves the file too.
+    await post('/api/setup/install/installer', { status: 'ready' });
+    expect(onDisk().email).toBeUndefined();
+    expect(onDisk().note).toBeUndefined();
+    for (const body of [await served(), ...frames]) expect(body).not.toContain(signup.email);
+  });
+
+  it('takes a DeepSeek Harness profile up to the one limit the setup page uses too', async () => {
+    await start();
+    await post('/api/setup/install/installer', { status: 'waiting', catalog });
+    expect((await post('/api/setup/install', { ...catalog.defaults, dshProfile: 'p'.repeat(SETUP_DSH_PROFILE_MAX_CHARACTERS + 1) })).status).toBe(400);
+    expect((await post('/api/setup/install', { ...catalog.defaults, dshProfile: 'p'.repeat(SETUP_DSH_PROFILE_MAX_CHARACTERS) })).status).toBe(200);
+    expect((await state()).install.selection.dshProfile).toHaveLength(SETUP_DSH_PROFILE_MAX_CHARACTERS);
+  });
+
+  it('takes a signup note up to the one limit the setup page uses too', async () => {
+    await start();
+    await post('/api/setup/install/installer', { status: 'waiting', catalog });
+    const withNote = (length: number) => ({ ...catalog.defaults, email: 'person@example.com', note: 'n'.repeat(length) });
+    expect((await post('/api/setup/install', withNote(SETUP_INSTALL_NOTE_MAX_CHARACTERS + 1))).status).toBe(400);
+    expect((await post('/api/setup/install', withNote(SETUP_INSTALL_NOTE_MAX_CHARACTERS))).status).toBe(200);
+    // The note is kept for the installer only (the state view never serves it), at its full length.
+    expect(JSON.parse(readFileSync(statePath, 'utf8')).install.selection.note).toHaveLength(SETUP_INSTALL_NOTE_MAX_CHARACTERS);
+  });
+
+  it('a retry that unticks the email drops the stored one', async () => {
+    await start();
+    await post('/api/setup/install/installer', { status: 'waiting', catalog });
+    await post('/api/setup/install', { ...catalog.defaults, email: 'person@example.com' });
+    await post('/api/setup/install/installer', { status: 'failed', error: 'x' });
+    expect((await post('/api/setup/install', catalog.defaults)).status).toBe(200);
+    expect(JSON.parse(readFileSync(statePath, 'utf8')).install.selection.email).toBeUndefined();
+  });
+
+  it('keeps failed installation reviewable and requires an explicit retry', async () => {
+    await start();
+    expect((await post('/api/setup/install/installer', { status: 'waiting' })).status).toBe(400);
+    expect((await post('/api/setup/install/installer', { status: 'ready' })).status).toBe(409);
+    await post('/api/setup/install/installer', { status: 'waiting', catalog });
+    await post('/api/setup/install', catalog.defaults);
+    await post('/api/setup/install/installer', { status: 'failed', error: 'Could not write configuration' });
+    expect((await state()).install).toMatchObject({ status: 'failed', error: 'Could not write configuration' });
+    expect((await post('/api/setup/install/installer', { status: 'ready' })).status).toBe(409);
+    expect((await post('/api/setup/install', catalog.defaults)).status).toBe(200);
+    expect((await post('/api/setup/install/installer', { status: 'ready' })).status).toBe(200);
+    await post('/api/setup/install/installer', { status: 'waiting', catalog });
+    expect((await state()).install.selection).toBeNull();
+  });
+
+  it('resumes deferred onboarding only on a local explicit request', async () => {
+    let resumes = 0;
+    await start(null, async () => { resumes++; });
+    expect((await post('/api/setup/resume', {})).status).toBe(409);
+    expect(resumes).toBe(0);
+    await post('/api/setup/install/installer', { status: 'waiting', catalog });
+    const foreign = { 'Content-Type': 'application/json', Origin: 'https://evil.example' };
+    expect((await post('/api/setup/resume', {}, foreign)).status).toBe(403);
+    expect((await post('/api/setup/install', catalog.defaults, foreign)).status).toBe(403);
+    expect((await post('/api/setup/install/installer', { status: 'ready' }, foreign)).status).toBe(403);
+    expect(resumes).toBe(0);
+    expect((await post('/api/setup/resume', {})).status).toBe(202);
+    expect(resumes).toBe(1);
+  });
+
+  it('honors externally controlled telemetry and disabled email signup', async () => {
+    await start();
+    await post('/api/setup/install/installer', { status: 'waiting', catalog: { ...catalog, telemetryLocked: true, emailEnabled: false } });
+    expect((await post('/api/setup/install', { ...catalog.defaults, telemetryEnabled: true })).status).toBe(400);
+    expect((await post('/api/setup/install', { ...catalog.defaults, email: 'test@example.com' })).status).toBe(400);
+    expect((await post('/api/setup/install', catalog.defaults)).status).toBe(200);
+  });
+
+  it('starts a manual refresh through the origin-guarded endpoint', async () => {
+    const reasons: string[] = [];
+    await start({ start() {}, close() {}, status: () => null, async runNow({ reason }: { reason: string }) { reasons.push(reason); return 'running'; } });
+    const response = await post('/api/work-view/refresh', {});
+    expect(response.status).toBe(202);
+    expect(await response.json()).toEqual({ state: 'running' });
+    expect(reasons).toEqual(['manual']);
+  });
+
+  it('answers at once while a manual refresh runs, without waiting for it to end', async () => {
+    const worker = { busy: false, start() {}, close() {}, status: () => null, runNow() { worker.busy = true; return new Promise(() => {}); } };
+    await start(worker);
+    const response = await post('/api/work-view/refresh', {});
+    expect(response.status).toBe(202);
+    expect(await response.json()).toEqual({ state: 'running' });
+  });
+
+  it('says when a manual refresh found nothing due', async () => {
+    await start({ start() {}, close() {}, status: () => null, async runNow() { return 'idle'; } });
+    const response = await post('/api/work-view/refresh', {});
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ state: 'idle' });
+  });
+
+  it('refuses a manual refresh while setup runs', async () => {
+    await start({ start() {}, close() {}, status: () => null, async runNow() { return 'setup-running'; } });
+    const response = await post('/api/work-view/refresh', {});
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: 'Refresh is unavailable until setup finishes.' });
+  });
+
+  it('a manual refresh spends nothing during setup, even with scheduled refresh off', async () => {
+    await start();
+    let scanning = true;
+    writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH: 'false' }));
+    const refresh = defaultAutoRefresh(dir, settingsPath, statePath, () => scanning, () => '', () => ({ placed: 0, focusAreaIds: [] }));
+    expect(await refresh.runNow({ reason: 'manual' })).toBe('setup-running');
+    scanning = false;
+    writeFileSync(sessionPath, JSON.stringify({ pid: process.pid }));
+    await post('/api/setup/installer', { stage: 'waiting-for-choice' });
+    expect(await refresh.runNow({ reason: 'manual' })).toBe('setup-running');
+    refresh.close();
+  });
+
+  it('refuses a manual refresh request from a different origin', async () => {
+    await start({ start() {}, close() {}, status: () => null, async runNow() { throw new Error('must not run'); } });
+    const response = await post('/api/work-view/refresh', {}, { 'Content-Type': 'application/json', Origin: 'https://evil.example' });
+    expect(response.status).toBe(403);
+  });
+
+  it('reports when manual refresh is unavailable on this worker', async () => {
+    await start();
+    const response = await post('/api/work-view/refresh', {});
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: 'Refresh is unavailable on this worker.' });
+  });
+
+  it('start pending on a machine that never finished setup, with nothing pre-selected', async () => {
+    await start();
+    expect(await state()).toEqual({ status: 'pending', choice: null, installer: null, checkout: null, tools: null, completedAt: null, alreadyPro: false, history: { projects: 0, sessions: 0, observations: 0 }, historyImport: null, backgroundWorkRunning: [] });
+    expect(existsSync(statePath)).toBe(false);
+  });
+
+  it('pauses local auto refresh only for active setup, preserving non-GUI installs and completed setup', async () => {
+    await start();
+    let scanning = false;
+    const refresh = defaultAutoRefresh(dir, settingsPath, statePath, () => scanning, () => '', () => ({ placed: 0, focusAreaIds: [] }));
+    const enabled = () => (refresh as unknown as { enabled: () => boolean }).enabled();
+    expect(enabled()).toBe(true); // Non-GUI installs do not write a funnel marker.
+    scanning = true;
+    expect(enabled()).toBe(false);
+    scanning = false;
+    writeFileSync(sessionPath, JSON.stringify({ pid: process.pid }));
+    await post('/api/setup/installer', { stage: 'waiting-for-choice' });
+    expect(enabled()).toBe(false);
+    await post('/api/setup/choice', { branch: 'home', memoryBilling: 'existing' });
+    await post('/api/setup/installer', { stage: 'home-ready' });
+    await post('/api/setup/complete', {});
+    expect(enabled()).toBe(true);
+    refresh.close();
+  });
+
+  it('resumes local refresh after an interrupted installer without discarding saved setup progress', async () => {
+    const saved = { status: 'pending', choice: { branch: 'home', memoryBilling: 'existing', chosenAt: 'earlier' } };
+    writeFileSync(statePath, JSON.stringify(saved));
+    writeFileSync(sessionPath, JSON.stringify({ pid: 2 ** 22 + 12345 }));
+    await start();
+    const refresh = defaultAutoRefresh(dir, settingsPath, statePath, () => false, () => '', () => ({ placed: 0, focusAreaIds: [] }));
+    try {
+      expect((refresh as unknown as { enabled: () => boolean }).enabled()).toBe(true);
+      expect(JSON.parse(readFileSync(statePath, 'utf8'))).toEqual(saved);
+    } finally {
+      refresh.close();
+    }
+  });
+
+  it('resumes after normal session removal and surfaces a corrupt session marker', async () => {
+    await start();
+    const refresh = defaultAutoRefresh(dir, settingsPath, statePath, () => false, () => '', () => ({ placed: 0, focusAreaIds: [] }));
+    const enabled = () => (refresh as unknown as { enabled: () => boolean }).enabled();
+    try {
+      writeFileSync(sessionPath, JSON.stringify({ pid: process.pid }));
+      expect(enabled()).toBe(false);
+      rmSync(sessionPath);
+      expect(enabled()).toBe(true);
+      writeFileSync(sessionPath, '{broken');
+      expect(enabled).toThrow();
+    } finally {
+      refresh.close();
+    }
+  });
+
+  it('keeps local work paused until an active scan ends after the installer exits', async () => {
+    await start();
+    const testRoutes = routes as unknown as { setupScan: unknown; setupIsActive: () => boolean };
+    let phase = 'reading';
+    testRoutes.setupScan = { state: () => ({ phase }) };
+    for (phase of ['reading', 'checking', 'saving', 'uploading']) expect(testRoutes.setupIsActive()).toBe(true);
+    // A closed tab leaves the scan waiting for an answer forever, so waiting must not hold local work paused.
+    for (phase of ['idle', 'done', 'failed', 'awaiting-consent']) expect(testRoutes.setupIsActive()).toBe(false);
+  });
+
+  it('keeps local work paused without an error while the machine has no free file descriptors, and reads again on every tick', async () => {
+    await start();
+    writeFileSync(statePath, JSON.stringify({ status: 'pending' }));
+    const testRoutes = routes as unknown as { setupIsActive: () => boolean };
+    let code = 'EMFILE';
+    const read = spyOn(fs, 'readFileSync').mockImplementation(() => { throw Object.assign(new Error(`${code}: too many open files`), { code }); });
+    const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+    const exhaustionWarnings = () => warn.mock.calls.filter(([, message]) => String(message).includes('no file descriptors are free')).length;
+    try {
+      expect(testRoutes.setupIsActive()).toBe(true);
+      expect(testRoutes.setupIsActive()).toBe(true);
+      expect(read).toHaveBeenCalledTimes(2);
+      code = 'ENFILE';
+      expect(testRoutes.setupIsActive()).toBe(true);
+      expect(read).toHaveBeenCalledTimes(3);
+      expect(exhaustionWarnings()).toBe(1);
+      code = 'EACCES';
+      expect(() => testRoutes.setupIsActive()).toThrow('EACCES');
+      read.mockRestore();
+      expect(testRoutes.setupIsActive()).toBe(false);
+      // A new episode after a successful read warns again.
+      code = 'EMFILE';
+      const readAgain = spyOn(fs, 'readFileSync').mockImplementation(() => { throw Object.assign(new Error(`${code}: too many open files`), { code }); });
+      try {
+        expect(testRoutes.setupIsActive()).toBe(true);
+        expect(exhaustionWarnings()).toBe(2);
+      } finally {
+        readAgain.mockRestore();
+      }
+    } finally {
+      read.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
+  it('report a setup scan as extraction in every phase until it ends, the upload question included (the installer holds any restart for it)', async () => {
+    await start();
+    // A scan in a given phase, set the way the setupIsActive test above sets one.
+    const testRoutes = routes as unknown as { setupScan: unknown };
+    let phase = 'reading';
+    testRoutes.setupScan = { state: () => ({ phase }) };
+    for (phase of ['reading', 'checking', 'saving', 'awaiting-consent', 'uploading']) expect((await state()).backgroundWorkRunning).toEqual(['extraction']);
+    for (phase of ['idle', 'done', 'failed']) expect((await state()).backgroundWorkRunning).toEqual([]);
+  });
+
+  it('report a live extraction run as background work (the installer holds any restart for it), not one a restart cut off', async () => {
+    let status: Record<string, unknown> | null = { state: 'running', pid: process.pid };
+    await start({ status: () => status, start() {}, close() {}, async runNow() { return 'idle'; } });
+    expect((await state()).backgroundWorkRunning).toEqual(['extraction']);
+    // A 'running' record left by a worker process that is gone.
+    status = { state: 'running', pid: 2 ** 22 + 12345 };
+    expect((await state()).backgroundWorkRunning).toEqual([]);
+    status = { state: 'ok', pid: process.pid };
+    expect((await state()).backgroundWorkRunning).toEqual([]);
+  });
+
+  it('report no extraction run, and still answer, when refresh.json cannot be read', async () => {
+    await start({ status: () => { throw new SyntaxError('JSON Parse error: Unrecognized token'); }, start() {}, close() {}, async runNow() { return 'idle'; } });
+    const response = await fetch(`${origin}/api/setup/state`);
+    expect(response.status).toBe(200);
+    expect((await response.json()).backgroundWorkRunning).toEqual([]);
+  });
+
+  it('fail the setup state request when refresh.json cannot be opened for a reason other than unreadable bytes', async () => {
+    await start({ status: () => { throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' }); }, start() {}, close() {}, async runNow() { return 'idle'; } });
+    const response = await fetch(`${origin}/api/setup/state`);
+    expect(response.status).toBe(500);
+  });
+
+  it('report an existing CMEM Pro configuration so On The Go is pre-selected', async () => {
+    writeFileSync(settingsPath, JSON.stringify({ env: {
+      CLAUDE_MEM_CLOUD_SYNC_TOKEN: 'token', CLAUDE_MEM_CLOUD_SYNC_USER_ID: 'user', CLAUDE_MEM_CLOUD_SYNC_HUB_URL: 'https://hub.example',
+    } }));
+    await start();
+    expect((await state()).alreadyPro).toBe(true);
+  });
+
+  it('accept only well-formed choices from the viewer page', async () => {
+    await start();
+    expect((await post('/api/setup/choice', { branch: 'home', memoryBilling: 'existing' }, { 'Content-Type': 'application/json', Origin: 'https://evil.example' })).status).toBe(403);
+    expect((await post('/api/setup/choice', { branch: 'away', memoryBilling: 'hosted' })).status).toBe(400);
+    // On The Go is always CMEM Pro (gap G1).
+    expect((await post('/api/setup/choice', { branch: 'go', memoryBilling: 'existing' })).status).toBe(400);
+    expect((await state()).choice).toBeNull();
+  });
+
+  it('record the choice, lock it once the installer applied it, and finish setup once', async () => {
+    await start();
+    expect((await post('/api/setup/complete', {})).status).toBe(409);
+
+    expect((await post('/api/setup/installer', { stage: 'waiting-for-choice' })).status).toBe(200);
+    const chosen = await post('/api/setup/choice', { branch: 'go', memoryBilling: 'hosted' });
+    expect(chosen.status).toBe(200);
+    expect((await chosen.json()).choice).toMatchObject({ branch: 'go', memoryBilling: 'hosted' });
+    // Before the installer acts, the person can still change their mind.
+    expect((await post('/api/setup/choice', { branch: 'home', memoryBilling: 'existing' })).status).toBe(200);
+
+    expect((await post('/api/setup/installer', { stage: 'home-ready' })).status).toBe(200);
+    expect((await post('/api/setup/choice', { branch: 'go', memoryBilling: 'hosted' })).status).toBe(409);
+    expect((await post('/api/setup/choice', { branch: 'home', memoryBilling: 'existing' })).status).toBe(200);
+
+    const completed = await post('/api/setup/complete', {});
+    expect(completed.status).toBe(200);
+    expect(await completed.json()).toMatchObject({ status: 'complete', choice: { branch: 'home' }, installer: { stage: 'home-ready' } });
+    expect(JSON.parse(readFileSync(statePath, 'utf8')).status).toBe('complete');
+    expect((await post('/api/setup/choice', { branch: 'go', memoryBilling: 'hosted' })).status).toBe(409);
+  });
+
+  it('clear an interrupted run\'s choice when a new installer starts waiting', async () => {
+    await start();
+    await post('/api/setup/installer', { stage: 'waiting-for-choice' });
+    await post('/api/setup/choice', { branch: 'go', memoryBilling: 'hosted' });
+    await post('/api/setup/installer', { stage: 'failed', error: 'cmem.ai unreachable' });
+    expect((await state()).installer).toMatchObject({ stage: 'failed', error: 'cmem.ai unreachable' });
+    await post('/api/setup/installer', { stage: 'waiting-for-choice' });
+    expect((await state()).choice).toBeNull();
+  });
+
+  it('push every change on the work view event stream', async () => {
+    await start();
+    const controller = new AbortController();
+    const response = await fetch(`${origin}/api/work-view/events`, { signal: controller.signal });
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    // Whole blocks only: a read can end partway through one.
+    const setupStates = () => buffer.split('\n\n').slice(0, -1).filter(block => block.startsWith('event: setup-state\n')).map(block => JSON.parse(block.split('\ndata: ')[1]));
+    // A stream's first view is read off the HTTP thread, so wait for it before changing anything.
+    while (!setupStates().length) buffer += decoder.decode((await reader.read()).value, { stream: true });
+    await post('/api/setup/installer', { stage: 'waiting-for-choice' });
+    while (!setupStates().some(view => view.installer?.stage === 'waiting-for-choice')) buffer += decoder.decode((await reader.read()).value, { stream: true });
+    controller.abort();
+    expect(setupStates()[0].installer).toBeNull();
+    expect(setupStates().at(-1).installer.stage).toBe('waiting-for-choice');
+  });
+
+  it('send the current setup state on every new event stream, so a reconnect sees a checkout paid while it was away', async () => {
+    await start();
+    await post('/api/setup/installer', { stage: 'go-awaiting-checkout', checkout: 'paid' });
+    const controller = new AbortController();
+    const reader = (await fetch(`${origin}/api/work-view/events`, { signal: controller.signal })).body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    while (!buffer.includes('event: setup-state\n') || !buffer.slice(buffer.indexOf('event: setup-state\n')).includes('\n\n')) buffer += decoder.decode((await reader.read()).value, { stream: true });
+    controller.abort();
+    const block = buffer.slice(buffer.indexOf('event: setup-state\n')).split('\n\n')[0];
+    expect(JSON.parse(block.split('\ndata: ')[1]).checkout.state).toBe('paid');
+  });
+
+  it('import history only on On The Go, and only with a history import on the worker', async () => {
+    await start();
+    expect((await post('/api/setup/import', {})).status).toBe(503);
+  });
+});

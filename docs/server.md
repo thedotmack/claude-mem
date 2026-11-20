@@ -58,8 +58,10 @@ the following are missing or invalid in Docker:
 | `CLAUDE_MEM_AUTH_MODE`            | Always   | Must NOT be `local-dev` in Docker.                           |
 | `CLAUDE_MEM_ALLOW_LOCAL_DEV_BYPASS` | Docker | Must NOT be `1`/`true` in Docker.                            |
 | `CLAUDE_MEM_GENERATION_DISABLED`  | Optional | Set to `true` on the HTTP service when running a separate worker. |
-| `CLAUDE_MEM_SERVER_PROVIDER`      | Worker   | One of `claude`, `gemini`, `openrouter`. Worker only.        |
+| `CLAUDE_MEM_SERVER_PROVIDER`      | Worker   | One of `claude`, `gemini`, `openrouter`, `custom`. Worker only. |
+| `CLAUDE_MEM_CUSTOM_PROVIDER_MODULE` | custom | Absolute path to a module exporting `createProvider(helpers)`. It runs with the worker's credentials; see the hosted-server docs. |
 | `ANTHROPIC_API_KEY` (or alt)      | Worker   | Required by the chosen provider.                             |
+| `CLAUDE_MEM_SERVER_GENERATION_CONCURRENCY` | Optional | Jobs per lane in parallel (default 1, max 64). Applies to both the `event` and `summary` lanes, so N means up to 2N provider calls in flight. |
 
 Local development can still use SQLite + `local-dev` auth bypass **outside
 Docker only**. Deployable mode must use the table above.
@@ -124,6 +126,40 @@ poison.
 > the HTTP listener, which is not a meaningful boundary inside a
 > container. The startup validator refuses to boot with this combination
 > and returns a non-zero exit code.
+
+### Viewer
+
+The server serves the viewer at `/`. Its read endpoints (`/stream`,
+`/api/projects`, `/api/observations`, `/api/summaries`, `/api/sessions`,
+`/api/processing-status`) need a `memories:read` key and return only that
+key's team, or its project for a project-bound key. A `limit` above 100
+answers 400. The `local-dev` loopback bypass is bound to no team, so it
+answers 403 here as on `/v1`; use a key. The daily log is one file for the
+whole server, so `/api/logs` and `POST /api/logs/clear` answer 404 for
+every key; read `logs/claude-mem-<date>.log` on the host instead.
+
+**The browser sends no key.** The viewer's own `fetch` and `EventSource`
+calls carry no `Authorization` header (`src/ui/viewer/constants/api.ts`,
+`src/ui/viewer/hooks/useSSE.ts`), so a browser that opens the server's `/`
+directly gets 401 on every data call and an empty page. Front the server
+with a reverse proxy that adds the header, and restrict who can reach that
+proxy: everyone behind it reads as that key's team. With Caddy, against the
+compose stack's port:
+
+```caddyfile
+viewer.example.internal {
+  reverse_proxy 127.0.0.1:37877 {
+    header_up Authorization "Bearer <memories:read key>"
+  }
+}
+```
+
+**New rows appear on reload.** The server has no in-process event bus, so
+`/stream` sends its two opening events (`initial_load`, `processing_status`)
+and then only keepalives; it carries no `data_changed` or `new_*` events.
+The feed and the session list show what existed when the page loaded or
+the stream last reconnected. Only the processing badge refreshes on its
+own, by polling `/api/processing-status`.
 
 ## Compose stack
 

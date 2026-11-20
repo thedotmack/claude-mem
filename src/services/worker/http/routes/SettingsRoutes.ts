@@ -2,21 +2,33 @@
 import express, { Request, Response } from 'express';
 import { z } from 'zod';
 import path from 'path';
-import { readFileSync, existsSync, renameSync, mkdirSync } from 'fs';
+import { existsSync, renameSync } from 'fs';
 import { getPackageRoot, paths, expandTilde } from '../../../../shared/paths.js';
 import { logger } from '../../../../utils/logger.js';
 import { SettingsManager } from '../../SettingsManager.js';
+import { MIN_CONTEXT_WINDOW_TOKENS, OBSERVER_MAX_OUTPUT_TOKENS_BOUNDS } from '../../context-window.js';
 import { ModeManager } from '../../../domain/ModeManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { clearPortCache } from '../../../../shared/worker-utils.js';
 import { snapshotDependencyHealth } from '../../../../shared/dependency-health.js';
-import { parseJsonWithBom, writeJsonFileAtomic } from '../../../../shared/atomic-json.js';
+import { ensureSettingsDocument, updateSettingsDocument } from '../../../../shared/settings-document.js';
+import { parseContextCountValue } from '../../../../shared/context-count.js';
+import { OPENROUTER_REASONING_EFFORTS, parseOpenRouterReasoningEffort } from '../../OpenRouterProvider.js';
+import { parseOpenAICompatReasoning } from '../../reasoning-budget.js';
+import { parseProviderBySource } from '../../../../shared/provider-by-source.js';
+import { QUOTA_FALLBACK_OPTIONS } from '../../../../ui/provider-options.js';
+import { CODEX_REASONING_EFFORTS, isCodexReasoningEffort } from '../../CodexProvider.js';
+import { emitContextInvalidation, noteUserSettingsSaved } from '../../../../shared/context-invalidation.js';
+import { WORK_VIEW_AGENT_CHOICES } from '../../../work-view/refresh-task.js';
+import { CORPUS_AGENT_CHOICES } from '../../knowledge/CorpusAgent.js';
 
 const toggleMcpSchema = z.object({
   enabled: z.boolean(),
 }).passthrough();
+
+const updateSettingsSchema = z.object({}).passthrough();
 
 // GET /api/settings has no auth. Mask known secrets before they leave the
 // process. Explicit allowlist — a /API_KEY|_TOKEN|SECRET/i regex also matches
@@ -24,30 +36,69 @@ const toggleMcpSchema = z.object({
 // prefs) and corrupts them on every GET (#3680 / #3861).
 const SECRET_SETTING_KEYS = new Set([
   'CLAUDE_MEM_GEMINI_API_KEY',
+  // The rotation pools hold credentials exactly like the singular keys above.
+  // Leaving them out would mask the primary key and hand back every rotation
+  // key in cleartext from an unauthenticated GET.
+  'CLAUDE_MEM_GEMINI_API_KEYS',
   'CLAUDE_MEM_OPENROUTER_API_KEY',
+  'CLAUDE_MEM_OPENROUTER_API_KEYS',
+  'CLAUDE_MEM_OPENAI_COMPAT_API_KEY',
+  'CLAUDE_MEM_OPENAI_COMPAT_API_KEYS',
   'CLAUDE_MEM_CHROMA_API_KEY',
   'CLAUDE_MEM_CLOUD_SYNC_TOKEN',
   'CLAUDE_MEM_TELEGRAM_BOT_TOKEN',
   'CLAUDE_MEM_TELEGRAM_WRAPUP_ROUTES',
   'CLAUDE_MEM_SERVER_API_KEY',
   'CLAUDE_MEM_SERVER_BETA_API_KEY',
-  'CLAUDE_MEM_TV_TOKEN',
+  'CLAUDE_MEM_LOCAL_API_TOKEN',
+  'CLAUDE_MEM_WORKER_INGEST_TOKEN',
   'CLAUDE_MEM_PRO_MEMORY_KEY',
   'CLAUDE_MEM_REDIS_URL',
+  // Brainbeat webhook: the shared secret, and the URL (it can carry userinfo
+  // or query tokens). Both are file/env only — never on the POST whitelist.
+  'CLAUDE_MEM_GROK_BOT_WEBHOOK_SECRET',
+  'CLAUDE_MEM_GROK_BOT_WEBHOOK_URL',
+  'CLAUDE_MEM_NOTION_TOKEN',
+  // Contact details, not credentials, but this GET answers any localhost page.
+  // The viewer never shows them, and HTTP cannot write them.
+  'CLAUDE_MEM_ONLINE_SIGNUP_EMAIL',
+  'CLAUDE_MEM_ONLINE_SIGNUP_NOTE',
+  'CLAUDE_MEM_PRO_TRIAL_EMAIL',
 ]);
 
-function maskSecretValue(value: unknown): unknown {
-  if (typeof value !== 'string' || value.length === 0) return value;
+function maskSecretString(value: string): string {
   if (value.length <= 4) return '*'.repeat(value.length);
   return `${'*'.repeat(value.length - 4)}${value.slice(-4)}`;
+}
+
+/**
+ * A secret as GET may show it, in every shape settings.json can hold: a string
+ * (a single key, or a comma/newline list, masked as a whole), an array (a key
+ * pool written as JSON: each entry masked), or anything else (hidden whole).
+ * Empty values stay as they are, so the viewer can tell "unset" apart.
+ */
+function maskSecretValue(value: unknown): unknown {
+  if (value === undefined || value === null || value === '') return value;
+  if (typeof value === 'string') return maskSecretString(value);
+  if (Array.isArray(value)) return value.map(entry => (typeof entry === 'string' ? maskSecretString(entry) : '****'));
+  return '****';
 }
 
 // Viewer save posts the GET body back unchanged. Treat a secret as untouched
 // only when the submitted value equals the mask of the currently stored
 // secret — not "any string starting with *", which would silently drop a
-// legitimate replacement key that happens to begin with '*'.
+// legitimate replacement key that happens to begin with '*'. Arrays compare
+// entry by entry, so a pool written as JSON survives a save too.
 function isUnchangedMaskedSecret(incoming: unknown, stored: unknown): boolean {
-  return typeof incoming === 'string' && incoming === maskSecretValue(stored);
+  if (incoming === undefined || incoming === null || incoming === '') return false;
+  return JSON.stringify(incoming) === JSON.stringify(maskSecretValue(stored));
+}
+
+/** The posted settings whose value differs from the one settings.json holds. */
+function settingsChangedBy(posted: Record<string, unknown>, onDisk: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(posted).filter(([key, value]) => JSON.stringify(value) !== JSON.stringify(onDisk[key])),
+  );
 }
 
 function redactSecretSettings<T extends object>(settings: T): T {
@@ -60,10 +111,51 @@ function redactSecretSettings<T extends object>(settings: T): T {
   return redacted as T;
 }
 
-// Spawn-binary paths: file/env only. Even if a key is accidentally re-added to
-// the HTTP write list below, this set keeps it from being persisted via POST.
-const FILE_ONLY_SETTING_KEYS = new Set([
+/**
+ * The posted settings minus those that only echo an environment override: the
+ * variable is set, and the viewer sent back what GET showed for it (masked,
+ * for a secret). The environment is that value's only source, so a save
+ * neither checks nor writes it. Written, it would outlive the variable, and a
+ * masked secret would replace the stored key.
+ */
+function withoutEnvironmentEchoes(posted: Record<string, unknown>, settingsPath: string): Record<string, unknown> {
+  const shown = redactSecretSettings(SettingsDefaultsManager.loadFromFile(settingsPath)) as unknown as Record<string, unknown>;
+  return Object.fromEntries(
+    Object.entries(posted).filter(([key, value]) =>
+      process.env[key] === undefined || JSON.stringify(value) !== JSON.stringify(shown[key])),
+  );
+}
+
+// Spawn-binary paths and filesystem/listen redirects: file/env only. Even if
+// a key is accidentally re-added to the HTTP write list below, this set keeps
+// it from being persisted via POST. CLAUDE_MEM_DATA_DIR is where memories and
+// every secret live — an HTTP-writable redirect hands them to any caller that
+// reaches the API. CLAUDE_MEM_WORKER_HOST decides the bind interface; changing
+// it remotely could re-expose the worker on a non-loopback address without
+// the local API token ever being written. The auto-update pair
+// decides what the installer runs on this machine:
+// CLAUDE_MEM_AUTO_UPDATE_PROMOTED_RELEASE_URL names the file that picks the
+// version `npx claude-mem@<version> update` installs (the updater reads it
+// from the file alone, never the environment: auto-update-check.ts
+// readAutoUpdateSettings), and CLAUDE_MEM_AUTO_UPDATE decides whether that
+// runs at all. Provider endpoints also choose where stored credentials and
+// prompt content go; the compatible preset supplies that destination when
+// its explicit base URL is empty, so it has the same boundary.
+// CLAUDE_MEM_LOCAL_API_TOKEN is the credential the local-api-token mode checks; a
+// caller that could rewrite or clear it over HTTP would hold the key to the
+// door it is meant to guard.
+export const FILE_ONLY_SETTING_KEYS = new Set([
   'CLAUDE_CODE_PATH',
+  'CLAUDE_MEM_CODEX_PATH',
+  'CLAUDE_MEM_CHROMA_UVX_PATH',
+  'CLAUDE_MEM_DATA_DIR',
+  'CLAUDE_MEM_WORKER_HOST',
+  'CLAUDE_MEM_AUTO_UPDATE',
+  'CLAUDE_MEM_AUTO_UPDATE_PROMOTED_RELEASE_URL',
+  'CLAUDE_MEM_OPENROUTER_BASE_URL',
+  'CLAUDE_MEM_OPENAI_COMPAT_BASE_URL',
+  'CLAUDE_MEM_OPENAI_COMPAT_PRESET',
+  'CLAUDE_MEM_LOCAL_API_TOKEN',
 ]);
 
 const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
@@ -110,6 +202,38 @@ export function isForeignLoopbackBrowserWrite(req: Pick<Request, 'headers'>): bo
   return originPort !== port;
 }
 
+/**
+ * True when a GET comes from a browser page other than the worker's own. A
+ * read that runs something for the caller (resolving a project from `cwd` runs
+ * `git` there) needs more than the write guard: a `no-cors` fetch or an
+ * `<img src>` sends no Origin, so this also refuses a foreign Referer and a
+ * `same-site`/`cross-site` fetch with neither header (another localhost port is
+ * same-site). Requests with no Origin, Referer or Sec-Fetch-Site (hooks, the
+ * CLI, the MCP server) and `same-origin`/`none` fetches pass. Exported for tests.
+ */
+export function isForeignBrowserRead(req: Pick<Request, 'headers'>): boolean {
+  if (isForeignLoopbackBrowserWrite(req)) return true;
+  const rawReferer = req.headers?.referer;
+  if (Array.isArray(rawReferer)) return true;
+  const hasReferer = typeof rawReferer === 'string' && rawReferer.length > 0;
+  if (hasReferer) {
+    let refererOrigin: string;
+    try {
+      refererOrigin = new URL(rawReferer).origin;
+    } catch {
+      return true;
+    }
+    // Same test as the Origin above: only this worker's own loopback host:port.
+    if (isForeignLoopbackBrowserWrite({ headers: { origin: refererOrigin, host: req.headers.host } })) return true;
+  }
+  const site = req.headers?.['sec-fetch-site'];
+  if (site === 'same-site' || site === 'cross-site') {
+    const hasOrigin = typeof req.headers.origin === 'string' && req.headers.origin.length > 0;
+    if (!hasOrigin && !hasReferer) return true;
+  }
+  return false;
+}
+
 export class SettingsRoutes extends BaseRouteHandler {
   constructor(
     private settingsManager: SettingsManager
@@ -119,7 +243,7 @@ export class SettingsRoutes extends BaseRouteHandler {
 
   setupRoutes(app: express.Application): void {
     app.get('/api/settings', this.handleGetSettings.bind(this));
-    app.post('/api/settings', this.handleUpdateSettings.bind(this));
+    app.post('/api/settings', validateBody(updateSettingsSchema), this.handleUpdateSettings.bind(this));
     app.get('/api/settings/dependency-health', this.handleGetDependencyHealth.bind(this));
 
     app.get('/api/mcp/status', this.handleGetMcpStatus.bind(this));
@@ -128,7 +252,7 @@ export class SettingsRoutes extends BaseRouteHandler {
 
   private handleGetSettings = this.wrapHandler((req: Request, res: Response): void => {
     const settingsPath = paths.settings();
-    this.ensureSettingsFile(settingsPath);
+    ensureSettingsDocument(settingsPath, SettingsDefaultsManager.getAllDefaults());
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
     res.json(redactSecretSettings(settings));
   });
@@ -149,7 +273,18 @@ export class SettingsRoutes extends BaseRouteHandler {
       return;
     }
 
-    const validation = this.validateSettings(req.body);
+    const settingsPath = paths.settings();
+
+    // The viewer posts every setting back, edited or not, as GET showed it:
+    // with environment overrides applied. Those echoes are dropped first. The
+    // rest is judged against settings.json itself, so only what this save
+    // changes is checked: a value hand-edited into the file that the worker
+    // already ignores (it falls back to the default) would otherwise fail
+    // every later save of an unrelated field.
+    const posted = withoutEnvironmentEchoes(req.body, settingsPath);
+    const validation = this.validateSettings(
+      settingsChangedBy(posted, SettingsDefaultsManager.loadFromFile(settingsPath, false) as unknown as Record<string, unknown>),
+    );
     if (!validation.valid) {
       res.status(400).json({
         success: false,
@@ -158,57 +293,66 @@ export class SettingsRoutes extends BaseRouteHandler {
       return;
     }
 
-    const settingsPath = paths.settings();
-    this.ensureSettingsFile(settingsPath);
-    let settings: any = {};
-
-    if (existsSync(settingsPath)) {
-      const settingsData = readFileSync(settingsPath, 'utf-8');
-      try {
-        settings = parseJsonWithBom(settingsData);
-      } catch (parseError) {
-        const normalizedParseError = parseError instanceof Error ? parseError : new Error(String(parseError));
-        logger.error('HTTP', 'Failed to parse settings file', { settingsPath }, normalizedParseError);
-        res.status(500).json({
-          success: false,
-          error: `Settings file is corrupted. Delete ${settingsPath} to reset.`
-        });
-        return;
-      }
-    }
-
     // Write whitelist. POST /api/settings has no authentication — the worker
     // trusts loopback — so any page that can reach this origin could set one
     // of these. Secrets stay off this list except the two provider keys the
     // viewer Settings UI must save (Gemini / OpenRouter); those are masked on
-    // GET and an unchanged mask is skipped on POST. Observation TV / Chroma /
+    // GET and an unchanged mask is skipped on POST. Local API / Chroma /
     // Telegram / CloudSync / Redis tokens remain file/env only.
     //
-    // Executable spawn paths (CLAUDE_CODE_PATH) are also file/env only: that
-    // value is the binary passed to posix_spawn, so it must not be HTTP-writable.
+    // Executable spawn paths (CLAUDE_CODE_PATH, CLAUDE_MEM_CODEX_PATH,
+    // CLAUDE_MEM_CHROMA_UVX_PATH) are also
+    // file/env only: each value is a binary the worker spawns, so it must not be
+    // HTTP-writable.
     const settingKeys = [
       'CLAUDE_MEM_MODEL',
       'CLAUDE_MEM_CONTEXT_OBSERVATIONS',
+      'CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES',
       'CLAUDE_MEM_WORKER_PORT',
-      'CLAUDE_MEM_WORKER_HOST',
       'CLAUDE_MEM_PROVIDER',
+      'CLAUDE_MEM_PROVIDER_BY_SOURCE',
+      'CLAUDE_MEM_OBSERVER_ENABLED',
+      // The viewer's "Keep images" switch. Inference stays file/env only: it
+      // sends images to a paid model and has no switch.
+      'CLAUDE_MEM_MEDIA_CAPTURE_ENABLED',
+      'CLAUDE_MEM_CODEX_MODEL',
+      'CLAUDE_MEM_CODEX_REASONING_EFFORT',
       'CLAUDE_MEM_CLAUDE_AUTH_METHOD',
       'CLAUDE_MEM_GEMINI_API_KEY',
+      'CLAUDE_MEM_GEMINI_API_KEYS',
       'CLAUDE_MEM_GEMINI_MODEL',
       'CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED',
       'CLAUDE_MEM_OPENROUTER_API_KEY',
-      'CLAUDE_MEM_OPENROUTER_BASE_URL',
+      'CLAUDE_MEM_OPENROUTER_API_KEYS',
       'CLAUDE_MEM_OPENROUTER_MODEL',
       'CLAUDE_MEM_OPENROUTER_SITE_URL',
       'CLAUDE_MEM_OPENROUTER_APP_NAME',
-      'CLAUDE_MEM_DATA_DIR',
+      // Destination and credentials are file/env only. The viewer may still
+      // choose the model and reasoning policy for the configured endpoint.
+      'CLAUDE_MEM_OPENAI_COMPAT_MODEL',
+      'CLAUDE_MEM_OPENAI_COMPAT_REASONING',
+      'CLAUDE_MEM_OPENROUTER_REASONING_EFFORT',
+      'CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW',
+      'CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS',
+      'CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER',
+      'CLAUDE_MEM_QUOTA_FALLBACK_MODEL',
+      'CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD',
+      'CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER',
+      'CLAUDE_MEM_WORK_VIEW_COPY_MODEL',
+      'CLAUDE_MEM_WORK_VIEW_AGENT',
+      'CLAUDE_MEM_WORK_VIEW_CLAUDE_MODEL',
+      'CLAUDE_MEM_WORK_VIEW_CODEX_MODEL',
+      'CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL',
+      'CLAUDE_MEM_WORK_VIEW_OPENCODE_MODEL',
+      'CLAUDE_MEM_WORK_VIEW_API_MODEL',
+      'CLAUDE_MEM_CORPUS_AGENT',
       'CLAUDE_MEM_LOG_LEVEL',
       'CLAUDE_MEM_PYTHON_VERSION',
       'CLAUDE_MEM_CLAUDE_CONFIG_DIR',
+      'CLAUDE_MEM_OBSERVER_CLAUDE_CONFIG_DIR',
       'CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS',
       'CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS',
-      'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT',
-      'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT',
+      'CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT',
       'CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES',
       'CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS',
       'CLAUDE_MEM_CONTEXT_FULL_COUNT',
@@ -216,29 +360,46 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_CONTEXT_SESSION_COUNT',
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY',
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
+      'CLAUDE_MEM_FILE_READ_GATE_ENABLED',
+      'CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY',
+      'CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED',
+      'CLAUDE_MEM_WELCOME_HINT_ENABLED',
       'CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED',
+      'CLAUDE_MEM_BACKUP_ENABLED',
+      'CLAUDE_MEM_BACKUP_INTERVAL_HOURS',
+      'CLAUDE_MEM_BACKUP_RETAIN_COUNT',
     ];
 
-    for (const key of settingKeys) {
-      if (FILE_ONLY_SETTING_KEYS.has(key)) continue;
-      if (req.body[key] !== undefined) {
-        if (SECRET_SETTING_KEYS.has(key) && isUnchangedMaskedSecret(req.body[key], settings[key])) {
-          continue;
-        }
-        settings[key] = req.body[key];
+    // Every rule runs inside the settings-document boundary's mutate callback,
+    // which sees the CURRENT on-disk settings (flat, or the env block of a
+    // wrapped document) and refuses — without writing — a corrupt file.
+    const result = updateSettingsDocument(settingsPath, {}, SettingsDefaultsManager.getAllDefaults(), target => {
+      for (const key of settingKeys) {
+        if (FILE_ONLY_SETTING_KEYS.has(key)) continue;
+        if (posted[key] === undefined) continue;
+        // The viewer posts GET's masked secret back unchanged: keep the stored value.
+        if (SECRET_SETTING_KEYS.has(key) && isUnchangedMaskedSecret(posted[key], target[key])) continue;
+        target[key] = posted[key];
       }
-    }
 
-    // Expand `~` on a CLAUDE_CODE_PATH that was already on disk (file/env).
-    // HTTP cannot set this key; the expand is only so a tilde written by the
-    // user in settings.json is resolved before posix_spawn sees it.
-    if (typeof settings.CLAUDE_CODE_PATH === 'string' && settings.CLAUDE_CODE_PATH) {
-      settings.CLAUDE_CODE_PATH = expandTilde(settings.CLAUDE_CODE_PATH);
+      // Expand `~` on a CLAUDE_CODE_PATH that was already on disk (file/env).
+      // HTTP cannot set this key; the expand is only so a tilde written by the
+      // user in settings.json is resolved before posix_spawn sees it.
+      if (typeof target.CLAUDE_CODE_PATH === 'string' && target.CLAUDE_CODE_PATH) {
+        target.CLAUDE_CODE_PATH = expandTilde(target.CLAUDE_CODE_PATH);
+      }
+    });
+    if (result.status === 'refused') {
+      logger.error('HTTP', 'Failed to persist settings file', { settingsPath }, result.error instanceof Error ? result.error : new Error(String(result.error)));
+      res.status(500).json({ success: false, error: `Settings file could not be updated. Repair or restore ${settingsPath}.` });
+      return;
     }
-
-    writeJsonFileAtomic(settingsPath, settings);
 
     clearPortCache();
+    // Drop cached settings snapshots first, so the re-render below reads this save.
+    noteUserSettingsSaved();
+    // Context settings (counts, columns, welcome hint) shape the SessionStart block.
+    emitContextInvalidation('all', 'settings');
 
     logger.info('WORKER', 'Settings updated');
     res.json({ success: true, message: 'Settings updated successfully' });
@@ -250,6 +411,18 @@ export class SettingsRoutes extends BaseRouteHandler {
   });
 
   private handleToggleMcp = this.wrapHandler((req: Request, res: Response): void => {
+    // The MCP toggle renames the plugin's .mcp.json, so it gets the same
+    // browser cross-port rejection as POST /api/settings: the viewer's own
+    // page keeps working, another localhost origin cannot flip the MCP server.
+    // Origin-less clients (hooks, CLI, curl) keep the loopback-trust model.
+    if (isForeignLoopbackBrowserWrite(req)) {
+      res.status(403).json({
+        success: false,
+        error: 'Settings writes from a different localhost origin are not allowed'
+      });
+      return;
+    }
+
     const { enabled } = req.body as z.infer<typeof toggleMcpSchema>;
 
     this.toggleMcp(enabled);
@@ -257,11 +430,51 @@ export class SettingsRoutes extends BaseRouteHandler {
   });
 
   private validateSettings(settings: any): { valid: boolean; error?: string } {
-    if (settings.CLAUDE_MEM_PROVIDER) {
-    const validProviders = ['claude', 'gemini', 'openrouter'];
-    if (!validProviders.includes(settings.CLAUDE_MEM_PROVIDER)) {
-      return { valid: false, error: 'CLAUDE_MEM_PROVIDER must be "claude", "gemini", or "openrouter"' };
+    for (const key of ['CLAUDE_MEM_OBSERVER_ENABLED', 'CLAUDE_MEM_MEDIA_CAPTURE_ENABLED'] as const) {
+      if (settings[key] !== undefined && !['true', 'false'].includes(settings[key])) {
+        return { valid: false, error: `${key} must be "true" or "false"` };
       }
+    }
+
+    for (const key of ['CLAUDE_MEM_CODEX_MODEL', 'CLAUDE_MEM_CODEX_REASONING_EFFORT'] as const) {
+      if (settings[key] !== undefined && typeof settings[key] !== 'string') {
+        return { valid: false, error: `${key} must be a string` };
+      }
+    }
+
+    // An effort Codex does not know fails every Codex request, and the
+    // app-server takes any string. Like every rule here, it sees only the
+    // values this save changes (settingsChangedBy).
+    const codexEffort = settings.CLAUDE_MEM_CODEX_REASONING_EFFORT;
+    if (typeof codexEffort === 'string' && codexEffort.trim() && !isCodexReasoningEffort(codexEffort.trim())) {
+      return {
+        valid: false,
+        error: `CLAUDE_MEM_CODEX_REASONING_EFFORT must be empty (Codex's default) or one of: ${CODEX_REASONING_EFFORTS.join(', ')}`,
+      };
+    }
+
+    if (settings.CLAUDE_MEM_PROVIDER_BY_SOURCE !== undefined) {
+      const bySource = parseProviderBySource(settings.CLAUDE_MEM_PROVIDER_BY_SOURCE);
+      if (!bySource.ok) return { valid: false, error: bySource.error };
+    }
+
+    if (settings.CLAUDE_MEM_PROVIDER) {
+    const validProviders = ['claude', 'gemini', 'openrouter', 'codex', 'openai-compatible'];
+    if (!validProviders.includes(settings.CLAUDE_MEM_PROVIDER)) {
+      return { valid: false, error: 'CLAUDE_MEM_PROVIDER must be "claude", "gemini", "openrouter", "codex", or "openai-compatible"' };
+      }
+    }
+
+    // Empty is valid: it means the default, the Anthropic plan. 'off' turns it off.
+    if (settings.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER) {
+      if (!(QUOTA_FALLBACK_OPTIONS as readonly string[]).includes(settings.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER)) {
+        return { valid: false, error: 'CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER must be empty (default) or one of: ' + QUOTA_FALLBACK_OPTIONS.join(', ') };
+      }
+    }
+
+    if (settings.CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD
+      && !['subscription', 'api-key'].includes(settings.CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD)) {
+      return { valid: false, error: 'CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD must be "subscription", "api-key", or empty (off, the default)' };
     }
 
     if (settings.CLAUDE_MEM_CLAUDE_AUTH_METHOD) {
@@ -278,11 +491,35 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
-    if (settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS) {
-      const obsCount = parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10);
-      if (isNaN(obsCount) || obsCount < 1 || obsCount > 200) {
-        return { valid: false, error: 'CLAUDE_MEM_CONTEXT_OBSERVATIONS must be between 1 and 200' };
+    if (settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS !== undefined) {
+      const obsCount = parseContextCountValue(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS);
+      if (obsCount === undefined || obsCount < 0 || obsCount > 200) {
+        return { valid: false, error: 'CLAUDE_MEM_CONTEXT_OBSERVATIONS must be between 0 and 200' };
       }
+    }
+
+    // Empty = resolve the window automatically. Otherwise whole tokens, at
+    // least the floor the resolver would clamp a smaller value up to.
+    if (settings.CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW) {
+      const raw = String(settings.CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW).trim();
+      if (!/^\d+$/.test(raw) || Number(raw) < MIN_CONTEXT_WINDOW_TOKENS) {
+        return { valid: false, error: `CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW must be empty (automatic) or a whole number of tokens, at least ${MIN_CONTEXT_WINDOW_TOKENS}` };
+      }
+    }
+
+    // A whole number of tokens inside the bounds the resolver accepts; anything
+    // else would silently fall back to the default at request time.
+    if (settings.CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS !== undefined) {
+      const raw = String(settings.CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS).trim();
+      const { min, max } = OBSERVER_MAX_OUTPUT_TOKENS_BOUNDS;
+      if (!/^\d+$/.test(raw) || Number(raw) < min || Number(raw) > max) {
+        return { valid: false, error: `CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS must be a whole number of tokens between ${min} and ${max}` };
+      }
+    }
+
+    if (settings.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES !== undefined
+      && !['true', 'false'].includes(settings.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES)) {
+      return { valid: false, error: 'CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES must be "true" or "false"' };
     }
 
     if (settings.CLAUDE_MEM_WORKER_PORT) {
@@ -294,12 +531,12 @@ export class SettingsRoutes extends BaseRouteHandler {
 
     if (settings.CLAUDE_MEM_WORKER_HOST) {
       const host = settings.CLAUDE_MEM_WORKER_HOST;
-      // Loopback, plus the documented bind-all addresses used by Observation TV
-      // and Docker (docs/public/configuration.mdx). Arbitrary IPv4 used to be
+      // Loopback, plus the documented bind-all addresses used by Docker and
+      // remote capture (docs/public/configuration.mdx). Arbitrary IPv4 used to be
       // accepted and would expose the unauthenticated worker API on that NIC.
       const validHostPattern = /^(127\.0\.0\.1|0\.0\.0\.0|::1|::|localhost)$/;
       if (!validHostPattern.test(host)) {
-        return { valid: false, error: 'CLAUDE_MEM_WORKER_HOST must be a loopback address (127.0.0.1, ::1, localhost) or a bind-all address (0.0.0.0, ::) for Observation TV / Docker' };
+        return { valid: false, error: 'CLAUDE_MEM_WORKER_HOST must be a loopback address (127.0.0.1, ::1, localhost) or a bind-all address (0.0.0.0, ::) for Docker / remote capture' };
       }
     }
 
@@ -332,38 +569,107 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
+    // #4689 — same shape guard as CLAUDE_MEM_CLAUDE_CONFIG_DIR: the value is
+    // stamped verbatim onto the SDK subprocess env (EnvManager's
+    // buildIsolatedEnv), so a type-confused payload must not reach the child.
+    if (
+      settings.CLAUDE_MEM_OBSERVER_CLAUDE_CONFIG_DIR !== undefined &&
+      settings.CLAUDE_MEM_OBSERVER_CLAUDE_CONFIG_DIR !== ''
+    ) {
+      if (typeof settings.CLAUDE_MEM_OBSERVER_CLAUDE_CONFIG_DIR !== 'string' || !settings.CLAUDE_MEM_OBSERVER_CLAUDE_CONFIG_DIR.trim()) {
+        return { valid: false, error: 'CLAUDE_MEM_OBSERVER_CLAUDE_CONFIG_DIR must be a non-empty path string, or "" to keep transcripts beside the credential profile' };
+      }
+    }
+
     const booleanSettings = [
       'CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS',
       'CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS',
-      'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT',
-      'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT',
+      'CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT',
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY',
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
+      'CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED',
+      'CLAUDE_MEM_WELCOME_HINT_ENABLED',
+      'CLAUDE_MEM_FILE_READ_GATE_ENABLED',
+      'CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY',
+      'CLAUDE_MEM_BACKUP_ENABLED',
     ];
 
     for (const key of booleanSettings) {
-      if (settings[key] && !['true', 'false'].includes(settings[key])) {
+      // Presence, not truthiness: a falsy value (0, "", null) is still a
+      // posted value, and readers only honor the strings "true"/"false",
+      // so saving one verbatim would report success and change nothing.
+      if (settings[key] !== undefined && !['true', 'false'].includes(settings[key])) {
         return { valid: false, error: `${key} must be "true" or "false"` };
       }
     }
 
-    if (settings.CLAUDE_MEM_CONTEXT_FULL_COUNT) {
-      const count = parseInt(settings.CLAUDE_MEM_CONTEXT_FULL_COUNT, 10);
-      if (isNaN(count) || count < 0 || count > 20) {
+    if (settings.CLAUDE_MEM_CONTEXT_FULL_COUNT !== undefined) {
+      const count = parseContextCountValue(settings.CLAUDE_MEM_CONTEXT_FULL_COUNT);
+      if (count === undefined || count < 0 || count > 20) {
         return { valid: false, error: 'CLAUDE_MEM_CONTEXT_FULL_COUNT must be between 0 and 20' };
       }
     }
 
-    if (settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT) {
-      const count = parseInt(settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT, 10);
-      if (isNaN(count) || count < 1 || count > 50) {
-        return { valid: false, error: 'CLAUDE_MEM_CONTEXT_SESSION_COUNT must be between 1 and 50' };
+    if (settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT !== undefined) {
+      const count = parseContextCountValue(settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT);
+      if (count === undefined || count < 0 || count > 50) {
+        return { valid: false, error: 'CLAUDE_MEM_CONTEXT_SESSION_COUNT must be between 0 and 50' };
+      }
+    }
+
+    // Backup bounds. Each snapshot is a full VACUUM INTO copy of the database:
+    // a 1-hour floor caps that I/O at 24 full copies a day, and a 168-hour
+    // (one week) ceiling keeps doctor's two-interval staleness warning
+    // meaningful. The 100-snapshot cap bounds disk use at 100 database copies.
+    if (settings.CLAUDE_MEM_BACKUP_INTERVAL_HOURS) {
+      const hours = parseFloat(settings.CLAUDE_MEM_BACKUP_INTERVAL_HOURS);
+      if (isNaN(hours) || hours < 1 || hours > 168) {
+        return { valid: false, error: 'CLAUDE_MEM_BACKUP_INTERVAL_HOURS must be between 1 and 168' };
+      }
+    }
+
+    if (settings.CLAUDE_MEM_BACKUP_RETAIN_COUNT) {
+      const count = parseInt(settings.CLAUDE_MEM_BACKUP_RETAIN_COUNT, 10);
+      if (isNaN(count) || count < 1 || count > 100) {
+        return { valid: false, error: 'CLAUDE_MEM_BACKUP_RETAIN_COUNT must be between 1 and 100' };
       }
     }
 
     if (settings.CLAUDE_MEM_CONTEXT_FULL_FIELD) {
       if (!['narrative', 'facts'].includes(settings.CLAUDE_MEM_CONTEXT_FULL_FIELD)) {
         return { valid: false, error: 'CLAUDE_MEM_CONTEXT_FULL_FIELD must be "narrative" or "facts"' };
+      }
+    }
+
+    if (settings.CLAUDE_MEM_OPENROUTER_REASONING_EFFORT
+      && !parseOpenRouterReasoningEffort(settings.CLAUDE_MEM_OPENROUTER_REASONING_EFFORT)) {
+      return { valid: false, error: `CLAUDE_MEM_OPENROUTER_REASONING_EFFORT must be empty or one of: ${OPENROUTER_REASONING_EFFORTS.join(', ')}` };
+    }
+
+    if (settings.CLAUDE_MEM_OPENAI_COMPAT_REASONING !== undefined
+      && parseOpenAICompatReasoning(settings.CLAUDE_MEM_OPENAI_COMPAT_REASONING) === undefined) {
+      return { valid: false, error: 'CLAUDE_MEM_OPENAI_COMPAT_REASONING must be "off" (default) or "on"' };
+    }
+
+    if (settings.CLAUDE_MEM_WORK_VIEW_AGENT !== undefined
+      && !(WORK_VIEW_AGENT_CHOICES as readonly string[]).includes(settings.CLAUDE_MEM_WORK_VIEW_AGENT)) {
+      return { valid: false, error: 'CLAUDE_MEM_WORK_VIEW_AGENT must be empty (follow CLAUDE_MEM_PROVIDER), "claude-code", "codex", "gemini", "opencode", "api", "off", or "all"' };
+    }
+    if (settings.CLAUDE_MEM_CORPUS_AGENT !== undefined
+      && !(CORPUS_AGENT_CHOICES as readonly string[]).includes(settings.CLAUDE_MEM_CORPUS_AGENT)) {
+      return { valid: false, error: `CLAUDE_MEM_CORPUS_AGENT must be empty (Claude Agent SDK) or ${CORPUS_AGENT_CHOICES.filter(Boolean).map(choice => JSON.stringify(choice)).join(', ')} (the selected openrouter / openai-compatible provider)` };
+    }
+    if (settings.CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER !== undefined
+      && !['', 'openrouter', 'openai-compatible', 'off'].includes(settings.CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER)) {
+      return { valid: false, error: 'CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER must be empty (follow the primary provider), "openrouter", "openai-compatible", or "off"' };
+    }
+    if (settings.CLAUDE_MEM_WORK_VIEW_COPY_MODEL !== undefined
+      && (typeof settings.CLAUDE_MEM_WORK_VIEW_COPY_MODEL !== 'string' || settings.CLAUDE_MEM_WORK_VIEW_COPY_MODEL.length > 200)) {
+      return { valid: false, error: 'CLAUDE_MEM_WORK_VIEW_COPY_MODEL must be a string of at most 200 characters' };
+    }
+    for (const key of ['CLAUDE_MEM_WORK_VIEW_CLAUDE_MODEL', 'CLAUDE_MEM_WORK_VIEW_CODEX_MODEL', 'CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL', 'CLAUDE_MEM_WORK_VIEW_OPENCODE_MODEL', 'CLAUDE_MEM_WORK_VIEW_API_MODEL'] as const) {
+      if (settings[key] !== undefined && (typeof settings[key] !== 'string' || settings[key].length > 200)) {
+        return { valid: false, error: `${key} must be a string of at most 200 characters` };
       }
     }
 
@@ -393,16 +699,25 @@ export class SettingsRoutes extends BaseRouteHandler {
     return { valid: true };
   }
 
-  private isMcpEnabled(): boolean {
+  // Installed plugin: the worker bundle runs from <pluginRoot>/scripts, so the
+  // package root is the plugin root and holds .mcp.json. Repo checkout: plugin/.
+  // Same layout resolution as ViewerRoutes' UI assets.
+  private mcpConfigDir(): string {
     const packageRoot = getPackageRoot();
-    const mcpPath = path.join(packageRoot, 'plugin', '.mcp.json');
-    return existsSync(mcpPath);
+    const candidates = [packageRoot, path.join(packageRoot, 'plugin')];
+    return candidates.find(dir =>
+      existsSync(path.join(dir, '.mcp.json')) || existsSync(path.join(dir, '.mcp.json.disabled'))
+    ) ?? candidates[0];
+  }
+
+  private isMcpEnabled(): boolean {
+    return existsSync(path.join(this.mcpConfigDir(), '.mcp.json'));
   }
 
   private toggleMcp(enabled: boolean): void {
-    const packageRoot = getPackageRoot();
-    const mcpPath = path.join(packageRoot, 'plugin', '.mcp.json');
-    const mcpDisabledPath = path.join(packageRoot, 'plugin', '.mcp.json.disabled');
+    const mcpDir = this.mcpConfigDir();
+    const mcpPath = path.join(mcpDir, '.mcp.json');
+    const mcpDisabledPath = path.join(mcpDir, '.mcp.json.disabled');
 
     if (enabled && existsSync(mcpDisabledPath)) {
       renameSync(mcpDisabledPath, mcpPath);
@@ -415,17 +730,4 @@ export class SettingsRoutes extends BaseRouteHandler {
     }
   }
 
-  private ensureSettingsFile(settingsPath: string): void {
-    if (!existsSync(settingsPath)) {
-      const defaults = SettingsDefaultsManager.getAllDefaults();
-
-      const dir = path.dirname(settingsPath);
-      if (!existsSync(dir)) {
-        mkdirSync(dir, { recursive: true });
-      }
-
-      writeJsonFileAtomic(settingsPath, defaults);
-      logger.info('SETTINGS', 'Created settings file with defaults', { settingsPath });
-    }
-  }
 }

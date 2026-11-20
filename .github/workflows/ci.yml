@@ -5,11 +5,23 @@ on:
   push:
     branches: [main]
 
+
+# A newer push to the same branch or PR cancels the older run: its result is
+# already out of date. 174 of 224 CI push runs on main (Nov 1-7) were superseded
+# yet ran to the end.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     name: typecheck · build · test · bundle-size
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # 35 minutes: the slowest full run measured, plus a quarter for a slower runner. PR #6210's run on 8816dd441
+    # (2026-11-17) took 27.6 minutes (npm install 4.2, fast lane 7.6, integration lane 14.2); My Work's browser
+    # tests add about 5 minutes to the integration lane. At 25 the run before it was cancelled with 32 files left.
+    # The deadline only stops a hung run.
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
 
@@ -20,7 +32,7 @@ jobs:
       - name: Install Bun (worker runtime + test runner)
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.4.4
 
       # The repo intentionally gitignores package-lock.json (.gitignore), so
       # `cache: 'npm'` and `npm ci` (both require a committed lockfile) cannot
@@ -29,10 +41,17 @@ jobs:
       - name: Install dependencies
         run: npm install --no-audit --no-fund
 
+      - name: Install Fish and ripgrep for regression tests
+        run: |
+          sudo apt-get update && sudo apt-get install -y fish ripgrep
+          fish --version
+          rg --version
+
       # Plugin installations execute the committed bundles directly. Check
-      # them before rebuilding, which would hide a stale published worker.
-      - name: Verify committed plugin versions
-        run: bun test tests/infrastructure/version-consistency.test.ts
+      # them before rebuilding, which would hide a stale published worker or
+      # a bundle committed with merge-conflict markers (#4728).
+      - name: Verify committed plugin bundles
+        run: bun test tests/infrastructure/version-consistency.test.ts tests/infrastructure/committed-plugin-bundles.test.ts
 
       - name: Typecheck
         run: npm run typecheck
@@ -43,22 +62,90 @@ jobs:
       - name: Build (includes bundle-size guardrails)
         run: npm run build
 
+      - name: Provider import CLI and real-worker smoke
+        run: python3 tests/fixtures/import-provider-smoke.py
+
       # The in-process server-runtime smoke test (tests/server/server-runtime-smoke.test.ts,
       # #2550) runs here with no Docker: it boots the server HTTP surface in
       # process, loads a mode, creates a key, makes an authed request, and
       # checks the viewer responds. This gives every PR real server-runtime
       # coverage. The full pg+redis e2e is the docker-gated job below.
       #
-      # Scoped to tests/ because workers/sync-hub/test is a vitest-pool-workers
+      # Scoped to tests/ because services/sync-hub/test is a vitest-pool-workers
       # suite (imports cloudflare:test — unresolvable under bun test); it runs
       # in the dedicated sync-hub job below.
-      - name: Test
-        run: bun test tests
+      # The root suite runs as two lanes (scripts/test-lanes.ts): the fast unit
+      # lane is `npm test`; the integration lane holds real Chrome, tree-sitter
+      # grammar builds and end-to-end installs. Together they cover every file
+      # `bun test tests` finds, which the lane check proves on every PR.
+      - name: Test lanes cover every test file
+        run: bun scripts/test-lanes.ts check
+
+      # Pure static guards over src/ that until now only ran by hand: hook
+      # handlers and adapters must stay free of stream writes and process
+      # control, and every spawn that passes an environment must sanitize
+      # process.env. Both exit non-zero with file:line, and they are cheap
+      # enough to run before the lanes.
+      - name: Hook I/O and spawn env discipline
+        run: |
+          npm run lint:hook-io
+          npm run lint:spawn-env
+
+      - name: Test (fast lane)
+        run: bun scripts/test-lanes.ts fast
+
+      # tests/integration/hooks-module-engine.test.ts runs the hooks module on
+      # two Claude Codes. 2.1.326 is the first that runs every mod's engine
+      # checks: the session-start card's need `$.process.hookEnv`, which came in
+      # it. 2.1.287 is the first with mods at all: the same bundle must load
+      # there, and the card must leave SessionStart alone. Its test kit has no
+      # `mock.session`, so auto-clear's checks are not run on it.
+      - name: Install Claude Code for the hooks module engine test
+        if: ${{ !cancelled() }}
+        run: |
+          npm install --global @anthropic-ai/claude-code@2.1.326 --no-audit --no-fund
+          claude --version
+          npm install --prefix "$RUNNER_TEMP/claude-code-2.1.287" @anthropic-ai/claude-code@2.1.287 --no-audit --no-fund
+          "$RUNNER_TEMP/claude-code-2.1.287/node_modules/.bin/claude" --version
+
+      # connectToPage allows a browser 10 s to start, and the runner's first
+      # Chrome launch takes about that long (a measured 10.9 s, almost all of
+      # it waiting, not CPU). The lane's first remote-debugging test
+      # (tests/helpers/chrome-devtools.browser.test.ts) used to pay that cold
+      # start inside its own deadline and failed with "Owned browser did not
+      # start". Launch Chrome once here, outside any test's deadline, and
+      # record how long it takes. Later launches start in under a second.
+      - name: Warm Chrome
+        if: ${{ !cancelled() }}
+        run: time google-chrome --headless --no-sandbox --disable-gpu --dump-dom about:blank
+
+      - name: Test (integration lane)
+        if: ${{ !cancelled() }}
+        env:
+          CLAUDE_MEM_TEST_PGVECTOR: '1'
+          CLAUDE_MEM_TEST_HOOKS_MODULE_ENGINE: '1'
+          CLAUDE_MEM_TEST_HOOKS_MODULE_OLDER_CLAUDE: ${{ runner.temp }}/claude-code-2.1.287/node_modules/.bin/claude
+        run: bun scripts/test-lanes.ts integration
 
       # openclaw's suite lives outside tests/ (openclaw/src/index.test.ts), so
       # the scoped step above no longer reaches it — run it explicitly.
       - name: Test (openclaw)
-        run: bun test openclaw
+        run: bun test ./openclaw
+
+      # The cowork plugin's suite lives outside tests/ (cowork/test), so the
+      # scoped lane check above never reaches it — run it explicitly, the same
+      # way openclaw's out-of-tree suite is run.
+      - name: Test (cowork)
+        run: bun test ./cowork/test
+
+      - name: Test (cowork standalone hooks)
+        run: node cowork/test/run-tests.mjs
+
+      - name: Test (agent cost report, Python)
+        run: python3 -B -m unittest discover -s plugin/skills/agent-cost-report/scripts/tests -v
+
+      - name: Test (Hermes provider, Python)
+        run: python3 -B -m unittest discover -s tests/hermes -v
 
   # #3482 was first characterised as a Windows bug, but a bare SIGKILL on the
   # stale worker orphans the identical uvx -> uv -> python chain on POSIX (the
@@ -85,7 +172,7 @@ jobs:
       - name: Install Bun (worker runtime + test runner)
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.4.4
 
       - name: Install uv (with cache)
         uses: astral-sh/setup-uv@v5
@@ -100,19 +187,6 @@ jobs:
       # recycle gate's version-mismatch probe needs a built worker present.
       - name: Build
         run: npm run build
-
-      # Same end-to-end tree-kill assertions the Windows job runs, so the two
-      # platforms are held to an identical contract rather than each being
-      # verified by whatever happens to run there.
-      - name: Tree-kill end-to-end (Linux implementations)
-        run: bun test tests/shared/kill-process-tree-cross-platform.test.ts --timeout 120000
-
-      # Same format-agreement guard as the Windows job, for the /proc (Linux)
-      # enumeration path: the table read and captureProcessStartToken must
-      # produce identical tokens, or every descendant is skipped as "reused"
-      # and the orphan bug returns silently.
-      - name: Process-identity format agreement
-        run: bun test tests/shared/kill-process-tree-identity.test.ts --timeout 120000
 
       # CLAUDE_MEM_DATA_DIR is set per-step, not on the job.
       #
@@ -154,7 +228,7 @@ jobs:
       - uses: actions/checkout@v4
 
       # Dumb-grep guard for the Durable Object source (plan Phase 4 / Phase 0.4):
-      # complements the ESLint rules in workers/sync-hub/eslint.config.mjs and
+      # complements the ESLint rules in services/sync-hub/eslint.config.mjs and
       # catches the `globalThis.setTimeout` evasion ESLint misses. The DO's
       # hibernation WebSocket upgrade handler is necessarily a method named
       # `fetch`, so exactly its definition line (`async fetch(request`) is
@@ -163,8 +237,8 @@ jobs:
       - name: Durable Object anti-pattern grep
         run: |
           set -u
-          hits=$(grep -rn "setTimeout\|setInterval\|\.accept()\|connect(\|globalThis\.\(setTimeout\|setInterval\)" workers/sync-hub/src/do/ || true)
-          fetch_hits=$(grep -rn "fetch(" workers/sync-hub/src/do/ | grep -v "async fetch(request" || true)
+          hits=$(grep -rn "setTimeout\|setInterval\|\.accept()\|connect(\|globalThis\.\(setTimeout\|setInterval\)" services/sync-hub/src/do/ || true)
+          fetch_hits=$(grep -rn "fetch(" services/sync-hub/src/do/ | grep -v "async fetch(request" || true)
           if [ -n "$hits$fetch_hits" ]; then
             echo "Durable Object anti-pattern hits (timers pin the DO awake; outbound I/O and legacy accept defeat hibernation):"
             echo "$hits"
@@ -176,22 +250,147 @@ jobs:
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.4.4
 
       - name: Install sync-hub dependencies
-        working-directory: workers/sync-hub
+        working-directory: services/sync-hub
         run: bun install --frozen-lockfile
 
       - name: sync-hub tests (main suite)
-        working-directory: workers/sync-hub
+        working-directory: services/sync-hub
         run: bun run test
 
       # The WS + DO tests need their own invocation with --maxWorkers=1
       # --no-isolate (documented @cloudflare/vitest-pool-workers limitation),
       # which is exactly what the test:ws script pins.
       - name: sync-hub tests (WebSocket suite)
-        working-directory: workers/sync-hub
+        working-directory: services/sync-hub
         run: bun run test:ws
+
+  sync-api:
+    name: sync-api (postgres · protocol v2 · matrix e2e)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: sync_api_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d sync_api_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/sync_api_test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+
+      - name: Install repository dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Install sync-api dependencies
+        working-directory: services/sync-api
+        run: bun install --frozen-lockfile
+
+      # Select only suites that read the Postgres test URL. The other server
+      # and storage suites already run in the root lanes.
+      - name: Server and storage tests (Postgres)
+        env:
+          CLAUDE_MEM_DATA_DIR: ${{ runner.temp }}/claude-mem-generation-data
+          CLAUDE_MEM_TEST_POSTGRES_URL: ${{ env.DATABASE_URL }}
+        run: |
+          mapfile -t postgres_tests < <(git grep -l -F 'process.env.CLAUDE_MEM_TEST_POSTGRES_URL' -- tests/server tests/storage tests/cli/server-jobs.test.ts tests/compat)
+          test "${#postgres_tests[@]}" -gt 0
+          bun test "${postgres_tests[@]/#/./}"
+
+      - name: sync-api unit and protocol tests
+        working-directory: services/sync-api
+        run: bun test test
+
+      - name: viewer-host gate tests
+        working-directory: services/viewer-host
+        run: bun install --frozen-lockfile && bun test test
+
+      # The matrix's browser pages compile the real My Work source, whose
+      # dependencies live in that app's own package.
+      - name: Install My Work dependencies
+        working-directory: src/ui/my-work
+        run: npm ci --no-audit --no-fund
+
+      # The matrix allows a browser 10 s to start. This is the runner's first
+      # Chrome launch, so run one first and record how long it takes.
+      - name: Warm Chrome
+        run: time google-chrome --headless --no-sandbox --disable-gpu --dump-dom about:blank
+
+      - name: protocol-v2 matrix e2e against local sync-api
+        run: bun scripts/sync-matrix-e2e.ts
+
+  # bm25 keyword ranking needs pg_textsearch (and search by meaning needs
+  # pgvector), which the postgres:16 service above lacks; there these tests
+  # skip. This job builds docker/postgres, the image docker-compose.yml runs,
+  # so the search tests run against the same Postgres self-hosters get.
+  server-search-pgvector:
+    name: server search (pgvector · pg_textsearch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CLAUDE_MEM_TEST_POSTGRES_URL: postgres://postgres:postgres@127.0.0.1:5432/server_search_test
+      # Fail, rather than skip, a search-by-meaning test that finds no pgvector.
+      CLAUDE_MEM_TEST_PGVECTOR: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and start Postgres from docker/postgres
+        run: |
+          docker build -t claude-mem-postgres:17 docker/postgres
+          docker run -d --name search-postgres -p 5432:5432 \
+            -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=server_search_test \
+            claude-mem-postgres:17
+          # Over TCP, so the image's socket-only init server does not count as ready.
+          for _attempt in $(seq 60); do
+            docker exec search-postgres pg_isready -h 127.0.0.1 -U postgres -d server_search_test && exit 0
+            sleep 1
+          done
+          docker logs search-postgres
+          exit 1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+
+      - name: Install repository dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: bm25 and hybrid search, vector writes and backfill
+        env:
+          CLAUDE_MEM_DATA_DIR: ${{ runner.temp }}/claude-mem-search-data
+        run: >-
+          bun test
+          tests/storage/postgres/postgres-storage.test.ts
+          tests/storage/postgres/observation-embeddings.test.ts
+          tests/server/embedding-parts-contract.test.ts
+          tests/server/runtime/memories-vector-write.test.ts
+          tests/server/generation/process-generated-response-vectors.test.ts
+          tests/server/semantic-context-route.test.ts
 
   clean-room-deps:
     name: clean-room dependency closure smoke
@@ -207,7 +406,7 @@ jobs:
       - name: Install Bun (worker runtime + test runner)
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.4.4
 
       # See note in the build job: no committed root lockfile, so npm install.
       - name: Install dependencies
@@ -231,6 +430,21 @@ jobs:
       - name: Clean-room dependency closure smoke
         run: npm run smoke:clean-room
 
+      # The build job runs the provider import smoke on the build tree. This runs
+      # it on the packed npm package instead, installed outside the checkout so
+      # nothing resolves from the repo: the CLI and worker `npx claude-mem`
+      # installs, against synthetic vendor APIs. `npx --no` runs the packed bin
+      # or fails; it never fetches claude-mem from the registry.
+      - name: Provider import smoke from the packed package
+        run: |
+          set -euo pipefail
+          package_dir="$RUNNER_TEMP/import-package"
+          mkdir -p "$package_dir/install"
+          tarball="$(npm pack --silent --pack-destination "$package_dir" | tail -n 1)"
+          npm install "$package_dir/$tarball" --prefix "$package_dir/install" --ignore-scripts --no-audit --no-fund
+          (cd "$package_dir/install" && npx --no claude-mem import --help | grep -F -- '--from mem0')
+          CLAUDE_MEM_IMPORT_TEST_PACKAGE="$package_dir/install/node_modules/claude-mem" python3 tests/fixtures/import-provider-smoke.py
+
   server-runtime-e2e-docker:
     name: server-runtime e2e (docker · pg + valkey)
     runs-on: ubuntu-latest
@@ -250,7 +464,7 @@ jobs:
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.4.4
 
       # See note in the build job: no committed lockfile, so npm install.
       - name: Install dependencies
@@ -261,3 +475,41 @@ jobs:
 
       - name: Server-runtime Docker e2e
         run: npm run e2e:server:docker
+
+  eve-provider:
+    name: eve memory provider (claude-mem/eve)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: integrations/eve/provider
+    steps:
+      - uses: actions/checkout@v4
+
+      # eve requires Node.js 24.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install eve for typecheck and tests
+        run: npm install --no-audit --no-fund
+
+      - name: Typecheck against eve
+        run: npm run typecheck
+
+      - name: Published types match the source
+        run: npm run check:types
+
+      - name: Provider tests
+        run: npm test
+
+      # The peer range covers eve 0.84.0 and the 1.0 release candidates, so the
+      # newest verified candidate is checked too, without changing the lockfile.
+      - name: Install eve 1.0.0-rc.9
+        run: npm install --no-save --no-audit --no-fund eve@1.0.0-rc.9
+
+      - name: Typecheck against eve 1.0.0-rc.9
+        run: npm run typecheck
+
+      - name: Provider tests against eve 1.0.0-rc.9
+        run: npm test

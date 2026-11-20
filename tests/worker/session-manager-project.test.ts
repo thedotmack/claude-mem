@@ -2,13 +2,15 @@ import { describe, it, expect, mock, beforeEach, afterEach, afterAll, spyOn } fr
 import { logger } from '../../src/utils/logger.js';
 import { SessionManager } from '../../src/services/worker/SessionManager.js';
 import { processAgentResponse } from '../../src/services/worker/agents/ResponseProcessor.js';
-import type { ActiveSession } from '../../src/services/worker-types.js';
 import type { DatabaseManager } from '../../src/services/worker/DatabaseManager.js';
 import type { StorageResult, WorkerRef } from '../../src/services/worker/agents/types.js';
 
-mock.module('../../src/services/worker-service.js', () => ({
-  updateCursorContextForProject: () => Promise.resolve(),
-}));
+// Snapshot worker-utils before the stub below replaces it, and restore it in
+// afterAll (see the ModeManager note): left in place, the getWorkerPort-only
+// stub hands 37777 to every later file that reads the worker port.
+import * as realWorkerUtilsModule from '../../src/shared/worker-utils.js';
+
+const realWorkerUtilsSnapshot = { ...realWorkerUtilsModule };
 
 mock.module('../../src/shared/worker-utils.js', () => ({
   getWorkerPort: () => 37777,
@@ -22,11 +24,13 @@ mock.module('../../src/shared/worker-utils.js', () => ({
 // readdir-dependent file order runs them after this file. Same pattern as
 // tests/context/formatters/agent-formatter.test.ts.
 import * as realModeManagerModule from '../../src/services/domain/ModeManager.js';
+import { sessionDbWithoutMedia } from '../fixtures/worker/session-db-without-media.js';
 
 const realModeManagerSnapshot = { ...realModeManagerModule };
 
 afterAll(() => {
   mock.module('../../src/services/domain/ModeManager.js', () => realModeManagerSnapshot);
+  mock.module('../../src/shared/worker-utils.js', () => realWorkerUtilsSnapshot);
 });
 
 mock.module('../../src/services/domain/ModeManager.js', () => ({
@@ -62,28 +66,12 @@ function makeDbManager(storeObservations = mock(() => ({
     }),
     getSessionStore: () => ({
       getPromptNumberFromUserPrompts: () => 1,
-      ensureMemorySessionIdRegistered: () => {},
+      db: sessionDbWithoutMedia(), ensureMemorySessionIdRegistered: () => {},
       storeObservations,
     }),
     getChromaSync: () => ({ syncObservation: mock(() => Promise.resolve()) }),
     getCloudSync: () => null,
   } as unknown as DatabaseManager;
-}
-
-function initializeWithProject(
-  sessionManager: SessionManager,
-  sessionDbId: number,
-  prompt: string,
-  promptNumber: number,
-  project: string,
-): ActiveSession {
-  const initialize = sessionManager.initializeSession as unknown as (
-    id: number,
-    currentPrompt: string,
-    number: number,
-    currentProject: string,
-  ) => ActiveSession;
-  return initialize.call(sessionManager, sessionDbId, prompt, promptNumber, project);
 }
 
 let spies: ReturnType<typeof spyOn>[] = [];
@@ -106,7 +94,7 @@ describe('SessionManager prompt project attribution', () => {
   it('uses the prompt project when a new active session is created cold', () => {
     const dbManager = makeDbManager();
     const sessionManager = new SessionManager(dbManager);
-    const session = initializeWithProject(sessionManager, 1, 'prompt 1', 1, 'repo-b/worktree');
+    const session = sessionManager.initializeSession(1, 'prompt 1', 1, 'repo-b/worktree');
 
     expect(session.project).toBe('repo-b/worktree');
     expect(dbManager.getSessionById(1).project).toBe('repo-a');
@@ -122,7 +110,7 @@ describe('SessionManager prompt project attribution', () => {
     const sessionManager = new SessionManager(dbManager);
     sessionManager.initializeSession(1, 'prompt 1', 1);
 
-    const session = initializeWithProject(sessionManager, 1, 'prompt 2', 2, 'repo-b/worktree');
+    const session = sessionManager.initializeSession(1, 'prompt 2', 2, 'repo-b/worktree');
     await processAgentResponse(
       `<observation><type>discovery</type><title>Prompt 2</title><narrative>Valid observation</narrative><facts></facts><concepts></concepts><files_read></files_read><files_modified></files_modified></observation>`,
       { ...session, memorySessionId: 'memory-123' },
@@ -144,7 +132,7 @@ describe('SessionManager prompt project attribution', () => {
     const firstPrompt = sessionManager.initializeSession(1, 'prompt 1', 1);
     expect(firstPrompt.project).toBe('repo-b/worktree');
 
-    const secondPrompt = initializeWithProject(sessionManager, 1, 'prompt 2', 2, 'repo-b/worktree');
+    const secondPrompt = sessionManager.initializeSession(1, 'prompt 2', 2, 'repo-b/worktree');
     expect(secondPrompt.project).toBe('repo-b/worktree');
   });
 
@@ -153,7 +141,7 @@ describe('SessionManager prompt project attribution', () => {
     (project) => {
       const sessionManager = new SessionManager(makeDbManager());
       sessionManager.initializeSession(1, 'prompt 1', 1);
-      const session = initializeWithProject(sessionManager, 1, 'prompt 2', 2, project as string);
+      const session = sessionManager.initializeSession(1, 'prompt 2', 2, project as string);
       expect(session.project).toBe('repo-a');
     },
   );

@@ -1,0 +1,988 @@
+/**
+ * The job My Work's automatic refresh hands the agent runner: refresh the
+ * owner's goals when they are stale, then group, review, name, sort into focus areas and retell
+ * every request that is due. No day window beyond the skill's own default,
+ * no group cap and no time limit (owner rule, Oct 22).
+ *
+ * Every backend (Claude Code, Codex, Gemini, OpenCode, and the selected API provider)
+ * runs the same way: the worker runs the skills' CLI and scripts, asks the
+ * read-only agent one JSON question per step or batch, and saves the answer through the
+ * same validators the skills' CLI uses.
+ */
+
+import { spawn } from 'child_process';
+import { randomBytes } from 'crypto';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { join } from 'path';
+import type { AgentTask, AnswerSchema, AskAgent, StepModels, TaskAgentId } from '../agent-runner/run.js';
+import type { UsableAgentId } from '../agent-runner/detect.js';
+import { runCommand } from '../agent-runner/detect.js';
+import { writeOwnerPromptsFile, type OwnerPromptsFile } from '../prompt-import/owner-prompts-file.js';
+import { resolvePythonCommand } from './python.js';
+import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
+import { logger } from '../../utils/logger.js';
+import { FOCUS_BATCH, readGoals, readLedger, runCli, storyInput as buildStoryInput, TITLE_BATCH, validateFocusAnswer, validateGroupingAnswer, validateStory, validateTitleAnswer, type FocusInput, type FocusRequestRecord, type LedgerDatabase, type RefreshNeeds } from './request-groups.mjs';
+import { FOCUS_AUTO_PLACE_THRESHOLD, judgeFocusBatch, placesAlone, type FocusJudge, type FocusJudgement } from './focus-judge.mjs';
+import { isWithdrawnArea, ownerGoalsAreaRows, ownerGoalsSaveKey, PROPOSAL_KINDS, readFocusAreas, routerFocusRows, type FocusArea, type RouterFocusBody } from './my-focus.mjs';
+import { NAV_LABELS } from './nav-words.mjs';
+import { routeUndecided, type RequestJudge } from './request-judge.mjs';
+import { RUNTIME_SKILLS } from '../../shared/runtime-skills.js';
+import { batchFailure, checkedGoalsQuoteBoundary, nextOwnerGoalsBatch, OWNER_GOALS_BATCH_BYTES, OWNER_GOALS_QUESTION_BYTES, ownerGoalsCheckpointPath, readOwnerGoalsCheckpoint, renderOwnerGoalsBatch, writeOwnerGoalsCheckpoint, type OwnerGoalsCheckpoint } from './owner-goals-batches.js';
+
+/** claude-mem MCP tools a refresh may call: reads only. Saves go through the skills' scripts and their
+ * validators (save_goals.py, the request-groups CLI), never a raw work_state_write. */
+export const MEMORY_TOOLS = ['search', 'dumb_search', 'timeline', 'get_observations', 'get_tool_uses', 'work_state_read'];
+const PLUGIN_MCP_PREFIX = 'mcp__plugin_claude-mem_mcp-search__';
+const REVIEW_BATCH = 8;
+/** save_goals.py's FAILED_AFTER_WRITING_EXIT: it failed after its first write, so the goals step must not ask again. */
+const SAVE_GOALS_FAILED_AFTER_WRITING_EXIT = 3;
+/**
+ * Review batches running at the same time. Each batch is one agent process, so this follows the
+ * owner's cap on concurrent agent subprocesses, CLAUDE_MEM_MAX_CONCURRENT_AGENTS (default 2), rather
+ * than a number of its own. Read on every run, so raising the setting takes effect without a restart.
+ */
+export function reviewConcurrency(dataDir: string): number {
+  // A 0, negative or non-numeric value would start no review lanes and skip every review without a failure,
+  // so each source is used only when it is a positive count: settings file, then environment, then built-in default.
+  const positive = (value: string | undefined) => { const count = parseInt(value ?? '', 10); return Number.isFinite(count) && count >= 1 ? count : null; };
+  return positive(SettingsDefaultsManager.loadFromFile(join(dataDir, 'settings.json'), true, { readOnly: true }).CLAUDE_MEM_MAX_CONCURRENT_AGENTS)
+    ?? positive(SettingsDefaultsManager.get('CLAUDE_MEM_MAX_CONCURRENT_AGENTS'))
+    ?? parseInt(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_MAX_CONCURRENT_AGENTS, 10);
+}
+
+/** The model each step runs on. Small, fast models match conversations and goals and name requests from their
+ * reviews; stronger ones judge progress, write the story and pick verbatim quotes. Codex's careful steps use its CLI
+ * default model. Ids checked against claude --help (aliases), codex-cli 0.163.0 models_cache.json and gemini 0.49.0 aliases. */
+const LIGHT: StepModels = { 'claude-code': { model: 'haiku' }, codex: { model: 'gpt-6-luna', reasoningEffort: 'low' }, gemini: { model: 'flash-lite' } };
+const CAREFUL: StepModels = { 'claude-code': { model: 'sonnet' }, codex: {}, gemini: { model: 'flash' } };
+export const STEP_MODELS = { goals: CAREFUL, grouping: LIGHT, review: CAREFUL, titles: LIGHT, focus: LIGHT, story: CAREFUL } as const;
+type Step = keyof typeof STEP_MODELS;
+
+/** The setting that puts every step of one agent on a single model (#5164), e.g. `haiku` to keep the refresh
+ * off Sonnet on a shared Claude subscription. Empty keeps the per-step table above. */
+export const STEP_MODEL_SETTINGS = {
+  'claude-code': 'CLAUDE_MEM_WORK_VIEW_CLAUDE_MODEL',
+  codex: 'CLAUDE_MEM_WORK_VIEW_CODEX_MODEL',
+  gemini: 'CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL',
+  opencode: 'CLAUDE_MEM_WORK_VIEW_OPENCODE_MODEL',
+  api: 'CLAUDE_MEM_WORK_VIEW_API_MODEL',
+} as const satisfies Record<TaskAgentId, keyof SettingsDefaults>;
+
+/** The models each step runs on, read from settings at the start of every run so a change applies without a restart.
+ * An override replaces only the model: Codex keeps each step's reasoning effort. */
+export function resolveStepModels(dataDir: string): Record<Step, StepModels> {
+  const settings = SettingsDefaultsManager.loadFromFile(join(dataDir, 'settings.json'), true, { readOnly: true });
+  const overrides = (Object.entries(STEP_MODEL_SETTINGS) as Array<[TaskAgentId, keyof SettingsDefaults]>)
+    .map(([agent, key]) => [agent, String(settings[key] ?? '').trim()] as const)
+    .filter(([, model]) => model);
+  if (!overrides.length) return STEP_MODELS;
+  const withOverrides = (models: StepModels): StepModels => {
+    const result: StepModels = { ...models };
+    for (const [agent, model] of overrides) result[agent] = { ...models[agent], model };
+    return result;
+  };
+  return Object.fromEntries((Object.keys(STEP_MODELS) as Step[]).map(step => [step, withOverrides(STEP_MODELS[step])])) as Record<Step, StepModels>;
+}
+
+/** The values CLAUDE_MEM_WORK_VIEW_AGENT accepts. The settings route validates against this same list. */
+export const WORK_VIEW_AGENT_CHOICES = ['', 'claude-code', 'codex', 'gemini', 'opencode', 'api', 'off', 'all'] as const;
+
+export interface RefreshAgentChoice {
+  /** The only agents the refresh may run on; absent means every logged-in agent. */
+  allowedAgents?: TaskAgentId[];
+  /** Tried first when it is logged in (#5435). */
+  preferredAgent?: TaskAgentId;
+  /** A failed run is never handed to a second agent. */
+  stayOnFirstUsableAgent: boolean;
+}
+
+const LOCAL_AGENT_IDS: readonly UsableAgentId[] = ['claude-code', 'codex', 'gemini', 'opencode'];
+
+/** Which agents the My Work refresh may run on (#5189). A background refresh that falls through to another
+ * agent spends that agent's quota without the owner asking: a Claude Code session limit sent ~230 hidden
+ * `codex exec` runs to one owner's ChatGPT plan. So the refresh stays on one agent unless the owner opts in:
+ * - CLAUDE_MEM_WORK_VIEW_AGENT names an agent: only that agent runs;
+ * - `off`: no agent runs;
+ * - `all`: every logged-in agent, falling through on failure (the agent CLAUDE_MEM_PROVIDER names first);
+ * - `api`: only the API provider CLAUDE_MEM_PROVIDER selects ('openrouter', 'openai-compatible', 'cmem');
+ * - empty: the agent CLAUDE_MEM_PROVIDER names (#5435). A provider that names an API endpoint instead
+ *   ('openrouter', 'openai-compatible', 'cmem') runs the first logged-in agent in detect order, and only that one.
+ *   The API provider itself runs the refresh only when the owner sets `api`: it spends that provider's credit.
+ * The worker builds a fresh task for every run, so a settings change applies to the next refresh. */
+export function resolveRefreshAgents(dataDir: string): RefreshAgentChoice {
+  const settings = SettingsDefaultsManager.loadFromFile(join(dataDir, 'settings.json'), true, { readOnly: true });
+  const provider = String(settings.CLAUDE_MEM_PROVIDER ?? '').trim();
+  const providerAgent: TaskAgentId | undefined = provider === 'claude' ? 'claude-code'
+    : provider === 'codex' || provider === 'gemini' ? provider : undefined;
+  const configuredAgent = String(settings.CLAUDE_MEM_WORK_VIEW_AGENT ?? '').trim();
+  if (configuredAgent === 'off') return { allowedAgents: [], stayOnFirstUsableAgent: true };
+  if (configuredAgent === 'all') return { preferredAgent: providerAgent, stayOnFirstUsableAgent: false };
+  const namedAgent = LOCAL_AGENT_IDS.find(agent => agent === configuredAgent);
+  if (namedAgent) return { allowedAgents: [namedAgent], preferredAgent: namedAgent, stayOnFirstUsableAgent: true };
+  if (configuredAgent === 'api') return { allowedAgents: ['api'], preferredAgent: 'api', stayOnFirstUsableAgent: true };
+  if (configuredAgent) {
+    logger.warn('WORKER', 'Unrecognized CLAUDE_MEM_WORK_VIEW_AGENT; the My Work refresh follows CLAUDE_MEM_PROVIDER instead', {
+      value: configuredAgent, accepted: WORK_VIEW_AGENT_CHOICES.filter(Boolean).join(', '),
+    });
+  }
+  if (providerAgent) return { allowedAgents: [providerAgent], preferredAgent: providerAgent, stayOnFirstUsableAgent: true };
+  return { stayOnFirstUsableAgent: true };
+}
+
+/** A language name CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE may hold: letters, spaces, hyphens and parentheses, such as "Turkish" or "Chinese (Simplified)". */
+const LANGUAGE_NAME = /^\p{L}[\p{L} ()'-]{0,39}$/u;
+
+/** The language My Work's generated text is written in, from CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE, read at the start of
+ * every run. Empty or not a language name gives null: the run then uses the language its grouping step decides from
+ * the owner's asks (decidedTextLanguage), and only with neither does each step apply the skills' own Language rule. */
+export function resolveTextLanguage(dataDir: string): string | null {
+  const value = String(SettingsDefaultsManager.loadFromFile(join(dataDir, 'settings.json'), true, { readOnly: true }).CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE ?? '').trim();
+  return LANGUAGE_NAME.test(value) ? value : null;
+}
+
+/** Where a run records the language its grouping step decided, for later runs that have nothing to group. */
+const DECIDED_LANGUAGE_FILE = 'text-language.json';
+
+/** A language name from a model answer, or null: only a value that passes LANGUAGE_NAME is ever put in a question. */
+export function decidedTextLanguage(value: unknown): string | null {
+  const name = typeof value === 'string' ? value.trim() : '';
+  return LANGUAGE_NAME.test(name) ? name : null;
+}
+
+/** The language an earlier run's grouping step decided, or null when none was recorded (or the file is unreadable). */
+export function readDecidedTextLanguage(ledgerDir: string): string | null {
+  try { return decidedTextLanguage(JSON.parse(readFileSync(join(ledgerDir, DECIDED_LANGUAGE_FILE), 'utf8'))?.language); }
+  catch { return null; }
+}
+
+const strictObject = (properties: Record<string, unknown>) => ({ type: 'object', additionalProperties: false, required: Object.keys(properties), properties });
+const stringArray = { type: 'array', items: { type: 'string' } };
+/** The decisions `apply` takes, as Codex's structured-output schema (strict mode: every field required). */
+export const GROUPING_ANSWER_SCHEMA: AnswerSchema = strictObject({
+  // The human language most of the batch's asks are written in (#5660): the run names it in every later question.
+  language: { type: 'string' },
+  groups: { type: 'array', items: strictObject({
+    title: { type: 'string' },
+    conversations: stringArray,
+    links: { type: 'array', items: strictObject({ kind: { type: 'string', enum: ['shared-work-list', 'shared-request-id', 'agent-judgment'] }, conversations: stringArray, evidence: { type: 'string' } }) },
+  }) },
+  ignored: { type: 'array', items: strictObject({ conversation: { type: 'string' }, reason: { type: 'string' } }) },
+});
+
+/** The answer `record-titles` takes: one written title per request of the batch, by its groupId. */
+export const TITLE_ANSWER_SCHEMA: AnswerSchema = strictObject({
+  titles: { type: 'array', items: strictObject({ groupId: { type: 'string' }, title: { type: 'string' } }) },
+});
+
+/** The answer `record-focus` takes: every request placed by area id (or "other"), and areas proposed from Other.
+ * sameAs is the model's judgment of which saved area (dismissed ones included) a proposal already is, or null. */
+export const FOCUS_ANSWER_SCHEMA: AnswerSchema = strictObject({
+  placements: { type: 'array', items: strictObject({ anchor: { type: 'string' }, focusAreaId: { type: 'string' }, evidence: { type: 'string' } }) },
+  proposals: { type: 'array', items: strictObject({
+    kind: { type: 'string', enum: [...PROPOSAL_KINDS] },
+    name: { type: 'string' }, goal: { type: 'string' }, about: { type: 'string' },
+    anchors: stringArray,
+    sameAs: { type: ['string', 'null'] },
+    evidence: { type: 'string' },
+  }) },
+});
+
+/** When each step ran, for refresh.json's run record (not shown in My Work). */
+export interface StepTiming { step: string; agent: TaskAgentId; startedAt: string; finishedAt: string; groups?: number }
+
+export interface RefreshTaskOptions {
+  needs: RefreshNeeds;
+  reason: string;
+  /** ~/.claude-mem: where the skill scripts run. */
+  dataDir: string;
+  /** ~/.claude-mem/work-view: every backend's working directory, and the only folder Claude Code may read. */
+  ledgerDir: string;
+  /** The installed plugin folder holding skills/ and .mcp.json. */
+  pluginRoot: string;
+  openDatabase: () => LedgerDatabase & { close(): void };
+  /** Files each new conversation under the request it continues before the grouping agent sees it (Jev on
+   * a CMEM Pro or OpenRouter install, request-judge.mjs). Null or absent: code links alone route, and the
+   * agent decides the rest as before. */
+  judge?: RequestJudge | null;
+  /** Asks Jev which kept focus area each request of a focus batch is part of, before the focus agent sees it
+   * (focus-judge.mjs; built from the same settings as `judge`). Null or absent: the agent places alone, as before. */
+  focusJudge?: FocusJudge | null;
+  /** The confidence at which a focus-judge pick is placed without the agent; FOCUS_AUTO_PLACE_THRESHOLD (null: never)
+   * unless a test injects one. */
+  focusAutoPlaceThreshold?: number | null;
+  now?: () => number;
+  spawnImpl?: typeof spawn;
+  /** This worker's sync device id ('' when cloud sync never started), so my-focus rows replay in the same order the
+   * worker's snapshot uses. Required. */
+  localDeviceId: () => string;
+  /** The focus step's write: the worker's system-only my-focus write (WorkViewRoutes.recordRouterFocus), called
+   * in-process. Throws a TypeError when it refused the answer before writing anything. */
+  saveFocus?: (body: RouterFocusBody) => { placed: number; focusAreaIds: string[] } | Promise<{ placed: number; focusAreaIds: string[] }>;
+  /** Owner-goals step 1: writes owner-prompts.md into the folder from every agent's transcripts (prompt importer). */
+  writeOwnerPrompts?: (folder: string, sinceMinute: string | null) => Promise<OwnerPromptsFile>;
+}
+
+function skillPaths(pluginRoot: string) {
+  const skills = join(pluginRoot, 'skills');
+  return {
+    requestProgressSkill: join(skills, RUNTIME_SKILLS.requestProgress, 'SKILL.md'),
+    ownerGoalsSkill: join(skills, RUNTIME_SKILLS.ownerGoals, 'SKILL.md'),
+    cli: join(skills, RUNTIME_SKILLS.requestProgress, 'scripts', 'request-groups.mjs'),
+    saveScript: join(skills, RUNTIME_SKILLS.ownerGoals, 'scripts', 'save_goals.py'),
+  };
+}
+
+/** A skill's instructions with its folder filled in, for agents without the Skill tool. */
+function inlineSkill(path: string): string {
+  return readFileSync(path, 'utf8').replaceAll('${CLAUDE_SKILL_DIR}', join(path, '..'));
+}
+
+/** The first JSON object in an agent's answer, with or without code fences. */
+export function parseAgentJson(text: string): any {
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start === -1 || end < start) throw new Error('The answer held no JSON object.');
+  return JSON.parse(text.slice(start, end + 1));
+}
+
+const pad = (value: number) => String(value).padStart(2, '0');
+const localDay = (epoch: number) => {
+  const date = new Date(epoch);
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+};
+/** The local `YYYY-MM-DD HH:MM` that owner-prompts.md headers use. */
+const localMinute = (epoch: number) => `${localDay(epoch)} ${pad(new Date(epoch).getHours())}:${pad(new Date(epoch).getMinutes())}`;
+
+/** A story preference's ISO time as the local minute owner-prompts.md headers use. */
+const quoteMinute = (at: string) => {
+  const epoch = Date.parse(at);
+  if (!Number.isFinite(epoch)) throw new Error(`A saved owner-goals rule quote has no readable time: ${at}`);
+  return localMinute(epoch);
+};
+
+/** The saved goals as the owner-goals.json the skill writes, so an update starts from them: the focus areas and
+ * asks in owner-goals, and the rules owner-goals put in the build story's preferences. */
+function goalsJson(saved: ReturnType<typeof readGoals>, story: { preferences?: Array<Record<string, any>> } | null) {
+  const items = (kind: string) => saved.goals.filter(goal => goal.kind === kind);
+  return {
+    generated_at: saved.generatedAt, window_days: 31, human_summary: saved.summary,
+    focus_areas: items('focus-area').map(goal => ({ rank: goal.rank, title: goal.title, goal: goal.goal, matches: goal.focusAreaId,
+      latest_at: goal.latestAt, times_asked: goal.timesAsked, evidence: goal.evidence })),
+    asks: items('ask').map(goal => ({ rank: goal.rank, title: goal.title, focus_area: goal.focusArea,
+      latest_at: goal.latestAt, times_asked: goal.timesAsked, evidence: goal.evidence })),
+    rules: (story?.preferences ?? []).filter(preference => preference.source === 'owner-goals').map(preference => {
+      const evidence = (preference.quotes ?? []).map((quote: { quote: string; at: string }) => ({ at: quoteMinute(quote.at), quote: quote.quote }));
+      return { when: preference.when ?? '', then: preference.preference, times_asked: preference.supportCount,
+        latest_at: evidence.map((quote: { at: string }) => quote.at).sort().at(-1) ?? null, evidence };
+    }),
+  };
+}
+
+/** What the goals step tells the model about My Focus, so it judges which saved area each mined one already is. */
+/** The worker refuses a new area named like a nav item (nav-words.mjs), so every prompt that names areas says so. */
+const NAV_LABEL_RULE = `A focus area's name never reuses a nav label as whole words, in any case: ${NAV_LABELS.map(label => `"${label}"`).join(', ')}. The worker refuses such a name and the whole answer fails.`;
+const focusAreasNote = (path: string) => `The focus areas already saved in My Focus are in ${path} (id, name, goal, status; do not run --print-focus-areas). For each focus area you write, set "matches" to the id of the saved area it already is, whatever its name, or null when none is. Never match by name alone. ${NAV_LABEL_RULE}`;
+
+export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { steps: StepTiming[] } {
+  const { needs, reason, dataDir, ledgerDir, pluginRoot, openDatabase } = options;
+  if (typeof options.localDeviceId !== 'function') throw new TypeError('buildRefreshTask needs localDeviceId, the worker\'s sync device id.');
+  const now = options.now ?? Date.now;
+  const paths = skillPaths(pluginRoot);
+  const goalsFolder = join(ledgerDir, 'owner-goals', localDay(now()));
+  const writeOwnerPrompts = options.writeOwnerPrompts ?? ((folder, sinceMinute) => writeOwnerPromptsFile({ folder, sinceMinute }));
+  // Owner-goals step 1 is the prompt importer's (one filter for every agent), run once as the task's prepare step:
+  // with saved goals, it also writes the prompts typed since they were saved (new-owner-prompts.md).
+  let savedGoals: ReturnType<typeof readGoals> | null = null;
+  let savedAreas: FocusArea[] = [];
+  let since: string | null = null;
+  let exported: OwnerPromptsFile | null = null;
+  let exportedAt = new Date(now()).toISOString();
+  const checkpointPath = ownerGoalsCheckpointPath(ledgerDir);
+  let goalsCheckpoint: OwnerGoalsCheckpoint | null = null;
+  // Set when prepare drops first-map progress that a newer snapshot superseded; reported with the goals step.
+  let discardedCheckpointNote: string | null = null;
+  const mappingSnapshotMatches = (progress: OwnerGoalsCheckpoint, generatedAt: string | null | undefined) => {
+    const current = generatedAt || null;
+    return progress.deviceId === options.localDeviceId()
+      && (current === progress.baseGeneratedAt || Boolean(progress.save && current === progress.exportedAt));
+  };
+  const checkMappingSnapshot = (progress: OwnerGoalsCheckpoint, generatedAt: string | null | undefined) => {
+    if (!mappingSnapshotMatches(progress, generatedAt)) {
+      throw batchFailure('Saved owner goals or the local device changed while mapping. Checked progress remains at ' + checkpointPath + '; it will not overwrite the newer snapshot.');
+    }
+  };
+  const checkCurrentMappingSnapshot = (progress: OwnerGoalsCheckpoint) => {
+    const database = openDatabase();
+    try { checkMappingSnapshot(progress, readGoals(database).generatedAt); }
+    finally { database.close(); }
+  };
+  const prepareGoals = async () => {
+    const database = openDatabase();
+    // A withdrawn area (a seed undo) is no match target: the owner never had it, so it is left out of the saved areas.
+    try { savedGoals = readGoals(database); savedAreas = readFocusAreas(database, { localDeviceId: options.localDeviceId() }).filter(area => !isWithdrawnArea(area)); } finally { database.close(); }
+    goalsCheckpoint = readOwnerGoalsCheckpoint(checkpointPath);
+    discardedCheckpointNote = null;
+    if (goalsCheckpoint && !mappingSnapshotMatches(goalsCheckpoint, savedGoals.generatedAt)) {
+      // A newer snapshot (another device's first map, a manual /owner-goals run) or another device wins. Keeping
+      // this progress would refuse every later refresh, so drop it and update the saved snapshot the normal way.
+      // The in-run check above still refuses, so the run that noticed the change never overwrites it.
+      rmSync(checkpointPath, { force: true });
+      goalsCheckpoint = null;
+      discardedCheckpointNote = 'discarded first-map progress: a newer goals snapshot was saved';
+    }
+    // A valid snapshot can contain only rules, which live in the story rather than the owner-goals list.
+    const hasSavedItems = savedGoals.goals.length > 0
+      || (readLedger(ledgerDir).story?.preferences ?? []).some((preference: { source?: string }) => preference.source === 'owner-goals');
+    const generatedAt = Date.parse(savedGoals.generatedAt ?? '');
+    since = hasSavedItems && Number.isFinite(generatedAt) ? localMinute(generatedAt) : null;
+    exportedAt = new Date(now()).toISOString();
+    exported = await writeOwnerPrompts(goalsFolder, since);
+  };
+
+  const steps: StepTiming[] = [];
+  const run = async (askBackend: AskAgent, agent: TaskAgentId): Promise<string> => {
+    const runDir = join(ledgerDir, 'agent-runs', randomBytes(6).toString('hex'));
+    mkdirSync(runDir, { recursive: true });
+    let fileNumber = 0;
+    // Once any answer from this agent was refused, the run's error carries `answerRefused` whatever failed first,
+    // so the runner never hands the refresh to another agent (#5189). Batches and focus can fail in any order.
+    let answerWasRefused = false;
+    const refused = (error: Error) => { answerWasRefused = true; return Object.assign(error, { answerRefused: true }); };
+    const stepModels = resolveStepModels(dataDir);
+    const inlineEvidence = new Map<string, string>();
+    // Count the files an agent must read when budgeting goals input, including tool-capable agents.
+    // Only Gemini, OpenCode and the API agent actually receive these contents inlined in the question below.
+    if (needs.goalsStale) {
+      for (const name of ['owner-prompts.md', 'new-owner-prompts.md']) {
+        const path = join(goalsFolder, name);
+        if (existsSync(path)) inlineEvidence.set(path, readFileSync(path, 'utf8'));
+      }
+    }
+    /** The byte budget the next question must fit, and the refusal that names its step when it does not. */
+    let questionBudget: { bytes: number; refusal: string } | null = null;
+    const expandedQuestion = (prompt: string): string => {
+      const supplied = [...inlineEvidence].filter(([path]) => prompt.includes(path));
+      return supplied.length ? prompt + '\n\nThe following input files are supplied inline; no file tools are available:\n'
+        + supplied.map(([path, contents]) => '--- ' + path + ' ---\n' + contents).join('\n\n') : prompt;
+    };
+    const ask: AskAgent = (prompt, models, schema) => {
+      const expanded = expandedQuestion(prompt);
+      if (questionBudget && Buffer.byteLength(expanded, 'utf8') > questionBudget.bytes) throw batchFailure(questionBudget.refusal);
+      return askBackend(agent === 'gemini' || agent === 'opencode' || agent === 'api' ? expanded : prompt, models, schema);
+    };
+    const writeInput = (name: string, value: unknown) => {
+      const path = join(runDir, `${++fileNumber}-${name}.json`);
+      const contents = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+      writeFileSync(path, contents, { mode: 0o600 });
+      inlineEvidence.set(path, contents);
+      return path;
+    };
+    const localDeviceId = options.localDeviceId();
+    const cli = (argv: string[], input?: unknown, cliOptions: { coerceProgress?: boolean; now?: number } = {}) => {
+      let output: any;
+      const database = openDatabase();
+      try { runCli(input === undefined ? argv : [...argv, writeInput(argv[0], input)], { dir: ledgerDir, database, now: now(), print: value => { output = value; }, localDeviceId, ...cliOptions }); }
+      finally { database.close(); }
+      return output;
+    };
+    /** record-focus: checked against the database, then written by the worker. The worker checks the whole answer before
+     * its first write, so its refusal (a TypeError) is re-asked; any other failure is not, since a retry would not help. */
+    const recordFocus = async (flags: string[], answer: unknown) => {
+      if (!options.saveFocus) throw Object.assign(new Error('The focus step has no way to save: the worker did not pass its my-focus write.'), { retryable: false });
+      let output: any;
+      const database = openDatabase();
+      try {
+        await runCli(['record-focus', ...flags, writeInput('record-focus', answer)], {
+          dir: ledgerDir, database, now: now(), print: value => { output = value; }, localDeviceId,
+          saveFocus: async body => {
+            try { return await options.saveFocus!(body); }
+            catch (error) { throw error instanceof TypeError ? error : Object.assign(error instanceof Error ? error : new Error(String(error)), { retryable: false }); }
+          },
+        });
+      } finally { database.close(); }
+      return output as { placed: number; proposed: number };
+    };
+    let droppedProposals = 0;
+    /** For the focus step's retry: the answer without each proposal that record-focus's check or the worker's write
+     * refuses. A proposal is a suggestion the owner still decides, so a bad one no longer fails the placements beside it.
+     * Refused placements are left for record-focus to refuse. */
+    const withoutRefusedProposals = (answer: any, input: Parameters<typeof validateFocusAnswer>[1], flags: { other?: boolean } = {}) => {
+      const ledger = readLedger(ledgerDir);
+      const database = openDatabase();
+      let focusAreas: FocusArea[];
+      try { focusAreas = readFocusAreas(database, { localDeviceId }); } finally { database.close(); }
+      // The worker's pure preflight (WorkViewRoutes.recordRouterFocus) after record-focus's check, as the goals step reuses
+      // ownerGoalsAreaRows: a name reusing a nav label, or a row too long to save, fails only there. Nothing is written.
+      const accepted = (candidate: any) => {
+        try { routerFocusRows(validateFocusAnswer(candidate, input, ledger, flags), focusAreas); return true; }
+        catch (error) { if (error instanceof TypeError || error instanceof RangeError) return false; throw error; }
+      };
+      if (!Array.isArray(answer?.proposals) || !accepted({ ...answer, proposals: [] })) return answer;
+      const proposals = answer.proposals.reduce((kept: unknown[], proposal: unknown) => accepted({ ...answer, proposals: [...kept, proposal] }) ? [...kept, proposal] : kept, []);
+      droppedProposals += answer.proposals.length - proposals.length;
+      return { ...answer, proposals };
+    };
+    let python: ReturnType<typeof resolvePythonCommand> | undefined;
+    /** Resolve once per refresh, and never retry the script with another interpreter. The goals step re-asks the model
+     * after a refusal, which save_goals.py gives before it writes anything (exit 1); a failure after it started writing
+     * (FAILED_AFTER_WRITING_EXIT) is never retried, since a second answer would suggest its new areas again. */
+    const runScript = async (args: string[]) => {
+      const spawnImpl = options.spawnImpl ?? spawn;
+      const interpreter = await (python ??= resolvePythonCommand(spawnImpl));
+      const result = await runCommand(spawnImpl, interpreter.command, [...interpreter.args, ...args], { cwd: dataDir, env: { ...process.env, CLAUDE_MEM_INTERNAL: '1', PYTHONUTF8: '1' } });
+      if (result.spawnError) throw result.spawnError;
+      if (result.exitCode !== 0) {
+        throw Object.assign(new Error(`${args[0].split('/').pop()} exited ${result.exitCode}: ${`${result.stdout}\n${result.stderr}`.trim().slice(-800)}`),
+          { retryable: result.exitCode !== SAVE_GOALS_FAILED_AFTER_WRITING_EXIT });
+      }
+      return result.stdout;
+    };
+    const timed = async <T>(name: string, work: () => Promise<T>, extra: { groups?: number } = {}): Promise<T> => {
+      const startedAt = new Date(now()).toISOString();
+      try { return await work(); }
+      finally { steps.push({ step: name, agent, startedAt, finishedAt: new Date(now()).toISOString(), ...extra }); }
+    };
+    /**
+     * The owner's language for this run is named in every step's question: grouping, review, naming, focus, story and goals.
+     * Those run as separate agents that each see only their own input (a review batch in "amend" mode sees only its
+     * later asks; a goals batch in an initial mapping sees only its slice of the prompts, and a goals-only run has no
+     * grouping at all), so left to the skill's rule they could each pick a different language (#5660, #6185). It is
+     * decided once: CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE when set; otherwise the first grouping answer's "language"
+     * (the grouping question already reads the asks, so this costs no extra model call), recorded for runs with
+     * nothing to group; otherwise the language an earlier run recorded. With none, each step keeps the skill's own
+     * rule. The rule keeps kept wording as it was, so naming the language never renames a kept title or rule.
+     */
+    const configuredLanguage = resolveTextLanguage(dataDir);
+    let textLanguage = configuredLanguage ?? readDecidedTextLanguage(ledgerDir);
+    let languageDecidedThisRun = false;
+    const languageRule = () => textLanguage ? `The owner's language for this run is ${textLanguage}. Wherever these instructions ask for the owner's language (the human language most of the owner's asks are written in), use ${textLanguage}; quotes stay as typed, and the wording the instructions say to keep stays as it was.` : '';
+    /** The first valid grouping answer decides the run's language when the setting names none. */
+    const noteGroupingLanguage = (value: unknown) => {
+      const decided = decidedTextLanguage(value);
+      if (configuredLanguage || languageDecidedThisRun || !decided) return;
+      languageDecidedThisRun = true;
+      textLanguage = decided;
+      writeFileSync(join(ledgerDir, DECIDED_LANGUAGE_FILE), JSON.stringify({ language: decided, decidedAt: new Date(now()).toISOString() }, null, 2), { mode: 0o600 });
+    };
+    const step = <T>(name: Step, question: string, save: (answer: any, retry: boolean) => T | Promise<T>, answerSchema?: AnswerSchema): Promise<T> => {
+      const rule = languageRule();
+      return timed(name, () => askAndSave(name, rule ? `${question}\n\n${rule}` : question, save, answerSchema));
+    };
+    /** Ask, save, and on a refusal (unreadable JSON or a validator's) ask once more with the answer and reason.
+     * A step refused twice fails with its last raw answer kept in failed-answers/ for diagnosis. `retry` tells the save
+     * it holds that second answer. */
+    const askAndSave = async <T>(name: Step, question: string, save: (answer: any, retry: boolean) => T | Promise<T>, answerSchema?: AnswerSchema): Promise<T> => {
+      let refusal: string | null = null;
+      let answer = '';
+      for (let attempt = 0; attempt < 2; attempt++) {
+        answer = await ask(refusal ? `${question}\n\nYour previous answer was refused: ${refusal}\nRejected answer:\n${answer}\n\nFix it and answer again.` : question, stepModels[name], answerSchema);
+        try { return await save(parseAgentJson(answer), attempt > 0); }
+        catch (error) {
+          // A save that failed after it started writing is not the answer's fault, and asking again would write twice.
+          if ((error as { retryable?: boolean })?.retryable === false) throw error;
+          refusal = error instanceof Error ? error.message : String(error);
+        }
+      }
+      const failedDir = join(ledgerDir, 'failed-answers');
+      mkdirSync(failedDir, { recursive: true });
+      const answerPath = join(failedDir, `${new Date(now()).toISOString().replaceAll(':', '-')}-${name}-${agent}.txt`);
+      writeFileSync(answerPath, answer, { mode: 0o600 });
+      // The path goes first: the runner keeps only the first 500 characters of an error.
+      throw refused(new Error(`${name} (raw answer: ${answerPath}): ${refusal}`));
+    };
+    const readOnly = [
+      'You are running in a read-only sandbox for claude-mem\'s automatic refresh: you cannot run commands that write or save. Nobody is watching, so never ask a question.',
+      agent === 'claude-code'
+        ? 'Search claude-mem memory with its MCP tools (search, timeline, get_observations) for evidence beyond the input files.'
+        : 'You have no memory tools: the input files hold the evidence (each conversation\'s asks and observations). Where the skill says to search memory, use them instead.',
+    ].join(' ');
+
+    try {
+      const done: string[] = discardedCheckpointNote ? [discardedCheckpointNote] : [];
+      if (needs.goalsStale) {
+        // With saved goals, update them from the prompts typed since; otherwise map the whole window.
+        if (!savedGoals || !exported) throw new Error('The owner prompts were not prepared.');
+        const saved: ReturnType<typeof readGoals> = savedGoals, { ownerPrompts, newPrompts } = exported as OwnerPromptsFile;
+        const goalsPath = join(goalsFolder, 'owner-goals.json'), promptsPath = join(goalsFolder, 'owner-prompts.md');
+        const save = async (goals: Record<string, unknown>, mapPath: string | null) => {
+          writeFileSync(goalsPath, JSON.stringify({ ...goals, source_prompt_count: ownerPrompts }, null, 2), { mode: 0o600 });
+          await runScript([paths.saveScript, '--goals', goalsPath, '--prompts', promptsPath, '--ledger-dir', ledgerDir, ...(mapPath ? ['--map', mapPath] : []), ...(since ? ['--carried-before', since] : [])]);
+        };
+        const previousMap = saved.mapPath && existsSync(saved.mapPath) ? saved.mapPath : null;
+        const focusPath = writeInput('focus-areas', savedAreas);
+        // Reuse the real single-map question for the size decision, including the skill and files.
+        // step() appends the run's language line to the question, so size the single map against the
+        // question as it will actually be asked: a map packed to the budget must not push it past the ask limit.
+        // A normal first map below this budget keeps the existing one-call path and no checkpoint.
+        const initialQuestion = [
+          inlineSkill(paths.ownerGoalsSkill), '---', readOnly,
+          `Step 1 is done: the owner's prompts are in ${promptsPath}. Do step 2 yourself (no subagent). Instead of writing owner-map.md and owner-goals.json, reply with only one JSON object: {"map": "<the owner-map.md markdown>", "goals": <the owner-goals.json object>}. The worker saves it with step 3.`,
+          focusAreasNote(focusPath),
+        ].join('\n\n');
+        const initialRule = languageRule();
+        if (goalsCheckpoint || (!since && ownerPrompts > 0 && Buffer.byteLength(expandedQuestion(initialRule ? `${initialQuestion}\n\n${initialRule}` : initialQuestion), 'utf8') > OWNER_GOALS_QUESTION_BYTES)) {
+          if (!exported.sections) throw batchFailure('The prompt export has no source identities for the checked owner-goals progress.');
+          let progress: OwnerGoalsCheckpoint = goalsCheckpoint ?? {
+            version: 1, deviceId: localDeviceId, baseGeneratedAt: saved.generatedAt || null, exportedAt,
+            processed: [], goals: null, maps: [], droppedUnverifiedQuotes: [], save: null,
+          };
+          if (!goalsCheckpoint) writeOwnerGoalsCheckpoint(checkpointPath, progress);
+          const currentKeys = new Set(exported.sections.map(section => section.key));
+          if (progress.processed.some(key => !currentKeys.has(key))) {
+            // Absent/changed source positions must not suppress a later restoration of those turns.
+            // Audit maps are model prose, not quote-validated records: do not republish cached prose
+            // after its source changed, even when none of the final goal quotes used that source.
+            progress = { ...progress, maps: [], droppedUnverifiedQuotes: [],
+              processed: progress.save ? progress.processed : progress.processed.filter(key => currentKeys.has(key)) };
+            writeOwnerGoalsCheckpoint(checkpointPath, progress);
+            goalsCheckpoint = progress;
+          }
+          type CheckedGoals = { goals: Record<string, unknown>; focus_areas: { areas: Parameters<typeof ownerGoalsSaveKey>[0] }; dropped_unverified_quotes?: string[] };
+          const validate = async (goals: Record<string, unknown>, carriedBefore: string | null = null): Promise<CheckedGoals> => {
+            const input = writeInput('check-owner-goals', { ...goals, generated_at: exportedAt, source_prompt_count: ownerPrompts });
+            const checked = JSON.parse(await runScript([paths.saveScript, '--goals', input, '--prompts', promptsPath, '--ledger-dir', ledgerDir,
+              '--dry-run', ...(carriedBefore ? ['--carried-before', carriedBefore] : [])])) as CheckedGoals;
+            if (!checked.goals || !Array.isArray(checked.focus_areas?.areas)) {
+              throw batchFailure('The installed save_goals.py did not return checked goals for the mapping checkpoint.');
+            }
+            // Reuse the route's pure preflight: an unknown/duplicate match or a forbidden name is refused
+            // in the current batch, before later inference and before the first persistent focus write.
+            ownerGoalsAreaRows(checked.focus_areas.areas, savedAreas);
+            return checked;
+          };
+          if (!progress.save) {
+            let checked: CheckedGoals | null = null;
+            if (progress.goals) {
+              // Recheck the full current window with carried-quote cleanup for this checked draft.
+              // Fresh batch answers below use fresh-save cleanup, reporting any unverified drops.
+              checked = await validate(progress.goals, checkedGoalsQuoteBoundary(progress.goals));
+              const hasItems = ['focus_areas', 'asks', 'rules'].some(key => (checked!.goals[key] as unknown[] | undefined)?.length);
+              progress = { ...progress, goals: hasItems ? checked.goals : null, exportedAt };
+              // An aggregate may age out without invalidating the completed source positions. A changed
+              // prompt has a different fingerprint and will still be read; unchanged batches are not replayed.
+              if (!hasItems) checked = null;
+              writeOwnerGoalsCheckpoint(checkpointPath, progress);
+            }
+            const processed = new Set(progress.processed);
+            while (exported.sections.some(section => !processed.has(section.key))) {
+              checkCurrentMappingSnapshot(progress);
+              const previousPath = progress.goals ? writeInput('checked-owner-goals', progress.goals) : null;
+              const batchPath = writeInput('owner-prompts-batch', '');
+              const question = [
+                inlineSkill(paths.ownerGoalsSkill), '---', readOnly,
+                'This is a bounded batch in the first mapping of the whole owner-prompt window. Step 1 is already done. Read only the supplied batch, not owner-prompts.md or another export, and do not delegate.',
+                previousPath
+                  ? 'The checked cumulative goals are in ' + previousPath + '. Apply "Update the saved goals" using this batch, keeping prior areas, asks, rules and quotes unless the new prompts show they are done or replaced. Keep titles, rule wording and matches as the skill requires.'
+                  : 'Do step 2 using this batch. Later batches will update the checked goals, so do not guess what the rest of the window says.',
+                'The next prompts, oldest first, are in ' + batchPath + '. Return only {"map": "<the map of this batch, with dated quotes>", "goals": <the complete cumulative owner-goals.json object>}. The worker checks every quote against the full window, keeps this batch map for audit and saves the final cumulative snapshot after all batches. If there have been no actionable goals at all so far, use "goals": null; do not invent an item just to fill a batch. Never replace a nonempty checked draft with null.',
+                focusAreasNote(focusPath),
+              ].join('\n\n');
+              // step() appends the run's language line to the question, so size the batch against the question
+              // as it will actually be asked: a batch packed to the budget must not push it past the ask limit.
+              const rule = languageRule();
+              const available = Math.min(OWNER_GOALS_BATCH_BYTES, OWNER_GOALS_QUESTION_BYTES - Buffer.byteLength(expandedQuestion(rule ? `${question}\n\n${rule}` : question), 'utf8'));
+              const batch = nextOwnerGoalsBatch(exported.sections, processed, available);
+              const contents = renderOwnerGoalsBatch(batch);
+              writeFileSync(batchPath, contents, { mode: 0o600 });
+              inlineEvidence.set(batchPath, contents);
+              questionBudget = { bytes: OWNER_GOALS_QUESTION_BYTES, refusal: 'This owner-goals question exceeds the input budget, including its checked draft or refused answer. Progress is retained; no prompt was skipped.' };
+              try {
+                await step('goals', question, async answer => {
+                  if (typeof answer.map !== 'string' || !(answer.goals === null || (answer.goals && typeof answer.goals === 'object' && !Array.isArray(answer.goals)))) {
+                    throw new Error('Answer needs "map" (markdown) and "goals" (object, or null before any actionable goals).');
+                  }
+                  if (answer.goals === null && progress.goals) throw new Error('A checked cumulative goal snapshot cannot be replaced with null.');
+                  // Null is a batch with no snapshot/evidence claims, not an unverified empty snapshot to save.
+                  checked = answer.goals === null ? null : await validate(answer.goals);
+                  if (checked && ['focus_areas', 'asks', 'rules'].every(key => !(checked!.goals[key] as unknown[] | undefined)?.length)) {
+                    throw new Error('No checked items remain in that answer. Use null only before any actionable goals; otherwise keep the checked cumulative snapshot.');
+                  }
+                  const next: OwnerGoalsCheckpoint = { ...progress, exportedAt, goals: checked?.goals ?? null,
+                    droppedUnverifiedQuotes: [...progress.droppedUnverifiedQuotes, ...(checked?.dropped_unverified_quotes ?? [])],
+                    processed: [...processed, ...batch.map(section => section.key)], maps: [...progress.maps, answer.map] };
+                  writeOwnerGoalsCheckpoint(checkpointPath, next);
+                  progress = next;
+                  goalsCheckpoint = next;
+                  for (const section of batch) processed.add(section.key);
+                });
+              } finally { questionBudget = null; }
+            }
+            if (!checked && !ownerPrompts) checked = await validate({ generated_at: exportedAt, window_days: 31,
+              human_summary: 'No owner prompts in this window.', focus_areas: [], asks: [], rules: [] });
+            if (checked) {
+              // Freeze the checked payload/key before any write. Retrying uses the current prompt export:
+              // --save-key refuses both invalid quotes and aged-out mutations before it writes anything.
+              progress = { ...progress, goals: checked.goals, exportedAt, save: { key: ownerGoalsSaveKey(checked.focus_areas.areas) } };
+              writeOwnerGoalsCheckpoint(checkpointPath, progress);
+            }
+            goalsCheckpoint = progress;
+          }
+          if (progress.save) {
+            checkCurrentMappingSnapshot(progress);
+            // Validate current evidence before republishing local map/output artifacts as well as before
+            // worker writes. The final save repeats this check, preserving the same payload and watermark.
+            const readyInput = writeInput('ready-owner-goals', progress.goals);
+            const saveKey = progress.save.key;
+            // A refused recheck means the frozen payload can never be saved as-is (its evidence was deleted, redacted or
+            // aged out), so every retry would refuse again. Remove the checkpoint, which also removes its copy of that
+            // evidence, and fail this run; the next refresh maps the window again. A spawn error keeps the checkpoint.
+            const discardUnsaveable = (reason: string) => {
+              rmSync(checkpointPath, { force: true });
+              goalsCheckpoint = null;
+              return batchFailure('The checked owner-goals snapshot can no longer be saved, so its mapping checkpoint was removed and the next refresh maps the window again. ' + reason);
+            };
+            let rechecked: CheckedGoals;
+            try {
+              rechecked = JSON.parse(await runScript([paths.saveScript, '--goals', readyInput, '--prompts', promptsPath,
+                '--ledger-dir', ledgerDir, '--dry-run', '--save-key', saveKey])) as CheckedGoals;
+            } catch (error) {
+              if ((error as { retryable?: boolean })?.retryable !== true) throw error;
+              throw discardUnsaveable((error as Error).message);
+            }
+            if (ownerGoalsSaveKey(rechecked.focus_areas.areas, saveKey.split(':')[0]) !== saveKey) {
+              throw discardUnsaveable('The checked focus payload no longer matches its retained save key.');
+            }
+            writeFileSync(goalsPath, JSON.stringify(progress.goals, null, 2), { mode: 0o600 });
+            const mapPath = join(goalsFolder, 'owner-map.md');
+            writeFileSync(mapPath, '# Owner goals map\n\nModel-written audit notes; goal quotes are checked separately. Earlier batch maps are omitted when their source changes.\n\n'
+              + progress.maps.map((map, index) => '## Batch ' + (index + 1) + '\n\n' + map).join('\n\n'), { mode: 0o600 });
+            await runScript([paths.saveScript, '--goals', goalsPath, '--prompts', promptsPath, '--map', mapPath,
+              '--ledger-dir', ledgerDir, '--save-key', saveKey]);
+            rmSync(checkpointPath, { force: true });
+            goalsCheckpoint = null;
+            done.push('goals mapped' + (progress.droppedUnverifiedQuotes.length ? ` (${progress.droppedUnverifiedQuotes.length} unverified quotes dropped)` : ''));
+          } else {
+            // No actionable goals in the completed batches. Keep their source positions without saving
+            // an unsupported empty snapshot, and let grouping/review continue. Only new sources need inference.
+            done.push('no actionable goals found');
+          }
+        } else if (!ownerPrompts) {
+          // No evidence needs no model call. Save the validated empty snapshot so
+          // the scheduler can continue grouping and will not retry every check.
+          await save({ generated_at: exportedAt, window_days: 31, human_summary: 'No owner prompts in this window.', focus_areas: [], asks: [], rules: [] }, null);
+          done.push('goals empty');
+        } else if (!since) {
+          await step('goals', initialQuestion, async answer => {
+            if (typeof answer.map !== 'string' || !answer.goals || typeof answer.goals !== 'object') throw new Error('Answer needs "map" (markdown) and "goals" (object).');
+            writeFileSync(join(goalsFolder, 'owner-map.md'), answer.map, { mode: 0o600 });
+            await save({ ...answer.goals, generated_at: exportedAt }, join(goalsFolder, 'owner-map.md'));
+          });
+          done.push('goals mapped');
+        } else {
+          const previous = goalsJson(saved, readLedger(ledgerDir).story);
+          // Items saved before the three tests (priorities and open asks), and focus areas hosted setup saved without a
+          // goal sentence or a My Focus area, are sorted again even with nothing new typed.
+          const needsSorting = saved.goals.some(goal => goal.legacy || (goal.kind === 'focus-area' && (!goal.goal || !goal.focusAreaId)));
+          if (!newPrompts && !needsSorting) {
+            // Nothing new typed: the saved goals still hold; re-save them as current.
+            await save({ ...previous, generated_at: exportedAt }, previousMap);
+            done.push('goals unchanged');
+          } else {
+            const previousPath = writeInput('previous-owner-goals', previous);
+            await step('goals', [
+              inlineSkill(paths.ownerGoalsSkill), '---', readOnly,
+              `Do "Update the saved goals" yourself (no subagent). The saved goals are in ${previousPath}; the ${newPrompts} prompts the owner typed since they were saved are in ${join(goalsFolder, 'new-owner-prompts.md')}. Reply with only the updated owner-goals.json object. The worker saves it with step 3.`,
+              ...(needsSorting ? ['Some saved items were not sorted with the three tests (a focus area with no "goal" or "matches", or an item with no "focus_area"). Apply the three tests to every saved item again, in order, and give each the fields its kind needs.'] : []),
+              focusAreasNote(writeInput('focus-areas', savedAreas)),
+            ].join('\n\n'), answer => save({ ...answer, generated_at: exportedAt }, previousMap));
+            done.push('goals updated');
+          }
+        }
+      }
+
+      const requestProgress = inlineSkill(paths.requestProgressSkill);
+      // The judge files each new conversation first: a code link joins at once, and Jev (when the
+      // install has it) joins, suggests or starts a request from the opening ask. Only what it cannot
+      // place reaches the agent batches below.
+      const judgeStartedAt = new Date(now()).toISOString();
+      const judgeDatabase = openDatabase();
+      let routing: Awaited<ReturnType<typeof routeUndecided>>;
+      try { routing = await routeUndecided({ dir: ledgerDir, database: judgeDatabase, judge: options.judge ?? null, now: now(), days: 14, apply: true }); }
+      finally { judgeDatabase.close(); }
+      if (routing.routed.length || routing.unplaced.length) steps.push({ step: 'judge', agent, startedAt: judgeStartedAt, finishedAt: new Date(now()).toISOString(), groups: routing.routed.length });
+      if (routing.routed.length) done.push(`${routing.routed.length} new conversations judged (${routing.counts.joined} joined, ${routing.counts.suggested} suggested, ${routing.counts.new} new)`);
+      // Only conversations the ledger has not decided, one project root per question, each beside
+      // that root's open requests. Every batch is saved before the next is read, so a later batch
+      // sees the requests an earlier one started.
+      let grouped = 0, repairedDecisions = 0;
+      for (let input = cli(['grouping-input', '--days', '14']); input.conversations.length; input = cli(['grouping-input', '--days', '14'])) {
+        await step('grouping', [
+          requestProgress, '---', readOnly,
+          // The batch is inline, with its keys named: on a file path alone Codex's light model sometimes
+          // answered {"groups": [], "ignored": []} without reading it (Oct 23, twice in a row).
+          `Do only section 1 (grouping) for this one batch of new conversations, the \`grouping-input\` output (also saved in ${writeInput('grouping-input', input)}):\n\n\`\`\`json\n${JSON.stringify(input, null, 2)}\n\`\`\``,
+          `Decide each of these ${input.conversations.length} conversations exactly once, in "groups" or "ignored": ${input.conversations.map((conversation: { conversationKey: string }) => conversation.conversationKey).join(', ')}. Reply with only the decisions JSON that \`apply\` takes ({"groups": [...], "ignored": [...]}), deciding every conversation in the batch and nothing else, plus "language": the human language most of the owner's asks are written in, as an English name such as "English", ignoring code, file paths, URLs and product names.`,
+        ].join('\n\n'), (answer, retry) => {
+          const { language, ...decisions } = answer ?? {};
+          // The first answer is held strictly, so the model can link its join itself. A retry that still names keys outside
+          // the batch or joins without links saves the parts its links support, instead of failing the whole run.
+          const repaired = new Set<string>();
+          const saved = cli(['apply'], validateGroupingAnswer(decisions, input, { coerce: retry, coercedFields: repaired }));
+          repairedDecisions += repaired.size;
+          noteGroupingLanguage(language);
+          return saved;
+        }, GROUPING_ANSWER_SCHEMA);
+        grouped += input.conversations.length;
+      }
+      if (grouped) done.push(`${grouped} new conversations grouped${repairedDecisions ? ` (${repairedDecisions} decisions repaired after retry)` : ''}`);
+
+      const due: Array<{ groupId: string }> = cli(['pending', '--days', '14', '--limit', '1000000']).groups;
+      let reviewed = 0;
+      const coercedReviewFields = new Set<string>(), droppedPreferences = new Set<string>();
+      /** One batch of reviews. Like step(), but a refusal re-asks only for the groups that were refused. */
+      const reviewBatch = async (groups: Array<{ groupId: string }>, rule: string) => {
+        let shows = groups.map(group => cli(['show', group.groupId]));
+        let refusals: string[] = [];
+        let rejectedReviews: Array<{ groupId?: string }> = [];
+        for (let attempt = 0; attempt < 2 && shows.length; attempt++) {
+          const retryGroupIds = new Set(shows.map(show => show.groupId));
+          const text = await ask([
+            requestProgress, '---', readOnly,
+            `Do only section 2's review for the groups whose \`show\` output is in ${writeInput('show', shows)}: decide each one from the evidence as the reviewer task describes (amend the previous review for a group in "amend" mode). Reply with only {"reviews": [<one record-progress input per group, with reviewBasis copied verbatim from its show output>]}.`,
+            rule,
+            refusals.length ? `Your previous answer was refused for these groups:\n${refusals.join('\n')}\nFix them and answer again for those groups only. Here are the rejected reviews to correct, preserving their evidence and reviewBasis:\n${JSON.stringify(rejectedReviews)}` : '',
+          ].filter(Boolean).join('\n\n'), stepModels.review);
+          let reviews: Array<{ groupId?: string }> = [];
+          try { const answer = parseAgentJson(text); reviews = Array.isArray(answer.reviews) ? answer.reviews : []; }
+          catch { /* Every group in this batch is refused below as "no review was given". */ }
+          refusals = [];
+          rejectedReviews = [];
+          const recorded = new Set<string>();
+          for (const review of reviews) {
+            try {
+              // Keep the first pass strict so the model can correct an oversized answer itself. If that same group
+              // still exceeds a review cap on its one retry, bound generated fields and save the partial review.
+              const saved = cli(['record-progress'], review, { coerceProgress: attempt > 0 && retryGroupIds.has(String(review.groupId)) });
+              for (const field of saved?.coercedFields ?? []) coercedReviewFields.add(`${review.groupId}:${field}`);
+              for (const label of saved?.droppedPreferences ?? []) droppedPreferences.add(`${review.groupId}:${label}`);
+              recorded.add(String(review.groupId)); reviewed++;
+            }
+            catch (error) { rejectedReviews.push(review); refusals.push(`${review.groupId}: ${error instanceof Error ? error.message : String(error)}`); }
+          }
+          shows = shows.filter(show => !recorded.has(show.groupId));
+          for (const show of shows) if (!refusals.some(line => line.startsWith(`${show.groupId}:`))) refusals.push(`${show.groupId}: no review was given.`);
+        }
+        if (shows.length) throw refused(new Error(`reviews: ${refusals.join('; ').slice(0, 500)}`));
+      };
+      // Batches are independent, so a few run at once; every batch finishes (and saves) before a failure is reported.
+      // Not all at once: each batch is its own agent process, and a large backlog (Oct 25: ~1,100 due groups,
+      // 138 batches) started every one of them in the same millisecond.
+      const batches: Array<Array<{ groupId: string }>> = [];
+      for (let index = 0; index < due.length; index += REVIEW_BATCH) batches.push(due.slice(index, index + REVIEW_BATCH));
+      const outcomes: PromiseSettledResult<void>[] = [];
+      let next = 0;
+      const lane = async () => {
+        while (next < batches.length) {
+          const batch = batches[next++];
+          outcomes.push(...await Promise.allSettled([timed('review', () => reviewBatch(batch, languageRule()), { groups: batch.length })]));
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(reviewConcurrency(dataDir), batches.length) }, lane));
+      const failed = outcomes.filter(outcome => outcome.status === 'rejected');
+      if (failed.length) throw (failed[0] as PromiseRejectedResult).reason;
+      const reviewRepairs = [...(coercedReviewFields.size ? [`${coercedReviewFields.size} oversized fields trimmed after retry`] : []),
+        ...(droppedPreferences.size ? [`${droppedPreferences.size} preferences without a quote or text dropped after retry`] : [])];
+      if (reviewed) done.push(`${reviewed} requests reviewed${reviewRepairs.length ? ` (${reviewRepairs.join(', ')})` : ''}`);
+
+      // Names: a request the judge started (or whose title a grouping answer copied) still shows its opening ask word for
+      // word as its title. After the reviews, so a vague ask ("figure it out") is named from what its review found; before
+      // focus, so a new request is placed while it shows its written title (a request named after it was placed keeps its
+      // placement: focusDue). Every owed title is read once (no group cap, as for the reviews: the owner rule at the top of
+      // this file) and asked batch by batch, so a request whose title is refused twice keeps its placeholder until the next
+      // run instead of being asked again here. Focus and the story do not depend on the names, so a failed naming step is
+      // reported after they have run.
+      let namingError: unknown = null;
+      try {
+        const owedTitles: FocusRequestRecord[] = cli(['title-input', '--limit', '1000000']).requests;
+        let named = 0, unnamed = 0;
+        for (let index = 0; index < owedTitles.length; index += TITLE_BATCH) {
+          const input = { requests: owedTitles.slice(index, index + TITLE_BATCH) };
+          const saved = await step('titles', [
+            requestProgress, '---', readOnly,
+            // Inline with every groupId named, like grouping and focus.
+            `Do only section 3 (name each request) for this batch of \`title-input\` requests (also saved in ${writeInput('title-input', input)}):\n\n\`\`\`json\n${JSON.stringify(input, null, 2)}\n\`\`\``,
+            `Write one title for each of these ${input.requests.length} requests, by its "groupId": ${input.requests.map(request => request.groupId).join(', ')}. Reply with only the JSON that \`record-titles\` takes ({"titles": [{"groupId": "...", "title": "..."}]}).`,
+          ].join('\n\n'), (answer, retry) => cli(['record-titles'], validateTitleAnswer(answer, input, { coerce: retry })), TITLE_ANSWER_SCHEMA);
+          named += saved.titled;
+          unnamed += input.requests.length - saved.titled - saved.kept;
+        }
+        if (named || unnamed) done.push(`${named} requests named${unnamed ? ` (${unnamed} still titled with their ask until the next refresh)` : ''}`);
+      } catch (error) { namingError = error; }
+
+      // Focus: place the requests not placed yet (changed since, or whose area is gone) in batches, each saved before the
+      // next is read, then propose areas from Other when the router-placed Other requests changed since the last pass.
+      // The story does not depend on it, so a failed focus step is reported after the story has run.
+      let focusError: unknown = null;
+      try {
+        let placed = 0, proposed = 0;
+        const sorting = (question: string) => [
+          requestProgress, '---', readOnly,
+          // Inline with every anchor named, like grouping: on a file path Codex's light model linked 2 of 60 groups (Oct 23).
+          question, NAV_LABEL_RULE,
+        ].join('\n\n');
+        let previousBatch = '';
+        // The focus judge (Jev) asks once per request per run: a request it judged stays judged when a later batch lists it again.
+        const focusJudge = options.focusJudge ?? null, threshold = options.focusAutoPlaceThreshold === undefined ? FOCUS_AUTO_PLACE_THRESHOLD : options.focusAutoPlaceThreshold;
+        const judged = new Map<string, FocusJudgement>(), placedAlone = new Set<string>();
+        for (let input: FocusInput = cli(['focus-input', '--limit', String(FOCUS_BATCH)]); input.requests.length; input = cli(['focus-input', '--limit', String(FOCUS_BATCH)])) {
+          if (focusJudge) {
+            const fresh = input.requests.filter(request => !judged.has(request.anchor));
+            if (fresh.length) await timed('focus-judge', async () => {
+              const database = openDatabase();
+              try { for (const result of await judgeFocusBatch({ judge: focusJudge, input: { ...input, requests: fresh }, database, ledger: readLedger(ledgerDir) })) judged.set(result.anchor, result); }
+              finally { database.close(); }
+            }, { groups: fresh.length });
+            // Picks at or above the threshold are router placements written now, through the same check and write as the
+            // agent's answer; the batch is then read again, so the agent's answer is checked against exactly what it saw.
+            const alone = input.requests.filter(request => placesAlone(judged.get(request.anchor)!, threshold));
+            if (alone.length) {
+              const again = alone.find(request => placedAlone.has(request.anchor));
+              if (again) throw new Error(`focus: a request the judge placed is still queued (${again.anchor}).`);
+              if (!options.saveFocus) throw new Error('The focus step has no way to save: the worker did not pass its my-focus write.');
+              const body = validateFocusAnswer({ placements: alone.map(request => ({ anchor: request.anchor, focusAreaId: judged.get(request.anchor)!.focusAreaId, evidence: judged.get(request.anchor)!.evidence })), proposals: [] },
+                { ...input, requests: alone }, readLedger(ledgerDir));
+              const saved = await options.saveFocus({ ...body, placements: body.placements.map(placement => ({ ...placement, confidence: judged.get(placement.anchorConversationKey)!.confidence })) });
+              for (const request of alone) placedAlone.add(request.anchor);
+              placed += saved.placed;
+              continue;
+            }
+            // Below the threshold a pick is only a hint on its request: the agent decides.
+            input = { ...input, requests: input.requests.map(request => {
+              const result = judged.get(request.anchor)!;
+              return result.focusAreaId === null ? request : { ...request, judgeSuggestion: { focusAreaId: result.focusAreaId, confidence: result.confidence, evidence: result.evidence } };
+            }) };
+          }
+          const anchors: string[] = input.requests.map((request: { anchor: string }) => request.anchor);
+          // A saved batch leaves the queue; the same batch twice means the save did not take, and asking again would loop.
+          if (anchors.join('\n') === previousBatch) throw new Error(`focus: the placed requests are still queued (${anchors.length} starting ${anchors[0]}).`);
+          previousBatch = anchors.join('\n');
+          const saved = await step('focus', sorting([
+            `Do only section 4, steps 1–2 (place each request in a focus area, promoting one that holds several separate asks) for this batch, the \`focus-input\` output (also saved in ${writeInput('focus-input', input)}):\n\n\`\`\`json\n${JSON.stringify(input, null, 2)}\n\`\`\``,
+            `Place each of these ${anchors.length} requests exactly once, by its "anchor": ${anchors.join(', ')}. Reply with only the JSON that \`record-focus\` takes ({"placements": [...], "proposals": [...]}).`,
+          ].join('\n\n')), (answer, retry) => recordFocus(['--limit', String(FOCUS_BATCH)], retry ? withoutRefusedProposals(answer, input) : answer), FOCUS_ANSWER_SCHEMA);
+          placed += saved.placed; proposed += saved.proposed;
+        }
+        if (judged.size) {
+          const results = [...judged.values()], picked = results.filter(result => result.focusAreaId !== null && result.focusAreaId !== 'other').length;
+          const none = results.filter(result => result.focusAreaId === 'other').length, unjudged = results.length - picked - none;
+          done.push(`${results.length} requests judged for focus (${picked} picked an area, ${none} none, ${unjudged} unjudged${placedAlone.size ? `, ${placedAlone.size} placed without the agent` : ''})`);
+        }
+        const other = cli(['focus-input', '--other']);
+        if (other.due) {
+          const saved = await step('focus', sorting(
+            `Do only section 4, step 3 (propose focus areas from Other) for the \`focus-input --other\` output (also saved in ${writeInput('focus-input-other', other)}):\n\n\`\`\`json\n${JSON.stringify(other, null, 2)}\n\`\`\`\n\nPlace nothing ("placements": []). Reply with only the JSON that \`record-focus --other\` takes ({"placements": [], "proposals": [...]}), proposing nothing when nothing qualifies.`,
+          ), (answer, retry) => recordFocus(['--other'], retry ? withoutRefusedProposals(answer, other, { other: true }) : answer), FOCUS_ANSWER_SCHEMA);
+          proposed += saved.proposed;
+        }
+        if (placed || proposed || droppedProposals) done.push([...(placed ? [`${placed} requests placed`] : []), ...(proposed ? [`${proposed} focus areas suggested`] : []),
+          ...(droppedProposals ? [`${droppedProposals} refused focus area proposals dropped after retry`] : [])].join(', '));
+      } catch (error) { focusError = error; }
+
+      // Only reviews whose facts (state, percent, dates, milestones, preferences, outcome) moved since the last story; none means the story still holds.
+      // A story written in parts takes several calls, so a review can move while it is being written. The story is
+      // recorded as of this read, so a review that moves after it still counts as news for the next refresh.
+      const storyReadAt = now();
+      const storyInput = cli(['story-input']);
+      if (storyInput.reviews.length) {
+        // One question held every moved review with no cap, so once enough reviews piled up the question
+        // outgrew the model's window and every later refresh failed the same way (#6226). The reviews are
+        // packed into parts under the complete-question budget the owner-goals map uses
+        // (OWNER_GOALS_QUESTION_BYTES, from the #5969 measurements), each part sized against the question
+        // as it will actually be asked: step() appends the run's language line, and the story so far rides
+        // along in every later part's input. The first part writes (or updates) the story and each later
+        // part updates the story the part before returned. Only the last part is recorded: record-story
+        // stamps the story's writtenAt, so recording an early part would mark the reviews still to come
+        // as already told, and no later refresh would send them again. A part that fails records nothing,
+        // so the next refresh tells the whole story again rather than losing the reviews it missed.
+        const batchPath = writeInput('story-input', '');
+        const storyQuestion = (input: any) => [
+          requestProgress, '---', readOnly,
+          `Do only section 5 (${input.update ? 'update' : 'write'} the build story). The \`story-input\` output is in ${batchPath}. Reply with only the JSON that \`record-story\` takes ({"narrative": "...", "preferences": [...]}).`,
+        ].join('\n\n');
+        // The first part answers story-input as read; each later part updates the story the part before returned,
+        // shaped as story-input reads a recorded one back.
+        const storyInputFor = (reviews: any[], previous: { narrative: string; preferences: any[] } | null) => previous === null
+          ? { ...storyInput, reviews }
+          : buildStoryInput(storyInput.groups, reviews, { ...previous, writtenAt: new Date(storyReadAt).toISOString() });
+        /** Write the part's input file and measure the question exactly as step() will ask it. */
+        const storyQuestionBytes = (input: any) => {
+          const contents = JSON.stringify(input, null, 2);
+          writeFileSync(batchPath, contents, { mode: 0o600 });
+          inlineEvidence.set(batchPath, contents);
+          const question = storyQuestion(input);
+          const rule = languageRule();
+          return Buffer.byteLength(expandedQuestion(rule ? `${question}\n\n${rule}` : question), 'utf8');
+        };
+        const packStoryBatch = (remaining: any[], previous: { narrative: string; preferences: any[] } | null) => {
+          const available = Math.min(OWNER_GOALS_BATCH_BYTES, OWNER_GOALS_QUESTION_BYTES - storyQuestionBytes(storyInputFor([], previous)));
+          const batch: any[] = [];
+          let used = 0;
+          for (const review of remaining) {
+            // A review's cost in the pretty-printed input: its own JSON, four more spaces of indent on
+            // every line, and the comma and newline that separate it from the review before it.
+            const cost = Buffer.byteLength(JSON.stringify(review, null, 2).replaceAll('\n', '\n    '), 'utf8') + 4 + (batch.length ? 2 : 0);
+            if (used + cost > available) break;
+            batch.push(review);
+            used += cost;
+          }
+          // The packing estimates each review's bytes; the written batch is measured exactly, and reviews
+          // move to the next part until the question fits the budget.
+          while (batch.length > 1 && storyQuestionBytes(storyInputFor(batch, previous)) > OWNER_GOALS_QUESTION_BYTES) batch.pop();
+          if (!batch.length || storyQuestionBytes(storyInputFor(batch, previous)) > OWNER_GOALS_QUESTION_BYTES) {
+            throw batchFailure('One moved review and the story question around it exceed the input budget, so the story cannot be written in parts. No review was skipped.');
+          }
+          return batch;
+        };
+        let previous: { narrative: string; preferences: any[] } | null = null;
+        let remaining = storyInput.reviews as any[];
+        let parts = 0;
+        while (remaining.length) {
+          const batch = packStoryBatch(remaining, previous);
+          remaining = remaining.slice(batch.length);
+          const input = storyInputFor(batch, previous);
+          storyQuestionBytes(input);
+          const last = !remaining.length;
+          questionBudget = { bytes: OWNER_GOALS_QUESTION_BYTES, refusal: 'This story question exceeds the input budget, including its refused answer. Nothing was recorded; no review was skipped.' };
+          try {
+            await step('story', storyQuestion(input), async answer => {
+              if (last) return cli(['record-story'], answer, { now: storyReadAt });
+              previous = validateStory(answer);
+              return previous;
+            });
+          } finally { questionBudget = null; }
+          parts++;
+        }
+        done.push(`${storyInput.update ? 'story updated' : 'story written'}${parts > 1 ? ` in ${parts} parts` : ''}`);
+      }
+      // Held so focus and the story still ran. When both failed, the run's error names both.
+      const heldFailures = [namingError, focusError].filter(error => error != null);
+      if (heldFailures.length > 1) throw new AggregateError(heldFailures, heldFailures.map(error => error instanceof Error ? error.message : String(error)).join(' · '));
+      if (heldFailures.length) throw heldFailures[0];
+      return done.length ? `${done.join(', ')}.` : 'Nothing was due.';
+    } catch (error) {
+      if (!answerWasRefused) throw error;
+      throw Object.assign(error instanceof Error ? error : new Error(String(error)), { answerRefused: true });
+    } finally {
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  };
+
+  return {
+    reason,
+    steps,
+    // The refresh runs on the agent the owner's settings name, and stays there (#5189, #5435).
+    ...resolveRefreshAgents(dataDir),
+    // The work-view folder holds every input file; the data dir above it holds .env and settings.json.
+    cwd: ledgerDir,
+    claudeCode: {
+      // The plugin is loaded for its memory-search MCP server; steps read their input files and search memory, nothing else.
+      plugins: [{ type: 'local', path: pluginRoot }],
+      tools: ['Read', 'Grep', 'Glob'],
+      allowedTools: MEMORY_TOOLS.map(tool => `${PLUGIN_MCP_PREFIX}${tool}`),
+      // Prompts carry untrusted conversation text, so file reads are held to the input files' folder.
+      readableFolders: [ledgerDir],
+    },
+    run,
+    prepare: needs.goalsStale ? prepareGoals : undefined,
+  };
+}

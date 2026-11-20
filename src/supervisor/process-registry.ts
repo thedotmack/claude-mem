@@ -1,16 +1,17 @@
 import { ChildProcess, spawnSync } from 'child_process';
 import { spawnHidden } from '../shared/spawn.js';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import path from 'path';
 import { logger } from '../utils/logger.js';
+import { writeJsonFileAtomic } from '../shared/atomic-json.js';
 import { sanitizeEnv } from './env-sanitizer.js';
 import { ensureDir, OBSERVER_SESSIONS_DIR, paths } from '../shared/paths.js';
 // Moved to shared/ so kill-process-tree.ts can use it without closing an
 // import cycle (process-registry already imports kill-process-tree). Re-exported
 // here so every existing caller keeps its import path.
-import { captureProcessStartToken, isSameProcess } from '../shared/process-identity.js';
-export { captureProcessStartToken, isSameProcess };
-import { killProcessTree } from '../shared/kill-process-tree.js';
+import { captureProcessName, captureProcessStartToken, isSameProcess, isSameProcessName, isSameProcessStartToken, normalizeProcessName } from '../shared/process-identity.js';
+export { captureProcessName, captureProcessStartToken, isSameProcess, isSameProcessName, isSameProcessStartToken, normalizeProcessName };
+import { collectProcessGroupMembers, killProcessTree, type ProcessGroupMember } from '../shared/kill-process-tree.js';
 
 const REAP_SESSION_SIGTERM_TIMEOUT_MS = 5_000;
 const REAP_SESSION_SIGKILL_TIMEOUT_MS = 1_000;
@@ -33,6 +34,21 @@ interface PersistedRegistry {
   processes: Record<string, ManagedProcessInfo>;
 }
 
+/**
+ * Optional reporter for a supervisor-registry persist failure. process-registry
+ * lives under src/supervisor/, which must not import src/services/ (telemetry) —
+ * so, exactly like logger.setErrorSink, the worker injects a reporter at startup
+ * that forwards to captureEvent. Absent (tests, CLI, telemetry off) it is a
+ * no-op, so a persist failure still degrades cleanly without telemetry.
+ */
+export type RegistryDegradedReporter = (info: { errorCategory: string }) => void;
+let degradedReporter: RegistryDegradedReporter | null = null;
+
+/** Installs (or clears, with null) the persist-failure reporter. Never throws. */
+export function setRegistryDegradedReporter(reporter: RegistryDegradedReporter | null): void {
+  degradedReporter = reporter;
+}
+
 export function isPidAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid < 0) return false;
   if (pid === 0) return false;
@@ -52,15 +68,71 @@ export function isPidAlive(pid: number): boolean {
   }
 }
 
-// Poll until every record's pid is gone or the timeout elapses. Shared by the
+/**
+ * Whether the process group `processGroupId` still has a process in it that has not exited.
+ *
+ * kill(2) with signal 0 to the group answers first: ESRCH, no process at all is left in it. Any other answer can come
+ * from zombies alone: processes that have exited and that their parent has not collected. Linux counts them as
+ * processes it may signal, and macOS answers EPERM for a group left with nothing else (both seen with real processes).
+ * A zombie runs nothing and writes nothing, and no signal ends it. Its parent may never collect it: a container's PID 1
+ * that does not reap the orphans it adopts (a worker run as PID 1 with no init, under Bun or Node, does not). So the
+ * process table decides (collectProcessGroupMembers): the group has processes while it lists one of them that has not
+ * exited. When it lists none of them, kill(2)'s answer stands: they exited between the two reads, which the next look
+ * sees, or the table could not be read, which its reader logs at WARN. EPERM from a group with processes that have not
+ * exited means some are left that this process may not signal.
+ *
+ * Only a look that kill(2) does not answer with ESRCH reads the table, and that read is the whole table: one ps(1) run on
+ * macOS, about 25 ms with 710 processes, and a /proc scan on Linux, about 4 to 6 ms with 600 (measured under Bun and
+ * Node). Its callers look again every PROCESS_EXIT_POLL_INTERVAL_MS while processes are left in a group they watch.
+ *
+ * A read that lists only processes that have exited is read once more before it is believed. On Linux the table is read
+ * as a list of process ids and then one process at a time, so a process can start a child after the list was taken and
+ * exit before its own line is read: that read shows the parent as exited and does not list the child, which may still be
+ * running. Every process the first read listed had exited before the second read began, and a process that has exited
+ * starts nothing, so a second read that lists no process the first did not, and none that has not exited, means none is
+ * left. A second read that lists nothing at all is not believed either: the next look asks kill(2) again.
+ *
+ * While any process is left in a group, a zombie too, the system gives its id to no new process or group (POSIX), so a
+ * group a caller has watched since it was made is still that group.
+ *
+ * `readGroupMembers` reads the table; tests pass their own reads in its place.
+ */
+export async function processGroupHasProcessesThatHaveNotExited(
+  processGroupId: number,
+  readGroupMembers: (processGroupId: number) => Promise<ProcessGroupMember[]> = collectProcessGroupMembers,
+): Promise<boolean> {
+  try {
+    process.kill(-processGroupId, 0);
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
+  }
+  const members = await readGroupMembers(processGroupId);
+  if (members.length === 0 || members.some(member => !member.hasExited)) return true;
+  const idsOfMembersThatHadExited = new Set(members.map(member => member.pid));
+  const membersReadAgain = await readGroupMembers(processGroupId);
+  return membersReadAgain.length === 0
+    || membersReadAgain.some(member => !member.hasExited || !idsOfMembersThatHadExited.has(member.pid));
+}
+
+/**
+ * How often waitForExit, and the waits like it, look again for the processes they wait on. 100 ms has been the
+ * supervisor's interval since it was added (#1370); no measurement behind it is recorded.
+ */
+export const PROCESS_EXIT_POLL_INTERVAL_MS = 100;
+
+// Poll until no record is running or the timeout elapses: by default a record runs while its pid is alive. Shared by the
 // reapSession wait phase and shutdown.ts's SIGTERM grace period.
-export async function waitForExit(records: ManagedProcessRecord[], timeoutMs: number): Promise<void> {
+export async function waitForExit<RecordWaitedOn extends ManagedProcessRecord>(
+  records: RecordWaitedOn[],
+  timeoutMs: number,
+  isRunning: (record: RecordWaitedOn) => boolean | Promise<boolean> = record => isPidAlive(record.pid),
+): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (records.every(record => !isPidAlive(record.pid))) {
+    if (!(await Promise.all(records.map(record => isRunning(record)))).includes(true)) {
       return;
     }
-    await new Promise(resolve => setTimeout(resolve, 100));
+    await new Promise(resolve => setTimeout(resolve, PROCESS_EXIT_POLL_INTERVAL_MS));
   }
 }
 
@@ -80,9 +152,19 @@ export function verifyPidFileOwnership(info: PidInfo | null): info is PidInfo {
   const currentToken = captureProcessStartToken(info.pid);
   if (currentToken === null) return true;
 
-  const match = currentToken === info.startToken;
+  const match = isSameProcessStartToken(currentToken, info.startToken);
   if (!match) {
     logger.debug('SYSTEM', 'verifyPidFileOwnership: start-token mismatch (PID reused)', {
+      pid: info.pid,
+      stored: info.startToken,
+      current: currentToken
+    });
+  } else if (currentToken !== info.startToken) {
+    // The record carries a pre-UTC-pin local-time token (#5311) that differs
+    // from the pinned read by a possible UTC offset, so both name one start
+    // instant. One-time migration only — this record is rewritten with a
+    // pinned token on the next worker start.
+    logger.debug('SYSTEM', 'verifyPidFileOwnership: pre-UTC-pin start token accepted (differs by a UTC offset)', {
       pid: info.pid,
       stored: info.startToken,
       current: currentToken
@@ -91,11 +173,85 @@ export function verifyPidFileOwnership(info: PidInfo | null): info is PidInfo {
   return match;
 }
 
+/**
+ * How a token-less worker PID record is checked against the live process.
+ * Injectable so the Linux branch can be tested on every platform.
+ */
+export interface WorkerCommandLineProbe {
+  platform: NodeJS.Platform;
+  readCommandLine(pid: number): string;
+}
+
+const LIVE_WORKER_COMMAND_LINE_PROBE: WorkerCommandLineProbe = {
+  platform: process.platform,
+  readCommandLine: pid => readFileSync(`/proc/${pid}/cmdline`, 'utf-8'),
+};
+
+/**
+ * verifyPidFileOwnership, plus an identity check for a worker PID record that
+ * carries no start token. Every worker since v12.3.8 writes a token, so a
+ * reused PID in a tokened record already fails the token comparison. A record
+ * written without one (an older worker, or a token capture that failed) used
+ * to pass for whatever live process inherited the PID, which refused every
+ * later worker start (#4270). On Linux such a record must now also name
+ * `worker-service.cjs` in /proc/<pid>/cmdline.
+ *
+ * A command line that cannot be read keeps the old trust, the same rule
+ * verifyPidFileOwnership applies to a start token it cannot capture: only a
+ * command line that was read and names another program proves the PID was
+ * reused. Answering "not the worker" on a failed read would delete a live
+ * worker's PID file and lose the PID that shutdown needs.
+ */
+export function verifyWorkerPidFileOwnership(
+  info: PidInfo | null,
+  probe: WorkerCommandLineProbe = LIVE_WORKER_COMMAND_LINE_PROBE
+): info is PidInfo {
+  if (!verifyPidFileOwnership(info)) return false;
+  if (info.startToken || probe.platform !== 'linux') return true;
+
+  let commandLine: string;
+  try {
+    commandLine = probe.readCommandLine(info.pid);
+  } catch (error: unknown) {
+    logger.debug('SYSTEM', 'Could not read the command line of a token-less worker PID; trusting the live PID', {
+      pid: info.pid,
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return true;
+  }
+
+  const namesWorker = commandLine.split('\0').some(argument => path.basename(argument) === 'worker-service.cjs');
+  if (!namesWorker) {
+    logger.debug('SYSTEM', 'Token-less worker PID now belongs to another program (PID reused)', { pid: info.pid });
+  }
+  return namesWorker;
+}
+
+/**
+ * The verified-owner PID info from the worker PID file, or null when the file
+ * is missing, unparseable, or names a process that is not a live claude-mem
+ * worker. Read-only sibling of validateWorkerPidFile for callers that need
+ * the pid itself (the hook's stale-worker kill in shared/worker-utils.ts, the
+ * installer's cache prune and pre-overwrite stop). Lives here, beside
+ * verifyPidFileOwnership, so npx-cli callers need not import the supervisor.
+ */
+export function readOwnedWorkerPidInfo(pidFilePath: string = paths.workerPid()): PidInfo | null {
+  if (!existsSync(pidFilePath)) return null;
+  let pidInfo: PidInfo | null;
+  try {
+    pidInfo = JSON.parse(readFileSync(pidFilePath, 'utf-8')) as PidInfo | null;
+  } catch {
+    return null;
+  }
+  return pidInfo !== null && verifyWorkerPidFileOwnership(pidInfo) ? pidInfo : null;
+}
+
 export class ProcessRegistry {
   private readonly registryPath: string;
   private readonly entries = new Map<string, ManagedProcessInfo>();
   private readonly runtimeProcesses = new Map<string, ChildProcess>();
   private initialized = false;
+  private persistDegraded = false;
 
   constructor(registryPath: string = DEFAULT_REGISTRY_PATH) {
     this.registryPath = registryPath;
@@ -105,7 +261,9 @@ export class ProcessRegistry {
     if (this.initialized) return;
     this.initialized = true;
 
-    mkdirSync(path.dirname(this.registryPath), { recursive: true });
+    // No mkdir here: persist() writes through writeJsonFileAtomic, which
+    // creates the parent directory itself and — unlike a bare mkdirSync — never
+    // propagates an EACCES/EROFS out of initialize() into worker/session start.
 
     if (!existsSync(this.registryPath)) {
       this.persist();
@@ -190,11 +348,19 @@ export class ProcessRegistry {
     this.persist();
   }
 
-  unregister(id: string): void {
+  /** Remove only the process that exited, even if its fixed id was reused. */
+  unregister(id: string, expectedPid?: number): void {
     this.initialize();
-    const existing = this.entries.get(id);
-    this.entries.delete(id);
-    this.runtimeProcesses.delete(id);
+    let targetId = id;
+    let existing = this.entries.get(targetId);
+    if (expectedPid !== undefined && existing?.pid !== expectedPid) {
+      targetId = `${id}#superseded:${expectedPid}`;
+      existing = this.entries.get(targetId);
+      if (existing?.pid !== expectedPid) return;
+    }
+    if (!existing) return;
+    this.entries.delete(targetId);
+    this.runtimeProcesses.delete(targetId);
     this.persist();
     if (existing?.type === 'sdk') notifySlotAvailable();
   }
@@ -355,7 +521,7 @@ export class ProcessRegistry {
       while (Date.now() < sigkillDeadline) {
         const remaining = survivors.filter(r => isPidAlive(r.pid));
         if (remaining.length === 0) break;
-        await new Promise(resolve => setTimeout(resolve, 100));
+        await new Promise(resolve => setTimeout(resolve, PROCESS_EXIT_POLL_INTERVAL_MS));
       }
     }
 
@@ -381,8 +547,38 @@ export class ProcessRegistry {
       processes: Object.fromEntries(this.entries.entries())
     };
 
-    mkdirSync(path.dirname(this.registryPath), { recursive: true });
-    writeFileSync(this.registryPath, JSON.stringify(payload, null, 2));
+    try {
+      writeJsonFileAtomic(this.registryPath, payload);
+      this.persistDegraded = false;
+    } catch (error: unknown) {
+      // An unwritable data directory (EACCES/EROFS/ENOSPC) must degrade, not
+      // crash. this.entries stays the source of truth in memory, so the worker
+      // still starts and the 30s health-check timer keeps pruning. Before this
+      // guard the throw propagated out of persist() into worker/session start
+      // and, every 30s, out of the health-check timer callback.
+      this.reportPersistFailure(error);
+    }
+  }
+
+  private reportPersistFailure(error: unknown): void {
+    // Log and report only on the transition INTO a degraded episode. A
+    // persistent permission failure is hit by every register/unregister/reap
+    // and by the 30s health-check timer, so logging (and rebuilding an Error
+    // for the stack) on each one would storm the warn log while only the first
+    // occurrence is worth surfacing. Reset again on the next successful persist.
+    if (this.persistDegraded) return;
+    this.persistDegraded = true;
+
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('SYSTEM', 'Failed to persist supervisor registry; keeping it in memory', {
+      path: this.registryPath,
+    }, err);
+    try {
+      degradedReporter?.({ errorCategory: (err as NodeJS.ErrnoException).code ?? 'unknown' });
+    } catch {
+      // Reporting is best-effort: never let it turn a degraded-but-running
+      // supervisor back into a crash.
+    }
   }
 }
 
@@ -605,11 +801,15 @@ export async function waitForSlot(
   signal?: AbortSignal,
   sessionId?: number | string
 ): Promise<SlotReservation> {
-  const getMax = typeof maxConcurrent === 'function' ? maxConcurrent : () => maxConcurrent;
+  const getConfiguredMax = typeof maxConcurrent === 'function' ? maxConcurrent : () => maxConcurrent;
+  // #5376: a limit at or above the hard cap behaves like a limit AT the cap.
+  // A full pool parks the session; only a registry already OVER the cap
+  // (processes that never went through this gate) is refused.
+  const getMax = () => Math.min(getConfiguredMax(), TOTAL_PROCESS_HARD_CAP);
 
   getProcessRegistry().pruneDeadEntries();
   const activeCount = getActiveSdkCount();
-  if (activeCount >= TOTAL_PROCESS_HARD_CAP) {
+  if (activeCount > TOTAL_PROCESS_HARD_CAP) {
     throw new Error(`Hard cap exceeded: ${activeCount} processes in registry (cap=${TOTAL_PROCESS_HARD_CAP}). Refusing to spawn more.`);
   }
 
@@ -641,7 +841,7 @@ export async function waitForSlot(
       // reaches an already-parked waiter the next time it's poked — either
       // by this recheck timer or by another slot freeing up via unregister().
       const count = getActiveSdkCount();
-      if (count >= TOTAL_PROCESS_HARD_CAP) {
+      if (count > TOTAL_PROCESS_HARD_CAP) {
         cleanup();
         reject(new Error(`Hard cap exceeded: ${count} processes in registry (cap=${TOTAL_PROCESS_HARD_CAP}). Refusing to spawn more.`));
         return;
@@ -712,11 +912,17 @@ export function normalizeSpawnSdkArgs(args: string[], extraArgs: string[] = []):
   const filteredArgs: string[] = [];
   for (const arg of args) {
     if (arg === '') {
-      // The SDK encodes optional flag/value pairs as `--flag ''` when the
-      // value is absent. Strip the whole pair, but only when the preceding
-      // token is a long option so positional args are left untouched.
-      if (filteredArgs.length > 0 && filteredArgs[filteredArgs.length - 1].startsWith('--')) {
-        filteredArgs.pop();
+      // The SDK encodes an explicitly empty value as the pair `--flag ''`:
+      // `tools: []` becomes `--tools ''`, which tells the CLI "no built-in
+      // tools". cmd.exe drops empty arguments (#3317), but stripping the pair
+      // changed its meaning: without `--tools` the CLI loads its full default
+      // tool set. Fold the pair into the single token `--flag=` instead, which
+      // carries the same empty value and survives cmd.exe. An empty positional
+      // argument is still dropped.
+      const previousIndex = filteredArgs.length - 1;
+      const previousArg = filteredArgs[previousIndex];
+      if (previousArg !== undefined && previousArg.startsWith('--') && !previousArg.includes('=')) {
+        filteredArgs[previousIndex] = `${previousArg}=`;
       }
       continue;
     }

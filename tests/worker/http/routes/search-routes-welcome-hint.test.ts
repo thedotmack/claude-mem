@@ -1,23 +1,23 @@
+import { Database } from 'bun:sqlite';
+import { SessionStore } from '../../../../src/services/sqlite/SessionStore.js';
+import { DataRoutes } from '../../../../src/services/worker/http/routes/DataRoutes.js';
+import { ContextCacheService } from '../../../../src/services/worker/ContextCacheService.js';
 
 import { describe, it, expect, mock, beforeEach, afterEach, afterAll, spyOn } from 'bun:test';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
-import { join } from 'path';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { basename, join } from 'path';
 import type { Request, Response } from 'express';
 import { logger } from '../../../../src/utils/logger.js';
 import * as realContextGenerator from '../../../../src/services/context-generator.js';
 import * as realPaths from '../../../../src/shared/paths.js';
 
 const realContextGeneratorSnapshot = { ...realContextGenerator };
-const realPathsSnapshot = { ...realPaths };
 
 const generateContextStub = mock(async () => ({ text: 'CONTEXT_FROM_GENERATOR', stats: null }));
 mock.module('../../../../src/services/context-generator.js', () => ({
   generateContext: mock(async () => 'CONTEXT_FROM_GENERATOR'),
   generateContextWithStats: generateContextStub,
-}));
-mock.module('../../../../src/shared/paths.js', () => ({
-  ...realPathsSnapshot,
-  paths: realPaths.paths,
 }));
 
 import { SearchRoutes } from '../../../../src/services/worker/http/routes/SearchRoutes.js';
@@ -25,12 +25,18 @@ import {
   OBSERVER_HEALTH_FILENAME,
   OBSERVER_UNHEALTHY_FAILURE_THRESHOLD,
 } from '../../../../src/shared/observer-health.js';
+import { resolveConfigDirProfileKey } from '../../../../src/shared/EnvManager.js';
+import { getProjectContext } from '../../../../src/utils/project-name.js';
+import { buildWorkStateContextSection } from '../../../../src/services/context/sections/WorkStateRenderer.js';
+import { TEAM_BRIEF_RESERVE_CHARS } from '../../../../src/shared/teambrain.js';
 
 // The route reads the ledger from paths.dataDir() (CLAUDE_MEM_DATA_DIR, set to a
 // per-run temp dir by tests/preload.ts), so write it there for the health case.
 const observerHealthPath = join(realPaths.paths.dataDir(), OBSERVER_HEALTH_FILENAME);
 
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
+
+const workStateEntriesStub = mock((): any[] => []);
 
 interface MockRes {
   setHeader: ReturnType<typeof mock>;
@@ -74,6 +80,13 @@ describe('SearchRoutes Welcome Hint', () => {
   let mockSessionStore: any;
   let mockSearchManager: any;
 
+  function withObservationCount(count: number): void {
+    countQueryStub = mock(() => ({ count }));
+    prepareStub = mock(() => ({ get: countQueryStub, finalize: () => {} }));
+    mockSessionStore = { db: { prepare: prepareStub }, getWorkStateEntries: workStateEntriesStub };
+    mockSearchManager = { getSessionStore: () => mockSessionStore };
+  }
+
   beforeEach(() => {
     loggerSpies = [
       spyOn(logger, 'info').mockImplementation(() => {}),
@@ -83,27 +96,52 @@ describe('SearchRoutes Welcome Hint', () => {
       spyOn(logger, 'failure').mockImplementation(() => {}),
     ];
 
-    countQueryStub = mock(() => ({ count: 0 }));
-    prepareStub = mock(() => ({ get: countQueryStub }));
-    mockSessionStore = { db: { prepare: prepareStub } };
-    mockSearchManager = {
-      getSessionStore: () => mockSessionStore,
-    };
+    withObservationCount(0);
 
     generateContextStub.mockClear();
+    workStateEntriesStub.mockClear();
+    workStateEntriesStub.mockImplementation(() => []);
     delete process.env.CLAUDE_MEM_WELCOME_HINT_ENABLED;
   });
 
   afterEach(() => {
     loggerSpies.forEach(spy => spy.mockRestore());
     delete process.env.CLAUDE_MEM_WELCOME_HINT_ENABLED;
+    delete process.env.CLAUDE_MEM_WORK_STATE_ENABLED;
     delete process.env.CLAUDE_MEM_WORKER_PORT;
     if (existsSync(observerHealthPath)) rmSync(observerHealthPath, { force: true });
   });
 
+  it('passes dynamic notice reserves to whole-item rendering without overwriting the ordinary cache', async () => {
+    process.env.CLAUDE_MEM_WELCOME_HINT_ENABLED = 'false';
+    process.env.CLAUDE_MEM_WORK_STATE_ENABLED = 'false';
+    const recordLiveRender = mock(async () => {});
+    const cache = {
+      recordLiveRender,
+      removalGenerationNow: () => 0,
+      warmVariant: mock(async () => {}),
+    };
+    const routes = new SearchRoutes(mockSearchManager, cache as any);
+    const handler = captureContextInjectHandler(routes);
+    const invoke = async (reserveChars?: string) => {
+      generateContextStub.mockClear();
+      const res = createMockRes();
+      await handler({ query: { projects: 'demo', ...(reserveChars === undefined ? {} : { reserveChars }) } } as any, res as any);
+      await new Promise(resolve => setImmediate(resolve));
+      return (generateContextStub.mock.calls[0] as unknown[])[0] as { reserveChars: number };
+    };
+    const baseline = (await invoke()).reserveChars;
+    expect(recordLiveRender).toHaveBeenCalledTimes(1);
+    expect((await invoke('251')).reserveChars).toBe(baseline + 251);
+    expect(cache.warmVariant).toHaveBeenCalledTimes(1);
+    expect(recordLiveRender).toHaveBeenCalledTimes(1);
+    expect((await invoke('-1')).reserveChars).toBe(baseline);
+    expect((await invoke('NaN')).reserveChars).toBe(baseline);
+    expect((await invoke('100000')).reserveChars).toBe(baseline + 10_000);
+  });
+
   afterAll(() => {
     mock.module('../../../../src/services/context-generator.js', () => realContextGeneratorSnapshot);
-    mock.module('../../../../src/shared/paths.js', () => realPathsSnapshot);
   });
 
   it('returns the welcome hint when project has zero observations', async () => {
@@ -159,8 +197,8 @@ describe('SearchRoutes Welcome Hint', () => {
     expect(body).toContain('What to do: It resets on the 1st. Upgrade or add credits to keep going now.');
     expect(body).toContain('# claude-mem status');
     expect(body).toContain('disappears once the first observation lands');
-    // Hint first, warning second — same order as normal context, so the
-    // warning is the last thing on screen rather than the first thing scrolled off.
+    // Hint first, warning second, so the warning is the last thing on screen
+    // rather than the first thing scrolled off.
     expect(body.indexOf('# claude-mem status')).toBeLessThan(body.indexOf('What to do:'));
     expect(generateContextStub).not.toHaveBeenCalled();
   });
@@ -177,6 +215,7 @@ describe('SearchRoutes Welcome Hint', () => {
       quotaCooldown: {
         active: true,
         provider: 'claude',
+        profile: resolveConfigDirProfileKey(), // pauses the account selected now
         armedAt: Date.now() - 60_000,
         until: Date.now() + 20 * 60_000,
         window: 'five_hour',
@@ -195,19 +234,16 @@ describe('SearchRoutes Welcome Hint', () => {
 
     expect(res.send).toHaveBeenCalledTimes(1);
     const body = (res.send as any).mock.calls[0][0] as string;
-    expect(body).toContain('paused while a provider quota cooldown is active');
-    expect(body).toContain('This is not a failure');
+    expect(body).toContain('claude-mem has paused saving memories');
+    expect(body).toContain("Activity during the pause isn't saved");
     expect(body).toContain('# claude-mem status');
     expect(body).not.toContain("can't save memories");
-    expect(body.indexOf('# claude-mem status')).toBeLessThan(body.indexOf('quota cooldown'));
+    expect(body.indexOf('# claude-mem status')).toBeLessThan(body.indexOf('has paused saving memories'));
     expect(generateContextStub).not.toHaveBeenCalled();
   });
 
   it('skips the welcome hint when at least one observation exists', async () => {
-    countQueryStub = mock(() => ({ count: 7 }));
-    prepareStub = mock(() => ({ get: countQueryStub }));
-    mockSessionStore = { db: { prepare: prepareStub } };
-    mockSearchManager = { getSessionStore: () => mockSessionStore };
+    withObservationCount(7);
 
     const routes = new SearchRoutes(mockSearchManager);
     const handler = captureContextInjectHandler(routes);
@@ -238,32 +274,8 @@ describe('SearchRoutes Welcome Hint', () => {
     expect(res.send).toHaveBeenCalledWith('CONTEXT_FROM_GENERATOR');
   });
 
-  it('queries both projects in a worktree (multi-project) request', async () => {
-    const routes = new SearchRoutes(mockSearchManager);
-    const handler = captureContextInjectHandler(routes);
-
-    const res = createMockRes();
-    const req = { query: { projects: '/path/parent, /path/worktree' } } as unknown as Request;
-
-    handler(req, res as unknown as Response);
-    await new Promise(resolve => setImmediate(resolve));
-
-    expect(res.send).toHaveBeenCalledTimes(1);
-    expect(countQueryStub).toHaveBeenCalledWith(
-      '/path/parent',
-      '/path/worktree',
-      '/path/parent',
-      '/path/worktree',
-      null,
-      null,
-    );
-  });
-
   it('threads normalized platformSource into observation count and context generation', async () => {
-    countQueryStub = mock(() => ({ count: 2 }));
-    prepareStub = mock(() => ({ get: countQueryStub }));
-    mockSessionStore = { db: { prepare: prepareStub } };
-    mockSearchManager = { getSessionStore: () => mockSessionStore };
+    withObservationCount(2);
 
     const routes = new SearchRoutes(mockSearchManager);
     const handler = captureContextInjectHandler(routes);
@@ -292,14 +304,12 @@ describe('SearchRoutes Welcome Hint', () => {
         platformSource: 'cursor',
       }),
       false,
+      expect.objectContaining({ execution: 'inline' }),
     );
   });
 
   it('does not leak positive observation state across route instances', async () => {
-    countQueryStub = mock(() => ({ count: 3 }));
-    prepareStub = mock(() => ({ get: countQueryStub }));
-    mockSessionStore = { db: { prepare: prepareStub } };
-    mockSearchManager = { getSessionStore: () => mockSessionStore };
+    withObservationCount(3);
 
     const activeRoutes = new SearchRoutes(mockSearchManager);
     const activeHandler = captureContextInjectHandler(activeRoutes);
@@ -311,10 +321,7 @@ describe('SearchRoutes Welcome Hint', () => {
     expect(generateContextStub).toHaveBeenCalledTimes(1);
 
     generateContextStub.mockClear();
-    countQueryStub = mock(() => ({ count: 0 }));
-    prepareStub = mock(() => ({ get: countQueryStub }));
-    mockSessionStore = { db: { prepare: prepareStub } };
-    mockSearchManager = { getSessionStore: () => mockSessionStore };
+    withObservationCount(0);
 
     const emptyRoutes = new SearchRoutes(mockSearchManager);
     const emptyHandler = captureContextInjectHandler(emptyRoutes);
@@ -327,6 +334,88 @@ describe('SearchRoutes Welcome Hint', () => {
     const body = (emptyRes.send as any).mock.calls[0][0] as string;
     expect(body).toContain('# claude-mem status');
     expect(generateContextStub).not.toHaveBeenCalled();
+  });
+
+  for (const count of [1, 2]) {
+  it(`rechecks whether memory remains after deleting one of ${count} observations in the same worker`, async () => {
+    const db = new Database(':memory:');
+    const store = new SessionStore(db);
+    db.prepare(`INSERT INTO sdk_sessions (content_session_id, memory_session_id, project, started_at, started_at_epoch)
+      VALUES ('hint-delete-content', 'hint-delete-session', 'hint-delete-project', '2026-10-12T00:00:00Z', 1)`).run();
+    db.prepare(`INSERT INTO observations (memory_session_id, project, type, title, created_at, created_at_epoch)
+      VALUES ('hint-delete-session', 'hint-delete-project', 'discovery', 'one memory', '2026-10-12T00:00:00Z', 1)`).run();
+    if (count === 2) db.prepare(`INSERT INTO observations (memory_session_id, project, type, title, created_at, created_at_epoch)
+      VALUES ('hint-delete-session', 'hint-delete-project', 'discovery', 'other memory', '2026-10-12T00:00:01Z', 2)`).run();
+    const previousDataDir = process.env.CLAUDE_MEM_DATA_DIR;
+    const fixtureDir = mkdtempSync(join(tmpdir(), 'welcome-delete-context-'));
+    process.env.CLAUDE_MEM_DATA_DIR = fixtureDir;
+    const cache = new ContextCacheService({
+      debounceMs: 60_000,
+      expandProjectReadKeys: projects => projects,
+      renderVariant: async () => ({ body: '', cacheable: false }),
+    });
+    cache.start();
+    try {
+      const handler = captureContextInjectHandler(new SearchRoutes({ getSessionStore: () => store } as any, cache));
+      const request = { query: { projects: 'hint-delete-project' } } as unknown as Request;
+      const first = createMockRes();
+      handler(request, first as unknown as Response);
+      await new Promise(resolve => setImmediate(resolve));
+      expect(generateContextStub).toHaveBeenCalledTimes(1);
+      expect((first.send as any).mock.calls[0][0]).toContain('CONTEXT_FROM_GENERATOR');
+
+      let remove: ((req: Request, res: Response) => void) | undefined;
+      const dataRoutes = new DataRoutes({} as any,
+        { getSessionStore: () => store, getCloudSync: () => null, getChromaSync: () => null } as any,
+        {} as any, { broadcast: () => {} } as any, {} as any, Date.now());
+      dataRoutes.setupRoutes({ get: () => {}, post: () => {}, delete: (path: string, fn: typeof remove) => {
+        if (path === '/api/observation/:id') remove = fn;
+      }} as any);
+      const deleted = createMockRes();
+      remove!({ params: { id: '1' } } as unknown as Request, deleted as unknown as Response);
+      expect(deleted.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+      expect((db.prepare('SELECT COUNT(*) AS count FROM observations').get() as {count: number}).count).toBe(count - 1);
+      expect(cache.removalGenerationNow()).toBe(1);
+      generateContextStub.mockClear();
+      const empty = createMockRes();
+      handler(request, empty as unknown as Response);
+      await new Promise(resolve => setImmediate(resolve));
+      if (count === 1) {
+        expect((empty.send as any).mock.calls[0][0]).toContain('This project has no memory yet.');
+        expect(generateContextStub).not.toHaveBeenCalled();
+      } else {
+        expect((empty.send as any).mock.calls[0][0]).toContain('CONTEXT_FROM_GENERATOR');
+        expect(generateContextStub).toHaveBeenCalledTimes(1);
+      }
+    } finally {
+      cache.stop();
+      db.close();
+      if (previousDataDir === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
+      else process.env.CLAUDE_MEM_DATA_DIR = previousDataDir;
+      rmSync(fixtureDir, { recursive: true, force: true });
+    }
+  });
+  }
+
+  it('uses the request-local account plan for the welcome hint trial promotion', async () => {
+    const previousPlan = process.env.CLAUDE_MEM_PRO_PLAN;
+    const handler = captureContextInjectHandler(new SearchRoutes(mockSearchManager));
+    const req = { query: { projects: '/path/to/empty-project' } } as unknown as Request;
+    try {
+      for (const plan of ['none', 'trial', 'pro', 'teambrain_seat']) {
+        process.env.CLAUDE_MEM_PRO_PLAN = plan;
+        const res = createMockRes();
+        handler(req, res as unknown as Response);
+        await new Promise(resolve => setImmediate(resolve));
+
+        const body = (res.send as any).mock.calls[0][0] as string;
+        expect(body).toContain('# claude-mem status');
+        expect(body.includes('https://cmem.ai/pro?from=welcome-hint')).toBe(plan === 'none');
+      }
+    } finally {
+      if (previousPlan === undefined) delete process.env.CLAUDE_MEM_PRO_PLAN;
+      else process.env.CLAUDE_MEM_PRO_PLAN = previousPlan;
+    }
   });
 
   it('uses the request-local worker port env override in the welcome hint URL', async () => {
@@ -343,5 +432,175 @@ describe('SearchRoutes Welcome Hint', () => {
 
     const body = (res.send as any).mock.calls[0][0] as string;
     expect(body).toContain('http://localhost:43210');
+  });
+
+  describe('work state', () => {
+    const releaseEntries = () => [
+      { id: 1, project: '/path/parent', list_name: 'release', fields: { version: '13.25.3', status: 'active' }, created_at_epoch: Date.now() },
+      { id: 2, project: '/path/worktree', list_name: 'release', fields: { task: 'publish', status: 'todo' }, created_at_epoch: Date.now() },
+    ];
+    it('hands what is still open to the renderer, which measures it with the block it places it in', async () => {
+      withObservationCount(7);
+      // Both request keys are checkout aliases. Match the scope annotation
+      // supplied by SessionStore.getWorkStateEntries for those explicit keys.
+      workStateEntriesStub.mockImplementation(() => releaseEntries().map(entry => ({
+        ...entry, scope_project: '/path/worktree',
+      })));
+      const handler = captureContextInjectHandler(new SearchRoutes({ getSessionStore: () => mockSessionStore } as any));
+      const res = createMockRes();
+
+      handler({ query: { projects: '/path/parent,/path/worktree' } } as unknown as Request, res as unknown as Response);
+      await new Promise(resolve => setImmediate(resolve));
+
+      expect(workStateEntriesStub).toHaveBeenCalledWith(['/path/parent', '/path/worktree']);
+      // The renderer puts the section under its header, above the timeline, so
+      // the route no longer glues it on top or reserves room for it.
+      expect((res.send as any).mock.calls[0][0]).toBe('CONTEXT_FROM_GENERATOR');
+      // The section goes in with its time placeholders (cacheable form), so the
+      // fitter measures it at least as long as the filled text it becomes.
+      const renderedEntries = (workStateEntriesStub.mock.results[0] as { value: any[] }).value;
+      const section = buildWorkStateContextSection(renderedEntries, 'placeholders');
+      expect(section).toStartWith('Work state, still open:\n- release: version=13.25.3, status=active, updated ');
+      expect(section).toContain('\n  - [todo] publish, updated ');
+      expect(section).not.toContain('# Work state: your to-do lists');
+      expect(generateContextStub).toHaveBeenCalledWith(expect.objectContaining({ workStateSection: section, reserveChars: 0 }), false, expect.objectContaining({ execution: 'inline' }));
+    });
+
+    it('leads the welcome hint with what is still open', async () => {
+      workStateEntriesStub.mockImplementation(releaseEntries);
+      const handler = captureContextInjectHandler(new SearchRoutes(mockSearchManager));
+      const res = createMockRes();
+
+      handler({ query: { projects: '/path/to/empty-project' } } as unknown as Request, res as unknown as Response);
+      await new Promise(resolve => setImmediate(resolve));
+
+      const body = (res.send as any).mock.calls[0][0] as string;
+      expect(body).toStartWith('Work state, still open:\n- release');
+      expect(body).toContain('  - [todo] publish');
+      expect(body.indexOf('Work state, still open:')).toBeLessThan(body.indexOf('# claude-mem status'));
+    });
+
+    // #4606: a host that tracks work its own way can turn the section off, so
+    // the agent is not told to use a to-do tool instead of the host's.
+    it('leaves the work state out when CLAUDE_MEM_WORK_STATE_ENABLED=false', async () => {
+      process.env.CLAUDE_MEM_WORK_STATE_ENABLED = 'false';
+      withObservationCount(7);
+      workStateEntriesStub.mockImplementation(releaseEntries);
+      const handler = captureContextInjectHandler(new SearchRoutes({ getSessionStore: () => mockSessionStore } as any));
+      const res = createMockRes();
+
+      handler({ query: { projects: '/path/to/active-project' } } as unknown as Request, res as unknown as Response);
+      await new Promise(resolve => setImmediate(resolve));
+
+      expect(workStateEntriesStub).not.toHaveBeenCalled();
+      expect(res.send).toHaveBeenCalledWith('CONTEXT_FROM_GENERATOR');
+      expect(generateContextStub).toHaveBeenCalledWith(expect.objectContaining({ reserveChars: 0, workStateSection: '' }), false, expect.objectContaining({ execution: 'inline' }));
+    });
+
+    it('leaves room for the TeamBrain brief the hook puts ahead of the block once the install is in a team', async () => {
+      process.env.CLAUDE_MEM_WORK_STATE_ENABLED = 'false';
+      withObservationCount(7);
+      const render = async () => {
+        generateContextStub.mockClear();
+        const handler = captureContextInjectHandler(new SearchRoutes({ getSessionStore: () => mockSessionStore } as any));
+        handler({ query: { projects: '/path/to/active-project' } } as unknown as Request, createMockRes() as unknown as Response);
+        await new Promise(resolve => setImmediate(resolve));
+      };
+      try {
+        process.env.CLAUDE_MEM_TEAMBRAIN_URL = 'https://cmem.ai';
+        await render();
+        expect(generateContextStub).toHaveBeenCalledWith(expect.objectContaining({ reserveChars: TEAM_BRIEF_RESERVE_CHARS }), false, expect.objectContaining({ execution: 'inline' }));
+      } finally {
+        delete process.env.CLAUDE_MEM_TEAMBRAIN_URL;
+      }
+    });
+
+    it('leaves the work state out of the welcome hint when CLAUDE_MEM_WORK_STATE_ENABLED=false', async () => {
+      process.env.CLAUDE_MEM_WORK_STATE_ENABLED = 'false';
+      workStateEntriesStub.mockImplementation(releaseEntries);
+      const handler = captureContextInjectHandler(new SearchRoutes(mockSearchManager));
+      const res = createMockRes();
+
+      handler({ query: { projects: '/path/to/empty-project' } } as unknown as Request, res as unknown as Response);
+      await new Promise(resolve => setImmediate(resolve));
+
+      const body = (res.send as any).mock.calls[0][0] as string;
+      expect(body).toStartWith('# claude-mem status');
+      expect(body).not.toContain('work_state_write');
+    });
+
+    it('leaves the work state out of the colored terminal preview, which is for the human', async () => {
+      withObservationCount(7);
+      workStateEntriesStub.mockImplementation(releaseEntries);
+      const handler = captureContextInjectHandler(new SearchRoutes({ getSessionStore: () => mockSessionStore } as any));
+      const res = createMockRes();
+
+      handler({ query: { projects: '/path/to/active-project', colors: 'true' } } as unknown as Request, res as unknown as Response);
+      await new Promise(resolve => setImmediate(resolve));
+
+      expect(workStateEntriesStub).not.toHaveBeenCalled();
+      expect(res.send).toHaveBeenCalledWith('CONTEXT_FROM_GENERATOR');
+      expect(generateContextStub).toHaveBeenCalledWith(expect.objectContaining({ reserveChars: 0 }), true, expect.objectContaining({ execution: 'inline' }));
+    });
+  });
+
+  // A host that cannot run the project resolver itself (the in-process OMP
+  // hook, #3556) sends its cwd; the route reads the keys the CLI context hook
+  // would send for that checkout.
+  describe('from a host cwd (#3556)', () => {
+    let checkout: string;
+
+    const searchManagerWithObservations = () => ({
+      getSessionStore: () => ({
+        db: { prepare: mock(() => ({ get: mock(() => ({ count: 1 })), finalize: () => {} })) },
+        getWorkStateEntries: workStateEntriesStub,
+      }),
+    });
+
+    beforeEach(() => {
+      checkout = mkdtempSync(join(tmpdir(), 'omp-inject-checkout-'));
+    });
+
+    afterEach(() => {
+      delete process.env.CLAUDE_MEM_EXCLUDED_PROJECTS;
+      rmSync(checkout, { recursive: true, force: true });
+    });
+
+    it('reads the project keys of that checkout', async () => {
+      const handler = captureContextInjectHandler(new SearchRoutes(searchManagerWithObservations() as any));
+      const res = createMockRes();
+
+      handler({ query: { cwd: checkout } } as unknown as Request, res as unknown as Response);
+      await new Promise(resolve => setImmediate(resolve));
+
+      expect(res.status).not.toHaveBeenCalledWith(400);
+      expect(generateContextStub).toHaveBeenCalledTimes(1);
+      const [injectRequest] = (generateContextStub as any).mock.calls[0];
+      expect(injectRequest.projects).toEqual(getProjectContext(checkout).allProjects);
+    });
+
+    it('injects nothing for a checkout the user excluded', async () => {
+      process.env.CLAUDE_MEM_EXCLUDED_PROJECTS = basename(checkout);
+      const handler = captureContextInjectHandler(new SearchRoutes(searchManagerWithObservations() as any));
+      const res = createMockRes();
+
+      handler({ query: { cwd: checkout } } as unknown as Request, res as unknown as Response);
+      await new Promise(resolve => setImmediate(resolve));
+
+      expect(res.send).toHaveBeenCalledWith('');
+      expect(generateContextStub).not.toHaveBeenCalled();
+    });
+
+    it('injects nothing for an excluded checkout even when the host names another project', async () => {
+      process.env.CLAUDE_MEM_EXCLUDED_PROJECTS = basename(checkout);
+      const handler = captureContextInjectHandler(new SearchRoutes(searchManagerWithObservations() as any));
+      const res = createMockRes();
+
+      handler({ query: { cwd: checkout, projects: 'project-override' } } as unknown as Request, res as unknown as Response);
+      await new Promise(resolve => setImmediate(resolve));
+
+      expect(res.send).toHaveBeenCalledWith('');
+      expect(generateContextStub).not.toHaveBeenCalled();
+    });
   });
 });

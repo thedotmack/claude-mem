@@ -26,6 +26,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { Database } from 'bun:sqlite';
+import { purgeUndrainableSyncOutbox } from '../../../src/services/sync/outbox-purge.js';
 import { SessionStore, type SessionStoreOptions } from '../../../src/services/sqlite/SessionStore.js';
 
 const ISO = '2026-07-09T00:00:00.000Z';
@@ -122,29 +123,6 @@ describe('sync_outbox growth bounds', () => {
   // (2) supersede — re-registrations replace queued repair ops per target
   // ---------------------------------------------------------------------------
   describe('set_prompt_session supersede (sync enabled)', () => {
-    it('one registration enqueues exactly one op per prompt with the full repair body (pre-fix behavior preserved)', () => {
-      const store = makeStore({ syncOpsEnabled: true });
-      seedSessionWithPrompts(db, 2);
-
-      store.updateMemorySessionId(1, 'mem-late');
-
-      const ops = outboxRows(db);
-      expect(ops.length).toBe(2);
-      const byTarget = new Map(ops.map(o => [o.body.target.origin_local_id, o]));
-      for (const promptId of ['1', '2']) {
-        const op = byTarget.get(promptId)!;
-        expect(op.rev).toBe('2'); // rev = post-bump sync_rev — REV MINTING RULES
-        expect(op.body.op).toBe('set_prompt_session');
-        expect(op.body.target.origin_device_id).toBeNull();
-        expect(op.body.fields).toEqual({
-          memory_session_id: 'mem-late',
-          project: 'proj-x',
-          content_session_id: 'sess-1',
-          platform_source: 'claude',
-        });
-      }
-    });
-
     it('N identity changes leave one op per prompt at the newest rev and fields, not N ops', () => {
       // The remaining amplification path after #4027: updateMemorySessionId
       // still rewrites identity and requeues every prompt. 3 prompts x 21
@@ -209,6 +187,23 @@ describe('sync_outbox growth bounds', () => {
       expect(outboxRows(db).length).toBe(1);
       expect(second.op_uuid).not.toBe(first.op_uuid);
       expect(second.rev).toBe('3');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // (3) #4228 backlog cleanup — an unconfigured install empties the undrainable queue
+  // ---------------------------------------------------------------------------
+  describe('undrainable backlog purge (#4228)', () => {
+    it('removes every queued op and reports the count; a second run is a no-op', () => {
+      const store = makeStore({ syncOpsEnabled: true });
+      seedSessionWithPrompts(db, 3);
+      store.updateMemorySessionId(1, 'mem-a');
+      const before = outboxRows(db).length;
+      expect(before).toBeGreaterThan(0);
+
+      expect(purgeUndrainableSyncOutbox(db)).toBe(before);
+      expect(outboxRows(db).length).toBe(0);
+      expect(purgeUndrainableSyncOutbox(db)).toBe(0);
     });
   });
 });

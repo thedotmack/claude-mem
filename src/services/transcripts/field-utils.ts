@@ -29,6 +29,23 @@ function parsePath(path: string): Array<string | number> {
   return tokens;
 }
 
+/**
+ * When a transcript record says it was written: a top-level `timestamp`
+ * (Codex, Claude Code), `time` or `createdAt` (DeepSeek Harness), as an ISO
+ * string or epoch seconds/milliseconds. Null when the record carries none.
+ */
+export function recordTimeEpochMs(record: unknown): number | null {
+  if (!record || typeof record !== 'object') return null;
+  for (const key of ['timestamp', 'time', 'createdAt']) {
+    const value = (record as Record<string, unknown>)[key];
+    const ms = typeof value === 'number' ? (value < 1e12 ? value * 1000 : value)
+      : typeof value === 'string' ? Date.parse(value)
+        : Number.NaN;
+    if (Number.isFinite(ms) && ms > 0) return ms;
+  }
+  return null;
+}
+
 export function getValueByPath(input: unknown, path: string): unknown {
   if (!path) return undefined;
   const tokens = parsePath(path);
@@ -120,6 +137,28 @@ export function matchesRule(
 ): boolean {
   if (!rule) return true;
 
+  // Every operator below is applied to the ONE value `rule.path` selects, so a
+  // single rule cannot constrain one field by another. `all`/`any` evaluate
+  // sub-rules that each carry their own path, which is what makes a rule like
+  // "role == user AND the content is not an injected preamble" expressible
+  // (#4211). Evaluated before the single-path operators so a nested rule is
+  // decided on its own terms, and so nesting composes.
+  // A malformed composite (an object where a list belongs) is a config typo, and
+  // silently ignoring it would turn a filter into a no-op - the exact failure a
+  // schema author is trying to prevent. Fail closed instead: the event does not
+  // match, so the typo is visible rather than quietly widening ingestion.
+  if (rule.all !== undefined) {
+    if (!Array.isArray(rule.all)) return false;
+    for (const subRule of rule.all) {
+      if (!matchesRule(entry, subRule, schema)) return false;
+    }
+  }
+
+  if (rule.any !== undefined) {
+    if (!Array.isArray(rule.any)) return false;
+    if (!rule.any.some(subRule => matchesRule(entry, subRule, schema))) return false;
+  }
+
   const path = rule.path || schema.eventTypePath || 'type';
   const value = path ? getValueByPath(entry, path) : undefined;
   const isAbsent = value === undefined || value === null || value === '';
@@ -155,6 +194,17 @@ export function matchesRule(
 
   if (rule.not_contains !== undefined) {
     if (typeof value === 'string' && value.includes(rule.not_contains)) return false;
+  }
+
+  // Literal prefix tests. `not_contains` cannot tell a host-injected preamble
+  // apart from a user who merely mentions the marker somewhere in their
+  // message, and rejecting the latter silently drops a real prompt (#4211).
+  if (rule.starts_with !== undefined) {
+    if (typeof value !== 'string' || !value.startsWith(rule.starts_with)) return false;
+  }
+
+  if (rule.not_starts_with !== undefined) {
+    if (typeof value === 'string' && value.startsWith(rule.not_starts_with)) return false;
   }
 
   if (rule.regex) {

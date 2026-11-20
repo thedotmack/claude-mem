@@ -12,6 +12,8 @@ import {
   toJsonObject
 } from './utils.js';
 import { normalizePlatformSourceOrNull } from '../../shared/platform-source.js';
+import { redactJsonStrings } from '../../utils/redaction.js';
+import { stripMemoryTagsFromJsonStrings } from '../../utils/tag-stripping.js';
 
 export interface PostgresAgentEvent {
   id: string;
@@ -83,6 +85,7 @@ export class PostgresAgentEventsRepository {
         )
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb, $12)
         ON CONFLICT (idempotency_key) DO UPDATE SET
+          server_session_id = COALESCE(agent_events.server_session_id, excluded.server_session_id),
           metadata = agent_events.metadata || excluded.metadata,
           platform_source = COALESCE(excluded.platform_source, agent_events.platform_source)
         RETURNING *
@@ -97,8 +100,11 @@ export class PostgresAgentEventsRepository {
         idempotencyKey,
         input.eventType,
         platformSource,
-        JSON.stringify(input.payload ?? {}),
-        JSON.stringify(input.metadata ?? {}),
+        // <private> sections are removed and opt-in secret redaction (#2616)
+        // applied to the raw event body, at the one write every ingest path
+        // goes through, so a client that did not strip still stores none.
+        JSON.stringify(redactJsonStrings(stripMemoryTagsFromJsonStrings(input.payload ?? {}))),
+        JSON.stringify(redactJsonStrings(stripMemoryTagsFromJsonStrings(input.metadata ?? {}))),
         new Date(input.occurredAt)
       ]
     );

@@ -3,13 +3,14 @@ name: mem-setup
 description: >
   This skill should be used when the user asks to "set up claude-mem", "pair
   claude-mem", "connect cmem", "add my cmem key", "set up cloud sync in
-  Cowork", or provides cmem.ai Connect values (sync token, user id, SyncHub
-  URL) for this plugin. Configures the claude-mem-cowork plugin credentials.
+  Cowork" or in the Claude app, or provides cmem.ai Connect values (sync token,
+  user id, SyncHub URL) for this plugin. Configures the CMEM Pro plugin
+  credentials.
 metadata:
   version: "0.1.0"
 ---
 
-# Claude-Mem Setup (Cowork pairing)
+# Claude-Mem Setup (Claude app pairing)
 
 Configure this plugin with the user's own cmem.ai credentials so hooks can
 capture and inject memory. Anyone can pair — credentials are per-user
@@ -21,7 +22,7 @@ From **cmem.ai → Connect**, the user has three values:
 
 1. **sync token** (starts with `cm_`) — used as the bearer API key
 2. **user id** (UUID)
-3. **SyncHub URL** (a workers.dev or cmem.ai URL)
+3. **SyncHub URL** (`https://sync.cmem.ai`)
 
 If the user pastes the whole Connect blurb, extract the three values from it.
 If any are missing, ask for the sync token at minimum — the other two are
@@ -38,16 +39,21 @@ optional.
    `config.json`: set `apiKey` to the sync token, `userId`, and `syncHubUrl`.
    Leave other settings unless the user asks (`inject` toggles). Project naming
    is automatic (`cmem_work_*`) and is not configurable.
-2. Cowork containers are ephemeral: edits to the installed copy last only for
+2. Claude app containers are ephemeral: edits to the installed copy last only for
    this session. To make pairing permanent, repackage — zip the plugin
    directory as `<plugin-name>.plugin` and send it to the user to re-install
    (the cowork-plugin skill's packaging flow). Tell the user this is why.
 3. If this machine also has a local claude-mem install (a `~/.claude-mem/`
-   directory exists), optionally write the same values to
+   directory exists), write the same values to
    `~/.claude-mem/settings.json` with mode 0600 (`CLAUDE_MEM_CLOUD_SYNC_TOKEN`,
    `CLAUDE_MEM_CLOUD_SYNC_USER_ID`, `CLAUDE_MEM_CLOUD_SYNC_HUB_URL` keys — the
-   same keys the local claude-mem cloud-sync pairing writes) — the hook script
-   and the local worker both read it.
+   same keys the local claude-mem cloud-sync pairing writes). This plugin's
+   hooks stay off wherever claude-mem is installed locally, so that pairing is
+   what carries this machine's work to cmem.ai. The worker reads those keys
+   only at startup: restart it and run the claude-mem cloud-sync skill's
+   Verify step, which must report `configured: true` and `hub.reachable: true`.
+   Don't report success before it does; if it never does, pair through that
+   skill's installer flow instead.
 4. Verify without exposing the secret:
 
    ```bash

@@ -8,6 +8,35 @@ export interface ContextInput {
   projects?: string[];
   platformSource?: string;
   full?: boolean;
+  /**
+   * Set false to build the context without the observer-health outage banner.
+   *
+   * The banner is written for the primary assistant and ends with an
+   * instruction addressed to it. Builds that are consumed by the observer
+   * itself must opt out (#4221).
+   */
+  includeHealthWarning?: boolean;
+  /**
+   * False renders without the prior session's reply whatever the setting says:
+   * for a block that may be cached, which any session can read.
+   */
+  includePriorMessage?: boolean;
+  /**
+   * Characters delivered beside this block (hook notices, the TeamBrain brief),
+   * taken off the 10K delivery limit so the combined output still fits it.
+   */
+  reserveChars?: number;
+  /**
+   * The open work-state lists (WorkStateRenderer), placed in the agent block
+   * under its header and above the timeline, and measured with it.
+   */
+  workStateSection?: string;
+  /**
+   * Render the header time as a placeholder that `fillContextPlaceholders`
+   * fills at read time, so the block can be cached (shared/context-cache.ts).
+   * The fitter's limit shrinks by what the placeholder can grow by.
+   */
+  timePlaceholders?: boolean;
   [key: string]: any;
 }
 
@@ -18,8 +47,6 @@ export interface ContextConfig {
 
   showReadTokens: boolean;
   showWorkTokens: boolean;
-  showSavingsAmount: boolean;
-  showSavingsPercent: boolean;
 
   observationTypes: Set<string>;
   observationConcepts: Set<string>;
@@ -27,11 +54,28 @@ export interface ContextConfig {
   fullObservationField: 'narrative' | 'facts';
   showLastSummary: boolean;
   showLastMessage: boolean;
+  mainAgentOnly: boolean;
+  /**
+   * ACT-R reinforcement weight for observation selection
+   * (CLAUDE_MEM_REINFORCE_ALPHA). Absent or 0 = off: the N most recent.
+   */
+  reinforcementAlpha?: number;
+
+  /**
+   * Whether observation refs in the inject panel can be fetched by id.
+   * When false (server runtime, where ids are Postgres UUIDs), refs are
+   * abbreviated to an 8-char prefix (display-only) and the legend points to
+   * observation_search. Defaults to true (full id shown) when omitted.
+   */
+  fetchByIdSupported?: boolean;
 }
 
 export interface Observation {
-  id: number;
+  // A numeric SQLite id, or the server's string id in server runtime.
+  id: number | string;
   memory_session_id: string;
+  /** Observed host session identity, used to resolve its transcript. */
+  content_session_id?: string | null;
   platform_source?: string;
   type: string;
   title: string | null;
@@ -45,10 +89,13 @@ export interface Observation {
   created_at: string;
   created_at_epoch: number;
   project?: string;
+  /** Selected only while reinforcement ranking is on. */
+  reinforcement_dates?: string | null;
 }
 
 export interface SessionSummary {
-  id: number;
+  // A numeric SQLite id, or the server's string id in server runtime.
+  id: number | string;
   memory_session_id: string;
   platform_source?: string;
   request: string | null;
@@ -56,10 +103,15 @@ export interface SessionSummary {
   learned: string | null;
   completed: string | null;
   next_steps: string | null;
+  notes?: string | null;
   created_at: string;
   created_at_epoch: number;
   project?: string;
 }
+
+/** Rows read from the local SQLite database always carry numeric ids. */
+export type LocalObservation = Observation & { id: number };
+export type LocalSessionSummary = SessionSummary & { id: number };
 
 export interface SummaryTimelineItem extends SessionSummary {
   displayEpoch: number;

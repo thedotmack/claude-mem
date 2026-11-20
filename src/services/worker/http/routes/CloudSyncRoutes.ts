@@ -3,6 +3,7 @@ import express, { Request, Response } from 'express';
 import { logger } from '../../../../utils/logger.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import type { DatabaseManager } from '../../DatabaseManager.js';
+import type { ViewerSyncService } from '../../../sync/ViewerSyncService.js';
 
 /**
  * Cloud sync status endpoint (cmem.ai Pro).
@@ -13,7 +14,7 @@ import type { DatabaseManager } from '../../DatabaseManager.js';
  * distinguish "not set up" from "worker down" without special-casing a 404/500.
  */
 export class CloudSyncRoutes extends BaseRouteHandler {
-  constructor(private dbManager: DatabaseManager) {
+  constructor(private dbManager: DatabaseManager, private viewerSync?: Pick<ViewerSyncService, 'statusWithProbe'>) {
     super();
   }
 
@@ -30,6 +31,7 @@ export class CloudSyncRoutes extends BaseRouteHandler {
     }
     // Always performs an authenticated, read-only SyncHub status GET. An
     // empty local queue alone is not evidence that the connection works.
-    res.json(await cloudSync.statusWithHubProbe());
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(this.viewerSync ? await this.viewerSync.statusWithProbe() : await cloudSync.statusWithHubProbe());
   });
 }

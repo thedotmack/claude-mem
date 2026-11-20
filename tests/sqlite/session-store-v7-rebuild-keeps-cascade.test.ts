@@ -9,10 +9,11 @@
 // column list.
 import { describe, it, expect, afterEach } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdtempSync, rmSync, existsSync } from 'fs';
+import { mkdtempSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
+import { removeTempDir } from '../helpers/temp-dir.js';
 
 const ISO = '2025-07-01T00:00:00.000Z';
 const EPOCH = 1751328000000;
@@ -135,7 +136,12 @@ function seedDbThatAlreadyLostCascade(dbPath: string): void {
       FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE
     )
   `);
-  for (const version of [4, 7, 11, 21]) {
+  db.run(`
+    CREATE UNIQUE INDEX ux_session_summaries_origin
+    ON session_summaries(origin_device_id, origin_local_id)
+    WHERE origin_device_id IS NOT NULL
+  `);
+  for (const version of [4, 7, 11, 21, 41]) {
     db.prepare('INSERT INTO schema_versions (version, applied_at) VALUES (?, ?)').run(version, ISO);
   }
   db.prepare(`
@@ -197,9 +203,9 @@ function hasTableLevelUniqueConstraint(db: Database): boolean {
 describe('session_summaries ON UPDATE CASCADE survives v7 rebuild (#3849)', () => {
   let tempDir: string;
 
-  afterEach(() => {
+  afterEach(async () => {
     if (tempDir && existsSync(tempDir)) {
-      rmSync(tempDir, { recursive: true, force: true });
+      await removeTempDir(tempDir);
     }
   });
 
@@ -240,7 +246,7 @@ describe('session_summaries ON UPDATE CASCADE survives v7 rebuild (#3849)', () =
     store.db.close();
   });
 
-  it('repairs a database that already lost CASCADE even though version 21 is stamped', () => {
+  it('repairs a database with the v41 origin index that already lost CASCADE after v21', () => {
     const dbPath = makeTempDbPath();
     seedDbThatAlreadyLostCascade(dbPath);
 
@@ -249,6 +255,11 @@ describe('session_summaries ON UPDATE CASCADE survives v7 rebuild (#3849)', () =
     const summaryFk = memorySessionFk(store.db, 'session_summaries');
     expect(summaryFk?.on_update).toBe('CASCADE');
     expect(summaryFk?.on_delete).toBe('CASCADE');
+    expect(store.db.query('PRAGMA index_list(session_summaries)').all()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'ux_session_summaries_origin', unique: 1, origin: 'c' }),
+      ])
+    );
     const observationFk = memorySessionFk(store.db, 'observations');
     expect(observationFk?.on_update).toBe('CASCADE');
 

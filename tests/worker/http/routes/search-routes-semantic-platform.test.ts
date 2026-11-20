@@ -129,3 +129,36 @@ describe('/api/context/semantic platform scoping', () => {
     });
   }
 });
+
+describe('/api/context/semantic format', () => {
+  const LONG_QUERY = 'Find relevant semantic context memories to inject for this prompt';
+  const observation = {
+    id: 4118,
+    title: 'Semantic injection renders narratives',
+    subtitle: 'Index format is opt-in',
+    narrative: 'NARRATIVE_BODY',
+    created_at: '2026-10-04T00:00:00.000Z',
+  };
+
+  async function render(body: Record<string, unknown>): Promise<string> {
+    const routes = new SearchRoutes({ search: mock(async () => ({ observations: [observation] })) } as any);
+    const handler = captureSemanticHandler(routes);
+    const response = makeResponse();
+    handler(makeRequest({ body: { q: LONG_QUERY, ...body } }), response.res);
+    await flushAsyncHandlers();
+    return ((response.json as any).mock.calls[0][0] as { context: string }).context;
+  }
+
+  it('renders full narratives when no format is given', async () => {
+    const context = await render({});
+    expect(context).toContain('### Semantic injection renders narratives (2026-10-04)');
+    expect(context).toContain('NARRATIVE_BODY');
+  });
+
+  it('renders id, title and subtitle with a get_observations pointer for format=index', async () => {
+    const context = await render({ format: 'index' });
+    expect(context).toContain('- #4118 Semantic injection renders narratives — Index format is opt-in (2026-10-04)');
+    expect(context).toContain('get_observations');
+    expect(context).not.toContain('NARRATIVE_BODY');
+  });
+});

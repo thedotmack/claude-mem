@@ -1,0 +1,33 @@
+{
+  "host": "omp (oh-my-pi)",
+  "source": "https://github.com/can1357/oh-my-pi/blob/main/docs/hooks.md#event-surfaces (typed in packages/coding-agent/src/extensibility/hooks/types.ts)",
+  "capturedAt": "2026-10-01",
+  "userHookDir": "<agentDir>/hooks/pre/*.{ts,js}; agentDir defaults to ~/.omp/agent and honours PI_CODING_AGENT_DIR",
+  "events": [
+    "session_start",
+    "session_before_switch",
+    "session_switch",
+    "session_before_branch",
+    "session_branch",
+    "session_before_compact",
+    "session.compacting",
+    "session_compact",
+    "session_before_tree",
+    "session_tree",
+    "session_shutdown",
+    "context",
+    "before_agent_start",
+    "agent_start",
+    "agent_end",
+    "turn_start",
+    "turn_end",
+    "auto_compaction_start",
+    "auto_compaction_end",
+    "auto_retry_start",
+    "auto_retry_end",
+    "ttsr_triggered",
+    "todo_reminder",
+    "tool_call",
+    "tool_result"
+  ]
+}

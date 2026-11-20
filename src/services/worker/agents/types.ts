@@ -1,15 +1,18 @@
+import type { MediaManifest } from '../../../shared/media-contract.js';
 
 export interface WorkerRef {
   sseBroadcaster?: {
     broadcast(event: SSEEventPayload): void;
   };
   broadcastProcessingStatus?: () => void;
+  recordAiInteraction?: (result: { success: boolean; error?: string; provider: string }) => void;
 }
 
 export interface ObservationSSEPayload {
   id: number;
   memory_session_id: string | null;
   session_id: string;
+  content_session_id: string;
   platform_source: string;
   type: string;
   title: string | null;
@@ -23,6 +26,8 @@ export interface ObservationSSEPayload {
   project: string;
   prompt_number: number;
   created_at_epoch: number;
+  /** Validated media refs, identical to the paged/by-id feeds; absent for image-free rows. */
+  media?: MediaManifest;
 }
 
 export interface SummarySSEPayload {
@@ -46,6 +51,14 @@ export type SSEEventPayload =
 
 export interface StorageResult {
   observationIds: number[];
+  /**
+   * Parallel to observationIds: true where a Tier-0 dedup merge (#3038) reused
+   * an existing row instead of storing a new one. Absent = nothing merged.
+   */
+  mergedIntoExisting?: boolean[];
+  /** The ids this turn actually inserted (no duplicates or Tier-0 merges of earlier rows). */
+  insertedObservationIds?: number[];
   summaryId: number | null;
   createdAtEpoch: number;
+  summaryUpdated?: boolean;
 }

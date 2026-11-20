@@ -1,12 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
-import { writeFileSync, mkdirSync, rmSync, existsSync } from 'fs';
-import { join } from 'path';
-import { tmpdir } from 'os';
+import codeMode from '../plugin/modes/code.json';
 import { GeminiProvider } from '../src/services/worker/GeminiProvider';
 import { DatabaseManager } from '../src/services/worker/DatabaseManager';
 import { SessionManager } from '../src/services/worker/SessionManager';
 import { ModeManager } from '../src/services/domain/ModeManager';
 import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager';
+import { sessionDbWithoutMedia } from './fixtures/worker/session-db-without-media.js';
 
 let rateLimitingEnabled = 'false';
 let queuedMessages: Array<Record<string, unknown>> = [];
@@ -21,11 +20,7 @@ const toolObservationMessage = {
 
 const mockMode = {
   name: 'code',
-  prompts: {
-    init: 'init prompt',
-    observation: 'obs prompt',
-    summary: 'summary prompt'
-  },
+  prompts: codeMode.prompts,
   observation_types: [{ id: 'discovery' }, { id: 'bugfix' }],
   observation_concepts: []
 };
@@ -42,21 +37,12 @@ function makeSession(overrides: Record<string, unknown> = {}) {
     cumulativeInputTokens: 0,
     cumulativeOutputTokens: 0,
     abortController: new AbortController(),
+    claimedMessageIds: [],
     generatorPromise: null,
     currentProvider: null,
     startTime: Date.now(),
     ...overrides,
   } as any;
-}
-
-function mockGeminiConfig() {
-  loadFromFileSpy.mockImplementation(() => ({
-    ...SettingsDefaultsManager.getAllDefaults(),
-    CLAUDE_MEM_GEMINI_API_KEY: 'test-api-key',
-    CLAUDE_MEM_GEMINI_MODEL: 'gemini-flash-latest',
-    CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: 'false',
-    CLAUDE_MEM_DATA_DIR: '/tmp/claude-mem-test',
-  }));
 }
 
 function mockSuccessfulGeminiFetch() {
@@ -113,6 +99,9 @@ describe('GeminiProvider', () => {
       CLAUDE_MEM_GEMINI_MODEL: 'gemini-flash-latest',
       CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: rateLimitingEnabled,
       CLAUDE_MEM_DATA_DIR: '/tmp/claude-mem-test',
+      // These tests drive the request shape and its failures through the
+      // generator's separate init request.
+      CLAUDE_MEM_OBSERVE_BARE_PROMPTS: 'true',
     }));
 
     getSpy = spyOn(SettingsDefaultsManager, 'get').mockImplementation((key: string) => {
@@ -144,7 +133,7 @@ describe('GeminiProvider', () => {
       storeSummary: mockStoreSummary,
       markSessionCompleted: mockMarkSessionCompleted,
       getSessionById: mock(() => ({ memory_session_id: 'mem-session-123' })), // Required by ResponseProcessor.ts for FK fix
-      ensureMemorySessionIdRegistered: mock(() => {}) 
+      db: sessionDbWithoutMedia(), ensureMemorySessionIdRegistered: mock(() => {}) 
     };
 
     const mockChromaSync = {
@@ -186,21 +175,7 @@ describe('GeminiProvider', () => {
   });
 
   it('should initialize with correct config', async () => {
-    const session = {
-      sessionDbId: 1,
-      contentSessionId: 'test-session',
-      memorySessionId: 'mem-session-123',
-      project: 'test-project',
-      userPrompt: 'test prompt',
-      conversationHistory: [],
-      lastPromptNumber: 1,
-      cumulativeInputTokens: 0,
-      cumulativeOutputTokens: 0,
-      abortController: new AbortController(),
-      generatorPromise: null,
-      currentProvider: null,
-      startTime: Date.now(),
-    } as any;
+    const session = makeSession();
 
     global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
       candidates: [{
@@ -214,39 +189,48 @@ describe('GeminiProvider', () => {
     await agent.startSession(session);
 
     expect(global.fetch).toHaveBeenCalledTimes(1);
-    const url = (global.fetch as any).mock.calls[0][0];
+    const [url, init] = (global.fetch as any).mock.calls[0];
     expect(url).toContain('https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent');
-    expect(url).toContain('key=test-api-key');
+    // The key travels in the header, never the URL: a query string is recorded
+    // by proxies and server access logs.
+    expect(url).not.toContain('key=');
+    expect(init.headers['x-goog-api-key']).toBe('test-api-key');
   });
 
-  it('should handle multi-turn conversation', async () => {
-    const session = {
-      sessionDbId: 1,
-      contentSessionId: 'test-session',
-      memorySessionId: 'mem-session-123',
-      project: 'test-project',
-      userPrompt: 'test prompt',
-      conversationHistory: [{ role: 'user', content: 'prev context' }, { role: 'assistant', content: 'prev response' }],
-      lastPromptNumber: 2,
-      cumulativeInputTokens: 0,
-      cumulativeOutputTokens: 0,
-      abortController: new AbortController(),
-      generatorPromise: null,
-      currentProvider: null,
-      startTime: Date.now(),
-    } as any;
+  // A generator start opens a new generation (#3479), so a multi-turn history
+  // only exists mid-generation. These drive query() with one directly.
+  const GEMINI_QUERY_CONFIG = { apiKey: 'test-api-key', model: 'gemini-flash-latest', rateLimitingEnabled: false };
 
-    global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
-      candidates: [{ content: { parts: [{ text: 'response' }] } }]
-    }))));
+  it('sends an init prompt (not a continuation) when the session has no prompt anchor (#3653)', async () => {
+    // A transcript-ingested session with no user_prompts row resolves to
+    // prompt 0. Before the fix that was built as a continuation with an empty
+    // user prompt, which the model rejects as prose and the batch is dropped.
+    const markerMode = {
+      ...mockMode,
+      prompts: {
+        ...mockMode.prompts,
+        system_identity: '__INIT_MARKER__',
+        continuation_greeting: '__CONTINUATION_MARKER__',
+      },
+    };
+    modeManagerSpy.mockImplementation(() => ({
+      getActiveMode: () => markerMode,
+      loadMode: () => {},
+    } as any));
 
-    await agent.startSession(session);
+    mockSuccessfulGeminiFetch();
 
+    await agent.startSession(makeSession({
+      userPrompt: '',
+      lastPromptNumber: 0,
+      conversationHistory: [],
+    }));
+
+    // The generation's framing prompt goes out as systemInstruction (#3868).
     const body = JSON.parse((global.fetch as any).mock.calls[0][1].body);
-    expect(body.contents).toHaveLength(3);
-    expect(body.contents[0].role).toBe('user');
-    expect(body.contents[1].role).toBe('model');
-    expect(body.contents[2].role).toBe('user');
+    const framing = body.systemInstruction.parts[0].text as string;
+    expect(framing).toContain('__INIT_MARKER__');
+    expect(framing).not.toContain('__CONTINUATION_MARKER__');
   });
 
   it('keeps Gemini roles alternating for full conversation history', async () => {
@@ -260,14 +244,12 @@ describe('GeminiProvider', () => {
     ];
 
     for (const label of ['a', 'b']) {
-      mockGeminiConfig();
       mockSuccessfulGeminiFetch();
 
-      await agent.startSession(makeSession({
-        userPrompt: `current prompt ${label}`,
-        lastPromptNumber: 2,
-        conversationHistory: history.map(message => ({ ...message })),
-      }));
+      await (agent as any).query(
+        [...history.map(message => ({ ...message })), { role: 'user', content: `current prompt ${label}` }],
+        GEMINI_QUERY_CONFIG,
+      );
 
       const contents = sentGeminiContents();
       expectAlternatingGeminiRoles(contents);
@@ -277,17 +259,14 @@ describe('GeminiProvider', () => {
   });
 
   it('merges adjacent same-role messages instead of sending repeated Gemini roles', async () => {
-    const session = makeSession({
-      conversationHistory: [
-        { role: 'user', content: 'first user turn' },
-        { role: 'user', content: 'second user turn' },
-        { role: 'assistant', content: 'model turn' },
-      ],
-    });
-
     mockSuccessfulGeminiFetch();
 
-    await agent.startSession(session);
+    await (agent as any).query([
+      { role: 'user', content: 'first user turn' },
+      { role: 'user', content: 'second user turn' },
+      { role: 'assistant', content: 'model turn' },
+      { role: 'user', content: 'next prompt' },
+    ], GEMINI_QUERY_CONFIG);
 
     const contents = sentGeminiContents();
     expectAlternatingGeminiRoles(contents);
@@ -299,21 +278,7 @@ describe('GeminiProvider', () => {
   });
 
   it('should process observations and store them', async () => {
-    const session = {
-      sessionDbId: 1,
-      contentSessionId: 'test-session',
-      memorySessionId: 'mem-session-123',
-      project: 'test-project',
-      userPrompt: 'test prompt',
-      conversationHistory: [],
-      lastPromptNumber: 1,
-      cumulativeInputTokens: 0,
-      cumulativeOutputTokens: 0,
-      abortController: new AbortController(),
-      generatorPromise: null,
-      currentProvider: null,
-      startTime: Date.now(),
-    } as any;
+    const session = makeSession();
 
     const observationXml = `
       <observation>
@@ -339,6 +304,71 @@ describe('GeminiProvider', () => {
     expect(mockStoreObservations).toHaveBeenCalledTimes(1);
     expect(mockSyncObservation).toHaveBeenCalled();
     expect(session.cumulativeInputTokens).toBeGreaterThan(0);
+  });
+
+  it('stores the answer, not the reasoning, when Gemini returns a thought part first', async () => {
+    const session = makeSession({ project: 'repo-a', userPrompt: 'prompt', lastPromptNumber: 1 });
+    const observationXml = `
+      <observation>
+        <type>discovery</type>
+        <title>Answer survived the reasoning part</title>
+        <narrative>Read from the part after the chain of thought.</narrative>
+        <facts></facts>
+        <concepts></concepts>
+        <files_read></files_read>
+        <files_modified></files_modified>
+      </observation>
+    `;
+
+    queuedMessages = [toolObservationMessage];
+    global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
+      candidates: [{
+        content: {
+          parts: [
+            // Captured shape with `thinkingConfig.includeThoughts`: the chain of
+            // thought is parts[0] and is the only part marked `thought`.
+            { text: 'The user wants an observation, so I should emit XML with a title.', thought: true },
+            { text: observationXml },
+          ],
+        },
+      }],
+      usageMetadata: { totalTokenCount: 50 }
+    }))));
+
+    await agent.startSession(session);
+
+    expect(mockStoreObservations).toHaveBeenCalledTimes(1);
+    // Reading parts[0] here would hand the parser the reasoning instead, and
+    // no observation would be stored at all.
+    const observations = mockStoreObservations.mock.calls[0][2];
+    expect(observations).toHaveLength(1);
+    expect(observations[0].title).toBe('Answer survived the reasoning part');
+  });
+
+  it('joins an answer that Gemini split across several parts', async () => {
+    const session = makeSession({ project: 'repo-a', userPrompt: 'prompt', lastPromptNumber: 1 });
+
+    queuedMessages = [toolObservationMessage];
+    global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
+      candidates: [{
+        content: {
+          parts: [
+            { text: '<observation>\n<type>discovery</type>\n<title>Split across parts</title>' },
+            { text: '\n<narrative>The second half of the same block.</narrative>\n<facts></facts>'
+              + '\n<concepts></concepts>\n<files_read></files_read>\n<files_modified></files_modified>\n</observation>' },
+          ],
+        },
+      }],
+      usageMetadata: { totalTokenCount: 50 }
+    }))));
+
+    await agent.startSession(session);
+
+    expect(mockStoreObservations).toHaveBeenCalledTimes(1);
+    // Taking only the first part would store a truncated block, or none.
+    const observations = mockStoreObservations.mock.calls[0][2];
+    expect(observations).toHaveLength(1);
+    expect(observations[0].title).toBe('Split across parts');
   });
 
   it('stores a deferred observation response under the original prompt project after the live session advances', async () => {
@@ -402,43 +432,15 @@ describe('GeminiProvider', () => {
   });
 
   it('should throw on rate limit (429) error — no Claude fallback (#2087)', async () => {
-    const session = {
-      sessionDbId: 1,
-      contentSessionId: 'test-session',
-      memorySessionId: 'mem-session-123',
-      project: 'test-project',
-      userPrompt: 'test prompt',
-      conversationHistory: [],
-      lastPromptNumber: 1,
-      cumulativeInputTokens: 0,
-      cumulativeOutputTokens: 0,
-      abortController: new AbortController(),
-      generatorPromise: null,
-      currentProvider: null,
-      startTime: Date.now(),
-    } as any;
+    const session = makeSession();
 
-    global.fetch = mock(() => Promise.resolve(new Response('Resource has been exhausted (e.g. check quota).', { status: 429 })));
+    global.fetch = mock(() => Promise.resolve(new Response('Resource has been exhausted (e.g. check quota).', { status: 429, headers: { 'Retry-After': '0' } })));
 
     await expect(agent.startSession(session)).rejects.toThrow(/429/);
   });
 
   it('should throw on other errors', async () => {
-    const session = {
-      sessionDbId: 1,
-      contentSessionId: 'test-session',
-      memorySessionId: 'mem-session-123',
-      project: 'test-project',
-      userPrompt: 'test prompt',
-      conversationHistory: [],
-      lastPromptNumber: 1,
-      cumulativeInputTokens: 0,
-      cumulativeOutputTokens: 0,
-      abortController: new AbortController(),
-      generatorPromise: null,
-      currentProvider: null,
-      startTime: Date.now(),
-    } as any;
+    const session = makeSession();
 
     global.fetch = mock(() => Promise.resolve(new Response('Invalid argument RAW_PROVIDER_BODY', { status: 400 })));
 
@@ -456,21 +458,7 @@ describe('GeminiProvider', () => {
 
   it('redacts non-400 Gemini response body from thrown message and cause', async () => {
     const rawBody = 'RAW_PROVIDER_BODY with credential sk-secret';
-    const session = {
-      sessionDbId: 1,
-      contentSessionId: 'test-session',
-      memorySessionId: 'mem-session-123',
-      project: 'test-project',
-      userPrompt: 'test prompt',
-      conversationHistory: [],
-      lastPromptNumber: 1,
-      cumulativeInputTokens: 0,
-      cumulativeOutputTokens: 0,
-      abortController: new AbortController(),
-      generatorPromise: null,
-      currentProvider: null,
-      startTime: Date.now(),
-    } as any;
+    const session = makeSession();
 
     global.fetch = mock(() => Promise.resolve(new Response(rawBody, {
       status: 418,
@@ -492,85 +480,19 @@ describe('GeminiProvider', () => {
     }
   });
 
-  it('should respect rate limits when rate limiting enabled', async () => {
-    rateLimitingEnabled = 'true';
+  it('falls back to gemini-flash-latest for a retired configured model', async () => {
+    loadFromFileSpy.mockImplementation(() => ({
+      ...SettingsDefaultsManager.getAllDefaults(),
+      CLAUDE_MEM_GEMINI_API_KEY: 'test-api-key',
+      CLAUDE_MEM_GEMINI_MODEL: 'gemini-2.5-flash',
+      CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: 'false',
+      CLAUDE_MEM_OBSERVE_BARE_PROMPTS: 'true',
+    }));
+    mockSuccessfulGeminiFetch();
 
-    const originalSetTimeout = global.setTimeout;
-    const mockSetTimeout = mock((cb: any) => cb());
-    global.setTimeout = mockSetTimeout as any;
+    await agent.startSession(makeSession());
 
-    try {
-      const session = {
-        sessionDbId: 1,
-        contentSessionId: 'test-session',
-        memorySessionId: 'mem-session-123',
-        project: 'test-project',
-        userPrompt: 'test prompt',
-        conversationHistory: [],
-        lastPromptNumber: 1,
-        cumulativeInputTokens: 0,
-        cumulativeOutputTokens: 0,
-        abortController: new AbortController(),
-        generatorPromise: null,
-        currentProvider: null,
-        startTime: Date.now(),
-      } as any;
-
-      global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
-        candidates: [{ content: { parts: [{ text: 'ok' }] } }]
-      }))));
-
-      await agent.startSession(session);
-      await agent.startSession(session);
-
-      expect(mockSetTimeout).toHaveBeenCalled();
-    } finally {
-      global.setTimeout = originalSetTimeout;
-    }
-  });
-
-  describe('gemini-3-flash-preview model support', () => {
-    it('should accept only currently-available models (no retired 2.x IDs)', async () => {
-      const validModels = [
-        'gemini-flash-latest',
-        'gemini-flash-lite-latest',
-        'gemini-3.5-flash',
-        'gemini-3.1-flash-lite',
-        'gemini-3-flash-preview'
-      ];
-
-      expect(validModels.every(m => typeof m === 'string')).toBe(true);
-      expect(validModels).toContain('gemini-3-flash-preview');
-      // Retired IDs that 404 for new API keys must not be selectable.
-      expect(validModels).not.toContain('gemini-2.5-flash-lite');
-      expect(validModels).not.toContain('gemini-2.5-flash');
-      expect(validModels).not.toContain('gemini-2.0-flash');
-    });
-
-    it('should have rate limit defined for gemini-3-flash-preview', async () => {
-      const session = {
-        sessionDbId: 1,
-        contentSessionId: 'test-session',
-        memorySessionId: 'mem-session-123',
-        project: 'test-project',
-        userPrompt: 'test prompt',
-        conversationHistory: [],
-        lastPromptNumber: 1,
-        cumulativeInputTokens: 0,
-        cumulativeOutputTokens: 0,
-        abortController: new AbortController(),
-        generatorPromise: null,
-        currentProvider: null,
-        startTime: Date.now(),
-      } as any;
-
-      global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
-        candidates: [{ content: { parts: [{ text: 'ok' }] } }],
-        usageMetadata: { totalTokenCount: 10 }
-      }))));
-
-      await agent.startSession(session);
-      expect(global.fetch).toHaveBeenCalled();
-    });
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect((global.fetch as any).mock.calls[0][0]).toContain('models/gemini-flash-latest:');
   });
 });

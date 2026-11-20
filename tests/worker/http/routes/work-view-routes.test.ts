@@ -1,0 +1,1010 @@
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { Database } from 'bun:sqlite';
+import express from 'express';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { Server } from 'node:http';
+import { isReportedReadyForCheck, WorkViewRoutes } from '../../../../src/services/worker/http/routes/WorkViewRoutes.js';
+import { contentFingerprint } from '../../../../src/services/work-view/review-store.js';
+import { reduceWorkState } from '../../../../src/services/work-view/data-source.mjs';
+import { HumanCopyWorker } from '../../../../src/services/work-view/human-copy-worker.mjs';
+import { boundedDurationMs } from '../../../../src/services/work-view/WorkViewReadProtocol.js';
+
+let directory: string;
+let source: Database;
+let routes: WorkViewRoutes;
+let server: Server;
+let origin: string;
+let reviewPath: string;
+let databasePath: string;
+let controllers: AbortController[];
+let nextId: number;
+
+function append(fields: Record<string, unknown>) {
+  source.prepare('INSERT INTO work_state_entries VALUES (?, ?, ?, ?, ?)')
+    .run(nextId++, 'example-project', 'example-work', JSON.stringify(fields), Date.now());
+}
+
+async function start(humanCopy: HumanCopyWorker | null = null, ledgerDir: string | null = null) {
+  routes = new WorkViewRoutes({ databasePath, reviewPath, pollIntervalMs: 20, humanCopy, ledgerDir, autoRefresh: null, setupStatePath: join(directory, 'setup-state.json') });
+  const app = express();
+  app.use(express.json());
+  routes.setupRoutes(app);
+  app.get('/probe', (_req, res) => { res.json({ ok: true }); }); // Touches no database: answers only if the event loop is free.
+  await new Promise<void>(resolve => { server = app.listen(0, '127.0.0.1', resolve); });
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('No test port');
+  origin = `http://127.0.0.1:${address.port}`;
+}
+
+async function stop() {
+  controllers.forEach(controller => controller.abort());
+  routes.close();
+  await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+}
+
+beforeEach(async () => {
+  directory = mkdtempSync(join(tmpdir(), 'work-view-test-'));
+  databasePath = join(directory, 'source.db');
+  reviewPath = join(directory, 'private-review.db');
+  source = new Database(databasePath);
+  source.exec('PRAGMA journal_mode=WAL');
+  source.exec('CREATE TABLE work_state_entries (id INTEGER PRIMARY KEY, project TEXT, list_name TEXT, fields TEXT, created_at_epoch INTEGER)');
+  nextId = 1; controllers = [];
+  append({ task: 'Build the local viewer', status: 'done', request_id: 'viewer-request', human_request: 'Build a local work viewer', request_complete: true, outcome: 'The local viewer is ready to use.' });
+  await start();
+});
+
+afterEach(async () => {
+  await stop();
+  source.close();
+  rmSync(directory, { recursive: true, force: true });
+});
+
+async function snapshot() { return (await fetch(`${origin}/api/work-view`)).json(); }
+async function review(request: any, checked = true, headers: Record<string, string> = {}) {
+  return fetch(`${origin}/api/work-view/review`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Origin: origin, ...headers },
+    body: JSON.stringify({ requestId: request.id, expectedFingerprint: request.contentFingerprint, checked }),
+  });
+}
+
+// A real linked conversation, kept deliberately small. Updates below come
+// through this separate writer connection, just as imported corrections do.
+function seedLinkedEvidence(promptText = 'Build a local work viewer') {
+  source.exec(`
+    CREATE TABLE sdk_sessions (id INTEGER PRIMARY KEY, project TEXT, platform_source TEXT,
+      content_session_id TEXT, memory_session_id TEXT, user_prompt TEXT, custom_title TEXT,
+      status TEXT, started_at_epoch INTEGER, completed_at_epoch INTEGER);
+    CREATE TABLE user_prompts (id INTEGER PRIMARY KEY, session_db_id INTEGER, prompt_number INTEGER,
+      prompt_text TEXT, created_at_epoch INTEGER);
+    CREATE TABLE observations (id INTEGER PRIMARY KEY, project TEXT, memory_session_id TEXT,
+      content_session_id TEXT, agent_id TEXT, agent_type TEXT, prompt_number INTEGER, title TEXT,
+      subtitle TEXT, type TEXT, created_at_epoch INTEGER, narrative TEXT);
+    CREATE TABLE session_summaries (id INTEGER PRIMARY KEY, project TEXT, memory_session_id TEXT,
+      prompt_number INTEGER, request TEXT, completed TEXT, next_steps TEXT, created_at_epoch INTEGER);
+    CREATE TABLE tool_uses (id INTEGER PRIMARY KEY, project TEXT, platform_source TEXT, agent_id TEXT,
+      agent_type TEXT, session_db_id INTEGER, memory_session_id TEXT, content_session_id TEXT,
+      prompt_number INTEGER, tool_input TEXT, created_at_epoch INTEGER, tool_name TEXT);
+  `);
+  const row = source.prepare('SELECT fields, created_at_epoch FROM work_state_entries WHERE id=1').get() as { fields: string; created_at_epoch: number };
+  source.prepare('INSERT INTO sdk_sessions VALUES (1,?,?,?,?,?,?,?,?,?)').run(
+    'example-project', 'codex', 'conversation', 'memory', promptText, null, 'active', row.created_at_epoch, null,
+  );
+  source.prepare('INSERT INTO user_prompts VALUES (1,1,1,?,?)').run(promptText, row.created_at_epoch);
+  source.prepare('INSERT INTO observations VALUES (1,?,?,?,?,?,?,?,?,?,?,?)').run(
+    'example-project', 'memory', 'conversation', 'agent', 'assistant', 1,
+    'Recorded viewer result', 'A readable result', 'feature', row.created_at_epoch, 'Original full narrative.',
+  );
+  source.prepare('INSERT INTO session_summaries VALUES (1,?,?,?,?,?,?,?)').run(
+    'example-project', 'memory', 1, promptText, 'The recorded result is complete.', 'Read the result.', row.created_at_epoch,
+  );
+  source.prepare('INSERT INTO tool_uses VALUES (1,?,?,?,?,?,?,?,?,?,?,?)').run(
+    'example-project', 'codex', 'agent', 'assistant', 1, 'memory', 'conversation', 1,
+    JSON.stringify({ list: 'example-work', fields: JSON.parse(row.fields) }), row.created_at_epoch, 'work_state_write',
+  );
+}
+
+describe('local work view', () => {
+  /** A database in rollback-journal mode, where another connection's lock really blocks a reader (WAL readers never wait). */
+  async function restartOnLockableDatabase() {
+    await stop();
+    source.close();
+    databasePath = join(directory, 'lockable.db');
+    source = new Database(databasePath);
+    source.exec('CREATE TABLE work_state_entries (id INTEGER PRIMARY KEY, project TEXT, list_name TEXT, fields TEXT, created_at_epoch INTEGER)');
+    nextId = 1;
+    append({ task: 'Build the local viewer', status: 'done', request_id: 'viewer-request', human_request: 'Build a local work viewer' });
+    await start();
+    await snapshot(); // Starts the worker, so the next read reaches a lock at once rather than while it loads.
+    return new Database(databasePath);
+  }
+
+  it('answers another request while a real read is held open in the worker thread', async () => {
+    const lock = await restartOnLockableDatabase();
+    (routes as any).source.read = () => { throw new Error('snapshot read ran on the HTTP thread'); };
+    lock.exec('BEGIN EXCLUSIVE');
+    try {
+      let readFinished = false;
+      const held = snapshot().then(view => { readFinished = true; return view; });
+      await Bun.sleep(100);
+      expect((await fetch(`${origin}/probe`, { signal: AbortSignal.timeout(1000) })).status).toBe(200);
+      expect(readFinished).toBe(false);
+      lock.exec('ROLLBACK');
+      const view = await held;
+      expect(view.source.connected).toBe(true);
+      expect(view.humanRequests).toHaveLength(1);
+      const diagnostic = (routes as any).sourceReader.getDiagnostics().lastRead;
+      expect(diagnostic.purpose).toBe('http');
+      expect(diagnostic.readMs).toBeGreaterThan(50);
+      expect(diagnostic.roundTripMs).toBeGreaterThanOrEqual(diagnostic.readMs);
+    } finally {
+      if (lock.inTransaction) lock.exec('ROLLBACK');
+      lock.close();
+    }
+  });
+
+  it('reports bounded numeric diagnostics without reading or retaining source content', async () => {
+    const before = await fetch(`${origin}/api/work-view/diagnostics`);
+    expect(before.headers.get('cache-control')).toBe('no-store');
+    expect((await before.json()).reader.completedReads).toBe(0);
+    const response = await fetch(`${origin}/api/work-view`);
+    const body = await response.text();
+    const statsResponse = await fetch(`${origin}/api/work-view/diagnostics`);
+    const diagnostic = await statsResponse.json();
+    expect(Object.keys(diagnostic).sort()).toEqual(['reader', 'response', 'snapshot']);
+    expect(diagnostic.reader).toMatchObject({ pendingCount: 0, maxPendingCount: 1, completedReads: 1, failedReads: 0 });
+    expect(diagnostic.reader.lastRead).toMatchObject({ purpose: 'http', pendingAtEnqueue: 0, started: true, ok: true });
+    for (const field of ['queueWaitMs', 'readMs', 'roundTripMs']) {
+      expect(Number.isFinite(diagnostic.reader.lastRead[field])).toBe(true);
+      expect(diagnostic.reader.lastRead[field]).toBeGreaterThanOrEqual(0);
+    }
+    expect(diagnostic.reader.lastRead.queueWaitMs).toBeLessThanOrEqual(diagnostic.reader.lastRead.roundTripMs);
+    expect(diagnostic.reader.lastRead.readMs).toBeLessThanOrEqual(diagnostic.reader.lastRead.roundTripMs);
+    expect(diagnostic.snapshot).toMatchObject({ purpose: 'http' });
+    expect(diagnostic.response).toMatchObject({ transport: 'http', bytes: Buffer.byteLength(body) });
+    expect(JSON.stringify(diagnostic)).not.toContain('Build the local viewer');
+    expect(JSON.stringify(diagnostic)).not.toContain(directory);
+    expect((await (await fetch(`${origin}/api/work-view/diagnostics`)).json()).reader.completedReads).toBe(1);
+  });
+
+  it('measures a queued read separately from a lock-held read', async () => {
+    const lock = await restartOnLockableDatabase();
+    const reader = (routes as any).sourceReader;
+    lock.exec('BEGIN EXCLUSIVE');
+    try {
+      const held = reader.read(0, '', 'http');
+      await Bun.sleep(30);
+      const queued = reader.read(0, 'private-device', 'private request text');
+      await Bun.sleep(80);
+      expect(reader.getDiagnostics().pendingCount).toBe(2);
+      expect((await fetch(`${origin}/probe`, { signal: AbortSignal.timeout(1000) })).status).toBe(200);
+      lock.exec('ROLLBACK');
+      await Promise.all([held, queued]);
+      const diagnostic = reader.getDiagnostics();
+      expect(diagnostic.pendingCount).toBe(0);
+      expect(diagnostic.maxPendingCount).toBe(2);
+      expect(diagnostic.lastRead).toMatchObject({ purpose: 'snapshot', pendingAtEnqueue: 1, ok: true });
+      expect(diagnostic.lastRead.queueWaitMs).toBeGreaterThan(50);
+      expect(diagnostic.lastRead.readMs).toBeLessThan(diagnostic.lastRead.queueWaitMs);
+      expect(JSON.stringify(diagnostic)).not.toContain('private');
+      diagnostic.lastRead.purpose = 'changed';
+      expect(reader.getDiagnostics().lastRead.purpose).toBe('snapshot');
+    } finally {
+      if (lock.inTransaction) lock.exec('ROLLBACK');
+      lock.close();
+    }
+  });
+
+  it('bounds invalid duration values', () => {
+    expect([NaN, Infinity, -Infinity, -10].map(boundedDurationMs)).toEqual([0, 0, 0, 0]);
+    expect(boundedDurationMs(Number.MAX_VALUE)).toBe(86_400_000);
+  });
+
+  it('counts a disconnected source as a failed read without retaining its error', async () => {
+    source.exec('DROP TABLE work_state_entries');
+    const reader = (routes as any).sourceReader;
+    const result = await reader.read(0, '');
+    expect(result.agentView.source.connected).toBe(false);
+    expect(reader.getDiagnostics()).toMatchObject({ pendingCount: 0, completedReads: 1, failedReads: 1, lastRead: { ok: false } });
+    expect(JSON.stringify(reader.getDiagnostics())).not.toContain('work_state_entries');
+  });
+
+  it('clears pending diagnostics when the reader closes', async () => {
+    const lock = await restartOnLockableDatabase();
+    const reader = (routes as any).sourceReader;
+    lock.exec('BEGIN EXCLUSIVE');
+    try {
+      const outcome = reader.read(0, '').then(() => null, (error: Error) => error);
+      const closing = reader.close();
+      lock.exec('ROLLBACK');
+      await closing;
+      expect((await outcome)?.message).toBe('Work view reader closed');
+      expect(reader.getDiagnostics()).toMatchObject({ pendingCount: 0, completedReads: 2, failedReads: 1, lastRead: { ok: false } });
+    } finally {
+      if (lock.inTransaction) lock.exec('ROLLBACK');
+      lock.close();
+    }
+  });
+
+  it('the reader answers in the order it was asked', async () => {
+    const reader = (routes as any).sourceReader;
+    const order: string[] = [];
+    await Promise.all([
+      // The first answer takes more steps to reach its consumer, and still has to arrive first.
+      reader.read(0, '').then(async () => { for (let step = 0; step < 10; step++) await null; order.push('first'); }),
+      reader.read(0, '').then(() => { order.push('second'); }),
+      reader.read(120_000, '').then(() => { order.push('third'); }),
+    ]);
+    expect(order).toEqual(['first', 'second', 'third']);
+  });
+
+  it('never sends an older view after a newer one, with a write landing while a read is held', async () => {
+    const lock = await restartOnLockableDatabase();
+    const controller = new AbortController(); controllers.push(controller);
+    const reader = (await fetch(`${origin}/api/work-view/events`, { signal: controller.signal })).body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    const views = () => buffer.split('\n\n').slice(0, -1).filter(block => block.startsWith('event: work-view\n'));
+    const collect = (async () => { for (;;) { const part = await reader.read(); if (part.done) return; buffer += decoder.decode(part.value, { stream: true }); } })().catch(() => undefined);
+    while (!views().length) await Bun.sleep(5);
+    lock.exec('BEGIN EXCLUSIVE');
+    try {
+      await Bun.sleep(60); // Ticks every 20 ms, so a background read is now held at the lock.
+      (routes as any).publish();
+      lock.exec('ROLLBACK');
+      append({ task: 'Keep the newest view', status: 'done', request_id: 'newest-request', human_request: 'Keep the newest view' });
+    } finally {
+      if (lock.inTransaction) lock.exec('ROLLBACK');
+      lock.close();
+    }
+    while (!views().some(view => view.includes('Keep the newest view'))) await Bun.sleep(5);
+    await Bun.sleep(200); // Ten more ticks.
+    const all = views();
+    const firstWithRow = all.findIndex(view => view.includes('Keep the newest view'));
+    expect(all.slice(firstWithRow).every(view => view.includes('Keep the newest view'))).toBe(true);
+    controller.abort();
+    await collect;
+  });
+
+  it('collapses reads while one is held, however often a publish or tick asks', async () => {
+    const lock = await restartOnLockableDatabase();
+    const controller = new AbortController(); controllers.push(controller);
+    const stream = (await fetch(`${origin}/api/work-view/events`, { signal: controller.signal })).body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    while (!buffer.includes('event: work-view\n')) buffer += decoder.decode((await stream.read()).value, { stream: true });
+    const sourceReader = (routes as any).sourceReader;
+    const realRead = sourceReader.read.bind(sourceReader);
+    let reads = 0;
+    sourceReader.read = (...args: [number, string]) => { reads++; return realRead(...args); };
+    lock.exec('BEGIN EXCLUSIVE');
+    try {
+      for (let ask = 0; ask < 20; ask++) { (routes as any).publish(); await Bun.sleep(5); }
+      expect(reads).toBeLessThanOrEqual(2); // One tick's read and one publish's read, with 20 ticks and 20 asks waiting on them.
+    } finally {
+      lock.exec('ROLLBACK');
+      lock.close();
+    }
+  });
+
+  it('ends a new event stream when its first read fails, so the page reconnects', async () => {
+    (routes as any).sourceReader.read = () => Promise.reject(new Error('reader is down'));
+    const controller = new AbortController(); controllers.push(controller);
+    const reader = (await fetch(`${origin}/api/work-view/events`, { signal: controller.signal })).body!.getReader();
+    while (!(await reader.read()).done) { /* retry line only */ }
+    expect(routes.getClientCount()).toBe(0);
+  });
+
+  it('serves a work-product file only through the work-state entry that attached it', async () => {
+    const image = join(directory, 'hero.png');
+    writeFileSync(image, 'png-bytes');
+    append({ task: 'Make the hero image', status: 'done', request_id: 'viewer-request', human_request: 'Build a local work viewer', work_product: [{ title: 'Hero', path: image }, 'https://claude.ai/artifact/abc'] });
+    const view = await (await fetch(`${origin}/api/work-view`)).json();
+    const products = view.humanRequests[0].workProduct;
+    expect(products.map((product: { title: string }) => product.title)).toEqual(['Hero', 'claude.ai']);
+    expect(products[0].fileUrl).toBe('/api/work-view/file/work-state/2/0');
+    expect(products[0].available).toBe(true);
+    const file = await fetch(`${origin}${products[0].fileUrl}`);
+    expect(file.status).toBe(200);
+    expect(file.headers.get('content-type')).toContain('image/png');
+    expect(file.headers.get('content-security-policy')).toBe('sandbox allow-scripts');
+    expect(await file.text()).toBe('png-bytes');
+    // Another local page cannot read the file through worker CORS.
+    const foreign = await fetch(`${origin}${products[0].fileUrl}`, { headers: { Origin: 'http://localhost:1' } });
+    expect(foreign.status).toBe(403);
+    expect((await fetch(`${origin}${products[0].fileUrl}`, { headers: { Origin: origin } })).status).toBe(200);
+    expect((await fetch(`${origin}/api/work-view/file/work-state/2/1`)).status).toBe(404);
+    expect((await fetch(`${origin}/api/work-view/file/work-state/1/0`)).status).toBe(404);
+  });
+
+  it('projects explicit completion and evidence without inventing presence or altering source', async () => {
+    const before = source.prepare('SELECT * FROM work_state_entries').all();
+    const view = await snapshot();
+    expect(view.source.connected).toBe(true);
+    expect(view.humanRequests).toHaveLength(1);
+    expect(view.humanRequests[0].lifecycle.complete).toBe(true);
+    expect(view.humanRequests[0].contentFingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect(view.humanRequests[0].review.checked).toBe(false);
+    expect(view.coverage.livePresenceAvailable).toBe(false);
+    expect(view.agents[0].presence.isLive).toBeNull();
+    expect(view.humanRequests[0].items[0].url).toBe('/api/work-view/evidence/work-state/1');
+    const evidence = await fetch(`${origin}/api/work-view/evidence/work-state/1`);
+    expect(evidence.status).toBe(200);
+    expect((await evidence.json()).fields).toContain('viewer-request');
+    expect((await fetch(`${origin}/api/work-view/evidence/secret/1`)).status).toBe(404);
+    expect(source.prepare('SELECT * FROM work_state_entries').all()).toEqual(before);
+  });
+
+  it('persists a check across restart and undoes it without writing source work', async () => {
+    const request = (await snapshot()).humanRequests[0];
+    const response = await review(request);
+    expect(response.status).toBe(200);
+    expect((await response.json()).humanRequests[0].review.checked).toBe(true);
+    await stop(); await start();
+    const restored = (await snapshot()).humanRequests[0];
+    expect(restored.contentFingerprint).toBe(request.contentFingerprint);
+    expect(restored.review.checked).toBe(true);
+    expect(restored.review.actor).toBe('local-user');
+    expect((await review(restored, false)).status).toBe(200);
+    expect((await snapshot()).humanRequests[0].review.checked).toBe(false);
+    expect(source.prepare('SELECT COUNT(*) as n FROM work_state_entries').get()).toEqual({ n: 1 });
+  });
+
+  it('rejects stale review versions and makes new work unreviewed', async () => {
+    const request = (await snapshot()).humanRequests[0];
+    expect((await review(request)).status).toBe(200);
+    append({ task: 'Build the local viewer', progress: 'A revised result is ready for another look.' });
+    const updated = (await snapshot()).humanRequests[0];
+    expect(updated.contentFingerprint).not.toBe(request.contentFingerprint);
+    expect(updated.review.checked).toBe(false);
+    expect((await review(request)).status).toBe(409);
+    expect((await review(request, false)).status).toBe(409);
+    expect((await review(updated)).status).toBe(200);
+  });
+
+  it.each([false, true])('adopts a pre-product review once, including its override: %s', async withOverride => {
+    seedLinkedEvidence();
+    source.exec(`CREATE TABLE deliverables (id INTEGER PRIMARY KEY, project TEXT, content_session_id TEXT,
+      platform_source TEXT, title TEXT, kind TEXT, source_path TEXT, bucket_path TEXT, created_at_epoch INTEGER)`);
+    const original = join(directory, 'viewer.html');
+    const first = join(directory, 'viewer-first.html');
+    const revised = join(directory, 'viewer-revised.html');
+    writeFileSync(first, '<h1>Original viewer</h1>');
+    writeFileSync(revised, '<h1>Revised viewer</h1>');
+    const record = source.prepare(`INSERT INTO deliverables(project, content_session_id, platform_source, title,
+      kind, source_path, bucket_path, created_at_epoch) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
+    const at = Date.now();
+    record.run('example-project', 'conversation', 'codex', 'Local viewer', 'page', original, first, at);
+    const before = (await snapshot()).humanRequests[0];
+    const prior = contentFingerprint({ ...before, sourceProductHash: undefined });
+    expect(before.contentFingerprint).not.toBe(prior);
+    const checkedAt = at + 1;
+    const sidecar = new Database(reviewPath);
+    try {
+      sidecar.prepare('INSERT INTO work_view_reviews VALUES (?, ?, ?, ?)').run(before.id, prior, checkedAt, 'local-user');
+      if (withOverride) sidecar.prepare('INSERT INTO work_view_review_overrides VALUES (?, ?, ?, ?, ?)')
+        .run(before.id, prior, 1, checkedAt, null);
+      const adopted = (await snapshot()).humanRequests[0];
+      expect(adopted.review).toMatchObject({ checked: true, checkedAtEpoch: checkedAt, actor: 'local-user', mode: 'local' });
+      expect(sidecar.prepare('SELECT content_fingerprint FROM work_view_reviews WHERE request_id=?').get(before.id))
+        .toEqual({ content_fingerprint: before.contentFingerprint });
+      if (withOverride) expect(sidecar.prepare('SELECT content_fingerprint, changed_at_epoch FROM work_view_review_overrides WHERE request_id=?').get(before.id))
+        .toEqual({ content_fingerprint: before.contentFingerprint, changed_at_epoch: checkedAt });
+      await stop(); await start();
+      expect((await snapshot()).humanRequests[0].review.checked).toBe(true);
+
+      record.run('example-project', 'conversation', 'codex', 'Local viewer', 'page', original, revised, at + 2);
+      const updated = (await snapshot()).humanRequests[0];
+      expect(updated.contentFingerprint).not.toBe(adopted.contentFingerprint);
+      expect(updated.review.checked).toBe(false);
+      expect((await review({ ...before, contentFingerprint: prior })).status).toBe(409);
+      expect((await review(adopted)).status).toBe(409);
+      await stop(); await start();
+      expect((await snapshot()).humanRequests[0].review.checked).toBe(false);
+      expect((await review(updated)).status).toBe(200);
+    } finally { sidecar.close(); }
+  });
+
+  it('adopts an explicit pre-product unchecked override without inventing a check', async () => {
+    append({ task: 'Build the local viewer', work_product: ['https://github.com/example/project/pull/42'] });
+    const before = (await snapshot()).humanRequests[0];
+    const prior = contentFingerprint({ ...before, sourceProductHash: undefined });
+    const sidecar = new Database(reviewPath);
+    try {
+      sidecar.prepare('INSERT INTO work_view_review_overrides VALUES (?, ?, ?, ?, ?)').run(before.id, prior, 0, 1234, null);
+      expect((await snapshot()).humanRequests[0].review).toMatchObject({ checked: false, mode: 'local', legacy: false });
+      expect(sidecar.prepare('SELECT content_fingerprint, checked, changed_at_epoch, shared_review_hash FROM work_view_review_overrides WHERE request_id=?').get(before.id))
+        .toEqual({ content_fingerprint: before.contentFingerprint, checked: 0, changed_at_epoch: 1234, shared_review_hash: null });
+      expect(sidecar.prepare('SELECT COUNT(*) AS n FROM work_view_reviews').get()).toEqual({ n: 0 });
+    } finally { sidecar.close(); }
+  });
+
+  it('adopts a legacy check with no products before invalidating it on the first publication', async () => {
+    seedLinkedEvidence();
+    source.exec('ALTER TABLE tool_uses ADD COLUMN tool_response TEXT');
+    const before = (await snapshot()).humanRequests[0];
+    expect(before.workProduct).toEqual([]);
+    const prior = contentFingerprint({ ...before, sourceProductHash: undefined });
+    const sidecar = new Database(reviewPath);
+    try {
+      sidecar.prepare('INSERT INTO work_view_reviews VALUES (?, ?, ?, ?)').run(before.id, prior, 1234, 'local-user');
+      expect((await snapshot()).humanRequests[0].review).toMatchObject({ checked: true, checkedAtEpoch: 1234 });
+      expect(sidecar.prepare('SELECT content_fingerprint FROM work_view_reviews WHERE request_id=?').get(before.id))
+        .toEqual({ content_fingerprint: before.contentFingerprint });
+      source.prepare(`INSERT INTO tool_uses(id, project, platform_source, session_db_id, memory_session_id,
+        content_session_id, prompt_number, tool_name, tool_input, tool_response, created_at_epoch)
+        VALUES(2,?,?,?,?,?,?,?,?,?,?)`).run('example-project', 'codex', 1, 'memory', 'conversation', 1, 'Bash',
+        JSON.stringify({ command: 'gh pr create --title "Local viewer"' }),
+        JSON.stringify({ stdout: 'https://github.com/example/project/pull/42', exitCode: 0 }), Date.now());
+      expect((await snapshot()).humanRequests[0].review.checked).toBe(false);
+      expect((await review(before)).status).toBe(409);
+    } finally { sidecar.close(); }
+  });
+
+  it('rolls back both adoption writes if the override update fails and retries on the next read', async () => {
+    append({ task: 'Build the local viewer', work_product: ['https://github.com/example/project/pull/42'] });
+    const before = (await snapshot()).humanRequests[0];
+    const prior = contentFingerprint({ ...before, sourceProductHash: undefined });
+    const checkedAt = before.workProduct[0].atEpoch + 1;
+    const sidecar = new Database(reviewPath);
+    try {
+      sidecar.prepare('INSERT INTO work_view_reviews VALUES (?, ?, ?, ?)').run(before.id, prior, checkedAt, 'local-user');
+      sidecar.prepare('INSERT INTO work_view_review_overrides VALUES (?, ?, ?, ?, ?)').run(before.id, prior, 1, checkedAt, null);
+      sidecar.exec(`CREATE TRIGGER refuse_override_adoption BEFORE UPDATE ON work_view_review_overrides
+        BEGIN SELECT RAISE(ABORT, 'forced adoption failure'); END`);
+      expect((await snapshot()).source.connected).toBe(true);
+      for (const table of ['work_view_reviews', 'work_view_review_overrides']) {
+        expect(sidecar.prepare(`SELECT content_fingerprint FROM ${table} WHERE request_id=?`).get(before.id))
+          .toEqual({ content_fingerprint: prior });
+      }
+      sidecar.exec('DROP TRIGGER refuse_override_adoption');
+      expect((await snapshot()).humanRequests[0].review).toMatchObject({ checked: true, checkedAtEpoch: checkedAt });
+    } finally { sidecar.close(); }
+  });
+
+  it.each([
+    { kind: 'deliverable', time: 'later' },
+    { kind: 'publication', time: 'later' },
+    { kind: 'deliverable', time: 'same' },
+    { kind: 'deliverable', time: 'unknown' },
+  ])('does not adopt a check over output added before the first upgraded snapshot: %j', async ({ kind, time }) => {
+    const at = Date.now();
+    source.prepare('UPDATE work_state_entries SET created_at_epoch=? WHERE id=1').run(at - 20_000);
+    seedLinkedEvidence();
+    source.exec(`CREATE TABLE deliverables (id INTEGER PRIMARY KEY, project TEXT, content_session_id TEXT,
+      platform_source TEXT, title TEXT, kind TEXT, source_path TEXT, bucket_path TEXT, created_at_epoch INTEGER)`);
+    source.exec('ALTER TABLE tool_uses ADD COLUMN tool_response TEXT');
+    const original = join(directory, 'viewer.html');
+    const first = join(directory, 'viewer-first.html');
+    const revised = join(directory, 'viewer-revised.html');
+    writeFileSync(first, '<h1>Original viewer</h1>');
+    writeFileSync(revised, '<h1>Revised viewer</h1>');
+    const record = source.prepare(`INSERT INTO deliverables(project, content_session_id, platform_source, title,
+      kind, source_path, bucket_path, created_at_epoch) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
+    record.run('example-project', 'conversation', 'codex', 'Local viewer', 'page', original, first, at - 10_000);
+    const before = (await snapshot()).humanRequests[0];
+    const prior = contentFingerprint({ ...before, sourceProductHash: undefined });
+    const checkedAt = at - 5000;
+    const sidecar = new Database(reviewPath);
+    try {
+      sidecar.prepare('INSERT INTO work_view_reviews VALUES (?, ?, ?, ?)').run(before.id, prior, checkedAt, 'local-user');
+      sidecar.prepare('INSERT INTO work_view_review_overrides VALUES (?, ?, ?, ?, ?)').run(before.id, prior, 1, checkedAt, null);
+      // The old client checked the first product. More output arrives before
+      // the new client gets its first opportunity to adopt that old check.
+      const recordedAt = time === 'same' ? checkedAt : time === 'unknown' ? 'unknown' : at - 1000;
+      if (kind === 'deliverable') {
+        record.run('example-project', 'conversation', 'codex', 'Local viewer', 'page', original, revised, recordedAt);
+      } else {
+        source.prepare(`INSERT INTO tool_uses(id, project, platform_source, session_db_id, memory_session_id,
+          content_session_id, prompt_number, tool_name, tool_input, tool_response, created_at_epoch)
+          VALUES(2,?,?,?,?,?,?,?,?,?,?)`).run('example-project', 'codex', 1, 'memory', 'conversation', 1, 'Bash',
+          JSON.stringify({ command: 'gh pr create --title "Local viewer"' }),
+          JSON.stringify({ stdout: 'https://github.com/example/project/pull/42', exitCode: 0 }), recordedAt);
+      }
+      const updated = (await snapshot()).humanRequests[0];
+      expect(updated.workProduct).toHaveLength(2);
+      expect(contentFingerprint({ ...updated, sourceProductHash: undefined })).toBe(prior);
+      expect(updated.review.checked).toBe(false);
+      expect((await review({ ...before, contentFingerprint: prior })).status).toBe(409);
+      expect((await review(updated)).status).toBe(200);
+      expect((await snapshot()).humanRequests[0].review.checked).toBe(true);
+    } finally { sidecar.close(); }
+  });
+
+  it('preserves a current local decision instead of reviving an older check', async () => {
+    seedLinkedEvidence();
+    source.exec('ALTER TABLE tool_uses ADD COLUMN tool_response TEXT');
+    const record = source.prepare(`INSERT INTO tool_uses(id, project, platform_source, session_db_id, memory_session_id,
+      content_session_id, prompt_number, tool_name, tool_input, tool_response, created_at_epoch)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?)`);
+    const publish = (id: number) => record.run(id, 'example-project', 'codex', 1, 'memory', 'conversation', 1, 'Bash',
+      JSON.stringify({ command: 'gh pr create --title "Local viewer"' }),
+      JSON.stringify({ stdout: `https://github.com/example/project/pull/${id}`, exitCode: 0 }), Date.now());
+    publish(2);
+    const before = (await snapshot()).humanRequests[0];
+    const prior = contentFingerprint({ ...before, sourceProductHash: undefined });
+    const sidecar = new Database(reviewPath);
+    try {
+      sidecar.prepare('INSERT INTO work_view_reviews VALUES (?, ?, ?, ?)').run(before.id, prior, 1234, 'local-user');
+      sidecar.prepare('INSERT INTO work_view_review_overrides VALUES (?, ?, ?, ?, ?)').run(before.id, before.contentFingerprint, 0, 5678, null);
+      expect((await snapshot()).humanRequests[0].review.checked).toBe(false);
+      expect(sidecar.prepare('SELECT content_fingerprint, checked, changed_at_epoch FROM work_view_review_overrides WHERE request_id=?').get(before.id))
+        .toEqual({ content_fingerprint: before.contentFingerprint, checked: 0, changed_at_epoch: 5678 });
+      publish(3);
+      const updated = (await snapshot()).humanRequests[0];
+      expect(updated.contentFingerprint).not.toBe(before.contentFingerprint);
+      expect(updated.review.checked).toBe(false);
+    } finally { sidecar.close(); }
+  });
+
+  it('requires another check when a new deliverable revision is recorded for the same request', async () => {
+    seedLinkedEvidence();
+    source.exec(`CREATE TABLE deliverables (id INTEGER PRIMARY KEY, project TEXT, content_session_id TEXT,
+      platform_source TEXT, title TEXT, kind TEXT, source_path TEXT, bucket_path TEXT, created_at_epoch INTEGER)`);
+    const original = join(directory, 'viewer.html');
+    const first = join(directory, 'viewer-first.html');
+    const revised = join(directory, 'viewer-revised.html');
+    source.exec('ALTER TABLE observations ADD COLUMN files_modified TEXT');
+    source.prepare('UPDATE observations SET files_modified=? WHERE id=1').run(JSON.stringify([original]));
+    writeFileSync(first, '<h1>Original viewer</h1>');
+    writeFileSync(revised, '<h1>Revised viewer</h1>');
+    const record = source.prepare(`INSERT INTO deliverables(project, content_session_id, platform_source, title,
+      kind, source_path, bucket_path, created_at_epoch) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
+    const at = Date.now();
+    record.run('example-project', 'conversation', 'codex', 'Local viewer', 'page', original, first, at);
+    const before = (await snapshot()).humanRequests[0];
+    expect(before.workProduct.map((product: any) => product.url)).toEqual(['/api/deliverables/1/viewer-first.html']);
+    expect((await review(before)).status).toBe(200);
+    expect((await snapshot()).humanRequests[0].review.checked).toBe(true);
+
+    rmSync(first);
+    await stop(); await start();
+    const missing = (await snapshot()).humanRequests[0];
+    expect(missing.workProduct[0].available).toBe(false);
+    expect(missing.workProduct).toHaveLength(2); // The uncovered original is visible again.
+    expect(missing.contentFingerprint).toBe(before.contentFingerprint);
+    expect(missing.review.checked).toBe(true);
+
+    // Stop-hook metadata can arrive after the work-state result was checked.
+    // No prompt, observation, work-state entry or lifecycle flag changes.
+    record.run('example-project', 'conversation', 'codex', 'Local viewer', 'page', original, revised, at + 1);
+    const updated = (await snapshot()).humanRequests[0];
+    expect(updated.workProduct.some((product: any) => product.url === '/api/deliverables/2/viewer-revised.html')).toBe(true);
+    expect(updated.contentFingerprint).not.toBe(before.contentFingerprint);
+    expect(updated.review.checked).toBe(false);
+    expect((await review(before)).status).toBe(409);
+    expect((await review(updated)).status).toBe(200);
+
+  });
+
+  it('requires another check when a publication is recorded without another work-state update', async () => {
+    seedLinkedEvidence();
+    source.exec('ALTER TABLE tool_uses ADD COLUMN tool_response TEXT');
+    const before = (await snapshot()).humanRequests[0];
+    expect(before.workProduct).toEqual([]);
+    expect((await review(before)).status).toBe(200);
+    source.prepare(`INSERT INTO tool_uses(id, project, platform_source, session_db_id, memory_session_id,
+      content_session_id, prompt_number, tool_name, tool_input, tool_response, created_at_epoch)
+      VALUES(2,?,?,?,?,?,?,?,?,?,?)`).run('example-project', 'codex', 1, 'memory', 'conversation', 1, 'Bash',
+      JSON.stringify({ command: 'gh pr create --title "Local viewer"' }),
+      JSON.stringify({ stdout: 'https://github.com/example/project/pull/42', exitCode: 0 }), Date.now());
+    const updated = (await snapshot()).humanRequests[0];
+    expect(updated.workProduct.map((product: any) => product.url)).toEqual(['https://github.com/example/project/pull/42']);
+    expect(updated.contentFingerprint).not.toBe(before.contentFingerprint);
+    expect(updated.review.checked).toBe(false);
+    expect((await review(before)).status).toBe(409);
+    expect((await review(updated)).status).toBe(200);
+
+    source.prepare('UPDATE tool_uses SET tool_response=? WHERE id=2').run(JSON.stringify({
+      stdout: 'Created the requested pull request.\nhttps://github.com/example/project/pull/42', exitCode: 0,
+    }));
+    const samePublication = (await snapshot()).humanRequests[0];
+    expect(samePublication.contentFingerprint).toBe(updated.contentFingerprint);
+    expect(samePublication.review.checked).toBe(true);
+  });
+
+  it.each(['commit', 'branch'] as const)('versions a recorded local Git %s without a remote URL', async kind => {
+    seedLinkedEvidence();
+    source.exec('ALTER TABLE tool_uses ADD COLUMN tool_response TEXT');
+    const before = (await snapshot()).humanRequests[0];
+    expect((await review(before)).status).toBe(200);
+
+    const repository = join(directory, 'local repository');
+    mkdirSync(repository);
+    const gitConfig = join(directory, 'empty-gitconfig');
+    writeFileSync(gitConfig, '');
+    const git = (args: string[]) => {
+      const result = spawnSync('git', args, { cwd: repository, encoding: 'utf8',
+        env: { ...process.env, LC_ALL: 'C', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: gitConfig } });
+      expect(result.status).toBe(0);
+      return { stdout: result.stdout, stderr: result.stderr, exitCode: result.status };
+    };
+    git(['init', '-q']);
+    git(['config', 'user.name', 'Work View Fixture']);
+    git(['config', 'user.email', 'fixture@example.invalid']);
+    const commit = git(['-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-m', 'Local viewer']);
+    const response = kind === 'commit' ? commit : git(['switch', '-c', 'local-viewer']);
+    const command = kind === 'commit' ? 'git commit --allow-empty -m "Local viewer"' : 'git switch -c local-viewer';
+    source.prepare(`INSERT INTO tool_uses(id, project, platform_source, session_db_id, memory_session_id,
+      content_session_id, prompt_number, tool_name, tool_input, tool_response, created_at_epoch)
+      VALUES(2,?,?,?,?,?,?,?,?,?,?)`).run('example-project', 'codex', 1, 'memory', 'conversation', 1, 'Bash',
+      JSON.stringify({ command }), JSON.stringify(response), Date.now());
+
+    const read = await fetch(`${origin}/api/work-view`);
+    expect(read.status).toBe(200);
+    const updated = (await read.json()).humanRequests[0];
+    expect(updated.workProduct).toHaveLength(1);
+    expect(updated.workProduct[0].kind).toBe(kind);
+    expect(updated.workProduct[0].url).toBeUndefined();
+    expect(updated.contentFingerprint).not.toBe(before.contentFingerprint);
+    expect(updated.review.checked).toBe(false);
+    expect((await review(before)).status).toBe(409);
+    expect((await review(updated)).status).toBe(200);
+    await stop(); await start();
+    const restored = (await snapshot()).humanRequests[0];
+    expect(restored.contentFingerprint).toBe(updated.contentFingerprint);
+    expect(restored.review.checked).toBe(true);
+  });
+
+  it('cannot mark completed child work checked without request completion', async () => {
+    append({ task: 'Build the local viewer', request_complete: false });
+    const request = (await snapshot()).humanRequests[0];
+    expect((await review(request)).status).toBe(409);
+    expect((await snapshot()).humanRequests[0].review.checked).toBe(false);
+  });
+
+  it('a memory review at 100% makes a request checkable, unless an explicit status came after it', () => {
+    const at = Date.parse('2026-10-22T12:00:00Z');
+    const doing = { explicit: true, status: 'in-progress', complete: null, atEpoch: at - 60000 };
+    expect(isReportedReadyForCheck({ lifecycle: null, progress: { percent: 100, checkedAt: '2026-10-22T12:00:00Z' } })).toBe(true);
+    expect(isReportedReadyForCheck({ lifecycle: doing, progress: { percent: 100, checkedAt: '2026-10-22T12:00:00Z' } })).toBe(true);
+    // Reopened after the review: the older 100% no longer counts.
+    expect(isReportedReadyForCheck({ lifecycle: { ...doing, atEpoch: at + 60000 }, progress: { percent: 100, checkedAt: '2026-10-22T12:00:00Z' } })).toBe(false);
+    expect(isReportedReadyForCheck({ lifecycle: null, progress: { percent: 90, checkedAt: '2026-10-22T12:00:00Z' } })).toBe(false);
+  });
+
+  it('lets a request Jev confidently judged finished be checked, as the viewer offers', async () => {
+    source.prepare('UPDATE work_state_entries SET fields=? WHERE id=1').run(JSON.stringify({
+      task: 'Build the local viewer', status: 'doing', request_id: 'viewer-request', human_request: 'Build a local work viewer', progress: 'Merged and verified.',
+    }));
+    const ledgerDir = join(directory, 'work-view');
+    mkdirSync(ledgerDir, { recursive: true });
+    await stop(); await start(null, ledgerDir);
+    const unlabeled = (await snapshot()).humanRequests[0];
+    expect(unlabeled.items[0].judgedStatus).toBeNull();
+    expect((await review(unlabeled)).status).toBe(409);
+    writeFileSync(join(ledgerDir, 'work-state-labels.json'), JSON.stringify({ schemaVersion: 1, failures: {}, labels: {
+      1: { at: new Date().toISOString(), model: 'typesafe/jev-1.14-test', state: 'finished', stateP: 0.9, nextField: null, nextP: null, resultField: null, resultP: null },
+    } }));
+    const labeled = (await snapshot()).humanRequests[0];
+    expect(labeled.items[0].judgedStatus).toBe('needs-review');
+    expect((await review(labeled)).status).toBe(200);
+  });
+
+  it('lets a request waiting for review be checked and unchecked', async () => {
+    append({ task: 'Build the local viewer', request_status: 'needs_review' });
+    const request = (await snapshot()).humanRequests[0];
+    expect(request.lifecycle.status).toBe('needs_review');
+    expect((await review(request)).status).toBe(200);
+    expect((await snapshot()).humanRequests[0].review.checked).toBe(true);
+    expect((await review(request, false)).status).toBe(200);
+    expect((await snapshot()).humanRequests[0].review.checked).toBe(false);
+  });
+
+  it('rejects foreign pages, proxy requests, rebound hosts and non-JSON writes', async () => {
+    const request = (await snapshot()).humanRequests[0];
+    for (const headers of [{ Origin: 'https://evil.example' }, { Origin: 'null' }, { Origin: 'http://127.0.0.1:3' }, { 'Sec-Fetch-Site': 'cross-site' }, { 'X-Forwarded-For': '127.0.0.1' }]) {
+      expect((await review(request, true, headers)).status).toBe(403);
+    }
+    expect((await fetch(`${origin}/api/work-view`, { headers: { Host: 'rebound.example' } })).status).toBe(403);
+    expect((await fetch(`${origin}/api/work-view`, { headers: { 'X-Forwarded-Host': 'localhost' } })).status).toBe(403);
+    expect((await fetch(`${origin}/api/work-view/review`, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: '{}' })).status).toBe(403);
+    expect((await snapshot()).humanRequests[0].review.checked).toBe(false);
+  });
+
+  it('rejects malformed review payloads', async () => {
+    for (const body of [{}, { requestId: 'x', expectedFingerprint: 'invalid', checked: true }, { requestId: 'x', expectedFingerprint: 'a'.repeat(64), checked: true, fields: { status: 'done' } }]) {
+      const response = await fetch(`${origin}/api/work-view/review`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: origin }, body: JSON.stringify(body) });
+      expect(response.status).toBe(400);
+    }
+  });
+
+  it('keeps local work readable when the optional review database is damaged', async () => {
+    await stop();
+    writeFileSync(reviewPath, 'This is not a SQLite database.');
+    await start();
+    const view = await snapshot();
+    expect(view.source.connected).toBe(true);
+    expect(view.humanRequests).toHaveLength(1);
+    expect(view.humanRequests[0].review.available).toBe(false);
+    expect((await review(view.humanRequests[0])).status).toBe(503);
+  });
+
+  it('keeps an older imported write from replacing newer completion', async () => {
+    source.exec('ALTER TABLE work_state_entries ADD COLUMN origin_device_id TEXT');
+    source.exec('ALTER TABLE work_state_entries ADD COLUMN origin_local_id TEXT');
+    const current = (source.prepare('SELECT created_at_epoch FROM work_state_entries WHERE id = 1').get() as { created_at_epoch: number }).created_at_epoch;
+    source.prepare('INSERT INTO work_state_entries(id, project, list_name, fields, created_at_epoch, origin_device_id, origin_local_id) VALUES(2,?,?,?,?,?,?)')
+      .run('example-project', 'example-work', JSON.stringify({ task: 'Build the local viewer', request_complete: false, outcome: 'Earlier unfinished work' }), current - 1000, 'other-device', '40');
+    const request = (await snapshot()).humanRequests[0];
+    expect(request.lifecycle.complete).toBe(true);
+    expect(request.items[0].outcome.text).toBe('The local viewer is ready to use.');
+  });
+
+  it('refreshes a replicated row revised in place', async () => {
+    source.exec("ALTER TABLE work_state_entries ADD COLUMN sync_rev TEXT DEFAULT '1'");
+    const first = (await snapshot()).humanRequests[0];
+    source.prepare("UPDATE work_state_entries SET fields = ?, sync_rev = '2' WHERE id = 1").run(JSON.stringify({ task: 'Build the local viewer', request_id: 'viewer-request', human_request: 'Build a local work viewer', request_complete: false, progress: 'Reopened for another check.' }));
+    const changed = (await snapshot()).humanRequests[0];
+    expect(changed.contentFingerprint).not.toBe(first.contentFingerprint);
+    expect(changed.lifecycle.complete).toBe(false);
+  });
+
+  for (const correction of [
+    { table: 'observations', column: 'title', text: 'Corrected observation result' },
+    { table: 'session_summaries', column: 'completed', text: 'Corrected summary result' },
+    { table: 'user_prompts', column: 'prompt_text', text: 'Build a more accessible local work viewer' },
+  ]) {
+    it(`notices an external in-place ${correction.table} correction without new IDs or rows`, async () => {
+      seedLinkedEvidence();
+      const before = (await snapshot()).humanRequests[0];
+      expect((await review(before)).status).toBe(200);
+      source.prepare(`UPDATE ${correction.table} SET ${correction.column}=? WHERE id=1`).run(correction.text);
+      const updated = (await snapshot()).humanRequests[0];
+      expect(JSON.stringify(updated)).toContain(correction.text);
+      expect(updated.contentFingerprint).not.toBe(before.contentFingerprint);
+      expect(updated.review.checked).toBe(false);
+      expect((await review(before)).status).toBe(409);
+      expect(source.prepare(`SELECT COUNT(*) AS n,MAX(id) AS id FROM ${correction.table}`).get()).toEqual({ n: 1, id: 1 });
+    });
+  }
+
+  it('invalidates a checked version when only the full linked narrative changes', async () => {
+    seedLinkedEvidence();
+    const before = (await snapshot()).humanRequests[0];
+    expect((await review(before)).status).toBe(200);
+    source.prepare('UPDATE observations SET narrative=? WHERE id=1').run('Corrected full narrative with a different result.');
+    const updated = (await snapshot()).humanRequests[0];
+    expect(updated.title).toBe(before.title);
+    expect(updated.contentFingerprint).not.toBe(before.contentFingerprint);
+    expect(updated.review.checked).toBe(false);
+    expect(JSON.stringify(updated)).not.toContain('Corrected full narrative');
+    expect((await (await fetch(`${origin}/api/work-view/evidence/observation/1`)).json()).narrative).toContain('Corrected full narrative');
+    expect((await review(before)).status).toBe(409);
+  });
+
+  it('accepts bracketed IPv6 loopback authority only at the viewer port', async () => {
+    const request = (await snapshot()).humanRequests[0];
+    const port = new URL(origin).port;
+    expect((await review(request, false, { Host: `[::1]:${port}`, Origin: `http://[::1]:${port}` })).status).toBe(200);
+    expect((await review(request, false, { Host: `[::1]:${port}`, Origin: 'http://[::1]:1' })).status).toBe(403);
+    for (const host of ['[::1]:bad', '[::1]suffix', '[::1]:70000', 'localhost:bad']) {
+      expect((await review(request, false, { Host: host, Origin: 'http://[::1]' })).status).toBe(403);
+    }
+  });
+
+  it('hashes the full prompt beyond the displayed request excerpt', async () => {
+    const excerpt = `Build a local work viewer. ${'Keep the work readable. '.repeat(70)}`;
+    seedLinkedEvidence(`${excerpt}Original tail.`);
+    const before = (await snapshot()).humanRequests[0];
+    expect((await review(before)).status).toBe(200);
+    source.prepare('UPDATE user_prompts SET prompt_text=? WHERE id=1').run(`${excerpt}Corrected tail.`);
+    const updated = (await snapshot()).humanRequests[0];
+    expect(updated.original.text).toBe(before.original.text);
+    expect(updated.contentFingerprint).not.toBe(before.contentFingerprint);
+    expect(updated.review.checked).toBe(false);
+  });
+
+  it('hashes the linked summary beyond its compact result text', async () => {
+    seedLinkedEvidence();
+    const excerpt = 'The viewer works locally. '.repeat(25);
+    source.prepare('UPDATE session_summaries SET completed=? WHERE id=1').run(`${excerpt}Original tail.`);
+    const before = (await snapshot()).humanRequests[0];
+    expect((await review(before)).status).toBe(200);
+    source.prepare('UPDATE session_summaries SET completed=? WHERE id=1').run(`${excerpt}Corrected tail.`);
+    const updated = (await snapshot()).humanRequests[0];
+    expect(updated.items.map((item: any) => item.outcome)).toEqual(before.items.map((item: any) => item.outcome));
+    expect(updated.contentFingerprint).not.toBe(before.contentFingerprint);
+    expect(updated.review.checked).toBe(false);
+  });
+
+  it('preserves a human check when only sync bookkeeping changes', async () => {
+    seedLinkedEvidence();
+    source.exec('ALTER TABLE observations ADD COLUMN synced_at INTEGER');
+    const before = (await snapshot()).humanRequests[0];
+    expect((await review(before)).status).toBe(200);
+    source.prepare('UPDATE observations SET synced_at=? WHERE id=1').run(Date.now());
+    const updated = (await snapshot()).humanRequests[0];
+    expect(updated.contentFingerprint).toBe(before.contentFingerprint);
+    expect(updated.review.checked).toBe(true);
+  });
+
+  it('honors a later request_complete=false at the same timestamp as request_status=done', async () => {
+    const at = Date.now();
+    source.prepare('UPDATE work_state_entries SET fields=?,created_at_epoch=? WHERE id=1').run(JSON.stringify({
+      task: 'Build the local viewer', request_id: 'viewer-request', human_request: 'Build a local work viewer', request_status: 'done',
+    }), at);
+    source.prepare('INSERT INTO work_state_entries VALUES (2,?,?,?,?)').run(
+      'example-project', 'example-work', JSON.stringify({ task: 'Build the local viewer', request_complete: false }), at,
+    );
+    const request = (await snapshot()).humanRequests[0];
+    expect(request.lifecycle.complete).toBe(false);
+    expect(request.completedAtEpoch).toBeNull();
+    expect((await review(request)).status).toBe(409);
+  });
+
+  for (const [doneDevice, reopenDevice, complete] of [['a-device', 'z-device', false], ['z-device', 'a-device', true]] as const) {
+    it(`uses canonical device order for equal-time completion from ${doneDevice} and reopening from ${reopenDevice}`, async () => {
+      source.exec('ALTER TABLE work_state_entries ADD COLUMN origin_device_id TEXT');
+      source.exec('ALTER TABLE work_state_entries ADD COLUMN origin_local_id TEXT');
+      const at = Date.now();
+      source.prepare('UPDATE work_state_entries SET fields=?,created_at_epoch=?,origin_device_id=?,origin_local_id=\'1\' WHERE id=1').run(JSON.stringify({
+        task: 'Build the local viewer', request_id: 'viewer-request', human_request: 'Build a local work viewer', request_status: 'done',
+      }), at, doneDevice);
+      source.prepare('INSERT INTO work_state_entries VALUES (2,?,?,?,?,?,?)').run(
+        'example-project', 'example-work', JSON.stringify({ task: 'Build the local viewer', request_complete: false }), at, reopenDevice, '1',
+      );
+      const request = (await snapshot()).humanRequests[0];
+      expect(request.completedAtEpoch !== null).toBe(complete);
+      expect((await review(request)).status).toBe(complete ? 200 : 409);
+    });
+  }
+
+  it('keeps origin-row ordering exact beyond the JavaScript safe integer range', async () => {
+    source.exec('ALTER TABLE work_state_entries ADD COLUMN origin_device_id TEXT');
+    source.exec('ALTER TABLE work_state_entries ADD COLUMN origin_local_id TEXT');
+    const at = Date.now();
+    source.prepare('UPDATE work_state_entries SET created_at_epoch=?,origin_device_id=\'same-device\',origin_local_id=\'9007199254740993\' WHERE id=1').run(at);
+    source.prepare('INSERT INTO work_state_entries VALUES (2,?,?,?,?,?,?)').run(
+      'example-project', 'example-work', JSON.stringify({ task: 'Build the local viewer', request_complete: false }), at, 'same-device', '9007199254740992',
+    );
+    const request = (await snapshot()).humanRequests[0];
+    expect(request.lifecycle.complete).toBe(true);
+    expect((await review(request)).status).toBe(200);
+  });
+
+  it('serves a retained snapshot with unavailable-source health and refuses reviews', async () => {
+    const request = (await snapshot()).humanRequests[0];
+    source.close();
+    rmSync(databasePath);
+    const unavailable = await snapshot();
+    expect(unavailable.source.connected).toBe(false);
+    expect(unavailable.source.stale).toBe(true);
+    expect(unavailable.humanRequests[0].id).toBe(request.id);
+    expect((await review(request)).status).toBe(503);
+    // afterEach may safely close an already closed handle.
+  });
+
+  it('coalesces background activity without accepting stale evidence reviews', async () => {
+    seedLinkedEvidence();
+    const request = (await snapshot()).humanRequests[0];
+    const controller = new AbortController(); controllers.push(controller);
+    const response = await fetch(`${origin}/api/work-view/events`, { signal: controller.signal });
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let initial = '';
+    while (!initial.includes('event: work-view')) {
+      const part = await reader.read();
+      if (part.done) throw new Error('event stream ended before its initial work view');
+      initial += decoder.decode(part.value, { stream: true });
+    }
+    const liveSource = (routes as any).source;
+    const initialRevision = liveSource.agentRevision;
+    source.prepare('UPDATE observations SET narrative=? WHERE id=1').run('Corrected full evidence.');
+    // Several real 20 ms polls must not rebuild for this activity-only commit.
+    await new Promise(resolve => setTimeout(resolve, 100));
+    expect(liveSource.agentRevision).toBe(initialRevision);
+    expect((await review(request)).status).toBe(409);
+    expect(liveSource.agentRevision).toBeGreaterThan(initialRevision);
+    controller.abort();
+  });
+
+  it('streams genuine external source changes and releases disconnected clients', async () => {
+    const controller = new AbortController(); controllers.push(controller);
+    const response = await fetch(`${origin}/api/work-view/events`, { signal: controller.signal });
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder(); let buffer = '';
+    const nextSnapshot = async (): Promise<any> => {
+      const timeout = setTimeout(() => controller.abort(), 3000);
+      try {
+        for (;;) {
+          const end = buffer.indexOf('\n\n');
+          if (end >= 0) {
+            const frame = buffer.slice(0, end); buffer = buffer.slice(end + 2);
+            if (frame.includes('event: work-view')) return JSON.parse(frame.split('\n').find(line => line.startsWith('data: '))!.slice(6));
+          } else {
+            const part = await reader.read(); if (part.done) throw new Error('stream ended');
+            buffer += decoder.decode(part.value, { stream: true });
+          }
+        }
+      } finally { clearTimeout(timeout); }
+    };
+    const first = await nextSnapshot();
+    expect(routes.getClientCount()).toBe(1);
+    append({ task: 'Build the local viewer', progress: 'An external write arrived over the live stream.' });
+    let changed = await nextSnapshot();
+    while (changed.revision === first.revision) changed = await nextSnapshot();
+    expect(changed.humanRequests[0].contentFingerprint).not.toBe(first.humanRequests[0].contentFingerprint);
+    expect(changed.source.connected).toBe(true);
+    controller.abort();
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(routes.getClientCount()).toBe(0);
+  });
+});
+
+describe('review content versions', () => {
+  it('matches canonical device and origin-row ordering at the same timestamp', () => {
+    const row = { project: 'example', list_name: 'work', created_at_epoch: 1000 };
+    const state = reduceWorkState([
+      { ...row, id: 30, origin_device_id: 'a-device', origin_local_id: '99', fields: { task: 'task', status: 'todo' } },
+      { ...row, id: 1, fields: { task: 'task', status: 'done' } },
+    ], { localDeviceId: 'z-device' });
+    expect(state.lists[0].tasks[0].status).toBe('done');
+    expect(state.lists[0].tasks[0].latestEntryId).toBe(1);
+  });
+  it('ignores transport clocks and generated copy but includes recorded result changes', () => {
+    const request = { id: 'x', title: 'Request', items: [{ outcome: { text: 'Done' } }] };
+    expect(contentFingerprint({ ...request, generatedAt: 1, humanCopy: { summary: 'first' } })).toBe(contentFingerprint({ ...request, generatedAt: 2, humanCopy: { summary: 'second' } }));
+    expect(contentFingerprint({ ...request, items: [{ outcome: { text: 'New result' } }] })).not.toBe(contentFingerprint(request));
+  });
+
+  it('attaches readable summaries without changing the reviewed fingerprint', async () => {
+    const before = (await (await fetch(`${origin}/api/work-view`)).json()).humanRequests[0];
+    await stop();
+    const humanCopy = new HumanCopyWorker({ cachePath: null, quietMs: 0, minIntervalMs: 0, provider: async (input: any) => ({ output: {
+      title: 'Build a local work viewer', summary: 'The viewer is ready to use.', next: '',
+      workstreams: input.workstreams.map((stream: { id: string }) => ({ id: stream.id, title: 'Viewer', summary: 'Ready.' })),
+    } }) });
+    await start(humanCopy);
+    await fetch(`${origin}/api/work-view`);
+    let request: any;
+    for (let attempt = 0; attempt < 50 && request?.humanCopy?.state !== 'current'; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 20));
+      request = (await (await fetch(`${origin}/api/work-view`)).json()).humanRequests[0];
+    }
+    expect(request.humanCopy.state).toBe('current');
+    expect(request.humanCopy.summary).toBe('The viewer is ready to use.');
+    expect(request.contentFingerprint).toBe(before.contentFingerprint);
+  });
+
+  it('does not spend user tokens on display copy during hosted setup, then resumes after completion', async () => {
+    await stop();
+    let calls = 0;
+    const humanCopy = new HumanCopyWorker({ cachePath: null, quietMs: 0, minIntervalMs: 0, provider: async (input: any) => {
+      calls++;
+      return { output: { title: 'Build a local work viewer', summary: 'The viewer is ready.', next: '',
+        workstreams: input.workstreams.map((stream: { id: string }) => ({ id: stream.id, title: 'Viewer', summary: 'Ready.' })) } };
+    } });
+    const setupPath = join(directory, 'setup-state.json');
+    writeFileSync(setupPath, JSON.stringify({ status: 'pending' }));
+    writeFileSync(join(directory, 'setup-session.json'), JSON.stringify({ pid: process.pid }));
+    await start(humanCopy);
+    await snapshot();
+    expect(calls).toBe(0);
+    expect(humanCopy.status().queued).toBe(0);
+    writeFileSync(setupPath, JSON.stringify({ status: 'complete' }));
+    await snapshot();
+    expect(calls).toBe(1);
+  });
+
+  it('resumes display copy with saved pending setup when the installer has exited', async () => {
+    await stop();
+    let calls = 0;
+    const humanCopy = new HumanCopyWorker({ cachePath: null, quietMs: 0, minIntervalMs: 0, provider: async (input: any) => {
+      calls++;
+      return { output: { title: 'Build a local work viewer', summary: 'The viewer is ready.', next: '',
+        workstreams: input.workstreams.map((stream: { id: string }) => ({ id: stream.id, title: 'Viewer', summary: 'Ready.' })) } };
+    } });
+    const setupPath = join(directory, 'setup-state.json');
+    const saved = { status: 'pending', choice: { branch: 'home', memoryBilling: 'existing', chosenAt: 'earlier' } };
+    writeFileSync(setupPath, JSON.stringify(saved));
+    writeFileSync(join(directory, 'setup-session.json'), JSON.stringify({ pid: 2 ** 22 + 12345 }));
+    await start(humanCopy);
+    await snapshot();
+    expect(calls).toBe(1);
+    expect(JSON.parse(readFileSync(setupPath, 'utf8'))).toEqual(saved);
+  });
+});

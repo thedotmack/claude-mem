@@ -16,50 +16,50 @@
 </h1>
 
 <p align="center">
-  <a href="docs/i18n/README.zh.md">🇨🇳 中文</a> •
-  <a href="docs/i18n/README.zh-tw.md">🇹🇼 繁體中文</a> •
-  <a href="docs/i18n/README.ja.md">🇯🇵 日本語</a> •
-  <a href="docs/i18n/README.pt.md">🇵🇹 Português</a> •
-  <a href="docs/i18n/README.pt-br.md">🇧🇷 Português</a> •
-  <a href="docs/i18n/README.ko.md">🇰🇷 한국어</a> •
-  <a href="docs/i18n/README.es.md">🇪🇸 Español</a> •
-  <a href="docs/i18n/README.de.md">🇩🇪 Deutsch</a> •
-  <a href="docs/i18n/README.fr.md">🇫🇷 Français</a> •
-  <a href="docs/i18n/README.he.md">🇮🇱 עברית</a> •
-  <a href="docs/i18n/README.ar.md">🇸🇦 العربية</a> •
-  <a href="docs/i18n/README.ru.md">🇷🇺 Русский</a> •
-  <a href="docs/i18n/README.pl.md">🇵🇱 Polski</a> •
-  <a href="docs/i18n/README.cs.md">🇨🇿 Čeština</a> •
-  <a href="docs/i18n/README.nl.md">🇳🇱 Nederlands</a> •
-  <a href="docs/i18n/README.tr.md">🇹🇷 Türkçe</a> •
-  <a href="docs/i18n/README.uk.md">🇺🇦 Українська</a> •
-  <a href="docs/i18n/README.vi.md">🇻🇳 Tiếng Việt</a> •
-  <a href="docs/i18n/README.tl.md">🇵🇭 Tagalog</a> •
-  <a href="docs/i18n/README.id.md">🇮🇩 Indonesia</a> •
-  <a href="docs/i18n/README.th.md">🇹🇭 ไทย</a> •
-  <a href="docs/i18n/README.hi.md">🇮🇳 हिन्दी</a> •
-  <a href="docs/i18n/README.bn.md">🇧🇩 বাংলা</a> •
-  <a href="docs/i18n/README.ur.md">🇵🇰 اردو</a> •
-  <a href="docs/i18n/README.ro.md">🇷🇴 Română</a> •
-  <a href="docs/i18n/README.sv.md">🇸🇪 Svenska</a> •
-  <a href="docs/i18n/README.it.md">🇮🇹 Italiano</a> •
-  <a href="docs/i18n/README.el.md">🇬🇷 Ελληνικά</a> •
-  <a href="docs/i18n/README.hu.md">🇭🇺 Magyar</a> •
-  <a href="docs/i18n/README.fi.md">🇫🇮 Suomi</a> •
-  <a href="docs/i18n/README.da.md">🇩🇰 Dansk</a> •
-  <a href="docs/i18n/README.no.md">🇳🇴 Norsk</a>
+  <a href="README.zh.md">🇨🇳 中文</a> •
+  <a href="README.zh-tw.md">🇹🇼 繁體中文</a> •
+  <a href="README.ja.md">🇯🇵 日本語</a> •
+  <a href="README.pt.md">🇵🇹 Português</a> •
+  <a href="README.pt-br.md">🇧🇷 Português</a> •
+  <a href="README.ko.md">🇰🇷 한국어</a> •
+  <a href="README.es.md">🇪🇸 Español</a> •
+  <a href="README.de.md">🇩🇪 Deutsch</a> •
+  <a href="README.fr.md">🇫🇷 Français</a> •
+  <a href="README.he.md">🇮🇱 עברית</a> •
+  <a href="README.ar.md">🇸🇦 العربية</a> •
+  <a href="README.ru.md">🇷🇺 Русский</a> •
+  <a href="README.pl.md">🇵🇱 Polski</a> •
+  <a href="README.cs.md">🇨🇿 Čeština</a> •
+  <a href="README.nl.md">🇳🇱 Nederlands</a> •
+  <a href="README.tr.md">🇹🇷 Türkçe</a> •
+  <a href="README.uk.md">🇺🇦 Українська</a> •
+  <a href="README.vi.md">🇻🇳 Tiếng Việt</a> •
+  <a href="README.tl.md">🇵🇭 Tagalog</a> •
+  <a href="README.id.md">🇮🇩 Indonesia</a> •
+  <a href="README.th.md">🇹🇭 ไทย</a> •
+  <a href="README.hi.md">🇮🇳 हिन्दी</a> •
+  <a href="README.bn.md">🇧🇩 বাংলা</a> •
+  <a href="README.ur.md">🇵🇰 اردو</a> •
+  <a href="README.ro.md">🇷🇴 Română</a> •
+  <a href="README.sv.md">🇸🇪 Svenska</a> •
+  <a href="README.it.md">🇮🇹 Italiano</a> •
+  <a href="README.el.md">🇬🇷 Ελληνικά</a> •
+  <a href="README.hu.md">🇭🇺 Magyar</a> •
+  <a href="README.fi.md">🇫🇮 Suomi</a> •
+  <a href="README.da.md">🇩🇰 Dansk</a> •
+  <a href="README.no.md">🇳🇴 Norsk</a>
 </p>
 
 <h4 align="center"><a href="https://claude.com/claude-code" target="_blank">Claude Code</a> کے لیے بنایا گیا مستقل میموری کمپریشن سسٹم۔</h4>
 
 <p align="center">
-  <a href="LICENSE">
+  <a href="../../LICENSE">
     <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License">
   </a>
-  <a href="package.json">
+  <a href="../../package.json">
     <img src="https://img.shields.io/badge/version-13.4.0-green.svg" alt="Version">
   </a>
-  <a href="package.json">
+  <a href="../../package.json">
     <img src="https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen.svg" alt="Node">
   </a>
   <a href="https://github.com/thedotmack/awesome-claude-code">
@@ -215,7 +215,6 @@ curl -fsSL https://install.cmem.ai/openclaw.sh | bash
 
 - **[ترتیبات](https://docs.claude-mem.ai/configuration)** - ماحول کے متغیرات اور سیٹنگز
 - **[ترقی](https://docs.claude-mem.ai/development)** - تعمیر، جانچ، حصہ داری
-- **[ریلیز برانچز](https://docs.claude-mem.ai/branches)** - Stable، core-dev، اور community-edge برانچ کا بہاؤ
 - **[مسائل کی تشخیص](https://docs.claude-mem.ai/troubleshooting)** - عام مسائل اور حل
 
 ---
@@ -271,14 +270,6 @@ get_observations(ids=[123, 456])
 ```
 
 تفصیلی مثالوں کے لیے [تلاش کے اوزار گائیڈ](https://docs.claude-mem.ai/usage/search-tools) دیکھیں۔
-
----
-
-## ریلیز برانچز
-
-مستحکم ریلیزز `main` سے شپ ہوتی ہیں اور npm پر شائع کی جاتی ہیں۔ `core-dev` اور
-`community-edge` ابتدائی اعتماد کی اصلاحات اور کمیونٹی انٹیگریشنز کے لیے سورس سے چلائی جانے والی برانچز ہیں۔ برانچ کے بہاؤ اور غیر مستحکم رن ہدایات کے لیے **[ریلیز برانچز](https://docs.claude-mem.ai/branches)**
-دیکھیں۔
 
 ---
 
@@ -348,6 +339,7 @@ ls ~/.claude/plugins/marketplaces/thedotmack/plugin/modes/
 #### موڈ تبدیل کرنے کے بعد
 
 نئی موڈ کنفیگریشن لاگو کرنے کے لیے Claude Code کو دوبارہ شروع کریں۔
+
 ---
 
 ## ترقی
@@ -383,10 +375,6 @@ npm run bug-report
 4. دستاویزات کو اپڈیٹ کریں
 5. ایک Pull Request جمع کریں
 
-Claude-Mem تین برانچز سے شپ ہوتا ہے: `main` (مستحکم)، `core-dev`، اور
-`community-edge`۔ صرف `main` ہی npm پر شائع کیا جاتا ہے؛ باقی سورس سے
-چلائی جاتی ہیں۔ حکمت عملی اور لوکل رن ہدایات کے لیے [ریلیز برانچز](https://docs.claude-mem.ai/branches) دیکھیں۔
-
 حصہ داری کے کام کے بہاؤ کے لیے [ترقی گائیڈ](https://docs.claude-mem.ai/development) دیکھیں۔
 
 ---
@@ -399,17 +387,16 @@ Claude-Mem کو Apache License 2.0 کے تحت لائسنس دیا گیا ہے۔
 MCP سرورز، انٹرپرائز نظاموں، روبوٹکس اسٹیکس، اور پروڈکشن ایجنٹ ہارنسز میں
 شامل کرنا آسان ہونا چاہیے۔
 
-مکمل تفصیلات کے لیے [LICENSE](LICENSE) فائل دیکھیں۔ لائسنسنگ کے دائرہ کار اور
-اوپن/کمرشل باؤنڈری کے لیے [docs/license.md](docs/license.md)
-اور [docs/ip-boundary.md](docs/ip-boundary.md) دیکھیں۔
+مکمل تفصیلات کے لیے [LICENSE](../../LICENSE) فائل دیکھیں۔ لائسنسنگ کے دائرہ کار اور
+اوپن/کمرشل باؤنڈری کے لیے [docs/license.md](../license.md)
+اور [docs/ip-boundary.md](../ip-boundary.md) دیکھیں۔
 
-**Ragtime پر نوٹ**: `ragtime/` ڈائریکٹری کو **Apache License 2.0** کے تحت لائسنس دیا گیا ہے۔ تفصیلات کے لیے [ragtime/LICENSE](ragtime/LICENSE) دیکھیں۔
 
 ---
 
 ## معاونت
 
-- **دستاویزات**: [docs/](docs/)
+- **دستاویزات**: [docs/](../)
 - **مسائل**: [GitHub Issues](https://github.com/thedotmack/claude-mem/issues)
 - **رپوزیٹری**: [github.com/thedotmack/claude-mem](https://github.com/thedotmack/claude-mem)
 - **سرکاری X اکاؤنٹ**: [@Claude_Memory](https://x.com/Claude_Memory)

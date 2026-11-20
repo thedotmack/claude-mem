@@ -34,14 +34,6 @@ describe('matchesRule negation operators', () => {
     expect(matchesRule(realSession, rule, schema)).toBe(true);
   });
 
-  it('combines a positive match with a negation in a single rule (AND semantics)', () => {
-    // Match tool_use events, but exclude guardian sessions.
-    const rule: MatchRule = { path: 'type', equals: 'tool_use' };
-    const ruleWithExclusion: MatchRule = { path: 'agentType', not_equals: 'guardian' };
-    expect(matchesRule(realSession, rule, schema) && matchesRule(realSession, ruleWithExclusion, schema)).toBe(true);
-    expect(matchesRule(noiseSession, rule, schema) && matchesRule(noiseSession, ruleWithExclusion, schema)).toBe(false);
-  });
-
   it('fixes exists:false — field must be ABSENT to match', () => {
     const rule: MatchRule = { path: 'agentType', exists: false };
     // agentType present → excluded

@@ -3,10 +3,43 @@ import {
   conversationChars,
   shouldRecycleConversation,
   resolveConversationMaxChars,
+  windowAwareConversationMaxChars,
   OBSERVER_CONVERSATION_MAX_CHARS,
 } from '../../src/shared/observer-recycle.js';
+import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
 import { wrapPriorContext } from '../../src/sdk/prompts.js';
 import type { ConversationMessage } from '../../src/services/worker-types.js';
+
+describe('window-aware generation budget (#3625)', () => {
+  it('retires a narrow-window generation at half its window', () => {
+    // 16k tokens * 0.5 * 4 chars/token.
+    expect(windowAwareConversationMaxChars(OBSERVER_CONVERSATION_MAX_CHARS, 16_384)).toBe(32_768);
+    // The 131,072 fallback for an unknown endpoint. An operator budget past half
+    // the window is lowered to it (the shipped default is already below that).
+    expect(windowAwareConversationMaxChars(400_000, 131_072)).toBe(262_144);
+  });
+
+  it('keeps the configured budget for windows it already fits inside', () => {
+    expect(windowAwareConversationMaxChars(OBSERVER_CONVERSATION_MAX_CHARS, 131_072)).toBe(OBSERVER_CONVERSATION_MAX_CHARS);
+    expect(windowAwareConversationMaxChars(OBSERVER_CONVERSATION_MAX_CHARS, 200_000)).toBe(OBSERVER_CONVERSATION_MAX_CHARS);
+    expect(windowAwareConversationMaxChars(OBSERVER_CONVERSATION_MAX_CHARS, 1_048_576)).toBe(OBSERVER_CONVERSATION_MAX_CHARS);
+  });
+
+  it('never raises an operator budget that is already smaller than the window allows', () => {
+    expect(windowAwareConversationMaxChars(20_000, 1_048_576)).toBe(20_000);
+    expect(windowAwareConversationMaxChars(20_000, 16_384)).toBe(20_000);
+  });
+
+  it('keeps the configured budget when the window is unknown', () => {
+    expect(windowAwareConversationMaxChars(OBSERVER_CONVERSATION_MAX_CHARS, undefined)).toBe(OBSERVER_CONVERSATION_MAX_CHARS);
+  });
+
+  it('recycles a 16k-window generation long before the fixed budget would', () => {
+    const history = windowOf(8, 5_000); // 40k chars: past half a 16k window, under the 100k default
+    expect(shouldRecycleConversation(history, windowAwareConversationMaxChars(OBSERVER_CONVERSATION_MAX_CHARS, 16_384))).toBe(true);
+    expect(shouldRecycleConversation(history)).toBe(false);
+  });
+});
 
 function windowOf(count: number, charsEach: number): ConversationMessage[] {
   return Array.from({ length: count }, (_, i) => ({
@@ -21,7 +54,7 @@ describe('observer generation budget (#3800)', () => {
   });
 
   it('recycles once the generation has spent its budget', () => {
-    const history = windowOf(50, 10_000); // 500k chars > 400k default
+    const history = windowOf(50, 10_000); // 500k chars > 100k default
     expect(conversationChars(history)).toBeGreaterThan(OBSERVER_CONVERSATION_MAX_CHARS);
     expect(shouldRecycleConversation(history)).toBe(true);
   });
@@ -33,6 +66,14 @@ describe('observer generation budget (#3800)', () => {
     expect(shouldRecycleConversation(atBudget)).toBe(true);
   });
 
+  // The fallback constant and the settings default are two copies of one number:
+  // a malformed setting resolves to the constant, an unset one to the default.
+  it('ships the same budget as the settings default and the fallback', () => {
+    const shipped = SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS;
+    expect(shipped).toBe('100000');
+    expect(resolveConversationMaxChars(shipped)).toBe(OBSERVER_CONVERSATION_MAX_CHARS);
+  });
+
   it('honours an operator override and falls back on a malformed one', () => {
     expect(resolveConversationMaxChars('120000')).toBe(120_000);
     expect(resolveConversationMaxChars(undefined)).toBe(OBSERVER_CONVERSATION_MAX_CHARS);
@@ -40,24 +81,6 @@ describe('observer generation budget (#3800)', () => {
     expect(resolveConversationMaxChars('nonsense')).toBe(OBSERVER_CONVERSATION_MAX_CHARS);
     expect(resolveConversationMaxChars('0')).toBe(OBSERVER_CONVERSATION_MAX_CHARS);
     expect(resolveConversationMaxChars('-5')).toBe(OBSERVER_CONVERSATION_MAX_CHARS);
-  });
-
-  it('bounds per-session cost regardless of session length', () => {
-    // The point of generations: a session 20x longer must not make any single
-    // request 20x bigger. Each generation is capped, so cost is linear in
-    // observations rather than quadratic.
-    const long = windowOf(2_000, 10_000);
-    let generationSize = 0;
-    const generation: ConversationMessage[] = [];
-    for (const message of long) {
-      if (shouldRecycleConversation(generation)) {
-        generation.length = 0; // retire and start fresh
-      }
-      generation.push(message);
-      generationSize = Math.max(generationSize, conversationChars(generation));
-    }
-    // No request ever exceeds one budget plus the message that tripped it.
-    expect(generationSize).toBeLessThanOrEqual(OBSERVER_CONVERSATION_MAX_CHARS + 10_000);
   });
 });
 

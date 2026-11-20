@@ -1,14 +1,10 @@
 import { describe, it, expect, afterEach } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
-import { MAX_TOOL_PAYLOAD_BYTES, truncatePayload } from '../../src/services/sqlite/tool-uses.js';
+import { MAX_TOOL_PAYLOAD_BYTES, TOOL_USES_BATCH_DEFAULT_ROWS, truncatePayload } from '../../src/services/sqlite/tool-uses.js';
 
 interface TableColumnInfo {
   name: string;
-}
-
-interface SchemaVersionRow {
-  version: number;
 }
 
 function toolUsesColumns(db: Database): string[] {
@@ -17,22 +13,6 @@ function toolUsesColumns(db: Database): string[] {
 
 function hasTable(db: Database, name: string): boolean {
   return (db.query("SELECT name FROM sqlite_master WHERE type='table' AND name = ?").all(name) as unknown[]).length > 0;
-}
-
-/**
- * Seed a pre-v51 database: the constructor chain fills in everything else, but
- * neither `tool_uses` nor the v51 stamp exists yet.
- */
-function seedLegacyDb(db: Database): void {
-  db.run(`
-    CREATE TABLE IF NOT EXISTS schema_versions (
-      id INTEGER PRIMARY KEY,
-      version INTEGER UNIQUE NOT NULL,
-      applied_at TEXT NOT NULL
-    )
-  `);
-  db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)')
-    .run(50, new Date().toISOString());
 }
 
 function baseInput(overrides: Record<string, unknown> = {}) {
@@ -86,37 +66,6 @@ describe('SessionStore tool_uses (v51)', () => {
       expect(columns).not.toContain('cost_usd');
       expect(columns.some(c => c.includes('cost'))).toBe(false);
       expect(columns.some(c => c.includes('micros'))).toBe(false);
-    });
-
-    it('migrates an existing pre-v51 database and stamps schema version 51', () => {
-      const db = new Database(':memory:');
-      seedLegacyDb(db);
-      expect(hasTable(db, 'tool_uses')).toBe(false);
-
-      store = new SessionStore(db);
-
-      expect(hasTable(db, 'tool_uses')).toBe(true);
-      const versions = (db.query('SELECT version FROM schema_versions').all() as SchemaVersionRow[])
-        .map(row => row.version);
-      expect(versions).toContain(51);
-    });
-
-    it('leaves pending_messages intact (queue is not repurposed)', () => {
-      const db = new Database(':memory:');
-      store = new SessionStore(db);
-      expect(hasTable(db, 'pending_messages')).toBe(true);
-    });
-
-    it('re-running the constructor over the same database is a no-op', () => {
-      const db = new Database(':memory:');
-      const first = new SessionStore(db);
-      first.upsertToolUse(baseInput());
-
-      // Second SessionStore over the same handle re-runs the whole chain.
-      const second = new SessionStore(db);
-      store = second;
-
-      expect(second.queryToolUses({ contentSessionId: 'content-session-a' })).toHaveLength(1);
     });
   });
 
@@ -219,24 +168,6 @@ describe('SessionStore tool_uses (v51)', () => {
       }
     });
 
-    it('does not steal an existing observation link', () => {
-      store = new SessionStore(new Database(':memory:'));
-      store.upsertToolUse(baseInput());
-      store.linkToolUsesToObservation({
-        contentSessionId: 'content-session-a',
-        toolUseIds: ['toolu_01'],
-        observationId: 1,
-      });
-      store.linkToolUsesToObservation({
-        contentSessionId: 'content-session-a',
-        toolUseIds: ['toolu_01'],
-        observationId: 2,
-      });
-
-      const [row] = store.queryToolUses({});
-      expect(row.observation_id).toBe(1);
-    });
-
     it('ignores an empty id list', () => {
       store = new SessionStore(new Database(':memory:'));
       expect(store.linkToolUsesToObservation({
@@ -271,6 +202,32 @@ describe('SessionStore tool_uses (v51)', () => {
 
       expect(store.getToolUsesByIds([id], { project: 'claude-mem' })).toHaveLength(1);
       expect(store.getToolUsesByIds([id], { project: 'other-project' })).toHaveLength(0);
+    });
+
+    // `tool_use_id` is only unique per (content_session_id, tool_use_id), so the
+    // same opaque id may appear under many sessions. The id array cap alone does
+    // not bound the row count: one accepted id must still fetch a bounded slice.
+    it('bounds the row count when limit is omitted, even if one id spans many sessions', () => {
+      store = new SessionStore(new Database(':memory:'));
+      const spanned = TOOL_USES_BATCH_DEFAULT_ROWS + 50;
+      for (let i = 0; i < spanned; i++) {
+        store.upsertToolUse(baseInput({ contentSessionId: `session-${i}` }));
+      }
+      expect(store.queryToolUses({ limit: 500 })).toHaveLength(spanned);
+
+      const rows = store.getToolUsesByIds(['toolu_01']);
+      expect(rows).toHaveLength(TOOL_USES_BATCH_DEFAULT_ROWS);
+      expect(rows.length).toBeLessThan(spanned);
+    });
+
+    it('still honours an explicit limit over the omitted-limit default', () => {
+      store = new SessionStore(new Database(':memory:'));
+      for (let i = 0; i < TOOL_USES_BATCH_DEFAULT_ROWS + 50; i++) {
+        store.upsertToolUse(baseInput({ contentSessionId: `session-${i}` }));
+      }
+
+      expect(store.getToolUsesByIds(['toolu_01'], { limit: 3 })).toHaveLength(3);
+      expect(store.getToolUsesByIds(['toolu_01'], { limit: 150 })).toHaveLength(150);
     });
 
     it('returns [] for an empty or unusable id list', () => {

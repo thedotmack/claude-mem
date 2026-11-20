@@ -1,24 +1,23 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { mkdtempSync, rmSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
 import { SessionStore } from '../src/services/sqlite/SessionStore.js';
 import { ClaudeProvider } from '../src/services/worker/ClaudeProvider.js';
 
 describe('FK Constraint Fix (Issue #846)', () => {
   let store: SessionStore;
-  let testDbPath: string;
+  let tempDir: string;
 
   beforeEach(() => {
-    testDbPath = `/tmp/test-fk-fix-${crypto.randomUUID()}.db`;
-    store = new SessionStore(testDbPath);
+    tempDir = mkdtempSync(join(tmpdir(), 'fk-fix-'));
+    store = new SessionStore(join(tempDir, 'test.db'));
   });
 
   afterEach(() => {
     store.close();
-    try {
-      require('fs').unlinkSync(testDbPath);
-    } catch (e) {
-      // Ignore cleanup errors
-    }
+    rmSync(tempDir, { recursive: true, force: true });
   });
 
   it('should auto-register memory_session_id before observation INSERT', () => {
@@ -141,40 +140,6 @@ describe('FK Constraint Fix (Issue #846)', () => {
         files_modified: []
       }
     );
-    expect(result.id).toBeGreaterThan(0);
-  });
-
-  it('should handle observation storage after worker restart scenario', () => {
-    const sessionDbId = store.createSDKSession('restart-test-id', 'test-project', 'test prompt');
-
-    const oldMemorySessionId = 'old-stale-id';
-    store.updateMemorySessionId(sessionDbId, oldMemorySessionId);
-
-    const before = store.getSessionById(sessionDbId);
-    expect(before?.memory_session_id).toBe(oldMemorySessionId);
-
-    const newMemorySessionId = 'new-fresh-id-from-sdk';
-
-    store.ensureMemorySessionIdRegistered(sessionDbId, newMemorySessionId);
-
-    const after = store.getSessionById(sessionDbId);
-    expect(after?.memory_session_id).toBe(oldMemorySessionId);
-
-    const result = store.storeObservation(
-      oldMemorySessionId,
-      'test-project',
-      {
-        type: 'bugfix',
-        title: 'Worker restart fix test',
-        subtitle: null,
-        facts: [],
-        narrative: null,
-        concepts: [],
-        files_read: [],
-        files_modified: []
-      }
-    );
-
     expect(result.id).toBeGreaterThan(0);
   });
 

@@ -11,6 +11,7 @@ type Handler = (req: Request, res: Response) => void;
 function captureSessionEndHandler(routes: SessionRoutes): Handler {
   let handler: Handler | undefined;
   const app = {
+    get: () => {},
     post: mock((path: string, ...handlers: Handler[]) => {
       if (path === '/api/sessions/session-end') {
         handler = handlers.at(-1);
@@ -47,7 +48,7 @@ async function flushAsyncHandler(): Promise<void> {
 function makeRoutes(findSessionDbIdByContentSessionId: ReturnType<typeof mock>, requestSessionWrapup: ReturnType<typeof mock>): SessionRoutes {
   return new SessionRoutes(
     { requestSessionWrapup } as any,
-    { getSessionStore: () => ({ findSessionDbIdByContentSessionId }) } as any,
+    { getSessionStore: () => ({ findSessionDbIdByContentSessionId, isSessionDeleted: () => false }) } as any,
     {} as any,
     {} as any,
     {} as any,

@@ -5,6 +5,7 @@ import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import { discoverGrokBotAgentDataRoot } from './GrokBotInstaller.js';
+import { formatRecalledObservationLine } from './grok-bot-untrusted-text.mjs';
 
 export const GROK_BOT_AWARENESS_PILOT_AGENT_IDS = [
   '521e962d-2ec3-4488-bfbc-54d5209ce118', // LFG
@@ -67,21 +68,14 @@ export function observationMatchesAwarenessNeedle(
   return matchesType || matchesConcept;
 }
 
-function collapseWhitespace(value: string): string {
-  return value.replace(/\s+/g, ' ').trim();
-}
-
+/**
+ * `- YYYY-MM-DD [awareness] <type> — «<title>: <subtitle>. <fact>»`. Title,
+ * subtitle and fact are LLM-written from untrusted tool output and land in a
+ * host Memory log, so they go through the shared untrusted-text sanitizer and
+ * are fenced; a long detail is cut inside the fence.
+ */
 export function formatAwarenessLine(obs: ParsedObservation, now: Date = new Date()): string {
-  const date = now.toISOString().slice(0, 10);
-  const title = collapseWhitespace(obs.title ?? '');
-  const subtitle = collapseWhitespace(obs.subtitle ?? '');
-  const fact = collapseWhitespace(obs.facts[0] ?? '');
-  const headline = [title, subtitle].filter(Boolean).join(': ');
-  const detail = [headline, fact].filter(Boolean).join('. ');
-  const body = collapseWhitespace(`${obs.type}${detail ? ` — ${detail}` : ''}`);
-  const line = `- ${date} ${AWARENESS_TAG} ${body}`.trimEnd();
-  if (line.length <= MAX_LINE_CHARS) return line;
-  return `${line.slice(0, MAX_LINE_CHARS - 1)}…`;
+  return formatRecalledObservationLine(AWARENESS_TAG, obs, now, MAX_LINE_CHARS);
 }
 
 export function awarenessLineBody(line: string): string {

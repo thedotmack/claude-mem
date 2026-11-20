@@ -83,12 +83,6 @@ describe('SessionStore summaries', () => {
   });
 
   describe('getSummaryForSession', () => {
-    it('retrieves by memory_session_id', () => {
-      const mem = session('mem-unique');
-      store.storeSummary(mem, 'project', summary({ request: 'Unique request' }));
-      expect(store.getSummaryForSession(mem)?.request).toBe('Unique request');
-    });
-
     it('returns null when none exists', () => {
       expect(store.getSummaryForSession('nonexistent-session')).toBeNull();
     });

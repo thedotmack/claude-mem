@@ -5,6 +5,7 @@ import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { findClaudeExecutable as defaultFindClaudeExecutable } from '../../shared/find-claude-executable.js';
 import { getUvxBinDirs } from '../../shared/uvx-bin-dirs.js';
 import { stripForeignPythonEnv } from '../../shared/uvx-env.js';
+import { providersMappedBySource } from '../../shared/provider-by-source.js';
 import { logger } from '../../utils/logger.js';
 import {
   clearDependencyStatus,
@@ -13,10 +14,13 @@ import {
   snapshotDependencyHealth,
   type DependencyHealthSnapshot,
 } from '../../shared/dependency-health.js';
+import { clearClaudeCliSelfHealAttempts } from './stale-spawn-recovery.js';
 
 interface DependencyPreflightSettings {
   CLAUDE_MEM_PROVIDER?: string;
+  CLAUDE_MEM_PROVIDER_BY_SOURCE?: unknown;
   CLAUDE_MEM_CHROMA_ENABLED?: string;
+  CLAUDE_MEM_CHROMA_UVX_PATH?: string;
 }
 
 interface ClassifiedClaudeSetupError {
@@ -27,7 +31,7 @@ interface ClassifiedClaudeSetupError {
 export interface WorkerDependencyPreflightOptions {
   settings: DependencyPreflightSettings;
   classifyClaudeError: (error: unknown) => ClassifiedClaudeSetupError;
-  findClaudeExecutable?: () => string;
+  findClaudeExecutable?: () => string | Promise<string>;
   env?: Record<string, string | undefined>;
   platform?: NodeJS.Platform;
   homedir?: () => string;
@@ -86,7 +90,7 @@ function effectiveUvxEnv(options: WorkerDependencyPreflightOptions): Record<stri
   const additions = getUvxBinDirs({
     homedir,
     isFile,
-    override: env.CLAUDE_MEM_CHROMA_UVX_PATH,
+    override: options.settings.CLAUDE_MEM_CHROMA_UVX_PATH,
     platform,
   }).filter(dir => {
     if (!pathExists(dir)) return false;
@@ -142,7 +146,7 @@ function resolveUvxCommand(options: WorkerDependencyPreflightOptions): string {
 
   const isFile = options.isFile ?? defaultIsFile;
   const env = effectiveUvxEnv(options);
-  const override = env.CLAUDE_MEM_CHROMA_UVX_PATH;
+  const override = options.settings.CLAUDE_MEM_CHROMA_UVX_PATH;
   if (override && isFile(override)) {
     return override;
   }
@@ -158,15 +162,19 @@ function resolveUvxCommand(options: WorkerDependencyPreflightOptions): string {
   return 'uvx.exe';
 }
 
-export function runWorkerDependencyPreflight(options: WorkerDependencyPreflightOptions): DependencyHealthSnapshot {
+export async function runWorkerDependencyPreflight(options: WorkerDependencyPreflightOptions): Promise<DependencyHealthSnapshot> {
   const provider = options.settings.CLAUDE_MEM_PROVIDER || 'claude';
   const chromaEnabled = options.settings.CLAUDE_MEM_CHROMA_ENABLED !== 'false';
 
-  if (provider === 'claude') {
+  // A provider mapped per source can need the Claude CLI even when the global one does not.
+  const needsClaudeCli = provider === 'claude' || providersMappedBySource(options.settings.CLAUDE_MEM_PROVIDER_BY_SOURCE).includes('claude');
+
+  if (needsClaudeCli) {
     const findClaudeExecutable = options.findClaudeExecutable ?? (() => defaultFindClaudeExecutable('WORKER'));
     try {
-      findClaudeExecutable();
+      await findClaudeExecutable();
       clearDependencyStatus('claude_cli');
+      clearClaudeCliSelfHealAttempts();
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
       const classified = options.classifyClaudeError(error);

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import {
   AgentEventsRepository,
@@ -10,6 +10,9 @@ import {
   ensureServerStorageSchema
 } from '../../../src/storage/sqlite/index.js';
 import { parseJsonArray, parseJsonObject } from '../../../src/storage/sqlite/serde.js';
+import { SettingsDefaultsManager } from '../../../src/shared/SettingsDefaultsManager.js';
+import { _resetRedactionConfigCache } from '../../../src/utils/redaction.js';
+import { logger } from '../../../src/utils/logger.js';
 
 interface TableNameRow {
   name: string;
@@ -37,6 +40,55 @@ describe('server-owned sqlite storage boundary', () => {
       for (const table of SERVER_OWNED_TABLES) {
         expect(tables).toContain(table);
       }
+    });
+  });
+
+  it('redacts secrets in an event payload before storing it while redaction is on (#2616)', () => {
+    const openAiKey = 'sk-ABCDEFGHIJ1234567890abcdef';
+    const loadSpy = spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(() => ({
+      ...SettingsDefaultsManager.getAllDefaults(),
+      CLAUDE_MEM_REDACT_ENABLED: 'true',
+    }));
+    _resetRedactionConfigCache();
+    try {
+      withDb(db => {
+        const project = new ProjectsRepository(db).create({ name: 'Redacted', rootPath: '/tmp/redacted' });
+        const event = new AgentEventsRepository(db).create({
+          projectId: project.id,
+          sourceType: 'hook',
+          eventType: 'tool_use',
+          payload: { tool_input: { command: `curl -H "Authorization: Bearer ${openAiKey}"` } },
+          occurredAtEpoch: Date.now()
+        });
+        const stored = db.prepare('SELECT payload FROM agent_events WHERE id = ?').get(event.id) as { payload: string };
+        expect(stored.payload).not.toContain(openAiKey);
+        expect(JSON.parse(stored.payload).tool_input.command).toBe(`curl -H "Authorization: Bearer <redacted type='openai_key'/>"`);
+      });
+    } finally {
+      loadSpy.mockRestore();
+      _resetRedactionConfigCache();
+    }
+  });
+
+  it('stores no <private> sections from a raw event payload or session metadata', () => {
+    withDb(db => {
+      const project = new ProjectsRepository(db).create({ name: 'Private', rootPath: '/tmp/private' });
+      const session = new ServerSessionsRepository(db).create({
+        projectId: project.id,
+        metadata: { prompt: 'hello <private>session-secret</private>' },
+      });
+      const event = new AgentEventsRepository(db).create({
+        projectId: project.id,
+        sourceType: 'hook',
+        eventType: 'tool_use',
+        payload: { tool_input: { edits: [{ newText: 'x <private>confidential text</private>' }] } },
+        occurredAtEpoch: Date.now(),
+      });
+      const storedEvent = db.prepare('SELECT payload FROM agent_events WHERE id = ?').get(event.id) as { payload: string };
+      expect(storedEvent.payload).not.toContain('confidential text');
+      expect(JSON.parse(storedEvent.payload).tool_input.edits[0].newText).toBe('x');
+      const storedSession = db.prepare('SELECT metadata FROM server_sessions WHERE id = ?').get(session.id) as { metadata: string };
+      expect(storedSession.metadata).not.toContain('session-secret');
     });
   });
 
@@ -251,6 +303,184 @@ describe('server-owned sqlite storage boundary', () => {
 
       expect(memories.search(project.id, '1778147273-16934').map(item => item.id)).toContain(memory.id);
       expect(memories.search(project.id, 'server-beta').map(item => item.id)).toContain(memory.id);
+    });
+  });
+
+  it('denormalizes platform_source onto memory items from their session', () => {
+    withDb(db => {
+      const projects = new ProjectsRepository(db);
+      const sessions = new ServerSessionsRepository(db);
+      const memories = new MemoryItemsRepository(db);
+      const project = projects.create({ name: 'Provenance' });
+
+      const cursorSession = sessions.create({ projectId: project.id, platformSource: 'cursor' });
+      const inherited = memories.create({
+        projectId: project.id,
+        serverSessionId: cursorSession.id,
+        kind: 'observation',
+        type: 'note',
+        title: 'inherited platform',
+      });
+      expect(inherited.platformSource).toBe('cursor');
+
+      const explicit = memories.create({
+        projectId: project.id,
+        serverSessionId: cursorSession.id,
+        platformSource: 'muse',
+        kind: 'observation',
+        type: 'note',
+        title: 'explicit platform wins',
+      });
+      expect(explicit.platformSource).toBe('muse');
+
+      const noSession = memories.create({
+        projectId: project.id,
+        kind: 'manual',
+        type: 'note',
+        title: 'no session',
+      });
+      expect(noSession.platformSource).toBeNull();
+
+      // search results carry provenance without a JOIN
+      const found = memories.search(project.id, 'inherited');
+      expect(found[0].platformSource).toBe('cursor');
+    });
+  });
+
+  it('backfills platform_source on existing memory items from their sessions', () => {
+    // Use a temp file (not :memory:) so a fresh connection re-runs the schema
+    // ensure — mirroring a worker restart after upgrade.
+    const fs = require('fs');
+    const os = require('os');
+    const path = require('path');
+    const tmp = path.join(os.tmpdir(), `prov-backfill-${Date.now()}.db`);
+    try {
+      {
+        const db = new Database(tmp);
+        ensureServerStorageSchema(db);
+        const projects = new ProjectsRepository(db);
+        const sessions = new ServerSessionsRepository(db);
+        const project = projects.create({ name: 'Backfill' });
+        const session = sessions.create({ projectId: project.id, platformSource: 'codex' });
+        // simulate a pre-provenance row: drop the column and index, insert, as an old DB would have
+        db.run('DROP INDEX IF EXISTS idx_memory_items_platform_source');
+        db.run('ALTER TABLE memory_items DROP COLUMN platform_source');
+        db.prepare(`INSERT INTO memory_items
+          (id, project_id, server_session_id, kind, type, title, facts, concepts, files_read, files_modified, metadata, created_at_epoch, updated_at_epoch)
+          VALUES ('backfill-item-1', ?, ?, 'observation', 'note', 'old', '[]', '[]', '[]', '[]', '{}', 1, 1)`)
+          .run(project.id, session.id);
+        db.close();
+      }
+      {
+        // fresh process: schema ensure runs the migration
+        const db = new Database(tmp);
+        ensureServerStorageSchema(db);
+        const row = db.prepare('SELECT platform_source FROM memory_items WHERE id = ?')
+          .get('backfill-item-1') as { platform_source: string | null };
+        expect(row.platform_source).toBe('codex');
+        db.close();
+      }
+    } finally {
+      fs.unlinkSync(tmp);
+    }
+  });
+
+  it('fills platform_source NULLs left by an interrupted upgrade (column present, backfill not run)', () => {
+    withDb(db => {
+      ensureServerStorageSchema(db);
+      const project = new ProjectsRepository(db).create({ name: 'Interrupted' });
+      const session = new ServerSessionsRepository(db).create({ projectId: project.id, platformSource: 'cursor' });
+      // The ALTER landed but the process died before the UPDATE: the column
+      // exists and session items still hold NULL.
+      db.prepare(`INSERT INTO memory_items
+        (id, project_id, server_session_id, platform_source, kind, type, title, facts, concepts, files_read, files_modified, metadata, created_at_epoch, updated_at_epoch)
+        VALUES ('interrupted-1', ?, ?, NULL, 'observation', 'note', 'old', '[]', '[]', '[]', '[]', '{}', 1, 1)`)
+        .run(project.id, session.id);
+      db.prepare(`INSERT INTO memory_items
+        (id, project_id, server_session_id, platform_source, kind, type, title, facts, concepts, files_read, files_modified, metadata, created_at_epoch, updated_at_epoch)
+        VALUES ('sessionless-1', ?, NULL, NULL, 'manual', 'note', 'manual', '[]', '[]', '[]', '[]', '{}', 1, 1)`)
+        .run(project.id);
+
+      // A fresh ensure on the same connection object is skipped by the cache,
+      // so serialize and reload to mirror the next worker start.
+      const restarted = Database.deserialize(db.serialize());
+      try {
+        ensureServerStorageSchema(restarted);
+        const platformOf = (id: string) => (restarted.prepare('SELECT platform_source FROM memory_items WHERE id = ?')
+          .get(id) as { platform_source: string | null }).platform_source;
+        expect(platformOf('interrupted-1')).toBe('cursor');
+        expect(platformOf('sessionless-1')).toBeNull();
+      } finally {
+        restarted.close();
+      }
+    });
+  });
+
+  it('still strips <private> content from memory items that carry provenance', () => {
+    withDb(db => {
+      const project = new ProjectsRepository(db).create({ name: 'Private provenance' });
+      const session = new ServerSessionsRepository(db).create({ projectId: project.id, platformSource: 'codex' });
+      const memories = new MemoryItemsRepository(db);
+      const item = memories.create({
+        projectId: project.id,
+        serverSessionId: session.id,
+        kind: 'observation',
+        type: 'note',
+        title: 'Visible title',
+        narrative: 'public <private>provenance-secret</private> text',
+      });
+      expect(item.platformSource).toBe('codex');
+      expect(item.narrative).not.toContain('provenance-secret');
+      expect(memories.search(project.id, 'provenance-secret')).toHaveLength(0);
+    });
+  });
+
+  it('reads an unreadable payload as an empty object instead of failing the whole read', () => {
+    withDb(db => {
+      const project = new ProjectsRepository(db).create({ name: 'Corrupt payload' });
+      const events = new AgentEventsRepository(db);
+      const good = events.create({
+        projectId: project.id,
+        sourceType: 'hook',
+        eventType: 'tool_use',
+        payload: { tool: 'Bash' },
+        occurredAtEpoch: Date.now(),
+      });
+      // A row another process (or a half-written one) can leave behind: the
+      // read paths are on the server's request path, so one bad row must not
+      // throw out of getById/listByProject.
+      db.prepare('UPDATE agent_events SET payload = ? WHERE id = ?').run('{not json', good.id);
+
+      expect(events.getById(good.id)?.payload).toEqual({});
+      expect(events.listByProject(project.id).map(event => event.payload)).toEqual([{}]);
+    });
+  });
+
+  it('never logs a fragment of an unreadable payload', () => {
+    withDb(db => {
+      const project = new ProjectsRepository(db).create({ name: 'Corrupt payload log' });
+      const events = new AgentEventsRepository(db);
+      const event = events.create({
+        projectId: project.id,
+        sourceType: 'hook',
+        eventType: 'tool_use',
+        payload: { tool: 'Bash' },
+        occurredAtEpoch: Date.now(),
+      });
+      // JSC quotes the unexpected token in its message:
+      // `JSON Parse error: Unexpected identifier "secretmarker"`.
+      db.prepare('UPDATE agent_events SET payload = ? WHERE id = ?').run('{"a": secretmarker}', event.id);
+      const warnSpy = spyOn(logger, 'warn');
+      try {
+        expect(events.getById(event.id)?.payload).toEqual({});
+        expect(warnSpy).toHaveBeenCalled();
+        for (const call of warnSpy.mock.calls) {
+          const logged = call.map(arg => (arg instanceof Error ? `${arg.message} ${arg.stack}` : JSON.stringify(arg))).join(' ');
+          expect(logged).not.toContain('secretmarker');
+        }
+      } finally {
+        warnSpy.mockRestore();
+      }
     });
   });
 });

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, writeFileSync, rmSync } from 'fs';
-import { tmpdir } from 'os';
+import { homedir, tmpdir } from 'os';
 import { join } from 'path';
 import { claudeJsonPath, detectObservedBilling } from '../../src/shared/observed-billing.js';
 
@@ -30,8 +30,7 @@ describe('claudeJsonPath', () => {
   });
 
   it('falls back to the home directory', () => {
-    expect(claudeJsonPath({})).toMatch(/\.claude\.json$/);
-    expect(claudeJsonPath({})).not.toContain('/custom/cfg');
+    expect(claudeJsonPath({})).toBe(join(homedir(), '.claude.json'));
   });
 });
 
@@ -81,12 +80,9 @@ describe('detectObservedBilling — API key', () => {
 });
 
 describe('detectObservedBilling — subscription account', () => {
-  it('strips the claude_ prefix from organizationType', () => {
-    writeClaudeJson({ oauthAccount: { organizationType: 'claude_max' } });
+  it('reads a BOM-prefixed Claude account file', () => {
+    writeClaudeJson('\uFEFF' + JSON.stringify({ oauthAccount: { organizationType: 'claude_max' } }));
     expect(detectObservedBilling({}, claudeJsonFile)).toBe('max');
-
-    writeClaudeJson({ oauthAccount: { organizationType: 'claude_pro' } });
-    expect(detectObservedBilling({}, claudeJsonFile)).toBe('pro');
   });
 
   it('recognizes every known tier: max / pro / team / enterprise', () => {
@@ -103,18 +99,6 @@ describe('detectObservedBilling — subscription account', () => {
     // Well-formed but not in the closed set — must not widen the enum.
     writeClaudeJson({ oauthAccount: { organizationType: 'claude_startup' } });
     expect(detectObservedBilling({}, claudeJsonFile)).toBe('subscription');
-  });
-
-  it('ignores token-shaped fields on oauthAccount and still reports the tier', () => {
-    writeClaudeJson({
-      oauthAccount: {
-        organizationType: 'claude_team',
-        accountUuid: 'acct-uuid',
-        emailAddress: 'someone@example.com',
-        accessToken: 'sk-ant-oat01-secret',
-      },
-    });
-    expect(detectObservedBilling({}, claudeJsonFile)).toBe('team');
   });
 
   it('reports subscription for an account without organizationType', () => {

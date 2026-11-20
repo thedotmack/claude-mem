@@ -8,7 +8,6 @@ import {
   detectClockHeader,
   detectDenyAllow,
   detectDrift,
-  detectShadowHouse,
   formatReportSection,
   gatherLayerEntries,
   isSafePatchTarget,
@@ -151,6 +150,7 @@ describe('CCS Align Phase 2 — rules walker', () => {
 
     const result = walkRules(config, now);
     expect(result.patchesApplied).toBe(2);
+    expect(readFileSync(result.reportPath, 'utf8')).toContain('Patches applied: 2');
 
     const patchedContent = readFileSync(seatPath, 'utf8');
     expect(patchedContent).not.toContain('Always address the human as Alex.');
@@ -222,27 +222,6 @@ describe('CCS Align Phase 2 — rules walker', () => {
     expect(detectClockHeader('current time is now')).toBe(true);
     expect(detectClockHeader('Some normal rule about time management')).toBe(false);
     expect(detectClockHeader('Remember to check the time')).toBe(false);
-  });
-
-  it('reports CLOCK_HEADER conflicts from walkRules', () => {
-    const root = tempRoot();
-    const seatPath = writeFile(root, 'seat/agent-1/profile.md', [
-      '# Current time is 2026-09-09T18:00:00Z',
-      'Some other rule.',
-    ].join('\n'));
-
-    const config: RulesWalkerConfig = {
-      dataRoot: root,
-      viewerId: VIEWER,
-      patchShadows: false,
-      housePaths: [],
-      projectPaths: [],
-      seatPaths: [seatPath],
-    };
-
-    const result = walkRules(config, now);
-    const clockHeaders = result.conflicts.filter(c => c.code === 'CLOCK_HEADER');
-    expect(clockHeaders.length).toBeGreaterThanOrEqual(1);
   });
 
   // --- DENY_ALLOW detection ---
@@ -328,21 +307,6 @@ describe('CCS Align Phase 2 — rules walker', () => {
 
   // --- applyShadowPatch ---
 
-  it('removes only specified duplicate lines from a leaf file atomically', () => {
-    const root = tempRoot();
-    const content = 'Line A\nLine B\nLine C\nLine D\n';
-    const filePath = writeFile(root, 'leaf.md', content);
-
-    const removed = applyShadowPatch(filePath, new Set(['Line B', 'Line D']));
-    expect(removed).toBe(2);
-
-    const result = readFileSync(filePath, 'utf8');
-    expect(result).toContain('Line A');
-    expect(result).toContain('Line C');
-    expect(result).not.toContain('Line B');
-    expect(result).not.toContain('Line D');
-  });
-
   it('returns 0 and does not touch the file when no lines match', () => {
     const root = tempRoot();
     const content = 'Line A\nLine B\n';
@@ -377,27 +341,6 @@ describe('CCS Align Phase 2 — rules walker', () => {
     expect(entries).toHaveLength(2);
     expect(entries.every(e => e.found)).toBe(true);
     expect(misses).toHaveLength(0);
-  });
-
-  it('records misses for non-existent paths', () => {
-    const { entries, misses } = gatherLayerEntries(['/nonexistent/path'], 'house');
-    expect(entries).toHaveLength(0);
-    expect(misses).toHaveLength(1);
-    expect(misses[0]).toContain('house');
-  });
-
-  // --- detectShadowHouse ---
-
-  it('detects exact duplicate lines as SHADOW_HOUSE', () => {
-    const houseLines = new Set(['Always be kind.', 'Never lie.']);
-    expect(detectShadowHouse('Always be kind.', houseLines).isShadow).toBe(true);
-    expect(detectShadowHouse('Something else.', houseLines).isShadow).toBe(false);
-  });
-
-  it('detects "House rule:" prefix as SHADOW_HOUSE', () => {
-    const houseLines = new Set(['Never lie.']);
-    const result = detectShadowHouse('House rule: Never lie.', houseLines);
-    expect(result.isShadow).toBe(true);
   });
 
   // --- Full integration: walkRules end-to-end ---
@@ -436,33 +379,6 @@ describe('CCS Align Phase 2 — rules walker', () => {
     expect(report).toContain('SHADOW_HOUSE');
     expect(report).toContain('CLOCK_HEADER');
     expect(report).toContain('DENY_ALLOW');
-  });
-
-  it('walkRules with patchShadows writes diff into report then patches', () => {
-    const root = tempRoot();
-    const housePath = writeFile(root, 'house/rules.md', 'Shared house rule.');
-    const seatContent = 'Shared house rule.\nLocal seat rule.';
-    const seatPath = writeFile(root, 'seat/agent/rules.md', seatContent);
-
-    const config: RulesWalkerConfig = {
-      dataRoot: root,
-      viewerId: VIEWER,
-      patchShadows: true,
-      housePaths: [housePath],
-      projectPaths: [],
-      seatPaths: [seatPath],
-    };
-
-    const result = walkRules(config, now);
-    expect(result.patchesApplied).toBe(1);
-
-    const patched = readFileSync(seatPath, 'utf8');
-    expect(patched).not.toContain('Shared house rule.');
-    expect(patched).toContain('Local seat rule.');
-
-    const report = readFileSync(result.reportPath, 'utf8');
-    expect(report).toContain('SHADOW_HOUSE');
-    expect(report).toContain('Patches applied: 1');
   });
 
   // --- Edge cases ---

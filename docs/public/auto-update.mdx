@@ -1,0 +1,261 @@
+---
+title: "Auto-update"
+description: "claude-mem updates itself to the release its owner promotes, once a day, while you are away"
+---
+
+# Auto-update
+
+claude-mem keeps itself up to date. Once a day it checks which release the
+claude-mem owner has promoted, and installs it while you are not using it.
+It is on by default.
+
+## What it does, and when
+
+- **One check a day.** The worker looks about 5 minutes after it starts, then
+  every hour. It reads the promoted release from the network only when a day
+  has passed since its last check, so a restart does not cause an extra
+  check. The one exception is an update that waited for you to be away: just
+  before it installs, claude-mem reads the promoted release again, so a
+  release the owner pulled back in the meantime is never installed.
+- **Only promoted releases.** claude-mem's updater installs only the version
+  the owner names in `releases/promoted-release.json` on claude-mem's `main`
+  branch. Only your `~/.claude-mem/settings.json` can point it at another file
+  (`CLAUDE_MEM_AUTO_UPDATE_PROMOTED_RELEASE_URL`, for testing). An environment
+  variable of that name is ignored, so a process that starts the worker cannot
+  choose what it installs. A newer release can still reach you before the
+  owner promotes it in two ways: while Claude Code's own background update is
+  on for claude-mem's marketplace (see
+  [below](#claude-codes-auto-update-toggle)), and when you update by hand.
+- **Only fully published releases.** npm must show the version was published
+  by claude-mem's release workflow (it carries the workflow's commit and its
+  SLSA provenance). A release whose publish failed is skipped.
+- **Only forward.** It never installs a version older than yours. A bad
+  release is fixed by promoting a newer one.
+- **Only while you are away.** It waits until nothing has happened for 18
+  minutes: no prompt, no tool use, no queued work, no long job running. If you
+  are rarely away that long, it installs anyway after a full day of busy time.
+- **The same installer you would run.** It runs
+  `npx claude-mem@<version> update` outside the worker, so a worker restart
+  cannot cut it off. The exact command is
+  `npx --yes --no-workspaces --package=claude-mem@<version> claude-mem update`,
+  run from a new folder claude-mem makes for each run in
+  `~/.claude-mem/auto-update-installer/`. The folder holds only a small
+  `package.json`, and only you can open it. That way npx installs the
+  published release: it never runs a copy of claude-mem it finds in a folder
+  above, and takes no npm settings from one. Your own npm settings apply as
+  when you run the command yourself: your `~/.npmrc` and npm's global npmrc,
+  with any proxy or certificate set there.
+
+## Turn it off
+
+Add this to `~/.claude-mem/settings.json`:
+
+```json
+{
+  "CLAUDE_MEM_AUTO_UPDATE": "false"
+}
+```
+
+If your `settings.json` keeps claude-mem's `CLAUDE_MEM_*` keys inside an
+`env` object, put it there instead. In such a file a `CLAUDE_MEM_*` key at the
+top level is not read:
+
+```json
+{
+  "env": {
+    "CLAUDE_MEM_AUTO_UPDATE": "false"
+  }
+}
+```
+
+Or set `CLAUDE_MEM_AUTO_UPDATE=false` in the environment the worker starts
+with. Off in either place turns it off: `CLAUDE_MEM_AUTO_UPDATE=true` in the
+environment never turns on an updater your `settings.json` saves as off. Only
+`true` turns it on, in any case (`true`, `True` and `TRUE` all count), so any
+other value, such as `0` or `off`, in either place leaves it off. The worker
+reads it again every hour, so no restart is needed.
+
+This is the reliable switch, on every machine and every host. If you manage a
+fleet, set it in each machine's `~/.claude-mem/settings.json` or environment.
+Claude Code switches set through MDM profiles, the Windows registry or
+server-managed settings are not read (see below).
+
+With it off, claude-mem leaves Claude Code's own update setting for its
+marketplace as it is. Only claude-mem's worker ever turns that setting off,
+and only while claude-mem's own updater is on and has shown it works (see
+[below](#claude-codes-auto-update-toggle)).
+
+## Claude Code's switches
+
+claude-mem also stays off when one of Claude Code's "no background updates"
+switches is on:
+
+| Variable | Turns auto-update off when it is |
+|---|---|
+| `DISABLE_AUTOUPDATER` | set to anything but empty, `0` or `false` |
+| `DISABLE_UPDATES` | set to anything but empty, `0` or `false` |
+| `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` | set to any non-empty value, even `0` or `false` |
+
+`FORCE_AUTOUPDATE_PLUGINS=1` brings it back: while it is `1`, none of the three
+turns auto-update off, as with Claude Code's own plugin updates. It forces
+nothing if it is set to any other value anywhere claude-mem reads it, for
+example `0` in a managed settings file.
+
+claude-mem reads these switches from:
+
+- the environment the worker runs in;
+- the `env` block of Claude Code's user settings, `~/.claude/settings.json`
+  (in `CLAUDE_CONFIG_DIR` when you set it);
+- the `env` block of Claude Code's managed settings files:
+  `managed-settings.json` and `managed-settings.d/*.json` in
+  `/Library/Application Support/ClaudeCode/` on macOS, `/etc/claude-code/` on
+  Linux and WSL, and `C:\Program Files\ClaudeCode\` on Windows.
+
+It does not read switches set only through MDM configuration profiles, the
+Windows registry or server-managed settings, nor a project's
+`.claude/settings.json`. If you set Claude Code's switches that way, also set
+`CLAUDE_MEM_AUTO_UPDATE=false`.
+
+## When it stays off on its own
+
+Auto-update does nothing, with no setting needed, when:
+
+- **claude-mem runs the server runtime** (`CLAUDE_MEM_RUNTIME` is not
+  `worker`). Servers are rebuilt to change versions.
+- **claude-mem is turned off or uninstalled in Claude Code.** An update would
+  turn it back on, or install it again.
+- **Claude Code's own auto-update is on for claude-mem's marketplace** in a
+  settings file (`extraKnownMarketplaces.thedotmack.autoUpdate` is `true`). Two
+  updaters would race, so claude-mem's stays off.
+- **You added claude-mem's marketplace from another source**: a fork, a branch,
+  a git URL or a local folder. An update would replace your marketplace entry.
+- **It runs in one of claude-mem's Docker images.** They set
+  `CLAUDE_MEM_AUTO_UPDATE=false`, or run the server runtime, because a new
+  version means a new image.
+
+It also stays off when you run the worker yourself
+(`CLAUDE_MEM_WORKER_AUTOSTART=false`), when the worker is on another machine
+(`CLAUDE_MEM_WORKER_URL` is set), and when claude-mem runs from a source
+checkout.
+
+Run `npx claude-mem doctor` to see whether it is on, and why not.
+
+## When an update fails
+
+claude-mem leaves you on a working version:
+
+- **Nothing changed yet** (for example, the download failed): your version
+  keeps running. The next daily check tries again.
+- **Some files changed:** claude-mem marks the new version's folder so nothing
+  uses it, reinstalls your previous version with that version's own installer,
+  and checks that the worker starts on it. A version that failed this way is
+  not tried again. The next release the owner promotes is.
+- **The database was already upgraded:** if the new version moved the database
+  to a newer format, your previous version cannot open it, so it is not put
+  back. claude-mem keeps the new version and waits for its worker to start.
+
+You hear about a failed update in a session only when your install may not
+work and you need to act. Your next Claude Code session then shows one notice
+with what to run, and when:
+
+- **The previous version could not be put back.** The notice names the command
+  claude-mem chose:
+
+  ```
+  claude-mem may not work: the automatic update to 15.13.0 failed. Fix: run `npx claude-mem@15.12.0 update`, then restart Claude Code.
+  ```
+
+  When the installer it ran is still running, the fix waits for it:
+
+  ```
+  claude-mem may not work: the automatic update to 15.13.0 failed. Fix: once the update that is still running has finished, run `npx claude-mem@15.12.0 update`, then restart Claude Code.
+  ```
+
+  When the new version failed on its own and your previous version cannot be
+  put back (the database was upgraded, or npm does not show that version fully
+  published), only a newer release can fix it:
+
+  ```
+  claude-mem may not work: the automatic update to 15.13.0 failed. Fix: once a claude-mem release newer than 15.13.0 is out, run `npx claude-mem@latest update`, then restart Claude Code.
+  ```
+
+- **The update was cut off** (for example by a reboot), and quick file checks
+  find the install half-written: the folder Claude Code loads claude-mem from
+  is missing, has no `node_modules`, or is marked as replaced (`.orphaned_at`),
+  or claude-mem's marketplace copy has no `plugin/scripts/worker-service.cjs`.
+  The fix is the new version's own installer, the release the owner promoted:
+
+  ```
+  claude-mem may not work: the automatic update to 15.13.0 did not finish (the folder Claude Code loads claude-mem from (/Users/you/.claude/plugins/cache/thedotmack/claude-mem/15.13.0) has no node_modules). Fix: run `npx claude-mem@15.13.0 update`, then restart Claude Code.
+  ```
+
+  An update cut off on an install that looks whole shows nothing: the worker
+  records how it ended at its next check.
+
+The notice is gone once a claude-mem worker finishes starting on the version
+your install uses, however you fixed it: the command, an update from Claude
+Code's `/plugin` screen, `npx claude-mem repair`, or the previous version's
+worker coming back on its own. Nothing is marked fixed while an update is
+still running.
+
+Every other failure shows only in `npx claude-mem doctor` and the logs. A
+failed update that left your previous version running is information, not a
+warning: that version still works, and the next release the owner promotes is
+tried.
+
+Each attempt also keeps its own log in `~/.claude-mem/logs/`, named
+`auto-update-<number>.log`, where the number is the time it started.
+
+## What doctor shows
+
+The **Auto-update** row of `npx claude-mem doctor` shows:
+
+- **On or off, and why, as the worker last decided it**, with the time. Doctor
+  runs in your terminal, whose environment can differ from the worker's, so it
+  shows the worker's own decision. Until the worker has recorded one, doctor
+  works it out itself and says so.
+- The installed version, the promoted version last seen, and the last check.
+- The last update, with the stage where it failed, and whether a worker has
+  started on a working version since. An update in progress, cut off, or never
+  started.
+- Claude Code's own background update of claude-mem's marketplace, as Claude
+  Code reads it now (a settings file's `extraKnownMarketplaces` entry first,
+  then `known_marketplaces.json`), and what claude-mem last did with it.
+- With no state file yet, that no auto-update check has run on this machine.
+  An install older than the first release with auto-update needs one
+  `npx claude-mem update` by hand.
+
+It warns only when you need to act: the same two cases as the session notice,
+with the same fix line, and a last check that failed while the updater is on.
+
+## Claude Code's auto-update toggle
+
+Claude Code has its own background update for plugin marketplaces: the
+**Enable auto-update** toggle under `/plugin` → Marketplaces. For claude-mem's
+marketplace it installs whatever is on claude-mem's `main` branch, at a random
+time, before the owner promotes it. It also writes the same folders as
+claude-mem's updater.
+
+So claude-mem's worker turns Claude Code's update off for its marketplace,
+once claude-mem's own updater has shown it works on that machine: a check has
+read the promoted file and npm, and `npx` is on the worker's PATH. Until then
+Claude Code's update stays on, so the install always has an updater, also on a
+network that blocks `raw.githubusercontent.com` or `registry.npmjs.org`.
+`npx claude-mem doctor` says which.
+
+The installer never turns it off. `npx claude-mem install` and
+`npx claude-mem update` register the marketplace with Claude Code's update on
+when it is new, and keep the setting it has when it is already registered.
+
+If you turn the toggle on again, what happens depends on where Claude Code
+saves it:
+
+- **Only in Claude Code's `known_marketplaces.json`** (claude-mem was installed
+  with `npx claude-mem install`): claude-mem turns it off again at its next
+  hourly check.
+- **Also in a settings file under `extraKnownMarketplaces`** (the marketplace
+  was added with `claude plugin marketplace add`, which declares it in your
+  user settings): claude-mem leaves it on, and turns its own updater off.
+
+To use Claude Code's update instead of claude-mem's, set
+`CLAUDE_MEM_AUTO_UPDATE` to `false` first, then turn the toggle on.

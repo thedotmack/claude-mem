@@ -1,10 +1,30 @@
+import { createHash } from 'crypto';
 import { describe, it, expect } from 'bun:test';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 
+const AGENT_COST_REPORT_DIRS = [
+  'plugin/skills/agent-cost-report',
+  'claude-mem-cursor/skills/agent-cost-report',
+  'claude-mem-grok-bot/skills/agent-cost-report',
+  'cowork/skills/agent-cost-report',
+  'openclaw/skills/agent-cost-report',
+].map((path) => join(import.meta.dir, '../../', path));
+
 const SKILLS_DIR = join(import.meta.dir, '../../plugin/skills');
 
 describe('skill docs placement (#1651)', () => {
+  it('mem-search metadata can be read by a YAML parser', () => {
+    const content = readFileSync(join(SKILLS_DIR, 'mem-search/SKILL.md'), 'utf-8');
+    const frontmatter = content.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+    expect(frontmatter).not.toBeNull();
+
+    const metadata = Bun.YAML.parse(frontmatter![1]) as { name: string; description: string };
+    expect(metadata.name).toBe('mem-search');
+    expect(typeof metadata.description).toBe('string');
+    expect(metadata.description).toContain('search, timeline, then selected get_observations');
+  });
+
   it('smart-explore/SKILL.md contains Language Support section', () => {
     const path = join(SKILLS_DIR, 'smart-explore/SKILL.md');
     expect(existsSync(path)).toBe(true);
@@ -34,16 +54,12 @@ describe('skill docs placement (#1651)', () => {
       expect(content).toContain(language);
     }
 
-    expect(content).toContain('Files with unrecognized extensions are parsed as plain text');
-  });
-
-  it('mem-search/SKILL.md does NOT contain tree-sitter or language grammar docs', () => {
-    const path = join(SKILLS_DIR, 'mem-search/SKILL.md');
-    expect(existsSync(path)).toBe(true);
-    const content = readFileSync(path, 'utf-8');
-
-    expect(content).not.toContain('tree-sitter');
-    expect(content).not.toContain('Bundled Languages');
+    expect(content).toContain('Files with unrecognized extensions do not produce structured symbols');
+    expect(content).toContain('`smart_search` is not a general file-content');
+    expect(content).toContain('Use `rg` or another text-search tool');
+    expect(content).not.toContain('Files with unrecognized extensions are parsed as plain text');
+    expect(content).toContain('Custom tree-sitter grammars cannot currently be registered through `.claude-mem.json`');
+    expect(content).not.toContain('### Adding Custom Grammars');
   });
 
   it('cloud-sync/SKILL.md requires the authenticated Hub probe for success', () => {
@@ -59,13 +75,31 @@ describe('skill docs placement (#1651)', () => {
     expect(content).not.toContain('/api/pro/sync/status');
   });
 
-  it('cloud sync copy keeps the launch boundary and 4,000,000-byte request contract accurate', () => {
-    const docs = readFileSync(join(import.meta.dir, '../../docs/public/cloud-sync.mdx'), 'utf-8');
-    const source = readFileSync(join(import.meta.dir, '../../src/services/sync/CloudSync.ts'), 'utf-8');
+  it('agent-cost-report uses a spec-compliant name in every bundled copy', () => {
+    const names = AGENT_COST_REPORT_DIRS.map((dir) => {
+      const content = readFileSync(join(dir, 'SKILL.md'), 'utf-8');
+      const frontmatter = content.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+      expect(frontmatter).not.toBeNull();
 
-    expect(docs).toContain('up to 500 ops / 4,000,000 encoded');
-    expect(docs).not.toContain('500 ops / 2&nbsp;MB');
-    expect(source).toContain('no historical/pre-launch backfill');
-    expect(source).not.toContain('This IS backfill');
+      const metadata = Bun.YAML.parse(frontmatter![1]) as { name: string };
+      expect(metadata.name.length).toBeGreaterThan(0);
+      expect(metadata.name.length).toBeLessThanOrEqual(64);
+      expect(metadata.name).toMatch(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
+      expect(metadata.name).toBe('agent-cost-report');
+      return metadata.name;
+    });
+
+    expect(new Set(names).size).toBe(1);
   });
+
+  it('agent-cost-report SKILL.md checksum is current in every bundled copy', () => {
+    for (const dir of AGENT_COST_REPORT_DIRS) {
+      const skill = readFileSync(join(dir, 'SKILL.md'));
+      const checksums = readFileSync(join(dir, 'CHECKSUMS.txt'), 'utf-8');
+      const skillChecksum = checksums.match(/^([a-f0-9]{64})  SKILL\.md$/m);
+      expect(skillChecksum).not.toBeNull();
+      expect(createHash('sha256').update(skill).digest('hex')).toBe(skillChecksum![1]);
+    }
+  });
+
 });

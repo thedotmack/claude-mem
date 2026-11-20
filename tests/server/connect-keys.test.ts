@@ -7,6 +7,7 @@
 // against the API (it lands in the same postgres api_keys store readAuth checks).
 
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
+import http from 'node:http';
 import pg from 'pg';
 import { randomUUID } from 'crypto';
 import { Server } from '../../src/services/server/Server.js';
@@ -38,6 +39,8 @@ describe('POST /v1/keys + GET /v1/connect', () => {
   let port: number;
   let writeKey: string;
   let readKey: string;
+  let teamId: string;
+  let projectId: string;
   let spies: ReturnType<typeof spyOn>[] = [];
 
   beforeEach(async () => {
@@ -52,6 +55,8 @@ describe('POST /v1/keys + GET /v1/connect', () => {
     storage = createPostgresStorageRepositories(client);
     const team = await storage.teams.create({ name: 'team' });
     const project = await storage.projects.create({ teamId: team.id, name: 'p' });
+    teamId = team.id;
+    projectId = project.id;
 
     const w = newApiKey(); writeKey = w.raw;
     await storage.auth.createApiKey({ keyHash: w.hash, teamId: team.id, projectId: project.id, actorId: 't', scopes: ['memories:read', 'memories:write'] });
@@ -88,6 +93,47 @@ describe('POST /v1/keys + GET /v1/connect', () => {
 
   const url = (p: string) => `http://127.0.0.1:${port}${p}`;
 
+  it('answers health while a new key is being derived', async () => {
+    // Warm authentication so this probe isolates issuance, not the first-key
+    // verifier's own asynchronous derivation.
+    const auth = { Authorization: `Bearer ${writeKey}` };
+    await (await fetch(url('/v1/connect'), { headers: auth })).json();
+    await (await fetch(url('/api/health'))).json();
+
+    const query = pool.query.bind(pool) as (sql: string, values?: unknown[]) => Promise<pg.QueryResult>;
+    let health: Promise<number> | undefined;
+    let healthAnswered = false;
+    let answeredBeforeInsert = false;
+    const observed = spyOn(pool, 'query').mockImplementation((async (sql: string, values?: unknown[]) => {
+      if (/INSERT INTO api_keys/.test(sql)) answeredBeforeInsert = healthAnswered;
+      const result = await query(sql, values);
+      if (!health && /FROM api_keys WHERE id =/.test(sql)) {
+        // The cached authorization row has arrived. Submit another real HTTP
+        // request just as this handler starts deriving its new key.
+        health = fetch(url('/api/health')).then(async response => {
+          await response.json();
+          healthAnswered = true;
+          return response.status;
+        });
+      }
+      return result;
+    }) as typeof pool.query);
+    try {
+      const response = await fetch(url('/v1/keys'), {
+        method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' }, body: '{}',
+      });
+      expect(response.status).toBe(201);
+      const minted = await response.json() as { apiKey: string };
+      expect(await health).toBe(200);
+      expect(answeredBeforeInsert).toBe(true);
+      const recall = await fetch(url('/v1/connect'), { headers: { Authorization: `Bearer ${minted.apiKey}` } });
+      expect(recall.status).toBe(200);
+      await recall.text();
+    } finally {
+      observed.mockRestore();
+    }
+  });
+
   it('mints a read-only key whose connect command targets /v1/mcp', async () => {
     const r = await fetch(url('/v1/keys'), {
       method: 'POST',
@@ -118,11 +164,88 @@ describe('POST /v1/keys + GET /v1/connect', () => {
     expect([401, 403]).toContain(r.status);
   });
 
+  it('a write-only capture key cannot mint access to existing memories', async () => {
+    const captureKey = newApiKey();
+    await storage.auth.createApiKey({
+      keyHash: captureKey.hash, teamId, projectId, actorId: 'capture', scopes: ['memories:write'],
+    });
+    const memory = await storage.observations.create({
+      teamId, projectId, kind: 'manual', content: 'Existing private project memory',
+    });
+    const readRequest = () => ({
+      method: 'POST',
+      headers: { Authorization: `Bearer ${captureKey.raw}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectId, ids: [memory.id] }),
+    });
+    const deniedRead = await fetch(url('/v1/observations/batch'), readRequest());
+    expect(deniedRead.status).toBe(403);
+    await deniedRead.text();
+
+    const countBefore = await client.query('SELECT COUNT(*)::int AS count FROM api_keys');
+    const issued = await fetch(url('/v1/keys'), {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${captureKey.raw}`, 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    const result = await issued.json() as { apiKey?: string };
+    expect(issued.status).toBe(403);
+    expect(result.apiKey).toBeUndefined();
+    expect((await client.query('SELECT COUNT(*)::int AS count FROM api_keys')).rows)
+      .toEqual(countBefore.rows);
+  });
+
+  it('a wildcard key can mint a read-only key in its existing project scope', async () => {
+    const adminKey = newApiKey();
+    await storage.auth.createApiKey({
+      keyHash: adminKey.hash, teamId, projectId, actorId: 'admin', scopes: ['*'],
+    });
+    const response = await fetch(url('/v1/keys'), {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${adminKey.raw}`, 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    expect(response.status).toBe(201);
+    const minted = await response.json() as { id: string; scopes: string[] };
+    expect(minted.scopes).toEqual(['memories:read']);
+    const row = await storage.auth.getApiKeyById(minted.id);
+    expect(row?.projectId).toBe(projectId);
+    expect(row?.teamId).toBe(teamId);
+  });
+
   it('GET /v1/connect returns the command with a placeholder key', async () => {
     const r = await fetch(url('/v1/connect'), { headers: { Authorization: `Bearer ${readKey}` } });
     expect(r.status).toBe(200);
     const body = await r.json() as { connectCommand: string; mcpUrl: string };
     expect(body.mcpUrl).toContain('/v1/mcp');
     expect(body.connectCommand).toContain('<YOUR_API_KEY>');
+  });
+
+  it('refuses a Host header it cannot advertise', async () => {
+    // With CLAUDE_MEM_PUBLIC_URL set the Host header is never used, so clear it for this case.
+    const savedPublicUrl = process.env.CLAUDE_MEM_PUBLIC_URL;
+    delete process.env.CLAUDE_MEM_PUBLIC_URL;
+    try {
+      const response = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+        const req = http.request({
+          host: '127.0.0.1',
+          port,
+          path: '/v1/connect',
+          method: 'GET',
+          headers: { Authorization: `Bearer ${readKey}`, Host: 'evil.example with-space' },
+        }, (res) => {
+          let body = '';
+          res.setEncoding('utf8');
+          res.on('data', (chunk) => { body += chunk; });
+          res.on('end', () => resolve({ status: res.statusCode ?? 0, body }));
+        });
+        req.on('error', reject);
+        req.end();
+      });
+      expect(response.status).toBe(400);
+      expect((JSON.parse(response.body) as { error: string }).error).toBe('InvalidHost');
+    } finally {
+      if (savedPublicUrl === undefined) delete process.env.CLAUDE_MEM_PUBLIC_URL;
+      else process.env.CLAUDE_MEM_PUBLIC_URL = savedPublicUrl;
+    }
   });
 });

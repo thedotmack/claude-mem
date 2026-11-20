@@ -1,0 +1,243 @@
+// The one My Work store is these slices bound together (index.ts). Each slice keeps its state under one key
+// (`work`, `view`, `rules`) and its actions at the top level, after MemeDeck's lib/store.
+import type { FocusChange, Request } from '../data.ts'
+import type { OwnerRule, RuleChange } from '../data-rules.ts'
+import type { ThemeChoice } from '../lib/theme.ts'
+import type { HomeAnchor } from './home-anchor.ts'
+import type { ConnectionStatus } from '../live/connection-status.ts'
+import type { ReviewResult } from '../live/review-response.ts'
+import type { RuleDecision, SavedRuleDecision } from '../live/rule-actions.ts'
+import type { RequestChange } from '../live/update-queue.ts'
+import type { UsageReport } from '../live/usage.ts'
+import type { ConversationContinuationSource, RuleSaveResult, SuggestionSaveResult, WorkDataSource, WorkModel } from '../live/work-data-source.ts'
+
+// ---------- Work: the active source's model ----------
+
+export type WorkModelLoad =
+  | { state: 'loading' }
+  | { state: 'loaded'; model: WorkModel }
+  | { state: 'failed'; error: string }
+
+export interface WorkState {
+  load: WorkModelLoad
+  /** The feed's health. Kept apart from the model so a heartbeat re-renders only the indicators. */
+  connection: ConnectionStatus | null
+  /** Requests whose recorded content changed in the last applied model; their cards show the "Just updated" dot. */
+  freshlyUpdatedIds: Set<string>
+  /** What changed in the models this screen showed, newest first, one entry per request (update-queue.ts). */
+  recentChanges: RequestChange[]
+  sourceKind: WorkDataSource['sourceKind'] | null
+  /**
+   * A save went through but reading the work after it failed: the raw cause. The save stands; the screen may be behind
+   * until a read succeeds (components/bits.tsx ReadAfterSaveNotice says so, with Try again). A successful read clears it.
+   */
+  readAfterSaveFailure: string | null
+}
+
+/** What one read of the work answered: it read, or it could not, with the reason (the raw cause, G17's Details). */
+export type WorkReadResult = { read: true } | { read: false; error: string }
+
+export interface WorkSlice {
+  work: WorkState
+  /** Reads the source and follows its live feed. The returned function stops it; nothing it started can publish after that. */
+  startWorkSource: (source: WorkDataSource) => () => void
+  /**
+   * Reads the active source again: the Retry after a failed first read, and Try again where a screen asks for fresh
+   * records. Answers whether the read worked and, when it did not, why (the shown work stays as it was).
+   */
+  retryWorkRead: () => Promise<WorkReadResult>
+  /** Loads one compact request's complete detail; old/full sources return the supplied request. */
+  loadRequestDetail: (request: Request, options?: { signal?: AbortSignal }) => Promise<Request>
+  receiveWorkModel: (model: WorkModel) => void
+  receiveConnection: (connection: ConnectionStatus) => void
+  /** Checks (or undoes the check of) the version of a request that was on screen. */
+  setRequestChecked: (requestId: string, checked: boolean, expectedFingerprint: string | undefined, expectedReviewHash?: string | null) => Promise<ReviewResult>
+  answerRequestSuggestion: (suggestion: NonNullable<Request['suggestion']>, action: 'join' | 'not-this') => Promise<SuggestionSaveResult>
+  /** Saves one rule change. Answers with the model the save returned, which is the receipt even if the screen has moved on. */
+  saveRuleChange: (change: RuleChange) => Promise<RuleSaveResult>
+  saveFocusChange: (change: FocusChange) => Promise<WorkModel>
+  markAgentFinished: (agentId: string) => Promise<void>
+  loadRulesInClaudeCode: () => Promise<void>
+  refreshWork: () => Promise<{ state: string }>
+  /**
+   * The active source, when it can continue a conversation from this page; null when it can't. Only the page this
+   * computer's worker serves can run a CLI here, so sample data and a cloud-served page answer null.
+   */
+  conversationContinuationSource: () => ConversationContinuationSource | null
+  /** Sample mode only: replace one fixture request everywhere. */
+  updateSampleRequest: (id: string, change: (request: Request) => Request) => void
+  /** Sample mode only: the wireframe agent finishes while you watch. Returns the stop. */
+  playSampleDemo: () => () => void
+}
+
+// ---------- View: where the person is and how they like to see it ----------
+
+/** `setup` is the install funnel (`?setup=1`): a full page outside the nav that becomes My Work when it completes. */
+export type Page = 'setup' | 'app'
+export type NavPage = 'work' | 'rules'
+/** What the main column shows: a page, or one of the focus views the rail opens. */
+export type Section = NavPage | 'suggested' | 'past-focus'
+export type WorkListView = 'cards' | 'list' | 'agents' | 'team'
+export type WorkFilter = 'all' | 'needs-you' | 'working' | 'shipped' | 'closed'
+export type WorkSort = 'attention' | 'started' | 'progress'
+export type FocusArtwork = 'full' | 'compact' | 'off'
+export interface Workspace { mode: 'home' | 'web'; team: boolean; connected: boolean }
+export type FocusSelection = { kind: 'area'; focusAreaId: string } | { kind: 'suggested' } | { kind: 'past-focus' } | null
+
+/**
+ * The open request drawer, by id so it always shows the current record. `fromLiveFeed` tells "left the feed" (close)
+ * from "never in it" (an older goal-only request, shown from `fallback`); null until a model confirms it (a reload).
+ */
+export interface OpenRequest {
+  id: string; fromLiveFeed: boolean | null; fallback: Request | null
+  /**
+   * The person pressed Reply (G2), so the drawer opens on the reply box: "Where this came from" opens and the first
+   * conversation that can be continued takes focus once its box shows (components/request-detail.tsx). Not in the
+   * address: a reload or Back opens the drawer plainly.
+   */
+  replyAsked?: boolean
+}
+
+export interface ViewState {
+  page: Page
+  section: Section
+  /** The area My Work is filtered to (an area id or Other); null shows every request. */
+  focusChoice: string | null
+  openRequest: OpenRequest | null
+  /** The place on the home page the address names (`/#all-requests`), or null. Only with section work and no area. */
+  homeAnchor: HomeAnchor | null
+  /**
+   * The person's last ask to go to a home anchor; each new ask (a new `sequence`) scrolls there once (App.tsx), and an
+   * ask for `focus-areas` shows every area on the board. Cleared when they leave home or go to its top, so a board
+   * drawn later never acts on an old ask.
+   */
+  homeAnchorRequest: { anchor: HomeAnchor; sequence: number } | null
+  /** Sample mode's place and TeamBrain switches. Outside sample mode the place comes from the source. */
+  workspace: Workspace
+  showSpec: boolean
+  /** Decision G8: the person's own choice, saved with the display preferences. */
+  theme: ThemeChoice
+  /**
+   * `?theme=` in the address this visit opened with: it wins over `theme` for this visit only and is never saved (G8),
+   * until the person picks a theme in the menu. The screens show `themeChoiceInUse(view)` (slices/view-slice.ts).
+   */
+  themeForThisVisit: ThemeChoice | null
+  listView: WorkListView
+  filter: WorkFilter
+  sort: WorkSort
+  /** Display density only; changing it never requests image generation. */
+  focusArtwork: FocusArtwork
+}
+
+export interface ViewSlice {
+  view: ViewState
+  goToPage: (page: NavPage) => void
+  goToFocus: (focusAreaId: string) => void
+  /** The home page, scrolled to `anchor` (and its address `/#anchor`), or to its top when null. */
+  goToHome: (anchor: HomeAnchor | null) => void
+  selectFocus: (selection: FocusSelection) => void
+  /** Opens a request's drawer; `{ reply: true }` opens it on its reply box (Reply on a card or the summary, G2). */
+  openRequestDrawer: (request: Request, options?: { reply?: boolean }) => void
+  closeRequestDrawer: () => void
+  /** Keeps the drawer on the current record; closes it when its request left the feed. Runs on every model. */
+  reconcileOpenRequest: () => void
+  /** Back/Forward: show what the URL now says. */
+  showUrl: () => void
+  startSetup: () => void
+  finishSetup: () => void
+  reportOpen: () => void
+  setWorkspace: (change: Partial<Workspace>) => void
+  setShowSpec: (showSpec: boolean) => void
+  /** Saves the choice; the address's `?theme=` stops overriding it for the rest of the visit. */
+  setTheme: (theme: ThemeChoice) => void
+  setListView: (listView: WorkListView) => void
+  setFilter: (filter: WorkFilter) => void
+  setSort: (sort: WorkSort) => void
+  setFocusArtwork: (focusArtwork: FocusArtwork) => void
+}
+
+// ---------- Rules: the receipts and Undo for My Rules saves ----------
+
+export interface RuleChangeRecord {
+  text: string
+  ruleId: string | null
+  undo: RuleChange | null
+  /** The saved version of the rule; Undo is offered only while the screen still shows it. */
+  expectedVersion: string | null
+}
+
+export interface RulesState {
+  /** Approve/Reject receipts, each for the exact version the worker saved. */
+  savedDecisions: Record<string, SavedRuleDecision>
+  /** Every change pushes the previous one, so the saved note's Undo reverses exactly the last change. */
+  history: RuleChangeRecord[]
+  changedIds: string[]
+  /** One rule save at a time: a second click while one is in flight does nothing. */
+  saving: boolean
+  saveError: string | null
+}
+
+/** What a finished rule save means for the receipts, worked out from the model that save returned. */
+export interface RuleSaveOutcome {
+  change: Omit<RuleChangeRecord, 'expectedVersion'> | null
+  decision?: { ruleId: string; decision: RuleDecision | null }
+}
+
+export interface RulesSlice {
+  rules: RulesState
+  /** Saves one change and records it. Resolves to the saved rules, or null while another save is running; rejects with the reason it was not saved. */
+  runRuleSave: (change: RuleChange, describe: (saved: RuleSaveResult) => RuleSaveOutcome) => Promise<OwnerRule[] | null>
+  undoLastRuleChange: () => Promise<void>
+  setRuleSaveError: (saveError: string | null) => void
+}
+
+// ---------- Focus: the last My Focus changes, for the saved note and Undo ----------
+
+export interface FocusChangeRecord { text: string; undo: FocusChange[] | null; expectedVersions?: string[] | null }
+
+/**
+ * The last My Focus save that failed, the one record of it every screen reads: what it tried (a change, or the Undo of
+ * the newest change in the history), the saved note's words that name it (components/focus-change-message.ts), the
+ * screen that made it (`place`, components/focus-changes.tsx useFocusChanges), and why, as the source said it. Only
+ * that screen shows it and offers Try again, which makes exactly this save once more; the next save of anything
+ * replaces it, and leaving the screen forgets it.
+ */
+export interface FailedFocusSave {
+  attempt: { kind: 'change'; change: FocusChange; record: FocusChangeRecord | null } | { kind: 'undo' }
+  words: FocusChangeRecord
+  place: string
+  reason: string
+}
+
+export interface FocusState {
+  history: FocusChangeRecord[]
+  /** One change at a time: a second click while one is saving does nothing. */
+  saving: boolean
+  failed: FailedFocusSave | null
+}
+
+export interface FocusSlice {
+  focus: FocusState
+  /**
+   * Saves one change; `record` (null when the screen shows its own Undo) goes in the history. `made`: the words that
+   * name the change and the screen making it, kept if the save fails. Resolves true when saved.
+   */
+  applyFocusChange: (change: FocusChange, record: FocusChangeRecord | null, made: { words: FocusChangeRecord; place: string }) => Promise<boolean>
+  /** Undoes the newest change in the history, from the screen `place` (kept if the Undo fails). */
+  undoLastFocusChange: (place: string) => Promise<boolean>
+  /** Forgets the failed save that `place` made, if the last one is its: a closed dialog, a screen left behind. */
+  forgetFailedFocusSave: (place: string) => void
+}
+
+export type BoundStore = WorkSlice & ViewSlice & RulesSlice & FocusSlice
+
+/** What the store reads from and writes to outside itself: the browser in the app, fakes in tests. */
+export interface StoreEnvironment {
+  href: () => string
+  writeUrl: (url: URL, replace: boolean) => void
+  storage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> | null
+  /** Usage counts describe real local work only; the sample fixtures are not usage. */
+  reportsUsage: boolean
+  sendUsage: (report: UsageReport | null) => void
+  scrollToTop: () => void
+}

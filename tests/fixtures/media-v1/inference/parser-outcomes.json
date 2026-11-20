@@ -1,0 +1,162 @@
+{
+  "version": 1,
+  "description": "Observation attachment-ref linkage outcomes. supplied lists the request labels whose pixels were in the accepted request, with the 1-based source event ordinal. Each expected observation lists linked request labels in first-occurrence order and rejected refs with a reason. Linked refs become inspected links; unassigned images stay on the source event as uninspected.",
+  "reasons": ["invalid_label", "unknown_label", "cross_event", "too_many_refs"],
+  "cases": [
+    {
+      "name": "explicit_refs_two_observations",
+      "supplied": [{ "label": "event1_image1", "event": 1 }, { "label": "event1_image2", "event": 1 }],
+      "response_file": "observation-with-refs.xml",
+      "expected": {
+        "valid": true,
+        "observations": [
+          { "refs": ["event1_image1"], "rejected": [] },
+          { "refs": ["event1_image2", "event1_image1"], "rejected": [] }
+        ],
+        "unassigned": []
+      }
+    },
+    {
+      "name": "single_observation_omitted_labels_associates_all",
+      "supplied": [{ "label": "event1_image1", "event": 1 }, { "label": "event1_image2", "event": 1 }],
+      "response": "<observation><type>discovery</type><title>Two screenshots of the build log</title></observation>",
+      "expected": {
+        "valid": true,
+        "observations": [{ "refs": ["event1_image1", "event1_image2"], "rejected": [] }],
+        "unassigned": []
+      }
+    },
+    {
+      "name": "single_observation_empty_attachments_counts_as_omitted",
+      "supplied": [{ "label": "event1_image1", "event": 1 }],
+      "response": "<observation><type>discovery</type><title>Chart of latency</title><attachments></attachments></observation>",
+      "expected": {
+        "valid": true,
+        "observations": [{ "refs": ["event1_image1"], "rejected": [] }],
+        "unassigned": []
+      }
+    },
+    {
+      "name": "multiple_observations_omitted_labels_stay_unassigned",
+      "supplied": [{ "label": "event1_image1", "event": 1 }, { "label": "event1_image2", "event": 1 }],
+      "response": "<observation><type>discovery</type><title>First</title></observation><observation><type>change</type><title>Second</title></observation>",
+      "expected": {
+        "valid": true,
+        "observations": [{ "refs": [], "rejected": [] }, { "refs": [], "rejected": [] }],
+        "unassigned": ["event1_image1", "event1_image2"]
+      }
+    },
+    {
+      "name": "partial_labels_leave_rest_unassigned",
+      "supplied": [{ "label": "event1_image1", "event": 1 }, { "label": "event1_image2", "event": 1 }],
+      "response": "<observation><type>discovery</type><title>First</title><attachments><attachment>event1_image1</attachment></attachments></observation><observation><type>change</type><title>Second</title></observation>",
+      "expected": {
+        "valid": true,
+        "observations": [{ "refs": ["event1_image1"], "rejected": [] }, { "refs": [], "rejected": [] }],
+        "unassigned": ["event1_image2"]
+      }
+    },
+    {
+      "name": "unknown_label_rejected_without_implicit_fallback",
+      "supplied": [{ "label": "event1_image1", "event": 1 }],
+      "response": "<observation><type>discovery</type><title>Screenshot</title><attachments><attachment>event2_image1</attachment></attachments></observation>",
+      "expected": {
+        "valid": true,
+        "observations": [{ "refs": [], "rejected": [{ "label": "event2_image1", "reason": "unknown_label" }] }],
+        "unassigned": ["event1_image1"]
+      }
+    },
+    {
+      "name": "label_comparison_is_case_sensitive",
+      "supplied": [{ "label": "event1_image1", "event": 1 }],
+      "response": "<observation><type>discovery</type><title>Screenshot</title><attachments><attachment>EVENT1_IMAGE1</attachment></attachments></observation>",
+      "expected": {
+        "valid": true,
+        "observations": [{ "refs": [], "rejected": [{ "label": "EVENT1_IMAGE1", "reason": "invalid_label" }] }],
+        "unassigned": ["event1_image1"]
+      }
+    },
+    {
+      "name": "malformed_label_rejected",
+      "supplied": [{ "label": "event1_image1", "event": 1 }],
+      "response": "<observation><type>discovery</type><title>Screenshot</title><attachments><attachment>../secret.png</attachment><attachment>event1_image1</attachment></attachments></observation>",
+      "expected": {
+        "valid": true,
+        "observations": [{ "refs": ["event1_image1"], "rejected": [{ "label": "../secret.png", "reason": "invalid_label" }] }],
+        "unassigned": []
+      }
+    },
+    {
+      "name": "cross_event_refs_rejected_for_whole_observation",
+      "supplied": [{ "label": "event1_image1", "event": 1 }, { "label": "event2_image1", "event": 2 }],
+      "response": "<observation><type>discovery</type><title>Before and after</title><attachments><attachment>event1_image1</attachment><attachment>event2_image1</attachment></attachments></observation>",
+      "expected": {
+        "valid": true,
+        "observations": [{ "refs": [], "rejected": [{ "label": "event1_image1", "reason": "cross_event" }, { "label": "event2_image1", "reason": "cross_event" }] }],
+        "unassigned": ["event1_image1", "event2_image1"]
+      }
+    },
+    {
+      "name": "batched_events_each_observation_one_event",
+      "supplied": [{ "label": "event1_image1", "event": 1 }, { "label": "event2_image1", "event": 2 }],
+      "response": "<observation><type>discovery</type><title>Before</title><attachments><attachment>event1_image1</attachment></attachments></observation><observation><type>change</type><title>After</title><attachments><attachment>event2_image1</attachment></attachments></observation>",
+      "expected": {
+        "valid": true,
+        "observations": [{ "refs": ["event1_image1"], "rejected": [] }, { "refs": ["event2_image1"], "rejected": [] }],
+        "unassigned": []
+      }
+    },
+    {
+      "name": "single_observation_omitted_labels_multiple_events_no_implicit",
+      "supplied": [{ "label": "event1_image1", "event": 1 }, { "label": "event2_image1", "event": 2 }],
+      "response": "<observation><type>discovery</type><title>Two events</title></observation>",
+      "expected": {
+        "valid": true,
+        "observations": [{ "refs": [], "rejected": [] }],
+        "unassigned": ["event1_image1", "event2_image1"]
+      }
+    },
+    {
+      "name": "duplicate_label_deduplicated",
+      "supplied": [{ "label": "event1_image1", "event": 1 }],
+      "response": "<observation><type>discovery</type><title>Screenshot</title><attachments><attachment>event1_image1</attachment><attachment> event1_image1 </attachment></attachments></observation>",
+      "expected": {
+        "valid": true,
+        "observations": [{ "refs": ["event1_image1"], "rejected": [] }],
+        "unassigned": []
+      }
+    },
+    {
+      "name": "elements_beyond_four_rejected",
+      "supplied": [{ "label": "event1_image1", "event": 1 }, { "label": "event1_image2", "event": 1 }, { "label": "event1_image3", "event": 1 }, { "label": "event1_image4", "event": 1 }],
+      "response": "<observation><type>discovery</type><title>Four screenshots</title><attachments><attachment>event1_image1</attachment><attachment>event1_image2</attachment><attachment>event1_image3</attachment><attachment>event2_image1</attachment><attachment>event1_image4</attachment></attachments></observation>",
+      "expected": {
+        "valid": true,
+        "observations": [{ "refs": ["event1_image1", "event1_image2", "event1_image3"], "rejected": [{ "label": "event2_image1", "reason": "unknown_label" }, { "label": "event1_image4", "reason": "too_many_refs" }] }],
+        "unassigned": ["event1_image4"]
+      }
+    },
+    {
+      "name": "uppercase_element_not_recognized_counts_as_omitted",
+      "supplied": [{ "label": "event1_image1", "event": 1 }],
+      "response": "<observation><type>discovery</type><title>Screenshot</title><Attachments><Attachment>event2_image1</Attachment></Attachments></observation>",
+      "expected": {
+        "valid": true,
+        "observations": [{ "refs": ["event1_image1"], "rejected": [] }],
+        "unassigned": []
+      }
+    },
+    {
+      "name": "skip_summary_leaves_all_unassigned",
+      "supplied": [{ "label": "event1_image1", "event": 1 }],
+      "response": "<skip_summary reason=\"noise\" />",
+      "expected": { "valid": true, "observations": [], "unassigned": ["event1_image1"] }
+    },
+    {
+      "name": "invalid_output_links_nothing",
+      "supplied": [{ "label": "event1_image1", "event": 1 }],
+      "response": "I looked at the screenshot.",
+      "expected": { "valid": false, "observations": [], "unassigned": ["event1_image1"] }
+    }
+  ]
+}

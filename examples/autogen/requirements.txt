@@ -1,0 +1,2 @@
+autogen-ext[mcp]==0.7.5
+mcp==1.30.0

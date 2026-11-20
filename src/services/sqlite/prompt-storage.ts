@@ -1,12 +1,16 @@
 import { stripMemoryTags } from '../../utils/tag-stripping.js';
+import { retainTextHeadTail } from '../../shared/text-truncation.js';
 import { logger } from '../../utils/logger.js';
 
 export const MAX_STORED_PROMPT_CHARS = 4000;
 
+// Stand-in written when a session is initialized with no usable prompt text; later real prompts may replace this durable value.
+export const MEDIA_PROMPT_PLACEHOLDER = '[media prompt]';
+
 export function normalizeStoredPromptText(promptText: string): string {
-  const trimmedRawPrompt = promptText.trim();
-  const strippedPrompt = stripMemoryTags(promptText).trim();
-  const preferredPrompt = strippedPrompt || trimmedRawPrompt;
+  // Never fall back to the raw text: a prompt that is entirely <private> (or
+  // other memory tags) must not be stored, unstripped and unredacted.
+  const preferredPrompt = stripMemoryTags(promptText).trim();
 
   if (preferredPrompt.length <= MAX_STORED_PROMPT_CHARS) {
     return preferredPrompt;
@@ -17,5 +21,5 @@ export function normalizeStoredPromptText(promptText: string): string {
     originalLength: preferredPrompt.length,
     storedLength: MAX_STORED_PROMPT_CHARS,
   });
-  return `${preferredPrompt.slice(0, MAX_STORED_PROMPT_CHARS - 1)}…`;
+  return `${retainTextHeadTail(preferredPrompt, MAX_STORED_PROMPT_CHARS - 1, 0).head}…`;
 }

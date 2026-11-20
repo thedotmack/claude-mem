@@ -1,0 +1,5 @@
+langgraph==1.2.20
+langchain[mcp]==1.4.10
+fastmcp==4.1.8
+langchain-core==1.7.7
+mcp==2.3.0

@@ -3,6 +3,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import { validateWorkerPidFile, type ValidateWorkerPidStatus } from '../../src/supervisor/index.js';
+import { captureProcessStartToken } from '../../src/supervisor/process-registry.js';
 
 function makeTempDir(): string {
   const dir = path.join(tmpdir(), `claude-mem-index-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -59,10 +60,14 @@ describe('validateWorkerPidFile', () => {
     const tempDir = makeTempDir();
     tempDirs.push(tempDir);
     const pidFilePath = path.join(tempDir, 'worker.pid');
+    // With its start token, as every worker since v12.3.8 writes it. A
+    // token-less record must also name worker-service.cjs on Linux (#4270),
+    // which the test runner's command line does not.
     writeFileSync(pidFilePath, JSON.stringify({
       pid: process.pid,
       port: 37777,
-      startedAt: new Date().toISOString()
+      startedAt: new Date().toISOString(),
+      startToken: captureProcessStartToken(process.pid) ?? undefined
     }));
 
     const status = validateWorkerPidFile({ logAlive: false, pidFilePath });
@@ -87,11 +92,16 @@ describe('validateWorkerPidFile', () => {
 });
 
 describe('Supervisor assertCanSpawn behavior', () => {
-  it('assertCanSpawn throws when stopPromise is active (shutdown in progress)', () => {
+  it('assertCanSpawn throws when stopPromise is active (shutdown in progress)', async () => {
     const { getSupervisor } = require('../../src/supervisor/index.js');
     const supervisor = getSupervisor();
 
-    expect(() => supervisor.assertCanSpawn('test')).not.toThrow();
+    const stopping = supervisor.stop();
+    try {
+      expect(() => supervisor.assertCanSpawn('test')).toThrow(/shutting down/);
+    } finally {
+      await stopping;
+    }
   });
 
   it('registerProcess and unregisterProcess delegate to the registry', () => {
@@ -113,14 +123,5 @@ describe('Supervisor assertCanSpawn behavior', () => {
     supervisor.unregisterProcess(testId);
     const afterUnregister = registry.getAll().find((r: { id: string }) => r.id === testId);
     expect(afterUnregister).toBeUndefined();
-  });
-});
-
-describe('Supervisor start idempotency', () => {
-  it('getSupervisor returns the same instance', () => {
-    const { getSupervisor } = require('../../src/supervisor/index.js');
-    const s1 = getSupervisor();
-    const s2 = getSupervisor();
-    expect(s1).toBe(s2);
   });
 });

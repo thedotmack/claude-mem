@@ -1,0 +1,97 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact|new",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${QODER_PLUGIN_ROOT}/plugin/scripts/qoder-hook-launcher.cjs",
+              "context"
+            ],
+            "env": {
+              "CLAUDE_MEM_CODEX_HOOK": "1"
+            },
+            "timeout": 180,
+            "statusMessage": "Loading claude-mem context"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${QODER_PLUGIN_ROOT}/plugin/scripts/qoder-hook-launcher.cjs",
+              "session-init"
+            ],
+            "env": {
+              "CLAUDE_MEM_CODEX_HOOK": "1"
+            },
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+      "matcher": "Bash|Read|Glob|Grep|memory_search|memory|mcp__.+__(read|view|cat)(_file|_files)?|mcp__.+__memory_search",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${QODER_PLUGIN_ROOT}/plugin/scripts/qoder-hook-launcher.cjs",
+              "file-context"
+            ],
+            "env": {
+              "CLAUDE_MEM_CODEX_HOOK": "1"
+            },
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${QODER_PLUGIN_ROOT}/plugin/scripts/qoder-hook-launcher.cjs",
+              "observation"
+            ],
+            "env": {
+              "CLAUDE_MEM_CODEX_HOOK": "1"
+            },
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${QODER_PLUGIN_ROOT}/plugin/scripts/qoder-hook-launcher.cjs",
+              "summarize"
+            ],
+            "env": {
+              "CLAUDE_MEM_CODEX_HOOK": "1"
+            },
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

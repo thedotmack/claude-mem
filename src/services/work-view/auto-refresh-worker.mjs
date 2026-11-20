@@ -1,0 +1,225 @@
+// Keeps My Work current without anyone running a skill: every ten minutes (CLAUDE_MEM_WORK_VIEW_REFRESH_INTERVAL_MIN) it
+// asks refreshNeeds() whether anything is due (ungrouped conversations, due
+// reviews, stale goals, requests not placed in a focus area) and, if so, runs one agent job.
+// Owner rule (Oct 22): AI magic, not speed. No minimum interval, no day
+// window, no group cap, and a run is never stopped for taking long; it ends
+// when the agent finishes or fails. One run at a time. The one exception:
+// after failed runs only, the scheduled check backs off (below). A run that
+// works, and runNow, keep no minimum interval.
+// Status lives in refresh.json beside the ledger; My Work shows it live.
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { refreshNeeds, writeJsonAtomic } from './request-groups.mjs';
+
+const TEN_MINUTES_MS = 10 * 60000;
+// setInterval stores its delay in a 32-bit signed integer and fires at once for anything larger.
+const MAX_CHECK_MS = 2 ** 31 - 1;
+
+/**
+ * How often the scheduled check runs, from CLAUDE_MEM_WORK_VIEW_REFRESH_INTERVAL_MIN (minutes).
+ * Each check is a cheap read-only look at the database; an agent runs only when something is due.
+ * Empty, non-numeric or non-positive values keep the ten-minute default, anything under one minute
+ * is raised to one minute, and the result never exceeds what setInterval can hold (about 24 days).
+ * The worker reads this once at start, so a change applies after the worker restarts.
+ * @param {string | number | null | undefined} minutes
+ * @returns {number} milliseconds
+ */
+export function refreshIntervalMs(minutes) {
+  const value = typeof minutes === 'string' ? Number(minutes.trim() === '' ? NaN : minutes) : Number(minutes);
+  if (!Number.isFinite(value) || value <= 0) return TEN_MINUTES_MS;
+  return Math.min(MAX_CHECK_MS, Math.max(60000, Math.round(value * 60000)));
+}
+// After a failed run the next scheduled one waits twice as long each time, up to four hours, and a run
+// that works resets it. Oct 25: a run that failed on the same due groups was restarted every ten minutes
+// all afternoon, each time re-asking every agent from the start.
+// Four hours: the subscription plans' usage limit resets on a 5-hour window (Oct 25: "You've hit your
+// session limit · resets 2:30pm"), so the longest wait stays inside one window and a run blocked by that
+// limit is tried again in the window after it resets, never skipping one.
+// An interval set longer than four hours (CLAUDE_MEM_WORK_VIEW_REFRESH_INTERVAL_MIN) caps the wait at one
+// interval instead: the timer only ticks once per interval, so a shorter wait would show a next check that never happens.
+const MAX_FAILURE_BACKOFF_MS = 4 * 60 * 60000;
+
+const processIsAlive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+
+export class AutoRefreshWorker {
+  /**
+   * @param {object} options
+   * @param {string} options.dir                ledger folder (~/.claude-mem/work-view)
+   * @param {() => any} options.openDatabase    read-only claude-mem.db handle with close()
+   * @param {(job: {needs: object, reason: string}) => Promise<{state: string, agent: string|null, result: string|null, error: string|null}>} options.runJob
+   *   runs the job on the first logged-in agent; 'waiting-for-agent' when there is none yet (agent-runner/run.ts)
+   * @param {() => boolean} [options.enabled]   scheduled refresh on: setup not running and CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH, read on every check
+   * @param {() => boolean} [options.setupRunning]  setup is running, so no refresh may spend tokens, not even one the owner asks for
+   * @param {() => string} options.localDeviceId the worker's sync device id ('' when cloud sync never started), so my-focus
+   *   rows replay in its order; required
+   * @param {(() => Promise<object | null>) | null} [options.labelWorkState] Jev labels for open work-state items
+   *   (work-state-labels.mjs labelOpenWorkState); null when the install has no Jev. Runs on every check while refresh is on.
+   */
+  constructor({ dir, openDatabase, runJob, enabled = () => true, setupRunning = () => false, checkMs = TEN_MINUTES_MS, now = Date.now, log = () => {}, localDeviceId, labelWorkState = null }) {
+    if (typeof localDeviceId !== 'function') throw new TypeError('AutoRefreshWorker needs localDeviceId, the worker\'s sync device id.');
+    Object.assign(this, { dir, openDatabase, runJob, enabled, setupRunning, checkMs, now, log, localDeviceId, labelWorkState });
+    this.timer = null; this.closed = false; this.busy = false; this.repairPending = false; this.labeling = null;
+  }
+
+  /**
+   * Labels open work-state items with Jev beside the agent run, which it never waits for or blocks: it needs no
+   * logged-in agent. One labeling run at a time; a check that finds one still going starts no other. Returns the
+   * run's promise, which never rejects: a failure is logged and the next check runs again.
+   */
+  labelInBackground() {
+    if (!this.labelWorkState || this.labeling) return this.labeling;
+    this.labeling = Promise.resolve()
+      .then(() => this.labelWorkState())
+      .then((result) => {
+        if (result?.failed) this.log('warn', 'Work state labeling stopped at a failed Jev call', { result });
+        else if (result?.serviceFailure) this.log('warn', 'Work state labeling paused: Jev refused or failed a call; the rest is asked at the next check', { result });
+        else if (result?.labeled) this.log('info', 'Work state labeled', { result });
+        return result;
+      })
+      .catch((error) => { this.log('warn', 'Work state labeling failed', { error: String(error?.message ?? error) }); return null; })
+      .finally(() => { this.labeling = null; });
+    return this.labeling;
+  }
+
+  path() { return join(this.dir, 'refresh.json'); }
+
+  status() {
+    try { return JSON.parse(readFileSync(this.path(), 'utf8')); }
+    catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+  }
+
+  /**
+   * status(), with an unreadable refresh.json (bytes that are not JSON) read as no status, for the callers that write
+   * a new status next and so replace the bad file. Before this, the scheduled check threw on such a file at every
+   * check, so the file stayed bad until the owner pressed Refresh now.
+   */
+  replaceableStatus() {
+    try { return this.status(); }
+    catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+      this.log('warn', 'Work view refresh status could not be read; a new status replaces it', { error: String(error.message) });
+      return null;
+    }
+  }
+
+  write(status) { writeJsonAtomic(this.path(), status); }
+
+  start() { this.repairInterrupted(); this.tick(); this.timer = setInterval(() => this.tick(), this.checkMs); this.timer.unref?.(); }
+
+  /** Another live worker process owns a run in progress. */
+  otherWorkerIsRunning(status) { return status?.state === 'running' && status.pid !== process.pid && status.pid && processIsAlive(status.pid); }
+
+  /**
+   * At startup this worker has no run, so a "running" record no other live worker owns was cut off by a restart. Repaired
+   * here whether or not scheduled refresh is on: check() stops early when it is off, and My Work would otherwise show that
+   * run, with its Refresh now button disabled, forever. Not counted as a failed run, so it starts no back-off.
+   * This runs inside the worker's startup, so a failed write is logged, never thrown: on 2026-11-11 the shared-ledger
+   * write behind it hit SQLITE_BUSY (the cut-off run's agent still held the database) and the throw failed the whole
+   * worker's initialization, leaving memory down until the next restart. The record then stays "running" with a dead
+   * pid, and the next check tries this repair again first, whether or not scheduled refresh is on.
+   */
+  repairInterrupted() {
+    let previous;
+    try { previous = this.status(); }
+    catch (error) { this.log('warn', 'Work view refresh status could not be read at startup', { error: String(error?.message ?? error) }); return; }
+    if (previous?.state !== 'running' || this.otherWorkerIsRunning(previous)) return;
+    this.repairPending = false;
+    try { this.write({ ...previous, state: 'failed', error: 'The previous refresh stopped before finishing.', finishedAt: this.iso(), nextAt: this.iso(this.now() + this.checkMs) }); }
+    catch (error) {
+      this.repairPending = true;
+      this.log('warn', 'Work view refresh status could not be repaired at startup; the next check tries again', { error: String(error?.message ?? error) });
+    }
+  }
+
+  /** A timer check: a failure (e.g. no database yet) is logged and the next check tries again. */
+  tick() { this.check().catch((error) => this.log('warn', 'Work view refresh check failed', { error: String(error?.message ?? error) })); }
+
+  close() { this.closed = true; clearInterval(this.timer); }
+
+  iso(epoch = this.now()) { return new Date(epoch).toISOString(); }
+
+  /** The wait after `failures` failed runs in a row: doubling from one interval, up to four hours or one interval if longer. */
+  failureWaitMs(failures) { return Math.min(this.checkMs * 2 ** (failures - 1), Math.max(MAX_FAILURE_BACKOFF_MS, this.checkMs)); }
+
+  readNeeds() {
+    const database = this.openDatabase();
+    try { return refreshNeeds({ dir: this.dir, database, now: this.now(), localDeviceId: this.localDeviceId() }); }
+    finally { database.close(); }
+  }
+
+  /** The ten-minute check: run when something is due, otherwise record that nothing is. */
+  async check() {
+    if (this.closed) return 'closed';
+    if (this.repairPending && !this.busy) this.repairInterrupted();
+    if (!this.enabled()) return 'disabled';
+    this.labelInBackground();
+    if (this.busy) return 'running';
+    const previous = this.replaceableStatus();
+    if (this.otherWorkerIsRunning(previous)) return 'running';
+    // Backing off after failed runs: wait for the time the last failure set.
+    if (previous?.state === 'failed' && previous.failures && this.now() < Date.parse(previous.nextAt)) return 'backing-off';
+    const needs = this.readNeeds();
+    if (!needs.needed) {
+      // A run this worker never finished was cut off by a restart.
+      const interrupted = previous?.state === 'running';
+      this.write({ ...previous, state: interrupted ? 'failed' : previous?.state ?? 'idle', ...(interrupted ? { error: 'The previous refresh stopped before finishing.' } : {}), checkedAt: this.iso(), nextAt: this.iso(this.now() + this.checkMs), needs });
+      return 'idle';
+    }
+    return this.run(needs, 'scheduled');
+  }
+
+  /** Run now instead of at the next ten-minute check, when something is due. Never while setup runs. */
+  async runNow({ reason }) {
+    if (this.closed) return 'closed';
+    if (this.busy) return 'running';
+    if (this.setupRunning()) return 'setup-running';
+    const previous = this.replaceableStatus();
+    if (this.otherWorkerIsRunning(previous)) return 'running';
+    this.busy = true;
+    const startedAt = this.iso();
+    try {
+      let needs;
+      try { needs = this.readNeeds(); }
+      catch (error) {
+        // Surface failures that happen before run() can write its normal status, so My Work can explain
+        // why an on-demand refresh did not start (for example, a database or saved-ledger read failure).
+        const failures = Number(previous?.failures ?? 0) + 1;
+        const message = String(error?.message ?? error).slice(0, 500);
+        const finishedAt = this.iso();
+        const wait = this.failureWaitMs(failures);
+        this.write({ state: 'failed', reason, startedAt, finishedAt, needs: null, result: null, error: message, nextAt: this.iso(this.now() + wait), failures });
+        this.log('warn', `Work view refresh failed before starting (${reason})`, { error: message });
+        return 'failed';
+      }
+      // A re-scan that found nothing new starts no agent.
+      if (!needs.needed) return 'idle';
+      return await this.run(needs, reason);
+    } finally { this.busy = false; }
+  }
+
+  async run(needs, reason) {
+    this.busy = true;
+    try {
+      // With no logged-in agent yet the job says 'waiting-for-agent', and the next ten-minute check tries again.
+      const previousFailures = this.replaceableStatus()?.failures ?? 0;
+      const startedAt = this.iso();
+      this.write({ state: 'running', pid: process.pid, reason, startedAt, needs, nextAt: null });
+      this.log('info', `Work view refresh started (${reason})`, { needs });
+      let outcome;
+      try { outcome = await this.runJob({ needs, reason }); }
+      catch (error) { outcome = { state: 'failed', agent: null, result: null, error: String(error?.message ?? error).slice(0, 500) }; }
+      const finishedAt = this.iso();
+      const failures = outcome.state === 'failed' ? previousFailures + 1 : 0;
+      const wait = failures ? this.failureWaitMs(failures) : this.checkMs;
+      this.write({
+        state: outcome.state, reason, agent: outcome.agent ?? null, startedAt, finishedAt, needs,
+        result: outcome.result ?? null, error: outcome.error ?? null, nextAt: this.iso(this.now() + wait),
+        ...(failures ? { failures } : {}),
+        // Per-step timings for measuring runs; My Work does not show them.
+        ...(outcome.steps ? { steps: outcome.steps } : {}),
+      });
+      this.log(outcome.state === 'ok' ? 'info' : 'warn', `Work view refresh ${outcome.state} (${reason})`, { agent: outcome.agent, error: outcome.error });
+      return outcome.state;
+    } finally { this.busy = false; }
+  }
+}

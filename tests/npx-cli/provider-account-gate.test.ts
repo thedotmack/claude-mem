@@ -1,34 +1,34 @@
 import { describe, it, expect } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-
-const source = readFileSync(
-  join(__dirname, '..', '..', 'src', 'npx-cli', 'commands', 'install.ts'),
-  'utf-8',
-);
+import { providerNeedsAccount } from '../../src/npx-cli/commands/install.js';
 
 describe('provider account gate', () => {
-  it('exempts explicit claude and host installs from the account requirement', () => {
-    expect(source).toContain("return provider !== 'claude' && provider !== 'host';");
+  it('exempts the local Anthropic plan and host installs from the account requirement', () => {
+    expect(providerNeedsAccount('claude')).toBe(false);
+    expect(providerNeedsAccount('host')).toBe(false);
   });
 
   it('still requires an account when no provider was named', () => {
-    expect(source).toContain('if (providerNeedsAccount(options.provider)) {');
+    expect(providerNeedsAccount(undefined)).toBe(true);
   });
 
-  it('still treats openrouter and gemini as account-backed providers', () => {
-    expect(source).toContain("if (options.provider !== 'gemini' && options.provider !== 'openrouter') return;");
+  it('still treats openrouter, gemini and codex as account-backed providers', () => {
+    expect(providerNeedsAccount('openrouter')).toBe(true);
+    expect(providerNeedsAccount('gemini')).toBe(true);
+    expect(providerNeedsAccount('codex')).toBe(true);
   });
 });
 
-describe('install flow wiring', () => {
-  it('gates the OAuth login call behind providerNeedsAccount', () => {
-    expect(source).toMatch(
-      /if \(providerNeedsAccount\(options\.provider\)\) \{\s*\n\s*oauthPairing = await requireInstallerOAuthLogin\(version\);/,
-    );
-  });
+describe('install help text (#4131)', () => {
+  const help = readFileSync(join(__dirname, '..', '..', 'src', 'npx-cli', 'index.ts'), 'utf-8');
+  const providerLine = help.split('\n').find((line) => line.includes('install --provider'));
 
-  it('refuses CMEM Pro enrollment without a pairing', () => {
-    expect(source).toContain("throw new Error('CMEM Pro requires a signed-in claude-mem account.');");
+  // A headless `--runtime server --provider openrouter` install blocked on a
+  // browser login the help never mentioned.
+  it('says which providers need a cmem.ai sign-in, matching providerNeedsAccount', () => {
+    expect(providerLine).toBeDefined();
+    expect(providerLine).toContain('codex, gemini and openrouter need a cmem.ai sign-in');
+    expect(providerLine).toContain('claude and host need no claude-mem account');
   });
 });

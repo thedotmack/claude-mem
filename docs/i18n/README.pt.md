@@ -16,50 +16,50 @@
 </h1>
 
 <p align="center">
-  <a href="docs/i18n/README.zh.md">🇨🇳 中文</a> •
-  <a href="docs/i18n/README.zh-tw.md">🇹🇼 繁體中文</a> •
-  <a href="docs/i18n/README.ja.md">🇯🇵 日本語</a> •
-  <a href="docs/i18n/README.pt.md">🇵🇹 Português</a> •
-  <a href="docs/i18n/README.pt-br.md">🇧🇷 Português</a> •
-  <a href="docs/i18n/README.ko.md">🇰🇷 한국어</a> •
-  <a href="docs/i18n/README.es.md">🇪🇸 Español</a> •
-  <a href="docs/i18n/README.de.md">🇩🇪 Deutsch</a> •
-  <a href="docs/i18n/README.fr.md">🇫🇷 Français</a> •
-  <a href="docs/i18n/README.he.md">🇮🇱 עברית</a> •
-  <a href="docs/i18n/README.ar.md">🇸🇦 العربية</a> •
-  <a href="docs/i18n/README.ru.md">🇷🇺 Русский</a> •
-  <a href="docs/i18n/README.pl.md">🇵🇱 Polski</a> •
-  <a href="docs/i18n/README.cs.md">🇨🇿 Čeština</a> •
-  <a href="docs/i18n/README.nl.md">🇳🇱 Nederlands</a> •
-  <a href="docs/i18n/README.tr.md">🇹🇷 Türkçe</a> •
-  <a href="docs/i18n/README.uk.md">🇺🇦 Українська</a> •
-  <a href="docs/i18n/README.vi.md">🇻🇳 Tiếng Việt</a> •
-  <a href="docs/i18n/README.tl.md">🇵🇭 Tagalog</a> •
-  <a href="docs/i18n/README.id.md">🇮🇩 Indonesia</a> •
-  <a href="docs/i18n/README.th.md">🇹🇭 ไทย</a> •
-  <a href="docs/i18n/README.hi.md">🇮🇳 हिन्दी</a> •
-  <a href="docs/i18n/README.bn.md">🇧🇩 বাংলা</a> •
-  <a href="docs/i18n/README.ur.md">🇵🇰 اردو</a> •
-  <a href="docs/i18n/README.ro.md">🇷🇴 Română</a> •
-  <a href="docs/i18n/README.sv.md">🇸🇪 Svenska</a> •
-  <a href="docs/i18n/README.it.md">🇮🇹 Italiano</a> •
-  <a href="docs/i18n/README.el.md">🇬🇷 Ελληνικά</a> •
-  <a href="docs/i18n/README.hu.md">🇭🇺 Magyar</a> •
-  <a href="docs/i18n/README.fi.md">🇫🇮 Suomi</a> •
-  <a href="docs/i18n/README.da.md">🇩🇰 Dansk</a> •
-  <a href="docs/i18n/README.no.md">🇳🇴 Norsk</a>
+  <a href="README.zh.md">🇨🇳 中文</a> •
+  <a href="README.zh-tw.md">🇹🇼 繁體中文</a> •
+  <a href="README.ja.md">🇯🇵 日本語</a> •
+  <a href="README.pt.md">🇵🇹 Português</a> •
+  <a href="README.pt-br.md">🇧🇷 Português</a> •
+  <a href="README.ko.md">🇰🇷 한국어</a> •
+  <a href="README.es.md">🇪🇸 Español</a> •
+  <a href="README.de.md">🇩🇪 Deutsch</a> •
+  <a href="README.fr.md">🇫🇷 Français</a> •
+  <a href="README.he.md">🇮🇱 עברית</a> •
+  <a href="README.ar.md">🇸🇦 العربية</a> •
+  <a href="README.ru.md">🇷🇺 Русский</a> •
+  <a href="README.pl.md">🇵🇱 Polski</a> •
+  <a href="README.cs.md">🇨🇿 Čeština</a> •
+  <a href="README.nl.md">🇳🇱 Nederlands</a> •
+  <a href="README.tr.md">🇹🇷 Türkçe</a> •
+  <a href="README.uk.md">🇺🇦 Українська</a> •
+  <a href="README.vi.md">🇻🇳 Tiếng Việt</a> •
+  <a href="README.tl.md">🇵🇭 Tagalog</a> •
+  <a href="README.id.md">🇮🇩 Indonesia</a> •
+  <a href="README.th.md">🇹🇭 ไทย</a> •
+  <a href="README.hi.md">🇮🇳 हिन्दी</a> •
+  <a href="README.bn.md">🇧🇩 বাংলা</a> •
+  <a href="README.ur.md">🇵🇰 اردو</a> •
+  <a href="README.ro.md">🇷🇴 Română</a> •
+  <a href="README.sv.md">🇸🇪 Svenska</a> •
+  <a href="README.it.md">🇮🇹 Italiano</a> •
+  <a href="README.el.md">🇬🇷 Ελληνικά</a> •
+  <a href="README.hu.md">🇭🇺 Magyar</a> •
+  <a href="README.fi.md">🇫🇮 Suomi</a> •
+  <a href="README.da.md">🇩🇰 Dansk</a> •
+  <a href="README.no.md">🇳🇴 Norsk</a>
 </p>
 
 <h4 align="center">Sistema de compressão de memória persistente construído para o <a href="https://claude.com/claude-code" target="_blank">Claude Code</a>.</h4>
 
 <p align="center">
-  <a href="LICENSE">
+  <a href="../../LICENSE">
     <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License">
   </a>
-  <a href="package.json">
+  <a href="../../package.json">
     <img src="https://img.shields.io/badge/version-13.4.0-green.svg" alt="Version">
   </a>
-  <a href="package.json">
+  <a href="../../package.json">
     <img src="https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen.svg" alt="Node">
   </a>
   <a href="https://github.com/thedotmack/awesome-claude-code">
@@ -215,7 +215,6 @@ O instalador trata das dependências, da configuração do plugin, da configura�
 
 - **[Configuração](https://docs.claude-mem.ai/configuration)** - Variáveis de ambiente e definições
 - **[Desenvolvimento](https://docs.claude-mem.ai/development)** - Compilação, testes e contribuição
-- **[Ramos de Lançamento](https://docs.claude-mem.ai/branches)** - Fluxo dos ramos stable, core-dev e community-edge
 - **[Resolução de Problemas](https://docs.claude-mem.ai/troubleshooting)** - Problemas comuns e soluções
 
 ---
@@ -271,15 +270,6 @@ get_observations(ids=[123, 456])
 ```
 
 Consulte o [Guia de Ferramentas de Pesquisa](https://docs.claude-mem.ai/usage/search-tools) para exemplos detalhados.
-
----
-
-## Ramos de Lançamento
-
-Os lançamentos stable partem do ramo `main` e são publicados no npm. Os ramos `core-dev` e
-`community-edge` são ramos executados a partir do código-fonte, destinados a correções de fiabilidade antecipadas e
-integrações com a comunidade. Consulte **[Ramos de Lançamento](https://docs.claude-mem.ai/branches)**
-para o fluxo dos ramos e instruções de execução não-stable.
 
 ---
 
@@ -349,6 +339,7 @@ Os modos específicos de idioma seguem o padrão `code--[lang]`, onde `[lang]` �
 #### Depois de Alterar o Modo
 
 Reinicie o Claude Code para aplicar a nova configuração de modo.
+
 ---
 
 ## Desenvolvimento
@@ -384,11 +375,6 @@ Contribuições são bem-vindas! Por favor:
 4. Atualize a documentação
 5. Submeta um Pull Request
 
-O Claude-Mem é lançado a partir de três ramos: `main` (stable), `core-dev` e
-`community-edge`. Apenas o `main` é publicado no npm; os restantes são executados a partir do
-código-fonte. Consulte [Ramos de Lançamento](https://docs.claude-mem.ai/branches) para a
-estratégia e instruções de execução local.
-
 Consulte o [Guia de Desenvolvimento](https://docs.claude-mem.ai/development) para o fluxo de contribuição.
 
 ---
@@ -401,17 +387,16 @@ Escolhemos a Apache-2.0 porque a memória agêntica durável deve ser fácil de 
 ferramentas de programação, agentes locais, servidores MCP, sistemas empresariais, stacks de robótica
 e harnesses de agentes em produção.
 
-Consulte o ficheiro [LICENSE](LICENSE) para todos os detalhes. Consulte [docs/license.md](docs/license.md)
-e [docs/ip-boundary.md](docs/ip-boundary.md) para o âmbito de licenciamento e a fronteira
+Consulte o ficheiro [LICENSE](../../LICENSE) para todos os detalhes. Consulte [docs/license.md](../license.md)
+e [docs/ip-boundary.md](../ip-boundary.md) para o âmbito de licenciamento e a fronteira
 entre o open e o comercial.
 
-**Nota sobre o Ragtime**: O diretório `ragtime/` está licenciado sob a **Apache License 2.0**. Consulte [ragtime/LICENSE](ragtime/LICENSE) para mais detalhes.
 
 ---
 
 ## Suporte
 
-- **Documentação**: [docs/](docs/)
+- **Documentação**: [docs/](../)
 - **Problemas**: [GitHub Issues](https://github.com/thedotmack/claude-mem/issues)
 - **Repositório**: [github.com/thedotmack/claude-mem](https://github.com/thedotmack/claude-mem)
 - **Conta X Oficial**: [@Claude_Memory](https://x.com/Claude_Memory)

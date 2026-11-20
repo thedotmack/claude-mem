@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdtempSync, rmSync, existsSync, readFileSync } from 'fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
@@ -11,36 +11,19 @@ import {
 import {
   createInstallSummary,
   installerError,
+  clearLastInstallError,
   flushSummary,
   InstallAbortError,
 } from '../src/npx-cli/install/error-reporter';
 import {
   isEresolve,
   extractEresolveBlock,
+  npmChildEnv,
+  npmErrorCode,
+  runNpmStrict,
 } from '../src/npx-cli/install/npm-install-helper';
 
-const CANONICAL_IDES = [
-  'claude-code',
-  'opencode',
-  'openclaw',
-  'windsurf',
-  'codex-cli',
-  'cursor',
-  'grok-bot',
-  'copilot-cli',
-  'antigravity',
-  'goose',
-  'roo-code',
-  'warp',
-];
-
 describe('error taxonomy', () => {
-  it('exposes ErrorSeverity, ERROR_CATEGORIES, classifyError', () => {
-    expect(ErrorSeverity.ABORT).toBe('ABORT');
-    expect(Array.isArray(ERROR_CATEGORIES)).toBe(true);
-    expect(ERROR_CATEGORIES.length).toBeGreaterThanOrEqual(12);
-  });
-
   it('has no SILENT severity', () => {
     const severities = new Set(ERROR_CATEGORIES.map((c) => c.severity));
     expect(severities.has('SILENT' as ErrorSeverity)).toBe(false);
@@ -70,6 +53,54 @@ describe('error taxonomy', () => {
     });
     expect(cat.id).toBe('tree-sitter-eresolve');
     expect(cat.severity).toBe(ErrorSeverity.ABORT);
+  });
+
+  it('classifies a non-interactive provider-selection abort with its own id', () => {
+    const cat = classifyError(new Error('A provider must be explicit when stdin is not interactive.'), {
+      component: 'provider-selection',
+      phase: 'non-interactive-validation',
+    });
+    expect(cat.id).toBe('provider-selection-non-interactive');
+    expect(cat.severity).toBe(ErrorSeverity.ABORT);
+    expect(cat.remediation({ platform: 'linux', dataDir: '/x' })).toContain('--provider claude');
+  });
+
+  it('classifies missing non-interactive provider credentials with its own id', () => {
+    const cat = classifyError(new Error('gemini requires a preconfigured personal API key when stdin is not interactive.'), {
+      component: 'provider-credentials',
+      phase: 'non-interactive-validation',
+    });
+    expect(cat.id).toBe('provider-credentials-missing');
+    expect(cat.severity).toBe(ErrorSeverity.ABORT);
+  });
+
+  it('classifies a tree-sitter CLI provisioning failure with the repair remediation', () => {
+    const cat = classifyError(new Error('tree-sitter-cli provisioning failed in /x: exited with code 2'), {
+      component: 'tree-sitter-cli-cache',
+      phase: 'dependency-install',
+    });
+    expect(cat.id).toBe('tree-sitter-cli-cache-provisioning-failed');
+    const remediation = cat.remediation({ platform: 'win32', dataDir: 'C:\\temp\\claude-mem' });
+    expect(remediation).toContain('npx claude-mem repair');
+    expect(remediation).toContain('C:\\temp\\claude-mem/last-install-error.json');
+    expect(remediation).toContain('CLAUDE_MEM_INSTALL_TIMEOUT_MS');
+  });
+
+  // #4858: on musl the download works but the glibc executable cannot run, so
+  // the remediation must not blame the network.
+  it('classifies a downloaded tree-sitter CLI that cannot run with the PATH workaround', () => {
+    const cat = classifyError(
+      new Error('tree-sitter-cli provisioning failed in /x: The downloaded tree-sitter 0.26.9 executable matches the pinned SHA-256 but cannot run on this system: spawn ENOENT'),
+      { component: 'tree-sitter-cli-cache', phase: 'dependency-install' },
+    );
+    expect(cat.id).toBe('tree-sitter-cli-cannot-run');
+    const remediation = cat.remediation({ platform: 'linux', dataDir: '/tmp/claude-mem' });
+    expect(remediation).toContain('musl');
+    expect(remediation).toContain('0.26 or newer');
+    expect(remediation).toContain('PATH');
+    expect(remediation).toContain('npx claude-mem doctor');
+    expect(remediation).not.toContain('network');
+    expect(remediation).not.toContain('last-install-error.json');
   });
 
   it('defaults unknown errors to ABORT (fail-loud)', () => {
@@ -128,6 +159,46 @@ describe('installerError decision logic', () => {
     expect(record.categoryId).toBe('tree-sitter-eresolve');
     expect(record.severity).toBe('ABORT');
     expect(record.details).toContain('While resolving');
+  });
+
+  // The record describes an aborted run. Nothing removed it, so doctor kept
+  // showing an old error and its advice after later runs succeeded (#4858).
+  it('a finished run clears the record of an earlier abort', () => {
+    const recordPath = join(home, 'last-install-error.json');
+    expect(() => installerError(ErrorSeverity.ABORT, {
+      component: 'marketplace-npm-install',
+      phase: 'marketplace-deps',
+      cause: new Error('npm error code ERESOLVE'),
+    }, createInstallSummary())).toThrow(InstallAbortError);
+    expect(existsSync(recordPath)).toBe(true);
+
+    clearLastInstallError();
+    expect(existsSync(recordPath)).toBe(false);
+    // Nothing to clear is not an error.
+    expect(() => clearLastInstallError()).not.toThrow();
+  });
+
+  // Clearing runs after the install already finished, so a record that cannot
+  // be removed must not turn that success into a failed command; it warns.
+  it('a record that cannot be removed warns instead of failing the finished run', () => {
+    const recordPath = join(home, 'last-install-error.json');
+    // A directory at the record's path makes the non-recursive remove throw on every platform.
+    mkdirSync(join(recordPath, 'blocker'), { recursive: true });
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => { warnings.push(args.join(' ')); };
+    try {
+      expect(() => clearLastInstallError()).not.toThrow();
+    } finally {
+      console.warn = originalWarn;
+    }
+    expect(warnings.join('\n')).toContain('last-install-error.json');
+  });
+
+  it('install and repair clear the record only after their run finishes', () => {
+    const source = readFileSync(join(import.meta.dir, '..', 'src', 'npx-cli', 'commands', 'install.ts'), 'utf-8');
+    expect(source).toMatch(/await runInstallCommandInner\(options, summary\);\r?\n\s*clearLastInstallError\(\);/);
+    expect(source).toMatch(/await runRepairCommandInner\(summary\);\r?\n\s*clearLastInstallError\(\);/);
   });
 
   it('WARN_CONTINUE appends to summary and does not throw', () => {
@@ -191,68 +262,75 @@ describe('npm install ERESOLVE detection', () => {
 });
 
 /**
- * Cross-IDE failure-mode matrix. We exercise the taxonomy/decision logic that
- * drives each install outcome for every IDE without spawning real npm/bun (the
- * directive: test the decision logic + summary rendering, not the network).
- *
- * For each IDE × scenario we assert: the install STATUS (Complete vs Partial vs
- * Aborted), whether an InstallAbortError is thrown, exit semantics (would-exit-1),
- * and that remediation text is present where expected.
+ * EALLOWSCRIPTS (#3697, #3835, #3774). npx on npm 11.16–12.1 exports a user's
+ * `allow-scripts=` line from ~/.npmrc to the installer as
+ * npm_config_allow_scripts; the installer's child `npm install` then counts it
+ * as a command-line setting and aborts before reading any manifest. Verified
+ * against npm 11.16.0, 11.17.0, 11.18.0 and 12.0.1.
  */
-type Scenario = 'happy' | 'eresolve' | 'missing-uv' | 'missing-bun';
+describe('npm install EALLOWSCRIPTS', () => {
+  it('drops an inherited allow-scripts setting from the child npm env, in every spelling', () => {
+    const env = npmChildEnv({
+      PATH: '/usr/bin',
+      npm_config_allow_scripts: 'esbuild',
+      NPM_CONFIG_ALLOW_SCRIPTS: 'esbuild',
+      'npm_config_allow-scripts': 'esbuild',
+      npm_config_registry: 'https://registry.example',
+    });
+    expect(env).toEqual({ PATH: '/usr/bin', npm_config_registry: 'https://registry.example' });
+  });
 
-interface Outcome {
-  status: 'Complete' | 'Partial' | 'Aborted';
-  aborted: boolean;
-  remediation?: string;
-}
+  it.skipIf(process.platform === 'win32')('never hands an inherited allow-scripts value to the npm it spawns', async () => {
+    const binDir = mkdtempSync(join(tmpdir(), 'claude-mem-fake-npm-'));
+    const saved = {
+      PATH: process.env.PATH,
+      lower: process.env.npm_config_allow_scripts,
+      upper: process.env.NPM_CONFIG_ALLOW_SCRIPTS,
+    };
+    try {
+      // A stand-in npm that reports what it inherited.
+      writeFileSync(
+        join(binDir, 'npm'),
+        '#!/bin/sh\nprintf "%s|%s" "${npm_config_allow_scripts-unset}" "${NPM_CONFIG_ALLOW_SCRIPTS-unset}"\n',
+      );
+      chmodSync(join(binDir, 'npm'), 0o755);
+      process.env.PATH = `${binDir}:${saved.PATH ?? ''}`;
+      process.env.npm_config_allow_scripts = 'esbuild';
+      process.env.NPM_CONFIG_ALLOW_SCRIPTS = 'esbuild';
 
-/**
- * Pure model of the installer's decision path for one IDE + one failure mode.
- * Mirrors how install.ts routes each scenario through installerError.
- */
-function simulateInstall(_ide: string, scenario: Scenario): Outcome {
-  const summary = createInstallSummary();
-  try {
-    switch (scenario) {
-      case 'happy':
-        // no errors -> Complete
-        break;
-      case 'eresolve':
-        installerError(ErrorSeverity.ABORT, {
-          component: 'marketplace-npm-install',
-          phase: 'marketplace-deps',
-          cause: new Error('npm error code ERESOLVE\nWhile resolving: tree-sitter'),
-        }, summary);
-        break;
-      case 'missing-uv':
-        installerError(ErrorSeverity.ABORT, {
-          component: 'uv-install',
-          phase: 'setup-runtime',
-          cause: new Error('uv binary not found after auto-install attempt'),
-        }, summary);
-        break;
-      case 'missing-bun':
-        installerError(ErrorSeverity.ABORT, {
-          component: 'bun-install',
-          phase: 'setup-runtime',
-          cause: new Error('Bun executable not found after auto-install attempt'),
-        }, summary);
-        break;
+      const result = await runNpmStrict(binDir, ['install', '--omit=dev', '--ignore-scripts']);
+
+      expect(result.code).toBe(0);
+      expect(result.stdout).toBe('unset|unset');
+    } finally {
+      process.env.PATH = saved.PATH;
+      if (saved.lower === undefined) delete process.env.npm_config_allow_scripts;
+      else process.env.npm_config_allow_scripts = saved.lower;
+      if (saved.upper === undefined) delete process.env.NPM_CONFIG_ALLOW_SCRIPTS;
+      else process.env.NPM_CONFIG_ALLOW_SCRIPTS = saved.upper;
+      rmSync(binDir, { recursive: true, force: true });
     }
-  } catch (e) {
-    if (e instanceof InstallAbortError) {
-      return { status: 'Aborted', aborted: true, remediation: e.remediation };
-    }
-    throw e;
-  }
-  const status = summary.failedIDEs.length > 0 ? 'Partial' : 'Complete';
-  return { status, aborted: false };
-}
+  });
 
-describe('cross-IDE failure matrix (11 IDEs x 4 scenarios)', () => {
-  const scenarios: Scenario[] = ['happy', 'eresolve', 'missing-uv', 'missing-bun'];
+  it("reads npm's error code from both stderr formats", () => {
+    expect(npmErrorCode('npm error code EALLOWSCRIPTS\nnpm error --allow-scripts is not allowed')).toBe('EALLOWSCRIPTS');
+    expect(npmErrorCode('npm ERR! code E404\nnpm ERR! 404 Not Found')).toBe('E404');
+    expect(npmErrorCode('segmentation fault')).toBeNull();
+  });
 
+  it('classifies an EALLOWSCRIPTS marketplace failure with the ~/.npmrc remediation', () => {
+    const cat = classifyError(new Error('npm install failed (exit 1): EALLOWSCRIPTS'), {
+      component: 'marketplace-npm-install',
+      phase: 'marketplace-deps',
+    });
+    expect(cat.id).toBe('npm-allow-scripts-policy');
+    const remediation = cat.remediation({ platform: 'linux', dataDir: '/tmp/cm' });
+    expect(remediation).toContain('~/.npmrc');
+    expect(remediation).toContain('allow-scripts');
+  });
+});
+
+describe('failure remediation', () => {
   let prevMatrixDataDir: string | undefined;
   beforeEach(() => {
     prevMatrixDataDir = process.env.CLAUDE_MEM_DATA_DIR;
@@ -269,34 +347,21 @@ describe('cross-IDE failure matrix (11 IDEs x 4 scenarios)', () => {
     else process.env.CLAUDE_MEM_DATA_DIR = prevMatrixDataDir;
   });
 
-  it('produces 48 cells (12 IDEs x 4 scenarios)', () => {
-    expect(CANONICAL_IDES.length * scenarios.length).toBe(48);
-  });
-
-  for (const ide of CANONICAL_IDES) {
-    for (const scenario of scenarios) {
-      it(`${ide} / ${scenario}`, () => {
-        const outcome = simulateInstall(ide, scenario);
-        if (scenario === 'happy') {
-          expect(outcome.status).toBe('Complete');
-          expect(outcome.aborted).toBe(false);
-        } else {
-          // Every failure mode must ABORT (exit 1) — never "Complete".
-          expect(outcome.status).toBe('Aborted');
-          expect(outcome.aborted).toBe(true);
-          expect(outcome.remediation && outcome.remediation.length).toBeGreaterThan(0);
-        }
-
-        if (scenario === 'missing-uv') {
-          expect(outcome.remediation).toContain('uv');
-        }
-        if (scenario === 'missing-bun') {
-          expect(outcome.remediation).toContain('Bun');
-        }
-        if (scenario === 'eresolve') {
-          expect(outcome.remediation).toContain('ERESOLVE');
-        }
-      });
+  it.each([
+    ['uv-install', 'setup-runtime', 'uv binary not found after auto-install attempt', 'uv'],
+    ['bun-install', 'setup-runtime', 'Bun executable not found after auto-install attempt', 'Bun'],
+    ['marketplace-npm-install', 'marketplace-deps', 'npm error code ERESOLVE\nWhile resolving: tree-sitter', 'ERESOLVE'],
+  ])('%s reports actionable remediation', (component, phase, message, expected) => {
+    try {
+      installerError(ErrorSeverity.ABORT, {
+        component,
+        phase,
+        cause: new Error(message),
+      }, createInstallSummary());
+      throw new Error('Expected InstallAbortError');
+    } catch (error) {
+      expect(error).toBeInstanceOf(InstallAbortError);
+      expect((error as InstallAbortError).remediation).toContain(expected);
     }
-  }
+  });
 });

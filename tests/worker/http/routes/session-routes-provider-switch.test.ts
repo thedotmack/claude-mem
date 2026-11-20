@@ -19,20 +19,37 @@ import { logger } from '../../../../src/utils/logger.js';
 import * as realProviderDispatch from '../../../../src/services/worker/provider-dispatch.js';
 const realProviderDispatchSnapshot = { ...realProviderDispatch };
 
-const providerSelectionBox: { current: 'claude' | 'gemini' | 'openrouter' } = { current: 'claude' };
+const providerSelectionBox: {
+  current: 'claude' | 'gemini' | 'openrouter' | 'codex';
+  fallbackFrom?: 'claude' | 'gemini' | 'openrouter' | 'codex';
+} = { current: 'claude' };
 
 mock.module('../../../../src/services/worker/provider-dispatch.js', () => ({
   ...realProviderDispatchSnapshot,
-  selectProviderForGenerator: () => ({ provider: providerSelectionBox.current, gatewayProbeClaimId: null }),
+  selectProviderForGenerator: () => ({
+    provider: providerSelectionBox.current,
+    gatewayProbeClaimId: null,
+    fallbackFrom: providerSelectionBox.fallbackFrom ?? null,
+  }),
   getSelectedProvider: () => providerSelectionBox.current,
 }));
 
 import { SessionRoutes } from '../../../../src/services/worker/http/routes/SessionRoutes.js';
-import { telemetryBuffer } from '../../../../src/services/telemetry/buffer.js';
 import { getProcessRegistry, waitForSlot, isSessionParkedForSlot } from '../../../../src/supervisor/process-registry.js';
 import { guardSharedProcessRegistrySingleton } from '../../../supervisor/process-registry-singleton-guard.js';
 import { guardSharedQuotaCooldownSingleton } from '../../../shared/quota-cooldown-singleton-guard.js';
-import { clearDependencyStatus } from '../../../../src/shared/dependency-health.js';
+import {
+  CODEX_CLI_SETUP_RECHECK_COOLDOWN_MS,
+  clearDependencyStatus,
+  getDependencyStatus,
+  recordCodexCliSetupRequired,
+} from '../../../../src/shared/dependency-health.js';
+import {
+  QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
+  recordQuotaExhausted,
+  resetQuotaCooldownsForTesting,
+  tryAdmitQuotaProbe,
+} from '../../../../src/shared/quota-cooldown.js';
 import type { ActiveSession, ConversationMessage } from '../../../../src/services/worker-types.js';
 
 /**
@@ -90,7 +107,9 @@ function makeFakeSession(sessionDbId: number): ActiveSession {
 
 function makeFakeMessageBuffer() {
   return {
-    getPendingCount: mock(() => 0),
+    // One message buffered: a generator only starts (or switches) when there
+    // is queued work — an empty queue is gated before provider selection.
+    getPendingCount: mock(() => 1),
     peekTypes: mock(() => [] as Array<{ message_type: string; tool_name?: string }>),
   };
 }
@@ -99,12 +118,15 @@ function makeRoutes(session: ActiveSession, agents: {
   sdkAgent: { startSession: ReturnType<typeof mock> };
   geminiAgent: { startSession: ReturnType<typeof mock> };
   openRouterAgent: { startSession: ReturnType<typeof mock> };
+  codexAgent?: { startSession: ReturnType<typeof mock> };
 }) {
   const messageBuffer = makeFakeMessageBuffer();
   const sessionManager = {
     getSession: mock((id: number) => (id === session.sessionDbId ? session : undefined)),
     getMessageBuffer: mock(() => messageBuffer),
     removeSessionImmediate: mock(() => {}),
+    // A start refused under a quota/auth cooldown discards buffered work.
+    discardBufferedWork: mock(() => 1),
   };
   const completionHandler = {
     finalizeSession: mock(() => Promise.resolve()),
@@ -119,6 +141,7 @@ function makeRoutes(session: ActiveSession, agents: {
     {} as any, // eventBroadcaster — unused by ensureGeneratorRunning
     {} as any, // workerService
     completionHandler as any,
+    agents.codexAgent as any,
   );
 
   return { routes, sessionManager, completionHandler, messageBuffer };
@@ -164,6 +187,7 @@ describe('SessionRoutes.ensureGeneratorRunning — provider switch (#2756)', () 
   // guaranteed to run before the guard's "after" check.
   beforeEach(() => {
     providerSelectionBox.current = 'claude';
+    providerSelectionBox.fallbackFrom = undefined;
     loggerSpies = [
       spyOn(logger, 'info').mockImplementation(() => {}),
       spyOn(logger, 'debug').mockImplementation(() => {}),
@@ -177,11 +201,52 @@ describe('SessionRoutes.ensureGeneratorRunning — provider switch (#2756)', () 
   afterEach(() => {
     loggerSpies.forEach(spy => spy.mockRestore());
     clearDependencyStatus('claude_cli');
+    clearDependencyStatus('codex_cli');
     while (registeredIds.length > 0) {
       const id = registeredIds.pop();
       if (id) registry.unregister(id);
     }
   });
+
+  for (const mode of ['live', 'replay', 'default-model', 'unavailable'] as const) {
+    it(`keeps ${mode} Codex Telegram wrap-ups on the selected provider`, async () => {
+      const session = makeFakeSession(900010);
+      session.currentProvider = mode === 'replay' ? null : 'codex';
+      session.lastModelId = mode === 'default-model' ? 'codex-default' : 'active-codex-model';
+      providerSelectionBox.current = 'codex';
+      const sdkAgent = {
+        startSession: mock(() => Promise.resolve()),
+        formatTelegramWrapup: mock(() => Promise.resolve('wrong provider')),
+      };
+      const codexAgent = {
+        startSession: mock(() => Promise.resolve()),
+        formatTelegramWrapup: mock(() => Promise.resolve('Codex wrap-up')),
+      };
+      const { routes } = makeRoutes(session, {
+        sdkAgent,
+        geminiAgent: { startSession: mock(() => Promise.resolve()) },
+        openRouterAgent: { startSession: mock(() => Promise.resolve()) },
+        codexAgent: mode === 'unavailable' ? undefined : codexAgent,
+      });
+      const input = {
+        sessionDbId: session.sessionDbId,
+        contentSessionId: session.contentSessionId,
+        project: session.project,
+        platformSource: 'codex',
+        summaryText: 'Stored summary',
+      };
+      const result = (routes as any).formatTelegramWrapup(input);
+      if (mode === 'unavailable') {
+        await expect(result).rejects.toThrow('Codex provider is not available');
+      } else {
+        await expect(result).resolves.toBe('Codex wrap-up');
+        expect(codexAgent.formatTelegramWrapup).toHaveBeenCalledWith(
+          input, mode === 'live' ? 'active-codex-model' : undefined,
+        );
+      }
+      expect(sdkAgent.formatTelegramWrapup).not.toHaveBeenCalled();
+    });
+  }
 
   it('aborts a PARKED generator and switches immediately when the provider changes', async () => {
     const sessionDbId = 900001;
@@ -218,28 +283,11 @@ describe('SessionRoutes.ensureGeneratorRunning — provider switch (#2756)', () 
     expect(isSessionParkedForSlot(sessionDbId)).toBe(true);
 
     const originalAbortController = session.abortController;
-    const originalConversationHistory = session.conversationHistory;
     const originalClaimedMessageIds = session.claimedMessageIds;
-
-    // #2756 round-2 review finding (important): normalizeAbortReason's new
-    // 'provider_switch' case is the only thing standing between this abort
-    // and a silently corrupted session_compressed telemetry event (a typo'd
-    // case falls through to the 'none' default with no type error and no
-    // other test noticing). Spy on the real telemetryBuffer.record and
-    // assert the emitted abort_reason directly, rather than only asserting
-    // on session state.
-    const telemetrySpy = spyOn(telemetryBuffer, 'record');
 
     // Settings changed: openrouter is now selected.
     providerSelectionBox.current = 'openrouter';
     await routes.ensureGeneratorRunning(sessionDbId, 'ingest');
-
-    const abortedTelemetryCall = telemetrySpy.mock.calls.find(
-      ([event, id]) => event === 'session_compressed' && id === sessionDbId
-    );
-    expect(abortedTelemetryCall).toBeDefined();
-    expect((abortedTelemetryCall?.[2] as Record<string, unknown> | undefined)?.abort_reason).toBe('provider_switch');
-    telemetrySpy.mockRestore();
 
     // Parked wait was aborted and replaced.
     expect(originalAbortController.signal.aborted).toBe(true);
@@ -252,8 +300,9 @@ describe('SessionRoutes.ensureGeneratorRunning — provider switch (#2756)', () 
     expect(session.abortController).not.toBe(originalAbortController);
     expect(session.abortController.signal.aborted).toBe(false);
 
-    // Queue/conversationHistory preserved across the switch (#2756 requirement).
-    expect(session.conversationHistory).toBe(originalConversationHistory);
+    // The queue survives the switch (#2756 requirement). The transcript need
+    // not: the new provider's generator opens a new generation seeded from the
+    // session's memory (#3800, #3479).
     expect(session.claimedMessageIds).toBe(originalClaimedMessageIds);
     expect(session.abortReason ?? null).toBeNull(); // consumed by handleGeneratorExit
 
@@ -262,6 +311,47 @@ describe('SessionRoutes.ensureGeneratorRunning — provider switch (#2756)', () 
     expect(completionHandler.finalizeSession).not.toHaveBeenCalled();
     expect(sessionManager.removeSessionImmediate).not.toHaveBeenCalled();
   });
+
+  for (const parkedSwitch of [false, true]) {
+    it(`honors Codex setup cooldown and admits one recovery probe on ${parkedSwitch ? 'parked switch' : 'fresh start'}`, async () => {
+      const session = makeFakeSession(parkedSwitch ? 900007 : 900006);
+      const sdkAgent = {
+        startSession: mock((s: ActiveSession) => waitForSlot(1, s.abortController.signal, s.sessionDbId)),
+      };
+      const geminiAgent = { startSession: mock(() => Promise.resolve()) };
+      const openRouterAgent = { startSession: mock(() => Promise.resolve()) };
+      const codexAgent = { startSession: mock(() => new Promise<void>(() => {})) };
+      const { routes, sessionManager, completionHandler } = makeRoutes(session, {
+        sdkAgent, geminiAgent, openRouterAgent, codexAgent,
+      });
+      if (parkedSwitch) {
+        registerFakeOccupant('codex-switch-occupant');
+        await routes.ensureGeneratorRunning(session.sessionDbId, 'init');
+        expect(isSessionParkedForSlot(session.sessionDbId)).toBe(true);
+      }
+      const history = session.conversationHistory;
+      const status = recordCodexCliSetupRequired('login required');
+      providerSelectionBox.current = 'codex';
+      await routes.ensureGeneratorRunning(session.sessionDbId, 'ingest');
+      expect(codexAgent.startSession).not.toHaveBeenCalled();
+      expect(session.generatorPromise).toBeNull();
+      expect(session.conversationHistory).toBe(history);
+      expect(completionHandler.finalizeSession).not.toHaveBeenCalled();
+      expect(sessionManager.removeSessionImmediate).not.toHaveBeenCalled();
+      expect(geminiAgent.startSession).not.toHaveBeenCalled();
+      expect(openRouterAgent.startSession).not.toHaveBeenCalled();
+
+      // Window elapsed: the next start is the recovery probe.
+      status.recordedAtMs = Date.now() - CODEX_CLI_SETUP_RECHECK_COOLDOWN_MS - 1;
+      await Promise.all([
+        routes.ensureGeneratorRunning(session.sessionDbId, 'retry-a'),
+        routes.ensureGeneratorRunning(session.sessionDbId, 'retry-b'),
+      ]);
+      expect(codexAgent.startSession).toHaveBeenCalledTimes(1);
+      expect(session.currentProvider).toBe('codex');
+      expect(getDependencyStatus('codex_cli')).toBeNull();
+    });
+  }
 
   it('does not touch a generator that already acquired its slot (mid-response)', async () => {
     const sessionDbId = 900002;
@@ -286,10 +376,68 @@ describe('SessionRoutes.ensureGeneratorRunning — provider switch (#2756)', () 
     providerSelectionBox.current = 'openrouter';
     await routes.ensureGeneratorRunning(sessionDbId, 'ingest');
 
-    // Nothing aborted, nothing switched — the existing log-only fallback.
+    // Nothing aborted mid-response: the switch waits for the next message
+    // boundary (#4846).
     expect(originalAbortController.signal.aborted).toBe(false);
     expect(session.abortController).toBe(originalAbortController);
     expect(session.generatorPromise).toBe(originalGeneratorPromise);
+    expect(session.currentProvider).toBe('claude');
+    expect(openRouterAgent.startSession).not.toHaveBeenCalled();
+    expect(session.providerSwitchPending).toBe(true);
+
+    // Selection went back to the running provider before the boundary.
+    providerSelectionBox.current = 'claude';
+    await routes.ensureGeneratorRunning(sessionDbId, 'ingest');
+    expect(session.providerSwitchPending).toBe(false);
+  });
+
+  it('asks a running stand-in to switch back once its primary is selected again (#4846)', async () => {
+    const sessionDbId = 900004;
+    const session = makeFakeSession(sessionDbId);
+
+    // A Claude stand-in for openrouter, mid-session: its generator never ends.
+    const sdkAgent = { startSession: mock(() => new Promise<void>(() => {})) };
+    const geminiAgent = { startSession: mock(() => Promise.resolve()) };
+    const openRouterAgent = { startSession: mock(() => Promise.resolve()) };
+    const { routes } = makeRoutes(session, { sdkAgent, geminiAgent, openRouterAgent });
+
+    await routes.ensureGeneratorRunning(sessionDbId, 'init');
+    session.fallbackFrom = 'openrouter';
+    const originalAbortController = session.abortController;
+
+    providerSelectionBox.current = 'openrouter';
+    await routes.ensureGeneratorRunning(sessionDbId, 'ingest');
+
+    // Not aborted mid-reply: the switch waits for the next message boundary.
+    expect(session.providerSwitchPending).toBe(true);
+    expect(originalAbortController.signal.aborted).toBe(false);
+    expect(session.currentProvider).toBe('claude');
+    expect(openRouterAgent.startSession).not.toHaveBeenCalled();
+
+    // The primary failed again elsewhere; dispatch selects the stand-in again.
+    providerSelectionBox.current = 'claude';
+    await routes.ensureGeneratorRunning(sessionDbId, 'ingest');
+    expect(session.providerSwitchPending).toBe(false);
+  });
+
+  it('does not switch a running generator away from the provider dispatch routes around (its own probe)', async () => {
+    const sessionDbId = 900008;
+    const session = makeFakeSession(sessionDbId);
+    const sdkAgent = { startSession: mock(() => new Promise<void>(() => {})) };
+    const geminiAgent = { startSession: mock(() => Promise.resolve()) };
+    const openRouterAgent = { startSession: mock(() => Promise.resolve()) };
+    const { routes } = makeRoutes(session, { sdkAgent, geminiAgent, openRouterAgent });
+
+    await routes.ensureGeneratorRunning(sessionDbId, 'init');
+    expect(session.currentProvider).toBe('claude');
+
+    // The primary's probe is in flight on this generator, so dispatch sends
+    // other work to the fallback meanwhile.
+    providerSelectionBox.current = 'openrouter';
+    providerSelectionBox.fallbackFrom = 'claude';
+    await routes.ensureGeneratorRunning(sessionDbId, 'ingest');
+
+    expect(session.providerSwitchPending).toBe(false);
     expect(session.currentProvider).toBe('claude');
     expect(openRouterAgent.startSession).not.toHaveBeenCalled();
   });
@@ -432,5 +580,67 @@ describe('SessionRoutes.ensureGeneratorRunning — provider switch (#2756)', () 
       expect(openRouterAgent.startSession).toHaveBeenCalledTimes(1);
       expect(session.currentProvider).toBe('openrouter');
     });
+  });
+});
+
+describe('SessionRoutes — the parked-slot race at a quota window edge (quota fallback)', () => {
+  // When the primary's window elapses, several sessions parked on a Claude
+  // fallback slot can each be sent back to the primary; only one wins its
+  // probe. That race is accepted, with no mitigation code. A loser is refused
+  // by the quota breaker, so it discards its buffered work like any start
+  // refused under a spent quota (observer-lifecycle.md); it must still not be
+  // finalized, so its next event starts fresh work. Nested one level in, so
+  // this cleanup runs before the file-level singleton guards check the breaker.
+  beforeEach(() => {
+    providerSelectionBox.current = 'claude';
+    providerSelectionBox.fallbackFrom = undefined;
+    loggerSpies = [
+      spyOn(logger, 'info').mockImplementation(() => {}),
+      spyOn(logger, 'debug').mockImplementation(() => {}),
+      spyOn(logger, 'warn').mockImplementation(() => {}),
+      spyOn(logger, 'error').mockImplementation(() => {}),
+      spyOn(logger, 'failure').mockImplementation(() => {}),
+    ];
+    clearDependencyStatus('claude_cli');
+  });
+
+  afterEach(() => {
+    loggerSpies.forEach(spy => spy.mockRestore());
+    clearDependencyStatus('claude_cli');
+    while (registeredIds.length > 0) {
+      const id = registeredIds.pop();
+      if (id) registry.unregister(id);
+    }
+    resetQuotaCooldownsForTesting();
+  });
+
+  it('a parked session that loses the primary probe starts nothing and discards its work, without finalizing', async () => {
+    const sessionDbId = 900101;
+    const session = makeFakeSession(sessionDbId);
+    registerFakeOccupant('occupant-for-900101');
+
+    const sdkAgent = { startSession: mock((s: ActiveSession) => waitForSlot(1, s.abortController.signal, s.sessionDbId)) };
+    const geminiAgent = { startSession: mock(() => new Promise<void>(() => {})) };
+    const openRouterAgent = { startSession: mock(() => Promise.resolve()) };
+    const { routes, sessionManager, completionHandler } = makeRoutes(session, { sdkAgent, geminiAgent, openRouterAgent });
+
+    // Parked on the Claude fallback while gemini was held.
+    await routes.ensureGeneratorRunning(sessionDbId, 'init');
+    expect(isSessionParkedForSlot(sessionDbId)).toBe(true);
+
+    // Gemini's window has elapsed, and another session claimed its single probe
+    // after this session's dispatch had already said "gemini".
+    recordQuotaExhausted('gemini', 'Daily limit reached', undefined, Date.now() - QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS - 1);
+    expect(tryAdmitQuotaProbe('gemini').admitted).toBe(true);
+    providerSelectionBox.current = 'gemini';
+    await routes.ensureGeneratorRunning(sessionDbId, 'ingest');
+
+    expect(isSessionParkedForSlot(sessionDbId)).toBe(false);
+    expect(geminiAgent.startSession).not.toHaveBeenCalled();
+    expect(sessionManager.discardBufferedWork).toHaveBeenCalledTimes(1);
+    expect(sessionManager.discardBufferedWork).toHaveBeenCalledWith(sessionDbId);
+    expect(session.pausedReason).toBe('quota');
+    expect(completionHandler.finalizeSession).not.toHaveBeenCalled();
+    expect(sessionManager.removeSessionImmediate).not.toHaveBeenCalled();
   });
 });

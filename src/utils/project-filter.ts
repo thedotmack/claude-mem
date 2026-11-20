@@ -18,12 +18,31 @@ function globToRegex(pattern: string): RegExp {
   let regex = expanded.replace(/[.+^${}()|[\]\\]/g, '\\$&');
 
   regex = regex
+    // A complete **/ directory segment also matches no directory. Keep its
+    // slash until after tokenization so consecutive globstars are recognized.
+    .replace(/(^|\/)\*\*(?=\/)/g, '$1<<<GLOBSTAR_DIR>>>')
     .replace(/\*\*/g, '<<<GLOBSTAR>>>')  
     .replace(/\*/g, '[^/]*')              
     .replace(/\?/g, '[^/]')               
-    .replace(/<<<GLOBSTAR>>>/g, '.*');    
+    .replace(/<<<GLOBSTAR>>>/g, '.*')
+    .replace(/<<<GLOBSTAR_DIR>>>\//g, '(?:.*/)?');
 
-  return new RegExp(`^${regex}$`);
+  // Directory names may contain line terminators, which globstars must also match.
+  return new RegExp(`^${regex}$`, 's');
+}
+
+/**
+ * `dir/**` means "everything under dir" and users also expect it to cover `dir`
+ * itself, but the regex needs a character after `dir/`. Match the pattern with
+ * its trailing `/**` removed against the path as well.
+ */
+function matchesGlobPattern(pattern: string, normalizedPath: string, pathBasename: string): boolean {
+  const regex = globToRegex(pattern);
+  if (regex.test(normalizedPath) || regex.test(pathBasename)) return true;
+  if (pattern.replace(/\\/g, '/').endsWith('/**')) {
+    return globToRegex(pattern.slice(0, -3)).test(normalizedPath.replace(/\/+$/, ''));
+  }
+  return false;
 }
 
 /**
@@ -40,8 +59,7 @@ export function matchesAnyGlob(folderPath: string, patterns: string[]): boolean 
     const pattern = rawPattern.trim();
     if (!pattern) continue;
     try {
-      const regex = globToRegex(pattern);
-      if (regex.test(normalizedPath) || regex.test(pathBasename)) {
+      if (matchesGlobPattern(pattern, normalizedPath, pathBasename)) {
         return true;
       }
     } catch (error: unknown) {
@@ -67,8 +85,7 @@ export function isProjectExcluded(projectPath: string, exclusionPatterns: string
 
   for (const pattern of patternList) {
     try {
-      const regex = globToRegex(pattern);
-      if (regex.test(normalizedProjectPath) || regex.test(projectBasename)) {
+      if (matchesGlobPattern(pattern, normalizedProjectPath, projectBasename)) {
         return true;
       }
     } catch (error: unknown) {

@@ -31,6 +31,10 @@ interface BeforeAgentStartEvent {
 
 interface BeforePromptBuildEvent {
   prompt: string;
+  /** The user's request before history projection; newer hosts only. An empty string means no textual request. */
+  currentUserMessage?: string;
+  /** Stable across rebuilds and retries of one admitted request; newer hosts only. */
+  currentUserMessageId?: string;
   messages: unknown[];
 }
 
@@ -41,13 +45,38 @@ interface BeforePromptBuildResult {
   appendSystemContext?: string;
 }
 
-interface ToolResultPersistEvent {
-  toolName?: string;
+// OpenClaw's PluginHookAfterToolCallEvent. A failed call reports its message in
+// `error`. `params` is required upstream, but a host build that omits it must
+// not throw here.
+interface AfterToolCallEvent {
+  toolName: string;
   params?: Record<string, unknown>;
-  message?: {
-    content?: Array<{ type: string; text?: string }>;
-  };
+  toolCallId?: string;
+  result?: unknown;
+  error?: string;
 }
+
+function stripPrivateSpans(text: string): string {
+  const tags = /<private(?=[\s>]|$)[^>]*(?:>|$)|<\/private\s*>/gi;
+  let depth = 0;
+  let cursor = 0;
+  let result = "";
+  for (const match of text.matchAll(tags)) {
+    if (match[0].startsWith("</")) {
+      if (depth > 0 && --depth === 0) cursor = match.index! + match[0].length;
+    } else {
+      if (depth === 0) result += text.slice(cursor, match.index);
+      depth++;
+    }
+  }
+  return result + (depth === 0 ? text.slice(cursor) : "");
+}
+
+const CAPTURE_TOOL_NAMES = new Map([
+  ["read", "Read"],
+  ["write", "Write"],
+  ["edit", "Edit"],
+]);
 
 interface AgentEndEvent {
   messages?: Array<{
@@ -118,7 +147,7 @@ interface OpenClawPluginApi {
   }) => void;
   on: ((event: "before_prompt_build", callback: PromptBuildCallback) => void) &
       ((event: "before_agent_start", callback: EventCallback<BeforeAgentStartEvent>) => void) &
-      ((event: "tool_result_persist", callback: EventCallback<ToolResultPersistEvent>) => void) &
+      ((event: "after_tool_call", callback: EventCallback<AfterToolCallEvent>) => void) &
       ((event: "agent_end", callback: EventCallback<AgentEndEvent>) => void) &
       ((event: "session_start", callback: EventCallback<SessionStartEvent>) => void) &
       ((event: "session_end", callback: EventCallback<SessionEndEvent>) => void) &
@@ -126,9 +155,33 @@ interface OpenClawPluginApi {
       ((event: "after_compaction", callback: EventCallback<AfterCompactionEvent>) => void) &
       ((event: "gateway_start", callback: EventCallback<Record<string, never>>) => void);
   runtime: {
+    /** The OpenClaw host version, e.g. "2026.11.2". */
+    version?: string;
     channel: Record<string, Record<string, (...args: any[]) => Promise<any>>>;
   };
 }
+
+// OpenClaw's validated hook set has before_agent_start through 2026.7.35 and
+// drops it from 2026.8.1-beta.1 on, where registering it only produces an
+// "unknown typed hook" warning. While a host has it, it carries the raw user
+// prompt; before_prompt_build's `prompt` there may include rebuilt history.
+const FIRST_OPENCLAW_VERSION_WITHOUT_BEFORE_AGENT_START = [2026, 8, 1] as const;
+
+/** null when the host's version is unreadable (OpenClaw 2026.2.9 reports "unknown"). */
+function openClawHostHasBeforeAgentStart(hostVersion: string | undefined): boolean | null {
+  const match = /^(\d+)\.(\d+)\.(\d+)/.exec(hostVersion ?? "");
+  if (!match) return null;
+  const hostParts = match.slice(1, 4).map(Number);
+  for (let i = 0; i < hostParts.length; i++) {
+    const boundary = FIRST_OPENCLAW_VERSION_WITHOUT_BEFORE_AGENT_START[i];
+    if (hostParts[i] !== boundary) return hostParts[i] < boundary;
+  }
+  return false;
+}
+
+// The worker refuses a native prompt ID longer than 256 characters or one that
+// contains whitespace or control characters (SessionStore.saveNativeUserPrompt).
+const WORKER_ACCEPTED_NATIVE_PROMPT_ID = /^[^\s\x00-\x1f\x7f]{1,256}$/;
 
 interface ObservationSSEPayload {
   id: number;
@@ -187,6 +240,8 @@ interface ClaudeMemPluginConfig {
 const MAX_SSE_BUFFER_SIZE = 1024 * 1024; 
 const DEFAULT_WORKER_PORT = 37777;
 const DEFAULT_WORKER_HOST = "127.0.0.1";
+// Stamped on every session post so OpenClaw memory is not stored as Claude Code's.
+const PLATFORM_SOURCE = "openclaw";
 
 const EMOJI_POOL = [
   "🔧","📐","🔍","💻","🧪","🐛","🛡️","☁️","📦","🎯",
@@ -237,11 +292,19 @@ function buildGetSourceLabel(
 let _workerHost = DEFAULT_WORKER_HOST;
 
 function workerBaseUrl(port: number): string {
-  return `http://${_workerHost}:${port}`;
+  const host = _workerHost.includes(":") && !_workerHost.startsWith("[")
+    ? `[${_workerHost}]` : _workerHost;
+  return `http://${host}:${port}`;
 }
 
 const CIRCUIT_BREAKER_THRESHOLD = 3;
 const CIRCUIT_BREAKER_COOLDOWN_MS = 30_000;
+// Covers both response headers and body reads; optional memory must not leave
+// an OpenClaw hook waiting indefinitely on an unresponsive worker. 5 s is the
+// bound the Hermes plugin, the other in-process host, already uses for the same
+// worker endpoints (WRITE_TIMEOUT_S in hermes/claude-mem/client.py; its context
+// reads use READ_TIMEOUT_S = 3 s), so context injection fits inside it too.
+const WORKER_REQUEST_TIMEOUT_MS = 5_000;
 
 type CircuitState = "CLOSED" | "OPEN" | "HALF_OPEN";
 
@@ -310,14 +373,17 @@ async function workerPost(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(WORKER_REQUEST_TIMEOUT_MS),
     });
     if (!response.ok) {
+      await response.body?.cancel();
       circuitOnFailure(logger);
       logger.warn(`[claude-mem] Worker POST ${path} returned ${response.status}`);
       return null;
     }
+    const result = (await response.json()) as Record<string, unknown>;
     circuitOnSuccess(logger);
-    return (await response.json()) as Record<string, unknown>;
+    return result;
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     circuitOnFailure(logger);
@@ -339,7 +405,10 @@ function workerPostFireAndForget(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
-  }).then((response) => {
+    signal: AbortSignal.timeout(WORKER_REQUEST_TIMEOUT_MS),
+  }).then(async (response) => {
+    // This caller needs only the status, so release the unused response body.
+    await response.body?.cancel();
     if (!response.ok) {
       circuitOnFailure(logger);
       logger.warn(`[claude-mem] Worker POST ${path} returned ${response.status}`);
@@ -362,14 +431,18 @@ async function workerGetText(
 ): Promise<string | null> {
   if (!circuitAllow(logger)) return null;
   try {
-    const response = await fetch(`${workerBaseUrl(port)}${path}`);
+    const response = await fetch(`${workerBaseUrl(port)}${path}`, {
+      signal: AbortSignal.timeout(WORKER_REQUEST_TIMEOUT_MS),
+    });
     if (!response.ok) {
+      await response.body?.cancel();
       circuitOnFailure(logger);
       logger.warn(`[claude-mem] Worker GET ${path} returned ${response.status}`);
       return null;
     }
+    const text = await response.text();
     circuitOnSuccess(logger);
-    return await response.text();
+    return text;
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     circuitOnFailure(logger);
@@ -744,12 +817,14 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     return null;
   }
 
-  // Centralized session-init POST. session_start, after_compaction, and
-  // before_agent_start each call this; the 2s dedup guard
-  // (shouldSkipDuplicatePromptInit) collapses the redundant inits a single
-  // user-message flow produces into one prompt record, while still ensuring a
-  // session is initialized even on flows that never reach before_agent_start.
-  async function initSessionOnce(ctx: EventContext, promptText: string, via: string): Promise<void> {
+  // Centralized session-init POST. session_start, after_compaction, and the
+  // prompt hook (before_agent_start while the host has it, else before_prompt_build) each
+  // call this; the 2s dedup guard (shouldSkipDuplicatePromptInit) collapses the
+  // redundant inits a single user-message flow produces into one prompt record,
+  // while still ensuring a session is initialized even on flows that never
+  // reach the prompt hook. A native prompt ID lets the worker recognize a
+  // rebuilt or retried request as the prompt it already recorded.
+  async function initSessionOnce(ctx: EventContext, promptText: string, via: string, nativePromptId?: string): Promise<void> {
     const { contentSessionId } = rememberSessionContext(ctx);
     const projectName = getProjectName(ctx);
 
@@ -762,6 +837,8 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
       contentSessionId,
       project: projectName,
       prompt: promptText,
+      platformSource: PLATFORM_SOURCE,
+      ...(nativePromptId ? { nativePromptId } : {}),
     }, api.logger);
 
     api.logger.info(`[claude-mem] Session initialized via ${via}: contentSessionId=${contentSessionId} project=${projectName}`);
@@ -773,29 +850,55 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
 
   api.on("message_received", async (event, ctx) => {
     const { canonicalKey, contentSessionId } = rememberSessionContext(ctx);
-    api.logger.info(`[claude-mem] Message received — prompt capture deferred to before_agent_start: session=${canonicalKey} contentSessionId=${contentSessionId} hasContent=${Boolean(event.content)}`);
+    api.logger.info(`[claude-mem] Message received — prompt capture deferred to the agent prompt hook: session=${canonicalKey} contentSessionId=${contentSessionId} hasContent=${Boolean(event.content)}`);
   });
 
   api.on("after_compaction", async (_event, ctx) => {
     await initSessionOnce(ctx, "after compaction", "after_compaction");
   });
 
-  api.on("before_agent_start", async (event, ctx) => {
-    await initSessionOnce(ctx, event.prompt || "agent run", "before_agent_start");
-  });
+  // Record each prompt from the cleanest source the host has: the raw prompt on
+  // before_agent_start while the host still has that hook (2026.2.9 through at
+  // least 2026.3.2 report their version as "unknown", and those all have it),
+  // otherwise the explicit request on before_prompt_build.
+  const hostHasBeforeAgentStart = openClawHostHasBeforeAgentStart(api.runtime?.version);
+  const recordPromptOnBeforeAgentStart = hostHasBeforeAgentStart !== false;
+  if (hostHasBeforeAgentStart === null) {
+    api.logger.info(`[claude-mem] OpenClaw host version "${api.runtime?.version ?? ""}" is unreadable; recording prompts on before_agent_start`);
+  }
+  if (recordPromptOnBeforeAgentStart) {
+    api.on("before_agent_start", async (event, ctx) => {
+      await initSessionOnce(ctx, event.prompt || "agent run", "before_agent_start");
+    });
+  }
 
-  api.on("before_prompt_build", async (_event, ctx) => {
-    if (!shouldInjectContext(ctx)) return;
+  api.on("before_prompt_build", async (event, ctx) => {
+    // A string currentUserMessage is the host's explicit request. Without text
+    // (image-only input or a continuation) there is no prompt to record, and
+    // OpenClaw says not to fall back to history. `prompt` may contain
+    // reconstructed history, so it is a prompt source only on a host that sends
+    // no currentUserMessage and has no before_agent_start.
+    const hasExplicitRequest = typeof event.currentUserMessage === "string";
+    const explicitRequestText = hasExplicitRequest ? event.currentUserMessage!.trim() : "";
+    const recordPrompt = hasExplicitRequest ? explicitRequestText.length > 0 : !recordPromptOnBeforeAgentStart;
+    const promptText = hasExplicitRequest ? event.currentUserMessage! : event.prompt || "agent run";
+    const nativePromptId = hasExplicitRequest && typeof event.currentUserMessageId === "string"
+      && WORKER_ACCEPTED_NATIVE_PROMPT_ID.test(event.currentUserMessageId)
+      ? event.currentUserMessageId
+      : undefined;
 
-    const contextText = await getContextForPrompt(ctx);
+    const [, contextText] = await Promise.all([
+      recordPrompt ? initSessionOnce(ctx, promptText, "before_prompt_build", nativePromptId) : Promise.resolve(),
+      shouldInjectContext(ctx) ? getContextForPrompt(ctx) : Promise.resolve(null),
+    ]);
     if (contextText) {
       api.logger.info(`[claude-mem] Context injected via system prompt for agent=${ctx.agentId ?? "unknown"}`);
       return { appendSystemContext: contextText };
     }
   });
 
-  api.on("tool_result_persist", (event, ctx) => {
-    api.logger.info(`[claude-mem] tool_result_persist fired: tool=${event.toolName ?? "unknown"} agent=${ctx.agentId ?? "none"} session=${ctx.sessionKey ?? "none"}`);
+  api.on("after_tool_call", (event, ctx) => {
+    api.logger.info(`[claude-mem] after_tool_call fired: tool=${event.toolName ?? "unknown"} agent=${ctx.agentId ?? "none"} session=${ctx.sessionKey ?? "none"}`);
     const toolName = event.toolName;
     if (!toolName) return;
 
@@ -803,8 +906,13 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
 
     const { canonicalKey, contentSessionId } = rememberSessionContext(ctx);
 
-    let toolResponseText = "";
-    const content = event.message?.content;
+    const failed = (typeof event.error === "string" && event.error.length > 0)
+      || (event.result !== null && typeof event.result === "object"
+        && (event.result as { isError?: unknown }).isError === true);
+    let toolResponseText = typeof event.result === "string" ? event.result : "";
+    const content = event.result && typeof event.result === "object"
+      ? (event.result as { content?: Array<{ type: string; text?: string }> }).content
+      : undefined;
     if (Array.isArray(content)) {
       toolResponseText = content
         .filter((block) => (block.type === "tool_result" || block.type === "text") && "text" in block)
@@ -812,6 +920,12 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
         .join("\n");
     }
 
+    // Ahead of any partial result, so the cap never cuts off why the call failed.
+    if (typeof event.error === "string" && event.error.length > 0) {
+      toolResponseText = [`Error: ${event.error}`, toolResponseText].filter(Boolean).join("\n");
+    }
+
+    toolResponseText = stripPrivateSpans(toolResponseText);
     const MAX_TOOL_RESPONSE_LENGTH = 1000;
     if (toolResponseText.length > MAX_TOOL_RESPONSE_LENGTH) {
       toolResponseText = toolResponseText.slice(0, MAX_TOOL_RESPONSE_LENGTH);
@@ -821,15 +935,25 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     // missing ctx field never silently drops a captured observation.
     const workspaceDir = ctx.workspaceDir || process.cwd();
     if (!ctx.workspaceDir) {
-      api.logger.info(`[claude-mem] tool_result_persist missing workspaceDir; using process.cwd(): session=${canonicalKey} tool=${toolName}`);
+      api.logger.info(`[claude-mem] after_tool_call missing workspaceDir; using process.cwd(): session=${canonicalKey} tool=${toolName}`);
     }
 
+    const params = event.params ?? {};
+    const toolInput = toolName === "read" && typeof params.path === "string"
+      && !(typeof params.file_path === "string" && params.file_path.length > 0)
+      ? { ...params, file_path: params.path }
+      : params;
     workerPostFireAndForget(workerPort, "/api/sessions/observations", {
       contentSessionId,
-      tool_name: toolName,
-      tool_input: event.params || {},
-      tool_response: toolResponseText,
+      tool_name: CAPTURE_TOOL_NAMES.get(toolName) ?? toolName,
+      tool_input: toolInput,
+      // A failed file operation is evidence of an attempt, not a completed
+      // read/edit. Keep the shared worker's structured failure marker.
+      tool_response: failed ? { is_error: true, error: toolResponseText } : toolResponseText,
+      // The worker needs the native ID to retain and link the raw tool receipt.
+      ...(typeof event.toolCallId === "string" && event.toolCallId ? { tool_use_id: event.toolCallId } : {}),
       cwd: workspaceDir,
+      platformSource: PLATFORM_SOURCE,
     }, api.logger);
   });
 
@@ -857,6 +981,7 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     await workerPost(workerPort, "/api/sessions/summarize", {
       contentSessionId,
       last_assistant_message: lastAssistantMessage,
+      platformSource: PLATFORM_SOURCE,
     }, api.logger);
   });
 
@@ -930,20 +1055,16 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     },
   });
 
-  function summarizeSearchResults(items: unknown[], limit = 5): string {
-    if (!Array.isArray(items) || items.length === 0) {
-      return "No results found.";
-    }
-
-    return items
-      .slice(0, limit)
-      .map((item, index) => {
-        const row = item as Record<string, unknown>;
-        const title = String(row.title || row.subtitle || row.text || "Untitled");
-        const project = row.project ? ` [${String(row.project)}]` : "";
-        return `${index + 1}. ${title}${project}`;
-      })
-      .join("\n");
+  // The worker's search, recent-context and timeline routes answer in the MCP
+  // tool shape ({ content: [{ type: "text", text }] }) with the rendered result.
+  function workerResultText(data: Record<string, unknown>): string {
+    const content = Array.isArray(data.content) ? data.content : [];
+    const text = content
+      .filter((block: any) => block?.type === "text" && typeof block.text === "string")
+      .map((block: any) => block.text)
+      .join("\n")
+      .trim();
+    return text || "No results found.";
   }
 
   function parseLimit(arg: string | undefined, fallback = 10): number {
@@ -997,7 +1118,8 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
 
       const pieces = raw.split(/\s+/);
       const maybeLimit = pieces[pieces.length - 1];
-      const hasTrailingLimit = /^\d+$/.test(maybeLimit);
+      // A lone number is the query (a PR number, port or year), not a limit, as in /claude-mem-timeline.
+      const hasTrailingLimit = pieces.length >= 2 && /^\d+$/.test(maybeLimit);
       const limit = hasTrailingLimit ? parseLimit(maybeLimit, 10) : 10;
       const query = hasTrailingLimit ? pieces.slice(0, -1).join(" ") : raw;
 
@@ -1011,10 +1133,9 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
         return "Claude-Mem search failed (worker unavailable or invalid response).";
       }
 
-      const items = Array.isArray(data.items) ? data.items : [];
       return [
         `Claude-Mem Search: \"${query}\"`,
-        summarizeSearchResults(items, limit),
+        workerResultText(data),
       ].join("\n");
     },
   });
@@ -1045,15 +1166,10 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
         return "Claude-Mem recent context failed (worker unavailable or invalid response).";
       }
 
-      const summaries = Array.isArray(data.session_summaries) ? data.session_summaries : [];
-      const observations = Array.isArray(data.recent_observations) ? data.recent_observations : [];
-
       return [
         "Claude-Mem Recent Context",
         `Project: ${project || "(auto)"}`,
-        `Session summaries: ${summaries.length}`,
-        `Recent observations: ${observations.length}`,
-        summarizeSearchResults(observations, Math.min(5, observations.length || 5)),
+        workerResultText(data),
       ].join("\n");
     },
   });
@@ -1082,7 +1198,6 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
       const query = parts.join(" ");
       const params = new URLSearchParams({
         query,
-        mode: "auto",
         depth_before: String(depthBefore),
         depth_after: String(depthAfter),
       });
@@ -1097,13 +1212,9 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
         return "Claude-Mem timeline lookup failed (worker unavailable or invalid response).";
       }
 
-      const timeline = Array.isArray(data.timeline) ? data.timeline : [];
-      const anchor = data.anchor ? String(data.anchor) : "(none)";
-
       return [
         `Claude-Mem Timeline: \"${query}\"`,
-        `Anchor: ${anchor}`,
-        summarizeSearchResults(timeline, 8),
+        workerResultText(data),
       ].join("\n");
     },
   });

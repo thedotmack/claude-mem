@@ -7,14 +7,22 @@ import {
   readFileSync,
   renameSync,
   unlinkSync,
-  readdirSync
+  readdirSync,
+  realpathSync
 } from 'fs';
 import { execSync } from 'child_process';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
-import { formatTime, groupByDate } from '../shared/timeline-formatting.js';
-import { isDirectChild } from '../shared/path-utils.js';
+import { formatTime, groupByDate, parseJsonArray } from '../shared/timeline-formatting.js';
+import { isDirectChild, normalizePath } from '../shared/path-utils.js';
 import { logger } from '../utils/logger.js';
+import { getProjectContext } from '../utils/project-name.js';
+import { replaceTaggedContent } from '../utils/claude-md-utils.js';
+import { findContextBlockRange } from '../utils/context-injection.js';
+import { toBmpSafe } from '../utils/bmp-safe.js';
+import { ensureDirectoryExists, resolveSymlinkWriteTarget } from '../shared/atomic-json.js';
 import { paths } from '../shared/paths.js';
+import { streamRows } from '../services/sqlite/stream-rows.js';
+import { parseContextCountValue } from '../shared/context-count.js';
 
 const DB_PATH = paths.database();
 const SETTINGS_PATH = paths.settings();
@@ -64,7 +72,7 @@ function getTrackedFolders(workingDir: string): Set<string> {
 
   let output: string;
   try {
-    output = execSync('git ls-files', {
+    output = execSync('git ls-files -z', {
       cwd: workingDir,
       encoding: 'utf-8',
       maxBuffer: 50 * 1024 * 1024
@@ -76,7 +84,7 @@ function getTrackedFolders(workingDir: string): Set<string> {
     return folders;
   }
 
-  const files = output.trim().split('\n').filter(f => f);
+  const files = output.split('\0').filter(f => f);
 
   for (const file of files) {
     const absPath = path.join(workingDir, file);
@@ -116,77 +124,177 @@ function walkDirectoriesWithIgnore(dir: string, folders: Set<string>, depth: num
   }
 }
 
-function hasDirectChildFile(obs: ObservationRow, folderPath: string): boolean {
-  const checkFiles = (filesJson: string | null): boolean => {
-    if (!filesJson) return false;
+const ABSOLUTE_PATH = /^([A-Za-z]:)?[\\/]/;
+
+function comparablePath(p: string): string {
+  const normalized = normalizePath(p);
+  // Windows drive letters and paths are case-insensitive.
+  return /^[A-Za-z]:/.test(normalized) ? normalized.toLowerCase() : normalized;
+}
+
+function realComparablePath(p: string): string | null {
+  try {
+    return comparablePath(realpathSync(p));
+  } catch {
+    return null;
+  }
+}
+
+/** realpath of the deepest existing ancestor, with the missing tail re-appended. */
+function realComparablePathOfAncestor(p: string): string | null {
+  const normalized = normalizePath(p);
+  const missing: string[] = [];
+  let current = normalized;
+  while (current && current !== path.posix.dirname(current)) {
+    const real = realComparablePath(current);
+    if (real !== null) return [real, ...missing.reverse()].join('/');
+    missing.push(path.posix.basename(current));
+    current = path.posix.dirname(current);
+  }
+  return null;
+}
+
+/**
+ * Tool evidence is usually absolute (Read/Edit/Write inputs). An absolute file
+ * is a child of the folder when it sits in `<root>/<relativeFolder>` for some
+ * checkout root: this one, or another checkout that shares the project key
+ * (a moved clone, a git-remote project name). It is not a child when that
+ * root lies inside this checkout: /repo/packages/widget/src/x.ts belongs to
+ * packages/widget/src, not to /repo/src. Relative evidence keeps the
+ * project-relative check.
+ */
+export function makeFolderChildMatcher(relativeFolder: string, workingDir: string): (file: string) => boolean {
+  const relativeForm = comparablePath(relativeFolder);
+  const rootForms = new Set([comparablePath(workingDir)]);
+  const realRoot = realComparablePath(workingDir);
+  if (realRoot) rootForms.add(realRoot);
+  const insideThisCheckout = (dir: string) => [...rootForms].some(root => dir.startsWith(root + '/'));
+  return (file: string) => {
+    if (!ABSOLUTE_PATH.test(file)) return isDirectChild(file, relativeFolder);
+    const fileDir = comparablePath(path.posix.dirname(normalizePath(file)));
+    // comparablePath lowercases drive-qualified (Windows) paths; fold the folder the same way.
+    const folderForm = /^[a-z]:/.test(fileDir) ? relativeForm.toLowerCase() : relativeForm;
+    if (!fileDir.endsWith('/' + folderForm)) return false;
+    const root = fileDir.slice(0, -(folderForm.length + 1));
+    if (rootForms.has(root)) return true;
+    const realFileRoot = realComparablePathOfAncestor(root);
+    if (realFileRoot !== null && rootForms.has(realFileRoot)) return true;
+    return !insideThisCheckout(root) && !(realFileRoot !== null && insideThisCheckout(realFileRoot));
+  };
+}
+
+/**
+ * Bucket key of a normalized path. A direct child's parent directory ends in
+ * its folder's last segment, so the key never skips a file the matcher accepts.
+ */
+function lastSegmentKey(normalized: string): string {
+  return path.posix.basename(normalized).toLowerCase();
+}
+
+interface FolderObservations {
+  isFolderChild: (file: string) => boolean;
+  /**
+   * The folder's segments followed by a separator, once with `/` and once
+   * with a backslash, ASCII-lowercased. A candidate file must contain one of them:
+   * the same check the old per-folder `LIKE '%src/auth/%'` prefilter made, so
+   * relative `auth/login.ts` never reaches `src/auth` through the matcher's
+   * suffix rule.
+   */
+  pathNeedles: [string, string];
+  observations: ObservationRow[];
+}
+
+/** SQLite's LIKE folds ASCII letters only; fold the same way. */
+function asciiLowerCase(value: string): string {
+  return value.replace(/[A-Z]/g, letter => letter.toLowerCase());
+}
+
+function folderPathNeedles(relativeFolder: string): [string, string] {
+  const segments = relativeFolder.split(/[\\/]+/).filter(Boolean);
+  return [
+    asciiLowerCase(segments.join('/') + '/'),
+    asciiLowerCase(segments.join('\\') + '\\'),
+  ];
+}
+
+/**
+ * The newest `limit` direct-child observations of each folder, in folder
+ * order, from one scan of the project's rows. Rows are bucketed by the parent
+ * directory's last segment, and the folder matcher does the exact check.
+ */
+function findObservationsByFolders(
+  db: Database,
+  relativeFolders: string[],
+  workingDir: string,
+  project: string,
+  limit: number,
+): FolderObservations[] {
+  const folders: FolderObservations[] = [];
+  const bucketed = new Map<string, FolderObservations[]>();
+  for (const relativeFolder of relativeFolders) {
+    const entry: FolderObservations = {
+      isFolderChild: makeFolderChildMatcher(relativeFolder, workingDir),
+      pathNeedles: folderPathNeedles(relativeFolder),
+      observations: [],
+    };
+    folders.push(entry);
+    const key = lastSegmentKey(normalizePath(relativeFolder));
+    if (!bucketed.has(key)) bucketed.set(key, []);
+    bucketed.get(key)!.push(entry);
+  }
+  if (limit <= 0 || folders.length === 0) return folders;
+
+  const statement = db.prepare(`
+    SELECT o.*
+    FROM observations o
+    WHERE o.project COLLATE NOCASE = ?
+    ORDER BY o.created_at_epoch DESC
+  `);
+  // Folders whose page is not full yet. The scan stops when it reaches 0, as
+  // the old per-folder query stopped at its own limit.
+  let unfilledFolders = folders.length;
+  try {
+    for (const obs of streamRows(statement, project) as Iterable<ObservationRow>) {
+      for (const file of [...parseJsonArray(obs.files_modified), ...parseJsonArray(obs.files_read)]) {
+        const candidates = bucketed.get(lastSegmentKey(path.posix.dirname(normalizePath(file))));
+        if (!candidates) continue;
+        const comparableFile = asciiLowerCase(file);
+        for (const entry of candidates) {
+          // Rows arrive one at a time, so a row already added is the last one.
+          if (entry.observations.at(-1) === obs || entry.observations.length === limit) continue;
+          if (!entry.pathNeedles.some(needle => comparableFile.includes(needle)) || !entry.isFolderChild(file)) continue;
+          entry.observations.push(obs);
+          if (entry.observations.length === limit) unfilledFolders--;
+        }
+      }
+      if (unfilledFolders === 0) break;
+    }
+  } finally {
+    statement.finalize();
+  }
+  return folders;
+}
+
+// The heading uses the same predicate that selected the row, so an observation
+// that also touched a same-named folder elsewhere is filed under this folder's file.
+function extractRelevantFile(obs: ObservationRow, isFolderChild: (file: string) => boolean): string {
+  for (const [column, filesJson] of [['files_modified', obs.files_modified], ['files_read', obs.files_read]] as const) {
+    if (!filesJson) continue;
     try {
       const files = JSON.parse(filesJson);
       if (Array.isArray(files)) {
-        return files.some(f => isDirectChild(f, folderPath));
+        const file = files.find((entry): entry is string => typeof entry === 'string' && isFolderChild(entry));
+        if (file) return path.posix.basename(normalizePath(file));
       }
     } catch (error) {
-      logger.warn('CLAUDE_MD', 'Failed to parse files JSON in hasDirectChildFile', { error: error instanceof Error ? error.message : String(error) });
-    }
-    return false;
-  };
-
-  return checkFiles(obs.files_modified) || checkFiles(obs.files_read);
-}
-
-function findObservationsByFolder(db: Database, relativeFolderPath: string, project: string, limit: number): ObservationRow[] {
-  const queryLimit = limit * 3;
-
-  const sql = `
-    SELECT o.*, o.discovery_tokens
-    FROM observations o
-    WHERE o.project = ?
-      AND (o.files_modified LIKE ? OR o.files_read LIKE ?)
-    ORDER BY o.created_at_epoch DESC
-    LIMIT ?
-  `;
-
-  const normalizedFolderPath = relativeFolderPath.split(path.sep).join('/');
-  const likePattern = `%"${normalizedFolderPath}/%`;
-  const allMatches = db.prepare(sql).all(project, likePattern, likePattern, queryLimit) as ObservationRow[];
-
-  return allMatches.filter(obs => hasDirectChildFile(obs, relativeFolderPath)).slice(0, limit);
-}
-
-function extractRelevantFile(obs: ObservationRow, relativeFolder: string): string {
-  if (obs.files_modified) {
-    try {
-      const modified = JSON.parse(obs.files_modified);
-      if (Array.isArray(modified)) {
-        for (const file of modified) {
-          if (isDirectChild(file, relativeFolder)) {
-            return path.basename(file);
-          }
-        }
-      }
-    } catch (error) {
-      logger.warn('CLAUDE_MD', 'Failed to parse files_modified JSON', { error: error instanceof Error ? error.message : String(error) });
-    }
-  }
-
-  if (obs.files_read) {
-    try {
-      const read = JSON.parse(obs.files_read);
-      if (Array.isArray(read)) {
-        for (const file of read) {
-          if (isDirectChild(file, relativeFolder)) {
-            return path.basename(file);
-          }
-        }
-      }
-    } catch (error) {
-      logger.warn('CLAUDE_MD', 'Failed to parse files_read JSON', { error: error instanceof Error ? error.message : String(error) });
+      logger.warn('CLAUDE_MD', `Failed to parse ${column} JSON`, { error: error instanceof Error ? error.message : String(error) });
     }
   }
 
   return 'General';
 }
 
-function formatObservationsForClaudeMd(observations: ObservationRow[], folderPath: string): string {
+function formatObservationsForClaudeMd(observations: ObservationRow[], isFolderChild: (file: string) => boolean): string {
   const lines: string[] = [];
   lines.push('# Recent Activity');
   lines.push('');
@@ -198,7 +306,8 @@ function formatObservationsForClaudeMd(observations: ObservationRow[], folderPat
     return lines.join('\n');
   }
 
-  const byDate = groupByDate(observations, obs => obs.created_at);
+  // Rows arrive newest-first (ORDER BY created_at_epoch DESC); keep days in the same order.
+  const byDate = groupByDate(observations, obs => obs.created_at, { order: 'desc' });
 
   for (const [day, dayObs] of byDate) {
     lines.push(`### ${day}`);
@@ -206,7 +315,7 @@ function formatObservationsForClaudeMd(observations: ObservationRow[], folderPat
 
     const byFile = new Map<string, ObservationRow[]>();
     for (const obs of dayObs) {
-      const file = extractRelevantFile(obs, folderPath);
+      const file = extractRelevantFile(obs, isFolderChild);
       if (!byFile.has(file)) byFile.set(file, []);
       byFile.get(file)!.push(obs);
     }
@@ -242,7 +351,6 @@ function writeClaudeMdToFolder(folderPath: string, newContent: string): void {
   if (resolvedPath.includes('/.git/') || resolvedPath.includes('\\.git\\') || resolvedPath.endsWith('/.git') || resolvedPath.endsWith('\\.git')) return;
 
   const claudeMdPath = path.join(folderPath, 'CLAUDE.md');
-  const tempFile = `${claudeMdPath}.tmp`;
 
   if (!existsSync(folderPath)) {
     throw new Error(`Folder does not exist: ${folderPath}`);
@@ -253,37 +361,24 @@ function writeClaudeMdToFolder(folderPath: string, newContent: string): void {
     existingContent = readFileSync(claudeMdPath, 'utf-8');
   }
 
-  const startTag = '<claude-mem-context>';
-  const endTag = '</claude-mem-context>';
+  // #2787: an observation title can carry an emoji, and the block must stay
+  // BMP-only, as the worker's folder writer keeps it.
+  const finalContent = replaceTaggedContent(existingContent, toBmpSafe(newContent));
 
-  let finalContent: string;
-  if (!existingContent) {
-    finalContent = `${startTag}\n${newContent}\n${endTag}`;
-  } else {
-    const startIdx = existingContent.indexOf(startTag);
-    const endIdx = existingContent.indexOf(endTag);
-
-    if (startIdx !== -1 && endIdx !== -1) {
-      finalContent = existingContent.substring(0, startIdx) +
-        `${startTag}\n${newContent}\n${endTag}` +
-        existingContent.substring(endIdx + endTag.length);
-    } else {
-      finalContent = existingContent + `\n\n${startTag}\n${newContent}\n${endTag}`;
-    }
-  }
-
+  // A symlinked CLAUDE.md stays a symlink: write onto its final target.
+  const writeTarget = resolveSymlinkWriteTarget(claudeMdPath);
+  ensureDirectoryExists(path.dirname(writeTarget));
+  const tempFile = `${writeTarget}.tmp`;
   writeFileSync(tempFile, finalContent);
-  renameSync(tempFile, claudeMdPath);
+  renameSync(tempFile, writeTarget);
 }
 
 function regenerateFolder(
-  db: Database,
   absoluteFolder: string,
   relativeFolder: string,
-  project: string,
+  folder: FolderObservations,
   dryRun: boolean,
-  workingDir: string,
-  observationLimit: number
+  workingDir: string
 ): { success: boolean; observationCount: number; error?: string } {
   if (!existsSync(absoluteFolder)) {
     return { success: false, observationCount: 0, error: 'Folder no longer exists' };
@@ -295,18 +390,17 @@ function regenerateFolder(
     return { success: false, observationCount: 0, error: 'Path escapes project root' };
   }
 
-  const observations = findObservationsByFolder(db, relativeFolder, project, observationLimit);
-
-  if (observations.length === 0) {
+  if (folder.observations.length === 0) {
     return { success: false, observationCount: 0, error: 'No observations for folder' };
   }
 
+  const { observations, isFolderChild } = folder;
   if (dryRun) {
     return { success: true, observationCount: observations.length };
   }
 
   try {
-    const formatted = formatObservationsForClaudeMd(observations, relativeFolder);
+    const formatted = formatObservationsForClaudeMd(observations, isFolderChild);
     writeClaudeMdToFolder(absoluteFolder, formatted);
     return { success: true, observationCount: observations.length };
   } catch (error) {
@@ -323,25 +417,26 @@ function processAllFoldersForGeneration(
   dryRun: boolean,
   observationLimit: number
 ): number {
+  const foldersArray = Array.from(trackedFolders).sort();
+  const relativeFolders = foldersArray.map(folder => path.relative(workingDir, folder));
+
   const db = new Database(DB_PATH, { readonly: true, create: false });
+  const observationsByFolder = findObservationsByFolders(db, relativeFolders, path.resolve(workingDir), project, observationLimit);
+  db.close();
 
   let successCount = 0;
   let skipCount = 0;
   let errorCount = 0;
 
-  const foldersArray = Array.from(trackedFolders).sort();
-
-  for (const absoluteFolder of foldersArray) {
-    const relativeFolder = path.relative(workingDir, absoluteFolder);
+  for (const [i, absoluteFolder] of foldersArray.entries()) {
+    const relativeFolder = relativeFolders[i];
 
     const result = regenerateFolder(
-      db,
       absoluteFolder,
       relativeFolder,
-      project,
+      observationsByFolder[i],
       dryRun,
-      workingDir,
-      observationLimit
+      workingDir
     );
 
     if (result.success) {
@@ -359,8 +454,6 @@ function processAllFoldersForGeneration(
     }
   }
 
-  db.close();
-
   logger.info('CLAUDE_MD', 'CLAUDE.md generation complete', {
     totalFolders: foldersArray.length,
     withObservations: successCount,
@@ -369,13 +462,13 @@ function processAllFoldersForGeneration(
     dryRun
   });
 
-  return 0;
+  return errorCount > 0 ? 1 : 0;
 }
 
 export async function generateClaudeMd(dryRun: boolean): Promise<number> {
   const workingDir = process.cwd();
   const settings = SettingsDefaultsManager.loadFromFile(SETTINGS_PATH);
-  const observationLimit = parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10) || 50;
+  const observationLimit = parseContextCountValue(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS) ?? 50;
 
   logger.info('CLAUDE_MD', 'Starting CLAUDE.md generation', {
     workingDir,
@@ -383,7 +476,7 @@ export async function generateClaudeMd(dryRun: boolean): Promise<number> {
     observationLimit
   });
 
-  const project = path.basename(workingDir);
+  const project = getProjectContext(workingDir).primary;
   const trackedFolders = getTrackedFolders(workingDir);
 
   if (trackedFolders.size === 0) {
@@ -439,12 +532,17 @@ function processFilesForCleanup(
     dryRun
   });
 
-  return 0;
+  return errorCount > 0 ? 1 : 0;
 }
 
-function cleanSingleFile(file: string, relativePath: string, dryRun: boolean): 'deleted' | 'cleaned' {
-  const content = readFileSync(file, 'utf-8');
-  const stripped = content.replace(/<claude-mem-context>[\s\S]*?<\/claude-mem-context>/g, '').trim();
+export function cleanSingleFile(file: string, relativePath: string, dryRun: boolean): 'deleted' | 'cleaned' {
+  let remaining = readFileSync(file, 'utf-8');
+  for (let block = findContextBlockRange(remaining); block; block = findContextBlockRange(remaining)) {
+    remaining = remaining.slice(0, block.start) + remaining.slice(block.end);
+  }
+  // Drop whole blank lines a leading managed block leaves behind, but keep the
+  // first authored line's indentation (an indented Markdown code block).
+  const stripped = remaining.replace(/^(?:[ \t]*\r?\n)+/, '').trimEnd();
 
   if (stripped === '') {
     if (!dryRun) {
@@ -490,7 +588,7 @@ export async function cleanClaudeMd(dryRun: boolean): Promise<number> {
         } else if (entry.name === 'CLAUDE.md') {
           try {
             const content = readFileSync(fullPath, 'utf-8');
-            if (content.includes('<claude-mem-context>')) {
+            if (findContextBlockRange(content)) {
               filesToProcess.push(fullPath);
             }
           } catch {

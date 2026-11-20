@@ -59,6 +59,8 @@ Everything that matters is a `--build-arg` — pin for reproducibility, omit for
 latest:
 
 ```bash
+# From the repository root: the Dockerfile copies plugin/, so the build context
+# has to be the repository, not docker/claude-mem/.
 docker build \
   -f docker/claude-mem/Dockerfile \
   --build-arg BUN_VERSION=1.3.12 \

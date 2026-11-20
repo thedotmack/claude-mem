@@ -1,26 +1,40 @@
-
-import { basename } from 'path';
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
 import {
   executeWithWorkerFallback,
   isWorkerFallback,
   getWorkerPort,
+  getViewerBaseUrl,
 } from '../../shared/worker-utils.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
+import { loadFromFileOnce } from '../../shared/hook-settings.js';
 import { proTrialLine } from '../../shared/pro-promo.js';
+import { shouldTrackProject } from '../../shared/should-track-project.js';
+import { projectsQueryString } from '../../shared/project-list.js';
+import { getProjectContext } from '../../utils/project-name.js';
 
 export const userMessageHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
+    const cwd = input.cwd ?? process.cwd();
+    // Same exclusion gate as SessionStart / file-context / capture. #3511
+    // closed after the SessionStart path honored CLAUDE_MEM_EXCLUDED_PROJECTS,
+    // but UserPromptSubmit still fetched and bannered context for excluded dirs.
+    if (!shouldTrackProject(cwd)) {
+      return { exitCode: HOOK_EXIT_CODES.SUCCESS };
+    }
+
     const port = getWorkerPort();
-    const project = basename(input.cwd ?? process.cwd());
+    // Use the same project-key resolution as SessionStart/capture (#2663, #3194).
+    // Raw basename(cwd) fragments non-git subdir launches away from parent memory.
+    const context = getProjectContext(cwd);
+    const projectsQuery = projectsQueryString(context.allProjects);
     const colorsParam = input.platform === 'claude-code' ? '&colors=true' : '';
     const platformSourceParam = input.platform
       ? `&platformSource=${encodeURIComponent(normalizePlatformSource(input.platform))}`
       : '';
 
     const result = await executeWithWorkerFallback<string>(
-      `/api/context/inject?project=${encodeURIComponent(project)}${colorsParam}${platformSourceParam}`,
+      `/api/context/inject?${projectsQuery}${colorsParam}${platformSourceParam}`,
       'GET',
     );
 
@@ -33,13 +47,14 @@ export const userMessageHandler: EventHandler = {
     // the platform adapter routes it (claude-code surfaces it inline, exactly
     // like the old stderr write, but inside the HookResult contract). This
     // handler MUST stay pure — no process.stderr.write / console.* / process.exit.
+    const promo = proTrialLine('context-banner', loadFromFileOnce().CLAUDE_MEM_PRO_PLAN);
     const bannerText =
       "\n\n" + String.fromCodePoint(0x1F4DD) + " Claude-Mem Context Loaded\n\n" +
       output +
       "\n\n" + String.fromCodePoint(0x1F4A1) + " Wrap any message with <private> ... </private> to prevent storing sensitive information.\n" +
       "\n" + String.fromCodePoint(0x1F4AC) + " Community https://discord.gg/J4wttp9vDu" +
-      `\n` + String.fromCodePoint(0x1F4FA) + ` Watch live in browser http://localhost:${port}/\n` +
-      proTrialLine('context-banner') + `\n`;
+      `\n` + String.fromCodePoint(0x1F4FA) + ` Watch live in browser ${getViewerBaseUrl(port)}/\n` +
+      (promo ? `${promo}\n` : '');
 
     return { exitCode: HOOK_EXIT_CODES.SUCCESS, systemMessage: bannerText };
   },

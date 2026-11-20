@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { Processor } from 'bullmq';
-import { ServerJobQueue } from '../jobs/ServerJobQueue.js';
+import { ServerJobQueue, type ServerJobCounts } from '../jobs/ServerJobQueue.js';
 import {
   SERVER_JOB_QUEUE_NAMES,
   type ServerGenerationJobKind,
@@ -26,15 +26,68 @@ import type {
 
 const QUEUE_KINDS: ServerGenerationJobKind[] = ['event', 'summary'];
 
+// Health/info requests must finish while Redis reconnects indefinitely. A
+// second is ample for a diagnostic count, and both lanes share that window.
+const LANE_METRIC_TIMEOUT_MS = 1_000;
+
+/** Per-lane upper bound for CLAUDE_MEM_SERVER_GENERATION_CONCURRENCY. */
+export const MAX_SERVER_GENERATION_CONCURRENCY_PER_LANE = 64;
+
+/**
+ * How many generation jobs each queue lane works in parallel.
+ *
+ * `ServerJobQueue` defaults to `concurrency: 1` and nothing has ever passed a
+ * value, so generation is strictly serial however the deployment is configured —
+ * the queue has carried the comment "per-kind concurrency tuning happens later"
+ * since it was written, and this is that knob.
+ *
+ * Serial generation is invisible until the estate outruns it, and then it is
+ * invisible in a second way: nothing fails. On one deployment the event lane
+ * drained 9 observations/min against ~28/min arriving, so the backlog reached
+ * 8,215 jobs in a single day and an observation was on average 5h02m old by the
+ * time it existed. Every job completed. Every health check passed. The memory was
+ * simply hours behind the work it described.
+ *
+ * The value applies PER LANE. There are two lanes, `event` and `summary`, and
+ * each gets its own BullMQ worker with this concurrency, so N allows up to 2N
+ * provider calls in flight from one generation process. Size it against the
+ * provider's rate limit with that in mind. A value above
+ * MAX_SERVER_GENERATION_CONCURRENCY_PER_LANE is clamped with a warning, so a typo
+ * cannot open an unbounded number of provider calls.
+ *
+ * Unset keeps 1, so behaviour is unchanged unless a deployment opts in.
+ */
+export function resolveServerGenerationConcurrency(): number | undefined {
+  const raw = process.env.CLAUDE_MEM_SERVER_GENERATION_CONCURRENCY;
+  if (!raw) return undefined;
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    logger.warn('SYSTEM', 'server: ignoring invalid CLAUDE_MEM_SERVER_GENERATION_CONCURRENCY', {
+      value: raw,
+    });
+    return undefined;
+  }
+  if (parsed > MAX_SERVER_GENERATION_CONCURRENCY_PER_LANE) {
+    logger.warn('SYSTEM', 'server: clamping CLAUDE_MEM_SERVER_GENERATION_CONCURRENCY to the per-lane cap', {
+      value: raw,
+      cap: MAX_SERVER_GENERATION_CONCURRENCY_PER_LANE,
+    });
+    return MAX_SERVER_GENERATION_CONCURRENCY_PER_LANE;
+  }
+  return parsed;
+}
+
 export class ActiveServerQueueManager implements ServerQueueManager {
   readonly kind = 'queue-manager' as const;
 
   private readonly queues: Map<ServerGenerationJobKind, ServerJobQueue<ServerGenerationJobPayload>>;
+  private readonly laneReads = new Map<ServerGenerationJobKind, Promise<ServerJobCounts>>();
   private closed = false;
 
   constructor(
     private readonly config: RedisQueueConfig,
     queues?: Map<ServerGenerationJobKind, ServerJobQueue<ServerGenerationJobPayload>>,
+    private readonly laneMetricTimeoutMs = LANE_METRIC_TIMEOUT_MS,
   ) {
     if (config.engine !== 'bullmq') {
       throw new Error(
@@ -83,13 +136,12 @@ export class ActiveServerQueueManager implements ServerQueueManager {
    * remains responsive even in partial-failure modes.
    */
   async getLaneMetrics(): Promise<ServerQueueLaneMetric[]> {
-    const out: ServerQueueLaneMetric[] = [];
-    for (const kind of QUEUE_KINDS) {
+    const out = await Promise.all(QUEUE_KINDS.map(async (kind): Promise<ServerQueueLaneMetric | null> => {
       const queue = this.queues.get(kind);
-      if (!queue) continue;
+      if (!queue) return null;
       const lifecycle = queue.getLifecycleCounters();
       try {
-        out.push(await this.readLaneMetric(kind, queue, lifecycle.stalled));
+        return await this.readLaneMetric(kind, queue, lifecycle.stalled);
       } catch (error) {
         const err = error instanceof Error ? error : new Error(String(error));
         logger.warn(
@@ -98,7 +150,7 @@ export class ActiveServerQueueManager implements ServerQueueManager {
           { kind, name: SERVER_JOB_QUEUE_NAMES[kind] },
           err,
         );
-        out.push({
+        return {
           kind,
           name: SERVER_JOB_QUEUE_NAMES[kind],
           waiting: 0,
@@ -109,10 +161,10 @@ export class ActiveServerQueueManager implements ServerQueueManager {
           stalled: lifecycle.stalled,
           unavailable: true,
           unavailableReason: err.message,
-        });
+        };
       }
-    }
-    return out;
+    }));
+    return out.filter((metric): metric is ServerQueueLaneMetric => metric !== null);
   }
 
   private async readLaneMetric(
@@ -120,7 +172,7 @@ export class ActiveServerQueueManager implements ServerQueueManager {
     queue: ServerJobQueue<ServerGenerationJobPayload>,
     stalled: number,
   ): Promise<ServerQueueLaneMetric> {
-    const counts = await queue.getCounts();
+    const counts = await this.readCountsWithinDeadline(kind, queue);
     return {
       kind,
       name: SERVER_JOB_QUEUE_NAMES[kind],
@@ -132,6 +184,35 @@ export class ActiveServerQueueManager implements ServerQueueManager {
       stalled,
       unavailable: false,
     };
+  }
+
+  private readCountsWithinDeadline(
+    kind: ServerGenerationJobKind,
+    queue: ServerJobQueue<ServerGenerationJobPayload>,
+  ): Promise<ServerJobCounts> {
+    const existing = this.laneReads.get(kind);
+    if (existing) return existing;
+
+    const pending = queue.getCounts();
+    const bounded = new Promise<ServerJobCounts>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error(`Queue ${kind} metrics timed out after ${this.laneMetricTimeoutMs}ms`));
+      }, this.laneMetricTimeoutMs);
+      // Keep even the timed-out result shared until Redis actually settles.
+      // Repeated health polls then add neither commands nor callbacks to a
+      // permanently pending Redis read, and a recovery permits a fresh probe.
+      void pending.then(counts => {
+        clearTimeout(timer);
+        this.laneReads.delete(kind);
+        resolve(counts);
+      }, error => {
+        clearTimeout(timer);
+        this.laneReads.delete(kind);
+        reject(error);
+      });
+    });
+    this.laneReads.set(kind, bounded);
+    return bounded;
   }
 
   async close(): Promise<void> {
@@ -162,12 +243,14 @@ export class ActiveServerQueueManager implements ServerQueueManager {
     config: RedisQueueConfig,
   ): Map<ServerGenerationJobKind, ServerJobQueue<ServerGenerationJobPayload>> {
     const map = new Map<ServerGenerationJobKind, ServerJobQueue<ServerGenerationJobPayload>>();
+    const concurrency = resolveServerGenerationConcurrency();
     for (const kind of QUEUE_KINDS) {
       map.set(
         kind,
         new ServerJobQueue<ServerGenerationJobPayload>({
           name: SERVER_JOB_QUEUE_NAMES[kind],
           config,
+          ...(concurrency !== undefined ? { concurrency } : {}),
         }),
       );
     }

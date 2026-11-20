@@ -31,7 +31,7 @@ export async function resolveWithinWorkspace(
   }
 
   const root = await realpath(resolve(workspaceCwd));
-  const lexicallyResolved = resolve(root, expandLeadingTilde(filePath.trim()));
+  const lexicallyResolved = resolve(root, expandLeadingTilde(filePath));
   let resolved: string;
   try {
     resolved = await realpath(lexicallyResolved);

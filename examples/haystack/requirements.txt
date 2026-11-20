@@ -1,0 +1,3 @@
+haystack-ai==3.5.0
+mcp-haystack==2.1.1
+mcp==2.3.0

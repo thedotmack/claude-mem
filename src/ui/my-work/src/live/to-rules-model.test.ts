@@ -1,0 +1,81 @@
+// My Rules from the worker's rules (plan Phase 8): story suggestions laid over by saved my-rules rows. Made-up text.
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { test } from 'node:test'
+import { recordedTime, toWorkModel } from './to-work-model.ts'
+import type { WorkViewRule, WorkViewSnapshot } from './work-view-api-types.ts'
+
+const appRoot = new URL('../../', import.meta.url)
+const baseSnapshot = JSON.parse(readFileSync(new URL('test-fixtures/work-view-snapshot.trimmed.json', appRoot), 'utf8')) as WorkViewSnapshot
+const now = Date.parse('2026-10-21T12:00:00Z')
+
+const suggestion: WorkViewRule = {
+  ruleId: 'pref_0123456789ab', scopeId: 'everywhere', scopeTier: 'everywhere', scopeName: 'Everywhere', when: '', then: 'Water the tomatoes before noon.',
+  setBy: 'learned', status: 'suggested', kind: 'correction', source: 'request-progress', timesSeen: 3, latestAt: '2026-10-18T10:00:00Z',
+  quotes: [{ at: '2026-10-18T10:00:00Z', quote: 'they wilt if you wait', kind: 'correction' }], replacedBy: null, replacedAt: null, savedAt: null,
+}
+const ownRule: WorkViewRule = {
+  ...suggestion, ruleId: 'own_aaaaaaaaaaaa', scopeId: 'project:garden planner', scopeTier: 'project', scopeName: 'garden planner', when: 'you plan beds', then: 'Leave a path.',
+  setBy: 'owner', status: 'on', source: 'you', timesSeen: 1, quotes: [], savedAt: '2026-10-20T09:00:00Z',
+}
+const scopes = [{ id: 'everywhere', tier: 'everywhere' as const, name: 'Everywhere' }, { id: 'project:garden planner', tier: 'project' as const, name: 'garden planner' }]
+const mapRules = (extra: Partial<WorkViewSnapshot>) => toWorkModel({ ...baseSnapshot, ...extra }, now)
+
+test('suggested and owner rules keep their words, counts and scopes', () => {
+  const model = mapRules({ rules: [suggestion, ownRule], ruleScopes: scopes, rulesLearning: { preferencesFound: 1, newSuggestions: 1, reviewsRead: 4, writtenAt: '2026-10-19T09:32:04Z' }, rulesFile: { path: '~/.claude-mem/MY-RULES.md', approvedCount: 1, loadedInClaudeCode: false } })
+  assert.equal(model.rulesReadError, null)
+  const [learned, own] = model.rules
+  assert.deepEqual([learned.id, learned.status, learned.setBy, learned.when, learned.then, learned.timesSeen, learned.source], ['pref_0123456789ab', 'suggested', 'learned', '', 'Water the tomatoes before noon.', 3, 'request-progress'])
+  assert.equal(learned.quotes[0].quote, 'they wilt if you wait')
+  assert.equal(learned.quotes[0].kind, 'correction')
+  // Preserve fractional days: renderRulesFile uses the same precision for strength ordering.
+  assert.equal(learned.latestDaysAgo, 3 + 2 / 24)
+  assert.ok(learned.records.some((record) => record.kind === 'Review'))
+  assert.deepEqual([own.scopeId, own.setBy, own.source], ['project:garden planner', 'owner', 'you'])
+  assert.ok(own.records.some((record) => record.label === 'Written in My Rules on this computer'))
+  assert.deepEqual(model.rulesLearning, { preferencesFound: 1, newSuggestions: 1, reviewsRead: 4 })
+  assert.equal(model.rulesFile?.loadedInClaudeCode, false)
+  assert.equal(model.lastRuns.progress?.label, 'request-progress')
+})
+
+test('no story and no saved rules: no rules, no learning run, no error', () => {
+  const model = mapRules({})
+  assert.deepEqual([model.rules, model.ruleScopes, model.rulesLearning, model.rulesFile, model.rulesReadError, model.lastRuns.progress], [[], [], null, null, null, null])
+})
+
+test('keeps saved-quote omissions visible even when local evidence is still available', () => {
+  const model = mapRules({ rules: [{ ...suggestion, quotesOmitted: 2 }, ownRule], ruleScopes: scopes })
+  assert.equal(model.rules[0].quotesOmitted, 2)
+  assert.equal(model.rules[0].quotes.length, 1)
+  assert.equal(model.rules[1].quotesOmitted, 0)
+})
+
+test('a rule in an unlisted scope or from an unknown source empties My Rules with the reason', () => {
+  assert.match(mapRules({ rules: [ownRule], ruleScopes: [scopes[0]] }).rulesReadError!, /scope the worker did not list/)
+  assert.match(mapRules({ rules: [{ ...suggestion, source: 'somewhere' }], ruleScopes: scopes }).rulesReadError!, /unknown source/)
+})
+
+test('each record says what it is, so My Rules words it in the reader’s language and shows a prompt in full', () => {
+  const said = 'they wilt if you wait until the afternoon sun is on them, so water the tomatoes before noon every day'
+  const model = mapRules({ rules: [{ ...suggestion, quotes: [{ at: '2026-10-18T10:00:00Z', quote: said, kind: 'correction' }], savedAt: '2026-10-19T08:00:00Z' }, ownRule], ruleScopes: scopes })
+  const [learned, own] = model.rules
+  assert.deepEqual(learned.records.map((record) => record.fact), ['your-prompt', 'build-story', 'saved-here'])
+  assert.equal(learned.records[0].said, said)
+  // The English label stays for screens that read it, cut as before; the words for `fact` replace it on My Rules.
+  assert.ok(learned.records[0].label.length < said.length)
+  assert.deepEqual(own.records.map((record) => record.fact), ['written-here'])
+})
+
+test('a rule\'s quote, record and latest times that are not recorded are null, never English words as data', () => {
+  const model = mapRules({ rules: [{ ...suggestion, latestAt: null, quotes: [{ at: null, quote: 'they wilt if you wait', kind: 'correction' }] }], ruleScopes: scopes })
+  const [rule] = model.rules
+  assert.equal(rule.quotes[0].at, null)
+  assert.equal(rule.latestAt, null)
+  assert.deepEqual(rule.records.map((record) => [record.kind, record.at]), [['Prompt', null], ['Review', null]])
+  assert.ok(!JSON.stringify(rule).includes('not recorded'), 'no English for a missing time rides the model')
+})
+
+test('an older worker\'s English for a rule time that is not recorded reads as not recorded (G19); a recorded time stays', () => {
+  for (const words of ['Time not recorded', 'not recorded', 'a date not recorded', '', null, undefined]) assert.equal(recordedTime(words), null, String(words))
+  assert.equal(recordedTime('Oct 18, 10:00 am'), 'Oct 18, 10:00 am')
+})

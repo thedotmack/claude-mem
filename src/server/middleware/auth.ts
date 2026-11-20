@@ -2,7 +2,8 @@
 
 import type { Database } from 'bun:sqlite';
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
-import { verifyServerApiKey } from '../auth/sqlite-api-key-service.js';
+import { verifyServerApiKeyAsync } from '../auth/sqlite-api-key-service.js';
+import { ScryptQueueFullError } from '../auth/api-key-hash.js';
 import {
   hasForwardedClientHeaders,
   hasLoopbackHostHeader,
@@ -36,7 +37,7 @@ export function requireServerAuth(
   getDatabase: () => Database,
   options: RequireAuthOptions = {},
 ): RequestHandler {
-  return (req: Request, res: Response, next: NextFunction) => {
+  return async (req: Request, res: Response, next: NextFunction) => {
     const authMode = options.authMode ?? process.env.CLAUDE_MEM_AUTH_MODE ?? 'api-key';
     const authorization = req.header('authorization') ?? '';
     const xApiKey = req.header('x-api-key')?.trim() ?? '';
@@ -75,7 +76,18 @@ export function requireServerAuth(
       return;
     }
 
-    const verified = verifyServerApiKey(getDatabase(), rawKey, options.requiredScopes ?? []);
+    let verified;
+    try {
+      verified = await verifyServerApiKeyAsync(getDatabase(), rawKey, options.requiredScopes ?? []);
+    } catch (error) {
+      if (error instanceof ScryptQueueFullError) {
+        res.setHeader('Retry-After', '1');
+        res.status(503).json({ error: 'Service Unavailable', message: error.message });
+      } else {
+        next(error);
+      }
+      return;
+    }
     if (!verified) {
       res.status(403).json({ error: 'Forbidden', message: 'Invalid API key or insufficient scope' });
       return;

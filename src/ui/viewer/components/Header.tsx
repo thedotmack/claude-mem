@@ -1,9 +1,17 @@
-import React from 'react';
-import { ThemeToggle } from './ThemeToggle';
-import { ThemePreference } from '../hooks/useTheme';
-import { GitHubStarsButton } from './GitHubStarsButton';
+import React, { useEffect, useId, useRef, useState } from 'react';
+import { LOCALES, LOCALE_NAMES, useI18n, interpolate } from '../../i18n';
+import { THEME_LABELS } from './ThemeToggle';
+import { THEME_PREFERENCES, type ThemePreference } from '../hooks/useTheme';
 import { useSpinningFavicon } from '../hooks/useSpinningFavicon';
-import { PRO_TRIAL_PITCH, PRO_TRIAL_SHORT, PRO_TRIAL_URL } from '../constants/promo';
+import { formatStarCount, useGitHubStars } from '../hooks/useGitHubStars';
+import { PRO_TRIAL_PITCH, PRO_TRIAL_SHORT, PRO_TRIAL_URL, TEAMBRAIN_PITCH, TEAMBRAIN_START_URL } from '../constants/promo';
+import { syncDetailWords, type SyncPresentation } from '../utils/sync-presentation';
+import { formatCount } from '../utils/formatters';
+import { ProjectPicker } from './ProjectPicker';
+import { MenuButton, MenuGroup, MenuItem, MenuLink, MenuRadioItem, MenuSeparator } from './MenuButton';
+import {
+  BookIcon, DiscordIcon, GearIcon, GlobeIcon, HelpIcon, SparkleIcon, StarIcon, TerminalIcon, UsersIcon, XLogoIcon,
+} from './icons';
 
 interface HeaderProps {
   projects: string[];
@@ -11,129 +19,196 @@ interface HeaderProps {
   onFilterChange: (filter: string) => void;
   isProcessing: boolean;
   queueDepth: number;
+  isConnected?: boolean;
+  syncStatus?: SyncPresentation;
   themePreference: ThemePreference;
   onThemeChange: (theme: ThemePreference) => void;
   onContextPreviewToggle: () => void;
   onShowHelp?: () => void;
+  /** Show the TeamBrain link: settings have loaded and this install is in no team. */
+  showTeamBrainLink?: boolean;
+  /** Opens the memory logs; offered in the "…" menu where the floating logs button is hidden (narrow screens). */
+  onOpenLogs?: () => void;
 }
 
+const syncTone = (syncStatus: SyncPresentation, isConnected: boolean) => isConnected ? syncStatus.tone : 'warning';
+
+/**
+ * The sync state on the header row: a dot and one short label. Its full words (the
+ * feed connection and the sync detail) open under it on hover, on keyboard focus and
+ * on tap or click (G10), and screen readers hear them as its description.
+ */
+function SyncState({ syncStatus, isConnected }: { syncStatus: SyncPresentation; isConnected: boolean }) {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const wrapperRef = useRef<HTMLSpanElement>(null);
+  const panelId = useId();
+  const detailId = useId();
+  const feed = isConnected ? t('Feed connected') : t('Feed disconnected');
+  // The same words as a sentence: each language ends it its own way ("。" in Chinese).
+  const feedSentence = isConnected ? t('Feed connected.') : t('Feed disconnected.');
+  useEffect(() => {
+    if (!open) return;
+    // A tap elsewhere closes it (a tapped button does not always take focus, so blur alone is not enough).
+    const onPointerDown = (event: PointerEvent) => {
+      if (!wrapperRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    return () => document.removeEventListener('pointerdown', onPointerDown);
+  }, [open]);
+  return (
+    <span ref={wrapperRef} className="header-sync-wrap"
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => { if (!wrapperRef.current?.contains(document.activeElement)) setOpen(false); }}>
+      <button type="button" className={`header-sync header-sync--${syncTone(syncStatus, isConnected)}`} data-sync-state={syncStatus.state}
+        aria-expanded={open} aria-controls={panelId} aria-describedby={detailId}
+        onFocus={() => setOpen(true)} onBlur={() => setOpen(false)} onClick={() => setOpen(true)}
+        onKeyDown={event => { if (event.key === 'Escape' && open) { event.stopPropagation(); setOpen(false); } }}>
+        <span className="header-sync-dot" aria-hidden="true" />
+        {isConnected
+          ? <span className="visually-hidden">{feedSentence} </span>
+          : <span className="header-sync-feed">{feed} · </span>}
+        <span className="header-sync-label">{t(syncStatus.label)}</span>
+      </button>
+      <span id={panelId} role="tooltip" className="header-sync-detail" hidden={!open}>
+        <strong>{feedSentence}</strong> <span id={detailId}>{syncDetailWords(syncStatus, t)}</span>
+      </span>
+    </span>
+  );
+}
+
+/**
+ * One row: My Work, the logo with the queue count, sync state, the Project filter,
+ * Settings, the trial link and one "…" menu holding everything else (links, stars,
+ * theme, language, TeamBrain, the welcome card, memory logs). At 1100px and under the sync
+ * state (with its full words) and the trial link move into the menu (a dot beside the logo
+ * keeps the sync tone); on a phone the row is My Work, the logo, Project, Settings and "…" at 44px.
+ */
 export function Header({
   projects,
   currentFilter,
   onFilterChange,
   isProcessing,
   queueDepth,
+  isConnected = false,
+  syncStatus,
   themePreference,
   onThemeChange,
   onContextPreviewToggle,
-  onShowHelp
+  onShowHelp,
+  showTeamBrainLink = false,
+  onOpenLogs,
 }: HeaderProps) {
+  const { t, locale, setLocale } = useI18n();
   useSpinningFavicon(isProcessing);
+  // The star count is only seen inside the "…" menu, so GitHub is asked once, when the menu first opens.
+  const [starsWanted, setStarsWanted] = useState(false);
+  const github = useGitHubStars('thedotmack', 'claude-mem', starsWanted);
+  const starTitle = github.stars !== null
+    ? interpolate(t('Star us on GitHub ({count} stars)'), { count: formatCount(github.stars) })
+    : t('Star us on GitHub');
+  const queueLabel = interpolate(t('{count} waiting to be processed'), { count: queueDepth });
 
   return (
-    <div className="header">
-      <div className="header-main">
-        <h1>
-          <div style={{ position: 'relative', display: 'inline-block' }}>
-            <img src="claude-mem-logomark.webp" alt="" className={`logomark ${isProcessing ? 'spinning' : ''}`} />
-            {queueDepth > 0 && (
-              <div className="queue-bubble">
-                {queueDepth}
-              </div>
+    <header className="header">
+      <a href="/" className="local-work-link" title={t('Open your local work and review queue')}>{t('My Work')}</a>
+      <h1 className="header-logo">
+        <span className="logomark-wrap">
+          <img src="claude-mem-logomark.webp" alt="" className={`logomark ${isProcessing ? 'spinning' : ''}`} />
+          {queueDepth > 0 && (
+            <span className="queue-bubble" title={queueLabel}>
+              <span aria-hidden="true">{queueDepth}</span>
+              <span className="visually-hidden">{queueLabel}</span>
+            </span>
+          )}
+        </span>
+        <span className="logo-text">claude-mem</span>
+      </h1>
+      {syncStatus && <span className="header-sync-phone-dot" aria-hidden="true" data-tone={syncTone(syncStatus, isConnected)} />}
+      <span className="header-spacer" />
+      {syncStatus && <SyncState syncStatus={syncStatus} isConnected={isConnected} />}
+      <ProjectPicker projects={projects} value={currentFilter} onChange={onFilterChange} />
+      <button
+        type="button"
+        className="settings-btn"
+        onClick={onContextPreviewToggle}
+        title={t('Settings')}
+        aria-label={t('Settings')}
+      >
+        <GearIcon size={18} />
+      </button>
+      {/* Most people running the free plugin never learn the trial exists; it follows the working controls. */}
+      <a
+        className="pro-trial-cta header-trial"
+        href={PRO_TRIAL_URL}
+        target="_blank"
+        rel="noopener noreferrer"
+        title={t(PRO_TRIAL_PITCH)}
+        aria-label={t(PRO_TRIAL_PITCH)}
+      >
+        <SparkleIcon size={14} />
+        <span className="pro-trial-cta-short">{t(PRO_TRIAL_SHORT)}</span>
+      </a>
+      <MenuButton
+        label={t('More')}
+        triggerClassName="header-more"
+        menuClassName="header-menu"
+        onOpenChange={open => { if (open) setStarsWanted(true); }}
+      >
+        {close => (
+          <>
+            {syncStatus && (
+              // The sync state and its full words, as the first item so arrow keys and taps reach them.
+              <MenuItem className="menu-compact-only menu-sync" onSelect={() => close()}
+                icon={<span className="header-sync-dot" data-tone={syncTone(syncStatus, isConnected)} />}>
+                <span className="menu-sync-label">{isConnected ? t('Feed connected') : t('Feed disconnected')} · {t(syncStatus.label)}</span>
+                <span className="menu-sync-detail">{syncDetailWords(syncStatus, t)}</span>
+              </MenuItem>
             )}
-          </div>
-          <span className="logo-text">claude-mem</span>
-        </h1>
-        {/* Most people running the free plugin never learn the trial exists.
-            It sits beside the logo (not in .status) so it survives the
-            responsive rules that hide the icon links on tablet and mobile. */}
-        <a
-          className="pro-trial-cta"
-          href={PRO_TRIAL_URL}
-          target="_blank"
-          rel="noopener noreferrer"
-          title={PRO_TRIAL_PITCH}
-          aria-label={PRO_TRIAL_PITCH}
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z" />
-          </svg>
-          <span className="pro-trial-cta-full">{PRO_TRIAL_PITCH}</span>
-          <span className="pro-trial-cta-short">{PRO_TRIAL_SHORT}</span>
-        </a>
-      </div>
-      <div className="status">
-        <a
-          href="https://docs.claude-mem.ai"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="icon-link"
-          title="Documentation"
-        >
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
-            <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
-          </svg>
-        </a>
-        <a
-          href="https://x.com/Claude_Memory"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="icon-link"
-          title="Follow us on X"
-        >
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
-          </svg>
-        </a>
-        <a
-          href="https://discord.gg/J4wttp9vDu"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="icon-link"
-          title="Join our Discord community"
-        >
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515a.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0a12.64 12.64 0 0 0-.617-1.25a.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057a19.9 19.9 0 0 0 5.993 3.03a.078.078 0 0 0 .084-.028a14.09 14.09 0 0 0 1.226-1.994a.076.076 0 0 0-.041-.106a13.107 13.107 0 0 1-1.872-.892a.077.077 0 0 1-.008-.128a10.2 10.2 0 0 0 .372-.292a.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127a12.299 12.299 0 0 1-1.873.892a.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028a19.839 19.839 0 0 0 6.002-3.03a.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419c0-1.333.956-2.419 2.157-2.419c1.21 0 2.176 1.096 2.157 2.42c0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419c0-1.333.955-2.419 2.157-2.419c1.21 0 2.176 1.096 2.157 2.42c0 1.333-.946 2.418-2.157 2.418z"/>
-          </svg>
-        </a>
-        <GitHubStarsButton username="thedotmack" repo="claude-mem" />
-        <select
-          value={currentFilter}
-          onChange={e => onFilterChange(e.target.value)}
-        >
-          <option value="">All Projects</option>
-          {projects.map(project => (
-            <option key={project} value={project}>{project}</option>
-          ))}
-        </select>
-        <ThemeToggle
-          preference={themePreference}
-          onThemeChange={onThemeChange}
-        />
-        <button
-          className="settings-btn"
-          onClick={() => onShowHelp?.()}
-          title="Show welcome card"
-          aria-label="Show welcome card"
-        >
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="12" cy="12" r="10"></circle>
-            <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path>
-            <line x1="12" y1="17" x2="12.01" y2="17"></line>
-          </svg>
-        </button>
-        <button
-          className="settings-btn"
-          onClick={onContextPreviewToggle}
-          title="Settings"
-        >
-          <svg className="settings-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path>
-            <circle cx="12" cy="12" r="3"></circle>
-          </svg>
-        </button>
-      </div>
-    </div>
+            <MenuLink className="menu-compact-only" href={PRO_TRIAL_URL} icon={<SparkleIcon />} title={t(PRO_TRIAL_PITCH)} onSelect={() => close()}>
+              {t(PRO_TRIAL_SHORT)}
+            </MenuLink>
+            <MenuSeparator className="menu-compact-only" />
+            <MenuLink href="https://docs.claude-mem.ai" icon={<BookIcon />} onSelect={() => close()}>{t('Documentation')}</MenuLink>
+            <MenuLink href="https://x.com/Claude_Memory" icon={<XLogoIcon />} onSelect={() => close()}>{t('Follow us on X')}</MenuLink>
+            <MenuLink href="https://discord.gg/J4wttp9vDu" icon={<DiscordIcon />} onSelect={() => close()}>{t('Join our Discord community')}</MenuLink>
+            <MenuLink href={github.repoUrl} icon={<StarIcon />} title={starTitle} onSelect={() => close()}
+              hint={github.stars !== null ? <span className="tabular">{formatStarCount(github.stars)}</span> : undefined}>
+              {t('Star on GitHub')}
+            </MenuLink>
+            <MenuSeparator />
+            <MenuGroup label={t('Theme')} className="menu-group--segments">
+              {THEME_PREFERENCES.map(choice => (
+                <MenuRadioItem key={choice} checked={themePreference === choice} className="menu-segment"
+                  onSelect={() => onThemeChange(choice)}>
+                  {t(THEME_LABELS[choice])}
+                </MenuRadioItem>
+              ))}
+            </MenuGroup>
+            <MenuGroup label={t('Language')} icon={<GlobeIcon size={14} />}>
+              {LOCALES.map(code => (
+                <MenuRadioItem key={code} checked={locale === code} lang={code} onSelect={() => setLocale(code)}>
+                  {LOCALE_NAMES[code]}
+                </MenuRadioItem>
+              ))}
+            </MenuGroup>
+            <MenuSeparator />
+            {showTeamBrainLink && (
+              <MenuLink className="teambrain-cta" href={TEAMBRAIN_START_URL} icon={<UsersIcon />} title={t(TEAMBRAIN_PITCH)} onSelect={() => close()}>
+                TeamBrain
+              </MenuLink>
+            )}
+            <MenuItem icon={<HelpIcon />} onSelect={() => { close(); onShowHelp?.(); }}>
+              {t('Show welcome card')}
+            </MenuItem>
+            {onOpenLogs && (
+              <MenuItem icon={<TerminalIcon />} onSelect={() => { close(); onOpenLogs(); }}>
+                {t('Memory logs')}
+              </MenuItem>
+            )}
+          </>
+        )}
+      </MenuButton>
+    </header>
   );
 }

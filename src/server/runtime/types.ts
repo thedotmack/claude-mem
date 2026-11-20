@@ -59,6 +59,8 @@ export interface ServerServiceGraph {
   authMode: ServerAuthMode;
   queueManager: ServerQueueManager;
   generationWorkerManager: ServerGenerationWorkerManager;
+  /** Stops background work that holds database connections, before the pool closes. */
+  stopBackgroundWork?: () => Promise<void>;
 }
 
 abstract class DisabledServerBoundary {

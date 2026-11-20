@@ -1,0 +1,116 @@
+---
+title: Pipecat
+description: Save selected transcript text and recall project memory through an explicit Pipecat pipeline stage.
+---
+
+Add [ProjectMemory](https://github.com/thedotmack/claude-mem/tree/main/examples/pipecat)
+to a Pipecat pipeline for user-selected saves and project-scoped recall.
+The application creates a `SaveMemoryFrame` only after the user chooses text
+to preserve, or a `RecallMemoryFrame` with a query and an observation ID from
+a prior search or save. Ordinary audio and transcription frames pass through
+without being stored, even if the transcript says “remember this.”
+
+The example uses Pipecat's [custom frame processor contract](https://docs.pipecat.ai/pipecat/fundamentals/custom-frame-processor)
+and the official [Python MCP client](https://github.com/modelcontextprotocol/python-sdk).
+It calls the existing local worker through Claude-Mem's MCP server. There is
+no new memory store, background capture, transcript replay or audio retention.
+
+## Requirements
+
+The example is verified on macOS arm64 with Python 3.12.4, Pipecat 1.16.0,
+MCP SDK 2.3.0, Node.js 25.1.0 and Claude-Mem 15.18.0. It needs Python 3.11
+or newer. Other operating systems have not been verified here.
+
+The runnable demonstration uses a real Pipecat pipeline with application-created
+frames. It does not open a microphone or contact an STT, LLM or TTS provider,
+so it needs no provider account, API key or CMEM Pro subscription. Audio
+transcription and speech playback in a full voice bot require your chosen
+Pipecat services; those integrations are not verified by this demonstration.
+
+## Connect and verify
+
+First [install Claude-Mem](/installation), start the local worker and check
+its status. Copy `examples/pipecat` from the repository, then install its
+pinned Python dependencies in a virtual environment:
+
+```bash
+cd examples/pipecat
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -r requirements.txt
+export CLAUDE_MEM_MCP_SERVER='/absolute/path/to/plugin/scripts/mcp-server.cjs'
+```
+
+Use your installed `plugin/scripts/mcp-server.cjs`. If your worker has a custom
+`CLAUDE_MEM_DATA_DIR`, host or port, pass those same settings in this shell.
+The example disables worker autostart and passes the existing environment to
+the MCP subprocess; it does not edit any application configuration.
+
+Save only a harmless, selected portion of a transcript:
+
+```bash
+python memory.py --project voice-demo save 'Use the amber staging region.' --title 'Deployment decision'
+```
+
+The result has `success: true` only after the worker returns a save receipt.
+Use that receipt's ID in a later recall, replacing `123` below:
+
+```bash
+python memory.py --project voice-demo recall 'Deployment decision' 123
+```
+
+Recall follows the compact search index, timeline and selected-detail workflow.
+The project is fixed by application code on all three requests, including
+follow-up reads. Repeating the same project, title and selected text reuses
+the existing saved observation through the worker's source fingerprint.
+
+## Add the stage to a voice application
+
+```python
+from memory import ProjectMemory, RecallMemoryFrame, SaveMemoryFrame
+
+memory = ProjectMemory(project='voice-demo', server=mcp_script, cwd=checkout)
+# Include memory in your Pipeline before the stage that consumes its results.
+# Only the application's confirmed-save UI enqueues this frame:
+await worker.queue_frame(SaveMemoryFrame(text=selected_text, title='Deployment decision'))
+# A user-requested recall enqueues a selected observation:
+await worker.queue_frame(RecallMemoryFrame(query='Deployment decision', observation_id=123))
+```
+
+`ProjectMemory` emits a `MemoryResultFrame` with `text` and `success`.
+Your application can display it or route the text to its speech service.
+Treat recalled text as reference material, not authorization to execute tools.
+Do not translate arbitrary model output or transcript text into save frames:
+the host application owns selection and consent.
+
+## Privacy, failures and disconnect
+
+Only selected save text, its title, the chosen project and deduplication
+metadata are stored. Nothing records audio. No full transcript, user identity
+or conversation history is sent automatically. The existing worker's indexing,
+sync and export settings still apply to explicitly saved notes.
+
+Connection and tool requests have a ten-second deadline; the MCP SDK separately
+bounds subprocess shutdown. There are no
+automatic retries or deferred writes. A failed or ambiguous save produces
+`success: false`; check the connection before explicitly trying again. The
+same fingerprint makes an exact retry idempotent if a receipt was lost.
+Failures do not prevent later audio or transcript frames from passing through.
+
+Set `enabled=False` or remove the stage to disconnect. Each explicit operation
+closes its MCP connection. No hook or configuration entry needs uninstalling;
+disconnecting leaves previously saved notes intact.
+
+## Tests
+
+```bash
+python -m unittest test_memory.py
+# Against a disposable worker: creates two harmless notes and verifies retrieval.
+python verify_worker.py
+```
+
+Tests run the real Pipecat pipeline with synthetic audio/transcription frames
+and stub only the memory boundary. `verify_worker.py` uses the real worker/MCP
+bundle, verifies an exact replay and project isolation, and reports IDs and
+failures. Do not point it at a personal project unless you want its test notes
+to remain in that worker.

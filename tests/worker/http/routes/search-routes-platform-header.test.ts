@@ -214,4 +214,35 @@ describe('SearchRoutes platform-source headers', () => {
       store.close();
     }
   });
+
+  it('does not crash on a hostile deeply-nested or self-referential platformSource', async () => {
+    const search = mock(async () => ({ route: 'search' }));
+    const routes = new SearchRoutes({ search } as any);
+    const handlers = captureGetHandlers(routes);
+
+    // Untrusted query input: a nested array past the coercion depth cap and a
+    // self-referential one. The old recursive platform-source coercion
+    // (BaseRouteHandler.firstString) recursed on value[0] with no bound — the
+    // cyclic case looped forever and overflowed the stack ("RangeError: Maximum
+    // call stack size exceeded"). The request must instead coerce to the default
+    // source and reach the handler, never throwing.
+    let nested: unknown = 'cursor';
+    for (let i = 0; i < 12; i++) nested = [nested];
+    const cyclic: unknown[] = [];
+    cyclic[0] = cyclic;
+
+    for (const platformSource of [nested, cyclic]) {
+      const response = makeResponse();
+      expect(() => callHandler(handlers, '/api/search', makeRequest({
+        path: '/api/search',
+        query: { query: 'needle', platformSource },
+      }), response.res)).not.toThrow();
+      await flushAsyncHandlers();
+    }
+
+    // Both requests reached the search handler. With the old recursive
+    // coercion the cyclic input overflowed the stack inside platform-source
+    // parsing — before search() was ever called — so this would be 1, not 2.
+    expect(search).toHaveBeenCalledTimes(2);
+  });
 });

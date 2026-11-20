@@ -1,28 +1,7 @@
 
-import { describe, it, expect, mock, beforeEach, afterEach, afterAll, spyOn } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
 import type { Request, Response } from 'express';
 import { logger } from '../../../../src/utils/logger.js';
-
-// Snapshot the real modules BEFORE mock.module mutates the live namespaces,
-// then re-register them in afterAll. bun's mock.module is process-global and
-// mock.restore() does NOT undo it, so these partial stubs would otherwise leak
-// into other test files in the same `bun test` run.
-import * as realPaths from '../../../../src/shared/paths.js';
-import * as realWorkerUtils from '../../../../src/shared/worker-utils.js';
-const realPathsSnapshot = { ...realPaths };
-const realWorkerUtilsSnapshot = { ...realWorkerUtils };
-
-mock.module('../../../../src/shared/paths.js', () => ({
-  getPackageRoot: () => '/tmp/test',
-}));
-mock.module('../../../../src/shared/worker-utils.js', () => ({
-  getWorkerPort: () => 37777,
-}));
-
-afterAll(() => {
-  mock.module('../../../../src/shared/paths.js', () => realPathsSnapshot);
-  mock.module('../../../../src/shared/worker-utils.js', () => realWorkerUtilsSnapshot);
-});
 
 import { DataRoutes } from '../../../../src/services/worker/http/routes/DataRoutes.js';
 
@@ -116,29 +95,37 @@ describe('DataRoutes Type Coercion', () => {
       routes.setupRoutes(mockApp as any);
     });
 
-    it('should accept a native array of numbers', () => {
-      const { req, res, jsonSpy } = createMockReqRes({ ids: [1, 2, 3] });
+    it.each([
+      [[1, 2, 3], [1, 2, 3]],
+      ['[1,2,3]', [1, 2, 3]],
+      ['1,2,3', [1, 2, 3]],
+      [['1', ' 2 ', 3], [1, 2, 3]],
+      ['["1","2"]', [1, 2]],
+    ])('coerces ids %j', (ids, expectedIds) => {
+      const { req, res, jsonSpy } = createMockReqRes({ ids });
       handler(req as Request, res as Response);
 
-      expect(mockGetObservationsByIds).toHaveBeenCalledWith([1, 2, 3], expect.anything());
+      expect(mockGetObservationsByIds).toHaveBeenCalledWith(expectedIds, expect.anything());
       expect(jsonSpy).toHaveBeenCalled();
     });
 
-    it('should coerce a JSON-encoded string array "[1,2,3]" to native array', () => {
-      const { req, res, jsonSpy } = createMockReqRes({ ids: '[1,2,3]' });
+    it('should reject non-numeric string elements of a native array', () => {
+      const { req, res, statusSpy } = createMockReqRes({ ids: ['observation:abc', ''] });
       handler(req as Request, res as Response);
 
-      expect(mockGetObservationsByIds).toHaveBeenCalledWith([1, 2, 3], expect.anything());
-      expect(jsonSpy).toHaveBeenCalled();
+      expect(statusSpy).toHaveBeenCalledWith(400);
+      expect(mockGetObservationsByIds).not.toHaveBeenCalled();
     });
 
-    it('should coerce a comma-separated string "1,2,3" to native array', () => {
-      const { req, res, jsonSpy } = createMockReqRes({ ids: '1,2,3' });
-      handler(req as Request, res as Response);
+    for (const invalidElement of [true, null, '1.5', '1e2', ' ']) {
+      it(`should reject ${JSON.stringify(invalidElement)} as an array element`, () => {
+        const { req, res, statusSpy } = createMockReqRes({ ids: [invalidElement] });
+        handler(req as Request, res as Response);
 
-      expect(mockGetObservationsByIds).toHaveBeenCalledWith([1, 2, 3], expect.anything());
-      expect(jsonSpy).toHaveBeenCalled();
-    });
+        expect(statusSpy).toHaveBeenCalledWith(400);
+        expect(mockGetObservationsByIds).not.toHaveBeenCalled();
+      });
+    }
 
     it('should reject non-integer values after coercion', () => {
       const { req, res, statusSpy } = createMockReqRes({ ids: 'foo,bar' });
@@ -160,6 +147,27 @@ describe('DataRoutes Type Coercion', () => {
 
       expect(jsonSpy).toHaveBeenCalledWith([]);
     });
+
+    // Every id comes back as a full row (narrative, facts, concepts, file
+    // lists), so an unbounded array is a way to page the whole table in one
+    // request. 100 is the ceiling the adapters already advertise.
+    it('should reject more than 100 ids', () => {
+      const ids = Array.from({ length: 101 }, (_, i) => i + 1);
+      const { req, res, statusSpy } = createMockReqRes({ ids });
+      handler(req as Request, res as Response);
+
+      expect(statusSpy).toHaveBeenCalledWith(400);
+      expect(mockGetObservationsByIds).not.toHaveBeenCalled();
+    });
+
+    it('should accept exactly 100 ids', () => {
+      const ids = Array.from({ length: 100 }, (_, i) => i + 1);
+      const { req, res, jsonSpy } = createMockReqRes({ ids });
+      handler(req as Request, res as Response);
+
+      expect(mockGetObservationsByIds).toHaveBeenCalledWith(ids, expect.anything());
+      expect(jsonSpy).toHaveBeenCalled();
+    });
   });
 
   describe('handleGetSdkSessionsByIds — memorySessionIds coercion', () => {
@@ -175,35 +183,16 @@ describe('DataRoutes Type Coercion', () => {
       routes.setupRoutes(mockApp as any);
     });
 
-    it('should accept a native array of strings', () => {
-      const { req, res, jsonSpy } = createMockReqRes({ memorySessionIds: ['abc', 'def'] });
+    it.each([
+      [['abc', 'def'], ['abc', 'def']],
+      ['["abc","def"]', ['abc', 'def']],
+      ['abc,def', ['abc', 'def']],
+      ['abc, def , ghi', ['abc', 'def', 'ghi']],
+    ])('coerces memorySessionIds %j', (memorySessionIds, expectedIds) => {
+      const { req, res, jsonSpy } = createMockReqRes({ memorySessionIds });
       handler(req as Request, res as Response);
 
-      expect(mockGetSdkSessionsBySessionIds).toHaveBeenCalledWith(['abc', 'def']);
-      expect(jsonSpy).toHaveBeenCalled();
-    });
-
-    it('should coerce a JSON-encoded string array to native array', () => {
-      const { req, res, jsonSpy } = createMockReqRes({ memorySessionIds: '["abc","def"]' });
-      handler(req as Request, res as Response);
-
-      expect(mockGetSdkSessionsBySessionIds).toHaveBeenCalledWith(['abc', 'def']);
-      expect(jsonSpy).toHaveBeenCalled();
-    });
-
-    it('should coerce a comma-separated string to native array', () => {
-      const { req, res, jsonSpy } = createMockReqRes({ memorySessionIds: 'abc,def' });
-      handler(req as Request, res as Response);
-
-      expect(mockGetSdkSessionsBySessionIds).toHaveBeenCalledWith(['abc', 'def']);
-      expect(jsonSpy).toHaveBeenCalled();
-    });
-
-    it('should trim whitespace from comma-separated values', () => {
-      const { req, res, jsonSpy } = createMockReqRes({ memorySessionIds: 'abc, def , ghi' });
-      handler(req as Request, res as Response);
-
-      expect(mockGetSdkSessionsBySessionIds).toHaveBeenCalledWith(['abc', 'def', 'ghi']);
+      expect(mockGetSdkSessionsBySessionIds).toHaveBeenCalledWith(expectedIds);
       expect(jsonSpy).toHaveBeenCalled();
     });
 

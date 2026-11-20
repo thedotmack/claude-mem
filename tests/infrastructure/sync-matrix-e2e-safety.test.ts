@@ -1,42 +1,64 @@
 import { describe, expect, it } from 'bun:test';
-import { readFileSync } from 'fs';
 import { join } from 'path';
 
 const root = join(import.meta.dir, '../..');
-const script = readFileSync(join(root, 'scripts/sync-matrix-e2e.ts'), 'utf8');
 
 describe('sync matrix E2E safety contract', () => {
-  it('uses only the local Miniflare runner and explicit loopback guards', () => {
-    expect(script).toContain('test/run-miniflare-pro-e2e.mjs');
-    expect(script).toContain("const HUB_DIR = resolve(import.meta.dir, '../workers/sync-hub')");
-    expect(script).toContain("'--worker-root', HUB_DIR");
-    expect(script).toContain("hostname: '127.0.0.1'");
-    expect(script).toContain('refused non-loopback URL');
-    expect(script).not.toContain('wrangler');
-    expect(script).not.toContain('cmem.ai');
-    expect(script).not.toContain('https://');
+  it('refuses non-loopback PostgreSQL before starting the matrix', () => {
+    const result = Bun.spawnSync(['bun', join(root, 'scripts/sync-matrix-e2e.ts')], {
+      env: { PATH: process.env.PATH ?? '', DATABASE_URL: 'postgres://postgres:postgres@database.example.test/sync_api_test' },
+      stdout: 'pipe', stderr: 'pipe', timeout: 20_000,
+    });
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr.toString()).toContain('sync matrix refuses non-loopback PostgreSQL');
   });
+});
 
-  it('spawns the Hub with an allowlisted environment instead of inherited secrets or code selectors', () => {
-    expect(script).toContain("const CHILD_ENV_ALLOWLIST = ['PATH', 'TMPDIR', 'TMP', 'TEMP', 'LANG', 'LC_ALL']");
-    expect(script).toContain('env: childEnvironment({');
-    expect(script).not.toContain('...process.env');
-    expect(script).not.toContain('CMEM_HUB_WORKER_ROOT: process.env');
-  });
+describe('sync matrix E2E (Supabase cmem-sync) safety contract', () => {
+  it('refuses every non-loopback host when the remote opt-in is unset, names other hosts, has an empty entry, or puts the Hub second', async () => {
+    const run = (env: Record<string, string>) => Bun.spawnSync(['bun', join(root, 'scripts/sync-matrix-e2e-supabase.ts')], {
+      env: { PATH: process.env.PATH ?? '', CMEM_SYNC_E2E_USER_ID: 'u', CMEM_SYNC_E2E_TOKEN: 't', ...env },
+      stdout: 'pipe', stderr: 'pipe', timeout: 20_000,
+    });
+    const remote = 'https://hub.example.test/functions/v1/cmem-sync';
+    for (const env of [
+      { CMEM_SYNC_E2E_HUB_URL: remote },
+      { CMEM_SYNC_E2E_HUB_URL: remote, CMEM_SYNC_E2E_ALLOW_REMOTE_HUB: 'other.example.test' },
+      { CMEM_SYNC_E2E_HUB_URL: 'http://hub.example.test/functions/v1/cmem-sync', CMEM_SYNC_E2E_ALLOW_REMOTE_HUB: 'hub.example.test' },
+      { CMEM_SYNC_E2E_HUB_URL: remote, CMEM_SYNC_E2E_ALLOW_REMOTE_HUB: '*.example.test' },
+      { CMEM_SYNC_E2E_HUB_URL: remote, CMEM_SYNC_E2E_ALLOW_REMOTE_HUB: 'other.example.test,hub.example.test' },
+      { CMEM_SYNC_E2E_HUB_URL: remote, CMEM_SYNC_E2E_ALLOW_REMOTE_HUB: 'hub.example.test,*.example.test' },
+      { CMEM_SYNC_E2E_HUB_URL: remote, CMEM_SYNC_E2E_ALLOW_REMOTE_HUB: 'hub.example.test,,other.example.test' },
+      { CMEM_SYNC_E2E_HUB_URL: remote, CMEM_SYNC_E2E_ALLOW_REMOTE_HUB: 'hub.example.test,' },
+    ]) {
+      const result = run(env);
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stderr.toString()).toMatch(/refused non-loopback URL|must be exact hostnames|not on its first host/);
+    }
+  }, 60_000);
 
-  it('defines exactly two real client identities and canonical protocol-v2 pushes', () => {
-    expect(script).toContain("const DEVICE_IDS = { a: 'matrix-device-a', b: 'matrix-device-b' }");
-    expect(script).not.toContain('matrix-device-c');
-    expect(script).not.toContain('rawPush');
-    expect(script).toContain('SessionStore');
-    expect(script).toContain('CloudSync');
-    expect(script).toContain('SyncApply');
-    expect(script).toContain('SyncClient');
-    expect(script).toContain('protocol v2');
-  });
-
-  it('is exposed as the package E2E command', () => {
-    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as { scripts?: Record<string, string> };
-    expect(pkg.scripts?.['e2e:sync-matrix']).toBe('bun scripts/sync-matrix-e2e.ts');
-  });
+  it('fails the run on a 3xx from the Hub without contacting the redirect target', async () => {
+    let targetHits = 0;
+    const target = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: () => { targetHits++; return Response.json({}); } });
+    const hub = Bun.serve({
+      hostname: '127.0.0.1', port: 0,
+      fetch: (request) => Response.redirect(`http://127.0.0.1:${target.port}${new URL(request.url).pathname}`, 302),
+    });
+    try {
+      const child = Bun.spawn(['bun', join(root, 'scripts/sync-matrix-e2e-supabase.ts')], {
+        env: {
+          PATH: process.env.PATH ?? '', CMEM_SYNC_E2E_USER_ID: 'u', CMEM_SYNC_E2E_TOKEN: 't',
+          CMEM_SYNC_E2E_HUB_URL: `http://127.0.0.1:${hub.port}/functions/v1/cmem-sync`,
+        },
+        stdout: 'pipe', stderr: 'pipe',
+      });
+      const [stderr, exitCode] = await Promise.all([new Response(child.stderr).text(), child.exited]);
+      expect(exitCode).not.toBe(0);
+      expect(stderr).toContain('refused redirect 302');
+      expect(targetHits).toBe(0);
+    } finally {
+      hub.stop(true);
+      target.stop(true);
+    }
+  }, 30_000);
 });

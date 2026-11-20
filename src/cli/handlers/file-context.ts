@@ -1,23 +1,67 @@
 // IO discipline (see src/shared/hook-io.ts): this handler is PURE. It returns a
 // HookResult and MUST NOT call process.stderr.write / process.stdout.write /
 // console.* / process.exit. logger.* calls are DIAGNOSTIC; thrown errors are
-// caught by hookCommand and routed through emitBlockingError.
+// caught by hookCommand, logged, and answered with a no-op (never exit 2).
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
 import { executeWithWorkerFallback, isWorkerFallback } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
-import { parseJsonArray } from '../../shared/timeline-formatting.js';
-import { statSync } from 'fs';
+import { parseJsonArray, formatTime, formatDate, formatHeaderDateTime, compactTime } from '../../shared/timeline-formatting.js';
+import { closeSync, openSync, readFileSync, readSync, realpathSync, statSync } from 'fs';
+import { homedir } from 'os';
 import path from 'path';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
-import { getProjectContext } from '../../utils/project-name.js';
+import { loadFromFileOnce } from '../../shared/hook-settings.js';
+import { projectsQueryValues } from '../../shared/project-list.js';
+import { getProjectContextWithRoot } from '../../utils/project-name.js';
+import { detectLanguage } from '../../services/smart-file-read/language-map.js';
+import { checkTreeSitterCliLoadable } from '../../services/smart-file-read/tree-sitter-bin-path.js';
+import { resolveWithinWorkspace } from '../../services/smart-file-read/workspace-path.js';
 import { claimFileContextInjection } from './file-context-dedupe.js';
+import { memorySearchHandler } from './memory-search.js';
+import { isQwenCodeHookEvent } from './session-init.js';
+import { resolveRuntimeContext } from '../../services/hooks/runtime-selector.js';
+import { normalizePlatformSource } from '../../shared/platform-source.js';
+import {
+  findLineAnchor,
+  indexFileLines,
+  LINE_ANCHOR_CHANGED_FILE_NOTE,
+  LINE_ANCHOR_CONTEXT_HINT,
+  LINE_ANCHOR_DENY_HINT,
+  LINE_ANCHOR_MAX_FILE_BYTES,
+  LINE_ANCHOR_ROW_SUFFIX,
+  lineAnchorStateOf,
+  normalizeLineAnchorPath,
+  readLineAnchors,
+  type FileLineIndex,
+  type LineAnchorStatus,
+} from '../../shared/line-anchors.js';
 
-const FILE_READ_GATE_MIN_BYTES = 1_500;
+/** Below this a file gets neither the timeline nor a deny: reading it costs about what the timeline would. */
+const FILE_CONTEXT_MIN_BYTES = 1_500;
+
+/**
+ * The File Read Gate denies a whole-file Read only from this size up; smaller
+ * files get the timeline as context. A deny costs turns: the denied Read and
+ * every smart-tool or targeted Read after it, each re-reading the whole
+ * context, against the file it keeps out. tests/evals/read-gate asked one question
+ * with the gate on and off: on a 19 KB file it cost -6% on Sonnet and +20% on
+ * Opus, on a 49 KB file -35% and -32%.
+ */
+export const FILE_READ_GATE_DENY_MIN_BYTES = 32 * 1024;
 
 const FETCH_LOOKAHEAD_LIMIT = 40;
 
 const DISPLAY_LIMIT = 15;
 const MAX_FILE_CONTEXT_PATHS = 10;
+
+// The PreToolUse Read hook is synchronous so the File Read Gate can deny, which
+// makes every Read wait on it. One budget covers the whole worker round trip
+// (liveness check + by-file query); a slow or absent worker fails open.
+export const FILE_CONTEXT_WORKER_BUDGET_MS = 3_000;
+
+// smart_outline cannot outline these (unknown) or smart-explore itself says to
+// Read them (markdown, config), so a full-file Read of them is never denied.
+const UNGATED_LANGUAGES = new Set(['unknown', 'markdown', 'yaml', 'toml']);
 
 const TYPE_ICONS: Record<string, string> = {
   decision: '\u2696\uFE0F',
@@ -28,19 +72,6 @@ const TYPE_ICONS: Record<string, string> = {
   change: '\u2705',
 };
 
-function compactTime(timeStr: string): string {
-  return timeStr.toLowerCase().replace(' am', 'a').replace(' pm', 'p');
-}
-
-function formatTime(epoch: number): string {
-  const date = new Date(epoch);
-  return date.toLocaleString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
-}
-
-function formatDate(epoch: number): string {
-  const date = new Date(epoch);
-  return date.toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-}
 
 interface ObservationRow {
   id: number;
@@ -50,6 +81,8 @@ interface ObservationRow {
   created_at_epoch: number;
   files_read: string | null;
   files_modified: string | null;
+  /** JSON; by-file returns every column (`o.*`). Read only with line anchors on (#4943). */
+  metadata?: string | null;
 }
 
 function deduplicateObservations(
@@ -87,58 +120,259 @@ function deduplicateObservations(
   return scored.slice(0, displayLimit).map(s => s.obs);
 }
 
-function formatFileTimeline(
-  observations: ObservationRow[],
-  filePath: string
-): string {
-  const safePath = filePath.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
-  const byDay = new Map<string, ObservationRow[]>();
-  for (const obs of observations) {
+interface FileObservationHistory {
+  /** The path as the tool input spelled it; the routing hints quote it back. */
+  filePath: string;
+  /** Canonical absolute path: the dedupe key and the gate's subject. */
+  absolutePath: string;
+  relativePath: string;
+  newestObservationMs: number;
+  /** Deduped and ranked down to DISPLAY_LIMIT, then ordered oldest first for display. */
+  displayedObservations: ObservationRow[];
+  /**
+   * The lookup stat'ed the file, so its size and mtime checks ran. False when
+   * stat failed with anything but ENOENT: the timeline is still context, but
+   * the gate never denies a Read it could not check.
+   */
+  fileStatVerified: boolean;
+  /** The size the lookup stat'ed; 0 when the stat failed. */
+  fileSizeBytes: number;
+  /**
+   * Line anchors (#4943), only with CLAUDE_MEM_LINE_ANCHORS_ENABLED: for each
+   * fetched observation with anchors on this file, where they are in it now.
+   * Absent when the setting is off or no observation has an anchor here.
+   */
+  lineAnchorStatus?: Map<number, LineAnchorStatus>;
+  /**
+   * The file changed after its newest observation, and line anchors listed the
+   * observations with anchors on it (#1719 hides the rest). Context only: the
+   * gate never denies on such history. Absent otherwise.
+   */
+  fileChangedSinceObservations?: boolean;
+}
+
+function formatLineAnchorSuffix(status: LineAnchorStatus | undefined): string {
+  return status ? LINE_ANCHOR_ROW_SUFFIX[lineAnchorStateOf(status)](status.lines) : '';
+}
+
+/** Whether a displayed row carries a line found again: the hints below only make sense then. */
+function showsFoundLineAnchor(history: FileObservationHistory): boolean {
+  const statuses = history.lineAnchorStatus;
+  return !!statuses && history.displayedObservations.some(obs => (statuses.get(obs.id)?.lines.length ?? 0) > 0);
+}
+
+/** Escapes a path for the quoted tool-call hints (backslashes, quotes, newlines). */
+function escapePathForHint(filePath: string): string {
+  return filePath.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
+}
+
+/**
+ * The day-grouped history both outputs share: `### <day>`, then one
+ * `<id> <time> <icon> <title>` line per observation, ending with where its
+ * line-anchored code is now when it has line anchors on this file (#4943).
+ * Expects oldest-first rows.
+ */
+function formatObservationTimeline(
+  observationsOldestFirst: ObservationRow[],
+  lineAnchorStatus?: Map<number, LineAnchorStatus>,
+): string[] {
+  const lines: string[] = [];
+  let currentDay: string | null = null;
+  for (const obs of observationsOldestFirst) {
     const day = formatDate(obs.created_at_epoch);
-    if (!byDay.has(day)) {
-      byDay.set(day, []);
+    if (day !== currentDay) {
+      lines.push(`### ${day}`);
+      currentDay = day;
     }
-    byDay.get(day)!.push(obs);
+    const title = (obs.title || 'Untitled').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160);
+    const icon = TYPE_ICONS[obs.type] || '\u2753';
+    const time = compactTime(formatTime(obs.created_at_epoch));
+    lines.push(`${obs.id} ${time} ${icon} ${title}${formatLineAnchorSuffix(lineAnchorStatus?.get(obs.id))}`);
   }
+  return lines;
+}
 
-  const sortedDays = Array.from(byDay.entries()).sort((a, b) => {
-    const aEpoch = Math.min(...a[1].map(o => o.created_at_epoch));
-    const bEpoch = Math.min(...b[1].map(o => o.created_at_epoch));
-    return aEpoch - bEpoch;
-  });
-
-  const now = new Date();
-  const currentDate = now.toLocaleDateString('en-CA'); 
-  const currentTime = now.toLocaleTimeString('en-US', {
-    hour: 'numeric',
-    minute: '2-digit',
-    hour12: true
-  }).toLowerCase().replace(' ', '');
-  const currentTimezone = now.toLocaleTimeString('en-US', { timeZoneName: 'short' }).split(' ').pop();
-
-  const lines: string[] = [
-    `Current: ${currentDate} ${currentTime} ${currentTimezone}`,
+function formatFileContextTimeline(history: FileObservationHistory): string {
+  const safePath = escapePathForHint(history.filePath);
+  return [
+    `Current: ${formatHeaderDateTime()}`,
     `This file has prior observations — supplementary context follows. The Read result below is the full requested section.`,
     `- **Need details on a past observation?** get_observations([IDs]) — ~300 tokens each.`,
     `- **Need a structural map first?** smart_outline("${safePath}") — line numbers only, cheaper than re-reading.`,
-  ];
+    ...(showsFoundLineAnchor(history)
+      ? [LINE_ANCHOR_CONTEXT_HINT]
+      : []),
+    ...(history.fileChangedSinceObservations
+      ? [LINE_ANCHOR_CHANGED_FILE_NOTE]
+      : []),
+    ...formatObservationTimeline(history.displayedObservations, history.lineAnchorStatus),
+  ].join('\n');
+}
 
-  for (const [day, dayObservations] of sortedDays) {
-    const chronological = [...dayObservations].sort((a, b) => a.created_at_epoch - b.created_at_epoch);
-    lines.push(`### ${day}`);
-    for (const obs of chronological) {
-      const title = (obs.title || 'Untitled').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160);
-      const icon = TYPE_ICONS[obs.type] || '\u2753';
-      const time = compactTime(formatTime(obs.created_at_epoch));
-      lines.push(`${obs.id} ${time} ${icon} ${title}`);
+// The `Full-file Read blocked by claude-mem:` line is the read-gate eval's trace
+// anchor (tests/evals/read-gate) — keep it verbatim.
+function formatFullFileReadDenyReason(history: FileObservationHistory): string {
+  const safePath = escapePathForHint(history.filePath);
+  const displayedIds = history.displayedObservations.map(obs => obs.id).join(', ');
+  return [
+    `Current: ${formatHeaderDateTime()}`,
+    `Full-file Read blocked by claude-mem: ${safePath} has prior observations (listed below). Get what you need without reading the whole file:`,
+    `- Current code: call smart_outline(file_path="${safePath}") for its symbols and line numbers, then smart_unfold(file_path="${safePath}", symbol_name="<name>") for the ones you need (MCP tools mcp__plugin_claude-mem_mcp-search__smart_outline / __smart_unfold; load them with ToolSearch if they are deferred).`,
+    `- Past work: call get_observations(ids=[${displayedIds}]) for the observations below that matter (~300 tokens each).`,
+    `- Exact lines, e.g. before an Edit: call Read on this file again with offset and limit around the lines smart_outline reported. Partial reads are allowed and satisfy Edit's read requirement.`,
+    ...(showsFoundLineAnchor(history)
+      ? [LINE_ANCHOR_DENY_HINT]
+      : []),
+    `The titles below are history from earlier sessions, not the file's current contents.`,
+    ...formatObservationTimeline(history.displayedObservations, history.lineAnchorStatus),
+  ].join('\n');
+}
+
+/** A Read offset/limit as a usable number; anything else counts as absent. */
+function readWindowValue(value: unknown): number | undefined {
+  const numeric = typeof value === 'string' && value.trim() !== '' ? Number(value) : value;
+  return typeof numeric === 'number' && Number.isFinite(numeric) && numeric >= 0 ? numeric : undefined;
+}
+
+/** fileHasMoreLinesThan reads this much at a time, so it never holds a whole file. */
+export const LINE_COUNT_CHUNK_BYTES = 64 * 1024;
+
+/** Whether an open file has more lines than `lineCount`, read a chunk at a time until the answer is known. */
+function openFileHasMoreLinesThan(fileDescriptor: number, lineCount: number): boolean {
+  const chunk = Buffer.allocUnsafe(LINE_COUNT_CHUNK_BYTES);
+  let newlineCount = 0;
+  let endsWithNewline = false;
+  for (;;) {
+    const bytesRead = readSync(fileDescriptor, chunk, 0, chunk.length, null);
+    if (bytesRead === 0) break;
+    const bytes = chunk.subarray(0, bytesRead);
+    for (let newlineIndex = bytes.indexOf(0x0a); newlineIndex !== -1; newlineIndex = bytes.indexOf(0x0a, newlineIndex + 1)) {
+      newlineCount += 1;
+      // Every newline ends a line, so the file has at least this many: stop here.
+      if (newlineCount > lineCount) return true;
     }
+    endsWithNewline = bytes[bytesRead - 1] === 0x0a;
   }
+  return (endsWithNewline ? newlineCount : newlineCount + 1) > lineCount;
+}
 
-  return lines.join('\n');
+/**
+ * Whether the file has more lines than `lineCount`, counting the lines the
+ * Read tool would return: one per `\n`, plus a last line without one (so an
+ * empty file counts as one line). Reads LINE_COUNT_CHUNK_BYTES at a time and
+ * stops as soon as the count passes `lineCount`, so a one-line Read of a huge
+ * file reads one chunk. Null when the file cannot be read: no deny then.
+ */
+export function fileHasMoreLinesThan(absolutePath: string, lineCount: number): boolean | null {
+  let fileDescriptor: number | undefined;
+  try {
+    fileDescriptor = openSync(absolutePath, 'r');
+    return openFileHasMoreLinesThan(fileDescriptor, lineCount);
+  } catch (err) {
+    logger.debug('HOOK', 'Could not count file lines, not gating this Read', {
+      absolutePath,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  } finally {
+    if (fileDescriptor !== undefined) closeSync(fileDescriptor);
+  }
+}
+
+/**
+ * Whether smart_outline / smart_unfold would accept `filePath` from this cwd:
+ * resolveWithinWorkspace is their own containment check, realpath on both
+ * sides. A symlink in the project that points outside it is outside, and a cwd
+ * that is itself a symlink (macOS /var -> /private/var) still holds its files.
+ */
+async function fileResolvesInsideWorkspace(filePath: string, workspaceCwd: string): Promise<boolean> {
+  try {
+    await resolveWithinWorkspace(filePath, workspaceCwd);
+    return true;
+  } catch (err) {
+    logger.debug('HOOK', 'File resolves outside the workspace, where the smart tools refuse it: not gating this Read', {
+      filePath,
+      workspaceCwd,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return false;
+  }
+}
+
+/**
+ * The File Read Gate's conditions that touch no file system, cheapest first:
+ * Claude Code main session (not Qwen Code, which runs the same command), gate
+ * setting not 'false', a single `file_path` Read of a file smart_outline can
+ * outline, with observation history whose lookup stat'ed the file (it enforced
+ * size >= FILE_CONTEXT_MIN_BYTES and mtime older than the newest
+ * observation, unless line anchors listed history of a file changed since,
+ * which is context only), a size of at least FILE_READ_GATE_DENY_MIN_BYTES, a
+ * session cwd, and a Read that starts at line 1. Only a Read
+ * that meets all of them pays for the workspace check, which resolves symlinks.
+ */
+function isFullFileReadGateCandidate(
+  input: NormalizedHookInput,
+  fileHistory: Pick<FileObservationHistory, 'absolutePath' | 'fileStatVerified' | 'fileSizeBytes' | 'fileChangedSinceObservations'>,
+  fileReadGateSetting: string | undefined,
+): boolean {
+  if (input.platform !== 'claude-code') return false;
+  // Qwen Code runs the same `hook claude-code …` commands: context, never a deny.
+  if (isQwenCodeHookEvent(input.transcriptPath)) return false;
+  if (fileReadGateSetting === 'false') return false;
+  if (input.agentId) return false;
+
+  const toolInput = input.toolInput;
+  if (!toolInput || typeof toolInput !== 'object' || Array.isArray(toolInput)) return false;
+  const readInput = toolInput as Record<string, unknown>;
+  if (typeof readInput.file_path !== 'string' || Array.isArray(readInput.filePaths)) return false;
+
+  // A failed stat skipped the size and mtime checks; a claude-mem failure must never block a Read.
+  if (!fileHistory.fileStatVerified) return false;
+  // History older than the file is context only (#1719), even where line anchors found its code again.
+  if (fileHistory.fileChangedSinceObservations) return false;
+  if (fileHistory.fileSizeBytes < FILE_READ_GATE_DENY_MIN_BYTES) return false;
+  if (UNGATED_LANGUAGES.has(detectLanguage(fileHistory.absolutePath))) return false;
+  if (!input.cwd) return false;
+  return (readWindowValue(readInput.offset) ?? 0) <= 1;
+}
+
+/**
+ * File Read Gate: deny a Read only when ALL hold — it is a gate candidate
+ * (isFullFileReadGateCandidate), the file resolves inside the workspace by the
+ * rule smart_outline / smart_unfold apply (the deny routes Claude to them, so
+ * a path they refuse is never denied), the Read would return the whole file,
+ * and the smart tools can parse here.
+ * Targeted reads always pass: Edit's read-before-edit rule needs one (#2094).
+ * Conditions run cheapest first; `fileHasMoreLinesThan` runs only when the
+ * Read sets a limit, and `isSmartReadAvailable` runs last.
+ */
+export function shouldDenyFullFileRead(
+  input: NormalizedHookInput,
+  fileHistory: Pick<FileObservationHistory, 'absolutePath' | 'fileStatVerified' | 'fileSizeBytes' | 'fileChangedSinceObservations'> | null,
+  fileReadGateSetting: string | undefined,
+  fileIsInsideWorkspace: boolean,
+  fileHasMoreLinesThan: (absolutePath: string, lineCount: number) => boolean | null,
+  isSmartReadAvailable: () => boolean,
+): boolean {
+  if (!fileHistory || !isFullFileReadGateCandidate(input, fileHistory, fileReadGateSetting)) return false;
+  if (!fileIsInsideWorkspace) return false;
+
+  const readLimit = readWindowValue((input.toolInput as Record<string, unknown>).limit);
+  // More lines than the limit is a targeted Read; null (unreadable) never denies.
+  if (readLimit !== undefined && fileHasMoreLinesThan(fileHistory.absolutePath, readLimit) !== false) return false;
+
+  // An install whose tree-sitter-cli never downloaded its binary answers
+  // "Could not parse" to every smart_outline call, so routing Claude there
+  // would strand it; the Read goes through with the timeline as context.
+  // The same holds for a present-but-unloadable binary (#4758): the file
+  // exists, but the smart tools cannot parse with it.
+  return isSmartReadAvailable();
 }
 
 export const fileContextHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
+    const memoryContext = await memorySearchHandler.execute(input);
+    if (memoryContext.hookSpecificOutput?.additionalContext) return memoryContext;
     if (input.agentId) {
       logger.debug('HOOK', 'Skipping file context: subagent context detected', {
         sessionId: input.sessionId,
@@ -164,14 +398,22 @@ export const fileContextHandler: EventHandler = {
       return { continue: true, suppressOutput: true };
     }
 
-    const timelineResults = await Promise.allSettled(
-      candidatePaths.map(candidatePath => buildFileContextTimeline(input, candidatePath))
-    );
-    const timelines: string[] = [];
+    // #4558 — the by-file lookup is a worker-only route, and calling it lazy-spawns
+    // a local worker (and creates its DB). In server runtime there is no local
+    // worker by design, so skip file context like summarize/session-end do.
+    if (resolveRuntimeContext().runtime === 'server') {
+      logger.debug('HOOK', 'Server runtime: skipping worker file-context lookup', { cwd: input.cwd });
+      return { continue: true, suppressOutput: true };
+    }
 
-    timelineResults.forEach((result, index) => {
+    const lookupResults = await Promise.allSettled(
+      candidatePaths.map(candidatePath => lookupFileObservationHistory(input, candidatePath))
+    );
+    const histories: FileObservationHistory[] = [];
+
+    lookupResults.forEach((result, index) => {
       if (result.status === 'fulfilled') {
-        if (result.value) timelines.push(result.value);
+        if (result.value) histories.push(result.value);
         return;
       }
       logger.debug('HOOK', 'File context timeline lookup failed, skipping path', {
@@ -180,39 +422,120 @@ export const fileContextHandler: EventHandler = {
       });
     });
 
+    if (histories.length === 1) {
+      const history = histories[0];
+      const fileReadGateSetting = loadFromFileOnce().CLAUDE_MEM_FILE_READ_GATE_ENABLED;
+      // Resolving symlinks costs syscalls: only a Read every cheaper condition gates pays for it.
+      const fileIsInsideWorkspace = isFullFileReadGateCandidate(input, history, fileReadGateSetting)
+        && await fileResolvesInsideWorkspace(history.filePath, input.cwd);
+      if (shouldDenyFullFileRead(
+        input,
+        history,
+        fileReadGateSetting,
+        fileIsInsideWorkspace,
+        fileHasMoreLinesThan,
+        // The gate denies only where the smart tools can actually parse: a
+        // present-but-unloadable tree-sitter CLI (#4758) must not route Reads
+        // to smart_outline.
+        () => checkTreeSitterCliLoadable().loadable,
+      )) {
+        // Record the claim so a targeted Read that follows this denial does not
+        // re-inject the timeline it already carried. The result is ignored on
+        // purpose: every whole-file Read of a gated file is denied, so the claim
+        // never opens a free retry.
+        claimFileContextInjection(input.sessionId, history.absolutePath, history.newestObservationMs);
+        return {
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            additionalContext: '',
+            permissionDecision: 'deny',
+            permissionDecisionReason: formatFullFileReadDenyReason(history),
+          },
+        };
+      }
+    }
+
+    const timelines: string[] = [];
+    for (const history of histories) {
+      // #3480 — skip re-injecting the same still-valid timeline for a file already
+      // surfaced this session; re-inject only once a newer observation has landed.
+      // Claimed last, after every other reason to bail out, so a suppressed
+      // injection never burns the claim — and claiming IS recording, so two
+      // concurrent Reads of this file cannot both inject.
+      if (!claimFileContextInjection(input.sessionId, history.absolutePath, history.newestObservationMs)) {
+        logger.debug('HOOK', 'File context already surfaced this session, skipping re-injection', {
+          filePath: history.relativePath,
+          sessionId: input.sessionId,
+          newestObservationMs: history.newestObservationMs,
+        });
+        continue;
+      }
+      timelines.push(formatFileContextTimeline(history));
+    }
+
     if (timelines.length === 0) {
       return { continue: true, suppressOutput: true };
     }
 
+    // Context only, no permissionDecision: on a synchronous hook 'allow' would
+    // skip the user's permission prompt for this Read.
     return {
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
         additionalContext: timelines.join('\n\n---\n\n'),
-        permissionDecision: 'allow',
       },
     };
   },
 };
 
-async function buildFileContextTimeline(input: NormalizedHookInput, filePath: string): Promise<string | null> {
+/**
+ * The `path` forms the by-file lookup sends, forward-slashed and de-duped: the
+ * absolute path, the cwd-relative path and, for a file under the home
+ * directory, its `~/` form. An observation can store the `~/` form a tool
+ * argument used (agy's `read_file` takes the path the model typed), and a
+ * lookup by the absolute path alone would miss it.
+ */
+export function fileHistoryQueryPaths(
+  absolutePath: string,
+  relativePath: string,
+  homeDirectory: string = homedir(),
+): string[] {
+  const absoluteForward = absolutePath.split(path.sep).join('/');
+  const homeForward = homeDirectory.split(path.sep).join('/');
+  const homeRelative = absoluteForward.startsWith(homeForward + '/')
+    ? '~/' + absoluteForward.slice(homeForward.length + 1)
+    : '';
+  return Array.from(new Set([absoluteForward, relativePath, homeRelative].filter(Boolean)));
+}
+
+async function lookupFileObservationHistory(
+  input: NormalizedHookInput,
+  filePath: string,
+): Promise<FileObservationHistory | null> {
   let fileMtimeMs = 0;
+  let fileStatVerified = false;
+  let fileSizeBytes = 0;
+  let resolvedFilePath: string | undefined;
   try {
     const statPath = path.isAbsolute(filePath)
       ? filePath
       : path.resolve(input.cwd || process.cwd(), filePath);
     const stat = statSync(statPath);
-    if (!stat.isFile() || stat.size < FILE_READ_GATE_MIN_BYTES) {
+    if (!stat.isFile() || stat.size < FILE_CONTEXT_MIN_BYTES) {
       return null;
     }
+    resolvedFilePath = realpathSync(statPath);
     fileMtimeMs = stat.mtimeMs;
+    fileStatVerified = true;
+    fileSizeBytes = stat.size;
   } catch (err) {
     if (err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
       return null;
     }
-    logger.debug('HOOK', 'File stat failed, proceeding with gate', { error: err instanceof Error ? err.message : String(err) });
+    logger.debug('HOOK', 'File stat failed: timeline as context only, the gate will not deny this Read', { error: err instanceof Error ? err.message : String(err) });
   }
 
-  const context = getProjectContext(input.cwd);
+  const { context, repoRoot } = getProjectContextWithRoot(input.cwd);
   const cwd = input.cwd || process.cwd();
   // path.resolve normalizes dot-segments (`a/../b` -> `b`) for BOTH absolute and
   // relative inputs, so `/p/src/../src/f.ts` and `/p/src/f.ts` collapse to one
@@ -225,25 +548,39 @@ async function buildFileContextTimeline(input: NormalizedHookInput, filePath: st
   // #2691 — PostToolUse stores whatever path form the observer recorded
   // (absolute tool-input path, or project-root-relative per the prompt). The
   // PreToolUse:Read query previously sent ONLY the cwd-relative form, so it
-  // never matched absolute-path storage. Send both candidate forms (forward-
-  // slashed, de-duped) as repeated `path` params so the key matches across
-  // both events regardless of how the path was stored.
+  // never matched absolute-path storage. A subdirectory cwd also needs the
+  // project-root-relative form; cwd-relative alone misses the observer's paths.
+  // Git returns a physical root even when cwd goes through a symlink. Keep
+  // in-checkout logical spellings too, since a file itself can be a symlink.
+  const projectRelativePaths = repoRoot
+    ? [absolutePath, resolvedFilePath ?? absolutePath]
+      .map(candidate => path.relative(repoRoot, candidate).split(path.sep).join('/'))
+      .filter(candidate => candidate && candidate !== '..' && !candidate.startsWith('../') && !path.isAbsolute(candidate))
+    : [];
   const candidateQueryPaths = Array.from(new Set([
-    absolutePath.split(path.sep).join("/"),
-    relativePath,
-  ].filter(Boolean)));
+    ...fileHistoryQueryPaths(absolutePath, relativePath), ...projectRelativePaths,
+  ]));
   const queryParams = new URLSearchParams();
   for (const candidate of candidateQueryPaths) {
     queryParams.append('path', candidate);
   }
   if (context.allProjects.length > 0) {
-    queryParams.set('projects', context.allProjects.join(','));
+    for (const value of projectsQueryValues(context.allProjects)) {
+      queryParams.append('projects', value);
+    }
   }
   queryParams.set('limit', String(FETCH_LOOKAHEAD_LIMIT));
+  // Keep the lookup on the calling harness's rows; the opt-out is the same
+  // cross-harness hand-off switch the other context paths honour.
+  if (input.platform && loadFromFileOnce().CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES !== 'true') {
+    queryParams.set('platformSource', normalizePlatformSource(input.platform));
+  }
 
   const result = await executeWithWorkerFallback<{ observations: ObservationRow[]; count: number }>(
     `/api/observations/by-file?${queryParams.toString()}`,
     'GET',
+    undefined,
+    { timeoutMs: FILE_CONTEXT_WORKER_BUDGET_MS },
   );
   if (isWorkerFallback(result)) {
     return null;
@@ -258,35 +595,88 @@ async function buildFileContextTimeline(input: NormalizedHookInput, filePath: st
     return null;
   }
 
+  // Over every fetched row, listed or not: it is the dedupe claim key.
   const newestObservationMs = Math.max(...data.observations.map(o => o.created_at_epoch));
+  // #4943, opt-in: off, metadata is never parsed and the file is never read.
+  const lineAnchorStatus = fileStatVerified && loadFromFileOnce().CLAUDE_MEM_LINE_ANCHORS_ENABLED === 'true'
+    ? lookUpLineAnchors(data.observations, candidateQueryPaths, absolutePath, fileSizeBytes)
+    : undefined;
+  const fileChangedSinceObservations = fileMtimeMs > 0 && fileMtimeMs >= newestObservationMs;
 
-  if (fileMtimeMs > 0 && fileMtimeMs >= newestObservationMs) {
-    logger.debug('HOOK', 'File modified since last observation, skipping context injection', {
+  let listedObservations = data.observations;
+  if (fileChangedSinceObservations) {
+    // #1719: history older than the file may describe code that is gone, so it
+    // is skipped, except observations with line anchors on this file: each
+    // row then says where its code is now, or that it changed since.
+    listedObservations = lineAnchorStatus ? data.observations.filter(obs => lineAnchorStatus.has(obs.id)) : [];
+    if (listedObservations.length === 0) {
+      logger.debug('HOOK', 'File modified since last observation, skipping context injection', {
+        filePath: relativePath,
+        fileMtimeMs,
+        newestObservationMs,
+      });
+      return null;
+    }
+    logger.debug('HOOK', 'File modified since last observation, listing only observations with line anchors on it', {
       filePath: relativePath,
-      fileMtimeMs,
-      newestObservationMs,
+      listed: listedObservations.length,
     });
-    return null;
   }
 
   // Never empty: the `observations.length === 0` guard above already returned,
-  // and deduplicateObservations only ever drops same-session duplicates and
-  // truncates to DISPLAY_LIMIT, so at least one row always survives.
-  const dedupedObservations = deduplicateObservations(data.observations, relativePath, DISPLAY_LIMIT);
+  // the #1719 branch returned on an empty list, and deduplicateObservations
+  // only ever drops same-session duplicates and truncates to DISPLAY_LIMIT, so
+  // at least one row always survives.
+  const displayedObservations = deduplicateObservations(listedObservations, relativePath, DISPLAY_LIMIT)
+    .sort((a, b) => a.created_at_epoch - b.created_at_epoch);
 
-  // #3480 — skip re-injecting the same still-valid timeline for a file already
-  // surfaced this session; re-inject only once a newer observation has landed.
-  // Claimed last, after every other reason to bail out, so a suppressed
-  // injection never burns the claim — and claiming IS recording, so two
-  // concurrent Reads of this file cannot both inject.
-  if (!claimFileContextInjection(input.sessionId, absolutePath, newestObservationMs)) {
-    logger.debug('HOOK', 'File context already surfaced this session, skipping re-injection', {
-      filePath: relativePath,
-      sessionId: input.sessionId,
-      newestObservationMs,
+  return {
+    filePath, absolutePath, relativePath, newestObservationMs, displayedObservations, fileStatVerified, fileSizeBytes,
+    ...(lineAnchorStatus && lineAnchorStatus.size > 0
+      ? { lineAnchorStatus, ...(fileChangedSinceObservations ? { fileChangedSinceObservations } : {}) }
+      : {}),
+  };
+}
+
+/**
+ * Line anchors (#4943): finds every anchor the observations hold on this file
+ * in the file as it is now. An anchor is on this file when its path, as
+ * anchors compare paths, is one of the spellings the by-file lookup sent;
+ * anchors on any other path are ignored, never shown as changed. The file is
+ * read and indexed once, and only when some observation has an anchor on it
+ * and it is at most LINE_ANCHOR_MAX_FILE_BYTES; a larger or unreadable file
+ * yields no statuses, so its rows carry no suffix.
+ */
+function lookUpLineAnchors(
+  observations: ObservationRow[],
+  candidateQueryPaths: string[],
+  absolutePath: string,
+  fileSizeBytes: number,
+): Map<number, LineAnchorStatus> {
+  const statuses = new Map<number, LineAnchorStatus>();
+  const spellings = new Set(candidateQueryPaths.map(normalizeLineAnchorPath));
+  const anchored = observations
+    .map(obs => ({
+      id: obs.id,
+      anchors: readLineAnchors(obs.metadata).filter(anchor => spellings.has(normalizeLineAnchorPath(anchor.path))),
+    }))
+    .filter(entry => entry.anchors.length > 0);
+  if (anchored.length === 0 || fileSizeBytes > LINE_ANCHOR_MAX_FILE_BYTES) return statuses;
+
+  let index: FileLineIndex;
+  try {
+    index = indexFileLines(readFileSync(absolutePath, 'utf8'));
+  } catch (err) {
+    logger.debug('HOOK', 'Could not read the file to find line anchors, listing rows without them', {
+      absolutePath,
+      error: err instanceof Error ? err.message : String(err),
     });
-    return null;
+    return statuses;
   }
-
-  return formatFileTimeline(dedupedObservations, filePath);
+  for (const { id, anchors } of anchored) {
+    const found = anchors.map(anchor => findLineAnchor(anchor, index));
+    const lines = [...new Set(found.filter((line): line is number => line !== null))].sort((a, b) => a - b);
+    statuses.set(id, { lines, missing: found.filter(line => line === null).length });
+  }
+  return statuses;
 }

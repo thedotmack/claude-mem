@@ -1,23 +1,32 @@
 
 import { logger } from '../../../utils/logger.js';
-import { parseAgentXml, type ParsedObservation, type ParsedSummary } from '../../../sdk/parser.js';
+import { hasStorableTitle } from '../../sqlite/observations/store.js';
+import { maskXmlLiteralMarkup, parseAgentXml, OBSERVATION_OPEN_TAG, OBSERVATION_BLOCK, SUMMARY_BLOCK, SKIP_SUMMARY_TAG, type ParsedObservation, type ParsedSummary } from '../../../sdk/parser.js';
 import {
   classifyObserverOutput,
+  isAnthropicVerificationHoldObserverOutput,
   isAuthFailureObserverOutput,
   isContextOverflowObserverOutput,
+  isOrgDisabledSubscriptionObserverOutput,
   isQuotaLimitedObserverOutput,
+  isRateLimitedObserverOutput,
   isTransportFailureObserverOutput,
   previewOutput,
 } from '../../../sdk/output-classifier.js';
 import { updateCursorContextForProject } from '../../integrations/CursorHooksInstaller.js';
+import { updateGrokContextForProject } from '../../integrations/GrokBuildRules.js';
 import { notifyTelegram } from '../../integrations/TelegramNotifier.js';
+import { notifyNotion } from '../../integrations/NotionExporter.js';
 import { notifyGrokBotAwareness } from '../../integrations/GrokBotAwarenessPusher.js';
+import { notifyGrokBotBrainbeat } from '../../integrations/GrokBotBrainbeat.js';
 import { notifyGrokBotIndex } from '../../integrations/GrokBotIndexWriter.js';
 import { updateFolderClaudeMdFiles } from '../../../utils/claude-md-utils.js';
 import { getWorkerPort } from '../../../shared/worker-utils.js';
-import { recordObserverSuccess } from '../../../shared/observer-health.js';
-import { clearQuotaCooldown } from '../../../shared/quota-cooldown.js';
+import { recordObserverFailure, recordObserverSuccess } from '../../../shared/observer-health.js';
+import { clearQuotaCooldown, routeAroundUnservableProviderIfLoaded } from '../../../shared/quota-cooldown.js';
 import { recycleObserverConversation } from '../session/recycle-conversation.js';
+import { OBSERVER_TEXT_RATE_LIMIT_ABORT_REASON } from '../session/abort-reason.js';
+import { clearRejectedOutput, recordRejectedOutput } from '../session/OutputRecovery.js';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../shared/paths.js';
 import type { ActiveSession, PendingMessage } from '../../worker-types.js';
@@ -26,16 +35,24 @@ import type { SessionManager } from '../SessionManager.js';
 import type { WorkerRef, StorageResult } from './types.js';
 import { broadcastObservation, broadcastSummary } from './ObservationBroadcaster.js';
 import { telemetryBuffer } from '../../telemetry/buffer.js';
+import { logChromaWriteFailure } from '../search/errors.js';
+import { linkAttachmentRefs, type ResponseMediaContext } from '../../media/inference.js';
+import { observationMediaFromMetadata } from '../../media/feed.js';
+import { captureOnlyLinkWrites, hasWaitingCaptureOnlyEvents, skippedTurnCaptureOnlyLinkWrites, withWaitingCaptureOnlyLinkWrites, writeMediaEventResults, writeObservationMediaLinks, type MediaLinkageWriteResult, type ObservationLinkWrite } from '../../media/linkage.js';
+import { deriveLineAnchors, lineAnchorsForObservation, withLineAnchors, type LineAnchor } from '../../../shared/line-anchors.js';
+import { normalizePlatformSource } from '../../../shared/platform-source.js';
+import { hasSummaryProgress } from './summary-content.js';
+import type { Database } from 'bun:sqlite';
 
-type ObservationFileEvidenceMessage = Pick<PendingMessage, 'type' | 'tool_name' | 'tool_input'>;
+type ObservationFileEvidenceMessage = Pick<PendingMessage, 'type' | 'tool_name' | 'tool_input' | 'tool_response'>;
 
 export interface ObservationFileEvidence {
   files_read: string[];
   files_modified: string[];
 }
 
-const READ_TOOL_NAMES = new Set(['Read']);
-const WRITE_TOOL_NAMES = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit', 'write_file']);
+const READ_TOOL_NAMES = new Set(['Read', 'read_file', 'view_file']);
+const WRITE_TOOL_NAMES = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit', 'write_file', 'edit_file']);
 const PATCH_TOOL_NAMES = new Set(['apply_patch']);
 
 export function extractObservationFileEvidence(messages: ReadonlyArray<ObservationFileEvidenceMessage>): ObservationFileEvidence {
@@ -51,6 +68,13 @@ export function extractObservationFileEvidence(messages: ReadonlyArray<Observati
 
     const toolName = typeof message.tool_name === 'string' ? message.tool_name : '';
     if (!toolName) {
+      continue;
+    }
+
+    // A denied, failed or timed-out call changed nothing, so the paths in its
+    // input are not evidence of a read or an edit. Cursor's postToolUseFailure
+    // reports failures this way (#5371).
+    if (toolResponseIndicatesError(message.tool_response)) {
       continue;
     }
 
@@ -79,6 +103,43 @@ export function extractObservationFileEvidence(messages: ReadonlyArray<Observati
   };
 }
 
+/**
+ * True when a tool response is marked as an error rather than a result.
+ * Pending messages store tool_response as text (ingest JSON.stringify()s it),
+ * so a JSON-string response is parsed the same way tool_input is.
+ */
+function toolResponseIndicatesError(toolResponse: unknown): boolean {
+  const record = maybeParseObject(toolResponse);
+  return record !== null && (record.is_error === true || record.isError === true);
+}
+
+/**
+ * Line anchors (#4943), opt-in with CLAUDE_MEM_LINE_ANCHORS_ENABLED: where in
+ * each file the batch's successful Edit, MultiEdit and targeted Read calls
+ * landed (src/shared/line-anchors.ts). Claude Code sessions only: other hosts'
+ * adapters rename their own tools to these names. Off, no source file is
+ * read. Runs outside the storage transaction, and a failure stores the batch
+ * without anchors: it must never fail or retry a batch.
+ */
+function captureLineAnchors(
+  messages: ReadonlyArray<PendingMessage>,
+  sessionDbId: number,
+  platformSource: string | undefined,
+): LineAnchor[] {
+  try {
+    if (SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_LINE_ANCHORS_ENABLED !== 'true') return [];
+    if (normalizePlatformSource(platformSource) !== 'claude') return [];
+    // A denied or failed call changed nothing, as with file evidence above.
+    return deriveLineAnchors(messages.filter(message => !toolResponseIndicatesError(message.tool_response)));
+  } catch (error) {
+    logger.debug('DB', 'Line anchors skipped for this batch', {
+      sessionId: sessionDbId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return [];
+  }
+}
+
 function pushUnique(seen: Set<string>, output: string[], filePath: string): void {
   if (!seen.has(filePath)) {
     seen.add(filePath);
@@ -90,8 +151,7 @@ function normalizePathValue(value: unknown): string | null {
   if (typeof value !== 'string') {
     return null;
   }
-  const trimmed = value.trim();
-  return trimmed ? trimmed : null;
+  return value.trim() ? value : null;
 }
 
 function maybeParseObject(value: unknown): Record<string, unknown> | null {
@@ -126,6 +186,9 @@ function extractPathsFromToolInput(
   }
 
   const paths: string[] = [];
+  // A read's canonical `file_path` wins over a conflicting `path` (Kimi and
+  // OpenClaw send both), so reads never take `path`. agy's `Path` argument is
+  // mapped to `file_path` by its adapter (normalizeAgyToolInput).
   const directFields = mode === 'read'
     ? ['file_path', 'filePath', 'notebook_path', 'notebookPath', 'filePaths']
     : ['file_path', 'filePath', 'notebook_path', 'notebookPath', 'path', 'filePaths'];
@@ -180,9 +243,12 @@ function extractPatchPaths(toolInput: unknown): string[] {
   }
 
   const patches: string[] = [];
-  const patch = normalizePathValue(input.patch);
-  if (patch) {
-    patches.push(patch);
+  // Codex's apply_patch hook carries the raw patch in tool_input.command.
+  for (const field of ['patch', 'command']) {
+    const patch = normalizePathValue(input[field]);
+    if (patch) {
+      patches.push(patch);
+    }
   }
 
   const edits = input.edits;
@@ -208,26 +274,52 @@ function extractPatchPaths(toolInput: unknown): string[] {
 
 function parsePatchFiles(patch: string): string[] {
   const files: string[] = [];
+  let customPatch = false;
+  let oldLines = 0;
+  let newLines = 0;
   for (const line of patch.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (trimmed.startsWith('*** Update File: ')) {
-      files.push(trimmed.replace('*** Update File: ', '').trim());
+    // Unified hunks can contain header-shaped context and +/- content. Count
+    // their lines so a later file header is still recognized without treating
+    // an added "++ b/path" line as another modified file.
+    // A `diff --git` line always starts a new file, so overstated hunk counts
+    // from a model-written diff cannot swallow the next file's headers.
+    if (line.startsWith('diff --git ')) {
+      oldLines = 0;
+      newLines = 0;
+    }
+    if (oldLines > 0 || newLines > 0) {
+      // An empty line is a context line whose single leading space was
+      // stripped by an editor or model.
+      const context = line === '' || line.startsWith(' ');
+      if (context || line.startsWith('-')) oldLines--;
+      if (context || line.startsWith('+')) newLines--;
       continue;
     }
-    if (trimmed.startsWith('*** Add File: ')) {
-      files.push(trimmed.replace('*** Add File: ', '').trim());
+    if (line === '*** Begin Patch') {
+      customPatch = true;
       continue;
     }
-    if (trimmed.startsWith('*** Delete File: ')) {
-      files.push(trimmed.replace('*** Delete File: ', '').trim());
+    const customHeader = line.match(/^\*\*\* (?:Update File|Add File|Delete File|Move to): (.+)$/);
+    if (customHeader) {
+      customPatch = true;
+      files.push(customHeader[1].trim());
       continue;
     }
-    if (trimmed.startsWith('*** Move to: ')) {
-      files.push(trimmed.replace('*** Move to: ', '').trim());
+    if (line === '*** End Patch') {
+      customPatch = false;
       continue;
     }
-    if (trimmed.startsWith('+++ ')) {
-      const filePath = trimmed.replace('+++ ', '').replace(/^b\//, '').trim();
+    // Custom patch body lines use a leading space, + or -. Their file
+    // directives start in column zero; +++ is never a header in this format.
+    if (customPatch) continue;
+    const hunk = line.match(/^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/);
+    if (hunk) {
+      oldLines = Number(hunk[1] ?? 1);
+      newLines = Number(hunk[2] ?? 1);
+      continue;
+    }
+    if (line.startsWith('+++ ')) {
+      const filePath = line.slice(4).replace(/^b\//, '').trim();
       if (filePath && filePath !== '/dev/null') {
         files.push(filePath);
       }
@@ -269,30 +361,348 @@ export interface ResponseContext {
   promptNumber: number;
   pendingAgentId: string | null;
   pendingAgentType: string | null;
+  /**
+   * The turn's source events and its request label -> (event_key,
+   * attachment_id, event_label) map, frozen when the request was sent. Batch
+   * labels resolve through this, never through mutable session state.
+   */
+  media?: ResponseMediaContext;
 }
 
-export function snapshotResponseContext(session: ActiveSession): ResponseContext {
+export function snapshotResponseContext(session: ActiveSession, media?: ResponseMediaContext): ResponseContext {
   return {
     project: session.project,
     promptNumber: session.lastPromptNumber,
     pendingAgentId: session.pendingAgentId ?? null,
     pendingAgentType: session.pendingAgentType ?? null,
+    ...(media ? { media } : {}),
   };
 }
 
 /**
+ * The durable media source events this reply answers. `attributed` events get
+ * this reply's observation rows: the frozen turn events when the request
+ * recorded them, otherwise every claimed event (a provider that never sends
+ * images still records the text outcome). `unattributed` are other claimed
+ * events confirmed with this batch; they get a result but no observation rows.
+ */
+interface TurnMediaEventKeys { attributed: string[]; unattributed: string[] }
+
+function turnMediaEventKeys(context: ResponseContext, sessionManager: SessionManager, sessionDbId: number): TurnMediaEventKeys {
+  const claimed = typeof sessionManager.getClaimedMessages === 'function'
+    ? [...new Set(sessionManager.getClaimedMessages(sessionDbId)
+      .map(message => message.mediaEventKey)
+      .filter((key): key is string => typeof key === 'string' && key.length > 0))]
+    : [];
+  if (!context.media) return { attributed: claimed, unattributed: [] };
+  const attributed = context.media.events.map(event => event.eventKey);
+  return { attributed, unattributed: claimed.filter(key => !attributed.includes(key)) };
+}
+
+function hasMediaEvents(keys: TurnMediaEventKeys): boolean {
+  return keys.attributed.length > 0 || keys.unattributed.length > 0;
+}
+
+/** A SQLite/media error code for logs; never the message, which can carry data. */
+function errorCode(error: unknown): string {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === 'string' && /^[A-Za-z0-9_]{1,64}$/.test(code) ? code : 'storage_unavailable';
+}
+
+/**
+ * Record a confirmed-without-storage outcome (skip, dropped batch) on the
+ * turn's source events before the batch is confirmed, and hand the turn's
+ * images on within its prompt (capture-only linkage, a turn that stored no
+ * observation). An outcome-write failure propagates to the caller; terminal
+ * answered batches report the durability gap and still settle their inference
+ * work. A failed link write only degrades the images to event-level.
+ */
+function recordSkippedMediaEvents(dbManager: DatabaseManager, keys: TurnMediaEventKeys, sessionDbId: number, promptNumber: number): void {
+  if (!hasMediaEvents(keys)) return;
+  const db = dbManager.getSessionStore().db;
+  const linkResult = db.transaction(() => {
+    writeMediaEventResults(db, [...keys.attributed, ...keys.unattributed], 'skipped', []);
+    if (keys.attributed.length === 0) return null;
+    return writeLinksInSavepoint(db, sessionDbId, () =>
+      skippedTurnCaptureOnlyLinkWrites(db, sessionDbId, promptNumber, keys.attributed));
+  })();
+  if (!linkResult) return;
+  logger.info('DB', 'Observation media linked capture-only (uninspected) from a turn that stored no observation', {
+    sessionId: sessionDbId,
+    changedRows: linkResult.changedNativeRows.length,
+    eventLevelRefs: linkResult.eventLevelRefs,
+  });
+  if (linkResult.changedNativeRows.length > 0) dbManager.getCloudSync()?.notify();
+}
+
+/**
+ * Release the quota breaker after the provider answered a turn. Codex clears
+ * its breaker in query using the admitted cooldown identity: an earlier
+ * response here must not erase a newer failure from a concurrent pool slot.
+ * A quota-fallback run proves its own credential works, not the spent primary one.
+ */
+function releaseQuotaBreaker(session: ActiveSession): void {
+  if (session.currentProvider && session.currentProvider !== 'codex' && !session.claudeAuthOverride) {
+    clearQuotaCooldown(session.currentProvider);
+  }
+}
+
+/** End an answered turn without a memory row, keeping its source and receipts. */
+async function confirmWithoutStorage(
+  session: ActiveSession,
+  context: ResponseContext,
+  dbManager: DatabaseManager,
+  sessionManager: SessionManager,
+  worker: WorkerRef | undefined,
+): Promise<void> {
+  session.lastSummaryStored = false;
+  try {
+    recordSkippedMediaEvents(dbManager, turnMediaEventKeys(context, sessionManager, session.sessionDbId), session.sessionDbId, context.promptNumber);
+  } catch (error) {
+    // A DB failure cannot turn an answered batch into another paid request.
+    // Keep original media evidence; report the missing result/link separately.
+    logger.error('DB', 'Answered batch media outcome could not be saved; no inference replay', {
+      sessionId: session.sessionDbId, code: errorCode(error),
+    });
+  }
+  const toolUseIds = Array.from(new Set(
+    sessionManager.getClaimedMessages(session.sessionDbId)
+      .map(message => message.toolUseId)
+      .filter((id): id is string => typeof id === 'string' && id.length > 0)
+  ));
+  // A final answer with no memory still spent this batch's budget. Do not
+  // let a later hook/transcript delivery buy another send of the same event.
+  if (toolUseIds.length > 0) {
+    try {
+      dbManager.getSessionStore().markCommittedToolUses({
+        platformSource: session.platformSource,
+        contentSessionId: session.contentSessionId,
+        toolUseIds,
+      });
+    } catch (error) {
+      // The live buffer still remembers these tool IDs. Durability is degraded,
+      // not repaired by regenerating a response or persisting inference work.
+      logger.error('DB', 'Answered batch completion receipt could not be saved; no inference replay', {
+        sessionId: session.sessionDbId, code: errorCode(error),
+      });
+    }
+  }
+  session.pendingAgentId = null;
+  session.pendingAgentType = null;
+  await sessionManager.confirmClaimedMessages(session.sessionDbId);
+  session.earliestPendingTimestamp = null;
+  worker?.broadcastProcessingStatus?.();
+}
+
+/**
+ * Inside the storeObservations transaction. The durable event results are
+ * written in that outer transaction, with the observation rows. Only the
+ * manifest and junction writes run in a savepoint: if they fail, the
+ * observations and event results still commit, the images degrade to
+ * event-level/uninspected, and replay does not ask the model again.
+ */
+function commitTurnMediaLinkage(
+  db: Database,
+  stored: StorageResult,
+  storedLinks: string[][],
+  media: ResponseMediaContext | undefined,
+  keys: TurnMediaEventKeys,
+  sessionDbId: number,
+  promptNumber: number,
+): MediaLinkageWriteResult | null {
+  writeMediaEventResults(db, keys.attributed, stored.observationIds.length > 0 ? 'stored' : 'skipped', stored.observationIds);
+  writeMediaEventResults(db, keys.unattributed, 'skipped', []);
+  if (stored.observationIds.length === 0) {
+    // Capture-only linkage, a turn that stored no observation: its images go
+    // to the prompt's most recent observation, or wait for its next one.
+    if (keys.attributed.length === 0) return null;
+    return writeLinksInSavepoint(db, sessionDbId, () =>
+      skippedTurnCaptureOnlyLinkWrites(db, sessionDbId, promptNumber, keys.attributed));
+  }
+  const inserted = stored.insertedObservationIds ?? [];
+  return writeLinksInSavepoint(db, sessionDbId, () => withWaitingCaptureOnlyLinkWrites(
+    db, sessionDbId, promptNumber, stored.observationIds, inserted, turnLinkWrites(db, stored, storedLinks, media, keys)));
+}
+
+/** This turn's own links: capture-only when the request carried none of its images, else the model's labels. */
+function turnLinkWrites(
+  db: Database,
+  stored: StorageResult,
+  storedLinks: string[][],
+  media: ResponseMediaContext | undefined,
+  keys: TurnMediaEventKeys,
+): ObservationLinkWrite[] {
+  if (!media?.imagesDelivered) {
+    // Capture-only linkage (docs/media-contract-v1.md): the request carried
+    // none of the turn's images, so every stored observation links every
+    // retained image of the attributed events as uninspected.
+    if (keys.attributed.length === 0) return [];
+    return captureOnlyLinkWrites(db, keys.attributed, stored.observationIds, stored.insertedObservationIds ?? []);
+  }
+  const imageByRequestLabel = new Map(media.images.map(image => [image.requestLabel, image]));
+  const inserted = new Set(stored.insertedObservationIds ?? []);
+  const writes = new Map<number, ObservationLinkWrite>();
+  storedLinks.forEach((requestLabels, index) => {
+    const observationId = stored.observationIds[index];
+    if (observationId === undefined || requestLabels.length === 0) return;
+    const write = writes.get(observationId) ?? { observationId, insertedThisTurn: inserted.has(observationId), refs: [] };
+    for (const requestLabel of requestLabels) {
+      const image = imageByRequestLabel.get(requestLabel);
+      if (!image || write.refs.some(ref => ref.id === image.attachmentId)) continue;
+      write.refs.push({ id: image.attachmentId, label: image.eventLabel, inspection: 'inspected', eventKey: image.eventKey });
+    }
+    writes.set(observationId, write);
+  });
+  return [...writes.values()];
+}
+
+/** The manifest and junction writes in a savepoint of the storage transaction; a failure degrades the images to event-level. */
+function writeLinksInSavepoint(
+  db: Database,
+  sessionDbId: number,
+  buildWrites: () => ObservationLinkWrite[],
+): MediaLinkageWriteResult | null {
+  try {
+    return db.transaction(() => {
+      const writes = buildWrites();
+      return writes.length === 0 ? null : writeObservationMediaLinks(db, writes);
+    })();
+  } catch (error) {
+    logger.error('DB', 'Observation media links were not written; images stay event-level and uninspected', {
+      sessionId: sessionDbId,
+      code: errorCode(error),
+    });
+    return null;
+  }
+}
+
+/**
  * An accepted reply proves the conversation fits and the provider is alive, so
- * the overflow and stall debts reset — but only when the reply answered queued
+ * the overflow, stall, rate-limit and unattended-gateway-resume debts reset — but only when the reply answered queued
  * work. The init prompt is answered on every fresh generation, so letting it
  * reset the debt meant an oversized message or a too-small budget went
  * init -> reset -> recycle -> restart forever and never reached the exhausted
  * pause (#4066). With the Claude feed paced to one unanswered prompt,
  * lastGeneratorSource names the prompt this reply answers.
  */
+/**
+ * Drifted replies allowed in a row before the generation is ended so the next
+ * one starts from the schema. A clean reply resets the count.
+ */
+const MAX_CONSECUTIVE_SCHEMA_DRIFTS = 3;
+
+/**
+ * A reply that drifted off the observation schema (#3461: `<kind>`/`<detail>`
+ * for `<type>`/`<title>`). Its rows were salvaged and stored, so nothing is
+ * asked again; what must not survive is the drifted turn itself — left in the
+ * conversation, it is the example the model copies for the rest of the
+ * generation. Replace it with the canonical XML of what was stored, remind the
+ * next observation prompt of the schema, and after
+ * MAX_CONSECUTIVE_SCHEMA_DRIFTS in a row end the generation (abort reason
+ * 'drift', preserved) so the next one starts clean.
+ */
+function correctSchemaDrift(
+  session: ActiveSession,
+  text: string,
+  observations: ParsedObservation[],
+  driftedTags: string[],
+  agentName: string,
+): void {
+  session.consecutiveSchemaDrifts = (session.consecutiveSchemaDrifts ?? 0) + 1;
+  const history = session.conversationHistory;
+  for (let index = history.length - 1; index >= 0; index--) {
+    if (history[index].role === 'assistant' && history[index].content === text) {
+      history[index] = { role: 'assistant', content: observations.map(renderObservationXml).join('\n') };
+      break;
+    }
+  }
+  session.observerSchemaReminder = true;
+  logger.warn('PARSER', `${agentName} reply used tags outside the observation schema; stored the salvaged rows and corrected the turn`, {
+    sessionId: session.sessionDbId,
+    driftedTags,
+    consecutiveSchemaDrifts: session.consecutiveSchemaDrifts,
+  });
+
+  if (session.consecutiveSchemaDrifts >= MAX_CONSECUTIVE_SCHEMA_DRIFTS) {
+    logger.error('PARSER', `${agentName} drifted off the observation schema ${session.consecutiveSchemaDrifts} times in a row; starting a fresh generation`, {
+      sessionId: session.sessionDbId,
+      driftedTags,
+    });
+    session.consecutiveSchemaDrifts = 0;
+    session.abortReason = 'drift:observer_schema';
+    try {
+      session.abortController.abort();
+    } catch {
+      // best-effort; AbortController.abort() should not throw in normal use.
+    }
+  }
+}
+
+function escapeXmlText(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/** One stored observation in the schema's own XML, for the corrected turn. */
+function renderObservationXml(observation: ParsedObservation): string {
+  const field = (name: string, value: string | null) =>
+    value ? `  <${name}>${escapeXmlText(value)}</${name}>` : null;
+  const list = (wrapper: string, element: string, values: string[]) =>
+    values.length > 0
+      ? `  <${wrapper}>${values.map(value => `<${element}>${escapeXmlText(value)}</${element}>`).join('')}</${wrapper}>`
+      : null;
+  return [
+    '<observation>',
+    field('type', observation.type),
+    field('title', observation.title),
+    field('subtitle', observation.subtitle),
+    list('facts', 'fact', observation.facts),
+    field('narrative', observation.narrative),
+    list('concepts', 'concept', observation.concepts),
+    list('files_read', 'file', observation.files_read),
+    list('files_modified', 'file', observation.files_modified),
+    '</observation>',
+  ].filter((line): line is string => line !== null).join('\n');
+}
+
+/**
+ * Whether the next observation prompt should restate the schema, after a
+ * drifted reply. Reading it consumes it: one reminder per drift.
+ */
+export function takeObserverSchemaReminder(session: ActiveSession): boolean {
+  const remind = session.observerSchemaReminder === true;
+  session.observerSchemaReminder = false;
+  return remind;
+}
+
 function clearDebtForAnsweredWork(session: ActiveSession): void {
   if (session.lastGeneratorSource === 'init') return;
   session.consecutiveContextOverflows = 0;
   session.consecutiveResponseStalls = 0;
+  session.consecutiveSdkStreamExits = 0;
+  session.consecutiveRateLimitResumes = 0;
+  session.consecutiveUnattendedGatewayResumes = 0;
+}
+
+/** finish_reason values that mean the reply hit its output-token cap (OpenAI-style and Gemini). */
+export function isOutputCapFinishReason(finishReason: string | null | undefined): boolean {
+  const reason = (finishReason ?? '').trim().toLowerCase();
+  return reason === 'length' || reason === 'max_tokens';
+}
+
+/**
+ * Whether the reply ends in an `<observation>` the parser cannot store. Every
+ * whole block the parser reads is removed first, using its own matches
+ * (parseAgentXml: observations, the summary, a skip_summary), so an
+ * `<observation>` written inside a block's content (CDATA, prose about the
+ * format) is not mistaken for an unfinished block. Any opening left has no
+ * close after it, so it begins the cut-off tail.
+ */
+export function hasUnfinishedObservationBlock(text: string): boolean {
+  const outsideWholeBlocks = maskXmlLiteralMarkup(text)
+    .replace(new RegExp(OBSERVATION_BLOCK.source, 'gi'), '')
+    .replace(new RegExp(SUMMARY_BLOCK.source, 'gi'), '')
+    .replace(new RegExp(SKIP_SUMMARY_TAG.source, 'gi'), '');
+  return OBSERVATION_OPEN_TAG.test(outsideWholeBlocks);
 }
 
 export async function processAgentResponse(
@@ -306,11 +716,17 @@ export async function processAgentResponse(
   agentName: string,
   projectRoot?: string,
   modelId?: string,
-  responseContext?: ResponseContext
-): Promise<void> {
+  responseContext?: ResponseContext,
+  /** Why an empty turn was empty (block kinds only, never content), for the idle WARN line. */
+  emptyOutputReason?: string
+): Promise<StorageResult | null> {
   const processingStartedAt = Date.now();
   session.lastGeneratorActivity = Date.now();
   const context = responseContext ?? snapshotResponseContext(session);
+  // Scoped to the reply that produced `text`: consumed here, before any branch,
+  // so a later reply (from any provider) never reads one an earlier turn set.
+  const finishReason = session.lastFinishReason ?? null;
+  session.lastFinishReason = null;
 
   // Classify rejections BEFORE growing the window. "Prompt is too long", quota
   // prose and auth prose are refusals, not conversational turns; appending them
@@ -320,6 +736,8 @@ export async function processAgentResponse(
     !!text &&
     (isContextOverflowObserverOutput(text) ||
       isQuotaLimitedObserverOutput(text) ||
+      isRateLimitedObserverOutput(text) ||
+      isAnthropicVerificationHoldObserverOutput(text) ||
       isAuthFailureObserverOutput(text) ||
       isTransportFailureObserverOutput(text));
 
@@ -348,12 +766,10 @@ export async function processAgentResponse(
         'refused',
         `${agentName} refused the prompt as too long: ${previewOutput(text)}`,
       );
-      return;
+      return null;
     }
 
     if (isQuotaLimitedObserverOutput(text)) {
-      session.consecutiveInvalidOutputs = 0;
-
       logger.warn('PARSER', `${agentName} returned quota-limit prose — pausing generator and preserving queued batch`, {
         sessionId: session.sessionDbId,
         outputClass: 'prose',
@@ -368,27 +784,75 @@ export async function processAgentResponse(
         // best-effort; AbortController.abort() should not throw in normal use.
       }
       worker?.broadcastProcessingStatus?.();
-      return;
+      return null;
     }
 
-    if (isAuthFailureObserverOutput(text)) {
-      session.consecutiveInvalidOutputs = 0;
+    // A 429 the CLI wrote as the reply (#5428). The provider never ran the
+    // batch, so confirming it would lose the work; it is a throttle, not a
+    // spent allowance, so it pauses under its own 'rate_limit' category and
+    // the runner books the short rate-limit window a thrown 429 gets.
+    if (isRateLimitedObserverOutput(text)) {
+      logger.warn('PARSER', `${agentName} returned a rate-limit reply — pausing generator and preserving queued batch`, {
+        sessionId: session.sessionDbId,
+        outputClass: 'prose',
+        preview: previewOutput(text),
+      });
 
       await sessionManager.resetProcessingToPending(session.sessionDbId);
-      session.abortReason = 'auth:observer_text';
+      session.abortReason = OBSERVER_TEXT_RATE_LIMIT_ABORT_REASON;
       try {
         session.abortController.abort();
       } catch {
         // best-effort; AbortController.abort() should not throw in normal use.
       }
       worker?.broadcastProcessingStatus?.();
-      logger.error('PARSER', `${agentName} authentication failed; run /login to preserve queued batch`, {
+      return null;
+    }
+
+    if (isAnthropicVerificationHoldObserverOutput(text)) {
+      await sessionManager.resetProcessingToPending(session.sessionDbId);
+      session.abortReason = 'auth:observer_verification_hold';
+      try {
+        session.abortController.abort();
+      } catch {
+        // best-effort; AbortController.abort() should not throw in normal use.
+      }
+      worker?.broadcastProcessingStatus?.();
+      worker?.recordAiInteraction?.({ success: false, error: 'unauthenticated', provider: providerName });
+      // Do not log the response preview: its verification URL contains an account identifier.
+      logger.error('PARSER', `${agentName} refused: Claude account verification is required; queued batch preserved`, {
         sessionId: session.sessionDbId,
         outputClass: 'prose',
-        remediation: '/login',
+        remediation: 'anthropic_verification_portal',
+      });
+      return null;
+    }
+
+    if (isAuthFailureObserverOutput(text)) {
+      // An org that disabled subscription access is refused like a signed-out
+      // observer, but /login cannot fix it (#4677): keep it apart so the
+      // runner books the API-key / admin remedy instead.
+      const orgDisabledSubscription = isOrgDisabledSubscriptionObserverOutput(text);
+      await sessionManager.resetProcessingToPending(session.sessionDbId);
+      session.abortReason = orgDisabledSubscription ? 'auth:observer_org_policy' : 'auth:observer_text';
+      try {
+        session.abortController.abort();
+      } catch {
+        // best-effort; AbortController.abort() should not throw in normal use.
+      }
+      worker?.broadcastProcessingStatus?.();
+      // /api/health's ai.lastInteraction: the observer is signed out and will
+      // keep producing nothing until re-auth, so say so instead of "ok".
+      worker?.recordAiInteraction?.({ success: false, error: 'unauthenticated', provider: providerName });
+      logger.error('PARSER', orgDisabledSubscription
+        ? `${agentName} refused: the organization has disabled Claude subscription access; queued batch preserved`
+        : `${agentName} authentication failed; run /login to preserve queued batch`, {
+        sessionId: session.sessionDbId,
+        outputClass: 'prose',
+        remediation: orgDisabledSubscription ? 'api_key_or_admin' : '/login',
         preview: previewOutput(text),
       });
-      return;
+      return null;
     }
 
     // A response that is the child's OWN transport/API failure is not the
@@ -397,8 +861,6 @@ export async function processAgentResponse(
     // it here would turn a transient network fault into permanent data loss
     // (#3752).
     if (isTransportFailureObserverOutput(text)) {
-      session.consecutiveInvalidOutputs = 0;
-
       await sessionManager.resetProcessingToPending(session.sessionDbId);
       session.abortReason = 'transport:observer_text';
       try {
@@ -412,15 +874,12 @@ export async function processAgentResponse(
         outputClass: 'transport',
         preview: previewOutput(text),
       });
-      return;
+      return null;
     }
 
-    // Classify the non-XML output so a dropped batch is visible, not silent.
-    // Ordinary idle/prose is a claimed no-op batch: confirm it and do not build
-    // any respawn debt from repeated skip acknowledgements.
+    // Classify the non-XML output so a rejected batch is visible, not silent.
     const outputClass = classifyObserverOutput(text);
     const preview = previewOutput(text);
-    session.consecutiveInvalidOutputs = 0;
     // The overflow/quota/auth rejections returned above, so reaching here means
     // the provider accepted this prompt and answered it. That is proof the
     // conversation fits, whether or not the answer parsed — so the recycle
@@ -428,33 +887,157 @@ export async function processAgentResponse(
     // that answered "idle" twice in a row trip the exhausted branch and wedge.
     // An init reply does not count (#4066).
     clearDebtForAnsweredWork(session);
+    const replyDiagnostics = {
+      // An HTTP reply cut off at the output-token cap reads as xml/prose here;
+      // name it, so a truncation is not mistaken for a skip (#3868).
+      ...(finishReason ? { finishReason, truncated: isOutputCapFinishReason(finishReason) } : {}),
+      // Only an idle turn has a shape worth naming: blank text, thinking or
+      // tool_use blocks only, or no content blocks at all (#3454).
+      ...(outputClass === 'idle' && emptyOutputReason ? { emptyOutputReason } : {}),
+    };
 
-    // consecutiveInvalidOutputs is deliberately always 0 here (see worker-types),
-    // so logging it read as "the breaker is fine" on every rejection and hid
-    // #3800 for a full day of failures. Report the counter that can actually be
-    // non-zero instead.
-    logger.warn('PARSER', `${agentName} returned non-XML ${outputClass} response — ignoring queued batch`, {
-      sessionId: session.sessionDbId,
-      outputClass,
-      preview,
-      consecutiveContextOverflows: session.consecutiveContextOverflows,
-    });
+    // Every mode now names the <skip_summary /> sentinel, so a reply to queued
+    // work that is neither XML nor the sentinel did not answer the batch, and
+    // confirming it lost the batch silently. It earns the batch one more try,
+    // in a fresh generation (the reply stays out of the next request); a second
+    // rejection of the same batch drops it with an error, so one stubborn batch
+    // can neither loop nor stall the queue behind it. An init reply has no
+    // batch, and is confirmed as before.
+    const answersQueuedWork = session.lastGeneratorSource !== 'init' && session.claimedMessageIds.length > 0;
+    if (answersQueuedWork && recordRejectedOutput(session) === 'retry') {
+      logger.warn('PARSER', `${agentName} returned non-XML ${outputClass} response — asking for the queued batch again in a fresh generation`, {
+        sessionId: session.sessionDbId,
+        outputClass,
+        preview,
+        ...replyDiagnostics,
+      });
+      await sessionManager.resetProcessingToPending(session.sessionDbId);
+      session.abortReason = `output_retry:${outputClass}`;
+      try {
+        session.abortController.abort();
+      } catch {
+        // best-effort; AbortController.abort() should not throw in normal use.
+      }
+      worker?.broadcastProcessingStatus?.();
+      return null;
+    }
 
-    // Plain-text skip responses are intentionally ignored. Re-queueing them
-    // creates an observer loop where the same low-signal batch is retried.
+    if (answersQueuedWork) {
+      clearRejectedOutput(session);
+      // A provider that answers the same batch twice without usable output is
+      // not serving it. When the fallback (by default the Anthropic plan) can
+      // take the work, hold the provider briefly and hand the batch there in a
+      // fresh generation instead of dropping it. Once there, the batch gets
+      // the same one retry; the fallback is never routed around itself.
+      const fallback = session.currentProvider
+        ? routeAroundUnservableProviderIfLoaded(
+          session.currentProvider,
+          `The observer answered a queued batch twice without observation XML (${outputClass})`,
+          'unavailable',
+          session.observerProfile,
+        )
+        : null;
+      if (fallback !== null) {
+        logger.warn('PARSER', `${agentName} returned non-XML ${outputClass} response again for the same queued batch — handing it to the ${fallback} fallback`, {
+          sessionId: session.sessionDbId,
+          outputClass,
+          preview,
+          ...replyDiagnostics,
+        });
+        await sessionManager.resetProcessingToPending(session.sessionDbId);
+        session.abortReason = `output_retry:${outputClass}`;
+        try {
+          session.abortController.abort();
+        } catch {
+          // best-effort; AbortController.abort() should not throw in normal use.
+        }
+        worker?.broadcastProcessingStatus?.();
+        return null;
+      }
+      logger.error('PARSER', `${agentName} returned non-XML ${outputClass} response again for the same queued batch — dropping it`, {
+        sessionId: session.sessionDbId,
+        outputClass,
+        preview,
+        ...replyDiagnostics,
+      });
+      recordObserverFailure(providerName, `The observer answered a queued batch twice without observation XML (${outputClass}); the batch was dropped`);
+      recordSkippedMediaEvents(dbManager, turnMediaEventKeys(context, sessionManager, session.sessionDbId), session.sessionDbId, context.promptNumber);
+    } else {
+      logger.warn('PARSER', `${agentName} returned non-XML ${outputClass} response to a prompt with no queued batch`, {
+        sessionId: session.sessionDbId,
+        outputClass,
+        preview,
+        ...replyDiagnostics,
+        consecutiveContextOverflows: session.consecutiveContextOverflows,
+      });
+    }
     await sessionManager.confirmClaimedMessages(session.sessionDbId);
     session.earliestPendingTimestamp = null;
-    return;
+    return null;
+  }
+
+  // A reply to the init prompt answers the user's request, not a tool call: an
+  // <observation> in it was invented from <user_request> alone and would be
+  // stored as memory for work that never happened. The OpenAI-compatible
+  // providers never hand that reply here; the Claude feed does when it observes
+  // bare prompts, and with the feed paced to one unanswered prompt,
+  // lastGeneratorSource names the prompt this reply answers. The turn is kept
+  // (appended above, so role alternation holds); nothing is stored, no batch is
+  // acknowledged, and no batch state is touched.
+  if (session.lastGeneratorSource === 'init') {
+    logger.debug('PARSER', `${agentName} answered the init prompt with XML; nothing to store before tool evidence`, {
+      sessionId: session.sessionDbId,
+    });
+    return null;
+  }
+
+  // A parseable title/plan is an answered request, but not progress worth
+  // saving. Keep this out of the invalid-XML recovery path: that path retries
+  // and can route to another provider. Settle only this batch, even before a
+  // memory session ID arrives, so fresh work can continue without a new send.
+  if (parsed.summary && !parsed.summary.skipped && !hasSummaryProgress(text)) {
+    clearRejectedOutput(session);
+    clearDebtForAnsweredWork(session);
+    logger.warn('PARSER', 'Summary has no progress content; not storing or retrying the answered batch', {
+      sessionId: session.sessionDbId,
+      reason: 'missing_progress_content',
+      ...(finishReason ? { finishReason, truncated: isOutputCapFinishReason(finishReason) } : {}),
+    });
+    await confirmWithoutStorage(session, context, dbManager, sessionManager, worker);
+    return null;
+  }
+
+  // A reply cut off at the output-token cap can still hold complete blocks.
+  // They are stored, but the unfinished tail is lost, so say so: hitting the
+  // cap is never silent. A provider that reports no finish reason (the Claude
+  // SDK path) still shows a cut reply as an <observation> with no close.
+  const hasUnfinishedBlock = hasUnfinishedObservationBlock(text);
+  if (isOutputCapFinishReason(finishReason) || hasUnfinishedBlock) {
+    logger.error('PARSER', `${agentName} reply was cut off; storing its complete blocks, the unfinished tail is lost. Raise CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS if this repeats`, {
+      sessionId: session.sessionDbId,
+      finishReason,
+      completeObservations: parsed.observations.length,
+      hasUnfinishedObservationBlock: hasUnfinishedBlock,
+      hasSummary: parsed.summary !== null,
+    });
   }
 
   // Valid parse — clear the invalid-output counter so transient misses don't
   // accumulate toward a respawn across a healthy session, and clear the overflow
   // counter so recycles only ever trip on *consecutive* failures (not on an
   // init reply, #4066).
-  session.consecutiveInvalidOutputs = 0;
+  clearRejectedOutput(session);
   clearDebtForAnsweredWork(session);
 
   if (!session.memorySessionId) {
+    // A valid <skip_summary/> stores nothing, so it does not wait for the
+    // memory session id: confirm it now. Resetting it to pending re-asked the
+    // same batch, for the same final answer, until the id appeared.
+    if (parsed.summary?.skipped) {
+      await confirmWithoutStorage(session, context, dbManager, sessionManager, worker);
+      releaseQuotaBreaker(session);
+      return null;
+    }
     logger.warn('SDK', 'memorySessionId not yet captured; deferring storage until next round', {
       sessionId: session.sessionDbId
     });
@@ -462,11 +1045,16 @@ export async function processAgentResponse(
     // count as "in progress" and trigger a respawn loop while we wait for the
     // memory session id to appear. The next generator pass will re-claim them.
     await sessionManager.resetProcessingToPending(session.sessionDbId);
-    return;
+    return null;
   }
 
   const { observations, summary } = parsed;
   const claimedMessages = sessionManager.getClaimedMessages(session.sessionDbId);
+  const claimedToolUseIds = Array.from(new Set(
+    claimedMessages
+      .map(message => message.toolUseId)
+      .filter((id): id is string => typeof id === 'string' && id.length > 0)
+  ));
   const fileEvidence = extractObservationFileEvidence(claimedMessages);
   const sanitizedObservations = sanitizeObservationFiles(observations, fileEvidence);
   // Include claimed-message file evidence even for summary-only responses
@@ -495,15 +1083,48 @@ export async function processAgentResponse(
     memorySessionId: registeredMemorySessionId
   });
 
-  const labeledObservations = sanitizedObservations.map(obs => ({
-    ...obs,
-    agent_type: context.pendingAgentType,
-    agent_id: context.pendingAgentId
-  }));
+  // Storage skips an observation without a title, and everything after it pairs
+  // parsed observations with stored ids by position (Chroma sync, SSE, alerts,
+  // the brainbeat webhook). Drop them here so one list feeds both sides: a
+  // skipped row in the middle would shift every later id onto the wrong one.
+  // Attachment refs are resolved against the labels frozen when the request
+  // was sent, and only when that accepted request carried the pixels. A
+  // text-only turn or fallback gets capture-only links instead, and a turn
+  // that stores nothing hands its images on within its prompt.
+  const mediaEventKeys = turnMediaEventKeys(context, sessionManager, session.sessionDbId);
+  const attachmentLinkage = context.media?.imagesDelivered
+    ? linkAttachmentRefs(sanitizedObservations, context.media.images.map(image => ({ label: image.requestLabel, event: image.eventOrdinal })))
+    : null;
+  const storableEntries = sanitizedObservations
+    .map((obs, index) => ({ obs, requestLabels: attachmentLinkage?.observations[index]?.refs ?? [] }))
+    .filter(entry => hasStorableTitle(entry.obs.title));
+  const storableObservations = storableEntries.map(entry => entry.obs);
+  if (storableObservations.length < sanitizedObservations.length) {
+    logger.debug('DB', 'Dropped observations without a title before storage', {
+      sessionId: session.sessionDbId,
+      dropped: sanitizedObservations.length - storableObservations.length,
+    });
+  }
+  // Line anchors (#4943): an observation without any gets no metadata key,
+  // so with the setting off (the default) every row is stored as before. A
+  // batch that stores no observation reads no file for them.
+  const lineAnchors = storableObservations.length > 0
+    ? captureLineAnchors(claimedMessages, session.sessionDbId, session.platformSource)
+    : [];
+  const labeledObservations = storableObservations.map(({ attachments: _attachmentLabels, ...obs }) => {
+    const anchors = lineAnchorsForObservation(obs, lineAnchors);
+    return {
+      ...obs,
+      agent_type: context.pendingAgentType,
+      agent_id: context.pendingAgentId,
+      ...(anchors.length > 0 ? { metadata: withLineAnchors(null, anchors) } : {}),
+    };
+  });
 
   let result: ReturnType<typeof sessionStore.storeObservations>;
+  let mediaLinkResult: MediaLinkageWriteResult | null = null;
   try {
-    result = sessionStore.storeObservations(
+    const storeTurn = () => sessionStore.storeObservations(
       registeredMemorySessionId,
       context.project,
       labeledObservations,
@@ -511,8 +1132,34 @@ export async function processAgentResponse(
       context.promptNumber,
       discoveryTokens,
       originalTimestamp ?? undefined,
-      modelId
+      modelId,
+      {
+        // A cut-off reply is terminal too: the lost tail is logged above, and
+        // replaying its tool uses after a restart would be unrequested spend.
+        committedToolUses: claimedToolUseIds.length > 0
+          ? { platformSource: session.platformSource, contentSessionId: session.contentSessionId, toolUseIds: claimedToolUseIds }
+          : undefined,
+      }
     );
+    // Events a skipped turn of this prompt left waiting link to this turn's
+    // observations even when the turn has no images of its own.
+    const linksMedia = hasMediaEvents(mediaEventKeys)
+      || (labeledObservations.length > 0
+        && hasWaitingCaptureOnlyEvents(sessionStore.db, session.sessionDbId, context.promptNumber));
+    if (!linksMedia) {
+      result = storeTurn();
+    } else {
+      // Observation rows, manifests, junctions and the durable event result
+      // commit together, before the RAM batch is confirmed below.
+      result = sessionStore.db.transaction(() => {
+        const stored = storeTurn();
+        mediaLinkResult = commitTurnMediaLinkage(
+          sessionStore.db, stored, storableEntries.map(entry => entry.requestLabels),
+          context.media, mediaEventKeys, session.sessionDbId, context.promptNumber,
+        );
+        return stored;
+      })();
+    }
   } finally {
     session.pendingAgentId = null;
     session.pendingAgentType = null;
@@ -522,6 +1169,49 @@ export async function processAgentResponse(
     sessionId: session.sessionDbId,
     memorySessionId: registeredMemorySessionId
   });
+  if (attachmentLinkage) {
+    // Reason codes and counts only, never label text from model output.
+    const rejectionCounts: Record<string, number> = {};
+    for (const observation of attachmentLinkage.observations) {
+      for (const rejection of observation.rejected) rejectionCounts[rejection.reason] = (rejectionCounts[rejection.reason] ?? 0) + 1;
+    }
+    const linkResult = mediaLinkResult as MediaLinkageWriteResult | null;
+    logger.info('DB', 'Observation media linked', {
+      sessionId: session.sessionDbId,
+      images: context.media?.images.length ?? 0,
+      unassigned: attachmentLinkage.unassigned.length,
+      rejected: rejectionCounts,
+      changedRows: linkResult?.changedNativeRows.length ?? 0,
+      eventLevelRefs: linkResult?.eventLevelRefs ?? 0,
+    });
+  } else if (mediaLinkResult) {
+    const linkResult = mediaLinkResult as MediaLinkageWriteResult;
+    logger.info('DB', 'Observation media linked capture-only (uninspected)', {
+      sessionId: session.sessionDbId,
+      changedRows: linkResult.changedNativeRows.length,
+      eventLevelRefs: linkResult.eventLevelRefs,
+    });
+  }
+  if ((mediaLinkResult as MediaLinkageWriteResult | null)?.changedNativeRows.length) {
+    dbManager.getCloudSync()?.notify();
+  }
+
+  // Storage is the irreversible step: confirm the batch at once, before the
+  // telemetry and integration side effects below, so an exception in any of
+  // them cannot replay an already-stored batch as duplicate observations.
+  await sessionManager.confirmClaimedMessages(session.sessionDbId);
+  session.earliestPendingTimestamp = null;
+  worker?.broadcastProcessingStatus?.();
+
+  if (parsed.schemaDrift) {
+    correctSchemaDrift(session, text, labeledObservations, parsed.schemaDrift, agentName);
+  } else {
+    session.consecutiveSchemaDrifts = 0;
+  }
+
+  // The provider that produced THIS response (the session's), not whichever
+  // provider the settings name right now.
+  worker?.recordAiInteraction?.({ success: true, provider: providerName });
 
   session.lastSummaryStored = result.summaryId !== null;
 
@@ -529,42 +1219,44 @@ export async function processAgentResponse(
   // at the observation that now summarizes them. It has to happen here and not
   // at ingest — the observation did not exist yet, and neither did
   // memorySessionId. The batch's FIRST observation id owns the link (see
-  // linkToolUsesToObservation), and RECEIPT-JOIN.md documents that
+  // linkToolUsesToObservation), and docs/receipt-join.md documents that
   // observation_id is a pointer into the batch, not a 1:1 mapping; the reliable
-  // per-call join stays (content_session_id, tool_use_id).
+  // per-call join is (platform_source, content_session_id, tool_use_id).
   //
   // Never fatal: a failed link costs a back-reference, not an observation.
-  const claimedToolUseIds = Array.from(new Set(
-    claimedMessages
-      .map(message => message.toolUseId)
-      .filter((id): id is string => typeof id === 'string' && id.length > 0)
-  ));
-  if (claimedToolUseIds.length > 0 && result.observationIds.length > 0) {
+  const linkObservationId = firstStoredObservationId(result);
+  if (claimedToolUseIds.length > 0 && linkObservationId !== undefined) {
     try {
       const linked = sessionStore.linkToolUsesToObservation({
         contentSessionId: session.contentSessionId,
+        platformSource: session.platformSource,
         toolUseIds: claimedToolUseIds,
-        observationId: result.observationIds[0],
-        memorySessionId: session.memorySessionId,
+        observationId: linkObservationId,
+        memorySessionId: registeredMemorySessionId,
       });
-      logger.debug('DB', `TOOL_USES_LINKED | sessionDbId=${session.sessionDbId} | rows=${linked} | observationId=${result.observationIds[0]}`, {
+      logger.debug('DB', `TOOL_USES_LINKED | sessionDbId=${session.sessionDbId} | rows=${linked} | observationId=${linkObservationId}`, {
         sessionId: session.sessionDbId
       });
     } catch (error) {
       logger.warn('DB', 'tool_uses observation link failed', {
         sessionId: session.sessionDbId,
-        observationId: result.observationIds[0],
+        observationId: linkObservationId,
       }, error instanceof Error ? error : new Error(String(error)));
     }
   }
 
-  // A completed store proves the observer pipeline works end-to-end — clear
+  // A store that wrote memory proves the observer pipeline works end-to-end — clear
   // the failure streak in the observer-health ledger, and release any quota
   // breaker so a re-probe that succeeds restores full speed at once rather
-  // than waiting out the remaining cooldown (#3634).
-  recordObserverSuccess();
-  if (session.currentProvider) {
-    clearQuotaCooldown(session.currentProvider);
+  // than waiting out the remaining cooldown (#3634). A valid <skip_summary/>
+  // writes no memory but still proves the provider is serving, so it releases
+  // the breaker too; without that a probe session that only skips re-probes
+  // forever (#6322).
+  if (result.observationIds.length > 0 || result.summaryId !== null) {
+    recordObserverSuccess();
+    releaseQuotaBreaker(session);
+  } else if (parsed.summary?.skipped) {
+    releaseQuotaBreaker(session);
   }
 
   // Telemetry: counts, enums, and REAL usage only (lastUsage is never an
@@ -634,23 +1326,41 @@ export async function processAgentResponse(
     });
   }
 
-  await sessionManager.confirmClaimedMessages(session.sessionDbId);
-  session.earliestPendingTimestamp = null;
-  worker?.broadcastProcessingStatus?.();
+  // Alerts fire for newly stored observations only; a Tier-0 merge (#3038)
+  // re-confirms a row that already alerted.
+  const fresh = freshlyStoredObservations(labeledObservations, result);
 
   void notifyTelegram({
-    observations: labeledObservations,
-    observationIds: result.observationIds,
+    observations: fresh.observations,
+    observationIds: fresh.observationIds,
     project: context.project,
-    memorySessionId: session.memorySessionId,
+    memorySessionId: registeredMemorySessionId,
   });
 
   void notifyGrokBotAwareness({
-    observations: labeledObservations,
-    observationIds: result.observationIds,
+    observations: fresh.observations,
+    observationIds: fresh.observationIds,
     project: context.project,
-    memorySessionId: session.memorySessionId,
+    memorySessionId: registeredMemorySessionId,
     agentId: context.pendingAgentId,
+  });
+
+  // Optional brainbeat webhook (off unless CLAUDE_MEM_GROK_BOT_WEBHOOK_URL is set).
+  // Like the alerts above, only newly stored rows fire (a dedup merge re-confirms one that already did).
+  void notifyGrokBotBrainbeat({
+    observations: fresh.observations,
+    observationIds: fresh.observationIds,
+    project: context.project,
+  });
+
+  // Optional Notion export (off unless CLAUDE_MEM_NOTION_ENABLED). Queues and
+  // returns; the upserts run in the background and never fail capture.
+  notifyNotion({
+    observations: fresh.observations,
+    observationIds: fresh.observationIds,
+    project: context.project,
+    memorySessionId: registeredMemorySessionId,
+    createdAtEpoch: result.createdAtEpoch,
   });
 
   // Growing Grok Bot INDEX: any new observation (any project) can fill a
@@ -665,6 +1375,8 @@ export async function processAgentResponse(
     dbManager,
     worker,
     agentName,
+    registeredMemorySessionId,
+    new Set((mediaLinkResult as MediaLinkageWriteResult | null)?.changedNativeRows ?? []),
     projectRoot
   );
 
@@ -676,12 +1388,14 @@ export async function processAgentResponse(
     context,
     dbManager,
     worker,
-    agentName
+    agentName,
+    registeredMemorySessionId
   );
 
   if (result.summaryId) {
     sessionManager.deliverRequestedSessionWrapup?.(session.sessionDbId);
   }
+  return result;
 }
 
 function normalizeSummaryForStorage(summary: ParsedSummary | null): {
@@ -747,6 +1461,35 @@ export function attachObservationFilesToSummary(
   };
 }
 
+/**
+ * The batch's first newly stored observation id, for the tool_uses late link.
+ * A Tier-0 merge (#3038) reuses a row from another session, so prefer a fresh
+ * row; when every item merged, the re-confirmed canonical row is the pointer.
+ */
+function firstStoredObservationId(result: StorageResult): number | undefined {
+  const freshIndex = result.mergedIntoExisting?.findIndex(merged => !merged) ?? 0;
+  return result.observationIds[freshIndex >= 0 ? freshIndex : 0];
+}
+
+/** Parsed observations and ids for rows this batch actually stored (Tier-0 merges dropped). */
+function freshlyStoredObservations<T>(
+  observations: T[],
+  result: StorageResult,
+): { observations: T[]; observationIds: number[] } {
+  // Dedup off (the default) or nothing merged: pass through untouched.
+  if (!result.mergedIntoExisting?.some(Boolean)) {
+    return { observations, observationIds: result.observationIds };
+  }
+  const freshObservations: T[] = [];
+  const freshIds: number[] = [];
+  result.observationIds.forEach((id, index) => {
+    if (result.mergedIntoExisting?.[index]) return;
+    freshObservations.push(observations[index]);
+    freshIds.push(id);
+  });
+  return { observations: freshObservations, observationIds: freshIds };
+}
+
 async function syncAndBroadcastObservations(
   observations: ParsedObservation[],
   result: StorageResult,
@@ -755,9 +1498,11 @@ async function syncAndBroadcastObservations(
   dbManager: DatabaseManager,
   worker: WorkerRef | undefined,
   agentName: string,
+  memorySessionId: string,
+  /** Rows whose manifest this turn's linkage changed. */
+  mediaLinkedObservationIds: ReadonlySet<number>,
   projectRoot?: string
 ): Promise<void> {
-  const memorySessionId = session.memorySessionId;
   if (!memorySessionId) {
     return;
   }
@@ -766,10 +1511,15 @@ async function syncAndBroadcastObservations(
   // multiple parsed observations onto the same row via content_hash, producing
   // duplicate IDs. Syncing them 1:1 triggers repeated Chroma "IDs already exist"
   // reconciles. See issue #2240.
-  const uniqueObservationIds = [...new Set(result.observationIds)];
+  // Skip Tier-0 dedup merges (#3038): a merge reuses an existing row, so syncing
+  // the new parsed content under that id would overwrite the canonical row's
+  // Chroma vector and broadcast text the row does not hold.
+  const handledObservationIds = new Set<number>();
 
-  for (const obsId of uniqueObservationIds) {
-    const observationIndex = result.observationIds.indexOf(obsId);
+  for (let observationIndex = 0; observationIndex < result.observationIds.length; observationIndex++) {
+    const obsId = result.observationIds[observationIndex];
+    if (result.mergedIntoExisting?.[observationIndex] || handledObservationIds.has(obsId)) continue;
+    handledObservationIds.add(obsId);
     const obs = observations[observationIndex];
     if (!obs) {
       logger.warn('DB', `${agentName} storage returned observation id without matching parsed observation`, {
@@ -798,7 +1548,7 @@ async function syncAndBroadcastObservations(
         title: obs.title || '(untitled)'
       });
     }).catch((error) => {
-      logger.error('CHROMA', `${agentName} chroma sync failed, continuing without vector search`, {
+      logChromaWriteFailure('CHROMA', `${agentName} chroma sync failed, continuing without vector search`, {
         obsId,
         type: obs.type,
         title: obs.title || '(untitled)'
@@ -807,10 +1557,23 @@ async function syncAndBroadcastObservations(
 
     dbManager.getCloudSync()?.notify();
 
+    // Media refs come from the committed row, so SSE carries exactly what the
+    // paged and by-id feeds serialize. A row can hold a manifest when this
+    // turn delivered pixels, when this turn's capture-only linkage wrote one,
+    // or when the turn reused an earlier stored row, which may already have
+    // images; any other newly inserted row cannot, so it skips the read.
+    const reusedStoredRow = result.insertedObservationIds !== undefined && !result.insertedObservationIds.includes(obsId);
+    const media = context.media?.imagesDelivered || mediaLinkedObservationIds.has(obsId) || reusedStoredRow
+      ? observationMediaFromMetadata(
+          (dbManager.getSessionStore().db.prepare('SELECT metadata FROM observations WHERE id = ?').get(obsId) as { metadata: unknown } | null)?.metadata,
+        )
+      : undefined;
+
     broadcastObservation(worker, {
       id: obsId,
-      memory_session_id: session.memorySessionId,
+      memory_session_id: memorySessionId,
       session_id: session.contentSessionId,
+      content_session_id: session.contentSessionId,
       platform_source: session.platformSource,
       type: obs.type,
       title: obs.title,
@@ -823,7 +1586,8 @@ async function syncAndBroadcastObservations(
       files_modified: JSON.stringify(obs.files_modified || []),
       project: context.project,
       prompt_number: context.promptNumber,
-      created_at_epoch: result.createdAtEpoch
+      created_at_epoch: result.createdAtEpoch,
+      ...(media ? { media } : {}),
     });
   }
 
@@ -842,7 +1606,6 @@ async function syncAndBroadcastObservations(
       updateFolderClaudeMdFiles(
         allFilePaths,
         context.project,
-        getWorkerPort(),
         projectRoot
       ).catch(error => {
         logger.warn('FOLDER_INDEX', 'CLAUDE.md update failed (non-critical)', { project: context.project }, error as Error);
@@ -859,12 +1622,12 @@ async function syncAndBroadcastSummary(
   context: ResponseContext,
   dbManager: DatabaseManager,
   worker: WorkerRef | undefined,
-  agentName: string
+  agentName: string,
+  memorySessionId: string
 ): Promise<void> {
   if (!summaryForStore || !result.summaryId) {
     return;
   }
-  const memorySessionId = session.memorySessionId;
   if (!memorySessionId) {
     return;
   }
@@ -878,7 +1641,8 @@ async function syncAndBroadcastSummary(
     summaryForStore,
     context.promptNumber,
     result.createdAtEpoch,
-    session.platformSource
+    session.platformSource,
+    result.summaryUpdated === true
   ).then(() => {
     const chromaDuration = Date.now() - chromaStart;
     logger.debug('CHROMA', 'Summary synced', {
@@ -887,7 +1651,7 @@ async function syncAndBroadcastSummary(
       request: summaryForStore.request || '(no request)'
     });
   }).catch((error) => {
-    logger.error('CHROMA', `${agentName} chroma sync failed, continuing without vector search`, {
+    logChromaWriteFailure('CHROMA', `${agentName} chroma sync failed, continuing without vector search`, {
       summaryId: result.summaryId,
       request: summaryForStore.request || '(no request)'
     }, error);
@@ -912,5 +1676,8 @@ async function syncAndBroadcastSummary(
 
   updateCursorContextForProject(context.project).catch(error => {
     logger.warn('CURSOR', 'Context update failed (non-critical)', { project: context.project }, error as Error);
+  });
+  updateGrokContextForProject(context.project).catch(error => {
+    logger.warn('GROK_BUILD', 'Context update failed (non-critical)', { project: context.project }, error as Error);
   });
 }

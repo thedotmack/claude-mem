@@ -30,20 +30,10 @@ describe('buildServerJobId', () => {
     }
   });
 
-  it('emits IDs without colons so BullMQ key separators stay safe', () => {
-    const id = buildServerJobId(baseParts);
-    expect(id.includes(':')).toBe(false);
-  });
-
   it('uses a kind-prefixed sha256 hex format', () => {
     const id = buildServerJobId(baseParts);
     expect(id).toMatch(/^evt_[0-9a-f]{64}$/);
+    expect(buildServerJobId({ ...baseParts, kind: 'summary' })).toMatch(/^sum_[0-9a-f]{64}$/);
   });
 
-  it('uses different prefixes per kind', () => {
-    const event = buildServerJobId({ ...baseParts, kind: 'event' });
-    const summary = buildServerJobId({ ...baseParts, kind: 'summary' });
-    expect(event.startsWith('evt_')).toBe(true);
-    expect(summary.startsWith('sum_')).toBe(true);
-  });
 });

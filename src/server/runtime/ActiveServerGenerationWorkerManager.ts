@@ -4,7 +4,8 @@ import type { Job } from 'bullmq';
 import { logger } from '../../utils/logger.js';
 import { PostgresAuthRepository } from '../../storage/postgres/auth.js';
 import type { PostgresPool } from '../../storage/postgres/pool.js';
-import { ProviderObservationGenerator } from '../generation/ProviderObservationGenerator.js';
+import { DEFAULT_PROVIDER_GENERATE_TIMEOUT_MS, ProviderObservationGenerator } from '../generation/ProviderObservationGenerator.js';
+import { reclaimStaleProcessingJobs } from '../generation/reclaimStaleProcessingJobs.js';
 import type { ServerGenerationProvider } from '../generation/providers/shared/types.js';
 import type { ServerGenerationJobPayload } from '../jobs/types.js';
 import type { ActiveServerQueueManager } from './ActiveServerQueueManager.js';
@@ -22,6 +23,8 @@ import type {
 // This class is wired in only when both a queue manager AND a configured
 // provider are present. create-server-service keeps the disabled
 // adapter otherwise so the server can boot without provider credentials.
+
+const STALE_LOCK_MULTIPLIER = 3;
 
 export interface ActiveServerGenerationWorkerManagerOptions {
   pool: PostgresPool;
@@ -42,6 +45,8 @@ export class ActiveServerGenerationWorkerManager implements ServerGenerationWork
   private closed = false;
   private readonly generator: ProviderObservationGenerator;
   private readonly workerId: string;
+  private staleSweepTimer: ReturnType<typeof setInterval> | null = null;
+  private staleSweepInFlight: Promise<void> | null = null;
 
   constructor(private readonly options: ActiveServerGenerationWorkerManagerOptions) {
     this.workerId = options.workerId ?? `server-${process.pid}`;
@@ -100,7 +105,49 @@ export class ActiveServerGenerationWorkerManager implements ServerGenerationWork
       }
     }
 
+    this.startStaleSweep();
     this.started = true;
+  }
+
+  // A row is stale once its lock is several BullMQ lock durations old: by
+  // then BullMQ has long since declared the job stalled, so no live worker
+  // still holds it. Sweep once at boot (the case a crash leaves behind) and
+  // then every lock duration.
+  //
+  // The threshold also never drops below one full provider call plus a lock
+  // duration, so a live but slow provider.generate() can't be reclaimed even
+  // if the lock duration is tuned down.
+  private startStaleSweep(): void {
+    const lockDurationMs = this.options.queueManager.getQueue('event').getLockDurationMs();
+    const staleAfterMs = Math.max(
+      lockDurationMs * STALE_LOCK_MULTIPLIER,
+      DEFAULT_PROVIDER_GENERATE_TIMEOUT_MS + lockDurationMs,
+    );
+    const sweep = () => {
+      // A slow sweep must not overlap the next tick. Retain ownership through
+      // shutdown so its final outbox transition precedes pool closure.
+      if (this.staleSweepInFlight || this.closed) return;
+      this.staleSweepInFlight = this.sweepStaleJobs(staleAfterMs).finally(() => {
+        this.staleSweepInFlight = null;
+      });
+    };
+    sweep();
+    this.staleSweepTimer = setInterval(sweep, lockDurationMs);
+    this.staleSweepTimer.unref?.();
+  }
+
+  private async sweepStaleJobs(staleAfterMs: number): Promise<void> {
+    try {
+      await reclaimStaleProcessingJobs({
+        pool: this.options.pool,
+        staleAfterMs,
+        resolveQueue: (lane) => this.options.queueManager.getQueue(lane),
+      });
+    } catch (error) {
+      logger.warn('SYSTEM', 'stale generation job sweep failed', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   // Phase 12 — write a `generation_job.stalled` audit row. We look up the
@@ -164,8 +211,9 @@ export class ActiveServerGenerationWorkerManager implements ServerGenerationWork
   }
 
   async close(): Promise<void> {
-    if (this.closed) return;
     this.closed = true;
+    if (this.staleSweepTimer) clearInterval(this.staleSweepTimer);
+    await this.staleSweepInFlight;
     // The underlying Worker is owned by ServerJobQueue.close() (driven by
     // the queue manager). We do not double-close here; the queue manager's
     // close cascade handles it.

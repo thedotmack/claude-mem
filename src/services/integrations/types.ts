@@ -8,6 +8,8 @@ export interface CursorHooksJson {
     afterMCPExecution?: Array<{ command: string }>;
     afterShellExecution?: Array<{ command: string }>;
     afterFileEdit?: Array<{ command: string }>;
+    postToolUse?: Array<{ command: string; matcher?: string }>;
+    postToolUseFailure?: Array<{ command: string; matcher?: string }>;
     stop?: Array<{ command: string }>;
   };
 }

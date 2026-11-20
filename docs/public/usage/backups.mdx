@@ -1,0 +1,106 @@
+---
+title: "Backups"
+description: "Automatic local snapshots of your memory database, and how to restore one"
+---
+
+# Backups
+
+Your memory database is a single SQLite file: `~/.claude-mem/claude-mem.db`.
+With backups on, the worker takes a consistent snapshot of it on a schedule
+(every 24 hours by default) and keeps the newest 7 under
+`~/.claude-mem/backups/auto/`. Snapshots stay on your machine.
+
+Snapshots are safe while sessions run: the worker uses SQLite's `VACUUM INTO`
+on a read-only connection, which writes a compacted, consistent copy without
+pausing anything. Each snapshot is one standalone database file, checked with
+`PRAGMA quick_check` before it is kept.
+
+<Note>
+Cloud sync and backups solve different problems. **Cloud sync** replicates
+individual memories across your devices as you work. **Backups** are whole
+database snapshots you can roll back to.
+</Note>
+
+## Enable snapshots
+
+In Claude Code, run the skill:
+
+```
+/claude-mem:backup-setup
+```
+
+Or turn it on in the viewer (**Settings → Backups → Automatic snapshots**),
+save, and restart the worker. Or edit `~/.claude-mem/settings.json`:
+
+```json
+{
+  "CLAUDE_MEM_BACKUP_ENABLED": "true",
+  "CLAUDE_MEM_BACKUP_INTERVAL_HOURS": "24",
+  "CLAUDE_MEM_BACKUP_RETAIN_COUNT": "7"
+}
+```
+
+After a worker restart, the first snapshot is taken about five minutes later.
+
+```bash
+npx claude-mem backup status   # last snapshot, count, errors, last restore
+npx claude-mem backup run      # take a snapshot now
+npx claude-mem backup list     # snapshots on disk
+```
+
+`npx claude-mem doctor` also warns when backups are on but the newest
+snapshot is older than two intervals.
+
+## Restore
+
+```bash
+npx claude-mem backup list
+npx claude-mem restore <file>
+npx claude-mem backup status
+```
+
+`restore` stages the snapshot and restarts the worker. The new worker swaps
+the database in before it opens it, and saves the database it replaced in the
+same folder as `claude-mem-<timestamp>-pre-restore.db`. To undo a restore,
+restore that file. It counts toward the retain count like any snapshot, so
+copy it elsewhere if you want to keep it longer. `backup status` prints the
+outcome. If the swap could not run (for example, another process still had
+the database open), it says why and the worker keeps the database it had.
+
+The swap is crash-safe: at every step the database on disk is either the old
+one or the restored one, each complete. New memories written after a restore
+never reuse an id from the database it replaced.
+
+<Note>
+With cloud sync on, the restored database resumes syncing from the position
+saved in the snapshot, so it can pull back changes that reached the cloud
+after the snapshot was taken. Restore is for recovering a damaged or lost
+local database, not for undoing synced changes.
+</Note>
+
+## Settings
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `CLAUDE_MEM_BACKUP_ENABLED` | `'false'` | Turns the snapshot schedule on. |
+| `CLAUDE_MEM_BACKUP_INTERVAL_HOURS` | `'24'` | Hours between snapshots (1 to 168). |
+| `CLAUDE_MEM_BACKUP_RETAIN_COUNT` | `'7'` | Snapshots kept before the oldest are deleted (1 to 100). |
+
+## FAQ
+
+**Where are my backup files?**
+In `~/.claude-mem/backups/auto/`, named `claude-mem-<timestamp>.db`. Each one
+is a complete SQLite database you can open with any SQLite tool.
+
+**Does a snapshot include the vector search index?**
+No. The SQLite database is the source of truth; the vector index is derived
+from it.
+
+**How much disk does this use?**
+About your database size times the retain count. `VACUUM INTO` compacts each
+snapshot, so it is usually a little smaller than the live database. The
+worker skips a snapshot when free disk is below 1.2 times the database size
+plus 100 MiB, and reports that as the last error.
+
+**Do backups slow down my sessions?**
+No. Snapshots run in the background worker on a read-only connection.

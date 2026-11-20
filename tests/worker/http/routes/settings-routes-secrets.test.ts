@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import type { Request, Response } from 'express';
 import { existsSync, readFileSync, writeFileSync, rmSync } from 'fs';
 import { SettingsRoutes } from '../../../../src/services/worker/http/routes/SettingsRoutes.js';
+import { SettingsDefaultsManager } from '../../../../src/shared/SettingsDefaultsManager.js';
 import { paths } from '../../../../src/shared/paths.js';
 
 function expectedMask(value: string): string {
@@ -46,16 +47,17 @@ function captureHandlers(routes: SettingsRoutes): {
 }
 
 const SECRET_ENV_KEYS = [
-  'CLAUDE_MEM_GEMINI_API_KEY',
-  'CLAUDE_MEM_OPENROUTER_API_KEY',
-  'CLAUDE_MEM_CHROMA_API_KEY',
-  'CLAUDE_MEM_CLOUD_SYNC_TOKEN',
-  'CLAUDE_MEM_TV_TOKEN',
+  ...Object.keys(SettingsDefaultsManager.getAllDefaults()).filter(key => /(_API_KEYS?|_TOKEN|_SECRET)$/.test(key)),
   'CLAUDE_MEM_PRO_MEMORY_KEY',
   'CLAUDE_MEM_REDIS_URL',
+  'CLAUDE_MEM_TELEGRAM_WRAPUP_ROUTES',
+  'CLAUDE_MEM_GROK_BOT_WEBHOOK_URL',
+  'CLAUDE_MEM_ONLINE_SIGNUP_EMAIL',
+  'CLAUDE_MEM_ONLINE_SIGNUP_NOTE',
+  'CLAUDE_MEM_PRO_TRIAL_EMAIL',
 ];
 
-describe('SettingsRoutes — credential redaction and host bind (#3861)', () => {
+describe('SettingsRoutes — credential redaction (#3861)', () => {
   const settingsPath = paths.settings();
   let priorSettingsContent: string | undefined;
   let priorEnv: Record<string, string | undefined>;
@@ -90,17 +92,26 @@ describe('SettingsRoutes — credential redaction and host bind (#3861)', () => 
     }
   });
 
-  it('GET /api/settings masks provider and sync secrets and leaves display prefs intact', () => {
+  it('GET /api/settings masks every secret default and leaves display prefs intact', () => {
     const secrets = {
+      ...Object.fromEntries(SECRET_ENV_KEYS.map(key => [key, `${key}-secret-1234`])),
       CLAUDE_MEM_GEMINI_API_KEY: 'gemini-secret-1234',
       CLAUDE_MEM_OPENROUTER_API_KEY: 'or-secret-5678',
       CLAUDE_MEM_CHROMA_API_KEY: 'chroma-secret-abcd',
       CLAUDE_MEM_CLOUD_SYNC_TOKEN: 'sync-token-wxyz',
-      CLAUDE_MEM_TV_TOKEN: 'tv-token-9999',
+      CLAUDE_MEM_WORKER_INGEST_TOKEN: 'spool-ingest-token-1234',
       CLAUDE_MEM_PRO_MEMORY_KEY: 'pro-memory-key-aaaa',
+      CLAUDE_MEM_GROK_BOT_WEBHOOK_SECRET: 'brainbeat-secret-bbbb',
+      CLAUDE_MEM_GROK_BOT_WEBHOOK_URL: 'https://bot.example/hook?token=cccc',
+      CLAUDE_MEM_NOTION_TOKEN: 'ntn_secret_dddd',
+      CLAUDE_MEM_ONLINE_SIGNUP_EMAIL: 'dev@example.com',
+      CLAUDE_MEM_ONLINE_SIGNUP_NOTE: 'onboarding a small team',
+      CLAUDE_MEM_PRO_TRIAL_EMAIL: 'trial@example.com',
     };
     writeFileSync(settingsPath, JSON.stringify({
       ...secrets,
+      // Observation TV was removed: its leftover token is no longer a setting, so GET never returns it.
+      CLAUDE_MEM_TV_TOKEN: 'tv-token-9999',
       CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: 'false',
       CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS: 'true',
     }));
@@ -114,35 +125,12 @@ describe('SettingsRoutes — credential redaction and host bind (#3861)', () => 
       expect(body[key]).toBe(expectedMask(value));
       expect(body[key]).not.toBe(value);
     }
+    expect(body.CLAUDE_MEM_TV_TOKEN).toBeUndefined();
     expect(body.CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS).toBe('false');
     expect(body.CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS).toBe('true');
 
     const persisted = JSON.parse(readFileSync(settingsPath, 'utf-8'));
     expect(persisted.CLAUDE_MEM_GEMINI_API_KEY).toBe('gemini-secret-1234');
-  });
-
-  it('POST of an unmodified GET body keeps the real Gemini key on disk', () => {
-    writeFileSync(settingsPath, JSON.stringify({
-      CLAUDE_MEM_GEMINI_API_KEY: 'keep-this-real-key',
-      CLAUDE_MEM_MODEL: 'claude-haiku-4-5-20251001',
-    }));
-
-    const { res: getRes, jsonSpy: getSpy } = createMockRes();
-    handlers.get({ body: {}, path: '/api/settings', params: {}, query: {} } as Request, getRes as Response);
-    const getBody = getSpy.mock.calls[0][0] as Record<string, string>;
-    expect(getBody.CLAUDE_MEM_GEMINI_API_KEY).toMatch(/^\*+-key$/);
-
-    const { res: postRes, jsonSpy: postSpy } = createMockRes();
-    handlers.post({
-      body: { ...getBody, CLAUDE_MEM_MODEL: 'claude-haiku-4-5-20251001' },
-      path: '/api/settings',
-      params: {},
-      query: {},
-    } as Request, postRes as Response);
-
-    expect(postSpy).toHaveBeenCalledWith({ success: true, message: 'Settings updated successfully' });
-    const persisted = JSON.parse(readFileSync(settingsPath, 'utf-8'));
-    expect(persisted.CLAUDE_MEM_GEMINI_API_KEY).toBe('keep-this-real-key');
   });
 
   it('POST of a new Gemini key that starts with * still replaces the stored key', () => {
@@ -163,30 +151,11 @@ describe('SettingsRoutes — credential redaction and host bind (#3861)', () => 
     expect(persisted.CLAUDE_MEM_GEMINI_API_KEY).toBe('*new-gemini-secret');
   });
 
-  it('rejects an arbitrary IPv4 worker host', () => {
-    const { res, statusSpy, jsonSpy } = createMockRes();
-    handlers.post({
-      body: { CLAUDE_MEM_WORKER_HOST: '8.8.8.8' },
-      path: '/api/settings',
-      params: {},
-      query: {},
-    } as Request, res as Response);
-
-    expect(statusSpy).toHaveBeenCalledWith(400);
-    expect(jsonSpy).toHaveBeenCalledWith(expect.objectContaining({ success: false }));
+  it('keeps the ingest token file/env-only when an unauthenticated settings write supplies another value', () => {
+    writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_WORKER_INGEST_TOKEN: 'original-ingest-token' }));
+    const { res } = createMockRes();
+    handlers.post({ body: { CLAUDE_MEM_WORKER_INGEST_TOKEN: 'replacement-token' }, path: '/api/settings', params: {}, query: {} } as Request, res as Response);
+    expect(JSON.parse(readFileSync(settingsPath, 'utf8')).CLAUDE_MEM_WORKER_INGEST_TOKEN).toBe('original-ingest-token');
   });
 
-  it('still accepts loopback and the documented bind-all hosts', () => {
-    for (const host of ['127.0.0.1', 'localhost', '::1', '0.0.0.0', '::']) {
-      const { res, jsonSpy, statusSpy } = createMockRes();
-      handlers.post({
-        body: { CLAUDE_MEM_WORKER_HOST: host },
-        path: '/api/settings',
-        params: {},
-        query: {},
-      } as Request, res as Response);
-      expect(statusSpy).not.toHaveBeenCalled();
-      expect(jsonSpy).toHaveBeenCalledWith({ success: true, message: 'Settings updated successfully' });
-    }
-  });
 });

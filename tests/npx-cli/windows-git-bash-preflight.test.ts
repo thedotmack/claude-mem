@@ -6,11 +6,12 @@ import {
   type GitBashProbe,
 } from '../../src/npx-cli/utils/windows-git-bash-preflight.js';
 
-// Windows #3605 (fail-loudly slice) — claude-mem hooks require bash, and on
-// Windows Claude Code resolves it via a closed chain (CLAUDE_CODE_GIT_BASH_PATH
+// Windows #3605 — runtime hooks run the claude-mem launcher with no shell; only
+// the Setup hook (`claude --init` / `--maintenance`) still uses bash, which on
+// Windows Claude Code resolves via a closed chain (CLAUDE_CODE_GIT_BASH_PATH
 // -> standard Git for Windows paths -> `git` on PATH -> null, no WSL fallback).
-// This preflight replicates that chain to detect "no Git Bash reachable" ahead
-// of the first opaque hook throw.
+// This preflight replicates that chain so install and doctor can warn that the
+// Setup hook will not run.
 
 function probeThatMustNotBeCalled(): GitBashProbe {
   return {

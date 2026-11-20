@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "cmem": {
+      "type": "http",
+      "url": "https://cmem.ai/api/mcp"
+    }
+  }
+}

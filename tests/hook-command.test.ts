@@ -1,20 +1,36 @@
-import { describe, it, expect, afterEach } from 'bun:test';
+import { describe, it, expect, afterEach, spyOn } from 'bun:test';
 import {
   buildNoOpResult,
   hookCommand,
   isNonBlockingHookInputError,
   isWorkerUnavailableError,
 } from '../src/cli/hook-command.js';
+import { claudeCodeAdapter } from '../src/cli/adapters/claude-code.js';
+import { getEventHandler } from '../src/cli/handlers/index.js';
+import { HOOK_EXIT_CODES } from '../src/shared/hook-constants.js';
 import { getActiveHookType, setActiveHookType } from '../src/shared/worker-utils.js';
 import { SAFETY_TIMEOUT_MS } from '../src/cli/stdin-reader.js';
+import { HookStdoutError } from '../src/shared/hook-io.js';
+import * as spoolHookEventModule from '../src/cli/spool-hook-event.js';
 import { installFakeStdin, installOpenFakeStdin, restoreStdin } from './fake-stdin.js';
+import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager.js';
+import { resetHookSettingsCacheForTesting } from '../src/shared/hook-settings.js';
 
-const realConsoleLog = console.log;
+const realStdoutWrite = process.stdout.write;
+
+function captureStdout(chunks: string[] = []): void {
+  process.stdout.write = ((chunk: string, callback: () => void): boolean => {
+    chunks.push(String(chunk).replace(/\n$/, ''));
+    callback();
+    return true;
+  }) as typeof process.stdout.write;
+}
 
 afterEach(() => {
   restoreStdin();
-  console.log = realConsoleLog;
+  process.stdout.write = realStdoutWrite;
   setActiveHookType('');
+  resetHookSettingsCacheForTesting();
 });
 
 describe('hook_failed telemetry type', () => {
@@ -39,6 +55,52 @@ describe('buildNoOpResult', () => {
   it('omits hookSpecificOutput for every other event', () => {
     for (const event of ['session-init', 'observation', 'summarize', 'user-message', 'file-edit', 'file-context']) {
       expect(buildNoOpResult(event)).toEqual({ continue: true, suppressOutput: true });
+    }
+  });
+});
+
+describe('hookCommand tool-hook disable (#3106)', () => {
+  afterEach(() => {
+    delete process.env.CLAUDE_MEM_DISABLE_TOOL_HOOKS;
+    delete process.env.CLAUDE_MEM_DISABLE_OBSERVATION;
+    delete process.env.CLAUDE_MEM_DISABLE_FILE_CONTEXT;
+  });
+
+  it('exits success without reading stdin when CLAUDE_MEM_DISABLE_TOOL_HOOKS=1', async () => {
+    process.env.CLAUDE_MEM_DISABLE_TOOL_HOOKS = '1';
+    // No stdin JSON is provided; a disabled early-return must not hang on readJsonFromStdin.
+    const code = await hookCommand('claude-code', 'observation', { skipExit: true });
+    expect(code).toBe(HOOK_EXIT_CODES.SUCCESS);
+  });
+
+  it('also no-ops file-context when CLAUDE_MEM_DISABLE_TOOL_HOOKS=1', async () => {
+    process.env.CLAUDE_MEM_DISABLE_TOOL_HOOKS = '1';
+    const code = await hookCommand('claude-code', 'file-context', { skipExit: true });
+    expect(code).toBe(HOOK_EXIT_CODES.SUCCESS);
+  });
+
+  it('exits before reading stdin when observer capture is disabled in settings', async () => {
+    const stderr: string[] = [];
+    const realStderrWrite = process.stderr.write;
+    process.stderr.write = ((chunk: string | Uint8Array): boolean => {
+      stderr.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
+      return true;
+    }) as typeof process.stderr.write;
+    const settings = spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(() => {
+      process.stderr.write('settings migration warning\n');
+      return {
+        ...SettingsDefaultsManager.getAllDefaults(),
+        CLAUDE_MEM_OBSERVER_ENABLED: 'false',
+      };
+    });
+    try {
+      // No stdin JSON: reaching the normal pipeline would hang or time out.
+      const code = await hookCommand('claude-code', 'observation', { skipExit: true });
+      expect(code).toBe(HOOK_EXIT_CODES.SUCCESS);
+      expect(stderr).toEqual([]);
+    } finally {
+      settings.mockRestore();
+      process.stderr.write = realStderrWrite;
     }
   });
 });
@@ -72,7 +134,7 @@ describe('isNonBlockingHookInputError', () => {
   it('fails open through hookCommand for truncated stdin and emits one no-op envelope', async () => {
     installFakeStdin('{"session_id":');
     const output: string[] = [];
-    console.log = (...args: unknown[]) => output.push(args.join(' '));
+    captureStdout(output);
 
     const exitCode = await hookCommand('claude-code', 'context', { skipExit: true });
 
@@ -87,7 +149,7 @@ describe('isNonBlockingHookInputError', () => {
   it('fails open through hookCommand for the UserPromptSubmit session-init hook and emits one empty envelope', async () => {
     installFakeStdin('{"session_id":');
     const output: string[] = [];
-    console.log = (...args: unknown[]) => output.push(args.join(' '));
+    captureStdout(output);
 
     const exitCode = await hookCommand('claude-code', 'session-init', { skipExit: true });
 
@@ -98,7 +160,7 @@ describe('isNonBlockingHookInputError', () => {
   it('fails open through hookCommand when stdin reaches the incomplete timeout path', async () => {
     installOpenFakeStdin('{"session_id":');
     const output: string[] = [];
-    console.log = (...args: unknown[]) => output.push(args.join(' '));
+    captureStdout(output);
 
     const exitCode = await hookCommand('claude-code', 'session-init', {
       skipExit: true,
@@ -118,163 +180,152 @@ describe('isNonBlockingHookInputError', () => {
   });
 });
 
+describe('hookCommand catch-all never blocks (#3161, plan-17 step 2)', () => {
+  const originalTelemetry = process.env.CLAUDE_MEM_TELEMETRY;
+
+  afterEach(() => {
+    if (originalTelemetry === undefined) delete process.env.CLAUDE_MEM_TELEMETRY;
+    else process.env.CLAUDE_MEM_TELEMETRY = originalTelemetry;
+  });
+
+  // Exit 2 used to answer these: UserPromptSubmit dropped the prompt,
+  // PreToolUse denied the tool, and Stop re-woke the agent in a loop.
+  for (const event of ['context', 'session-init', 'observation', 'file-context', 'summarize', 'session-end']) {
+    it(`answers an unexpected ${event} handler error with the no-op envelope and exit 0`, async () => {
+      // The catch-all awaits hook_failed telemetry; keep it off the network.
+      process.env.CLAUDE_MEM_TELEMETRY = '0';
+      const executeSpy = spyOn(getEventHandler(event), 'execute').mockImplementation(async () => {
+        throw new TypeError('unexpected handler bug');
+      });
+      const stdout: string[] = [];
+      captureStdout(stdout);
+      const stderr: string[] = [];
+      const realStderrWrite = process.stderr.write;
+      process.stderr.write = ((chunk: string | Uint8Array): boolean => {
+        stderr.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf-8'));
+        return true;
+      }) as typeof process.stderr.write;
+      installFakeStdin(JSON.stringify({ session_id: 'catch-all-session', cwd: process.cwd() }));
+
+      try {
+        const exitCode = await hookCommand('claude-code', event, { skipExit: true });
+
+        expect(exitCode).toBe(HOOK_EXIT_CODES.SUCCESS);
+        expect(executeSpy).toHaveBeenCalledTimes(1);
+        expect(stdout).toEqual([JSON.stringify(claudeCodeAdapter.formatOutput(buildNoOpResult(event)))]);
+        expect(stderr.join('')).toContain('claude-mem: hook error, continuing without memory: unexpected handler bug');
+      } finally {
+        process.stderr.write = realStderrWrite;
+        executeSpy.mockRestore();
+      }
+    });
+  }
+});
+
+describe('hookCommand stdout delivery failures', () => {
+  it('rejects a failed write without emitting a second envelope', async () => {
+    const executeSpy = spyOn(getEventHandler('session-init'), 'execute').mockResolvedValue({ continue: true });
+    const output: string[] = [];
+    process.stdout.write = ((chunk: string, callback: (error?: Error | null) => void): boolean => {
+      output.push(String(chunk));
+      queueMicrotask(() => callback(new Error('stdout unavailable')));
+      return false;
+    }) as typeof process.stdout.write;
+    installFakeStdin(JSON.stringify({ session_id: 'stdout-failure', cwd: process.cwd() }));
+    try {
+      await expect(hookCommand('claude-code', 'session-init', { skipExit: true })).rejects.toBeInstanceOf(HookStdoutError);
+      expect(output).toEqual(['{}\n']);
+      expect(executeSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      executeSpy.mockRestore();
+    }
+  });
+});
+
+describe('hookCommand stdout failure while capture handoffs settle', () => {
+  it('reports the closed stdout as a handled delivery error, never an unhandled rejection', async () => {
+    const executeSpy = spyOn(getEventHandler('session-init'), 'execute').mockResolvedValue({ continue: true });
+    // The handoff wait outlives the failed write, so an un-awaited stdout promise would reject with no handler.
+    const settleSpy = spyOn(spoolHookEventModule, 'settleHookSpoolNudges').mockImplementation(
+      () => new Promise<void>((resolve) => setTimeout(resolve, 50)),
+    );
+    const unhandledRejections: unknown[] = [];
+    const recordUnhandledRejection = (reason: unknown) => { unhandledRejections.push(reason); };
+    process.on('unhandledRejection', recordUnhandledRejection);
+    process.stdout.write = ((_chunk: string, callback: (error?: Error | null) => void): boolean => {
+      setTimeout(() => callback(new Error('write EPIPE')), 0);
+      return false;
+    }) as typeof process.stdout.write;
+    installFakeStdin(JSON.stringify({ session_id: 'stdout-closed-during-handoff', cwd: process.cwd() }));
+    try {
+      await expect(hookCommand('claude-code', 'session-init', { skipExit: true })).rejects.toBeInstanceOf(HookStdoutError);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(unhandledRejections).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', recordUnhandledRejection);
+      settleSpy.mockRestore();
+      executeSpy.mockRestore();
+    }
+  });
+});
+
+describe("hook claude <event> is Claude Code (#2835)", () => {
+  it('hands handlers the canonical platform id, so claude-code branches apply', async () => {
+    const platforms: unknown[] = [];
+    const executeSpy = spyOn(getEventHandler('session-init'), 'execute').mockImplementation(async (input) => {
+      platforms.push(input.platform);
+      return { continue: true, suppressOutput: true };
+    });
+    captureStdout();
+    installFakeStdin(JSON.stringify({ session_id: 'alias-session', cwd: process.cwd(), prompt: 'hello' }));
+
+    try {
+      const exitCode = await hookCommand('claude', 'session-init', { skipExit: true });
+
+      expect(exitCode).toBe(HOOK_EXIT_CODES.SUCCESS);
+      expect(platforms).toEqual(['claude-code']);
+    } finally {
+      executeSpy.mockRestore();
+    }
+  });
+});
+
 describe('isWorkerUnavailableError', () => {
-  describe('transport failures → true (graceful)', () => {
-    it('should classify ECONNREFUSED as worker unavailable', () => {
-      const error = new Error('connect ECONNREFUSED 127.0.0.1:37777');
-      expect(isWorkerUnavailableError(error)).toBe(true);
-    });
-
-    it('should classify ECONNRESET as worker unavailable', () => {
-      const error = new Error('socket hang up ECONNRESET');
-      expect(isWorkerUnavailableError(error)).toBe(true);
-    });
-
-    it('should classify EPIPE as worker unavailable', () => {
-      const error = new Error('write EPIPE');
-      expect(isWorkerUnavailableError(error)).toBe(true);
-    });
-
-    it('should classify ETIMEDOUT as worker unavailable', () => {
-      const error = new Error('connect ETIMEDOUT 127.0.0.1:37777');
-      expect(isWorkerUnavailableError(error)).toBe(true);
-    });
-
-    it('should classify "fetch failed" as worker unavailable', () => {
-      const error = new TypeError('fetch failed');
-      expect(isWorkerUnavailableError(error)).toBe(true);
-    });
-
-    it('should classify "Unable to connect" as worker unavailable', () => {
-      const error = new Error('Unable to connect to server');
-      expect(isWorkerUnavailableError(error)).toBe(true);
-    });
-
-    it('should classify ENOTFOUND as worker unavailable', () => {
-      const error = new Error('getaddrinfo ENOTFOUND localhost');
-      expect(isWorkerUnavailableError(error)).toBe(true);
-    });
-
-    it('should classify "socket hang up" as worker unavailable', () => {
-      const error = new Error('socket hang up');
-      expect(isWorkerUnavailableError(error)).toBe(true);
-    });
-
-    it('should classify Bun "socket connection was closed unexpectedly" as worker unavailable (#3871)', () => {
-      const error = new Error('The socket connection was closed unexpectedly');
-      expect(isWorkerUnavailableError(error)).toBe(true);
-    });
-
-    it('should classify "connection closed" as worker unavailable (#3871)', () => {
-      const error = new Error('connection closed');
-      expect(isWorkerUnavailableError(error)).toBe(true);
-    });
-
-    it('should classify ECONNABORTED as worker unavailable', () => {
-      const error = new Error('ECONNABORTED');
-      expect(isWorkerUnavailableError(error)).toBe(true);
-    });
-  });
-
-  describe('timeout errors → true (graceful)', () => {
-    it('should classify "timed out" as worker unavailable', () => {
-      const error = new Error('Request timed out after 3000ms');
-      expect(isWorkerUnavailableError(error)).toBe(true);
-    });
-
-    it('should classify "timeout" as worker unavailable', () => {
-      const error = new Error('Connection timeout');
-      expect(isWorkerUnavailableError(error)).toBe(true);
-    });
-  });
-
-  describe('HTTP 5xx server errors → true (graceful)', () => {
-    it('should classify 500 status as worker unavailable', () => {
-      const error = new Error('Context generation failed: 500');
-      expect(isWorkerUnavailableError(error)).toBe(true);
-    });
-
-    it('should classify 502 status as worker unavailable', () => {
-      const error = new Error('Observation storage failed: 502');
-      expect(isWorkerUnavailableError(error)).toBe(true);
-    });
-
-    it('should classify 503 status as worker unavailable', () => {
-      const error = new Error('Request failed: 503');
-      expect(isWorkerUnavailableError(error)).toBe(true);
-    });
-
-    it('should classify "status: 500" format as worker unavailable', () => {
-      const error = new Error('HTTP error status: 500');
-      expect(isWorkerUnavailableError(error)).toBe(true);
-    });
-  });
-
-  describe('HTTP 429 rate limit → true (graceful)', () => {
-    it('should classify 429 as worker unavailable (rate limit is transient)', () => {
-      const error = new Error('Request failed: 429');
-      expect(isWorkerUnavailableError(error)).toBe(true);
-    });
-
-    it('should classify "status: 429" format as worker unavailable', () => {
-      const error = new Error('HTTP error status: 429');
-      expect(isWorkerUnavailableError(error)).toBe(true);
-    });
-  });
-
-  describe('HTTP 4xx client errors → false (blocking)', () => {
-    it('should NOT classify 400 Bad Request as worker unavailable', () => {
-      const error = new Error('Request failed: 400');
-      expect(isWorkerUnavailableError(error)).toBe(false);
-    });
-
-    it('should NOT classify 404 Not Found as worker unavailable', () => {
-      const error = new Error('Observation storage failed: 404');
-      expect(isWorkerUnavailableError(error)).toBe(false);
-    });
-
-    it('should NOT classify 422 Validation Error as worker unavailable', () => {
-      const error = new Error('Request failed: 422');
-      expect(isWorkerUnavailableError(error)).toBe(false);
-    });
-
-    it('should NOT classify "status: 400" format as worker unavailable', () => {
-      const error = new Error('HTTP error status: 400');
-      expect(isWorkerUnavailableError(error)).toBe(false);
-    });
-  });
-
-  describe('programming errors → false (blocking)', () => {
-    it('should NOT classify TypeError as worker unavailable', () => {
-      const error = new TypeError('Cannot read properties of undefined');
-      expect(isWorkerUnavailableError(new TypeError('Cannot read properties of undefined'))).toBe(false);
-    });
-
-    it('should NOT classify ReferenceError as worker unavailable', () => {
-      const error = new ReferenceError('foo is not defined');
-      expect(isWorkerUnavailableError(error)).toBe(false);
-    });
-
-    it('should NOT classify SyntaxError as worker unavailable', () => {
-      const error = new SyntaxError('Unexpected token');
-      expect(isWorkerUnavailableError(error)).toBe(false);
-    });
-  });
-
-  describe('unknown errors → false (blocking, conservative)', () => {
-    it('should NOT classify generic Error as worker unavailable', () => {
-      const error = new Error('Something unexpected happened');
-      expect(isWorkerUnavailableError(error)).toBe(false);
-    });
-
-    it('should handle string errors', () => {
-      expect(isWorkerUnavailableError('ECONNREFUSED')).toBe(true);
-      expect(isWorkerUnavailableError('random error')).toBe(false);
-    });
-
-    it('should handle null/undefined errors', () => {
-      expect(isWorkerUnavailableError(null)).toBe(false);
-      expect(isWorkerUnavailableError(undefined)).toBe(false);
-    });
+  it.each([
+    [new Error('connect ECONNREFUSED 127.0.0.1:37777'), true],
+    [new Error('socket hang up ECONNRESET'), true],
+    [new Error('write EPIPE'), true],
+    [new Error('connect ETIMEDOUT 127.0.0.1:37777'), true],
+    [new TypeError('fetch failed'), true],
+    [new Error('Unable to connect to server'), true],
+    [new Error('getaddrinfo ENOTFOUND localhost'), true],
+    [new Error('socket hang up'), true],
+    [new Error('The socket connection was closed unexpectedly'), true],
+    [new Error('connection closed'), true],
+    [new Error('ECONNABORTED'), true],
+    [new Error('Request timed out after 3000ms'), true],
+    [new Error('Connection timeout'), true],
+    [new Error('Context generation failed: 500'), true],
+    [new Error('Observation storage failed: 502'), true],
+    [new Error('Request failed: 503'), true],
+    [new Error('HTTP error status: 500'), true],
+    [new Error('Request failed: 429'), true],
+    [new Error('HTTP error status: 429'), true],
+    [new Error('Request failed: 400'), false],
+    [new Error('Observation storage failed: 404'), false],
+    [new Error('Request failed: 422'), false],
+    [new Error('HTTP error status: 400'), false],
+    [new TypeError('Cannot read properties of undefined'), false],
+    [new ReferenceError('foo is not defined'), false],
+    [new SyntaxError('Unexpected token'), false],
+    [new Error('Something unexpected happened'), false],
+    ['ECONNREFUSED', true],
+    ['random error', false],
+    [null, false],
+    [undefined, false],
+  ].map(([error, expected]) => [
+    error instanceof Error ? `${error.name}: ${error.message}` : String(error), error, expected,
+  ] as const))('classifies %s as unavailable=%p', (_label, error, expected) => {
+    expect(isWorkerUnavailableError(error)).toBe(expected);
   });
 });

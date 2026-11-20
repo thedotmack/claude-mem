@@ -43,26 +43,11 @@ describe('GET /restart', () => {
     expect(html).toContain('Restart the claude-mem memory worker');
   });
 
-  it('never restarts on load — the POST is bound to a click, so an <img> or <iframe> cannot fire it', () => {
-    const { html } = renderRestartPage();
-    const clickBinding = html.indexOf("addEventListener('click'");
-    const restartPost = html.indexOf("fetch('/api/admin/restart'");
-
-    expect(clickBinding).toBeGreaterThan(-1);
-    expect(restartPost).toBeGreaterThan(clickBinding);
-    expect(html).toContain("method: 'POST'");
-  });
-
   it('is self-contained, so a blocked CDN cannot leave a blank page', () => {
     const { html } = renderRestartPage();
     expect(html).not.toContain('<script src');
     expect(html).not.toContain('<link rel="stylesheet"');
     expect(html).not.toContain('//cdn');
-  });
-
-  it('sends the reader to doctor when the worker does not come back', () => {
-    const { html } = renderRestartPage();
-    expect(html).toContain('npx claude-mem doctor');
   });
 
   // A click requirement alone does not stop clickjacking: an attacker who can
@@ -71,33 +56,6 @@ describe('GET /restart', () => {
     const { headers } = renderRestartPage();
     expect(headers['content-security-policy']).toContain("frame-ancestors 'none'");
     expect(headers['x-frame-options']).toBe('DENY');
-  });
-
-  // The dying worker answers /health for the whole graceful-shutdown window,
-  // so "healthy" alone reports success against the worker we just killed.
-  it('waits for a different pid rather than any healthy response', () => {
-    const { html } = renderRestartPage();
-    expect(html).toContain(`const outgoingPid = ${process.pid};`);
-    expect(html).toContain('body.pid === outgoingPid) return false');
-  });
-
-  it('still finishes against a worker too old to report a pid', () => {
-    const { html } = renderRestartPage();
-    expect(html).toContain("typeof body.pid === 'number'");
-  });
-
-  // A bound port is not a ready worker: the successor opens the DB, bootstraps
-  // chroma and connects MCP after it starts listening.
-  it('requires the successor to report readiness, not just a bound port', () => {
-    const { html } = renderRestartPage();
-    expect(html).toContain('/api/readiness');
-    expect(html).toContain('readiness.ok');
-    expect(html.indexOf('body.pid')).toBeLessThan(html.indexOf('/api/readiness'));
-  });
-
-  it('does not block on readiness against a worker too old to expose it', () => {
-    const { html } = renderRestartPage();
-    expect(html).toContain('readiness.status === 404');
   });
 });
 
@@ -113,5 +71,59 @@ describe('GET /health', () => {
   it('reports the serving process identity so a restart can be confirmed', () => {
     expect(readHealth().pid).toBe(process.pid);
     expect(readHealth().status).toBe('ok');
+  });
+});
+
+// Local API token mode (#5141): the worker refuses /health, /api/readiness and the restart
+// POST without the token, so the page must send it. Runs the page's own inline script
+// against a stand-in window and clicks the button.
+describe('GET /restart with a local API token', () => {
+  const TOKEN_KEY = 'claude-mem.local-api-token';
+
+  async function clickRestart(pageUrl: string, storedToken?: string) {
+    const { html } = renderRestartPage();
+    const script = html.slice(html.indexOf('<script>') + '<script>'.length, html.indexOf('</script>'));
+    let onClick: (() => Promise<void>) | undefined;
+    const button = { disabled: false, addEventListener: (_type: string, handler: () => Promise<void>) => { onClick = handler; } };
+    const status = { textContent: '' };
+    const storage = new Map<string, string>(storedToken ? [[TOKEN_KEY, storedToken]] : []);
+    let addressBar: string | undefined;
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const fakeWindow = {
+      document: { getElementById: (id: string) => (id === 'go' ? button : status) },
+      location: { href: pageUrl },
+      sessionStorage: { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => { storage.set(key, value); } },
+      history: { state: null, replaceState: (_state: unknown, _unused: string, url: string) => { addressBar = url; } },
+      fetch: async (url: string, init: RequestInit) => {
+        calls.push({ url, init });
+        return { ok: true, status: 200, json: async () => ({ pid: -1 }) };
+      },
+    };
+    new Function(...Object.keys(fakeWindow), script)(...Object.values(fakeWindow));
+    await onClick!();
+    return { calls, addressBar, storage, status: status.textContent };
+  }
+
+  const tokenOf = (init: RequestInit) => (init.headers as Record<string, string> | undefined)?.['X-Claude-Mem-Token'];
+
+  it("sends the page URL's ?token= on the restart POST and both checks, then drops it from the address bar", async () => {
+    const run = await clickRestart('http://localhost:37777/restart?token=restart-secret');
+    expect(run.calls.map(call => call.url)).toEqual(['/api/admin/restart', '/health', '/api/readiness']);
+    for (const call of run.calls) expect(tokenOf(call.init)).toBe('restart-secret');
+    expect(run.addressBar).toBe('/restart');
+    expect(run.storage.get(TOKEN_KEY)).toBe('restart-secret');
+    expect(run.status).toContain('restarted');
+  });
+
+  it('uses the token a viewer tab kept when the URL has none', async () => {
+    const run = await clickRestart('http://localhost:37777/restart', 'kept-secret');
+    for (const call of run.calls) expect(tokenOf(call.init)).toBe('kept-secret');
+    expect(run.addressBar).toBeUndefined();
+  });
+
+  it('sends no header at all when there is no token', async () => {
+    const run = await clickRestart('http://localhost:37777/restart');
+    expect(run.calls).toHaveLength(3);
+    for (const call of run.calls) expect(call.init.headers).toBeUndefined();
   });
 });

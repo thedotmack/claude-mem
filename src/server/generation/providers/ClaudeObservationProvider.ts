@@ -11,8 +11,10 @@ import type {
   ServerGenerationProvider,
   ServerGenerationResult,
 } from './shared/types.js';
+import { readCappedErrorBody } from '../../../shared/capped-error-body.js';
+import { DEFAULT_OBSERVER_THINKING_BUDGET_TOKENS, type ObserverThinkingOption } from '../../../sdk/hardened-options.js';
 
-const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
+const ANTHROPIC_DEFAULT_BASE_URL = 'https://api.anthropic.com';
 const ANTHROPIC_VERSION = '2023-06-01';
 // #2554 — the previous default `claude-3-5-sonnet-latest` is stale and 404s on
 // the current Anthropic Messages API. Align with the repo's canonical default
@@ -27,12 +29,38 @@ export interface ClaudeObservationProviderOptions {
   model?: string;
   maxOutputTokens?: number;
   fetchImpl?: typeof fetch;
+  // Anthropic-API-compatible gateway base URL (no path suffix — `/v1/messages`
+  // is appended), for deployments that don't call api.anthropic.com directly.
+  // Defaults to the real Anthropic API.
+  baseUrl?: string;
+  // The worker's CLAUDE_MEM_OBSERVER_THINKING policy (#4732), parsed by
+  // resolveObserverThinkingOption; instantiateServerGenerationProvider passes
+  // it, so the server defaults to `disabled` as the worker does: a model that
+  // thinks by default (Claude Haiku 5.5) bills it as output and spends
+  // max_tokens on it, up to a reply with no text. Unset here sends no field,
+  // as before, for providers built directly by a custom module.
+  thinking?: ObserverThinkingOption;
+  // Extra request headers, such as a gateway's own auth header
+  // (`cf-aig-authorization` on Cloudflare AI Gateway). They can't replace the
+  // API key, version or content type.
+  extraHeaders?: Record<string, string>;
 }
 
 interface AnthropicMessagesResponse {
   content?: Array<{ type?: string; text?: string }>;
+  stop_reason?: string;
   usage?: { input_tokens?: number; output_tokens?: number };
   error?: { type?: string; message?: string };
+}
+
+/**
+ * The Messages endpoint a provider built with this base URL posts to: the
+ * custom base (trimmed, trailing slashes dropped) or api.anthropic.com, plus
+ * /v1/messages. Exported so the runtime checks the cmem key lock against the
+ * exact URL the key would be sent to.
+ */
+export function resolveAnthropicMessagesUrl(baseUrl?: string): string {
+  return `${(baseUrl?.trim() || ANTHROPIC_DEFAULT_BASE_URL).replace(/\/+$/, '')}/v1/messages`;
 }
 
 export class ClaudeObservationProvider implements ServerGenerationProvider {
@@ -41,6 +69,9 @@ export class ClaudeObservationProvider implements ServerGenerationProvider {
   private readonly model: string;
   private readonly maxOutputTokens: number;
   private readonly fetchImpl: typeof fetch;
+  private readonly messagesUrl: string;
+  private readonly thinking: ObserverThinkingOption;
+  private readonly extraHeaders: Record<string, string>;
 
   constructor(options: ClaudeObservationProviderOptions) {
     if (!options.apiKey) {
@@ -53,13 +84,26 @@ export class ClaudeObservationProvider implements ServerGenerationProvider {
     this.model = options.model ?? DEFAULT_MODEL;
     this.maxOutputTokens = options.maxOutputTokens ?? 4096;
     this.fetchImpl = options.fetchImpl ?? fetch;
+    this.messagesUrl = resolveAnthropicMessagesUrl(options.baseUrl);
+    this.thinking = options.thinking ?? 'omit';
+    this.extraHeaders = options.extraHeaders ?? {};
   }
 
   async generate(
     context: ServerGenerationContext,
     signal?: AbortSignal,
   ): Promise<ServerGenerationResult> {
-    const { prompt, skippedAll } = buildServerGenerationPrompt(context);
+    const { prompt, skippedAll, noEvents } = buildServerGenerationPrompt(context);
+    // Nothing was loaded, so there is nothing to summarise and no question to
+    // ask a model. Answering it anyway bought `<skip_summary />` and recorded
+    // the result as an ordinary completion; the reason below names it instead.
+    if (noEvents) {
+      return {
+        rawText: '<skip_summary reason="no_events_loaded" />',
+        providerLabel: this.providerLabel,
+        modelId: this.model,
+      };
+    }
     if (skippedAll) {
       // All events were scrubbed by privacy stripping. Don't bill the
       // provider — return a synthetic skip response that parser accepts.
@@ -117,7 +161,16 @@ export class ClaudeObservationProvider implements ServerGenerationProvider {
       .join('\n')
       .trim();
 
-    if (!rawText) {
+    // A reply cut off at the output-token cap loses its tail, or all of it when
+    // thinking spent the cap first; say so rather than store it silently.
+    if (data.stop_reason === 'max_tokens') {
+      logger.error('SDK', 'Anthropic reply was cut off at max_tokens; the unfinished tail is lost. Raise CLAUDE_MEM_SERVER_MAX_OUTPUT_TOKENS if this repeats', {
+        provider: 'claude',
+        model: this.model,
+        maxTokens: this.requestMaxTokens(),
+        hasText: rawText !== '',
+      });
+    } else if (!rawText) {
       logger.warn('SDK', 'Anthropic returned empty content array', {
         provider: 'claude',
         model: this.model,
@@ -139,21 +192,47 @@ export class ClaudeObservationProvider implements ServerGenerationProvider {
   }
 
   private postMessages(prompt: string, signal?: AbortSignal): Promise<Response> {
-    return this.fetchImpl(ANTHROPIC_API_URL, {
+    return this.fetchImpl(this.messagesUrl, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': this.apiKey,
-        'anthropic-version': ANTHROPIC_VERSION,
-      },
+      headers: this.requestHeaders(),
+      // No temperature, as on the worker's Agent SDK path: Claude Haiku 5.5
+      // rejects any request that sets one.
       body: JSON.stringify({
         model: this.model,
-        max_tokens: this.maxOutputTokens,
-        temperature: 0.3,
+        max_tokens: this.requestMaxTokens(),
         messages: [{ role: 'user', content: prompt }],
+        ...this.thinkingField(),
       }),
       signal,
     });
+  }
+
+  // Header names are case-insensitive, so the fixed headers are set last on a
+  // Headers object: an extra `X-Api-Key` is replaced, not sent beside the key.
+  private requestHeaders(): Headers {
+    const headers = new Headers(this.extraHeaders);
+    headers.set('Content-Type', 'application/json');
+    headers.set('x-api-key', this.apiKey);
+    headers.set('anthropic-version', ANTHROPIC_VERSION);
+    return headers;
+  }
+
+  // An enabled thinking budget gets its own tokens on top of the answer's
+  // cap, as the worker's reasoning budget does (#5033); the API also requires
+  // max_tokens above budget_tokens.
+  private requestMaxTokens(): number {
+    const thinking = this.thinking;
+    return thinking && thinking !== 'omit' && thinking.type === 'enabled'
+      ? this.maxOutputTokens + (thinking.budgetTokens ?? DEFAULT_OBSERVER_THINKING_BUDGET_TOKENS)
+      : this.maxOutputTokens;
+  }
+
+  private thinkingField(): { thinking?: Record<string, unknown> } {
+    if (this.thinking === 'omit' || !this.thinking) return {};
+    if (this.thinking.type === 'enabled') {
+      return { thinking: { type: 'enabled', budget_tokens: this.thinking.budgetTokens ?? DEFAULT_OBSERVER_THINKING_BUDGET_TOKENS } };
+    }
+    return { thinking: { type: this.thinking.type } };
   }
 }
 
@@ -252,7 +331,7 @@ export function classifyClaudeServerError(input: ClassifyInput): ServerClassifie
 
 async function safeReadBody(response: Response): Promise<string> {
   try {
-    return await response.text();
+    return await readCappedErrorBody(response);
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
     logger.warn('SDK', 'Failed to read Anthropic error response body', {

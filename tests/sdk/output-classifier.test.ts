@@ -1,9 +1,14 @@
 import { describe, it, expect } from 'bun:test';
 import {
   classifyObserverOutput,
+  describeObserverOutputShape,
+  formatEmptyOutputReason,
+  isAnthropicVerificationHoldObserverOutput,
   isAuthFailureObserverOutput,
   isContextOverflowObserverOutput,
+  isOrgDisabledSubscriptionObserverOutput,
   isQuotaLimitedObserverOutput,
+  isRateLimitedObserverOutput,
   isTransportFailureObserverOutput,
   previewOutput,
 } from '../../src/sdk/output-classifier.js';
@@ -82,6 +87,98 @@ describe('isQuotaLimitedObserverOutput', () => {
     ).toBe(true);
   });
 
+  it('detects the Anthropic API credit-balance wording returned as assistant text', () => {
+    // #4632: on an API key with no credit, the SDK returns the billing notice
+    // as the whole assistant response instead of raising an error.
+    expect(isQuotaLimitedObserverOutput('Credit balance is too low')).toBe(true);
+    expect(
+      isQuotaLimitedObserverOutput(
+        'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.',
+      ),
+    ).toBe(true);
+  });
+
+  it('detects the credit-balance notice inside the CLI 400 envelope', () => {
+    expect(
+      isQuotaLimitedObserverOutput(
+        'API Error: 400 {"error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API."}}',
+      ),
+    ).toBe(true);
+  });
+
+  it('does not treat prose that merely narrates a low credit balance as quota prose', () => {
+    expect(
+      isQuotaLimitedObserverOutput(
+        'The deploy failed because the credit balance is too low on the staging key; nothing was recorded.',
+      ),
+    ).toBe(false);
+  });
+
+});
+
+describe('isRateLimitedObserverOutput (#5428)', () => {
+  // The exact reply the reporter's observer received from Claude Code.
+  const REPORTED_429_REPLY =
+    'API Error: Request rejected (429) · The request was rate limited. Its source could not be identified. Retry after the indicated delay.';
+
+  it('detects a Claude provider 429 returned as reply text', () => {
+    // The CLI prints the rate limit as the assistant response instead of
+    // throwing. That text used to classify as prose, and the second reply
+    // confirmed the queued batch away.
+    expect(isRateLimitedObserverOutput(REPORTED_429_REPLY)).toBe(true);
+    expect(isRateLimitedObserverOutput('API Error: 429 Too Many Requests')).toBe(true);
+    expect(
+      isRateLimitedObserverOutput(
+        'API Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"Number of request tokens has exceeded your per-minute rate limit"}}',
+      ),
+    ).toBe(true);
+    expect(
+      isRateLimitedObserverOutput(
+        'The request was rate limited. Its source could not be identified. Retry after the indicated delay.',
+      ),
+    ).toBe(true);
+  });
+
+  it('is a throttle, not a spent allowance or a transport failure', () => {
+    // A quota match would book the half-hour quota cooldown for a throttle.
+    expect(isQuotaLimitedObserverOutput(REPORTED_429_REPLY)).toBe(false);
+    expect(isQuotaLimitedObserverOutput('API Error: 429 Too Many Requests')).toBe(false);
+    expect(isTransportFailureObserverOutput(REPORTED_429_REPLY)).toBe(false);
+    expect(isTransportFailureObserverOutput('API Error: 429 Too Many Requests')).toBe(false);
+  });
+
+  it('does not treat a 429 or rate-limit wording in ordinary prose, a file count, or XML as a rate limit', () => {
+    expect(isRateLimitedObserverOutput('You have 429 files to review')).toBe(false);
+    expect(isRateLimitedObserverOutput('No observations to record.')).toBe(false);
+    expect(isRateLimitedObserverOutput('API Error: 4290 records were imported')).toBe(false);
+    expect(
+      isRateLimitedObserverOutput(
+        'The retry notes mention status 429, but this batch completed with nothing new to store.',
+      ),
+    ).toBe(false);
+    expect(
+      isRateLimitedObserverOutput('The request was rate limited during testing; nothing new to record.'),
+    ).toBe(false);
+    expect(
+      isRateLimitedObserverOutput('Fixed the bug where the request was rate limited. Retry after the indicated delay.'),
+    ).toBe(false);
+    expect(
+      isRateLimitedObserverOutput('The request was rate limited. Logged nothing new for this batch.'),
+    ).toBe(false);
+    expect(
+      isRateLimitedObserverOutput(
+        'The request was rate limited. Its source could not be identified. Retry after the indicated delay. Then we fixed it.',
+      ),
+    ).toBe(false);
+    expect(
+      isRateLimitedObserverOutput(
+        '<observation><title>Request rejected (429)</title><narrative>The request was rate limited.</narrative></observation>',
+      ),
+    ).toBe(false);
+  });
+});
+
+describe('isQuotaLimitedObserverOutput (continued)', () => {
   it('does not treat XML that mentions a limit as quota prose', () => {
     expect(
       isQuotaLimitedObserverOutput(
@@ -114,12 +211,58 @@ describe('isAuthFailureObserverOutput', () => {
     expect(isAuthFailureObserverOutput('Request failed with 403')).toBe(true);
   });
 
+  it('detects the organization-disabled subscription notice (#4677)', () => {
+    // Returned as the whole assistant response when the account's org has
+    // disabled Claude subscription access for Claude Code.
+    const notice =
+      'Your organization has disabled Claude subscription access for Claude Code · Use an Anthropic API key instead, or ask your admin to enable access';
+    expect(isAuthFailureObserverOutput(notice)).toBe(true);
+    // Disjoint from the quota and transport detectors: transport defers to
+    // auth, and quota must not claim an account-policy refusal.
+    expect(isQuotaLimitedObserverOutput(notice)).toBe(false);
+    expect(isTransportFailureObserverOutput(notice)).toBe(false);
+  });
+
+  it('does not treat prose narrating an organization policy as an auth failure', () => {
+    expect(
+      isAuthFailureObserverOutput(
+        'The admin explained that your organization has disabled Claude subscription access for Claude Code, so nothing was recorded.',
+      ),
+    ).toBe(false);
+    // Opens with the notice's words but runs on: an observation, not the CLI.
+    expect(
+      isAuthFailureObserverOutput(
+        'Your organization has disabled Claude subscription access for Claude Code, so we updated the setup guide to use API keys.',
+      ),
+    ).toBe(false);
+  });
+
+  it('matches the org notice alone or with its own remediation only', () => {
+    expect(isOrgDisabledSubscriptionObserverOutput('Your organization has disabled Claude subscription access for Claude Code')).toBe(true);
+    expect(isOrgDisabledSubscriptionObserverOutput('Your organization has disabled Claude subscription access for Claude Code.')).toBe(true);
+    expect(isOrgDisabledSubscriptionObserverOutput('Not logged in · Please run /login')).toBe(false);
+    expect(isAuthFailureObserverOutput('Not logged in · Please run /login')).toBe(true);
+  });
+
   it('does not classify XML, ordinary prose, or unrelated numeric output as auth failure', () => {
     expect(isAuthFailureObserverOutput('<observation><title>HTTP 401</title></observation>')).toBe(false);
     expect(isAuthFailureObserverOutput('The request returned 500 and produced no XML.')).toBe(false);
     expect(isAuthFailureObserverOutput('No observations to record.')).toBe(false);
     expect(isAuthFailureObserverOutput('Please run /login in the observed project instructions.')).toBe(false);
     expect(isAuthFailureObserverOutput('The project authentication guide says to run /login before testing.')).toBe(false);
+  });
+});
+
+describe('isAnthropicVerificationHoldObserverOutput (#5251)', () => {
+  const response = "API Error: Your account can't receive replies from Claude right now. You can find the next step in the Anthropic Verification Portal: https://portal.anthropic.com/verify?org=org-fixture";
+
+  it('recognises the complete Claude CLI verification-hold response', () => {
+    expect(isAnthropicVerificationHoldObserverOutput(response)).toBe(true);
+  });
+
+  it('does not match an observation discussing account verification', () => {
+    expect(isAnthropicVerificationHoldObserverOutput('<observation><title>Account verification</title><narrative>The portal returned an API Error.</narrative></observation>')).toBe(false);
+    expect(isAnthropicVerificationHoldObserverOutput('The account cannot receive replies from Claude until verification is complete.')).toBe(false);
   });
 });
 
@@ -446,5 +589,181 @@ describe('isTransportFailureObserverOutput separates envelope from diagnosis (re
   it('does not treat a 4xx as retryable because a 5xx-shaped number appears later', () => {
     expect(isTransportFailureObserverOutput('API Error: 400 Bad Request')).toBe(false);
     expect(isTransportFailureObserverOutput('API Error: 429 Too Many Requests')).toBe(false);
+  });
+});
+
+// #3460 (danemil): CLI stream cuts and deadlines that the anchored detector
+// missed. Each was classified prose, so its claimed batch was confirmed away.
+describe('isTransportFailureObserverOutput — CLI stream cuts and deadlines (#3460)', () => {
+  const cliFailures = [
+    'API Error: Connection closed mid-response. The response above may be incomplete.',
+    'API Error: Connection closed mid-response',
+    'Connection closed mid-response. The response above may be incomplete.',
+    'API ERROR:   Connection   Closed\n  Mid-Response.',
+    'API Error: Request timed out.',
+    'Request error: request timed out',
+    'API Error: premature close',
+    'Error: premature close',
+    'Error: stream ended unexpectedly',
+  ];
+  for (const output of cliFailures) {
+    it(`preserves the batch for: ${output.replace(/\s+/g, ' ').slice(0, 60)}`, () => {
+      expect(isTransportFailureObserverOutput(output)).toBe(true);
+    });
+  }
+
+  // The same words inside an observer's narrative must stay prose: a false
+  // positive requeues completed work and pauses the generator.
+  const prose = [
+    'The Read tool failed with ECONNRESET while fetching the config file.',
+    'Connection closed mid-response handling was reviewed and is covered by the retry wrapper.',
+    'The observed test run showed the stream ended unexpectedly; the retry wrapper now handles it.',
+    'API Error: request timed out handling was added to the retry wrapper',
+    'Request timed out errors are now retried with backoff.',
+  ];
+  for (const output of prose) {
+    it(`leaves prose alone: ${output.slice(0, 50)}…`, () => {
+      expect(isTransportFailureObserverOutput(output)).toBe(false);
+    });
+  }
+
+  it('does not steal XML that mentions a dropped connection', () => {
+    expect(
+      isTransportFailureObserverOutput(
+        '<observation><title>Connection closed mid-response in the retry path</title></observation>'
+      )
+    ).toBe(false);
+    expect(
+      isTransportFailureObserverOutput('<skip_summary reason="premature close in observed code"/>')
+    ).toBe(false);
+  });
+});
+
+describe('describeObserverOutputShape and formatEmptyOutputReason (#3454)', () => {
+  it('returns no-content-blocks for null', () => {
+    const r = describeObserverOutputShape(null);
+    expect(r.shape).toBe('no-content-blocks');
+    expect(r.blockKinds).toEqual([]);
+    expect(formatEmptyOutputReason(r)).toBe('no-content-blocks');
+  });
+
+  it('returns no-content-blocks for undefined', () => {
+    const r = describeObserverOutputShape(undefined);
+    expect(r.shape).toBe('no-content-blocks');
+    expect(formatEmptyOutputReason(r)).toBe('no-content-blocks');
+  });
+
+  it('returns unrecognized-content for a plain object', () => {
+    const r = describeObserverOutputShape({});
+    expect(r.shape).toBe('unrecognized-content');
+    expect(r.blockKinds).toEqual([]);
+    expect(formatEmptyOutputReason(r)).toBe('unrecognized-content');
+  });
+
+  it('returns unrecognized-content for a number', () => {
+    const r = describeObserverOutputShape(42);
+    expect(r.shape).toBe('unrecognized-content');
+  });
+
+  it('returns no-content-blocks for an empty array', () => {
+    const r = describeObserverOutputShape([]);
+    expect(r.shape).toBe('no-content-blocks');
+    expect(r.blockKinds).toEqual([]);
+  });
+
+  it('returns text for a non-blank string', () => {
+    const r = describeObserverOutputShape('<observation/>');
+    expect(r.shape).toBe('text');
+    expect(r.blockKinds).toEqual([]);
+    expect(formatEmptyOutputReason(r)).toBeUndefined();
+  });
+
+  it('returns blank-text for whitespace string', () => {
+    const r = describeObserverOutputShape('   ');
+    expect(r.shape).toBe('blank-text');
+    expect(formatEmptyOutputReason(r)).toBe('blank-text');
+  });
+
+  it('returns text for array with non-blank text block', () => {
+    const r = describeObserverOutputShape([{ type: 'text', text: 'hello' }]);
+    expect(r.shape).toBe('text');
+    expect(r.blockKinds).toEqual(['text']);
+    expect(formatEmptyOutputReason(r)).toBeUndefined();
+  });
+
+  it('returns blank-text for array with blank text block', () => {
+    const r = describeObserverOutputShape([{ type: 'text', text: '' }]);
+    expect(r.shape).toBe('blank-text');
+    expect(r.blockKinds).toEqual(['text']);
+    expect(formatEmptyOutputReason(r)).toBe('blank-text');
+  });
+
+  it('returns non-text-blocks-only(tool_use) for tool_use block', () => {
+    const r = describeObserverOutputShape([{ type: 'tool_use', name: 'bash', input: {} }]);
+    expect(r.shape).toBe('non-text-blocks-only');
+    expect(r.blockKinds).toEqual(['tool_use']);
+    expect(formatEmptyOutputReason(r)).toBe('non-text-blocks-only(tool_use)');
+  });
+
+  it('returns non-text-blocks-only(thinking,tool_use) for mixed non-text blocks', () => {
+    const r = describeObserverOutputShape([
+      { type: 'thinking', thinking: 'thought' },
+      { type: 'tool_use', name: 'bash', input: {} },
+    ]);
+    expect(r.shape).toBe('non-text-blocks-only');
+    expect(r.blockKinds).toEqual(['thinking', 'tool_use']);
+    expect(formatEmptyOutputReason(r)).toBe('non-text-blocks-only(thinking,tool_use)');
+  });
+
+  it('whitelist boundary: unknown type becomes "other" and output contains no input substring', () => {
+    const malicious = 'wat-<script>alert(1)</script>';
+    const r = describeObserverOutputShape([{ type: malicious }]);
+    expect(r.shape).toBe('non-text-blocks-only');
+    expect(r.blockKinds).toEqual(['other']);
+    const reason = formatEmptyOutputReason(r);
+    expect(reason).toBe('non-text-blocks-only(other)');
+    expect(reason).not.toContain(malicious);
+  });
+
+  it('totality: nested array [[]]] does not throw', () => {
+    expect(() => describeObserverOutputShape([[]])).not.toThrow();
+  });
+
+  it('totality: array with null element does not throw', () => {
+    expect(() => describeObserverOutputShape([null])).not.toThrow();
+    const r = describeObserverOutputShape([null]);
+    expect(r.blockKinds).toContain('other');
+  });
+
+  it('totality: array of primitives does not throw', () => {
+    expect(() => describeObserverOutputShape([1, 'raw', true, undefined])).not.toThrow();
+    const r = describeObserverOutputShape([1, 'raw', true, undefined]);
+    expect(r.blockKinds).toEqual(['other']);
+  });
+
+  it('totality: array with plain object (no type) does not throw', () => {
+    expect(() => describeObserverOutputShape([{}])).not.toThrow();
+    const r = describeObserverOutputShape([{}]);
+    expect(r.blockKinds).toContain('other');
+  });
+
+  it('totality: block with throwing type getter does not throw', () => {
+    const evil = Object.defineProperty({}, 'type', {
+      get() { throw new Error('boom'); },
+    });
+    expect(() => describeObserverOutputShape([evil])).not.toThrow();
+    const r = describeObserverOutputShape([evil]);
+    expect(r.blockKinds).toContain('other');
+  });
+
+  it('totality: block with throwing text getter does not throw (Preservation Invariant 2)', () => {
+    const block = Object.defineProperties({}, {
+      type: { get() { return 'text'; }, enumerable: true },
+      text: { get() { throw new Error('boom'); }, enumerable: true },
+    });
+    expect(() => describeObserverOutputShape([block])).not.toThrow();
+    const r = describeObserverOutputShape([block]);
+    expect(r.blockKinds).toContain('text');
+    expect(r.shape).toBe('blank-text');
   });
 });

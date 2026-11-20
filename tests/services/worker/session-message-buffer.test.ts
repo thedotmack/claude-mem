@@ -1,4 +1,4 @@
-import { describe, test, expect } from 'bun:test';
+import { afterEach, describe, test, expect, jest } from 'bun:test';
 import { SessionMessageBuffer } from '../../../src/services/worker/SessionMessageBuffer.js';
 import type { PendingMessage, PendingMessageWithId } from '../../../src/services/worker-types.js';
 
@@ -22,6 +22,8 @@ async function drainAll(buffer: SessionMessageBuffer, sessionDbId: number): Prom
 }
 
 describe('SessionMessageBuffer (in-RAM observation buffer)', () => {
+  afterEach(() => jest.useRealTimers());
+
   test('enqueue assigns increasing ids and reports depth', () => {
     const buffer = new SessionMessageBuffer();
     const id1 = buffer.enqueue(1, obs('Read'));
@@ -94,6 +96,27 @@ describe('SessionMessageBuffer (in-RAM observation buffer)', () => {
     expect(buffer.enqueue(1, obs('Read', 'a'))).toBeGreaterThan(0); // not suppressed
   });
 
+  test('clearUnclaimed preserves in-flight evidence and delivery identities', async () => {
+    const buffer = new SessionMessageBuffer();
+    const confirmedId = buffer.enqueue(1, obs('Read', 'confirmed'));
+    expect(buffer.confirm(confirmedId)).toBe(1);
+    const claimedId = buffer.enqueue(1, obs('Read', 'claimed'));
+    buffer.enqueue(1, obs('Write', 'unsent'));
+    const controller = new AbortController();
+    const iterator = buffer.drain({ sessionDbId: 1, signal: controller.signal });
+
+    expect((await iterator.next()).value?._persistentId).toBe(claimedId);
+    expect(buffer.clearUnclaimed(1)).toBe(1);
+    expect(buffer.getMessagesByIds(1, [claimedId])).toHaveLength(1);
+    expect(buffer.enqueue(1, obs('Read', 'confirmed'))).toBe(0);
+    expect(buffer.enqueue(1, obs('Read', 'claimed'))).toBe(0);
+    expect(buffer.enqueue(1, obs('Write', 'unsent'))).toBe(0);
+    expect(buffer.enqueue(1, obs('Write', 'fresh'))).toBeGreaterThan(0);
+
+    controller.abort();
+    await iterator.return?.(undefined);
+  });
+
   test('drain ends via idle timeout when no work arrives', async () => {
     const buffer = new SessionMessageBuffer();
     const controller = new AbortController();
@@ -111,6 +134,86 @@ describe('SessionMessageBuffer (in-RAM observation buffer)', () => {
     expect(idleFired).toBe(true);
     expect(iterated.length).toBe(0);
     expect(Date.now() - start).toBeGreaterThanOrEqual(20);
+  });
+
+  test('drain releases the idle slot early while slot waiters are parked (#5376)', async () => {
+    jest.useFakeTimers();
+    const buffer = new SessionMessageBuffer();
+    const controller = new AbortController();
+    let idleFired = false;
+    const start = Date.now();
+    const iterator = buffer.drain({
+      sessionDbId: 100,
+      signal: controller.signal,
+      idleTimeoutMs: 6000,
+      shouldReleaseIdleSlot: () => true,
+      onIdleTimeout: () => { idleFired = true; controller.abort(); },
+    });
+    const next = iterator.next();
+    jest.advanceTimersByTime(999);
+    await Promise.resolve();
+    expect(idleFired).toBe(false);
+    jest.advanceTimersByTime(1);
+    expect((await next).done).toBe(true);
+    expect(idleFired).toBe(true);
+    // Ended on the contention recheck (~1s slices), not the 6s idle timeout.
+    expect(Date.now() - start).toBeLessThan(3000);
+  });
+
+  test('drain keeps the full idle timeout while no slot waiters are parked (#5376)', async () => {
+    jest.useFakeTimers();
+    const buffer = new SessionMessageBuffer();
+    const controller = new AbortController();
+    let idleFired = false;
+    const start = Date.now();
+    const iterator = buffer.drain({
+      sessionDbId: 101,
+      signal: controller.signal,
+      idleTimeoutMs: 300,
+      shouldReleaseIdleSlot: () => false,
+      onIdleTimeout: () => { idleFired = true; controller.abort(); },
+    });
+    const next = iterator.next();
+    jest.advanceTimersByTime(299);
+    await Promise.resolve();
+    expect(idleFired).toBe(false);
+    jest.advanceTimersByTime(1);
+    expect((await next).done).toBe(true);
+    expect(idleFired).toBe(true);
+    expect(Date.now() - start).toBeGreaterThanOrEqual(250);
+  });
+
+  test('drain starts the idle clock when the consumer returns, not when a message is claimed (#5376)', async () => {
+    jest.useFakeTimers();
+    const buffer = new SessionMessageBuffer();
+    buffer.enqueue(102, obs('Read', 'a'));
+    const controller = new AbortController();
+    let idleFiredAt: number | null = null;
+    const iterator = buffer.drain({
+      sessionDbId: 102,
+      signal: controller.signal,
+      idleTimeoutMs: 1500,
+      onIdleTimeout: () => { idleFiredAt = Date.now(); },
+    });
+    const first = await iterator.next();
+    expect(first.done).toBe(false);
+    // Simulate a slow reply: the consumer holds the message for 1.2s before
+    // asking for the next one.
+    jest.advanceTimersByTime(1200);
+    const returnedAt = Date.now();
+    const second = iterator.next();
+    jest.advanceTimersByTime(1000);
+    await Promise.resolve();
+    expect(idleFiredAt).toBeNull();
+    jest.advanceTimersByTime(1000);
+    expect((await second).done).toBe(true);
+    expect(idleFiredAt).not.toBeNull();
+    // The full 1.5s idle window runs from the consumer's return. Waits are
+    // sliced at 1s, so it fires on the second slice (~2s after the return).
+    // A clock stamped at claim time would already fire on the first slice
+    // (~1s after the return), its 1.2s of processing having counted as idle.
+    expect(idleFiredAt! - returnedAt).toBeGreaterThanOrEqual(1800);
+    controller.abort();
   });
 
   test('peekTypes reflects buffered message types', () => {

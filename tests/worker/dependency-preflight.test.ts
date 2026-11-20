@@ -16,29 +16,36 @@ function classifier(error: unknown): { kind: string; message: string } {
   };
 }
 
+function run(overrides: Omit<Parameters<typeof runWorkerDependencyPreflight>[0], 'classifyClaudeError'>) {
+  return runWorkerDependencyPreflight({
+    classifyClaudeError: classifier,
+    env: { PATH: '' },
+    platform: 'linux',
+    homedir: () => '/fixture/home',
+    pathExists: () => false,
+    isFile: () => false,
+    ...overrides,
+  });
+}
+
 describe('worker dependency preflight', () => {
   beforeEach(() => {
     resetDependencyStatusesForTesting();
   });
 
-  it('records missing uvx using PATH/file checks without checking Claude for Gemini', () => {
+  it('records missing uvx using PATH/file checks without checking Claude for Gemini', async () => {
     let claudeChecked = false;
 
-    const snapshot = runWorkerDependencyPreflight({
+    const snapshot = await run({
       settings: {
         CLAUDE_MEM_PROVIDER: 'gemini',
         CLAUDE_MEM_CHROMA_ENABLED: 'true',
       },
-      classifyClaudeError: classifier,
-      findClaudeExecutable: () => {
+      findClaudeExecutable: async () => {
         claudeChecked = true;
         throw new Error('Claude should not be checked for Gemini');
       },
       env: { PATH: '/tmp/no-uvx' },
-      platform: 'linux',
-      homedir: () => '/tmp/home',
-      pathExists: () => false,
-      isFile: () => false,
     });
 
     expect(claudeChecked).toBe(false);
@@ -50,22 +57,39 @@ describe('worker dependency preflight', () => {
     expect(getDependencyStatus('uvx')?.remediation).toContain('uv/uvx');
   });
 
-  it('recognizes a Homebrew-only uvx install on darwin', () => {
+  it('checks Claude for Gemini when a source maps to claude', async () => {
     let claudeChecked = false;
 
-    const snapshot = runWorkerDependencyPreflight({
+    await run({
+      settings: {
+        CLAUDE_MEM_PROVIDER: 'gemini',
+        CLAUDE_MEM_PROVIDER_BY_SOURCE: '{"claude":"claude"}',
+        CLAUDE_MEM_CHROMA_ENABLED: 'false',
+      },
+      findClaudeExecutable: async () => {
+        claudeChecked = true;
+        return '/usr/bin/claude';
+      },
+      env: { PATH: '/tmp' },
+    });
+
+    expect(claudeChecked).toBe(true);
+  });
+
+  it('recognizes a Homebrew-only uvx install on darwin', async () => {
+    let claudeChecked = false;
+
+    const snapshot = await run({
       settings: {
         CLAUDE_MEM_PROVIDER: 'gemini',
         CLAUDE_MEM_CHROMA_ENABLED: 'true',
       },
-      classifyClaudeError: classifier,
-      findClaudeExecutable: () => {
+      findClaudeExecutable: async () => {
         claudeChecked = true;
         throw new Error('Claude should not be checked for Gemini');
       },
       env: { PATH: '/usr/bin:/bin' },
       platform: 'darwin',
-      homedir: () => '/tmp/home',
       pathExists: filePath => filePath === '/opt/homebrew/bin',
       isFile: filePath => filePath === path.join('/opt/homebrew/bin', 'uvx'),
     });
@@ -75,43 +99,52 @@ describe('worker dependency preflight', () => {
     expect(getDependencyStatus('uvx')).toBeNull();
   });
 
-  it('clears stale Claude CLI setup status when a non-Claude provider is selected', () => {
+  it('finds uvx.exe at the path set in settings on Windows (#4195)', async () => {
+    const settingsUvx = 'C:\\Users\\Jane Doe\\AppData\\Local\\Programs\\Python\\Python313\\Scripts\\uvx.exe';
+
+    const snapshot = await run({
+      settings: {
+        CLAUDE_MEM_PROVIDER: 'gemini',
+        CLAUDE_MEM_CHROMA_ENABLED: 'true',
+        CLAUDE_MEM_CHROMA_UVX_PATH: settingsUvx,
+      },
+      env: { PATH: 'C:\\Windows\\System32' },
+      platform: 'win32',
+      homedir: () => 'C:\\Users\\Jane Doe',
+      isFile: filePath => filePath === settingsUvx,
+    });
+
+    expect(snapshot.degraded).toBe(false);
+    expect(getDependencyStatus('uvx')).toBeNull();
+  });
+
+  it('clears stale Claude CLI setup status when a non-Claude provider is selected', async () => {
     recordDependencyStatus('claude_cli', 'setup_required', 'old failure');
 
-    runWorkerDependencyPreflight({
+    await run({
       settings: {
         CLAUDE_MEM_PROVIDER: 'openrouter',
         CLAUDE_MEM_CHROMA_ENABLED: 'false',
       },
-      classifyClaudeError: classifier,
-      findClaudeExecutable: () => {
+      findClaudeExecutable: async () => {
         throw new Error('Claude should not be checked for OpenRouter');
       },
       env: { PATH: '' },
-      platform: 'linux',
-      homedir: () => '/tmp/home',
-      pathExists: () => false,
-      isFile: () => false,
     });
 
     expect(getDependencyStatus('claude_cli')).toBeNull();
   });
 
-  it('records Claude CLI setup_required when Claude is selected and discovery fails', () => {
-    runWorkerDependencyPreflight({
+  it('records Claude CLI setup_required when Claude is selected and discovery fails', async () => {
+    await run({
       settings: {
         CLAUDE_MEM_PROVIDER: 'claude',
         CLAUDE_MEM_CHROMA_ENABLED: 'false',
       },
-      classifyClaudeError: classifier,
-      findClaudeExecutable: () => {
+      findClaudeExecutable: async () => {
         throw new Error('Claude executable not found. Please install Claude Code CLI.');
       },
       env: { PATH: '' },
-      platform: 'linux',
-      homedir: () => '/tmp/home',
-      pathExists: () => false,
-      isFile: () => false,
     });
 
     expect(getDependencyStatus('claude_cli')).toMatchObject({

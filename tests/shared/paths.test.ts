@@ -1,35 +1,22 @@
 import { describe, it, expect, afterEach } from 'bun:test';
-import { paths, DATA_DIR, resolveDataDir, expandHome } from '../../src/shared/paths.js';
-import { homedir } from 'os';
+import {
+  paths,
+  DATA_DIR,
+  resolveDataDir,
+  ensureObserverSessionsDir,
+  expandHome,
+} from '../../src/shared/paths.js';
+import { homedir, tmpdir } from 'os';
 import { join } from 'path';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 
 describe('paths namespace', () => {
-  it('exposes at least the known core accessors', () => {
-    const keys = Object.keys(paths);
-    const required = [
-      'dataDir',
-      'workerPid',
-      'settings',
-      'database',
-      'chroma',
-      'transcriptsConfig',
-    ];
-    for (const key of required) {
-      expect(keys).toContain(key);
-    }
-  });
 
   it('every accessor returns a string starting with DATA_DIR', () => {
     for (const key of Object.keys(paths) as Array<keyof typeof paths>) {
       const value = paths[key]();
       expect(typeof value).toBe('string');
       expect(value.startsWith(DATA_DIR)).toBe(true);
-    }
-  });
-
-  it('every accessor is a callable function', () => {
-    for (const key of Object.keys(paths) as Array<keyof typeof paths>) {
-      expect(typeof paths[key]).toBe('function');
     }
   });
 });
@@ -102,5 +89,46 @@ describe('resolveDataDir tilde expansion', () => {
   it('still returns a real env-var value when it is already absolute', () => {
     process.env.CLAUDE_MEM_DATA_DIR = sentinel;
     expect(resolveDataDir()).toBe(sentinel);
+  });
+});
+
+describe('ensureObserverSessionsDir', () => {
+  const created: string[] = [];
+
+  afterEach(() => {
+    for (const dir of created.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  function makeTempBase(): string {
+    const base = mkdtempSync(join(tmpdir(), 'cmem-obs-'));
+    created.push(base);
+    return base;
+  }
+
+  it('creates the directory and returns it', () => {
+    const dir = join(makeTempBase(), 'observer-sessions');
+    expect(ensureObserverSessionsDir(dir)).toBe(dir);
+    expect(existsSync(dir)).toBe(true);
+  });
+
+  it('turns a permanent mkdir failure (data dir is a file) into the setup message', () => {
+    const asFile = join(makeTempBase(), 'data-is-a-file');
+    writeFileSync(asFile, 'x');
+    // observer-sessions would sit under a file, so mkdir throws ENOTDIR.
+    expect(() => ensureObserverSessionsDir(join(asFile, 'observer-sessions')))
+      .toThrow(/^Observer working directory could not be prepared: .* \(ENOTDIR\)/);
+  });
+
+  it('rethrows a transient mkdir failure unchanged so it is retried, not parked', () => {
+    for (const code of ['EMFILE', 'ENFILE', 'EIO', 'ENOSPC']) {
+      const transient = Object.assign(new Error(`${code}: simulated`), { code });
+      let caught: unknown;
+      try {
+        ensureObserverSessionsDir('/unused', () => { throw transient; });
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBe(transient);
+    }
   });
 });

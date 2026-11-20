@@ -22,13 +22,16 @@
  * Closes #2222 (desktop-app detection), hardens against stale-CLI selection.
  */
 
-import { execSync, execFileSync } from 'child_process';
+import { exec, execFile } from 'child_process';
+import { promisify } from 'util';
 import { existsSync, realpathSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
+import { isCurrentDirectoryCandidate, isWindowsNativeExecutable, windowsWhereExecutablePath } from './spawn.js';
 import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, expandTilde } from './paths.js';
 import { logger, type Component } from '../utils/logger.js';
+import { withNpmClaudeExe } from './windows-npm-claude.js';
 
 /**
  * How long to wait for a probe (`--version` / capability) before giving up (ms).
@@ -57,21 +60,28 @@ export const CAPABILITY_PROBE_ARGS = ['--permission-mode', 'dontAsk', '--version
  * Successful resolutions are cached briefly: findClaudeExecutable() runs once
  * per SDK query, and each cold resolution costs one subprocess spawn per
  * installed candidate. Failures are never cached, so a user who updates their
- * CLI is picked up on the next observation without a worker restart.
+ * CLI is picked up on the next observation without a worker restart. A cached
+ * resolution only answers for the CLAUDE_CODE_PATH it was made under, so
+ * changing that setting takes effect on the next call too.
  */
 const RESOLUTION_CACHE_TTL_MS = 15 * 60_000;
 
 interface CachedResolution {
   path: string;
   version: string;
+  /** The CLAUDE_CODE_PATH setting this was resolved under ('' when discovered). */
+  configuredSetting: string;
   expiresAtMs: number;
 }
 
 let cachedResolution: CachedResolution | null = null;
+/** Concurrent cache misses for the same setting share one set of CLI probes. */
+const pendingResolutions = new Map<string, Promise<string>>();
 
 /** Test hook: clear the resolution cache between cases. */
 export function resetClaudeExecutableCache(): void {
   cachedResolution = null;
+  pendingResolutions.clear();
 }
 
 /**
@@ -79,14 +89,45 @@ export function resetClaudeExecutableCache(): void {
  * which tests replace by reassigning these members (no module mocking).
  */
 export const _internals = {
-  execSync,
-  execFileSync,
+  exec: promisify(exec),
+  execFile: promisify(execFile),
   existsSync,
   realpathSync,
   homedir,
   platform: (): NodeJS.Platform => process.platform,
   loadSettings: () => SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH),
 };
+
+/**
+ * A Claude CLI binary exists on disk at a discovered path but this worker
+ * process can no longer spawn it (ENOENT on posix_spawn despite the file
+ * being present — typically a stale worker after Claude Code's native
+ * auto-updater swapped the binary underneath a long-running process).
+ *
+ * Carries every present-but-unspawnable candidate plus the probe detail, so
+ * callers can surface a single actionable error rather than a generic
+ * not-found. The message deliberately includes the literal token `ENOENT` so
+ * `classifyClaudeError` keeps mapping it to `setup_required` — but the
+ * `isClaudeExecutableUnspawnable` discriminator lets the routes layer
+ * distinguish it from a genuine setup gap and trigger a self-heal restart.
+ */
+export class ClaudeExecutableUnspawnableError extends Error {
+  readonly candidates: ReadonlyArray<{ path: string; detail: string }>;
+  constructor(candidates: ReadonlyArray<{ path: string; detail: string }>) {
+    const list = candidates.map(c => `  - ${c.path} — ${c.detail}`).join('\n');
+    super(
+      'Claude executable(s) exist on disk but could not be spawned by this worker process ' +
+      '(ENOENT on posix_spawn despite the file being present — typically a stale worker after a ' +
+      `Claude Code CLI auto-update):\n${list}\n` +
+      `Restarting the worker resolves this. ${updateInstructions()}`
+    );
+    this.name = 'ClaudeExecutableUnspawnableError';
+    this.candidates = candidates;
+  }
+}
+export function isClaudeExecutableUnspawnable(err: unknown): err is ClaudeExecutableUnspawnableError {
+  return err instanceof ClaudeExecutableUnspawnableError;
+}
 
 /**
  * Returns true if the path looks like a Windows desktop-app installation
@@ -122,24 +163,23 @@ type ProbeResult =
   | { kind: 'broken'; detail: string; launchFailed: boolean };
 
 /**
- * Run `<candidate> <args>` and return trimmed stdout, or null on any failure.
+ * Run `<candidate> <args>` without blocking the worker while the CLI starts.
  *
- * Uses execFileSync (not execSync) so the candidate path is passed as a
+ * Uses asynchronous execFile so the candidate path is passed as a
  * separate argument and never interpreted by a shell. This prevents shell
  * injection if the path contains characters like `"`, `;`, `&` — reachable
  * on Windows via a crafted CLAUDE_CODE_PATH in settings.json.
  */
-function runProbe(candidate: string, args: readonly string[]): { stdout: string } | { error: string; flagRejection: boolean; launchFailed: boolean } {
+async function runProbe(candidate: string, args: readonly string[]): Promise<{ stdout: string } | { error: string; flagRejection: boolean; launchFailed: boolean }> {
   try {
-    const stdout = _internals.execFileSync(candidate, [...args], {
+    const { stdout } = await _internals.execFile(candidate, [...args], {
       encoding: 'utf8',
       timeout: VERSION_CHECK_TIMEOUT_MS,
       windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    }).trim();
-    return { stdout };
+    });
+    return { stdout: stdout.trim() };
   } catch (error) {
-    const err = error as { stderr?: unknown; status?: unknown; signal?: unknown; killed?: unknown };
+    const err = error as { stderr?: unknown; code?: unknown; signal?: unknown; killed?: unknown };
     const stderrText = String(err.stderr ?? '').trim();
     const firstLine = (stderrText || (error instanceof Error ? error.message : String(error)))
       .split('\n')[0]
@@ -149,16 +189,16 @@ function runProbe(candidate: string, args: readonly string[]): { stdout: string 
     // A timeout or signal kill (killed/signal set, empty stderr — a Windows
     // cold start losing the 10 s race) leaves no such proof, so it must stay
     // retryable and never classify as incompatible.
-    const status = err.status;
+    const status = err.code;
     const killed = err.killed === true;
     const signalled = err.signal != null;
     const flagRejection = stderrText.length > 0 && !killed && !signalled && typeof status === 'number' && status !== 0;
     // Did the OS fail to launch the process at all (ENOENT/EACCES/ENOEXEC), or
-    // did the process run and then fail? A launch failure yields neither an
-    // exit status nor a termination signal — the child never started. A
-    // non-zero exit sets `status`; a timeout sets `signal`/`killed`. Only a
+    // did the process run and then fail? A launch failure yields neither a
+    // numeric exit code nor a termination signal — the child never started. A
+    // non-zero exit sets a numeric `code`; a timeout sets `signal`/`killed`. Only a
     // true launch failure is the "found but could not be executed" case.
-    const launchFailed = err.status == null && err.signal == null && !err.killed;
+    const launchFailed = typeof status !== 'number' && err.signal == null && !err.killed;
     // Probe failures are expected classification signals (stale CLI, desktop
     // app, broken install); callers warn on or surface the detail, so this
     // stays at debug with the full error for deep troubleshooting.
@@ -181,8 +221,8 @@ function runProbe(candidate: string, args: readonly string[]): { stdout: string 
  * old". So after `--version` warms the binary, the capability probe runs once
  * more; only real flag rejection classifies the CLI as incompatible.
  */
-function probeCandidate(candidate: string): ProbeResult {
-  const capability = runProbe(candidate, CAPABILITY_PROBE_ARGS);
+async function probeCandidate(candidate: string): Promise<ProbeResult> {
+  const capability = await runProbe(candidate, CAPABILITY_PROBE_ARGS);
   if ('stdout' in capability && capability.stdout) {
     return { kind: 'capable', version: capability.stdout };
   }
@@ -191,7 +231,7 @@ function probeCandidate(candidate: string): ProbeResult {
   // CLI) from "doesn't run at all" (desktop app, broken install) via a plain
   // --version. Any error wording ("invalid", "unknown option", localized
   // variants) classifies the same way, so no stderr pattern-matching.
-  const plain = runProbe(candidate, ['--version']);
+  const plain = await runProbe(candidate, ['--version']);
   if ('stdout' in plain && plain.stdout) {
     if ('flagRejection' in capability && capability.flagRejection) {
       return { kind: 'incompatible', version: plain.stdout, detail: capability.error };
@@ -199,7 +239,7 @@ function probeCandidate(candidate: string): ProbeResult {
     // No flag-rejection evidence: the capability probe most likely lost a
     // cold-start race that the --version spawn just warmed away. Re-probe the
     // warm binary once before giving up.
-    const warm = runProbe(candidate, CAPABILITY_PROBE_ARGS);
+    const warm = await runProbe(candidate, CAPABILITY_PROBE_ARGS);
     if ('stdout' in warm && warm.stdout) {
       return { kind: 'capable', version: warm.stdout };
     }
@@ -243,30 +283,61 @@ function compareVersionKeysDesc(a: [number, number, number], b: [number, number,
  *
  * Order is preserved (PATH order first) and only used to break version ties.
  */
-function discoverCandidates(): string[] {
+async function discoverCandidates(): Promise<string[]> {
   const candidates: string[] = [];
 
   if (_internals.platform() === 'win32') {
-    // claude.cmd first: spawning the .cmd wrapper avoids spawn issues with
-    // spaces in the .exe path (long-standing Windows preference).
-    for (const command of ['where claude.cmd', 'where claude']) {
+    // Gather every PATH hit through where.exe argv (not a shell string), so the
+    // lookup does not flash a console and names with spaces stay argv-safe.
+    // `claude` already lists the native binary and any shim (PATHEXT covers
+    // .exe and .cmd); `claude.cmd` is kept so a shim on a PATH entry the bare
+    // lookup misses is still found. Native-before-shim preference is applied
+    // after dedupe below.
+    for (const name of ['claude', 'claude.cmd']) {
       try {
-        const output = _internals.execSync(command, {
+        // where.exe itself must come from System32, and its results exclude
+        // the current directory — hooks run with the user's project as cwd,
+        // where a planted claude.exe would otherwise be found and spawned.
+        const { stdout: output } = await _internals.execFile(windowsWhereExecutablePath(), [name], {
           encoding: 'utf8',
           windowsHide: true,
-          stdio: ['ignore', 'pipe', 'ignore'],
         });
-        candidates.push(...output.split('\n').map((line) => line.trim()).filter(Boolean));
+        // where.exe writes the console's active code page (cp949 on ko-KR) but
+        // the `encoding: 'utf8'` above decodes the bytes as UTF-8, so a
+        // non-ASCII profile folder name arrives as U+FFFD and the reported
+        // path does not exist (#4694, #3865). Keep only lines that resolve on
+        // disk — a garbled candidate would only die at the probe with ENOENT.
+        candidates.push(
+          ...output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+            .filter((line) => !isCurrentDirectoryCandidate(line))
+            .filter((line) => _internals.existsSync(line)),
+        );
       } catch {
         // Not found via this lookup — try the next discovery source.
       }
     }
+    // A global npm install's PATH hits are shims the SDK can't spawn: swap in
+    // the package's own claude.exe and drop the extension-less sh script.
+    candidates.splice(0, candidates.length, ...withNpmClaudeExe(candidates, (path) => _internals.existsSync(path)));
+    // The native installer puts the CLI at ~/.local/bin/claude.exe (and the
+    // legacy local install at ~/.claude/local/claude.exe), which may not be on
+    // the worker's PATH at all — or where.exe may only report garbled lines
+    // (#4694). Without these, a perfectly installed CLI wedges the worker in
+    // setup_required. The .exe suffix matters: Windows has no shebang, so an
+    // extension-less file is not spawnable here.
+    for (const knownPath of [
+      join(_internals.homedir(), '.local', 'bin', 'claude.exe'),
+      join(_internals.homedir(), '.claude', 'local', 'claude.exe'),
+    ]) {
+      if (_internals.existsSync(knownPath)) {
+        candidates.push(knownPath);
+      }
+    }
   } else {
     try {
-      const output = _internals.execSync('which -a claude', {
+      const { stdout: output } = await _internals.exec('which -a claude', {
         encoding: 'utf8',
         windowsHide: true,
-        stdio: ['ignore', 'pipe', 'ignore'],
       });
       candidates.push(...output.split('\n').map((line) => line.trim()).filter(Boolean));
     } catch {
@@ -301,6 +372,18 @@ function discoverCandidates(): string[] {
     seenRealPaths.add(realPath);
     deduped.push(candidate);
   }
+
+  // The agent SDK spawns this path directly on the field-compression calls the
+  // observer makes with no cmd.exe wrapper, and modern Node refuses to launch a
+  // .cmd/.bat shim without a shell (EINVAL). When a native .exe/.com and a shim
+  // resolve to the same install, hand back the native one so the SDK never gets
+  // a shim it cannot spawn. Stable native-first tie-break only: the newest
+  // capable version still wins over it (see findClaudeExecutable), sharing the
+  // native-vs-shim rule with selectWindowsCommandCandidate.
+  if (_internals.platform() === 'win32') {
+    deduped.sort((a, b) => Number(isWindowsNativeExecutable(b)) - Number(isWindowsNativeExecutable(a)));
+  }
+
   return deduped;
 }
 
@@ -342,36 +425,57 @@ function updateInstructions(): string {
  * @param logComponent  Logger {@link Component} tag (e.g. 'SDK', 'WORKER')
  * @throws {Error} when no Claude CLI compatible with claude-mem can be found
  */
-export function findClaudeExecutable(logComponent: Component = 'SDK'): string {
-  if (cachedResolution && cachedResolution.expiresAtMs > Date.now() && _internals.existsSync(cachedResolution.path)) {
+export async function findClaudeExecutable(logComponent: Component = 'SDK'): Promise<string> {
+  const settings = _internals.loadSettings();
+  const configuredSetting = settings.CLAUDE_CODE_PATH || '';
+
+  if (
+    cachedResolution &&
+    cachedResolution.configuredSetting === configuredSetting &&
+    cachedResolution.expiresAtMs > Date.now() &&
+    _internals.existsSync(cachedResolution.path)
+  ) {
     return cachedResolution.path;
   }
   cachedResolution = null;
 
-  const settings = _internals.loadSettings();
+  const pending = pendingResolutions.get(configuredSetting);
+  if (pending) return pending;
+  const resolution = resolveClaudeExecutable(configuredSetting, logComponent);
+  pendingResolutions.set(configuredSetting, resolution);
+  try {
+    return await resolution;
+  } finally {
+    // Do not retain a failed resolution: installing/updating the CLI must
+    // take effect on the next call. A cache reset may have started a new one.
+    if (pendingResolutions.get(configuredSetting) === resolution) pendingResolutions.delete(configuredSetting);
+  }
+}
 
+async function resolveClaudeExecutable(configuredSetting: string, logComponent: Component): Promise<string> {
   // --- 1. Explicit configured path ----------------------------------------
-  if (settings.CLAUDE_CODE_PATH) {
+  if (configuredSetting) {
     // A user who types `~/.local/bin/claude` in settings.json expects the shell
     // convention, but nothing here runs through a shell — existsSync and
     // posix_spawn take the string verbatim, so a literal `~` fails with ENOENT.
     // Expand it defensively at read time so both the existence check and every
     // probe spawn see a real absolute path (SettingsRoutes also normalizes on
     // write; this covers files edited by hand).
-    const configuredPath = expandTilde(settings.CLAUDE_CODE_PATH, _internals.homedir());
-    const describedPath = describeConfiguredPath(settings.CLAUDE_CODE_PATH, configuredPath);
+    const configuredPath = expandTilde(configuredSetting, _internals.homedir());
+    const describedPath = describeConfiguredPath(configuredSetting, configuredPath);
     if (!_internals.existsSync(configuredPath)) {
       throw new Error(
         `CLAUDE_CODE_PATH is set to ${describedPath} but the file does not exist.`
       );
     }
 
-    const probe = probeCandidate(configuredPath);
+    const probe = await probeCandidate(configuredPath);
     if (probe.kind === 'capable') {
       logger.info(logComponent, `Using configured CLAUDE_CODE_PATH: ${configuredPath} (${probe.version})`);
       cachedResolution = {
         path: configuredPath,
         version: probe.version,
+        configuredSetting,
         expiresAtMs: Date.now() + RESOLUTION_CACHE_TTL_MS,
       };
       return configuredPath;
@@ -396,11 +500,20 @@ export function findClaudeExecutable(logComponent: Component = 'SDK'): string {
     // that ran but exited non-zero, timed out, or printed no version is a
     // different problem — do not claim it "could not be executed".
     if (probe.launchFailed) {
-      throw new Error(
-        `CLAUDE_CODE_PATH is set to ${describedPath} — the file exists but could not be executed (${probe.detail}). ` +
-        `A launcher script whose interpreter (shebang) is missing, or a native-installer stub pointing at a deleted version directory, fails this way. ` +
-        `Reinstall the Claude Code CLI or point CLAUDE_CODE_PATH at a working binary.`
-      );
+      // Present on disk (existsSync guard above) but the OS could not launch
+      // it — the same stale-worker signature as the discovered-candidate path
+      // (#3290). Pinned installs must surface the self-heal discriminator too,
+      // or a wedged CLAUDE_CODE_PATH parks the worker in setup_required
+      // forever; the launch-failure guidance rides in the candidate detail.
+      throw new ClaudeExecutableUnspawnableError([
+        {
+          path: configuredPath,
+          detail:
+            `CLAUDE_CODE_PATH is set to ${describedPath} — the file exists but could not be executed (${probe.detail}). ` +
+            `A launcher script whose interpreter (shebang) is missing, or a native-installer stub pointing at a deleted version directory, fails this way. ` +
+            `Reinstall the Claude Code CLI or point CLAUDE_CODE_PATH at a working binary.`,
+        },
+      ]);
     }
     throw new Error(
       `CLAUDE_CODE_PATH is set to ${describedPath} — the file ran but failed its version probe (${probe.detail}). ` +
@@ -412,11 +525,16 @@ export function findClaudeExecutable(logComponent: Component = 'SDK'): string {
   // --- 2. Probe every discovered candidate ---------------------------------
   const capable: Array<{ path: string; version: string; key: [number, number, number]; order: number }> = [];
   const incompatible: Array<{ path: string; version: string; detail: string }> = [];
+  // Candidates that are present on disk but every probe failed (broken/ENOENT).
+  // When this set is non-empty AND nothing capable was found, the final throw
+  // is a ClaudeExecutableUnspawnableError so callers can self-heal restart
+  // instead of looping forever in setup_required cooldown.
+  const presentButUnspawnable: Array<{ path: string; detail: string }> = [];
 
-  const candidates = discoverCandidates();
+  const candidates = await discoverCandidates();
   for (let order = 0; order < candidates.length; order++) {
     const candidate = candidates[order];
-    const probe = probeCandidate(candidate);
+    const probe = await probeCandidate(candidate);
 
     if (probe.kind === 'capable') {
       capable.push({ path: candidate, version: probe.version, key: parseVersionKey(probe.version), order });
@@ -440,6 +558,19 @@ export function findClaudeExecutable(logComponent: Component = 'SDK'): string {
       );
     } else {
       logger.warn(logComponent, `Skipping "${candidate}" — failed --version check (${probe.detail})`);
+      // A file that is present on disk but the OS could not launch is the
+      // signature of a stale worker after a CLI auto-update — collected here
+      // so the final throw can be a ClaudeExecutableUnspawnableError (which
+      // callers use to self-heal restart) instead of a generic not-found.
+      // Two guards, both load-bearing: launchFailed because a candidate that
+      // RAN but failed its version probe is a wrong program, not a stale
+      // spawn — a restart can never fix it, so it must not burn the self-heal
+      // budget (matches the configured-path branch); existsSync because a
+      // MISSING file also probes as launchFailed (spawn ENOENT sets no status
+      // or signal) and a dangling PATH entry is the genuine not-found case.
+      if (probe.launchFailed && _internals.existsSync(candidate)) {
+        presentButUnspawnable.push({ path: candidate, detail: probe.detail });
+      }
     }
   }
 
@@ -455,6 +586,7 @@ export function findClaudeExecutable(logComponent: Component = 'SDK'): string {
     cachedResolution = {
       path: winner.path,
       version: winner.version,
+      configuredSetting,
       expiresAtMs: Date.now() + RESOLUTION_CACHE_TTL_MS,
     };
     return winner.path;
@@ -470,6 +602,9 @@ export function findClaudeExecutable(logComponent: Component = 'SDK'): string {
     );
   }
 
+  if (presentButUnspawnable.length > 0) {
+    throw new ClaudeExecutableUnspawnableError(presentButUnspawnable);
+  }
   throw new Error(
     'Claude executable not found. Please either:\n' +
     '1. Add "claude" to your system PATH, or\n' +

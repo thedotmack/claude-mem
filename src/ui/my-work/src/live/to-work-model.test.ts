@@ -1,0 +1,718 @@
+// Run with `npm test` (node --test; Node strips the types). Checks the mapper against real worker snapshots:
+// the tracked trimmed fixture always, plus the full .scratch/work-view-sample.json when it exists on this machine.
+import assert from 'node:assert/strict'
+import { existsSync, readFileSync } from 'node:fs'
+import { test } from 'node:test'
+import { assertConsistentRequest, EVIDENCE_KINDS } from '../data.ts'
+import { NEXT_STEP_NOT_RECORDED, NO_WORK_YET, UNNAMED_TOOL, conversationToolWords, evidenceShown, nextStepShown, recordedStart, recordedTaskName, recordedWorkstreamTitle, toWorkModel } from './to-work-model.ts'
+import type { WorkViewHumanRequest, WorkViewSnapshot } from './work-view-api-types.ts'
+import { myworkFr } from '../../../i18n/mywork-fr.ts'
+import { myworkKo } from '../../../i18n/mywork-ko.ts'
+import { myworkTr } from '../../../i18n/mywork-tr.ts'
+import { myworkZh } from '../../../i18n/mywork-zh.ts'
+
+const appRoot = new URL('../../', import.meta.url)
+const SNAPSHOT_FILES = ['test-fixtures/work-view-snapshot.trimmed.json', '.scratch/work-view-sample.json']
+  .map((path) => new URL(path, appRoot))
+  .filter((url) => existsSync(url))
+
+const readSnapshot = (url: URL) => JSON.parse(readFileSync(url, 'utf8')) as WorkViewSnapshot
+const snapshotTime = (snapshot: WorkViewSnapshot) => Date.parse(snapshot.generatedAt)
+
+for (const url of SNAPSHOT_FILES) {
+  const name = url.pathname.split('/').slice(-2).join('/')
+  const snapshot = readSnapshot(url)
+  const model = toWorkModel(snapshot, snapshotTime(snapshot))
+  const rawById = new Map(snapshot.humanRequests.map((raw) => [raw.id, raw]))
+
+  test(`${name}: every request maps, and every mapped request passes assertConsistentRequest`, () => {
+    assert.ok(snapshot.humanRequests.length > 0)
+    assert.equal(model.requests.length + model.requestReadErrors.length, snapshot.humanRequests.length)
+    assert.deepEqual(model.requestReadErrors, [], 'real records read without errors')
+    for (const request of model.requests) assert.doesNotThrow(() => assertConsistentRequest(request))
+  })
+
+  test(`${name}: a missing next step is a value, never English filler (decision G3)`, () => {
+    for (const request of model.requests) {
+      assert.ok(request.next.missing || request.next.text?.trim(), `${request.id} says what happens next, or why nothing is recorded`)
+      for (const filler of [NEXT_STEP_NOT_RECORDED, NO_WORK_YET]) assert.ok(!request.next.text?.includes(filler), `${request.id} next step carries "${filler}"`)
+    }
+  })
+
+  test(`${name}: percent, estimate and asked-by are never invented`, () => {
+    for (const request of model.requests) {
+      const raw = rawById.get(request.id)!
+      const readings = raw.progress?.readings ?? []
+      if (readings.length < 2) assert.equal(request.estimate, null, 'no measured-pace ETA without two readings')
+      assert.deepEqual(request.progress.history, readings.map((reading) => reading.percent))
+      assert.equal(request.progress.percent, request.state === 'shipped' ? 100 : raw.progress?.percent ?? null, 'percent only from a review, or 100 for an explicit ship')
+      assert.equal(request.askedBy, raw.requestedBy ?? 'You')
+      if (!raw.focusAreaId) assert.equal(request.focusAreaId, undefined, 'a request reads "Not sorted yet" until the focus step places it')
+    }
+  })
+
+  test(`${name}: every conversation row names the platform and session id of its conversation key`, () => {
+    let rows = 0
+    for (const request of model.requests) {
+      const keys = rawById.get(request.id)!.conversationKeys.map((key) => JSON.parse(key) as string[])
+      assert.deepEqual(request.conversations.map(({ platform, conversationSessionId }) => ({ platform, conversationSessionId })),
+        keys.map(([, platform, conversationSessionId]) => ({ platform, conversationSessionId })))
+      rows += keys.length
+    }
+    assert.ok(rows > 0, 'the real data has conversation rows')
+  })
+
+  test(`${name}: titles come from generated records or human copy, never raw prompts`, () => {
+    for (const request of model.requests) {
+      const raw = rawById.get(request.id)!
+      const copy = raw.humanCopy
+      const ready = !!copy && ['current', 'outdated'].includes(copy.state)
+      const generated = raw.titleSource === 'request-group' || raw.titleSource === 'title-cache'
+      assert.equal(request.title, generated ? raw.title.trim() || null : ready && copy.title?.trim() ? copy.title.trim() : null)
+    }
+  })
+
+  test(`${name}: a needs-review lifecycle reads "Done, not checked"`, () => {
+    const needsReview = snapshot.humanRequests.filter((raw) => raw.lifecycle?.explicit && raw.lifecycle.status === 'needs-review')
+    assert.ok(needsReview.length > 0, 'the real data has a needs-review request')
+    for (const raw of needsReview) {
+      const request = model.requests.find((entry) => entry.id === raw.id)!
+      assert.equal(request.state, 'needs-check')
+      assert.equal(request.stage, 'Reviewing')
+      assert.equal(request.next.who, 'human')
+    }
+  })
+
+  test(`${name}: agents, devices and the unlinked count come from the snapshot`, () => {
+    assert.deepEqual(model.devices.map((device) => device.id), ['this-computer'])
+    for (const request of model.requests) assert.ok(model.agents.some((agent) => agent.id === request.agentId))
+    for (const agent of model.agents) assert.ok(['claude', 'codex', 'gemini', 'other'].includes(agent.tool))
+    assert.equal(model.unlinkedWorkCount, snapshot.unlinkedWork.length)
+  })
+}
+
+// Status rows the real data does not have today, built from a real record so only the status fields differ.
+const baseSnapshot = readSnapshot(SNAPSHOT_FILES[0])
+const baseRequest = baseSnapshot.humanRequests.find((raw) => raw.lifecycle?.status === 'needs-review')!
+const mapOne = (change: Partial<WorkViewHumanRequest>) => {
+  const model = toWorkModel({ ...baseSnapshot, humanRequests: [{ ...baseRequest, ...change }] }, snapshotTime(baseSnapshot))
+  return { request: model.requests[0], readError: model.requestReadErrors[0] }
+}
+
+test('a checked result hands the next move back to you, and never ships it', () => {
+  const { request } = mapOne({ review: { checked: true, checkedAtEpoch: snapshotTime(baseSnapshot), available: true } })
+  assert.equal(request.state, 'your-move')
+  // A value the screens word ("Ship it" in English), not English text in the model (M6).
+  assert.deepEqual(request.next, { who: 'human', kind: 'ship' })
+  assert.deepEqual(nextStepShown(request.next), { kind: 'step', who: 'human', step: 'ship' })
+  assert.ok(request.checkedAt)
+})
+
+test('a blocked item puts its step on you as one that unblocks it, without English words in the model', () => {
+  const { request } = mapOne({ lifecycle: null, items: baseRequest.items.map((item, index) => index === 0 ? { ...item, status: 'blocked' } : item) })
+  assert.equal(request.state, 'your-move')
+  const shown = nextStepShown(request.next)
+  assert.equal(request.next.kind, 'unblock')
+  assert.equal(shown.kind === 'step' && shown.step, 'unblock')
+  assert.doesNotMatch(request.next.text ?? '', /^Unblock: /)
+})
+
+test('a shipped lifecycle without a completion time becomes a read-error card, not a crash', () => {
+  const { request, readError } = mapOne({ lifecycle: { status: 'shipped', explicit: true }, completedAtEpoch: null })
+  assert.equal(request, undefined)
+  assert.match(readError.reason, /shipped requests are 100% with a completion date/)
+})
+
+test('missing human copy shows the terminal view, with no invented title', () => {
+  const { request } = mapOne({ humanCopy: null })
+  assert.equal(request.title, null)
+  assert.equal(request.activityWord, 'Translating')
+  assert.ok(request.terminal.length > 0)
+})
+
+test('a request whose work-state items were all dropped is closed, with no lifecycle needed', () => {
+  const dropped = baseRequest.items.map((item) => ({ ...item, kind: 'work-state' as const, status: 'dropped' }))
+  const { request, readError } = mapOne({ lifecycle: null, items: dropped })
+  assert.equal(readError, undefined)
+  assert.equal(request.state, 'idle')
+  assert.equal(request.closed, true)
+})
+
+test('a closed request with a start and no completion does not count up as running', () => {
+  const dropped = baseRequest.items.map((item) => ({ ...item, kind: 'work-state' as const, status: 'dropped' }))
+  const { request } = mapOne({ lifecycle: null, items: dropped, completedAtEpoch: null })
+  assert.equal(request.closed, true)
+  assert.ok(request.startedAtIso, 'the fixture has a recorded start')
+  assert.equal(request.runningLive, undefined)
+  const complete = mapOne({ lifecycle: { explicit: true, complete: true, status: 'done' }, completedAtEpoch: null }).request
+  assert.equal(complete.runningLive, undefined, 'a lifecycle that says complete has finished, even without a time')
+  const open = mapOne({ completedAtEpoch: null }).request
+  assert.equal(open.runningLive, true, 'an open request with a start and no completion still counts up')
+})
+
+const syntheticRequest = (): WorkViewHumanRequest => ({
+  id: '["overall-request","g_000000000001"]', contentFingerprint: 'f', title: 'Cards', original: { text: 'Build the release cards', atEpoch: Date.UTC(2026, 9, 18) },
+  scopeUpdates: [], humanCopy: null, lifecycle: null, items: [], workstreams: [], activity: [], agentIds: [], conversationKeys: [],
+  requestedBy: null, startedAtEpoch: Date.UTC(2026, 9, 18), completedAtEpoch: null, updatedAtEpoch: Date.UTC(2026, 9, 21), review: null,
+})
+const snapshotWith = (humanRequests: WorkViewHumanRequest[], extra: Partial<WorkViewSnapshot> = {}): WorkViewSnapshot => ({
+  version: 1, generatedAt: '2026-10-22T12:00:00Z', agents: [], humanRequests, unlinkedWork: [], revision: '1',
+  source: { kind: 'test', connected: true, error: null, lastCheckedAt: null }, ...extra,
+})
+
+test('a request carries how long it has run as a value; a start that was not recorded is null (never English)', () => {
+  const now = Date.parse('2026-10-22T12:00:00Z')
+  const started = Date.parse('2026-10-20T12:00:00Z')
+  const [running] = toWorkModel(snapshotWith([{ ...syntheticRequest(), startedAtEpoch: started }]), now).requests
+  assert.equal(running.runningForMs, now - started)
+  assert.equal('runningFor' in running, false, 'no English duration rides the model')
+  const [unstarted] = toWorkModel(snapshotWith([{ ...syntheticRequest(), startedAtEpoch: null }]), now).requests
+  assert.equal(unstarted.runningForMs, null)
+})
+
+test('looks up conversation titles by platform and content-session identity', () => {
+  const raw = syntheticRequest()
+  raw.conversationKeys = ['claude', 'codex'].map(platform => JSON.stringify(['conversation', platform, 'same-id']))
+  const agents = ['claude', 'codex'].map(platform => ({
+    id: platform, label: platform, platformSource: platform, sessionTitle: platform + ' session',
+    project: 'repo', contentSessionId: 'same-id',
+  }))
+  const [request] = toWorkModel(snapshotWith([raw], { agents }), Date.now()).requests
+  assert.deepEqual(request.conversations.map(item => item.title), ['claude session', 'codex session'])
+})
+
+test('a conversation with no recorded title carries none (null), never English words in its place (fix round R2, rule 4)', () => {
+  const raw = syntheticRequest()
+  const untitledSessionId = '0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d'
+  raw.conversationKeys = [JSON.stringify(['conversation', 'claude', untitledSessionId]), JSON.stringify(['conversation', 'codex', 'titled-id'])]
+  // The first session has no title; the second has its own. A session with an empty title counts as untitled.
+  const agents = [
+    { id: 'a', label: 'Claude Code', platformSource: 'claude', sessionTitle: '', project: 'repo', contentSessionId: untitledSessionId },
+    { id: 'b', label: 'Codex', platformSource: 'codex', sessionTitle: 'Fix the login flow', project: 'repo', contentSessionId: 'titled-id' },
+  ]
+  const [request] = toWorkModel(snapshotWith([raw], { agents }), Date.now()).requests
+  assert.deepEqual(request.conversations.map((item) => item.title), [null, 'Fix the login flow'])
+})
+
+test('each conversation row carries the platform and session id its key records, for Claude Code and for Codex', () => {
+  const raw = syntheticRequest()
+  const claudeSessionId = '0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d'
+  const codexSessionId = '9f8e7d6c-5b4a-4c3d-8e2f-1a0b9c8d7e6f'
+  raw.conversationKeys = [JSON.stringify(['conversation', 'claude', claudeSessionId]), JSON.stringify(['conversation', 'codex', codexSessionId])]
+  const [request] = toWorkModel(snapshotWith([raw]), Date.now()).requests
+  assert.deepEqual(request.conversations.map(({ tool, platform, conversationSessionId }) => ({ tool, platform, conversationSessionId })), [
+    { tool: 'Claude Code', platform: 'claude', conversationSessionId: claudeSessionId },
+    { tool: 'Codex', platform: 'codex', conversationSessionId: codexSessionId },
+  ])
+})
+
+test('maps shared decision versions and keeps an origin-only file visible without a link', () => {
+  const raw = syntheticRequest()
+  raw.review = { checked: false, checkedAtEpoch: null, actor: 'shared-user', available: true, mode: 'shared', hash: 'review-hash', version: 2, conflict: true, pending: true, message: 'Choose the current review.' }
+  raw.suggestion = { conversationKey: 'c', requestId: 'r', requestTitle: 'Related request', evidence: 'The same change', confidence: 0.8, judge: 'test', at: null, expectedSuggestionHash: 'suggestion-hash', sharedConflict: true }
+  raw.workProduct = [
+    { kind: 'document', title: 'report.pdf', availability: 'origin-only', available: false, fileUrl: '/wrong/download', url: 'https://example.com/wrong' },
+    { kind: 'pull-request', title: 'Published PR', url: 'https://github.com/example/repo/pull/1' },
+  ]
+  const mapped = toWorkModel(snapshotWith([raw]), Date.now()).requests[0]
+  assert.deepEqual(mapped.review, { mode: 'shared', hash: 'review-hash', available: true, version: 2, conflict: true, legacy: undefined, pending: true, message: 'Choose the current review.' })
+  assert.equal(mapped.suggestion?.expectedSuggestionHash, 'suggestion-hash')
+  assert.equal(mapped.suggestion?.sharedConflict, true)
+  // The judge's check score rides along, so the drawer can say it as a percent (c-request-detail-suggestion-action).
+  assert.equal(mapped.suggestion?.confidence, 0.8)
+  assert.equal(mapped.workProduct[0].availability, 'origin-only')
+  assert.equal(mapped.workProduct[0].href, undefined)
+  assert.equal(mapped.workProduct[1].href, 'https://github.com/example/repo/pull/1')
+})
+
+test('a reviewed request shows the review percent, its readings, the measured ETA and its milestones', () => {
+  const raw = { ...syntheticRequest(), progress: {
+    state: 'in-progress' as const, percent: 60, summary: 'Under way.', narrative: 'Cards built first, then spacing.', checkedAt: '2026-10-21T12:00:00Z',
+    milestones: [{ at: '2026-10-21T09:00:00Z', text: 'Spacing fixed' }, { at: '2026-10-19T09:00:00Z', text: 'Cards built' }],
+    readings: [{ at: '2026-10-20T12:00:00Z', percent: 40 }, { at: '2026-10-21T12:00:00Z', percent: 60 }],
+  } }
+  const [request] = toWorkModel(snapshotWith([raw]), Date.parse('2026-10-22T12:00:00Z')).requests
+  assert.equal(request.progress.percent, 60)
+  assert.equal(request.progress.readings, 2)
+  assert.deepEqual(request.progress.history, [40, 60])
+  assert.equal(request.estimate, 'at this pace, about Oct 23')
+  assert.deepEqual(request.story.map((step) => step.label), ['Cards built', 'Spacing fixed'])
+  assert.equal(request.storyNarrative, 'Cards built first, then spacing.')
+  const single = toWorkModel(snapshotWith([{ ...raw, progress: { ...raw.progress, readings: [raw.progress.readings[1]] } }]), Date.parse('2026-10-22T12:00:00Z')).requests[0]
+  assert.equal(single.estimate, null, 'one reading has no pace')
+  assert.equal(single.progress.readings, 1)
+})
+
+test('a build story step carries when it happened as a value: null when the review recorded no time, never English, and no time posing as a description', () => {
+  const raw = { ...syntheticRequest(), progress: {
+    state: 'in-progress' as const, percent: 60, summary: 'Under way.', narrative: '', checkedAt: '2026-10-21T12:00:00Z',
+    milestones: [{ at: '2026-10-21T09:00:00Z', text: 'Spacing fixed' }, { at: null, text: 'Cards built' }], readings: [],
+  } }
+  const [request] = toWorkModel(snapshotWith([raw]), Date.parse('2026-10-22T12:00:00Z')).requests
+  assert.deepEqual(request.story.map((step) => step.label), ['Cards built', 'Spacing fixed'])
+  assert.equal(request.story[0].at, null, 'a step with no recorded time says so as a value; the drawer words it')
+  assert.equal(typeof request.story[1].at, 'string')
+  for (const step of request.story) assert.equal(step.description, undefined, 'a recorded time is never written as a description')
+})
+
+test('a conversation from a platform with no name of its own is the catalog word "Agent", which the screens word in the reader’s language', () => {
+  const raw = syntheticRequest()
+  raw.conversationKeys = [JSON.stringify(['conversation', 'opencode', 'session-id'])]
+  const [request] = toWorkModel(snapshotWith([raw]), Date.now()).requests
+  assert.equal(request.conversations[0].tool, UNNAMED_TOOL)
+  const reader = { [UNNAMED_TOOL]: 'Ajan' }
+  const translate = (english: string) => reader[english as keyof typeof reader] ?? english
+  assert.equal(conversationToolWords(request.conversations[0].tool, translate), 'Ajan')
+  for (const catalog of [myworkZh, myworkKo, myworkTr, myworkFr]) assert.ok(catalog[UNNAMED_TOOL]?.trim(), 'every My Work catalog words it')
+  // A tool's own name is a name: it is never looked up.
+  assert.equal(conversationToolWords('Claude Code', () => 'translated'), 'Claude Code')
+})
+
+test('the terminal lines of a request with no title always start with what they are, so the card never reads one as a command (V10)', () => {
+  const raw = syntheticRequest()
+  raw.title = ''
+  raw.activity = [{ id: 'a', kind: 'work-state', title: '$ npm test', detail: 'passed', atEpoch: Date.UTC(2026, 9, 21), url: '/api/work-view/evidence/work-state/1' }]
+  const [request] = toWorkModel(snapshotWith([raw]), Date.now()).requests
+  assert.deepEqual(request.terminal, ['work-state $ npm test: passed'])
+  for (const line of request.terminal) assert.equal(line.trimStart().startsWith('$'), false)
+})
+
+test('a review newer than its items wins: shipped ships, and 100% is done, never an error card', () => {
+  const now = Date.parse('2026-10-22T12:00:00Z')
+  const doing = [{ ...baseRequest.items[0], kind: 'work-state' as const, status: 'doing', lastUpdateEpoch: now - 60000 }]
+  const review = { summary: 'Done.', narrative: '', milestones: [], checkedAt: '2026-10-22T11:00:00Z', readings: [{ at: '2026-10-22T11:00:00Z', percent: 100 }] }
+  const shipped = { ...syntheticRequest(), id: 'shipped', items: doing, progress: { ...review, state: 'shipped' as const, percent: 100, shippedAt: '2026-10-22T10:00:00Z' } }
+  const finished = { ...syntheticRequest(), id: 'finished', items: doing, progress: { ...review, state: 'in-progress' as const, percent: 100 } }
+  const model = toWorkModel(snapshotWith([shipped, finished]), now)
+  assert.deepEqual(model.requestReadErrors, [])
+  const [shippedCard, finishedCard] = model.requests
+  assert.equal(shippedCard.state, 'shipped')
+  assert.equal(shippedCard.stage, 'Shipped')
+  assert.equal(shippedCard.progress.percent, 100)
+  assert.ok(shippedCard.progress.completedAt, 'the review\'s shippedAt is the completion date')
+  assert.equal(finishedCard.state, 'needs-check')
+  assert.equal(finishedCard.next.who, 'human')
+  assert.equal(finishedCard.progress.percent, 100)
+})
+
+test('an explicit status recorded after a review wins over it: a reopened request is not shipped or done', () => {
+  const now = Date.parse('2026-10-22T12:00:00Z')
+  const doing = [{ ...baseRequest.items[0], kind: 'work-state' as const, status: 'doing', lastUpdateEpoch: now - 60000 }]
+  const reopened = { status: 'in-progress', explicit: true, complete: false, atEpoch: Date.parse('2026-10-22T11:30:00Z') }
+  const review = { summary: 'Done.', narrative: '', milestones: [], checkedAt: '2026-10-22T11:00:00Z', readings: [{ at: '2026-10-22T11:00:00Z', percent: 100 }] }
+  const wasShipped = { ...syntheticRequest(), id: 'was-shipped', items: doing, lifecycle: reopened, progress: { ...review, state: 'shipped' as const, percent: 100, shippedAt: '2026-10-22T10:00:00Z' } }
+  const wasDone = { ...syntheticRequest(), id: 'was-done', items: doing, lifecycle: reopened, progress: { ...review, state: 'in-progress' as const, percent: 100 } }
+  const partway = { ...syntheticRequest(), id: 'partway', items: doing, lifecycle: reopened, progress: { ...review, state: 'in-progress' as const, percent: 60, readings: [{ at: '2026-10-22T11:00:00Z', percent: 60 }] } }
+  const model = toWorkModel(snapshotWith([wasShipped, wasDone, partway]), now)
+  assert.deepEqual(model.requestReadErrors, [])
+  for (const request of model.requests.slice(0, 2)) {
+    assert.equal(request.state, 'working')
+    assert.equal(request.progress.percent, null, 'an older 100% is not shown on a reopened request')
+  }
+  assert.equal(model.requests[2].progress.percent, 60, 'an older partial review still shows')
+})
+
+test('a request shipped after a partial review is a shipped card at 100%, not a read-error card', () => {
+  const now = Date.parse('2026-10-22T12:00:00Z')
+  const partial = { summary: 'Under way.', narrative: '', milestones: [], checkedAt: '2026-10-22T09:00:00Z', state: 'in-progress' as const, percent: 60, readings: [{ at: '2026-10-22T08:00:00Z', percent: 30 }, { at: '2026-10-22T09:00:00Z', percent: 60 }] }
+  const shippedLater = { status: 'shipped', explicit: true, complete: true, atEpoch: Date.parse('2026-10-22T11:00:00Z') }
+  // Shipped after the review, and shipped before a newer partial review.
+  const after = { ...syntheticRequest(), id: 'shipped-after', lifecycle: shippedLater, completedAtEpoch: shippedLater.atEpoch, progress: partial }
+  const before = { ...syntheticRequest(), id: 'shipped-before', lifecycle: { ...shippedLater, atEpoch: Date.parse('2026-10-22T08:30:00Z') }, completedAtEpoch: Date.parse('2026-10-22T08:30:00Z'), progress: partial }
+  const model = toWorkModel(snapshotWith([after, before]), now)
+  assert.deepEqual(model.requestReadErrors, [])
+  for (const card of model.requests) {
+    assert.equal(card.state, 'shipped')
+    assert.equal(card.progress.percent, 100, 'the recorded ship completes it')
+    assert.ok(card.progress.completedAt)
+    assert.equal(card.progress.readings, 2, 'the reviews still count')
+  }
+})
+
+test('a request with only asks maps cleanly: its asks show, no activity, and a fresh ask reads as working', () => {
+  const now = Date.parse('2026-10-22T12:00:00Z')
+  const asked = { ...syntheticRequest(), updatedAtEpoch: now - 60000, scopeUpdates: [{ text: 'Keep the existing design.', atEpoch: now - 60000 }] }
+  const model = toWorkModel(snapshotWith([asked, { ...asked, id: 'old-ask', updatedAtEpoch: now - 3 * 86400000 }]), now)
+  assert.deepEqual(model.requestReadErrors, [])
+  const [fresh, old] = model.requests
+  assert.deepEqual(fresh.terminal, ['ask Build the release cards', 'ask Keep the existing design.'])
+  assert.deepEqual(fresh.granular, [])
+  assert.deepEqual(fresh.workstreams, [])
+  // Only asks so far: the missing step is a value (decision G3), not the English filler older workers wrote.
+  assert.deepEqual(fresh.next, { who: 'bot', missing: 'no-agent-work' })
+  assert.equal(fresh.state, 'working')
+  assert.deepEqual(fresh.prompts.map((prompt) => prompt.quote), ['Build the release cards', 'Keep the existing design.'])
+  assert.equal(old.state, 'idle')
+})
+
+test('the build story recap is its first paragraph; no story hides it', () => {
+  const now = Date.parse('2026-10-22T12:00:00Z')
+  const model = toWorkModel(snapshotWith([], { story: { story: { narrative: '## Velocity\n\nFirst **part**.\n\nSecond part.', writtenAt: '2026-10-22T10:00:00Z' } } }), now)
+  assert.equal(model.buildStory?.recap, 'First part.')
+  assert.deepEqual(model.buildStory?.paragraphs, ['Velocity', 'First part.', 'Second part.'])
+  // The sheet draws headings as headings (c-work-story-sheet), so the mapper keeps which block was one.
+  assert.deepEqual(model.buildStory?.chapters, [{ heading: 'Velocity', paragraphs: ['First part.', 'Second part.'] }])
+  // Its writing time as an ISO time too: it dates the headings' UTC days and times (lib/display-time.ts displayRecordedDate).
+  assert.equal(model.buildStory?.writtenAtIso, '2026-10-22T10:00:00.000Z')
+  assert.equal(toWorkModel(snapshotWith([]), now).buildStory, null)
+})
+
+test('the automatic refresh maps running, last refreshed and failure text, with nothing else from refresh.json', () => {
+  const base = JSON.parse(readFileSync(new URL('test-fixtures/work-view-snapshot.trimmed.json', new URL('../../', import.meta.url)), 'utf8')) as WorkViewSnapshot
+  const at = Date.parse('2026-10-21T12:00:00Z')
+  assert.equal(toWorkModel(base, at).refresh, null)
+  assert.deepEqual(toWorkModel({ ...base, refresh: { state: 'running', startedAt: '2026-10-21T11:00:00Z' } }, at).refresh, { state: 'running', finishedAt: null, error: null })
+  const ok = toWorkModel({ ...base, refresh: { state: 'ok', startedAt: '2026-10-21T11:00:00Z', finishedAt: '2026-10-21T11:40:00Z', error: null } }, at).refresh
+  assert.equal(ok?.state, 'ok')
+  assert.match(ok!.finishedAt!, /^Oct 21(,| at) \d{1,2}:\d{2} [ap]m$/)
+  assert.equal(ok!.finishedAtIso, '2026-10-21T11:40:00.000Z', 'the same time for the reader\'s own clock')
+  assert.deepEqual(toWorkModel({ ...base, refresh: { state: 'failed', finishedAt: '2026-10-21T11:40:00Z', error: 'codex exec exited 1' } }, at).refresh?.error, 'codex exec exited 1')
+  assert.deepEqual(toWorkModel({ ...base, refresh: { state: 'waiting-for-agent', error: 'No logged-in Claude Code, Codex or Gemini on this computer yet.' } }, at).refresh, { state: 'waiting-for-agent', finishedAt: null, error: 'No logged-in Claude Code, Codex or Gemini on this computer yet.' })
+})
+
+test('recorded work product maps onto the drawer kinds; a missing local file is dropped and a commit without a GitHub remote has no link', () => {
+  const { request } = mapOne({ workProduct: [
+    { kind: 'commit', title: 'bc8cd09 feat(work-view): progress readings', url: 'https://github.com/thedotmack/claude-mem/commit/bc8cd096b', sha: 'bc8cd096b', branch: 'feat/my-work-react-viewer' },
+    { kind: 'commit', title: '1e89284 fix(agent-runner): wait for each agent CLI', sha: '1e8928441', branch: null },
+    { kind: 'branch', title: 'feat/my-work-react-viewer', url: 'https://github.com/thedotmack/claude-mem/tree/feat/my-work-react-viewer', branch: 'feat/my-work-react-viewer' },
+    { kind: 'pull-request', title: 'Add work product', url: 'https://github.com/o/r/pull/42' },
+    { kind: 'image', title: 'shot.png', fileUrl: '/api/work-view/file/observation/3/0', available: true },
+    { kind: 'image', title: 'gone.png', fileUrl: '/api/work-view/file/observation/4/0', available: false },
+    { kind: 'something-new', title: 'Release notes', url: 'https://example.com/notes' },
+  ] })
+  assert.deepEqual(request.workProduct, [
+    { kind: 'Commit', label: 'bc8cd09 feat(work-view): progress readings', href: 'https://github.com/thedotmack/claude-mem/commit/bc8cd096b' },
+    { kind: 'Commit', label: '1e89284 fix(agent-runner): wait for each agent CLI', href: undefined },
+    { kind: 'Branch', label: 'feat/my-work-react-viewer', href: 'https://github.com/thedotmack/claude-mem/tree/feat/my-work-react-viewer' },
+    { kind: 'PR', label: 'Add work product', href: 'https://github.com/o/r/pull/42' },
+    { kind: 'File', label: 'shot.png', href: '/api/work-view/file/observation/3/0' },
+    { kind: 'Link', label: 'Release notes', href: 'https://example.com/notes' },
+  ])
+  assert.deepEqual(mapOne({ workProduct: undefined }).request.workProduct, [])
+})
+
+test('a subagent shows Finished only on a recorded stop, and quiet otherwise; main agents carry no status', async () => {
+  const { toAgent } = await import('./to-work-model.ts')
+  const base = { id: 'g', label: 'Claude Code', platformSource: 'claude', sessionTitle: null, project: 'repo', contentSessionId: 's' }
+  assert.equal(toAgent(base).status, undefined)
+  const finished = toAgent({ ...base, isSubagent: true, canMarkFinished: false, presence: { status: 'finished', finishedAt: '2026-10-23T18:12:50Z', evidence: 'subagent-stop-hook' } })
+  assert.equal(finished.status, 'finished')
+  assert.equal(finished.canMarkFinished, false)
+  assert.ok(finished.finishedAt)
+  const quiet = toAgent({ ...base, isSubagent: true, canMarkFinished: true, presence: { status: 'quiet' } })
+  assert.equal(quiet.status, 'quiet')
+  assert.equal(quiet.canMarkFinished, true)
+  assert.equal(toAgent({ ...base, isSubagent: true, canMarkFinished: true, presence: { status: 'recent' } }).status, 'working')
+})
+
+test('a subagent nests under the one main agent of its recorded session, and under none when the session does not say which', async () => {
+  const { subagentParents, toAgent } = await import('./to-work-model.ts')
+  const agent = (id: string, contentSessionId: string | null, isSubagent = false, platformSource = 'claude') =>
+    ({ id, label: 'Claude Code', platformSource, sessionTitle: null, project: 'repo', contentSessionId, isSubagent, presence: { status: 'quiet' } })
+  const parents = subagentParents([
+    agent('main-a', 'session-a'), agent('sub-a1', 'session-a', true), agent('sub-a2', 'session-a', true),
+    // A subagent whose session's main agent recorded nothing has no parent to sit under.
+    agent('sub-lonely', 'session-b', true),
+    // The same session seen twice: which main agent launched the subagent is not recorded, so it is not guessed.
+    agent('main-c1', 'session-c'), agent('main-c2', 'session-c'), agent('sub-c', 'session-c', true),
+    // The same session id on another platform is another conversation.
+    agent('main-d', 'session-d', false, 'codex'), agent('sub-d', 'session-d', true),
+    // Folders and titles say nothing about who launched whom: an unrelated main agent in the same folder.
+    agent('main-same-folder', 'session-e'),
+  ])
+  assert.deepEqual([...parents], [['sub-a1', 'main-a'], ['sub-a2', 'main-a']])
+  assert.equal(toAgent(agent('sub-a1', 'session-a', true), parents.get('sub-a1')).parentId, 'main-a')
+  assert.equal('parentId' in toAgent(agent('sub-lonely', 'session-b', true), parents.get('sub-lonely')), false)
+  // A main agent never carries a parent, even when one is passed.
+  assert.equal('parentId' in toAgent(agent('main-a', 'session-a'), 'main-x'), false)
+  // The model the screens read (and the worker's overview) carries the link.
+  const model = toWorkModel({ ...baseSnapshot, agents: [agent('main-a', 'session-a'), agent('sub-a1', 'session-a', true), agent('sub-lonely', 'session-b', true)] }, snapshotTime(baseSnapshot))
+  assert.deepEqual(model.agents.filter((entry) => entry.id.startsWith('sub-')).map(({ id, parentId }) => ({ id, parentId })), [{ id: 'sub-a1', parentId: 'main-a' }, { id: 'sub-lonely', parentId: undefined }])
+})
+
+test('a subagent is known by its typed status, keeps its own role, its launch title (never the whole task) and its stop time; a main agent keeps its session', async () => {
+  const { agentOwnRole, SUBAGENT_ROLE_PREFIX, toAgent } = await import('./to-work-model.ts')
+  const { isSubagent } = await import('../data.ts')
+  const base = { id: 'g', label: 'Claude Code', platformSource: 'claude', sessionTitle: null, project: '/work/claude-mem', contentSessionId: 'f75ded15-17fa-437a-afc3-58020cabf452' }
+  const main = toAgent(base)
+  assert.equal(isSubagent(main), false)
+  assert.equal(main.role, 'claude-mem')
+  const task = toAgent({ ...base, isSubagent: true, canMarkFinished: false, presence: { status: 'finished', finishedAt: '2026-10-23T18:12:50Z' },
+    launch: { description: 'Phase 4 verify', prompt: 'You are verifying Phase 4. Read the plan first, then…' } } as Parameters<typeof toAgent>[0])
+  assert.equal(isSubagent(task), true)
+  // The role is the agent's own; "Subagent" is worded from the status (lib/agent-words.ts), not written into the role.
+  assert.equal(task.role, 'claude-mem')
+  assert.equal(task.launchDescription, 'Phase 4 verify')
+  assert.equal(task.finishedAtIso, '2026-10-23T18:12:50.000Z')
+  // No launch title recorded, or only the whole task text: nothing to show but its state.
+  assert.equal('launchDescription' in toAgent({ ...base, isSubagent: true, presence: { status: 'quiet' }, launch: { description: null } }), false)
+  assert.equal('launchDescription' in toAgent({ ...base, isSubagent: true, presence: { status: 'quiet' }, launch: { prompt: 'The whole task text' } } as Parameters<typeof toAgent>[0]), false)
+  // A 15.19.0 worker's subagent role carries the old prefix: its own role reads without it, once, here.
+  assert.equal(agentOwnRole({ role: `${SUBAGENT_ROLE_PREFIX}claude-mem`, status: 'quiet' }), 'claude-mem')
+  assert.equal(agentOwnRole({ role: task.role, status: task.status }), 'claude-mem')
+  // A main agent's title is its own words, even one that starts the same way.
+  assert.equal(agentOwnRole({ role: `${SUBAGENT_ROLE_PREFIX}notes` }), `${SUBAGENT_ROLE_PREFIX}notes`)
+})
+
+test('two sessions in one folder carry the start of their sessions, and only they: the one fact that tells their cards apart', () => {
+  const agent = (id: string, project: string, contentSessionId: string, isSubagent = false) =>
+    ({ id, label: 'Claude Code', platformSource: 'claude', sessionTitle: null, project, contentSessionId, isSubagent, presence: { status: 'quiet' } })
+  const model = toWorkModel({ ...baseSnapshot, agents: [
+    agent('one', '/work/claude-mem', 'f75ded15-17fa-437a-afc3-58020cabf452'), agent('two', '/work/claude-mem', '30809f06-dcd1-44d2-84a9-b1cbe7cb9829'),
+    agent('elsewhere', '/work/claude-mem-pro', 'c16fbb54-ce5a-4dac-b809-3da17ad4f5d9'),
+    // A subagent works in its parent's session: it is told apart by its task, never by a session.
+    agent('sub', '/work/claude-mem', 'f75ded15-17fa-437a-afc3-58020cabf452', true),
+  ] }, snapshotTime(baseSnapshot))
+  // (The fixture's requests name agents this list leaves out, so the mapper adds its "Agent not recorded" stand-in too.)
+  const sessions = Object.fromEntries(model.agents.filter((entry) => ['one', 'two', 'elsewhere', 'sub'].includes(entry.id)).map((entry) => [entry.id, entry.sessionShortId ?? null]))
+  assert.deepEqual(sessions, { one: 'f75ded15', two: '30809f06', elsewhere: null, sub: null })
+})
+
+test('a bucket copy keeps its deliverable mark for the front of the card; other products carry none, and a gone copy is left out', async () => {
+  const { isCardDeliverable } = await import('../lib/deliverables.ts')
+  const { request } = mapOne({ workProduct: [
+    { kind: 'page', title: 'Launch report', url: '/api/deliverables/21/report-3f9a1c2b.html', available: true, deliverable: true, sourcePath: '/w/.scratch/report.html' },
+    { kind: 'file', title: 'notes.txt', url: '/api/deliverables/22/notes-ab12cd34.txt', available: true, deliverable: true },
+    { kind: 'page', title: 'Gone', url: '/api/deliverables/23/gone-00000000.html', available: false, deliverable: true },
+    { kind: 'commit', title: 'bc8cd09 feat: progress readings', sha: 'bc8cd096b', branch: 'main' },
+    { kind: 'pull-request', title: 'Add work product', url: 'https://github.com/o/r/pull/42' },
+  ] })
+  assert.deepEqual(request.workProduct, [
+    { kind: 'Page', label: 'Launch report', href: '/api/deliverables/21/report-3f9a1c2b.html', deliverable: true },
+    { kind: 'File', label: 'notes.txt', href: '/api/deliverables/22/notes-ab12cd34.txt', deliverable: true },
+    { kind: 'Commit', label: 'bc8cd09 feat: progress readings', href: undefined },
+    { kind: 'PR', label: 'Add work product', href: 'https://github.com/o/r/pull/42' },
+  ])
+  // The card's front links deliverables and PRs; commits and branches stay in the drawer.
+  assert.deepEqual(request.workProduct.filter(isCardDeliverable).map((product) => product.label), ['Launch report', 'notes.txt', 'Add work product'])
+})
+
+const reviewedGroup = (): WorkViewHumanRequest => ({
+  ...syntheticRequest(), groupId: 'g_000000000001', titleSource: 'request-group', humanCopy: { state: 'unavailable' },
+  progress: { state: 'in-progress', percent: 60, summary: 'Cards are built; review remains.', narrative: 'Cards built.',
+    milestones: [], checkedAt: '2026-10-21T12:00:00Z', readings: [{ at: '2026-10-21T12:00:00Z', percent: 60 }] },
+})
+
+for (const state of ['in-progress', 'stalled', 'shipped'] as const) {
+  test(`a reviewed ${state} group shows its recorded title and summary without a human-copy provider`, () => {
+    const raw = reviewedGroup()
+    raw.progress = { ...raw.progress!, state, percent: state === 'shipped' ? 100 : 60,
+      shippedAt: state === 'shipped' ? '2026-10-21T12:00:00Z' : null,
+      readings: [{ at: '2026-10-21T12:00:00Z', percent: state === 'shipped' ? 100 : 60 }] }
+    const model = toWorkModel(snapshotWith([raw]), Date.parse('2026-10-22T12:00:00Z'))
+    assert.deepEqual(model.requestReadErrors, [])
+    const request = model.requests[0]
+    assert.equal(request.title, 'Cards')
+    assert.equal(request.summary, raw.progress.summary)
+    assert.deepEqual(request.next, { who: 'bot', missing: 'not-recorded' })
+    assert.equal(request.progress.percent, raw.progress.percent)
+    assert.equal(request.state, state === 'shipped' ? 'shipped' : 'idle')
+  })
+}
+
+test('a group uses its recorded review even when human copy exists for the original ask', () => {
+  const raw = { ...reviewedGroup(), humanCopy: { state: 'current', title: 'Old wording', summary: 'Work has not started.', next: '', workstreams: [] } }
+  const model = toWorkModel(snapshotWith([raw]), Date.parse('2026-10-22T12:00:00Z'))
+  assert.equal(model.requests[0].title, raw.title)
+  assert.equal(model.requests[0].summary, raw.progress!.summary)
+})
+
+for (const state of ['current', 'outdated']) {
+  test(`a group awaiting its first progress review preserves its ${state} human-copy summary`, () => {
+    const raw: WorkViewHumanRequest = { ...reviewedGroup(), progress: null,
+      humanCopy: { state, title: 'Cards', summary: 'The initial design is ready.', next: '', workstreams: [] } }
+    const model = toWorkModel(snapshotWith([raw]), Date.parse('2026-10-22T12:00:00Z'))
+    assert.deepEqual(model.requestReadErrors, [])
+    assert.equal(model.requests[0].summary, 'The initial design is ready.')
+    assert.equal(model.requests[0].progress.percent, null)
+  })
+}
+
+test('a cached generated title is displayed without promoting a raw prompt title', () => {
+  const requests: WorkViewHumanRequest[] = ['title-cache', 'original-human-request', 'explicit-work-state-request'].map((titleSource, i) => ({
+    ...syntheticRequest(), id: `request-${i}`, titleSource: titleSource as WorkViewHumanRequest['titleSource'], humanCopy: null,
+  }))
+  const model = toWorkModel(snapshotWith(requests), Date.parse('2026-10-22T12:00:00Z'))
+  assert.deepEqual(model.requests.map(request => request.title), ['Cards', null, null])
+})
+
+test('reopening a shipped group does not display its older completion summary', () => {
+  const raw = reviewedGroup()
+  raw.humanCopy = { state: 'current', title: 'Cards', summary: 'All shipped.', next: '', workstreams: [] }
+  raw.progress = { ...raw.progress!, state: 'shipped', percent: 100, summary: 'All shipped.', shippedAt: '2026-10-21T12:00:00Z', readings: [{ at: '2026-10-21T12:00:00Z', percent: 100 }] }
+  raw.lifecycle = { status: 'in-progress', explicit: true, atEpoch: Date.parse('2026-10-22T11:00:00Z') }
+  raw.updatedAtEpoch = raw.lifecycle.atEpoch!
+  const model = toWorkModel(snapshotWith([raw]), Date.parse('2026-10-22T12:00:00Z'))
+  assert.deepEqual(model.requestReadErrors, [])
+  assert.equal(model.requests[0].title, raw.title)
+  assert.equal(model.requests[0].summary, null)
+  assert.equal(model.requests[0].state, 'working')
+  assert.equal(model.requests[0].progress.percent, null)
+})
+
+test('recorded observations without work-state items do not claim no agent work exists', () => {
+  const raw: WorkViewHumanRequest = { ...syntheticRequest(), activity: [{ id: 'observation-42', kind: 'observation', title: 'Cards built', detail: 'Ready for review', atEpoch: Date.parse('2026-10-21T12:00:00Z'), url: '/api/work-view/evidence/observation/42' }] }
+  const model = toWorkModel(snapshotWith([raw]), Date.parse('2026-10-22T12:00:00Z'))
+  assert.deepEqual(model.requests[0].next, { who: 'bot', missing: 'not-recorded' })
+})
+
+for (const status of ['shipped', 'blocked']) {
+  test(`a newer ${status} lifecycle hides an older partial review summary while retaining its readings`, () => {
+    const raw = reviewedGroup()
+    raw.humanCopy = { state: 'current', title: 'Cards', summary: 'Cards are built; review remains.', next: '', workstreams: [] }
+    raw.lifecycle = { status, explicit: true, atEpoch: Date.parse('2026-10-22T11:00:00Z') }
+    if (status === 'shipped') raw.completedAtEpoch = raw.lifecycle.atEpoch!
+    const model = toWorkModel(snapshotWith([raw]), Date.parse('2026-10-22T12:00:00Z'))
+    assert.deepEqual(model.requestReadErrors, [])
+    const request = model.requests[0]
+    assert.equal(request.state, status === 'shipped' ? 'shipped' : 'your-move')
+    assert.equal(request.summary, null)
+    assert.equal(request.progress.percent, status === 'shipped' ? 100 : 60)
+    assert.equal(request.progress.readings, 1)
+  })
+}
+
+for (const state of ['unavailable', 'current']) {
+  test(`a group with a cached title still displays its review summary when human copy is ${state}`, () => {
+    const raw: WorkViewHumanRequest = { ...reviewedGroup(), titleSource: 'title-cache', title: 'Cached group title',
+      humanCopy: { state, title: 'Old title', summary: 'Work has not started.', next: '', workstreams: [] } }
+    const model = toWorkModel(snapshotWith([raw]), Date.parse('2026-10-22T12:00:00Z'))
+    assert.equal(model.requests[0].title, 'Cached group title')
+    assert.equal(model.requests[0].summary, raw.progress!.summary)
+  })
+}
+
+test('a group title that repeats the prompt is marked, even past the part the card quotes', () => {
+  const long = `${'Context. '.repeat(60)}\nGOAL: Move billing to the new processor`
+  const raw: WorkViewHumanRequest = { ...syntheticRequest(), titleSource: 'request-group', title: 'Move billing to the new processor', original: { text: long, atEpoch: Date.UTC(2026, 9, 18) } }
+  const [copied] = toWorkModel(snapshotWith([raw]), Date.parse('2026-10-22T12:00:00Z')).requests
+  assert.equal(copied.titleRepeatsPrompt, true)
+  assert.ok(!copied.prompts[0].quote.includes('billing'), 'the card quote alone would have missed it')
+  const [written] = toWorkModel(snapshotWith([{ ...raw, title: 'Billing moves processors' }]), Date.parse('2026-10-22T12:00:00Z')).requests
+  assert.equal(written.titleRepeatsPrompt, undefined)
+})
+
+
+test('canonical minimal shared progress stays visible without inventing a history or milestones', () => {
+  const raw = { ...syntheticRequest(), groupId: 'g_000000000001', titleSource: 'request-group' as const,
+    progress: { state: 'in-progress' as const, percent: 60 } }
+  const model = toWorkModel(snapshotWith([raw]), Date.parse('2026-10-22T12:00:00Z'))
+  assert.deepEqual(model.requestReadErrors, [])
+  assert.equal(model.requests.length, 1)
+  const request = model.requests[0]
+  assert.equal(request.title, 'Cards')
+  assert.equal(request.progress.percent, 60)
+  assert.equal(request.progress.readings, 1, 'the current progress record is one assessment')
+  assert.equal(request.progress.history, undefined, 'no historical readings were supplied')
+  assert.deepEqual(request.story, [])
+  assert.equal(request.summary, null)
+  assert.equal(request.estimate, null)
+})
+
+test('minimal shipped progress retains its date and survives mapping without optional detail', () => {
+  const raw = { ...syntheticRequest(), groupId: 'g_000000000001', titleSource: 'request-group' as const,
+    progress: { state: 'shipped' as const, percent: 100, shippedAt: '2026-10-21T12:00:00Z' } }
+  const model = toWorkModel(snapshotWith([raw]), Date.parse('2026-10-22T12:00:00Z'))
+  assert.deepEqual(model.requestReadErrors, [])
+  assert.equal(model.requests[0].progress.percent, 100)
+  assert.ok(model.requests[0].progress.completedAt)
+  assert.deepEqual(model.requests[0].story, [])
+  assert.equal(model.requests[0].progress.history, undefined)
+})
+
+test('image refs ride through: the card summary to Request.media, each record\'s refs to its granular row', () => {
+  const ref = (n: number) => ({ id: `00000000-0000-4000-8000-00000000000${n}`, label: `image-${n}`, inspection: 'uninspected' as const })
+  const at = Date.UTC(2026, 9, 21)
+  const raw: WorkViewHumanRequest = { ...syntheticRequest(),
+    activity: [
+      { id: 'observation:2', kind: 'observation', title: 'Read the screenshot', detail: null, atEpoch: at, url: '/api/work-view/evidence/observation/2', media: { version: 1, attachments: [ref(1), ref(2)], overflow: true } },
+      { id: 'observation:1', kind: 'observation', title: 'Planned the layout', detail: null, atEpoch: at - 1000, url: '/api/work-view/evidence/observation/1' },
+    ],
+    media: { count: 2, preview: [ref(1), ref(2)] } }
+  const [request] = toWorkModel(snapshotWith([raw]), Date.parse('2026-10-22T12:00:00Z')).requests
+  assert.deepEqual(request.media, { count: 2, preview: [ref(1), ref(2)] })
+  assert.deepEqual(request.granular[0].media, { version: 1, attachments: [ref(1), ref(2)], overflow: true })
+  assert.equal('media' in request.granular[1], false, 'an image-free record gains no key')
+  const [plain] = toWorkModel(snapshotWith([syntheticRequest()]), Date.parse('2026-10-22T12:00:00Z')).requests
+  assert.equal('media' in plain, false, 'an image-free request gains no key')
+})
+
+test('a blocked request with no recorded step is your move, and carries why rather than "Unblock: <filler>"', () => {
+  const raw = { ...syntheticRequest(), updatedAtEpoch: Date.parse('2026-10-22T11:00:00Z'),
+    items: [{ kind: 'work-state', status: 'blocked', title: 'Ship', url: '/api/work-view/evidence/work-state/1', lastUpdateEpoch: Date.parse('2026-10-22T11:00:00Z') }] }
+  const [request] = toWorkModel(snapshotWith([raw as WorkViewHumanRequest]), Date.parse('2026-10-22T12:00:00Z')).requests
+  assert.equal(request.state, 'your-move')
+  assert.deepEqual(request.next, { who: 'human', kind: 'unblock', missing: 'not-recorded' })
+  assert.deepEqual(nextStepShown(request.next), { kind: 'missing', who: 'human', missing: 'not-recorded' }, 'screens leave it out (G3)')
+})
+
+test('nextStepShown reads the missing value and every English filler an older worker sends as missing', () => {
+  assert.deepEqual(nextStepShown({ who: 'bot', missing: 'no-agent-work' }), { kind: 'missing', who: 'bot', missing: 'no-agent-work' })
+  // The 15.19.0 worker (and every worker before 16.0.0) writes these in place of a step (G19).
+  assert.deepEqual(nextStepShown({ who: 'bot', text: NEXT_STEP_NOT_RECORDED }), { kind: 'missing', who: 'bot', missing: 'not-recorded' })
+  assert.deepEqual(nextStepShown({ who: 'human', text: `Unblock: ${NEXT_STEP_NOT_RECORDED}` }), { kind: 'missing', who: 'human', missing: 'not-recorded' })
+  assert.deepEqual(nextStepShown({ who: 'bot', text: ` ${NO_WORK_YET} ` }), { kind: 'missing', who: 'bot', missing: 'no-agent-work' })
+  assert.deepEqual(nextStepShown({ who: 'bot', text: '   ' }), { kind: 'missing', who: 'bot', missing: 'not-recorded' })
+  assert.deepEqual(nextStepShown(null), { kind: 'missing', who: null, missing: 'not-recorded' })
+  // An older worker's English for the two step kinds that are not recorded words reads as those kinds (G19).
+  assert.deepEqual(nextStepShown({ who: 'human', text: 'Unblock: pick a forecast' }), { kind: 'step', who: 'human', step: 'unblock', text: 'pick a forecast' })
+  assert.deepEqual(nextStepShown({ who: 'human', text: 'Ship it' }), { kind: 'step', who: 'human', step: 'ship' })
+  assert.deepEqual(nextStepShown({ who: 'human', text: `Unblock: ${NO_WORK_YET}` }), { kind: 'missing', who: 'human', missing: 'no-agent-work' })
+  // This mapper's own values.
+  assert.deepEqual(nextStepShown({ who: 'human', kind: 'unblock', text: 'pick a forecast' }), { kind: 'step', who: 'human', step: 'unblock', text: 'pick a forecast' })
+  assert.deepEqual(nextStepShown({ who: 'bot', text: 'Write the tests' }), { kind: 'step', who: 'bot', step: 'recorded', text: 'Write the tests' })
+})
+
+test('a start, a workstream title and a task name that are not recorded are null, and each source carries its kind, never English words as data', () => {
+  const now = Date.parse('2026-10-22T12:00:00Z')
+  const item = (id: string, title: string, url = `/api/work-view/evidence/work-state/${id}`) => ({ id, kind: 'work-state' as const, title, status: 'in_progress', nextStep: null, lastUpdateEpoch: now - 60_000, sourceRefs: [], url })
+  const raw: WorkViewHumanRequest = {
+    ...syntheticRequest(), startedAtEpoch: null,
+    original: { text: 'Build the release cards', atEpoch: Date.UTC(2026, 9, 18), url: '/api/work-view/evidence/prompt/7' },
+    items: [item('1', 'Write the card copy'), item('2', 'Saw the build fail', '/api/work-view/evidence/observation/2')],
+    workstreams: [{ id: 'ws1', title: 'Cards', items: [item('3', '')] }],
+  }
+  const [request] = toWorkModel(snapshotWith([raw]), now).requests
+  assert.equal(request.startedAt, null)
+  // The workstream's title comes from the human copy, which this request has none of; its one task has no name.
+  assert.deepEqual(request.workstreams, [{ title: null, tasks: [{ name: null, done: false }] }])
+  assert.deepEqual(request.evidence.map(({ kind, title }) => [kind, title]), [['prompt', 'Build the release cards'], ['work-state', 'Write the card copy'], ['observation', 'Saw the build fail']])
+  assert.ok(!JSON.stringify(request).includes('Start not recorded') && !JSON.stringify(request).includes('Supporting work') && !JSON.stringify(request).includes('Untitled task'))
+})
+
+// Phase 6 fix AP-L4: the kinds come from the one list (data.ts EVIDENCE_KINDS), and an unknown one is said, never `record`.
+test('each source\'s kind is read against the one list of evidence kinds; a kind the list does not name makes the request unreadable with the link in its reason, never a plain record', () => {
+  const now = Date.parse('2026-10-22T12:00:00Z')
+  const item = (id: string, url: string) => ({ id, kind: 'work-state' as const, title: `Record ${id}`, status: 'in_progress', nextStep: null, lastUpdateEpoch: now - 60_000, sourceRefs: [], url })
+  const routeKinds = EVIDENCE_KINDS.filter((kind) => kind !== 'record')
+  const known: WorkViewHumanRequest = {
+    ...syntheticRequest(), id: 'known-kinds',
+    items: [...routeKinds.map((kind, index) => item(String(index), `/api/work-view/evidence/${kind}/${index + 1}`)), item('other', 'https://example.com/not-a-record')],
+  }
+  const unknown: WorkViewHumanRequest = { ...syntheticRequest(), id: 'unknown-kind', items: [item('9', '/api/work-view/evidence/tool-use/9')] }
+  const model = toWorkModel(snapshotWith([known, unknown]), now)
+  const [request] = model.requests
+  // Every kind the route serves, by its own name, and the link of another shape left out; none is `record`.
+  assert.deepEqual(request.evidence.filter((source) => source.title.startsWith('Record ')).map((source) => source.kind), routeKinds)
+  assert.ok(!request.evidence.some((source) => source.kind === 'record' || source.href === 'https://example.com/not-a-record'))
+  assert.deepEqual(model.requests.map((each) => each.id), ['known-kinds'])
+  assert.equal(model.requestReadErrors.length, 1)
+  assert.equal(model.requestReadErrors[0].requestId, 'unknown-kind')
+  assert.match(model.requestReadErrors[0].reason, /evidence kind this page does not know: \/api\/work-view\/evidence\/tool-use\/9/)
+})
+
+test('an older worker\'s English for a missing start, workstream title, task name and a source\'s kind reads as the missing value and the kind (G19)', () => {
+  assert.equal(recordedStart('Start not recorded'), null)
+  assert.equal(recordedStart(null), null)
+  assert.equal(recordedStart('Oct 20, 1:16 pm'), 'Oct 20, 1:16 pm')
+  assert.equal(recordedWorkstreamTitle('Supporting work'), null)
+  assert.equal(recordedWorkstreamTitle('Cards'), 'Cards')
+  assert.equal(recordedTaskName('Untitled task'), null)
+  assert.equal(recordedTaskName(null), null)
+  const href = '/api/work-view/evidence/observation/2'
+  assert.deepEqual(evidenceShown({ title: 'Observation: Saw the build fail', href }), { kind: 'observation', title: 'Saw the build fail' })
+  assert.deepEqual(evidenceShown({ title: 'Your prompt: Build it', href }), { kind: 'prompt', title: 'Build it' })
+  assert.deepEqual(evidenceShown({ title: 'Work state: Write it', href }), { kind: 'work-state', title: 'Write it' })
+  assert.deepEqual(evidenceShown({ title: 'A title naming no kind', href }), { kind: null, title: 'A title naming no kind' })
+  assert.deepEqual(evidenceShown({ kind: 'session', title: 'Session 4', href }), { kind: 'session', title: 'Session 4' })
+})

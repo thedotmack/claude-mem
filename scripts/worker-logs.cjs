@@ -1,103 +1,111 @@
 #!/usr/bin/env node
 
-const { closeSync, fstatSync, openSync, readSync, watchFile } = require('fs');
+const { closeSync, fstatSync, openSync, readSync, watchFile, unwatchFile } = require('fs');
 const path = require('path');
-const os = require('os');
+const { resolveDataDir } = require('./resolve-data-dir.cjs');
 
 const LINE_COUNT = 50;
 const POLL_INTERVAL_MS = 250;
 const CHUNK_SIZE = 64 * 1024;
 
+function fileIdentity(fd) {
+  // Filesystem IDs can exceed Number's exact integer range (notably on NTFS).
+  // Keep identity exact while the byte offsets used by readSync stay Numbers.
+  const { ino, dev, size } = fstatSync(fd, { bigint: true });
+  return { ino, dev, size: Number(size) };
+}
+
 function todaysLogPath() {
-  const now = new Date();
-  const stamp = [
-    now.getFullYear(),
-    String(now.getMonth() + 1).padStart(2, '0'),
-    String(now.getDate()).padStart(2, '0'),
-  ].join('-');
-  return path.join(os.homedir(), '.claude-mem', 'logs', `worker-${stamp}.log`);
+  const stamp = new Date().toISOString().slice(0, 10);
+  return path.join(resolveDataDir(), 'logs', `claude-mem-${stamp}.log`);
 }
 
-function readAt(fd, position, length) {
-  const buffer = Buffer.alloc(length);
-  const bytes = readSync(fd, buffer, 0, length, position);
-  if (bytes !== length) {
-    throw new Error(`short read at ${position}: expected ${length} bytes, got ${bytes}`);
-  }
-  return buffer;
-}
-
-function countNewlines(buffer) {
-  let count = 0;
-  let index = buffer.indexOf(0x0a);
-  while (index !== -1) {
-    count++;
-    index = buffer.indexOf(0x0a, index + 1);
-  }
-  return count;
-}
-
-// Worker logs grow without bound, so this walks backwards in fixed chunks until
-// it has one more newline than it needs, rather than decoding the whole file to
-// keep its last few lines. Reading one newline past the target also guarantees
-// the chunk boundary is discarded with the partial line in front of it, so a
-// multi-byte character split across chunks can never reach the output.
-function readLastLines(fd, size, lineCount) {
-  const chunks = [];
+// A single log entry can exceed the heap. Find the byte boundary in reverse
+// without retaining the lines, then copy that range to stdout in bounded chunks.
+function findTailStart(fd, size, lineCount) {
+  const buffer = Buffer.alloc(CHUNK_SIZE);
   let position = size;
-  let newlines = 0;
-
-  while (position > 0 && newlines <= lineCount) {
-    const length = Math.min(CHUNK_SIZE, position);
+  let remaining = lineCount;
+  while (position > 0) {
+    const length = Math.min(position, CHUNK_SIZE);
     position -= length;
-    const chunk = readAt(fd, position, length);
-    chunks.unshift(chunk);
-    newlines += countNewlines(chunk);
+    const bytes = readSync(fd, buffer, 0, length, position);
+    for (let i = bytes - 1; i >= 0; i--) {
+      if (buffer[i] !== 0x0a || position + i === size - 1) continue;
+      if (--remaining === 0) return position + i + 1;
+    }
   }
-
-  const lines = Buffer.concat(chunks).toString('utf-8').split('\n');
-  if (lines[lines.length - 1] === '') lines.pop();
-  return lines.slice(-lineCount);
+  return 0;
 }
 
-const follow = process.argv.includes('--follow');
+async function writeRange(fd, offset, end) {
+  const buffer = Buffer.alloc(Math.min(CHUNK_SIZE, end - offset));
+  while (offset < end) {
+    const bytes = readSync(fd, buffer, 0, Math.min(buffer.length, end - offset), offset);
+    if (!bytes) break;
+    await new Promise((resolve, reject) => {
+      process.stdout.write(buffer.subarray(0, bytes), error => error ? reject(error) : resolve());
+    });
+    offset += bytes;
+  }
+  return offset;
+}
+
 const logPath = todaysLogPath();
 
-let fd;
-try {
-  fd = openSync(logPath, 'r');
-} catch (error) {
-  console.error('\x1b[31m%s\x1b[0m', `Cannot read worker log ${logPath}: ${error.message}`);
-  process.exit(1);
-}
+async function main() {
+  const fd = openSync(logPath, 'r');
+  let followedIdentity;
+  let offset;
+  try {
+    followedIdentity = fileIdentity(fd);
+    const size = followedIdentity.size;
+    offset = await writeRange(fd, findTailStart(fd, size, LINE_COUNT), size);
+  } finally { closeSync(fd); }
 
-let size;
-try {
-  size = fstatSync(fd).size;
-  const lines = readLastLines(fd, size, LINE_COUNT);
-  if (lines.length > 0) console.log(lines.join('\n'));
-} finally {
-  closeSync(fd);
-}
+  if (!process.argv.includes('--follow')) return;
+  let reading = false;
+  let pending = false;
 
-if (follow) {
-  let offset = size;
-  watchFile(logPath, { interval: POLL_INTERVAL_MS }, (current, previous) => {
-    // A rename-and-recreate rotation can leave the replacement at exactly the
-    // previous offset's size, so byte counts alone cannot detect it — a change
-    // of file identity must also reset the read position. A missing file stats
-    // as all-zero, and the size === offset check below skips the read until it
-    // reappears.
-    const replaced = current.ino !== previous.ino || current.dev !== previous.dev;
-    if (replaced || current.size < offset) offset = 0;
-    if (current.size === offset) return;
-    const appended = openSync(logPath, 'r');
+  async function drain() {
+    if (reading) return;
+    reading = true;
     try {
-      const buffer = readAt(appended, offset, current.size - offset);
-      offset += buffer.length;
-      process.stdout.write(buffer);
-    } finally {
-      closeSync(appended);
-    }
+      while (pending) {
+        pending = false;
+        let appended;
+        try { appended = openSync(logPath, 'r'); }
+        catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+        try {
+          // Stat the opened descriptor: rotation may happen after the poll.
+          const current = fileIdentity(appended);
+          if (current.ino !== followedIdentity.ino || current.dev !== followedIdentity.dev || current.size < offset) offset = 0;
+          followedIdentity = current;
+          offset = await writeRange(appended, offset, current.size);
+        } finally { closeSync(appended); }
+      }
+    } finally { reading = false; }
+  }
+
+  function scheduleDrain() {
+    pending = true;
+    drain().catch(error => {
+      console.error(`Cannot follow worker log ${logPath}: ${error.message}`);
+      process.exitCode = 1;
+      unwatchFile(logPath);
+    });
+  }
+  watchFile(logPath, { interval: POLL_INTERVAL_MS, bigint: true }, (current) => {
+    if (Number(current.size) === offset && current.ino === followedIdentity.ino && current.dev === followedIdentity.dev) return;
+    scheduleDrain();
   });
+  // An append while the snapshot was flushing may already be in the watcher's
+  // initial baseline. Re-open once after registration instead of waiting for
+  // some future append to reveal those bytes.
+  scheduleDrain();
 }
+
+main().catch(error => {
+  console.error(`Cannot read worker log ${logPath}: ${error.message}`);
+  process.exitCode = 1;
+});

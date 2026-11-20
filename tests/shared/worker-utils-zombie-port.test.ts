@@ -1,19 +1,25 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
 import { mkdtempSync, rmSync } from 'fs';
+import { createServer, type AddressInfo } from 'net';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { settleUnderFakeClock } from './settle-under-fake-clock.js';
 import * as realInfrastructure from '../../src/services/infrastructure/index.js';
 import * as realSupervisor from '../../src/supervisor/index.js';
 import * as realSpawn from '../../src/shared/spawn.js';
 import * as realHookIo from '../../src/shared/hook-io.js';
 import * as realCliTelemetry from '../../src/services/telemetry/cli-telemetry.js';
+import * as realHealthMonitor from '../../src/services/infrastructure/HealthMonitor.js';
+import * as realPortReclaim from '../../src/shared/port-reclaim.js';
 
 const realInfrastructureSnapshot = { ...realInfrastructure };
+const realHealthMonitorSnapshot = { ...realHealthMonitor };
+const realPortReclaimSnapshot = { ...realPortReclaim };
 const realSupervisorSnapshot = { ...realSupervisor };
 const realSpawnSnapshot = { ...realSpawn };
-// emitBlockingError is mocked to a no-op collector below; restoring it in
-// afterAll keeps a silenced fail-loud path from leaking into other suites
-// sharing this process.
+// emitDiagnostic is mocked to a collector below; restoring it in afterAll
+// keeps a silenced fail-loud path from leaking into other suites sharing this
+// process.
 const realHookIoSnapshot = { ...realHookIo };
 const realCliTelemetrySnapshot = { ...realCliTelemetry };
 
@@ -37,9 +43,32 @@ let portOccupied = true;
 // `false` = connection refused, `true` = healthy worker.
 let healthSequence: boolean[] = [];
 
-mock.module('../../src/services/infrastructure/index.js', () => ({
+// The pre-spawn check is the one place ensureWorkerRunning touches a real port:
+// a bind probe (classifyPortOccupancy), then a reclaim attempt when the probe
+// finds it held. Unmocked, the outcome depended on whatever held the port, and
+// the reclaim could aim at a live worker. Here the port is free, as on a clean
+// CI runner, and nothing is ever reclaimed.
+//
+// One set of probe mocks serves both entry points: infrastructure/index.js
+// re-exports HealthMonitor.js, and patching HealthMonitor.js re-links those
+// re-exports, so a mock missing from either one would fall back to the real
+// probe.
+const portProbes = {
   checkVersionMatch: () => Promise.resolve({ matches: true, pluginVersion: '13.16.0', workerVersion: '13.16.0' }),
   isPortInUse: () => Promise.resolve(portOccupied),
+  classifyPortOccupancy: () => Promise.resolve('free'),
+};
+
+mock.module('../../src/services/infrastructure/index.js', () => portProbes);
+
+mock.module('../../src/services/infrastructure/HealthMonitor.js', () => ({
+  ...realHealthMonitorSnapshot,
+  ...portProbes,
+}));
+
+mock.module('../../src/shared/port-reclaim.js', () => ({
+  ...realPortReclaimSnapshot,
+  reclaimGhostListeningPort: () => Promise.resolve({ reclaimed: false, reason: 'owner-alive', killedPids: [] }),
 }));
 
 mock.module('../../src/supervisor/index.js', () => ({
@@ -54,18 +83,35 @@ mock.module('../../src/shared/spawn.js', () => ({
   },
 }));
 
-// emitBlockingError is the only channel the user actually sees when hooks
-// start failing; the real one writes to stderr and process.exit(2)s.
-const blockingErrors: string[] = [];
+// The fail-loud diagnostic goes through emitDiagnostic (stderr, never exits);
+// the user sees the same text via consumeWorkerOutageNotice's systemMessage.
+const failLoudDiagnostics: string[] = [];
 mock.module('../../src/shared/hook-io.js', () => ({
-  emitBlockingError: (message: string) => {
-    blockingErrors.push(message);
+  emitDiagnostic: (line: string) => {
+    failLoudDiagnostics.push(line);
   },
 }));
 
 mock.module('../../src/services/telemetry/cli-telemetry.js', () => ({
   captureCliEvent: () => Promise.resolve(),
 }));
+
+/**
+ * A port the OS just handed out and nothing holds, so no path in this test can
+ * target the default worker port (37700 + uid % 100), which is the machine's
+ * real worker whenever one runs. Nothing binds it for real: the port probes
+ * above are mocked, so it is never raced either.
+ */
+function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address() as AddressInfo;
+      server.close(() => resolve(port));
+    });
+  });
+}
 
 async function importWorkerUtilsFresh() {
   return import(`../../src/shared/worker-utils.js?worker-utils-zombie-port=${Date.now()}-${Math.random()}`);
@@ -94,16 +140,19 @@ function installFetchMock(): void {
 describe('ensureWorkerRunning — occupied port with no owned PID file', () => {
   const originalFetch = global.fetch;
   const originalDataDir = process.env.CLAUDE_MEM_DATA_DIR;
+  const originalWorkerPort = process.env.CLAUDE_MEM_WORKER_PORT;
   let tempDataDir: string;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     tempDataDir = mkdtempSync(join(tmpdir(), 'claude-mem-zombie-port-'));
     process.env.CLAUDE_MEM_DATA_DIR = tempDataDir;
+    process.env.CLAUDE_MEM_WORKER_PORT = String(await freePort());
     spawnCalls.length = 0;
-    blockingErrors.length = 0;
+    failLoudDiagnostics.length = 0;
     portOccupied = true;
     healthSequence = [false];
     installFetchMock();
+    await (await importWorkerUtilsFresh()).__resetWorkerFailureCounterForTesting();
   });
 
   afterEach(() => {
@@ -112,6 +161,11 @@ describe('ensureWorkerRunning — occupied port with no owned PID file', () => {
       delete process.env.CLAUDE_MEM_DATA_DIR;
     } else {
       process.env.CLAUDE_MEM_DATA_DIR = originalDataDir;
+    }
+    if (originalWorkerPort === undefined) {
+      delete process.env.CLAUDE_MEM_WORKER_PORT;
+    } else {
+      process.env.CLAUDE_MEM_WORKER_PORT = originalWorkerPort;
     }
     rmSync(tempDataDir, { recursive: true, force: true });
     mock.restore();
@@ -123,6 +177,8 @@ describe('ensureWorkerRunning — occupied port with no owned PID file', () => {
     mock.module('../../src/shared/spawn.js', () => realSpawnSnapshot);
     mock.module('../../src/shared/hook-io.js', () => realHookIoSnapshot);
     mock.module('../../src/services/telemetry/cli-telemetry.js', () => realCliTelemetrySnapshot);
+    mock.module('../../src/services/infrastructure/HealthMonitor.js', () => realHealthMonitorSnapshot);
+    mock.module('../../src/shared/port-reclaim.js', () => realPortReclaimSnapshot);
   });
 
   // Regression guard for the warming-worker race: a worker that has bound the
@@ -133,7 +189,9 @@ describe('ensureWorkerRunning — occupied port with no owned PID file', () => {
     healthSequence = [false, false, true];
 
     const workerUtils = await importWorkerUtilsFresh();
-    const result = await workerUtils.ensureWorkerRunning();
+    // Every probe below targets the port this test was handed, never a live worker's.
+    expect(workerUtils.getWorkerPort()).toBe(Number(process.env.CLAUDE_MEM_WORKER_PORT));
+    const { value: result } = await settleUnderFakeClock(() => workerUtils.ensureWorkerRunning());
 
     expect(result).toBe(true);
   }, 30000);
@@ -142,9 +200,12 @@ describe('ensureWorkerRunning — occupied port with no owned PID file', () => {
     healthSequence = [false];
 
     const workerUtils = await importWorkerUtilsFresh();
-    const result = await workerUtils.ensureWorkerRunning();
+    const { value: result, fakeElapsedMs } = await settleUnderFakeClock(() => workerUtils.ensureWorkerRunning());
 
     expect(result).toBe(false);
+    // It gave up only after the full cold-boot backoff (500+1000+2000+4000+8000 ms).
+    expect(fakeElapsedMs).toBeGreaterThanOrEqual(15_500);
+    expect(spawnCalls).toHaveLength(1);
   }, 30000);
 
   // The log file is not where a user looks when their prompts start getting
@@ -154,16 +215,21 @@ describe('ensureWorkerRunning — occupied port with no owned PID file', () => {
     healthSequence = [false];
 
     const workerUtils = await importWorkerUtilsFresh();
-    expect(await workerUtils.ensureWorkerRunning()).toBe(false);
+    expect((await settleUnderFakeClock(() => workerUtils.ensureWorkerRunning())).value).toBe(false);
 
-    // Threshold is 3 consecutive failures before emitBlockingError fires.
+    // Threshold is 3 consecutive failures before the fail-loud path fires.
     await workerUtils.recordWorkerUnreachable();
     await workerUtils.recordWorkerUnreachable();
     await workerUtils.recordWorkerUnreachable();
 
-    expect(blockingErrors.length).toBeGreaterThan(0);
-    const message = blockingErrors[blockingErrors.length - 1];
-    expect(message).toContain(String(workerUtils.getWorkerPort()));
-    expect(message).toContain('CLAUDE_MEM_WORKER_PORT');
+    const diagnostic = failLoudDiagnostics.find(line => line.includes('consecutive hooks'));
+    expect(diagnostic).toBeDefined();
+    expect(diagnostic).toContain(String(workerUtils.getWorkerPort()));
+    expect(diagnostic).toContain('CLAUDE_MEM_WORKER_PORT');
+
+    // The user-visible notice (a synchronous hook's systemMessage) names the fix too.
+    const notice = await workerUtils.consumeWorkerOutageNotice('session-zombie-port');
+    expect(notice).toContain(String(workerUtils.getWorkerPort()));
+    expect(notice).toContain('CLAUDE_MEM_WORKER_PORT');
   }, 30000);
 });

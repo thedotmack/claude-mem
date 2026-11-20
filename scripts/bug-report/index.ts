@@ -41,6 +41,7 @@ export async function generateBugReport(
     );
 
     let generatedMarkdown = "";
+    let completedSuccessfully = false;
     let charCount = 0;
     const startTime = Date.now();
 
@@ -82,11 +83,20 @@ export async function generateBugReport(
 
       if (message.type === "result") {
         const result = message as SDKResultMessage;
-        if (result.subtype === "success" && !generatedMarkdown && result.result) {
+        if (result.subtype !== "success" || result.is_error) {
+          throw new Error(`Bug report generation failed (${result.subtype})`);
+        }
+        completedSuccessfully = true;
+        if (!generatedMarkdown && result.result) {
           generatedMarkdown = result.result;
           charCount = generatedMarkdown.length;
         }
       }
+    }
+
+    // Partial text is not a report until the SDK confirms the turn succeeded.
+    if (!completedSuccessfully || !generatedMarkdown.trim()) {
+      throw new Error("Bug report generation ended without a complete report");
     }
 
     process.stdout.write("\r" + " ".repeat(60) + "\r");

@@ -20,7 +20,9 @@ import {
   type PostgresPool,
   type PostgresPoolClient,
 } from '../../storage/postgres/pool.js';
-import { stripTags } from '../../utils/tag-stripping.js';
+import { stripMemoryTagsFromJsonStrings, stripTags } from '../../utils/tag-stripping.js';
+import { PostgresObservationEmbeddingsRepository } from '../../storage/postgres/observation-embeddings.js';
+import { embedObservationRows } from '../services/ObservationEmbeddingService.js';
 
 // processGeneratedResponse owns the full "we got XML from a provider →
 // persist + link + advance outbox" pipeline. Every side-effect runs inside
@@ -43,10 +45,22 @@ export type ProcessGeneratedResponseOutcome =
       observations: PostgresObservation[];
       privateContentDetected: boolean;
     }
-  | { kind: 'parse_error'; jobId: string; reason: string };
+  | { kind: 'parse_error'; jobId: string; reason: string }
+  | { kind: 'superseded'; jobId: string }
+  // Distinct from parse_error: the provider returned no content at all
+  // (safety block, MAX_TOKENS truncation, gateway hiccup). Detected before
+  // parsing so the failure is attributed to the provider, not the parser,
+  // and the caller can fail fast instead of burning queue retries.
+  | { kind: 'empty_response'; jobId: string; reason: string };
 
 export interface ProcessGeneratedResponseInput {
   pool: PostgresPool;
+  /**
+   * How many events the provider was actually handed. Recorded on the
+   * completion so an `observationCount: 0` always says WHY: nothing was
+   * loaded, or plenty was loaded and the model still declined.
+   */
+  inputEventCount?: number;
   job: PostgresObservationGenerationJob;
   rawText: string;
   modelId?: string;
@@ -68,6 +82,10 @@ export async function processGeneratedResponse(
 ): Promise<ProcessGeneratedResponseOutcome> {
   const { job, rawText } = input;
 
+  if (!rawText.trim()) {
+    return { kind: 'empty_response', jobId: job.id, reason: 'provider returned empty content' };
+  }
+
   const parsed = parseAgentXml(rawText, job.id);
   if (!parsed.valid) {
     return { kind: 'parse_error', jobId: job.id, reason: 'parser rejected response' };
@@ -80,7 +98,7 @@ export async function processGeneratedResponse(
   const skipped = parsed.summary?.skipped === true;
   const privateContentDetected = skipped || observationsToWrite.length === 0;
 
-  const outcome = await persistGeneratedObservations(
+  return persistGeneratedObservations(
     input,
     observationsToWrite.map(observation => ({
       kind: observation.type ?? 'observation',
@@ -97,22 +115,6 @@ export async function processGeneratedResponse(
     })),
     privateContentDetected,
   );
-
-  // Cost/usage metering — AFTER the transaction commits, so a metering insert
-  // failure can NEVER roll back the observation + job writes (Greptile #3078: a
-  // failed insert aborts the tx, and the catch can't un-abort it). Opt-in;
-  // best-effort (logged); awaited so callers observe usage consistently.
-  if (outcome.kind === 'completed' && process.env.CLAUDE_MEM_USAGE_METERING === '1') {
-    try {
-      await recordUsageMetering(input, outcome.observations.length);
-    } catch (usageError) {
-      logger.warn('SYSTEM', 'usage metering record failed (post-commit)', {
-        jobId: input.job.id,
-        error: usageError instanceof Error ? usageError.message : String(usageError),
-      });
-    }
-  }
-  return outcome;
 }
 
 export interface MarkGenerationFailedInput {
@@ -122,6 +124,8 @@ export interface MarkGenerationFailedInput {
   classification?: string;
   retryable: boolean;
   workerId?: string;
+  /** Required for worker failures after claiming; absent for pre-claim guards. */
+  expectedAttempt?: PostgresObservationGenerationJob;
 }
 
 /**
@@ -139,8 +143,12 @@ export async function markGenerationFailed(input: MarkGenerationFailedInput): Pr
       id: input.job.id,
       projectId: input.job.projectId,
       teamId: input.job.teamId,
+      forUpdate: true,
     });
     if (!fresh || fresh.status === 'completed' || fresh.status === 'cancelled') {
+      return;
+    }
+    if (input.expectedAttempt && !ownsProcessingAttempt(fresh, input.expectedAttempt)) {
       return;
     }
 
@@ -190,6 +198,10 @@ export async function processSessionSummaryResponse(
     return { kind: 'parse_error', jobId: job.id, reason: 'session summary processor invoked on non-summary job' };
   }
 
+  if (!rawText.trim()) {
+    return { kind: 'empty_response', jobId: job.id, reason: 'provider returned empty content' };
+  }
+
   const parsed = parseAgentXml(rawText, job.id);
   if (!parsed.valid) {
     return { kind: 'parse_error', jobId: job.id, reason: 'parser rejected summary response' };
@@ -209,6 +221,14 @@ export async function processSessionSummaryResponse(
     : fallbackObservations.map(o => renderObservationContent(o)).join('\n\n');
 
   const privateContentDetected = skipped || summaryContent.trim().length === 0;
+  // `privateContentDetected` cannot tell "the model declined" from "we rendered
+  // nothing", and the parser's own skip_reason was being thrown away, so every
+  // zero-observation completion looked identical. Keep the reason.
+  const skipReason = skipped
+    ? (summary?.skip_reason ?? 'model_skipped')
+    : summaryContent.trim().length === 0
+      ? 'rendered_empty'
+      : null;
 
   const rendered: RenderedObservation[] = privateContentDetected
     ? []
@@ -225,13 +245,27 @@ export async function processSessionSummaryResponse(
         },
       }];
 
-  return persistGeneratedObservations(input, rendered, privateContentDetected);
+  return persistGeneratedObservations(input, rendered, privateContentDetected, skipReason);
 }
 
 interface RenderedObservation {
   kind: string;
   content: string;
   metadata: Record<string, unknown>;
+}
+
+function ownsProcessingAttempt(
+  current: PostgresObservationGenerationJob,
+  expected: PostgresObservationGenerationJob,
+): boolean {
+  // Operator retry can reuse an attempt number, and the same worker can claim
+  // again. Include the lossless lock timestamp rather than its JS Date value.
+  return current.status === 'processing'
+    && expected.status === 'processing'
+    && expected.lockedAtToken != null
+    && current.lockedAtToken === expected.lockedAtToken
+    && current.lockedBy === expected.lockedBy
+    && current.attempts === expected.attempts;
 }
 
 // Shared persist transaction for both the per-event and session-summary
@@ -244,22 +278,48 @@ async function persistGeneratedObservations(
   input: ProcessGeneratedResponseInput,
   rendered: RenderedObservation[],
   privateContentDetected: boolean,
+  skipReason: string | null = null,
 ): Promise<ProcessGeneratedResponseOutcome> {
   const { job } = input;
 
-  return withPostgresTransaction(input.pool, async (client) => {
+  // Metadata feeds both the viewer and embedding parts, independently of the
+  // rendered content. Apply the same memory-tag boundary before either use.
+  rendered = rendered.map(observation => ({
+    ...observation,
+    metadata: stripMemoryTagsFromJsonStrings(observation.metadata),
+  }));
+
+  // Vectors for search by meaning, computed before the transaction opens so
+  // the model never holds it, and written beside each row inside it. Null when
+  // unavailable: the rows are written anyway and the backfill at the next
+  // start embeds them. Index-aligned with `rendered`, not with the
+  // rows the loop below writes: a row it skips is embedded and discarded, so
+  // the loop's index (which also feeds the generation key) picks each vector.
+  const embedded = await embedObservationRows(
+    input.pool,
+    rendered.map(({ kind, content, metadata }) => ({
+      kind,
+      content: stripTags(content).stripped,
+      metadata,
+    })),
+  );
+
+  let completedNow = false;
+  const outcome = await withPostgresTransaction<ProcessGeneratedResponseOutcome>(input.pool, async (client) => {
     const obsRepo = new PostgresObservationRepository(client);
+    const embeddingsRepo = new PostgresObservationEmbeddingsRepository(client);
     const sourcesRepo = new PostgresObservationSourcesRepository(client);
     const jobsRepo = new PostgresObservationGenerationJobRepository(client);
     const eventsLogRepo = new PostgresObservationGenerationJobEventsRepository(client);
     const auditRepo = new PostgresAuthRepository(client);
 
-    // Reload the job inside the transaction. If it was already completed
-    // by another worker, return its existing observations idempotently.
+    // Lock before checking ownership, keeping reclaim/retry/cancellation out
+    // until observations, sources, audit and the outbox transition commit.
     const fresh = await jobsRepo.getByIdForScope({
       id: job.id,
       projectId: job.projectId,
       teamId: job.teamId,
+      forUpdate: true,
     });
     if (!fresh) {
       throw new Error(`generation job ${job.id} not found in scope`);
@@ -275,6 +335,11 @@ async function persistGeneratedObservations(
         observations: [],
         privateContentDetected,
       };
+    }
+
+    if (!ownsProcessingAttempt(fresh, job)) {
+      logger.info('SYSTEM', 'generation attempt superseded; discarding response', { jobId: job.id });
+      return { kind: 'superseded', jobId: job.id };
     }
 
     // Folder label travels on the server_session: the worker derives it from
@@ -319,6 +384,23 @@ async function persistGeneratedObservations(
         createdByJobId: fresh.id,
       });
       persisted.push(observation);
+
+      if (embedded) {
+        // Vectors are best-effort: a failed insert rolls back to this savepoint
+        // and leaves the row to the backfill, instead of aborting the
+        // transaction and discarding the generated observations with it.
+        await client.query('SAVEPOINT observation_vectors');
+        try {
+          await embeddingsRepo.upsert({ observationId: observation.id, ...embedded[index]! });
+          await client.query('RELEASE SAVEPOINT observation_vectors');
+        } catch (error) {
+          await client.query('ROLLBACK TO SAVEPOINT observation_vectors');
+          logger.warn('SYSTEM', 'observation saved without vectors; the backfill embeds it at the next start', {
+            observationId: observation.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
 
       await sourcesRepo.addSource({
         observationId: observation.id,
@@ -393,6 +475,8 @@ async function persistGeneratedObservations(
         model: input.modelId ?? null,
         observationCount: persisted.length,
         privateContentDetected,
+        inputEventCount: input.inputEventCount ?? null,
+        skipReason,
         workerId: input.workerId ?? null,
         sourceType: fresh.sourceType,
       },
@@ -430,6 +514,7 @@ async function persistGeneratedObservations(
       });
     }
 
+    completedNow = true;
     return {
       kind: 'completed' as const,
       jobId: fresh.id,
@@ -437,6 +522,22 @@ async function persistGeneratedObservations(
       privateContentDetected,
     };
   });
+
+  // Both event and summary jobs consume provider tokens. Meter only the
+  // transaction that completed this attempt: a terminal replay also returns
+  // `completed`, but must not charge the same response again. Keep writes
+  // outside the transaction so a metering failure cannot undo saved memory.
+  if (completedNow && outcome.kind === 'completed' && process.env.CLAUDE_MEM_USAGE_METERING === '1') {
+    try {
+      await recordUsageMetering(input, outcome.observations.length);
+    } catch (usageError) {
+      logger.warn('SYSTEM', 'usage metering record failed (post-commit)', {
+        jobId: input.job.id,
+        error: usageError instanceof Error ? usageError.message : String(usageError),
+      });
+    }
+  }
+  return outcome;
 }
 
 // Post-commit usage metering writes (tokens + observation counts). Extracted

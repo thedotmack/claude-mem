@@ -1,6 +1,7 @@
 import {
   closeSync,
   existsSync,
+  fchmodSync,
   fsyncSync,
   lstatSync,
   mkdirSync,
@@ -27,6 +28,91 @@ export function parseJsonWithBom<T = unknown>(raw: string): T {
   return JSON.parse(stripUtf8Bom(raw)) as T;
 }
 
+/**
+ * Strip `//` and `/* *\/` comments and trailing commas from JSONC text,
+ * then parse it. Zed's settings.json is JSONC: the editor accepts both,
+ * strict JSON.parse does not. Strings are copied verbatim, so `//`, `/*`,
+ * `,}` and friends inside a string value are never touched. Throws on an
+ * unterminated string or block comment; JSON.parse throws on anything else
+ * that is still malformed.
+ */
+export function stripJsonComments(raw: string): string {
+  let out = '';
+  let i = 0;
+  while (i < raw.length) {
+    const ch = raw[i];
+    if (ch === '"') {
+      // Copy the string verbatim, honouring backslash escapes.
+      const start = i;
+      i++;
+      let closed = false;
+      while (i < raw.length) {
+        if (raw[i] === '\\') {
+          i += 2;
+          continue;
+        }
+        if (raw[i] === '"') {
+          i++;
+          closed = true;
+          break;
+        }
+        if (raw[i] === '\n') throw new Error('Unterminated string in JSON');
+        i++;
+      }
+      if (!closed) throw new Error('Unterminated string in JSON');
+      out += raw.slice(start, i);
+      continue;
+    }
+    if (ch === '/' && raw[i + 1] === '/') {
+      const newline = raw.indexOf('\n', i + 2);
+      out += ' ';
+      i = newline === -1 ? raw.length : newline;
+      continue;
+    }
+    if (ch === '/' && raw[i + 1] === '*') {
+      const end = raw.indexOf('*/', i + 2);
+      if (end === -1) throw new Error('Unterminated block comment in JSON');
+      out += ' ';
+      i = end + 2;
+      continue;
+    }
+    if (ch === ',') {
+      // A trailing comma: drop it when only whitespace and comments
+      // separate it from a closing `}` or `]`.
+      let j = i + 1;
+      for (;;) {
+        while (j < raw.length && (raw[j] === ' ' || raw[j] === '\t' || raw[j] === '\n' || raw[j] === '\r')) j++;
+        if (raw[j] === '/' && raw[j + 1] === '/') {
+          const newline = raw.indexOf('\n', j + 2);
+          j = newline === -1 ? raw.length : newline;
+          continue;
+        }
+        if (raw[j] === '/' && raw[j + 1] === '*') {
+          const end = raw.indexOf('*/', j + 2);
+          if (end === -1) break;
+          j = end + 2;
+          continue;
+        }
+        break;
+      }
+      if (raw[j] === '}' || raw[j] === ']') {
+        i++;
+        continue;
+      }
+      out += ch;
+      i++;
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  return out;
+}
+
+export function parseJsonc<T = unknown>(raw: string): T {
+  return JSON.parse(stripJsonComments(stripUtf8Bom(raw))) as T;
+}
+
 export function readJsonFileWithBom<T = unknown>(filepath: string): T {
   return parseJsonWithBom<T>(readFileSync(filepath, 'utf-8'));
 }
@@ -38,7 +124,98 @@ export function ensureDirectoryExists(directoryPath: string): void {
 }
 
 /**
- * Write JSON to disk with crash-safe atomic-rename semantics.
+ * The realpath of `filePath`, or, when it doesn't exist yet, the realpath of
+ * its deepest existing ancestor with the missing tail appended. Relative link
+ * targets must resolve against this physical location, not the logical path
+ * the link was reached through.
+ */
+function physicalPathOf(filePath: string): string {
+  try {
+    return realpathSync(filePath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    const parent = dirname(filePath);
+    if (parent === filePath) return filePath;
+    return join(physicalPathOf(parent), basename(filePath));
+  }
+}
+
+/**
+ * Where an atomic write to `filePath` must land so a symlink at that path
+ * stays a symlink: the final target of the link chain, also when that target
+ * doesn't exist yet. Renaming a temp file over the link itself would replace
+ * it with a regular file and orphan the file it pointed to.
+ *
+ * A loop throws ELOOP, and any resolution failure other than a missing target
+ * is thrown: those must never turn a link into a regular file.
+ */
+export function resolveSymlinkWriteTarget(filePath: string): string {
+  let resolved = filePath;
+  const followed = new Set<string>();
+  try {
+    while (lstatSync(resolved).isSymbolicLink()) {
+      const absolute = resolve(resolved);
+      if (followed.has(absolute)) {
+        throw Object.assign(new Error(`Symlink loop at ${resolved}`), { code: 'ELOOP' });
+      }
+      followed.add(absolute);
+      try {
+        return realpathSync(resolved);
+      } catch (realpathErr) {
+        // A missing final target can be created. Loops, permission errors and
+        // other resolution failures must never turn a link into a regular file.
+        if ((realpathErr as NodeJS.ErrnoException).code !== 'ENOENT') throw realpathErr;
+        const realpathError = realpathErr instanceof Error ? realpathErr : new Error(String(realpathErr));
+        emitDiagnostic(`claude-mem: realpathSync failed for ${resolved}, resolving symlink manually: ${realpathError.message}\n`);
+        const linkTarget = readlinkSync(resolved);
+        resolved = resolve(physicalPathOf(dirname(resolve(resolved))), linkTarget);
+      }
+    }
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT') {
+      throw err;
+    }
+  }
+  return resolved;
+}
+
+export const WINDOWS_RENAME_RETRY_CODES = new Set(['EPERM', 'EBUSY', 'EACCES']);
+/** About 0.6 s in total, the same order as graceful-fs's Windows rename retry. */
+const WINDOWS_RENAME_RETRY_DELAYS_MS = [10, 20, 40, 80, 160, 320];
+
+export function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Rename `from` over `to`. On Windows, a rename over a file that antivirus,
+ * the search indexer or a sync client holds open for a moment fails with
+ * EPERM, EBUSY or EACCES, so retry those with a short bounded backoff.
+ */
+export function renameWithWindowsRetry(
+  from: string,
+  to: string,
+  rename: (from: string, to: string) => void = renameSync,
+  onWindows: boolean = IS_WINDOWS_PLATFORM
+): void {
+  if (!onWindows) return rename(from, to);
+  for (let attempt = 0; ; attempt++) {
+    try {
+      rename(from, to);
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code ?? '';
+      if (attempt >= WINDOWS_RENAME_RETRY_DELAYS_MS.length || !WINDOWS_RENAME_RETRY_CODES.has(code)) {
+        throw err;
+      }
+      sleepSync(WINDOWS_RENAME_RETRY_DELAYS_MS[attempt]);
+    }
+  }
+}
+
+/**
+ * Write a payload to disk with crash-safe atomic-rename semantics.
  *
  * Sequence: resolve symlinks at the destination, write payload to a uniquely
  * named temp file in the same directory as the resolved target, loop writeSync
@@ -47,43 +224,42 @@ export function ensureDirectoryExists(directoryPath: string): void {
  * crash mid-write leaves either the old contents or the new contents, never a
  * truncated file.
  */
-export function writeJsonFileAtomic(filepath: string, data: any): void {
-  let resolved = filepath;
-  try {
-    if (lstatSync(filepath).isSymbolicLink()) {
-      try {
-        resolved = realpathSync(filepath);
-      } catch (realpathErr) {
-        const realpathError = realpathErr instanceof Error ? realpathErr : new Error(String(realpathErr));
-        emitDiagnostic(`claude-mem: realpathSync failed for ${filepath}, resolving symlink manually: ${realpathError.message}\n`);
-        const linkTarget = readlinkSync(filepath);
-        resolved = resolve(dirname(filepath), linkTarget);
-      }
-    }
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code !== 'ENOENT' && code !== 'ENOTDIR') {
-      throw err;
-    }
-  }
+export interface AtomicJsonWriteOptions {
+  /** Force the destination mode from the first byte written (for secrets). */
+  mode?: number;
+}
+
+function writeBufferAtomic(
+  filepath: string,
+  payload: Buffer,
+  options: AtomicJsonWriteOptions = {}
+): void {
+  const resolved = resolveSymlinkWriteTarget(filepath);
 
   ensureDirectoryExists(dirname(resolved));
 
   const dir = dirname(resolved);
   const base = basename(resolved);
   const tmpPath = join(dir, `.${base}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`);
-  const payload = Buffer.from(JSON.stringify(data, null, 2) + '\n', 'utf-8');
 
-  let mode: number | undefined;
-  try {
-    mode = statSync(resolved).mode & 0o777;
-  } catch {
-    // File does not exist yet; let openSync apply the process umask.
+  let mode = options.mode;
+  if (mode === undefined) {
+    try {
+      mode = statSync(resolved).mode & 0o777;
+    } catch {
+      // File does not exist yet; let openSync apply the process umask.
+    }
   }
 
   let fd: number | undefined;
   try {
-    fd = mode !== undefined ? openSync(tmpPath, 'w', mode) : openSync(tmpPath, 'w');
+    // Exclusive create (see #5145): the random name keeps a planted symlink
+    // from targeting the temp path, and 'wx' keeps an existing file there from
+    // being followed at all.
+    fd = mode !== undefined ? openSync(tmpPath, 'wx', mode) : openSync(tmpPath, 'wx');
+    // open(2) masks the mode with the umask (0660 under 022 lands as 0640), so
+    // set it exactly before the first byte: the rename must keep the file's mode.
+    if (mode !== undefined && !IS_WINDOWS_PLATFORM) fchmodSync(fd, mode);
 
     let written = 0;
     while (written < payload.length) {
@@ -97,7 +273,7 @@ export function writeJsonFileAtomic(filepath: string, data: any): void {
     fsyncSync(fd);
     closeSync(fd);
     fd = undefined;
-    renameSync(tmpPath, resolved);
+    renameWithWindowsRetry(tmpPath, resolved);
 
     if (!IS_WINDOWS_PLATFORM) {
       let dirFd: number | undefined;
@@ -120,4 +296,26 @@ export function writeJsonFileAtomic(filepath: string, data: any): void {
     try { unlinkSync(tmpPath); } catch { /* tempfile may not exist */ }
     throw err;
   }
+}
+
+/** Write JSON to disk atomically: pretty-printed, newline-terminated, via writeBufferAtomic. */
+export function writeJsonFileAtomic(
+  filepath: string,
+  data: any,
+  options: AtomicJsonWriteOptions = {}
+): void {
+  writeBufferAtomic(filepath, Buffer.from(JSON.stringify(data, null, 2) + '\n', 'utf-8'), options);
+}
+
+/**
+ * Write a text file (YAML, TOML, plain text) to disk atomically via
+ * writeBufferAtomic, writing exactly the bytes given: no serialization, no
+ * added trailing newline.
+ */
+export function writeTextFileAtomic(
+  filepath: string,
+  text: string,
+  options: AtomicJsonWriteOptions = {}
+): void {
+  writeBufferAtomic(filepath, Buffer.from(text, 'utf-8'), options);
 }

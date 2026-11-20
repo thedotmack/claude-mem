@@ -1,0 +1,682 @@
+import { describe, it, expect } from 'bun:test';
+import {
+  AutoClearController,
+  CONTINUE_PROMPT,
+  continuationBlanks,
+  inTurnSaveRequest,
+  savePrompt,
+  type AutoClearHost,
+} from '../../src/mods/auto-clear/controller.js';
+import type { AutoClearSettings } from '../../src/mods/auto-clear/settings.js';
+
+const WRITE = 'mcp__plugin_claude-mem_mcp-search__work_state_write';
+const READ = 'mcp__plugin_claude-mem_mcp-search__work_state_read';
+const SAVED = 'Saved to "auth-refactor" in claude-mem. Still open in it:\n- [doing] wire the login route';
+
+/** A host that records what the controller asks of Claude Code; deferred tasks run when the test flushes them. */
+function fakeHost(options: { percent?: number; settings?: Partial<AutoClearSettings>; interactive?: boolean } = {}) {
+  const calls: string[] = [];
+  const notes: string[] = [];
+  const deferred: Array<() => Promise<void>> = [];
+  const state = {
+    percent: options.percent as number | undefined,
+    settings: { enabled: true, percent: 33, ...options.settings } as AutoClearSettings,
+    interactive: options.interactive ?? true,
+    failClear: false,
+    failAsUser: false,
+  };
+  const host: AutoClearHost = {
+    settings: async () => state.settings,
+    contextPercent: async () => state.percent,
+    isInteractive: async () => state.interactive,
+    submitPrompt: async text => { calls.push(`prompt:${text.split('\n')[0]}`); },
+    clear: async () => {
+      if (state.failClear) throw new Error('no /clear');
+      calls.push('clear');
+    },
+    submitAsUser: async text => {
+      if (state.failAsUser) throw new Error('no submit');
+      calls.push(`user:${text}`);
+    },
+    note: text => { notes.push(text); },
+    defer: task => { deferred.push(task); },
+  };
+  const flush = async () => {
+    while (deferred.length > 0) await deferred.shift()!();
+  };
+  return { host, calls, notes, state, flush };
+}
+
+const answered = { isAborted: false, reason: 'answer' };
+const tool = (name: string, text = 'ok', extra: Partial<{ agentId: string; isError: boolean }> = {}) => ({
+  tool: name, text, isError: false, ...extra,
+});
+
+/** Hold one host response after it has sampled the old conversation. */
+function holdRead(host: AutoClearHost, method: 'settings' | 'contextPercent' | 'isInteractive') {
+  const read = host[method];
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  Object.assign(host, {
+    [method]: async () => {
+      const value = await read();
+      entered();
+      await gate;
+      return value;
+    },
+  });
+  return { started, release };
+}
+
+describe('auto-clear controller', () => {
+  it('does nothing below the threshold', async () => {
+    const { host, calls, notes, flush } = fakeHost({ percent: 32 });
+    const controller = new AutoClearController(host);
+    expect(await controller.onToolCallEnd(tool('Bash'))).toBeNull();
+    await controller.onTurnEnd(answered);
+    await flush();
+    expect(calls).toEqual([]);
+    expect(notes).toEqual([]);
+  });
+
+  it('asks Claude to save mid-turn, then clears and sends "continue" once the save is the last thing it did', async () => {
+    const { host, calls, notes, flush } = fakeHost({ percent: 34 });
+    const controller = new AutoClearController(host);
+
+    const note = await controller.onToolCallEnd(tool('Bash'));
+    expect(note).toContain('34% of the context window');
+    expect(note).toContain('work_state_write');
+    expect(notes[0]).toContain('Context is at 34%');
+    // Asked once per conversation, not on every later tool call.
+    expect(await controller.onToolCallEnd(tool('Read'))).toBeNull();
+
+    await controller.onToolCallEnd(tool(WRITE, SAVED));
+    await controller.onTurnEnd(answered);
+    await flush();
+    expect(calls).toEqual(['clear', `user:${CONTINUE_PROMPT}`]);
+  });
+
+  it('counts a save followed only by reading the work state back', async () => {
+    const { host, calls, flush } = fakeHost({ percent: 40 });
+    const controller = new AutoClearController(host);
+    await controller.onToolCallEnd(tool('Bash'));
+    await controller.onToolCallEnd(tool(WRITE, SAVED));
+    await controller.onToolCallEnd(tool(READ, 'open lists'));
+    await controller.onTurnEnd(answered);
+    await flush();
+    expect(calls).toEqual(['clear', 'user:continue']);
+  });
+
+  it('treats a save followed by more work as stale and asks again in a turn of its own', async () => {
+    const { host, calls, flush } = fakeHost({ percent: 40 });
+    const controller = new AutoClearController(host);
+    await controller.onToolCallEnd(tool('Bash'));
+    await controller.onToolCallEnd(tool(WRITE, SAVED));
+    await controller.onToolCallEnd(tool('Edit'));
+    await controller.onTurnEnd(answered);
+    await flush();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toStartWith('prompt:This conversation now uses 40%');
+
+    // The save prompt's turn writes the work state: now it clears.
+    await controller.onToolCallEnd(tool(WRITE, SAVED));
+    await controller.onTurnEnd(answered);
+    await flush();
+    expect(calls.slice(1)).toEqual(['clear', 'user:continue']);
+  });
+
+  it('sends the save request as a prompt when the turn crossed the threshold without a tool call', async () => {
+    const { host, calls, flush } = fakeHost({ percent: 50 });
+    const controller = new AutoClearController(host);
+    await controller.onTurnEnd(answered);
+    await flush();
+    expect(calls).toEqual(['prompt:This conversation now uses 50% of the context window, past the 33% auto-clear point set in claude-mem. When this turn ends, claude-mem clears the conversation and starts the fresh one with your open work state and this message, filled in from your last save: You are working on "<list>" and recently completed "<task>". Pick back up on our overarching goal "<goal>" from where you left off.']);
+
+    await controller.onToolCallEnd(tool(WRITE, SAVED));
+    await controller.onTurnEnd(answered);
+    await flush();
+    expect(calls.slice(1)).toEqual(['clear', 'user:continue']);
+  });
+
+  it('never clears when nothing was saved, and waits for the next /clear', async () => {
+    const { host, calls, notes, flush } = fakeHost({ percent: 50 });
+    const controller = new AutoClearController(host);
+    await controller.onTurnEnd(answered);
+    await flush();
+    await controller.onTurnEnd(answered); // the save prompt's turn, no write
+    await flush();
+    expect(calls).toHaveLength(1);
+    expect(notes.at(-1)).toContain('did not save the work state, so the conversation was not cleared');
+
+    // Paused: later turns ask nothing.
+    await controller.onTurnEnd(answered);
+    expect(await controller.onToolCallEnd(tool('Bash'))).toBeNull();
+    await flush();
+    expect(calls).toHaveLength(1);
+
+    // The person's own /clear starts a new conversation, and auto-clear is back.
+    controller.onConversationEnd();
+    expect(await controller.onToolCallEnd(tool('Bash'))).not.toBeNull();
+  });
+
+  it('does not count a write that failed or was refused', async () => {
+    for (const failed of [
+      tool(WRITE, 'Not saved: this project is excluded from claude-mem (CLAUDE_MEM_EXCLUDED_PROJECTS).'),
+      tool(WRITE, 'Worker API error (500)', { isError: true }),
+      // A refused call is stored as an error result.
+      tool(WRITE, 'Permission denied.', { isError: true }),
+      // An error result does not count even when its text reads like a save.
+      tool(WRITE, SAVED, { isError: true }),
+    ]) {
+      const { host, calls, flush } = fakeHost({ percent: 40 });
+      const controller = new AutoClearController(host);
+      await controller.onToolCallEnd(tool('Bash'));
+      await controller.onToolCallEnd(failed);
+      await controller.onTurnEnd(answered);
+      await flush();
+      expect(calls.some(call => call === 'clear')).toBe(false);
+    }
+  });
+
+  it('does not clear when the save result cannot be read (Code Mode), says so, and stays off after that', async () => {
+    const { host, calls, notes, flush } = fakeHost({ percent: 40 });
+    const controller = new AutoClearController(host);
+    await controller.onToolCallEnd(tool('Bash'));
+    // A script's tool calls are stored with no result text, so a save looks like a blank success.
+    await controller.onToolCallEnd(tool(WRITE, ''));
+    expect(notes.at(-1)).toContain('(Code Mode)');
+    expect(notes.at(-1)).toContain('did not clear the conversation');
+    expect(notes.at(-1)).toContain('until Claude Code restarts');
+    const notesAfterStop = notes.length;
+
+    await controller.onTurnEnd(answered);
+    await flush();
+    expect(calls).toEqual([]);
+
+    // Nothing more is asked in this session, on a tool result or at a turn end, even past the threshold.
+    expect(await controller.onToolCallEnd(tool('Bash'))).toBeNull();
+    await controller.onTurnEnd(answered);
+    await flush();
+    expect(calls).toEqual([]);
+    expect(notes).toHaveLength(notesAfterStop);
+
+    // The person's own /clear does not bring it back: it stays off until Claude Code restarts.
+    controller.onConversationEnd();
+    expect(await controller.onToolCallEnd(tool('Bash'))).toBeNull();
+    await controller.onTurnEnd(answered);
+    await flush();
+    expect(calls).toEqual([]);
+  });
+
+  it('drops a queued save prompt when the save result turns out to be unreadable', async () => {
+    const { host, calls, flush } = fakeHost({ percent: 50 });
+    const controller = new AutoClearController(host);
+    await controller.onTurnEnd(answered); // queues the save prompt
+    await controller.onToolCallEnd(tool(WRITE, '  \n'));
+    await flush();
+    expect(calls).toEqual([]);
+  });
+
+  it('leaves a blank write result alone while nothing was asked of Claude, or an error result', async () => {
+    const { host, calls, notes, flush } = fakeHost({ percent: 40 });
+    const controller = new AutoClearController(host);
+    // Idle: a write nobody asked for says nothing about whether results can be read.
+    await controller.onToolCallEnd(tool(WRITE, ''));
+    expect(notes).toEqual([]);
+    await controller.onToolCallEnd(tool('Bash'));
+    // An error result is an error, not a blind session.
+    await controller.onToolCallEnd(tool(WRITE, '', { isError: true }));
+    expect(notes.every(note => !note.includes('Code Mode'))).toBe(true);
+    await controller.onToolCallEnd(tool(WRITE, SAVED));
+    await controller.onTurnEnd(answered);
+    await flush();
+    expect(calls).toEqual(['clear', 'user:continue']);
+  });
+
+  it('does not clear when the person stops the turn, even after a save', async () => {
+    const { host, calls, notes, flush } = fakeHost({ percent: 40 });
+    const controller = new AutoClearController(host);
+    await controller.onToolCallEnd(tool('Bash'));
+    await controller.onToolCallEnd(tool(WRITE, SAVED));
+    await controller.onTurnEnd({ isAborted: true, reason: 'aborted' });
+    await flush();
+    expect(calls).toEqual([]);
+    expect(notes.at(-1)).toContain('stopped');
+  });
+
+  it('ignores subagents: their tool calls, saves and turns', async () => {
+    const { host, calls, flush } = fakeHost({ percent: 60 });
+    const controller = new AutoClearController(host);
+    expect(await controller.onToolCallEnd(tool('Bash', 'ok', { agentId: 'a1' }))).toBeNull();
+    await controller.onTurnEnd({ ...answered, agentId: 'a1' });
+    await flush();
+    expect(calls).toEqual([]);
+
+    await controller.onToolCallEnd(tool('Bash'));
+    await controller.onToolCallEnd(tool(WRITE, SAVED, { agentId: 'a1' }));
+    await controller.onTurnEnd(answered);
+    await flush();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toStartWith('prompt:');
+  });
+
+  it('stays out of -p runs and SDK sessions, and honors the settings', async () => {
+    for (const options of [
+      { percent: 90, interactive: false },
+      { percent: 90, settings: { enabled: false } },
+      { percent: 90, settings: { percent: 95 } },
+      { percent: undefined },
+    ]) {
+      const { host, calls, flush } = fakeHost(options);
+      const controller = new AutoClearController(host);
+      expect(await controller.onToolCallEnd(tool('Bash'))).toBeNull();
+      await controller.onTurnEnd(answered);
+      await flush();
+      expect(calls).toEqual([]);
+    }
+  });
+
+  it('keeps going cycle after cycle while each fresh conversation starts below the threshold', async () => {
+    const { host, calls, state, flush } = fakeHost({ percent: 40 });
+    let controller!: AutoClearController;
+    const clearing = host.clear;
+    host.clear = async () => {
+      await clearing();
+      controller.onConversationEnd(); // our own /clear ends the old conversation
+    };
+    controller = new AutoClearController(host);
+    for (let cycle = 0; cycle < 3; cycle += 1) {
+      state.percent = 40;
+      await controller.onToolCallEnd(tool('Bash'));
+      await controller.onToolCallEnd(tool(WRITE, SAVED));
+      await controller.onTurnEnd(answered);
+      await flush();
+      controller.onTurnStart(); // the "continue" turn
+      // The fresh conversation's first reading is low.
+      state.percent = 6;
+      expect(await controller.onToolCallEnd(tool('Read'))).toBeNull();
+    }
+    expect(calls.filter(call => call === 'clear')).toHaveLength(3);
+    expect(calls.filter(call => call === 'user:continue')).toHaveLength(3);
+  });
+
+  it('turns itself off when a fresh conversation already starts at the threshold, instead of clearing in a loop', async () => {
+    const { host, calls, notes, state, flush } = fakeHost({ percent: 40 });
+    const controller = new AutoClearController(host);
+    await controller.onToolCallEnd(tool('Bash'));
+    await controller.onToolCallEnd(tool(WRITE, SAVED));
+    await controller.onTurnEnd(answered);
+    await flush();
+    expect(calls).toEqual(['clear', 'user:continue']);
+
+    state.percent = 35; // system prompt and context alone are past 33%
+    expect(await controller.onToolCallEnd(tool('Read'))).toBeNull();
+    await controller.onTurnEnd(answered);
+    await flush();
+    expect(calls).toEqual(['clear', 'user:continue']);
+    expect(notes.at(-1)).toContain('auto-clear is off until Claude Code restarts');
+  });
+
+  it('lets a manual /clear cancel a request in flight', async () => {
+    const { host, calls, flush } = fakeHost({ percent: 40 });
+    const controller = new AutoClearController(host);
+    await controller.onToolCallEnd(tool('Bash'));
+    await controller.onToolCallEnd(tool(WRITE, SAVED));
+    controller.onConversationEnd(); // the person typed /clear mid-turn
+    await controller.onTurnEnd({ ...answered });
+    await flush();
+    // The new conversation is measured afresh, and nothing from the old one is cleared again.
+    expect(calls.filter(call => call === 'clear')).toHaveLength(0);
+  });
+
+  it('does not start the flow when a turn that crossed the threshold was stopped (Esc)', async () => {
+    const { host, calls, flush } = fakeHost({ percent: 50 });
+    const controller = new AutoClearController(host);
+    await controller.onTurnEnd({ isAborted: true, reason: 'aborted' });
+    await controller.onTurnEnd({ isAborted: false, reason: 'error' });
+    await flush();
+    expect(calls).toEqual([]);
+    // The next turn that ends normally still starts it.
+    await controller.onTurnEnd(answered);
+    await flush();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toStartWith('prompt:');
+  });
+
+  it('drops a queued save prompt when the person clears before it is sent', async () => {
+    const { host, calls, flush } = fakeHost({ percent: 50 });
+    const controller = new AutoClearController(host);
+    await controller.onTurnEnd(answered); // queues the save prompt
+    controller.onConversationEnd(); // the person's /clear lands first
+    await flush();
+    expect(calls).toEqual([]);
+  });
+
+  for (const method of ['settings', 'contextPercent', 'isInteractive'] as const) {
+    for (const event of ['tool', 'turn'] as const) {
+      for (const transition of ['conversation end', 'turn start'] as const) {
+        it(`ignores an old ${event} ${method} response after ${transition}`, async () => {
+          const { host, calls, notes, state, flush } = fakeHost({ percent: 50 });
+          const controller = new AutoClearController(host);
+          const blocked = holdRead(host, method);
+          const pending = event === 'tool'
+            ? controller.onToolCallEnd(tool('Read'))
+            : controller.onTurnEnd(answered);
+          await blocked.started;
+          if (transition === 'conversation end') controller.onConversationEnd();
+          else controller.onTurnStart();
+          blocked.release();
+          const result = await pending;
+          if (event === 'tool') expect(result).toBeNull();
+          await flush();
+          expect(calls).toEqual([]);
+          expect(notes).toEqual([]);
+
+          // Dropping a stale response must not pause or disable the current turn.
+          state.percent = 10;
+          expect(await controller.onToolCallEnd(tool('Read'))).toBeNull();
+          state.percent = 40;
+          expect(await controller.onToolCallEnd(tool('Edit'))).toContain('work_state_write');
+          await controller.onToolCallEnd(tool(WRITE, SAVED));
+          await controller.onTurnEnd(answered);
+          await flush();
+          expect(calls).toEqual(['clear', 'user:continue']);
+        });
+      }
+    }
+
+    for (const ending of [{ isAborted: true, reason: 'aborted' }, { isAborted: false, reason: 'error' }]) {
+      it(`ignores an old tool ${method} response after the turn was ${ending.reason}`, async () => {
+        const { host, calls, notes, flush } = fakeHost({ percent: 50 });
+        const controller = new AutoClearController(host);
+        const blocked = holdRead(host, method);
+        const pending = controller.onToolCallEnd(tool('Read'));
+        await blocked.started;
+        await controller.onTurnEnd(ending);
+        blocked.release();
+        expect(await pending).toBeNull();
+        await flush();
+        expect(calls).toEqual([]);
+        expect(notes).toEqual([]);
+        controller.onTurnStart();
+        expect(await controller.onToolCallEnd(tool('Read'))).toContain('work_state_write');
+      });
+    }
+
+    it(`uses the turn-end reading after an old tool ${method} response`, async () => {
+      const { host, calls, flush } = fakeHost({ percent: 50 });
+      const controller = new AutoClearController(host);
+      const blocked = holdRead(host, method);
+      const pending = controller.onToolCallEnd(tool('Read'));
+      await blocked.started;
+      const ending = controller.onTurnEnd(answered);
+      blocked.release();
+      expect(await pending).toBeNull();
+      await ending;
+      await flush();
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toStartWith('prompt:This conversation now uses 50%');
+    });
+  }
+
+  it('drops the follow-up save prompt when its context read outlives the conversation', async () => {
+    const { host, calls, state, flush } = fakeHost({ percent: 40 });
+    const controller = new AutoClearController(host);
+    await controller.onToolCallEnd(tool('Bash')); // asks for a save, but no save follows
+    const blocked = holdRead(host, 'contextPercent');
+    const pending = controller.onTurnEnd(answered);
+    await blocked.started;
+    controller.onConversationEnd();
+    state.percent = 10;
+    blocked.release();
+    await pending;
+    await flush();
+    expect(calls).toEqual([]);
+    expect(await controller.onToolCallEnd(tool('Read'))).toBeNull();
+  });
+
+  it('keeps a pending main-turn reading when a subagent turn ends', async () => {
+    const { host, calls, flush } = fakeHost({ percent: 40 });
+    const controller = new AutoClearController(host);
+    const blocked = holdRead(host, 'contextPercent');
+    const pending = controller.onToolCallEnd(tool('Read'));
+    await blocked.started;
+    await controller.onTurnEnd({ ...answered, agentId: 'subagent' });
+    blocked.release();
+    expect(await pending).toContain('work_state_write');
+    await controller.onToolCallEnd(tool(WRITE, SAVED));
+    await controller.onTurnEnd(answered);
+    await flush();
+    expect(calls).toEqual(['clear', 'user:continue']);
+  });
+
+  it('drops a pending clear when the person clears or resumes first, so the new conversation is left alone', async () => {
+    const { host, calls, flush } = fakeHost({ percent: 40 });
+    const controller = new AutoClearController(host);
+    await controller.onToolCallEnd(tool('Bash'));
+    await controller.onToolCallEnd(tool(WRITE, SAVED));
+    await controller.onTurnEnd(answered); // decides to clear; the clear is deferred
+    controller.onConversationEnd(); // the person's /clear or /resume runs first
+    await flush();
+    expect(calls).toEqual([]);
+  });
+
+  it('waits when a prompt the person typed starts before the clear, and asks for a fresh save after it', async () => {
+    const { host, calls, flush } = fakeHost({ percent: 40 });
+    const controller = new AutoClearController(host);
+    await controller.onToolCallEnd(tool('Bash'));
+    await controller.onToolCallEnd(tool(WRITE, SAVED));
+    await controller.onTurnEnd(answered); // decides to clear
+    controller.onTurnStart(); // the queued prompt the person typed runs first
+    await flush();
+    expect(calls).toEqual([]);
+
+    // That turn works on; past the threshold it is asked to save again, and only then cleared.
+    const note = await controller.onToolCallEnd(tool('Edit'));
+    expect(note).toContain('work_state_write');
+    await controller.onToolCallEnd(tool(WRITE, SAVED));
+    await controller.onTurnEnd(answered);
+    await flush();
+    expect(calls).toEqual(['clear', 'user:continue']);
+  });
+
+  it('does not send "continue" when a prompt the person typed ran while /clear waited for the session', async () => {
+    const { host, calls, notes, flush } = fakeHost({ percent: 40 });
+    let controller!: AutoClearController;
+    const clearing = host.clear;
+    host.clear = async () => {
+      // /clear queues behind a turn that starts in the meantime, then runs as our own clear.
+      controller.onTurnStart();
+      await clearing();
+      controller.onConversationEnd();
+    };
+    controller = new AutoClearController(host);
+    await controller.onToolCallEnd(tool('Bash'));
+    await controller.onToolCallEnd(tool(WRITE, SAVED));
+    await controller.onTurnEnd(answered);
+    await flush();
+    expect(calls).toEqual(['clear']);
+    expect(notes.at(-1)).toContain('Tell Claude where to pick up');
+  });
+
+  it('reports a /clear that could not run and pauses', async () => {
+    const { host, calls, notes, state, flush } = fakeHost({ percent: 40 });
+    state.failClear = true;
+    const controller = new AutoClearController(host);
+    await controller.onToolCallEnd(tool('Bash'));
+    await controller.onToolCallEnd(tool(WRITE, SAVED));
+    await controller.onTurnEnd(answered);
+    await flush();
+    expect(calls).toEqual([]);
+    expect(notes.at(-1)).toContain('/clear could not run');
+    expect(await controller.onToolCallEnd(tool('Bash'))).toBeNull();
+  });
+
+  it('tells the person to type "continue" when the conversation was cleared but the message could not be sent', async () => {
+    const { host, calls, notes, state, flush } = fakeHost({ percent: 40 });
+    state.failAsUser = true;
+    const controller = new AutoClearController(host);
+    await controller.onToolCallEnd(tool('Bash'));
+    await controller.onToolCallEnd(tool(WRITE, SAVED));
+    await controller.onTurnEnd(answered);
+    await flush();
+    expect(calls).toEqual(['clear']);
+    expect(notes.at(-1)).toContain('Type it to pick the work back up');
+  });
+});
+
+describe('auto-clear continuation prompt', () => {
+  const SAVE_WITH_BLANKS = {
+    list: 'auth-refactor',
+    fields: {
+      continuation_recently_completed_task: 'wire the login route',
+      continuation_overarching_goal: 'ship passwordless login',
+    },
+  };
+  const SAVE_WITHOUT_BLANKS = { list: 'auth-refactor', fields: { status: 'doing' } };
+  const CONTINUATION = 'You are working on "auth-refactor" and recently completed "wire the login route". '
+    + 'Pick back up on our overarching goal "ship passwordless login" from where you left off.';
+  /** The model writes a save call; its result comes back under the same tool_use id. */
+  const saveCall = async (controller: AutoClearController, toolUseId: string, input: unknown, result = tool(WRITE, SAVED)) => {
+    controller.onWorkStateWriteCall({ toolUseId, input });
+    return controller.onToolCallEnd({ ...result, toolUseId });
+  };
+
+  it('sends the sentence built from the save that carried the blanks, not "continue"', async () => {
+    const { host, calls, notes, flush } = fakeHost({ percent: 40 });
+    const controller = new AutoClearController(host);
+    await controller.onToolCallEnd(tool('Bash'));
+    await saveCall(controller, 'w1', SAVE_WITHOUT_BLANKS);
+    await saveCall(controller, 'w2', SAVE_WITH_BLANKS);
+    await controller.onTurnEnd(answered);
+    await flush();
+    expect(calls).toEqual(['clear', `user:${CONTINUATION}`]);
+    expect(notes.join('\n')).not.toContain('"continue" is sent instead');
+  });
+
+  it('builds it the same way when the save was asked for in a turn of its own', async () => {
+    const { host, calls, flush } = fakeHost({ percent: 50 });
+    const controller = new AutoClearController(host);
+    await controller.onTurnEnd(answered);
+    await flush();
+    expect(calls[0]).toStartWith('prompt:');
+    await saveCall(controller, 'w1', SAVE_WITH_BLANKS);
+    await controller.onTurnEnd(answered);
+    await flush();
+    expect(calls.slice(1)).toEqual(['clear', `user:${CONTINUATION}`]);
+  });
+
+  it('matches each result to its own call when saves run side by side', async () => {
+    const { host, calls, flush } = fakeHost({ percent: 40 });
+    const controller = new AutoClearController(host);
+    await controller.onToolCallEnd(tool('Bash'));
+    controller.onWorkStateWriteCall({ toolUseId: 'w1', input: SAVE_WITHOUT_BLANKS });
+    controller.onWorkStateWriteCall({ toolUseId: 'w2', input: SAVE_WITH_BLANKS });
+    await controller.onToolCallEnd({ ...tool(WRITE, SAVED), toolUseId: 'w1' });
+    await controller.onToolCallEnd({ ...tool(WRITE, SAVED), toolUseId: 'w2' });
+    await controller.onTurnEnd(answered);
+    await flush();
+    expect(calls).toEqual(['clear', `user:${CONTINUATION}`]);
+  });
+
+  it('never takes the blanks from a failed or refused save, even when a later save succeeds', async () => {
+    const failedResults = [
+      tool(WRITE, 'HTTP 400: fields is over the 2000-character limit', { isError: true }),
+      tool(WRITE, 'The user doesn\'t want to proceed with this tool use.'),
+    ];
+    for (const failed of failedResults) {
+      const { host, calls, flush } = fakeHost({ percent: 40 });
+      const controller = new AutoClearController(host);
+      await controller.onToolCallEnd(tool('Bash'));
+      await saveCall(controller, 'w1', SAVE_WITH_BLANKS, failed);
+      await saveCall(controller, 'w2', SAVE_WITHOUT_BLANKS);
+      await controller.onTurnEnd(answered);
+      await flush();
+      expect(calls).toEqual(['clear', 'user:continue']);
+    }
+  });
+
+  it('sends "continue" and tells the person why when no save carried all three blanks', async () => {
+    const { host, calls, notes, flush } = fakeHost({ percent: 40 });
+    const controller = new AutoClearController(host);
+    await controller.onToolCallEnd(tool('Bash'));
+    await saveCall(controller, 'w1', {
+      list: 'auth-refactor',
+      fields: { continuation_recently_completed_task: 'wire the login route', continuation_overarching_goal: '  ' },
+    });
+    await controller.onTurnEnd(answered);
+    await flush();
+    expect(calls).toEqual(['clear', 'user:continue']);
+    expect(notes.at(-1)).toContain('"continue" is sent instead');
+  });
+
+  it('never takes the blanks from a subagent or from a save made before auto-clear asked', async () => {
+    const { host, calls, flush } = fakeHost({ percent: 40 });
+    const controller = new AutoClearController(host);
+    await saveCall(controller, 'w0', SAVE_WITH_BLANKS); // idle: auto-clear has asked for nothing yet
+    await controller.onToolCallEnd(tool('Bash'));
+    controller.onWorkStateWriteCall({ agentId: 'agent-1', toolUseId: 'w1', input: SAVE_WITH_BLANKS });
+    await controller.onToolCallEnd({ ...tool(WRITE, SAVED, { agentId: 'agent-1' }), toolUseId: 'w1' });
+    await saveCall(controller, 'w2', SAVE_WITHOUT_BLANKS);
+    await controller.onTurnEnd(answered);
+    await flush();
+    expect(calls).toEqual(['clear', 'user:continue']);
+  });
+
+  it('drops the blanks of a stale save once a fresh save is asked for', async () => {
+    const { host, calls, flush } = fakeHost({ percent: 40 });
+    const controller = new AutoClearController(host);
+    await controller.onToolCallEnd(tool('Bash'));
+    await saveCall(controller, 'w1', SAVE_WITH_BLANKS);
+    await controller.onToolCallEnd(tool('Edit')); // more work after the save: it is stale
+    await controller.onTurnEnd(answered);
+    await flush();
+    expect(calls[0]).toStartWith('prompt:');
+    await saveCall(controller, 'w2', SAVE_WITHOUT_BLANKS);
+    await controller.onTurnEnd(answered);
+    await flush();
+    expect(calls.slice(1)).toEqual(['clear', 'user:continue']);
+  });
+
+  it('shows the person the message it could not send, so they can type it', async () => {
+    const { host, calls, notes, state, flush } = fakeHost({ percent: 40 });
+    state.failAsUser = true;
+    const controller = new AutoClearController(host);
+    await controller.onToolCallEnd(tool('Bash'));
+    await saveCall(controller, 'w1', SAVE_WITH_BLANKS);
+    await controller.onTurnEnd(answered);
+    await flush();
+    expect(calls).toEqual(['clear']);
+    expect(notes.at(-1)).toContain(`Type it to pick the work back up: ${CONTINUATION}`);
+  });
+
+  it('asks for the blanks in both save requests and shows the sentence they fill', () => {
+    for (const request of [inTurnSaveRequest(40, 40), savePrompt(40, 40)]) {
+      expect(request).toContain('"continuation_recently_completed_task"');
+      expect(request).toContain('"continuation_overarching_goal"');
+      expect(request).toContain('You are working on "<list>" and recently completed "<task>". Pick back up on our overarching goal "<goal>" from where you left off.');
+      expect(request).not.toContain('sends "continue"');
+    }
+  });
+
+  it('reads the list and the two fields, trimmed, and nothing less', () => {
+    expect(continuationBlanks({
+      list: ' work ',
+      fields: { continuation_recently_completed_task: ' a ', continuation_overarching_goal: ' b ' },
+    })).toEqual({ workStateList: 'work', recentlyCompletedTask: 'a', overarchingGoal: 'b' });
+    for (const input of [
+      null,
+      'text',
+      {},
+      { list: 'work' },
+      { list: 'work', fields: null },
+      { list: '', fields: { continuation_recently_completed_task: 'a', continuation_overarching_goal: 'b' } },
+      { list: 'work', fields: { continuation_recently_completed_task: 'a' } },
+      { list: 'work', fields: { continuation_recently_completed_task: 3, continuation_overarching_goal: 'b' } },
+    ]) {
+      expect(continuationBlanks(input)).toBeNull();
+    }
+  });
+});

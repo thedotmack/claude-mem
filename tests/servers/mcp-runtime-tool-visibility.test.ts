@@ -1,9 +1,8 @@
 import { describe, it, expect } from 'bun:test';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import {
   getAdvertisedMcpToolsForRuntime,
   SERVER_BETA_ONLY_TOOL_NAMES,
+  WORKER_ONLY_TOOL_NAMES,
 } from '../../src/servers/mcp-tool-visibility.js';
 
 const allTools = [
@@ -19,6 +18,13 @@ const allTools = [
   { name: 'memory_search', description: '', inputSchema: {} },
   { name: 'memory_context', description: '', inputSchema: {} },
   { name: 'smart_search', description: '', inputSchema: {} },
+  { name: 'get_tool_uses', description: '', inputSchema: {} },
+  { name: 'save_memory', description: '', inputSchema: {} },
+  { name: 'dumb_search', description: '', inputSchema: {} },
+  { name: 'work_state_write', description: '', inputSchema: {} },
+  { name: 'work_state_read', description: '', inputSchema: {} },
+  { name: 'team_brief', description: '', inputSchema: {} },
+  { name: 'team_search', description: '', inputSchema: {} },
 ];
 
 describe('MCP runtime-aware tool visibility', () => {
@@ -40,6 +46,26 @@ describe('MCP runtime-aware tool visibility', () => {
     }
   });
 
+  it('server runtime hides worker-only tools that always refuse it', () => {
+    const names = new Set(getAdvertisedMcpToolsForRuntime(allTools, 'server').map(tool => tool.name));
+
+    for (const toolName of WORKER_ONLY_TOOL_NAMES) {
+      expect(names.has(toolName)).toBe(false);
+    }
+    expect(names.has('search')).toBe(true);
+    expect(names.has('observation_search')).toBe(true);
+    expect(names.has('save_memory')).toBe(false);
+    expect(names.has('get_tool_uses')).toBe(false);
+  });
+
+  it('worker runtime keeps worker-only tools', () => {
+    const names = new Set(getAdvertisedMcpToolsForRuntime(allTools, 'worker').map(tool => tool.name));
+
+    for (const toolName of WORKER_ONLY_TOOL_NAMES) {
+      expect(names.has(toolName)).toBe(true);
+    }
+  });
+
   it('worker runtime still advertises core MCP worker tools', () => {
     const workerTools = getAdvertisedMcpToolsForRuntime(allTools, 'worker');
     const names = new Set(workerTools.map(tool => tool.name));
@@ -50,11 +76,4 @@ describe('MCP runtime-aware tool visibility', () => {
     expect(names.has('smart_search')).toBe(true);
   });
 
-  it('tools/list path references the helper so discovery is runtime-aware', () => {
-    const mcpServerPath = join(import.meta.dir, '..', '..', 'src', 'servers', 'mcp-server.ts');
-    const mcpServerSrc = readFileSync(mcpServerPath, 'utf-8');
-
-    expect(mcpServerSrc).toContain('getAdvertisedMcpToolsForRuntime(tools, selectRuntime())');
-    expect(mcpServerSrc).not.toContain('tools.map(tool => ({');
-  });
 });

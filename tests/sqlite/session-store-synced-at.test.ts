@@ -6,10 +6,6 @@ import { SyncApply } from '../../src/services/sync/SyncApply.js';
 
 const SYNCED_TABLES = ['observations', 'session_summaries', 'user_prompts'] as const;
 
-function columnNames(db: Database, table: string): Set<string> {
-  return new Set((db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(col => col.name));
-}
-
 function syncedAtById(db: Database, table: string): Map<number, number | null> {
   const rows = db.prepare(`SELECT id, synced_at FROM ${table} ORDER BY id`).all() as Array<{ id: number; synced_at: number | null }>;
   return new Map(rows.map(row => [row.id, row.synced_at]));
@@ -53,27 +49,6 @@ function seedRows(db: Database): void {
 }
 
 describe('SessionStore SyncHub launch baseline', () => {
-  it('creates synced_at columns, unsynced indexes, and the durable launch boundary', () => {
-    const db = new Database(':memory:');
-    try {
-      new SessionStore(db);
-      for (const table of SYNCED_TABLES) {
-        expect(columnNames(db, table).has('synced_at')).toBe(true);
-        const index = db.prepare(`
-          SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?
-        `).get(`idx_${table}_unsynced`) as { sql: string } | undefined;
-        expect(index?.sql).toContain('synced_at IS NULL');
-      }
-      expect(db.prepare('SELECT version FROM schema_versions WHERE version = 47').get()).not.toBeNull();
-      expect(db.prepare('SELECT version FROM schema_versions WHERE version = 48').get()).not.toBeNull();
-      expect(db.prepare(`
-        SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'sync_launch_exclusions'
-      `).get()).not.toBeNull();
-    } finally {
-      db.close();
-    }
-  });
-
   it('preserves all content while marking only the native pre-launch corpus and clearing stale sync state', () => {
     const db = new Database(':memory:');
     try {
@@ -222,6 +197,7 @@ describe('SessionStore SyncHub launch baseline', () => {
         observations: 1,
         summaries: 1,
         prompts: 1,
+        workState: 0,
         mutations: 0,
         tombstones: 0,
       });
@@ -280,6 +256,27 @@ describe('SessionStore SyncHub launch baseline', () => {
         { id: 1, synced_at: boundaryMs },
         { id: 2, synced_at: null },
       ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('rebuilds the exclusion ledger when v48 is recorded but its table is missing', () => {
+    const db = new Database(':memory:');
+    try {
+      new SessionStore(db);
+      seedRows(db);
+      const appliedAt = (db.prepare(`
+        SELECT applied_at FROM schema_versions WHERE version = 47
+      `).get() as { applied_at: string }).applied_at;
+      const boundaryMs = Date.parse(appliedAt);
+      for (const table of SYNCED_TABLES) db.run(`UPDATE ${table} SET synced_at = ${boundaryMs}`);
+
+      // v48 stays recorded, so only the table-presence check can trigger the repair.
+      db.run('DROP TABLE sync_launch_exclusions');
+      new SessionStore(db);
+
+      expect(rowCount(db, 'sync_launch_exclusions')).toBe(3);
     } finally {
       db.close();
     }

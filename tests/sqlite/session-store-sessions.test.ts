@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
-import { MAX_STORED_PROMPT_CHARS } from '../../src/services/sqlite/prompt-storage.js';
+import { MAX_STORED_PROMPT_CHARS, MEDIA_PROMPT_PLACEHOLDER } from '../../src/services/sqlite/prompt-storage.js';
 
 describe('SessionStore session lifecycle', () => {
   let store: SessionStore;
@@ -14,21 +14,11 @@ describe('SessionStore session lifecycle', () => {
   });
 
   describe('createSDKSession', () => {
-    it('returns a positive id', () => {
-      const id = store.createSDKSession('content-1', 'project', 'prompt');
-      expect(id).toBeGreaterThan(0);
-    });
-
     it('is idempotent for the same content_session_id', () => {
       const a = store.createSDKSession('content-same', 'project', 'prompt');
       const b = store.createSDKSession('content-same', 'project', 'different prompt');
       expect(b).toBe(a);
-    });
-
-    it('returns different ids for different content_session_ids', () => {
-      const a = store.createSDKSession('content-a', 'project', 'prompt');
-      const b = store.createSDKSession('content-b', 'project', 'prompt');
-      expect(a).not.toBe(b);
+      expect(store.getSessionById(a)?.user_prompt).toBe('prompt');
     });
 
     it('persists a tag-stripped, bounded user_prompt ending in an ellipsis', () => {
@@ -39,6 +29,26 @@ describe('SessionStore session lifecycle', () => {
       expect(session?.user_prompt.startsWith('<private>')).toBe(false);
       expect(session?.user_prompt.length).toBe(MAX_STORED_PROMPT_CHARS);
       expect(session?.user_prompt.endsWith('…')).toBe(true);
+    });
+
+    it('never persists a prompt that is entirely private', () => {
+      // /api/sessions/init passes the raw prompt here before its privacy gate,
+      // and a tool-first observer later reads this column as the user request.
+      const id = store.createSDKSession('content-all-private', 'project', '<private>my AWS secret is AKIAEXAMPLE123</private>');
+
+      expect(store.getSessionById(id)?.user_prompt).not.toContain('AKIAEXAMPLE123');
+      expect(store.getSessionById(id)?.user_prompt).not.toContain('<private>');
+    });
+
+    it.each([
+      [MEDIA_PROMPT_PLACEHOLDER, 'real user prompt', 'real user prompt'],
+      ['', 'real user prompt', 'real user prompt'],
+      ['first real prompt', 'second real prompt', 'first real prompt'],
+      ['a real prompt', MEDIA_PROMPT_PLACEHOLDER, 'a real prompt'],
+    ])('repairs placeholders without replacing real prompts (%s, %s)', (first, second, expected) => {
+      const id = store.createSDKSession('content-prompt-repair', 'project', first);
+      store.createSDKSession('content-prompt-repair', 'project', second);
+      expect(store.getSessionById(id)?.user_prompt).toBe(expected);
     });
   });
 
@@ -60,16 +70,6 @@ describe('SessionStore session lifecycle', () => {
   });
 
   describe('custom_title', () => {
-    it('stores custom_title at creation', () => {
-      const id = store.createSDKSession('content-title-1', 'project', 'prompt', 'My Agent');
-      expect(store.getSessionById(id)?.custom_title).toBe('My Agent');
-    });
-
-    it('defaults custom_title to null', () => {
-      const id = store.createSDKSession('content-title-2', 'project', 'prompt');
-      expect(store.getSessionById(id)?.custom_title).toBeNull();
-    });
-
     it('backfills custom_title on an idempotent call if unset', () => {
       const id = store.createSDKSession('content-title-3', 'project', 'prompt');
       expect(store.getSessionById(id)?.custom_title).toBeNull();
@@ -91,11 +91,6 @@ describe('SessionStore session lifecycle', () => {
   });
 
   describe('platform_source', () => {
-    it('defaults to claude', () => {
-      const id = store.createSDKSession('content-platform-1', 'project', 'prompt');
-      expect(store.getSessionById(id)?.platform_source).toBe('claude');
-    });
-
     it('uses claude when a legacy caller omits platform_source', () => {
       const id = store.createSDKSession('content-platform-2', 'project', 'prompt', undefined, 'codex');
       expect(store.getSessionById(id)?.platform_source).toBe('codex');

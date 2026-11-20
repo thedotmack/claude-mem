@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll } from 'bun:test';
-import { existsSync, readFileSync, mkdirSync, mkdtempSync, writeFileSync, rmSync, statSync } from 'fs';
+import { spawn, spawnSync } from 'child_process';
+import { existsSync, readFileSync, mkdirSync, mkdtempSync, writeFileSync, rmSync, statSync, utimesSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import path from 'path';
 import type { PidInfo } from '../../src/services/infrastructure/index.js';
@@ -25,11 +26,13 @@ const {
   cleanStalePidFile,
   isPidFileRecent,
   touchPidFile,
-  spawnDaemon,
+  spawnDetachedWorkerDaemon,
+  getLastWorkerDaemonLaunchError,
   probeWorkerBootFailure,
   shouldRetryWorkerBootProbe,
-  buildWindowsDaemonStartCommand,
+  buildDetachedWorkerDaemonSpawn,
   daemonWorkingDirectory,
+  pinDaemonWorkingDirectory,
   resolveWorkerRuntimePath,
   captureProcessStartToken,
   verifyPidFileOwnership,
@@ -78,12 +81,7 @@ describe('ProcessManager', () => {
       expect(DATA_DIR).not.toBe(REAL_DATA_DIR);
       expect(PID_FILE.startsWith(REAL_DATA_DIR + path.sep)).toBe(false);
       expect(PID_FILE).toBe(path.join(DATA_DIR, 'worker.pid'));
-    });
-
-    it('writePidFile lands in the isolated dir', () => {
-      writePidFile({ pid: 4242, port: 37777, startedAt: new Date().toISOString() });
-      expect(existsSync(PID_FILE)).toBe(true);
-      expect(readPidFile()!.pid).toBe(4242);
+      expect(paths.supervisorRegistry().startsWith(REAL_DATA_DIR + path.sep)).toBe(false);
     });
   });
 
@@ -98,10 +96,7 @@ describe('ProcessManager', () => {
       writePidFile(testInfo);
 
       expect(existsSync(PID_FILE)).toBe(true);
-      const content = JSON.parse(readFileSync(PID_FILE, 'utf-8'));
-      expect(content.pid).toBe(12345);
-      expect(content.port).toBe(37777);
-      expect(content.startedAt).toBe(testInfo.startedAt);
+      expect(readPidFile()).toEqual(testInfo);
     });
 
     it('should overwrite existing PID file', () => {
@@ -126,22 +121,6 @@ describe('ProcessManager', () => {
   });
 
   describe('readPidFile', () => {
-    it('should return PidInfo object for valid file', () => {
-      const testInfo: PidInfo = {
-        pid: 54321,
-        port: 37999,
-        startedAt: '2024-06-15T12:00:00.000Z'
-      };
-      writePidFile(testInfo);
-
-      const result = readPidFile();
-
-      expect(result).not.toBeNull();
-      expect(result!.pid).toBe(54321);
-      expect(result!.port).toBe(37999);
-      expect(result!.startedAt).toBe('2024-06-15T12:00:00.000Z');
-    });
-
     it('should return null for missing file', () => {
       removePidFile();
 
@@ -255,52 +234,21 @@ describe('ProcessManager', () => {
       });
     });
 
-    it('should return same value on non-Windows platforms', () => {
+    it.each([
+      ['darwin', 1000, 1000],
+      ['win32', 1000, 2000],
+      ['win32', 500, 1000],
+      ['win32', 5000, 10000],
+      ['win32', 100, 200],
+      ['win32', 333, 666],
+    ])('uses %s timeout %i → %i', (platform, timeout, expected) => {
       Object.defineProperty(process, 'platform', {
-        value: 'darwin',
+        value: platform,
         writable: true,
         configurable: true
       });
 
-      const result = getPlatformTimeout(1000);
-
-      expect(result).toBe(1000);
-    });
-
-    it('should return doubled value on Windows', () => {
-      Object.defineProperty(process, 'platform', {
-        value: 'win32',
-        writable: true,
-        configurable: true
-      });
-
-      const result = getPlatformTimeout(1000);
-
-      expect(result).toBe(2000);
-    });
-
-    it('should apply 2.0x multiplier consistently on Windows', () => {
-      Object.defineProperty(process, 'platform', {
-        value: 'win32',
-        writable: true,
-        configurable: true
-      });
-
-      expect(getPlatformTimeout(500)).toBe(1000);
-      expect(getPlatformTimeout(5000)).toBe(10000);
-      expect(getPlatformTimeout(100)).toBe(200);
-    });
-
-    it('should round Windows timeout values', () => {
-      Object.defineProperty(process, 'platform', {
-        value: 'win32',
-        writable: true,
-        configurable: true
-      });
-
-      const result = getPlatformTimeout(333);
-
-      expect(result).toBe(666);
+      expect(getPlatformTimeout(timeout)).toBe(expected);
     });
   });
 
@@ -315,16 +263,19 @@ describe('ProcessManager', () => {
     });
 
     it('should look up Bun on non-Windows when caller is Node (e.g. MCP server)', () => {
+      // path.join follows the host OS separator even when platform:'linux' is
+      // injected, so expect the host-joined form (Windows CI runs this too).
+      const expected = path.join('/home/alice', '.bun', 'bin', 'bun');
       const resolved = resolveWorkerRuntimePath({
         platform: 'linux',
         execPath: '/usr/bin/node',
         env: {} as NodeJS.ProcessEnv,
         homeDirectory: '/home/alice',
-        pathExists: candidatePath => candidatePath === '/home/alice/.bun/bin/bun',
+        pathExists: candidatePath => candidatePath === expected,
         lookupInPath: () => null
       });
 
-      expect(resolved).toBe('/home/alice/.bun/bin/bun');
+      expect(resolved).toBe(expected);
     });
 
     it('should preserve bare BUN env command on non-Windows so spawn resolves it via PATH', () => {
@@ -445,6 +396,38 @@ describe('ProcessManager', () => {
       expect(resolved).toBe('C:\\tools\\bun.exe');
     });
 
+    it('should resolve Bun from BUN_INSTALL on Windows when PATH is empty (#3224)', () => {
+      // path.join follows the host OS separator even when platform:'win32' is
+      // injected, so expect the host-joined form (Linux CI / T-Rex runs this too).
+      const expected = path.join('D:\\custom\\bun-root', 'bin', 'bun.exe');
+      const resolved = resolveWorkerRuntimePath({
+        platform: 'win32',
+        execPath: 'C:\\Program Files\\nodejs\\node.exe',
+        env: { BUN_INSTALL: 'D:\\custom\\bun-root' } as NodeJS.ProcessEnv,
+        homeDirectory: 'C:\\Users\\alice',
+        pathExists: candidatePath => candidatePath === expected,
+        lookupInPath: () => null
+      });
+
+      expect(resolved).toBe(expected);
+    });
+
+    it('should resolve Bun from BUN_INSTALL on Linux when PATH is empty (#3224)', () => {
+      // path.join follows the host OS separator even when platform:'linux' is
+      // injected, so expect the host-joined form (Windows CI runs this too).
+      const expected = path.join('/opt/bun', 'bin', 'bun');
+      const resolved = resolveWorkerRuntimePath({
+        platform: 'linux',
+        execPath: '/usr/bin/node',
+        env: { BUN_INSTALL: '/opt/bun' } as NodeJS.ProcessEnv,
+        homeDirectory: '/home/alice',
+        pathExists: candidatePath => candidatePath === expected,
+        lookupInPath: () => null
+      });
+
+      expect(resolved).toBe(expected);
+    });
+
     it('should fall back to PATH lookup when no Bun candidate exists', () => {
       const resolved = resolveWorkerRuntimePath({
         platform: 'win32',
@@ -495,46 +478,6 @@ describe('ProcessManager', () => {
       expect(captureProcessStartToken(-1)).toBeNull();
       expect(captureProcessStartToken(1.5)).toBeNull();
       expect(captureProcessStartToken(NaN)).toBeNull();
-    });
-
-    it('win32 branch attempts a CIM lookup and degrades to null when powershell is unavailable', () => {
-      // On the non-Windows CI host powershell.exe does not exist, so the CIM
-      // lookup fails and the function returns null (the historic liveness-only
-      // fallback). The point of this test is to lock the contract: the win32
-      // path no longer unconditionally returns null at the source level — it
-      // attempts a real start-time token capture (closing the PID-reuse wedge
-      // on Windows, where /proc and `ps lstart` are unavailable) and only
-      // falls back to null when the lookup genuinely cannot run.
-      const originalPlatform = process.platform;
-      // Use a PID unlikely to be cached by other tests so we exercise the
-      // lookup path rather than a memoized result.
-      const probePid = 424242;
-      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
-      try {
-        const result = captureProcessStartToken(probePid);
-        // Either null (powershell missing / pid absent) or a string token if
-        // the host actually is Windows — both are valid, neither throws.
-        expect(result === null || typeof result === 'string').toBe(true);
-      } finally {
-        Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
-      }
-    });
-
-    it('win32 branch caches the per-PID lookup within the TTL window', () => {
-      // Two back-to-back calls for the same PID must return an identical value
-      // and must not throw — the second call should be served from the 5s
-      // cache rather than re-shelling. We can only assert the observable
-      // contract (stable result) cross-platform.
-      const originalPlatform = process.platform;
-      const probePid = 525252;
-      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
-      try {
-        const first = captureProcessStartToken(probePid);
-        const second = captureProcessStartToken(probePid);
-        expect(first).toBe(second as typeof first);
-      } finally {
-        Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
-      }
     });
   });
 
@@ -611,6 +554,52 @@ describe('ProcessManager', () => {
   });
 
   describe('cleanStalePidFile', () => {
+    it.if(process.platform === 'linux')('treats a tokenless PID reused by an unrelated process as stale', () => {
+      const commandLine = readFileSync(`/proc/${process.pid}/cmdline`, 'utf-8');
+      expect(commandLine).not.toContain('worker-service.cjs');
+      writeFileSync(PID_FILE, JSON.stringify({
+        pid: process.pid,
+        port: 37777,
+        startedAt: new Date().toISOString()
+      }));
+
+      expect(cleanStalePidFile({ removeStale: false })).toBe('stale');
+      expect(existsSync(PID_FILE)).toBe(true);
+    });
+
+    it.if(process.platform === 'linux')('accepts a tokenless worker identified by its command line', async () => {
+      const workerDir = mkdtempSync(path.join(tmpdir(), 'claude-mem-legacy-worker-'));
+      const workerScript = path.join(workerDir, 'worker-service.cjs');
+      writeFileSync(workerScript, 'setInterval(() => {}, 1000);\n');
+      const worker = spawn(process.execPath, [workerScript], { stdio: 'ignore' });
+
+      try {
+        await new Promise<void>((resolve, reject) => {
+          worker.once('spawn', resolve);
+          worker.once('error', reject);
+        });
+        if (!worker.pid) throw new Error('Worker test process did not receive a PID');
+        writeFileSync(PID_FILE, JSON.stringify({
+          pid: worker.pid,
+          port: 37777,
+          startedAt: new Date().toISOString()
+        }));
+
+        expect(cleanStalePidFile({ removeStale: false })).toBe('alive');
+      } finally {
+        // An exit that already happened never fires 'exit' again, so only wait
+        // for a child still running, and never longer than five seconds.
+        if (worker.exitCode === null && worker.signalCode === null) {
+          const exited = new Promise<void>(resolve => worker.once('exit', () => resolve()));
+          worker.kill('SIGTERM');
+          let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
+          await Promise.race([exited, new Promise<void>(resolve => { cleanupTimer = setTimeout(resolve, 5_000); })]);
+          clearTimeout(cleanupTimer);
+        }
+        rmSync(workerDir, { recursive: true, force: true });
+      }
+    });
+
     it('should remove PID file when process is dead', () => {
       const staleInfo: PidInfo = {
         pid: 2147483647,
@@ -667,112 +656,21 @@ describe('ProcessManager', () => {
   });
 
   describe('touchPidFile', () => {
-    it('should update mtime of existing PID file', async () => {
+    it('should update mtime of existing PID file', () => {
       writePidFile({ pid: process.pid, port: 37777, startedAt: new Date().toISOString() });
-
-      await new Promise(r => setTimeout(r, 50));
-
-      const statsBefore = statSync(PID_FILE);
-      const mtimeBefore = statsBefore.mtimeMs;
-
-      await new Promise(r => setTimeout(r, 50));
+      const past = new Date(Date.now() - 60_000);
+      utimesSync(PID_FILE, past, past);
+      const mtimeBefore = statSync(PID_FILE).mtimeMs;
 
       touchPidFile();
 
-      const statsAfter = statSync(PID_FILE);
-      const mtimeAfter = statsAfter.mtimeMs;
-
-      expect(mtimeAfter).toBeGreaterThanOrEqual(mtimeBefore);
+      expect(statSync(PID_FILE).mtimeMs).toBeGreaterThan(mtimeBefore);
     });
 
     it('should not throw when PID file does not exist', () => {
       removePidFile();
 
       expect(() => touchPidFile()).not.toThrow();
-    });
-  });
-
-  describe('spawnDaemon', () => {
-    it('should use setsid on Linux when available', () => {
-      if (process.platform === 'win32') return; 
-
-      const setsidAvailable = existsSync('/usr/bin/setsid');
-      if (!setsidAvailable) return; 
-
-      const pid = spawnDaemon('/dev/null', 39999);
-
-      expect(pid).toBeDefined();
-      expect(typeof pid).toBe('number');
-
-      if (pid !== undefined && pid > 0) {
-        try { process.kill(pid, 'SIGKILL'); } catch { /* already exited */ }
-      }
-    });
-
-    it('should return undefined when spawn fails on Windows path', () => {
-      if (process.platform === 'win32') return;
-
-      const result = spawnDaemon('/nonexistent/script.cjs', 39998);
-      expect(result).toBeDefined();
-
-      if (result !== undefined && result > 0) {
-        try { process.kill(result, 'SIGKILL'); } catch { /* already exited */ }
-      }
-    });
-
-    it('Windows 0 PID success sentinel must NOT be detected via falsy check', () => {
-      const windowsSuccessSentinel: number | undefined = 0;
-      const failureSentinel: number | undefined = undefined;
-
-      expect(windowsSuccessSentinel === undefined).toBe(false);
-      expect(failureSentinel === undefined).toBe(true);
-
-      expect(!windowsSuccessSentinel).toBe(true); 
-      expect(!failureSentinel).toBe(true);
-
-      const isFailure = (pid: number | undefined) => pid === undefined;
-      expect(isFailure(windowsSuccessSentinel)).toBe(false);
-      expect(isFailure(failureSentinel)).toBe(true);
-    });
-  });
-
-  describe('buildWindowsDaemonStartCommand (#3195)', () => {
-    // Windows PowerShell 5.1 (powershell.exe, which spawnDaemon invokes via
-    // -EncodedCommand) builds the native command line for Start-Process by
-    // joining -ArgumentList elements with spaces WITHOUT quoting them. The
-    // single quotes in the PS source only delimit the PS string literal; they
-    // never reach the child. So the script path must carry its own embedded
-    // double quotes or a spaced %USERPROFILE% splits it into multiple argv
-    // entries and bun dies with "Module not found".
-    it('embeds double quotes around a script path containing spaces', () => {
-      const runtimePath = String.raw`C:\Users\Test User\.bun\bin\bun.exe`;
-      const scriptPath = String.raw`C:\Users\Test User\.claude\plugins\marketplaces\thedotmack\plugin\scripts\worker-service.cjs`;
-
-      const command = buildWindowsDaemonStartCommand(runtimePath, scriptPath, String.raw`C:\daemon-home`);
-
-      expect(command).toBe(
-        `Start-Process -FilePath '${runtimePath}' -ArgumentList @('"${scriptPath}"','--daemon') -WorkingDirectory 'C:\\daemon-home' -WindowStyle Hidden`
-      );
-    });
-
-    it('keeps --daemon as its own ArgumentList element', () => {
-      const command = buildWindowsDaemonStartCommand(
-        String.raw`C:\bun\bun.exe`,
-        String.raw`C:\plugin\worker-service.cjs`
-      );
-
-      expect(command).toContain(`,'--daemon')`);
-    });
-
-    it('still doubles single quotes for PowerShell string escaping', () => {
-      const command = buildWindowsDaemonStartCommand(
-        String.raw`C:\Users\O'Brien\.bun\bin\bun.exe`,
-        String.raw`C:\Users\O'Brien\plugin\scripts\worker-service.cjs`
-      );
-
-      expect(command).toBe(
-        `Start-Process -FilePath 'C:\\Users\\O''Brien\\.bun\\bin\\bun.exe' -ArgumentList @('"C:\\Users\\O''Brien\\plugin\\scripts\\worker-service.cjs"','--daemon') -WorkingDirectory '${DATA_DIR.replace(/'/g, "''")}' -WindowStyle Hidden`
-      );
     });
   });
 
@@ -835,6 +733,18 @@ describe('ProcessManager', () => {
       expect(failure!).toContain('boot noise line 0');
     });
 
+    it('runs the bundle with Bun auto-install off, like the daemon it stands in for (#5601)', () => {
+      const scriptPath = writeProbeScript(
+        'exec-argv.cjs',
+        `console.error('execArgv=' + JSON.stringify(process.execArgv));\nprocess.exit(1);\n`
+      );
+
+      const failure = probeWorkerBootFailure(scriptPath);
+
+      expect(failure).toBeDefined();
+      expect(failure!).toContain('execArgv=["--no-install"]');
+    });
+
     it('returns rather than throwing when the script does not exist at all', () => {
       const missing = path.join(PROBE_DIR, 'no-such-worker-bundle.cjs');
 
@@ -868,24 +778,16 @@ describe('ProcessManager', () => {
   // outlives the session that spawned it -- so a hook-spawned daemon inheriting the
   // project folder left it permanently locked (#3706).
   describe('daemon working directory (#3706)', () => {
-    it('pins the daemon to a directory the user is not working in', () => {
-      const command = buildWindowsDaemonStartCommand(
-        String.raw`C:\bun\bun.exe`,
-        String.raw`C:\plugin\worker-service.cjs`
-      );
-
-      expect(command).toContain('-WorkingDirectory');
-      expect(command).toContain(`-WorkingDirectory '${DATA_DIR.replace(/'/g, "''")}'`);
-    });
-
-    it('escapes a single quote in the working directory', () => {
-      const command = buildWindowsDaemonStartCommand(
+    it('hands the daemon the data directory, never the caller cwd', () => {
+      const plan = buildDetachedWorkerDaemonSpawn(
         String.raw`C:\bun\bun.exe`,
         String.raw`C:\plugin\worker-service.cjs`,
-        String.raw`C:\Users\O'Brien\.claude-mem`
+        {},
+        'win32',
       );
 
-      expect(command).toContain(String.raw`-WorkingDirectory 'C:\Users\O''Brien\.claude-mem'`);
+      expect(plan.options.cwd).toBe(DATA_DIR);
+      expect(plan.options.cwd).not.toBe(process.cwd());
     });
 
     it('defaults to the claude-mem data directory, never the caller cwd', () => {
@@ -894,41 +796,89 @@ describe('ProcessManager', () => {
     });
 
     // Passing a cwd that does not exist is worse than passing none: spawn fails with
-    // ENOENT and Start-Process refuses outright, so this fix would turn a first run on
-    // a fresh install into a launch failure. paths.ts resolves DATA_DIR but never
-    // creates it — today some earlier caller happens to, which is not a guarantee.
+    // ENOENT, so this fix would turn a first run on a fresh install into a launch
+    // failure. paths.ts resolves DATA_DIR but never creates it — today some earlier
+    // caller happens to, which is not a guarantee.
     it('creates the directory it hands out, so a fresh install can spawn', () => {
-      rmSync(DATA_DIR, { recursive: true, force: true });
-      expect(existsSync(DATA_DIR)).toBe(false);
+      const dataDir = mkdtempSync(path.join(tmpdir(), 'claude-mem-fresh-daemon-'));
+      rmSync(dataDir, { recursive: true, force: true });
+      const modulePath = path.resolve(import.meta.dir, '../../src/services/infrastructure/ProcessManager.ts');
+      try {
+        const result = spawnSync(process.execPath, ['-e', `
+          import { existsSync, statSync } from 'fs';
+          const { daemonWorkingDirectory } = await import(${JSON.stringify(modulePath)});
+          const dir = daemonWorkingDirectory();
+          if (!existsSync(dir) || !statSync(dir).isDirectory()) process.exit(1);
+          console.log(dir);
+        `], {
+          encoding: 'utf-8',
+          env: { ...process.env, CLAUDE_MEM_DATA_DIR: dataDir },
+          timeout: 10_000,
+        });
+        expect(result.error).toBeUndefined();
+        expect(result.status).toBe(0);
+        expect(result.stdout.trim()).toBe(dataDir);
+      } finally {
+        rmSync(dataDir, { recursive: true, force: true });
+      }
+    });
 
-      const dir = daemonWorkingDirectory();
+    // A daemon launched by hand (or by an older launcher) can inherit the
+    // user's project, a deleted directory, or an ACL-locked Store-app path;
+    // the daemon boot moves it into the data dir regardless of how it started.
+    it('pins a running daemon into the data directory by default', () => {
+      const moves: string[] = [];
+      expect(pinDaemonWorkingDirectory(undefined, (dir) => { moves.push(dir); })).toBe(DATA_DIR);
+      expect(moves).toEqual([DATA_DIR]);
+    });
 
-      expect(existsSync(dir)).toBe(true);
-      expect(statSync(dir).isDirectory()).toBe(true);
+    it('falls back to the next candidate when a chdir is refused', () => {
+      const moves: string[] = [];
+      const chdir = (dir: string) => {
+        if (dir === '/locked') throw Object.assign(new Error('EPERM: operation not permitted, chdir'), { code: 'EPERM' });
+        moves.push(dir);
+      };
+      expect(pinDaemonWorkingDirectory([() => '/locked', () => '/home/me', () => '/tmp'], chdir)).toBe('/home/me');
+      expect(moves).toEqual(['/home/me']);
+    });
+
+    it('never throws when every candidate fails', () => {
+      const refuse = () => { throw new Error('EACCES'); };
+      expect(pinDaemonWorkingDirectory([() => '/a', () => { throw new Error('no home'); }], refuse)).toBeNull();
     });
   });
 
-  describe('SIGHUP handling', () => {
-    it('should have SIGHUP listeners registered (integration check)', () => {
-      if (process.platform === 'win32') return;
+});
 
-      let received = false;
-      const testHandler = () => { received = true; };
+describe('spawnDetachedWorkerDaemon runtime flags (#5601)', () => {
+  // A worker started from a plugin root without node_modules (the marketplace
+  // clone) let Bun auto-install sharp's wasm32 build, whose first decode froze
+  // the daemon for good. A real detached launch must reach the script with
+  // auto-install off.
+  it('starts the daemon with Bun auto-install off', async () => {
+    const launchDir = mkdtempSync(path.join(tmpdir(), 'claude-mem-daemon-flags-'));
+    const reportPath = path.join(launchDir, 'exec-argv.json');
+    const scriptPath = path.join(launchDir, 'fake-worker.cjs');
+    writeFileSync(scriptPath, `require('fs').writeFileSync(${JSON.stringify(reportPath)}, JSON.stringify({ execArgv: process.execArgv, argv: process.argv.slice(2) }));\n`);
 
-      process.on('SIGHUP', testHandler);
-      expect(process.listenerCount('SIGHUP')).toBeGreaterThanOrEqual(1);
+    const pid = spawnDetachedWorkerDaemon(process.execPath, scriptPath, { ...process.env });
+    expect(pid).toBeDefined();
 
-      process.removeListener('SIGHUP', testHandler);
-    });
+    // 10 s: a cold Bun start on a loaded CI runner, not a product limit.
+    const deadline = Date.now() + 10_000;
+    while (!existsSync(reportPath) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
+    expect(existsSync(reportPath)).toBe(true);
+    const report = JSON.parse(readFileSync(reportPath, 'utf-8')) as { execArgv: string[]; argv: string[] };
+    expect(report.execArgv).toEqual(['--no-install']);
+    expect(report.argv).toEqual(['--daemon']);
+    rmSync(launchDir, { recursive: true, force: true });
+  }, 15_000); // above the 10 s wait, so the wait's own failure is what reports
+});
 
-    it('should ignore SIGHUP when --daemon is in process.argv', () => {
-      if (process.platform === 'win32') return;
-
-      const isDaemon = process.argv.includes('--daemon');
-      expect(isDaemon).toBe(false);
-
-      // Verify the non-daemon path: SIGHUP should trigger shutdown (covered by registerSignalHandlers)
-      // This is a logic verification test — actual signal delivery is tested manually
-    });
+describe('spawnDetachedWorkerDaemon launch error', () => {
+  it('records why the daemon launch failed', () => {
+    const missingRuntime = path.join(TEST_DATA_DIR, 'no-such-runtime', 'bun.exe');
+    expect(spawnDetachedWorkerDaemon(missingRuntime, 'worker-service.cjs', {}, 'win32')).toBeUndefined();
+    expect(getLastWorkerDaemonLaunchError()).toContain(missingRuntime);
   });
 });

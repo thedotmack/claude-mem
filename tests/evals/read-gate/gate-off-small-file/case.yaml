@@ -1,0 +1,5 @@
+schema_version: "1.1"
+name: gate-off-small-file
+tags: [gate-off]
+context:
+  scaffold_script: scaffold-gate-off.sh

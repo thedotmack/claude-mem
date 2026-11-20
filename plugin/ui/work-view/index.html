@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/work-view/favicon.svg" />
+    <!-- viewport-fit=cover: iOS reports env(safe-area-inset-*) only with it; the bottom bar and the page padding use them. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>My Work · claude-mem</title>
+    <!-- Decision G8: vite.config.ts puts the pre-paint theme script (src/lib/theme-pre-paint.ts) here, in dev and in the build. -->
+    <script>(function (choices, followsSystem, dark, key, oldest, version) {
+  var params = new URLSearchParams(location.search)
+  if (params.get('setup') === '1') return
+  var choice = params.get('theme')
+  if (choices.indexOf(choice) < 0) {
+    choice = followsSystem
+    try {
+      var saved = JSON.parse(localStorage.getItem(key) || 'null')
+      if (saved && saved.version >= oldest && saved.version <= version && saved.state && choices.indexOf(saved.state.theme) >= 0) choice = saved.state.theme
+    } catch (error) {
+      console.warn('[my-work] The saved theme could not be read, so the page follows the system theme:', error)
+    }
+  }
+  var resolved = choice === followsSystem ? (matchMedia('(prefers-color-scheme: dark)').matches ? dark : null) : choice
+  if (resolved === dark) document.documentElement.classList.add('dark')
+})(["system","light","dark"], "system", "dark", "claude-mem:my-work:preferences", 1, 2)</script>
+    <script type="module" crossorigin src="/work-view/assets/index-CfEihc-5.js"></script>
+    <link rel="modulepreload" crossorigin href="/work-view/assets/next-step-words-BFoQgMAL.js">
+    <link rel="modulepreload" crossorigin href="/work-view/assets/ui-message-QJhjFBnC.js">
+    <link rel="modulepreload" crossorigin href="/work-view/assets/data-goals-DoNvz0gt.js">
+    <link rel="modulepreload" crossorigin href="/work-view/assets/textarea-DYyTceEV.js">
+    <link rel="stylesheet" crossorigin href="/work-view/assets/index-C_hVPzWE.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>

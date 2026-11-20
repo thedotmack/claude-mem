@@ -171,12 +171,13 @@ describe('Phase 8 MCP-backing REST endpoints (/v1/memories, /v1/search, /v1/cont
   it('observation_search path: POST /v1/search returns FTS-ranked observations from PostgresObservationRepository', async () => {
     // Seed two observations directly via REST so we exercise the same write path.
     const c = buildClient();
-    await c.addObservation({ projectId, content: 'Refactored authentication middleware to use JWT verification', kind: 'manual' });
+    const inserted = await c.addObservation({ projectId, content: 'Refactored authentication middleware to use JWT verification', kind: 'manual' });
     await c.addObservation({ projectId, content: 'Fixed flaky test in payment processing', kind: 'manual' });
 
     const matches = await c.searchObservations({ projectId, query: 'authentication', limit: 10 });
     expect(matches.observations.length).toBeGreaterThanOrEqual(1);
     expect(matches.observations[0]?.content).toContain('authentication');
+    expect(matches.observations.some(observation => observation.id === inserted.memory.id)).toBe(true);
 
     const noMatches = await c.searchObservations({ projectId, query: 'nonexistent_xyz_term', limit: 10 });
     expect(noMatches.observations).toHaveLength(0);
@@ -218,15 +219,29 @@ describe('Phase 8 MCP-backing REST endpoints (/v1/memories, /v1/search, /v1/cont
     expect(rawJson.generationJob.id).toBe(jobId);
   });
 
-  it('end-to-end: observation_add → observation_search returns the inserted observation (no provider needed)', async () => {
-    const c = buildClient();
-    const inserted = await c.addObservation({
-      projectId,
-      content: 'End-to-end harness verifies idempotent search round-trip',
-      kind: 'manual',
+  it('Smart REST stages keep anchors and selected IDs scoped and validate inputs', async () => {
+    const own = await storage.observations.create({ projectId, teamId, content: 'Smart recall own observation' });
+    const foreignTeam = await storage.teams.create({ name: 'foreign Smart team' });
+    const foreignProject = await storage.projects.create({ teamId: foreignTeam.id, name: 'foreign Smart project' });
+    const foreign = await storage.observations.create({ projectId: foreignProject.id, teamId: foreignTeam.id, content: 'private foreign record' });
+    const request = (path: string, body: unknown) => fetch(`http://127.0.0.1:${port}${path}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKeyRaw}` }, body: JSON.stringify(body),
     });
-    const found = await c.searchObservations({ projectId, query: 'harness verifies idempotent', limit: 5 });
-    expect(found.observations.some(observation => observation.id === inserted.memory.id)).toBe(true);
+    const context = await request('/v1/timeline', { projectId, anchorId: own.id, depthBefore: 0, depthAfter: 0 });
+    expect(context.status).toBe(200);
+    expect((await context.json()).observations.map((row: { id: string }) => row.id)).toEqual([own.id]);
+    const selected = await request('/v1/observations/batch', { projectId, ids: [own.id, foreign.id, 'missing'] });
+    expect((await selected.json()).observations.map((row: { id: string }) => row.id)).toEqual([own.id]);
+    for (const anchorId of [foreign.id, 'missing']) {
+      expect((await (await request('/v1/timeline', { projectId, anchorId })).json()).observations).toEqual([]);
+    }
+    expect((await request('/v1/timeline', { projectId: foreignProject.id, anchorId: foreign.id })).status).toBe(403);
+    expect((await request('/v1/observations/batch', { projectId: foreignProject.id, ids: [foreign.id] })).status).toBe(403);
+    expect((await request('/v1/timeline', { projectId, anchorId: own.id, depthBefore: 21 })).status).toBe(400);
+    expect((await request('/v1/timeline', { projectId })).status).toBe(400);
+    expect((await request('/v1/observations/batch', { projectId, ids: [] })).status).toBe(400);
+    const unauthenticated = await fetch(`http://127.0.0.1:${port}/v1/timeline`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ projectId, anchorId: own.id }) });
+    expect(unauthenticated.status).toBe(401);
   });
 
   it('cross-tenant request to /v1/search is rejected', async () => {

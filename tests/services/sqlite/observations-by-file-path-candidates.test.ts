@@ -21,15 +21,15 @@ describe('getObservationsByFilePath — multi-candidate path matching (#2691)', 
     store.close();
   });
 
-  function seedObservationWithReadPath(readPath: string, sessionSuffix: string): number {
-    const sdkId = store.createSDKSession(`content-${sessionSuffix}`, 'proj', 'prompt');
+  function seedObservationWithReadPath(readPath: string, sessionSuffix: string, project = 'proj', platform = 'claude'): number {
+    const sdkId = store.createSDKSession(`content-${sessionSuffix}`, project, 'prompt', undefined, platform);
     store.updateMemorySessionId(sdkId, `session-${sessionSuffix}`);
     const result = store.storeObservations(
       `session-${sessionSuffix}`,
-      'proj',
+      project,
       [{
         type: 'discovery',
-        title: `touched ${readPath}`,
+        title: `touched ${sessionSuffix}: ${readPath}`,
         subtitle: null,
         facts: ['fact'],
         narrative: null,
@@ -55,6 +55,28 @@ describe('getObservationsByFilePath — multi-candidate path matching (#2691)', 
     expect(matches.map(o => o.id)).toContain(id);
   });
 
+  it.each([
+    ['./src/note.ts', 'src/note.ts'],
+    ['.\\src\\note.ts', 'src/note.ts'],
+    ['src/note.ts', './src/note.ts'],
+    ['src/note.ts', '.\\src\\note.ts'],
+  ])('matches current-directory evidence %s from query %s', (storedPath, queryPath) => {
+    const id = seedObservationWithReadPath(storedPath, 'matching');
+    seedObservationWithReadPath(storedPath, 'other-project', 'unrelated');
+    seedObservationWithReadPath(storedPath, 'other-source', 'proj', 'codex');
+    seedObservationWithReadPath('./src/note.ts.bak', 'other-file');
+    expect(getObservationsByFilePath(store.db, ['/checkout/src/note.ts', queryPath], {
+      projects: ['proj'], platformSource: 'claude',
+    }).map(row => row.id)).toEqual([id]);
+  });
+
+  it('does not reinterpret an absolute or home path as a current-directory path', () => {
+    seedObservationWithReadPath('./C:/repo/note.ts', 'drive-lookalike');
+    seedObservationWithReadPath('.//repo/note.ts', 'absolute-lookalike');
+    seedObservationWithReadPath('./~/note.ts', 'home-lookalike');
+    expect(getObservationsByFilePath(store.db, ['C:/repo/note.ts', '/repo/note.ts', '~/note.ts'])).toEqual([]);
+  });
+
   it('matches an observation stored under a RELATIVE path when querying multiple candidate forms', () => {
     const absolutePath = '/Users/dev/proj/src/services/bar.ts';
     const relativePath = 'src/services/bar.ts';
@@ -64,24 +86,33 @@ describe('getObservationsByFilePath — multi-candidate path matching (#2691)', 
     expect(matches.map(o => o.id)).toContain(id);
   });
 
-  it('regression: the OLD single relative-path query would NOT match absolute storage', () => {
-    const absolutePath = '/Users/dev/proj/src/services/baz.ts';
-    const relativePath = 'src/services/baz.ts';
-    const id = seedObservationWithReadPath(absolutePath, 'old');
+  it('matches a Windows tool-input path stored with backslashes when querying the forward-slashed forms', () => {
+    // Claude Code on Windows reads and edits `C:\...` paths; the PreToolUse:Read
+    // hook sends `absolutePath.split(path.sep).join('/')` and the relative form.
+    const storedAbsolute = 'C:\\Users\\dev\\proj\\src\\services\\win.ts';
+    const storedRelative = 'src\\services\\win-relative.ts';
+    const absoluteId = seedObservationWithReadPath(storedAbsolute, 'win-abs');
+    const relativeId = seedObservationWithReadPath(storedRelative, 'win-rel');
 
-    // Old behavior (single relative path) — no match. Demonstrates the bug.
-    const relativeOnly = getObservationsByFilePath(store.db, relativePath);
-    expect(relativeOnly.map(o => o.id)).not.toContain(id);
+    const absoluteMatches = getObservationsByFilePath(store.db, ['C:/Users/dev/proj/src/services/win.ts', 'src/services/win.ts']);
+    expect(absoluteMatches.map(o => o.id)).toContain(absoluteId);
 
-    // New behavior (both forms) — match.
-    const both = getObservationsByFilePath(store.db, [absolutePath, relativePath]);
-    expect(both.map(o => o.id)).toContain(id);
+    const relativeMatches = getObservationsByFilePath(store.db, ['C:/Users/dev/proj/src/services/win-relative.ts', 'src/services/win-relative.ts']);
+    expect(relativeMatches.map(o => o.id)).toContain(relativeId);
+  });
+  it('keeps a literal backslash in a POSIX absolute filename distinct from a separator', () => {
+    const path = String.raw`/repo/src/main\draft.ts`;
+    const id = seedObservationWithReadPath(path, 'literal-backslash');
+    seedObservationWithReadPath('/repo/src/main/draft.ts', 'different-file');
+    expect(getObservationsByFilePath(store.db, path).map(row => row.id)).toEqual([id]);
   });
 
-  it('backward compatible: a single string path still works', () => {
-    const absolutePath = '/Users/dev/proj/src/single.ts';
-    const id = seedObservationWithReadPath(absolutePath, 'single');
-    const matches = getObservationsByFilePath(store.db, absolutePath);
-    expect(matches.map(o => o.id)).toContain(id);
+  it('preserves literal backslashes in relative candidates of a POSIX lookup', () => {
+    const absolute = String.raw`/repo/src/main\draft.ts`;
+    const relative = String.raw`src/main\draft.ts`;
+    const id = seedObservationWithReadPath(relative, 'literal-relative');
+    seedObservationWithReadPath('src/main/draft.ts', 'other-relative');
+    expect(getObservationsByFilePath(store.db, [absolute, relative]).map(row => row.id)).toEqual([id]);
   });
+
 });

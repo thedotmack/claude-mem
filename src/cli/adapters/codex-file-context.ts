@@ -1,6 +1,7 @@
 import { existsSync, statSync } from 'fs';
+import { homedir } from 'os';
 import path from 'path';
-import { parse, type ParsedToken } from 'shell-quote';
+import { parse, quote, type ParsedToken } from 'shell-quote';
 
 const MAX_FILE_PATHS = 10;
 const READ_COMMANDS = new Set(['cat', 'head', 'tail', 'less', 'more', 'bat', 'view', 'nl', 'tac']);
@@ -10,16 +11,29 @@ const FLAGS_WITH_VALUES_BY_COMMAND: Record<string, Set<string>> = {
 };
 const NO_FLAGS_WITH_VALUES = new Set<string>();
 
-function isOperatorToken(token: ParsedToken): boolean {
+function isOperatorToken(token: ParsedToken): token is { op: string } {
   return typeof token === 'object' && token !== null && 'op' in token;
 }
 
 function splitSegments(tokens: ParsedToken[]): string[][] {
   const segments: string[][] = [];
   let current: string[] = [];
+  let outputTarget = false;
 
   for (const token of tokens) {
+    if (outputTarget) {
+      // shell-quote emits >| as two operator tokens.
+      if (isOperatorToken(token) && token.op === '|') continue;
+      outputTarget = false;
+      if (typeof token === 'string') continue;
+    }
     if (isOperatorToken(token)) {
+      // Output redirections remove an output target from argv; they do not
+      // end the command. Read operands can occur on either side of them.
+      if (['>', '>>', '>&', '>|'].includes(token.op)) {
+        outputTarget = true;
+        continue;
+      }
       if (current.length > 0) segments.push(current);
       current = [];
       continue;
@@ -33,11 +47,53 @@ function splitSegments(tokens: ParsedToken[]): string[][] {
   return segments;
 }
 
-function normalizeCommand(command: unknown): string | null {
-  if (typeof command === 'string') return command;
+// Codex runs PowerShell on Windows, where a quoted '~/x' path still resolves
+// to the home directory, so only POSIX shells keep a quoted or escaped tilde literal.
+const QUOTED_TILDE_IS_LITERAL = process.platform !== 'win32';
+
+// Expand before shell-quote removes quote/escape information. A quoted or
+// escaped tilde, and every literal argv element, names cwd/~/... instead.
+function expandShellHome(command: string, homeDirectory: string): string {
+  let result = '';
+  let quoting: "'" | '"' | undefined;
+  let wordStart = true;
+  for (let index = 0; index < command.length; index++) {
+    const char = command[index];
+    if (char === '\\' && quoting !== "'") {
+      if (command[index + 1] === '\n') { index++; continue; }
+      result += char + (command[++index] ?? '');
+      wordStart = false;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      if (quoting === char) quoting = undefined;
+      else if (quoting === undefined) quoting = char;
+      result += char;
+      wordStart = false;
+      continue;
+    }
+    if (!quoting && wordStart && char === '~') {
+      // Line continuations disappear before the shell identifies a tilde
+      // prefix. Look at the next logical character without altering quoted text.
+      let next = index + 1;
+      while (command[next] === '\\' && command[next + 1] === '\n') next += 2;
+      if (next === command.length || /[\s/|&;()<>]/.test(command[next])) {
+        result += quote([homeDirectory]);
+        wordStart = false;
+        continue;
+      }
+    }
+    result += char;
+    wordStart = !quoting && /[\s|&;()<>]/.test(char);
+  }
+  return result;
+}
+
+function normalizeCommand(command: unknown, homeDirectory: string): string | null {
+  if (typeof command === 'string') return QUOTED_TILDE_IS_LITERAL ? expandShellHome(command, homeDirectory) : command;
   if (Array.isArray(command)) {
     const parts = command.filter((part): part is string => typeof part === 'string');
-    return parts.length > 0 ? parts.join(' ') : null;
+    return parts.length > 0 ? quote(parts) : null;
   }
   return null;
 }
@@ -55,6 +111,15 @@ function dropFlagValue(flag: string, command: string): boolean {
   if (valueFlags.has(flag)) return true;
   const eqIndex = flag.indexOf('=');
   return eqIndex > 0 && valueFlags.has(flag.slice(0, eqIndex));
+}
+
+// A shell expands `~/` before `cat` sees it, so a command that reads
+// `~/notes/x.md` reads a file under the home directory. Resolving the literal
+// token against cwd would point at `<cwd>/~/notes/x.md`, which never exists.
+export function expandHomeDirectory(candidate: string, homeDirectory: string = homedir()): string {
+  if (candidate === '~') return homeDirectory;
+  if (candidate.startsWith('~/')) return path.join(homeDirectory, candidate.slice(2));
+  return candidate;
 }
 
 function isExistingFile(candidate: string, cwd: string): boolean {
@@ -84,8 +149,8 @@ function dedupeAndCap(paths: string[]): string[] {
   return deduped;
 }
 
-function extractFromBash(toolInput: unknown, cwd: string): string[] {
-  const command = normalizeCommand((toolInput as { command?: unknown } | undefined)?.command);
+function extractFromBash(toolInput: unknown, cwd: string, homeDirectory: string): string[] {
+  const command = normalizeCommand((toolInput as { command?: unknown } | undefined)?.command, homeDirectory);
   if (!command) return [];
 
   // `parse` throws on substitutions it cannot resolve — `${}` raises
@@ -97,7 +162,7 @@ function extractFromBash(toolInput: unknown, cwd: string): string[] {
   // blocking the user's command is not.
   let tokens: ParsedToken[];
   try {
-    tokens = parse(command);
+    tokens = parse(command, process.env);
   } catch {
     return [];
   }
@@ -111,17 +176,28 @@ function extractFromBash(toolInput: unknown, cwd: string): string[] {
     if (!READ_COMMANDS.has(argv0)) continue;
 
     let skipNext = false;
+    let optionsEnded = false;
     for (const token of segment.slice(argv0Index + 1)) {
       if (skipNext) {
         skipNext = false;
         continue;
       }
-      if (isFlagLike(token)) {
+      if (!optionsEnded && token === '--') {
+        optionsEnded = true;
+        continue;
+      }
+      // cat accepts +name as a filename; other readers can use + for positioning.
+      if (!optionsEnded && (token.startsWith('-') || (argv0 !== 'cat' && token.startsWith('+')))) {
         skipNext = dropFlagValue(token, argv0) && !token.includes('=');
         continue;
       }
-      if (isExistingFile(token, cwd)) {
-        paths.push(token);
+      // The POSIX scanner splices the home directory in as text, so normalize
+      // it to the shape path.join gives (no doubled separator from HOME=/).
+      const candidate = QUOTED_TILDE_IS_LITERAL
+        ? (token.startsWith(homeDirectory) ? path.normalize(token) : token)
+        : expandHomeDirectory(token, homeDirectory);
+      if (isExistingFile(candidate, cwd)) {
+        paths.push(candidate);
       }
     }
   }
@@ -129,7 +205,7 @@ function extractFromBash(toolInput: unknown, cwd: string): string[] {
   return dedupeAndCap(paths);
 }
 
-function extractFromMcp(toolName: string, toolInput: unknown, cwd: string): string[] {
+function extractFromMcp(toolName: string, toolInput: unknown, cwd: string, homeDirectory: string): string[] {
   if (!/^mcp__.+__(read|view|cat)(?:_file|_files)?$/.test(toolName)) return [];
 
   const input = (toolInput ?? {}) as { path?: unknown; paths?: unknown };
@@ -142,11 +218,11 @@ function extractFromMcp(toolName: string, toolInput: unknown, cwd: string): stri
     }
   }
 
-  return dedupeAndCap(candidates.filter(candidate => isExistingFile(candidate, cwd)));
+  return dedupeAndCap(candidates.map(candidate => expandHomeDirectory(candidate, homeDirectory)).filter(candidate => isExistingFile(candidate, cwd)));
 }
 
-export function extractFilePaths(toolName: string, toolInput: unknown, cwd: string): string[] {
-  if (toolName === 'Bash') return extractFromBash(toolInput, cwd);
-  if (toolName.startsWith('mcp__')) return extractFromMcp(toolName, toolInput, cwd);
+export function extractFilePaths(toolName: string, toolInput: unknown, cwd: string, homeDirectory: string = homedir()): string[] {
+  if (toolName === 'Bash') return extractFromBash(toolInput, cwd, homeDirectory);
+  if (toolName.startsWith('mcp__')) return extractFromMcp(toolName, toolInput, cwd, homeDirectory);
   return [];
 }

@@ -3,7 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import pg from 'pg';
 import { Server } from '../../../src/services/server/Server.js';
-import { ServerV1PostgresRoutes } from '../../../src/server/routes/v1/ServerV1PostgresRoutes.js';
+import { JOB_LIST_MAX_OFFSET, ServerV1PostgresRoutes } from '../../../src/server/routes/v1/ServerV1PostgresRoutes.js';
 import {
   bootstrapServerPostgresSchema,
   createPostgresStorageRepositories,
@@ -225,6 +225,39 @@ describe('Phase 11 — team/project queue listing endpoints', () => {
     expect(body.limit).toBe(2);
     expect(body.offset).toBe(0);
     expect(body.jobs.every((j: any) => j.status === 'queued')).toBe(true);
+  });
+
+  describe('offset ceiling', () => {
+    const jobListingPaths = (): string[] => [
+      `/v1/teams/${teamAId}/jobs`,
+      `/v1/projects/${projectA1Id}/jobs`,
+      '/v1/jobs',
+    ];
+
+    it('answers 200 for an offset at the ceiling on every job listing route', async () => {
+      for (const path of jobListingPaths()) {
+        const resp = await authedFetch(teamAKey, `${path}?offset=${JOB_LIST_MAX_OFFSET}`);
+        expect(resp.status).toBe(200);
+        const body = await resp.json();
+        expect(body.offset).toBe(JOB_LIST_MAX_OFFSET);
+        expect(body.jobs).toEqual([]);
+      }
+    });
+
+    it('answers 400 INVALID_PAGINATION for an offset above the ceiling on every job listing route', async () => {
+      for (const path of jobListingPaths()) {
+        const resp = await authedFetch(teamAKey, `${path}?offset=${JOB_LIST_MAX_OFFSET + 1}`);
+        expect(resp.status).toBe(400);
+        const body = await resp.json();
+        expect(body.code).toBe('INVALID_PAGINATION');
+        expect(body.message).toContain(String(JOB_LIST_MAX_OFFSET));
+      }
+    });
+
+    it('still answers 404 first when the caller cannot see the team', async () => {
+      const resp = await authedFetch(teamBKey, `/v1/teams/${teamAId}/jobs?offset=${JOB_LIST_MAX_OFFSET + 1}`);
+      expect(resp.status).toBe(404);
+    });
   });
 
   it('rejects unauthenticated requests', async () => {

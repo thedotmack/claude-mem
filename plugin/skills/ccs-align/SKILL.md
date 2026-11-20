@@ -152,12 +152,14 @@ Each line of `middle.jsonl` is one record. The shape is **locked** for Phase 0 (
   "project": "claude-mem",
   "agent_id": null,
   "source": "worker",
-  "line": "- 2026-09-09 [ccs-align] decision — …"
+  "line": "- 2026-09-09 [ccs-align] decision — «…»"
 }
 ```
 
-`line` is `formatCcsAlignLine` — the #3931 `formatAwarenessLine` with the tag
-swapped and the same 500-char truncation. Dedupe is by observation `id` **and**
+`line` is `formatCcsAlignLine`: the awareness line format with the tag swapped,
+written by the same shared formatter, so the recalled text is sanitized (no tag
+framing or invisible characters) and fenced in `«…»`, truncated inside the fence
+to 500 chars. Dedupe is by observation `id` **and**
 by body (the line from `[ccs-align]` onward, date excluded), so the same fact on
 a new day is still skipped and the file does not grow on a repeat cycle.
 

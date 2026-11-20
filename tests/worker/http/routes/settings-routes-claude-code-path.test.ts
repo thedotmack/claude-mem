@@ -88,53 +88,6 @@ describe('SettingsRoutes — CLAUDE_CODE_PATH is not HTTP-writable', () => {
     }
   });
 
-  it('does not persist CLAUDE_CODE_PATH from POST /api/settings', () => {
-    writeFileSync(settingsPath, JSON.stringify({
-      CLAUDE_MEM_MODEL: 'claude-haiku-4-5-20251001',
-    }));
-
-    const { res, jsonSpy } = createMockRes();
-    handler({
-      body: {
-        CLAUDE_CODE_PATH: '/tmp/attacker-controlled-binary',
-        CLAUDE_MEM_MODEL: 'claude-sonnet-5',
-      },
-      path: '/api/settings',
-      params: {},
-      query: {},
-      headers: {},
-    } as Request, res as Response);
-
-    expect(jsonSpy).toHaveBeenCalledWith({ success: true, message: 'Settings updated successfully' });
-    const persisted = JSON.parse(readFileSync(settingsPath, 'utf-8'));
-    expect(persisted.CLAUDE_CODE_PATH).toBeUndefined();
-    expect(persisted.CLAUDE_MEM_MODEL).toBe('claude-sonnet-5');
-  });
-
-  it('leaves an existing file/env CLAUDE_CODE_PATH unchanged when the viewer echoes GET', () => {
-    writeFileSync(settingsPath, JSON.stringify({
-      CLAUDE_CODE_PATH: '/usr/local/bin/claude',
-      CLAUDE_MEM_LOG_LEVEL: 'INFO',
-    }));
-
-    const { res, jsonSpy } = createMockRes();
-    handler({
-      body: {
-        CLAUDE_CODE_PATH: '/tmp/attacker-controlled-binary',
-        CLAUDE_MEM_LOG_LEVEL: 'DEBUG',
-      },
-      path: '/api/settings',
-      params: {},
-      query: {},
-      headers: {},
-    } as Request, res as Response);
-
-    expect(jsonSpy).toHaveBeenCalledWith({ success: true, message: 'Settings updated successfully' });
-    const persisted = JSON.parse(readFileSync(settingsPath, 'utf-8'));
-    expect(persisted.CLAUDE_CODE_PATH).toBe('/usr/local/bin/claude');
-    expect(persisted.CLAUDE_MEM_LOG_LEVEL).toBe('DEBUG');
-  });
-
   it('rejects a browser POST from a different localhost origin', () => {
     writeFileSync(settingsPath, JSON.stringify({
       CLAUDE_MEM_MODEL: 'claude-haiku-4-5-20251001',

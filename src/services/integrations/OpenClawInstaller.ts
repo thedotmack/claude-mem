@@ -1,20 +1,60 @@
 
 import path from 'path';
 import { homedir } from 'os';
+/*!
+ * JSON5 (https://github.com/json5/json5) — MIT License
+ * Copyright (c) 2012-2018 Aseem Kishore, and others
+ * (https://github.com/json5/json5/contributors).
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+import JSON5 from 'json5';
 import {
   existsSync,
   readFileSync,
-  writeFileSync,
   mkdirSync,
   cpSync,
   rmSync,
-  unlinkSync,
 } from 'fs';
+import { writeJsonFileAtomic } from '../../shared/atomic-json.js';
 import { logger } from '../../utils/logger.js';
-import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { getWorkerPort } from '../../shared/worker-utils.js';
 
+function openClawHome(): string {
+  const override = process.env.OPENCLAW_HOME?.trim();
+  const home = override && override !== 'null' && override !== 'undefined' ? override : homedir();
+  return path.resolve(home.replace(/^~(?=$|[\\/])/, () => homedir()));
+}
+
+function openClawUserPath(value: string): string {
+  return path.resolve(value.trim().replace(/^~(?=$|[\\/])/, () => openClawHome()));
+}
+
+// Match OpenClaw's src/config/state-dir.ts and src/config/paths.ts: extensions
+// belong to the selected state directory, while the config may live elsewhere.
 export function getOpenClawConfigDirectory(): string {
-  return path.join(homedir(), '.openclaw');
+  const override = process.env.OPENCLAW_STATE_DIR?.trim();
+  if (override) return openClawUserPath(override);
+  const profile = process.env.OPENCLAW_PROFILE?.trim();
+  const suffix = profile && profile.toLowerCase() !== 'default' && /^[a-z0-9][a-z0-9_-]{0,63}$/i.test(profile)
+    ? `-${profile}` : '';
+  return path.join(openClawHome(), `.openclaw${suffix}`);
 }
 
 export function getOpenClawExtensionsDirectory(): string {
@@ -26,7 +66,8 @@ export function getOpenClawClaudeMemExtensionDirectory(): string {
 }
 
 export function getOpenClawConfigFilePath(): string {
-  return path.join(getOpenClawConfigDirectory(), 'openclaw.json');
+  const override = process.env.OPENCLAW_CONFIG_PATH?.trim();
+  return override ? openClawUserPath(override) : path.join(getOpenClawConfigDirectory(), 'openclaw.json');
 }
 
 const OPENCLAW_MARKETPLACE_ROOTS = [
@@ -75,7 +116,7 @@ function readOpenClawConfig(): Record<string, any> {
   const configFilePath = getOpenClawConfigFilePath();
   if (!existsSync(configFilePath)) return {};
   try {
-    return JSON.parse(readFileSync(configFilePath, 'utf-8'));
+    return JSON5.parse(readFileSync(configFilePath, 'utf-8'));
   } catch (error) {
     const normalizedError = error instanceof Error ? error : new Error(String(error));
     logger.error('WORKER', 'Failed to parse openclaw.json', { path: configFilePath }, normalizedError);
@@ -84,9 +125,9 @@ function readOpenClawConfig(): Record<string, any> {
 }
 
 function writeOpenClawConfig(config: Record<string, any>): void {
-  const configDirectory = getOpenClawConfigDirectory();
-  mkdirSync(configDirectory, { recursive: true });
-  writeFileSync(getOpenClawConfigFilePath(), JSON.stringify(config, null, 2) + '\n', 'utf-8');
+  const configFilePath = getOpenClawConfigFilePath();
+  mkdirSync(path.dirname(configFilePath), { recursive: true });
+  writeJsonFileAtomic(configFilePath, config);
 }
 
 function registerPluginInOpenClawConfig(
@@ -199,13 +240,12 @@ function copyPluginFilesAndRegister(
     console.log(`  Skills copied to: ${destinationSkills}`);
   }
 
-  writeFileSync(
+  writeJsonFileAtomic(
     path.join(extensionDirectory, 'package.json'),
-    JSON.stringify(extensionPackageJson, null, 2) + '\n',
-    'utf-8',
+    extensionPackageJson,
   );
 
-  const workerPort = SettingsDefaultsManager.getInt('CLAUDE_MEM_WORKER_PORT');
+  const workerPort = getWorkerPort();
   registerPluginInOpenClawConfig(workerPort);
   console.log(`  Registered in openclaw.json`);
 
@@ -237,51 +277,6 @@ export function uninstallOpenClawPlugin(): number {
   }
 
   return hasErrors ? 1 : 0;
-}
-
-export function checkOpenClawStatus(): number {
-  console.log('\nClaude-Mem OpenClaw Integration Status\n');
-
-  const configDirectory = getOpenClawConfigDirectory();
-  const extensionDirectory = getOpenClawClaudeMemExtensionDirectory();
-  const configFilePath = getOpenClawConfigFilePath();
-  const pluginEntryPoint = path.join(extensionDirectory, 'dist', 'index.js');
-
-  console.log(`Config directory: ${configDirectory}`);
-  console.log(`  Exists: ${existsSync(configDirectory) ? 'yes' : 'no'}`);
-  console.log('');
-
-  console.log(`Extension directory: ${extensionDirectory}`);
-  console.log(`  Exists: ${existsSync(extensionDirectory) ? 'yes' : 'no'}`);
-  console.log(`  Plugin entry: ${existsSync(pluginEntryPoint) ? 'yes' : 'no'}`);
-  console.log('');
-
-  console.log(`Config (openclaw.json): ${configFilePath}`);
-  if (existsSync(configFilePath)) {
-    const config = readOpenClawConfig();
-    const isRegistered = config.plugins?.entries?.['claude-mem'] !== undefined;
-    const isEnabled = config.plugins?.entries?.['claude-mem']?.enabled === true;
-    const isMemorySlot = config.plugins?.slots?.memory === 'claude-mem';
-
-    console.log(`  Exists: yes`);
-    console.log(`  Registered: ${isRegistered ? 'yes' : 'no'}`);
-    console.log(`  Enabled: ${isEnabled ? 'yes' : 'no'}`);
-    console.log(`  Memory slot: ${isMemorySlot ? 'yes' : 'no'}`);
-
-    if (isRegistered) {
-      const pluginConfig = config.plugins.entries['claude-mem'].config;
-      if (pluginConfig) {
-        console.log(`  Worker port: ${pluginConfig.workerPort ?? 'default'}`);
-        console.log(`  Project: ${pluginConfig.project ?? 'default'}`);
-        console.log(`  Sync MEMORY.md: ${pluginConfig.syncMemoryFile ?? 'default'}`);
-      }
-    }
-  } else {
-    console.log(`  Exists: no`);
-  }
-
-  console.log('');
-  return 0;
 }
 
 export async function installOpenClawIntegration(): Promise<number> {

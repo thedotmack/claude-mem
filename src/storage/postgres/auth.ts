@@ -6,6 +6,7 @@ import { assertProjectOwnership, newId, queryOne, toDate, toEpoch, toJsonArray, 
 export interface PostgresApiKey {
   id: string;
   keyHash: string;
+  keyPrefix: string | null;
   teamId: string | null;
   projectId: string | null;
   actorId: string;
@@ -32,6 +33,7 @@ export interface PostgresAuditLog {
 interface ApiKeyRow {
   id: string;
   key_hash: string;
+  key_prefix: string | null;
   team_id: string | null;
   project_id: string | null;
   actor_id: string;
@@ -61,6 +63,7 @@ export class PostgresAuthRepository {
   async createApiKey(input: {
     id?: string;
     keyHash: string;
+    keyPrefix?: string | null;
     teamId?: string | null;
     projectId?: string | null;
     actorId: string;
@@ -74,13 +77,14 @@ export class PostgresAuthRepository {
     const row = await queryOne<ApiKeyRow>(
       this.client,
       `
-        INSERT INTO api_keys (id, key_hash, team_id, project_id, actor_id, scopes, expires_at)
-        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)
+        INSERT INTO api_keys (id, key_hash, key_prefix, team_id, project_id, actor_id, scopes, expires_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)
         RETURNING *
       `,
       [
         id,
         input.keyHash,
+        input.keyPrefix ?? null,
         input.teamId ?? null,
         input.projectId ?? null,
         input.actorId,
@@ -89,6 +93,41 @@ export class PostgresAuthRepository {
       ]
     );
     return mapApiKeyRow(row!);
+  }
+
+  /**
+   * Narrow candidate keys by the raw key's non-secret prefix (salted lookups).
+   * Only active rows come back and the result is LIMITed: a caller who knows a
+   * prefix must never trigger scrypt work for revoked or expired keys, and the
+   * per-request derivation count stays bounded no matter how many rows share
+   * the prefix.
+   */
+  async listApiKeysByPrefix(prefix: string): Promise<PostgresApiKey[]> {
+    const result = await this.client.query<ApiKeyRow>(
+      `
+        SELECT id, key_hash, key_prefix, team_id, project_id, actor_id, scopes,
+               revoked_at, expires_at, created_at, updated_at
+        FROM api_keys
+        WHERE key_prefix = $1
+          AND revoked_at IS NULL
+          AND (expires_at IS NULL OR expires_at > now())
+        LIMIT 8
+      `,
+      [prefix],
+    );
+    return result.rows.map(mapApiKeyRow);
+  }
+
+  /** Upgrade a legacy SHA-256 row to the salted scheme once its raw key is known. */
+  async updateApiKeyHash(id: string, keyHash: string, keyPrefix: string | null): Promise<void> {
+    await this.client.query(
+      `
+        UPDATE api_keys
+        SET key_hash = $1, key_prefix = $2, updated_at = now()
+        WHERE id = $3
+      `,
+      [keyHash, keyPrefix, id],
+    );
   }
 
   async createAuditLog(input: {
@@ -135,12 +174,18 @@ export class PostgresAuthRepository {
     const row = await queryOne<ApiKeyRow>(this.client, 'SELECT * FROM api_keys WHERE key_hash = $1', [keyHash]);
     return row ? mapApiKeyRow(row) : null;
   }
+
+  async getApiKeyById(id: string): Promise<PostgresApiKey | null> {
+    const row = await queryOne<ApiKeyRow>(this.client, 'SELECT * FROM api_keys WHERE id = $1', [id]);
+    return row ? mapApiKeyRow(row) : null;
+  }
 }
 
 function mapApiKeyRow(row: ApiKeyRow): PostgresApiKey {
   return {
     id: row.id,
     keyHash: row.key_hash,
+    keyPrefix: row.key_prefix ?? null,
     teamId: row.team_id,
     projectId: row.project_id,
     actorId: row.actor_id,

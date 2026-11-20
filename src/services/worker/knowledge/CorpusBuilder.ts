@@ -3,6 +3,7 @@ import { logger } from '../../../utils/logger.js';
 import type { ObservationSearchResult } from '../../sqlite/types.js';
 import type { SessionStore } from '../../sqlite/SessionStore.js';
 import type { SearchOrchestrator } from '../search/SearchOrchestrator.js';
+import { parseStringListField } from '../../sync/string-list-field.js';
 import { CorpusRenderer } from './CorpusRenderer.js';
 import { CorpusStore } from './CorpusStore.js';
 import type { CorpusFile, CorpusFilter, CorpusObservation, CorpusStats } from './types.js';
@@ -34,18 +35,27 @@ export class CorpusBuilder {
     this.renderer = new CorpusRenderer();
   }
 
-  async build(name: string, description: string, filter: CorpusFilter): Promise<CorpusFile> {
+  async build(
+    name: string,
+    description: string,
+    filter: CorpusFilter,
+    options: { writeFile?: boolean } = {}
+  ): Promise<CorpusFile> {
     logger.debug('WORKER', `Building corpus "${name}" with filter`, { filter });
 
-    const searchArgs: Record<string, unknown> = {};
+    // A corpus contains observations; unrelated prompts and summaries must
+    // not consume the semantic search candidate window.
+    const searchArgs: Record<string, unknown> = { searchType: 'observations', limit: filter.limit ?? 500 };
     if (filter.project) searchArgs.project = filter.project;
     if (filter.types && filter.types.length > 0) searchArgs.obs_type = filter.types.join(',');
-    if (filter.concepts && filter.concepts.length > 0) searchArgs.concepts = filter.concepts.join(',');
-    if (filter.files && filter.files.length > 0) searchArgs.files = filter.files.join(',');
+    if (filter.concepts && filter.concepts.length > 0) searchArgs.concepts = filter.concepts;
+    if (filter.files && filter.files.length > 0) searchArgs.files = filter.files;
     if (filter.query) searchArgs.query = filter.query;
     if (filter.date_start) searchArgs.dateStart = filter.date_start;
     if (filter.date_end) searchArgs.dateEnd = filter.date_end;
-    if (filter.limit) searchArgs.limit = filter.limit;
+    // The stored filter is the whole definition of a corpus; the 90-day window interactive
+    // search applies to date-less Chroma queries would shrink it on every rebuild.
+    searchArgs.ignoreDefaultRecencyWindow = true;
 
     const searchResult = await this.searchOrchestrator.search(searchArgs);
 
@@ -55,10 +65,11 @@ export class CorpusBuilder {
 
     logger.debug('WORKER', `Search returned ${observationIds.length} observation IDs`);
 
-    const hydrateOptions: { orderBy?: 'date_asc' | 'date_desc'; limit?: number; project?: string; type?: string | string[] } = {
+    const hydrateOptions: { orderBy?: 'date_asc' | 'date_desc'; limit?: number; projects?: string[]; type?: string | string[] } = {
       orderBy: 'date_asc',
     };
-    if (filter.project) hydrateOptions.project = filter.project;
+    // Hydration must retain the same adopted-project scope as selection.
+    if (filter.project) hydrateOptions.projects = this.sessionStore.getProjectReadKeys([filter.project]);
     if (filter.types && filter.types.length > 0) hydrateOptions.type = filter.types;
     if (filter.limit) hydrateOptions.limit = filter.limit;
 
@@ -91,7 +102,9 @@ export class CorpusBuilder {
     const renderedText = this.renderer.renderCorpus(corpus);
     corpus.stats.token_estimate = this.renderer.estimateTokens(renderedText);
 
-    this.corpusStore.write(corpus);
+    if (options.writeFile !== false) {
+      this.corpusStore.write(corpus);
+    }
 
     logger.debug('WORKER', `Corpus "${name}" built with ${observations.length} observations, ~${corpus.stats.token_estimate} tokens`);
 
@@ -104,9 +117,9 @@ export class CorpusBuilder {
       type: row.type,
       title: row.title || '',
       subtitle: row.subtitle || null,
-      narrative: row.narrative || null,
-      facts: safeParseJsonArray(row.facts),
-      concepts: safeParseJsonArray(row.concepts),
+      narrative: row.narrative || row.text || null,
+      facts: parseStringListField(row.facts, 'facts', row.id),
+      concepts: parseStringListField(row.concepts, 'concepts', row.id),
       files_read: safeParseJsonArray(row.files_read),
       files_modified: safeParseJsonArray(row.files_modified),
       project: row.project,
@@ -116,7 +129,7 @@ export class CorpusBuilder {
   }
 
   private calculateStats(observations: CorpusObservation[]): CorpusStats {
-    const typeBreakdown: Record<string, number> = {};
+    const typeBreakdown: Record<string, number> = Object.create(null);
     let earliestEpoch = Infinity;
     let latestEpoch = -Infinity;
 

@@ -9,6 +9,10 @@ export const MemoryItemSchema = z.object({
   id: z.string().min(1),
   projectId: z.string().min(1),
   serverSessionId: z.string().min(1).nullable().default(null),
+  // Provenance: which agent/platform produced this observation (claude, codex,
+  // cursor, cowork, muse, ...). Denormalized from server_sessions at write time
+  // so search results carry it without a JOIN. Null = created before provenance.
+  platformSource: z.string().min(1).nullable().default(null),
   legacyObservationId: z.number().int().positive().nullable().default(null),
   kind: MemoryItemKindSchema,
   type: z.string().min(1),
@@ -31,6 +35,7 @@ export const CreateMemoryItemSchema = MemoryItemSchema.omit({
   updatedAtEpoch: true
 }).partial({
   serverSessionId: true,
+  platformSource: true,
   legacyObservationId: true,
   title: true,
   subtitle: true,
@@ -41,6 +46,25 @@ export const CreateMemoryItemSchema = MemoryItemSchema.omit({
   filesRead: true,
   filesModified: true,
   metadata: true
+});
+
+/** PATCH fields have no creation defaults: omission means preserve the stored value. */
+export const UpdateMemoryItemSchema = MemoryItemSchema.pick({
+  projectId: true,
+  kind: true,
+  type: true,
+}).partial().extend({
+  serverSessionId: MemoryItemSchema.shape.serverSessionId.removeDefault().optional(),
+  legacyObservationId: MemoryItemSchema.shape.legacyObservationId.removeDefault().optional(),
+  title: MemoryItemSchema.shape.title.removeDefault().optional(),
+  subtitle: MemoryItemSchema.shape.subtitle.removeDefault().optional(),
+  text: MemoryItemSchema.shape.text.removeDefault().optional(),
+  narrative: MemoryItemSchema.shape.narrative.removeDefault().optional(),
+  facts: MemoryItemSchema.shape.facts.removeDefault().optional(),
+  concepts: MemoryItemSchema.shape.concepts.removeDefault().optional(),
+  filesRead: MemoryItemSchema.shape.filesRead.removeDefault().optional(),
+  filesModified: MemoryItemSchema.shape.filesModified.removeDefault().optional(),
+  metadata: MemoryItemSchema.shape.metadata.removeDefault().optional(),
 });
 
 export const MemorySourceSchema = z.object({

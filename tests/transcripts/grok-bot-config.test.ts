@@ -4,8 +4,6 @@ import { tmpdir } from 'os';
 import path from 'path';
 import { buildGrokBotWatch, GROK_BOT_SCHEMA, installGrokBotIntegration, resolveGrokBotProject } from '../../src/services/integrations/GrokBotInstaller.js';
 
-const fixturePath = path.join(__dirname, '..', 'fixtures', 'grok-bot-session.jsonl');
-
 function writeAgent(root: string, agentId: string, name: string): void {
   mkdirSync(path.join(root, 'agents', agentId), { recursive: true });
   writeFileSync(path.join(root, 'agents', agentId, 'profile.json'), JSON.stringify({ name }));
@@ -86,10 +84,10 @@ describe('Grok Bot transcript integration', () => {
       const grokWatches = parsed.watches.filter((watch: { name: string }) => watch.name === 'grok-bot');
       const otherWatches = parsed.watches.filter((watch: { name: string }) => watch.name !== 'grok-bot');
       expect(otherWatches).toHaveLength(1);
-      expect(grokWatches).toHaveLength(2);
+      expect(grokWatches).toHaveLength(3);
 
       const byProject = Object.fromEntries(
-        grokWatches.map((watch: { project: string }) => [watch.project, watch]),
+        grokWatches.map((watch: { project: string; path: string }) => [watch.project, watch]),
       );
       expect(byProject.cmem_work_biff.agentId).toBe(biffId);
       expect(byProject.cmem_work_biff.path).toBe(
@@ -105,19 +103,15 @@ describe('Grok Bot transcript integration', () => {
       expect(byProject['cmem_work_new-bot'].workspace).toBe(
         path.join(workspaceRoot, '.cmem-projects', 'cmem_work_new-bot'),
       );
+      expect(byProject.cmem_work_root.path).toBe(
+        path.join(workspaceRoot, 'agent-transcripts', '*', '*.jsonl'),
+      );
 
-      expect(grokWatches.some((watch: { path: string }) => watch.path.includes(`${path.sep}*${path.sep}`))).toBe(false);
+      expect(grokWatches.some((watch: { path: string }) => watch.path.includes(`${path.sep}*${path.sep}`))).toBe(true);
+      expect(grokWatches.some((watch: { path: string }) => watch.path.includes('sand-subagent-'))).toBe(false);
     } finally {
       rmSync(tempRoot, { recursive: true, force: true });
     }
-  });
-
-  it('ships a Grok Bot transcript fixture with tool_use and tool result lines', () => {
-    const lines = readFileSync(fixturePath, 'utf-8').trim().split('\n').map((line) => JSON.parse(line));
-    expect(lines[0].role).toBe('assistant');
-    expect(lines[0].message.content[0].type).toBe('tool_use');
-    expect(lines[1].role).toBe('tool');
-    expect(lines[1].message.content[0].toolUseId).toBe('toolu_123');
   });
 
   it('no-arg install watches a well-known agent-data directory instead of cwd', () => {
@@ -141,11 +135,17 @@ describe('Grok Bot transcript integration', () => {
 
       const parsed = JSON.parse(readFileSync(configPath, 'utf-8'));
       const grokWatches = parsed.watches.filter((watch: { name: string }) => watch.name === 'grok-bot');
-      expect(grokWatches).toHaveLength(1);
-      expect(grokWatches[0].path).toBe(path.join(agentData, 'agent-transcripts', agentId, '*.jsonl'));
+      expect(grokWatches).toHaveLength(2);
+      expect(grokWatches.map((watch: { path: string }) => watch.path)).toEqual([
+        path.join(agentData, 'agent-transcripts', agentId, '*.jsonl'),
+        path.join(agentData, 'agent-transcripts', '*', '*.jsonl'),
+      ]);
       expect(grokWatches[0].agentId).toBe(agentId);
+      expect(grokWatches[1].agentId).toBeUndefined();
       expect(grokWatches[0].project).toBe('cmem_work_alpha');
-      expect(grokWatches[0].path.includes(installCwd)).toBe(false);
+      expect(grokWatches[1].project).toBe('cmem_work_root');
+      expect(grokWatches.every((watch: { path: string }) => watch.path.startsWith(agentData))).toBe(true);
+      expect(grokWatches.every((watch: { path: string }) => watch.path.includes(installCwd))).toBe(false);
     } finally {
       process.chdir(previousCwd);
       if (previousHome === undefined) delete process.env.HOME;
@@ -186,7 +186,8 @@ describe('Grok Bot transcript integration', () => {
 
       const parsed = JSON.parse(readFileSync(configPath, 'utf-8'));
       const grokWatches = parsed.watches.filter((watch: { name: string }) => watch.name === 'grok-bot');
-      expect(grokWatches).toHaveLength(1);
+      // The agent's own watch, then the catch-all for agents created after install.
+      expect(grokWatches).toHaveLength(2);
       expect(grokWatches[0].agentId).toBe(memoryAgentId);
       expect(grokWatches[0].path).toBe(
         path.join(workspaceRoot, 'agent-transcripts', memoryAgentId, '*.jsonl'),

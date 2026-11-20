@@ -26,6 +26,10 @@ Searches the database using **hybrid search** (combines ChromaDB vector embeddin
 
 Output is a portable JSON file that can be shared.
 
+Exports include older matches even when `CLAUDE_MEM_SEARCH_RECENCY_DAYS` limits
+interactive semantic search. An empty query exports all saved history, restricted
+to the selected project when `--project` is provided.
+
 > **Privacy Note:** Export files contain all matching memory data in plain text. Review exports before sharing to ensure no sensitive information (API keys, passwords, private paths) is included.
 
 ### Import Script
@@ -33,8 +37,26 @@ Output is a portable JSON file that can be shared.
 Imports memories with **duplicate prevention**:
 - Checks if each record already exists before inserting
 - Skips duplicates automatically
-- Maintains data integrity with transactional imports
-- Reports what was imported vs. skipped
+- Preserves the owning session of each imported record
+- Reports what was imported, skipped, or rejected
+
+When a session already exists in the destination installation, its local title,
+prompt, and registered memory session ID are retained. New observations and
+summaries from the export attach to that existing session. If it has no memory
+session ID yet, the import registers the exported ID before adding those memories.
+Re-importing the same export still skips the memories already restored.
+
+Large files are sent in multiple requests within the worker's 5 MiB JSON body
+limit, measured in UTF-8 bytes. Parent sessions are imported first, and later
+requests use the local session identities returned by the worker. Use a worker
+from the same version as the script for this identity response. The script checks
+the original input rows before writing: a row whose serialized request alone
+exceeds the limit is refused without shortening its content. After importing the
+parents, it checks the resolved child rows again before sending any children.
+An existing destination session can have a longer identity that makes a child
+row exceed the limit; this error names the row's original export index. The
+already accepted parent sessions remain, since a multi-request import is not a
+single transaction.
 
 **Duplicate Detection Strategy:**
 - **Sessions**: By `claude_session_id` (unique)
@@ -193,7 +215,7 @@ If you run the import again on the same file, duplicates are automatically skipp
 ## Safety Features
 
 ✅ **Duplicate Prevention** - Won't re-import existing records
-✅ **Transactional** - All-or-nothing imports (database stays consistent)
+✅ **Explicit rejections** - Rejected rows are reported with their input positions
 ✅ **Read-only Export** - Export script opens database in read-only mode
 ✅ **Dependency Ordering** - Sessions imported before observations/summaries
 ✅ **Validation** - Checks database exists before starting
@@ -262,7 +284,10 @@ npx tsx scripts/import-memories.ts linux.json
 
 ### Partial Import
 
-If import fails mid-way, the transaction is rolled back - your database remains unchanged. Fix the issue and try again.
+If a request fails mid-way, earlier accepted rows remain imported and the script
+exits with a nonzero status. Fix the reported problem and import the same file
+again: duplicate prevention skips rows already restored. A rejected row also
+produces a nonzero exit status, with its original position in the export file.
 
 ## Contributing Memory Sets
 
@@ -294,3 +319,46 @@ npx tsx scripts/export-memories.ts "bugfix error handling" bugfix-patterns.json
 ```bash
 npx tsx scripts/export-memories.ts "performance optimization caching" perf-tips.json
 ```
+
+## Export a complete work-state list
+
+The memory export scripts above export observations, summaries and prompts.
+For the to-do lists written with `work_state_write`, use the local worker's
+`GET /api/work-state/export` endpoint instead. This returns the complete
+ordered history as JSON, including closed items, without the MCP text limit.
+
+With the worker running, run this from the checkout whose work state you
+want. The worker port is `CLAUDE_MEM_WORKER_PORT` in `~/.claude-mem/settings.json`;
+when it isn't set, the default is `37700 + (your user id % 100)` on macOS and
+Linux (on Windows, read it from `settings.json`):
+
+```bash
+WORKER_PORT=$(jq -r '.CLAUDE_MEM_WORKER_PORT // empty' ~/.claude-mem/settings.json)
+WORKER_PORT=${WORKER_PORT:-$((37700 + $(id -u) % 100))}
+curl --fail-with-body --get "http://127.0.0.1:$WORKER_PORT/api/work-state/export" \
+  --data-urlencode "cwd=$PWD" \
+  --data-urlencode 'list=release' \
+  --output work-state.json
+```
+
+Omit `list` to export all public work-state lists visible to that checkout,
+including its configured aliases, worktree parent and adopted projects.
+Shared My Work internal records stay excluded. The response contains
+`version: 1`, the primary `project`, the checkout's `projects`, the selected
+`list` (or `null`) and an `entries` array. An empty history returns `entries: []`.
+
+Each entry preserves its local `id`, origin `project`, `scope_project` when
+present, `list_name`, `fields` and `created_at_epoch`. The array is already in
+the worker's replay order; do not sort it by local IDs. Group by
+`scope_project ?? project` and `list_name`, then apply patches in array order.
+Fields without a `task` update the list state; a named `task` updates that
+item. The latest value wins and `null` clears a field. This preserves the
+current state and the recorded done/dropped transitions without creating new
+task identities. IDs identify records in this installation, not across devices.
+
+`work_state_read` keeps its existing text response. Its MCP result metadata
+contains `claude-mem/truncated`; when true, the text also points to this export.
+Exports always include recorded closures, regardless of `includeClosed`.
+They are read-only and contain plaintext working state: choose the destination
+deliberately and review the file before sharing. This is an export, not a
+work-state import or synchronization format.

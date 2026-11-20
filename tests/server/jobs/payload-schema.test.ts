@@ -31,50 +31,22 @@ describe('ServerGenerationJobPayloadSchema', () => {
     expect(result.success).toBe(true);
   });
 
-  it('rejects payload missing team_id', () => {
-    const { team_id, ...rest } = validEvent;
-    const result = ServerGenerationJobPayloadSchema.safeParse(rest);
-    expect(result.success).toBe(false);
-    if (!result.success) {
-      const message = result.error.issues.map(i => i.path.join('.')).join(',');
-      expect(message).toContain('team_id');
+  for (const field of ['team_id', 'project_id', 'generation_job_id', 'source_adapter', 'api_key_id', 'actor_id'] as const) {
+    it(`rejects payload missing ${field}`, () => {
+      const payload: Partial<typeof validEvent> = { ...validEvent };
+      delete payload[field];
+      const result = ServerGenerationJobPayloadSchema.safeParse(payload);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues.map(issue => issue.path.join('.'))).toContain(field);
+      }
+    });
+  }
+
+  it('allows null api_key_id and actor_id independently', () => {
+    for (const field of ['api_key_id', 'actor_id'] as const) {
+      expect(ServerGenerationJobPayloadSchema.safeParse({ ...validEvent, [field]: null }).success).toBe(true);
     }
-  });
-
-  it('rejects payload missing project_id', () => {
-    const { project_id, ...rest } = validEvent;
-    const result = ServerGenerationJobPayloadSchema.safeParse(rest);
-    expect(result.success).toBe(false);
-  });
-
-  it('rejects payload missing generation_job_id', () => {
-    const { generation_job_id, ...rest } = validEvent;
-    const result = ServerGenerationJobPayloadSchema.safeParse(rest);
-    expect(result.success).toBe(false);
-  });
-
-  it('rejects payload missing source_adapter', () => {
-    const { source_adapter, ...rest } = validEvent;
-    const result = ServerGenerationJobPayloadSchema.safeParse(rest);
-    expect(result.success).toBe(false);
-  });
-
-  it('requires the api_key_id field to be present (null is allowed)', () => {
-    const { api_key_id, ...withoutKey } = validEvent;
-    const result = ServerGenerationJobPayloadSchema.safeParse(withoutKey);
-    expect(result.success).toBe(false);
-
-    const withNullKey = { ...validEvent, api_key_id: null };
-    expect(ServerGenerationJobPayloadSchema.safeParse(withNullKey).success).toBe(true);
-  });
-
-  it('requires the actor_id field to be present (null is allowed)', () => {
-    const { actor_id, ...withoutActor } = validEvent;
-    const result = ServerGenerationJobPayloadSchema.safeParse(withoutActor);
-    expect(result.success).toBe(false);
-
-    const withNullActor = { ...validEvent, actor_id: null };
-    expect(ServerGenerationJobPayloadSchema.safeParse(withNullActor).success).toBe(true);
   });
 
   it('accepts a summary payload with server_session_id', () => {

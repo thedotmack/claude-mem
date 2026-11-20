@@ -5,7 +5,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 
 /**
- * Tests for the `tail -n 50 ~/.claude-mem/logs/worker-$(date +%F).log`
+ * Tests for the `tail -n 50 ~/.claude-mem/logs/claude-mem-$(date -u +%F).log`
  * replacement. `tail`, `date +%F` and `~` are all bash-only, so this is what
  * makes `npm run worker:logs` work in native PowerShell.
  *
@@ -33,7 +33,7 @@ describe('worker-logs', () => {
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), 'claude-mem-worker-logs-'));
     mkdirSync(join(home, '.claude-mem', 'logs'), { recursive: true });
-    logPath = join(home, '.claude-mem', 'logs', `worker-${logStamp()}.log`);
+    logPath = join(home, '.claude-mem', 'logs', `claude-mem-${logStamp()}.log`);
   });
 
   afterEach(() => {
@@ -43,11 +43,11 @@ describe('worker-logs', () => {
   // Deliberately `node`, not process.execPath: under `bun test` execPath is
   // bun, which ignores --max-old-space-size, so the heap-constrained case below
   // would silently prove nothing. `npm run worker:logs` shells out to node too.
-  function run(nodeArgs: string[] = []) {
+  function run(nodeArgs: string[] = [], overrides: Record<string, string> = {}) {
     return spawnSync('node', [...nodeArgs, SCRIPT], {
       encoding: 'utf-8',
       // os.homedir() reads HOME on POSIX and USERPROFILE on Windows.
-      env: { ...process.env, HOME: home, USERPROFILE: home, TZ: 'UTC' },
+      env: { ...process.env, CLAUDE_MEM_DATA_DIR: '', HOME: home, USERPROFILE: home, TZ: 'UTC', ...overrides },
     });
   }
 
@@ -115,6 +115,20 @@ describe('worker-logs', () => {
     expect(lines[0].startsWith(`line ${line - 49} `)).toBe(true);
   }, 60000);
 
+  function customLog(dataDir: string): void {
+    mkdirSync(join(dataDir, 'logs'), { recursive: true });
+    writeFileSync(join(dataDir, 'logs', `claude-mem-${logStamp()}.log`), 'custom worker log\n');
+    writeFileSync(logPath, 'stale default log\n');
+  }
+
+  it('reads the effective environment data directory', () => {
+    const custom = join(home, 'custom-data');
+    customLog(custom);
+    const result = run([], { CLAUDE_MEM_DATA_DIR: custom });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe('custom worker log\n');
+  });
+
   // Worker restarts rotate the log by rename-and-recreate. When the
   // replacement lands at exactly the followed offset's byte size, a
   // size-only follower skips it forever — file identity must be tracked too.
@@ -122,7 +136,7 @@ describe('worker-logs', () => {
     writeFileSync(logPath, 'old line 1\n');
 
     const child = spawn('node', [SCRIPT, '--follow'], {
-      env: { ...process.env, HOME: home, USERPROFILE: home, TZ: 'UTC' },
+      env: { ...process.env, CLAUDE_MEM_DATA_DIR: '', HOME: home, USERPROFILE: home, TZ: 'UTC' },
     });
     let output = '';
     child.stdout.on('data', (chunk) => { output += chunk; });

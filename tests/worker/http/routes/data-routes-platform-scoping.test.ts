@@ -106,91 +106,53 @@ describe('DataRoutes platform-scoped hydration', () => {
     store.close();
   });
 
-  function seedPlatformRows(): {
-    claudeObservationId: number;
-    cursorObservationId: number;
-    claudeSummaryId: number;
-    claudePromptId: number;
-  } {
+  function seedPlatformRows() {
     const baseEpoch = Date.UTC(2024, 2, 1, 0, 0, 0);
-    const claudeSessionDbId = store.createSDKSession(contentSessionId, project, 'claude prompt', undefined, 'claude');
-    store.ensureMemorySessionIdRegistered(claudeSessionDbId, 'claude-data-route-memory');
-    const cursorSessionDbId = store.createSDKSession(contentSessionId, project, 'cursor prompt', undefined, 'cursor');
-    store.ensureMemorySessionIdRegistered(cursorSessionDbId, 'cursor-data-route-memory');
-
-    const claudeObservation = store.storeObservation(
-      'claude-data-route-memory',
-      project,
-      {
-        type: 'discovery',
-        title: 'CLAUDE_ROUTE_OBS',
-        subtitle: null,
-        facts: [],
-        narrative: 'claude route observation',
-        concepts: [],
-        files_read: [filePath],
-        files_modified: [],
-      },
-      1,
-      0,
-      baseEpoch
-    );
-    const cursorObservation = store.storeObservation(
-      'cursor-data-route-memory',
-      project,
-      {
-        type: 'discovery',
-        title: 'CURSOR_ROUTE_OBS',
-        subtitle: null,
-        facts: [],
-        narrative: 'cursor route observation',
-        concepts: [],
-        files_read: [filePath],
-        files_modified: [],
-      },
-      1,
-      0,
-      baseEpoch + 1_000
-    );
-    const claudeSummary = store.storeSummary(
-      'claude-data-route-memory',
-      project,
-      {
-        request: 'CLAUDE_ROUTE_SUMMARY',
-        investigated: '',
-        learned: '',
-        completed: '',
-        next_steps: '',
-        notes: null,
-      },
-      1,
-      0,
-      baseEpoch
-    );
-    store.storeSummary(
-      'cursor-data-route-memory',
-      project,
-      {
-        request: 'CURSOR_ROUTE_SUMMARY',
-        investigated: '',
-        learned: '',
-        completed: '',
-        next_steps: '',
-        notes: null,
-      },
-      1,
-      0,
-      baseEpoch + 1_000
-    );
-    const claudePromptId = insertPrompt(store, claudeSessionDbId, contentSessionId, 'CLAUDE_ROUTE_PROMPT', baseEpoch);
-    insertPrompt(store, cursorSessionDbId, contentSessionId, 'CURSOR_ROUTE_PROMPT', baseEpoch + 1_000);
-
-    return {
-      claudeObservationId: claudeObservation.id,
-      cursorObservationId: cursorObservation.id,
-      claudeSummaryId: claudeSummary.id,
-      claudePromptId,
-    };
+    const ids = {} as Record<'claude' | 'cursor', { observationId: number; summaryId: number; promptId: number }>;
+    for (const [platform, offset] of [['claude', 0], ['cursor', 1_000]] as const) {
+      const sessionDbId = store.createSDKSession(contentSessionId, project, `${platform} prompt`, undefined, platform);
+      const memorySessionId = `${platform}-data-route-memory`;
+      store.ensureMemorySessionIdRegistered(sessionDbId, memorySessionId);
+      const epoch = baseEpoch + offset;
+      const observation = store.storeObservation(
+        memorySessionId,
+        project,
+        {
+          type: 'discovery',
+          title: `${platform.toUpperCase()}_ROUTE_OBS`,
+          subtitle: null,
+          facts: [],
+          narrative: `${platform} route observation`,
+          concepts: [],
+          files_read: [filePath],
+          files_modified: [],
+        },
+        1,
+        0,
+        epoch
+      );
+      const summary = store.storeSummary(
+        memorySessionId,
+        project,
+        {
+          request: `${platform.toUpperCase()}_ROUTE_SUMMARY`,
+          investigated: '',
+          learned: '',
+          completed: '',
+          next_steps: '',
+          notes: null,
+        },
+        1,
+        0,
+        epoch
+      );
+      ids[platform] = {
+        observationId: observation.id,
+        summaryId: summary.id,
+        promptId: insertPrompt(store, sessionDbId, contentSessionId, `${platform.toUpperCase()}_ROUTE_PROMPT`, epoch),
+      };
+    }
+    return ids;
   }
 
   it('scopes batch observations, summaries, prompts, and by-file results by platform', () => {
@@ -200,18 +162,18 @@ describe('DataRoutes platform-scoped hydration', () => {
     const batchResponse = makeResponse();
     batchHandler(makeRequest({
       body: {
-        ids: [ids.claudeObservationId, ids.cursorObservationId],
+        ids: [ids.claude.observationId, ids.cursor.observationId],
         platform_source: 'cursor',
       },
     }), batchResponse.res);
     expect(batchResponse.json).toHaveBeenCalledWith([
-      expect.objectContaining({ id: ids.cursorObservationId, title: 'CURSOR_ROUTE_OBS' }),
+      expect.objectContaining({ id: ids.cursor.observationId, title: 'CURSOR_ROUTE_OBS' }),
     ]);
 
     const sessionHandler = captureRoute(routes, 'get', '/api/session/:id');
     const sessionResponse = makeResponse();
     sessionHandler(makeRequest({
-      params: { id: String(ids.claudeSummaryId) },
+      params: { id: String(ids.claude.summaryId) },
       query: { platformSource: 'cursor' },
     }), sessionResponse.res);
     expect(sessionResponse.status).toHaveBeenCalledWith(404);
@@ -219,7 +181,7 @@ describe('DataRoutes platform-scoped hydration', () => {
     const promptHandler = captureRoute(routes, 'get', '/api/prompt/:id');
     const promptResponse = makeResponse();
     promptHandler(makeRequest({
-      params: { id: String(ids.claudePromptId) },
+      params: { id: String(ids.claude.promptId) },
       query: { platform_source: 'cursor' },
     }), promptResponse.res);
     expect(promptResponse.status).toHaveBeenCalledWith(404);
@@ -232,7 +194,7 @@ describe('DataRoutes platform-scoped hydration', () => {
     }), byFileResponse.res);
     expect(byFileResponse.json).toHaveBeenCalledWith({
       observations: [
-        expect.objectContaining({ id: ids.cursorObservationId, title: 'CURSOR_ROUTE_OBS' }),
+        expect.objectContaining({ id: ids.cursor.observationId, title: 'CURSOR_ROUTE_OBS' }),
       ],
       count: 1,
     });
@@ -244,18 +206,18 @@ describe('DataRoutes platform-scoped hydration', () => {
 
     const mismatchResponse = makeResponse();
     handler(makeRequest({
-      params: { id: String(ids.claudeObservationId) },
+      params: { id: String(ids.claude.observationId) },
       query: { platformSource: 'cursor' },
     }), mismatchResponse.res);
     expect(mismatchResponse.status).toHaveBeenCalledWith(404);
 
     const matchResponse = makeResponse();
     handler(makeRequest({
-      params: { id: String(ids.cursorObservationId) },
+      params: { id: String(ids.cursor.observationId) },
       headers: { 'x-claude-mem-platform-source': 'cursor' },
     }), matchResponse.res);
     expect(matchResponse.json).toHaveBeenCalledWith(
-      expect.objectContaining({ id: ids.cursorObservationId, title: 'CURSOR_ROUTE_OBS' })
+      expect.objectContaining({ id: ids.cursor.observationId, title: 'CURSOR_ROUTE_OBS' })
     );
   });
 });

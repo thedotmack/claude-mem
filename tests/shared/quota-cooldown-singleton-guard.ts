@@ -26,6 +26,10 @@ const QUOTA_PROVIDERS: QuotaProvider[] = ['claude', 'gemini', 'openrouter', 'cme
  * only a hook registered outside every describe() block is guaranteed to run
  * its "after" check strictly after that file's own local cleanup, which must
  * stay nested one level in.
+ *
+ * The cmem gateway re-probe claim (provider-dispatch.ts) lives in the same Map
+ * under 'cmem-gateway', so the check below covers it too: a claim left held by
+ * one test routes every later gateway dispatch in the process to 'claude'.
  */
 export function guardSharedQuotaCooldownSingleton(label: string): void {
   const assertClean = (when: 'before' | 'after') => {

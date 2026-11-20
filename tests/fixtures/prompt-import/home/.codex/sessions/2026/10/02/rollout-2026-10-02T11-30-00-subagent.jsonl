@@ -1,0 +1,2 @@
+{"timestamp":"2026-10-02T11:30:00.000Z","type":"session_meta","payload":{"id":"codex-subagent-1","cwd":"/work/beta","originator":"codex-tui","source":{"subagent":"review"}}}
+{"timestamp":"2026-10-02T11:30:01.000Z","type":"response_item","payload":{"type":"message","id":"msg_sub","role":"user","content":[{"type":"input_text","text":"subagent task"}]}}

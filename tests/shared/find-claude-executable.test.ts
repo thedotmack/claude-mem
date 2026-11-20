@@ -1,11 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { join } from 'path';
 import {
   findClaudeExecutable,
   resetClaudeExecutableCache,
   CAPABILITY_PROBE_ARGS,
+  isClaudeExecutableUnspawnable,
   _internals,
 } from '../../src/shared/find-claude-executable.js';
 import { logger } from '../../src/utils/logger.js';
+import { buildHardenedSdkOptions } from '../../src/sdk/hardened-options.js';
 
 /**
  * All probing goes through the _internals seam, so these tests swap its
@@ -32,7 +35,7 @@ const ORIGINALS = { ..._internals };
 
 /** Paths that exist in the fake filesystem and how each fake CLI behaves. */
 let fakeClis: Map<string, FakeCli>;
-/** Every execFileSync invocation, for probe-count assertions. */
+/** Every execFile invocation, for probe-count assertions. */
 let probeCalls: Array<{ path: string; args: string[] }>;
 /** Capability-probe count per path, so `capabilityTimeouts` fires only the first N. */
 let capabilityProbeCounts: Map<string, number>;
@@ -41,24 +44,48 @@ let realPaths: Map<string, string>;
 /** stdout of `which -a claude`; null = which fails. */
 let whichOutput: string | null;
 
-function installFakes(options: { settingsPath?: string; platform?: NodeJS.Platform; whereOutputs?: Record<string, string> } = {}): void {
+/**
+ * Paths built the way the code builds them: with the host path module. The
+ * fakes run a POSIX home ('/home/tester') on a mocked darwin platform, but
+ * join() is the host's — on a Windows host the built candidates come out
+ * backslashed, so fake-fs keys and assertions for those paths must be built,
+ * not written (the POSIX literals elsewhere compare against each other, so
+ * they pass on every host).
+ */
+function homeJoin(...parts: string[]): string {
+  return join('/home/tester', ...parts);
+}
+
+function installFakes(options: {
+  settingsPath?: string;
+  platform?: NodeJS.Platform;
+  /** Keys are where.exe argv names (e.g. `claude.cmd`), values are stdout. */
+  whereOutputs?: Record<string, string>;
+} = {}): void {
   _internals.platform = () => options.platform ?? 'darwin';
   _internals.homedir = () => '/home/tester';
   _internals.loadSettings = () => ({ CLAUDE_CODE_PATH: options.settingsPath ?? '' }) as ReturnType<typeof ORIGINALS.loadSettings>;
   _internals.existsSync = (path) => fakeClis.has(String(path));
   _internals.realpathSync = ((path: string) => realPaths.get(path) ?? path) as typeof ORIGINALS.realpathSync;
 
-  _internals.execSync = ((command: string) => {
-    if (options.whereOutputs && command in options.whereOutputs) {
-      return options.whereOutputs[command];
-    }
+  _internals.exec = (async (command: string) => {
     if (command === 'which -a claude' && whichOutput !== null) {
-      return whichOutput;
+      return { stdout: whichOutput, stderr: '' };
     }
     throw new Error(`not found: ${command}`);
-  }) as typeof ORIGINALS.execSync;
+  }) as typeof ORIGINALS.exec;
 
-  _internals.execFileSync = ((path: string, args: string[]) => {
+  _internals.execFile = (async (path: string, args: string[]) => {
+    // The source now invokes where.exe by its absolute System32 path, so a
+    // planted cwd copy can never be the binary that runs.
+    if (path === 'where.exe' || path.endsWith('where.exe')) {
+      const name = args[0] ?? '';
+      if (options.whereOutputs && name in options.whereOutputs) {
+        return { stdout: options.whereOutputs[name], stderr: '' };
+      }
+      throw new Error(`not found: where.exe ${name}`);
+    }
+
     probeCalls.push({ path, args });
     const real = realPaths.get(path) ?? path;
     const cli = fakeClis.get(path) ?? fakeClis.get(real);
@@ -71,17 +98,17 @@ function installFakes(options: { settingsPath?: string; platform?: NodeJS.Platfo
     }
     if (cli.broken) {
       // Spawn/launch failure: the OS never started the process, so no exit
-      // status or signal is set (mirrors ENOENT/EACCES from execFileSync).
+      // status or signal is set (mirrors ENOENT/EACCES from execFile).
       const error = new Error('Command failed') as Error & { stderr: string };
       error.stderr = 'cannot execute binary file';
       throw error;
     }
     if (cli.ranButFailed) {
-      // The process ran and exited non-zero: `status` is set, so this is NOT a
+      // The process ran and exited non-zero: numeric `code` is set, so this is NOT a
       // launch failure.
-      const error = new Error('Command failed') as Error & { stderr: string; status: number };
+      const error = new Error('Command failed') as Error & { stderr: string; code: number };
       error.stderr = 'boom: exiting 17';
-      error.status = 17;
+      error.code = 17;
       throw error;
     }
     if (isCapabilityProbe && cli.capabilityTimeouts) {
@@ -90,7 +117,7 @@ function installFakes(options: { settingsPath?: string; platform?: NodeJS.Platfo
         capabilityProbeCounts.set(path, seen + 1);
         // A 10 s timeout kills the spawn with a signal and leaves stderr empty
         // — no flag-rejection evidence, so it must stay retryable.
-        const error = new Error(`spawnSync ${path} ETIMEDOUT`) as Error & { stderr: string; killed: boolean; signal: string };
+        const error = new Error(`spawn ${path} ETIMEDOUT`) as Error & { stderr: string; killed: boolean; signal: string };
         error.stderr = '';
         error.killed = true;
         error.signal = 'SIGTERM';
@@ -100,13 +127,13 @@ function installFakes(options: { settingsPath?: string; platform?: NodeJS.Platfo
     if (isCapabilityProbe && !cli.supportsDontAsk) {
       // A real flag rejection: the CLI parsed the flag, wrote a diagnostic to
       // stderr, and exited non-zero.
-      const error = new Error('Command failed') as Error & { stderr: string; status: number };
+      const error = new Error('Command failed') as Error & { stderr: string; code: number };
       error.stderr = "error: option '--permission-mode <mode>' argument 'dontAsk' is invalid. Allowed choices are acceptEdits, bypassPermissions, default, plan.";
-      error.status = 1;
+      error.code = 1;
       throw error;
     }
-    return `${cli.version} (Claude Code)`;
-  }) as typeof ORIGINALS.execFileSync;
+    return { stdout: `${cli.version} (Claude Code)`, stderr: '' };
+  }) as typeof ORIGINALS.execFile;
 }
 
 beforeEach(() => {
@@ -124,7 +151,7 @@ afterEach(() => {
 });
 
 describe('findClaudeExecutable candidate selection', () => {
-  it('prefers the newest capable CLI over a stale binary earlier in PATH', () => {
+  it('prefers the newest capable CLI over a stale binary earlier in PATH', async () => {
     // The exact incident shape: abandoned npm-global 2.0.42 shadows the
     // auto-updated 2.1.176 in PATH order.
     installFakes();
@@ -132,35 +159,35 @@ describe('findClaudeExecutable candidate selection', () => {
     fakeClis.set('/opt/homebrew/bin/claude', { version: '2.0.42', supportsDontAsk: false });
     fakeClis.set('/home/tester/.local/bin/claude', { version: '2.1.176', supportsDontAsk: true });
 
-    expect(findClaudeExecutable('SDK')).toBe('/home/tester/.local/bin/claude');
+    expect(await findClaudeExecutable('SDK')).toBe('/home/tester/.local/bin/claude');
   });
 
-  it('prefers the higher version when several candidates are capable', () => {
+  it('prefers the higher version when several candidates are capable', async () => {
     installFakes();
     whichOutput = '/a/claude\n/b/claude\n';
     fakeClis.set('/a/claude', { version: '2.1.100', supportsDontAsk: true });
     fakeClis.set('/b/claude', { version: '2.1.176', supportsDontAsk: true });
 
-    expect(findClaudeExecutable('SDK')).toBe('/b/claude');
+    expect(await findClaudeExecutable('SDK')).toBe('/b/claude');
   });
 
-  it('breaks version ties by PATH order', () => {
+  it('breaks version ties by PATH order', async () => {
     installFakes();
     whichOutput = '/a/claude\n/b/claude\n';
     fakeClis.set('/a/claude', { version: '2.1.176', supportsDontAsk: true });
     fakeClis.set('/b/claude', { version: '2.1.176', supportsDontAsk: true });
 
-    expect(findClaudeExecutable('SDK')).toBe('/a/claude');
+    expect(await findClaudeExecutable('SDK')).toBe('/a/claude');
   });
 
-  it('throws an actionable error naming every too-old candidate when none are capable', () => {
+  it('throws an actionable error naming every too-old candidate when none are capable', async () => {
     installFakes();
     whichOutput = '/opt/homebrew/bin/claude\n';
     fakeClis.set('/opt/homebrew/bin/claude', { version: '2.0.42', supportsDontAsk: false });
 
-    expect(() => findClaudeExecutable('SDK')).toThrow(/too old/);
+    await expect(findClaudeExecutable('SDK')).rejects.toThrow(/too old/);
     try {
-      findClaudeExecutable('SDK');
+      await findClaudeExecutable('SDK');
     } catch (error) {
       const message = (error as Error).message;
       expect(message).toContain('/opt/homebrew/bin/claude');
@@ -170,28 +197,28 @@ describe('findClaudeExecutable candidate selection', () => {
     }
   });
 
-  it('falls back to known install locations when PATH has no claude', () => {
+  it('falls back to known install locations when PATH has no claude', async () => {
     installFakes();
     whichOutput = null;
-    fakeClis.set('/home/tester/.local/bin/claude', { version: '2.1.176', supportsDontAsk: true });
+    fakeClis.set(homeJoin('.local', 'bin', 'claude'), { version: '2.1.176', supportsDontAsk: true });
 
-    expect(findClaudeExecutable('SDK')).toBe('/home/tester/.local/bin/claude');
+    expect(await findClaudeExecutable('SDK')).toBe(homeJoin('.local', 'bin', 'claude'));
   });
 
-  it('dedupes PATH repeats and symlink aliases to a single probe', () => {
+  it('dedupes PATH repeats and symlink aliases to a single probe', async () => {
     installFakes();
     whichOutput = '/a/claude\n/a/claude\n/alias/claude\n';
     realPaths.set('/alias/claude', '/a/claude');
     fakeClis.set('/a/claude', { version: '2.1.176', supportsDontAsk: true });
     fakeClis.set('/alias/claude', { version: '2.1.176', supportsDontAsk: true });
 
-    expect(findClaudeExecutable('SDK')).toBe('/a/claude');
+    expect(await findClaudeExecutable('SDK')).toBe('/a/claude');
     expect(probeCalls.filter((call) => call.args.includes('--permission-mode')).length).toBe(1);
   });
 
-  it('keeps the not-found error when nothing is installed', () => {
+  it('keeps the not-found error when nothing is installed', async () => {
     installFakes();
-    expect(() => findClaudeExecutable('SDK')).toThrow(/Claude executable not found/);
+    await expect(findClaudeExecutable('SDK')).rejects.toThrow(/Claude executable not found/);
   });
 });
 
@@ -199,7 +226,7 @@ describe('findClaudeExecutable cold-start race', () => {
   // The reported Windows failure: a current CLI whose first capability probe
   // times out gets mislabeled "too old". The capability probe must be re-run
   // on the warm binary, and only real flag rejection may classify it as old.
-  it('selects a current CLI whose first capability probe times out on a cold start', () => {
+  it('selects a current CLI whose first capability probe times out on a cold start', async () => {
     installFakes();
     whichOutput = '/home/tester/.local/bin/claude\n';
     fakeClis.set('/home/tester/.local/bin/claude', {
@@ -208,10 +235,10 @@ describe('findClaudeExecutable cold-start race', () => {
       capabilityTimeouts: 1,
     });
 
-    expect(findClaudeExecutable('SDK')).toBe('/home/tester/.local/bin/claude');
+    expect(await findClaudeExecutable('SDK')).toBe('/home/tester/.local/bin/claude');
   });
 
-  it('does not throw "too old" when a timing-out capability probe leaves no flag-rejection proof', () => {
+  it('does not throw "too old" when a timing-out capability probe leaves no flag-rejection proof', async () => {
     installFakes();
     whichOutput = '/home/tester/.local/bin/claude\n';
     // Every capability probe times out, but --version answers — no proof the
@@ -222,15 +249,7 @@ describe('findClaudeExecutable cold-start race', () => {
       capabilityTimeouts: 5,
     });
 
-    expect(findClaudeExecutable('SDK')).toBe('/home/tester/.local/bin/claude');
-  });
-
-  it('still rejects a genuinely old CLI that writes a flag-rejection error to stderr', () => {
-    installFakes();
-    whichOutput = '/opt/homebrew/bin/claude\n';
-    fakeClis.set('/opt/homebrew/bin/claude', { version: '2.0.42', supportsDontAsk: false });
-
-    expect(() => findClaudeExecutable('SDK')).toThrow(/too old/);
+    expect(await findClaudeExecutable('SDK')).toBe('/home/tester/.local/bin/claude');
   });
 });
 
@@ -252,180 +271,508 @@ describe('findClaudeExecutable broken candidates', () => {
     logger.warn = ORIGINAL_WARN;
   });
 
-  it('skips a broken candidate with a --version-check warning and picks the capable CLI', () => {
+  it('skips a broken candidate with a --version-check warning and picks the capable CLI', async () => {
     installFakes();
     whichOutput = '/broken/claude\n/good/claude\n';
     fakeClis.set('/broken/claude', { version: '0.0.0', supportsDontAsk: false, broken: true });
     fakeClis.set('/good/claude', { version: '2.1.176', supportsDontAsk: true });
 
-    expect(findClaudeExecutable('SDK')).toBe('/good/claude');
+    expect(await findClaudeExecutable('SDK')).toBe('/good/claude');
     expect(warnings.some((m) => m.includes('/broken/claude') && m.includes('failed --version check'))).toBe(true);
   });
 
-  it('warns with desktop-app guidance when the broken candidate is a desktop-app path', () => {
+  it('warns with desktop-app guidance when the broken candidate is a desktop-app path', async () => {
     installFakes({
       platform: 'win32',
       whereOutputs: {
-        'where claude': 'C:\\Users\\tester\\AppData\\Local\\AnthropicClaude\\claude.exe\r\nC:\\good\\claude.exe\r\n',
+        claude: 'C:\\Users\\tester\\AppData\\Local\\AnthropicClaude\\claude.exe\r\nC:\\good\\claude.exe\r\n',
       },
     });
     fakeClis.set('C:\\Users\\tester\\AppData\\Local\\AnthropicClaude\\claude.exe', { version: '0.0.0', supportsDontAsk: false, broken: true });
     fakeClis.set('C:\\good\\claude.exe', { version: '2.1.176', supportsDontAsk: true });
 
-    expect(findClaudeExecutable('SDK')).toBe('C:\\good\\claude.exe');
+    expect(await findClaudeExecutable('SDK')).toBe('C:\\good\\claude.exe');
     expect(warnings.some((m) => m.includes('desktop app') && m.includes('AnthropicClaude'))).toBe(true);
   });
 
-  it('falls through to not-found when the only candidate is broken', () => {
-    installFakes();
-    whichOutput = '/broken/claude\n';
-    fakeClis.set('/broken/claude', { version: '0.0.0', supportsDontAsk: false, broken: true });
 
-    expect(() => findClaudeExecutable('SDK')).toThrow(/Claude executable not found/);
-  });
-
-  it('reports a configured CLAUDE_CODE_PATH that exists but cannot be launched', () => {
-    installFakes({ settingsPath: '/custom/claude' });
-    fakeClis.set('/custom/claude', { version: '0.0.0', supportsDontAsk: false, broken: true });
-
-    // The file exists (existsSync passes) and the OS could not launch it (no
-    // exit status), so it is reported as "exists but could not be executed" —
-    // not "file does not exist" and not the old dead-end "--version check".
-    expect(() => findClaudeExecutable('SDK')).toThrow(/exists but could not be executed/);
-    expect(() => findClaudeExecutable('SDK')).toThrow(/shebang|native-installer/);
-  });
-
-  it('reports a configured CLAUDE_CODE_PATH that ran but failed its version probe without claiming it could not launch', () => {
+  it('reports a configured CLAUDE_CODE_PATH that ran but failed its version probe without claiming it could not launch', async () => {
     installFakes({ settingsPath: '/custom/claude' });
     fakeClis.set('/custom/claude', { version: '0.0.0', supportsDontAsk: false, ranButFailed: true });
 
     // The process started and exited non-zero, so the launch-failure guidance
-    // (shebang / native-installer stub) must NOT appear.
-    expect(() => findClaudeExecutable('SDK')).toThrow(/ran but failed its version probe/);
-    expect(() => findClaudeExecutable('SDK')).not.toThrow(/could not be executed|shebang|native-installer/);
+    // (shebang / native-installer stub) must NOT appear — and since the probe
+    // actually ran, this is NOT the stale-worker signature: a plain Error, no
+    // self-heal discriminator.
+    let caught: unknown;
+    try {
+      await findClaudeExecutable('SDK');
+    } catch (error) {
+      caught = error;
+    }
+    expect(isClaudeExecutableUnspawnable(caught)).toBe(false);
+    expect((caught as Error).message).toMatch(/ran but failed its version probe/);
+    expect((caught as Error).message).not.toMatch(/could not be executed|shebang|native-installer/);
   });
 
-  it('reports a desktop-app CLAUDE_CODE_PATH with CLI install guidance', () => {
+  it('reports a desktop-app CLAUDE_CODE_PATH with CLI install guidance', async () => {
     const desktopPath = 'C:\\Users\\tester\\AppData\\Local\\AnthropicClaude\\claude.exe';
     installFakes({ settingsPath: desktopPath });
     fakeClis.set(desktopPath, { version: '0.0.0', supportsDontAsk: false, broken: true });
 
-    expect(() => findClaudeExecutable('SDK')).toThrow(/desktop app/);
+    await expect(findClaudeExecutable('SDK')).rejects.toThrow(/desktop app/);
   });
 });
 
 describe('findClaudeExecutable explicit CLAUDE_CODE_PATH', () => {
-  it('returns a capable configured path without scanning PATH', () => {
+  it('returns a capable configured path without scanning PATH', async () => {
     installFakes({ settingsPath: '/custom/claude' });
     fakeClis.set('/custom/claude', { version: '2.1.150', supportsDontAsk: true });
 
-    expect(findClaudeExecutable('SDK')).toBe('/custom/claude');
+    expect(await findClaudeExecutable('SDK')).toBe('/custom/claude');
     // Discovery (`which`) must not run when the override resolves.
     expect(probeCalls.every((call) => call.path === '/custom/claude')).toBe(true);
   });
 
-  it('fails loud when the configured path is too old instead of dying at spawn', () => {
+  it('fails loud when the configured path is too old instead of dying at spawn', async () => {
     installFakes({ settingsPath: '/custom/claude' });
     fakeClis.set('/custom/claude', { version: '2.0.42', supportsDontAsk: false });
 
-    expect(() => findClaudeExecutable('SDK')).toThrow(/too old/);
-    expect(() => findClaudeExecutable('SDK')).toThrow(/2\.0\.42/);
+    await expect(findClaudeExecutable('SDK')).rejects.toThrow(/too old/);
+    await expect(findClaudeExecutable('SDK')).rejects.toThrow(/2\.0\.42/);
   });
 
-  it('still reports a missing configured path', () => {
+  it('still reports a missing configured path', async () => {
     installFakes({ settingsPath: '/missing/claude' });
-    expect(() => findClaudeExecutable('SDK')).toThrow(/does not exist/);
+    await expect(findClaudeExecutable('SDK')).rejects.toThrow(/does not exist/);
   });
 
-  it('expands a leading ~ so a tilde path resolves instead of dying with ENOENT', () => {
+  it('expands a leading ~ so a tilde path resolves instead of dying with ENOENT', async () => {
     // The reported failure: `~/.local/bin/claude` hits existsSync/posix_spawn
-    // verbatim and fails ENOENT. Home is /home/tester in the fakes.
+    // verbatim and fails ENOENT. Home is /home/tester in the fakes. The
+    // expansion is host-join built, so the expected path is built too.
     installFakes({ settingsPath: '~/.local/bin/claude' });
-    fakeClis.set('/home/tester/.local/bin/claude', { version: '2.1.176', supportsDontAsk: true });
+    fakeClis.set(homeJoin('.local', 'bin', 'claude'), { version: '2.1.176', supportsDontAsk: true });
 
-    expect(findClaudeExecutable('SDK')).toBe('/home/tester/.local/bin/claude');
+    expect(await findClaudeExecutable('SDK')).toBe(homeJoin('.local', 'bin', 'claude'));
     // Every spawn must see the expanded path, never the literal tilde.
-    expect(probeCalls.every((call) => call.path === '/home/tester/.local/bin/claude')).toBe(true);
+    expect(probeCalls.every((call) => call.path === homeJoin('.local', 'bin', 'claude'))).toBe(true);
   });
 
-  it('labels a verbatim absolute path as un-expanded so a redacted ~ is not mistaken for a tilde setting', () => {
+  it('labels a verbatim absolute path as un-expanded so a redacted ~ is not mistaken for a tilde setting', async () => {
     // Telemetry rewrites /home/tester -> ~ before an error is sent, so this
     // absolute path arrives tildified. The "used verbatim" note tells the
     // reader no tilde was expanded, so a ~ in the report is redaction.
     installFakes({ settingsPath: '/home/tester/.local/bin/claude' });
     fakeClis.set('/home/tester/.local/bin/claude', { version: '0.0.0', supportsDontAsk: false, broken: true });
 
-    expect(() => findClaudeExecutable('SDK')).toThrow(/used verbatim, no tilde expansion/);
+    await expect(findClaudeExecutable('SDK')).rejects.toThrow(/used verbatim, no tilde expansion/);
   });
 
-  it('labels a tilde path as expanded in the error so the two forms are visible', () => {
+  it('labels a tilde path as expanded in the error so the two forms are visible', async () => {
     installFakes({ settingsPath: '~/.local/bin/claude' });
-    fakeClis.set('/home/tester/.local/bin/claude', { version: '0.0.0', supportsDontAsk: false, broken: true });
+    fakeClis.set(homeJoin('.local', 'bin', 'claude'), { version: '0.0.0', supportsDontAsk: false, broken: true });
 
-    expect(() => findClaudeExecutable('SDK')).toThrow(/tilde-expanded to "\/home\/tester\/\.local\/bin\/claude"/);
+    // The expanded path in the message is host-join built, so the regex is
+    // built from the same join instead of a POSIX literal.
+    const expanded = homeJoin('.local', 'bin', 'claude');
+    const escaped = expanded.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    await expect(findClaudeExecutable('SDK')).rejects.toThrow(new RegExp(`tilde-expanded to "${escaped}"`));
   });
 });
 
 describe('findClaudeExecutable caching', () => {
-  it('caches a successful resolution and skips re-probing', () => {
+  it('shares discovery and capability probes for concurrent cold-cache calls', async () => {
+    installFakes();
+    whichOutput = '/a/claude\n';
+    fakeClis.set('/a/claude', { version: '2.1.176', supportsDontAsk: true });
+    const paths = await Promise.all(Array.from({ length: 8 }, () => findClaudeExecutable('SDK')));
+    expect(paths).toEqual(Array(8).fill('/a/claude'));
+    expect(probeCalls).toHaveLength(1);
+  });
+
+  it('keeps in-flight resolutions separate when the configured path changes', async () => {
+    installFakes({ settingsPath: '/custom/claude' });
+    fakeClis.set('/custom/claude', { version: '2.1.150', supportsDontAsk: true });
+    fakeClis.set('/other/claude', { version: '2.1.151', supportsDontAsk: true });
+    const first = findClaudeExecutable('SDK');
+    installFakes({ settingsPath: '/other/claude' });
+    const second = findClaudeExecutable('SDK');
+    const repeated = findClaudeExecutable('SDK');
+    expect(await Promise.all([first, second, repeated])).toEqual(['/custom/claude', '/other/claude', '/other/claude']);
+    expect(probeCalls.map(call => call.path)).toEqual(['/custom/claude', '/other/claude']);
+  });
+
+  it('caches a successful resolution and skips re-probing', async () => {
     installFakes();
     whichOutput = '/a/claude\n';
     fakeClis.set('/a/claude', { version: '2.1.176', supportsDontAsk: true });
 
-    expect(findClaudeExecutable('SDK')).toBe('/a/claude');
+    expect(await findClaudeExecutable('SDK')).toBe('/a/claude');
     const probesAfterFirst = probeCalls.length;
-    expect(findClaudeExecutable('SDK')).toBe('/a/claude');
+    expect(await findClaudeExecutable('SDK')).toBe('/a/claude');
     expect(probeCalls.length).toBe(probesAfterFirst);
 
     resetClaudeExecutableCache();
-    findClaudeExecutable('SDK');
+    await findClaudeExecutable('SDK');
     expect(probeCalls.length).toBeGreaterThan(probesAfterFirst);
   });
 
-  it('never caches failure — a fixed CLI is picked up on the next call', () => {
+  it('never caches failure — a fixed CLI is picked up on the next call', async () => {
     installFakes();
     whichOutput = '/a/claude\n';
     fakeClis.set('/a/claude', { version: '2.0.42', supportsDontAsk: false });
-    expect(() => findClaudeExecutable('SDK')).toThrow(/too old/);
+    await expect(findClaudeExecutable('SDK')).rejects.toThrow(/too old/);
 
     // User updates the CLI in place; no cache reset, no worker restart.
     fakeClis.set('/a/claude', { version: '2.1.176', supportsDontAsk: true });
-    expect(findClaudeExecutable('SDK')).toBe('/a/claude');
+    expect(await findClaudeExecutable('SDK')).toBe('/a/claude');
   });
 
-  it('re-resolves when the cached binary disappears', () => {
+  it('re-resolves when the cached binary disappears', async () => {
     installFakes();
     whichOutput = '/a/claude\n/b/claude\n';
     fakeClis.set('/a/claude', { version: '2.1.176', supportsDontAsk: true });
     fakeClis.set('/b/claude', { version: '2.1.100', supportsDontAsk: true });
 
-    expect(findClaudeExecutable('SDK')).toBe('/a/claude');
+    expect(await findClaudeExecutable('SDK')).toBe('/a/claude');
     fakeClis.delete('/a/claude');
     whichOutput = '/b/claude\n';
-    expect(findClaudeExecutable('SDK')).toBe('/b/claude');
+    expect(await findClaudeExecutable('SDK')).toBe('/b/claude');
+  });
+
+  it('honors a CLAUDE_CODE_PATH set after a discovered CLI was cached', async () => {
+    installFakes();
+    whichOutput = '/a/claude\n';
+    fakeClis.set('/a/claude', { version: '2.1.176', supportsDontAsk: true });
+    fakeClis.set('/custom/claude', { version: '2.1.150', supportsDontAsk: true });
+    expect(await findClaudeExecutable('SDK')).toBe('/a/claude');
+
+    // The user pins a CLI in settings.json; no cache reset, no worker restart.
+    installFakes({ settingsPath: '/custom/claude' });
+    expect(await findClaudeExecutable('SDK')).toBe('/custom/claude');
+  });
+
+  it('follows CLAUDE_CODE_PATH when it changes or is cleared', async () => {
+    installFakes({ settingsPath: '/custom/claude' });
+    whichOutput = '/a/claude\n';
+    fakeClis.set('/a/claude', { version: '2.1.176', supportsDontAsk: true });
+    fakeClis.set('/custom/claude', { version: '2.1.150', supportsDontAsk: true });
+    fakeClis.set('/other/claude', { version: '2.1.151', supportsDontAsk: true });
+    expect(await findClaudeExecutable('SDK')).toBe('/custom/claude');
+
+    installFakes({ settingsPath: '/other/claude' });
+    expect(await findClaudeExecutable('SDK')).toBe('/other/claude');
+
+    installFakes();
+    expect(await findClaudeExecutable('SDK')).toBe('/a/claude');
+  });
+
+  it('keeps serving the cached CLI while CLAUDE_CODE_PATH is unchanged', async () => {
+    installFakes({ settingsPath: '/custom/claude' });
+    fakeClis.set('/custom/claude', { version: '2.1.150', supportsDontAsk: true });
+    expect(await findClaudeExecutable('SDK')).toBe('/custom/claude');
+    const probesAfterFirst = probeCalls.length;
+
+    expect(await findClaudeExecutable('SDK')).toBe('/custom/claude');
+    expect(probeCalls.length).toBe(probesAfterFirst);
   });
 });
 
 describe('findClaudeExecutable on Windows', () => {
-  it('probes where-discovered candidates and applies the same version preference', () => {
+  it('probes where-discovered candidates and applies the same version preference', async () => {
     installFakes({
       platform: 'win32',
       whereOutputs: {
-        'where claude.cmd': 'C:\\old\\claude.cmd\r\n',
-        'where claude': 'C:\\new\\claude.exe\r\n',
+        'claude.cmd': 'C:\\old\\claude.cmd\r\n',
+        claude: 'C:\\new\\claude.exe\r\n',
       },
     });
     fakeClis.set('C:\\old\\claude.cmd', { version: '2.0.42', supportsDontAsk: false });
     fakeClis.set('C:\\new\\claude.exe', { version: '2.1.176', supportsDontAsk: true });
 
-    expect(findClaudeExecutable('SDK')).toBe('C:\\new\\claude.exe');
+    expect(await findClaudeExecutable('SDK')).toBe('C:\\new\\claude.exe');
+  });
+
+  it('prefers the native .exe over a same-version .cmd shim (avoids the SDK EINVAL)', async () => {
+    // The SDK spawns the resolved path directly on the standalone observer
+    // calls, and modern Node refuses to launch a .cmd shim without a shell.
+    // `where` lists the shim first here, so only the native-first tie-break
+    // keeps the SDK from receiving the shim.
+    installFakes({
+      platform: 'win32',
+      whereOutputs: {
+        claude: 'C:\\install\\claude.cmd\r\nC:\\install\\claude.exe\r\n',
+        'claude.cmd': 'C:\\install\\claude.cmd\r\n',
+      },
+    });
+    fakeClis.set('C:\\install\\claude.cmd', { version: '2.1.176', supportsDontAsk: true });
+    fakeClis.set('C:\\install\\claude.exe', { version: '2.1.176', supportsDontAsk: true });
+
+    expect(await findClaudeExecutable('SDK')).toBe('C:\\install\\claude.exe');
+  });
+
+  it('never probes a where hit in the current directory, even at a higher version', async () => {
+    // where.exe lists the current directory first, and hooks run in the
+    // user's project: a planted claude.exe there must not be a candidate.
+    const plantedClaude = join(process.cwd(), 'claude.exe');
+    installFakes({
+      platform: 'win32',
+      whereOutputs: {
+        claude: `${plantedClaude}\r\nC:\\install\\claude.exe\r\n`,
+      },
+    });
+    fakeClis.set(plantedClaude, { version: '9.9.9', supportsDontAsk: true });
+    fakeClis.set('C:\\install\\claude.exe', { version: '2.1.176', supportsDontAsk: true });
+
+    expect(await findClaudeExecutable('SDK')).toBe('C:\\install\\claude.exe');
+    expect(probeCalls.some((call) => call.path === plantedClaude)).toBe(false);
+  });
+
+  it('skips the extensionless npm sh shim even when it probes as capable (#5163)', async () => {
+    // `npm install -g` writes an extensionless `claude` POSIX sh shim next to
+    // claude.cmd/claude.ps1, and `where claude` lists it first. The SDK spawns
+    // the resolved path directly and cannot launch a shebang script on
+    // Windows, so a shim that answers the probe (an installed sh resolves it)
+    // must still never win: it would be handed to the SDK and every spawn
+    // would fail with it.
+    installFakes({
+      platform: 'win32',
+      whereOutputs: {
+        claude: 'C:\\npm\\claude\r\nC:\\npm\\claude.cmd\r\n',
+        'claude.cmd': 'C:\\npm\\claude.cmd\r\n',
+      },
+    });
+    fakeClis.set('C:\\npm\\claude', { version: '2.1.309', supportsDontAsk: true });
+    fakeClis.set('C:\\npm\\claude.cmd', { version: '2.1.309', supportsDontAsk: true });
+
+    expect(await findClaudeExecutable('SDK')).toBe('C:\\npm\\claude.cmd');
+    expect(probeCalls.some((call) => call.path === 'C:\\npm\\claude')).toBe(false);
+  });
+
+  it('fails loud instead of returning a bare extensionless where hit (#5163)', async () => {
+    // An npm layout where the shim is the only PATH hit: with no spawnable
+    // candidate left, resolution must report not-found (with the
+    // CLAUDE_CODE_PATH instructions) rather than hand back a file the SDK
+    // cannot spawn.
+    installFakes({
+      platform: 'win32',
+      whereOutputs: {
+        claude: 'C:\\npm\\claude\r\n',
+      },
+    });
+    fakeClis.set('C:\\npm\\claude', { version: '2.1.309', supportsDontAsk: true });
+
+    await expect(findClaudeExecutable('SDK')).rejects.toThrow(/Claude executable not found/);
+    expect(probeCalls.some((call) => call.path === 'C:\\npm\\claude')).toBe(false);
+  });
+});
+
+describe('findClaudeExecutable with a global npm install on Windows (#5163)', () => {
+  // `npm install -g @anthropic-ai/claude-code` puts an extension-less sh
+  // script, claude.cmd and claude.ps1 on PATH; the real claude.exe lives in
+  // the package. The sh script must never be picked, and the package's
+  // claude.exe should win over the .cmd shim.
+  const NPM = 'C:\\Users\\u\\AppData\\Roaming\\npm';
+  const SH_SHIM = `${NPM}\\claude`;
+  const CMD_SHIM = `${NPM}\\claude.cmd`;
+  const NPM_EXE = `${NPM}\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe`;
+
+  it('uses the package claude.exe, not the extension-less sh shim', async () => {
+    installFakes({
+      platform: 'win32',
+      whereOutputs: {
+        claude: `${SH_SHIM}\r\n${CMD_SHIM}\r\n`,
+        'claude.cmd': `${CMD_SHIM}\r\n`,
+      },
+    });
+    fakeClis.set(SH_SHIM, { version: '2.1.309', supportsDontAsk: true });
+    fakeClis.set(CMD_SHIM, { version: '2.1.309', supportsDontAsk: true });
+    fakeClis.set(NPM_EXE, { version: '2.1.309', supportsDontAsk: true });
+
+    expect(await findClaudeExecutable('SDK')).toBe(NPM_EXE);
+    expect(probeCalls.some((call) => call.path === SH_SHIM)).toBe(false);
+  });
+
+  it('falls back to the .cmd shim when the package has no claude.exe', async () => {
+    installFakes({
+      platform: 'win32',
+      whereOutputs: {
+        claude: `${SH_SHIM}\r\n${CMD_SHIM}\r\n`,
+      },
+    });
+    fakeClis.set(SH_SHIM, { version: '2.1.309', supportsDontAsk: true });
+    fakeClis.set(CMD_SHIM, { version: '2.1.309', supportsDontAsk: true });
+
+    expect(await findClaudeExecutable('SDK')).toBe(CMD_SHIM);
+  });
+});
+
+describe('findClaudeExecutable code-page-garbled where output (#4694)', () => {
+  // where.exe writes the console's active code page (cp949 on ko-KR) while the
+  // lookup decodes its stdout as UTF-8, so a non-ASCII profile folder turns
+  // into U+FFFD and the reported path does not exist. The garbled line must
+  // never become a candidate, and the native-installer home location must stay
+  // reachable on Windows when where is unreliable.
+  const GARBLED_CLAUDE = 'C:\\Users\\\uFFFD\uFFFD\uFFFD\uFFFD\uFFFD\uFFFD\\.local\\bin\\claude.exe';
+
+  it('drops where hits that do not exist instead of probing them', async () => {
+    installFakes({
+      platform: 'win32',
+      whereOutputs: {
+        claude: `${GARBLED_CLAUDE}\r\nC:\\real\\claude.exe\r\n`,
+      },
+    });
+    fakeClis.set('C:\\real\\claude.exe', { version: '2.1.176', supportsDontAsk: true });
+
+    expect(await findClaudeExecutable('SDK')).toBe('C:\\real\\claude.exe');
+    expect(probeCalls.some((call) => call.path === GARBLED_CLAUDE)).toBe(false);
+  });
+
+  it('finds the native-installer CLI at ~/.local/bin/claude.exe when every where hit is garbled', async () => {
+    installFakes({
+      platform: 'win32',
+      whereOutputs: {
+        claude: `${GARBLED_CLAUDE}\r\n`,
+      },
+    });
+    const homeCli = join(_internals.homedir(), '.local', 'bin', 'claude.exe');
+    fakeClis.set(homeCli, { version: '2.1.283', supportsDontAsk: true });
+
+    expect(await findClaudeExecutable('SDK')).toBe(homeCli);
+  });
+
+  it('still returns a where hit that exists on disk (#2222 discovery contract)', async () => {
+    installFakes({
+      platform: 'win32',
+      whereOutputs: {
+        claude: `${GARBLED_CLAUDE}\r\nC:\\good\\claude.exe\r\n`,
+      },
+    });
+    fakeClis.set('C:\\good\\claude.exe', { version: '2.1.176', supportsDontAsk: true });
+
+    expect(await findClaudeExecutable('SDK')).toBe('C:\\good\\claude.exe');
+  });
+});
+
+describe('findClaudeExecutable present-but-unspawnable detection', () => {
+  // The #3290 incident shape: a candidate that exists on disk but every probe
+  // fails (broken/ENOENT — a stale worker after the Claude Code native
+  // auto-updater swapped the binary). When no capable CLI is found, the
+  // resolver surfaces ClaudeExecutableUnspawnableError so SessionRoutes can
+  // self-heal restart instead of looping forever in setup_required cooldown.
+  const ORIGINAL_WARN = logger.warn;
+  let warnings: string[];
+
+  beforeEach(() => {
+    warnings = [];
+    logger.warn = ((_component: unknown, message: string) => {
+      warnings.push(message);
+    }) as typeof logger.warn;
+  });
+
+  afterEach(() => {
+    logger.warn = ORIGINAL_WARN;
+  });
+
+  it('throws ClaudeExecutableUnspawnableError when a broken candidate exists on disk', async () => {
+    installFakes();
+    whichOutput = '/stale/claude\n';
+    fakeClis.set('/stale/claude', { version: '0.0.0', supportsDontAsk: false, broken: true });
+
+    let caught: unknown;
+    try {
+      await findClaudeExecutable('SDK');
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeDefined();
+    expect(isClaudeExecutableUnspawnable(caught)).toBe(true);
+    if (isClaudeExecutableUnspawnable(caught)) {
+      expect(caught.candidates).toEqual([
+        { path: '/stale/claude', detail: expect.any(String) },
+      ]);
+      // The literal ENOENT token keeps classifyClaudeError on setup_required.
+      expect(caught.message).toContain('ENOENT');
+      expect(caught.message).toContain('/stale/claude');
+    }
+    // Existing per-candidate warn still fires.
+    expect(warnings.some((m) => m.includes('/stale/claude') && m.includes('failed --version check'))).toBe(true);
+  });
+
+  it('throws ClaudeExecutableUnspawnableError when the configured CLAUDE_CODE_PATH exists but cannot be spawned', async () => {
+    // Same wedge, pinned install: CLAUDE_CODE_PATH points at a binary that is
+    // on disk but fails every probe. Without the discriminator the routes
+    // layer sees a generic setup failure and never self-heals.
+    installFakes({ settingsPath: '/pinned/claude' });
+    fakeClis.set('/pinned/claude', { version: '0.0.0', supportsDontAsk: false, broken: true });
+
+    let caught: unknown;
+    try {
+      await findClaudeExecutable('SDK');
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeDefined();
+    expect(isClaudeExecutableUnspawnable(caught)).toBe(true);
+    if (isClaudeExecutableUnspawnable(caught)) {
+      expect(caught.candidates).toEqual([
+        { path: '/pinned/claude', detail: expect.any(String) },
+      ]);
+      expect(caught.message).toContain('/pinned/claude');
+      expect(caught.message).toMatch(/exists but could not be executed/);
+      expect(caught.message).toMatch(/shebang|native-installer/);
+    }
+  });
+
+  it('throws the generic not-found Error (NOT ClaudeExecutableUnspawnableError) when nothing exists on disk', async () => {
+    installFakes();
+    // PATH returns a candidate that does not exist on disk → broken probe,
+    // but it is NOT collected as present-but-unspawnable.
+    whichOutput = '/missing/claude\n';
+
+    let caught: unknown;
+    try {
+      await findClaudeExecutable('SDK');
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeDefined();
+    expect(isClaudeExecutableUnspawnable(caught)).toBe(false);
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toContain('Claude executable not found');
+  });
+
+  it('throws the generic not-found Error (NOT ClaudeExecutableUnspawnableError) when the only candidate ran but failed its version probe', async () => {
+    // A wrong wrapper that launches fine and exits non-zero is an install
+    // problem a restart can never fix. Collecting it as present-but-unspawnable
+    // would burn the self-heal restart budget on every worker start before
+    // parking in setup_required, instead of surfacing the bad install now.
+    installFakes();
+    whichOutput = '/wrong/claude\n';
+    fakeClis.set('/wrong/claude', { version: '0.0.0', supportsDontAsk: false, ranButFailed: true });
+
+    let caught: unknown;
+    try {
+      await findClaudeExecutable('SDK');
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeDefined();
+    expect(isClaudeExecutableUnspawnable(caught)).toBe(false);
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toContain('Claude executable not found');
   });
 });
 
 describe('capability probe contract', () => {
-  it('passes the exact flags hardened options force on every spawn', () => {
-    // buildHardenedSdkOptions sets permissionMode 'dontAsk' unconditionally;
-    // the probe must cover it or stale CLIs die at spawn instead of resolve.
-    expect([...CAPABILITY_PROBE_ARGS]).toEqual(['--permission-mode', 'dontAsk', '--version']);
+  it('probes the permission mode hardened options force on every spawn', async () => {
+    const options = buildHardenedSdkOptions({
+      source: 'Observer', model: 'test', env: {}, cwd: process.cwd(),
+      pathToClaudeCodeExecutable: '/unused/claude',
+    });
+    const modeIndex = CAPABILITY_PROBE_ARGS.indexOf('--permission-mode');
+    expect(modeIndex).toBeGreaterThanOrEqual(0);
+    expect(CAPABILITY_PROBE_ARGS[modeIndex + 1]).toBe(options.permissionMode);
   });
 });

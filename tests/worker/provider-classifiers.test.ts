@@ -56,6 +56,100 @@ describe('classifyGeminiError', () => {
     expect(err.retryAfterMs).toBe(5000);
   });
 
+  // Gemini answers a momentary throttle and a spent allowance with the same
+  // status and the same `RESOURCE_EXHAUSTED` marker, so the two tests above
+  // pass only because their bodies are shapes this endpoint never returns.
+  // The window named in the QuotaFailure is the part that differs, and the two
+  // bodies below are captures from the live endpoint.
+  const quotaFailure = (...quotaIds: string[]) => JSON.stringify({
+    error: {
+      code: 429,
+      status: 'RESOURCE_EXHAUSTED',
+      message: 'You exceeded your current quota, please check your plan and billing details.',
+      details: [
+        {
+          '@type': 'type.googleapis.com/google.rpc.QuotaFailure',
+          violations: quotaIds.map((quotaId) => ({ quotaId })),
+        },
+        {
+          '@type': 'type.googleapis.com/google.rpc.RetryInfo',
+          retryDelay: '6s',
+        },
+      ],
+    },
+  });
+
+  it('classifies a 429 naming only a per-minute window as rate_limit', () => {
+    const err = classifyGeminiError({
+      status: 429,
+      bodyText: quotaFailure('GenerateRequestsPerMinutePerProjectPerModel-FreeTier'),
+      cause: new Error('rate limited'),
+    });
+    expect(err.kind).toBe('rate_limit');
+    // The retry hint lives in the body: Google sends no Retry-After here.
+    expect(err.retryAfterMs).toBe(6000);
+  });
+
+  it('treats a 429 it cannot place as a throttle, not a spent allowance', () => {
+    // Defaulting the unplaceable case to `rate_limit` is deliberate, and the
+    // asymmetry is the whole point: a throttle misread as a spent allowance
+    // costs a half-hour outage that repeats on every expiry, while a spent
+    // allowance misread as a throttle costs a few probes the breaker's next
+    // refusal corrects.
+    const err = classifyGeminiError({
+      status: 429,
+      bodyText: 'RESOURCE_EXHAUSTED',
+      cause: new Error('resource exhausted'),
+    });
+    expect(err.kind).toBe('rate_limit');
+  });
+
+  it('keeps a non-JSON 429 a throttle even when its text says "quota exceeded"', () => {
+    const err = classifyGeminiError({
+      status: 429,
+      bodyText: 'RESOURCE_EXHAUSTED: quota exceeded for metric',
+      headers: new Headers(),
+      cause: new Error('429'),
+    });
+    expect(err.kind).toBe('rate_limit');
+    expect(err.retryAfterMs).toBeUndefined();
+  });
+
+  for (const window of ['PerWeek', 'PerMonth']) {
+    it(`classifies a 429 naming a ${window} window as quota_exhausted`, () => {
+      const err = classifyGeminiError({
+        status: 429,
+        bodyText: quotaFailure(`GenerateRequests${window}PerProjectPerModel`),
+        cause: new Error('quota spent'),
+      });
+      expect(err.kind).toBe('quota_exhausted');
+    });
+  }
+
+  it('lets a Retry-After header win over the body RetryInfo', () => {
+    const err = classifyGeminiError({
+      status: 429,
+      bodyText: quotaFailure('GenerateRequestsPerMinutePerProjectPerModel'),
+      headers: new Headers({ 'Retry-After': '60' }),
+      cause: new Error('429'),
+    });
+    expect(err.kind).toBe('rate_limit');
+    expect(err.retryAfterMs).toBe(60_000);
+  });
+
+  it('falls back to the Retry-After header when the body has no RetryInfo', () => {
+    const err = classifyGeminiError({
+      status: 429,
+      bodyText: JSON.stringify({ error: { code: 429, status: 'RESOURCE_EXHAUSTED', details: [
+        { '@type': 'type.googleapis.com/google.rpc.QuotaFailure', violations: [{ quotaId: 'GenerateRequestsPerMinutePerProjectPerModel' }] },
+      ] } }),
+      headers: new Headers({ 'Retry-After': '12' }),
+      cause: new Error('429'),
+    });
+    expect(err.kind).toBe('rate_limit');
+    expect(err.retryAfterMs).toBe(12_000);
+  });
+
   it('classifies 500 with body containing "quota exceeded" as quota_exhausted', () => {
     const err = classifyGeminiError({
       status: 500,
@@ -147,18 +241,6 @@ describe('classifyOpenRouterError', () => {
     expect(err.retryAfterMs).toBeUndefined();
   });
 
-  it('classifies 429 with Retry-After: 10 as rate_limit with retryAfterMs=10000', () => {
-    const headers = new Headers({ 'retry-after': '10' });
-    const err = classifyOpenRouterError({
-      status: 429,
-      bodyText: '',
-      headers,
-      cause: new Error('429'),
-    });
-    expect(err.kind).toBe('rate_limit');
-    expect(err.retryAfterMs).toBe(10_000);
-  });
-
   it('classifies 500 with body containing "quota exceeded" as quota_exhausted', () => {
     const err = classifyOpenRouterError({
       status: 500,
@@ -177,28 +259,134 @@ describe('classifyOpenRouterError', () => {
     expect(err.kind).toBe('quota_exhausted');
   });
 
-  it('classifies 401 as auth_invalid', () => {
+  // OpenRouter refuses a flagged INPUT with a 403. It says nothing about the
+  // key: the next observation goes through. As auth_invalid it would pause all
+  // memory for a cooldown under "credentials refused".
+  it('classifies a moderation 403 (input flagged) as unrecoverable, not auth_invalid', () => {
     const err = classifyOpenRouterError({
-      status: 401,
-      bodyText: 'unauthorized',
-      cause: new Error('401'),
+      status: 403,
+      bodyText: JSON.stringify({ error: {
+        code: 403,
+        message: 'openai/gpt-4o-mini requires moderation on OpenAI. Your input was flagged for "harassment".',
+        metadata: { reasons: ['harassment'], flagged_input: 'the observed tool output', provider_name: 'OpenAI', model_slug: 'openai/gpt-4o-mini' },
+      } }),
+      cause: new Error('403'),
     });
-    expect(err.kind).toBe('auth_invalid');
+    expect(err.kind).toBe('unrecoverable');
+    expect(err.message).toContain('Your input was flagged');
   });
 
-  it('classifies 502 as transient', () => {
+  it('keeps a 403 that refuses the key itself as auth_invalid', () => {
     const err = classifyOpenRouterError({
-      status: 502,
-      bodyText: 'bad gateway',
-      cause: new Error('502'),
+      status: 403,
+      bodyText: JSON.stringify({ error: { code: 403, message: 'This API key has been disabled.' } }),
+      cause: new Error('403'),
     });
-    expect(err.kind).toBe('transient');
+    expect(err.kind).toBe('auth_invalid');
   });
 
   it('classifies network error (no status) as transient', () => {
     const cause = new Error('ECONNRESET');
     const err = classifyOpenRouterError({ cause });
     expect(err.kind).toBe('transient');
+  });
+
+  // Never pay twice (Phase 1): litellm's "Unable to get json response" means
+  // the model ran and was billed and only its output was lost. These used to be
+  // transient (retried); a resend pays for the same work again, so they are now
+  // output failures that are never retried.
+  it('classifies a 200 body-level litellm parse error as an output failure (never retried)', () => {
+    const err = classifyOpenRouterError({
+      status: 200,
+      bodyText: '200 Unable to get json response - Expecting value: line 45 column 1',
+      cause: new Error('OpenRouter API error: 200 - Unable to get json response'),
+    });
+    expect(err.kind).toBe('unrecoverable');
+    expect(err.paidSendOutcome).toBe('output_failure');
+  });
+
+  it('classifies the litellm error envelope the query path forwards (numeric code, 200) as an output failure', () => {
+    const message = 'Unable to get json response - Expecting value: line 45 column 1 (char 44)';
+    const err = classifyOpenRouterError({
+      status: 200,
+      bodyText: JSON.stringify({ error: { code: 200, message } }),
+      cause: new Error(`OpenRouter API error: 200 - ${message}`),
+      requestId: 'or-req-litellm',
+    });
+    expect(err.kind).toBe('unrecoverable');
+    expect(err.paidSendOutcome).toBe('output_failure');
+    expect(err.message).toBe(`OpenRouter upstream output failure (status 200): ${message}`);
+    expect(err.requestId).toBe('or-req-litellm');
+  });
+
+  it('classifies litellm "expecting value" markers as an output failure regardless of a non-standard status', () => {
+    const err = classifyOpenRouterError({
+      status: 418,
+      bodyText: 'Expecting value: line 1 column 1 (char 0)',
+      cause: new Error('418'),
+    });
+    expect(err.paidSendOutcome).toBe('output_failure');
+  });
+
+  // --- Model unavailable (#3659): the configured model id itself is gone ---
+
+  it.each([
+    [404, 'This model has been deprecated. It is recommended to migrate to xiaomi/mimo-v2.5'],
+    [400, 'xiaomi/mimo-v2-flash:free is not a valid model ID'],
+    [404, 'No endpoints found for xiaomi/mimo-v2-flash:free.'],
+  ])('classifies a %i "%s" as model_unavailable with a change-the-model remedy', (status, message) => {
+    const err = classifyOpenRouterError({
+      status,
+      bodyText: JSON.stringify({ error: { message, code: status } }),
+      cause: new Error(String(status)),
+      requestId: 'req-1',
+    });
+    expect(err.kind).toBe('unrecoverable');
+    expect(err.code).toBe('model_unavailable');
+    expect(err.message).toBe(`OpenRouter model unavailable (status ${status}): ${message}`);
+    expect(err.action).toContain('CLAUDE_MEM_OPENROUTER_MODEL');
+    expect(err.url).toBe('https://openrouter.ai/models');
+    expect(err.requestId).toBe('req-1');
+  });
+
+  it('classifies a model deprecation inside a 200 error envelope as model_unavailable', () => {
+    const err = classifyOpenRouterError({
+      status: 200,
+      bodyText: JSON.stringify({ error: { message: 'This model has been deprecated', code: 404 } }),
+      cause: new Error('200 error envelope'),
+    });
+    expect(err.code).toBe('model_unavailable');
+  });
+
+  it('keeps an unrelated 400/404 a plain bad request', () => {
+    const unrelated = classifyOpenRouterError({
+      status: 400,
+      bodyText: JSON.stringify({ error: { message: 'Input required: specify "prompt" or "messages"', code: 400 } }),
+      cause: new Error('400'),
+    });
+    expect(unrelated.kind).toBe('unrecoverable');
+    expect(unrelated.code).toBeUndefined();
+    expect(unrelated.message).toContain('bad request');
+
+    // Free-model privacy settings, not a missing model: the upstream message
+    // already carries its own remedy link.
+    const dataPolicy = classifyOpenRouterError({
+      status: 404,
+      bodyText: JSON.stringify({ error: { message: 'No endpoints found matching your data policy (Free model publication). Configure: https://openrouter.ai/settings/privacy', code: 404 } }),
+      cause: new Error('404'),
+    });
+    expect(dataPolicy.code).toBeUndefined();
+    expect(dataPolicy.message).toContain('bad request');
+  });
+
+  it('only reads model-unavailable phrasing on a 400/404 or a 200 envelope', () => {
+    const upstream = classifyOpenRouterError({
+      status: 503,
+      bodyText: 'No endpoints found for vendor/model.',
+      cause: new Error('503'),
+    });
+    expect(upstream.kind).toBe('transient');
+    expect(upstream.code).toBeUndefined();
   });
 
   // --- Gateway taxonomy envelope: { error: { code, message, action, url, request_id } } ---
@@ -504,101 +692,41 @@ describe('describeProviderError', () => {
 });
 
 describe('classifyClaudeError', () => {
-  it('classifies SDK-level OverloadedError as transient', () => {
-    class OverloadedError extends Error {
-      constructor() {
-        super('Overloaded');
-        this.name = 'OverloadedError';
-      }
+  class OverloadedError extends Error {
+    constructor() {
+      super('Overloaded');
+      this.name = 'OverloadedError';
     }
-    const err = classifyClaudeError(new OverloadedError());
+  }
+
+  const cases: Array<[string, () => Error, string, string?, string?]> = [
+    ['classifies SDK-level OverloadedError as transient', () => new OverloadedError(), 'transient'],
+    ['classifies 529 status as transient', () => Object.assign(new Error('overloaded'), { status: 529 }), 'transient'],
+    ['classifies anthropic error.type=overloaded_error as transient', () => Object.assign(new Error('upstream'), { error: { type: 'overloaded_error' }, }), 'transient'],
+    ['classifies "Invalid API key" message as auth_invalid', () => new Error('Invalid API key: configure ~/.claude-mem/.env'), 'auth_invalid'],
+    ['classifies status=401 as auth_invalid', () => Object.assign(new Error('unauthorized'), { status: 401 }), 'auth_invalid'],
+    ['classifies ENOENT spawn error as setup_required', () => Object.assign(new Error('spawn claude ENOENT'), { code: 'ENOENT' }), 'setup_required'],
+    ['classifies a Windows .cmd shim EINVAL spawn error as setup_required', () => Object.assign(new Error('spawn C:\\Users\\x\\codex.cmd EINVAL'), { code: 'EINVAL' }), 'setup_required'],
+    ['classifies a bare EINVAL error (no "spawn " prefix) as setup_required', () => new Error('posix_spawn failed with EINVAL'), 'setup_required'],
+    ['classifies "Claude executable not found" as setup_required', () => new Error('Claude executable not found at $CLAUDE_CODE_PATH'), 'setup_required'],
+    ['classifies too-old Claude CLI finder errors as setup_required', () => new Error( 'Every Claude CLI found is too old for claude-mem (each rejects flags the memory agent passes on every spawn)' ), 'setup_required'],
+    ['classifies desktop app headless-mode setup error as setup_required', () => new Error( 'Found desktop app at "/Applications/Claude.app" but it doesn\'t support headless mode. Install Claude Code CLI: npm install -g @anthropic-ai/claude-code' ), 'setup_required'],
+    ['classifies prompt-too-long as unrecoverable', () => new Error('Claude session context overflow: prompt is too long'), 'unrecoverable'],
+    ['classifies structured context-window errors as unrecoverable', () => new Error('Claude SDK error: context window exceeded'), 'unrecoverable'],
+    ['classifies status=429 as rate_limit', () => Object.assign(new Error('rate limited'), { status: 429 }), 'rate_limit'],
+    ['classifies "quota exceeded" message as quota_exhausted', () => new Error('upstream: quota exceeded'), 'quota_exhausted'],
+    ['classifies status=503 as transient', () => Object.assign(new Error('service unavailable'), { status: 503 }), 'transient'],
+    ['classifies unrecognized_model message as unrecoverable', () => new Error('[claude-code:unrecognized_model] {"model":"auto","query_source":"sdk"}'), 'unrecoverable'],
+    ['classifies "There\'s an issue with the selected model" message as unrecoverable', () => new Error( "There's an issue with the selected model (auto). It may not exist or you may not have access to it." ), 'unrecoverable', 'model_unavailable'],
+    ['classifies the SDK error that follows a model refusal as model_unavailable', () => new Error("Claude Code returned an error result: There's an issue with the selected model (auto). It may not exist or you may not have access to it. Run --model to pick a different model."), 'unrecoverable', 'model_unavailable', 'CLAUDE_MEM_MODEL'],
+    ['classifies unknown error as transient (preserve old default)', () => new Error('something weird happened'), 'transient'],
+  ];
+
+  it.each(cases.map(([name, error, kind, code, action]) => [name, error, kind, code, action] as const))('%s', (_name, error, kind, code, action) => {
+    const err = classifyClaudeError(error());
     expect(isClassified(err)).toBe(true);
-    expect(err.kind).toBe('transient');
-  });
-
-  it('classifies 529 status as transient', () => {
-    const sdkErr = Object.assign(new Error('overloaded'), { status: 529 });
-    const err = classifyClaudeError(sdkErr);
-    expect(err.kind).toBe('transient');
-  });
-
-  it('classifies anthropic error.type=overloaded_error as transient', () => {
-    const sdkErr = Object.assign(new Error('upstream'), {
-      error: { type: 'overloaded_error' },
-    });
-    const err = classifyClaudeError(sdkErr);
-    expect(err.kind).toBe('transient');
-  });
-
-  it('classifies "Invalid API key" message as auth_invalid', () => {
-    const err = classifyClaudeError(new Error('Invalid API key: configure ~/.claude-mem/.env'));
-    expect(err.kind).toBe('auth_invalid');
-  });
-
-  it('classifies status=401 as auth_invalid', () => {
-    const sdkErr = Object.assign(new Error('unauthorized'), { status: 401 });
-    const err = classifyClaudeError(sdkErr);
-    expect(err.kind).toBe('auth_invalid');
-  });
-
-  it('classifies ENOENT spawn error as setup_required', () => {
-    const spawnErr = Object.assign(new Error('spawn claude ENOENT'), { code: 'ENOENT' });
-    const err = classifyClaudeError(spawnErr);
-    expect(err.kind).toBe('setup_required');
-  });
-
-  it('classifies "Claude executable not found" as setup_required', () => {
-    const err = classifyClaudeError(new Error('Claude executable not found at $CLAUDE_CODE_PATH'));
-    expect(err.kind).toBe('setup_required');
-  });
-
-  it('classifies too-old Claude CLI finder errors as setup_required', () => {
-    const err = classifyClaudeError(
-      new Error(
-        'Every Claude CLI found is too old for claude-mem (each rejects flags the memory agent passes on every spawn)'
-      )
-    );
-    expect(err.kind).toBe('setup_required');
-  });
-
-  it('classifies desktop app headless-mode setup error as setup_required', () => {
-    const err = classifyClaudeError(
-      new Error(
-        'Found desktop app at "/Applications/Claude.app" but it doesn\'t support headless mode. Install Claude Code CLI: npm install -g @anthropic-ai/claude-code'
-      )
-    );
-    expect(err.kind).toBe('setup_required');
-  });
-
-  it('classifies prompt-too-long as unrecoverable', () => {
-    const err = classifyClaudeError(new Error('Claude session context overflow: prompt is too long'));
-    expect(err.kind).toBe('unrecoverable');
-  });
-
-  it('classifies structured context-window errors as unrecoverable', () => {
-    const err = classifyClaudeError(new Error('Claude SDK error: context window exceeded'));
-    expect(err.kind).toBe('unrecoverable');
-  });
-
-  it('classifies status=429 as rate_limit', () => {
-    const sdkErr = Object.assign(new Error('rate limited'), { status: 429 });
-    const err = classifyClaudeError(sdkErr);
-    expect(err.kind).toBe('rate_limit');
-  });
-
-  it('classifies "quota exceeded" message as quota_exhausted', () => {
-    const err = classifyClaudeError(new Error('upstream: quota exceeded'));
-    expect(err.kind).toBe('quota_exhausted');
-  });
-
-  it('classifies status=503 as transient', () => {
-    const sdkErr = Object.assign(new Error('service unavailable'), { status: 503 });
-    const err = classifyClaudeError(sdkErr);
-    expect(err.kind).toBe('transient');
-  });
-
-  it('classifies unknown error as transient (preserve old default)', () => {
-    const err = classifyClaudeError(new Error('something weird happened'));
-    expect(err.kind).toBe('transient');
+    expect(err.kind).toBe(kind);
+    if (code !== undefined) expect(err.code).toBe(code);
+    if (action !== undefined) expect(err.action).toContain(action);
   });
 });

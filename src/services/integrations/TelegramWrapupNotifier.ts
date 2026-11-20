@@ -77,7 +77,7 @@ export function loadTelegramWrapupConfig(settings: SettingsDefaults): TelegramWr
   for (const [project, routeValue] of Object.entries(parsedRoutes)) {
     const route = toRoute(routeValue);
     if (route) {
-      routes[project] = route;
+      Object.defineProperty(routes, project, { value: route, enumerable: true, writable: true, configurable: true });
     }
   }
 
@@ -93,7 +93,7 @@ function resolveRouteEntry(
   config: TelegramWrapupConfig,
   project: string,
 ): ResolvedTelegramWrapupRoute | null {
-  const route = config.routes[project];
+  const route = Object.hasOwn(config.routes, project) ? config.routes[project] : undefined;
   if (!route) return null;
   return {
     chatId: route.chat_id,
@@ -115,6 +115,43 @@ export function resolveWrapupRoute(
   return resolveRouteEntry(config, project.slice(0, separator));
 }
 
+/**
+ * Paths that name credential stores. A wrap-up leaves the machine for an
+ * external model and then a chat, so these must never travel as text.
+ */
+const SENSITIVE_PATH_PATTERNS: readonly RegExp[] = [
+  /(^|\/)\.ssh\//i,
+  /(^|\/)\.aws\//i,
+  /(^|\/)\.gnupg\//i,
+  /(^|\/)\.env(\.[^/]*)?$/i,
+  /(^|\/)\.netrc$/i,
+  /(^|\/)\.npmrc$/i,
+  /(^|\/)\.pypirc$/i,
+  /(^|\/)id_(rsa|dsa|ecdsa|ed25519)$/i,
+  /(^|\/)credentials$/i,
+  /\.(pem|p12|pfx|key)$/i,
+];
+
+function isSensitiveFilePath(filePath: string): boolean {
+  const normalizedPath = filePath.replace(/\\/g, '/');
+  return SENSITIVE_PATH_PATTERNS.some(pattern => pattern.test(normalizedPath));
+}
+
+/** Count the non-sensitive entries in a stored JSON file-path array. */
+function countRedactedFiles(rawList: string | null): number {
+  if (!rawList) return 0;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawList);
+  } catch {
+    return 0;
+  }
+  if (!Array.isArray(parsed)) return 0;
+  return parsed.filter(
+    (entry): entry is string => typeof entry === 'string' && !isSensitiveFilePath(entry),
+  ).length;
+}
+
 export function joinStoredSummaryForTelegram(summary: {
   request: string | null;
   investigated: string | null;
@@ -125,14 +162,15 @@ export function joinStoredSummaryForTelegram(summary: {
   files_edited: string | null;
   notes: string | null;
 }): string {
+  const filesRead = countRedactedFiles(summary.files_read);
+  const filesEdited = countRedactedFiles(summary.files_edited);
   return [
     summary.request ?? '',
     summary.investigated ?? '',
     summary.learned ?? '',
     summary.completed ?? '',
     summary.next_steps ?? '',
-    summary.files_read ?? '',
-    summary.files_edited ?? '',
+    `${filesRead} files read, ${filesEdited} edited`,
     summary.notes ?? '',
   ].join('\n');
 }

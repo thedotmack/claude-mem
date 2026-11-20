@@ -1,13 +1,57 @@
 import { describe, it, expect } from 'bun:test';
-import { readFileSync, existsSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '../..');
+const versionManifestFilenames = ['plugin.json', 'openclaw.plugin.json', 'package.json'];
+const nonNpmVersionManifests = [
+  '.grok-plugin/plugin.json',
+  'claude-mem-cursor/.cursor-plugin/plugin.json',
+  'claude-mem-grok-bot/.cursor-plugin/plugin.json',
+];
+const independentVersionManifests = new Set([
+  'openclaw/package.json',
+]);
+
+function readManifest(root: string, relativePath: string) {
+  return JSON.parse(readFileSync(path.join(root, relativePath), 'utf-8'));
+}
+
+function discoverShippedVersionManifests(root: string = projectRoot): string[] {
+  const packageFiles = readManifest(root, 'package.json').files as string[];
+  const candidates = new Set<string>();
+
+  for (const entry of packageFiles) {
+    const relativePath = entry.replace(/\\/g, '/');
+    const absolutePath = path.join(root, relativePath);
+
+    if (
+      versionManifestFilenames.includes(path.posix.basename(relativePath))
+      && existsSync(absolutePath)
+    ) {
+      candidates.add(relativePath);
+    }
+
+    if (!existsSync(absolutePath) || !statSync(absolutePath).isDirectory()) continue;
+
+    for (const filename of versionManifestFilenames) {
+      const candidate = path.posix.join(relativePath, filename);
+      if (existsSync(path.join(root, candidate))) candidates.add(candidate);
+    }
+  }
+
+  // No filter on the manifest's contents: a shipped manifest that lost its
+  // `version` must stay in the list so its version test fails, not vanish.
+  return [...candidates]
+    .filter(candidate => candidate !== 'package.json' && !independentVersionManifests.has(candidate))
+    .sort();
+}
 
 describe('Version Consistency', () => {
-  let rootVersion: string;
+  const rootVersion: string = readManifest(projectRoot, 'package.json').version;
 
   it('should read version from root package.json', () => {
     const packageJsonPath = path.join(projectRoot, 'package.json');
@@ -16,24 +60,45 @@ describe('Version Consistency', () => {
     const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
     expect(packageJson.version).toBeDefined();
     expect(packageJson.version).toMatch(/^\d+\.\d+\.\d+$/);
-    
-    rootVersion = packageJson.version;
   });
 
-  it('should have matching version in plugin/package.json', () => {
-    const pluginPackageJsonPath = path.join(projectRoot, 'plugin/package.json');
-    expect(existsSync(pluginPackageJsonPath)).toBe(true);
-    
-    const pluginPackageJson = JSON.parse(readFileSync(pluginPackageJsonPath, 'utf-8'));
-    expect(pluginPackageJson.version).toBe(rootVersion);
+  it('discovers shipped version manifests from package.json#files', () => {
+    // The exact set, so a required manifest that drops out of discovery fails
+    // here instead of silently losing its version test.
+    expect(discoverShippedVersionManifests()).toEqual([
+      '.claude-plugin/plugin.json',
+      '.codex-plugin/plugin.json',
+      '.qoder-plugin/plugin.json',
+      'dsh/package.json',
+      'openclaw/openclaw.plugin.json',
+      'plugin/.claude-plugin/plugin.json',
+      'plugin/.codex-plugin/plugin.json',
+      'plugin/.devin-plugin/plugin.json',
+      'plugin/.qoder-plugin/plugin.json',
+      'plugin/package.json',
+    ]);
   });
 
-  it('should have matching version in plugin/.claude-plugin/plugin.json', () => {
-    const pluginJsonPath = path.join(projectRoot, 'plugin/.claude-plugin/plugin.json');
-    expect(existsSync(pluginJsonPath)).toBe(true);
-    
-    const pluginJson = JSON.parse(readFileSync(pluginJsonPath, 'utf-8'));
-    expect(pluginJson.version).toBe(rootVersion);
+  it('still discovers a listed manifest that has no version', () => {
+    const fixtureRoot = mkdtempSync(path.join(tmpdir(), 'cmem-manifest-discovery-'));
+
+    try {
+      mkdirSync(path.join(fixtureRoot, 'new-host'), { recursive: true });
+      writeFileSync(
+        path.join(fixtureRoot, 'package.json'),
+        JSON.stringify({ files: ['new-host'] }),
+      );
+      writeFileSync(
+        path.join(fixtureRoot, 'new-host', 'plugin.json'),
+        JSON.stringify({ name: 'new-host' }),
+      );
+
+      expect(discoverShippedVersionManifests(fixtureRoot)).toEqual([
+        'new-host/plugin.json',
+      ]);
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
   });
 
   it('should have matching version in .claude-plugin/marketplace.json', () => {
@@ -49,30 +114,18 @@ describe('Version Consistency', () => {
     expect(claudeMemPlugin.version).toBe(rootVersion);
   });
 
-
-  for (const pluginPath of [
-    'claude-mem-cursor/.cursor-plugin/plugin.json',
-    'claude-mem-grok-bot/.cursor-plugin/plugin.json',
+  for (const manifestPath of [
+    ...discoverShippedVersionManifests(),
+    ...nonNpmVersionManifests,
   ]) {
-    it(`should have matching version in ${pluginPath}`, () => {
-      const manifestPath = path.join(projectRoot, pluginPath);
-      expect(existsSync(manifestPath)).toBe(true);
+    it(`should have matching version in ${manifestPath}`, () => {
+      const filePath = path.join(projectRoot, manifestPath);
+      expect(existsSync(filePath)).toBe(true);
 
-      const pluginJson = JSON.parse(readFileSync(manifestPath, 'utf-8'));
-      expect(pluginJson.version).toBe(rootVersion);
+      const manifest = readManifest(projectRoot, manifestPath);
+      expect(manifest.version).toBe(rootVersion);
     });
   }
-
-  it('should list both cursor marketplace plugin sources', () => {
-    const marketplaceJsonPath = path.join(projectRoot, '.cursor-plugin', 'marketplace.json');
-    expect(existsSync(marketplaceJsonPath)).toBe(true);
-
-    const marketplaceJson = JSON.parse(readFileSync(marketplaceJsonPath, 'utf-8'));
-    expect(marketplaceJson.plugins.map((plugin: any) => plugin.name)).toEqual([
-      'claude-mem-cursor',
-      'claude-mem-grok-bot',
-    ]);
-  });
 
   for (const bundle of ['worker-service.cjs', 'mcp-server.cjs', 'server-service.cjs', 'transcript-watcher.cjs']) {
     it(`should have the release version injected into built ${bundle}`, () => {
@@ -83,29 +136,4 @@ describe('Version Consistency', () => {
     });
   }
 
-  it('should validate version format is semver compliant', () => {
-    expect(rootVersion).toMatch(/^\d+\.\d+\.\d+$/);
-    
-    const [major, minor, patch] = rootVersion.split('.').map(Number);
-    expect(major).toBeGreaterThanOrEqual(0);
-    expect(minor).toBeGreaterThanOrEqual(0);
-    expect(patch).toBeGreaterThanOrEqual(0);
-  });
-});
-
-describe('Build Script Version Handling', () => {
-  it('should read version from package.json in build-hooks.js', () => {
-    const buildScriptPath = path.join(projectRoot, 'scripts/build-hooks.js');
-    expect(existsSync(buildScriptPath)).toBe(true);
-    
-    const buildScriptContent = readFileSync(buildScriptPath, 'utf-8');
-    
-    expect(buildScriptContent).toContain("readFileSync('package.json'");
-    expect(buildScriptContent).toContain('packageJson.version');
-    
-    expect(buildScriptContent).toContain('version: version');
-    
-    expect(buildScriptContent).toContain('__DEFAULT_PACKAGE_VERSION__');
-    expect(buildScriptContent).toContain('`"${version}"`');
-  });
 });

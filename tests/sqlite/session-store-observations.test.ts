@@ -87,28 +87,15 @@ describe('SessionStore.storeObservation', () => {
     expect(store.getObservationById(99999)).toBeNull();
   });
 
-  it('stores agent_type and agent_id when provided', () => {
-    const result = store.storeObservation(session('mem-agent'), 'project', obs({ agent_type: 'Explore', agent_id: 'agent-abc' }));
-
+  it.each([
+    [{ agent_type: 'Explore', agent_id: 'agent-abc' }, 'Explore', 'agent-abc'],
+    [{}, null, null],
+    [{ agent_type: 'Plan' }, 'Plan', null],
+  ] as const)('round-trips agent fields %j', (fields, agentType, agentId) => {
+    const result = store.storeObservation(session('mem-agent'), 'project', obs(fields));
     const row = store.getObservationById(result.id);
-    expect(row?.agent_type).toBe('Explore');
-    expect(row?.agent_id).toBe('agent-abc');
-  });
-
-  it('defaults agent_type and agent_id to NULL when omitted', () => {
-    const result = store.storeObservation(session('mem-noagent'), 'project', obs());
-
-    const row = store.getObservationById(result.id);
-    expect(row?.agent_type).toBeNull();
-    expect(row?.agent_id).toBeNull();
-  });
-
-  it('stores agent_type alone when agent_id is absent', () => {
-    const result = store.storeObservation(session('mem-partial'), 'project', obs({ agent_type: 'Plan' }));
-
-    const row = store.getObservationById(result.id);
-    expect(row?.agent_type).toBe('Plan');
-    expect(row?.agent_id).toBeNull();
+    expect(row?.agent_type).toBe(agentType);
+    expect(row?.agent_id).toBe(agentId);
   });
 
   it('getFirstObservationCreatedAt returns null when empty and the earliest ISO otherwise', () => {
@@ -119,5 +106,100 @@ describe('SessionStore.storeObservation', () => {
     store.storeObservation(mem, 'project', obs({ title: 'Earlier', narrative: 'a' }), 1, 0, 1000000000000);
 
     expect(getFirstObservationCreatedAt(store.db)).toBe(new Date(1000000000000).toISOString());
+  });
+});
+
+describe('SessionStore.importObservation', () => {
+  let store: SessionStore;
+
+  beforeEach(() => {
+    store = new SessionStore(':memory:');
+  });
+
+  afterEach(() => {
+    store.close();
+  });
+
+  function importedObs(memorySessionId: string | null | undefined) {
+    return {
+      memory_session_id: memorySessionId,
+      project: 'project',
+      text: null,
+      type: 'discovery',
+      title: 'Imported observation',
+      subtitle: null,
+      facts: JSON.stringify(['fact1']),
+      narrative: 'Imported narrative',
+      concepts: JSON.stringify(['concept1']),
+      files_read: JSON.stringify([]),
+      files_modified: JSON.stringify([]),
+      prompt_number: 1,
+      discovery_tokens: 0,
+      created_at: new Date(1000000000000).toISOString(),
+      created_at_epoch: 1000000000000,
+    };
+  }
+
+  function observationCount(): number {
+    return (store.db.prepare('SELECT COUNT(*) AS n FROM observations').get() as { n: number }).n;
+  }
+
+  // Regression: /api/import (DataRoutes.handleImport) feeds unvalidated payload
+  // rows (z.array(z.unknown())) straight into importObservation. A row whose
+  // memory_session_id is null/undefined must be rejected with a warning rather
+  // than crashing with "NOT NULL constraint failed: observations.memory_session_id".
+  // Truthiness is not enough: {}, true and 123 are truthy but are not session ids.
+  for (const notASessionId of [null, undefined, {}, true, 123, '   ']) {
+    it(`rejects an observation whose memory_session_id is ${JSON.stringify(notASessionId)}`, () => {
+      const result = store.importObservation(importedObs(notASessionId as any) as any);
+
+      expect(result.imported).toBe(false);
+      expect(observationCount()).toBe(0);
+    });
+  }
+
+});
+
+describe('SessionStore.importSessionSummary', () => {
+  let store: SessionStore;
+
+  beforeEach(() => {
+    store = new SessionStore(':memory:');
+  });
+
+  afterEach(() => {
+    store.close();
+  });
+
+  function importedSummary(memorySessionId: string | null | undefined) {
+    return {
+      memory_session_id: memorySessionId,
+      project: 'project',
+      request: 'Imported request',
+      investigated: null,
+      learned: null,
+      completed: null,
+      next_steps: null,
+      files_read: null,
+      files_edited: null,
+      notes: null,
+      prompt_number: 1,
+      discovery_tokens: 0,
+      created_at: new Date(1000000000000).toISOString(),
+      created_at_epoch: 1000000000000,
+    };
+  }
+
+  function summaryCount(): number {
+    return (store.db.prepare('SELECT COUNT(*) AS n FROM session_summaries').get() as { n: number }).n;
+  }
+
+  // Regression: same /api/import unvalidated-payload exposure as
+  // importObservation — session_summaries.memory_session_id is NOT NULL.
+  it('rejects a summary with null memory_session_id without throwing or inserting', () => {
+    const result = store.importSessionSummary(importedSummary(null) as any);
+
+    expect(result.imported).toBe(false);
+    expect(summaryCount()).toBe(0);
   });
 });

@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, mock, spyOn } fr
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
 import { logger } from '../../src/utils/logger.js';
 import type { TelegramWrapupFormatterInput } from '../../src/services/integrations/TelegramWrapupNotifier.js';
+import { optimizeField } from '../../src/services/worker/field-optimizer.js';
 
 // No SDK process, OAuth refresh, or paid request may run in this harness.
 const actualSdk = { ...(await import('@anthropic-ai/claude-agent-sdk')) };
@@ -9,6 +10,7 @@ const actualFindClaude = { ...(await import('../../src/shared/find-claude-execut
 const actualEnv = { ...(await import('../../src/shared/EnvManager.js')) };
 const sdkQuery = mock((_input: unknown) => (async function* () {
   yield { type: 'assistant', message: { content: [{ type: 'text', text: '• Finished the session' }] } };
+  yield { type: 'result', subtype: 'success', is_error: false, result: '• Finished the session' };
 })());
 
 mock.module('@anthropic-ai/claude-agent-sdk', () => ({ ...actualSdk, query: sdkQuery }));
@@ -22,6 +24,8 @@ mock.module('../../src/shared/EnvManager.js', () => ({
 const { ClaudeProvider } = await import('../../src/services/worker/ClaudeProvider.js');
 const { GeminiProvider } = await import('../../src/services/worker/GeminiProvider.js');
 const { OpenRouterProvider } = await import('../../src/services/worker/OpenRouterProvider.js');
+const { CodexProvider } = await import('../../src/services/worker/CodexProvider.js');
+const { anonymousSessionId } = await import('../../src/services/worker/OpenAICompatibleProvider.js');
 
 const input: TelegramWrapupFormatterInput = {
   sessionDbId: 42,
@@ -91,7 +95,18 @@ describe('Telegram wrap-up provider reuse', () => {
     expect(sdkQuery).not.toHaveBeenCalled();
   });
 
-  for (const Provider of [GeminiProvider, OpenRouterProvider]) {
+  it('does not start field compression after observer capture is disabled', async () => {
+    settings.CLAUDE_MEM_OBSERVER_ENABLED = 'false';
+    const provider = new ClaudeProvider({} as never, {} as never);
+
+    await expect((provider as any).compressField(
+      'large field', 100, { ...input, abortController: new AbortController() },
+      'model', '/mock/claude', new AbortController().signal,
+    )).resolves.toBeNull();
+    expect(sdkQuery).not.toHaveBeenCalled();
+  });
+
+  for (const Provider of [GeminiProvider, OpenRouterProvider, CodexProvider]) {
     it(`${Provider.name} uses its normal query/config and summary-tier model even for a live session`, async () => {
       const provider = new Provider({} as never, {} as never);
       const config = { apiKey: 'mock-key', model: 'default-model', maxTokens: 1234, temperature: 0.2 };
@@ -104,6 +119,10 @@ describe('Telegram wrap-up provider reuse', () => {
       expect(query).toHaveBeenCalledWith(
         [{ role: 'user', content: `${prompt}\n\n${input.summaryText}` }],
         { ...config, model: 'configured-summary-model', plainText: true },
+        undefined,
+        undefined,
+        undefined,
+        { kind: 'telegram_wrapup', sessionId: anonymousSessionId(input.contentSessionId) },
       );
       expect(config.model).toBe('default-model');
     });
@@ -115,7 +134,9 @@ describe('Telegram wrap-up provider reuse', () => {
       spyOn(provider as any, 'getConfig').mockReturnValue(config);
       const query = spyOn(provider as any, 'query').mockResolvedValue({ content: '• Finished' });
       await provider.formatTelegramWrapup(input, 'active-model');
-      expect(query).toHaveBeenCalledWith(expect.any(Array), { ...config, model: 'active-model', plainText: true });
+      expect(query).toHaveBeenCalledWith(
+        expect.any(Array), { ...config, model: 'active-model', plainText: true }, undefined, undefined, undefined, expect.anything(),
+      );
     });
 
     it(`${Provider.name} does not query without its existing credentials`, async () => {
@@ -139,13 +160,70 @@ describe('Telegram wrap-up provider reuse', () => {
   }
 
   it('logs and rejects a Claude formatter completion without an assistant text frame', async () => {
-    sdkQuery.mockImplementationOnce(() => (async function* () {})());
+    sdkQuery.mockImplementationOnce(() => (async function* () {
+      yield { type: 'result', subtype: 'success', is_error: false, result: '' };
+    })());
     const log = spyOn(logger, 'error').mockImplementation(() => {});
     const provider = new ClaudeProvider({} as never, {} as never);
     await expect(provider.formatTelegramWrapup(input)).rejects.toThrow('Claude returned no text');
     expect(log).toHaveBeenCalledWith('TELEGRAM', expect.any(String), {
       sessionId: 42, model: 'configured-summary-model',
     }, expect.any(Error));
+  });
+
+  it.each([
+    { subtype: 'success', is_error: true, result: 'Invalid API key · Fix external API key' },
+    { subtype: 'error_during_execution', is_error: true, errors: ['provider execution failed'] },
+    { subtype: 'error_max_turns', is_error: true, errors: ['maximum turns reached'] },
+  ])('rejects failed standalone results instead of returning their assistant text (%j)', async result => {
+    sdkQuery.mockImplementationOnce(() => (async function* () {
+      yield { type: 'assistant', message: { content: [{ type: 'text', text: 'This is not a completed summary.' }] } };
+      yield { type: 'result', ...result };
+    })());
+    const provider = new ClaudeProvider({} as never, {} as never);
+
+    await expect(provider.formatTelegramWrapup(input)).rejects.toThrow();
+    expect(sdkQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the original tool payload when a compression request returns an API error result', async () => {
+    sdkQuery.mockImplementationOnce(() => (async function* () {
+      yield { type: 'assistant', error: 'authentication_failed', message: {
+        content: [{ type: 'text', text: 'Invalid API key · Fix external API key' }],
+      } };
+      yield { type: 'result', subtype: 'success', is_error: true, result: 'Invalid API key · Fix external API key' };
+    })());
+    const provider = new ClaudeProvider({} as never, {} as never);
+    const payload = { file_path: '/project/report.txt', content: 'verified tool output '.repeat(2_000) };
+    const session = { ...input, abortController: new AbortController() };
+    const result = await optimizeField(payload, (text, budget, signal) =>
+      (provider as any).compressField(text, budget, session, 'model', '/mock/claude', signal),
+    { sessionDbId: input.sessionDbId, field: 'outcome' }, 1_000);
+
+    expect(result).toEqual(payload);
+    expect(sdkQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects text from a standalone stream that never completes its result', async () => {
+    sdkQuery.mockImplementationOnce(() => (async function* () {
+      yield { type: 'assistant', message: { content: [{ type: 'text', text: 'unfinished summary' }] } };
+    })());
+    const provider = new ClaudeProvider({} as never, {} as never);
+
+    await expect(provider.formatTelegramWrapup(input)).rejects.toThrow();
+    expect(sdkQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps ordinary completed text that discusses an API error', async () => {
+    const text = '• Fixed the Invalid API key error in the client';
+    sdkQuery.mockImplementationOnce(() => (async function* () {
+      yield { type: 'assistant', message: { content: [{ type: 'text', text }] } };
+      yield { type: 'result', subtype: 'success', is_error: false, result: text };
+    })());
+    const provider = new ClaudeProvider({} as never, {} as never);
+
+    await expect(provider.formatTelegramWrapup(input)).resolves.toBe(text);
+    expect(sdkQuery).toHaveBeenCalledTimes(1);
   });
 
   it.each([
@@ -209,7 +287,7 @@ describe('Telegram wrap-up provider reuse', () => {
     expect(result).toMatchObject({ content: '', tokensUsed: 20, inputTokens: 12, outputTokens: 8 });
     const body = JSON.parse(String(network.mock.calls[0][1]?.body));
     expect(body.response_format).toBeUndefined();
-    expect(body.reasoning).toBeUndefined();
+    expect(body.reasoning).toEqual({ enabled: false });
     expect(body.max_tokens).toBe(4096);
   });
 });

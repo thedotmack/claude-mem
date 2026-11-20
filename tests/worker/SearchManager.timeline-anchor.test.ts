@@ -1,38 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
-
-// Capture real exports before mock.module mutates the live namespace, then
-// re-register the snapshot in afterAll so the partial ModeManager stub (no
-// class prototype, no loadMode) does not leak into later test files (bun's
-// mock.module is process-global; mock.restore() does NOT undo it). A leaked
-// stub breaks tests/server/server-boot.test.ts, server-runtime-smoke and the
-// tests/sdk parser suites whenever the readdir-dependent file order runs them
-// after this file.
-import * as realModeManagerModule from '../../src/services/domain/ModeManager.js';
-
-const realModeManagerSnapshot = { ...realModeManagerModule };
-
-afterAll(() => {
-  mock.module('../../src/services/domain/ModeManager.js', () => realModeManagerSnapshot);
-});
-
-mock.module('../../src/services/domain/ModeManager.js', () => ({
-  ModeManager: {
-    getInstance: () => ({
-      getActiveMode: () => ({
-        name: 'code',
-        prompts: {},
-        observation_types: [
-          { id: 'discovery', icon: 'I' },
-        ],
-        observation_concepts: [],
-      }),
-      getObservationTypes: () => [{ id: 'discovery', icon: 'I' }],
-      getTypeIcon: (_type: string) => 'I',
-      getWorkEmoji: () => 'W',
-    }),
-  },
-}));
-
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { ModeManager } from '../../src/services/domain/ModeManager.js';
 import { Database } from 'bun:sqlite';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import { SessionSearch } from '../../src/services/sqlite/SessionSearch.js';
@@ -108,6 +75,7 @@ describe('SearchManager.timeline() anchor dispatch', () => {
   let seeded: SeededObservation[];
 
   beforeEach(() => {
+    ModeManager.getInstance().loadMode('code');
     db = new Database(':memory:');
     db.run('PRAGMA foreign_keys = ON');
     store = new SessionStore(db);
@@ -127,102 +95,20 @@ describe('SearchManager.timeline() anchor dispatch', () => {
     db.close();
   });
 
-  it('(a) numeric anchor passed as JS number returns the 7-id window around the anchor', async () => {
-    const middle = seeded[24]; 
-    const expectedIds = seeded.slice(21, 28).map((o) => o.id);
-
-    const response = await manager.timeline({
-      anchor: middle.id, // pass as JS number
-      depth_before: 3,
-      depth_after: 3,
-    });
-
-    expect(response.isError).not.toBe(true);
-    const text: string = response.content[0].text;
-    const returnedIds = extractObservationIds(text);
-    expect(returnedIds).toEqual(expectedIds);
-    expectAnchorRendered(text, middle.id);
-  });
-
-  it('(b) numeric anchor passed as STRING returns the 7-id window around the anchor (THE bug case)', async () => {
+  it.each([
+    ['number', (id: number) => id],
+    ['string', (id: number) => String(id)],
+    ['padded string', (id: number) => `  ${id}  `],
+    ['search-output id', (id: number) => `#${id}`],
+  ] as const)('returns the 7-id window for a numeric anchor passed as %s', async (_label, anchor) => {
     const middle = seeded[24];
     const expectedIds = seeded.slice(21, 28).map((o) => o.id);
-
-    const response = await manager.timeline({
-      anchor: String(middle.id), // pass as STRING — what HTTP layer always sends
-      depth_before: 3,
-      depth_after: 3,
-    });
+    const response = await manager.timeline({ anchor: anchor(middle.id), depth_before: 3, depth_after: 3 });
 
     expect(response.isError).not.toBe(true);
     const text: string = response.content[0].text;
-    const returnedIds = extractObservationIds(text);
-    expect(returnedIds).toEqual(expectedIds);
+    expect(extractObservationIds(text)).toEqual(expectedIds);
     expectAnchorRendered(text, middle.id);
-  });
-
-  it('(b2) numeric anchor with surrounding whitespace is coerced and returns the same window', async () => {
-    const middle = seeded[24];
-    const expectedIds = seeded.slice(21, 28).map((o) => o.id);
-
-    const response = await manager.timeline({
-      anchor: `  ${middle.id}  `,
-      depth_before: 3,
-      depth_after: 3,
-    });
-
-    expect(response.isError).not.toBe(true);
-    const text: string = response.content[0].text;
-    const returnedIds = extractObservationIds(text);
-    expect(returnedIds).toEqual(expectedIds);
-    expectAnchorRendered(text, middle.id);
-  });
-
-  it('(c) session-ID anchor "S<n>" routes to the timestamp branch and returns a non-error response', async () => {
-    const middle = seeded[24];
-    const summaryResult = store.storeSummary(
-      MEMORY_SESSION_ID,
-      PROJECT,
-      {
-        request: 'Synthetic session for timeline anchor test',
-        investigated: '',
-        learned: '',
-        completed: '',
-        next_steps: '',
-        notes: null,
-      },
-      undefined,
-      0,
-      middle.epoch
-    );
-    const sessionDbId = summaryResult.id;
-
-    const response = await manager.timeline({
-      anchor: `S${sessionDbId}`,
-      depth_before: 3,
-      depth_after: 3,
-    });
-
-    expect(response.isError).not.toBe(true);
-    const text: string = response.content[0].text;
-    expect(typeof text).toBe('string');
-    expect(text.length).toBeGreaterThan(0);
-  });
-
-  it('(d) ISO-timestamp anchor routes to the timestamp branch and returns a non-error response', async () => {
-    const middle = seeded[24];
-    const isoAnchor = new Date(middle.epoch).toISOString();
-
-    const response = await manager.timeline({
-      anchor: isoAnchor,
-      depth_before: 3,
-      depth_after: 3,
-    });
-
-    expect(response.isError).not.toBe(true);
-    const text: string = response.content[0].text;
-    const returnedIds = extractObservationIds(text);
-    expect(returnedIds).toContain(middle.id);
   });
 
   it('(e) garbage anchor "123abc" returns isError: true (does NOT swallow as numeric)', async () => {
@@ -352,5 +238,109 @@ describe('SearchManager.timeline() anchor dispatch', () => {
     expect(text).not.toContain('CLAUDE_LEAK_OBS');
     expect(text).not.toContain('CLAUDE_LEAK_SUMMARY');
     expect(text).not.toContain('CLAUDE_LEAK_PROMPT');
+  });
+});
+
+// storeObservations() stamps a turn's observations and its summary with one epoch, so an
+// epoch anchor (S<n> or an ISO timestamp) routinely ties several rows. Every row tied at the
+// anchor epoch is the anchor group; depth counts the rows strictly before and after it.
+describe('SearchManager.timeline() epoch anchors with tied rows', () => {
+  const TIE_PROJECT = 'timeline-tie-e2e';
+  const TIE_MEMORY_SESSION_ID = 'mem-session-timeline-tie';
+  const stepMs = 60_000;
+  const tieEpoch = Date.UTC(2024, 2, 1, 12, 0, 0);
+
+  let db: Database;
+  let store: SessionStore;
+  let manager: SearchManager;
+  let summaryId: number;
+  const idsByTitle = new Map<string, number>();
+
+  function storeTitledObservation(title: string, epoch: number): void {
+    const result = store.storeObservation(TIE_MEMORY_SESSION_ID, TIE_PROJECT, {
+      type: 'discovery',
+      title,
+      subtitle: null,
+      facts: [],
+      narrative: `narrative for ${title}`,
+      concepts: [],
+      files_read: [],
+      files_modified: [],
+    }, 1, 0, epoch);
+    idsByTitle.set(title, result.id);
+  }
+
+  // Rendered items in order: observations as their title, the summary as "summary".
+  function renderedItems(text: string): string[] {
+    const titleById = new Map(Array.from(idsByTitle.entries()).map(([title, id]) => [id, title]));
+    const items: string[] = [];
+    for (const line of text.split('\n')) {
+      const observationRow = /^\|\s*#(\d+)\s*\|/.exec(line);
+      if (observationRow) {
+        items.push(titleById.get(Number(observationRow[1])) ?? `#${observationRow[1]}`);
+      } else if (line.includes(`#S${summaryId}**`)) {
+        items.push('summary');
+      }
+    }
+    return items;
+  }
+
+  beforeEach(() => {
+    ModeManager.getInstance().loadMode('code');
+    db = new Database(':memory:');
+    store = new SessionStore(db);
+    manager = new SearchManager(new SessionSearch(db), store, null, new FormattingService(), new TimelineService());
+
+    const sdkId = store.createSDKSession('content-timeline-tie', TIE_PROJECT, 'initial prompt');
+    store.updateMemorySessionId(sdkId, TIE_MEMORY_SESSION_ID);
+
+    // before-1..before-4 sit 4..1 minutes before the tie; after-1..after-4 sit 1..4 minutes after.
+    for (let i = 1; i <= 4; i++) storeTitledObservation(`before-${i}`, tieEpoch - (5 - i) * stepMs);
+    storeTitledObservation('tie-a', tieEpoch);
+    storeTitledObservation('tie-b', tieEpoch);
+    storeTitledObservation('tie-c', tieEpoch);
+    summaryId = store.storeSummary(TIE_MEMORY_SESSION_ID, TIE_PROJECT, {
+      request: 'Turn summary sharing the batch epoch',
+      investigated: '',
+      learned: '',
+      completed: '',
+      next_steps: '',
+      notes: null,
+    }, 1, 0, tieEpoch).id;
+    for (let i = 1; i <= 4; i++) storeTitledObservation(`after-${i}`, tieEpoch + i * stepMs);
+  });
+
+  afterEach(() => {
+    db.close();
+    idsByTitle.clear();
+  });
+
+  const tiedWindow = ['before-3', 'before-4', 'tie-a', 'tie-b', 'tie-c', 'summary', 'after-1', 'after-2'];
+
+  it('S<n> anchor keeps the whole tied turn plus depth rows on both sides', async () => {
+    const response = await manager.timeline({ anchor: `S${summaryId}`, depth_before: 2, depth_after: 2 });
+    expect(response.isError).not.toBe(true);
+    expect(renderedItems(response.content[0].text)).toEqual(tiedWindow);
+  });
+
+  it('ISO anchor on the tied epoch keeps the rows after the tie', async () => {
+    const response = await manager.timeline({
+      anchor: new Date(tieEpoch).toISOString(),
+      depth_before: 2,
+      depth_after: 2,
+    });
+    expect(response.isError).not.toBe(true);
+    expect(renderedItems(response.content[0].text)).toEqual(tiedWindow);
+  });
+
+  it('ISO anchor between rows returns exactly depth_before + depth_after rows', async () => {
+    const betweenBefore2AndBefore3 = tieEpoch - 2.5 * stepMs;
+    const response = await manager.timeline({
+      anchor: new Date(betweenBefore2AndBefore3).toISOString(),
+      depth_before: 2,
+      depth_after: 2,
+    });
+    expect(response.isError).not.toBe(true);
+    expect(renderedItems(response.content[0].text)).toEqual(['before-1', 'before-2', 'before-3', 'before-4']);
   });
 });

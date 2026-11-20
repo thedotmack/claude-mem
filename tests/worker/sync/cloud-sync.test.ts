@@ -6,22 +6,29 @@
 // in-temp-dir SessionStore over an in-memory DB, injected fetchImpl, fast
 // debounce/backoff.
 
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import {
   CloudSync,
+  HubHttpError,
+  hubRetryAfterMs,
   parseContentBatchSize,
   parseRequestTimeoutMs,
+  parseRetryAfterMs,
   DEFAULT_CONTENT_BATCH_SIZE,
   DEFAULT_REQUEST_TIMEOUT_MS,
+  DEFAULT_STATUS_TIMEOUT_MS,
   type CloudSyncSettingKeys,
   type CloudSyncOptions,
 } from '../../../src/services/sync/CloudSync.js';
+import { PROMPT_TEXT_MAX_BYTES, PROMPT_TRUNCATION_MARKER } from '../../../src/services/sync/prompt-text-clamp.js';
 import { buildContentOperation, buildMutationOperation, stableDocumentId } from '../../../src/services/sync/CanonicalContent.js';
+import { SyncApply } from '../../../src/services/sync/SyncApply.js';
+import { decodeChanges } from '../../../src/services/sync/SyncClient.js';
 
 const ISO = '2026-07-09T00:00:00.000Z';
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -130,10 +137,31 @@ function makeFetchMock(handler?: (call: number) => Response | Error | undefined)
   return { impl, calls };
 }
 
+describe('hub retry-after helpers', () => {
+  it('parses delta-seconds and HTTP-date Retry-After values', () => {
+    expect(parseRetryAfterMs('5')).toBe(5_000);
+    expect(parseRetryAfterMs(null)).toBeNull();
+    expect(parseRetryAfterMs('nope')).toBeNull();
+    const now = Date.parse('Wed, 21 Oct 2015 07:28:00 GMT');
+    expect(parseRetryAfterMs('Wed, 21 Oct 2015 07:28:05 GMT', now)).toBe(5_000);
+  });
+
+  it('treats Cloudflare HTML 429 as a 10-minute floor', () => {
+    expect(hubRetryAfterMs(429, '<!DOCTYPE html><p>error 1027</p>', null)).toBe(10 * 60 * 1_000);
+    expect(hubRetryAfterMs(429, '<!DOCTYPE html>', '30')).toBe(10 * 60 * 1_000);
+    expect(hubRetryAfterMs(503, 'busy', '2')).toBe(2_000);
+    const err = new HubHttpError('sync hub push', 429, '<!DOCTYPE html>', 600_000);
+    expect(err.retryable).toBe(true);
+    expect(err.retryAfterMs).toBe(600_000);
+    expect(err.message).toContain('sync hub push 429');
+  });
+});
+
 describe('cloud sync flush knobs', () => {
   it('defaults content batch to 40 and request timeout to 90s', () => {
     expect(DEFAULT_CONTENT_BATCH_SIZE).toBe(40);
     expect(DEFAULT_REQUEST_TIMEOUT_MS).toBe(90_000);
+    expect(DEFAULT_STATUS_TIMEOUT_MS).toBe(20_000);
     expect(parseContentBatchSize(undefined)).toBe(40);
     expect(parseRequestTimeoutMs(undefined)).toBe(90_000);
   });
@@ -158,6 +186,7 @@ describe('CloudSync', () => {
   let db: Database;
   let store: SessionStore;
   let settingsPath: string;
+  const syncs: CloudSync[] = [];
 
   function makeSettings(overrides: Partial<CloudSyncSettingKeys> = {}): CloudSyncSettingKeys {
     return {
@@ -175,7 +204,7 @@ describe('CloudSync', () => {
     settingsOverrides: Partial<CloudSyncSettingKeys> = {},
     options: Partial<CloudSyncOptions> = {}
   ): CloudSync {
-    return new CloudSync(db, makeSettings(settingsOverrides), {
+    const sync = new CloudSync(db, makeSettings(settingsOverrides), {
       fetchImpl,
       settingsPath,
       debounceMs: 25,
@@ -183,6 +212,8 @@ describe('CloudSync', () => {
       backoffMaxMs: 200,
       ...options,
     });
+    syncs.push(sync);
+    return sync;
   }
 
   function seedObservation(overrides: Record<string, unknown> = {}): void {
@@ -302,9 +333,9 @@ describe('CloudSync', () => {
       VALUES (?, 'observation', 'device-fixture', '1', '1', ?, 0, 1)
     `).run(priorBody.id, prior.operation_sha256);
 
-    // Content snapshots drain first, so this mutation is also provably
-    // untouched when the content response fails validation.
-    store.createSDKSession('ack-proof-session', 'proj-x', 'prompt', 'queued title', 'claude');
+    // Keep this fixture a two-operation frozen content page. Mutation pages
+    // now have an independent fair turn; their own invalid-ack case below
+    // checks that a frozen mutation remains intact on rejection.
   }
 
   function ackDurabilityState(): Record<string, unknown> {
@@ -343,9 +374,48 @@ describe('CloudSync', () => {
   });
 
   afterEach(() => {
+    syncs.forEach(sync => sync.stop());
+    syncs.length = 0;
     db.close();
     rmSync(tempDir, { recursive: true, force: true });
   });
+
+  for (const kind of ['observation', 'summary'] as const) {
+    it(`syncs finalized discovery tokens after the ${kind}'s first push was acknowledged`, async () => {
+      if (kind === 'observation') seedObservation();
+      else seedSummary();
+      const table = kind === 'observation' ? 'observations' : 'session_summaries';
+      const { impl, calls } = makeFetchMock();
+      const sync = makeCloudSync(impl);
+      const receiver = new SessionStore(':memory:');
+      const apply = new SyncApply(receiver.db, { deviceId: 'receiver' });
+      const pull = () => apply.applyOps(decodeChanges(calls.flatMap(call => call.wireParsed.ops)
+        .map((op, index) => ({ ...op, seq: String(index + 1) }))), { epoch: '1' });
+      const received = () => receiver.db.prepare(`SELECT discovery_tokens FROM ${table}`).get();
+      try {
+        await sync.flush();
+        expect(pendingCount(table)).toBe(0);
+        expect(pull().quarantined).toBe(0);
+        expect(received()).toEqual({ discovery_tokens: kind === 'observation' ? 42 : 0 });
+
+        // Claude's final result can arrive after the earlier assistant row
+        // has already synced. Patch through the production store entry point.
+        store.updateDiscoveryTokens(kind === 'observation' ? [1] : [], kind === 'summary' ? 1 : null, 1040);
+        await sync.flush();
+        expect(pull().quarantined).toBe(0);
+        expect(received()).toEqual({ discovery_tokens: 1040 });
+        expect(calls.flatMap(call => call.parsed.ops).map(op => op.rev)).toEqual(['1', '2']);
+
+        // An equal correction (or a lower summary total) changes no payload.
+        store.updateDiscoveryTokens(kind === 'observation' ? [1] : [], kind === 'summary' ? 1 : null,
+          kind === 'summary' ? 40 : 1040);
+        await sync.flush();
+        expect(calls).toHaveLength(2);
+      } finally {
+        receiver.close();
+      }
+    });
+  }
 
   // ---------------------------------------------------------------------------
   // Wire contract: ops POST bodies must follow the SyncApply BODY FIELD
@@ -370,6 +440,7 @@ describe('CloudSync', () => {
       expect(call.headers['X-User-Id']).toBe('user-42');
       expect(call.headers['X-Device-Id']).toBe('device-fixture');
       expect(call.headers['X-Device-Name']).toBe('test-host');
+      expect(call.headers['X-Sync-Capabilities']).toBe('quarantine-unknown-kinds');
       expect(call.hasSignal).toBe(true); // AbortSignal.timeout on every POST
     }
 
@@ -553,7 +624,7 @@ describe('CloudSync', () => {
     expect(pendingCount('observations')).toBe(0);
 
     const status = sync.status();
-    expect(status.pending).toEqual({ observations: 0, summaries: 0, prompts: 0, mutations: 0, tombstones: 0 });
+    expect(status.pending).toEqual({ observations: 0, summaries: 0, prompts: 0, workState: 0, mutations: 0, tombstones: 0 });
     expect(status.lastFlushAt).not.toBeNull();
     expect(status.lastError).toBeNull();
   });
@@ -583,14 +654,75 @@ describe('CloudSync', () => {
     expect(calls.map(c => c.parsed.ops.length)).toEqual([6, 6, 3]);
   });
 
-  it('falls back to the default content batch when the setting is out of range', async () => {
-    for (let i = 0; i < 90; i++) seedObservation({ title: `obs ${i}` });
+  it('never stamps rows on a durable 503 that carries no per-op acks', async () => {
+    seedObservation({ title: 'durable-but-unprojected' });
+    const { impl, calls } = makeFetchMock(() => new Response(JSON.stringify({
+      error: 'projection_busy', durable: true, retryable: true, head_seq: '1', projected_seq: '0',
+    }), { status: 503, headers: { 'Retry-After': '30' } }));
+    const sync = makeCloudSync(impl);
 
-    const { impl, calls } = makeFetchMock();
-    const sync = makeCloudSync(impl, { CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE: '9999' });
     await sync.flush();
 
-    expect(calls.map(c => c.parsed.ops.length)).toEqual([40, 40, 10]);
+    expect(calls.length).toBe(1);
+    expect(pendingCount('observations')).toBe(1);
+    sync.stop();
+  });
+
+  it('restarts the retry ladder when a flush got pages through before the hub refused one', async () => {
+    for (let i = 0; i < 3; i++) seedObservation({ title: `obs ${i}` });
+    let refuseFromCall = 1;
+    const { impl, calls } = makeFetchMock((call) => call >= refuseFromCall
+      ? new Response(JSON.stringify({ error: 'projection_busy', durable: true, retryable: true }), { status: 503 })
+      : undefined);
+    const sync = makeCloudSync(impl, {}, { contentBatchSize: 1, backoffInitialMs: 1_000, backoffMaxMs: 64_000 });
+    const internals = sync as unknown as { nextBackoffMs: number; retryTimer: ReturnType<typeof setTimeout> | null };
+    // Stand in for the armed retry timer firing, so each flush below is a retry.
+    const fireRetryTimer = async () => {
+      if (internals.retryTimer) clearTimeout(internals.retryTimer);
+      internals.retryTimer = null;
+      await sync.flush();
+    };
+
+    // Retries that move nothing climb the ladder: 1s, then 2s, so 4s is next.
+    await sync.flush();
+    await fireRetryTimer();
+    expect(internals.nextBackoffMs).toBe(4_000);
+
+    // One page acked, the next refused: the retry waits the initial 1s again.
+    refuseFromCall = calls.length + 2;
+    await fireRetryTimer();
+    expect(pendingCount('observations')).toBe(2);
+    expect(internals.nextBackoffMs).toBe(2_000);
+    sync.stop();
+  });
+
+  it('restarts the retry ladder when a page split across requests got its first request acked', async () => {
+    // ~240 KB rows: one 20-row page exceeds the 4 MB request cap and is sent
+    // as two requests. The first is acked, the second refused.
+    for (let i = 0; i < 20; i++) seedObservation({ title: `big ${i}`, narrative: `${i}`.padEnd(240_000, 'x') });
+    let refuseFromCall = 1;
+    const { impl, calls } = makeFetchMock((call) => call >= refuseFromCall
+      ? new Response(JSON.stringify({ error: 'projection_busy', durable: true, retryable: true }), { status: 503 })
+      : undefined);
+    const sync = makeCloudSync(impl, {}, { contentBatchSize: 20, backoffInitialMs: 1_000, backoffMaxMs: 64_000 });
+    const internals = sync as unknown as { nextBackoffMs: number; retryTimer: ReturnType<typeof setTimeout> | null };
+    const fireRetryTimer = async () => {
+      if (internals.retryTimer) clearTimeout(internals.retryTimer);
+      internals.retryTimer = null;
+      await sync.flush();
+    };
+
+    await sync.flush();
+    await fireRetryTimer();
+    expect(internals.nextBackoffMs).toBe(4_000);
+
+    refuseFromCall = calls.length + 2;
+    await fireRetryTimer();
+    const pending = pendingCount('observations');
+    expect(pending).toBeGreaterThan(0);
+    expect(pending).toBeLessThan(20);
+    expect(internals.nextBackoffMs).toBe(2_000);
+    sync.stop();
   });
 
   it('aborts a hung content push at the configured requestTimeoutMs', async () => {
@@ -648,7 +780,8 @@ describe('CloudSync', () => {
     expect(calls[0].headers.get('X-User-Id')).toBe('user-42');
     expect(calls[0].headers.get('X-Device-Id')).toBe('device-fixture');
     expect(calls[0].headers.get('X-Device-Name')).toBe('test-host');
-    expect(status.pending).toEqual({ observations: 0, summaries: 0, prompts: 0, mutations: 0, tombstones: 0 });
+    expect(calls[0].headers.get('X-Sync-Capabilities')).toBe('quarantine-unknown-kinds');
+    expect(status.pending).toEqual({ observations: 0, summaries: 0, prompts: 0, workState: 0, mutations: 0, tombstones: 0 });
     expect(status.hub).toMatchObject({
       reachable: true,
       epoch: '18446744073709551615',
@@ -657,6 +790,61 @@ describe('CloudSync', () => {
       error: null,
     });
     expect(status.hub.checkedAt).toBeNumber();
+  });
+
+  it('shares concurrent status probes and probes again after completion', async () => {
+    let calls = 0;
+    let release!: () => void;
+    const impl = (async () => {
+      calls++;
+      if (calls === 1) await new Promise<void>(resolve => { release = resolve; });
+      return Response.json({ protocol_version: 2, epoch: '1', head_seq: '4', projected_seq: '4' });
+    }) as typeof fetch;
+    const sync = makeCloudSync(impl);
+    const probes = Array.from({ length: 4 }, () => sync.statusWithHubProbe());
+    expect(calls).toBe(1);
+    release();
+    const statuses = await Promise.all(probes);
+    expect(statuses.every(status => status.hub.reachable === true)).toBe(true);
+    await sync.statusWithHubProbe();
+    expect(calls).toBe(2);
+    sync.stop();
+  });
+
+  it('bounds hung status headers and bodies while preserving queued rows and retrying the probe', async () => {
+    seedObservation();
+    for (const phase of ['headers', 'body']) {
+      let calls = 0;
+      const impl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        calls++;
+        if (calls > 1) {
+          return Response.json({ protocol_version: 2, epoch: '1', head_seq: '4', projected_seq: '4' });
+        }
+        const signal = init!.signal!;
+        if (phase === 'headers') {
+          return await new Promise<Response>((_resolve, reject) => {
+            signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+          });
+        }
+        return new Response(new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('{'));
+            signal.addEventListener('abort', () => controller.error(signal.reason), { once: true });
+          },
+        }));
+      }) as typeof fetch;
+      const sync = makeCloudSync(impl, {}, { requestTimeoutMs: 90_000, statusTimeoutMs: 20 });
+      const started = Date.now();
+      const status = await sync.statusWithHubProbe();
+      expect(Date.now() - started).toBeLessThan(500);
+      expect(status.hub.reachable).toBe(false);
+      expect(status.hub.error).toMatch(/aborted|timed out|timeout/i);
+      expect(status.lastError).toBeNull();
+      expect(pendingCount('observations')).toBe(1);
+      expect((await sync.statusWithHubProbe()).hub.reachable).toBe(true);
+      expect(calls).toBe(2);
+      sync.stop();
+    }
   });
 
   it('surfaces Hub authentication, network, and malformed-status failures without leaking the token', async () => {
@@ -709,22 +897,121 @@ describe('CloudSync', () => {
     expect(pendingCount('observations')).toBe(0);
   });
 
-  it('rejects a prompt whose canonical body exceeds the 256KB bound without stamping it', async () => {
-    seedPrompt('x'.repeat(300_000));
+  /** UTF-8 bytes of a string as it sits inside the JSON body. */
+  const jsonBytes = (text: string): number => Buffer.byteLength(JSON.stringify(text), 'utf8') - 2;
+
+  it('clamps an oversized prompt at the SELECT and syncs it truncated with a marker (#3537)', async () => {
+    // A pasted multi-MB prompt must not cross the bun:sqlite FFI boundary in
+    // full: the drain reads only its first PROMPT_TEXT_MAX_BYTES bytes. It
+    // syncs truncated, is stamped, and is not re-queued by ack reconciliation
+    // (which re-reads the row through the same clamp).
+    seedPrompt('x'.repeat(1_000_000));
+
+    const { impl, calls } = makeFetchMock();
+    const sync = makeCloudSync(impl);
+    await sync.flush();
+
+    const text: string = calls[0].parsed.ops[0].body.prompt_text;
+    expect(text.endsWith(PROMPT_TRUNCATION_MARKER)).toBe(true);
+    expect(jsonBytes(text)).toBeLessThanOrEqual(PROMPT_TEXT_MAX_BYTES);
+    expect(text.slice(0, -PROMPT_TRUNCATION_MARKER.length)).toBe('x'.repeat(text.length - PROMPT_TRUNCATION_MARKER.length));
+    expect(pendingCount('user_prompts')).toBe(0);
+    expect(sync.status().quarantine.count).toBe(0);
+    // The local row keeps the full prompt.
+    expect((db.prepare('SELECT length(prompt_text) AS n FROM user_prompts WHERE id = 1').get() as { n: number }).n)
+      .toBe(1_000_000);
+
+    await sync.flush();
+    expect(calls.length).toBe(1);
+  });
+
+  it('cuts a multibyte prompt on a character boundary, inside the 256KB body bound', async () => {
+    seedPrompt('☃'.repeat(300_000));
     seedPrompt('following row', 6);
 
     const { impl, calls } = makeFetchMock();
     const sync = makeCloudSync(impl);
     await sync.flush();
 
-    expect(calls.length).toBe(1);
+    const ops = calls.flatMap(call => call.wireParsed.ops) as Array<{ body: string }>;
+    expect(ops).toHaveLength(2);
+    for (const op of ops) expect(Buffer.byteLength(op.body, 'utf8')).toBeLessThanOrEqual(256_000);
+    const text: string = calls[0].parsed.ops[0].body.prompt_text;
+    const kept = text.slice(0, -PROMPT_TRUNCATION_MARKER.length);
+    expect(kept.length).toBeGreaterThan(60_000);
+    expect(kept).toBe('☃'.repeat(kept.length));
     expect(pendingCount('user_prompts')).toBe(0);
-    expect(db.prepare('SELECT synced_at FROM user_prompts WHERE id = 1').get())
-      .toEqual({ synced_at: -1 });
+    expect(sync.status().quarantine.count).toBe(0);
+  });
+
+  it('never cuts a prompt short at an embedded NUL', async () => {
+    // SQLite's TEXT substr()/length() stop at the first NUL, so a text clamp
+    // would drop everything after it and ack the row as synced.
+    seedPrompt('before\u0000after');
+    seedPrompt(`a\u0000${'b'.repeat(300_000)}`, 6);
+
+    const { impl, calls } = makeFetchMock();
+    const sync = makeCloudSync(impl);
+    await sync.flush();
+
+    const [small, large] = calls.flatMap(call => call.parsed.ops).map((op: any) => op.body.prompt_text as string);
+    expect(small).toBe('before\u0000after');
+    expect(large.startsWith('a\u0000bbb')).toBe(true);
+    expect(large.endsWith(PROMPT_TRUNCATION_MARKER)).toBe(true);
+    expect(large.length).toBeGreaterThan(190_000);
+    expect(pendingCount('user_prompts')).toBe(0);
+  });
+
+  it('re-queues, once, prompts dead-lettered for size before the clamp, so they sync truncated', async () => {
+    // Before #3537 a prompt whose canonical body passed 256000 bytes was
+    // dead-lettered (synced_at = -1), and the drain reads synced_at IS NULL
+    // only, so it never synced again even after the clamp made it fit.
+    const deadLetter = db.prepare(`
+      INSERT INTO sync_dead_letter (lane, queue_key, kind, origin_local_id, entity_rev, reason, raw_body, created_at_epoch)
+      VALUES ('content', ?, 'prompt', ?, '1', ?, NULL, 1)
+    `);
+    seedPrompt('x'.repeat(400_000));
+    db.prepare('UPDATE user_prompts SET synced_at = -1 WHERE id = 1').run();
+    deadLetter.run('prompt:oversized', '1', 'canonical content: body exceeds 256000 UTF-8 bytes');
+    // A prompt refused for another reason keeps its quarantine.
+    seedPrompt('second prompt', 6);
+    db.prepare('UPDATE user_prompts SET synced_at = -1 WHERE id = 2').run();
+    deadLetter.run('prompt:other', '2', 'canonical content: prompt.project must not be empty or whitespace-only');
+
+    // The re-queue runs at store open, as on the first start of an upgraded install.
+    db.prepare('DELETE FROM schema_versions WHERE version = 60').run();
+    new SessionStore(db);
+
+    const { impl, calls } = makeFetchMock();
+    const sync = makeCloudSync(impl);
+    await sync.flush();
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].parsed.ops).toHaveLength(1);
+    expect((calls[0].parsed.ops[0].body.prompt_text as string).endsWith(PROMPT_TRUNCATION_MARKER)).toBe(true);
+    expect((db.prepare('SELECT synced_at FROM user_prompts WHERE id = 1').get() as { synced_at: number }).synced_at)
+      .toBeGreaterThan(0);
+    expect(db.prepare('SELECT synced_at FROM user_prompts WHERE id = 2').get()).toEqual({ synced_at: -1 });
     expect(sync.status().quarantine.count).toBe(1);
-    expect(sync.status().quarantine.latestReason).toMatch(/256000 UTF-8 bytes/);
-    expect(db.prepare('SELECT synced_at FROM user_prompts WHERE id = 2').get() as { synced_at: number })
-      .toMatchObject({ synced_at: expect.any(Number) });
+
+    // Once: a later store open finds nothing to re-queue.
+    db.prepare('UPDATE user_prompts SET synced_at = -1 WHERE id = 1').run();
+    new SessionStore(db);
+    expect(db.prepare('SELECT synced_at FROM user_prompts WHERE id = 1').get()).toEqual({ synced_at: -1 });
+  });
+
+  it('cuts a prompt that fits as raw bytes but not once JSON-escaped', async () => {
+    // Quotes escape to two bytes in the body, so 150 KB of them is 300 KB there.
+    seedPrompt('"'.repeat(150_000));
+
+    const { impl, calls } = makeFetchMock();
+    const sync = makeCloudSync(impl);
+    await sync.flush();
+
+    const text: string = calls[0].parsed.ops[0].body.prompt_text;
+    expect(text.endsWith(PROMPT_TRUNCATION_MARKER)).toBe(true);
+    expect(jsonBytes(text)).toBeLessThanOrEqual(PROMPT_TEXT_MAX_BYTES);
+    expect(pendingCount('user_prompts')).toBe(0);
   });
 
   it('queues a durable tombstone and revives the same stable entity at a higher revision', async () => {
@@ -848,42 +1135,6 @@ describe('CloudSync', () => {
     expect(revived).toMatchObject({ deleted: false, entity_rev: '3' });
   });
 
-  it('keeps an in-flight snapshot immutable and queues a higher rev for same-rev local drift', async () => {
-    seedObservation();
-    let release!: () => void;
-    const gate = new Promise<void>(resolve => { release = resolve; });
-    const sent: any[] = [];
-    let seq = 0;
-    const impl = (async (_input: any, init?: any) => {
-      const parsed = JSON.parse(String(init?.body));
-      sent.push(parsed);
-      if (sent.length === 1) await gate;
-      return canonicalSuccess(parsed.ops.map((op: any) => canonicalAck(op, ++seq)), seq);
-    }) as typeof fetch;
-    const sync = makeCloudSync(impl);
-    const flushing = sync.flush();
-    for (let i = 0; i < 100 && sent.length === 0; i++) await sleep(2);
-
-    const first = JSON.parse(sent[0].ops[0].body);
-    expect(first).toMatchObject({ entity_rev: '1', payload: { title: 'Title A' } });
-    db.prepare("UPDATE observations SET title = 'changed without rev bump', synced_at = NULL WHERE id = 1").run();
-    const frozen = db.prepare(
-      'SELECT body FROM sync_content_outbox WHERE entity_rev = ?'
-    ).get('1') as { body: string };
-    expect(JSON.parse(frozen.body).payload.title).toBe('Title A');
-
-    release();
-    await flushing;
-    const rowOps = sent.flatMap(page => page.ops).map((op: any) => JSON.parse(op.body))
-      .filter((body: any) => body.kind === 'observation');
-    expect(rowOps.map((body: any) => [body.entity_rev, body.payload.title])).toEqual([
-      ['1', 'Title A'],
-      ['2', 'changed without rev bump'],
-    ]);
-    expect(db.prepare('SELECT sync_rev, synced_at FROM observations WHERE id = 1').get())
-      .toMatchObject({ sync_rev: '2', synced_at: expect.any(Number) });
-  });
-
   it('keeps an acked snapshot committed when in-flight local drift becomes invalid', async () => {
     seedObservation();
     let release!: () => void;
@@ -981,6 +1232,79 @@ describe('CloudSync', () => {
   // substituted at push time.
   // ---------------------------------------------------------------------------
   describe('mutation outbox drain', () => {
+    function queueRemap(number: number, frozen = false): string {
+      const opUuid = `00000000-0000-4000-8000-${String(number).padStart(12, '0')}`;
+      const mutation = {
+        op: 'remap_project' as const,
+        where: { project: `old-${number}`, merged_into_project_is_null: true },
+        fields: { merged_into_project: `new-${number}` },
+      };
+      const canonical = frozen ? buildMutationOperation({
+        originDeviceId: 'device-fixture', mutationId: opUuid, entityRev: '1', mutation,
+      }) : null;
+      db.prepare(`
+        INSERT INTO sync_outbox (op_uuid, rev, body, canonical_body, operation_sha256, created_at_epoch)
+        VALUES (?, 1, ?, ?, ?, 1)
+      `).run(opUuid, JSON.stringify(mutation), canonical?.body ?? null, canonical?.operation_sha256 ?? null);
+      return opUuid;
+    }
+
+    it('isolates each project remap while preserving ordinary batching and mutation-before-content order', async () => {
+      const title = (name: string) => store.createSDKSession(`sess-${name}`, 'proj-x', 'p', name, 'claude');
+      title('before-one');
+      title('before-two');
+      queueRemap(1);
+      title('middle-one');
+      title('middle-two');
+      queueRemap(2, true);
+      queueRemap(3);
+      title('after');
+      seedObservation();
+
+      const { impl, calls } = makeFetchMock();
+      const sync = makeCloudSync(impl);
+      await sync.flush();
+
+      expect(calls.map(call => call.parsed.ops.map((op: any) => op.kind === 'mutation'
+        ? op.body.op === 'remap_project' ? op.body.where.project : op.body.fields.custom_title
+        : op.kind))).toEqual([
+        ['before-one', 'before-two'], ['old-1'], ['middle-one', 'middle-two'],
+        ['old-2'], ['old-3'], ['after'], ['observation'],
+      ]);
+      expect(outboxRows()).toEqual([]);
+      expect(pendingCount('observations')).toBe(0);
+      expect(sync.status().lastError).toBeNull();
+      sync.stop();
+    });
+
+    for (const failingCall of [1, 2]) {
+      it(`keeps unacknowledged mutations when request ${failingCall} fails around a remap boundary`, async () => {
+        store.createSDKSession('sess-before', 'proj-x', 'p', 'before', 'claude');
+        queueRemap(1);
+        store.createSDKSession('sess-after', 'proj-x', 'p', 'after', 'claude');
+        const queued = outboxRows().map(row => row.op_uuid);
+        const { impl, calls } = makeFetchMock(call => call === failingCall
+          ? new Response('temporarily unavailable', { status: 503 }) : undefined);
+        const sync = makeCloudSync(impl, {}, { backoffInitialMs: 600_000 });
+
+        await sync.flush();
+        expect(calls.length).toBe(failingCall);
+        expect(outboxRows().map(row => row.op_uuid)).toEqual(queued.slice(failingCall - 1));
+        expect(sync.status().quarantine.count).toBe(0);
+        expect(sync.status().lastError).toContain('503');
+        const failedBytes = calls[failingCall - 1].wireParsed.ops;
+
+        await sync.flush();
+        expect(calls[failingCall].wireParsed.ops).toEqual(failedBytes);
+        expect(calls.slice(failingCall).flatMap(call => call.parsed.ops.map((op: any) => op.origin_id)))
+          .toEqual(queued.slice(failingCall - 1));
+        expect(outboxRows()).toEqual([]);
+        expect(sync.status().quarantine.count).toBe(0);
+        expect(sync.status().lastError).toBeNull();
+        sync.stop();
+      });
+    }
+
     it('drains mutation ops before row kinds and deletes them on ack', async () => {
       store.createSDKSession('sess-title', 'proj-x', 'prompt', 'My Custom Title', 'claude');
       seedObservation();
@@ -1108,6 +1432,21 @@ describe('CloudSync', () => {
     const STALE_OP_UUID = '11111111-1111-4111-8111-111111111111';
     const STALE_OP_UUID_2 = '22222222-2222-4222-8222-222222222222';
 
+    function staleDeviceHub() {
+      const endpoint = makeFetchMock(call => {
+        const ops = endpoint.calls[call - 1]?.wireParsed?.ops ?? [];
+        const hasStale = ops.some((op: { body: string }) => {
+          const body = JSON.parse(op.body) as { origin_device_id?: string };
+          return body.origin_device_id === STALE_DEVICE_ID;
+        });
+        if (!hasStale) return undefined;
+        return new Response(JSON.stringify({
+          error: 'invalid_ops: ops[0] origin_device_id does not match authenticated X-Device-Id',
+        }), { status: 400 });
+      });
+      return endpoint;
+    }
+
     function seedFrozenStaleMutation(opUuid: string): void {
       const mutation = {
         op: 'set_prompt_session' as const,
@@ -1127,38 +1466,27 @@ describe('CloudSync', () => {
       `).run(opUuid, JSON.stringify(mutation), op.body, op.operation_sha256);
     }
 
-    it('dead-letters a stale-head mutation so the healthy op behind it drains', async () => {
+    it('quarantines every stale-head op in a rejected batch before draining later work', async () => {
       seedFrozenStaleMutation(STALE_OP_UUID);
+      seedFrozenStaleMutation(STALE_OP_UUID_2);
       store.createSDKSession('sess-healthy', 'proj-x', 'p', 'healthy title', 'claude');
-      expect(outboxRows()[0].op_uuid).toBe(STALE_OP_UUID);
-      expect(outboxRows().length).toBe(2);
 
-      const { impl, calls } = makeFetchMock(call => {
-        const ops = calls[call - 1]?.wireParsed?.ops ?? [];
-        const hasStale = ops.some((op: { body: string }) => {
-          const body = JSON.parse(op.body) as { origin_device_id?: string };
-          return body.origin_device_id === STALE_DEVICE_ID;
-        });
-        if (!hasStale) return undefined;
-        return new Response(JSON.stringify({
-          error: 'invalid_ops: ops[0] origin_device_id does not match authenticated X-Device-Id',
-        }), { status: 400 });
-      });
+      const { impl, calls } = staleDeviceHub();
       const sync = makeCloudSync(impl);
       await sync.flush();
 
       expect(outboxRows().length).toBe(0);
       expect(sync.status().lastError).toBeNull();
-      expect(sync.status().quarantine.count).toBe(1);
+      expect(sync.status().quarantine.count).toBe(2);
       expect(sync.status().quarantine.latestReason).toMatch(
         /origin_device_id does not match authenticated X-Device-Id/,
       );
       const dead = db.prepare(
-        "SELECT queue_key, raw_body FROM sync_dead_letter WHERE lane = 'mutation'"
-      ).get() as { queue_key: string; raw_body: string };
-      expect(dead.queue_key).toBe(STALE_OP_UUID);
-      expect(JSON.parse(dead.raw_body).origin_device_id).toBe(STALE_DEVICE_ID);
-
+        "SELECT queue_key, raw_body FROM sync_dead_letter WHERE lane = 'mutation' ORDER BY queue_key"
+      ).all() as Array<{ queue_key: string; raw_body: string }>;
+      expect(dead.map(row => row.queue_key)).toEqual([STALE_OP_UUID, STALE_OP_UUID_2]);
+      expect(dead.map(row => JSON.parse(row.raw_body).origin_device_id))
+        .toEqual([STALE_DEVICE_ID, STALE_DEVICE_ID]);
       const healthyPushes = calls.filter(c =>
         c.parsed.ops.some((o: { kind: string; body: { fields?: { custom_title?: string } } }) =>
           o.kind === 'mutation' && o.body.fields?.custom_title === 'healthy title',
@@ -1168,40 +1496,6 @@ describe('CloudSync', () => {
       expect(healthyPushes.some(c =>
         c.parsed.ops.every((o: { body: { fields?: { custom_title?: string } } }) =>
           o.body.fields?.custom_title === 'healthy title',
-        ),
-      )).toBe(true);
-      sync.stop();
-    });
-
-    it('quarantines every stale-head op in a rejected batch before draining later work', async () => {
-      seedFrozenStaleMutation(STALE_OP_UUID);
-      seedFrozenStaleMutation(STALE_OP_UUID_2);
-      store.createSDKSession('sess-healthy', 'proj-x', 'p', 'healthy title', 'claude');
-
-      const { impl, calls } = makeFetchMock(call => {
-        const ops = calls[call - 1]?.wireParsed?.ops ?? [];
-        const hasStale = ops.some((op: { body: string }) => {
-          const body = JSON.parse(op.body) as { origin_device_id?: string };
-          return body.origin_device_id === STALE_DEVICE_ID;
-        });
-        if (!hasStale) return undefined;
-        return new Response(JSON.stringify({
-          error: 'invalid_ops: ops[0] origin_device_id does not match authenticated X-Device-Id',
-        }), { status: 400 });
-      });
-      const sync = makeCloudSync(impl);
-      await sync.flush();
-
-      expect(outboxRows().length).toBe(0);
-      expect(sync.status().lastError).toBeNull();
-      expect(sync.status().quarantine.count).toBe(2);
-      const deadKeys = (db.prepare(
-        "SELECT queue_key FROM sync_dead_letter WHERE lane = 'mutation' ORDER BY queue_key"
-      ).all() as Array<{ queue_key: string }>).map(r => r.queue_key);
-      expect(deadKeys).toEqual([STALE_OP_UUID, STALE_OP_UUID_2]);
-      expect(calls.some(c =>
-        c.parsed.ops.some((o: { kind: string; body: { fields?: { custom_title?: string } } }) =>
-          o.kind === 'mutation' && o.body.fields?.custom_title === 'healthy title',
         ),
       )).toBe(true);
       sync.stop();
@@ -1233,17 +1527,7 @@ describe('CloudSync', () => {
       const staleEntityId = seedFrozenStaleContent('1', 'Title A');
       expect(db.prepare('SELECT COUNT(*) AS n FROM sync_content_outbox').get()).toEqual({ n: 1 });
 
-      const { impl, calls } = makeFetchMock(call => {
-        const ops = calls[call - 1]?.wireParsed?.ops ?? [];
-        const hasStale = ops.some((op: { body: string }) => {
-          const body = JSON.parse(op.body) as { origin_device_id?: string };
-          return body.origin_device_id === STALE_DEVICE_ID;
-        });
-        if (!hasStale) return undefined;
-        return new Response(JSON.stringify({
-          error: 'invalid_ops: ops[0] origin_device_id does not match authenticated X-Device-Id',
-        }), { status: 400 });
-      });
+      const { impl, calls } = staleDeviceHub();
       const sync = makeCloudSync(impl);
       await sync.flush();
 
@@ -1278,17 +1562,7 @@ describe('CloudSync', () => {
       seedObservation({ title: 'Title A' });
       seedFrozenStaleContent('99', 'gone', true);
 
-      const { impl, calls } = makeFetchMock(call => {
-        const ops = calls[call - 1]?.wireParsed?.ops ?? [];
-        const hasStale = ops.some((op: { body: string }) => {
-          const body = JSON.parse(op.body) as { origin_device_id?: string };
-          return body.origin_device_id === STALE_DEVICE_ID;
-        });
-        if (!hasStale) return undefined;
-        return new Response(JSON.stringify({
-          error: 'invalid_ops: ops[0] origin_device_id does not match authenticated X-Device-Id',
-        }), { status: 400 });
-      });
+      const { impl, calls } = staleDeviceHub();
       const sync = makeCloudSync(impl);
       await sync.flush();
 
@@ -1332,11 +1606,6 @@ describe('CloudSync', () => {
         name: 'duplicate acknowledgment',
         mutate: acks => [...acks, { ...acks[0] }],
         error: /multiplicity mismatch/,
-      },
-      {
-        name: 'extra acknowledgment',
-        mutate: acks => [...acks, { ...acks[0], id: 'observation:extra' }],
-        error: /extra or mismatched/,
       },
       {
         name: 'wrong kind',
@@ -1386,8 +1655,10 @@ describe('CloudSync', () => {
         expect(sync.status().lastError).toMatch(scenario.error);
         expect(ackDurabilityState()).toEqual(before);
         expect(seenHeads).toEqual([]);
-        await sleep(50);
-        expect(calls).toHaveLength(1); // invalid 200 entered backoff, never line-rate retry
+        if (scenario.name === 'missing acknowledgment') {
+          await sleep(50);
+          expect(calls).toHaveLength(1); // invalid 200 entered backoff, never line-rate retry
+        }
         sync.stop();
       });
     }
@@ -1413,9 +1684,9 @@ describe('CloudSync', () => {
         error: /seq exceeds head_seq/,
       },
       {
-        name: 'head beyond projected checkpoint',
-        change: acks => ({ acks, head: '3', projected: '2' }),
-        error: /head_seq <= projected_seq/,
+        name: 'ack seq beyond projected coverage',
+        change: acks => ({ acks: [{ ...acks[0], seq: '3' }, acks[1]], head: '3', projected: '2' }),
+        error: /not covered by projected_seq/,
       },
       {
         name: 'noncanonical head checkpoint',
@@ -1474,6 +1745,20 @@ describe('CloudSync', () => {
       sync.stop();
     });
 
+    it('accepts a 200 whose durable head is ahead of projected when every ack is covered', async () => {
+      seedFrozenAckState();
+      const impl = (async (_input: any, init?: any) => {
+        const parsed = JSON.parse(String(init?.body));
+        const acks = parsed.ops.map((op: any, index: number) => canonicalAck(op, index + 1));
+        return canonicalSuccess(acks, '3', undefined, '2');
+      }) as typeof fetch;
+      const sync = makeCloudSync(impl);
+      await sync.flush();
+      expect(sync.status().lastError).toBeNull();
+      expect(pendingCount('observations')).toBe(0);
+      sync.stop();
+    });
+
     it('accepts identical sent tuple multiplicity only when every duplicate ack owns the same seq', () => {
       const op = buildContentOperation({
         kind: 'observation', originDeviceId: 'device-fixture', originLocalId: '1', entityRev: '1',
@@ -1512,6 +1797,70 @@ describe('CloudSync', () => {
     });
 
   });
+
+  // ---------------------------------------------------------------------------
+  // A failed repair must not commit the identity that makes future calls no-op.
+  for (const method of ['ensureMemorySessionIdRegistered', 'updateMemorySessionId'] as const) {
+    it(`${method} commits the identity and prompt repair together`, async () => {
+      const initialMemoryId = method === 'ensureMemorySessionIdRegistered' ? null : 'mem-1';
+      db.prepare('UPDATE sdk_sessions SET memory_session_id = ? WHERE id = 1').run(initialMemoryId);
+      if (initialMemoryId) {
+        seedObservation();
+        store.upsertToolUse({ toolUseId: 'read-one', contentSessionId: 'sess-abc', sessionDbId: 1,
+          memorySessionId: initialMemoryId, project: 'proj-x', toolName: 'Read' });
+      }
+      seedPrompt('first prompt', 1, 1);
+      seedPrompt('second prompt', 2, 1);
+      const { impl, calls } = makeFetchMock();
+      const sync = makeCloudSync(impl);
+      await sync.flush();
+      expect(pendingCount('user_prompts')).toBe(0);
+
+      const promptState = () => db.query('SELECT id, sync_rev, synced_at FROM user_prompts ORDER BY id').all();
+      const identityState = () => ({
+        session: db.query('SELECT memory_session_id FROM sdk_sessions WHERE id = 1').get(),
+        observations: db.query('SELECT memory_session_id FROM observations ORDER BY id').all(),
+        receipts: db.query('SELECT memory_session_id FROM tool_uses ORDER BY id').all(),
+      });
+      const before = promptState();
+      const identityBefore = identityState();
+      const callsBefore = calls.length;
+      // Fail on the second prompt, after the repair has already changed the first.
+      db.run(`CREATE TRIGGER reject_prompt_repair BEFORE INSERT ON sync_outbox
+        WHEN json_extract(NEW.body, '$.target.origin_local_id') = '2'
+        BEGIN SELECT RAISE(ABORT, 'prompt repair write failed'); END`);
+      expect(() => store[method](1, 'mem-registered')).toThrow('prompt repair write failed');
+      const failedIdentity = identityState();
+      const failedPrompts = promptState();
+      const failedOutbox = outboxRows();
+
+      db.run('DROP TRIGGER reject_prompt_repair');
+      store[method](1, 'mem-registered');
+      await sync.flush();
+      const pushed = calls.slice(callsBefore).flatMap(call => call.parsed.ops);
+      const repairs = pushed.filter(op => op.kind === 'mutation');
+      const prompts = pushed.filter(op => op.kind === 'prompt');
+      expect(repairs).toHaveLength(2);
+      expect(prompts).toHaveLength(2);
+      expect(failedIdentity).toEqual(identityBefore);
+      expect(failedPrompts).toEqual(before);
+      expect(failedOutbox).toEqual([]);
+      for (const op of repairs) {
+        expect(op.body.op).toBe('set_prompt_session');
+        expect(op.body.fields.memory_session_id).toBe('mem-registered');
+      }
+      for (const op of prompts) {
+        expect(op.rev).toBe('2');
+        expect(op.body.memory_session_id).toBe('mem-registered');
+      }
+      expect(pendingCount('user_prompts')).toBe(0);
+      expect(outboxRows()).toEqual([]);
+      const repairedCalls = calls.length;
+      store[method](1, 'mem-registered');
+      await sync.flush();
+      expect(calls).toHaveLength(repairedCalls);
+    });
+  }
 
   // ---------------------------------------------------------------------------
   // Rev-matched stamping — the ordering that replaced stampGuard: a mutation
@@ -1620,13 +1969,38 @@ describe('CloudSync', () => {
     expect(pendingCount('observations')).toBe(1);
     expect(sync.status().lastError).toContain('ECONNREFUSED');
 
-    // A later notify() also retries (independent of the backoff timer).
+    // Notify must not bypass backoff (#4231). The retry timer drains instead.
     failing = false;
     sync.notify();
-    await sleep(200);
-    expect(pendingCount('observations')).toBe(0);
+    await sleep(50);
+    expect(pendingCount('observations')).toBe(1);
+    expect(calls.length).toBe(1);
 
     sync.stop();
+  });
+
+
+  it.each([
+    ['rate limited', 1000],
+    ['<!DOCTYPE html><html>rate limited</html>', 600_000],
+  ])('does not shorten the retry floor for %s with negative jitter', async (body, minimumMs) => {
+    seedObservation();
+    const impl = (async () => new Response(body, {
+      status: 429,
+      headers: { 'Retry-After': '1' },
+    })) as typeof fetch;
+    const sync = makeCloudSync(impl, {}, { backoffInitialMs: 20 });
+    const random = spyOn(Math, 'random').mockReturnValue(0);
+    const timers = spyOn(globalThis, 'setTimeout');
+    try {
+      await sync.flush();
+      // The final native timer is the retry scheduled after the failed push.
+      expect(timers.mock.calls.at(-1)?.[1]).toBeGreaterThanOrEqual(minimumMs);
+    } finally {
+      sync.stop();
+      timers.mockRestore();
+      random.mockRestore();
+    }
   });
 
   it('stop() mid-flight halts stamping, further DB access, and retry re-arming', async () => {
@@ -1665,29 +2039,14 @@ describe('CloudSync', () => {
     expect(pendingCount('observations')).toBe(250);
   });
 
-  it('start() no-ops and status reports configured:false when the token is blank', async () => {
+  it.each([
+    'CLAUDE_MEM_CLOUD_SYNC_TOKEN',
+    'CLAUDE_MEM_CLOUD_SYNC_HUB_URL',
+  ] as const)('sync stays off when %s is blank', async key => {
     seedObservation();
 
     const { impl, calls } = makeFetchMock();
-    const sync = makeCloudSync(impl, { CLAUDE_MEM_CLOUD_SYNC_TOKEN: '' });
-
-    sync.start();
-    sync.notify();
-    await sleep(120);
-
-    expect(calls.length).toBe(0);
-    const status = sync.status();
-    expect(status.configured).toBe(false);
-    expect(status.deviceId).toBe('');
-    expect(status.pending.observations).toBe(1);
-    expect(pendingCount('observations')).toBe(1);
-  });
-
-  it('sync is OFF entirely when the hub URL is empty (hard cutover — no legacy lane)', async () => {
-    seedObservation();
-
-    const { impl, calls } = makeFetchMock();
-    const sync = makeCloudSync(impl, { CLAUDE_MEM_CLOUD_SYNC_HUB_URL: '' });
+    const sync = makeCloudSync(impl, { [key]: '' });
 
     sync.start();
     sync.notify();
@@ -1695,7 +2054,10 @@ describe('CloudSync', () => {
     await sleep(120);
 
     expect(calls.length).toBe(0);
-    expect(sync.status().configured).toBe(false);
+    const status = sync.status();
+    expect(status.configured).toBe(false);
+    expect(status.deviceId).toBe('');
+    expect(status.pending.observations).toBe(1);
     expect(pendingCount('observations')).toBe(1);
   });
 
@@ -1716,6 +2078,15 @@ describe('CloudSync', () => {
 
       const persisted = JSON.parse(readFileSync(settingsPath, 'utf-8'));
       expect(persisted.CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID).toBe(deviceId);
+    });
+
+    it('disables sync instead of treating a root array as a writable settings document', () => {
+      writeFileSync(settingsPath, '["sentinel"]');
+      const { impl } = makeFetchMock();
+      const sync = makeCloudSync(impl, { CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: '' });
+
+      expect(sync.status().deviceId).toBe('');
+      expect(readFileSync(settingsPath, 'utf-8')).toBe('["sentinel"]');
     });
   });
 

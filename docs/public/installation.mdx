@@ -9,6 +9,17 @@ description: "Install Claude-Mem plugin for persistent memory across sessions"
 
 ## Quick Start
 
+### When an AI agent installs for a user
+
+1. If the user is available, run `npx claude-mem install --setup browser --runtime worker` on their computer. This opens browser setup even when the agent's terminal has no TTY. Leave `--provider` and `--no-auto-start` unset.
+2. An interactive terminal asks for an optional work email and, if the user enters one, an optional message. The user can press Enter to skip either prompt. A terminal without a TTY skips both. Keep the terminal running while it prepares the local runtime. When it prints **Continue setup in your browser**, open the printed URL in the user's browser if the page hasn't opened automatically. If you can't open their browser, give them that exact URL to open on the same computer.
+3. Hand control of the browser to the user. They choose agents, integrations and skills, set their preferences, choose how to use memory, and complete any sign-in themselves.
+4. Wait for the installer to report the outcome before confirming setup. A failed integration must be reported as a partial installation.
+
+If the user is away, run `npx claude-mem install --setup defer` to prepare the runtime and leave their choices pending. The next time they open My Work, it brings them to the GUI; existing agent integrations also show the onboarding link at session start. A plain non-TTY install without `--provider` or `--ide` also defers setup. Do not answer the user's agent, integration, skill, or account choices for them.
+
+If you only have a remote sandbox, give the user the browser command to run on their own computer; a browser in the sandbox cannot configure their local agents.
+
 ### Option 1: Grok Bot
 
 Grok Bot has no host hooks. Install it independently of Cursor or Claude Code. Default is CMEM Pro, the hosted memory:
@@ -27,25 +38,30 @@ Install and configure Claude-Mem with a single command:
 npx claude-mem install
 ```
 
-The interactive installer runs in three stages — runtime first, sign in second, then pick your memory provider:
+The standard interactive install starts in the terminal and opens the web GUI for configuration, including when you rerun the installer on a machine that has already completed setup. `--ide <id>` and `--disable-auto-memory` preset their corresponding GUI choices. `--runtime worker` also keeps browser setup.
 
-1. **Install runtime.** Runs a runtime check (auto-installs Bun and uv if missing), detects your installed IDEs (Claude Code, Cursor, Windsurf, OpenCode, Codex CLI, Antigravity CLI, Grok Bot) and lets you multi-select which ones to wire up, offers to install Claude Code if it isn't found, then copies plugin files into the marketplace directory, registers the plugin, and installs dependencies.
-2. **Sign in.** Skipped only for `--provider claude` (that path never talks to cmem.ai). The CLI does **not** ask for an email. It starts an OAuth pairing (`POST https://cmem.ai/api/installer/oauth/start`), prints a device code `XXXX-XXXX`, opens `authorization_url` in your browser, and polls until you are authenticated. No card required.
-3. **Choose your memory provider.** **CMEM Pro is pre-selected.** Picking it opens a checkout/trial URL, polls until the account is `ready`, writes `~/.claude-mem/settings.json`, and restarts the worker. Other choices: personal OpenRouter, Gemini, Anthropic plan, or `--provider host` (local loopback observer).
+1. **Start in the terminal.** Enter your work email to get product updates, or press Enter to skip. If you enter an address, you can leave a message about what you're working on or where you need help. The installer then checks Bun and uv, copies plugin files, installs dependencies, and puts the `claude-mem` hook launcher on your PATH (see [How hooks reach claude-mem](#how-hooks-reach-claude-mem)). Keep the terminal running while you use the GUI.
+2. **Choose agents, integrations and skills.** The GUI offers the supported agents and pre-selects detected ones. Choose which integrations to configure and which bundled skills to enable. Claude Code's native auto-memory stays enabled unless you explicitly choose to disable it. Installing a claude-mem integration does not install its host application; installing a missing Claude Code host requires a separate opt-in.
+3. **Choose how to use memory.** Review the prompt scan and choose local memory or On The Go. Local memory uses your existing Anthropic plan without a claude-mem login. On The Go handles CMEM Pro sign-in and checkout in the browser; an existing Pro configuration is kept.
+4. **Finish setup.** Review connection instructions and optional history import, then finish in the GUI. The installer reports the result in the terminal.
+
+Sharing an email in the terminal sends it and your optional message, with the claude-mem version and OS, to `https://cmem.ai/api/waitlist` and saves the preference in `~/.claude-mem/settings.json`. A saved signup skips both questions on later installs. `CLAUDE_MEM_ONLINE_OPTIN=false` and `CI` suppress the offer. You can choose whether to share anonymized usage data in the GUI. Usage sharing respects `DO_NOT_TRACK`, `CI`, and a previously saved decision.
+
+For scripted or advanced installs, explicit provider flags, `--no-auto-start`, and the server runtime retain their command-line flow. An unattended install with an explicit `--ide` also keeps its configured automation behavior. Use `--provider claude` for your Anthropic plan, `--provider codex`, `--provider gemini`, or `--provider openrouter` for those providers, and `--provider host` for a local host observer. Personal API-key providers require a configured key on unattended runs.
 
 Headless or already signed in? See [CMEM Pro (manual / headless)](/cmem-pro-headless) for the exact settings the installer writes.
 
 ### Memory Provider Options
 
-- **CMEM Pro / claude-mem observer (pre-selected)** — memory runs off-plan through `https://cmem.ai/api/inference/v1` with model `cmem-observer`. Free trial, then subscribe or fall back. Fallback is **event-driven** (`CLAUDE_MEM_PRO_FALLBACK_AT` after a terminal gateway quota/key error), not the trial end date. See [CMEM Pro (manual / headless)](/cmem-pro-headless).
+- **CMEM Pro / claude-mem observer** — memory runs off-plan through `https://cmem.ai/api/inference/v1` with model `cmem-observer`. **30 Day Free Trial**, then subscribe or fall back. Fallback is **event-driven**: `CLAUDE_MEM_PRO_FALLBACK_AT` is set when the gateway stops serving the account (a spent allowance, an inactive subscription, or a refused key), not on the trial end date, and memory then uses your Anthropic plan. See [CMEM Pro (manual / headless)](/cmem-pro-headless).
 - **Your OpenRouter key** — memory runs off-plan on your OpenRouter credit. Empty base URL (or `https://openrouter.ai/api/v1`). **Never** send a personal `sk-or-` key to the cmem.ai inference gateway.
 - **Gemini API key** — memory runs off-plan on your Gemini key.
-- **Anthropic plan** (`--provider claude`) — memory shares your Claude plan usage. Skips cmem.ai entirely. Prompts for the Claude model used to compress observations (Haiku / Sonnet / Opus).
+- **Anthropic plan** (`--provider claude`) — memory shares your Claude plan usage. Skips the sign-in step. Local installs send cmem.ai your email and optional note (with the claude-mem version and OS) only if you share them, and a numbers-only usage summary (observation counts and token totals, no prompts, paths, or project names) when setup creates a sign-in link; nothing else is sent to cmem.ai unless you choose to upload your prompts during browser setup. The explicit command-line provider flow offers the Claude model used to compress observations (Haiku / Sonnet / Opus).
 - **Host observer (opt-in)** — `--provider host` uses the already-logged-in agent over a local loopback. No API key. See [Grok Bot Integration](/grok-bot).
 
 ### Skipping the Sign-In
 
-`--provider claude` never touches cmem.ai and skips OAuth. You can finish a CMEM Pro pairing anytime by re-running `npx claude-mem install`, or by writing settings by hand ([manual / headless](/cmem-pro-headless)).
+Choose local memory in the GUI, or use `--provider claude`, to skip claude-mem sign-in. A plain unattended install defers the choices to onboarding instead of choosing an account for you. An explicit scripted install can retain its configured provider; fresh scripted installs with an explicit `--ide` and no provider use the Anthropic plan. After a scripted install that skipped sign-in, the CLI may offer an optional sign-in link; it is best-effort, never blocks or changes the exit status, and is skipped when `CI` is set. Local installs send cmem.ai your email and optional note (with the claude-mem version and OS) only if you share them, and a numbers-only usage summary (observation counts and token totals, no prompts, paths, or project names) when setup creates a sign-in link; nothing else is sent to cmem.ai unless you choose to upload your prompts during browser setup. You can finish a CMEM Pro pairing anytime by re-running `npx claude-mem install`, or by writing settings by hand ([manual / headless](/cmem-pro-headless)).
 
 ### Option 3: Plugin Marketplace
 
@@ -58,16 +74,42 @@ Install Claude-Mem directly from the plugin marketplace inside Claude Code:
 
 Both methods will automatically configure hooks and start the worker service. Start a new Claude Code session and you'll see context from previous sessions automatically loaded.
 
+A marketplace-only install has no installer step, so the plugin places the `claude-mem` launcher itself on the first session start (see below). That first session can run without memory context while the launcher compiles; the next one has it. Running `npx claude-mem install` once avoids the gap.
+
 > **Important:** Claude-Mem is published on npm, but running `npm install -g claude-mem` installs the
 > **SDK/library only**. It does **not** register plugin hooks or start the worker service.
-> Always install via `npx claude-mem install` or the `/plugin` commands above.
+> Always install via `npx claude-mem install` or the `/plugin` commands above. A global npm `claude-mem` that sits
+> earlier on PATH than the hook launcher shadows it; see [Troubleshooting](/troubleshooting#claude-mem-command-not-found-in-hooks).
+
+### How hooks reach claude-mem
+
+Every Claude Code hook is one short command with no shell: `claude-mem hook claude-code <event>` (the worker-start entry is `claude-mem start`). Claude Code looks `claude-mem` up on PATH and runs it directly, so runtime hooks need no bash on any platform, and Windows needs no Git Bash for them. The one exception is the Setup hook, which still runs through bash but only fires for `claude --init` / `--maintenance`.
+
+This exec form (`"command": "claude-mem", "args": [...]`) needs **Claude Code 2.1.139 or later**. An older Claude Code ignores `args` and runs bare `claude-mem`, which only prints usage, so no memory is captured. `npx claude-mem install` and `npx claude-mem doctor` warn when the detected Claude Code is older; update it with `claude update`.
+
+`claude-mem` here is a small compiled launcher, not the npm CLI. It finds the installed plugin, runs the hook under Bun, and exits 0 on any failure so it never blocks a session.
+
+| | Where the launcher goes | PATH |
+|---|---|---|
+| macOS / Linux | `~/.local/bin/claude-mem` | Appended to your shell rc file if `~/.local/bin` is not already on PATH |
+| Windows | `%LOCALAPPDATA%\claude-mem\bin\claude-mem.exe` | Appended to your user Path |
+
+- `npx claude-mem install` and `npx claude-mem update` compile and place it. They skip the compile when the placed launcher is already current.
+- Marketplace-only installs are covered by an extra SessionStart entry, `node ${CLAUDE_PLUGIN_ROOT}/scripts/ensure-launcher.cjs`, which runs at startup and places or refreshes the launcher when it is missing or out of date.
+- If the launcher cannot be made active, session start shows:
+  ```
+  claude-mem: memory hooks are not active: <reason>. Fix: run `npx claude-mem install`, then restart Claude Code.
+  ```
+- After a PATH change, restart your terminal or IDE so Claude Code inherits the new PATH.
+- `npx claude-mem doctor` shows a **Hook launcher** row with where `claude-mem` resolves on PATH and whether it is the launcher. See [claude-mem: command not found in hooks](/troubleshooting#claude-mem-command-not-found-in-hooks).
+- `npx claude-mem uninstall` removes the launcher binary. It leaves your shell rc file and user Path alone and prints the line to remove.
 
 ## System Requirements
 
-- **Node.js**: 20.0.0 or higher
-- **Bun** ≥ 1.0 (auto-installed by `npx claude-mem install` if missing)
+- **Node.js**: 20.19 or later in the 20.x line, or 22.12 or later
+- **Bun** ≥ 1.2.16 (the hook launcher is compiled with Bun and that step needs it; `npx claude-mem install` installs Bun if it is missing). On macOS 27 the signed launcher needs 1.4.1 or newer.
 - **uv** (auto-installed if missing — provides Python for Chroma's embedding service)
-- **Claude Code** or another supported host (Cursor, Grok Bot, Windsurf, OpenCode, Codex CLI, Antigravity CLI, OpenClaw)
+- **Claude Code** 2.1.139 or later (the first release with exec-form hook `args`), or another supported host (Cursor, Grok Bot, Windsurf, OpenCode, Codex CLI, Antigravity CLI, OpenClaw)
 - **SQLite 3**: bundled via `bun:sqlite`
 
 ## Advanced Installation
@@ -99,13 +141,17 @@ npm run worker:status
 
 #### 1. Automatic Dependency Installation
 
-Dependencies are installed automatically by `npx claude-mem install` and `npx claude-mem repair`. Heavy lifting (Bun + uv install, `bun install` inside the plugin cache) happens behind a visible installer spinner. The Setup hook only performs a sub-100ms `version-check.js` read of the `.install-version` marker — on mismatch it prints `run: npx claude-mem repair` to stderr and exits 0, so it never blocks a session. Works cross-platform on Windows, macOS, and Linux.
+Dependencies are installed automatically by `npx claude-mem install` and `npx claude-mem repair`. Heavy lifting (Bun + uv install, `bun install` inside the plugin cache, compiling the hook launcher) happens behind a visible installer spinner. Works cross-platform on Windows, macOS, and Linux.
+
+The plugin also ships a Setup hook (`version-check.js`) that runs `bun install` in the plugin root when its declared dependencies are missing and records the `.install-version` marker once they are complete. Claude Code fires Setup only for `claude --init`, `claude --init-only` and `claude -p --maintenance`, never on plugin install, update or a normal session start, so for a marketplace install whose dependencies are missing, run `npx claude-mem install` (or `claude --init-only`). The Setup hook always exits 0.
 
 #### 2. Verify Plugin Installation
 
-Check that hooks are configured in Claude Code:
+Check that hooks are configured in Claude Code and that the launcher is on PATH:
 ```bash
 cat plugin/hooks/hooks.json
+command -v claude-mem && claude-mem --version   # prints the launcher protocol number, e.g. 1
+npx claude-mem doctor                            # "Hook launcher" row
 ```
 
 #### 3. Data Directory Location
@@ -145,9 +191,11 @@ See [CMEM Pro (manual / headless)](/cmem-pro-headless).
 
 ## Upgrading
 
-Upgrades are automatic when updating via the plugin marketplace. After an external upgrade (for example `claude plugin update`), the Setup hook detects a version-marker mismatch and asks you to run `npx claude-mem repair`, which installs any missing runtime dependencies and refreshes the marker.
+claude-mem updates itself: once a day it checks the release its owner promotes and installs it while you are away (see [Auto-update](/auto-update)). To update by hand, run `npx claude-mem update`. The on-PATH launcher is version-stable: it carries no claude-mem logic, so an update does not need a new one. When an update does need a newer launcher, the startup SessionStart self-heal compiles it, and that first session may miss memory context while it does. `npx claude-mem update` refreshes the plugin, its dependencies and the launcher in one step. If an update leaves dependencies missing, run `npx claude-mem@latest install`.
 
-See [CHANGELOG](https://github.com/thedotmack/claude-mem/blob/main/CHANGELOG.md) for complete version history.
+`update` (also available as `upgrade`) keeps your configured provider, model, runtime, account, and preferences. It refreshes the saved agent selection without reopening the setup wizard or repeating optional email, telemetry, and auto-memory questions. Older installations without a saved agent selection refresh the shared plugin and keep existing agent configuration. If a provider choice or API key is missing, an interactive update asks only for that setup; an unattended update with missing provider credentials reports what needs fixing. Run `npx claude-mem install` when you want to change your setup.
+
+See [CHANGELOG](https://github.com/thedotmack/claude-mem/blob/main/docs/CHANGELOG.md) for complete version history.
 
 ## Next Steps
 

@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
 import { extractFilePaths } from '../../../src/cli/adapters/codex-file-context.js';
+import { codexAdapter } from '../../../src/cli/adapters/codex.js';
 
 let tmpDir: string;
 
@@ -27,12 +29,80 @@ describe('extractFilePaths', () => {
     expect(paths).toEqual(['README.md', 'src.ts']);
   });
 
+  for (const [command, expected, output] of [
+    ['cat > captured.txt README.md', ['README.md'], 'readme'],
+    ['cat >| captured.txt README.md', ['README.md'], 'readme'],
+    ['cat >> captured.txt src.ts', ['src.ts'], 'source'],
+    ['> captured.txt cat README.md', ['README.md'], 'readme'],
+    ['cat README.md > captured.txt src.ts', ['README.md', 'src.ts'], 'readmesource'],
+    ['cat > captured.txt README.md && head -n 1 src.ts >> captured.txt', ['README.md', 'src.ts'], 'readmesource'],
+  ] as const) {
+    it.skipIf(process.platform === 'win32')(`keeps the files actually read across output redirection: ${command}`, () => {
+      execFileSync('sh', ['-c', command], { cwd: tmpDir });
+      expect(readFileSync(join(tmpDir, 'captured.txt'), 'utf8')).toBe(output);
+      const normalized = codexAdapter.normalizeInput({
+        hook_event_name: 'PreToolUse', session_id: 'redirect-session', cwd: tmpDir,
+        tool_name: 'Bash', tool_input: { command },
+      });
+      expect((normalized.toolInput as { filePaths?: string[] }).filePaths).toEqual([...expected]);
+      expect(extractFilePaths('Bash', { command }, tmpDir)).not.toContain('captured.txt');
+    });
+  }
+
+  it.skipIf(process.platform === 'win32')('keeps a literal argv filename spelled like a redirection operator', () => {
+    writeFileSync(join(tmpDir, '>'), 'literal filename');
+    expect(extractFilePaths('Bash', { command: ['cat', '>', 'README.md'] }, tmpDir)).toEqual(['>', 'README.md']);
+  });
+
+  it('expands ~/ to the home directory, as the shell does, instead of resolving it under cwd', () => {
+    // tmpDir stands in for the home directory; cwd is elsewhere.
+    const paths = extractFilePaths('Bash', { command: 'cat ~/README.md ~/missing.md' }, '/nonexistent-cwd', tmpDir);
+
+    expect(paths).toEqual([join(tmpDir, 'README.md')]);
+  });
+
   it('does not consume cat boolean flags as file arguments', () => {
     const paths = extractFilePaths('Bash', {
       command: 'cat -n README.md',
     }, tmpDir);
 
     expect(paths).toEqual(['README.md']);
+  });
+
+  it('extracts plus-prefixed read operands', () => {
+    writeFileSync(join(tmpDir, '+page.svelte'), 'synthetic page');
+    expect(extractFilePaths('Bash', { command: 'cat +page.svelte' }, tmpDir)).toEqual(['+page.svelte']);
+  });
+
+  it.each(['my notes.md', 'notes;draft.md'])('preserves the %s operand in a read-command argv', (name) => {
+    writeFileSync(join(tmpDir, name), 'contents');
+    expect(extractFilePaths('Bash', { command: ['cat', name] }, tmpDir)).toEqual([name]);
+  });
+
+  it('still excludes plus-prefixed positioning options for tail', () => {
+    writeFileSync(join(tmpDir, '+2'), 'not an operand');
+    expect(extractFilePaths('Bash', { command: 'tail +2 README.md' }, tmpDir)).toEqual(['README.md']);
+  });
+
+  it('honors the option terminator before a hyphen-prefixed filename', () => {
+    writeFileSync(join(tmpDir, '-notes.md'), 'literal filename');
+    expect(extractFilePaths('Bash', { command: 'cat -- -notes.md' }, tmpDir)).toEqual(['-notes.md']);
+  });
+
+  it('keeps flag values before the terminator and filenames after it distinct', () => {
+    writeFileSync(join(tmpDir, '-n'), 'literal filename');
+    expect(extractFilePaths('Bash', { command: 'head -n 1 -- -n' }, tmpDir)).toEqual(['-n']);
+  });
+
+  it('treats a second terminator token as a filename once options have ended', () => {
+    writeFileSync(join(tmpDir, '--'), 'literal filename');
+    expect(extractFilePaths('Bash', { command: 'cat -- --' }, tmpDir)).toEqual(['--']);
+  });
+
+  it('resets option parsing at each shell command segment', () => {
+    writeFileSync(join(tmpDir, '-notes.md'), 'literal filename');
+    expect(extractFilePaths('Bash', { command: 'cat -- -notes.md && cat -n README.md' }, tmpDir))
+      .toEqual(['-notes.md', 'README.md']);
   });
 
   it('ignores non-read Bash commands', () => {
@@ -68,18 +138,5 @@ describe('extractFilePaths', () => {
   it('yields no paths instead of throwing on an unparseable substitution', () => {
     expect(() => extractFilePaths('Bash', { command: 'cat ${}' }, tmpDir)).not.toThrow();
     expect(extractFilePaths('Bash', { command: 'cat ${}' }, tmpDir)).toEqual([]);
-  });
-
-  it('yields no paths when the unparseable part rides alongside a real read', () => {
-    // The readable file is genuinely there, so this fails only because the
-    // command as a whole cannot be tokenised — not because the path is bad.
-    expect(
-      extractFilePaths('Bash', { command: 'cat README.md && cat ${}' }, tmpDir)
-    ).toEqual([]);
-  });
-
-  it('still extracts paths from a command that parses', () => {
-    // The guard must not swallow the feature it protects.
-    expect(extractFilePaths('Bash', { command: 'cat README.md' }, tmpDir)).toEqual(['README.md']);
   });
 });

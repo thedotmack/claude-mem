@@ -12,10 +12,11 @@
 // live table regardless of the stamped version.
 import { describe, it, expect, afterEach } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdtempSync, rmSync, existsSync } from 'fs';
+import { mkdtempSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
+import { removeTempDir } from '../helpers/temp-dir.js';
 
 const ISO = '2025-07-01T00:00:00.000Z';
 const EPOCH = 1751328000000;
@@ -153,9 +154,9 @@ function count(db: Database, sql: string): number {
 describe('session_summaries v7 rebuild keeps post-v7 columns (#3890)', () => {
   let tempDir: string;
 
-  afterEach(() => {
+  afterEach(async () => {
     if (tempDir && existsSync(tempDir)) {
-      rmSync(tempDir, { recursive: true, force: true });
+      await removeTempDir(tempDir);
     }
   });
 

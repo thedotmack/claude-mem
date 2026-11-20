@@ -1,0 +1,89 @@
+// Adapted from Bleed00/dsh-claude-mem, Apache-2.0; see dsh/LICENSE.
+import { describe, expect, it } from 'bun:test'
+import { dedupeObservations, dedupeRenderedTable } from '../../src/integrations/dsh-plugin/dedupe.js'
+import type { MemObservation } from '../../src/integrations/dsh-plugin/types.js'
+
+function obs(id: number, over: Partial<MemObservation> = {}): MemObservation {
+  return {
+    id,
+    title: 'Media prompt processing session initiated',
+    narrative: 'Initialized observation session…',
+    facts: ['Session type: media prompt observation'],
+    ...over,
+  }
+}
+
+describe('dedupeObservations', () => {
+  it('keeps the first copy and drops identical later ones', () => {
+    const items = [
+      obs(627),
+      obs(671),
+      obs(628, { title: '  Media Prompt Processing   Session Initiated ' }),
+      obs(715, { narrative: 'different work' }),
+    ]
+    const out = dedupeObservations(items)
+    expect(out.map(i => i.id)).toEqual([627, 715])
+  })
+
+  it('keeps distinct fields and fact boundaries when deduplicating content', () => {
+    const items = [
+      { id: 1, title: 'Deploy', subtitle: 'Paused' },
+      { id: 2, title: 'Deploy', narrative: 'Paused' },
+      { id: 3, title: 'Deploy', facts: ['a\u0000b'] },
+      { id: 4, title: 'Deploy', facts: ['a', 'b'] },
+      { id: 5, title: 'deploy', narrative: ' PAUSED ' },
+    ]
+    expect(dedupeObservations(items).map(item => item.id)).toEqual([1, 2, 3, 4])
+  })
+
+  it('never drops observations with empty content fingerprint', () => {
+    const blank = { id: 1, title: '', narrative: '' } as MemObservation
+    expect(dedupeObservations([blank, blank, blank]).length).toBe(3)
+  })
+})
+
+describe('dedupeRenderedTable', () => {
+  it('collapses index rows that differ only by id', () => {
+    const text = [
+      '| #627 | 12:22 PM | ◆ | Media prompt processing session initiated | ~144 |',
+      '| #671 | ″ | ◆ | Media prompt processing session initiated | ~144 |',
+      '| #715 | ″ | ◆ | Something real | ~144 |',
+    ].join('\n')
+    const out = dedupeRenderedTable(text)
+    expect(out).toContain('#627')
+    expect(out).not.toContain('#671')
+    expect(out).toContain('#715')
+  })
+
+  it('keeps a time when it is the title rather than the display time', () => {
+    const rows = [
+      '| #1 | 9:00 AM | ◆ | 10:30 | ~10 |',
+      '| #2 | ″ | ◆ | 11:30 | ~10 |',
+    ].join('\n')
+    expect(dedupeRenderedTable(rows)).toBe(rows)
+  })
+
+  it('leaves non-row lines untouched', () => {
+    const text = 'Found 3 result(s)\n\n### Aug 11, 2026\n\n| #1 | x |'
+    expect(dedupeRenderedTable(text)).toBe(text)
+  })
+
+  it('passes through empty/plain text unchanged', () => {
+    expect(dedupeRenderedTable('No results found.')).toBe('No results found.')
+  })
+
+  it('keeps the header and separator of every per-file table', () => {
+    const text = [
+      '**src/a.ts**',
+      '| ID | Time | T | Title | Read |',
+      '|----|------|---|-------|------|',
+      '| #1 | 9:00 AM | ◆ | First change | ~10 |',
+      '',
+      '**src/b.ts**',
+      '| ID | Time | T | Title | Read |',
+      '|----|------|---|-------|------|',
+      '| #2 | 9:05 AM | ◆ | Second change | ~12 |',
+    ].join('\n')
+    expect(dedupeRenderedTable(text)).toBe(text)
+  })
+})

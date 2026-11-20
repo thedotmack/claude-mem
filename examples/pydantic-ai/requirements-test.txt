@@ -1,0 +1,2 @@
+-r requirements.txt
+fastmcp-slim[server]==4.1.8

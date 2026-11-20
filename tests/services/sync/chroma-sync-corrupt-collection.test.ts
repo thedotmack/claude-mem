@@ -1,0 +1,794 @@
+import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
+import { mkdtempSync, rmSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
+
+import { ChromaSync } from '../../../src/services/sync/ChromaSync.js';
+import { ChromaMcpManager } from '../../../src/services/sync/ChromaMcpManager.js';
+import { ChromaSyncState } from '../../../src/services/sync/ChromaSyncState.js';
+import { ChromaCorruptCollectionError, ChromaDeleteOutcomeUnknownError, ChromaUnavailableError, logChromaWriteFailure } from '../../../src/services/worker/search/errors.js';
+import { logger } from '../../../src/utils/logger.js';
+
+// Corrupt-collection coverage (#3202).
+//
+// A collection whose HNSW segment can no longer apply its write-ahead log
+// fails every chroma_add_documents call the same way, and each attempt makes
+// chroma-mcp replay the log in memory (about 20 GB within 4 minutes on the
+// reporting host). Once that signature repeats on two distinct batches the
+// collection is dropped and every project is rebuilt from SQLite. Any other
+// tool error (embedding runtime, protobuf, one bad metadata value) must never
+// drop every project's vectors.
+
+const CORRUPT_SEGMENT_ERROR = new Error(
+  'chroma-mcp tool "chroma_add_documents" returned error: Error executing tool chroma_add_documents: ' +
+  "Failed to add documents to collection 'cm__claude-mem': Error executing plan: " +
+  'Error sending backfill request to compactor: Failed to apply logs to the hnsw segment writer'
+);
+
+const EMBEDDING_RUNTIME_ERROR = new Error(
+  'chroma-mcp tool "chroma_add_documents" returned error: Error executing tool chroma_add_documents: ' +
+  '[ONNXRuntimeError] : 7 : INVALID_PROTOBUF : Load model from all-MiniLM-L6-v2 failed'
+);
+
+const statics = ChromaSync as unknown as {
+  backfillStore: unknown;
+  backfillInProgress: boolean;
+  collectionGeneration: number;
+  sweepAllProjects(store: unknown, generation: number): Promise<boolean>;
+  corruptSegmentBatches: Map<string, Set<string>>;
+  inFlightCollectionDrops: Map<string, Promise<void>>;
+  droppedCollections: Set<string>;
+  failedDropAttempts: Map<string, number>;
+  lastCollectionDrop: unknown;
+  backfillAllProjects(store: unknown): Promise<boolean>;
+};
+
+const managerStatics = ChromaMcpManager as unknown as { instance: unknown };
+const realInstance = managerStatics.instance;
+const realBackfillAllProjects = statics.backfillAllProjects;
+const realSweepAllProjects = statics.sweepAllProjects;
+
+type ToolCall = { tool: string; args: Record<string, unknown> };
+let toolCalls: ToolCall[] = [];
+
+function installCallTool(impl: (tool: string, args: Record<string, unknown>) => Promise<unknown>): void {
+  managerStatics.instance = {
+    acceptsMutations: () => true,
+    callTool: async (tool: string, args: Record<string, unknown>) => {
+      toolCalls.push({ tool, args });
+      return impl(tool, args);
+    },
+  };
+}
+
+function calls(tool: string): number {
+  return toolCalls.filter(call => call.tool === tool).length;
+}
+
+function makeDoc(id: string) {
+  return { id, document: `doc ${id}`, metadata: { sqlite_id: 1, doc_type: 'observation', project: 'p' } };
+}
+
+let backfillSweeps = 0;
+let dataDir: string;
+let previousDataDir: string | undefined;
+
+beforeEach(() => {
+  previousDataDir = process.env.CLAUDE_MEM_DATA_DIR;
+  dataDir = mkdtempSync(join(tmpdir(), 'claude-mem-corrupt-'));
+  process.env.CLAUDE_MEM_DATA_DIR = dataDir;
+  ChromaSyncState.resetCacheForTests();
+  toolCalls = [];
+  backfillSweeps = 0;
+  statics.backfillStore = null;
+  statics.backfillInProgress = false;
+  statics.corruptSegmentBatches.clear();
+  statics.inFlightCollectionDrops.clear();
+  statics.droppedCollections.clear();
+  statics.failedDropAttempts.clear();
+  statics.lastCollectionDrop = null;
+  statics.backfillAllProjects = async () => {
+    backfillSweeps += 1;
+    return true;
+  };
+});
+
+afterEach(() => {
+  ChromaSyncState.resetCacheForTests();
+  if (previousDataDir === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
+  else process.env.CLAUDE_MEM_DATA_DIR = previousDataDir;
+  rmSync(dataDir, { recursive: true, force: true });
+});
+
+afterAll(() => {
+  managerStatics.instance = realInstance;
+  statics.backfillAllProjects = realBackfillAllProjects;
+  statics.sweepAllProjects = realSweepAllProjects;
+});
+
+describe('ChromaSync corrupt-collection handling (#3202)', () => {
+  it('drops the collection only after the HNSW signature repeats on two distinct batches', async () => {
+    installCallTool(async (tool) => {
+      if (tool === 'chroma_add_documents') throw CORRUPT_SEGMENT_ERROR;
+      if (tool === 'chroma_get_collection_count') return 1234;
+      return {};
+    });
+    ChromaSyncState.replace('alpha', { observations: 40, summaries: 3, prompts: 7 });
+    ChromaSyncState.replace('beta', { observations: 9, summaries: 0, prompts: 0 });
+    const sync = new ChromaSync('claude-mem');
+
+    // First batch: an ordinary failed write, nothing dropped yet.
+    expect(await sync.addDocuments([makeDoc('d1')])).toBe(0);
+    expect(calls('chroma_delete_collection')).toBe(0);
+
+    // A second, distinct batch confirms it.
+    await expect(sync.addDocuments([makeDoc('d2')])).rejects.toBeInstanceOf(ChromaCorruptCollectionError);
+
+    expect(calls('chroma_delete_collection')).toBe(1);
+    // The size was captured before the drop, for the log and health reporting.
+    const countIndex = toolCalls.findIndex(call => call.tool === 'chroma_get_collection_count');
+    const deleteIndex = toolCalls.findIndex(call => call.tool === 'chroma_delete_collection');
+    expect(countIndex).toBeGreaterThan(-1);
+    expect(countIndex).toBeLessThan(deleteIndex);
+    expect(ChromaSync.getLastCollectionDrop()).toMatchObject({ collection: 'cm__claude-mem', documentCount: 1234 });
+    // Every project is flagged for a rebuild from zero.
+    expect(ChromaSyncState.isRebuildPending('alpha')).toBe(true);
+    expect(ChromaSyncState.isRebuildPending('beta')).toBe(true);
+  });
+
+  it('does not count the same batch failing twice as confirmation', async () => {
+    installCallTool(async (tool) => {
+      if (tool === 'chroma_add_documents') throw CORRUPT_SEGMENT_ERROR;
+      return {};
+    });
+    const sync = new ChromaSync('claude-mem');
+
+    expect(await sync.addDocuments([makeDoc('same')])).toBe(0);
+    expect(await sync.addDocuments([makeDoc('same')])).toBe(0);
+
+    expect(calls('chroma_delete_collection')).toBe(0);
+  });
+
+  it('starts the confirmation over after a write lands', async () => {
+    let failNext = true;
+    installCallTool(async (tool) => {
+      if (tool === 'chroma_add_documents') {
+        if (failNext) throw CORRUPT_SEGMENT_ERROR;
+        return {};
+      }
+      return {};
+    });
+    const sync = new ChromaSync('claude-mem');
+
+    expect(await sync.addDocuments([makeDoc('d1')])).toBe(0);
+    failNext = false;
+    expect(await sync.addDocuments([makeDoc('d2')])).toBe(1);
+    failNext = true;
+    expect(await sync.addDocuments([makeDoc('d3')])).toBe(0);
+
+    expect(calls('chroma_delete_collection')).toBe(0);
+  });
+
+  it('never drops the collection for other tool errors such as an embedding-runtime failure', async () => {
+    installCallTool(async (tool) => {
+      if (tool === 'chroma_add_documents') throw EMBEDDING_RUNTIME_ERROR;
+      return {};
+    });
+    const sync = new ChromaSync('claude-mem');
+
+    for (const id of ['d1', 'd2', 'd3', 'd4']) {
+      expect(await sync.addDocuments([makeDoc(id)])).toBe(0);
+    }
+
+    expect(calls('chroma_delete_collection')).toBe(0);
+  });
+
+  it('does not treat availability errors as corruption', async () => {
+    installCallTool(async (tool) => {
+      if (tool === 'chroma_add_documents') throw new ChromaUnavailableError('chroma-mcp connection in backoff');
+      return {};
+    });
+    const sync = new ChromaSync('claude-mem');
+
+    expect(await sync.addDocuments([makeDoc('d1')])).toBe(0);
+    expect(await sync.addDocuments([makeDoc('d2')])).toBe(0);
+
+    expect(calls('chroma_delete_collection')).toBe(0);
+  });
+
+  it('still reconciles duplicate-ID conflicts without dropping the collection', async () => {
+    let addCalls = 0;
+    installCallTool(async (tool) => {
+      if (tool === 'chroma_add_documents') {
+        addCalls += 1;
+        if (addCalls === 1) {
+          throw new Error('chroma-mcp tool "chroma_add_documents" returned error: IDs already exist');
+        }
+        return {};
+      }
+      if (tool === 'chroma_get_documents') return { ids: ['d1'] };
+      return {};
+    });
+    const sync = new ChromaSync('claude-mem');
+
+    expect(await sync.addDocuments([makeDoc('d1'), makeDoc('d2')])).toBe(2);
+
+    expect(calls('chroma_delete_collection')).toBe(0);
+    expect(calls('chroma_update_documents')).toBe(1);
+  });
+
+  it('makes every instance recreate the collection instead of writing into the dropped one', async () => {
+    let failAdds = true;
+    installCallTool(async (tool) => {
+      if (tool === 'chroma_add_documents' && failAdds) throw CORRUPT_SEGMENT_ERROR;
+      return {};
+    });
+    const writer = new ChromaSync('claude-mem');
+    const sibling = new ChromaSync('claude-mem');
+    await sibling.ensureCollectionExists();
+
+    await writer.addDocuments([makeDoc('d1')]);
+    await expect(writer.addDocuments([makeDoc('d2')])).rejects.toBeInstanceOf(ChromaCorruptCollectionError);
+    const createsBefore = calls('chroma_create_collection');
+
+    failAdds = false;
+    expect(await sibling.addDocuments([makeDoc('d3')])).toBe(1);
+    expect(calls('chroma_create_collection')).toBe(createsBefore + 1);
+  });
+
+  it('drops a collection at most once per process', async () => {
+    installCallTool(async (tool) => {
+      if (tool === 'chroma_add_documents') throw CORRUPT_SEGMENT_ERROR;
+      return {};
+    });
+    const sync = new ChromaSync('claude-mem');
+
+    await sync.addDocuments([makeDoc('d1')]);
+    await expect(sync.addDocuments([makeDoc('d2')])).rejects.toBeInstanceOf(ChromaCorruptCollectionError);
+    // The rebuilt collection fails the same way: Chroma itself is broken.
+    expect(await sync.addDocuments([makeDoc('d3')])).toBe(0);
+    expect(await sync.addDocuments([makeDoc('d4')])).toBe(0);
+
+    expect(calls('chroma_delete_collection')).toBe(1);
+  });
+
+  it('runs only one drop when parallel sweeps confirm the same corrupt segment together (#6113)', async () => {
+    // The incident: ~19 parallel project backfills confirmed the same corrupt
+    // segment while the first delete was still in flight, and each queued its
+    // own delete against chroma-mcp. The delete here stays in flight until
+    // every writer has reached the drop path.
+    let deleteStarted = false;
+    let releaseDelete: () => void = () => {};
+    const deleteGate = new Promise<void>((resolve) => { releaseDelete = resolve; });
+    installCallTool(async (tool) => {
+      if (tool === 'chroma_add_documents') throw CORRUPT_SEGMENT_ERROR;
+      if (tool === 'chroma_delete_collection') {
+        deleteStarted = true;
+        await deleteGate;
+        return {};
+      }
+      return {};
+    });
+    const confirmer = new ChromaSync('claude-mem');
+    expect(await confirmer.addDocuments([makeDoc('d0')])).toBe(0);
+
+    const writers = Array.from({ length: 10 }, () => new ChromaSync('claude-mem'));
+    const writes = Promise.allSettled(writers.map((sync, i) => sync.addDocuments([makeDoc(`c${i + 1}`)])));
+
+    for (let i = 0; i < 100 && !deleteStarted; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(deleteStarted).toBe(true);
+    // Let every concurrent writer arrive at the drop path before releasing.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(calls('chroma_delete_collection')).toBe(1);
+
+    releaseDelete();
+    const results = await writes;
+
+    expect(calls('chroma_delete_collection')).toBe(1);
+    expect(calls('chroma_get_collection_count')).toBe(1);
+    for (const result of results) {
+      expect(result.status).toBe('rejected');
+      if (result.status === 'rejected') expect(result.reason).toBeInstanceOf(ChromaCorruptCollectionError);
+    }
+  });
+
+  it('shares a failed drop between concurrent callers and retries it on a later batch (#6113)', async () => {
+    let deleteAttempts = 0;
+    let releaseDelete: () => void = () => {};
+    const deleteGate = new Promise<void>((resolve) => { releaseDelete = resolve; });
+    installCallTool(async (tool) => {
+      if (tool === 'chroma_add_documents') throw CORRUPT_SEGMENT_ERROR;
+      if (tool === 'chroma_delete_collection') {
+        deleteAttempts += 1;
+        if (deleteAttempts === 1) {
+          await deleteGate;
+          throw new ChromaUnavailableError('chroma-mcp connection in backoff (8s remaining)');
+        }
+      }
+      return {};
+    });
+    const confirmer = new ChromaSync('claude-mem');
+    expect(await confirmer.addDocuments([makeDoc('d0')])).toBe(0);
+
+    const writers = Array.from({ length: 5 }, () => new ChromaSync('claude-mem'));
+    const writes = Promise.allSettled(writers.map((sync, i) => sync.addDocuments([makeDoc(`c${i + 1}`)])));
+    for (let i = 0; i < 100 && deleteAttempts < 1; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    // Let every concurrent writer join the in-flight drop before it fails.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(calls('chroma_delete_collection')).toBe(1);
+    releaseDelete();
+    const results = await writes;
+
+    // One shared attempt: one budget unit spent, the same rejection for all.
+    expect(calls('chroma_delete_collection')).toBe(1);
+    expect(statics.failedDropAttempts.get('cm__claude-mem')).toBe(1);
+    for (const result of results) {
+      expect(result.status).toBe('rejected');
+      if (result.status === 'rejected') expect((result.reason as Error).message).toContain('backoff');
+    }
+
+    // The in-flight entry settled and cleared: the next failing batch retries.
+    const late = new ChromaSync('claude-mem');
+    await expect(late.addDocuments([makeDoc('late')])).rejects.toBeInstanceOf(ChromaCorruptCollectionError);
+    expect(calls('chroma_delete_collection')).toBe(2);
+  });
+
+  it('drops two different collections independently when they fail together (#6113)', async () => {
+    let deletesStarted = 0;
+    let releaseDelete: () => void = () => {};
+    const deleteGate = new Promise<void>((resolve) => { releaseDelete = resolve; });
+    installCallTool(async (tool) => {
+      if (tool === 'chroma_add_documents') throw CORRUPT_SEGMENT_ERROR;
+      if (tool === 'chroma_delete_collection') {
+        deletesStarted += 1;
+        await deleteGate;
+        return {};
+      }
+      return {};
+    });
+    expect(await new ChromaSync('claude-mem').addDocuments([makeDoc('a0')])).toBe(0);
+    expect(await new ChromaSync('other-tenant').addDocuments([makeDoc('b0')])).toBe(0);
+
+    const writes = Promise.allSettled([
+      new ChromaSync('claude-mem').addDocuments([makeDoc('a1')]),
+      new ChromaSync('other-tenant').addDocuments([makeDoc('b1')]),
+    ]);
+    for (let i = 0; i < 100 && deletesStarted < 2; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    // The dedupe is per collection: neither drop waits for the other.
+    expect(calls('chroma_delete_collection')).toBe(2);
+    releaseDelete();
+    const results = await writes;
+    for (const result of results) {
+      expect(result.status).toBe('rejected');
+      if (result.status === 'rejected') expect(result.reason).toBeInstanceOf(ChromaCorruptCollectionError);
+    }
+  });
+
+  it('rebuilds even when chroma-mcp commits the delete but the call rejects', async () => {
+    // A large collection can outlive the delete's request deadline: chroma-mcp
+    // drops it, the reply is lost, and the call rejects.
+    let failAdds = true;
+    installCallTool(async (tool) => {
+      if (tool === 'chroma_add_documents' && failAdds) throw CORRUPT_SEGMENT_ERROR;
+      if (tool === 'chroma_delete_collection') {
+        throw new ChromaDeleteOutcomeUnknownError('chroma-mcp "chroma_delete_collection" timed out; the subprocess was left running');
+      }
+      // The manager decodes chroma-mcp's empty-database sentinel to [].
+      if (tool === 'chroma_list_collections') return [];
+      return {};
+    });
+    statics.backfillStore = {};
+    ChromaSyncState.replace('alpha', { observations: 40, summaries: 3, prompts: 7 });
+    ChromaSyncState.replace('beta', { observations: 9, summaries: 0, prompts: 0 });
+    const writer = new ChromaSync('claude-mem');
+    const sibling = new ChromaSync('claude-mem');
+    await sibling.ensureCollectionExists();
+
+    await writer.addDocuments([makeDoc('d1')]);
+    await expect(writer.addDocuments([makeDoc('d2')])).rejects.toBeInstanceOf(ChromaCorruptCollectionError);
+    expect(calls('chroma_delete_collection')).toBe(1);
+    expect(calls('chroma_list_collections')).toBe(1);
+
+    // The watermarks no longer claim rows the dropped collection took with it.
+    expect(ChromaSyncState.isRebuildPending('alpha')).toBe(true);
+    expect(ChromaSyncState.isRebuildPending('beta')).toBe(true);
+    // The rebuild starts now, not at the next worker start.
+    expect(backfillSweeps).toBe(1);
+    // No instance keeps writing into the collection it cached before the drop.
+    const createsBefore = calls('chroma_create_collection');
+    failAdds = false;
+    expect(await sibling.addDocuments([makeDoc('d3')])).toBe(1);
+    expect(calls('chroma_create_collection')).toBe(createsBefore + 1);
+  });
+
+  it('retries within the upstream budget when a complete list shows the collection present', async () => {
+    let deleteAttempts = 0;
+    installCallTool(async (tool) => {
+      if (tool === 'chroma_add_documents') throw CORRUPT_SEGMENT_ERROR;
+      if (tool === 'chroma_delete_collection') {
+        deleteAttempts += 1;
+        if (deleteAttempts === 1) {
+          throw new ChromaDeleteOutcomeUnknownError('delete acknowledgment lost');
+        }
+      }
+      if (tool === 'chroma_list_collections') {
+        return [...Array.from({ length: 130 }, (_, i) => `other_${i}`), 'cm__claude-mem'];
+      }
+      return {};
+    });
+    statics.backfillStore = {};
+    const sync = new ChromaSync('claude-mem');
+    await sync.addDocuments([makeDoc('d1')]);
+    await expect(sync.addDocuments([makeDoc('d2')])).rejects.toBeInstanceOf(ChromaDeleteOutcomeUnknownError);
+    // Still listed: a failed attempt, and the restarted sweep is the retry.
+    expect(backfillSweeps).toBe(1);
+    expect(statics.failedDropAttempts.get('cm__claude-mem')).toBe(1);
+    expect(ChromaSync.getLastCollectionDrop()).toBeNull();
+    expect(calls('chroma_delete_collection')).toBe(1);
+    expect(toolCalls.find(call => call.tool === 'chroma_list_collections')?.args).toEqual({});
+    await expect(sync.addDocuments([makeDoc('d3')])).rejects.toBeInstanceOf(ChromaCorruptCollectionError);
+    expect(calls('chroma_delete_collection')).toBe(2);
+    expect(calls('chroma_list_collections')).toBe(1);
+    expect(backfillSweeps).toBe(2);
+  });
+
+  it('counts a failed attempt and restarts the sweep when listing fails', async () => {
+    installCallTool(async (tool) => {
+      if (tool === 'chroma_add_documents') throw CORRUPT_SEGMENT_ERROR;
+      if (tool === 'chroma_delete_collection') {
+        throw new ChromaDeleteOutcomeUnknownError('delete acknowledgment lost');
+      }
+      if (tool === 'chroma_list_collections') {
+        throw new ChromaUnavailableError('list timed out');
+      }
+      return {};
+    });
+    statics.backfillStore = {};
+    const sync = new ChromaSync('claude-mem');
+    await sync.addDocuments([makeDoc('d1')]);
+    await expect(sync.addDocuments([makeDoc('d2')])).rejects.toThrow('Could not verify');
+    expect(calls('chroma_delete_collection')).toBe(1);
+    expect(calls('chroma_list_collections')).toBe(1);
+    expect(ChromaSync.getLastCollectionDrop()).toBeNull();
+    expect(statics.failedDropAttempts.get('cm__claude-mem')).toBe(1);
+    expect(backfillSweeps).toBe(1);
+  });
+
+  for (const [label, listing] of [['null', null], ['non-string entries', ['cm__a', 42]]] as const) {
+    it(`does not confirm a delete from a malformed listing (${label})`, async () => {
+      installCallTool(async (tool) => {
+        if (tool === 'chroma_add_documents') throw CORRUPT_SEGMENT_ERROR;
+        if (tool === 'chroma_delete_collection') {
+          throw new ChromaDeleteOutcomeUnknownError('delete acknowledgment lost');
+        }
+        if (tool === 'chroma_list_collections') return listing;
+        return {};
+      });
+      statics.backfillStore = {};
+      const sync = new ChromaSync('claude-mem');
+      await sync.addDocuments([makeDoc('d1')]);
+      await expect(sync.addDocuments([makeDoc('d2')])).rejects.toThrow('Could not verify');
+      expect(ChromaSync.getLastCollectionDrop()).toBeNull();
+      expect(statics.failedDropAttempts.get('cm__claude-mem')).toBe(1);
+    });
+  }
+
+  it('retries a drop whose delete never reached chroma-mcp', async () => {
+    let deleteAttempts = 0;
+    installCallTool(async (tool) => {
+      if (tool === 'chroma_add_documents') throw CORRUPT_SEGMENT_ERROR;
+      if (tool === 'chroma_delete_collection') {
+        deleteAttempts += 1;
+        if (deleteAttempts === 1) throw new ChromaUnavailableError('chroma-mcp connection in backoff (8s remaining)');
+      }
+      return {};
+    });
+    const sync = new ChromaSync('claude-mem');
+
+    await sync.addDocuments([makeDoc('d1')]);
+    await expect(sync.addDocuments([makeDoc('d2')])).rejects.toThrow('backoff');
+    // The connection is back: the next batch the segment fails drops the collection.
+    await expect(sync.addDocuments([makeDoc('d3')])).rejects.toBeInstanceOf(ChromaCorruptCollectionError);
+
+    expect(calls('chroma_delete_collection')).toBe(2);
+    expect(ChromaSync.getLastCollectionDrop()).toMatchObject({ collection: 'cm__claude-mem' });
+  });
+
+  it('never sends a fourth delete after three ambiguous responses confirm presence', async () => {
+    installCallTool(async (tool) => {
+      if (tool === 'chroma_add_documents') throw CORRUPT_SEGMENT_ERROR;
+      if (tool === 'chroma_delete_collection') {
+        throw new ChromaDeleteOutcomeUnknownError('delete acknowledgment lost');
+      }
+      if (tool === 'chroma_list_collections') return ['cm__claude-mem'];
+      return {};
+    });
+    const sync = new ChromaSync('claude-mem');
+    await sync.addDocuments([makeDoc('d1')]);
+    for (const id of ['d2', 'd3', 'd4']) {
+      await expect(sync.addDocuments([makeDoc(id)])).rejects.toBeInstanceOf(ChromaDeleteOutcomeUnknownError);
+    }
+    expect(await sync.addDocuments([makeDoc('d5')])).toBe(0);
+    expect(calls('chroma_delete_collection')).toBe(3);
+    expect(calls('chroma_list_collections')).toBe(3);
+    expect(statics.failedDropAttempts.get('cm__claude-mem')).toBe(3);
+  });
+
+  it('gives up on a delete that keeps failing after a few attempts, so it never loops', async () => {
+    installCallTool(async (tool) => {
+      if (tool === 'chroma_add_documents') throw CORRUPT_SEGMENT_ERROR;
+      if (tool === 'chroma_delete_collection') {
+        throw new Error('chroma-mcp transport error during "chroma_delete_collection" (retry failed): Connection closed');
+      }
+      return {};
+    });
+    statics.backfillStore = {};
+    const sync = new ChromaSync('claude-mem');
+
+    await sync.addDocuments([makeDoc('d1')]);
+    for (const id of ['d2', 'd3', 'd4']) {
+      await expect(sync.addDocuments([makeDoc(id)])).rejects.toThrow('transport error');
+    }
+    // Out of attempts: later batches are ordinary failed writes, and no more sweeps restart.
+    expect(await sync.addDocuments([makeDoc('d5')])).toBe(0);
+    expect(await sync.addDocuments([makeDoc('d6')])).toBe(0);
+
+    expect(calls('chroma_delete_collection')).toBe(3);
+    expect(backfillSweeps).toBe(3);
+  });
+
+  // The real backfill loop: an ambiguous delete reconciles with one listing,
+  // and the running sweep restarts the same way it does on main, so the
+  // retry and the rebuild both stay bounded by MAX_FAILED_DROP_ATTEMPTS.
+  async function runRealSweepLoop(
+    listing: () => Promise<unknown>,
+    corruptBatchesInSweep: (sweepCall: number) => string[],
+  ): Promise<{ result: boolean; sweepCalls: number; outcomes: unknown[] }> {
+    installCallTool(async (tool) => {
+      if (tool === 'chroma_add_documents') throw CORRUPT_SEGMENT_ERROR;
+      if (tool === 'chroma_delete_collection') throw new ChromaDeleteOutcomeUnknownError('reply lost');
+      if (tool === 'chroma_list_collections') return listing();
+      return {};
+    });
+    statics.backfillStore = {};
+    const sync = new ChromaSync('claude-mem');
+    let sweepCalls = 0;
+    const outcomes: unknown[] = [];
+    statics.sweepAllProjects = async () => {
+      sweepCalls += 1;
+      for (const id of corruptBatchesInSweep(sweepCalls)) {
+        outcomes.push(await sync.addDocuments([makeDoc(id)]).catch((error: unknown) => error));
+      }
+      return true;
+    };
+    statics.backfillAllProjects = realBackfillAllProjects;
+    try {
+      const result = await statics.backfillAllProjects({});
+      return { result, sweepCalls, outcomes };
+    } finally {
+      statics.sweepAllProjects = realSweepAllProjects;
+    }
+  }
+
+  it('confirms an ambiguous delete the listing no longer shows, and restarts the running sweep', async () => {
+    const run = await runRealSweepLoop(
+      async () => ['cm__other'],
+      sweepCall => (sweepCall === 1 ? ['d1', 'd2'] : []),
+    );
+    expect(run.result).toBe(true);
+    expect(run.sweepCalls).toBe(2);
+    expect(run.outcomes[1]).toBeInstanceOf(ChromaCorruptCollectionError);
+    expect(calls('chroma_delete_collection')).toBe(1);
+    expect(calls('chroma_list_collections')).toBe(1);
+    expect(statics.failedDropAttempts.get('cm__claude-mem')).toBeUndefined();
+    expect(ChromaSync.getLastCollectionDrop()).toMatchObject({ collection: 'cm__claude-mem' });
+  });
+
+  for (const [label, listing] of [
+    ['still listed', async () => ['cm__claude-mem']],
+    ['the listing itself fails', async () => { throw new ChromaUnavailableError('list timed out'); }],
+  ] as const) {
+    it(`retries an ambiguous delete through the restarted sweep when ${label}, and stops after three`, async () => {
+      // Each restarted sweep meets the corrupt segment again; the first sweep
+      // needs two distinct batches to confirm it.
+      const run = await runRealSweepLoop(
+        listing,
+        sweepCall => (sweepCall === 1 ? ['d1', 'd2'] : [`d${sweepCall + 1}`]),
+      );
+      expect(run.result).toBe(true);
+      // Three failed drops each restarted the sweep; the fourth sweep finds the
+      // collection counted as dropped and sends no fourth delete.
+      expect(run.sweepCalls).toBe(4);
+      expect(calls('chroma_delete_collection')).toBe(3);
+      expect(calls('chroma_list_collections')).toBe(3);
+      expect(statics.failedDropAttempts.get('cm__claude-mem')).toBe(3);
+      expect(ChromaSync.getLastCollectionDrop()).toBeNull();
+    });
+  }
+
+  it('starts a rebuild sweep when none is running, and leaves a running sweep to restart itself', async () => {
+    installCallTool(async (tool) => {
+      if (tool === 'chroma_add_documents') throw CORRUPT_SEGMENT_ERROR;
+      return {};
+    });
+    statics.backfillStore = {};
+    const sync = new ChromaSync('claude-mem');
+
+    await sync.addDocuments([makeDoc('d1')]);
+    await expect(sync.addDocuments([makeDoc('d2')])).rejects.toBeInstanceOf(ChromaCorruptCollectionError);
+    expect(backfillSweeps).toBe(1);
+
+    // A second collection dropped while a sweep runs: the sweep restarts itself.
+    statics.backfillInProgress = true;
+    const other = new ChromaSync('other-tenant');
+    await other.addDocuments([makeDoc('o1')]);
+    await expect(other.addDocuments([makeDoc('o2')])).rejects.toBeInstanceOf(ChromaCorruptCollectionError);
+    expect(backfillSweeps).toBe(1);
+  });
+});
+
+describe('ChromaSync rebuild after a dropped collection (#3202)', () => {
+  function makeStore(project: string, ids: number[]) {
+    const rows = ids.map(id => ({
+      id,
+      memory_session_id: `mem-${id}`,
+      project,
+      merged_into_project: null,
+      platform_source: 'claude',
+      text: null,
+      type: 'discovery',
+      title: `Observation ${id}`,
+      subtitle: null,
+      facts: '[]',
+      narrative: `Narrative ${id}`,
+      concepts: '[]',
+      files_read: '[]',
+      files_modified: '[]',
+      prompt_number: id,
+      created_at_epoch: 1_700_000_000_000 + id,
+    }));
+    return {
+      db: {
+        prepare(query: string) {
+          return {
+            all: (...params: Array<string | number>) => {
+              if (query.includes('FROM observations o')) {
+                if (query.includes('IN (')) {
+                  const wanted = params.slice(1);
+                  return rows.filter(row => wanted.includes(row.id));
+                }
+                return rows.filter(row => row.id > Number(params[1] ?? 0));
+              }
+              return [];
+            },
+            get: (...params: Array<string | number>) => query.includes('o.id = ?')
+              ? rows.find(row => row.id === params[1]) : { count: rows.length },
+            finalize: () => {},
+          };
+        },
+      },
+    } as any;
+  }
+
+  it('rebuilds a flagged project from zero even after a live write bumped its watermark', async () => {
+    const written: string[] = [];
+    installCallTool(async (tool, args) => {
+      if (tool === 'chroma_add_documents') written.push(...(args.ids as string[]));
+      return {};
+    });
+    // The drop flagged the project; a live write then bumped it to 5.
+    ChromaSyncState.replace('proj', { observations: 3, summaries: 0, prompts: 0, rebuildPending: true });
+    ChromaSyncState.bump('proj', 'observations', 5);
+
+    const outcome = await new ChromaSync('claude-mem').ensureBackfilled('proj', makeStore('proj', [1, 2, 3, 4, 5]));
+
+    expect(outcome).toBe('completed');
+    expect(written).toEqual(['obs_1_narrative', 'obs_2_narrative', 'obs_3_narrative', 'obs_4_narrative', 'obs_5_narrative']);
+    expect(ChromaSyncState.isRebuildPending('proj')).toBe(false);
+    expect(ChromaSyncState.get('proj').observations).toBe(5);
+  });
+
+  it('keeps the rebuild flag when the rebuild does not finish, so the next run rebuilds again', async () => {
+    installCallTool(async (tool) => {
+      if (tool === 'chroma_add_documents') throw new ChromaUnavailableError('down');
+      return {};
+    });
+    ChromaSyncState.replace('proj', { observations: 3, summaries: 0, prompts: 0, rebuildPending: true });
+
+    const outcome = await new ChromaSync('claude-mem').ensureBackfilled('proj', makeStore('proj', [1, 2, 3, 4]));
+
+    expect(outcome).toBe('write_failures');
+    expect(ChromaSyncState.isRebuildPending('proj')).toBe(true);
+    expect(ChromaSyncState.get('proj').observations).toBe(0);
+  });
+
+  it('finishes a rebuild that attempted every row; an isolated failed row stays pending and is retried alone', async () => {
+    let failRowTwo = true;
+    const written: string[] = [];
+    installCallTool(async (tool, args) => {
+      if (tool !== 'chroma_add_documents') return {};
+      const ids = args.ids as string[];
+      if (failRowTwo && ids.includes('obs_2_narrative')) {
+        throw new Error('embedding failed for one document');
+      }
+      written.push(...ids);
+      return {};
+    });
+    ChromaSyncState.replace('proj', { observations: 3, summaries: 0, prompts: 0, rebuildPending: true });
+    const sync = new ChromaSync('claude-mem');
+    const store = makeStore('proj', [1, 2, 3, 4, 5]);
+
+    const outcome = await sync.ensureBackfilled('proj', store);
+
+    // Restarting the rebuild from zero would re-embed the whole project on
+    // every start just to retry row 2; the pending mark already covers it.
+    expect(ChromaSyncState.isRebuildPending('proj')).toBe(false);
+    expect(ChromaSyncState.getPending('proj', 'observations')).toEqual([2]);
+    expect(ChromaSyncState.get('proj').observations).toBe(5);
+    expect(outcome).toBe('rows_pending');
+
+    failRowTwo = false;
+    written.length = 0;
+    expect(await sync.ensureBackfilled('proj', store)).toBe('completed');
+    expect(written).toEqual(['obs_2_narrative']);
+    expect(ChromaSyncState.getPending('proj', 'observations')).toEqual([]);
+  });
+
+  it('stops a run whose collection is dropped mid-run without bumping anything', async () => {
+    let adds = 0;
+    installCallTool(async (tool) => {
+      if (tool === 'chroma_add_documents') {
+        adds += 1;
+        if (adds >= 2) throw CORRUPT_SEGMENT_ERROR;
+      }
+      return {};
+    });
+    ChromaSyncState.replace('proj', { observations: 0, summaries: 0, prompts: 0 });
+
+    const outcome = await new ChromaSync('claude-mem').ensureBackfilled('proj', makeStore('proj', [1, 2, 3, 4]));
+
+    expect(outcome).toBe('collection_dropped');
+    expect(calls('chroma_delete_collection')).toBe(1);
+    // Row 1 landed before the drop, but the whole project is rebuilt anyway.
+    expect(ChromaSyncState.isRebuildPending('proj')).toBe(true);
+  });
+});
+
+describe('logChromaWriteFailure', () => {
+  let sink: Error[] = [];
+  beforeEach(() => {
+    sink = [];
+    logger.setErrorSink(error => { sink.push(error); });
+  });
+  afterEach(() => {
+    logger.setErrorSink(null);
+  });
+
+  it('reports a corrupt-collection drop to the error sink only once', async () => {
+    installCallTool(async (tool) => {
+      if (tool === 'chroma_add_documents') throw CORRUPT_SEGMENT_ERROR;
+      return {};
+    });
+    const sync = new ChromaSync('claude-mem');
+    expect(await sync.addDocuments([makeDoc('d1')])).toBe(0);
+    const failure = await sync.addDocuments([makeDoc('d2')]).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(ChromaCorruptCollectionError);
+    const reportedBeforeCaller = sink.length;
+    expect(reportedBeforeCaller).toBeGreaterThan(0);
+
+    logChromaWriteFailure('CHROMA', 'live write failed', {}, failure);
+
+    expect(sink.length).toBe(reportedBeforeCaller);
+  });
+
+  it('still reports any other write failure to the error sink', () => {
+    logChromaWriteFailure('CHROMA', 'live write failed', {}, EMBEDDING_RUNTIME_ERROR);
+    expect(sink).toEqual([EMBEDDING_RUNTIME_ERROR]);
+  });
+});

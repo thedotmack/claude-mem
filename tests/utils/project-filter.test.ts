@@ -1,6 +1,6 @@
 
 import { describe, it, expect } from 'bun:test';
-import { isProjectExcluded } from '../../src/utils/project-filter.js';
+import { isProjectExcluded, matchesAnyGlob } from '../../src/utils/project-filter.js';
 import { homedir } from 'os';
 
 describe('Project Filter', () => {
@@ -34,6 +34,74 @@ describe('Project Filter', () => {
       it('matches any path depth', () => {
         expect(isProjectExcluded('/Users/test/kunden/client1/project', '/Users/*/kunden/**')).toBe(true);
         expect(isProjectExcluded('/Users/test/kunden/deep/nested/project', '/Users/*/kunden/**')).toBe(true);
+      });
+
+      for (const [name, separator] of [
+        ['LF', '\n'],
+        ['CR', '\r'],
+        ['line separator', '\u2028'],
+        ['paragraph separator', '\u2029'],
+      ]) {
+        it(`matches ${name} inside path components for exclusions and deny-lists`, () => {
+          const folder = `/workspace/team${separator}one/private`;
+          for (const pattern of ['/workspace/**', '/workspace/**/private', '**/private']) {
+            expect(isProjectExcluded(folder, pattern)).toBe(true);
+            expect(matchesAnyGlob(folder, [pattern])).toBe(true);
+          }
+          expect(isProjectExcluded(`${folder}/cache`, '/workspace/**/private/**')).toBe(true);
+          expect(matchesAnyGlob(`${folder}/cache`, ['/workspace/**/private/**'])).toBe(true);
+          expect(isProjectExcluded(`${folder}-copy`, '/workspace/**/private')).toBe(false);
+          expect(matchesAnyGlob(`${folder}-copy`, ['/workspace/**/private'])).toBe(false);
+          expect(isProjectExcluded(folder, '/workspace/*')).toBe(false);
+          expect(matchesAnyGlob(folder, ['/workspace/*'])).toBe(false);
+        });
+      }
+    });
+
+    describe('with **/ matching zero or more directories', () => {
+      it('excludes direct children as well as nested matches', () => {
+        for (const project of ['/workspace/private', '/workspace/team/private', '/workspace/a/b/private']) {
+          expect(isProjectExcluded(project, '/workspace/**/private')).toBe(true);
+        }
+        expect(isProjectExcluded('/workspace/private-copy', '/workspace/**/private')).toBe(false);
+        expect(isProjectExcluded('/workspace/not-private', '/workspace/**/private')).toBe(false);
+      });
+
+      it('supports leading and consecutive globstar directory segments', () => {
+        expect(isProjectExcluded('private', '**/private')).toBe(true);
+        expect(isProjectExcluded('/workspace/private', '/workspace/**/**/private')).toBe(true);
+        expect(isProjectExcluded('/workspace/a/b/private', '/workspace/**/**/private')).toBe(true);
+      });
+
+      it('normalizes home and Windows paths before matching directory segments', () => {
+        expect(isProjectExcluded(`${homedir()}/private`, '~/**/private')).toBe(true);
+        expect(isProjectExcluded('C:\\work\\private', 'C:\\work\\**\\private')).toBe(true);
+        expect(isProjectExcluded('/workspace/private', '/workspace/*/private')).toBe(false);
+      });
+
+      it('uses the same zero-directory match for the shared deny-list matcher', () => {
+        expect(matchesAnyGlob('/workspace/private', ['/workspace/**/private/**'])).toBe(true);
+        expect(matchesAnyGlob('/workspace/private/cache', ['/workspace/**/private/**'])).toBe(true);
+        expect(matchesAnyGlob('/workspace/private-copy', ['/workspace/**/private/**'])).toBe(false);
+      });
+    });
+
+    describe('with a trailing /** (the directory itself)', () => {
+      it('excludes the directory itself as well as everything under it', () => {
+        expect(isProjectExcluded('/Users/test/kunden', '/Users/*/kunden/**')).toBe(true);
+        expect(isProjectExcluded('/Users/test/kunden/', '/Users/*/kunden/**')).toBe(true);
+        expect(isProjectExcluded('/Users/test/kunden/client1', '/Users/*/kunden/**')).toBe(true);
+        expect(isProjectExcluded(`${homedir()}/customers`, '~/customers/**')).toBe(true);
+        expect(isProjectExcluded('C:\\Users\\test\\kunden', 'C:\\Users\\test\\kunden\\**')).toBe(true);
+      });
+
+      it('does not exclude siblings that merely share the prefix', () => {
+        expect(isProjectExcluded('/Users/test/kunden-archive', '/Users/*/kunden/**')).toBe(false);
+        expect(isProjectExcluded('/Users/test', '/Users/*/kunden/**')).toBe(false);
+      });
+
+      it('leaves single-star patterns unchanged', () => {
+        expect(isProjectExcluded('/tmp', '/tmp/*')).toBe(false);
       });
     });
 

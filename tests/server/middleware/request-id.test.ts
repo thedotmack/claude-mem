@@ -1,66 +1,44 @@
 // SPDX-License-Identifier: Apache-2.0
 
-import { describe, expect, it } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import express from 'express';
 import { isAcceptableRequestId, requestIdMiddleware } from '../../../src/server/middleware/request-id.js';
 
 describe('Phase 12 — request_id middleware', () => {
-  it('mints a request id when none is provided', async () => {
+  let server: ReturnType<ReturnType<typeof express>['listen']>;
+  let url: string;
+
+  beforeAll(() => {
     const app = express();
     app.use(requestIdMiddleware());
-    app.get('/echo', (req, res) => {
-      res.json({ id: req.requestId ?? null });
-    });
-    const server = app.listen(0);
-    try {
-      const port = (server.address() as { port: number }).port;
-      const resp = await fetch(`http://127.0.0.1:${port}/echo`);
-      expect(resp.headers.get('x-request-id')).toBeTruthy();
-      const body = await resp.json() as { id: string };
-      expect(body.id.length).toBeGreaterThan(0);
-      expect(body.id).toBe(resp.headers.get('x-request-id'));
-    } finally {
-      await new Promise<void>(resolve => server.close(() => resolve()));
-    }
+    app.get('/echo', (req, res) => res.json({ id: req.requestId ?? null }));
+    server = app.listen(0);
+    url = `http://127.0.0.1:${(server.address() as { port: number }).port}/echo`;
+  });
+
+  afterAll(async () => {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  });
+
+  it('mints a request id when none is provided', async () => {
+    const resp = await fetch(url);
+    expect(resp.headers.get('x-request-id')).toBeTruthy();
+    const body = await resp.json() as { id: string };
+    expect(body.id.length).toBeGreaterThan(0);
+    expect(body.id).toBe(resp.headers.get('x-request-id'));
   });
 
   it('honors a safe inbound X-Request-Id header', async () => {
-    const app = express();
-    app.use(requestIdMiddleware());
-    app.get('/echo', (req, res) => {
-      res.json({ id: req.requestId ?? null });
-    });
-    const server = app.listen(0);
-    try {
-      const port = (server.address() as { port: number }).port;
-      const resp = await fetch(`http://127.0.0.1:${port}/echo`, {
-        headers: { 'X-Request-Id': 'abc-123_DEF' },
-      });
-      const body = await resp.json() as { id: string };
-      expect(body.id).toBe('abc-123_DEF');
-    } finally {
-      await new Promise<void>(resolve => server.close(() => resolve()));
-    }
+    const resp = await fetch(url, { headers: { 'X-Request-Id': 'abc-123_DEF' } });
+    const body = await resp.json() as { id: string };
+    expect(body.id).toBe('abc-123_DEF');
   });
 
   it('rejects unsafe inbound request ids by minting a fresh uuid', async () => {
-    const app = express();
-    app.use(requestIdMiddleware());
-    app.get('/echo', (req, res) => {
-      res.json({ id: req.requestId ?? null });
-    });
-    const server = app.listen(0);
-    try {
-      const port = (server.address() as { port: number }).port;
-      const resp = await fetch(`http://127.0.0.1:${port}/echo`, {
-        headers: { 'X-Request-Id': '<script>alert(1)</script>' },
-      });
-      const body = await resp.json() as { id: string };
-      expect(body.id).not.toBe('<script>alert(1)</script>');
-      expect(isAcceptableRequestId(body.id)).toBe(true);
-    } finally {
-      await new Promise<void>(resolve => server.close(() => resolve()));
-    }
+    const resp = await fetch(url, { headers: { 'X-Request-Id': '<script>alert(1)</script>' } });
+    const body = await resp.json() as { id: string };
+    expect(body.id).not.toBe('<script>alert(1)</script>');
+    expect(isAcceptableRequestId(body.id)).toBe(true);
   });
 
   it('isAcceptableRequestId enforces the safe-charset, length contract', () => {

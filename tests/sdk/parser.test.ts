@@ -12,6 +12,7 @@ import { parseAgentXml } from '../../src/sdk/parser.js';
 // real `code` mode is a superset of the types these tests exercise
 // (bugfix / discovery / refactor), so the assertions below are unchanged.
 ModeManager.getInstance().loadMode('code');
+let previousMode: unknown;
 
 function expectObservation(raw: string) {
   const result = parseAgentXml(raw);
@@ -22,6 +23,7 @@ function expectObservation(raw: string) {
 
 beforeEach(() => {
   const modeManager = ModeManager.getInstance() as unknown as { activeMode: unknown };
+  previousMode = modeManager.activeMode;
   modeManager.activeMode = {
     observation_types: [{ id: 'bugfix' }, { id: 'discovery' }, { id: 'refactor' }],
     observation_concepts: [],
@@ -30,10 +32,55 @@ beforeEach(() => {
 
 afterEach(() => {
   const modeManager = ModeManager.getInstance() as unknown as { activeMode: unknown };
-  modeManager.activeMode = null;
+  modeManager.activeMode = previousMode;
 });
 
 describe('parseAgentXml — observations', () => {
+  it('reads a single-quoted skip reason with XML attribute whitespace', () => {
+    const result = parseAgentXml("<skip_summary reason = 'No change &amp; no new result' />");
+    if (!result.valid) throw new Error('Expected a valid skip sentinel');
+    expect(result.summary?.skip_reason).toBe('No change & no new result');
+  });
+
+  it('treats a whitespace-padded standalone <skip_summary/> as a valid no-op with no observations', () => {
+    const result = parseAgentXml('\n  <skip_summary reason="agent bookkeeping"/>  \n');
+
+    expect(result.valid).toBe(true);
+    if (result.valid) {
+      expect(result.observations).toEqual([]);
+      expect(result.summary?.skipped).toBe(true);
+      expect(result.summary?.skip_reason).toBe('agent bookkeeping');
+    }
+  });
+
+  it('treats a fenced standalone <skip_summary/> as a valid no-op with no observations', () => {
+    const result = parseAgentXml('```xml\n<skip_summary />\n```');
+
+    expect(result.valid).toBe(true);
+    if (result.valid) {
+      expect(result.observations).toEqual([]);
+      expect(result.summary?.skipped).toBe(true);
+    }
+  });
+
+  it('preserves an observation that documents a skip sentinel inside its narrative', () => {
+    const narrative = '<![CDATA[The observer returned <skip_summary reason="no change"/> for bookkeeping.]]>';
+    const result = expectObservation(`<observation><type>discovery</type><title>Skip behavior</title><narrative>${narrative}</narrative></observation>`);
+    expect(result).toHaveLength(1);
+    expect(result[0].title).toBe('Skip behavior');
+    expect(result[0].narrative).toBe(narrative);
+  });
+
+  it('preserves a summary that discusses the skip sentinel in a field', () => {
+    const learned = '<![CDATA[<skip_summary/> means no substantive summary was requested.]]>';
+    const result = parseAgentXml(`<summary><request>Document the parser</request><learned>${learned}</learned></summary>`);
+    expect(result.valid).toBe(true);
+    if (!result.valid) throw new Error('Expected a complete summary');
+    expect(result.summary?.skipped).toBeUndefined();
+    expect(result.summary?.request).toBe('Document the parser');
+    expect(result.summary?.learned).toBe(learned);
+  });
+
   it('returns a populated observation when title is present', () => {
     const xml = `<observation>
       <type>discovery</type>
@@ -242,9 +289,11 @@ describe('parseAgentXml — observations', () => {
     expect(result.valid).toBe(false);
   });
 
-  it('uses first mode type as fallback when type is missing', () => {
+  it('takes the re-opened type when a stray closing tag precedes it', () => {
     const xml = `<observation>
-      <title>Missing type field</title>
+      <type>bugfix</parameter>
+      <type>bugfix</type>
+      <title>Stray closing tag inside type</title>
     </observation>`;
 
     const result = expectObservation(xml);
@@ -253,21 +302,77 @@ describe('parseAgentXml — observations', () => {
     expect(result[0].type).toBe('bugfix');
   });
 
-  it('preserves a reporter-shaped unsupported observation type', () => {
+  it('keeps the corrected type when the model re-opens type with a different value', () => {
     const xml = `<observation>
-      <type>code</type>
-      <title>Reporter-shaped unsupported type</title>
+      <type>bugfix</reasoning_effort>
+      <type>discovery</type>
+      <title>Self-corrected type</title>
     </observation>`;
 
     const result = expectObservation(xml);
 
-    expect(result).toHaveLength(1);
-    expect(result[0].type).toBe('code');
+    expect(result[0].type).toBe('discovery');
   });
 
-  it('returns a fail-fast result when no observation/summary blocks are present', () => {
-    const result = parseAgentXml('Some text without any observations.');
-    expect(result.valid).toBe(false);
+  it('takes the restated type when the model restarts the observation mid-type', () => {
+    const xml = `<observation>
+      <type>refactor</reasoning_effort>
+Oops, let me restate the output cleanly.
+
+<observation>
+      <type>refactor</type>
+      <title>Restated observation</title>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result[0].type).toBe('refactor');
+    expect(result[0].title).toBe('Restated observation');
+  });
+
+  it('never stores markup as the type when the value itself carries a stray tag', () => {
+    const xml = `<observation>
+      <type>discovery</parameter></type>
+      <title>Stray tag before the real close</title>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result[0].type).toBe('discovery');
+  });
+
+  it('reads the type when a stray tag closes it and no </type> follows', () => {
+    const xml = `<observation>
+      <type>discovery</reasoning_effort>
+      <title>Pinned pnpm invocation fails</title>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result[0].type).toBe('discovery');
+    expect(result[0].title).toBe('Pinned pnpm invocation fails');
+  });
+
+  it('does not take prose as the type when no </type> follows', () => {
+    const xml = `<observation>
+      <type>the model wrote a sentence</parameter>
+      <title>Prose in type</title>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result[0].type).toBe('bugfix');
+  });
+
+  it('falls back to the first mode type when the type is only encoded whitespace', () => {
+    const xml = `<observation>
+      <type>&#32;</type>
+      <title>Encoded whitespace type</title>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result[0].type).toBe('bugfix');
   });
 
   it('parses files_read and files_modified arrays correctly', () => {
@@ -287,20 +392,6 @@ describe('parseAgentXml — observations', () => {
 });
 
 describe('parseAgentXml — fence tolerance (#2233 Part A)', () => {
-  it('parses plain XML input correctly (no fence)', () => {
-    const xml = `<observation>
-      <type>discovery</type>
-      <title>Plain XML input</title>
-      <narrative>No fence wrapper present.</narrative>
-    </observation>`;
-
-    const result = parseAgentXml(xml);
-    expect(result.valid).toBe(true);
-    if (!result.valid) return;
-    expect(result.observations).toHaveLength(1);
-    expect(result.observations[0].title).toBe('Plain XML input');
-  });
-
   it('parses fenced XML with language tag (```xml ... ```)', () => {
     const xml = '```xml\n<observation>\n  <type>discovery</type>\n  <title>Fenced with lang</title>\n  <narrative>Wrapped in xml-tagged code fence.</narrative>\n</observation>\n```';
 
@@ -469,5 +560,111 @@ describe('parseAgentXml — observation type against the mode enum', () => {
 
     expect(result).toHaveLength(1);
     expect(result[0].type).toBe('refactor');
+  });
+});
+
+// #4098: local models that emit capitalized XML wrapper tags (e.g. `<Concepts>`,
+// `<Files_read>`) silently lose facts/concepts/files because every tag regex in
+// the parser was built without the `i` flag. Each case below isolates exactly
+// one regex site by capitalizing only the tag(s) that regex matches, leaving
+// every other tag in the fixture at whatever casing already passes today — so
+// no case can pass by riding on a different, unrelated flag.
+describe('parseAgentXml — tag casing (#4098)', () => {
+  it('populates all four arrays from capitalized wrapper tags only', () => {
+    // Only the array-wrapper tags are capitalized. Outer <observation> and every
+    // leaf (<fact>, <concept>, <file>) stay lowercase.
+    const xml = `<observation><type>discovery</type><title>t</title><Facts><fact>f1</fact></Facts><narrative>n</narrative><Concepts><concept>gotcha</concept></Concepts><Files_read><file>a.ts</file></Files_read><Files_modified><file>b.ts</file></Files_modified></observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].facts).toEqual(['f1']);
+    expect(result[0].concepts).toEqual(['gotcha']);
+    expect(result[0].files_read).toEqual(['a.ts']);
+    expect(result[0].files_modified).toEqual(['b.ts']);
+  });
+
+  it('parses a capitalized <Observation> root wrapper', () => {
+    // Only the outer <Observation>/</Observation> tag is capitalized. Every
+    // wrapper and leaf tag inside stays lowercase (today's already-passing
+    // shape), isolating the block regex distinct from root detection (which
+    // already has `i` and is unchanged).
+    const xml = `<Observation><type>discovery</type><title>t</title><facts><fact>f1</fact></facts><narrative>n</narrative><concepts><concept>c1</concept></concepts><files_read><file>a.ts</file></files_read><files_modified><file>b.ts</file></files_modified></Observation>`;
+
+    const result = parseAgentXml(xml);
+
+    expect(result.valid).toBe(true);
+    if (!result.valid) return;
+    expect(result.observations).toHaveLength(1);
+    expect(result.observations[0].facts).toEqual(['f1']);
+    expect(result.observations[0].concepts).toEqual(['c1']);
+    expect(result.observations[0].files_read).toEqual(['a.ts']);
+    expect(result.observations[0].files_modified).toEqual(['b.ts']);
+  });
+
+  it('populates arrays from capitalized leaf element tags only', () => {
+    // Outer <observation> and the array-wrapper tags stay lowercase; only the
+    // leaf element tags (<Fact>, <Concept>, <File>) are capitalized.
+    const xml = `<observation><type>discovery</type><title>t</title><facts><Fact>f1</Fact></facts><narrative>n</narrative><concepts><Concept>c1</Concept></concepts><files_read><File>a.ts</File></files_read><files_modified><File>b.ts</File></files_modified></observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].facts).toEqual(['f1']);
+    expect(result[0].concepts).toEqual(['c1']);
+    expect(result[0].files_read).toEqual(['a.ts']);
+    expect(result[0].files_modified).toEqual(['b.ts']);
+  });
+
+  it('parses the reporter\'s raw model output tail (#4098)', () => {
+    const xml = `<observation><type>discovery</type><title>Reporter-shaped output</title><narrative>n</narrative><Concepts><concept>security_note</concept><concept>gotcha</concept></Concepts><Files_read><file>terraform/task_definition</file></Files_read><Files_modified><file>issues/418</file></Files_modified></observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].concepts).toEqual(['security_note', 'gotcha']);
+    expect(result[0].files_read).toEqual(['terraform/task_definition']);
+    expect(result[0].files_modified).toEqual(['issues/418']);
+  });
+
+  it('parses a capitalized <Summary> with mixed-case children', () => {
+    // Outer <Summary> capitalized isolates the summary-block regex; <Request>
+    // capitalized vs. <learned> lowercase isolates the shared extractField
+    // regex used by both observation and summary fields.
+    const xml = `<Summary><Request>r</Request><learned>l</learned></Summary>`;
+
+    const result = parseAgentXml(xml);
+
+    expect(result.valid).toBe(true);
+    if (!result.valid) return;
+    expect(result.summary?.request).toBe('r');
+    expect(result.summary?.learned).toBe('l');
+  });
+
+  it('parses a capitalized <Skip_summary> as skipped', () => {
+    const xml = `<Skip_summary reason="x"/>`;
+
+    const result = parseAgentXml(xml);
+
+    expect(result.valid).toBe(true);
+    if (!result.valid) return;
+    expect(result.summary?.skipped).toBe(true);
+    expect(result.summary?.skip_reason).toBe('x');
+  });
+
+  it('does not leak a capitalized field\'s text into prose salvage', () => {
+    // Only <Type> is capitalized; title/narrative/facts/concepts are all
+    // genuinely empty, so parsing should fall into the prose-salvage path.
+    // Before the fix, the salvage regex's case-sensitive alternation left
+    // <Type>bugfix</Type>'s content behind for the generic tag stripper,
+    // producing a spurious observation titled "bugfix". The lowercase
+    // equivalent already drops this as an empty observation (see "keeps
+    // self-closing empty fields out of the prose salvage path" above); the
+    // capitalized form must match that behavior.
+    const xml = `<observation><Type>bugfix</Type><title></title><narrative></narrative></observation>`;
+
+    const result = parseAgentXml(xml);
+
+    expect(result.valid).toBe(false);
   });
 });

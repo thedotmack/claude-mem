@@ -17,8 +17,12 @@ import { z } from 'zod';
 import type { RouteHandler } from '../../services/server/Server.js';
 import type { PostgresPool } from '../../storage/postgres/pool.js';
 import { PostgresServerSessionsRepository } from '../../storage/postgres/server-sessions.js';
+import { PostgresAgentEventsRepository } from '../../storage/postgres/agent-events.js';
+import { deterministicKey } from '../../storage/postgres/utils.js';
 import { logger } from '../../utils/logger.js';
+import { stripMemoryTags } from '../../utils/tag-stripping.js';
 import { requirePostgresServerAuth } from '../middleware/postgres-auth.js';
+import { serverUsageGuards } from '../middleware/usage-guards.js';
 import { EndSessionService } from '../services/EndSessionService.js';
 import { resolveServerSession } from './SessionsObservationsAdapter.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../shared/platform-source.js';
@@ -41,11 +45,11 @@ export class SessionsSummarizeAdapter implements RouteHandler {
   constructor(private readonly options: SessionsSummarizeAdapterOptions) {}
 
   setupRoutes(app: Application): void {
-    const writeAuth = requirePostgresServerAuth(this.options.pool, {
+    const writeAuth = [requirePostgresServerAuth(this.options.pool, {
       authMode: this.options.authMode,
       allowLocalDevBypass: this.options.allowLocalDevBypass,
       requiredScopes: ['memories:write'],
-    });
+    }), ...serverUsageGuards(this.options.pool, { write: true })];
 
     app.post('/api/sessions/summarize', writeAuth, this.asyncHandler(async (req, res) => {
       const parsed = summarizeSchema.safeParse(req.body);
@@ -108,6 +112,26 @@ export class SessionsSummarizeAdapter implements RouteHandler {
       agentId: null,
       agentType: null,
     });
+
+    // The canonical Stop path records this answer before ending the session.
+    // Keep the same summary evidence for legacy callers, without adding a
+    // separate generation job or duplicating the event on a repeated Stop.
+    const lastAssistantMessage = stripMemoryTags(data.last_assistant_message ?? '');
+    if (lastAssistantMessage.trim()) {
+      await new PostgresAgentEventsRepository(this.options.pool).create({
+        projectId,
+        teamId,
+        serverSessionId: session.id,
+        contentSessionId: data.contentSessionId,
+        sourceAdapter: 'claude-code-compat',
+        sourceEventId: `summary-answer:${deterministicKey([session.id, lastAssistantMessage])}`,
+        eventType: 'assistant_message',
+        platformSource,
+        payload: { last_assistant_message: lastAssistantMessage, platformSource },
+        metadata: { compat: 'sessions/summarize' },
+        occurredAt: new Date(),
+      });
+    }
 
     const result = await this.options.endSession.end({
       sessionId: session.id,

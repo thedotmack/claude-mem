@@ -1,0 +1,8 @@
+{
+  "name": "claude-mem-vercel-ai-sdk-example",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node --test memory.test.mjs" },
+  "dependencies": { "@ai-sdk/mcp": "2.0.96" },
+  "engines": { "node": ">=22.12.0" }
+}

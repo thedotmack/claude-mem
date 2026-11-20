@@ -8,9 +8,10 @@
  * install ID as the worker transport (telemetry.ts).
  */
 
-import { resolveTelemetryConsent, loadTelemetryConfig, getOrCreateInstallId } from './consent.js';
+import { resolveTelemetryConsent, loadTelemetryConfig, getOrCreateInstallId, getOrCreateAnonymousDistinctId } from './consent.js';
 import { scrubProperties } from './scrub.js';
 import { getTelemetryApiKey, getTelemetryHost, buildBaseProperties, buildPersonSet } from './common.js';
+import { observeTelemetryVolume } from './daily-volume.js';
 
 const CAPTURE_TIMEOUT_MS = 2000;
 
@@ -22,7 +23,7 @@ const CAPTURE_TIMEOUT_MS = 2000;
 export async function captureCliEvent(
   event: string,
   props?: Record<string, unknown>,
-  opts?: { person?: boolean }
+  opts?: { person?: boolean; bypassVolume?: boolean }
 ): Promise<void> {
   try {
     if (!resolveTelemetryConsent(process.env, loadTelemetryConfig())) {
@@ -33,8 +34,20 @@ export async function captureCliEvent(
       ...buildBaseProperties(),
       ...(props ?? {}),
     });
-    // Lifecycle events (install_* / uninstall) build the anonymous person
-    // profile that powers retention and cohort insights; see telemetry.ts.
+    if (!opts?.bypassVolume) {
+      const decision = observeTelemetryVolume(event, properties);
+      for (const closed of decision.closed) {
+        await postCaptureEvent(getTelemetryApiKey(), closed.event, {
+          ...closed.properties,
+          $process_person_profile: false,
+        }, AbortSignal.timeout(CAPTURE_TIMEOUT_MS), getOrCreateAnonymousDistinctId());
+      }
+      if (!decision.forward) return;
+    }
+    // Install / uninstall events build the anonymous person profile that
+    // powers retention and cohort insights. Worker and plugin events do not:
+    // `$set` on the install id makes every later event for that id bill as
+    // identified. See telemetry.ts.
     if (opts?.person) {
       properties.$set = buildPersonSet(properties);
     } else {
@@ -50,7 +63,13 @@ export async function captureCliEvent(
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), CAPTURE_TIMEOUT_MS);
     try {
-      await postCaptureEvent(apiKey, event, properties, controller.signal);
+      await postCaptureEvent(
+        apiKey,
+        event,
+        properties,
+        controller.signal,
+        opts?.person ? getOrCreateInstallId() : getOrCreateAnonymousDistinctId(),
+      );
     } finally {
       clearTimeout(timer);
     }
@@ -70,7 +89,8 @@ async function postCaptureEvent(
   apiKey: string,
   event: string,
   properties: Record<string, unknown>,
-  signal: AbortSignal
+  signal: AbortSignal,
+  distinctId: string,
 ): Promise<void> {
   await fetch(`${getTelemetryHost()}/capture/`, {
     method: 'POST',
@@ -78,7 +98,7 @@ async function postCaptureEvent(
     body: JSON.stringify({
       api_key: apiKey,
       event,
-      distinct_id: getOrCreateInstallId(),
+      distinct_id: distinctId,
       properties,
     }),
     signal,

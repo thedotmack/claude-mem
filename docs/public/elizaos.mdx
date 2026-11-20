@@ -1,0 +1,46 @@
+---
+title: elizaOS
+description: Explicitly save and recall project memory with the elizaOS runtime and MCP plugin.
+icon: robot
+---
+
+The [runnable example](https://github.com/thedotmack/claude-mem/blob/main/examples/elizaos/memory.mjs) uses the actual elizaOS runtime and its existing MCP service. It explicitly saves a synthetic note through the worker's JSON API, then searches, inspects the timeline and retrieves that note through MCP. It starts no model and adds no automatic capture.
+
+## Run
+
+Build Claude-Mem and start your configured worker. Install the example's pinned dependencies:
+
+```bash
+npm run build
+npm install --prefix examples/elizaos
+node examples/elizaos/memory.mjs \
+  --project eliza-practice \
+  --server "$PWD/plugin/scripts/mcp-server.cjs" \
+  --worker http://127.0.0.1:YOUR_WORKER_PORT
+```
+
+Replace `YOUR_WORKER_PORT` with your worker's actual port. Run from the checkout for this command, or give an absolute MCP bundle path when running from another project. Each run intentionally requests one explicit save. Reuse the saved observation ID in your own application when you only want recall.
+
+The worker URL must be a credential-free loopback origin. The same origin is passed to the MCP child as `CLAUDE_MEM_WORKER_URL`, so saving and recall use the same worker even when your settings name a different one. All three recall calls carry the exact selected project, as `project` and as a one-item `projects` list, so an MCP server started inside a git worktree does not widen the read to the checkout's other project keys. Project filtering is not a multi-user authorization boundary; this example uses the owner's local worker.
+
+The note passes through the existing save endpoint and its privacy rules. Saved content follows your existing worker synchronization settings. The example sends no content to a model provider. It stores no conversation transcript or IDE configuration. The existing plugin discovers tools and registers actions internally, but this example calls the service directly and does not run generated actions or an autonomous conversation.
+
+## Verified versions
+
+Verified on macOS with elizaOS core 1.7.2 and `@elizaos/plugin-mcp` 1.7.0. The verified pair is pinned in the example; elizaOS 2.x was not tested. Plugin 1.8.2 was also checked but failed to import with core 1.7.2 because `getRequestContext` was missing. Do not substitute that combination without rechecking compatibility.
+
+The [official plugin source](https://github.com/elizaos-plugins/plugin-mcp) documents the MCP service. The integration reuses it instead of adding another client or storage layer.
+
+After building and installing the example dependencies, run the real-runtime check with Bun and Node on PATH:
+
+```bash
+python3 tests/fixtures/elizaos-smoke.py
+```
+
+The check creates an isolated worker and synthetic records, verifies the exact recalled text, checks that another project's matching record appears in none of the search, timeline or detail results and is withheld when asked for by ID, then confirms a stopped worker fails the explicit save. No account, paid model or private transcript is used. Windows/Linux and autonomous model-driven elizaOS conversations were not tested.
+
+## Failures and disconnect
+
+A failed save, failed MCP connection or missing recalled text causes the example to fail. A confirmed save ID is printed before recall starts, so a later recall failure does not hide the saved record. Check the worker port, MCP bundle path and selected project. Keep the tested package pair together.
+
+The service is stopped in `finally`, closing its MCP child connection. Stop using the example to disconnect. Remove only this application's MCP configuration if you adapt it elsewhere. Disconnecting preserves saved memories, other agents and their settings.

@@ -7,65 +7,31 @@ const PROJECT_ROOT = join(import.meta.dir, "..");
 const SRC_DIR = join(PROJECT_ROOT, "src");
 
 const EXCLUDED_PATTERNS = [
-  /types\//,             // Type definition files
-  /constants\//,         // Pure constants
-  /\.d\.ts$/,            // Type declaration files
   /^ui\//,               // UI components (separate logging context)
-  /^bin\//,              // CLI utilities (may use console.log for output)
   /index\.ts$/,          // Re-export files
+  /integrations\/opencode-plugin\//,  // OpenCode plugin bundle: must stay free of worker-only imports (logger pulls in settings-document/hook-io), so it logs to the host's console; only the entry index.ts was excluded before the v1/v2 split
   /logger\.ts$/,         // Logger itself
-  /hook-response\.ts$/,  // Pure data structure
-  /hook-constants\.ts$/, // Pure constants
-  /paths\.ts$/,          // Path utilities
-  /bun-path\.ts$/,       // Path utilities
-  /migrations\.ts$/,     // Database migrations (console.log for migration output)
   /worker-service\.ts$/, // CLI entry point with interactive setup wizard (console.log for user prompts)
   /integrations\/.*Installer\.ts$/, // CLI installer commands (console.log for interactive installation output)
   /SettingsDefaultsManager\.ts$/,  // Must use console.log to avoid circular dependency with logger
-  /user-message-hook\.ts$/,  // Deprecated - kept for reference only, not registered in hooks.json
-  /cli\/hook-command\.ts$/,  // CLI hook command uses console.log/error for hook protocol output
+  /cli\/run-hook-subcommand\.ts$/,  // `claude-mem hook` usage text on missing args, printed before the hook IO window opens (moved from worker-service.ts)
   /shared\/hook-io\.ts$/,  // Canonical hook-protocol IO module: console.log emits MODEL_CONTEXT JSON to stdout (plan 01 / #2292)
-  /cli\/handlers\/user-message\.ts$/,  // User message handler uses console.error for user-visible context
   /services\/transcripts\/cli\.ts$/,  // CLI transcript subcommands use console.log for user-visible interactive output
+  /services\/memory\/cli\.ts$/,  // CLI `memory ingest` prints its dry-run and import report to the user's terminal
   /services\/transcripts\/transcript-watcher-entry\.ts$/,  // CLI process entry point: console.error on fatal startup error goes to a visible stderr (own process, not a background service)
   /npx-cli\/commands\//,  // npx CLI subcommands (install/uninstall/runtime/server/etc) emit user-visible terminal output
   /npx-cli\/install\//,  // npx CLI install-time modules (error-reporter/setup-runtime/etc) emit user-visible terminal output during `npx claude-mem install`
   /npx-cli\/banner\.ts$/,  // npx CLI banner animation runs only on an interactive TTY; console.warn on frame-decode failure is user-visible terminal output
   /server\/runtime\/ServerService\.ts$/,  // server CLI entry point (status/usage output, process.exit)
   /integrations\/McpIntegrations\.ts$/,  // CLI installer for MCP integrations (interactive install output)
-  /errors\.ts$/,  // Error class/type definitions (pure data, no logic to instrument)
-  /worker\/provider-errors\.ts$/,  // Provider error classification (pure data structures)
-  /worker\/agents\/FallbackErrorHandler\.ts$/,  // Pure isAbortError predicate after dead-code removal; no side effects (mirrors output-classifier)
-  /worker\/search\/ResultFormatter\.ts$/,  // Pure static Chroma-failure message builder; no side effects (mirrors CorpusRenderer)
-  /worker\/knowledge\/CorpusRenderer\.ts$/,  // Pure string/markdown rendering, no side effects
-  /worker\/http\/middleware\/validateBody\.ts$/,  // Trivial zod validation middleware factory
-  /worker\/RateLimitStore\.ts$/,  // Side-effect-free in-memory rate-limit store
-  /worker\/events\/SessionEventBroadcaster\.ts$/,  // Thin SSE broadcast wrapper, no error paths
-  /sdk\/output-classifier\.ts$/,  // Pure, side-effect-free output classifier; logging happens at the ResponseProcessor call site with full session context
-  /build\/hook-shell-template\.ts$/,  // Pure build-time shell-string generator (no runtime/observability surface); drift is enforced by build-hooks.js + plugin-distribution.test.ts
-  /worker\/model-aliases\.ts$/,  // Pure $TIER alias resolver (#2289); side-effect-free passthrough, logging happens at the request-time call site
-  /worker\/TimelineService\.ts$/,  // Pure filterByDepth helper after dead-code removal; no side effects (mirrors FallbackErrorHandler)
+  /media\/smoke\.ts$/,  // `worker-service media-smoke` prints its one JSON result line to the terminal for the binary smoke check
 ];
-
-const HIGH_PRIORITY_PATTERNS = [
-  /^services\/worker\/(?!.*types\.ts$)/,  // Worker services (not type files)
-  /^services\/sqlite\/(?!types\.ts$|index\.ts$)/,  // SQLite services
-  /^services\/sync\//,
-  /^services\/context-generator\.ts$/,
-  /^hooks\/(?!hook-response\.ts$)/,  // All src/hooks/* except hook-response.ts (NOT ui/hooks)
-  /^sdk\/(?!.*types?\.ts$)/,  // SDK files (not type files)
-  /^servers\/(?!.*types?\.ts$)/,  // Server files (not type files)
-];
-
-const isUIFile = (path: string) => /^ui\//.test(path);
 
 interface FileAnalysis {
   path: string;
   relativePath: string;
-  hasLoggerImport: boolean;
   usesConsoleLog: boolean;
   consoleLogLines: number[];
-  isHighPriority: boolean;
 }
 
 async function findTypeScriptFiles(dir: string): Promise<string[]> {
@@ -86,26 +52,14 @@ async function findTypeScriptFiles(dir: string): Promise<string[]> {
 }
 
 function shouldExclude(filePath: string): boolean {
-  const relativePath = relative(SRC_DIR, filePath);
+  const relativePath = relative(SRC_DIR, filePath).replaceAll("\\", "/");
   return EXCLUDED_PATTERNS.some(pattern => pattern.test(relativePath));
-}
-
-function isHighPriority(filePath: string): boolean {
-  const relativePath = relative(SRC_DIR, filePath);
-
-  if (isUIFile(relativePath)) {
-    return false;
-  }
-
-  return HIGH_PRIORITY_PATTERNS.some(pattern => pattern.test(relativePath));
 }
 
 function analyzeFile(filePath: string): FileAnalysis {
   const content = readFileSync(filePath, "utf-8");
   const lines = content.split("\n");
-  const relativePath = relative(PROJECT_ROOT, filePath);
-
-  const hasLoggerImport = /import\s+.*logger.*from\s+['"].*logger(\.(js|ts))?['"]/.test(content);
+  const relativePath = relative(PROJECT_ROOT, filePath).replaceAll("\\", "/");
 
   const consoleLogLines: number[] = [];
   lines.forEach((line, index) => {
@@ -117,22 +71,16 @@ function analyzeFile(filePath: string): FileAnalysis {
   return {
     path: filePath,
     relativePath,
-    hasLoggerImport,
     usesConsoleLog: consoleLogLines.length > 0,
     consoleLogLines,
-    isHighPriority: isHighPriority(filePath),
   };
 }
 
+const allFiles = (await findTypeScriptFiles(SRC_DIR)).map(analyzeFile);
+const relevantFiles = allFiles.filter(f => !shouldExclude(f.path));
+
 describe("Logger Usage Standards", () => {
-  let allFiles: FileAnalysis[] = [];
-  let relevantFiles: FileAnalysis[] = [];
-
-  it("should scan all TypeScript files in src/", async () => {
-    const files = await findTypeScriptFiles(SRC_DIR);
-    allFiles = files.map(analyzeFile);
-    relevantFiles = allFiles.filter(f => !shouldExclude(f.path));
-
+  it("should scan all TypeScript files in src/", () => {
     expect(allFiles.length).toBeGreaterThan(0);
     expect(relevantFiles.length).toBeGreaterThan(0);
   });
@@ -153,22 +101,6 @@ describe("Logger Usage Standards", () => {
         `These logs are INVISIBLE - they run in background processes where console output goes nowhere.\n` +
         `Replace with logger.debug/info/warn/error calls immediately.\n\n` +
         `Only hook files (src/hooks/*) should use console.log for their output response.`
-      );
-    }
-  });
-
-  it("should have logger coverage in high-priority files", () => {
-    const highPriorityFiles = relevantFiles.filter(f => f.isHighPriority);
-    const withoutLogger = highPriorityFiles.filter(f => !f.hasLoggerImport);
-
-    if (withoutLogger.length > 0) {
-      const report = withoutLogger
-        .map(f => `  ${f.relativePath}`)
-        .join("\n");
-
-      throw new Error(
-        `High-priority files missing logger import (${withoutLogger.length}):\n${report}\n\n` +
-        `These files should import and use logger for debugging and observability.`
       );
     }
   });

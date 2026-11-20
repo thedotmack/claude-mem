@@ -53,13 +53,13 @@
 <h4 align="center">Sistema ng kompresyon ng persistent memory na ginawa para sa <a href="https://claude.com/claude-code" target="_blank">Claude Code</a>.</h4>
 
 <p align="center">
-  <a href="LICENSE">
+  <a href="../../LICENSE">
     <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License">
   </a>
-  <a href="package.json">
+  <a href="../../package.json">
     <img src="https://img.shields.io/badge/version-13.4.0-green.svg" alt="Version">
   </a>
-  <a href="package.json">
+  <a href="../../package.json">
     <img src="https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen.svg" alt="Node">
   </a>
   <a href="https://github.com/thedotmack/awesome-claude-code">
@@ -215,7 +215,6 @@ Hinahawakan ng installer ang mga dependencies, plugin setup, konpigurasyon ng AI
 
 - **[Konpigurasyon](https://docs.claude-mem.ai/configuration)** - Environment variables at settings
 - **[Pagbuo](https://docs.claude-mem.ai/development)** - Pag-build, pag-test, at contribution workflow
-- **[Release Branches](https://docs.claude-mem.ai/branches)** - Daloy ng stable, core-dev, at community-edge branches
 - **[Pag-troubleshoot](https://docs.claude-mem.ai/troubleshooting)** - Karaniwang isyu at solusyon
 
 ---
@@ -271,15 +270,6 @@ get_observations(ids=[123, 456])
 ```
 
 Tingnan ang [Search Tools Guide](https://docs.claude-mem.ai/usage/search-tools) para sa mas detalyadong mga halimbawa.
-
----
-
-## Release Branches
-
-Ang mga stable release ay nagmumula sa `main` at pinapublish sa npm. Ang `core-dev`
-at `community-edge` ay mga source-run branch para sa maagang reliability fixes at
-community integrations. Tingnan ang **[Release Branches](https://docs.claude-mem.ai/branches)**
-para sa daloy ng branch at mga instruksyon sa pagpapatakbo ng non-stable version.
 
 ---
 
@@ -349,6 +339,7 @@ Ang mga wika-specific na mode ay sumusunod sa pattern na `code--[lang]` kung saa
 #### Pagkatapos Baguhin ang Mode
 
 I-restart ang Claude Code para maipatupad ang bagong konpigurasyon ng mode.
+
 ---
 
 ## Pagbuo
@@ -384,11 +375,6 @@ Malugod na tinatanggap ang mga kontribusyon! Pakisunod:
 4. I-update ang dokumentasyon
 5. Mag-submit ng Pull Request
 
-Nagmumula ang Claude-Mem sa tatlong branch: `main` (stable), `core-dev`, at
-`community-edge`. Tanging ang `main` lamang ang pinapublish sa npm; ang iba ay
-pinapatakbo mula sa source. Tingnan ang [Release Branches](https://docs.claude-mem.ai/branches) para sa
-estratehiya at mga instruksyon sa lokal na pagpapatakbo.
-
 Tingnan ang [Gabay sa Pagbuo](https://docs.claude-mem.ai/development) para sa contribution workflow.
 
 ---
@@ -401,17 +387,16 @@ Pinili namin ang Apache-2.0 dahil ang matibay na agentic memory ay dapat madalin
 i-embed sa mga developer tool, local agents, MCP servers, enterprise systems,
 robotics stacks, at production agent harnesses.
 
-Tingnan ang [LICENSE](LICENSE) file para sa buong detalye. Tingnan ang [docs/license.md](docs/license.md)
-at [docs/ip-boundary.md](docs/ip-boundary.md) para sa saklaw ng lisensya at ang
+Tingnan ang [LICENSE](../../LICENSE) file para sa buong detalye. Tingnan ang [docs/license.md](../license.md)
+at [docs/ip-boundary.md](../ip-boundary.md) para sa saklaw ng lisensya at ang
 hangganan ng open/commercial.
 
-**Tala tungkol sa Ragtime**: Ang direktoryong `ragtime/` ay lisensyado sa ilalim ng **Apache License 2.0**. Tingnan ang [ragtime/LICENSE](ragtime/LICENSE) para sa detalye.
 
 ---
 
 ## Suporta
 
-- **Dokumentasyon**: [docs/](docs/)
+- **Dokumentasyon**: [docs/](../)
 - **Issues**: [GitHub Issues](https://github.com/thedotmack/claude-mem/issues)
 - **Repository**: [github.com/thedotmack/claude-mem](https://github.com/thedotmack/claude-mem)
 - **Opisyal na X Account**: [@Claude_Memory](https://x.com/Claude_Memory)

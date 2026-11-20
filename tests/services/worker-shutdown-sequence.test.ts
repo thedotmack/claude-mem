@@ -18,6 +18,8 @@ interface Harness {
   counters: {
     beforeGraceful: number;
     graceful: number;
+    forceStop: number;
+    supervisorCascade: number;
     waitForPortFree: number;
     removePidFile: number;
     spawnDaemon: number;
@@ -30,6 +32,8 @@ function makeHarness(overrides: {
   gracefulDeadlineMs?: number;
   beforeGracefulThrows?: boolean;
   graceful?: () => Promise<void>;
+  forceStop?: () => Promise<void>;
+  supervisorCascade?: () => Promise<void>;
   portFree?: boolean;
   spawnResult?: number | undefined;
   spawnThrows?: boolean;
@@ -39,6 +43,8 @@ function makeHarness(overrides: {
   const counters = {
     beforeGraceful: 0,
     graceful: 0,
+    forceStop: 0,
+    supervisorCascade: 0,
     waitForPortFree: 0,
     removePidFile: 0,
     spawnDaemon: 0,
@@ -62,6 +68,16 @@ function makeHarness(overrides: {
       return overrides.graceful ? overrides.graceful() : Promise.resolve();
     },
     gracefulDeadlineMs: overrides.gracefulDeadlineMs ?? 1000,
+    forceStopCommandsStillRunning: () => {
+      counters.forceStop++;
+      calls.push('forceStopCommandsStillRunning');
+      return overrides.forceStop ? overrides.forceStop() : Promise.resolve();
+    },
+    stopEveryRegisteredChildProcess: () => {
+      counters.supervisorCascade++;
+      calls.push('stopEveryRegisteredChildProcess');
+      return overrides.supervisorCascade ? overrides.supervisorCascade() : Promise.resolve();
+    },
     restartHandoff: {
       port: PORT,
       portFreeTimeoutMs: 1000,
@@ -99,6 +115,7 @@ describe('runShutdownSequence — re-entrancy guard', () => {
 
     expect(h.counters.graceful).toBe(1);
     expect(h.counters.beforeGraceful).toBe(1);
+    expect(h.counters.forceStop).toBe(1);
     expect(h.guard.shuttingDown).toBe(true);
   });
 
@@ -164,6 +181,123 @@ describe('runShutdownSequence — graceful-shutdown deadline', () => {
   });
 });
 
+describe('runShutdownSequence — force-stopping the commands still running, before the worker exits', () => {
+  // The callers exit the process once the sequence returns (flushResponseThen, the supervisor's signal handler, the idle
+  // exit), and a restart spawns its successor in it: the force stop comes after the graceful shutdown and before both.
+  it('runs once the graceful shutdown has finished, and before the restart handoff', async () => {
+    const h = makeHarness({ reason: 'restart' });
+
+    await runShutdownSequence(h.options);
+
+    expect(h.counters.forceStop).toBe(1);
+    expect(h.calls).toEqual(['beforeGraceful', 'graceful', 'forceStopCommandsStillRunning', `waitForPortFree:${PORT}`, 'removePidFile', 'spawnDaemon']);
+  });
+
+  it('runs when the graceful shutdown runs out of its deadline, before the sequence returns', async () => {
+    const h = makeHarness({
+      reason: 'signal',
+      gracefulDeadlineMs: 50,
+      graceful: () => new Promise<void>(() => { /* hangs forever — unbounded session drain */ }),
+    });
+
+    await runShutdownSequence(h.options);
+
+    expect(h.calls).toEqual(['beforeGraceful', 'graceful', 'forceStopCommandsStillRunning', 'stopEveryRegisteredChildProcess']);
+  });
+
+  it('runs when the graceful shutdown fails', async () => {
+    const h = makeHarness({ reason: 'idle', graceful: () => Promise.reject(new Error('db close failed')) });
+
+    await runShutdownSequence(h.options);
+
+    expect(h.calls).toEqual(['beforeGraceful', 'graceful', 'forceStopCommandsStillRunning', 'stopEveryRegisteredChildProcess']);
+  });
+
+  it('returns only once the force stop has finished, since the process exits then', async () => {
+    let finishForceStop!: () => void;
+    const h = makeHarness({ reason: 'signal', forceStop: () => new Promise<void>(resolve => { finishForceStop = resolve; }) });
+    let returned = false;
+
+    const sequence = runShutdownSequence(h.options).then(() => { returned = true; });
+    await new Promise(resolve => setImmediate(resolve));
+    expect(h.counters.forceStop).toBe(1);
+    expect(returned).toBe(false);
+
+    finishForceStop();
+    await sequence;
+    expect(returned).toBe(true);
+  });
+
+  it('still hands off to the successor (and does not reject) when the force stop throws', async () => {
+    const h = makeHarness({ reason: 'restart', forceStop: () => Promise.reject(new Error('process table unreadable')) });
+
+    await runShutdownSequence(h.options); // must not throw
+
+    expect(h.counters.forceStop).toBe(1);
+    expect(h.counters.spawnDaemon).toBe(1);
+  });
+});
+
+describe("runShutdownSequence — the supervisor's cascade, when the graceful shutdown did not finish", () => {
+  // performGracefulShutdown runs the cascade as its last step. Past the deadline it may not have got there, or may be
+  // running it, released by the force stop; spawnDaemon refuses while it runs. So it is run, or waited for, again.
+  it('runs after the force stop when the graceful shutdown runs out of its deadline, and before the restart handoff', async () => {
+    const h = makeHarness({
+      reason: 'restart',
+      gracefulDeadlineMs: 50,
+      graceful: () => new Promise<void>(() => { /* hangs forever — unbounded session drain */ }),
+    });
+
+    await runShutdownSequence(h.options);
+
+    expect(h.counters.supervisorCascade).toBe(1);
+    expect(h.calls).toEqual([
+      'beforeGraceful', 'graceful', 'forceStopCommandsStillRunning', 'stopEveryRegisteredChildProcess', `waitForPortFree:${PORT}`, 'removePidFile', 'spawnDaemon',
+    ]);
+  });
+
+  it('returns only once the cascade has finished, since the process exits then', async () => {
+    let finishCascade!: () => void;
+    const h = makeHarness({
+      reason: 'signal',
+      gracefulDeadlineMs: 50,
+      graceful: () => new Promise<void>(() => { /* hangs forever — unbounded session drain */ }),
+      supervisorCascade: () => new Promise<void>(resolve => { finishCascade = resolve; }),
+    });
+    let returned = false;
+
+    const sequence = runShutdownSequence(h.options).then(() => { returned = true; });
+    while (h.counters.supervisorCascade === 0) await new Promise(resolve => setTimeout(resolve, 10));
+    await new Promise(resolve => setImmediate(resolve));
+    expect(returned).toBe(false);
+
+    finishCascade();
+    await sequence;
+    expect(returned).toBe(true);
+  });
+
+  it('is not run again when the graceful shutdown finished: its last step ran it', async () => {
+    const h = makeHarness({ reason: 'stop' });
+
+    await runShutdownSequence(h.options);
+
+    expect(h.counters.supervisorCascade).toBe(0);
+  });
+
+  it('still hands off to the successor (and does not reject) when the cascade throws', async () => {
+    const h = makeHarness({
+      reason: 'restart',
+      graceful: () => Promise.reject(new Error('db close failed')),
+      supervisorCascade: () => Promise.reject(new Error('process table unreadable')),
+    });
+
+    await runShutdownSequence(h.options); // must not throw
+
+    expect(h.counters.supervisorCascade).toBe(1);
+    expect(h.counters.spawnDaemon).toBe(1);
+  });
+});
+
 describe('runShutdownSequence — restart successor handoff', () => {
   it('spawns the successor only AFTER the port is confirmed free (restart)', async () => {
     const h = makeHarness({ reason: 'restart', portFree: true });
@@ -204,6 +338,19 @@ describe('runShutdownSequence — restart successor handoff', () => {
     await runShutdownSequence(h.options);
 
     expect(h.counters.waitForPortFree).toBe(0);
+    expect(h.counters.spawnDaemon).toBe(0);
+  });
+
+  it("stays kill-only for reason 'idle' (idle-exit monitor)", async () => {
+    const h = makeHarness({ reason: 'idle' });
+
+    await runShutdownSequence(h.options);
+
+    // An idle exit is a graceful stop — the drain runs, no successor spawn.
+    expect(h.counters.beforeGraceful).toBe(1);
+    expect(h.counters.graceful).toBe(1);
+    expect(h.counters.waitForPortFree).toBe(0);
+    expect(h.counters.removePidFile).toBe(0);
     expect(h.counters.spawnDaemon).toBe(0);
   });
 

@@ -105,6 +105,28 @@ describe('ProcessRegistry keeps a superseded live process reapable (#3301)', () 
     expect(registry.getRuntimeProcess('chroma-mcp')).toBeUndefined();
   });
 
+  it('an old exit removes its superseded record without unregistering the replacement', () => {
+    const { registry, registryPath } = makeRegistry();
+    const oldHandle = { pid: LIVE_PID } as unknown as Parameters<typeof registry.register>[2];
+    registry.register('chroma-mcp', { pid: LIVE_PID, type: 'chroma', startedAt: '2026-03-15T00:00:00.000Z' }, oldHandle);
+    registry.register('chroma-mcp', { pid: DEAD_PID, type: 'chroma', startedAt: '2026-03-15T00:00:05.000Z' });
+
+    registry.unregister('chroma-mcp', LIVE_PID);
+
+    expect(registry.getAll().map(record => [record.id, record.pid])).toEqual([['chroma-mcp', DEAD_PID]]);
+    expect(registry.getRuntimeProcess(`chroma-mcp#superseded:${LIVE_PID}`)).toBeUndefined();
+    const persisted = JSON.parse(readFileSync(registryPath, 'utf-8')) as { processes: Record<string, { pid: number }> };
+    expect(persisted.processes['chroma-mcp']?.pid).toBe(DEAD_PID);
+    expect(persisted.processes[`chroma-mcp#superseded:${LIVE_PID}`]).toBeUndefined();
+  });
+
+  it('ignores an exit whose pid belongs to neither the current nor a superseded record', () => {
+    const { registry } = makeRegistry();
+    registry.register('chroma-mcp', { pid: LIVE_PID, type: 'chroma', startedAt: '2026-03-15T00:00:00.000Z' });
+    registry.unregister('chroma-mcp', DEAD_PID);
+    expect(registry.getAll().map(record => record.pid)).toEqual([LIVE_PID]);
+  });
+
   it('the retained record is pruned once its process exits', () => {
     const { registry } = makeRegistry();
 

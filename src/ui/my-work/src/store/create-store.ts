@@ -1,0 +1,92 @@
+// Binds the slices into the one My Work store, after MemeDeck's lib/store: immer for updates, devtools to watch
+// them, persist for the display preferences only. The browser instance is index.ts; tests make their own.
+import { enableMapSet, setAutoFreeze } from 'immer'
+import { create, type StateCreator } from 'zustand'
+import { createJSONStorage, devtools, persist } from 'zustand/middleware'
+import { immer } from 'zustand/middleware/immer'
+import { isThemeChoice } from '../lib/theme.ts'
+import { createFocusSlice } from './slices/focus-slice.ts'
+import { createRulesSlice } from './slices/rules-slice.ts'
+import { createViewSlice } from './slices/view-slice.ts'
+import { createWorkSlice } from './slices/work-slice.ts'
+import { OLDEST_MIGRATED_PREFERENCES_VERSION, PREFERENCES_STORAGE_KEY, PREFERENCES_VERSION } from './preferences.ts'
+import type { BoundStore, StoreEnvironment, ViewState } from './store-types.ts'
+
+/** The pre-paint script in index.html (lib/theme-pre-paint.ts) reads the saved theme from here (`state.theme`). */
+export { PREFERENCES_STORAGE_KEY }
+
+enableMapSet()
+// The sample source edits its fixture objects in place (sample-source.ts), and those objects sit in the model.
+// Immer would freeze them on the way in, so freezing stays off; slices still update only through set().
+setAutoFreeze(false)
+
+type Mutators = [['zustand/persist', unknown], ['zustand/devtools', never], ['zustand/immer', never]]
+export type SliceCreator<Slice> = StateCreator<BoundStore, Mutators, [], Slice>
+
+// The theme is saved since 16.0.0 (G8): before that it always followed the system preference or `?theme=`. Only the
+// person's own choice is saved; `?theme=` lasts the visit (view.themeForThisVisit, never saved).
+type Preferences = Pick<ViewState, 'listView' | 'filter' | 'sort' | 'focusArtwork' | 'theme'>
+
+const LIST_VIEWS: readonly ViewState['listView'][] = ['cards', 'list', 'agents', 'team']
+const FILTERS: readonly ViewState['filter'][] = ['all', 'needs-you', 'working', 'shipped', 'closed']
+const SORTS: readonly ViewState['sort'][] = ['attention', 'started', 'progress']
+const FOCUS_ARTWORK: readonly ViewState['focusArtwork'][] = ['full', 'compact', 'off']
+
+/** Saved preferences are read back field by field; a value this version doesn't know is left at its default. */
+function validPreferences(saved: unknown): Partial<Preferences> {
+  const value = (saved ?? {}) as Record<string, unknown>
+  const preferences: Partial<Preferences> = {}
+  if (LIST_VIEWS.includes(value.listView as ViewState['listView'])) preferences.listView = value.listView as ViewState['listView']
+  if (FILTERS.includes(value.filter as ViewState['filter'])) preferences.filter = value.filter as ViewState['filter']
+  if (SORTS.includes(value.sort as ViewState['sort'])) preferences.sort = value.sort as ViewState['sort']
+  if (FOCUS_ARTWORK.includes(value.focusArtwork as ViewState['focusArtwork'])) preferences.focusArtwork = value.focusArtwork as ViewState['focusArtwork']
+  if (isThemeChoice(value.theme)) preferences.theme = value.theme
+  return preferences
+}
+
+/** The first saved version in which `focusArtwork` is the person's choice (preferences.ts PREFERENCES_VERSION, 2). */
+const FOCUS_ARTWORK_CHOSEN_FROM_VERSION = 2
+
+/**
+ * Saved preferences from another version, in this version's meaning; persist calls it when the saved version differs
+ * and then saves the result as this version. A version-1 `focusArtwork: 'full'` is dropped, so the board opens at this
+ * version's default: 15.19.0 saved its own default on every visit, so it was never a choice. A choice made from
+ * version 2 on is kept as made. A version this store cannot read is dropped whole, as the pre-paint script drops it.
+ */
+export function migratePreferences(saved: unknown, version: number): Partial<Preferences> {
+  if (version < OLDEST_MIGRATED_PREFERENCES_VERSION || version > PREFERENCES_VERSION) return {}
+  const { focusArtwork, ...kept } = validPreferences(saved)
+  if (version < FOCUS_ARTWORK_CHOSEN_FROM_VERSION && focusArtwork === 'full') return kept
+  return focusArtwork ? { ...kept, focusArtwork } : kept
+}
+
+export function createBoundStore(environment: StoreEnvironment) {
+  return create<BoundStore>()(
+    persist(
+      devtools(
+        immer((...a) => ({
+          ...createWorkSlice(...a),
+          ...createViewSlice(environment)(...a),
+          ...createRulesSlice(...a),
+          ...createFocusSlice(...a),
+        })),
+        // Zustand turns devtools off in production builds by itself.
+        { name: 'claude-mem-my-work' },
+      ),
+      {
+        name: PREFERENCES_STORAGE_KEY,
+        version: PREFERENCES_VERSION,
+        migrate: migratePreferences,
+        ...(environment.storage ? { storage: createJSONStorage(() => environment.storage!) } : {}),
+        // Only how the person likes to see My Work is saved. Server records stay in memory.
+        partialize: ({ view: { listView, filter, sort, focusArtwork, theme } }): Preferences => ({ listView, filter, sort, focusArtwork, theme }),
+        merge: (saved, current) => {
+          const view = { ...current.view, ...validPreferences(saved) }
+          // The team view needs the team switch, which is not saved.
+          if (view.listView === 'team') view.listView = 'cards'
+          return { ...current, view }
+        },
+      },
+    ),
+  )
+}

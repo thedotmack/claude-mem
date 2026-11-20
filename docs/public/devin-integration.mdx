@@ -1,0 +1,161 @@
+---
+title: Devin Integration
+description: Persistent memory for Devin CLI, Devin Desktop, Devin cloud sessions and Devin Bots — hook-based observation recording, session-start context injection, and session summaries
+icon: terminal
+---
+
+## Overview
+
+The Devin integration gives claude-mem persistent memory to agents running in Devin CLI, which Devin Desktop also uses. It handles four things:
+
+1. **Observation recording** — Captures tool usage from Devin's lifecycle hooks and sends it to the claude-mem worker for AI processing
+2. **Context injection** — Injects the observation timeline at session start through the `SessionStart` hook's `additionalContext`, the same envelope Claude Code uses, and again after Devin compacts the conversation (`PostCompaction`)
+3. **Session summaries** — Summarizes each session from the last assistant message Devin sends on `Stop`
+4. **MCP search tools** — Registers the claude-mem stdio server in `mcp_config.json`, so `mcp__claude-mem__*` memory search tools are available inside Devin
+
+<Info>
+Devin reads user-level hooks from the `"hooks"` key of `~/.config/devin/config.json` (`%APPDATA%\devin\config.json` on Windows). The installer merges claude-mem's hook rules into that key and leaves your other Devin settings and hooks alone. It also registers the claude-mem MCP server in `~/.config/devin/mcp_config.json` (`%APPDATA%\devin\mcp_config.json` on Windows), the dedicated file Devin v3000.3+ reads MCP servers from (older versions stored them in `config.json`'s `mcpServers` key and migrate on upgrade).
+</Info>
+
+## Installation
+
+```bash
+npx claude-mem install --ide devin
+```
+
+Or manage the hooks directly:
+
+```bash
+npx claude-mem devin install
+npx claude-mem devin status
+npx claude-mem devin uninstall
+```
+
+Start a new Devin session afterwards and run `/hooks` to confirm the claude-mem hooks loaded, and `/mcp` or `devin mcp list` to see the `claude-mem` server.
+
+## Devin cloud sessions and Devin Bots
+
+Cloud sessions run on a fresh VM each time, and a Devin Bot runs its conversation and every child session it starts as cloud sessions. Three organization-wide pieces give all of them claude-mem, with no Claude Code or Devin CLI on the VM:
+
+| Piece | What it does |
+| --- | --- |
+| Organization plugin `plugin/` | Devin hooks, the `claude-mem` MCP server and the claude-mem skills in every session |
+| Organization blueprint | Installs the claude-mem runtime (Bun, uv, worker, MCP server) on every VM |
+| CMEM Pro org secrets | Run the observer and sync memory through your cmem.ai account, so every session shares one memory |
+
+### 1. Install the plugin for the organization
+
+In Devin, open **Customize → Plugins → Add plugin → From repository** at the organization scope and add the `plugin` folder of this repository:
+
+```text
+https://github.com/thedotmack/claude-mem/tree/main/plugin
+```
+
+`plugin/.devin-plugin/plugin.json` makes Devin load the folder as a Devin plugin: hooks from `plugin/hooks.json`, MCP from `plugin/devin.mcp.json` only, and every skill in `plugin/skills`. Organization plugins reach every session in the organization, including each Devin Bot and the child sessions it starts.
+
+### 2. Add the organization blueprint
+
+In the organization-wide blueprint (**Settings → Environment**), install the runtime in `initialize` and write CMEM Pro settings in `maintenance`:
+
+```yaml
+initialize: |
+  source ~/.nvm/nvm.sh
+  nvm install 22
+  nvm alias default 22
+  # --ide claude-code only selects where the runtime files go; Claude Code is not installed.
+  CI=1 npx -y claude-mem@latest install --ide claude-code --provider claude --no-auto-start </dev/null
+maintenance: |
+  if [ -n "$CLAUDE_MEM_CLOUD_SYNC_TOKEN" ]; then
+  python3 - <<'PY'
+  import json, os, urllib.request
+  p = os.path.expanduser('~/.claude-mem/settings.json')
+  s = json.load(open(p)) if os.path.exists(p) else {}
+  e = os.environ
+  token = e['CLAUDE_MEM_CLOUD_SYNC_TOKEN'].strip()
+  user_id = e.get('CLAUDE_MEM_CLOUD_SYNC_USER_ID', '').strip()
+  if not user_id:
+      try:
+          req = urllib.request.Request('https://cmem.ai/api/pro/validate-setup', data=json.dumps({'setup_token': token}).encode(), headers={'Content-Type': 'application/json'})
+          user_id = json.load(urllib.request.urlopen(req, timeout=30))['config']['user_id']
+      except Exception as err:
+          print(f'claude-mem: could not look up the cmem.ai user id ({type(err).__name__}); cloud sync stays off')
+  s.update({
+    'CLAUDE_MEM_CLOUD_SYNC_TOKEN': token,
+    'CLAUDE_MEM_CLOUD_SYNC_USER_ID': user_id,
+    'CLAUDE_MEM_CLOUD_SYNC_HUB_URL': e.get('CLAUDE_MEM_CLOUD_SYNC_HUB_URL', '').strip() or 'https://sync.cmem.ai',
+    'CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID': '',
+    'CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME': 'devin-cloud',
+    'CLAUDE_MEM_PRO_TRIAL_STATE': 'active',
+    'CLAUDE_MEM_PRO_PLAN': e.get('CLAUDE_MEM_PRO_PLAN', 'pro'),
+    'CLAUDE_MEM_PRO_FALLBACK_AT': '',
+    'CLAUDE_MEM_PROVIDER': 'openrouter',
+    'CLAUDE_MEM_OPENROUTER_BASE_URL': 'https://cmem.ai/api/inference/v1',
+    'CLAUDE_MEM_OPENROUTER_MODEL': 'cmem-observer',
+    'CLAUDE_MEM_OPENROUTER_API_KEY': e.get('CLAUDE_MEM_PRO_MEMORY_KEY') or e['CLAUDE_MEM_CLOUD_SYNC_TOKEN'],
+    'CLAUDE_MEM_PRO_MEMORY_KEY': '', 'CLAUDE_MEM_PRO_MEMORY_BASE_URL': '', 'CLAUDE_MEM_PRO_MEMORY_MODEL': '',
+  })
+  os.makedirs(os.path.dirname(p), exist_ok=True)
+  fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+  with os.fdopen(fd, 'w') as f: json.dump(s, f, indent=2)
+  PY
+  fi
+```
+
+The worker is not started during the build, so each session's worker mints its own sync device id on its first start.
+
+### 3. Connect CMEM Pro
+
+1. Sign in at [cmem.ai](https://cmem.ai) and start CMEM Pro (for example through `npx claude-mem install` → **CMEM Pro** on any machine).
+2. Open [cmem.ai/pro/key](https://cmem.ai/pro/key) and copy the **CMEM Pro key** (`cm_pro_…`). Click **Generate new key** if none is shown.
+3. Save it in Devin as the **organization** secret `CLAUDE_MEM_CLOUD_SYNC_TOKEN`, then rebuild the snapshot.
+
+The key is the only secret needed: the blueprint looks up your cmem.ai user id from it (`POST https://cmem.ai/api/pro/validate-setup`) and uses `https://sync.cmem.ai` as the sync hub. Organization secrets named `CLAUDE_MEM_CLOUD_SYNC_USER_ID`, `CLAUDE_MEM_CLOUD_SYNC_HUB_URL` or `CLAUDE_MEM_PRO_MEMORY_KEY` override those values.
+
+Snapshot builds only see organization and repository secrets, not personal ones. Without the key the blueprint keeps the local provider, which needs a logged-in Claude account and has no cloud sync.
+
+### 4. Check a new session
+
+Start a new session. Within a minute of startup:
+
+- `~/.local/bin/claude-mem status` reports the worker running on port 37700.
+- `grep "hook devin\|PostToolUse" ~/.claude-mem/logs/*.log` shows Devin tool calls arriving, such as `PostToolUse: Bash(...)` for `exec`.
+- The `claude-mem` MCP server is listed among the session's MCP servers.
+
+Cloud sessions do not fire `SessionEnd`; the `Stop` hook writes each session's summary. Do not also run `npx claude-mem devin install` on cloud VMs: the plugin already provides the hooks and MCP server.
+
+## Event Mapping
+
+| Devin hook event | claude-mem internal event | Notes |
+| --- | --- | --- |
+| `SessionStart` | worker start, then `context` | the timeline is returned as `hookSpecificOutput.additionalContext` |
+| `PostCompaction` | `context` | Devin's `SessionStart` does not fire after compaction, so the timeline is re-injected here; the reply names `PostCompaction`, since Devin drops a reply that names another event |
+| `UserPromptSubmit` | `session-init` | |
+| `PostToolUse` | `observation` | `tool_response` is Devin's `{ success, output, error }` |
+| `Stop` | `summarize` | uses `last_assistant_message`; Devin sends no transcript path |
+| `SessionEnd` | `session-end` | |
+
+`PreToolUse` is not registered: Devin's `PreToolUse` output can rewrite tool input and approve calls, so claude-mem does not hook it.
+
+### Tool names
+
+Devin names its tools in lowercase. The adapter maps the ones with a Claude Code counterpart, so capture, file tracking and the `CLAUDE_MEM_SKIP_TOOLS` defaults apply to them the same way:
+
+| Devin | claude-mem |
+| --- | --- |
+| `exec` | `Bash` |
+| `read` / `edit` / `write` | `Read` / `Edit` / `Write` |
+| `notebook_edit` | `NotebookEdit` |
+| `grep` / `glob` | `Grep` / `Glob` |
+| `webfetch` | `WebFetch` |
+| `todo_write` | `TodoWrite` |
+| `skill` | `Skill` |
+
+Other tools, including MCP tools (`mcp__<server>__<tool>`), are recorded under their Devin names.
+
+### Working directory
+
+Devin's hook payload carries no `cwd`. The adapter uses `DEVIN_PROJECT_DIR`, which Devin sets for every hook command, so observations land in the right project.
+
+## Claude Code hooks in Devin
+
+Devin also loads hooks from `~/.claude/settings.json` and `.claude/settings.json` by default (`read_config_from.claude`). claude-mem's Claude Code hooks ship as plugin hooks, not in those files, so Devin does not run them a second time.

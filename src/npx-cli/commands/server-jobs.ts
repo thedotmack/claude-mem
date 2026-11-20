@@ -2,6 +2,7 @@
 
 import { parseArgs as parseNodeArgs, styleText } from 'node:util';
 import { logger } from '../../utils/logger.js';
+import type { ServerJobQueueOptions } from '../../server/jobs/ServerJobQueue.js';
 
 // Phase 12 — `claude-mem server jobs <subcommand>` operator console for the
 // Postgres-backed observation generation queue. These commands talk DIRECTLY
@@ -148,7 +149,9 @@ async function runJobsStatus(args: ParsedArgs): Promise<void> {
       scope: { team: scope.team, project: scope.project },
       postgres: pgCounts,
       bullmq: bullmqCounts ?? { unavailable: true },
-      divergence: detectDivergence(pgCounts, bullmqCounts),
+      divergence: bullmqCounts && (scope.team || scope.project)
+        ? { reason: 'queue_counts_are_global' }
+        : detectDivergence(pgCounts, bullmqCounts),
     };
     console.log(JSON.stringify(output, null, 2));
   } finally {
@@ -231,6 +234,10 @@ async function runJobsRetry(args: ParsedArgs): Promise<void> {
     }
     if (lookup.status === 'processing') {
       console.error(styleText('red', `Cannot retry an in-flight job. Cancel first or wait. Current status: ${lookup.status}`));
+      process.exit(1);
+    }
+    if (lookup.status !== 'failed' && lookup.status !== 'cancelled') {
+      console.error(styleText('red', `Cannot retry a ${lookup.status} job. Only failed or cancelled jobs can be retried.`));
       process.exit(1);
     }
 
@@ -474,6 +481,7 @@ export interface ServerJobsTestSeams {
   }>;
   collectBullmqCounts?: () => Promise<Record<string, { waiting: number; active: number; completed: number; failed: number; delayed: number; stalled: number }>>;
   republishToBullmq?: (sourceType: string, jobId: string, payload: Record<string, unknown>) => Promise<void>;
+  bullmqQueueFactory?: ServerJobQueueOptions<Record<string, unknown>>['queueFactory'];
   removeFromBullmq?: (sourceType: string, jobId: string) => Promise<void>;
 }
 
@@ -492,11 +500,15 @@ async function openPool(): Promise<{
   releasePool: () => Promise<void>;
 }> {
   if (testSeams.openPool) return testSeams.openPool();
-  const { getSharedPostgresPool } = await import('../../storage/postgres/index.js');
-  const pool = getSharedPostgresPool({ requireDatabaseUrl: true });
+  const { createPostgresPool, parsePostgresConfig } = await import('../../storage/postgres/index.js');
+  const config = parsePostgresConfig({ requireDatabaseUrl: true });
+  if (!config) throw new Error('Postgres requires CLAUDE_MEM_SERVER_DATABASE_URL');
+  // These short-lived commands own their connection lifetime. An idle shared
+  // pool keeps the CLI alive after output and cannot tear itself down on exit.
+  const pool = createPostgresPool(config);
   return {
     pool: pool as never,
-    releasePool: async () => { /* shared pool tears down on process exit */ },
+    releasePool: () => pool.end(),
   };
 }
 
@@ -533,15 +545,22 @@ async function collectBullmqCounts(): Promise<Record<string, { waiting: number; 
 
 async function republishToBullmq(sourceType: string, jobId: string, payload: Record<string, unknown>): Promise<void> {
   const { getRedisQueueConfig } = await import('../../server/queue/redis-config.js');
-  const { Queue } = await import('bullmq');
+  const { ServerJobQueue } = await import('../../server/jobs/ServerJobQueue.js');
   const config = getRedisQueueConfig();
   if (config.engine !== 'bullmq') return;
   const { SERVER_JOB_QUEUE_NAMES } = await import('../../server/jobs/types.js');
   const lane = sourceType === 'session_summary' ? SERVER_JOB_QUEUE_NAMES.summary : SERVER_JOB_QUEUE_NAMES.event;
-  const queue = new Queue(lane, { connection: config.connection, prefix: config.prefix });
+  // Publish through ServerJobQueue, as POST /v1/jobs/:id/retry does. A bare
+  // Queue.add() leaves BullMQ's attempts at zero, so the first retryable
+  // provider error would strand the job in `queued` with nothing to redeliver it.
+  const queue = new ServerJobQueue<Record<string, unknown>>({
+    name: lane,
+    config,
+    ...(testSeams.bullmqQueueFactory !== undefined ? { queueFactory: testSeams.bullmqQueueFactory } : {}),
+  });
   try {
     try { await queue.remove(jobId); } catch { /* terminal slot may be missing */ }
-    await queue.add(lane, payload as never, { jobId });
+    await queue.add(jobId, payload);
   } finally {
     await queue.close();
   }

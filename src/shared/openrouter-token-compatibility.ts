@@ -1,3 +1,28 @@
+import { MAX_ERROR_BODY_BYTES } from './capped-error-body.js';
+
+async function inspectResponseHead(response: Response): Promise<string> {
+  const reader = response.clone().body?.getReader();
+  if (!reader) return '';
+  const decoder = new TextDecoder();
+  let text = '';
+  let remaining = MAX_ERROR_BODY_BYTES;
+  try {
+    while (remaining > 0) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = value.subarray(0, remaining);
+      text += decoder.decode(chunk, { stream: true });
+      remaining -= chunk.byteLength;
+    }
+    return text + decoder.decode();
+  } finally {
+    // A clone is one branch of a tee. Awaiting its cancellation can wait for
+    // the original response, which the caller cannot consume until we return.
+    void reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
+}
+
 export function isMaxCompletionTokensCompatibilityError(status: number, bodyText: string): boolean {
   let error: Record<string, unknown> | undefined;
   try {
@@ -28,31 +53,32 @@ export async function fetchWithOpenRouterTokenCompatibility(
   init: RequestInit,
   body: Record<string, unknown>,
   maxOutputTokens: number,
+  /** False for image requests: max_completion_tokens is never sent with images. */
+  allowMaxCompletionTokensRetry: boolean = true,
 ): Promise<Response> {
   const initialBody = { ...body, max_tokens: maxOutputTokens };
   const response = await fetchImpl(input, { ...init, body: JSON.stringify(initialBody) });
+  if (!allowMaxCompletionTokensRetry) return response;
   if (response.status !== 400 && (response.status < 200 || response.status >= 300 || response.status === 204 || response.status === 205)) {
     return response;
   }
 
   let bodyText = '';
-  let responseForCaller = response;
   try {
-    const bodyBytes = new Uint8Array(await response.clone().arrayBuffer());
-    bodyText = new TextDecoder().decode(bodyBytes);
-    responseForCaller = new Response(response.body === null ? null : bodyBytes, {
-      status: response.status,
-      statusText: response.statusText,
-      headers: response.headers,
-    });
+    bodyText = await inspectResponseHead(response);
   } catch {
     return response;
   }
 
   if (!isMaxCompletionTokensCompatibilityError(response.status, bodyText)) {
-    return responseForCaller;
+    // Inspect only the clone: reconstructing a Response discards fetch URL,
+    // redirect and response-type metadata even when no retry is needed.
+    return response;
   }
 
+  // The first response will not be returned after a retry. Release its tee
+  // branch too so an oversized compatibility error cannot keep streaming.
+  void response.body?.cancel().catch(() => {});
   const { max_tokens: _ignored, ...bodyWithoutMaxTokens } = body;
   return fetchImpl(input, {
     ...init,

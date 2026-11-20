@@ -2,6 +2,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { logger } from '../../../utils/logger.js';
+import { writeJsonFileAtomic } from '../../../shared/atomic-json.js';
 import { paths } from '../../../shared/paths.js';
 import { AppError } from '../../server/ErrorHandler.js';
 import type { CorpusFile, CorpusStats } from './types.js';
@@ -30,7 +31,7 @@ export class CorpusStore {
 
   write(corpus: CorpusFile): void {
     const filePath = this.getFilePath(corpus.name);
-    fs.writeFileSync(filePath, JSON.stringify(corpus, null, 2), 'utf-8');
+    writeJsonFileAtomic(filePath, corpus);
     logger.debug('WORKER', `Wrote corpus file: ${filePath} (${corpus.observations.length} observations)`);
   }
 

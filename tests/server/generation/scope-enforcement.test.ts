@@ -14,9 +14,10 @@ import {
 } from '../../../src/server/generation/ProviderObservationGenerator.js';
 import { ServerGenerationJobPayloadValidationError } from '../../../src/server/jobs/types.js';
 import type { ServerGenerationProvider } from '../../../src/server/generation/providers/shared/types.js';
-import type { Job } from 'bullmq';
+import { UnrecoverableError, type Job } from 'bullmq';
 import type { ServerGenerationJobPayload, GenerateObservationsForEventJob } from '../../../src/server/jobs/types.js';
-import { quoteIdentifier } from '../../sdk/pg-isolation.js';
+import { createIsolatedSchema, poolForSchema, quoteIdentifier } from '../../sdk/pg-isolation.js';
+import { ModeManager } from '../../../src/services/domain/ModeManager.js';
 
 const testDatabaseUrl = process.env.CLAUDE_MEM_TEST_POSTGRES_URL;
 
@@ -33,13 +34,26 @@ class StubProvider implements ServerGenerationProvider {
   }
 }
 
+describe('Phase 11 — scope violation error', () => {
+  it('is a bullmq UnrecoverableError so a refused job is not delivered again', () => {
+    for (const reason of ['scope_mismatch', 'revoked_key'] as const) {
+      const error = new ServerGenerationScopeViolationError(reason, `refused: ${reason}`);
+      expect(error).toBeInstanceOf(UnrecoverableError);
+      // BullMQ identifies unrecoverable errors by name, so subclassing must not change it.
+      expect(error.name).toBe('UnrecoverableError');
+      expect(error.reason).toBe(reason);
+      expect(error.message).toBe(`refused: ${reason}`);
+    }
+  });
+});
+
 describe('Phase 11 — ProviderObservationGenerator scope enforcement', () => {
   if (!testDatabaseUrl) {
     it.skip('requires CLAUDE_MEM_TEST_POSTGRES_URL', () => {});
     return;
   }
 
-  const pool = new pg.Pool({ connectionString: testDatabaseUrl });
+  let pool: pg.Pool;
   let client: PostgresPoolClient;
   let schemaName: string;
   let storage: PostgresStorageRepositories;
@@ -51,16 +65,15 @@ describe('Phase 11 — ProviderObservationGenerator scope enforcement', () => {
   let apiKeyId: string;
 
   beforeEach(async () => {
+    // The generation path reads the active ModeManager mode; load it so this
+    // file runs standalone instead of relying on another test file's side effect.
+    ModeManager.getInstance().loadMode('code');
+    schemaName = await createIsolatedSchema(testDatabaseUrl!, 'cm_phase11');
+    pool = poolForSchema(testDatabaseUrl!, schemaName);
     client = await pool.connect();
-    schemaName = `cm_phase11_${crypto.randomUUID().replaceAll('-', '_')}`;
-    await client.query(`CREATE SCHEMA ${quoteIdentifier(schemaName)}`);
-    await client.query(`SET search_path TO ${quoteIdentifier(schemaName)}`);
     await bootstrapServerPostgresSchema(client);
     storage = createPostgresStorageRepositories(client);
 
-    pool.on('connect', (poolClient) => {
-      poolClient.query(`SET search_path TO ${quoteIdentifier(schemaName)}`).catch(() => {});
-    });
 
     const team = await storage.teams.create({ name: 'team-a' });
     const foreignTeam = await storage.teams.create({ name: 'team-b' });
@@ -105,7 +118,7 @@ describe('Phase 11 — ProviderObservationGenerator scope enforcement', () => {
       } catch {}
       client.release();
     }
-    pool.removeAllListeners('connect');
+    await pool.end();
   });
 
   function makeJob(overrides: Partial<GenerateObservationsForEventJob> = {}): Job<ServerGenerationJobPayload> {
@@ -137,7 +150,9 @@ describe('Phase 11 — ProviderObservationGenerator scope enforcement', () => {
     // Tampered payload — claims a different team.
     const job = makeJob({ team_id: foreignTeamId });
 
-    await expect(generator.process(job)).rejects.toBeInstanceOf(ServerGenerationScopeViolationError);
+    const rejection = generator.process(job);
+    await expect(rejection).rejects.toBeInstanceOf(ServerGenerationScopeViolationError);
+    await expect(rejection).rejects.toBeInstanceOf(UnrecoverableError);
     expect(provider.calls).toBe(0);
 
     // Job should be in 'failed' status with classification 'scope_mismatch'.
@@ -169,7 +184,9 @@ describe('Phase 11 — ProviderObservationGenerator scope enforcement', () => {
       provider,
     } as unknown as ConstructorParameters<typeof ProviderObservationGenerator>[0]);
 
-    await expect(generator.process(makeJob())).rejects.toBeInstanceOf(ServerGenerationScopeViolationError);
+    const rejection = generator.process(makeJob());
+    await expect(rejection).rejects.toBeInstanceOf(ServerGenerationScopeViolationError);
+    await expect(rejection).rejects.toBeInstanceOf(UnrecoverableError);
     expect(provider.calls).toBe(0);
 
     const reloaded = await storage.observationGenerationJobs.getByIdForScope({

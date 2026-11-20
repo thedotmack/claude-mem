@@ -1,0 +1,999 @@
+import { afterAll, describe, expect, it, spyOn } from 'bun:test';
+import { getSupervisor } from '../../src/supervisor/index.js';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, relative } from 'node:path';
+import {
+  buildCodexAppServerEnv,
+  buildCodexAppServerThreadConfig,
+  CodexAppServerClient,
+  sweepStaleAppServerWorkdirs,
+  CODEX_ISOLATION_UNATTESTED_CODE,
+  CODEX_NO_AGENT_MESSAGE_CODE,
+  CODEX_SETUP_REQUIRED_CODE,
+} from '../../src/services/worker/CodexAppServerClient.js';
+import { CodexProvider } from '../../src/services/worker/CodexProvider.js';
+import { CodexAppServerPool } from '../../src/services/worker/CodexAppServerPool.js';
+import { logger } from '../../src/utils/logger.js';
+import { accumulateObserverUsage } from '../../src/services/worker/observer-usage.js';
+import { shouldRecycleConversation } from '../../src/shared/observer-recycle.js';
+import type { ActiveSession } from '../../src/services/worker-types.js';
+
+const itPosix = process.platform === 'win32' ? it.skip : it;
+
+interface FakeCodex {
+  authHome: string;
+  executable: string;
+  root: string;
+  trace: string;
+}
+
+interface FakeCodexOptions {
+  authHomeName?: string;
+  usage?: Record<string, number>;
+  instructionSources?: string[];
+  writeOnShutdown?: boolean;
+  terminalItemType?: string;
+  networkUrl?: string;
+  /** Give this fake its own executable file, for tests that replace the binary in place. */
+  privateExecutable?: boolean;
+  mode?: 'normal' | 'terminal-response' | 'hold-first-turn' | 'reject-first-init' | 'usage-limit' | 'retried-error'
+    | 'empty-first-turn' | 'empty-always' | 'missing-message' | 'silent-init' | 'finish-during-interrupt';
+}
+
+const FAKE_CODEX_CONFIG_FILE = 'fake-codex.json';
+
+// One fake app-server script, configured per test by the fake-codex.json in the
+// test's root. macOS checks every newly written executable on its first exec
+// (~200 ms idle, far longer under load), so writing a fresh script per test made
+// every spawn slow and was the main source of timeouts. The client only passes
+// the fake a private CODEX_HOME whose auth.json links back to the test's own
+// auth home, so the fake finds its configuration through that link.
+const FAKE_CODEX_SOURCE = [
+  '#!/usr/bin/env bun',
+  "import { appendFileSync, statSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';",
+  "import { dirname, join } from 'node:path';",
+  "const authHome = dirname(realpathSync(join(process.env.CODEX_HOME, 'auth.json')));",
+  `const config = JSON.parse(readFileSync(join(dirname(authHome), ${JSON.stringify(FAKE_CODEX_CONFIG_FILE)}), 'utf8'));`,
+  'const { trace, instructionSources, mode, writeOnShutdown, terminalItemType, usage } = config;',
+  "const rejectInit = mode === 'reject-first-init' && !existsSync(trace);",
+  "const record = value => appendFileSync(trace, JSON.stringify(value) + '\\n');",
+  // hold-first-turn: turn 1 finishes only when the test sends SIGUSR1.
+  'let releaseFirstTurn = null;',
+  "process.on('SIGUSR1', () => { const release = releaseFirstTurn; releaseFirstTurn = null; release?.(); });",
+  "if (writeOnShutdown) process.on('SIGTERM', () => {",
+  "  mkdirSync(process.env.CODEX_HOME, { recursive: true });",
+  "  writeFileSync(join(process.env.CODEX_HOME, 'shutdown-state.json'), '{}');",
+  "  record({ method: 'process/shutdown' });",
+  "  process.exit(0);",
+  "});",
+  "record({ method: 'process/start', args: process.argv.slice(2), codexHome: process.env.CODEX_HOME, pid: process.pid });",
+  "const send = value => process.stdout.write(JSON.stringify(value) + '\\n');",
+  'let buffer = "";',
+  'let turn = 0;',
+  "process.stdin.setEncoding('utf8');",
+  "process.stdin.on('data', chunk => {",
+  '  buffer += chunk;',
+  "  let newline; while ((newline = buffer.indexOf('\\n')) !== -1) {",
+  '    const line = buffer.slice(0, newline).trim(); buffer = buffer.slice(newline + 1);',
+  '    if (!line) continue;',
+  '    const message = JSON.parse(line);',
+  '    record(message);',
+  "    if (message.method === 'initialized') continue;",
+  "    if (message.method === 'initialize' && mode === 'silent-init') continue;",
+  "    if (message.method === 'initialize') {",
+  "      void (async () => {",
+  "        if (config.networkUrl) {",
+  "          try {",
+  "            const response = await fetch(config.networkUrl, { signal: AbortSignal.timeout(3000) });",
+  "            record({ method: 'network/check', body: await response.text(), apiKeyPresent: !!process.env.OPENAI_API_KEY });",
+  "            if (!response.ok) throw new Error('owned network request failed');",
+  "          } catch (error) { send({ id: message.id, error: { code: -32603, message: String(error) } }); return; }",
+  "        }",
+  "        send(rejectInit ? { id: message.id, error: { code: -32600, message: 'initialize rejected' } } : { id: message.id, result: { userAgent: 'fake-codex' } });",
+  "      })();",
+  "    }",
+  "    else if (message.method === 'config/read') send({ id: message.id, result: { config: { mcp_servers: { inherited: { command: 'false' } } }, layers: [] } });",
+  "    else if (message.method === 'thread/start') {",
+  "      const mode = statSync(message.params.cwd).mode & 0o777;",
+  "      record({ method: 'workspace/attestation', mode });",
+  "      send({ id: message.id, result: { thread: { id: 'thread-' + (turn + 1) }, instructionSources } });",
+  '    }',
+  "    else if (message.method === 'mcpServerStatus/list') send({ id: message.id, result: { data: [{ name: 'inherited', serverInfo: null, tools: {} }], nextCursor: null } });",
+  "    else if (message.method === 'turn/start') {",
+  '      turn += 1;',
+  "      const turnId = 'turn-' + turn;",
+  "      const terminalItems = terminalItemType ? [{ type: terminalItemType }] : [];",
+  "      const content = JSON.stringify({ content: mode === 'empty-always' || (mode === 'empty-first-turn' && turn === 1) ? '   ' : '<observation><type>discovery</type><title>Turn ' + turn + '</title><narrative>Captured.</narrative></observation>' });",
+  "      const finish = () => {",
+  "        send({ method: 'thread/tokenUsage/updated', params: { threadId: message.params.threadId, tokenUsage: { total: usage ?? { inputTokens: 10, cachedInputTokens: 2, outputTokens: 3, reasoningOutputTokens: 1, totalTokens: 13 } } } });",
+  "        if (mode !== 'missing-message') send({ method: 'item/completed', params: { threadId: message.params.threadId, turnId, item: { type: 'agentMessage', phase: 'final_answer', text: content } } });",
+  "        send({ method: 'turn/completed', params: { threadId: message.params.threadId, turn: { id: turnId, status: 'completed', items: terminalItems } } });",
+  '      };',
+  "      const turnError = { message: 'You have hit your usage limit.', codexErrorInfo: 'usageLimitExceeded', additionalDetails: null };",
+  "      if (mode === 'usage-limit') {",
+  "        send({ id: message.id, result: { turn: { id: turnId, status: 'inProgress' } } });",
+  "        send({ method: 'error', params: { threadId: message.params.threadId, turnId, willRetry: false, error: turnError } });",
+  "        send({ method: 'turn/completed', params: { threadId: message.params.threadId, turn: { id: turnId, status: 'failed', items: [], error: turnError } } });",
+  "      } else if (mode === 'retried-error') {",
+  "        send({ id: message.id, result: { turn: { id: turnId, status: 'inProgress' } } });",
+  "        send({ method: 'error', params: { threadId: message.params.threadId, turnId, willRetry: true, error: { message: 'stream disconnected', codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: null } }, additionalDetails: null } } });",
+  "        finish();",
+  "      } else if (mode === 'terminal-response') {",
+  "        send({ id: message.id, result: { turn: { id: turnId, status: 'completed', items: [...terminalItems, { type: 'agentMessage', phase: 'final_answer', text: content }] } } });",
+  '      } else {',
+  '        send({ id: message.id, result: { turn: { id: turnId, status: \'inProgress\' } } });',
+  "        if ((mode === 'hold-first-turn' || mode === 'finish-during-interrupt') && turn === 1) releaseFirstTurn = finish; else finish();",
+  '      }',
+  '    }',
+  "    else if (message.method === 'thread/unsubscribe') send({ id: message.id, result: {} });",
+  "    else if (message.method === 'turn/interrupt') {",
+  "      if (mode === 'finish-during-interrupt') { releaseFirstTurn?.(); setTimeout(() => send({ id: message.id, result: {} }), 30); }",
+  "      else send({ id: message.id, result: {} });",
+  "    }",
+  "    else if (message.id !== undefined) send({ id: message.id, error: { code: -32601, message: 'unsupported' } });",
+  '  }',
+  '});',
+].join('\n');
+
+let sharedFakeCodexRoot: string | null = null;
+
+function sharedFakeCodexExecutable(): string {
+  if (!sharedFakeCodexRoot) sharedFakeCodexRoot = mkdtempSync(join(tmpdir(), 'claude-mem-fake-codex-bin-'));
+  const executable = join(sharedFakeCodexRoot, 'codex');
+  if (!existsSync(executable)) writeFileSync(executable, FAKE_CODEX_SOURCE, { mode: 0o700 });
+  return executable;
+}
+
+afterAll(() => {
+  if (sharedFakeCodexRoot) rmSync(sharedFakeCodexRoot, { recursive: true, force: true });
+});
+
+function createFakeCodex(options: FakeCodexOptions = {}): FakeCodex {
+  const root = mkdtempSync(join(tmpdir(), 'claude-mem-fake-codex-'));
+  const trace = join(root, 'trace.jsonl');
+  const authHome = join(root, options.authHomeName ?? 'native-codex-home');
+  mkdirSync(authHome, { mode: 0o700 });
+  writeFileSync(join(authHome, 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt', tokens: {} }), { mode: 0o600 });
+  writeFileSync(join(root, FAKE_CODEX_CONFIG_FILE), JSON.stringify({
+    trace,
+    instructionSources: options.instructionSources ?? [],
+    mode: options.mode ?? 'normal',
+    writeOnShutdown: options.writeOnShutdown === true,
+    terminalItemType: options.terminalItemType,
+    networkUrl: options.networkUrl,
+    usage: options.usage,
+  }));
+  let executable = sharedFakeCodexExecutable();
+  if (options.privateExecutable) {
+    executable = join(root, 'codex');
+    writeFileSync(executable, FAKE_CODEX_SOURCE, { mode: 0o700 });
+    chmodSync(executable, 0o700);
+  }
+  return { authHome, executable, root, trace };
+}
+
+/** Let the fake's held first turn (mode 'hold-first-turn') finish. */
+function releaseFirstTurn(fake: FakeCodex): void {
+  const started = readTrace(fake.trace).find(entry => entry.method === 'process/start');
+  if (!started) throw new Error('fake Codex has not started');
+  process.kill(started.pid, 'SIGUSR1');
+}
+
+function readTrace(path: string): Array<Record<string, any>> {
+  if (!existsSync(path)) return [];
+  return readFileSync(path, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+}
+
+itPosix('leaves model and effort selection to Codex when no override is configured', async () => {
+  const fake = createFakeCodex();
+  const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+  try {
+    await client.runTurn({ codexPath: fake.executable, model: '', reasoningEffort: null,
+      prompt: 'Summarize the supplied text.', timeoutMs: 5000 });
+    const messages = readTrace(fake.trace).filter(entry => ['thread/start', 'turn/start'].includes(entry.method as string));
+    expect(messages).toHaveLength(2);
+    for (const entry of messages) {
+      expect(entry.params).not.toHaveProperty('model');
+      expect(entry.params).not.toHaveProperty('effort');
+    }
+  } finally {
+    await client.close();
+    rmSync(fake.root, { recursive: true, force: true });
+  }
+});
+
+for (const mode of ['normal', 'terminal-response'] as const) {
+  for (const terminalItemType of ['commandExecution', 'fileChange', 'mcpToolCall', 'webSearch']) {
+    itPosix(`rejects forbidden terminal items without another turn (${mode}, ${terminalItemType})`, async () => {
+      const fake = createFakeCodex({ mode, terminalItemType });
+      const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+      try {
+        await expect(client.runTurn({ codexPath: fake.executable, model: '', reasoningEffort: null,
+          prompt: 'Summarize the supplied text.', timeoutMs: 5000 }))
+          .rejects.toThrow(`forbidden ${terminalItemType} capability`);
+        const trace = readTrace(fake.trace);
+        expect(trace.filter(entry => entry.method === 'turn/start')).toHaveLength(1);
+        // The completed turn needs no interrupt, and rejection never retries it.
+        expect(trace.filter(entry => entry.method === 'turn/interrupt')).toHaveLength(0);
+      } finally {
+        await client.close();
+        rmSync(fake.root, { recursive: true, force: true });
+      }
+    });
+  }
+}
+
+for (const source of ['option', 'environment'] as const) {
+  for (const kind of ['relative', 'literal whitespace'] as const) {
+    itPosix(`uses the selected ${kind} auth profile from the ${source}`, async () => {
+      const fake = createFakeCodex({ authHomeName: kind === 'literal whitespace' ? 'native-codex-home ' : undefined });
+      const configuredHome = kind === 'relative' ? relative(process.cwd(), fake.authHome) : fake.authHome;
+      const previousHome = process.env.CODEX_HOME;
+      if (kind === 'literal whitespace') {
+        // Both names exist: trimming silently chooses a different account,
+        // rather than merely reporting that the selected login is missing.
+        mkdirSync(fake.authHome.trim(), { mode: 0o700 });
+        writeFileSync(join(fake.authHome.trim(), 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt', tokens: { account_id: 'neighbor' } }), { mode: 0o600 });
+      }
+      if (source === 'environment') process.env.CODEX_HOME = configuredHome;
+      const client = new CodexAppServerClient(source === 'option' ? { nativeCodexHome: configuredHome } : {});
+      try {
+        const result = await client.runTurn({ codexPath: fake.executable, model: '', reasoningEffort: null,
+          prompt: 'Summarize using the selected profile.', timeoutMs: 5000 });
+        expect(result.content).toContain('<title>Turn 1</title>');
+        const started = readTrace(fake.trace).find(entry => entry.method === 'process/start');
+        expect(started).toBeDefined();
+        expect(realpathSync(join(started!.codexHome, 'auth.json'))).toBe(realpathSync(join(fake.authHome, 'auth.json')));
+        expect(readTrace(fake.trace).filter(entry => entry.method === 'turn/start')).toHaveLength(1);
+      } finally {
+        await client.close();
+        if (previousHome === undefined) delete process.env.CODEX_HOME;
+        else process.env.CODEX_HOME = previousHome;
+        rmSync(fake.root, { recursive: true, force: true });
+      }
+    });
+  }
+}
+
+it('rejects API-key login before launching a model process', async () => {
+  const fake = createFakeCodex();
+  writeFileSync(join(fake.authHome, 'auth.json'), JSON.stringify({ auth_mode: 'apikey' }), { mode: 0o600 });
+  const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+  try {
+    await expect(client.runTurn({ codexPath: fake.executable, model: '', reasoningEffort: null,
+      prompt: 'Summarize.', timeoutMs: 5000 })).rejects.toThrow('not an API key');
+    expect(readTrace(fake.trace)).toHaveLength(0);
+  } finally {
+    await client.close();
+    rmSync(fake.root, { recursive: true, force: true });
+  }
+});
+
+for (const mode of [undefined, null, 'chatgpt', 'chatgptAuthTokens']) {
+  itPosix(`accepts native ChatGPT login with auth_mode=${String(mode)} without rewriting it`, async () => {
+    const fake = createFakeCodex();
+    const authFile = join(fake.authHome, 'auth.json');
+    // Native AuthDotJson and pro_account_with_no_api_key_uses_chatgpt_auth:
+    // mode is optional; the selected CLI owns validation and token refresh.
+    writeFileSync(authFile, JSON.stringify({ auth_mode: mode, OPENAI_API_KEY: null,
+      tokens: { id_token: 'owned-test-id-token', access_token: 'owned-test-access-token', refresh_token: 'owned-test-refresh-token' },
+      last_refresh: '2026-11-10T00:00:00Z' }), { mode: 0o600 });
+    const original = readFileSync(authFile);
+    const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+    try {
+      const result = await client.runTurn({ codexPath: fake.executable, model: '', reasoningEffort: null,
+        prompt: 'Summarize the supplied text.', timeoutMs: 5000 });
+      expect(result.content).toContain('<title>Turn 1</title>');
+      const trace = readTrace(fake.trace);
+      expect(trace.filter(entry => entry.method === 'turn/start')).toHaveLength(1);
+      const started = trace.find(entry => entry.method === 'process/start')!;
+      expect(realpathSync(join(started.codexHome, 'auth.json'))).toBe(realpathSync(authFile));
+      await client.close();
+      expect(existsSync(started.codexHome)).toBe(false);
+      expect(readFileSync(authFile)).toEqual(original);
+    } finally {
+      await client.close(); rmSync(fake.root, { recursive: true, force: true });
+    }
+  });
+}
+
+for (const otherAuth of [
+  { OPENAI_API_KEY: 'owned-api-key' }, { OPENAI_API_KEY: '' },
+  { personal_access_token: 'owned-pat' }, { bedrock_api_key: { api_key: 'owned-bedrock-key' } },
+  { bedrock_access_keys: { access_key_id: 'owned-id', secret_access_key: 'owned-secret' } },
+  { auth_mode: 'apikey' }, { auth_mode: 'agentIdentity' }, { auth_mode: '' }, { tokens: null },
+]) {
+  it(`rejects non-ChatGPT or missing legacy credentials before spawn: ${Object.keys(otherAuth).join(',')}/${String(otherAuth.auth_mode ?? '')}`, async () => {
+    const fake = createFakeCodex();
+    writeFileSync(join(fake.authHome, 'auth.json'), JSON.stringify({ tokens: { access_token: 'owned-chatgpt-token' }, ...otherAuth }), { mode: 0o600 });
+    const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+    try {
+      const error = await client.runTurn({ codexPath: fake.executable, model: '', reasoningEffort: null,
+        prompt: 'Summarize.', timeoutMs: 5000 }).then(() => null, error => error);
+      expect(error).toHaveProperty('code', CODEX_SETUP_REQUIRED_CODE);
+      expect(readTrace(fake.trace)).toHaveLength(0);
+    } finally {
+      await client.close(); rmSync(fake.root, { recursive: true, force: true });
+    }
+  });
+}
+
+itPosix('keeps usage-limit details from app-server error notifications', async () => {
+  const fake = createFakeCodex({ mode: 'usage-limit' });
+  const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+  try {
+    const error = await client.runTurn({ codexPath: fake.executable, model: '', reasoningEffort: null,
+      prompt: 'Summarize.', timeoutMs: 5000 }).then(() => null, (caught: unknown) => caught);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe('Codex app-server reported an error: You have hit your usage limit.');
+    expect(error).toHaveProperty('codexErrorInfo', 'usageLimitExceeded');
+  } finally {
+    await client.close();
+    rmSync(fake.root, { recursive: true, force: true });
+  }
+});
+
+itPosix('waits for the final turn state when Codex retries an error itself', async () => {
+  const fake = createFakeCodex({ mode: 'retried-error' });
+  const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+  try {
+    const result = await client.runTurn({ codexPath: fake.executable, model: '', reasoningEffort: null,
+      prompt: 'Summarize.', timeoutMs: 5000 });
+    expect(result.content).toContain('<title>Turn 1</title>');
+  } finally {
+    await client.close();
+    rmSync(fake.root, { recursive: true, force: true });
+  }
+});
+
+itPosix('passes an empty structured reply on in one turn and logs counts, never the text', async () => {
+  const fake = createFakeCodex({ mode: 'empty-always' });
+  const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+  const provider = new CodexProvider(null as any, null as any) as any;
+  provider.appServer = new CodexAppServerPool(1, () => client);
+  const warn = spyOn(logger, 'warn');
+  try {
+    const result = await provider.query([{ role: 'user', content: 'Remember this.' }], {
+      apiKey: 'codex-subscription', codexPath: fake.executable, model: '', reasoningEffort: null,
+    });
+    expect(result.content).toBe('');
+    expect(readTrace(fake.trace).filter(entry => entry.method === 'turn/start')).toHaveLength(1);
+    const logged = warn.mock.calls.find(call => call[1] === 'Codex app-server returned empty structured content');
+    expect(JSON.stringify(logged)).toContain('agentMessages=1');
+    expect(JSON.stringify(logged)).not.toContain('content\\":');
+  } finally {
+    warn.mockRestore();
+    await client.close();
+    rmSync(fake.root, { recursive: true, force: true });
+  }
+});
+
+// Never pay twice (Phase 1): the completed turn was billed, so its missing
+// agent message is an output failure after ONE turn, passed on to the session
+// as an empty reply (queryObserverTurn); it no longer earns an in-place resend.
+itPosix('passes a turn without an agent message on as an empty reply, without a second turn', async () => {
+  const fake = createFakeCodex({ mode: 'missing-message' });
+  const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+  const provider = new CodexProvider(null as any, null as any) as any;
+  provider.appServer = new CodexAppServerPool(1, () => client);
+  try {
+    const session = { sessionDbId: 9101, claimedMessageIds: [], conversationHistory: [{ role: 'user', content: 'Remember this.' }] };
+    const result = await provider.queryObserverTurn(session, {
+      apiKey: 'codex-subscription', codexPath: fake.executable, model: '', reasoningEffort: null,
+    }, undefined);
+    expect(result.content).toBe('');
+    expect(readTrace(fake.trace).filter(entry => entry.method === 'turn/start')).toHaveLength(1);
+  } finally {
+    await client.close();
+    rmSync(fake.root, { recursive: true, force: true });
+  }
+});
+
+itPosix('describes a completed turn without an agent message', async () => {
+  const fake = createFakeCodex({ mode: 'missing-message' });
+  const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+  try {
+    const error = await client.runTurn({ codexPath: fake.executable, model: '', reasoningEffort: null,
+      prompt: 'Summarize.', timeoutMs: 5000 }).then(() => null, (caught: unknown) => caught);
+    expect((error as Error).message).toContain('completedItems=0, terminalItems=0, agentMessages=0, finalTextBytes=0');
+    expect(error).toHaveProperty('code', CODEX_NO_AGENT_MESSAGE_CODE);
+  } finally {
+    await client.close();
+    rmSync(fake.root, { recursive: true, force: true });
+  }
+});
+
+/** Poll until a condition the test observes directly holds (bounded below bun's 5 s test timeout). */
+async function waitUntil(condition: () => boolean, description: string): Promise<void> {
+  const deadline = Date.now() + 4_000;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error(`Timed out waiting for ${description}`);
+    await Bun.sleep(5);
+  }
+}
+
+function waitForTrace(path: string, predicate: (trace: Array<Record<string, any>>) => boolean): Promise<void> {
+  return waitUntil(() => predicate(readTrace(path)), 'fake Codex trace');
+}
+
+describe('CodexAppServerClient configuration', () => {
+  it('disables inherited MCP servers, tools, hooks, skills, and project instructions', () => {
+    const config = buildCodexAppServerThreadConfig(['zeta', 'alpha', 'alpha']);
+
+    expect(config.project_doc_max_bytes).toBe(0);
+    expect(config.include_environment_context).toBe(false);
+    expect(config.hooks).toEqual({
+      PreToolUse: [], PermissionRequest: [], PostToolUse: [], PreCompact: [], PostCompact: [],
+      SessionStart: [], UserPromptSubmit: [], SubagentStart: [], SubagentStop: [], Stop: [],
+    });
+    expect(config.mcp_servers).toEqual({ alpha: { enabled: false }, zeta: { enabled: false } });
+    expect(config['features.shell_tool']).toBe(false);
+    expect(config['features.unified_exec']).toBe(false);
+    expect(config['features.web_search_request']).toBe(false);
+    expect(config['skills.include_instructions']).toBe(false);
+  });
+
+  it('passes OS paths and proxy routing while excluding unrelated credentials', () => {
+    const proxy = Object.fromEntries(['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy']
+      .map(key => [key, 'http://owned-proxy:3128']));
+    Object.assign(proxy, { NO_PROXY: 'localhost', no_proxy: '127.0.0.1' });
+    const env = buildCodexAppServerEnv({
+      ...proxy,
+      PATH: '/usr/bin', HOME: '/home/tester', CODEX_HOME: '/home/tester/.codex', LANG: 'C.UTF-8',
+      OPENROUTER_API_KEY: 'secret', OPENAI_API_KEY: 'secret', ANTHROPIC_API_KEY: 'secret',
+      CLAUDE_MEM_OPENROUTER_API_KEY: 'cm_pro_0123456789abcdef01234567',
+      CLAUDE_MEM_OPENROUTER_BASE_URL: 'https://cmem.ai/api/v1',
+      SSH_AUTH_SOCK: '/tmp/agent.sock', CUSTOM_TOKEN: 'secret',
+    }, '/tmp/claude-mem-private-codex');
+
+    expect(env).toEqual({ ...proxy, PATH: '/usr/bin', HOME: '/home/tester', CODEX_HOME: '/tmp/claude-mem-private-codex', LANG: 'C.UTF-8' });
+  });
+});
+
+describe('CodexAppServerClient transport', () => {
+  for (const casing of ['upper', 'lower']) {
+    for (const bypass of [false, true]) {
+      itPosix(`retains ${casing}-case proxy routing in the real child (bypass=${bypass})`, async () => {
+        const received: string[] = [];
+        const origin = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: () => new Response('direct') });
+        const originUrl = new URL('/owned-bootstrap', origin.url).href;
+        if (!bypass) await origin.stop(true); // This endpoint is reachable only through the owned proxy.
+        const proxy = Bun.serve({ hostname: '127.0.0.1', port: 0,
+          fetch: request => { received.push(request.url); return new Response('proxied'); },
+        });
+        const keys = ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy', 'OPENAI_API_KEY'];
+        const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+        const fake = createFakeCodex({ networkUrl: originUrl });
+        const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+        try {
+          for (const key of keys) delete process.env[key];
+          process.env[casing === 'upper' ? 'HTTP_PROXY' : 'http_proxy'] = proxy.url.href;
+          if (bypass) process.env[casing === 'upper' ? 'NO_PROXY' : 'no_proxy'] = '127.0.0.1';
+          process.env.OPENAI_API_KEY = 'owned-key-must-not-reach-child';
+          const result = await client.runTurn({ codexPath: fake.executable, model: '', reasoningEffort: null,
+            prompt: 'Summarize the supplied text.', timeoutMs: 5000 });
+          expect(result.content).toContain('Captured.');
+          expect(readTrace(fake.trace).find(entry => entry.method === 'network/check')).toEqual({
+            method: 'network/check', body: bypass ? 'direct' : 'proxied', apiKeyPresent: false,
+          });
+          expect(received).toEqual(bypass ? [] : [originUrl]);
+          expect(readTrace(fake.trace).filter(entry => entry.method === 'turn/start')).toHaveLength(1);
+        } finally {
+          await client.close();
+          for (const key of keys) {
+            if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key];
+          }
+          await proxy.stop(true);
+          if (bypass) await origin.stop(true);
+          rmSync(fake.root, { recursive: true, force: true });
+        }
+      });
+    }
+  }
+
+  itPosix('reaps a rejected handshake and initializes a fresh supervised child', async () => {
+    const fake = createFakeCodex({ mode: 'reject-first-init', writeOnShutdown: true });
+    const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+    const register = spyOn(getSupervisor(), 'registerProcess');
+    const unregister = spyOn(getSupervisor(), 'unregisterProcess');
+    const options = { codexPath: fake.executable, model: '', reasoningEffort: null,
+      prompt: 'Summarize.', timeoutMs: 5000 };
+    try {
+      await expect(client.runTurn(options)).rejects.toThrow('initialize rejected');
+      expect((client as any).child).toBeNull();
+      expect((client as any).privateRoot).toBeNull();
+      const firstStart = readTrace(fake.trace).find(entry => entry.method === 'process/start')!;
+      const firstPid = firstStart.pid;
+      expect(() => process.kill(firstPid, 0)).toThrow();
+      expect(existsSync(dirname(firstStart.codexHome))).toBe(false);
+      expect((await client.runTurn(options)).content).toContain('Captured.');
+      const starts = readTrace(fake.trace).filter(entry => entry.method === 'process/start');
+      expect(starts).toHaveLength(2);
+      expect(starts[1].pid).not.toBe(firstPid);
+      expect(getSupervisor().getRegistry().getRuntimeProcess(`codex-app-server:${starts[1].pid}`)).toBe((client as any).child);
+      expect(readTrace(fake.trace).filter(entry => entry.method === 'initialize')).toHaveLength(2);
+      expect(register).toHaveBeenCalledTimes(2);
+      await (client as any).invalidate(new Error('late old-child failure'), register.mock.calls[0][2]);
+      expect((client as any).child.pid).toBe(starts[1].pid);
+      await client.close();
+      // Unregistration runs from each child's own exit/close event.
+      await waitUntil(() => starts.every(start => unregister.mock.calls.some(call => call[0] === `codex-app-server:${start.pid}`)),
+        'both children to unregister');
+      for (const start of starts) {
+        expect(unregister).toHaveBeenCalledWith(`codex-app-server:${start.pid}`);
+        expect(getSupervisor().getRegistry().getAll().some(entry => entry.pid === start.pid)).toBe(false);
+        expect(existsSync(start.codexHome)).toBe(false);
+      }
+    } finally {
+      await client.close();
+      register.mockRestore();
+      unregister.mockRestore();
+      for (const start of readTrace(fake.trace).filter(entry => entry.method === 'process/start')) {
+        rmSync(dirname(start.codexHome), { recursive: true, force: true });
+      }
+      rmSync(fake.root, { recursive: true, force: true });
+    }
+  });
+
+  itPosix('does not spawn while the supervisor is shutting down', async () => {
+    const fake = createFakeCodex();
+    const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+    const guard = spyOn(getSupervisor(), 'assertCanSpawn').mockImplementation(() => {
+      throw new Error('Supervisor is shutting down');
+    });
+    try {
+      await expect(client.runTurn({ codexPath: fake.executable, model: '', reasoningEffort: null,
+        prompt: 'Summarize.', timeoutMs: 5000 })).rejects.toThrow('Supervisor is shutting down');
+      expect(guard).toHaveBeenCalledWith('codex');
+      expect(readTrace(fake.trace)).toHaveLength(0);
+      expect((client as any).privateRoot).toBeNull();
+    } finally {
+      guard.mockRestore();
+      await client.close();
+      rmSync(fake.root, { recursive: true, force: true });
+    }
+  });
+
+  itPosix('reuses one process while isolating and validating every turn', async () => {
+    const fake = createFakeCodex();
+    const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+    try {
+      const options = {
+        codexPath: fake.executable,
+        model: 'test-model',
+        reasoningEffort: 'low',
+        prompt: 'Return one durable observation.',
+        timeoutMs: 5_000,
+      };
+      const first = await client.runTurn(options);
+      const second = await client.runTurn({ ...options, prompt: 'Return the next durable observation.' });
+      const trace = readTrace(fake.trace);
+
+      expect(first.content).toContain('<title>Turn 1</title>');
+      expect(first).toMatchObject({ inputTokens: 10, outputTokens: 3, tokensUsed: 13 });
+      expect(second.content).toContain('<title>Turn 2</title>');
+      expect(trace.filter(entry => entry.method === 'process/start')).toHaveLength(1);
+      expect(trace.find(entry => entry.method === 'process/start').codexHome).not.toBe(fake.authHome);
+      expect(trace.filter(entry => entry.method === 'initialize')).toHaveLength(1);
+      expect(trace.filter(entry => entry.method === 'thread/start')).toHaveLength(2);
+      expect(trace.filter(entry => entry.method === 'workspace/attestation').every(entry => entry.mode === 0o700)).toBe(true);
+
+      const threadStart = trace.find(entry => entry.method === 'thread/start');
+      expect(threadStart.params.ephemeral).toBe(true);
+      expect(threadStart.params.sandbox).toBe('read-only');
+      expect(threadStart.params.dynamicTools).toEqual([]);
+      expect(threadStart.params.config.mcp_servers.inherited.enabled).toBe(false);
+
+      const turnStart = trace.find(entry => entry.method === 'turn/start');
+      expect(turnStart.params.effort).toBe('low');
+      expect(turnStart.params.outputSchema.required).toEqual(['content']);
+    } finally {
+      await client.close();
+      rmSync(fake.root, { recursive: true, force: true });
+    }
+  });
+
+  for (const usage of [
+    // The native app-server turn_start.rs fixture: both detail counts are
+    // already included in the parent's input/output count (30 + 7 = 37).
+    { inputTokens: 30, cachedInputTokens: 11, outputTokens: 7, reasoningOutputTokens: 3, totalTokens: 37 },
+    { inputTokens: 60_000, cachedInputTokens: 55_000, outputTokens: 2_000, reasoningOutputTokens: 1_500, totalTokens: 62_000 },
+  ]) {
+    itPosix(`keeps native token totals inclusive (${usage.totalTokens} tokens)`, async () => {
+      const fake = createFakeCodex({ usage });
+      const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+      try {
+        const result = await client.runTurn({ codexPath: fake.executable, model: '', reasoningEffort: null,
+          prompt: 'Return one observation.', timeoutMs: 5_000 });
+        const session = { cumulativeInputTokens: 0, cumulativeOutputTokens: 0 } as ActiveSession;
+        accumulateObserverUsage(session, result);
+        // A 60k-token prompt is below the existing 100k-token generation
+        // boundary, even when nearly all of its input was a cache hit.
+        expect({
+          tokensUsed: result.tokensUsed,
+          cumulativeInputTokens: session.cumulativeInputTokens,
+          cumulativeOutputTokens: session.cumulativeOutputTokens,
+          retireGeneration: shouldRecycleConversation([], 400_000, result.inputTokens),
+        }).toEqual({
+          tokensUsed: usage.totalTokens,
+          cumulativeInputTokens: usage.inputTokens,
+          cumulativeOutputTokens: usage.outputTokens,
+          retireGeneration: false,
+        });
+      } finally {
+        await client.close();
+        rmSync(fake.root, { recursive: true, force: true });
+      }
+    });
+  }
+
+  itPosix('rejects any instruction source loaded by Codex', async () => {
+    const fake = createFakeCodex({ instructionSources: ['/unexpected/AGENTS.md'] });
+    const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+    try {
+      const error = await client.runTurn({
+        codexPath: fake.executable,
+        model: 'test-model',
+        reasoningEffort: 'low',
+        prompt: 'Return one durable observation.',
+        timeoutMs: 5_000,
+      }).then(() => null, (rejection: unknown) => rejection as Error & { code?: string });
+      expect(error?.message).toMatch(/unexpected instruction sources/);
+      // Coded, so it is classified as setup the user fixes, not a transport blip.
+      expect(error?.code).toBe(CODEX_ISOLATION_UNATTESTED_CODE);
+    } finally {
+      await client.close();
+      rmSync(fake.root, { recursive: true, force: true });
+    }
+  });
+
+  itPosix('accepts a terminal turn returned directly by turn/start', async () => {
+    const fake = createFakeCodex({ mode: 'terminal-response' });
+    const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+    try {
+      const result = await client.runTurn({
+        codexPath: fake.executable,
+        model: 'test-model',
+        reasoningEffort: 'low',
+        prompt: 'Return one durable observation.',
+        timeoutMs: 5_000,
+      });
+      expect(result.content).toContain('<title>Turn 1</title>');
+    } finally {
+      await client.close();
+      rmSync(fake.root, { recursive: true, force: true });
+    }
+  });
+
+  itPosix('drops an aborted queued turn without restarting the shared process', async () => {
+    const fake = createFakeCodex({ mode: 'hold-first-turn' });
+    const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+    const options = {
+      codexPath: fake.executable,
+      model: 'test-model',
+      reasoningEffort: 'low',
+      prompt: 'Return one durable observation.',
+      timeoutMs: 5_000,
+    } as const;
+    try {
+      const first = client.runTurn(options);
+      await waitForTrace(fake.trace, trace => trace.some(entry => entry.method === 'turn/start'));
+      const controller = new AbortController();
+      const queued = client.runTurn({ ...options, signal: controller.signal });
+      controller.abort();
+      await expect(queued).rejects.toThrow(/aborted while queued/);
+      releaseFirstTurn(fake);
+      await first;
+      await client.runTurn(options);
+      expect(readTrace(fake.trace).filter(entry => entry.method === 'process/start')).toHaveLength(1);
+    } finally {
+      await client.close();
+      rmSync(fake.root, { recursive: true, force: true });
+    }
+  });
+
+  itPosix('rechecks caller admission after the queue wait and before turn/start', async () => {
+    const fake = createFakeCodex({ mode: 'hold-first-turn' });
+    const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+    const options = { codexPath: fake.executable, model: 'test-model', reasoningEffort: 'none',
+      prompt: 'Return one durable observation.', timeoutMs: 5_000 };
+    let admitted = true;
+    try {
+      const first = client.runTurn(options);
+      await waitForTrace(fake.trace, trace => trace.some(entry => entry.method === 'turn/start'));
+      const queued = client.runTurn({ ...options, beforeSend: () => {
+        if (!admitted) throw new Error('quota paused while queued');
+      } });
+      admitted = false;
+      releaseFirstTurn(fake);
+      await first;
+      await expect(queued).rejects.toThrow('quota paused while queued');
+      expect(readTrace(fake.trace).filter(entry => entry.method === 'turn/start')).toHaveLength(1);
+    } finally {
+      await client.close();
+      rmSync(fake.root, { recursive: true, force: true });
+    }
+  });
+
+  itPosix('ignores stale close events after a binary replacement', async () => {
+    const fake = createFakeCodex({ writeOnShutdown: true, privateExecutable: true });
+    const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+    const options = {
+      codexPath: fake.executable,
+      model: 'test-model',
+      reasoningEffort: 'low',
+      prompt: 'Return one durable observation.',
+      timeoutMs: 5_000,
+    } as const;
+    try {
+      await client.runTurn(options);
+      writeFileSync(fake.executable, `${readFileSync(fake.executable, 'utf8')}\n`);
+      await client.runTurn(options);
+      const starts = readTrace(fake.trace).filter(entry => entry.method === 'process/start');
+      expect(starts).toHaveLength(2);
+      const previousRoot = dirname(starts[0].codexHome);
+      const currentRoot = dirname(starts[1].codexHome);
+      // The replaced child's teardown finishes before its root is removed.
+      await (client as any).cleanupPromise;
+      expect(existsSync(previousRoot)).toBe(false);
+      expect(existsSync(currentRoot)).toBe(true);
+      await client.runTurn(options);
+      expect(readTrace(fake.trace).filter(entry => entry.method === 'process/start')).toHaveLength(2);
+      await client.close();
+      expect(existsSync(currentRoot)).toBe(false);
+    } finally {
+      await client.close();
+      for (const start of readTrace(fake.trace).filter(entry => entry.method === 'process/start')) {
+        rmSync(dirname(start.codexHome), { recursive: true, force: true });
+      }
+      rmSync(fake.root, { recursive: true, force: true });
+    }
+  });
+
+  itPosix('waits for the persistent child to stop on close', async () => {
+    const fake = createFakeCodex();
+    const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+    try {
+      await client.runTurn({
+        codexPath: fake.executable,
+        model: 'test-model',
+        reasoningEffort: 'low',
+        prompt: 'Return one durable observation.',
+        timeoutMs: 5_000,
+      });
+      const pid = Number(readTrace(fake.trace).find(entry => entry.method === 'process/start')?.pid);
+      expect(pid).toBeGreaterThan(0);
+      await client.close();
+      expect(() => process.kill(pid, 0)).toThrow();
+    } finally {
+      await client.close();
+      rmSync(fake.root, { recursive: true, force: true });
+    }
+  });
+
+  itPosix('removes the private runtime after the child finishes writing on shutdown', async () => {
+    const fake = createFakeCodex({ writeOnShutdown: true });
+    const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+    let runtimeRoot: string | undefined;
+    try {
+      await client.runTurn({
+        codexPath: fake.executable,
+        model: 'test-model',
+        reasoningEffort: 'low',
+        prompt: 'Return one durable observation.',
+        timeoutMs: 5_000,
+      });
+      const started = readTrace(fake.trace).find(entry => entry.method === 'process/start');
+      runtimeRoot = dirname(started!.codexHome);
+      expect(existsSync(runtimeRoot)).toBe(true);
+
+      await client.close();
+
+      expect(readTrace(fake.trace).some(entry => entry.method === 'process/shutdown')).toBe(true);
+      expect(existsSync(runtimeRoot)).toBe(false);
+      expect(existsSync(join(fake.authHome, 'auth.json'))).toBe(true);
+    } finally {
+      await client.close();
+      if (runtimeRoot) rmSync(runtimeRoot, { recursive: true, force: true });
+      rmSync(fake.root, { recursive: true, force: true });
+    }
+  });
+
+  itPosix('awaits cleanup already started by a handshake timeout when closed', async () => {
+    const fake = createFakeCodex({ mode: 'silent-init', writeOnShutdown: true });
+    const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+    let runtimeRoot: string | undefined;
+    try {
+      await expect(client.runTurn({
+        codexPath: fake.executable,
+        model: 'test-model',
+        reasoningEffort: 'low',
+        prompt: 'Return one durable observation.',
+        timeoutMs: 300,
+      })).rejects.toThrow('initialize timed out');
+      // The handshake really reached the running fake and went unanswered.
+      expect(readTrace(fake.trace).some(entry => entry.method === 'initialize')).toBe(true);
+      const started = readTrace(fake.trace).find(entry => entry.method === 'process/start');
+      runtimeRoot = dirname(started!.codexHome);
+
+      await client.close();
+
+      expect(() => process.kill(started!.pid, 0)).toThrow();
+      expect(existsSync(runtimeRoot)).toBe(false);
+    } finally {
+      await client.close();
+      // On the regressed implementation, the first teardown is still pending.
+      await waitForTrace(fake.trace, trace => trace.some(entry => entry.method === 'process/shutdown'));
+      if (runtimeRoot) rmSync(runtimeRoot, { recursive: true, force: true });
+      rmSync(fake.root, { recursive: true, force: true });
+    }
+  });
+
+  itPosix('does not abort a replacement turn when a timed-out handshake signal fires later', async () => {
+    const fake = createFakeCodex({ mode: 'silent-init' });
+    const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+    const oldController = new AbortController();
+    const options = { codexPath: fake.executable, model: '', reasoningEffort: null,
+      prompt: 'Summarize.', timeoutMs: 5000 };
+    try {
+      await expect(client.runTurn({ ...options, timeoutMs: 1000, signal: oldController.signal }))
+        .rejects.toThrow('initialize timed out');
+      expect(readTrace(fake.trace).some(entry => entry.method === 'initialize')).toBe(true);
+
+      const configPath = join(fake.root, FAKE_CODEX_CONFIG_FILE);
+      const config = JSON.parse(readFileSync(configPath, 'utf8'));
+      writeFileSync(configPath, JSON.stringify({ ...config, mode: 'hold-first-turn' }));
+      const replacement = client.runTurn(options)
+        .then(value => ({ value, error: null }), error => ({ value: null, error }));
+      await waitForTrace(fake.trace, trace => trace.some(entry => entry.method === 'turn/start'));
+      const starts = readTrace(fake.trace).filter(entry => entry.method === 'process/start');
+      expect(starts).toHaveLength(2);
+
+      oldController.abort();
+      // Release the real replacement child. The baseline may already have
+      // killed it through the stale handshake's retained abort callback.
+      try { process.kill(starts[1].pid, 'SIGUSR1'); } catch { /* baseline child exited */ }
+      const result = await replacement;
+      expect(result.error).toBeNull();
+      expect(result.value?.content).toContain('<title>Turn 1</title>');
+      await client.runTurn(options);
+      expect(readTrace(fake.trace).filter(entry => entry.method === 'process/start')).toHaveLength(2);
+    } finally {
+      await client.close();
+      rmSync(fake.root, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  itPosix('rejects queued and future turns without restarting after close', async () => {
+    const fake = createFakeCodex({ mode: 'hold-first-turn' });
+    const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+    const options = {
+      codexPath: fake.executable,
+      model: 'test-model',
+      reasoningEffort: 'none',
+      prompt: 'Return one durable observation.',
+      timeoutMs: 5_000,
+    } as const;
+    try {
+      const active = client.runTurn(options);
+      await waitForTrace(fake.trace, trace => trace.some(entry => entry.method === 'turn/start'));
+      const queued = client.runTurn(options);
+      const settled = Promise.allSettled([active, queued]);
+
+      await client.close();
+      const [activeResult, queuedResult] = await settled;
+
+      expect(activeResult.status).toBe('rejected');
+      expect(queuedResult.status).toBe('rejected');
+      if (queuedResult.status === 'rejected') {
+        expect(String(queuedResult.reason)).toMatch(/client closed/);
+      }
+      await expect(client.runTurn(options)).rejects.toThrow(/client closed/);
+      expect(readTrace(fake.trace).filter(entry => entry.method === 'process/start')).toHaveLength(1);
+    } finally {
+      await client.close();
+      rmSync(fake.root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('sweepStaleAppServerWorkdirs (#4788)', () => {
+  const longAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const deadPid = 999_001;
+  const livePid = 999_002;
+  const isPidAlive = (pid: number) => pid === livePid;
+
+  function withBase(run: (base: string, make: (name: string, options: { ownerPid?: number; old: boolean }) => string) => Promise<void>) {
+    return async () => {
+      const base = mkdtempSync(join(tmpdir(), 'claude-mem-sweep-'));
+      const make = (name: string, { ownerPid, old }: { ownerPid?: number; old: boolean }) => {
+        const dir = join(base, name);
+        mkdirSync(join(dir, 'codex-home'), { recursive: true });
+        if (ownerPid !== undefined) writeFileSync(join(dir, 'owner.json'), JSON.stringify({ pid: ownerPid }));
+        if (old) utimesSync(dir, longAgo, longAgo);
+        return dir;
+      };
+      try {
+        await run(base, make);
+      } finally {
+        rmSync(base, { recursive: true, force: true });
+      }
+    };
+  }
+
+  it('keeps an old workdir whose owner process is still alive', withBase(async (base, make) => {
+    const live = make('claude-mem-codex-app-server-live', { ownerPid: livePid, old: true });
+
+    expect(await sweepStaleAppServerWorkdirs({ baseDir: base, isPidAlive })).toEqual([]);
+    expect(existsSync(live)).toBe(true);
+  }));
+
+  it('removes a workdir whose owner process is dead, however recent', withBase(async (base, make) => {
+    const orphan = make('claude-mem-codex-app-server-orphan', { ownerPid: deadPid, old: false });
+
+    expect(await sweepStaleAppServerWorkdirs({ baseDir: base, isPidAlive })).toEqual([orphan]);
+    expect(existsSync(orphan)).toBe(false);
+  }));
+
+  it('removes an old workdir with no owner file and keeps a fresh one', withBase(async (base, make) => {
+    const legacy = make('claude-mem-codex-app-server-legacy', { old: true });
+    const fresh = make('claude-mem-codex-app-server-fresh', { old: false });
+    const unrelated = make('someone-elses-dir', { ownerPid: deadPid, old: true });
+
+    expect(await sweepStaleAppServerWorkdirs({ baseDir: base, isPidAlive })).toEqual([legacy]);
+    expect(existsSync(legacy)).toBe(false);
+    expect(existsSync(fresh)).toBe(true);
+    expect(existsSync(unrelated)).toBe(true);
+  }));
+
+  it('returns before the removal finishes, so the caller is not blocked', withBase(async (base, make) => {
+    const orphan = make('claude-mem-codex-app-server-orphan', { ownerPid: deadPid, old: true });
+
+    const sweep = sweepStaleAppServerWorkdirs({ baseDir: base, isPidAlive });
+    expect(sweep).toBeInstanceOf(Promise);
+    expect(existsSync(orphan)).toBe(true);
+    expect(await sweep).toEqual([orphan]);
+    expect(existsSync(orphan)).toBe(false);
+  }));
+
+  it('treats the current process as a live owner by default', withBase(async (base, make) => {
+    const own = make('claude-mem-codex-app-server-own', { ownerPid: process.pid, old: true });
+
+    expect(await sweepStaleAppServerWorkdirs({ baseDir: base })).toEqual([]);
+    expect(existsSync(own)).toBe(true);
+  }));
+
+  it('returns nothing when the temp directory cannot be read', async () => {
+    expect(await sweepStaleAppServerWorkdirs({ baseDir: join(tmpdir(), 'claude-mem-no-such-dir-4788') })).toEqual([]);
+  });
+});
+
+for (const stop of ['abort', 'timeout'] as const) {
+  itPosix(`rejects after ${stop} even when completion arrives during the interrupt acknowledgement`, async () => {
+    const fake = createFakeCodex({ mode: 'finish-during-interrupt' });
+    const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+    const controller = new AbortController();
+    try {
+      const turn = client.runTurn({ codexPath: fake.executable, model: '', reasoningEffort: null,
+        prompt: 'Summarize.', timeoutMs: 1000, signal: controller.signal })
+        .then(value => ({ value, error: null }), error => ({ value: null, error }));
+      if (stop === 'abort') {
+        const deadline = Date.now() + 5000;
+        while (!readTrace(fake.trace).some(entry => entry.method === 'turn/start')) {
+          if (Date.now() > deadline) throw new Error('fake turn did not start');
+          await Bun.sleep(10);
+        }
+        controller.abort();
+      }
+      const result = await turn;
+      expect(result.error).toBeInstanceOf(Error);
+      expect(result.error.message).toContain(stop === 'abort' ? 'aborted' : 'timed out');
+      expect(result.value).toBeNull();
+      expect(readTrace(fake.trace).filter(entry => entry.method === 'turn/interrupt')).toHaveLength(1);
+    } finally {
+      await client.close();
+      rmSync(fake.root, { recursive: true, force: true });
+    }
+  });
+}

@@ -1,4 +1,5 @@
-// Durable raw tool-use rows (schema v51).
+import { projectScopeSql, scopedProjects } from './project-read-keys.js';
+// Durable raw tool-use rows (schema v51; platform-qualified identity v75).
 //
 // `pending_messages` is the GENERATION QUEUE: rows are claimed, fed to the
 // observer, then deleted. Nothing durable survives it, so raw tool I/O was
@@ -11,11 +12,13 @@
 // Receipt freeze 2026-09-06: this table carries tool IDENTITY only. Dollars
 // live on OpenRouter call-time stamps / the Receipt spend log. `or_generation_id`
 // and `or_session_id` are nullable JOIN keys back to those lines — never a
-// `cost_usd` / micros column here. See reports/tool-sqlite-offload/RECEIPT-JOIN.md.
+// `cost_usd` / micros column here. See docs/receipt-join.md.
 import { Database } from 'bun:sqlite';
 import { createHash } from 'crypto';
 import { logger } from '../../utils/logger.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../shared/platform-source.js';
+import { isRecursiveMemoryTool } from '../../shared/memory-retrieval-tools.js';
+export { isRecursiveMemoryTool } from '../../shared/memory-retrieval-tools.js';
 
 /**
  * Soft cap per stored payload field. The Pro hook envelope already truncates
@@ -39,40 +42,12 @@ export const MAX_TOOL_PAYLOAD_BYTES = 64 * 1024;
  * a third — the table grows with every read instead of every tool call. The
  * other layers are gated for the same reason at a smaller scale.
  *
- * This gates only the `tool_uses` backup write. The observation generator still
- * sees these calls exactly as it does today; nothing about that path changes.
+ * The same lightweight classifier gates hook/ingest observation generation:
+ * retrieval must not create a new paid observation of its own previous output.
  * OpenClaw already drops `memory_*` before it ever reaches the worker
  * (`openclaw/src/index.ts:802`); the prefix is mirrored here so every other
  * adapter gets the same protection.
  */
-const RECURSIVE_MEMORY_TOOLS: ReadonlySet<string> = new Set([
-  'search',
-  'timeline',
-  'get_observations',
-  'get_tool_uses',
-  'session_start_context',
-  'observation_search',
-]);
-
-export function isRecursiveMemoryTool(toolName: string): boolean {
-  if (!toolName) return false;
-  if (toolName.startsWith('memory_')) return true;
-  if (!toolName.startsWith('mcp__')) return false;
-
-  // mcp__<server>__<tool>. Match the SERVER segment too: a different MCP
-  // server's generic `search` is a real tool call and belongs in the index.
-  const parts = toolName.split('__');
-  if (parts.length < 3) return false;
-  const server = parts[1].toLowerCase();
-  const tool = parts.slice(2).join('__');
-  const isClaudeMemServer = server.includes('claude-mem')
-    || server.includes('claude_mem')
-    || server.includes('mcp-search')
-    || server.includes('cmem');
-
-  return isClaudeMemServer && RECURSIVE_MEMORY_TOOLS.has(tool);
-}
-
 export interface ToolUseRow {
   id: number;
   tool_use_id: string;
@@ -95,6 +70,16 @@ export interface ToolUseRow {
   created_at: string;
   created_at_epoch: number;
 }
+
+/** Metadata disclosed before a caller chooses which raw tool bodies to read. */
+export type ToolUseIndexRow = Pick<ToolUseRow,
+  'id' | 'tool_use_id' | 'tool_name' | 'project' | 'content_session_id' |
+  'memory_session_id' | 'platform_source' | 'agent_id' | 'agent_type' |
+  'observation_id' | 'or_generation_id' | 'or_session_id' | 'prompt_number' |
+  'created_at' | 'created_at_epoch'> & {
+    tool_input_bytes: number;
+    tool_response_bytes: number;
+  };
 
 export interface UpsertToolUseInput {
   toolUseId: string;
@@ -131,17 +116,17 @@ export interface ToolUseQueryFilters {
 }
 
 /**
- * UTF-8-safe byte truncation. Copied from the oversized-prompt guard in
- * `SessionRoutes.handleSessionInitByClaudeId` so both boundaries clip the same
- * way (never mid-codepoint).
+ * UTF-8-safe byte truncation. Match the oversized-prompt guard's semantics:
+ * retain only whole code points and report the original payload's byte size.
  */
 export function truncatePayload(value: string, maxBytes: number = MAX_TOOL_PAYLOAD_BYTES): string {
   const byteLength = Buffer.byteLength(value, 'utf8');
   if (byteLength <= maxBytes) return value;
 
-  const buf = Buffer.from(value, 'utf8');
-  let end = maxBytes;
-  while (end > 0 && (buf[end] & 0xc0) === 0x80) end--;
+  // Encode only the retained prefix. Buffer.write stops before a code point
+  // that cannot fit, without allocating a copy of the full tool response.
+  const buf = Buffer.allocUnsafe(maxBytes);
+  const end = buf.write(value, 'utf8');
   return `${buf.subarray(0, end).toString('utf8')}…[truncated: ${byteLength} bytes]`;
 }
 
@@ -156,14 +141,16 @@ export function computeToolUseContentHash(
   toolResponse: string | null | undefined
 ): string {
   return createHash('sha256')
-    .update([toolName || '', toolInput || '', toolResponse || ''].join('\x00'))
+    .update(toolName || '').update('\x00')
+    .update(toolInput || '').update('\x00')
+    .update(toolResponse || '')
     .digest('hex')
     .slice(0, 16);
 }
 
 /**
- * v51 DDL. `CREATE TABLE IF NOT EXISTS` + `CREATE INDEX IF NOT EXISTS` only —
- * no FK on `session_db_id` / `observation_id` on purpose: a FK here would let a
+ * Creates the raw tool table and upgrades the v51 identity constraint to v75.
+ * No FK on `session_db_id` / `observation_id` on purpose: a FK here would let a
  * single orphan row abort the whole constructor migration chain (#3378), and
  * `observation_id` is deliberately linked LATE (after generation), so it cannot
  * be required at insert time.
@@ -191,11 +178,37 @@ export function createToolUsesSchema(db: Database): void {
       content_hash TEXT,
       created_at TEXT NOT NULL,
       created_at_epoch INTEGER NOT NULL,
-      UNIQUE(content_session_id, tool_use_id)
+      UNIQUE(platform_source, content_session_id, tool_use_id)
     )
   `);
 
+  // v75: host IDs are only unique within a platform, as sdk_sessions and the
+  // committed-result marker already reflect. Rebuild the old inline UNIQUE
+  // constraint while preserving every stored column, rowid and derived index.
+  db.transaction(() => {
+    const schema = db.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tool_uses'")
+      .get() as { sql: string };
+    const oldIdentity = /UNIQUE\s*\(\s*content_session_id\s*,\s*tool_use_id\s*\)/i;
+    if (!oldIdentity.test(schema.sql)) return;
+    const dependents = db.query(`SELECT sql FROM sqlite_master
+      WHERE tbl_name = 'tool_uses' AND type IN ('index', 'trigger') AND sql IS NOT NULL`)
+      .all() as Array<{ sql: string }>;
+    const sequence = db.query("SELECT seq FROM sqlite_sequence WHERE name = 'tool_uses'")
+      .get() as { seq: number } | null;
+    db.run(schema.sql
+      .replace(/^CREATE TABLE\s+(?:"tool_uses"|tool_uses)\s*\(/i, 'CREATE TABLE tool_uses_platform_new (')
+      .replace(oldIdentity, 'UNIQUE(platform_source, content_session_id, tool_use_id)'));
+    db.run('INSERT INTO tool_uses_platform_new SELECT * FROM tool_uses');
+    db.run('DROP TABLE tool_uses');
+    db.run('ALTER TABLE tool_uses_platform_new RENAME TO tool_uses');
+    // The external-content FTS table still holds exactly these same rowids.
+    // Restore its triggers without replaying inserts or deleting its documents.
+    for (const dependent of dependents) db.run(dependent.sql);
+    if (sequence) db.run("UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = 'tool_uses'", [sequence.seq]);
+  }).immediate();
+
   db.run('CREATE INDEX IF NOT EXISTS idx_tool_uses_project ON tool_uses(project)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_tool_uses_project_nocase_created ON tool_uses(project COLLATE NOCASE, created_at_epoch DESC, id DESC)');
   db.run('CREATE INDEX IF NOT EXISTS idx_tool_uses_memory_session ON tool_uses(memory_session_id)');
   db.run('CREATE INDEX IF NOT EXISTS idx_tool_uses_content_session ON tool_uses(content_session_id)');
   db.run('CREATE INDEX IF NOT EXISTS idx_tool_uses_session_db_id ON tool_uses(session_db_id)');
@@ -207,7 +220,7 @@ export function createToolUsesSchema(db: Database): void {
 
 /**
  * Idempotent write. A replayed PostToolUse (hook retry, transcript re-scan)
- * carries the same `(content_session_id, tool_use_id)` and must not duplicate;
+ * carries the same `(platform_source, content_session_id, tool_use_id)` and must not duplicate;
  * it refreshes the payload instead, because the replay may be the first one to
  * carry a `tool_response`. Fields the replay does not carry are preserved via
  * COALESCE — notably `observation_id`, which is linked later.
@@ -227,7 +240,7 @@ export function upsertToolUse(db: Database, input: UpsertToolUseInput): number |
   const toolInput = input.toolInput != null ? truncatePayload(input.toolInput) : null;
   const toolResponse = input.toolResponse != null ? truncatePayload(input.toolResponse) : null;
 
-  const row = db.prepare(`
+  const row = (db.prepare(`
     INSERT INTO tool_uses (
       tool_use_id, content_session_id, memory_session_id, session_db_id, project,
       platform_source, tool_name, tool_input, tool_response, cwd, prompt_number,
@@ -235,8 +248,10 @@ export function upsertToolUse(db: Database, input: UpsertToolUseInput): number |
       created_at, created_at_epoch
     )
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(content_session_id, tool_use_id) DO UPDATE SET
-      memory_session_id = COALESCE(excluded.memory_session_id, tool_uses.memory_session_id),
+    ON CONFLICT(platform_source, content_session_id, tool_use_id) DO UPDATE SET
+      memory_session_id = CASE WHEN tool_uses.observation_id IS NULL
+        THEN COALESCE(excluded.memory_session_id, tool_uses.memory_session_id)
+        ELSE tool_uses.memory_session_id END,
       session_db_id     = COALESCE(excluded.session_db_id, tool_uses.session_db_id),
       project           = CASE WHEN excluded.project != '' THEN excluded.project ELSE tool_uses.project END,
       platform_source   = excluded.platform_source,
@@ -250,7 +265,7 @@ export function upsertToolUse(db: Database, input: UpsertToolUseInput): number |
       or_session_id     = COALESCE(excluded.or_session_id, tool_uses.or_session_id),
       content_hash      = excluded.content_hash
     RETURNING id
-  `).get(
+  `).all(
     input.toolUseId,
     input.contentSessionId,
     input.memorySessionId ?? null,
@@ -269,7 +284,7 @@ export function upsertToolUse(db: Database, input: UpsertToolUseInput): number |
     contentHash,
     createdAt,
     createdAtEpoch
-  ) as { id: number } | null;
+  ) as { id: number }[])[0] ?? null;
 
   return row ? row.id : null;
 }
@@ -288,6 +303,7 @@ export function linkToolUsesToObservation(
   db: Database,
   params: {
     contentSessionId: string;
+    platformSource?: string;
     toolUseIds: string[];
     observationId: number;
     memorySessionId?: string | null;
@@ -300,14 +316,22 @@ export function linkToolUsesToObservation(
   const result = db.prepare(`
     UPDATE tool_uses
     SET observation_id = COALESCE(observation_id, ?),
-        memory_session_id = COALESCE(?, memory_session_id)
+        memory_session_id = CASE WHEN observation_id IS NULL
+          THEN COALESCE(?, memory_session_id)
+          ELSE COALESCE(memory_session_id, ?)
+        END
     WHERE content_session_id = ?
+      AND platform_source = ?
       AND tool_use_id IN (${placeholders})
+      AND (observation_id IS NULL OR observation_id = ?)
   `).run(
     params.observationId,
     params.memorySessionId ?? null,
+    params.memorySessionId ?? null,
     params.contentSessionId,
-    ...ids
+    normalizePlatformSource(params.platformSource),
+    ...ids,
+    params.observationId
   );
 
   return Number(result.changes ?? 0);
@@ -322,16 +346,30 @@ function mapPlatformFilter(platformSource: string | undefined): { clause: string
 }
 
 /**
+ * Default row ceiling for `getToolUsesByIds` when the caller omits `limit`.
+ *
+ * The route caps the id array, but `tool_use_id` is only unique per
+ * `(platform_source, content_session_id, tool_use_id)` — `upsertToolUse` stores the same id under
+ * a new session as a distinct row — so the id cap alone does not bound the row
+ * count. An omitted `limit` must not mean "every matching row", or a single
+ * accepted id can still page hundreds of raw payloads.
+ */
+export const TOOL_USES_BATCH_DEFAULT_ROWS = 100;
+
+/**
  * Layer-4 fetch: full tool bodies for an explicitly filtered set of ids.
  *
  * Accepts BOTH numeric `tool_uses.id` (what `queryToolUses` / the search index
  * hand back) and string `tool_use_id` (what a transcript or an observation ref
  * carries), because callers legitimately hold either one.
+ *
+ * The result is always bounded: an explicit `limit` wins, and an omitted `limit`
+ * falls back to `TOOL_USES_BATCH_DEFAULT_ROWS` rather than returning every row.
  */
 export function getToolUsesByIds(
   db: Database,
   ids: Array<number | string>,
-  options: { limit?: number; project?: string; platformSource?: string; contentSessionId?: string } = {}
+  options: { limit?: number; project?: string; projects?: string[]; platformSource?: string; contentSessionId?: string } = {}
 ): ToolUseRow[] {
   const numericIds: number[] = [];
   const stringIds: string[] = [];
@@ -364,9 +402,10 @@ export function getToolUsesByIds(
 
   const conditions = [`(${idClauses.join(' OR ')})`];
 
-  if (options.project) {
-    conditions.push('project = ?');
-    params.push(options.project);
+  const projects = scopedProjects(options);
+  if (projects.length) {
+    const scope = projectScopeSql('tool_uses', projects, { includeMerged: false });
+    conditions.push(scope.sql); params.push(...scope.params);
   }
   if (options.contentSessionId) {
     conditions.push('content_session_id = ?');
@@ -378,27 +417,42 @@ export function getToolUsesByIds(
     params.push(platform.param);
   }
 
-  const limitClause = options.limit && options.limit > 0 ? `LIMIT ${Math.floor(options.limit)}` : '';
+  const rowLimit = options.limit && options.limit > 0 ? Math.floor(options.limit) : TOOL_USES_BATCH_DEFAULT_ROWS;
 
   return db.prepare(`
     SELECT * FROM tool_uses
     WHERE ${conditions.join(' AND ')}
     ORDER BY created_at_epoch DESC
-    ${limitClause}
+    LIMIT ${rowLimit}
   `).all(...params) as ToolUseRow[];
 }
 
-/**
- * Index-shaped listing for Receipt tallies and for finding ids to hand to
- * `getToolUsesByIds`. Deliberately still returns full rows — callers that want
- * the cheap shape project it themselves — but it is always bounded by a limit.
- */
+/** Bounded full-row listing for callers that explicitly need stored bodies. */
 export function queryToolUses(db: Database, filters: ToolUseQueryFilters = {}): ToolUseRow[] {
+  return queryToolUseRows(db, filters, '*') as ToolUseRow[];
+}
+
+/**
+ * Keep raw payloads inside SQLite for the progressive-disclosure index. Count
+ * BLOB bytes, not TEXT characters, so Unicode and embedded NULs agree with
+ * the sizes an explicit body fetch returns.
+ */
+export function queryToolUseIndex(db: Database, filters: ToolUseQueryFilters = {}): ToolUseIndexRow[] {
+  return queryToolUseRows(db, filters, `
+    id, tool_use_id, tool_name, project, content_session_id, memory_session_id,
+    platform_source, agent_id, agent_type, observation_id, or_generation_id,
+    or_session_id, prompt_number, created_at, created_at_epoch,
+    COALESCE(length(CAST(tool_input AS BLOB)), 0) AS tool_input_bytes,
+    COALESCE(length(CAST(tool_response AS BLOB)), 0) AS tool_response_bytes
+  `) as ToolUseIndexRow[];
+}
+
+function queryToolUseRows(db: Database, filters: ToolUseQueryFilters, projection: string): unknown[] {
   const conditions: string[] = [];
   const params: Array<string | number> = [];
 
   if (filters.project) {
-    conditions.push('project = ?');
+    conditions.push('project COLLATE NOCASE = ?');
     params.push(filters.project);
   }
   if (filters.contentSessionId) {
@@ -444,11 +498,11 @@ export function queryToolUses(db: Database, filters: ToolUseQueryFilters = {}): 
   const offset = Math.max(Math.floor(filters.offset ?? 0), 0);
 
   return db.prepare(`
-    SELECT * FROM tool_uses
+    SELECT ${projection} FROM tool_uses
     ${whereClause}
     ORDER BY created_at_epoch ${order}, id ${order}
     LIMIT ${limit} OFFSET ${offset}
-  `).all(...params) as ToolUseRow[];
+  `).all(...params);
 }
 
 /**
@@ -464,7 +518,7 @@ export function countToolUses(
   const params: Array<string | number> = [];
 
   if (filters.project) {
-    conditions.push('project = ?');
+    conditions.push('project COLLATE NOCASE = ?');
     params.push(filters.project);
   }
   if (filters.contentSessionId) {
@@ -505,4 +559,45 @@ export function toolUsesTableExists(db: Database): boolean {
     return false;
   }
   return true;
+}
+
+/**
+ * Opt-in retention for the raw tool I/O index. Deletes rows older than
+ * `retentionDays` that are linked to an observation that still exists, because
+ * that observation carries the distilled result. `observation_id` is not a
+ * foreign key, so deleting an observation leaves the link behind: a row whose
+ * observation is gone is, like a row with no `observation_id` at all, the only
+ * copy of that I/O and is never touched. `retentionDays` of 0 keeps
+ * everything. Freed pages are reused by SQLite; returning disk space to the OS
+ * is the job of VACUUM / auto_vacuum, not of this purge.
+ *
+ * Returns the number of rows removed.
+ */
+export function purgeLinkedToolUses(db: Database, retentionDays: number, nowEpoch: number = Date.now()): number {
+  if (!Number.isSafeInteger(retentionDays) || retentionDays <= 0) return 0;
+  try {
+    if (!toolUsesTableExists(db)) return 0;
+    const cutoffEpoch = nowEpoch - retentionDays * 24 * 60 * 60 * 1000;
+    db
+      .prepare(
+        `DELETE FROM tool_uses
+          WHERE observation_id IS NOT NULL
+            AND created_at_epoch < ?
+            AND EXISTS (SELECT 1 FROM observations WHERE observations.id = tool_uses.observation_id)`
+      )
+      .run(cutoffEpoch);
+    // Bun's run().changes includes FTS shadow-table writes from triggers.
+    const { changes } = db.query('SELECT changes() AS changes').get() as { changes: number };
+    if (changes > 0) {
+      logger.info('DB', 'Purged tool_uses rows past retention that are already linked to an observation', {
+        rows: changes,
+        retentionDays,
+      });
+    }
+    return changes;
+  } catch (error) {
+    logger.warn('DB', 'tool_uses retention purge failed', {},
+      error instanceof Error ? error : new Error(String(error)));
+    return 0;
+  }
 }

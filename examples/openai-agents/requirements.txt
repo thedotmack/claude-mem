@@ -1,0 +1,2 @@
+openai-agents==0.24.0
+mcp==2.3.0

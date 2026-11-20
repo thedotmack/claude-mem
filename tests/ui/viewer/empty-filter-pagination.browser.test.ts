@@ -1,0 +1,243 @@
+import { expect, it } from 'bun:test';
+import {
+  FIXTURE_PAGE_HTML, chromeExecutablePath, compileBrowserFixture, htmlResponse, launchChrome, scriptResponse, withTimeout,
+  type OwnedChrome,
+} from '../../helpers/chrome-devtools';
+
+for (const mode of ['more', 'exhausted', 'loading'] as const) {
+  (chromeExecutablePath ? it : it.skip)(`handles an empty filtered page while ${mode}`, async () => {
+    const common = { itemType: 'observation', project: 'owned-project',
+      content_session_id: 'owned-session', platform_source: 'claude',
+      created_at_epoch: Date.now(), created_at: new Date().toISOString(),
+      narrative: 'Owned fixture', facts: '[]', concepts: '[]', files_read: '[]', files_modified: '[]' };
+    const items = [
+      { ...common, id: 1, type: 'bugfix', title: 'OWNED_LOADED_BUGFIX' },
+      { ...common, id: 2, type: 'discovery', title: 'OWNED_DISCOVERY' },
+    ];
+    const older = { ...common, id: 3, type: 'bugfix', title: 'OWNED_OLDER_BUGFIX' };
+    const bundle = compileBrowserFixture(`
+        import React, { useState } from 'react';
+        import { createRoot } from 'react-dom/client';
+        import { SessionDetailPage } from './src/ui/viewer/components/SessionDetailPage';
+        import { removeLoadedRow } from './src/ui/viewer/utils/feed-deletion';
+        window.confirm = () => { throw new Error('The viewer must not use the browser confirm box'); };
+        function Probe() {
+          const [items, setItems] = useState(${JSON.stringify(items)});
+          const [loading, setLoading] = useState(${mode === 'loading'});
+          const [hasMore, setHasMore] = useState(${mode !== 'exhausted'});
+          async function loadMore() {
+            setLoading(true);
+            const response = await fetch('/older-page');
+            const data = await response.json();
+            setItems(previous => [...previous, ...data.items]);
+            setHasMore(data.hasMore); setLoading(false);
+          }
+          return <SessionDetailPage tabs={null} title="Owned session"
+            session={{ platformSource: 'claude', contentSessionId: 'owned-session' }}
+            items={items} isLoading={loading} hasMore={hasMore}
+            onLoadMore={loadMore} onBack={() => {}}
+            onDeleted={(_type, id) => setItems(previous => removeLoadedRow(previous, id).rows)} />;
+        }
+        createRoot(document.getElementById('root')).render(<Probe />);
+        async function settle() { for (let i = 0; i < 4; i++) await new Promise(requestAnimationFrame); }
+        (async () => {
+          try {
+            const deadline = Date.now() + 6000;
+            while (!document.querySelector('[title="Filter to Bugfix"]')) {
+              if (Date.now() > deadline) throw new Error('Session did not render');
+              await new Promise(resolve => setTimeout(resolve, 10));
+            }
+            await settle();
+            document.querySelector('[title="Filter to Bugfix"]').click(); await settle();
+            const beforeDelete = [...document.querySelectorAll('.card-title')].map(x => x.textContent);
+            // Delete through the card's "…" menu and its in-page question (no browser confirm box).
+            document.querySelector('.observation-card .card-menu-trigger').click(); await settle();
+            [...document.querySelectorAll('.observation-card [role="menuitem"]')].find(item => item.textContent.includes('Delete')).click(); await settle();
+            document.querySelector('.inline-confirm-danger').click();
+            const until = Date.now() + 1800;
+            while (document.body.textContent.includes('OWNED_LOADED_BUGFIX') || (${mode === 'more'} && !document.body.textContent.includes('OWNED_OLDER_BUGFIX'))) {
+              if (Date.now() > until) throw new Error('Deletion did not settle');
+              await new Promise(resolve => setTimeout(resolve, 10));
+            }
+            await settle();
+            await fetch('/result', { method: 'POST', body: JSON.stringify({
+              beforeDelete, afterDelete: [...document.querySelectorAll('.card-title')].map(x => x.textContent),
+            }) });
+          } catch (error) { await fetch('/result', { method: 'POST', body: JSON.stringify({ failure: String(error) }) }); }
+        })();
+      `);
+    let resolveReport!: (report: unknown) => void;
+    const result = new Promise(resolve => { resolveReport = resolve; });
+    let deletes = 0; let pages = 0;
+    const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
+      const path = new URL(request.url).pathname;
+      if (path === '/') return htmlResponse('<style>.card{min-height:2000px}</style>' + FIXTURE_PAGE_HTML);
+      if (path === '/fixture.js') return scriptResponse(bundle);
+      if (path === '/api/observation/1' && request.method === 'DELETE') { deletes++; return Response.json({ success: true }); }
+      if (path === '/older-page') { pages++; return Response.json({ items: [older], hasMore: false }); }
+      if (path === '/result') { resolveReport(await request.json()); return new Response('received'); }
+      return new Response('not found', { status: 404 });
+    } });
+    let chrome: OwnedChrome | undefined;
+    try {
+      chrome = launchChrome(server.url.href, { profilePrefix: 'claude-mem-empty-filter-browser-' });
+      // Leaves room for a cold Chrome start on CI, which has taken 8-11 s.
+      const report = await withTimeout(result, 25000, 'Browser timed out');
+      expect(deletes).toBe(1);
+      expect(pages).toBe(mode === 'more' ? 1 : 0);
+      expect(report).toEqual({ beforeDelete: ['OWNED_LOADED_BUGFIX'], afterDelete: mode === 'more' ? ['OWNED_OLDER_BUGFIX'] : [] });
+    } finally {
+      await chrome?.close(); server.stop(true);
+    }
+  }, 40000);
+
+}
+
+// The empty feed renders its sentinel on mount, so the mount observer can deliver
+// its first notification after the initial page started loading (and failed),
+// but before React's effect cleanup disconnects it. That stale notification must
+// not load again: the failed page has to wait for Retry.
+(chromeExecutablePath ? it : it.skip)('ignores a late notification from a sentinel that is no longer rendered', async () => {
+  const bundle = compileBrowserFixture(`
+      import React, { useLayoutEffect, useState } from 'react';
+      import { createRoot } from 'react-dom/client';
+      import { Feed } from './src/ui/viewer/components/Feed';
+      // Notifications are delivered by hand, so the test decides when one arrives.
+      const observers = [];
+      window.IntersectionObserver = class {
+        constructor(callback) { this.callback = callback; this.targets = []; this.disconnected = false; observers.push(this); }
+        observe(target) { this.targets.push(target); }
+        unobserve() {}
+        disconnect() { this.disconnected = true; }
+      };
+      const deliver = observer => observer.callback(observer.targets.map(target => ({ isIntersecting: true, target })), observer);
+      let loads = 0;
+      let deliveredBeforeCleanup = null;
+      let setStep;
+      function Probe() {
+        const [step, set] = useState('mounted'); setStep = set;
+        // Layout effects run in the commit that removed the sentinel, before the
+        // passive cleanup that disconnects the mount observer.
+        useLayoutEffect(() => {
+          if (step !== 'loading') return;
+          deliveredBeforeCleanup = !observers[0].disconnected;
+          deliver(observers[0]);
+        }, [step]);
+        return <Feed items={[]} hasMore={true} isLoading={step === 'loading'}
+          loadError={step === 'failed' ? 'Failed to load prompts' : null}
+          onLoadMore={() => { loads++; }} onDeleted={() => {}} />;
+      }
+      createRoot(document.getElementById('root')).render(<Probe />);
+      async function until(predicate) {
+        const deadline = Date.now() + 6000;
+        while (!predicate()) {
+          if (Date.now() > deadline) throw new Error('Fixture did not reach expected state');
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
+      }
+      (async () => {
+        try {
+          await until(() => observers.length === 1 && observers[0].targets.length === 1);
+          const mountSentinel = observers[0].targets[0];
+          setStep('loading');
+          await until(() => observers[0].disconnected);
+          const lateLoads = loads;
+          setStep('failed');
+          await until(() => !!document.querySelector('[role="alert"]'));
+          const retry = [...document.querySelectorAll('button')].some(button => button.textContent === 'Retry');
+          setStep('recovered');
+          await until(() => observers.length === 2 && observers[1].targets.length === 1);
+          deliver(observers[1]);
+          await fetch('/result', { method: 'POST', body: JSON.stringify({
+            mountSentinelRemoved: !mountSentinel.isConnected, deliveredBeforeCleanup, lateLoads, retry, liveLoads: loads - lateLoads,
+          }) });
+        } catch (error) { await fetch('/result', { method: 'POST', body: JSON.stringify({ failure: String(error) }) }); }
+      })();
+    `);
+  let resolveReport!: (report: unknown) => void;
+  const result = new Promise(resolve => { resolveReport = resolve; });
+  const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
+    const path = new URL(request.url).pathname;
+    if (path === '/') return htmlResponse(FIXTURE_PAGE_HTML);
+    if (path === '/fixture.js') return scriptResponse(bundle);
+    if (path === '/result') { resolveReport(await request.json()); return new Response('received'); }
+    return new Response('not found', { status: 404 });
+  } });
+  let chrome: OwnedChrome | undefined;
+  try {
+    chrome = launchChrome(server.url.href, { profilePrefix: 'claude-mem-late-sentinel-browser-' });
+    const report = await withTimeout(result, 25000, 'Browser timed out');
+    expect(report).toEqual({ mountSentinelRemoved: true, deliveredBeforeCleanup: true, lateLoads: 0, retry: true, liveLoads: 1 });
+  } finally {
+    await chrome?.close(); server.stop(true);
+  }
+}, 40000);
+
+// On a slow frame Chrome queues the observer's first check of a new sentinel
+// (not yet in view) and the check after a scroll that brought it into view,
+// then hands both to one callback, oldest first. Only the newest entry says
+// where the sentinel is now: the list must load once for [out, in] and not
+// for [in, out].
+(chromeExecutablePath ? it : it.skip)('acts on the newest of several queued sentinel notifications', async () => {
+  const bundle = compileBrowserFixture(`
+      import React from 'react';
+      import { createRoot } from 'react-dom/client';
+      import { Feed } from './src/ui/viewer/components/Feed';
+      import { SessionList } from './src/ui/viewer/components/SessionList';
+      const observers = [];
+      window.IntersectionObserver = class {
+        constructor(callback) { this.callback = callback; this.targets = []; observers.push(this); }
+        observe(target) { this.targets.push(target); }
+        unobserve() {}
+        disconnect() {}
+      };
+      const deliverQueued = (observer, states) =>
+        observer.callback(states.map(isIntersecting => ({ isIntersecting, target: observer.targets[0] })), observer);
+      const loads = { feed: 0, sessions: 0 };
+      const feedItem = { itemType: 'observation', id: 1, project: 'owned-project', content_session_id: 'owned-session',
+        platform_source: 'claude', type: 'discovery', title: 'OWNED_ITEM', created_at_epoch: 1, created_at: new Date(1).toISOString(),
+        narrative: '', facts: '[]', concepts: '[]', files_read: '[]', files_modified: '[]' };
+      const session = { content_session_id: 'owned-session', platform_source: 'claude', project: 'owned-project',
+        custom_title: 'OWNED_SESSION', started_at_epoch: 1, item_count: 1 };
+      const feedRoot = document.createElement('div'); const sessionRoot = document.createElement('div');
+      document.body.append(feedRoot, sessionRoot);
+      createRoot(feedRoot).render(<Feed items={[feedItem]} hasMore={true} isLoading={false}
+        onLoadMore={() => { loads.feed++; }} onDeleted={() => {}} />);
+      createRoot(sessionRoot).render(<SessionList header={null} sessions={[session]} hasMore={true} isLoading={false}
+        loadError={null} onOpen={() => {}} onDelete={async () => {}} onLoadMore={() => { loads.sessions++; }} />);
+      (async () => {
+        try {
+          const deadline = Date.now() + 6000;
+          while (!(observers.length === 2 && observers.every(observer => observer.targets.length === 1))) {
+            if (Date.now() > deadline) throw new Error('Fixture did not reach expected state');
+            await new Promise(resolve => setTimeout(resolve, 10));
+          }
+          const report = {};
+          for (const [name, observer] of [['feed', observers[0]], ['sessions', observers[1]]]) {
+            deliverQueued(observer, [false, true]);
+            const intoView = loads[name];
+            deliverQueued(observer, [true, false]);
+            report[name] = { intoView, outOfView: loads[name] - intoView };
+          }
+          await fetch('/result', { method: 'POST', body: JSON.stringify(report) });
+        } catch (error) { await fetch('/result', { method: 'POST', body: JSON.stringify({ failure: String(error) }) }); }
+      })();
+    `);
+  let resolveReport!: (report: unknown) => void;
+  const result = new Promise(resolve => { resolveReport = resolve; });
+  const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
+    const path = new URL(request.url).pathname;
+    if (path === '/') return htmlResponse(FIXTURE_PAGE_HTML);
+    if (path === '/fixture.js') return scriptResponse(bundle);
+    if (path === '/result') { resolveReport(await request.json()); return new Response('received'); }
+    return new Response('not found', { status: 404 });
+  } });
+  let chrome: OwnedChrome | undefined;
+  try {
+    chrome = launchChrome(server.url.href, { profilePrefix: 'claude-mem-queued-sentinel-browser-' });
+    const report = await withTimeout(result, 25000, 'Browser timed out');
+    expect(report).toEqual({ feed: { intoView: 1, outOfView: 0 }, sessions: { intoView: 1, outOfView: 0 } });
+  } finally {
+    await chrome?.close(); server.stop(true);
+  }
+}, 40000);

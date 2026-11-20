@@ -1,0 +1,125 @@
+// Each claude-mem instruction reaches a Claude Code agent once. When the user's
+// CLAUDE.md -> MY-RULES.md -> RULES-AND-TOOLS.md chain is in place, the MCP
+// server instructions and the SessionStart pointer line stay quiet; anywhere
+// else they keep delivering, so nothing is lost.
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import {
+  claudeCodeAlreadyLoadsInstructions,
+  claudeCodeImportLine,
+  forwardSlashPath,
+  hasImportLine,
+  rulesAndToolsLoadedByClaudeCode,
+  rulesAndToolsPointerLine,
+  withoutLoadedRulesPointer,
+  type RulesImportPaths,
+} from '../../src/shared/claude-code-rules-import.js';
+
+const INSTRUCTIONS = '# Work state: your to-do lists and working state\nUse work_state_write.';
+const CLAUDE_CODE = { CLAUDECODE: '1' } as NodeJS.ProcessEnv;
+
+let directory: string;
+let paths: Required<RulesImportPaths>;
+
+function writeChain(options: { claudeImportsRules?: boolean; rulesImportTools?: boolean; toolsText?: string | null } = {}): void {
+  const { claudeImportsRules = true, rulesImportTools = true, toolsText = `# Claude-Mem Rules + Tools\n\n${INSTRUCTIONS}\n` } = options;
+  writeFileSync(paths.claudeInstructionsPath, `# Mine\n${claudeImportsRules ? `${claudeCodeImportLine(paths.myRulesPath)}\n` : ''}`);
+  writeFileSync(paths.myRulesPath, `# My Rules\n\n- Be plain.\n${rulesImportTools ? `\n${claudeCodeImportLine(paths.rulesAndToolsPath)}\n` : ''}`);
+  if (toolsText !== null) writeFileSync(paths.rulesAndToolsPath, toolsText);
+}
+
+beforeEach(() => {
+  // A space in the path: Claude Code ends an unescaped @path there.
+  directory = mkdtempSync(join(tmpdir(), 'rules import test-'));
+  mkdirSync(join(directory, 'claude'));
+  paths = {
+    claudeInstructionsPath: join(directory, 'claude', 'CLAUDE.md'),
+    myRulesPath: join(directory, 'MY-RULES.md'),
+    rulesAndToolsPath: join(directory, 'RULES-AND-TOOLS.md'),
+  };
+});
+
+afterEach(() => rmSync(directory, { recursive: true, force: true }));
+
+describe('Claude Code rules import chain', () => {
+  it('is loaded only when every link and the final file are there', () => {
+    writeChain();
+    expect(rulesAndToolsLoadedByClaudeCode(paths)).toBe(true);
+    writeChain({ claudeImportsRules: false });
+    expect(rulesAndToolsLoadedByClaudeCode(paths)).toBe(false);
+    writeChain({ rulesImportTools: false });
+    expect(rulesAndToolsLoadedByClaudeCode(paths)).toBe(false);
+    rmSync(paths.rulesAndToolsPath);
+    writeChain({ toolsText: null });
+    expect(rulesAndToolsLoadedByClaudeCode(paths)).toBe(false);
+  });
+
+  it('escapes spaces in the import line', () => {
+    expect(claudeCodeImportLine('/home/me/rules dir/MY-RULES.md', '/elsewhere', '/')).toBe('@/home/me/rules\\ dir/MY-RULES.md');
+  });
+
+  // Claude Code skips an @import whose separators are backslashes; C:/… and ~/… load on Windows.
+  it('writes Windows paths with forward slashes', () => {
+    expect(claudeCodeImportLine('C:\\Users\\me\\.claude-mem\\MY-RULES.md', 'C:\\Users\\me', '\\')).toBe('@~/.claude-mem/MY-RULES.md');
+    expect(claudeCodeImportLine('D:\\Data Dir\\MY-RULES.md', 'C:\\Users\\me', '\\')).toBe('@D:/Data\\ Dir/MY-RULES.md');
+  });
+
+  it('leaves POSIX paths alone, backslashes included', () => {
+    expect(claudeCodeImportLine('/home/me/.claude-mem/MY-RULES.md', '/home/me', '/')).toBe('@~/.claude-mem/MY-RULES.md');
+    expect(claudeCodeImportLine('/tmp/odd\\name.md', '/home/me', '/')).toBe('@/tmp/odd\\name.md');
+  });
+
+  it('counts the home-relative and the absolute forward-slash spellings as the import', () => {
+    const absolute = `@${forwardSlashPath(paths.myRulesPath).replaceAll(' ', '\\ ')}`;
+    expect(hasImportLine(`# Mine\n${claudeCodeImportLine(paths.myRulesPath)}\n`, paths.myRulesPath)).toBe(true);
+    expect(hasImportLine(`# Mine\n${absolute}\n`, paths.myRulesPath)).toBe(true);
+    expect(hasImportLine('# Mine\n', paths.myRulesPath)).toBe(false);
+  });
+
+  it('does not count a backslash-separated import line as loaded', () => {
+    const backslashed = (filePath: string) => `@${filePath.replaceAll('/', '\\').replaceAll(' ', '\\ ')}`;
+    writeFileSync(paths.claudeInstructionsPath, `# Mine\n${backslashed(paths.myRulesPath)}\n`);
+    writeFileSync(paths.myRulesPath, `# My Rules\n\n${backslashed(paths.rulesAndToolsPath)}\n`);
+    writeFileSync(paths.rulesAndToolsPath, `# Claude-Mem Rules + Tools\n\n${INSTRUCTIONS}\n`);
+    expect(rulesAndToolsLoadedByClaudeCode(paths)).toBe(false);
+  });
+});
+
+describe('MCP server instructions', () => {
+  it('are skipped in Claude Code when the imported file holds the same text', () => {
+    writeChain();
+    expect(claudeCodeAlreadyLoadsInstructions(INSTRUCTIONS, CLAUDE_CODE, paths)).toBe(true);
+  });
+
+  it('are still sent to any other host', () => {
+    writeChain();
+    expect(claudeCodeAlreadyLoadsInstructions(INSTRUCTIONS, {} as NodeJS.ProcessEnv, paths)).toBe(false);
+  });
+
+  it('are still sent when the chain is incomplete or the file says something else', () => {
+    writeChain({ rulesImportTools: false });
+    expect(claudeCodeAlreadyLoadsInstructions(INSTRUCTIONS, CLAUDE_CODE, paths)).toBe(false);
+    // A setting changed after the file was written, or another runtime's text.
+    writeChain({ toolsText: '# Claude-Mem Rules + Tools\n\nolder text\n' });
+    expect(claudeCodeAlreadyLoadsInstructions(INSTRUCTIONS, CLAUDE_CODE, paths)).toBe(false);
+  });
+});
+
+describe('SessionStart pointer line', () => {
+  it('is dropped when CLAUDE.md already loads the file it points to', () => {
+    writeChain();
+    const pointer = rulesAndToolsPointerLine(paths.rulesAndToolsPath);
+    expect(withoutLoadedRulesPointer(`${pointer}\n\n# timeline`, paths)).toBe('# timeline');
+    expect(withoutLoadedRulesPointer(pointer, paths)).toBe('');
+  });
+
+  it('stays when the chain is incomplete or the text starts differently', () => {
+    writeChain({ claudeImportsRules: false });
+    const pointer = rulesAndToolsPointerLine(paths.rulesAndToolsPath);
+    expect(withoutLoadedRulesPointer(`${pointer}\n\n# timeline`, paths)).toBe(`${pointer}\n\n# timeline`);
+    writeChain();
+    expect(withoutLoadedRulesPointer(`# warning\n${pointer}`, paths)).toBe(`# warning\n${pointer}`);
+  });
+});

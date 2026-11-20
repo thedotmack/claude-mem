@@ -12,8 +12,8 @@ function createMockReqRes(body: any): {
   const jsonSpy = mock(() => {});
   const statusSpy = mock(() => ({ json: jsonSpy }));
   return {
-    req: { body, path: '/api/corpus', params: {}, query: {} } as Partial<Request>,
-    res: { json: jsonSpy, status: statusSpy, headersSent: false } as unknown as Partial<Response>,
+    req: { body, path: '/api/corpus', params: {}, query: {}, headers: {}, socket: { on: mock(() => {}), off: mock(() => {}) } } as unknown as Partial<Request>,
+    res: { json: jsonSpy, status: statusSpy, headersSent: false, on: mock(() => {}), off: mock(() => {}), end: mock(() => {}) } as unknown as Partial<Response>,
     jsonSpy,
     statusSpy,
   };
@@ -90,71 +90,35 @@ describe('CorpusRoutes Type Coercion', () => {
     routes.setupRoutes(mockApp as any);
   });
 
-  it('accepts native array filters and numeric limit', async () => {
-    const { req, res, jsonSpy } = createMockReqRes({
-      name: 'native',
-      types: ['decision', 'bugfix'],
-      concepts: ['hooks'],
-      files: ['src/a.ts'],
-      limit: 10,
-    });
-
+  it.each<[Record<string, unknown>, Record<string, unknown>]>([
+    [{ name: 'native', types: ['decision', 'bugfix'], concepts: ['hooks'], files: ['src/a.ts'], limit: 10 },
+      { types: ['decision', 'bugfix'], concepts: ['hooks'], files: ['src/a.ts'], limit: 10 }],
+    [{ name: 'json-strings', types: '["decision","bugfix"]', concepts: '["hooks","agent"]', files: '["src/a.ts","src/b.ts"]', limit: '25' },
+      { types: ['decision', 'bugfix'], concepts: ['hooks', 'agent'], files: ['src/a.ts', 'src/b.ts'], limit: 25 }],
+    [{ name: 'camel-dates', dateStart: '2025-01-01', dateEnd: '2025-03-01' },
+      { date_start: '2025-01-01', date_end: '2025-03-01' }],
+    [{ name: 'snake-dates', date_start: '2025-01-01', date_end: '2025-03-01' },
+      { date_start: '2025-01-01', date_end: '2025-03-01' }],
+    [{ name: 'comma-strings', types: 'decision, bugfix', concepts: 'hooks, agent', files: 'src/a.ts, src/b.ts' },
+      { types: ['decision', 'bugfix'], concepts: ['hooks', 'agent'], files: ['src/a.ts', 'src/b.ts'] }],
+  ])('coerces the filter in %j', async (body, expectedFilter) => {
+    const { req, res, jsonSpy } = createMockReqRes(body);
     handler(req as Request, res as Response);
     await flushPromises();
 
-    expect(mockBuild).toHaveBeenCalledWith('native', '', {
-      types: ['decision', 'bugfix'],
-      concepts: ['hooks'],
-      files: ['src/a.ts'],
-      limit: 10,
-    });
+    expect(mockBuild).toHaveBeenCalledWith(body.name, '', expectedFilter);
     expect(jsonSpy).toHaveBeenCalled();
   });
 
-  it('coerces JSON-encoded string filters and string limit', async () => {
-    const { req, res } = createMockReqRes({
-      name: 'json-strings',
-      types: '["decision","bugfix"]',
-      concepts: '["hooks","agent"]',
-      files: '["src/a.ts","src/b.ts"]',
-      limit: '25',
-    });
-
-    handler(req as Request, res as Response);
-    await flushPromises();
-
-    expect(mockBuild).toHaveBeenCalledWith('json-strings', '', {
-      types: ['decision', 'bugfix'],
-      concepts: ['hooks', 'agent'],
-      files: ['src/a.ts', 'src/b.ts'],
-      limit: 25,
-    });
-  });
-
-  it('coerces comma-separated filters and trims whitespace', async () => {
-    const { req, res } = createMockReqRes({
-      name: 'comma-strings',
-      types: 'decision, bugfix',
-      concepts: 'hooks, agent',
-      files: 'src/a.ts, src/b.ts',
-    });
-
-    handler(req as Request, res as Response);
-    await flushPromises();
-
-    expect(mockBuild).toHaveBeenCalledWith('comma-strings', '', {
-      types: ['decision', 'bugfix'],
-      concepts: ['hooks', 'agent'],
-      files: ['src/a.ts', 'src/b.ts'],
-    });
-  });
-
-  it('rejects invalid array items before calling CorpusBuilder', async () => {
-    const { req, res, statusSpy } = createMockReqRes({
-      name: 'bad-array',
-      concepts: ['hooks', 42],
-    });
-
+  it.each([
+    { name: 'bad-array', concepts: ['hooks', 42] },
+    { name: 'bad-type', types: ['decision', 42] },
+    { name: 'empty-type', types: [''] },
+    { name: 'bad-limit', limit: 'many' },
+    { name: 'bad name/with spaces' },
+    { name: '  bad  ' },
+  ])('rejects %j before calling CorpusBuilder', async (body) => {
+    const { req, res, statusSpy } = createMockReqRes(body);
     handler(req as Request, res as Response);
     await flushPromises();
 
@@ -162,53 +126,20 @@ describe('CorpusRoutes Type Coercion', () => {
     expect(mockBuild).not.toHaveBeenCalled();
   });
 
-  it('rejects unsupported corpus types before calling CorpusBuilder', async () => {
-    const { req, res, statusSpy } = createMockReqRes({
-      name: 'bad-type',
-      types: ['typo'],
-    });
+  it.each([
+    ['dateStart', 'not-a-date'],
+    ['date_start', 'not-a-date'],
+    ['dateEnd', '2025-13-45'],
+    ['date_end', 'yesterday-ish'],
+  ])('rejects an unparseable %s with 400 INVALID_DATE before calling CorpusBuilder', async (key, value) => {
+    const { req, res, statusSpy, jsonSpy } = createMockReqRes({ name: 'bad-date', [key]: value });
 
     handler(req as Request, res as Response);
     await flushPromises();
 
     expect(statusSpy).toHaveBeenCalledWith(400);
+    expect(jsonSpy).toHaveBeenCalledWith(expect.objectContaining({ code: 'INVALID_DATE' }));
     expect(mockBuild).not.toHaveBeenCalled();
   });
 
-  it('rejects invalid limit before calling CorpusBuilder', async () => {
-    const { req, res, statusSpy } = createMockReqRes({
-      name: 'bad-limit',
-      limit: 'many',
-    });
-
-    handler(req as Request, res as Response);
-    await flushPromises();
-
-    expect(statusSpy).toHaveBeenCalledWith(400);
-    expect(mockBuild).not.toHaveBeenCalled();
-  });
-
-  it('rejects a corpus name with illegal characters before calling CorpusBuilder', async () => {
-    const { req, res, statusSpy } = createMockReqRes({
-      name: 'bad name/with spaces',
-    });
-
-    handler(req as Request, res as Response);
-    await flushPromises();
-
-    expect(statusSpy).toHaveBeenCalledWith(400);
-    expect(mockBuild).not.toHaveBeenCalled();
-  });
-
-  it('rejects a padded corpus name instead of silently trimming it', async () => {
-    const { req, res, statusSpy } = createMockReqRes({
-      name: '  bad  ',
-    });
-
-    handler(req as Request, res as Response);
-    await flushPromises();
-
-    expect(statusSpy).toHaveBeenCalledWith(400);
-    expect(mockBuild).not.toHaveBeenCalled();
-  });
 });

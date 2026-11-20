@@ -14,6 +14,9 @@
 import { fetchWithTimeout } from '../../shared/worker-utils.js';
 import { HOOK_TIMEOUTS, getTimeout } from '../../shared/hook-constants.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
+import { stripMemoryTags, stripMemoryTagsFromJsonStrings } from '../../utils/tag-stripping.js';
+import { redactJsonStrings } from '../../utils/redaction.js';
+import { retainTextHeadTail } from '../../shared/text-truncation.js';
 
 const DEFAULT_TIMEOUT_MS = getTimeout(HOOK_TIMEOUTS.API_REQUEST);
 
@@ -57,6 +60,10 @@ export class ServerClientError extends Error {
 export interface ServerClientConfig {
   serverBaseUrl: string;
   apiKey: string;
+  timeoutMs?: number;
+}
+
+export interface ServerRequestOptions {
   timeoutMs?: number;
 }
 
@@ -175,9 +182,25 @@ export interface ServerSearchObservationsResponse {
 // matched observations AND a pre-joined `context` string.
 export interface ServerContextObservationsRequest {
   projectId: string;
-  query: string;
+  // OPTIONAL, and the whole session-start read depends on it being optional.
+  // With a query the route is FTS and answers by relevance; with the key ABSENT
+  // it answers by recency, which is what a session-start block is. An empty
+  // STRING is not the same thing -- the route's schema requires >=1 character
+  // and rejects `""` -- so the key must be omitted, never blanked.
+  query?: string;
   limit?: number;
+  // In recency mode, reserve this portion of limit for session summaries.
+  summaryLimit?: number;
   platformSource?: string | null;
+  // Folder labels (observations.metadata.project) to scope the read to. Omitted
+  // or empty means every folder in the server project.
+  folderProjects?: string[];
+  // Leave out rows generated from subagent events (CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY).
+  excludeSubagents?: boolean;
+  // Active-mode filters for observations. Empty selects none; summaries keep
+  // their own allowance. Omitted preserves the unfiltered API contract.
+  observationTypes?: string[];
+  observationConcepts?: string[];
 }
 
 export interface ServerContextObservationsResponse {
@@ -188,6 +211,35 @@ export interface ServerContextObservationsResponse {
     [key: string]: unknown;
   }>;
   context: string;
+}
+
+export interface ServerTimelineRequest {
+  projectId: string;
+  anchorId: string;
+  depthBefore?: number;
+  depthAfter?: number;
+}
+export interface ServerSelectedObservationsRequest {
+  projectId: string;
+  ids: string[];
+}
+
+// Per-prompt injection (CLAUDE_MEM_SEMANTIC_INJECT): observations near the
+// prompt in meaning, rendered like the worker's /api/context/semantic.
+export interface ServerSemanticContextRequest {
+  projectId: string;
+  query: string;
+  limit?: number;
+  platformSource?: string | null;
+  folderProjects?: string[];
+  // The Claude Code session id, as on /v1/sessions/start and /v1/events, so
+  // the server can leave out the asking session's own recent observations.
+  contentSessionId?: string | null;
+}
+
+export interface ServerSemanticContextResponse {
+  context: string;
+  count: number;
 }
 
 // Phase 8 — generation job status, scoped by api-key team/project.
@@ -210,15 +262,21 @@ export class ServerClient {
     this.timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
 
-  async startSession(input: ServerStartSessionRequest): Promise<ServerStartSessionResponse> {
+  async startSession(
+    input: ServerStartSessionRequest,
+    options: ServerRequestOptions = {},
+  ): Promise<ServerStartSessionResponse> {
     const body = this.buildStartSessionPayload(input);
-    return this.request<ServerStartSessionResponse>('POST', '/v1/sessions/start', body);
+    return this.request<ServerStartSessionResponse>('POST', '/v1/sessions/start', body, options);
   }
 
-  async recordEvent(input: ServerRecordEventRequest): Promise<ServerRecordEventResponse> {
+  async recordEvent(
+    input: ServerRecordEventRequest,
+    options: ServerRequestOptions = {},
+  ): Promise<ServerRecordEventResponse> {
     const body = this.buildEventPayload(input);
     const path = input.generate === false ? '/v1/events?generate=false' : '/v1/events';
-    return this.request<ServerRecordEventResponse>('POST', path, body);
+    return this.request<ServerRecordEventResponse>('POST', path, body, options);
   }
 
   async endSession(input: ServerEndSessionRequest): Promise<ServerEndSessionResponse> {
@@ -258,16 +316,56 @@ export class ServerClient {
     );
   }
 
-  // Phase 8 — MCP `observation_context`. Same FTS surface as search, but
-  // returns a pre-joined context string suitable for direct prompt injection.
+  async timelineObservations(input: ServerTimelineRequest): Promise<ServerSearchObservationsResponse> {
+    return this.request<ServerSearchObservationsResponse>('POST', '/v1/timeline', input);
+  }
+
+  async selectedObservations(input: ServerSelectedObservationsRequest): Promise<ServerSearchObservationsResponse> {
+    return this.request<ServerSearchObservationsResponse>('POST', '/v1/observations/batch', input);
+  }
+
+  // Phase 8 — MCP `observation_context` and the server-runtime session-start
+  // read. With a query this is the same FTS surface as search; without one the
+  // route returns the most recent rows. Either way it also returns a pre-joined
+  // context string.
   async contextObservations(
     input: ServerContextObservationsRequest,
+    options: ServerRequestOptions = {},
   ): Promise<ServerContextObservationsResponse> {
-    return this.request<ServerContextObservationsResponse>(
-      'POST',
-      '/v1/context',
-      this.buildSearchPayload(input),
-    );
+    // Built here rather than through buildSearchPayload(): that helper is the
+    // /v1/search contract, where a query is genuinely required, and widening it
+    // would let a search ship without one.
+    const payload: Record<string, unknown> = { projectId: input.projectId };
+    if (input.query !== undefined) payload.query = input.query;
+    if (input.limit !== undefined) payload.limit = input.limit;
+    if (input.summaryLimit !== undefined) payload.summaryLimit = input.summaryLimit;
+    if (input.platformSource !== undefined) {
+      payload.platformSource = normalizePlatformSourceField(input.platformSource);
+    }
+    if (input.folderProjects && input.folderProjects.length > 0) {
+      payload.folderProjects = input.folderProjects;
+    }
+    if (input.excludeSubagents !== undefined) payload.excludeSubagents = input.excludeSubagents;
+    if (input.observationTypes !== undefined) payload.observationTypes = input.observationTypes;
+    if (input.observationConcepts !== undefined) payload.observationConcepts = input.observationConcepts;
+    return this.request<ServerContextObservationsResponse>('POST', '/v1/context', payload, options);
+  }
+
+  async semanticContext(
+    input: ServerSemanticContextRequest,
+    options: ServerRequestOptions = {},
+  ): Promise<ServerSemanticContextResponse> {
+    // The query is the user's prompt; <private> sections never leave the hook.
+    const payload: Record<string, unknown> = { projectId: input.projectId, query: stripMemoryTags(input.query) };
+    if (input.limit !== undefined) payload.limit = input.limit;
+    if (input.platformSource !== undefined) {
+      payload.platformSource = normalizePlatformSourceField(input.platformSource);
+    }
+    if (input.folderProjects && input.folderProjects.length > 0) {
+      payload.folderProjects = input.folderProjects;
+    }
+    if (input.contentSessionId) payload.contentSessionId = input.contentSessionId;
+    return this.request<ServerSemanticContextResponse>('POST', '/v1/context/semantic', payload, options);
   }
 
   // Phase 8 — MCP `observation_generation_status`. Server returns the same
@@ -286,21 +384,29 @@ export class ServerClient {
   buildAddObservationPayload(
     input: ServerAddObservationRequest,
   ): Record<string, unknown> {
-    // Write-path contract (#2684): /v1/memories persists a `memory_items` row
-    // whose searchable text lives in `narrative` (the FTS trigger copies it
-    // into memory_items_fts). The MCP `observation_add` surface speaks in terms
-    // of `content`; map it onto `narrative` so the row is never empty and the
-    // FTS index always has something to match. `type` is REQUIRED by
-    // CreateMemoryItemSchema; default it from `kind` so a manual insert that
-    // only supplied content still persists instead of 400-ing.
+    // Write-path contract. This client is constructed ONLY on the `server`
+    // runtime (runtime-selector.ts `buildServerContext`), so the only
+    // /v1/memories it can ever reach is ServerV1PostgresRoutes, which validates
+    // `content: z.string().min(1)` and writes an `observations` row through
+    // PostgresObservationRepository.
+    //
+    // It previously mapped `content` onto `narrative` and added `type`, citing
+    // #2684 / CreateMemoryItemSchema / `memory_items`. That is the contract of
+    // the OTHER /v1/memories — ServerV1Routes, the SQLite route mounted by
+    // worker-service — which this client never talks to: the `worker` runtime
+    // returns before a ServerClient is built. `memory_items` does not exist in
+    // the server database at all.
+    //
+    // Observed on a live `server` runtime: every MCP `observation_add`
+    // returned 400 ValidationError "path":["content"], so the direct-write
+    // surface was unusable rather than merely untested.
     const content = input.content;
     const kind = input.kind ?? 'manual';
     const metadataTitle = typeof input.metadata?.title === 'string' ? input.metadata.title : undefined;
     return {
       projectId: input.projectId,
       kind,
-      type: kind,
-      narrative: content,
+      content,
       ...(metadataTitle ? { title: metadataTitle } : {}),
       ...(input.serverSessionId !== undefined ? { serverSessionId: input.serverSessionId } : {}),
       // Forward the in-session identifiers so the server can resolve the
@@ -330,7 +436,9 @@ export class ServerClient {
       ...(input.agentId !== undefined ? { agentId: input.agentId } : {}),
       ...(input.agentType !== undefined ? { agentType: input.agentType } : {}),
       ...(input.platformSource !== undefined ? { platformSource: normalizePlatformSourceField(input.platformSource) } : {}),
-      ...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
+      // The prompt rides in metadata. Apply the hook's redaction settings
+      // before transport as well as removing explicitly private sections.
+      ...(input.metadata !== undefined ? { metadata: redactJsonStrings(stripMemoryTagsFromJsonStrings(input.metadata)) } : {}),
     };
   }
 
@@ -344,7 +452,10 @@ export class ServerClient {
       ...(input.contentSessionId !== undefined ? { contentSessionId: input.contentSessionId } : {}),
       ...(input.memorySessionId !== undefined ? { memorySessionId: input.memorySessionId } : {}),
       ...(input.platformSource !== undefined ? { platformSource: normalizePlatformSourceField(input.platformSource) } : {}),
-      ...(input.payload !== undefined ? { payload: input.payload } : {}),
+      // Every server-bound event (tool use, file edit, assistant message, MCP
+      // record_event) passes here: <private> sections never leave the hook,
+      // the same rule worker ingest applies before storing tool data.
+      ...(input.payload !== undefined ? { payload: redactJsonStrings(stripMemoryTagsFromJsonStrings(input.payload)) } : {}),
     };
   }
 
@@ -352,6 +463,7 @@ export class ServerClient {
     method: 'GET' | 'POST',
     path: string,
     body?: unknown,
+    options: ServerRequestOptions = {},
   ): Promise<T> {
     if (!this.apiKey || !this.apiKey.trim()) {
       throw new ServerClientError(
@@ -372,17 +484,22 @@ export class ServerClient {
       init.body = JSON.stringify(body);
     }
 
-    let response: Response;
-    try {
-      response = await fetchWithTimeout(url, init, this.timeoutMs);
-    } catch (error: unknown) {
+    const transportFailure = (error: unknown): ServerClientError => {
       const message = error instanceof Error ? error.message : String(error);
-      const isTimeout = /timed out|timeout/i.test(message);
-      throw new ServerClientError(
+      const isTimeout = /timed out|timeout/i.test(message)
+        || (error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError'));
+      return new ServerClientError(
         isTimeout ? 'timeout' : 'transport',
         `Server ${method} ${path} failed: ${message}`,
         { cause: error },
       );
+    };
+    let response: Response;
+    const timeoutMs = options.timeoutMs ?? this.timeoutMs;
+    try {
+      response = await fetchWithTimeout(url, init, timeoutMs);
+    } catch (error: unknown) {
+      throw transportFailure(error);
     }
 
     if (!response.ok) {
@@ -394,7 +511,12 @@ export class ServerClient {
       );
     }
 
-    const text = await response.text();
+    let text: string;
+    try {
+      text = await response.text();
+    } catch (error: unknown) {
+      throw transportFailure(error);
+    }
     if (!text || text.length === 0) {
       // Endpoints we call always return JSON; a body-less success is unusual
       // but not fatal — return undefined-shaped object.
@@ -427,5 +549,5 @@ function normalizePlatformSourceField(value: string | null): string | null {
 
 function truncate(text: string, max: number): string {
   if (text.length <= max) return text;
-  return `${text.slice(0, max)}…`;
+  return `${retainTextHeadTail(text, max, 0).head}…`;
 }

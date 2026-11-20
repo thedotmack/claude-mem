@@ -1,0 +1,218 @@
+import { useId, useMemo, useState } from 'react'
+import { ArrowRightIcon, ChevronDownIcon, ChevronRightIcon, SearchIcon } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { Collapsible, CollapsibleContent, CollapsibleFoldTrigger, CollapsibleTrigger } from '@/components/ui/collapsible'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Skeleton } from '@/components/ui/skeleton'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
+import { useI18n, interpolate } from '@/lib/i18n'
+import { formatPromptDay } from '@/lib/prompt-time'
+import { displayTime } from '@/lib/display-time'
+import { cn } from '@/lib/utils'
+import { needsYou, type FocusArea, type Request } from '@/data'
+import { focusOverview, needsOwnerFirst, type FocusOverviewRow } from '@/live/focus-overview'
+import { nextStepShown } from '@/live/to-work-model'
+import { nextStepWords } from '@/live/next-step-words'
+import { FocusArtwork } from './focus-artwork'
+import type { FocusArtwork as ArtworkDensity } from '@/store/store-types'
+
+/**
+ * Kept areas shown before "Show all <n> focus areas": two rows of two compact rows at desktop, so the board stays one
+ * block between what needs you and every request (content-priority, page-01).
+ */
+export const FOCUS_OVERVIEW_FIRST_AREAS = 4
+/** A search field past this many areas: eight are four rows of two; past that, finding one by eye means a long scan (search-accessible). */
+export const FOCUS_OVERVIEW_SEARCH_PAST = 8
+/** Requests named in an area's folded work before the rest are counted; the area page lists them all (progressive-disclosure). */
+export const FOCUS_OVERVIEW_REQUESTS_NAMED = 3
+
+/**
+ * Pictures loaded at once instead of as they scroll near: the board's first row, two areas a row once the board itself
+ * is 900px wide (the container query in focus-overview.css), which is on the first screen; every other picture loads
+ * lazily (FocusArtwork `priority`).
+ */
+const EAGER_ARTWORKS = 2
+
+/** The Artwork control's words, in the order it shows them (c-focus-overview: three visible choices, not a native select). */
+const ARTWORK_WORDS: Record<ArtworkDensity, string> = { full: 'Full', compact: 'Compact', off: 'Off' }
+
+/** While the areas are still being found: the shape of two compact rows, not a lone block (D b18 M 373). */
+function BoardSkeleton() {
+  return (
+    <div className="focus-area-grid artwork-compact">
+      {Array.from({ length: 2 }, (_, index) => (
+        <div key={index} className="flex items-center gap-3 rounded-xl border border-border p-2">
+          <Skeleton className="size-14 shrink-0 rounded-lg" />
+          <div className="min-w-0 flex-1 space-y-2"><Skeleton className="h-4 w-1/2" /><Skeleton className="h-3 w-3/4" /></div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/**
+ * One area (c-focus-overview, c-focus-artwork). The whole card opens the area: its name is the one button, stretched
+ * over the card (one Tab stop; it was 27 equal "Open focus area" buttons). Compact and Off are one 72px row with the
+ * counts at the right ("1 needs you" first, so it reads before the picture's caption); Full keeps the picture, filling
+ * its box, its caption under it as normal small text, the next step and "Work & evidence", the shared fold row (G5)
+ * that shows the area's work in place. An area that needs you has a brighter edge. In setup, with no area page to
+ * open, the name folds the area's work open instead.
+ */
+function AreaCard({ row, index, artwork, incomplete, workLoading, onOpenArea, onOpenRequest }: {
+  row: FocusOverviewRow; index: number; artwork: ArtworkDensity; incomplete: boolean; workLoading: boolean
+  onOpenArea?: (id: string) => void; onOpenRequest?: (request: Request) => void
+}) {
+  const { t } = useI18n()
+  const id = useId()
+  const [open, setOpen] = useState(false)
+  const { area, requests: work, needsYou: waiting, working: moving } = row
+  const active = work.filter((request) => !request.closed)
+  const next = active.find(needsYou) ?? active.find((request) => request.state === 'working')
+  // A missing step is left out (decision G3): the mapper's value or an older worker's filler.
+  const nextStep = next ? nextStepShown(next.next) : null
+  const full = artwork === 'full'
+  const name = (
+    <Button variant="bare" className="focus-area-target focus-visible:border-transparent focus-visible:ring-0"
+      aria-label={interpolate(onOpenArea ? t('Open {name} focus area') : t('Explore {name} focus area'), { name: area.name })}
+      aria-describedby={`${id}-goal ${id}-signals`} onClick={onOpenArea ? () => onOpenArea(area.id) : undefined}>
+      {area.name}
+    </Button>
+  )
+  return (
+    <article className={cn('focus-area-card', waiting > 0 && 'needs-owner')}>
+      {artwork !== 'off' && <FocusArtwork area={area} priority={index < EAGER_ARTWORKS} />}
+      <Collapsible open={open} onOpenChange={setOpen} asChild>
+        <div className="focus-area-body">
+          {full && <p className="focus-area-eyebrow">{String(index + 1).padStart(2, '0')} · {area.status === 'suggested' ? t('Suggested focus') : t('Focus area')}</p>}
+          <h3>{onOpenArea ? name : <CollapsibleTrigger asChild>{name}</CollapsibleTrigger>}</h3>
+          <p id={`${id}-goal`} className="focus-area-goal">{area.goal ?? area.about ?? t('A recurring thread in your work.')}</p>
+          <div id={`${id}-signals`} className="focus-area-signals">
+            {waiting > 0 && <span className="focus-signal-attention">{interpolate(waiting === 1 ? t('{count} needs you') : t('{count} need you'), { count: waiting })}</span>}
+            {moving > 0 && <span className="focus-signal-working">{interpolate(t('{count} working'), { count: moving })}</span>}
+            {/* Requests already linked to this area count even while others are still being connected or could not be read. */}
+            {workLoading && active.length === 0 ? <span>{t('Connecting work…')}</span> : <span>{interpolate(active.length === 1 ? t('{count} request') : t('{count} requests'), { count: active.length })}</span>}
+            {incomplete && <span>{t('Some work could not be read')}</span>}
+          </div>
+          {full && nextStep?.kind === 'step' && (
+            <p className="focus-area-next">
+              {onOpenRequest ? <Button variant="bare" className="focus-area-above" onClick={() => onOpenRequest(next!)}>{nextStepWords(nextStep, t)}<ArrowRightIcon aria-hidden="true" /></Button> : nextStepWords(nextStep, t)}
+            </p>
+          )}
+          {full && onOpenArea && (
+            <div className="focus-area-actions focus-area-above">
+              <CollapsibleFoldTrigger className="text-xs">{t('Work & evidence')}</CollapsibleFoldTrigger>
+            </div>
+          )}
+          <CollapsibleContent className="focus-area-evidence focus-area-above">
+            {area.quotes[0] && <blockquote>“{area.quotes[0].quote}”<cite>{displayTime(formatPromptDay(area.quotes[0].at))}</cite></blockquote>}
+            {!area.quotes.length && area.evidence && <p>{area.evidence}</p>}
+            {area.timesAsked !== null && <p>{interpolate(t('Mentioned {count} times in the reviewed prompts'), { count: area.timesAsked })}</p>}
+            {active.length > 0 ? (
+              <ul>{active.slice(0, FOCUS_OVERVIEW_REQUESTS_NAMED).map((request) => (
+                <li key={request.id}>{onOpenRequest
+                  ? <Button variant="bare" onClick={() => onOpenRequest(request)}>{request.title ?? t('New request')}<ArrowRightIcon aria-hidden="true" /></Button>
+                  : request.title ?? t('New request')}</li>
+              ))}</ul>
+            ) : <p>{incomplete ? t('Some requests could not be read. The work shown may be incomplete.') : workLoading ? t('Work is still being connected to this area.') : t('No linked requests yet. Focus areas can appear before their work is sorted.')}</p>}
+            {area.asks.length > 0 && <p>{interpolate(area.asks.length === 1 ? t('{count} recorded ask · not linked to a request yet') : t('{count} recorded asks · not linked to requests yet'), { count: area.asks.length })}</p>}
+          </CollapsibleContent>
+        </div>
+      </Collapsible>
+      {onOpenArea && <ChevronRightIcon aria-hidden="true" className="focus-area-chevron" />}
+    </article>
+  )
+}
+
+/** The same saved areas in setup and My Work. Reading this view never starts inference. */
+export function FocusOverview({ areas, requests, loading = false, workLoading = false, incomplete = false, emptyMessage, discovering = false, onOpenArea, onOpenRequest, artwork = 'full', onArtworkChange, anchorId, expandAllOn = 0 }: {
+  areas: readonly FocusArea[]; requests: readonly Request[]; loading?: boolean; discovering?: boolean
+  workLoading?: boolean; incomplete?: boolean; emptyMessage?: string
+  onOpenArea?: (id: string) => void; onOpenRequest?: (request: Request) => void
+  /** Display density only. The setup screen has no store, so it shows full artwork without the control. */
+  artwork?: ArtworkDensity; onArtworkChange?: (artwork: ArtworkDensity) => void
+  /** The board's address on the page (My Work: `focus-areas`); setup passes none. */
+  anchorId?: string
+  /** Each new value shows every area (a link to `/#focus-areas`); 0 leaves the choice to the person. */
+  expandAllOn?: number
+}) {
+  const { t } = useI18n()
+  const id = useId()
+  const [showSuggestions, setShowSuggestions] = useState(false)
+  const [showAll, setShowAll] = useState(expandAllOn > 0)
+  const [query, setQuery] = useState('')
+  // A later link to the whole board ("All N" in the rail or the chip row, the bottom bar's Focus) opens it again after
+  // the person folded it back, and ends a search: it promises every area, and a typed search had kept showing only the
+  // matches. Set while rendering: React's way to follow a prop without an extra paint.
+  const [expandedFor, setExpandedFor] = useState(expandAllOn)
+  if (expandAllOn !== expandedFor) {
+    setExpandedFor(expandAllOn)
+    if (expandAllOn > 0) { setShowAll(true); setQuery('') }
+  }
+  const overview = useMemo(() => focusOverview(areas, requests), [areas, requests])
+  // Areas that need the owner come first, each part in the saved order (live/focus-overview.ts needsOwnerFirst).
+  const ordered = useMemo(() => needsOwnerFirst(overview.areas), [overview.areas])
+  // Suggestions stay visible after setup. Opening one reaches its existing Keep / Dismiss controls.
+  const searching = query.trim().length > 0
+  const matches = ({ area }: FocusOverviewRow) => `${area.name} ${area.goal ?? ''} ${area.about ?? ''}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())
+  const kept = searching ? ordered.filter(matches) : showAll ? ordered : ordered.slice(0, FOCUS_OVERVIEW_FIRST_AREAS)
+  const suggested = searching ? overview.suggested.filter(matches) : overview.suggested
+  const visible = overview.areas.length && !showSuggestions && !searching ? kept : [...kept, ...suggested]
+  const otherCount = overview.other.filter((request) => !request.closed).length
+  const sortingCount = overview.sorting.filter((request) => !request.closed).length
+  return (
+    <section id={anchorId} className="focus-overview" aria-labelledby={`${id}-heading`} aria-busy={loading}>
+      <header className="focus-overview-heading">
+        <div><p className="section-label">{discovering ? t('Found in your conversations') : t('The bigger picture')}</p>
+          <h2 id={`${id}-heading`}>{t('Your focus areas')}</h2>
+          <p>{discovering ? t('The things you keep coming back to, with the work behind them.') : t('What you’re working toward, across your agents and conversations.')}</p>
+        </div>
+        <div className="focus-overview-controls">
+          {onArtworkChange && (
+            <div className="flex items-center gap-2">
+              <span aria-hidden="true" className="text-xs text-muted-foreground">{t('Artwork')}</span>
+              <ToggleGroup type="single" variant="outline" size="sm" spacing={0} value={artwork} aria-label={t('Artwork')}
+                onValueChange={(next) => next && onArtworkChange(next as ArtworkDensity)}>
+                {(Object.keys(ARTWORK_WORDS) as ArtworkDensity[]).map((choice) => <ToggleGroupItem key={choice} value={choice}>{t(ARTWORK_WORDS[choice])}</ToggleGroupItem>)}
+              </ToggleGroup>
+            </div>
+          )}
+          {overview.areas.length + overview.suggested.length > FOCUS_OVERVIEW_SEARCH_PAST && (
+            <div className="focus-area-search">
+              <Label htmlFor={`${id}-search`} className="text-xs font-normal text-muted-foreground">{t('Find a focus area')}</Label>
+              <div className="relative">
+                <SearchIcon aria-hidden="true" className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
+                <Input id={`${id}-search`} type="search" value={query} onChange={(event) => setQuery(event.target.value)} className="pl-9" />
+              </div>
+            </div>
+          )}
+        </div>
+      </header>
+      {/* While a search filters the board, it says so and how to see every area again. */}
+      {searching && visible.length > 0 && (
+        <div className="focus-area-filtering">
+          <p role="status">{interpolate(t('{shown} of {total} focus areas match “{query}”'), { shown: visible.length, total: overview.areas.length + overview.suggested.length, query: query.trim() })}</p>
+          <Button variant="link" size="sm" className="px-0" onClick={() => setQuery('')}>{t('Clear search')}</Button>
+        </div>
+      )}
+      {loading && visible.length === 0 ? (
+        <div className="focus-area-loading" role="status"><p>{t('Finding the threads in your work…')}</p><BoardSkeleton /></div>
+      ) : visible.length === 0 ? (
+        <div className="focus-area-empty">
+          <p>{searching ? t('No focus areas match your search.') : emptyMessage ?? (discovering ? t('No focus areas found in this scan. You can continue setup and review your work later.') : t('No focus areas yet. Keep working and check back after a refresh.'))}</p>
+          {searching && <Button variant="outline" size="sm" onClick={() => setQuery('')}>{t('Clear search')}</Button>}
+        </div>
+      ) : (
+        <div className={`focus-area-grid artwork-${artwork}`}>
+          {visible.map((row, index) => <AreaCard key={row.area.id} row={row} index={index} artwork={artwork} incomplete={incomplete} workLoading={workLoading} onOpenArea={onOpenArea} onOpenRequest={onOpenRequest} />)}
+        </div>
+      )}
+      <div className="focus-overview-footer">
+        {!searching && overview.areas.length > FOCUS_OVERVIEW_FIRST_AREAS && <Button variant="link" size="sm" className="px-0" aria-expanded={showAll} onClick={() => setShowAll(!showAll)}>{showAll ? t('Show priority areas') : interpolate(t('Show all {count} focus areas'), { count: overview.areas.length })}<ChevronDownIcon aria-hidden="true" className={cn(showAll && 'rotate-180')} /></Button>}
+        {overview.areas.length > 0 && overview.suggested.length > 0 && <Button variant="link" size="sm" className="px-0" aria-expanded={showSuggestions} onClick={() => setShowSuggestions(!showSuggestions)}>{interpolate(showSuggestions ? t('Hide {count} suggested areas') : t('Explore {count} suggested areas'), { count: overview.suggested.length })}<ChevronDownIcon aria-hidden="true" className={cn(showSuggestions && 'rotate-180')} /></Button>}
+        {otherCount > 0 && onOpenArea && <Button variant="link" size="sm" className="px-0" onClick={() => onOpenArea('other')}>{interpolate(t('{count} in Other'), { count: otherCount })}<ArrowRightIcon aria-hidden="true" /></Button>}
+        {sortingCount > 0 && <span>{interpolate(t('{count} still being sorted'), { count: sortingCount })}</span>}
+      </div>
+    </section>
+  )
+}

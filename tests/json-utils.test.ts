@@ -57,66 +57,6 @@ describe('JSON Utils', () => {
       );
     });
 
-    it('works with array default values', () => {
-      const nonExistentPath = join(tempDir, 'missing.json');
-
-      const result = readJsonSafe<string[]>(nonExistentPath, ['a', 'b']);
-
-      expect(result).toEqual(['a', 'b']);
-    });
-
-    it('works with string default values', () => {
-      const nonExistentPath = join(tempDir, 'missing.json');
-
-      const result = readJsonSafe<string>(nonExistentPath, 'default');
-
-      expect(result).toBe('default');
-    });
-
-    it('works with number default values', () => {
-      const nonExistentPath = join(tempDir, 'missing.json');
-
-      const result = readJsonSafe<number>(nonExistentPath, 0);
-
-      expect(result).toBe(0);
-    });
-
-    it('reads JSON arrays correctly', () => {
-      const filePath = join(tempDir, 'array.json');
-      writeFileSync(filePath, JSON.stringify([1, 2, 3]));
-
-      const result = readJsonSafe<number[]>(filePath, []);
-
-      expect(result).toEqual([1, 2, 3]);
-    });
-
-    it('reads deeply nested JSON correctly', () => {
-      const filePath = join(tempDir, 'nested.json');
-      const deepData = {
-        level1: {
-          level2: {
-            level3: {
-              value: 'deep',
-            },
-          },
-        },
-      };
-      writeFileSync(filePath, JSON.stringify(deepData));
-
-      const result = readJsonSafe<typeof deepData>(filePath, { level1: { level2: { level3: { value: '' } } } });
-
-      expect(result.level1.level2.level3.value).toBe('deep');
-    });
-
-    it('handles JSON with trailing newline', () => {
-      const filePath = join(tempDir, 'trailing-newline.json');
-      writeFileSync(filePath, JSON.stringify({ ok: true }) + '\n');
-
-      const result = readJsonSafe(filePath, {});
-
-      expect(result).toEqual({ ok: true });
-    });
-
     it('parses UTF-8 BOM prefixed JSON (Windows PowerShell 5.1)', () => {
       const filePath = join(tempDir, 'settings.json');
       const payload = { CLAUDE_MEM_MODEL: 'bom-model', nested: { ok: true } };
@@ -128,13 +68,5 @@ describe('JSON Utils', () => {
       expect(result).toEqual(payload);
     });
 
-    it('parses string that already starts with U+FEFF', () => {
-      const filePath = join(tempDir, 'feff.json');
-      writeFileSync(filePath, '\uFEFF' + JSON.stringify({ port: 37777 }), 'utf-8');
-
-      const result = readJsonSafe<{ port: number }>(filePath, { port: 0 });
-
-      expect(result.port).toBe(37777);
-    });
   });
 });

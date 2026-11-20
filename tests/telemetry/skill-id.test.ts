@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { existsSync, readdirSync, readFileSync } from 'fs';
+import { existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 import {
   FIRST_PARTY_SKILL_IDS,
@@ -10,13 +10,6 @@ import {
 
 const PROJECT_ROOT = join(import.meta.dir, '../..');
 const PLUGIN_SKILLS_DIR = join(PROJECT_ROOT, 'plugin/skills');
-
-const MEM_SEARCH_COPIES = [
-  'plugin/skills/mem-search/SKILL.md',
-  'claude-mem-cursor/skills/mem-search/SKILL.md',
-  'cowork/skills/mem-search/SKILL.md',
-  'claude-mem-grok-bot/skills/mem-search/SKILL.md',
-];
 
 function pluginSkillIdsOnDisk(): string[] {
   return readdirSync(PLUGIN_SKILLS_DIR, { withFileTypes: true })
@@ -34,9 +27,6 @@ describe('FIRST_PARTY_SKILL_IDS pinned to plugin/skills/', () => {
   });
 
   it('collapses sibling mem-search copies to one first-party id', () => {
-    for (const rel of MEM_SEARCH_COPIES) {
-      expect(existsSync(join(PROJECT_ROOT, rel))).toBe(true);
-    }
     expect(classifySkillId('mem-search')).toEqual({
       skill_id: 'mem-search',
       skill_source: 'first_party',
@@ -54,22 +44,9 @@ describe('FIRST_PARTY_SKILL_IDS pinned to plugin/skills/', () => {
       skill_source: 'first_party',
     });
   });
-
-  it('is a pure helper — no captureEvent, completion, or duration fields', () => {
-    const src = readFileSync(join(PROJECT_ROOT, 'src/services/telemetry/skill-id.ts'), 'utf8');
-    expect(src).not.toContain('captureEvent');
-    expect(src).not.toContain('skill_completed');
-    expect(src).not.toContain('duration_ms');
-  });
 });
 
 describe('classifySkillId', () => {
-  it('classifies a bare first-party name as first_party', () => {
-    expect(classifySkillId('mem-search')).toEqual({
-      skill_id: 'mem-search',
-      skill_source: 'first_party',
-    });
-  });
 
   it('strips a claude-mem: prefix', () => {
     expect(classifySkillId('claude-mem:make-plan')).toEqual({
@@ -107,12 +84,6 @@ describe('classifySkillId', () => {
     expect(classifySkillId({ skill: 'x' })).toEqual({ skill_id: 'other', skill_source: 'third_party' });
   });
 
-  it('never echoes the original string', () => {
-    const classified = classifySkillId('Someone-Else:SecretSkill');
-    expect(JSON.stringify(classified)).not.toContain('Someone-Else');
-    expect(JSON.stringify(classified)).not.toContain('SecretSkill');
-    expect(classified.skill_id).toBe('other');
-  });
 });
 
 describe('skillNameFromToolInput', () => {

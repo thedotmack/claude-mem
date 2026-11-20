@@ -4,6 +4,7 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import {
   buildHostObserverSettings,
+  HostObserverUnavailableError,
   hostObserverCandidatePorts,
   probeHostObserverPort,
   probeHostObserverPortSync,
@@ -40,6 +41,10 @@ describe('host observer port resolution', () => {
     const probe = (port: number) => (port === 37778 ? 'observer' : 'free' as const);
     expect(resolveHostObserverPort('37777', {} as NodeJS.ProcessEnv, probe)).toBe('37778');
     expect(resolveHostObserverPort(37777, {} as NodeJS.ProcessEnv, probe)).toBe('37778');
+  });
+
+  it('uses the first live observer when both candidate ports respond', () => {
+    expect(resolveHostObserverPort('37742', {} as NodeJS.ProcessEnv, () => 'observer')).toBe('37777');
   });
 
   it('fails install resolution when nothing OpenAI-compatible is listening', () => {
@@ -153,6 +158,61 @@ describe('host observer port resolution', () => {
     } finally {
       await close(observer);
       await close(occupied);
+    }
+  });
+
+  it('treats HTTP 503 error-shaped payloads as occupied and never persists them', async () => {
+    // spawnSync(curl) blocks this process, so the occupied listener must live
+    // in a child. Otherwise the install-time probe never sees HTTP status.
+    const child = spawn(process.execPath, ['-e', `
+      const http = require('http');
+      const server = http.createServer((_req, res) => {
+        res.writeHead(503, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'unavailable' } }));
+      });
+      server.listen(0, '127.0.0.1', () => {
+        process.stdout.write(String(server.address().port));
+      });
+    `], { stdio: ['ignore', 'pipe', 'pipe'] });
+
+    try {
+      const port = await new Promise<number>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('occupied child did not start')), 2000);
+        child.once('error', (error) => {
+          clearTimeout(timer);
+          reject(error);
+        });
+        child.stdout.once('data', (chunk) => {
+          clearTimeout(timer);
+          const parsed = Number(String(chunk).trim());
+          if (!Number.isInteger(parsed) || parsed <= 0) {
+            reject(new Error(`invalid child port: ${String(chunk)}`));
+            return;
+          }
+          resolve(parsed);
+        });
+      });
+
+      expect(await probeHostObserverPort(port)).toBe('occupied');
+
+      const env = { CLAUDE_MEM_HOST_OBSERVER_PORT: String(port) } as NodeJS.ProcessEnv;
+      expect(() => resolveHostObserverPort('1', env)).toThrow(HostObserverUnavailableError);
+      expect(() => resolveHostObserverPort('1', env)).toThrow(/is occupied/);
+
+      let updates: Record<string, string> | undefined;
+      try {
+        updates = buildHostObserverSettings(
+          'grok-bot',
+          { CLAUDE_MEM_WORKER_PORT: '1' },
+          env,
+        );
+      } catch (error) {
+        expect(error).toBeInstanceOf(HostObserverUnavailableError);
+      }
+      expect(updates).toBeUndefined();
+      expect(updates?.CLAUDE_MEM_OPENROUTER_BASE_URL).toBeUndefined();
+    } finally {
+      child.kill('SIGTERM');
     }
   });
 });

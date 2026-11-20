@@ -13,6 +13,7 @@ import {
 import { DisabledServerQueueManager } from '../../../src/server/runtime/types.js';
 import { logger } from '../../../src/utils/logger.js';
 import { quoteIdentifier, newApiKey } from '../../sdk/pg-isolation.js';
+import { ServerClient } from '../../../src/services/hooks/server-client.js';
 
 const testDatabaseUrl = process.env.CLAUDE_MEM_TEST_POSTGRES_URL;
 
@@ -118,14 +119,151 @@ describe('ServerV1PostgresRoutes Phase 6 session endpoints', () => {
     mock.restore();
   });
 
-  function authedFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  function authedFetch(path: string, init: RequestInit = {}, key = apiKeyRaw): Promise<Response> {
     return fetch(`http://127.0.0.1:${port}${path}`, {
       ...init,
       headers: {
         ...(init.headers ?? {}),
-        Authorization: `Bearer ${apiKeyRaw}`,
+        Authorization: `Bearer ${key}`,
         'Content-Type': 'application/json',
       },
+    });
+  }
+
+  async function scopedKey(scopes: string[]): Promise<string> {
+    const key = newApiKey();
+    await storage.auth.createApiKey({ keyHash: key.hash, teamId, projectId, actorId: 'capture', scopes });
+    return key.raw;
+  }
+
+  it('returns an existing session receipt without saved metadata to a write-only key', async () => {
+    const input = { projectId, externalSessionId: 'shared-session', contentSessionId: 'shared-session',
+      platformSource: 'cursor', metadata: { prompt: 'Owner opening prompt', project: 'private-checkout' } };
+    const owner = await authedFetch('/v1/sessions/start', { method: 'POST', body: JSON.stringify(input) });
+    expect(owner.status).toBe(201);
+    const original = (await owner.json()).session;
+    const writeKey = await scopedKey(['memories:write']);
+    expect((await authedFetch(`/v1/sessions/${original.id}`, {}, writeKey)).status).toBe(403);
+
+    const replay = await authedFetch('/v1/sessions/start', { method: 'POST', body: JSON.stringify({
+      projectId, externalSessionId: input.externalSessionId, platformSource: 'cursor',
+    }) }, writeKey);
+    expect(replay.status).toBe(200);
+    const receipt = (await replay.json()).session;
+    expect(receipt.id).toBe(original.id);
+    expect(receipt.metadata).toBeUndefined();
+    expect(receipt).toMatchObject({ projectId, teamId, externalSessionId: 'shared-session',
+      contentSessionId: 'shared-session', platformSource: 'cursor', endedAtEpoch: null });
+    const stored = await storage.sessions.getByIdForScope({ id: original.id, projectId, teamId });
+    expect(stored?.metadata).toEqual(input.metadata);
+  });
+
+  it('ends and re-ends a session without reading its saved metadata through a write-only key', async () => {
+    const session = await storage.sessions.create({ projectId, teamId, externalSessionId: 'end-only',
+      metadata: { prompt: 'Owner private planning details' } });
+    const writeKey = await scopedKey(['memories:write']);
+    expect((await authedFetch(`/v1/sessions/${session.id}`, {}, writeKey)).status).toBe(403);
+    const receipts = [];
+    for (let repeat = 0; repeat < 2; repeat++) {
+      const response = await authedFetch(`/v1/sessions/${session.id}/end`, { method: 'POST' }, writeKey);
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.session.id).toBe(session.id);
+      expect(body.session.endedAtEpoch).not.toBeNull();
+      expect(body.session.metadata).toBeUndefined();
+      receipts.push(body);
+    }
+    expect(receipts[1].generationJob.id).toBe(receipts[0].generationJob.id);
+    expect(receipts[1].session.endedAtEpoch).toBe(receipts[0].session.endedAtEpoch);
+    const ownerRead = await authedFetch(`/v1/sessions/${session.id}`);
+    expect((await ownerRead.json()).session.metadata).toEqual(session.metadata);
+  });
+
+  for (const scopes of [['memories:read', 'memories:write'], ['*']]) {
+    it(`retains full session responses with ${scopes.join(', ')} scope`, async () => {
+      const session = await storage.sessions.create({ projectId, teamId, externalSessionId: 'full-receipt',
+        metadata: { prompt: 'Visible to authorized recall' } });
+      const key = await scopedKey(scopes);
+      const replay = await authedFetch('/v1/sessions/start', { method: 'POST',
+        body: JSON.stringify({ projectId, externalSessionId: session.externalSessionId }) }, key);
+      expect(replay.status).toBe(200);
+      expect((await replay.json()).session.metadata).toEqual(session.metadata);
+      const ended = await authedFetch(`/v1/sessions/${session.id}/end`, { method: 'POST' }, key);
+      expect(ended.status).toBe(200);
+      expect((await ended.json()).session.metadata).toEqual(session.metadata);
+    });
+  }
+
+  it('keeps the hook client start, capture and end flow working with write-only receipts', async () => {
+    const apiKey = await scopedKey(['memories:write']);
+    const hook = new ServerClient({ serverBaseUrl: `http://127.0.0.1:${port}`, apiKey });
+    const started = await hook.startSession({ projectId, externalSessionId: 'capture-only',
+      contentSessionId: 'capture-only', platformSource: 'cursor', metadata: { prompt: 'Capture this work' } });
+    const event = await hook.recordEvent({ projectId, serverSessionId: started.session.id,
+      sourceType: 'hook', eventType: 'tool_use', occurredAtEpoch: Date.now(), generate: false,
+      payload: { tool: 'Read', result: 'fixture' } });
+    expect(event.event.serverSessionId).toBe(started.session.id);
+    const ended = await hook.endSession({ sessionId: started.session.id });
+    expect(ended.session.id).toBe(started.session.id);
+    expect(ended.session.endedAtEpoch).not.toBeNull();
+    expect(started.session.metadata).toBeUndefined();
+    expect(ended.session.metadata).toBeUndefined();
+    expect(event.event.payload).toBeUndefined();
+    expect(event.event.metadata).toBeUndefined();
+    expect(enqueuedSummaryJobs).toHaveLength(1);
+  });
+
+  async function existingEvent() {
+    const payload = { tool: 'Read', result: 'recorded delivery' };
+    const occurredAtEpoch = 1_700_000_000_000;
+    const event = await storage.agentEvents.create({ projectId, teamId, sourceAdapter: 'api',
+      eventType: 'tool_use', platformSource: 'cursor', payload, occurredAt: new Date(occurredAtEpoch),
+      metadata: { note: 'Saved event context from another writer' } });
+    return { event, body: { projectId, sourceType: 'api', eventType: 'tool_use',
+      platformSource: 'cursor', payload, occurredAtEpoch } };
+  }
+
+  for (const batch of [false, true]) {
+    for (const wait of [false, true]) {
+      it(`omits stored event content from write-only ${batch ? 'batch' : 'single'} ${wait ? 'wait' : 'ordinary'} receipts`, async () => {
+        const original = await existingEvent();
+        const writeKey = await scopedKey(['memories:write']);
+        expect((await authedFetch(`/v1/events/${original.event.id}`, {}, writeKey)).status).toBe(403);
+        // With generation disabled, wait=true exercises its response branch
+        // immediately. Ordinary replies retain their queued job descriptor.
+        const path = `/v1/events${batch ? '/batch' : ''}${wait ? '?generate=false&wait=true' : ''}`;
+        const response = await authedFetch(path, { method: 'POST',
+          body: JSON.stringify(batch ? [original.body] : original.body) }, writeKey);
+        expect(response.status).toBe(201);
+        const body = await response.json();
+        const receipt = batch ? body.events[0] : body;
+        expect(receipt.event.id).toBe(original.event.id);
+        expect(receipt.event.metadata).toBeUndefined();
+        expect(receipt.event.payload).toBeUndefined();
+        expect(receipt.event).toMatchObject({ projectId, teamId, platformSource: 'cursor', eventType: 'tool_use' });
+        if (wait) expect(receipt.generationJob).toBeNull();
+        else expect(receipt.generationJob.status).toBe('queued');
+        const ownerRead = await authedFetch(`/v1/events/${original.event.id}`);
+        expect((await ownerRead.json()).event.metadata).toEqual(original.event.metadata);
+      });
+    }
+  }
+
+  for (const scopes of [['memories:read', 'memories:write'], ['*']]) {
+    it(`retains full event responses with ${scopes.join(', ')} scope`, async () => {
+      const original = await existingEvent();
+      const key = await scopedKey(scopes);
+      for (const batch of [false, true]) {
+        const response = await authedFetch(`/v1/events${batch ? '/batch' : ''}?generate=false&wait=true`, {
+          method: 'POST', body: JSON.stringify(batch ? [original.body] : original.body),
+        }, key);
+        expect(response.status).toBe(201);
+        const body = await response.json();
+        const receipt = batch ? body.events[0] : body;
+        expect(receipt.event.id).toBe(original.event.id);
+        expect(receipt.event.payload).toEqual(original.event.payload);
+        expect(receipt.event.metadata).toEqual(original.event.metadata);
+      }
     });
   }
 

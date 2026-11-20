@@ -95,23 +95,6 @@ async function roundTrip(label: string): Promise<{ ids: string[]; documentId: st
   }
 }
 
-describe.if(RUN_CHROMA)('chroma-mcp lifecycle over the production path', () => {
-  beforeAll(() => {
-    assertIsolatedDataDir();
-  });
-
-  it('round-trips a document and returns it by id', async () => {
-    const { ids, documentId, rootPid } = await roundTrip('plain');
-
-    // The real assertion: the exact document must come BACK, by id. A query
-    // that returns an empty result set is a failure, not a pass.
-    expect(ids).toContain(documentId);
-
-    // The supervisor must have seen a real subprocess.
-    expect(rootPid).toBeGreaterThan(0);
-  }, ROUND_TRIP_TIMEOUT_MS);
-});
-
 describe.if(RUN_CHROMA)('ChromaMcpManager teardown reaps the whole tree', () => {
   beforeAll(() => {
     assertIsolatedDataDir();

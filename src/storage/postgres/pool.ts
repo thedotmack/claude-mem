@@ -12,7 +12,7 @@ export type PostgresPoolClient = PgPoolClient;
 let sharedPool: PostgresPool | null = null;
 
 export function createPostgresPool(config: PostgresConfig): PostgresPool {
-  return new Pool({
+  const pool = new Pool({
     connectionString: config.connectionString,
     max: config.max,
     idleTimeoutMillis: config.idleTimeoutMillis,
@@ -20,6 +20,10 @@ export function createPostgresPool(config: PostgresConfig): PostgresPool {
     statement_timeout: config.statementTimeoutMillis,
     ssl: config.ssl
   });
+  // pg-pool evicts the idle client before emitting this event. Without an
+  // error listener a database restart can bring down the whole Node process.
+  pool.on('error', (error: Error) => logger.warn('DB', 'Idle Postgres connection lost', {}, error));
+  return pool;
 }
 
 export function getSharedPostgresPool(options: { requireDatabaseUrl?: boolean } = {}): PostgresPool {
@@ -39,6 +43,7 @@ export async function withPostgresTransaction<T>(
   fn: (client: PostgresPoolClient) => Promise<T>
 ): Promise<T> {
   const client = await pool.connect();
+  let discard = false;
   try {
     await client.query('BEGIN');
     const result = await fn(client);
@@ -46,11 +51,17 @@ export async function withPostgresTransaction<T>(
     return result;
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
-    logger.warn('DB', 'Postgres transaction rolled back', {}, err);
-    await client.query('ROLLBACK');
+    try {
+      await client.query('ROLLBACK');
+      logger.warn('DB', 'Postgres transaction rolled back', {}, err);
+    } catch (rollbackError) {
+      discard = true;
+      logger.warn('DB', 'Postgres rollback failed; discarding connection', {},
+        rollbackError instanceof Error ? rollbackError : new Error(String(rollbackError)));
+    }
     throw error;
   } finally {
-    client.release();
+    client.release(discard);
   }
 }
 

@@ -27,7 +27,7 @@ function readState(dataDir: string): Required<PersistedFailureState> {
   return JSON.parse(readFileSync(join(dataDir, 'state', 'hook-failures.json'), 'utf-8'));
 }
 
-function recordFailure(dataDir: string, threshold: number): ReturnType<typeof Bun.spawnSync> {
+function recordFailure(dataDir: string, threshold: number, telemetryEnv: Record<string, string> = { CLAUDE_MEM_TELEMETRY: '0' }): ReturnType<typeof Bun.spawnSync> {
   const source = `
     const { recordWorkerUnreachable } = await import(${JSON.stringify(WORKER_UTILS_URL)});
     await recordWorkerUnreachable();
@@ -39,9 +39,19 @@ function recordFailure(dataDir: string, threshold: number): ReturnType<typeof Bu
       CLAUDE_MEM_DATA_DIR: dataDir,
       CLAUDE_CONFIG_DIR: dataDir,
       CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD: String(threshold),
-      CLAUDE_MEM_TELEMETRY: '0',
+      ...telemetryEnv,
     },
   });
+}
+
+/** Records one failure with telemetry printed to stderr instead of sent, and returns the hook_failed properties. */
+function recordFailureTelemetry(dataDir: string, threshold: number): Record<string, unknown> | null {
+  const result = recordFailure(dataDir, threshold, { CLAUDE_MEM_TELEMETRY: '1', CLAUDE_MEM_TELEMETRY_DEBUG: '1', DO_NOT_TRACK: '0' });
+  expect(result.exitCode).toBe(0);
+  const line = new TextDecoder().decode(result.stderr)
+    .split('\n')
+    .find(entry => entry.startsWith('[telemetry] ') && entry.includes('"hook_failed"'));
+  return line ? JSON.parse(line.slice('[telemetry] '.length)).properties : null;
 }
 
 function resetFailureState(dataDir: string): ReturnType<typeof Bun.spawnSync> {
@@ -67,15 +77,15 @@ afterEach(() => {
 });
 
 describe('worker-unreachable fail-loud latch', () => {
-  it('migrates an already-exceeded counter and blocks only once', () => {
+  it('migrates an already-exceeded counter and escalates only once, without blocking', () => {
     // Old state files do not have thresholdTripped. Simulate lowering the
     // threshold from above 4 to 3 during the same worker outage.
     const dataDir = createStateDir({ consecutiveFailures: 4, lastFailureAt: 1 });
 
     const first = recordFailure(dataDir, 3);
-    expect(first.exitCode).toBe(2);
+    expect(first.exitCode).toBe(0);
     expect(new TextDecoder().decode(first.stderr)).toContain(
-      'claude-mem worker unreachable for 5 consecutive hooks.'
+      'claude-mem worker unreachable for 5 consecutive hooks'
     );
     expect(readState(dataDir)).toMatchObject({
       consecutiveFailures: 5,
@@ -96,6 +106,25 @@ describe('worker-unreachable fail-loud latch', () => {
       consecutiveFailures: 0,
       lastFailureAt: 0,
       thresholdTripped: false,
+    });
+  });
+
+  it('flags an escalation that reads a counter written by a pre-latch version', () => {
+    // A pre-latch version writes no thresholdTripped field, so its streak
+    // can span an outage that started before the upgrade.
+    const legacyDir = createStateDir({ consecutiveFailures: 22_632, lastFailureAt: 1 });
+    expect(recordFailureTelemetry(legacyDir, 3)).toMatchObject({
+      error_mode: 'worker_unavailable',
+      consecutive_failures: 22_633,
+      threshold_tripped: true,
+      pre_latch_state: true,
+    });
+
+    const currentDir = createStateDir({ consecutiveFailures: 2, lastFailureAt: 1, thresholdTripped: false });
+    expect(recordFailureTelemetry(currentDir, 3)).toMatchObject({
+      consecutive_failures: 3,
+      threshold_tripped: true,
+      pre_latch_state: false,
     });
   });
 
@@ -127,8 +156,7 @@ describe('worker-unreachable fail-loud latch', () => {
     const exits = await Promise.all(workers.map(worker => worker.exited));
     const errors = await Promise.all(workers.map(worker => new Response(worker.stderr).text()));
 
-    expect(exits.filter(exit => exit === 2)).toHaveLength(1);
-    expect(exits.filter(exit => exit === 0)).toHaveLength(5);
+    expect(exits.filter(exit => exit === 0)).toHaveLength(6);
     expect(errors.join('').match(/claude-mem worker unreachable/g)?.length).toBe(1);
     const state = readState(dataDir);
     expect(state.thresholdTripped).toBe(true);
@@ -194,9 +222,9 @@ describe('worker-unreachable fail-loud latch', () => {
 
     expect(recordFailure(dataDir, 2).exitCode).toBe(0);
     const thresholdFailure = recordFailure(dataDir, 2);
-    expect(thresholdFailure.exitCode).toBe(2);
+    expect(thresholdFailure.exitCode).toBe(0);
     expect(new TextDecoder().decode(thresholdFailure.stderr)).toContain(
-      'claude-mem worker unreachable for 2 consecutive hooks.'
+      'claude-mem worker unreachable for 2 consecutive hooks'
     );
   });
 });

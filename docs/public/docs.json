@@ -35,14 +35,23 @@
         "pages": [
           "introduction",
           "installation",
+          "t3code-integration",
           "usage/getting-started",
+          "usage/my-work",
+          "usage/teambrain",
           "usage/openrouter-provider",
           "usage/gemini-provider",
+          "usage/openai-compatible-provider",
+          "usage/multi-key-rotation",
+          "usage/quota-fallback",
           "usage/search-tools",
           "usage/knowledge-agents",
           "usage/claude-desktop",
           "usage/private-tags",
+          "usage/auto-redaction",
           "usage/export-import",
+          "usage/import-providers",
+          "usage/memory-ingest",
           "usage/manual-recovery",
           "usage/folder-context"
         ]
@@ -64,10 +73,24 @@
         ]
       },
       {
+        "group": "Grok Build Integration",
+        "icon": "terminal",
+        "pages": [
+          "grok-build/index"
+        ]
+      },
+      {
         "group": "Antigravity CLI Integration",
         "icon": "terminal",
         "pages": [
           "antigravity-cli/setup"
+        ]
+      },
+      {
+        "group": "Gemini CLI Integration",
+        "icon": "terminal",
+        "pages": [
+          "gemini-cli/setup"
         ]
       },
       {
@@ -89,11 +112,52 @@
           "configuration/custom-anthropic-backends",
           "modes",
           "telemetry",
+          "auto-update",
           "development",
-          "branches",
           "troubleshooting",
           "platform-integration",
-          "openclaw-integration"
+          "contextforge",
+          "openclaw-integration",
+          "hermes-integration",
+          "hermes-desktop-integration",
+          "kimi-integration",
+          "omo-native-integration",
+          "cline",
+          "copilot-vscode",
+          "devin-integration",
+          "kilo",
+          "qoder-integration",
+          "zed-integration",
+          "screenpipe-integration",
+          "aider-integration",
+          "eve-integration",
+          "notion-export",
+          "obsidian"
+        ]
+      },
+      {
+        "group": "Agent Frameworks",
+        "icon": "robot",
+        "pages": [
+          "ag2-integration",
+          "agno-integration",
+          "autogen-integration",
+          "claude-agent-sdk",
+          "crewai-integration",
+          "elizaos",
+          "google-adk-integration",
+          "haystack",
+          "langgraph-integration",
+          "llamaindex-integration",
+          "microsoft-agent-framework",
+          "n8n",
+          "openai-agents-integration",
+          "pipecat",
+          "pydantic-ai-integration",
+          "smolagents-integration",
+          "strands-agents-integration",
+          "vercel-ai-sdk",
+          "vercel-chat"
         ]
       },
       {
@@ -102,7 +166,8 @@
         "pages": [
           "hosted-server",
           "cloud-sync",
-          "cmem-pro-headless"
+          "cmem-pro-headless",
+          "usage/backups"
         ]
       },
       {
@@ -115,8 +180,7 @@
           "architecture/hooks",
           "architecture/worker-service",
           "architecture/database",
-          "architecture/search-architecture",
-          "architecture/pm2-to-bun-migration"
+          "architecture/search-architecture"
         ]
       }
     ]
@@ -171,5 +235,15 @@
     "telemetry": {
       "enabled": false
     }
-  }
+  },
+  "redirects": [
+    {
+      "source": "/branches",
+      "destination": "/development"
+    },
+    {
+      "source": "/architecture/pm2-to-bun-migration",
+      "destination": "/architecture-evolution"
+    }
+  ]
 }

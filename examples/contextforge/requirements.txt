@@ -1,0 +1,3 @@
+mcp-contextforge-gateway==1.1.1
+mcp==2.3.0
+httpx2==2.16.0

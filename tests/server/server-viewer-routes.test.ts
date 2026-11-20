@@ -9,6 +9,7 @@
 import { afterEach, describe, expect, it, spyOn } from 'bun:test';
 import { logger } from '../../src/utils/logger.js';
 import { Server, type ServerOptions } from '../../src/services/server/Server.js';
+import { listenOnEphemeralPort } from '../helpers/ephemeral-port.js';
 import { ServerViewerRoutes } from '../../src/server/runtime/ServerViewerRoutes.js';
 
 function baseOptions(): ServerOptions {
@@ -54,8 +55,7 @@ describe('ServerViewerRoutes on the server runtime (#2552)', () => {
     server.registerRoutes(new ServerViewerRoutes());
     server.finalizeRoutes();
 
-    const port = 42000 + Math.floor(Math.random() * 9000);
-    await server.listen(port, '127.0.0.1');
+    const port = await listenOnEphemeralPort(server);
 
     // The co-mounted API route still resolves (compat/v1 layer reachable).
     const apiRes = await fetch(`http://127.0.0.1:${port}/v1/info`);

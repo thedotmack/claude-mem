@@ -20,6 +20,12 @@ describe('Windows #3677 - Volta Bun shims resolve to the native executable', () 
     expect(selectWindowsCommandCandidate([shim], () => null)).toBe(shim);
   });
 
+  it('resolves the first stdout line from a successful Volta probe', () => {
+    const shim = 'C:\\Users\\tester\\AppData\\Local\\Volta\\bin\\bun.cmd';
+    const executable = 'C:\\Users\\tester\\AppData\\Local\\Volta\\tools\\image\\bun\\1.3.11\\bun.exe';
+    expect(resolveVoltaShim('bun', shim, () => ({ status: 0, stdout: `${executable}\r\nignored\r\n` }))).toBe(executable);
+  });
+
   it('bounds a stalled Volta probe and falls back to the shim', () => {
     const shim = 'C:\\Users\\tester\\AppData\\Local\\Volta\\bin\\bun.cmd';
     let timeout: number | undefined;

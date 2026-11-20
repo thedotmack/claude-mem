@@ -12,8 +12,7 @@ import { styleText } from 'node:util';
 import {
   explainTelemetryConsent,
   loadTelemetryConfig,
-  saveTelemetryConfig,
-  getOrCreateInstallId,
+  recordTelemetryDecision,
   getTelemetryConfigPath,
   type TelemetryConsentSource,
 } from '../../services/telemetry/consent.js';
@@ -43,6 +42,8 @@ const COLLECTED_FIELDS = [
   'has_summary      whether a compression produced a summary',
   'is_update        whether an install was an update',
   'interactive      whether the installer ran in a TTY',
+  'provider_source  how the installer chose the provider (flag / default / persisted / prompt / browser)',
+  'phase            installer OAuth pairing phase (login / enrollment / deferred)',
   'install_method   npm / bun / pnpm / yarn (launcher of the CLI)',
   'bun_version / uv_version / claude_code_version',
   '                 toolchain versions detected during install',
@@ -65,20 +66,22 @@ const COLLECTED_FIELDS = [
   '                 install age and recent activity, in days/counts',
   'result_count     how many results a search returned (never the query)',
   'chroma_available whether vector search was reachable for a search',
-  'fallback_reason  none / chroma_connection / chroma_error / chroma_not_initialized',
+  'fallback_reason  none / chroma_connection / chroma_error / chroma_not_initialized / chroma_zero_results',
   'invalid_output_class   xml / idle / prose (never the output)',
   'consecutive_invalid_outputs   legacy unusable-output counter',
   'respawn_triggered      legacy recovery flag for old invalid-output restarts',
-  'abort_reason     idle / shutdown / overflow / restart_guard / quota / provider_switch / none',
+  'abort_reason     idle / shutdown / overflow / restart_guard / quota / rate_limit / auth / provider_switch / deadline_exceeded / output_retry / drift / none',
+  'top_abort_reason the most common abort_reason in a session rollup (same enum)',
   'previous_shutdown      crash / clean / unknown (detected at worker start)',
   'previous_uptime_seconds / uptime_seconds',
   '                 worker uptime in whole seconds (previous run / at stop)',
-  'shutdown_reason  stop / restart / signal',
+  'shutdown_reason  stop / restart / signal / idle',
   'process_rss_mb / heap_used_mb   worker memory, integer megabytes',
   'hook_type        context / session-init / observation / summarize / session-end / file-context',
   'error_mode       worker_unavailable / blocking_error (never a message)',
   'consecutive_failures   hook failures in a row (the fail-loud counter)',
   'threshold_tripped      whether the fail-loud threshold was reached',
+  'pre_latch_state        the counter was last written by a version older than the fail-loud latch',
   'skill_id         first-party plugin/skills name or other (never a third-party name)',
   'skill_source     first_party / third_party',
   'skill_trigger    tool (Skill tool) / prompt (typed /skill)',
@@ -87,15 +90,38 @@ const COLLECTED_FIELDS = [
 const EVENT_NAMES = [
   'install_completed',
   'install_failed',
+  'installer_oauth_started',
+  'installer_oauth_completed',
+  'installer_oauth_timeout',
+  'installer_oauth_start_failed',
+  'installer_oauth_deferred',
+  'trial_activated',
   'uninstall_completed',
+  'auto_update_applied',
+  'auto_update_failed',
   'worker_started',
+  'worker_start_failed',
   'worker_stopped',
-  'session_compressed',
-  'context_injected',
+  'supervisor_registry_degraded',
+  'usage_limit_hit',
+  'observer_turn_rollup',
+  'context_injected_rollup',
+  'context_read_timed_out',
+  'work_state_usage_rollup',
   'search_performed',
   'skill_invoked',
   'hook_failed',
-  'error_occurred',
+  'work_view_opened',
+  'work_view_switched',
+  'setup_step_viewed',
+  'setup_step_transitioned',
+  'setup_step_action',
+  'setup_step_error',
+  'setup_page_hidden',
+  'setup_completed',
+  'historical_activity',
+  'install_inferred',
+  '$exception (redacted error type, message, and stack)',
 ];
 
 const SOURCE_LABELS: Record<TelemetryConsentSource, string> = {
@@ -154,7 +180,7 @@ async function runTelemetryEnable(): Promise<void> {
       '',
       'NEVER collected — not now, not ever:',
       '  prompts or conversation content, file paths, source code,',
-      '  project names, git remotes, search queries, error messages,',
+      '  project names, git remotes, search queries,',
       '  IP addresses, hardware IDs, env values, emails.',
       '',
       `Full details: ${DOCS_URL}`,
@@ -178,25 +204,14 @@ async function runTelemetryEnable(): Promise<void> {
     return;
   }
 
-  // getOrCreateInstallId() persists a config if none exists; reuse its ID.
-  const installId = getOrCreateInstallId();
-  saveTelemetryConfig({
-    enabled: true,
-    installId,
-    decidedAt: new Date().toISOString(),
-  });
+  recordTelemetryDecision(true);
 
   p.log.success(`Telemetry enabled. Config: ${getTelemetryConfigPath()}`);
   p.outro(`Change your mind anytime: ${styleText('cyan', 'npx claude-mem telemetry disable')}`);
 }
 
 function runTelemetryDisable(): void {
-  const existing = loadTelemetryConfig();
-  saveTelemetryConfig({
-    enabled: false,
-    installId: existing?.installId ?? '',
-    decidedAt: new Date().toISOString(),
-  });
+  recordTelemetryDecision(false);
 
   console.log(styleText('green', 'Telemetry disabled.'));
   console.log(`${styleText('bold', 'Config file:')} ${getTelemetryConfigPath()}`);

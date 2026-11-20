@@ -1,0 +1,4 @@
+interface:
+  display_name: "Eve Template Runtime"
+  short_description: "Work safely with Eve template internals"
+  default_prompt: "Use $eve-chat-template-eve to update Eve-specific runtime, session, stream, or connection behavior in the chat template."

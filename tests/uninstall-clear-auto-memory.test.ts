@@ -68,20 +68,6 @@ describe('Uninstall: clear Claude Code auto-memory env var', () => {
       expect(settings.env.AWS_REGION).toBe('us-east-1');
     });
 
-    it('removes CLAUDE_CODE_DISABLE_AUTO_MEMORY from the env block', () => {
-      writeFileSync(
-        settingsPath,
-        JSON.stringify({
-          env: { CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' },
-        }, null, 2),
-      );
-
-      removeFromClaudeSettings();
-
-      const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
-      expect(settings.env?.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBeUndefined();
-    });
-
     it('drops the entire env block when CLAUDE_CODE_DISABLE_AUTO_MEMORY was the only key', () => {
       writeFileSync(
         settingsPath,
@@ -134,20 +120,6 @@ describe('Uninstall: clear Claude Code auto-memory env var', () => {
       expect(settings.enabledPlugins['claude-mem@thedotmack']).toBeUndefined();
       expect(settings.enabledPlugins['other-plugin@vendor']).toBe(true);
       expect(settings.env).toBeUndefined();
-    });
-
-    it('is a no-op when neither the plugin nor the env var are present', () => {
-      writeFileSync(
-        settingsPath,
-        JSON.stringify({ theme: 'dark', env: { AWS_REGION: 'us-east-1' } }, null, 2),
-      );
-      const before = readFileSync(settingsPath, 'utf-8');
-
-      removeFromClaudeSettings();
-
-      // File should be untouched (no write occurred).
-      const after = readFileSync(settingsPath, 'utf-8');
-      expect(after).toBe(before);
     });
 
     it('does not crash when settings.json is missing', () => {

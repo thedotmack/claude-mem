@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'fs';
+import { afterEach, beforeEach, describe, expect, it, setSystemTime } from 'bun:test';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { ChromaSyncState } from '../../../src/services/sync/ChromaSyncState.js';
@@ -28,6 +28,16 @@ describe('ChromaSyncState atomic persistence', () => {
     } else {
       process.env.CLAUDE_MEM_DATA_DIR = previousDataDir;
     }
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it.each(['null', '[]', '"not a checkpoint"', '7'])('recovers an invalid root %s', (payload) => {
+    writeFileSync(statePath(dataDir), payload);
+    expect(() => ChromaSyncState.get('owned')).not.toThrow();
+    expect(ChromaSyncState.get('owned').observations).toBe(0);
+    ChromaSyncState.bump('owned', 'observations', 8);
+    ChromaSyncState.resetCacheForTests();
+    expect(ChromaSyncState.get('owned').observations).toBe(8);
   });
 
   it('treats a truncated state file as empty instead of throwing', () => {
@@ -53,5 +63,49 @@ describe('ChromaSyncState atomic persistence', () => {
 
     const written = JSON.parse(readFileSync(statePath(dataDir), 'utf8'));
     expect(written[project].observations).toBe(3);
+  });
+
+  it('keeps a watermark change in memory when the write fails, and writes it after the backoff', () => {
+    // A directory at the state path makes the rename fail on every platform.
+    mkdirSync(join(statePath(dataDir), 'blocker'), { recursive: true });
+
+    expect(() => ChromaSyncState.bump(project, 'observations', 5)).not.toThrow();
+    // Flush while the path is still blocked: the write fails and starts the
+    // backoff, and the change stays in memory for a later flush to retry.
+    ChromaSyncState.flush();
+    expect(ChromaSyncState.get(project).observations).toBe(5);
+    expect(readdirSync(dataDir).filter(name => name.endsWith('.tmp'))).toEqual([]);
+
+    rmSync(statePath(dataDir), { recursive: true });
+    ChromaSyncState.bump(project, 'summaries', 1);
+    // Still inside the backoff: a flush must not write yet.
+    ChromaSyncState.flush();
+    expect(existsSync(statePath(dataDir))).toBe(false);
+
+    setSystemTime(new Date(Date.now() + 10_000));
+    try {
+      // After the backoff, an explicit flush writes the accumulated state.
+      ChromaSyncState.flush();
+    } finally {
+      setSystemTime();
+    }
+
+    const written = JSON.parse(readFileSync(statePath(dataDir), 'utf8'));
+    expect(written[project].observations).toBe(5);
+    expect(written[project].summaries).toBe(1);
+  });
+
+  it('throws when the rebuild flags cannot be written', () => {
+    ChromaSyncState.replace(project, { observations: 3, summaries: 0, prompts: 0 });
+    rmSync(statePath(dataDir));
+    mkdirSync(join(statePath(dataDir), 'blocker'), { recursive: true });
+
+    expect(() => ChromaSyncState.markAllForRebuild()).toThrow();
+  });
+
+  it('throws when a revised row\'s repair state cannot be written', () => {
+    mkdirSync(join(statePath(dataDir), 'blocker'), { recursive: true });
+
+    expect(() => ChromaSyncState.markFragmentReconciliation(project, 'observations', 4)).toThrow();
   });
 });
