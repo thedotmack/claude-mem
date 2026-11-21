@@ -563,7 +563,13 @@ resolve_extension_dir() {
         if (p) console.log(p);
       } catch {}
     " 2>/dev/null)" || true
-    if [[ -n "$existing_path" ]]; then
+    # install.sh removes this directory before re-cloning, so the configured
+    # installPath is deleted verbatim on every run. The plugin's own writer
+    # (OpenClawInstaller) always lands under the extensions dir, so accept
+    # only the same shape the load.paths branch below accepts: a path that
+    # ends in /claude-mem. Anything else falls through to the default path
+    # instead of handing `rm -rf` an arbitrary directory from the config.
+    if [[ -n "$existing_path" && "$existing_path" == */claude-mem ]]; then
       echo "$existing_path"
       return
     fi
