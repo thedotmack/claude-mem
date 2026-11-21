@@ -200,7 +200,7 @@ type FakeWorker = ReturnType<typeof fakeWorker>;
  * upload's start and stop, which play `run` the way the worker does: every change goes out as a `setup-import` frame
  * before the request's answer. Every request is recorded. Nothing here reaches a real worker or cmem.ai.
  */
-function fakeWorker(initialRun: object) {
+function fakeWorker(initialRun: object, setupChanges: object = {}) {
   const requests: Array<{ method: string; path: string; body: any }> = [];
   const streams = new Set<ReadableStreamDefaultController<Uint8Array>>();
   const encoder = new TextEncoder();
@@ -209,6 +209,7 @@ function fakeWorker(initialRun: object) {
   const state = () => ({
     status: 'pending', alreadyPro: true, choice: null, install: null, checkout: null, installer: null,
     history: { projects: 3, sessions: 24, observations: 128 }, historyImport: run, backgroundWorkRunning: [],
+    ...setupChanges,
   });
   const frame = (event: string, data: unknown) => encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   const send = (event: string, data: unknown) => {
@@ -267,8 +268,51 @@ function fakeWorker(initialRun: object) {
     /** The page's POSTs other than telemetry, in order. */
     posts: () => requests.filter((entry) => entry.method === 'POST' && entry.path !== '/api/setup/telemetry').map((entry) => entry.path),
     telemetry: () => requests.filter((entry) => entry.method === 'POST' && entry.path === '/api/setup/telemetry').map((entry) => entry.body),
+    choices: () => requests.filter((entry) => entry.method === 'POST' && entry.path === '/api/setup/choice').map((entry) => entry.body),
   };
 }
+
+(chromeExecutablePath ? it : it.skip)('the annual Cloud choice reaches checkout with its price and existing-provider intent intact', async () => {
+  const worker = fakeWorker(uploadRun({ state: 'idle' }), { alreadyPro: false });
+  await withSetupPage('', { width: 390, height: 844, phone: true }, async page => {
+    await page.atStep('reveal');
+    await page.press('.setup-actions .primary', 'Continue');
+    await page.atStep('choice');
+    expect(await page.browser.evaluate(`document.querySelector('input[name="cloud-sync-offer"]:checked').value`)).toBe('cloud_sync_monthly');
+    await page.press('input[value="cloud_sync_annual"]');
+    expect(await page.browser.evaluate(`document.querySelector('.is-go .card-price').textContent`)).toBe('$99 today · $99/year · No trial');
+    expect(await page.browser.evaluate(`[...document.querySelectorAll('.cloud-sync-offer')].every(label => label.getBoundingClientRect().height >= 44)`)).toBe(true);
+    await page.press('.setup-actions .primary', 'Continue with');
+    await page.atStep('savings');
+    expect(await page.browser.evaluate(`document.querySelector('.price-card').textContent`)).toContain('$99 today. Renews yearly. No trial.');
+    await page.press('.setup-actions .primary', 'Continue with Cloud Sync');
+    await page.atStep('checkout');
+    const receipt = await page.browser.evaluate<string>(`document.querySelector('.checkout-receipt').textContent`);
+    expect(receipt).toContain('Due today$99');
+    expect(receipt).toContain('$99 / year');
+    expect(receipt).toContain('There is no trial.');
+    expect(receipt).toContain('Your existing provider');
+    expect(receipt).not.toContain('30 days');
+    expect(receipt).not.toContain('$30');
+    expect(worker.choices()).toEqual([{ branch: 'go', memoryBilling: 'existing', cloudSyncOffer: 'cloud_sync_annual' }]);
+    expect(worker.posts()).not.toContain('/api/setup/checkout');
+  }, worker);
+}, 30_000);
+
+(chromeExecutablePath ? it : it.skip)('Skip for now commits a genuinely local choice and never opens checkout', async () => {
+  const worker = fakeWorker(uploadRun({ state: 'idle' }), { alreadyPro: false });
+  await withSetupPage('', { width: 1440, height: 900, phone: false }, async page => {
+    await page.atStep('reveal');
+    await page.press('.setup-actions .primary', 'Continue');
+    await page.atStep('choice');
+    await page.press('.setup-actions .primary', 'Continue with');
+    await page.atStep('savings');
+    await page.press('.setup-actions .secondary', 'Skip for now');
+    await page.atStep('finish-setup');
+    expect(worker.choices()).toEqual([{ branch: 'home', memoryBilling: 'existing' }]);
+    expect(worker.posts()).toEqual(['/api/setup/choice']);
+  }, worker);
+}, 30_000);
 
 /** From the first screen to Finish Setup on the page's own source: the fake worker's scan is done and the person has Pro. */
 async function toFinishSetupOnTheWorker(page: SetupWalk) {
@@ -277,7 +321,7 @@ async function toFinishSetupOnTheWorker(page: SetupWalk) {
   await page.atStep('choice');
   await page.press('.setup-actions .primary', 'Continue with');
   await page.atStep('savings');
-  await page.press('.setup-actions .primary', 'Continue with CMEM Pro');
+  await page.press('.setup-actions .primary', 'Continue with Cloud Sync');
   await page.atStep('finish-setup');
 }
 
@@ -321,7 +365,7 @@ async function install(page: SetupWalk) {
     await page.press('.setup-actions .primary', 'Continue with');
     await page.atStep('savings');
     await measure('savings');
-    await page.press('.setup-actions .primary', 'Continue with CMEM Pro');
+    await page.press('.setup-actions .primary', 'Continue with Cloud Sync');
     await page.atStep('checkout');
     await measure('checkout');
     await page.press('.setup-actions .primary', 'Open checkout');
@@ -413,7 +457,7 @@ async function install(page: SetupWalk) {
     await page.atStep('savings');
 
     // The refused choice: its alert, with Try again, on Token Savings only.
-    await page.press('.setup-actions .primary', 'Continue with CMEM Pro');
+    await page.press('.setup-actions .primary', 'Continue with Cloud Sync');
     await page.until(`window.alerts().includes('Couldn’t save your storage choice.')`, 'the refused choice');
     expect(await page.step()).toBe('savings');
     expect(await page.browser.evaluate(`[...document.querySelectorAll('.setup-error button')].some((el) => el.textContent.trim() === 'Try again')`)).toBe(true);
@@ -436,12 +480,12 @@ async function install(page: SetupWalk) {
     expect(await alerts()).toEqual([]);
 
     // Sent and applied by the installer: Checkout → Back → Token Savings, and no Back to the choice from there.
-    await page.press('.setup-actions .primary', 'Continue with CMEM Pro');
+    await page.press('.setup-actions .primary', 'Continue with Cloud Sync');
     await page.atStep('checkout');
     await page.press('.setup-back');
     await page.atStep('savings');
     expect((await row()).back).toBe('none');
-    await page.press('.setup-actions .primary', 'Continue with CMEM Pro');
+    await page.press('.setup-actions .primary', 'Continue with Cloud Sync');
     await page.atStep('checkout');
     await page.press('.setup-actions .primary', 'Open checkout');
     await page.atStep('finish-setup');
@@ -468,7 +512,7 @@ async function install(page: SetupWalk) {
     await page.atStep('choice');
     await page.press('.setup-actions .primary', 'Continue with');
     await page.atStep('savings');
-    await page.press('.setup-actions .primary', 'Continue with CMEM Pro');
+    await page.press('.setup-actions .primary', 'Continue with Cloud Sync');
     await page.until(`window.alerts().includes('Couldn’t save your storage choice.')`, 'the refused choice');
     // Nothing retries by itself: 2s is longer than any sample delay (checkout answers in 1.5s, setup-sample.ts), so a
     // timed retry would have moved the page by now.
@@ -510,7 +554,7 @@ async function toFinishSetup(page: SetupWalk) {
   await page.atStep('choice');
   await page.press('.setup-actions .primary', 'Continue with');
   await page.atStep('savings');
-  await page.press('.setup-actions .primary', 'Continue with CMEM Pro');
+  await page.press('.setup-actions .primary', 'Continue with Cloud Sync');
   await page.atStep('checkout');
   await page.press('.setup-actions .primary', 'Open checkout');
   await page.atStep('finish-setup');
