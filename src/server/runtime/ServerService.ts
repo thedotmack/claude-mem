@@ -82,7 +82,16 @@ class ServerRuntimeInfoRoutes implements RouteHandler {
     // `vectorSearch` keeps its documented shape (available, model, missing
     // count, last embedding error).
     app.get('/v1/info', async (_req, res) => {
-      const queueLanes = await collectQueueLaneMetrics(this.graph);
+      // The lanes' `unavailable` flag is probe state; the failure reason is the
+      // driver's raw error text (host, port, topology), which this route's own
+      // comment above calls reconnaissance. /api/health strips the same field
+      // from its lanes for exactly that reason, so the cause stays in the log
+      // the manager already wrote and this response keeps the flag only. The
+      // loopback-only doctor route keeps the reason: its consumer reads it for
+      // the remediation row.
+      const queueLanes = (await collectQueueLaneMetrics(this.graph)).map(
+        ({ unavailableReason: _unavailableReason, ...lane }) => lane,
+      );
       const vectorSearch = await getVectorSearchStatus(this.graph.postgres.pool).catch((error: unknown) => {
         // The response stays free of the driver error text (see above); the
         // cause goes to the server log, where the operator can read it.
