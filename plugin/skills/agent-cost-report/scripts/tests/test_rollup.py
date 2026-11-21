@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import closing
 
 import _paths
 import _db
@@ -91,6 +92,18 @@ class Rollup(Fixture):
         self.assertEqual(e1["observer_tokens_raw"], 3 * 5000 + 7000)
         self.assertEqual(e1["observer_tokens"], 5000 + 7000)
         self.assertAlmostEqual(r["spend"]["observer_note_taker_est_usd"], round((12000 + 20000 + 1000) * 0.1 / 1e6, 2))
+
+    def test_unpriced_observer_tokens_include_missing_model(self):
+        import sqlite3
+        with closing(sqlite3.connect(self.dbp)) as db:
+            _db.add_obs(db, "m1", "claude-mem", "discovery", "missing model", 100, ms(0, 9.3), model=None)
+            _db.add_obs(db, "m1", "claude-mem", "discovery", "unknown model", 250, ms(0, 9.4), model="test/unknown")
+            db.commit()
+
+        report, _, _ = self.build()
+        expected = {"<none>": 100, "test/unknown": 250}
+        self.assertEqual(report["observer"]["unpriced_tokens"], expected)
+        self.assertEqual({u["model"]: u["tokens"] for u in report["unpriced_models"] if u["role"] == "observer"}, expected)
 
     def test_observer_never_changes_agent_estimate_or_by_day(self):
         base, _, _ = self.build()
