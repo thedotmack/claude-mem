@@ -1256,6 +1256,8 @@ var init_SettingsDefaultsManager = __esm({
         // Bulk backfill sleeps (row write time x ratio) after each row: 1 = at most ~50% duty, 0 = off, max 10. Live sync is never paced
         CLAUDE_MEM_CHROMA_PROCESS_NICE: "10",
         // chroma-mcp starts as `nice -n N uvx ...` where `nice` exists (not Windows). 0 = off, max 19
+        CLAUDE_MEM_CHROMA_MAX_THREADS: "0",
+        // Opt-in cap on chroma-mcp's embedding threads and Linux CPU affinity (`taskset`). 0 = off: 39f110260 removed an always-on cap that slowed backfill. 2 suits machines where chroma-mcp pins cores (#6365)
         // Embedding function used when creating the Chroma collection. 'default' is
         // the local all-MiniLM-L6-v2 (English-tuned). The pinned chroma-mcp also
         // accepts 'openai', 'cohere', 'jina', 'voyageai' and 'roboflow'; those are
@@ -1274,9 +1276,9 @@ var init_SettingsDefaultsManager = __esm({
         // embeds them in the background, which can take hours on a large store.
         // That start caps the embedder at this many CPU threads until the next
         // restart: empty is half the machine's threads, 0 is every thread. This
-        // applies to the hosted server only: local Chroma's embedder runs inside
-        // chroma-mcp and cannot be capped from claude-mem (see
-        // CLAUDE_MEM_CHROMA_PROCESS_NICE and CLAUDE_MEM_CHROMA_BACKFILL_PAUSE_RATIO).
+        // applies to the hosted server only: local Chroma uses
+        // CLAUDE_MEM_CHROMA_MAX_THREADS, CLAUDE_MEM_CHROMA_PROCESS_NICE, and
+        // CLAUDE_MEM_CHROMA_BACKFILL_PAUSE_RATIO.
         CLAUDE_MEM_EMBEDDING_BACKFILL_THREADS: "",
         // Embedding model the server's search by meaning uses: a key of
         // EMBEDDING_MODELS in src/services/vector/models.ts, which lists them and
