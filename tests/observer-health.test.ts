@@ -1043,6 +1043,9 @@ describe('ContextBuilder observer-health injection', () => {
         CLAUDE_MEM_DATA_DIR: childDataDir,
         TZ: QUOTA_NOTICE_TIME_ZONE,
         CLAUDE_CONFIG_DIR: childDataDir,
+        CLAUDE_MEM_PROVIDER: 'openrouter',
+        CLAUDE_MEM_OPENROUTER_API_KEY: 'sk-or-test-key',
+        CLAUDE_MEM_OPENROUTER_BASE_URL: 'https://openrouter.ai/api/v1',
         CLAUDE_MEM_MODES_DIR: join(repoRoot, 'plugin', 'modes'),
       },
     });

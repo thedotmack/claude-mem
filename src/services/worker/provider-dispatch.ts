@@ -94,6 +94,11 @@ function staysOnClaudeInFallback(fallbackAt: string): boolean {
   return shouldUseCmemFallback(fallbackAt) || isQuotaCooldownActive('openrouter');
 }
 
+/** The gateway's daily cap gate uses Claude even after the trial fallback window expires. */
+function usesClaudeForCmemCap(settings: SettingsDefaults): boolean {
+  return isCmemGatewayUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL) && !cmemCapProbeAllowed();
+}
+
 /**
  * A dispatch decision, plus any gateway re-probe claim it took.
  *
@@ -352,6 +357,24 @@ export function getSelectedProvider(platformSource?: string): SelectableProvider
   return routedProviderFor(primaryFor(platformSource));
 }
 
+/**
+ * Providers whose quota holds still describe the configured capture routes.
+ * Keep held primaries even while their backup serves, and include gateway
+ * routing, which can use Claude independently of the quota fallback setting.
+ * Like getSelectedProvider, this never claims a probe or starts inference.
+ */
+export function getRelevantQuotaProviders(): ReadonlySet<string> {
+  const primaries = [globalPrimary(), ...readProviderBySource().values()].filter(isProviderConfigured);
+  const providers = new Set<string>(primaries);
+  const fallback = readQuotaFallbackProvider();
+  if (fallback !== null) providers.add(fallback);
+  for (const primary of primaries) providers.add(routedProviderFor(primary));
+  if (primaries.includes('openrouter') && usesClaudeForCmemCap(SettingsDefaultsManager.loadFromFile(paths.settings()))) {
+    providers.add('claude');
+  }
+  return providers;
+}
+
 /** The read-only counterpart of `selectForPrimary`: where `primary`'s work goes right now. */
 function routedProviderFor(primary: SelectableProvider): SelectableProvider {
   if (primary === 'openrouter') {
@@ -543,7 +566,7 @@ function selectForPrimary(primary: SelectableProvider): ProviderSelection {
   const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
   // A spent cmem allowance is one probe a day. Selecting the gateway again
   // on the immediate fallback resume is what re-sent pro_inference_cap_exhausted.
-  if (isCmemGatewayUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL) && !cmemCapProbeAllowed()) {
+  if (usesClaudeForCmemCap(settings)) {
     return { provider: 'claude', gatewayProbeClaimId: null };
   }
   if (settings.CLAUDE_MEM_PRO_FALLBACK_AT && isCmemGatewayUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL)) {

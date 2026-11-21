@@ -321,20 +321,32 @@ export function observerHealthWarning(forHuman: boolean = false): string {
   // when the notice is silent. Unrelated failures still get their own banner.
   // A Claude hold only applies to the account it was armed under.
   //
-  // The notice was mirrored under whichever account was selected then, so a
-  // Claude hold is dropped here unless it pauses the account selected now. A
-  // hold mirrored before holds carried their own account uses the ledger's.
+  // The mirror can outlive a provider or account switch. Only keep holds for
+  // current capture routes and the selected account. A hold mirrored before
+  // holds carried their own account uses the ledger's.
   const mirrored = health?.quotaCooldown;
+  const quotaFailure = health ? isQuotaFailure(health) || isQuotaGuardPause(health) : false;
+  // Providers import this builder through their observer briefing. Resolve
+  // dispatch only at render time, after those provider classes initialize.
+  const relevantProviders = mirrored || quotaFailure
+    ? (require('../worker/provider-dispatch.js') as typeof import('../worker/provider-dispatch.js')).getRelevantQuotaProviders()
+    : new Set<string>();
+  const holdApplies = (hold: { provider: string; profile?: string }) =>
+    relevantProviders.has(hold.provider) && cooldownAppliesToCurrentAccount(hold);
   const cooldown = mirrored?.notice
     ? { ...mirrored, notice: { ...mirrored.notice, holds: mirrored.notice.holds.filter(hold =>
-      cooldownAppliesToCurrentAccount({ provider: hold.provider, profile: hold.profile ?? mirrored.profile })) } }
+      holdApplies({ provider: hold.provider, profile: hold.profile ?? mirrored.profile })) } }
     : mirrored;
+  // GeneratorRunner also records quota pauses as failures. Once their
+  // provider is removed, they must not reappear through the generic banner.
+  const failureProvider = health?.lastErrorProvider;
+  const removedQuotaFailure = quotaFailure && failureProvider && !relevantProviders.has(failureProvider);
   let notice: string | null = null;
   if (health && isObserverQuotaCooldownActive(health) && cooldown
-    && (cooldown.notice ? cooldown.notice.holds.length > 0 : cooldownAppliesToCurrentAccount(cooldown))
+    && (cooldown.notice ? cooldown.notice.holds.length > 0 : holdApplies(cooldown))
     && (!isObserverUnhealthy(health) || (cooldown.notice && (isQuotaFailure(health) || isQuotaGuardPause(health))))) {
     notice = renderObserverQuotaCooldownNotice({ ...health, quotaCooldown: cooldown });
-  } else if (isObserverUnhealthy(health)) {
+  } else if (isObserverUnhealthy(health) && !removedQuotaFailure) {
     notice = renderObserverHealthWarning(health);
   }
   // Cloud sync health rides the same slot: a paused (401/403) or long-failing

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, setSystemTime } from 'bun:
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { OBSERVER_HEALTH_FILENAME, readObserverHealth, renderObserverQuotaCooldownNotice } from '../../src/shared/observer-health.js';
+import { OBSERVER_HEALTH_FILENAME, OBSERVER_UNHEALTHY_FAILURE_THRESHOLD, readObserverHealth, recordObserverFailure, renderObserverQuotaCooldownNotice } from '../../src/shared/observer-health.js';
 import {
   getQuotaCooldown,
   QUOTA_COOLDOWN_FILENAME,
@@ -10,7 +10,8 @@ import {
   resetQuotaCooldownsForTesting,
 } from '../../src/shared/quota-cooldown.js';
 import { setClaudeFallbackReadinessForTesting } from '../../src/shared/claude-fallback-readiness.js';
-import { getSelectedProvider, resetQuotaFallbackStateForTesting } from '../../src/services/worker/provider-dispatch.js';
+import { getSelectedProvider, resetQuotaFallbackStateForTesting, selectProviderForGenerator } from '../../src/services/worker/provider-dispatch.js';
+import { clearCmemCapProbe, noteCmemCapExhausted } from '../../src/shared/cmem-cap-probe.js';
 import { paths } from '../../src/shared/paths.js';
 import { observerHealthWarning } from '../../src/services/context/ContextBuilder.js';
 
@@ -19,6 +20,7 @@ const MODEL_LINE = "(Assistant: at the start of your first reply, tell the user 
 const ENV_KEYS = [
   'TZ',
   'CLAUDE_MEM_PROVIDER',
+  'CLAUDE_MEM_PROVIDER_BY_SOURCE',
   'CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER',
   'CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD',
   'CLAUDE_MEM_OPENROUTER_API_KEY',
@@ -52,6 +54,7 @@ describe('quota notice from the persisted dispatch mirror', () => {
       savedEnv[key] = process.env[key];
       process.env[key] = '';
     }
+    delete process.env.CLAUDE_MEM_PROVIDER_BY_SOURCE;
     credentialDir = mkdtempSync(join(tmpdir(), 'claude-mem-quota-notice-'));
     writeFileSync(join(credentialDir, '.env'), '');
     writeFileSync(join(credentialDir, '.credentials.json'), '{}');
@@ -77,6 +80,7 @@ describe('quota notice from the persisted dispatch mirror', () => {
   });
 
   afterEach(() => {
+    clearCmemCapProbe();
     resetQuotaCooldownsForTesting();
     resetQuotaFallbackStateForTesting();
     setClaudeFallbackReadinessForTesting(previousClaudeReadiness);
@@ -91,6 +95,135 @@ describe('quota notice from the persisted dispatch mirror', () => {
       else process.env[key] = savedEnv[key];
     }
     rmSync(credentialDir, { recursive: true, force: true });
+  });
+
+  function persistClaudeMainHold(): string {
+    process.env.CLAUDE_MEM_PROVIDER = 'claude';
+    process.env.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER = 'off';
+    recordQuotaExhausted('claude', 'weekly reserve guard', 'seven_day', NOW, undefined, 'subscription', {
+      kind: 'limit_guard', window: 'seven_day', usagePercent: 99, thresholdPercent: 93,
+    });
+    expect(observerHealthWarning()).toContain(MODEL_LINE);
+    return readFileSync(join(paths.dataDir(), OBSERVER_HEALTH_FILENAME), 'utf8');
+  }
+
+  it.each(['off', 'gemini'])('drops the persisted Claude main warning after switching to Codex with %s fallback', (fallback) => {
+    const persisted = persistClaudeMainHold();
+    Object.assign(process.env, {
+      CLAUDE_MEM_PROVIDER: 'codex',
+      CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: fallback,
+    });
+
+    expect(observerHealthWarning()).toBe('');
+    expect(observerHealthWarning(true)).toBe('');
+    expect(readFileSync(join(paths.dataDir(), OBSERVER_HEALTH_FILENAME), 'utf8')).toBe(persisted);
+  });
+
+  it('also drops a legacy Claude cooldown after the provider switch', () => {
+    persistClaudeMainHold();
+    const health = readObserverHealth()!;
+    delete health.quotaCooldown!.notice;
+    writeFileSync(join(paths.dataDir(), OBSERVER_HEALTH_FILENAME), JSON.stringify(health));
+    process.env.CLAUDE_MEM_PROVIDER = 'codex';
+
+    expect(observerHealthWarning()).toBe('');
+    expect(observerHealthWarning(true)).toBe('');
+  });
+
+  it.each(['quota_guard', 'quota_exhausted'] as const)('drops an unhealthy %s failure from the removed Claude provider', (kind) => {
+    persistClaudeMainHold();
+    for (let i = 0; i < OBSERVER_UNHEALTHY_FAILURE_THRESHOLD; i++) {
+      recordObserverFailure('claude', { kind, message: 'Old Claude weekly limit' });
+    }
+    process.env.CLAUDE_MEM_PROVIDER = 'codex';
+
+    expect(observerHealthWarning()).toBe('');
+    expect(observerHealthWarning(true)).toBe('');
+  });
+
+  it.each([
+    ['claude', 'auth_invalid'],
+    ['claude', 'transient'],
+    ['codex', 'quota_guard'],
+    ['gemini', 'quota_exhausted'],
+  ] as const)('retains an unrelated %s %s failure after removing the Claude hold', (provider, kind) => {
+    persistClaudeMainHold();
+    for (let i = 0; i < OBSERVER_UNHEALTHY_FAILURE_THRESHOLD; i++) {
+      recordObserverFailure(provider, { kind, message: 'Retain this unrelated failure' });
+    }
+    Object.assign(process.env, {
+      CLAUDE_MEM_PROVIDER: 'codex',
+      CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: 'gemini',
+    });
+
+    expect(observerHealthWarning()).toContain('Retain this unrelated failure');
+    expect(observerHealthWarning(true)).toContain('Retain this unrelated failure');
+  });
+
+  it('keeps the held primary relevant while dispatch serves its backup', () => {
+    persistClaudeMainHold();
+    process.env.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER = 'gemini';
+
+    expect(getSelectedProvider()).toBe('gemini');
+    expect(observerHealthWarning()).toContain(MODEL_LINE);
+  });
+
+  it.each(['claude', ''])('keeps the Claude hold relevant as the %s fallback', (fallback) => {
+    persistClaudeMainHold();
+    Object.assign(process.env, {
+      CLAUDE_MEM_PROVIDER: 'codex',
+      CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: fallback,
+    });
+
+    expect(observerHealthWarning()).toContain(MODEL_LINE);
+  });
+
+  it('keeps a Claude primary selected by source mapping relevant', () => {
+    persistClaudeMainHold();
+    Object.assign(process.env, {
+      CLAUDE_MEM_PROVIDER: 'codex',
+      CLAUDE_MEM_PROVIDER_BY_SOURCE: JSON.stringify({ claude: 'claude' }),
+    });
+
+    expect(observerHealthWarning()).toContain(MODEL_LINE);
+    process.env.CLAUDE_MEM_PROVIDER_BY_SOURCE = JSON.stringify({ claude: 'gemini' });
+    expect(observerHealthWarning()).toBe('');
+  });
+
+  it.each([
+    ['https://cmem.ai/api/inference/v1', true],
+    ['https://openrouter.ai/api/v1', false],
+  ] as const)('keeps the trial fallback relevant only for the gateway route at %s', (baseUrl, relevant) => {
+    persistClaudeMainHold();
+    Object.assign(process.env, {
+      CLAUDE_MEM_PROVIDER: 'openrouter',
+      CLAUDE_MEM_OPENROUTER_BASE_URL: baseUrl,
+      CLAUDE_MEM_OPENROUTER_API_KEY: relevant ? 'cm_pro_0123456789abcdef01234567' : 'sk-or-test-key',
+      CLAUDE_MEM_PRO_FALLBACK_AT: new Date(NOW - 60_000).toISOString(),
+    });
+
+    if (relevant) expect(observerHealthWarning()).toContain(MODEL_LINE);
+    else expect(observerHealthWarning()).toBe('');
+  });
+
+  it('keeps the gateway cap fallback relevant after its trial fallback window expires', () => {
+    const persisted = persistClaudeMainHold();
+    Object.assign(process.env, {
+      CLAUDE_MEM_PROVIDER: 'openrouter',
+      CLAUDE_MEM_PRO_FALLBACK_AT: new Date(NOW - 20 * 60_000).toISOString(),
+    });
+    noteCmemCapExhausted();
+
+    expect(selectProviderForGenerator()).toEqual({ provider: 'claude', gatewayProbeClaimId: null });
+    expect(observerHealthWarning()).toContain(MODEL_LINE);
+    expect(observerHealthWarning(true)).toContain(MODEL_LINE);
+    expect(readFileSync(join(paths.dataDir(), OBSERVER_HEALTH_FILENAME), 'utf8')).toBe(persisted);
+
+    process.env.CLAUDE_MEM_PROVIDER = 'codex';
+    expect(observerHealthWarning()).toBe('');
+    process.env.CLAUDE_MEM_PROVIDER = 'openrouter';
+    clearCmemCapProbe();
+    expect(observerHealthWarning()).toBe('');
   });
 
   it('reports the default Claude backup during the 8:15 PM cmem.ai outage, rounded up to 8:17 PM', () => {
