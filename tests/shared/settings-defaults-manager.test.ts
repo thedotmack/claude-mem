@@ -1406,8 +1406,8 @@ describe('Chroma resource-pacing defaults', () => {
     expect(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_CHROMA_PROCESS_NICE).toBe('10');
   });
 
-  it('caps chroma-mcp to 2 threads/cores by default (#6365)', () => {
-    expect(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_CHROMA_MAX_THREADS).toBe('2');
+  it('leaves the chroma-mcp thread cap off by default (#6365, 39f110260)', () => {
+    expect(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_CHROMA_MAX_THREADS).toBe('0');
   });
 });
 

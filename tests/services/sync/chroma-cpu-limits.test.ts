@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -48,9 +48,16 @@ const THREAD_ENV_KEYS = [
   'OMP_WAIT_POLICY',
   'TOKENIZERS_PARALLELISM',
 ] as const;
+// The subset the chroma-mcp stack actually reads (see CHROMA_THREAD_COUNT_ENV_VARS).
+const CAPPED_ENV_KEYS = [
+  'ORT_INTRA_OP_NUM_THREADS',
+  'OPENBLAS_NUM_THREADS',
+  'VECLIB_MAXIMUM_THREADS',
+  'RAYON_NUM_THREADS',
+] as const;
 
 const savedEnv: Record<string, string | undefined> = {};
-for (const key of [...THREAD_ENV_KEYS, 'omp_num_threads', 'UV_CACHE_DIR']) {
+for (const key of [...THREAD_ENV_KEYS, 'ort_intra_op_num_threads', 'UV_CACHE_DIR']) {
   savedEnv[key] = process.env[key];
 }
 
@@ -172,7 +179,7 @@ mock.module('child_process', () => {
 import { ChromaMcpManager } from '../../../src/services/sync/ChromaMcpManager.js';
 
 function clearThreadEnvVars(): void {
-  for (const key of [...THREAD_ENV_KEYS, 'omp_num_threads']) {
+  for (const key of [...THREAD_ENV_KEYS, 'ort_intra_op_num_threads']) {
     delete process.env[key];
   }
 }
@@ -200,6 +207,7 @@ beforeEach(async () => {
   ChromaMcpManager.setNiceAvailabilityProbeForTesting(() => false);
   ChromaMcpManager.setTasksetAvailabilityProbeForTesting(() => false);
   ChromaMcpManager.setAllowedCpusProbeForTesting(() => [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+  ChromaMcpManager.setProcSelfStatusPathForTesting(null);
   ChromaMcpManager.setChildExitWaitTimeoutsForTesting(10);
 });
 
@@ -216,6 +224,7 @@ afterAll(async () => {
   ChromaMcpManager.setNiceAvailabilityProbeForTesting(null);
   ChromaMcpManager.setTasksetAvailabilityProbeForTesting(null);
   ChromaMcpManager.setAllowedCpusProbeForTesting(null);
+  ChromaMcpManager.setProcSelfStatusPathForTesting(null);
   ChromaMcpManager.setChildExitWaitTimeoutsForTesting(null);
   for (const [key, value] of Object.entries(savedEnv)) {
     if (value === undefined) delete process.env[key];
@@ -246,35 +255,52 @@ describe('ChromaMcpManager.parseLinuxCpuList', () => {
     expect(ChromaMcpManager.parseLinuxCpuList('6-7,0,2-3,2')).toEqual([0, 2, 3, 6, 7]);
   });
 
-  it('returns [] for empty, malformed, inverted, or oversized specs', () => {
+  it('accepts every CPU ID the Linux kernel can report (0..8191)', () => {
+    expect(ChromaMcpManager.parseLinuxCpuList('0-8191')).toHaveLength(8192);
+    expect(ChromaMcpManager.parseLinuxCpuList('8191')).toEqual([8191]);
+  });
+
+  it('returns [] for empty, malformed, inverted, or out-of-kernel-range specs', () => {
     expect(ChromaMcpManager.parseLinuxCpuList('')).toEqual([]);
     expect(ChromaMcpManager.parseLinuxCpuList('   ')).toEqual([]);
     expect(ChromaMcpManager.parseLinuxCpuList('abc')).toEqual([]);
     expect(ChromaMcpManager.parseLinuxCpuList('4-2')).toEqual([]);
     expect(ChromaMcpManager.parseLinuxCpuList('0-99999')).toEqual([]);
     expect(ChromaMcpManager.parseLinuxCpuList('0,,2')).toEqual([]);
+    expect(ChromaMcpManager.parseLinuxCpuList('8192')).toEqual([]);
+    expect(ChromaMcpManager.parseLinuxCpuList('99999999999999999999')).toEqual([]);
   });
 });
 
 describe('chroma-mcp CPU and thread limits (#6365)', () => {
   const MAX_THREADS_KEY = 'CLAUDE_MEM_CHROMA_MAX_THREADS';
 
-  it('injects default 2-thread caps and passive wait policy into both prewarm and transport env', async () => {
+  it('is off by default: no thread env vars and no taskset, deferring to the OS scheduler (39f110260)', async () => {
     setPlatform('linux');
+    ChromaMcpManager.setTasksetAvailabilityProbeForTesting(() => true);
+    await connect();
+
+    for (const spawn of [prewarmSpawns[0], transportSpawns[0]]) {
+      expect(spawn.command).toBe('uvx');
+      for (const key of THREAD_ENV_KEYS) {
+        expect(spawn.env![key]).toBeUndefined();
+      }
+    }
+  });
+
+  it('injects only the thread caps the chroma-mcp stack reads when set to 2, in both prewarm and transport env', async () => {
+    setPlatform('linux');
+    mockedSettings = { [MAX_THREADS_KEY]: '2' };
     await connect();
 
     for (const spawn of [prewarmSpawns[0], transportSpawns[0]]) {
       expect(spawn.env).toBeDefined();
-      expect(spawn.env!.OMP_NUM_THREADS).toBe('2');
-      expect(spawn.env!.OPENBLAS_NUM_THREADS).toBe('2');
-      expect(spawn.env!.MKL_NUM_THREADS).toBe('2');
-      expect(spawn.env!.VECLIB_MAXIMUM_THREADS).toBe('2');
-      expect(spawn.env!.NUMEXPR_NUM_THREADS).toBe('2');
-      expect(spawn.env!.RAYON_NUM_THREADS).toBe('2');
-      expect(spawn.env!.ORT_INTRA_OP_NUM_THREADS).toBe('2');
-      expect(spawn.env!.ORT_INTER_OP_NUM_THREADS).toBe('1');
-      expect(spawn.env!.OMP_WAIT_POLICY).toBe('PASSIVE');
-      expect(spawn.env!.TOKENIZERS_PARALLELISM).toBe('false');
+      for (const key of CAPPED_ENV_KEYS) {
+        expect(spawn.env![key]).toBe('2');
+      }
+      for (const key of THREAD_ENV_KEYS.filter(k => !(CAPPED_ENV_KEYS as readonly string[]).includes(k))) {
+        expect(spawn.env![key]).toBeUndefined();
+      }
     }
   });
 
@@ -283,35 +309,33 @@ describe('chroma-mcp CPU and thread limits (#6365)', () => {
     mockedSettings = { [MAX_THREADS_KEY]: 4 };
     await connect();
 
-    expect(transportSpawns[0].env!.OMP_NUM_THREADS).toBe('4');
-    expect(transportSpawns[0].env!.RAYON_NUM_THREADS).toBe('4');
-    expect(transportSpawns[0].env!.ORT_INTRA_OP_NUM_THREADS).toBe('4');
-    expect(transportSpawns[0].env!.ORT_INTER_OP_NUM_THREADS).toBe('1');
+    for (const key of CAPPED_ENV_KEYS) {
+      expect(transportSpawns[0].env![key]).toBe('4');
+    }
     expect(logEntries.filter(e => e.level === 'warn' && JSON.stringify(e).includes(MAX_THREADS_KEY))).toHaveLength(0);
   });
 
   it('preserves explicit user thread env vars instead of overwriting them', async () => {
     setPlatform('linux');
-    process.env.OMP_NUM_THREADS = '6';
-    process.env.TOKENIZERS_PARALLELISM = 'true';
+    mockedSettings = { [MAX_THREADS_KEY]: '2' };
+    process.env.ORT_INTRA_OP_NUM_THREADS = '6';
     await connect();
 
-    expect(transportSpawns[0].env!.OMP_NUM_THREADS).toBe('6');
-    expect(transportSpawns[0].env!.TOKENIZERS_PARALLELISM).toBe('true');
-    // Unset vars still receive the default cap.
+    expect(transportSpawns[0].env!.ORT_INTRA_OP_NUM_THREADS).toBe('6');
+    // Unset vars still receive the configured cap.
     expect(transportSpawns[0].env!.RAYON_NUM_THREADS).toBe('2');
-    expect(transportSpawns[0].env!.OMP_WAIT_POLICY).toBe('PASSIVE');
   });
 
   it('treats existing env var names case-insensitively on win32', async () => {
     setPlatform('win32');
-    process.env.omp_num_threads = '3';
+    mockedSettings = { [MAX_THREADS_KEY]: '2' };
+    process.env.ort_intra_op_num_threads = '3';
     await connect();
 
     const env = transportSpawns[0].env!;
-    const matchingKeys = Object.keys(env).filter(k => k.toLowerCase() === 'omp_num_threads');
-    expect(matchingKeys).toEqual(['omp_num_threads']);
-    expect(env.omp_num_threads).toBe('3');
+    const matchingKeys = Object.keys(env).filter(k => k.toLowerCase() === 'ort_intra_op_num_threads');
+    expect(matchingKeys).toEqual(['ort_intra_op_num_threads']);
+    expect(env.ort_intra_op_num_threads).toBe('3');
     expect(env.RAYON_NUM_THREADS).toBe('2');
   });
 
@@ -328,16 +352,15 @@ describe('chroma-mcp CPU and thread limits (#6365)', () => {
     }
   });
 
-  for (const bad of ['abc', '-1', '65', '2.5']) {
-    it(`falls back to 2 with a single warning for invalid value ${JSON.stringify(bad)}`, async () => {
+  for (const bad of ['abc', '-1', '8193', '2.5']) {
+    it(`falls back to off with a single warning for invalid value ${JSON.stringify(bad)}`, async () => {
       setPlatform('linux');
       ChromaMcpManager.setTasksetAvailabilityProbeForTesting(() => true);
       mockedSettings = { [MAX_THREADS_KEY]: bad };
       await connect();
 
-      expect(transportSpawns[0].command).toBe('taskset');
-      expect(transportSpawns[0].args.slice(0, 3)).toEqual(['-c', '0,1', 'uvx']);
-      expect(transportSpawns[0].env!.OMP_NUM_THREADS).toBe('2');
+      expect(transportSpawns[0].command).toBe('uvx');
+      expect(transportSpawns[0].env!.ORT_INTRA_OP_NUM_THREADS).toBeUndefined();
       const warnings = logEntries.filter(
         e => e.level === 'warn' && JSON.stringify([e.message, e.meta]).includes(MAX_THREADS_KEY),
       );
@@ -347,6 +370,7 @@ describe('chroma-mcp CPU and thread limits (#6365)', () => {
 
   it('wraps Linux prewarm and transport with `taskset -c 0,1` when available', async () => {
     setPlatform('linux');
+    mockedSettings = { [MAX_THREADS_KEY]: '2' };
     ChromaMcpManager.setTasksetAvailabilityProbeForTesting(() => true);
     await connect();
 
@@ -359,6 +383,7 @@ describe('chroma-mcp CPU and thread limits (#6365)', () => {
 
   it('composes `nice -n 10 taskset -c 0,1 uvx ...` when both nice and taskset are available on Linux', async () => {
     setPlatform('linux');
+    mockedSettings = { [MAX_THREADS_KEY]: '2' };
     ChromaMcpManager.setNiceAvailabilityProbeForTesting(() => true);
     ChromaMcpManager.setTasksetAvailabilityProbeForTesting(() => true);
     await connect();
@@ -372,6 +397,7 @@ describe('chroma-mcp CPU and thread limits (#6365)', () => {
 
   it('picks CPUs from the process allowed cpuset (container-safe, never hardcodes CPU 0)', async () => {
     setPlatform('linux');
+    mockedSettings = { [MAX_THREADS_KEY]: '2' };
     ChromaMcpManager.setTasksetAvailabilityProbeForTesting(() => true);
     ChromaMcpManager.setAllowedCpusProbeForTesting(() => [4, 5, 6, 7]);
     await connect();
@@ -382,16 +408,18 @@ describe('chroma-mcp CPU and thread limits (#6365)', () => {
 
   it('omits taskset when allowed CPUs are already within maxThreads', async () => {
     setPlatform('linux');
+    mockedSettings = { [MAX_THREADS_KEY]: '2' };
     ChromaMcpManager.setTasksetAvailabilityProbeForTesting(() => true);
     ChromaMcpManager.setAllowedCpusProbeForTesting(() => [0, 1]);
     await connect();
 
     expect(transportSpawns[0].command).toBe('uvx');
-    expect(transportSpawns[0].env!.OMP_NUM_THREADS).toBe('2');
+    expect(transportSpawns[0].env!.ORT_INTRA_OP_NUM_THREADS).toBe('2');
   });
 
   it('omits taskset on darwin and win32 while still applying thread-cap env vars', async () => {
     ChromaMcpManager.setTasksetAvailabilityProbeForTesting(() => true);
+    mockedSettings = { [MAX_THREADS_KEY]: '2' };
 
     for (const platform of ['darwin', 'win32'] as const) {
       await ChromaMcpManager.reset();
@@ -401,8 +429,59 @@ describe('chroma-mcp CPU and thread limits (#6365)', () => {
 
       expect(transportSpawns[0].command).not.toBe('taskset');
       expect(transportSpawns[0].args).not.toContain('taskset');
-      expect(transportSpawns[0].env!.OMP_NUM_THREADS).toBe('2');
+      expect(transportSpawns[0].env!.ORT_INTRA_OP_NUM_THREADS).toBe('2');
       expect(transportSpawns[0].env!.RAYON_NUM_THREADS).toBe('2');
+    }
+  });
+
+  describe('when the allowed CPU list is unknown, affinity is skipped and logged, never guessed', () => {
+    function statusFile(contents: string): string {
+      const file = path.join(tempRoots[tempRoots.length - 1], 'status');
+      writeFileSync(file, contents);
+      return file;
+    }
+
+    function affinityWarnings() {
+      return logEntries.filter(e => e.level === 'warn' && e.message === 'CPU affinity cap skipped: allowed CPU list unknown');
+    }
+
+    beforeEach(() => {
+      setPlatform('linux');
+      ChromaMcpManager.setTasksetAvailabilityProbeForTesting(() => true);
+      ChromaMcpManager.setAllowedCpusProbeForTesting(null);
+      mockedSettings = { [MAX_THREADS_KEY]: '2' };
+    });
+
+    it('reads Cpus_allowed_list from proc status (container cpuset 4-7)', async () => {
+      ChromaMcpManager.setProcSelfStatusPathForTesting(statusFile('Name:\tbun\nCpus_allowed:\tf0\nCpus_allowed_list:\t4-7\n'));
+      await connect();
+
+      expect(transportSpawns[0].command).toBe('taskset');
+      expect(transportSpawns[0].args.slice(0, 3)).toEqual(['-c', '4,5', 'uvx']);
+      expect(affinityWarnings()).toHaveLength(0);
+    });
+
+    const unknownCases: Array<[string, () => void, string]> = [
+      ['the probe returns no CPUs', () => ChromaMcpManager.setAllowedCpusProbeForTesting(() => []), 'no CPUs'],
+      ['proc status is unreadable', () => ChromaMcpManager.setProcSelfStatusPathForTesting(path.join(os.tmpdir(), 'claude-mem-no-such-status')), 'cannot read'],
+      ['proc status has no Cpus_allowed_list', () => ChromaMcpManager.setProcSelfStatusPathForTesting(statusFile('Name:\tbun\n')), 'no Cpus_allowed_list'],
+      ['Cpus_allowed_list is unparseable', () => ChromaMcpManager.setProcSelfStatusPathForTesting(statusFile('Cpus_allowed_list:\t0-99999\n')), 'cannot parse'],
+    ];
+    for (const [label, arrange, reason] of unknownCases) {
+      it(`launches without taskset and warns once when ${label}`, async () => {
+        arrange();
+        await connect();
+
+        for (const spawn of [prewarmSpawns[0], transportSpawns[0]]) {
+          expect(spawn.command).toBe('uvx');
+          expect(spawn.args).not.toContain('taskset');
+        }
+        // The env caps still apply; only the affinity mask is skipped.
+        expect(transportSpawns[0].env!.ORT_INTRA_OP_NUM_THREADS).toBe('2');
+        const warnings = affinityWarnings();
+        expect(warnings).toHaveLength(1);
+        expect(String(warnings[0].meta?.reason)).toContain(reason);
+      });
     }
   });
 });

@@ -171,6 +171,6 @@ describe('Chroma pacing settings in the settings file claude-mem uses', () => {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     expect(settings.CLAUDE_MEM_CHROMA_BACKFILL_PAUSE_RATIO).toBe('1');
     expect(settings.CLAUDE_MEM_CHROMA_PROCESS_NICE).toBe('10');
-    expect(settings.CLAUDE_MEM_CHROMA_MAX_THREADS).toBe('2');
+    expect(settings.CLAUDE_MEM_CHROMA_MAX_THREADS).toBe('0');
   });
 });
