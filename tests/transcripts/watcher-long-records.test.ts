@@ -50,6 +50,43 @@ it('joins long UTF-8 records once complete and keeps byte-exact append checkpoin
   }
 });
 
+it('skips a record beyond the tail cap instead of accumulating it without bound', async () => {
+  // A record with no newline (a runaway writer, a corrupted transcript) would
+  // otherwise keep every pass's bytes in pendingRecordParts until the newline
+  // finally arrives, growing worker memory without bound. Past the cap the
+  // record is skipped — loudly, and without parking the source cursor — so
+  // the lines after it still flow and the checkpoint still reaches the end.
+  const huge = JSON.stringify({ text: 'x'.repeat(9 * 1024 * 1024) });
+  const fixture = await setup('capped', 'preamble\n' + huge);
+  try {
+    expect(fixture.lines).toEqual(['preamble']);
+    appendFileSync(fixture.path, '\n{"after-cap":true}\n');
+    fixture.tailer.poke();
+    await fixture.tailer.readTask;
+    expect(fixture.lines).toEqual(['preamble', '{"after-cap":true}']);
+    expect(loadWatchState(fixture.statePath).offsets[fixture.path]).toBe(statSync(fixture.path).size);
+  } finally {
+    fixture.watcher.stop();
+    await fixture.tailer.readTask;
+  }
+});
+
+it('skips an oversized record whose newline is already on disk', async () => {
+  // The reverse write order of the capped test: the whole oversized record,
+  // newline included, is on disk before the tailer starts. Accumulation alone
+  // would dispatch it on the pass that finds the newline, so the cap has to
+  // be checked when the record is assembled, not only between passes.
+  const huge = JSON.stringify({ text: 'x'.repeat(9 * 1024 * 1024) });
+  const fixture = await setup('capped-on-disk', 'preamble\n' + huge + '\n{"after-cap":true}\n');
+  try {
+    expect(fixture.lines).toEqual(['preamble', '{"after-cap":true}']);
+    expect(loadWatchState(fixture.statePath).offsets[fixture.path]).toBe(statSync(fixture.path).size);
+  } finally {
+    fixture.watcher.stop();
+    await fixture.tailer.readTask;
+  }
+});
+
 for (const replacement of ['truncate', 'rename'] as const) {
   it(`discards unfinished long-record fragments after ${replacement}`, async () => {
     const fixture = await setup(replacement, '{"text":"' + 'x'.repeat(5 * 1024 * 1024));
