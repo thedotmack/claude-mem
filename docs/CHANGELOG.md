@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## Critical fix
 
 - **The OMP hook works with the server runtime** (#6367, thanks @flipcyde101, closes #6366 reported by @walynde). When `CLAUDE_MEM_RUNTIME` was `server` or `server-beta`, the OMP hook still sent everything to the local worker, so OMP sessions were dropped. The hook now reads `CLAUDE_MEM_SERVER_URL`, `CLAUDE_MEM_SERVER_API_KEY` and `CLAUDE_MEM_SERVER_PROJECT_ID` (or the `CLAUDE_MEM_SERVER_BETA_*` names; environment variables win over `settings.json`) and talks to the server's `/v1` API directly: session start, tool and reply events, context, and session end. It applies the same rules the worker applies before it saves anything: `<private>` blocks are stripped, excluded projects and `CLAUDE_MEM_SKIP_TOOLS` are honored, every prompt is recorded, and the project name comes from git. If the server settings are incomplete, it falls back to the worker as before.
+- **OMP users: run `npx claude-mem install --ide omp` once to get this fix.** The OMP hook is a copied file, so a plugin update alone does not replace it.
 
 ## Fixes
 
