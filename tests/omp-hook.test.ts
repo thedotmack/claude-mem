@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import registerClaudeMemHook from '../omp/hooks/claude-mem.ts';
@@ -118,6 +119,7 @@ const ENV_KEYS = [
   'CLAUDE_MEM_RUNTIME',
   'CLAUDE_MEM_SERVER_URL', 'CLAUDE_MEM_SERVER_API_KEY', 'CLAUDE_MEM_SERVER_PROJECT_ID',
   'CLAUDE_MEM_SERVER_BETA_URL', 'CLAUDE_MEM_SERVER_BETA_API_KEY', 'CLAUDE_MEM_SERVER_BETA_PROJECT_ID',
+  'CLAUDE_MEM_EXCLUDED_PROJECTS', 'CLAUDE_MEM_SKIP_TOOLS', 'CLAUDE_MEM_INTERNAL',
 ] as const;
 
 describe('OMP Claude Mem hook', () => {
@@ -855,6 +857,7 @@ describe('OMP Claude Mem hook', () => {
         'POST https://mem.example.com/v1/sessions/start',
         'POST https://mem.example.com/v1/events',
         'POST https://mem.example.com/v1/events',
+        'POST https://mem.example.com/v1/events',
         'POST https://mem.example.com/v1/sessions/srv-sess-1/end',
       ]);
       for (const req of requests) {
@@ -884,8 +887,22 @@ describe('OMP Claude Mem hook', () => {
         },
       });
 
+      // Every prompt is also its own event, recorded without inference
+      expect(requests[2]?.url.searchParams.get('generate')).toBe('false');
+      expect(requests[2]?.body).toEqual({
+        projectId: 'proj-123',
+        serverSessionId: 'srv-sess-1',
+        contentSessionId,
+        platformSource: 'omp',
+        sourceType: 'hook',
+        eventType: 'user_prompt',
+        occurredAtEpoch: expect.any(Number),
+        payload: { prompt: 'fix  bug', cwd, platformSource: 'omp' },
+      });
+
       // Tool event request
-      expect(requests[2]?.body).toMatchObject({
+      expect(requests[3]?.url.searchParams.get('generate')).toBeNull();
+      expect(requests[3]?.body).toMatchObject({
         projectId: 'proj-123',
         serverSessionId: 'srv-sess-1',
         contentSessionId,
@@ -904,7 +921,7 @@ describe('OMP Claude Mem hook', () => {
       });
 
       // Assistant message event before session end
-      expect(requests[3]?.body).toMatchObject({
+      expect(requests[4]?.body).toMatchObject({
         projectId: 'proj-123',
         serverSessionId: 'srv-sess-1',
         contentSessionId,
@@ -919,7 +936,7 @@ describe('OMP Claude Mem hook', () => {
       });
 
       // End session request
-      expect(requests[4]?.body).toEqual({});
+      expect(requests[5]?.body).toEqual({});
     });
 
     it('accepts legacy server-beta runtime and CLAUDE_MEM_SERVER_BETA_* settings when canonical keys are empty', async () => {
@@ -946,7 +963,7 @@ describe('OMP Claude Mem hook', () => {
       await handlers.before_agent_start?.({ prompt: 'hello' }, { cwd: '/tmp/repo' });
       await drainMicrotasks();
 
-      expect(requests).toHaveLength(1);
+      expect(requests.map(r => r.path)).toEqual(['/v1/sessions/start', '/v1/events']);
       expect(requests[0]?.url.origin).toBe('http://127.0.0.1:37877');
       expect(requests[0]?.path).toBe('/v1/sessions/start');
       expect(requests[0]?.headers.get('authorization')).toBe('Bearer beta-key');
@@ -1081,6 +1098,185 @@ describe('OMP Claude Mem hook', () => {
         serverSessionId: 'srv-compact-1',
         payload: { last_assistant_message: 'pre-compact reply', platformSource: 'omp' },
       });
+    });
+
+    // Server events never pass through the worker's ingest gates, so the hook
+    // applies them itself (#6367 review).
+    function writeServerSettings(extra: Record<string, string> = {}): void {
+      writeFileSync(join(dataDir, 'settings.json'), JSON.stringify({
+        CLAUDE_MEM_RUNTIME: 'server',
+        CLAUDE_MEM_SERVER_URL: 'https://mem.example.com',
+        CLAUDE_MEM_SERVER_API_KEY: 'cmem_secret_key',
+        CLAUDE_MEM_SERVER_PROJECT_ID: 'proj-123',
+        ...extra,
+      }));
+    }
+
+    function installServerCapture(requests: CapturedRequest[]): void {
+      installFetchCapture(requests, path => {
+        if (path === '/v1/sessions/start') return { status: 201, body: { session: { id: 'srv-gate-1' } } };
+        if (path === '/v1/context') return { body: { context: '# memory' } };
+        return {};
+      });
+    }
+
+    for (const [label, configure] of [
+      ['a CLAUDE_MEM_EXCLUDED_PROJECTS glob in settings.json', () => writeServerSettings({ CLAUDE_MEM_EXCLUDED_PROJECTS: '/work/private/**' })],
+      ['a folder-name pattern in the environment', () => {
+        writeServerSettings({ CLAUDE_MEM_EXCLUDED_PROJECTS: 'nothing-matches' });
+        process.env.CLAUDE_MEM_EXCLUDED_PROJECTS = 'secret-*';
+      }],
+      ['CLAUDE_MEM_INTERNAL=1', () => {
+        writeServerSettings();
+        process.env.CLAUDE_MEM_INTERNAL = '1';
+      }],
+    ] as const) {
+      it(`sends nothing to the server for an excluded checkout (${label})`, async () => {
+        configure();
+        const requests: CapturedRequest[] = [];
+        installServerCapture(requests);
+        const handlers = registerHook();
+        const cwd = '/work/private/secret-app';
+
+        await handlers.session_start?.();
+        // A tool result before any prompt never waits on an init.
+        await handlers.tool_result?.({ toolName: 'bash', content: 'early' }, { cwd });
+        const ctxResult = await handlers.context?.({ messages: [] }, { cwd });
+        await handlers.before_agent_start?.({ prompt: 'leak nothing' }, { cwd });
+        await handlers.tool_result?.({ toolName: 'read', content: 'x' }, { cwd });
+        await handlers.agent_end?.({ messages: [{ role: 'assistant', content: 'done' }] });
+        await handlers.session_shutdown?.();
+        await drainMicrotasks();
+
+        expect(ctxResult).toBeUndefined();
+        expect(requests).toEqual([]);
+      });
+    }
+
+    it('still sends a checkout that no exclusion pattern matches', async () => {
+      writeServerSettings({ CLAUDE_MEM_EXCLUDED_PROJECTS: '/work/private/**,secret-*' });
+      const requests: CapturedRequest[] = [];
+      installServerCapture(requests);
+      const handlers = registerHook();
+
+      await handlers.session_start?.();
+      await handlers.before_agent_start?.({ prompt: 'public work' }, { cwd: '/work/public/app' });
+      await drainMicrotasks();
+
+      expect(requests.map(r => r.path)).toEqual(['/v1/sessions/start', '/v1/events']);
+    });
+
+    it('records every prompt as a user_prompt event with generate=false', async () => {
+      writeServerSettings();
+      const requests: CapturedRequest[] = [];
+      installServerCapture(requests);
+      const handlers = registerHook();
+      const cwd = '/work/acme';
+
+      await handlers.session_start?.();
+      await handlers.before_agent_start?.({ prompt: 'first ask' }, { cwd });
+      await handlers.before_agent_start?.({ prompt: 'second ask' }, { cwd });
+      await drainMicrotasks();
+
+      const promptEvents = requests.filter(r => r.path === '/v1/events' && r.body.eventType === 'user_prompt');
+      expect(promptEvents.map(r => r.url.searchParams.get('generate'))).toEqual(['false', 'false']);
+      expect(promptEvents.map(r => (r.body.payload as { prompt: string }).prompt)).toEqual(['first ask', 'second ask']);
+      expect(promptEvents.map(r => r.body.serverSessionId)).toEqual(['srv-gate-1', 'srv-gate-1']);
+    });
+
+    it('names the project the way the Claude Code hooks do: git root, or <repo>/<worktree>', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'omp-hook-git-'));
+      try {
+        const repo = join(root, 'acme-repo');
+        const worktree = join(root, 'acme-feature');
+        const git = (...args: string[]) => execFileSync('git', args, { stdio: 'ignore' });
+        git('init', '-q', repo);
+        git('-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-q', '--allow-empty', '-m', 'init');
+        git('-C', repo, 'worktree', 'add', '-q', '--detach', worktree);
+        const subdir = join(repo, 'src', 'deep');
+        mkdirSync(subdir, { recursive: true });
+
+        writeServerSettings();
+        const requests: CapturedRequest[] = [];
+        installServerCapture(requests);
+        const handlers = registerHook();
+
+        for (const cwd of [subdir, worktree]) {
+          await handlers.session_start?.();
+          await handlers.context?.({ messages: [] }, { cwd });
+          await handlers.before_agent_start?.({ prompt: 'name me' }, { cwd });
+          await drainMicrotasks();
+        }
+
+        const contexts = requests.filter(r => r.path === '/v1/context').map(r => r.body.folderProjects);
+        const starts = requests.filter(r => r.path === '/v1/sessions/start')
+          .map(r => (r.body.metadata as { project?: string }).project);
+        expect(contexts).toEqual([['acme-repo'], ['acme-repo/acme-feature']]);
+        expect(starts).toEqual(['acme-repo', 'acme-repo/acme-feature']);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it('drops tools listed in CLAUDE_MEM_SKIP_TOOLS, by OMP or mapped name, in any case', async () => {
+      writeServerSettings({ CLAUDE_MEM_SKIP_TOOLS: ' BASH , todo_write' });
+      const requests: CapturedRequest[] = [];
+      installServerCapture(requests);
+      const handlers = registerHook();
+      const cwd = '/work/acme';
+
+      await handlers.session_start?.();
+      await handlers.before_agent_start?.({ prompt: 'run things' }, { cwd });
+      await handlers.tool_result?.({ toolName: 'bash', content: 'skipped (mapped to Bash)' }, { cwd });
+      await handlers.tool_result?.({ toolName: 'todo_write', content: 'skipped (native name)' }, { cwd });
+      await handlers.tool_result?.({ toolName: 'read', content: 'kept' }, { cwd });
+      await drainMicrotasks();
+
+      const tools = requests.filter(r => r.body.eventType === 'tool_use')
+        .map(r => (r.body.payload as { tool_name: string }).tool_name);
+      expect(tools).toEqual(['Read']);
+    });
+
+    it('records nothing for a wholly private prompt: no start, prompt event or tool events', async () => {
+      writeServerSettings();
+      const requests: CapturedRequest[] = [];
+      installServerCapture(requests);
+      const handlers = registerHook();
+      const cwd = '/work/acme';
+
+      await handlers.session_start?.();
+      await handlers.before_agent_start?.({ prompt: '  <private>my token is abc</private>  ' }, { cwd });
+      await handlers.tool_result?.({ toolName: 'read', content: 'private turn' }, { cwd });
+      await handlers.agent_end?.({ messages: [{ role: 'assistant', content: 'private reply' }] });
+      await handlers.session_shutdown?.();
+      await drainMicrotasks();
+
+      expect(requests).toEqual([]);
+    });
+
+    it('drops a private later turn but still ends the session its public turn started', async () => {
+      writeServerSettings();
+      const requests: CapturedRequest[] = [];
+      installServerCapture(requests);
+      const handlers = registerHook();
+      const cwd = '/work/acme';
+
+      await handlers.session_start?.();
+      await handlers.before_agent_start?.({ prompt: 'public ask' }, { cwd });
+      await handlers.tool_result?.({ toolName: 'read', content: 'public turn' }, { cwd });
+      await handlers.before_agent_start?.({ prompt: '<private>secret ask</private>' }, { cwd });
+      await handlers.tool_result?.({ toolName: 'bash', content: 'private turn' }, { cwd });
+      await handlers.agent_end?.({ messages: [{ role: 'assistant', content: 'private reply' }] });
+      await handlers.session_shutdown?.();
+      await drainMicrotasks();
+
+      expect(requests.map(r => `${r.path} ${String(r.body.eventType ?? '')}`.trim())).toEqual([
+        '/v1/sessions/start',
+        '/v1/events user_prompt',
+        '/v1/events tool_use',
+        '/v1/sessions/srv-gate-1/end',
+      ]);
+      expect(JSON.stringify(requests.map(r => r.body))).not.toContain('secret ask');
     });
   });
 });

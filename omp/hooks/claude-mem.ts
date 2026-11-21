@@ -31,15 +31,21 @@
  *  - All POSTs are fire-and-forget via detached chains; the handler returns
  *    synchronously and never blocks the tool dispatch (30s handler cap). Every
  *    request is bounded by a timeout, which counts as a breaker failure.
- *  - The project is never named here: every request carries the session's cwd
- *    and the worker resolves the project key from it, the same resolver the
- *    Claude Code hooks use (worktrees, markers, environments).
+ *  - Worker mode never names the project: every request carries the session's
+ *    cwd and the worker resolves the project key from it, the same resolver
+ *    the Claude Code hooks use (worktrees, markers, environments).
+ *  - Server mode (CLAUDE_MEM_RUNTIME=server) bypasses the worker, so the hook
+ *    does the worker's ingest work itself, as hermes/claude-mem/client.py does:
+ *    it derives the project key from git, checks CLAUDE_MEM_EXCLUDED_PROJECTS
+ *    before every request, drops CLAUDE_MEM_SKIP_TOOLS tools, skips wholly
+ *    private prompts, and posts each prompt as a user_prompt event.
  */
 
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, normalize, resolve } from "node:path";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 
 // ---------------------------------------------------------------------------
@@ -140,9 +146,19 @@ const REQUEST_TIMEOUT_MS = 5_000;
 // Runtime & endpoint resolution (matches src/services/hooks/runtime-selector.ts)
 // ---------------------------------------------------------------------------
 
-type RuntimeTarget =
-  | { mode: "worker"; baseUrl: string }
-  | { mode: "server"; baseUrl: string; apiKey: string; projectId: string };
+// Server mode sends events straight to the server, which never runs the
+// worker's ingest gates, so the hook applies them itself (as the Claude Code
+// hooks and the Hermes plugin do): project exclusion and CLAUDE_MEM_SKIP_TOOLS.
+type ServerTarget = {
+  mode: "server";
+  baseUrl: string;
+  apiKey: string;
+  projectId: string;
+  excludedProjects: string;
+  // Lower-cased CLAUDE_MEM_SKIP_TOOLS entries.
+  skipTools: Set<string>;
+};
+type RuntimeTarget = { mode: "worker"; baseUrl: string } | ServerTarget;
 
 /**
  * claude-mem's settings.json, read the way claude-mem reads it: from
@@ -197,10 +213,80 @@ function resolveRuntime(): RuntimeTarget {
     const apiKey = firstSetting(settings, "CLAUDE_MEM_SERVER_API_KEY", "CLAUDE_MEM_SERVER_BETA_API_KEY");
     const projectId = firstSetting(settings, "CLAUDE_MEM_SERVER_PROJECT_ID", "CLAUDE_MEM_SERVER_BETA_PROJECT_ID");
     if (baseUrl && apiKey && projectId) {
-      return { mode: "server", baseUrl, apiKey, projectId };
+      const skipTools = new Set(
+        setting(settings, "CLAUDE_MEM_SKIP_TOOLS", "").split(",").map(tool => tool.trim().toLowerCase()).filter(Boolean),
+      );
+      return {
+        mode: "server",
+        baseUrl,
+        apiKey,
+        projectId,
+        excludedProjects: setting(settings, "CLAUDE_MEM_EXCLUDED_PROJECTS", ""),
+        skipTools,
+      };
     }
   }
   return { mode: "worker", baseUrl: resolveWorkerBase(settings) };
+}
+
+/** Port of the worker's glob (src/utils/project-filter.ts globToRegex). Keep the two in step. */
+function globToRegex(pattern: string): RegExp {
+  let expanded = pattern.replace(/\\/g, "/");
+  if (expanded === "~") expanded = homedir();
+  else if (expanded.startsWith("~/")) expanded = join(homedir(), expanded.slice(2));
+  expanded = expanded.replace(/\\/g, "/");
+  const regex = expanded.replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/(^|\/)\*\*(?=\/)/g, "$1<<<GLOBSTAR_DIR>>>")
+    .replace(/\*\*/g, "<<<GLOBSTAR>>>")
+    .replace(/\*/g, "[^/]*")
+    .replace(/\?/g, "[^/]")
+    .replace(/<<<GLOBSTAR>>>/g, ".*")
+    .replace(/<<<GLOBSTAR_DIR>>>\//g, "(?:.*/)?");
+  return new RegExp(`^${regex}$`, "s");
+}
+
+/**
+ * CLAUDE_MEM_EXCLUDED_PROJECTS, matched as the worker matches it
+ * (src/utils/project-filter.ts isProjectExcluded): comma-separated globs
+ * (`*`, `**`, `?`, leading `~`) against the full path and its last folder
+ * name; `dir/**` also covers `dir` itself.
+ */
+function isProjectExcluded(cwd: string, patterns: string): boolean {
+  if (!cwd || !patterns.trim()) return false;
+  const path = cwd.replace(/\\/g, "/");
+  const name = projectLabelFromCwd(path);
+  for (const raw of patterns.split(",")) {
+    const pattern = raw.trim();
+    if (!pattern) continue;
+    try {
+      if (globToRegex(pattern).test(path) || globToRegex(pattern).test(name)) return true;
+      if (pattern.replace(/\\/g, "/").endsWith("/**")
+        && globToRegex(pattern.slice(0, -3)).test(path.replace(/\/+$/, ""))) return true;
+    } catch {
+      continue; // an invalid pattern excludes nothing, as in the worker
+    }
+  }
+  return false;
+}
+
+/**
+ * Server mode only: whether nothing from `cwd` may leave this process. The
+ * worker answers this itself (`project_excluded`); the server does not, so the
+ * hook checks before every server request, as src/shared/should-track-project.ts
+ * does for the Claude Code hooks. CLAUDE_MEM_INTERNAL=1 marks claude-mem's own
+ * agent processes.
+ */
+function serverExcludes(rt: ServerTarget, cwd: string | undefined): boolean {
+  if (process.env.CLAUDE_MEM_INTERNAL === "1") return true;
+  return !!cwd && isProjectExcluded(cwd, rt.excludedProjects);
+}
+
+/** CLAUDE_MEM_SKIP_TOOLS, case-insensitive, by OMP's name or the mapped one (src/shared/is-tool-skipped.ts). */
+function serverSkipsTool(rt: ServerTarget, toolName: string, nativeToolName: string): boolean {
+  if (rt.skipTools.has(toolName.toLowerCase())) return true;
+  // A qualified MCP exclusion keeps its server scope, as in isToolSkipped.
+  const native = nativeToolName.toLowerCase();
+  return !native.startsWith("mcp__") && rt.skipTools.has(native);
 }
 
 // Resolved once per omp session (session_start / session_switch clears it), so
@@ -218,6 +304,53 @@ function projectLabelFromCwd(cwd: string | undefined): string {
   const trimmed = cwd.replace(/[\\/]+$/, "");
   const idx = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
   return idx >= 0 ? trimmed.slice(idx + 1) : trimmed;
+}
+
+// Why 2 s: `git rev-parse` answered in 26 ms median, 57 ms max over 30 runs
+// (macOS, linked worktree, 2026-11-21, spawn included). The call is synchronous,
+// so the bound is what a hung git (a stalled network mount) may cost OMP once
+// per cwd before the folder name is used instead; it stays under the 5 s
+// request timeout.
+const GIT_TIMEOUT_MS = 2_000;
+// Why 300 s: the context handler runs before every model call and needs the
+// key, so it is cached; a checkout whose git structure changes under the same
+// path (a nested `git init`, a clone turned into a linked worktree) is accepted
+// as stale for at most five minutes. Same value as hermes/claude-mem/client.py.
+const PROJECT_KEY_TTL_MS = 300_000;
+const projectKeys = new Map<string, { key: string; expiresAt: number }>();
+
+/**
+ * Server mode only (the worker derives the key itself from the cwd): the
+ * project key the Claude Code hooks give this checkout, as
+ * hermes/claude-mem/client.py checkout_project() does — the git root's folder
+ * name, `<repo>/<worktree>` for a linked worktree, the folder name outside git.
+ */
+function checkoutProject(cwd: string | undefined): string {
+  if (!cwd) return "";
+  const now = Date.now();
+  const cached = projectKeys.get(cwd);
+  if (cached && cached.expiresAt > now) return cached.key;
+  let key = projectLabelFromCwd(cwd);
+  try {
+    const out = execFileSync(
+      "git",
+      ["-C", cwd, "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir", "--git-common-dir"],
+      { encoding: "utf8", timeout: GIT_TIMEOUT_MS, stdio: ["ignore", "pipe", "ignore"], windowsHide: true },
+    );
+    const [top, gitDir, common] = out.split("\n").map(line => line.trim());
+    if (top && gitDir && common) {
+      key = basename(normalize(top));
+      const commonDir = normalize(common);
+      if (normalize(gitDir) !== commonDir && basename(commonDir) === ".git") {
+        const parent = basename(dirname(commonDir));
+        key = key === parent ? parent : `${parent}/${key}`;
+      }
+    }
+  } catch {
+    // No git, not a checkout, or no answer in time: the folder name stands.
+  }
+  projectKeys.set(cwd, { key, expiresAt: now + PROJECT_KEY_TTL_MS });
+  return key;
 }
 
 // ---------------------------------------------------------------------------
@@ -263,8 +396,11 @@ interface OmpSession {
   observations?: Promise<void>;
   // The runtime recorded at least one prompt for this id (finalize needs one).
   anchored: boolean;
-  // The worker skipped this checkout as excluded: nothing more is sent.
+  // The checkout is excluded (the worker said so, or, in server mode, the
+  // hook's own check matched): nothing more is sent.
   excluded: boolean;
+  // The latest prompt's cwd; server-mode finalize checks it for exclusion.
+  cwd?: string;
 }
 
 let session: OmpSession | undefined;
@@ -353,6 +489,7 @@ function post(rt: RuntimeTarget, path: string, body: unknown): Promise<void> {
  */
 function sendPrompt(target: OmpSession, cwd: string | undefined, prompt: string): void {
   const telemetryPromptEpochMs = Date.now();
+  if (cwd) target.cwd = cwd;
   target.lastInit = (target.lastInit ?? Promise.resolve(true)).then(
     () => recordPrompt(target, cwd, prompt, telemetryPromptEpochMs),
   );
@@ -371,9 +508,17 @@ async function recordPrompt(
   const rt = target.runtime ?? runtime();
   try {
     if (rt.mode === "server") {
-      const metadata: Record<string, unknown> = { prompt: stripPrivateBlocks(prompt) };
+      if (serverExcludes(rt, cwd)) {
+        target.excluded = true;
+        return false;
+      }
+      // A wholly private (or empty) prompt is not recorded, and neither are
+      // the tool calls that wait on it (resolving false drops them).
+      const cleanPrompt = stripPrivateBlocks(prompt).trim();
+      if (!cleanPrompt) return false;
+      const metadata: Record<string, unknown> = { prompt: cleanPrompt };
       if (cwd) metadata.cwd = cwd;
-      const project = projectLabelFromCwd(cwd);
+      const project = checkoutProject(cwd);
       if (project) metadata.project = project;
       const r = await postJson(rt, "/v1/sessions/start", {
         projectId: rt.projectId,
@@ -388,7 +533,26 @@ async function recordPrompt(
       if (typeof reply?.session?.id === "string" && reply.session.id) {
         target.serverSessionId = reply.session.id;
       }
+      // The session row exists now, so finalize must end it even if the
+      // prompt event below fails.
       target.anchored = true;
+      // Starting a session is idempotent and keeps only the first prompt, so
+      // every prompt is also its own event. generate=false: recording a prompt
+      // must not start server-side inference.
+      const promptEvent: Record<string, unknown> = {
+        projectId: rt.projectId,
+        contentSessionId: target.id,
+        platformSource: "omp",
+        sourceType: "hook",
+        eventType: "user_prompt",
+        occurredAtEpoch: telemetryPromptEpochMs,
+        payload: cwd
+          ? { prompt: cleanPrompt, cwd, platformSource: "omp" }
+          : { prompt: cleanPrompt, platformSource: "omp" },
+      };
+      if (target.serverSessionId) promptEvent.serverSessionId = target.serverSessionId;
+      await postJson(rt, "/v1/events?generate=false", promptEvent);
+      onOk();
       return true;
     }
 
@@ -414,11 +578,15 @@ async function recordPrompt(
 }
 
 async function finalizeServerSession(
-  rt: Extract<RuntimeTarget, { mode: "server" }>,
+  rt: ServerTarget,
   target: OmpSession,
   assistantMessage: string,
 ): Promise<void> {
   if (breakerOpen()) return;
+  if (serverExcludes(rt, target.cwd)) {
+    target.excluded = true;
+    return;
+  }
   try {
     let serverSessionId = target.serverSessionId;
     if (!serverSessionId) {
@@ -467,11 +635,13 @@ async function finalizeServerSession(
 // left alone.
 function finalize(target: OmpSession | undefined, assistantMessage: string): void {
   if (!target) return;
-  void Promise.all([target.lastInit ?? Promise.resolve(false), target.observations]).then(() => {
+  void Promise.all([target.lastInit ?? Promise.resolve(false), target.observations]).then(([lastRecorded]) => {
     if (!target.anchored || target.excluded) return;
     const rt = target.runtime ?? runtime();
     if (rt.mode === "server") {
-      return finalizeServerSession(rt, target, assistantMessage);
+      // When the last prompt was not recorded (wholly private, or its send
+      // failed) its closing reply is dropped too; the session still ends.
+      return finalizeServerSession(rt, target, lastRecorded ? assistantMessage : "");
     }
     return post(rt, "/api/sessions/summarize", {
       contentSessionId: target.id,
@@ -567,6 +737,13 @@ export default function claudeMemBridge(pi: ExtensionAPI): void {
       if (!recorded || target.excluded) return;
       const rt = target.runtime ?? runtime();
       if (rt.mode === "server") {
+        // Also covers a tool result that arrives before any prompt, which
+        // never waited on an init that could have found the exclusion.
+        if (serverExcludes(rt, ctx?.cwd ?? target.cwd)) {
+          target.excluded = true;
+          return;
+        }
+        if (serverSkipsTool(rt, toolName, nativeToolName)) return;
         const payload: Record<string, unknown> = {
           tool_name: toolName,
           tool_input: stripPrivateFromValue(toolInput),
@@ -630,9 +807,13 @@ export default function claudeMemBridge(pi: ExtensionAPI): void {
         const rt = runtime();
         let md: string;
         if (rt.mode === "server") {
+          if (serverExcludes(rt, cwd)) {
+            if (session) session.excluded = true;
+            return; // nothing about an excluded checkout leaves OMP
+          }
           const payload: Record<string, unknown> = { projectId: rt.projectId };
           if (!allSources) payload.platformSource = "omp";
-          const project = projectLabelFromCwd(cwd);
+          const project = checkoutProject(cwd);
           if (project) payload.folderProjects = [project];
           const r = await postJson(rt, "/v1/context", payload);
           const data = (await r.json()) as { context?: unknown } | null;
