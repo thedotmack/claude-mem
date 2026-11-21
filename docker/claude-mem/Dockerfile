@@ -1,5 +1,9 @@
 
-FROM node:20
+# Debian trixie (glibc 2.41): the grammar postinstalls in `npm install` below
+# run tree-sitter-cli 0.26's prebuilt binary, and the tree-sitter 0.26 runtime
+# loads in the server; both need glibc >= 2.39. Plain node:20 is bookworm
+# (glibc 2.36), where the build stops at @derekstride/tree-sitter-sql (#6379).
+FROM node:20-trixie
 
 ENV DEBIAN_FRONTEND=noninteractive
 
