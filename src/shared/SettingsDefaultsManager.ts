@@ -376,9 +376,10 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CHROMA_MAX_PENDING_MUTATIONS: string;
   CLAUDE_MEM_CHROMA_BACKFILL_PAUSE_RATIO: string; // bulk backfill sleeps write-time x ratio per row; 0 = off, 0-10
   CLAUDE_MEM_CHROMA_PROCESS_NICE: string;         // niceness for chroma-mcp (non-Windows, needs `nice`); 0 = off, 0-19
+  CLAUDE_MEM_CHROMA_MAX_THREADS: string;          // thread & Linux CPU-affinity cap for chroma-mcp; 0 = uncapped, 0-64
   CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION: string;  // chroma-mcp embedding function for new collections
   CLAUDE_MEM_SERVER_VECTOR_SEARCH: string;       // server search by meaning: 'auto', 'true' or 'false'
-  CLAUDE_MEM_EMBEDDING_BACKFILL_THREADS: string; // hosted server only (local Chroma's embedder can't be capped from claude-mem): CPU threads for embedding stored rows; '' = half, 0 = all
+  CLAUDE_MEM_EMBEDDING_BACKFILL_THREADS: string; // hosted server only (local Chroma uses CLAUDE_MEM_CHROMA_MAX_THREADS): CPU threads for embedding stored rows; '' = half, 0 = all
   CLAUDE_MEM_EMBEDDING_MODEL: string;            // in-process embedding model for server search by meaning
   CLAUDE_MEM_CHROMA_UVX_PATH: string;            // uvx binary (or its folder) to launch chroma-mcp with
   CLAUDE_MEM_SEARCH_RECENCY_DAYS: string;        // Implicit 90-day recency window on date-less semantic searches (#4770); 0 = no window
@@ -708,6 +709,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CHROMA_MAX_PENDING_MUTATIONS: '5000', // Bound burst imports without changing normal live indexing
     CLAUDE_MEM_CHROMA_BACKFILL_PAUSE_RATIO: '1',     // Bulk backfill sleeps (row write time x ratio) after each row: 1 = at most ~50% duty, 0 = off, max 10. Live sync is never paced
     CLAUDE_MEM_CHROMA_PROCESS_NICE: '10',            // chroma-mcp starts as `nice -n N uvx ...` where `nice` exists (not Windows). 0 = off, max 19
+    CLAUDE_MEM_CHROMA_MAX_THREADS: '2',              // Cap chroma-mcp thread pools (OMP/BLAS/Rayon/ORT/tokenizers) and Linux CPU affinity (`taskset`). 0 = uncapped, max 64
     // Embedding function used when creating the Chroma collection. 'default' is
     // the local all-MiniLM-L6-v2 (English-tuned). The pinned chroma-mcp also
     // accepts 'openai', 'cohere', 'jina', 'voyageai' and 'roboflow'; those are
@@ -726,9 +728,9 @@ export class SettingsDefaultsManager {
     // embeds them in the background, which can take hours on a large store.
     // That start caps the embedder at this many CPU threads until the next
     // restart: empty is half the machine's threads, 0 is every thread. This
-    // applies to the hosted server only: local Chroma's embedder runs inside
-    // chroma-mcp and cannot be capped from claude-mem (see
-    // CLAUDE_MEM_CHROMA_PROCESS_NICE and CLAUDE_MEM_CHROMA_BACKFILL_PAUSE_RATIO).
+    // applies to the hosted server only: local Chroma uses
+    // CLAUDE_MEM_CHROMA_MAX_THREADS, CLAUDE_MEM_CHROMA_PROCESS_NICE, and
+    // CLAUDE_MEM_CHROMA_BACKFILL_PAUSE_RATIO.
     CLAUDE_MEM_EMBEDDING_BACKFILL_THREADS: '',
     // Embedding model the server's search by meaning uses: a key of
     // EMBEDDING_MODELS in src/services/vector/models.ts, which lists them and

@@ -34,6 +34,21 @@ const CHROMA_PREWARM_TIMEOUT_SETTING = 'CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS';
 const DEFAULT_CHROMA_PROCESS_NICE = 10;
 const CHROMA_PROCESS_NICE_SETTING = 'CLAUDE_MEM_CHROMA_PROCESS_NICE';
 const CHROMA_PROCESS_NICE_BOUNDS = { min: 0, max: 19, integer: true } as const;
+// Default 2 threads/cores keeps local all-MiniLM-L6-v2 embeddings responsive
+// without allowing ONNX Runtime, OpenMP, BLAS, or Rayon to pin 4-5+ CPU cores
+// indefinitely (#6365). 0 disables both env caps and Linux taskset affinity.
+const DEFAULT_CHROMA_MAX_THREADS = 2;
+const CHROMA_MAX_THREADS_SETTING = 'CLAUDE_MEM_CHROMA_MAX_THREADS';
+const CHROMA_MAX_THREADS_BOUNDS = { min: 0, max: 64, integer: true } as const;
+const CHROMA_THREAD_COUNT_ENV_VARS = [
+  'OMP_NUM_THREADS',
+  'OPENBLAS_NUM_THREADS',
+  'MKL_NUM_THREADS',
+  'VECLIB_MAXIMUM_THREADS',
+  'NUMEXPR_NUM_THREADS',
+  'RAYON_NUM_THREADS',
+  'ORT_INTRA_OP_NUM_THREADS',
+] as const;
 const CHROMA_PREWARM_TIMEOUT_BOUNDS = { min: 1, max: 600_000, integer: true } as const;
 const DEFAULT_CHROMA_MUTATION_TIMEOUT_MS = 600_000;
 const CHROMA_MUTATION_TIMEOUT_BOUNDS = { min: 60_000, max: 3_600_000 } as const;
@@ -332,6 +347,8 @@ export class ChromaMcpManager {
   private chromaCrashCount = 0;
   private chromaLastExit: ChromaCrashState['lastExit'] = null;
   private static niceAvailabilityProbe: ((env: Record<string, string>, platform: NodeJS.Platform) => boolean) | null = null;
+  private static tasksetAvailabilityProbe: ((env: Record<string, string>, platform: NodeJS.Platform) => boolean) | null = null;
+  private static allowedCpusProbe: (() => number[]) | null = null;
   private static uvxAvailabilityProbe: ((command: string, env: Record<string, string>, platform: NodeJS.Platform) => boolean) | null = null;
   private static exitObserveTimeoutMs = CHROMA_EXIT_OBSERVE_TIMEOUT_MS;
   private static prewarmReapTimeoutMs = CHROMA_PREWARM_REAP_TIMEOUT_MS;
@@ -467,7 +484,8 @@ export class ChromaMcpManager {
     }
 
     const commandArgs = this.buildCommandArgs(localChromaDataDir);
-    const uvxPreflightEnv = ChromaMcpManager.getUvxPreflightEnv();
+    const maxThreads = ChromaMcpManager.resolveMaxThreads();
+    const uvxPreflightEnv = ChromaMcpManager.getUvxPreflightEnv(maxThreads);
     getSupervisor().assertCanSpawn('chroma mcp');
 
     // Spawn uvx DIRECTLY (no `cmd.exe` shell wrapper). On Windows, routing through
@@ -486,9 +504,13 @@ export class ChromaMcpManager {
 
     const spawnEnvironment = this.getSpawnEnv(uvxPreflightEnv);
 
-    // One wrapped launch shared by the prewarm and the transport spawn.
+    // One wrapped launch shared by the prewarm and the transport spawn:
+    // Linux CPU-affinity cap (`taskset`) inside low-priority `nice` so both
+    // ONNX Runtime's Eigen thread pool and multiprocessing children stay bounded (#6365).
+    const tasksetLaunch = ChromaMcpManager.wrapWithTaskset(
+      uvxSpawnCommand, uvxSpawnArgs, spawnEnvironment, process.platform, maxThreads);
     const { command: launchCommand, args: launchArgs } = ChromaMcpManager.wrapWithNice(
-      uvxSpawnCommand, uvxSpawnArgs, spawnEnvironment, process.platform);
+      tasksetLaunch.command, tasksetLaunch.args, spawnEnvironment, process.platform);
 
     await this.prewarmChromaMcp(launchCommand, launchArgs, spawnEnvironment, connectionGeneration);
     this.assertConnectionNotCancelled(connectionGeneration);
@@ -2427,6 +2449,110 @@ export class ChromaMcpManager {
     return false;
   }
 
+  private static resolveMaxThreads(): number {
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    return resolveBoundedNumber(
+      'CHROMA_MCP', CHROMA_MAX_THREADS_SETTING, settings[CHROMA_MAX_THREADS_SETTING],
+      CHROMA_MAX_THREADS_BOUNDS, DEFAULT_CHROMA_MAX_THREADS);
+  }
+
+  /**
+   * Parses Linux procfs CPU list notation (e.g. "0-15", "0,2,4-7") into a
+   * sorted, deduplicated list of CPU IDs. Returns [] for empty or malformed input.
+   */
+  static parseLinuxCpuList(spec: string): number[] {
+    const trimmed = spec.trim();
+    if (!trimmed) return [];
+    const cpus = new Set<number>();
+    for (const part of trimmed.split(',')) {
+      const token = part.trim();
+      if (!token) return [];
+      const rangeMatch = /^(\d+)-(\d+)$/.exec(token);
+      if (rangeMatch) {
+        const start = Number(rangeMatch[1]);
+        const end = Number(rangeMatch[2]);
+        if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || end < start || end - start > 4096) {
+          return [];
+        }
+        for (let cpu = start; cpu <= end; cpu += 1) {
+          cpus.add(cpu);
+        }
+        continue;
+      }
+      if (!/^\d+$/.test(token)) return [];
+      const single = Number(token);
+      if (!Number.isSafeInteger(single)) return [];
+      cpus.add(single);
+    }
+    return [...cpus].sort((a, b) => a - b);
+  }
+
+  private static getAllowedLinuxCpus(): number[] {
+    if (ChromaMcpManager.allowedCpusProbe) {
+      return ChromaMcpManager.allowedCpusProbe();
+    }
+    try {
+      const status = fs.readFileSync('/proc/self/status', 'utf8');
+      const line = status.split('\n').find(entry => entry.startsWith('Cpus_allowed_list:'));
+      if (line) {
+        const parsed = ChromaMcpManager.parseLinuxCpuList(line.slice('Cpus_allowed_list:'.length));
+        if (parsed.length > 0) return parsed;
+      }
+    } catch {
+      // Fall back to os.cpus() when procfs is unavailable.
+    }
+    const count = os.cpus().length;
+    return Array.from({ length: count }, (_, idx) => idx);
+  }
+
+  private static isExecutableOnPath(binary: string, env: Record<string, string>): boolean {
+    const pathKey = Object.keys(env).find(k => k.toLowerCase() === 'path') ?? 'PATH';
+    return (env[pathKey] ?? '').split(':').filter(Boolean).some(dir => {
+      const candidate = path.join(dir, binary);
+      try {
+        if (!fs.statSync(candidate).isFile()) return false;
+        fs.accessSync(candidate, fs.constants.X_OK);
+        return true;
+      } catch {
+        // A missing or unreadable entry just means the binary is not in this dir, so false is safe.
+        return false;
+      }
+    });
+  }
+
+  /**
+   * Hard-caps chroma-mcp to at most `maxThreads` CPU cores on Linux via
+   * `taskset -c <cpus> <command> ...args`. Standard PyPI onnxruntime wheels
+   * use an internal Eigen thread pool that ignores OMP_NUM_THREADS and
+   * otherwise pins 4-5+ physical cores indefinitely in local mode (#6365).
+   * taskset execs the target in place, so the tracked pid is unchanged, and
+   * every thread and multiprocessing child inherits the affinity mask.
+   */
+  private static wrapWithTaskset(
+    command: string,
+    args: string[],
+    env: Record<string, string>,
+    platform: NodeJS.Platform,
+    maxThreads: number,
+  ): { command: string; args: string[] } {
+    if (platform !== 'linux' || maxThreads <= 0 || !ChromaMcpManager.isTasksetAvailable(env, platform)) {
+      return { command, args };
+    }
+    const allowedCpus = ChromaMcpManager.getAllowedLinuxCpus();
+    if (allowedCpus.length <= maxThreads) {
+      return { command, args };
+    }
+    const cpuList = allowedCpus.slice(0, maxThreads).join(',');
+    return { command: 'taskset', args: ['-c', cpuList, command, ...args] };
+  }
+
+  private static isTasksetAvailable(env: Record<string, string>, platform: NodeJS.Platform): boolean {
+    if (ChromaMcpManager.tasksetAvailabilityProbe) {
+      return ChromaMcpManager.tasksetAvailabilityProbe(env, platform);
+    }
+    return ChromaMcpManager.isExecutableOnPath('taskset', env);
+  }
+
   /**
    * Starts chroma-mcp at low priority: `nice -n N <command> ...args` on
    * non-Windows hosts where `nice` resolves on PATH. nice execs the target, so
@@ -2455,24 +2581,23 @@ export class ChromaMcpManager {
     if (ChromaMcpManager.niceAvailabilityProbe) {
       return ChromaMcpManager.niceAvailabilityProbe(env, platform);
     }
-    const pathKey = Object.keys(env).find(k => k.toLowerCase() === 'path') ?? 'PATH';
-    return (env[pathKey] ?? '').split(':').filter(Boolean).some(dir => {
-      const candidate = path.join(dir, 'nice');
-      try {
-        if (!fs.statSync(candidate).isFile()) return false;
-        fs.accessSync(candidate, fs.constants.X_OK);
-        return true;
-      } catch {
-        // A missing or unreadable entry just means nice is not in this dir, so false is safe.
-        return false;
-      }
-    });
+    return ChromaMcpManager.isExecutableOnPath('nice', env);
   }
 
   static setNiceAvailabilityProbeForTesting(
     probe: ((env: Record<string, string>, platform: NodeJS.Platform) => boolean) | null,
   ): void {
     ChromaMcpManager.niceAvailabilityProbe = probe;
+  }
+
+  static setTasksetAvailabilityProbeForTesting(
+    probe: ((env: Record<string, string>, platform: NodeJS.Platform) => boolean) | null,
+  ): void {
+    ChromaMcpManager.tasksetAvailabilityProbe = probe;
+  }
+
+  static setAllowedCpusProbeForTesting(probe: (() => number[]) | null): void {
+    ChromaMcpManager.allowedCpusProbe = probe;
   }
 
   static setUvxAvailabilityProbeForTesting(
@@ -2512,7 +2637,50 @@ export class ChromaMcpManager {
     }
   }
 
-  private static getUvxPreflightEnv(): Record<string, string> {
+  private static setDefaultEnv(
+    env: Record<string, string>,
+    name: string,
+    value: string,
+    platform: NodeJS.Platform = process.platform,
+  ): void {
+    if (platform === 'win32') {
+      const target = name.toLowerCase();
+      const existing = Object.keys(env).find(key => key.toLowerCase() === target);
+      if (existing && env[existing]) return;
+      if (existing) delete env[existing];
+      env[name] = value;
+      return;
+    }
+    if (!env[name]) {
+      env[name] = value;
+    }
+  }
+
+  /**
+   * Caps OpenMP, BLAS, MKL, Accelerate, NumExpr, Rust Rayon (chromadb +
+   * tokenizers), and ONNX Runtime thread pools on the spawned chroma-mcp
+   * sidecar, and disables OpenMP busy-spinning and tokenizer parallelism so
+   * local mode cannot saturate all host cores (#6365). Explicit user values
+   * already present in the environment win.
+   */
+  private static applyChromaThreadLimits(
+    env: Record<string, string>,
+    maxThreads: number,
+    platform: NodeJS.Platform = process.platform,
+  ): void {
+    if (maxThreads <= 0) return;
+    const threads = String(maxThreads);
+    for (const key of CHROMA_THREAD_COUNT_ENV_VARS) {
+      ChromaMcpManager.setDefaultEnv(env, key, threads, platform);
+    }
+    ChromaMcpManager.setDefaultEnv(env, 'OMP_WAIT_POLICY', 'PASSIVE', platform);
+    ChromaMcpManager.setDefaultEnv(env, 'ORT_INTER_OP_NUM_THREADS', '1', platform);
+    ChromaMcpManager.setDefaultEnv(env, 'TOKENIZERS_PARALLELISM', 'false', platform);
+  }
+
+  private static getUvxPreflightEnv(
+    maxThreads: number = ChromaMcpManager.resolveMaxThreads(),
+  ): Record<string, string> {
     const baseEnv: Record<string, string> = {};
     for (const [key, value] of Object.entries(sanitizeEnv(process.env))) {
       if (value !== undefined) {
@@ -2542,6 +2710,10 @@ export class ChromaMcpManager {
         && !Object.keys(baseEnv).some(key => key.toLowerCase() === 'uv_link_mode')) {
       baseEnv.UV_LINK_MODE = 'copy';
     }
+
+    // Cap sidecar thread pools (OpenMP/BLAS/Rayon/tokenizers/ORT) and disable
+    // OpenMP active spin-wait so local mode does not pin 4-5+ CPU cores (#6365).
+    ChromaMcpManager.applyChromaThreadLimits(baseEnv, maxThreads, process.platform);
 
     // Disable Chroma's anonymous telemetry — it issues background HTTP from
     // the embedding subprocess on every collection touch.
