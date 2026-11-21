@@ -363,6 +363,10 @@ export async function optimizeObservationFields(
     toolOutput: stripImagePayloadsFromField(fields.toolOutput),
   };
 
+  // Concurrent, deliberately: the session abort must cancel both live
+  // compression requests at once, and each compression rides its own
+  // standalone SDK child that does not replace its sibling (see
+  // ClaudeProvider's spawn factory wiring).
   const [toolInput, toolOutput] = await Promise.all([
     optimizeField(stripped.toolInput, compress, { ...context, field: 'parameters' }, maxChars, timeoutMs,
       contextWindowTokens, maxOutputTokens),

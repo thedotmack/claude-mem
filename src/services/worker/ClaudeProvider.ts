@@ -18,6 +18,7 @@ import { ModeManager } from '../domain/ModeManager.js';
 import { processAgentResponse, snapshotResponseContext, takeObserverSchemaReminder, type WorkerRef } from './agents/index.js';
 import {
   createSdkSpawnFactory,
+  createStandaloneSdkSpawnFactory,
   getSdkProcessForSession,
   ensureSdkProcessExit,
   waitForSlot,
@@ -69,6 +70,18 @@ import { isObserverCaptureEnabled } from '../../shared/observer-capture.js';
 let effortHintLogged = false;
 export function __resetEffortHintLatchForTesting(): void {
   effortHintLogged = false;
+}
+
+/**
+ * The registry session id a standalone observer SDK call (field compression,
+ * Telegram wrap-up) is registered under: the session id negated. The child is
+ * a STANDALONE_SDK_PROCESS_TYPE record, which is what keeps it from stopping,
+ * or being stopped by, the generation and the session's other standalone
+ * calls. The negated id gives it its own OBSERVER_SESSIONS_DIR/<id> working
+ * directory and keeps it out of lookups by the real session id.
+ */
+export function standaloneObserverRegistrySessionId(sessionDbId: number): number {
+  return -Math.abs(sessionDbId);
 }
 
 /**
@@ -1156,6 +1169,10 @@ export class ClaudeProvider {
                 ? 'omit'
                 : SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_OBSERVER_THINKING,
             ),
+            // Register the child so the shutdown cascade reaches it. A
+            // standalone record takes no slot and stops no other SDK child:
+            // the two field compressions of one observation run at once.
+            spawnClaudeCodeProcess: createStandaloneSdkSpawnFactory(standaloneObserverRegistrySessionId(context.sessionDbId)),
           }),
           maxTurns: 1,
         },
