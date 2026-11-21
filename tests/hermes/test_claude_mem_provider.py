@@ -623,6 +623,11 @@ class SettingsTest(unittest.TestCase):
         self.assertEqual(config.worker_base, "http://127.0.0.1:39123")
         self.assertFalse(config.server)
 
+    def test_worker_port_saved_as_a_json_number(self):
+        directory = self.write_settings({"CLAUDE_MEM_WORKER_PORT": 39123})
+        config = client_module.Config.resolve({"CLAUDE_MEM_DATA_DIR": directory})
+        self.assertEqual(config.worker_base, "http://127.0.0.1:39123")
+
     def test_environment_wins_over_settings(self):
         directory = self.write_settings({"CLAUDE_MEM_WORKER_PORT": "39123", "CLAUDE_MEM_WORKER_HOST": "::1"})
         config = client_module.Config.resolve({"CLAUDE_MEM_DATA_DIR": directory, "CLAUDE_MEM_WORKER_PORT": "39999"})

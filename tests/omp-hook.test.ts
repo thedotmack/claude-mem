@@ -176,6 +176,19 @@ describe('OMP Claude Mem hook', () => {
     expect(requests[0]?.url.host).toBe('127.0.0.2:45678');
   });
 
+  it('reads a numeric worker port from settings.json', async () => {
+    writeFileSync(join(dataDir, 'settings.json'), JSON.stringify({ CLAUDE_MEM_WORKER_PORT: 45678 }));
+    const requests: CapturedRequest[] = [];
+    installFetchCapture(requests);
+    const handlers = registerHook();
+
+    await handlers.session_start?.();
+    await handlers.before_agent_start?.({ prompt: 'p' }, { cwd: '/tmp/omp-port' });
+    await drainMicrotasks();
+
+    expect(requests[0]?.url.host).toBe('127.0.0.1:45678');
+  });
+
   it('reads settings nested under env, and lets the environment win', async () => {
     writeFileSync(join(dataDir, 'settings.json'), JSON.stringify({
       env: { CLAUDE_MEM_WORKER_PORT: '45679' },

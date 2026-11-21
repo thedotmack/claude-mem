@@ -25,6 +25,8 @@ import type { ActiveSession } from '../../src/services/worker-types.js';
 import { processAgentResponse } from '../../src/services/worker/agents/ResponseProcessor.js';
 import { ModeManager } from '../../src/services/domain/ModeManager.js';
 import { sessionDbWithoutMedia } from '../fixtures/worker/session-db-without-media.js';
+import { readObserverHealth } from '../../src/shared/observer-health.js';
+import { observerHealthWarning } from '../../src/services/context/ContextBuilder.js';
 
 const config = { apiKey: 'native', model: '', reasoningEffort: null, codexPath: 'codex' };
 
@@ -181,6 +183,23 @@ describe('Codex provider integration', () => {
       expect(getQuotaCooldown('codex')).toBeNull();
     });
   }
+
+  it('drops the Claude pause notice once Codex stores memory after CLAUDE_MEM_PROVIDER was switched to codex (#6372)', async () => {
+    process.env.CLAUDE_MEM_PROVIDER = 'claude';
+    recordQuotaExhausted('claude', 'weekly reserve guard', 'seven_day', undefined, undefined, 'subscription', {
+      kind: 'limit_guard', window: 'seven_day', usagePercent: 93, thresholdPercent: 93,
+    });
+    expect(observerHealthWarning()).toContain('paused saving memories');
+
+    process.env.CLAUDE_MEM_PROVIDER = 'codex';
+    const h = storageHarness();
+    await h.process(observation, { ...session(), currentProvider: 'codex' });
+    expect(h.store).toHaveBeenCalledTimes(1);
+    expect(readObserverHealth()?.quotaCooldown?.notice?.mainProvider).toBe('codex');
+    expect(observerHealthWarning()).toBe('');
+    // Only the notice is restated: the Claude breaker still holds Claude.
+    expect(getQuotaCooldown('claude')).not.toBeNull();
+  });
 
   for (const currentProvider of ['claude', 'gemini', 'openrouter', 'cmem-gateway'] as const) {
     it(`still clears ${currentProvider} cooldown after valid observation storage`, async () => {
