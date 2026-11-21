@@ -81,16 +81,181 @@ async function findClaudeExecutableForKnowledge(): Promise<string> {
 /** Per-call options. `abortController` is passed to the Agent SDK's `Options.abortController` (sdk.d.ts). */
 export type { KnowledgeAgentCallOptions } from './types.js';
 
+/** Max silence between Agent SDK messages before a knowledge call is aborted as stalled. */
+export const DEFAULT_KNOWLEDGE_STREAM_IDLE_TIMEOUT_MS = 120_000;
+
+/** Hard wall-clock ceiling for an entire knowledge prime() or query() (including auto-reprime). */
+export const DEFAULT_KNOWLEDGE_ABSOLUTE_CAP_MS = 10 * 60_000;
+
+export interface KnowledgeAgentOptions {
+  /** Max silence between SDK messages before aborting the stream and failing with 504. */
+  streamIdleTimeoutMs?: number;
+  /** Hard wall-clock ceiling for an entire prime() or query() (including auto-reprime). */
+  absoluteCapMs?: number;
+}
+
+function createKnowledgeTimeoutError(action: 'prime' | 'query', corpusName: string, detail: string): AppError {
+  const code = action === 'prime' ? 'KNOWLEDGE_PRIME_TIMEOUT' : 'KNOWLEDGE_QUERY_TIMEOUT';
+  return new AppError(`Knowledge ${action} timed out for corpus "${corpusName}" (${detail})`, 504, code);
+}
+
+function isKnowledgeTimeoutError(error: unknown): boolean {
+  return error instanceof AppError && error.statusCode === 504;
+}
+
+interface BoundedStreamOptions {
+  action: 'prime' | 'query';
+  corpusName: string;
+  sdkAbortController: AbortController;
+  callerSignal?: AbortSignal;
+  idleTimeoutMs: number;
+  deadlineAt: number;
+}
+
+/**
+ * Consume an Agent SDK async iterable under both an idle watchdog (reset on
+ * every message) and an absolute wall-clock deadline. On timeout or caller
+ * abort, aborts `sdkAbortController` so the SDK terminates its Claude CLI
+ * child process and settles immediately even if the iterator never yields.
+ */
+async function consumeBoundedSdkStream(
+  stream: AsyncIterable<any>,
+  options: BoundedStreamOptions,
+  onMessage: (msg: any) => void
+): Promise<void> {
+  const { action, corpusName, sdkAbortController, callerSignal, idleTimeoutMs, deadlineAt } = options;
+
+  callerSignal?.throwIfAborted();
+  const remainingCapMs = deadlineAt - Date.now();
+  if (remainingCapMs <= 0) {
+    const expired = createKnowledgeTimeoutError(action, corpusName, 'exceeded deadline');
+    sdkAbortController.abort(expired);
+    throw expired;
+  }
+
+  let disposed = false;
+  let timeoutError: AppError | null = null;
+  let idleTimer: ReturnType<typeof setTimeout> | null = null;
+  let capTimer: ReturnType<typeof setTimeout> | null = null;
+  let rejectAbort!: (reason: unknown) => void;
+
+  const abortPromise = new Promise<never>((_resolve, reject) => {
+    rejectAbort = reject;
+  });
+  // Prevent an unhandled rejection if the stream finishes or throws before abortPromise is awaited.
+  abortPromise.catch(() => {});
+
+  const clearIdleTimer = (): void => {
+    if (idleTimer !== null) {
+      clearTimeout(idleTimer);
+      idleTimer = null;
+    }
+  };
+
+  const tripTimeout = (detail: string): void => {
+    if (disposed || timeoutError) return;
+    disposed = true;
+    clearIdleTimer();
+    if (capTimer !== null) {
+      clearTimeout(capTimer);
+      capTimer = null;
+    }
+    timeoutError = createKnowledgeTimeoutError(action, corpusName, detail);
+    if (!sdkAbortController.signal.aborted) {
+      sdkAbortController.abort(timeoutError);
+    }
+    rejectAbort(timeoutError);
+  };
+
+  const onCallerAbort = (): void => {
+    if (disposed) return;
+    disposed = true;
+    clearIdleTimer();
+    if (capTimer !== null) {
+      clearTimeout(capTimer);
+      capTimer = null;
+    }
+    const reason = callerSignal?.reason ?? new Error(`Knowledge ${action} aborted`);
+    if (!sdkAbortController.signal.aborted) {
+      sdkAbortController.abort(reason);
+    }
+    rejectAbort(reason);
+  };
+
+  const armIdleTimer = (): void => {
+    if (disposed) return;
+    clearIdleTimer();
+    idleTimer = setTimeout(() => tripTimeout(`no SDK message for ${idleTimeoutMs}ms`), idleTimeoutMs);
+  };
+
+  callerSignal?.addEventListener('abort', onCallerAbort, { once: true });
+  // Watch the combined signal as well in case callerSignal aborted between the check and addEventListener.
+  const combinedSignal = callerSignal
+    ? AbortSignal.any([callerSignal, sdkAbortController.signal])
+    : sdkAbortController.signal;
+  if (combinedSignal.aborted) {
+    onCallerAbort();
+  }
+
+  capTimer = setTimeout(() => tripTimeout(`exceeded ${remainingCapMs}ms deadline`), remainingCapMs);
+
+  const iterator = stream[Symbol.asyncIterator]();
+  let iteratorDone = false;
+  try {
+    while (true) {
+      armIdleTimer();
+      const nextPromise = iterator.next();
+      // Prevent an unhandled rejection if a stalled iterator rejects after we already timed out or aborted.
+      nextPromise.catch(() => {});
+      const step = await Promise.race([nextPromise, abortPromise]);
+      clearIdleTimer();
+      if (step.done) {
+        iteratorDone = true;
+        break;
+      }
+      onMessage(step.value);
+    }
+  } catch (error) {
+    if (timeoutError) throw timeoutError;
+    throw error;
+  } finally {
+    disposed = true;
+    clearIdleTimer();
+    if (capTimer !== null) {
+      clearTimeout(capTimer);
+      capTimer = null;
+    }
+    callerSignal?.removeEventListener('abort', onCallerAbort);
+    if (!iteratorDone && typeof iterator.return === 'function') {
+      // Release generator resources without blocking on a stuck iterator.
+      void Promise.resolve(iterator.return()).catch(() => {});
+    }
+  }
+}
+
 export class KnowledgeAgent {
   private renderer: CorpusRenderer;
+  private readonly streamIdleTimeoutMs: number;
+  private readonly absoluteCapMs: number;
 
   constructor(
-    private corpusStore: CorpusStore
+    private corpusStore: CorpusStore,
+    options: KnowledgeAgentOptions = {}
   ) {
     this.renderer = new CorpusRenderer();
+    this.streamIdleTimeoutMs = options.streamIdleTimeoutMs ?? DEFAULT_KNOWLEDGE_STREAM_IDLE_TIMEOUT_MS;
+    this.absoluteCapMs = options.absoluteCapMs ?? DEFAULT_KNOWLEDGE_ABSOLUTE_CAP_MS;
   }
 
   async prime(corpus: CorpusFile, callOptions: KnowledgeAgentCallOptions = {}): Promise<string> {
+    return this.primeWithDeadline(corpus, callOptions, Date.now() + this.absoluteCapMs);
+  }
+
+  private async primeWithDeadline(
+    corpus: CorpusFile,
+    callOptions: KnowledgeAgentCallOptions,
+    deadlineAt: number
+  ): Promise<string> {
     const renderedCorpus = this.renderer.renderCorpus(corpus);
 
     const primePrompt = [
@@ -103,8 +268,16 @@ export class KnowledgeAgent {
       'Acknowledge what you\'ve received. Summarize the key themes and topics you can answer questions about.'
     ].join('\n');
 
+    callOptions.abortController?.signal.throwIfAborted();
+    if (deadlineAt - Date.now() <= 0) {
+      throw createKnowledgeTimeoutError('prime', corpus.name, 'exceeded deadline');
+    }
+
     const claudePath = await findClaudeExecutableForKnowledge();
     const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
+
+    callOptions.abortController?.signal.throwIfAborted();
+    const sdkAbortController = new AbortController();
 
     const queryResult = query({
       prompt: primePrompt,
@@ -114,23 +287,34 @@ export class KnowledgeAgent {
         model: this.getModelId(),
         env: isolatedEnv,
         pathToClaudeCodeExecutable: claudePath,
-        abortController: callOptions.abortController,
+        abortController: sdkAbortController,
       }),
     });
 
     let sessionId: string | undefined;
     let successfulResult = false;
     try {
-      for await (const msg of queryResult) {
-        if (msg.session_id) sessionId = msg.session_id;
-        if (msg.type === 'result') {
-          successfulResult = msg.is_error !== true && msg.subtype === 'success';
-          if (!successfulResult) throw errorFromUnsuccessfulResult('prime', msg);
-          logger.info('WORKER', `Knowledge agent primed for corpus "${corpus.name}"`);
+      await consumeBoundedSdkStream(
+        queryResult,
+        {
+          action: 'prime',
+          corpusName: corpus.name,
+          sdkAbortController,
+          callerSignal: callOptions.abortController?.signal,
+          idleTimeoutMs: this.streamIdleTimeoutMs,
+          deadlineAt,
+        },
+        (msg) => {
+          if (msg.session_id) sessionId = msg.session_id;
+          if (msg.type === 'result') {
+            successfulResult = msg.is_error !== true && msg.subtype === 'success';
+            if (!successfulResult) throw errorFromUnsuccessfulResult('prime', msg);
+            logger.info('WORKER', `Knowledge agent primed for corpus "${corpus.name}"`);
+          }
         }
-      }
+      );
     } catch (error) {
-      if (callOptions.abortController?.signal.aborted) throw error;
+      if (callOptions.abortController?.signal.aborted || isKnowledgeTimeoutError(error)) throw error;
       if (sessionId && successfulResult) {
         if (error instanceof Error) {
           logger.debug('WORKER', `SDK process exited after priming corpus "${corpus.name}" — session captured, continuing`, {}, error);
@@ -163,8 +347,10 @@ export class KnowledgeAgent {
       throw new AppError(`Corpus "${corpus.name}" has no session — call prime first`, 409, 'CORPUS_NOT_PRIMED');
     }
 
+    const deadlineAt = Date.now() + this.absoluteCapMs;
+
     try {
-      const result = await this.executeQuery(corpus, question, callOptions);
+      const result = await this.executeQuery(corpus, question, callOptions, deadlineAt);
       // The SDK may end quietly after cancellation, including after a success
       // result. Check at the commit boundary before changing the saved session.
       callOptions.abortController?.signal.throwIfAborted();
@@ -187,12 +373,12 @@ export class KnowledgeAgent {
         throw error;
       }
       logger.info('WORKER', `Session expired for corpus "${corpus.name}", auto-repriming...`);
-      await this.prime(corpus, callOptions);
+      await this.primeWithDeadline(corpus, callOptions, deadlineAt);
       const refreshedCorpus = this.corpusStore.read(corpus.name);
       if (!refreshedCorpus || !refreshedCorpus.session_id) {
         throw new Error(`Auto-reprime failed for corpus "${corpus.name}"`);
       }
-      const result = await this.executeQuery(refreshedCorpus, question, callOptions);
+      const result = await this.executeQuery(refreshedCorpus, question, callOptions, deadlineAt);
       callOptions.abortController?.signal.throwIfAborted();
       if (result.session_id !== refreshedCorpus.session_id) {
         refreshedCorpus.session_id = result.session_id;
@@ -207,9 +393,22 @@ export class KnowledgeAgent {
     return this.prime(corpus, callOptions);
   }
 
-  private async executeQuery(corpus: CorpusFile, question: string, callOptions: KnowledgeAgentCallOptions): Promise<QueryResult> {
+  private async executeQuery(
+    corpus: CorpusFile,
+    question: string,
+    callOptions: KnowledgeAgentCallOptions,
+    deadlineAt: number
+  ): Promise<QueryResult> {
+    callOptions.abortController?.signal.throwIfAborted();
+    if (deadlineAt - Date.now() <= 0) {
+      throw createKnowledgeTimeoutError('query', corpus.name, 'exceeded deadline');
+    }
+
     const claudePath = await findClaudeExecutableForKnowledge();
     const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
+
+    callOptions.abortController?.signal.throwIfAborted();
+    const sdkAbortController = new AbortController();
 
     const queryResult = query({
       prompt: question,
@@ -220,7 +419,7 @@ export class KnowledgeAgent {
         env: isolatedEnv,
         pathToClaudeCodeExecutable: claudePath,
         resume: corpus.session_id!,
-        abortController: callOptions.abortController,
+        abortController: sdkAbortController,
       }),
     });
 
@@ -228,24 +427,35 @@ export class KnowledgeAgent {
     let newSessionId = corpus.session_id!;
     let successfulResult = false;
     try {
-      for await (const msg of queryResult) {
-        if (msg.session_id) newSessionId = msg.session_id;
-        if (msg.type === 'result') {
-          successfulResult = msg.is_error !== true && msg.subtype === 'success';
-          if (!successfulResult) throw errorFromUnsuccessfulResult('query', msg);
+      await consumeBoundedSdkStream(
+        queryResult,
+        {
+          action: 'query',
+          corpusName: corpus.name,
+          sdkAbortController,
+          callerSignal: callOptions.abortController?.signal,
+          idleTimeoutMs: this.streamIdleTimeoutMs,
+          deadlineAt,
+        },
+        (msg) => {
+          if (msg.session_id) newSessionId = msg.session_id;
+          if (msg.type === 'result') {
+            successfulResult = msg.is_error !== true && msg.subtype === 'success';
+            if (!successfulResult) throw errorFromUnsuccessfulResult('query', msg);
+          }
+          if (msg.type === 'assistant') {
+            const text = msg.message.content
+              .filter((b: any) => b.type === 'text')
+              .map((b: any) => b.text)
+              .join('');
+            // The SDK emits one assistant message per completed content block.
+            // Later text extends the answer; non-text blocks do not erase it.
+            answer += text;
+          }
         }
-        if (msg.type === 'assistant') {
-          const text = msg.message.content
-            .filter((b: any) => b.type === 'text')
-            .map((b: any) => b.text)
-            .join('');
-          // The SDK emits one assistant message per completed content block.
-          // Later text extends the answer; non-text blocks do not erase it.
-          answer += text;
-        }
-      }
+      );
     } catch (error) {
-      if (callOptions.abortController?.signal.aborted) throw error;
+      if (callOptions.abortController?.signal.aborted || isKnowledgeTimeoutError(error)) throw error;
       if (answer && successfulResult) {
         if (error instanceof Error) {
           logger.debug('WORKER', `SDK process exited after query — answer captured, continuing`, {}, error);
