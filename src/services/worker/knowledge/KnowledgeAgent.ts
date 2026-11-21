@@ -81,15 +81,21 @@ async function findClaudeExecutableForKnowledge(): Promise<string> {
 /** Per-call options. `abortController` is passed to the Agent SDK's `Options.abortController` (sdk.d.ts). */
 export type { KnowledgeAgentCallOptions } from './types.js';
 
-/** Max silence between Agent SDK messages before a knowledge call is aborted as stalled. */
-export const DEFAULT_KNOWLEDGE_STREAM_IDLE_TIMEOUT_MS = 120_000;
-
-/** Hard wall-clock ceiling for an entire knowledge prime() or query() (including auto-reprime). */
+/**
+ * Hard wall-clock ceiling for an entire knowledge prime() or query(), including
+ * setup and the auto-reprime retry. It sits below the corpus route deadline and
+ * the MCP client cap (both CORPUS_STREAM_ABSOLUTE_CAP_MS, 15 min), so the typed
+ * KNOWLEDGE_*_TIMEOUT reaches the client before the generic route 504 does.
+ *
+ * There is deliberately no idle watchdog between SDK messages: without
+ * `includePartialMessages` the SDK emits one message per completed content
+ * block, so a legitimate prime of a large corpus is silent for the whole
+ * prefill and summary. No measured bound for that silence exists, and an
+ * unmeasured one would kill real work.
+ */
 export const DEFAULT_KNOWLEDGE_ABSOLUTE_CAP_MS = 10 * 60_000;
 
 export interface KnowledgeAgentOptions {
-  /** Max silence between SDK messages before aborting the stream and failing with 504. */
-  streamIdleTimeoutMs?: number;
   /** Hard wall-clock ceiling for an entire prime() or query() (including auto-reprime). */
   absoluteCapMs?: number;
 }
@@ -103,27 +109,66 @@ function isKnowledgeTimeoutError(error: unknown): boolean {
   return error instanceof AppError && error.statusCode === 504;
 }
 
+/**
+ * Await one setup step (CLI lookup, OAuth refresh) inside the call's deadline
+ * and the caller's abort. The step itself cannot be cancelled, but the call
+ * settles on time, so the corpus route's lock is not held by a stalled
+ * `which`/`where.exe` or token refresh.
+ */
+async function awaitSetupWithinDeadline<T>(
+  setup: Promise<T>,
+  action: 'prime' | 'query',
+  corpusName: string,
+  deadlineAt: number,
+  callerSignal: AbortSignal | undefined
+): Promise<T> {
+  callerSignal?.throwIfAborted();
+  const remainingMs = deadlineAt - Date.now();
+  if (remainingMs <= 0) throw createKnowledgeTimeoutError(action, corpusName, 'exceeded deadline during setup');
+  // Keep a late rejection from a setup step we stopped waiting on from going unhandled.
+  setup.catch(() => {});
+  let deadlineTimer: ReturnType<typeof setTimeout> | null = null;
+  let onCallerAbort: (() => void) | null = null;
+  try {
+    return await Promise.race([
+      setup,
+      new Promise<never>((_resolve, reject) => {
+        deadlineTimer = setTimeout(
+          () => reject(createKnowledgeTimeoutError(action, corpusName, `exceeded ${remainingMs}ms deadline during setup`)),
+          remainingMs
+        );
+        if (callerSignal) {
+          onCallerAbort = () => reject(callerSignal.reason);
+          callerSignal.addEventListener('abort', onCallerAbort, { once: true });
+        }
+      }),
+    ]);
+  } finally {
+    if (deadlineTimer !== null) clearTimeout(deadlineTimer);
+    if (onCallerAbort) callerSignal?.removeEventListener('abort', onCallerAbort);
+  }
+}
+
 interface BoundedStreamOptions {
   action: 'prime' | 'query';
   corpusName: string;
   sdkAbortController: AbortController;
   callerSignal?: AbortSignal;
-  idleTimeoutMs: number;
   deadlineAt: number;
 }
 
 /**
- * Consume an Agent SDK async iterable under both an idle watchdog (reset on
- * every message) and an absolute wall-clock deadline. On timeout or caller
- * abort, aborts `sdkAbortController` so the SDK terminates its Claude CLI
- * child process and settles immediately even if the iterator never yields.
+ * Consume an Agent SDK async iterable under an absolute wall-clock deadline.
+ * On timeout or caller abort, aborts `sdkAbortController` so the SDK
+ * terminates its Claude CLI child process and settles immediately even if the
+ * iterator never yields.
  */
 async function consumeBoundedSdkStream(
   stream: AsyncIterable<any>,
   options: BoundedStreamOptions,
   onMessage: (msg: any) => void
 ): Promise<void> {
-  const { action, corpusName, sdkAbortController, callerSignal, idleTimeoutMs, deadlineAt } = options;
+  const { action, corpusName, sdkAbortController, callerSignal, deadlineAt } = options;
 
   callerSignal?.throwIfAborted();
   const remainingCapMs = deadlineAt - Date.now();
@@ -135,7 +180,6 @@ async function consumeBoundedSdkStream(
 
   let disposed = false;
   let timeoutError: AppError | null = null;
-  let idleTimer: ReturnType<typeof setTimeout> | null = null;
   let capTimer: ReturnType<typeof setTimeout> | null = null;
   let rejectAbort!: (reason: unknown) => void;
 
@@ -145,17 +189,9 @@ async function consumeBoundedSdkStream(
   // Prevent an unhandled rejection if the stream finishes or throws before abortPromise is awaited.
   abortPromise.catch(() => {});
 
-  const clearIdleTimer = (): void => {
-    if (idleTimer !== null) {
-      clearTimeout(idleTimer);
-      idleTimer = null;
-    }
-  };
-
   const tripTimeout = (detail: string): void => {
     if (disposed || timeoutError) return;
     disposed = true;
-    clearIdleTimer();
     if (capTimer !== null) {
       clearTimeout(capTimer);
       capTimer = null;
@@ -170,7 +206,6 @@ async function consumeBoundedSdkStream(
   const onCallerAbort = (): void => {
     if (disposed) return;
     disposed = true;
-    clearIdleTimer();
     if (capTimer !== null) {
       clearTimeout(capTimer);
       capTimer = null;
@@ -180,12 +215,6 @@ async function consumeBoundedSdkStream(
       sdkAbortController.abort(reason);
     }
     rejectAbort(reason);
-  };
-
-  const armIdleTimer = (): void => {
-    if (disposed) return;
-    clearIdleTimer();
-    idleTimer = setTimeout(() => tripTimeout(`no SDK message for ${idleTimeoutMs}ms`), idleTimeoutMs);
   };
 
   callerSignal?.addEventListener('abort', onCallerAbort, { once: true });
@@ -203,12 +232,10 @@ async function consumeBoundedSdkStream(
   let iteratorDone = false;
   try {
     while (true) {
-      armIdleTimer();
       const nextPromise = iterator.next();
       // Prevent an unhandled rejection if a stalled iterator rejects after we already timed out or aborted.
       nextPromise.catch(() => {});
       const step = await Promise.race([nextPromise, abortPromise]);
-      clearIdleTimer();
       if (step.done) {
         iteratorDone = true;
         break;
@@ -220,7 +247,6 @@ async function consumeBoundedSdkStream(
     throw error;
   } finally {
     disposed = true;
-    clearIdleTimer();
     if (capTimer !== null) {
       clearTimeout(capTimer);
       capTimer = null;
@@ -235,7 +261,6 @@ async function consumeBoundedSdkStream(
 
 export class KnowledgeAgent {
   private renderer: CorpusRenderer;
-  private readonly streamIdleTimeoutMs: number;
   private readonly absoluteCapMs: number;
 
   constructor(
@@ -243,7 +268,6 @@ export class KnowledgeAgent {
     options: KnowledgeAgentOptions = {}
   ) {
     this.renderer = new CorpusRenderer();
-    this.streamIdleTimeoutMs = options.streamIdleTimeoutMs ?? DEFAULT_KNOWLEDGE_STREAM_IDLE_TIMEOUT_MS;
     this.absoluteCapMs = options.absoluteCapMs ?? DEFAULT_KNOWLEDGE_ABSOLUTE_CAP_MS;
   }
 
@@ -273,8 +297,9 @@ export class KnowledgeAgent {
       throw createKnowledgeTimeoutError('prime', corpus.name, 'exceeded deadline');
     }
 
-    const claudePath = await findClaudeExecutableForKnowledge();
-    const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
+    const callerSignal = callOptions.abortController?.signal;
+    const claudePath = await awaitSetupWithinDeadline(findClaudeExecutableForKnowledge(), 'prime', corpus.name, deadlineAt, callerSignal);
+    const isolatedEnv = sanitizeEnv(await awaitSetupWithinDeadline(buildIsolatedEnvWithFreshOAuth(), 'prime', corpus.name, deadlineAt, callerSignal));
 
     callOptions.abortController?.signal.throwIfAborted();
     const sdkAbortController = new AbortController();
@@ -301,7 +326,6 @@ export class KnowledgeAgent {
           corpusName: corpus.name,
           sdkAbortController,
           callerSignal: callOptions.abortController?.signal,
-          idleTimeoutMs: this.streamIdleTimeoutMs,
           deadlineAt,
         },
         (msg) => {
@@ -404,8 +428,9 @@ export class KnowledgeAgent {
       throw createKnowledgeTimeoutError('query', corpus.name, 'exceeded deadline');
     }
 
-    const claudePath = await findClaudeExecutableForKnowledge();
-    const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
+    const callerSignal = callOptions.abortController?.signal;
+    const claudePath = await awaitSetupWithinDeadline(findClaudeExecutableForKnowledge(), 'query', corpus.name, deadlineAt, callerSignal);
+    const isolatedEnv = sanitizeEnv(await awaitSetupWithinDeadline(buildIsolatedEnvWithFreshOAuth(), 'query', corpus.name, deadlineAt, callerSignal));
 
     callOptions.abortController?.signal.throwIfAborted();
     const sdkAbortController = new AbortController();
@@ -434,7 +459,6 @@ export class KnowledgeAgent {
           corpusName: corpus.name,
           sdkAbortController,
           callerSignal: callOptions.abortController?.signal,
-          idleTimeoutMs: this.streamIdleTimeoutMs,
           deadlineAt,
         },
         (msg) => {

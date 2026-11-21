@@ -33,23 +33,19 @@ const fixture = String.raw`
         if (scenario === 'query-stall' || scenario === 'prime-stall' || scenario === 'caller-abort-stall') {
           await new Promise(() => {});
         }
-        if (scenario === 'query-active-past-idle') {
-          // Yields messages every 25ms (under 70ms idle bound), spanning > 100ms total.
+        if (scenario === 'query-silent-under-cap') {
+          // A large prime or answer is one content block: the SDK says nothing
+          // between init and the finished block. Stay silent for most of the
+          // 160ms cap, then answer; nothing may kill this as stalled.
           yield { type: 'system', subtype: 'init', session_id: 'active-session' };
-          await sleep(25);
-          yield { type: 'system', subtype: 'status', session_id: 'active-session' };
-          await sleep(25);
-          yield { type: 'system', subtype: 'status', session_id: 'active-session' };
-          await sleep(25);
-          yield { type: 'system', subtype: 'status', session_id: 'active-session' };
-          await sleep(25);
+          await sleep(110);
           yield { type: 'assistant', message: { content: [{ type: 'text', text: 'Paris' }] } };
           yield { type: 'result', subtype: 'success', is_error: false, session_id: 'active-session', result: 'done' };
           return;
         }
         if (scenario === 'query-chatty-past-cap') {
-          // Keeps yielding every 20ms so the 70ms idle watchdog keeps resetting,
-          // testing that the 140ms absolute cap still terminates the call.
+          // Keeps yielding every 20ms and never finishes; the 160ms absolute
+          // cap must still terminate the call.
           while (true) {
             yield { type: 'system', subtype: 'status', session_id: 'old-session' };
             await sleep(20);
@@ -95,30 +91,35 @@ const fixture = String.raw`
   }
 
   mock.module('@anthropic-ai/claude-agent-sdk', () => ({ query: sdkQuery }));
+  // A setup step that never settles: a hung which/where.exe or OAuth refresh.
   mock.module('./src/shared/EnvManager.ts', () => ({
-    buildIsolatedEnvWithFreshOAuth: async () => ({ PATH: process.env.PATH }),
+    buildIsolatedEnvWithFreshOAuth: () => scenario === 'setup-oauth-stall'
+      ? new Promise(() => {})
+      : Promise.resolve({ PATH: process.env.PATH }),
   }));
   mock.module('./src/shared/find-claude-executable.ts', () => ({
-    findClaudeExecutable: () => '/fixture/claude',
+    findClaudeExecutable: () => scenario === 'setup-executable-stall' || scenario === 'setup-caller-abort'
+      ? new Promise(() => {})
+      : Promise.resolve('/fixture/claude'),
     isClaudeExecutableUnspawnable: () => false,
   }));
 
   const { KnowledgeAgent } = await import('./src/services/worker/knowledge/KnowledgeAgent.ts');
   const { CorpusStore } = await import('./src/services/worker/knowledge/CorpusStore.ts');
   const store = new CorpusStore();
-  const agent = new KnowledgeAgent(store, {
-    streamIdleTimeoutMs: 70,
-    absoluteCapMs: 160,
-  });
+  const agent = new KnowledgeAgent(store, { absoluteCapMs: 160 });
 
   const scenarios = [
     'query-stall',
     'prime-stall',
-    'query-active-past-idle',
+    'query-silent-under-cap',
     'query-chatty-past-cap',
     'reprime-stall',
     'reprime-retry-stall',
     'caller-abort-stall',
+    'setup-executable-stall',
+    'setup-oauth-stall',
+    'setup-caller-abort',
   ];
 
   const outcomes = [];
@@ -133,14 +134,14 @@ const fixture = String.raw`
       filter: {},
       stats: { observation_count: 0, token_estimate: 0, date_range: { earliest: '', latest: '' }, type_breakdown: {} },
       system_prompt: 'Use only this corpus',
-      session_id: scenario === 'prime-stall' ? null : 'old-session',
+      session_id: scenario === 'prime-stall' || scenario === 'setup-oauth-stall' ? null : 'old-session',
       observations: [],
     };
     store.write(corpus);
 
     const callerController = new AbortController();
     const callerReason = new Error('caller hung up');
-    if (scenario === 'caller-abort-stall') {
+    if (scenario === 'caller-abort-stall' || scenario === 'setup-caller-abort') {
       setTimeout(() => callerController.abort(callerReason), 25);
     }
 
@@ -152,7 +153,7 @@ const fixture = String.raw`
     let errorCode;
     let matchedCallerReason = false;
 
-    const callPromise = scenario === 'prime-stall'
+    const callPromise = scenario === 'prime-stall' || scenario === 'setup-oauth-stall'
       ? agent.prime(corpus, { abortController: callerController })
       : agent.query(corpus, 'question', { abortController: callerController });
 
@@ -237,7 +238,7 @@ describe('knowledge query and prime deadlines', () => {
     }
   });
 
-  it('fails a stalled query within the idle bound with 504 and aborts the SDK controller', () => {
+  it('fails a stalled query at the absolute cap with 504 and aborts the SDK controller', () => {
     const outcome = outcomeFor('query-stall');
     expect(outcome.settled).toBe(true);
     expect(outcome.race).toBe('ERR');
@@ -251,7 +252,7 @@ describe('knowledge query and prime deadlines', () => {
     expect(outcome.diskSession).toBe('old-session');
   });
 
-  it('fails a stalled prime within the idle bound with 504 and aborts the SDK controller', () => {
+  it('fails a stalled prime at the absolute cap with 504 and aborts the SDK controller', () => {
     const outcome = outcomeFor('prime-stall');
     expect(outcome.settled).toBe(true);
     expect(outcome.race).toBe('ERR');
@@ -265,8 +266,8 @@ describe('knowledge query and prime deadlines', () => {
     expect(outcome.diskSession).toBeNull();
   });
 
-  it('resets the idle watchdog on each SDK message so an active stream succeeds past the idle window', () => {
-    const outcome = outcomeFor('query-active-past-idle');
+  it('lets a long-silent stream that answers inside the cap succeed', () => {
+    const outcome = outcomeFor('query-silent-under-cap');
     expect(outcome.settled).toBe(true);
     expect(outcome.race).toBe('OK');
     expect(outcome.result).toEqual({ answer: 'Paris', session_id: 'active-session' });
@@ -314,5 +315,33 @@ describe('knowledge query and prime deadlines', () => {
     expect(outcome.callerAborted).toBe(true);
     expect(outcome.sdkCalls).toHaveLength(1);
     expect(outcome.sdkCalls[0].aborted).toBe(true);
+  });
+
+  it('bounds a stalled Claude CLI lookup with the same deadline, before any SDK call', () => {
+    const outcome = outcomeFor('setup-executable-stall');
+    expect(outcome.settled).toBe(true);
+    expect(outcome.race).toBe('ERR');
+    expect(outcome.errorStatus).toBe(504);
+    expect(outcome.errorCode).toBe('KNOWLEDGE_QUERY_TIMEOUT');
+    expect(outcome.sdkCalls).toHaveLength(0);
+    expect(outcome.diskSession).toBe('old-session');
+  });
+
+  it('bounds a stalled OAuth refresh with the same deadline, before any SDK call', () => {
+    const outcome = outcomeFor('setup-oauth-stall');
+    expect(outcome.settled).toBe(true);
+    expect(outcome.race).toBe('ERR');
+    expect(outcome.errorStatus).toBe(504);
+    expect(outcome.errorCode).toBe('KNOWLEDGE_PRIME_TIMEOUT');
+    expect(outcome.sdkCalls).toHaveLength(0);
+    expect(outcome.diskSession).toBeNull();
+  });
+
+  it('settles on caller abort during a stalled setup step', () => {
+    const outcome = outcomeFor('setup-caller-abort');
+    expect(outcome.settled).toBe(true);
+    expect(outcome.race).toBe('ERR');
+    expect(outcome.matchedCallerReason).toBe(true);
+    expect(outcome.sdkCalls).toHaveLength(0);
   });
 });

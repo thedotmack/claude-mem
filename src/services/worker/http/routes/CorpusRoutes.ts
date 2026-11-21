@@ -11,6 +11,7 @@ import { logger } from '../../../../utils/logger.js';
 import { AppError } from '../../../server/ErrorHandler.js';
 import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
 import { resolveDateBound } from '../../../../shared/date-bounds.js';
+import { CORPUS_STREAM_ABSOLUTE_CAP_MS } from '../../../../servers/corpus-worker-stream.js';
 
 const stringArrayLike = z.preprocess((value) => {
   if (value === undefined || value === null || value === '') return undefined;
@@ -74,8 +75,13 @@ interface CorpusOutcome {
 /** Comment-line heartbeat cadence for SSE mode (the MCP client's idle window is 30 s). */
 const DEFAULT_CORPUS_SSE_HEARTBEAT_INTERVAL_MS = 10_000;
 
-/** Absolute wall-clock ceiling for any corpus POST operation, independent of SSE heartbeats. */
-export const DEFAULT_CORPUS_REQUEST_DEADLINE_MS = 15 * 60_000;
+/**
+ * Absolute wall-clock ceiling for any corpus POST operation, independent of SSE
+ * heartbeats. It is the MCP client's own cap: the client abandons the request
+ * at that point, so the server must give up no later, and a curl caller gets
+ * the same bound instead of none.
+ */
+const DEFAULT_CORPUS_REQUEST_DEADLINE_MS = CORPUS_STREAM_ABSOLUTE_CAP_MS;
 
 // A prime/query can persist the whole corpus after awaiting the SDK. Keep
 // every mutation of that corpus out until it settles, so an older snapshot
@@ -200,11 +206,19 @@ export class CorpusRoutes extends BaseRouteHandler {
     if (this.rejectBusyCorpus(res, name)) return;
     const key = corpusOperationKey(name);
     activeCorpusOperations.add(key);
+    // A client disconnect or the request deadline answers the caller at once,
+    // but that is not completion: a build ignores the abort and may still be
+    // writing. Release the corpus only when the work itself settles.
+    let workSettled: Promise<unknown> = Promise.resolve();
+    const releaseCorpus = (): void => { activeCorpusOperations.delete(key); };
     try {
-      await this.runAdmittedCorpusWork(req, res, work);
+      await this.runAdmittedCorpusWork(req, res, (abortController) => {
+        const workPromise = work(abortController);
+        workSettled = workPromise;
+        return workPromise;
+      });
     } finally {
-      // Client disconnect is not completion: a build may still be writing.
-      activeCorpusOperations.delete(key);
+      workSettled.then(releaseCorpus, releaseCorpus);
     }
   }
 
@@ -315,6 +329,10 @@ export class CorpusRoutes extends BaseRouteHandler {
         if (!abortController.signal.aborted) {
           abortController.abort(deadlineError);
         }
+        logger.warn('HTTP', 'Corpus request deadline reached; work aborted, corpus stays locked until the work settles', {
+          path: req.path,
+          deadlineMs: this.requestDeadlineMs,
+        });
         finish(null, deadlineError);
       }, this.requestDeadlineMs);
 

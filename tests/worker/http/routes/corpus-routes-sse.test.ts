@@ -61,14 +61,15 @@ function createRequest(name: string, accept: string | undefined, body: any = {})
   return { req, socket };
 }
 
-function captureHandler(routes: CorpusRoutes, targetPath: string): (req: Request, res: Response) => void {
+function captureHandler(routes: CorpusRoutes, targetPath: string, method: 'post' | 'delete' = 'post'): (req: Request, res: Response) => void {
   let handler: ((req: Request, res: Response) => void) | undefined;
+  const capture = (registeredMethod: 'post' | 'delete') => mock((path: string, ...rest: any[]) => {
+    if (registeredMethod === method && path === targetPath) handler = rest[rest.length - 1];
+  });
   const mockApp: any = {
     get: mock(() => {}),
-    delete: mock(() => {}),
-    post: mock((path: string, ...rest: any[]) => {
-      if (path === targetPath) handler = rest[rest.length - 1];
-    }),
+    delete: capture('delete'),
+    post: capture('post'),
   };
   routes.setupRoutes(mockApp);
   if (!handler) throw new Error(`${targetPath} not registered`);
@@ -413,26 +414,27 @@ describe('CorpusRoutes when every Claude CLI is too old', () => {
 });
 
 describe('CorpusRoutes absolute request deadline', () => {
-  it('terminates a silent-but-pinging SSE query with a 504 error event and aborts underlying work', async () => {
+  it('terminates a silent-but-pinging SSE query with a 504 error event and keeps the corpus locked until the work settles', async () => {
     const seen: { abortController?: AbortController } = {};
+    let settleStalledWork!: () => void;
     let attempt = 0;
     const query = mock((_corpus: any, _question: string, callOptions: { abortController?: AbortController }) => {
       attempt++;
       if (attempt === 1) {
         seen.abortController = callOptions.abortController;
-        // Stalled work that ignores abort and never settles on its own.
-        return new Promise(() => {});
+        // Stalled work that ignores abort and settles only when the test says so.
+        return new Promise((_resolve, reject) => { settleStalledWork = () => reject(new Error('stalled work finally gave up')); });
       }
       return Promise.resolve({ answer: 'recovered', session_id: 'sess-old' });
     });
     const routes = new CorpusRoutes(
-      { read: mock(() => createCorpus('alpha')), write: mock(() => {}), list: mock(() => [{ name: 'alpha' }]), delete: mock(() => false) } as any,
-      { build: mock(() => Promise.resolve(createCorpus('alpha'))) } as any,
+      { read: mock(() => createCorpus('delta')), write: mock(() => {}), list: mock(() => [{ name: 'delta' }]), delete: mock(() => false) } as any,
+      { build: mock(() => Promise.resolve(createCorpus('delta'))) } as any,
       { query } as any,
       { sseHeartbeatIntervalMs: HEARTBEAT_INTERVAL_MS, requestDeadlineMs: 85 }
     );
     const handler = captureHandler(routes, '/api/corpus/:name/query');
-    const { req } = createRequest('alpha', 'text/event-stream', { question: 'why?' });
+    const { req } = createRequest('delta', 'text/event-stream', { question: 'why?' });
     const res = new FakeResponse();
 
     handler(req, res as unknown as Response);
@@ -452,20 +454,87 @@ describe('CorpusRoutes absolute request deadline', () => {
     await sleep(HEARTBEAT_INTERVAL_MS * 3);
     expect(res.writes.length).toBe(writesAtEnd);
 
-    // Busy lock is released so a subsequent query for the same corpus is not rejected with 409.
-    const followUpReq = createRequest('alpha', undefined, { question: 'retry?' }).req;
+    // The first work has not settled, so it may still persist the corpus: a follow-up is refused.
+    const busyRes = new FakeResponse();
+    handler(createRequest('delta', undefined, { question: 'retry?' }).req, busyRes as unknown as Response);
+    await waitFor(() => busyRes.ended);
+    expect(busyRes.statusCode).toBe(409);
+    expect(busyRes.jsonBodies).toEqual([expect.objectContaining({ code: 'CORPUS_BUSY' })]);
+    expect(attempt).toBe(1);
+
+    // Once the stalled work settles, the corpus is free again.
+    settleStalledWork();
+    await sleep(0);
     const followUpRes = new FakeResponse();
-    handler(followUpReq, followUpRes as unknown as Response);
+    handler(createRequest('delta', undefined, { question: 'retry?' }).req, followUpRes as unknown as Response);
     await waitFor(() => followUpRes.ended);
     expect(followUpRes.statusCode).toBe(200);
     expect(followUpRes.jsonBodies).toEqual([{ answer: 'recovered', session_id: 'sess-old' }]);
+  });
+
+  it('refuses a delete and a rebuild while a timed-out build is still writing', async () => {
+    let finishLateBuild!: () => void;
+    const events: string[] = [];
+    const corpusStore = {
+      read: mock(() => createCorpus('epsilon')),
+      write: mock(() => { events.push('write'); }),
+      list: mock(() => [{ name: 'epsilon' }]),
+      delete: mock(() => { events.push('delete'); return true; }),
+    };
+    // build() is never handed the abort controller; it ignores the deadline and writes late.
+    const build = mock(() => new Promise((resolve) => {
+      finishLateBuild = () => {
+        corpusStore.write();
+        resolve(createCorpus('epsilon'));
+      };
+    }));
+    const routes = new CorpusRoutes(
+      corpusStore as any,
+      { build } as any,
+      {} as any,
+      { sseHeartbeatIntervalMs: HEARTBEAT_INTERVAL_MS, requestDeadlineMs: 40 }
+    );
+    const buildHandler = captureHandler(routes, '/api/corpus');
+    const deleteHandler = captureHandler(routes, '/api/corpus/:name', 'delete');
+    const rebuildHandler = captureHandler(routes, '/api/corpus/:name/rebuild');
+
+    const buildRes = new FakeResponse();
+    buildHandler(createRequest('epsilon', undefined, { name: 'epsilon' }).req, buildRes as unknown as Response);
+    await waitFor(() => buildRes.ended);
+    expect(buildRes.statusCode).toBe(504);
+    expect(buildRes.jsonBodies[0]).toMatchObject({ code: 'CORPUS_REQUEST_TIMEOUT' });
+    expect(routes.corpusBuildsRunning()).toBe(1);
+
+    const deleteRes = new FakeResponse();
+    deleteHandler(createRequest('epsilon', undefined).req, deleteRes as unknown as Response);
+    expect(deleteRes.statusCode).toBe(409);
+    expect(deleteRes.jsonBodies).toEqual([expect.objectContaining({ code: 'CORPUS_BUSY' })]);
+
+    const rebuildRes = new FakeResponse();
+    rebuildHandler(createRequest('epsilon', undefined).req, rebuildRes as unknown as Response);
+    await waitFor(() => rebuildRes.ended);
+    expect(rebuildRes.statusCode).toBe(409);
+    expect(rebuildRes.jsonBodies).toEqual([expect.objectContaining({ code: 'CORPUS_BUSY' })]);
+    expect(build).toHaveBeenCalledTimes(1);
+
+    // The late build writes, settles, and only then may the delete go through.
+    finishLateBuild();
+    await sleep(0);
+    expect(routes.corpusBuildsRunning()).toBe(0);
+    const laterDeleteRes = new FakeResponse();
+    deleteHandler(createRequest('epsilon', undefined).req, laterDeleteRes as unknown as Response);
+    expect(laterDeleteRes.jsonBodies).toEqual([{ success: true }]);
+    expect(events).toEqual(['write', 'delete']);
   });
 
   it('bounds a stalled JSON-mode query (curl path) with 504 and aborts underlying work', async () => {
     const seen: { abortController?: AbortController } = {};
     const query = mock((_corpus: any, _question: string, callOptions: { abortController?: AbortController }) => {
       seen.abortController = callOptions.abortController;
-      return new Promise(() => {});
+      // Silent until aborted, like an SDK stream that stalls but honours its abort.
+      return new Promise((_resolve, reject) => {
+        callOptions.abortController?.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+      });
     });
     const routes = new CorpusRoutes(
       { read: mock(() => createCorpus('alpha')), write: mock(() => {}), list: mock(() => [{ name: 'alpha' }]), delete: mock(() => false) } as any,
