@@ -158,6 +158,21 @@ class Rollup(Fixture):
         self.assertTrue(any(a["kind"] == "unpriced" for a in r["attention"]))
         self.assertEqual(sum(m["unpriced_calls"] for m in r["by_model"]), 3)
 
+    def test_null_generated_by_model_normalized_to_none_marker(self):
+        """#6371: a NULL observations.generated_by_model must register as "<none>" (like the agent path),
+        not crash unpriced_list()'s model sort when a non-null unpriced model sits alongside it."""
+        import sqlite3
+        db = sqlite3.connect(self.dbp)
+        db.execute("insert into observations (memory_session_id, project, type, title, discovery_tokens, created_at, created_at_epoch, generated_by_model) "
+                   "values ('m1','claude-mem','discovery','no model recorded',4000,'x',?,NULL)", (ms(0, 9.4),))
+        db.commit(); db.close()
+        rows = self.rows + [row("cs1", ms(0, 9.7), model="test/no-output")]     # non-null unpriced model -> mixed None/str sort before the fix
+        r, _, _ = self.build(rows=rows)
+        self.assertEqual({(u["model"], u["role"]): u["tokens"] for u in r["unpriced_models"] if u["role"] == "observer"}, {("<none>", "observer"): 4000})
+        self.assertEqual(r["observer"]["unpriced_tokens"], {"<none>": 4000})    # JSON used to emit a "null" key here
+        self.assertNotIn('"null":', json.dumps(r["observer"]))
+        self.assertIn(("test/no-output", "agent"), {(u["model"], u["role"]) for u in r["unpriced_models"]})   # agent register untouched
+
     def test_join_key_and_unmatched_still_counted(self):
         r, _, _ = self.build()
         li = {x["session_ids"][0]: x for x in r["line_items"]}
