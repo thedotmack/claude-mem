@@ -8,8 +8,10 @@ import { CorpusBuilder } from '../../knowledge/CorpusBuilder.js';
 import type { CorpusAgent } from '../../knowledge/CorpusAgent.js';
 import type { CorpusFilter } from '../../knowledge/types.js';
 import { logger } from '../../../../utils/logger.js';
+import { AppError } from '../../../server/ErrorHandler.js';
 import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
 import { resolveDateBound } from '../../../../shared/date-bounds.js';
+import { CORPUS_STREAM_ABSOLUTE_CAP_MS } from '../../../../servers/corpus-worker-stream.js';
 
 const stringArrayLike = z.preprocess((value) => {
   if (value === undefined || value === null || value === '') return undefined;
@@ -73,6 +75,14 @@ interface CorpusOutcome {
 /** Comment-line heartbeat cadence for SSE mode (the MCP client's idle window is 30 s). */
 const DEFAULT_CORPUS_SSE_HEARTBEAT_INTERVAL_MS = 10_000;
 
+/**
+ * Absolute wall-clock ceiling for any corpus POST operation, independent of SSE
+ * heartbeats. It is the MCP client's own cap: the client abandons the request
+ * at that point, so the server must give up no later, and a curl caller gets
+ * the same bound instead of none.
+ */
+const DEFAULT_CORPUS_REQUEST_DEADLINE_MS = CORPUS_STREAM_ABSOLUTE_CAP_MS;
+
 // A prime/query can persist the whole corpus after awaiting the SDK. Keep
 // every mutation of that corpus out until it settles, so an older snapshot
 // cannot replace a rebuild or recreate a corpus the owner just deleted.
@@ -88,6 +98,7 @@ function corpusOperationKey(name: string): string {
 
 export interface CorpusRoutesOptions {
   sseHeartbeatIntervalMs?: number;
+  requestDeadlineMs?: number;
 }
 
 function clientAcceptsEventStream(req: Request): boolean {
@@ -114,6 +125,7 @@ function writeSseEvent(res: Response, eventName: 'result' | 'error', data: Recor
  */
 export class CorpusRoutes extends BaseRouteHandler {
   private readonly sseHeartbeatIntervalMs: number;
+  private readonly requestDeadlineMs: number;
   private corpusBuildsInProgress = 0;
 
   constructor(
@@ -124,6 +136,7 @@ export class CorpusRoutes extends BaseRouteHandler {
   ) {
     super();
     this.sseHeartbeatIntervalMs = options.sseHeartbeatIntervalMs ?? DEFAULT_CORPUS_SSE_HEARTBEAT_INTERVAL_MS;
+    this.requestDeadlineMs = options.requestDeadlineMs ?? DEFAULT_CORPUS_REQUEST_DEADLINE_MS;
   }
 
   /**
@@ -193,11 +206,19 @@ export class CorpusRoutes extends BaseRouteHandler {
     if (this.rejectBusyCorpus(res, name)) return;
     const key = corpusOperationKey(name);
     activeCorpusOperations.add(key);
+    // A client disconnect or the request deadline answers the caller at once,
+    // but that is not completion: a build ignores the abort and may still be
+    // writing. Release the corpus only when the work itself settles.
+    let workSettled: Promise<unknown> = Promise.resolve();
+    const releaseCorpus = (): void => { activeCorpusOperations.delete(key); };
     try {
-      await this.runAdmittedCorpusWork(req, res, work);
+      await this.runAdmittedCorpusWork(req, res, (abortController) => {
+        const workPromise = work(abortController);
+        workSettled = workPromise;
+        return workPromise;
+      });
     } finally {
-      // Client disconnect is not completion: a build may still be writing.
-      activeCorpusOperations.delete(key);
+      workSettled.then(releaseCorpus, releaseCorpus);
     }
   }
 
@@ -207,20 +228,27 @@ export class CorpusRoutes extends BaseRouteHandler {
     return true;
   }
 
-  private async runAdmittedCorpusWork(
+  private runAdmittedCorpusWork(
     req: Request,
     res: Response,
     work: (abortController: AbortController) => Promise<CorpusOutcome>
   ): Promise<void> {
     const abortController = new AbortController();
     let workSettled = false;
+    let clientDisconnected = false;
     let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+    let deadlineTimer: ReturnType<typeof setTimeout> | null = null;
     const stopHeartbeat = (): void => {
       if (heartbeatTimer !== null) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
     };
+    const stopDeadline = (): void => {
+      if (deadlineTimer !== null) { clearTimeout(deadlineTimer); deadlineTimer = null; }
+    };
     const abortWhenClientDisconnects = (): void => {
       if (workSettled || abortController.signal.aborted) return;
+      clientDisconnected = true;
       stopHeartbeat();
+      stopDeadline();
       abortController.abort(new Error(`Client disconnected before ${req.path} finished`));
     };
     // Node fires res 'close' on a dropped client; Bun's node:http only fires the
@@ -239,50 +267,87 @@ export class CorpusRoutes extends BaseRouteHandler {
       heartbeatTimer = setInterval(() => res.write(': ping\n\n'), this.sseHeartbeatIntervalMs);
     }
 
-    let outcome: CorpusOutcome | null = null;
-    let failure: Error | null = null;
-    try {
-      outcome = await work(abortController);
-    } catch (error: unknown) {
-      failure = error instanceof Error ? error : new Error(String(error));
-    } finally {
-      workSettled = true;
-      stopHeartbeat();
-      res.off('close', abortWhenClientDisconnects);
-      clientSocket.off('close', abortWhenClientDisconnects);
-    }
+    return new Promise<void>((resolve, reject) => {
+      const finish = (outcome: CorpusOutcome | null, error: unknown): void => {
+        if (workSettled) return;
+        workSettled = true;
+        stopHeartbeat();
+        stopDeadline();
+        res.off('close', abortWhenClientDisconnects);
+        clientSocket.off('close', abortWhenClientDisconnects);
 
-    if (abortController.signal.aborted) {
-      logger.info('HTTP', 'Corpus request abandoned by client; underlying work aborted', {
-        path: req.path,
-        workError: failure?.message,
-      });
-      res.end();
-      return;
-    }
+        const failure = error === null ? null : (error instanceof Error ? error : new Error(String(error)));
 
-    if (!streamAsSse) {
-      if (failure) throw failure;
-      if (outcome!.status === 200) res.json(outcome!.body);
-      else res.status(outcome!.status).json(outcome!.body);
-      return;
-    }
+        if (clientDisconnected) {
+          logger.info('HTTP', 'Corpus request abandoned by client; underlying work aborted', {
+            path: req.path,
+            workError: failure?.message,
+          });
+          res.end();
+          resolve();
+          return;
+        }
 
-    // finally: the stream always closes, even if serialising the terminal event throws
-    // (that error still reaches wrapHandler and is logged there).
-    try {
-      if (failure) {
-        // Logs exactly as the JSON mode does; headers are already sent, so it writes nothing.
-        this.handleError(res, failure);
-        writeSseEvent(res, 'error', { ...this.errorResponseBody(failure), status: this.errorStatusCode(failure) });
-      } else if (outcome!.status === 200) {
-        writeSseEvent(res, 'result', outcome!.body);
-      } else {
-        writeSseEvent(res, 'error', { ...outcome!.body, status: outcome!.status });
+        if (!streamAsSse) {
+          if (failure) {
+            reject(failure);
+            return;
+          }
+          if (outcome!.status === 200) res.json(outcome!.body);
+          else res.status(outcome!.status).json(outcome!.body);
+          resolve();
+          return;
+        }
+
+        // finally: the stream always closes, even if serialising the terminal event throws
+        // (that error still reaches wrapHandler and is logged there).
+        try {
+          if (failure) {
+            // Logs exactly as the JSON mode does; headers are already sent, so it writes nothing.
+            this.handleError(res, failure);
+            writeSseEvent(res, 'error', { ...this.errorResponseBody(failure), status: this.errorStatusCode(failure) });
+          } else if (outcome!.status === 200) {
+            writeSseEvent(res, 'result', outcome!.body);
+          } else {
+            writeSseEvent(res, 'error', { ...outcome!.body, status: outcome!.status });
+          }
+          resolve();
+        } catch (writeError) {
+          reject(writeError);
+        } finally {
+          res.end();
+        }
+      };
+
+      deadlineTimer = setTimeout(() => {
+        if (workSettled || clientDisconnected) return;
+        const deadlineError = new AppError(
+          `Corpus request ${req.path} timed out after ${this.requestDeadlineMs}ms`,
+          504,
+          'CORPUS_REQUEST_TIMEOUT'
+        );
+        if (!abortController.signal.aborted) {
+          abortController.abort(deadlineError);
+        }
+        logger.warn('HTTP', 'Corpus request deadline reached; work aborted, corpus stays locked until the work settles', {
+          path: req.path,
+          deadlineMs: this.requestDeadlineMs,
+        });
+        finish(null, deadlineError);
+      }, this.requestDeadlineMs);
+
+      let workPromise: Promise<CorpusOutcome>;
+      try {
+        workPromise = work(abortController);
+      } catch (syncError) {
+        finish(null, syncError);
+        return;
       }
-    } finally {
-      res.end();
-    }
+      workPromise.then(
+        (outcome) => finish(outcome, null),
+        (error) => finish(null, error)
+      );
+    });
   }
 
   private handleBuildCorpus = this.wrapHandler((req: Request, res: Response) => {
