@@ -52,6 +52,19 @@ const NEW_TRANSCRIPT_REPLAY_MAX_BYTES = 256 * 1024;
  * event loop back between them.
  */
 const MAX_BYTES_PER_PASS = 4 * 1024 * 1024;
+/**
+ * The largest JSONL record the tailer holds. An unterminated record is kept
+ * across passes until its newline arrives, so without a ceiling a runaway
+ * writer or a corrupt transcript grows worker memory without bound. A record
+ * over the cap is skipped whole and logged at WARN with its offset and size.
+ *
+ * Measured 2026-11-21 on the maintainer's machine by splitting every file on
+ * newlines and recording each record's byte length: 1.2 M Codex rollout
+ * records (~/.codex/sessions, .jsonl and .zst) peaked at 44.17 MiB, 73 of them
+ * above 8 MiB; 2.1 M Claude Code records (~/.claude/projects) peaked at
+ * 25.99 MiB. 64 MiB sits above every measured record with room for growth.
+ */
+export const MAX_RECORD_BYTES = 64 * 1024 * 1024;
 
 /** The startAtEnd frame scan of a zstd file walks this many bytes of frames between yields. */
 const RESUME_SCAN_BYTES_PER_STEP = 16 * 1024 * 1024;
@@ -436,13 +449,27 @@ class FileTailer {
         this.checkpoint(this.tailState.offset);
         return;
       }
-      const tail = chunk.subarray(lineStart, newline);
-      const bytes = this.pendingRecordParts.length
-        ? Buffer.concat([...this.pendingRecordParts, tail], this.pendingRecordBytes + tail.length)
-        : tail;
+      // The record runs from the checkpoint to this newline, however many
+      // passes it took to arrive, so the cap does not depend on write timing.
+      const recordStartOffset = this.tailState.offset;
+      const recordBytes = readFrom + newline - recordStartOffset;
+      let line: string | null = null;
+      if (recordBytes > MAX_RECORD_BYTES) {
+        logger.warn('TRANSCRIPT', 'Skipped a transcript record larger than the record cap', {
+          file: this.filePath,
+          capBytes: MAX_RECORD_BYTES,
+          recordStartOffset,
+          skippedBytes: recordBytes,
+        });
+      } else {
+        const tail = chunk.subarray(lineStart, newline);
+        const bytes = this.pendingRecordParts.length
+          ? Buffer.concat([...this.pendingRecordParts, tail], this.pendingRecordBytes + tail.length)
+          : tail;
+        line = bytes.toString('utf8').trim() || null;
+      }
       this.pendingRecordParts = [];
       this.pendingRecordBytes = 0;
-      const line = bytes.toString('utf8').trim();
       if (line) {
         try {
           await this.onLine(line);
@@ -459,9 +486,25 @@ class FileTailer {
     }
 
     if (lineStart < chunk.length) {
-      const tail = lineStart === 0 ? chunk : Buffer.from(chunk.subarray(lineStart));
-      this.pendingRecordParts.push(tail);
-      this.pendingRecordBytes += tail.length;
+      const recordStartOffset = this.tailState.offset;
+      const heldBytes = this.tailState.readOffset - recordStartOffset;
+      if (heldBytes <= MAX_RECORD_BYTES) {
+        const tail = lineStart === 0 ? chunk : Buffer.from(chunk.subarray(lineStart));
+        this.pendingRecordParts.push(tail);
+        this.pendingRecordBytes += tail.length;
+      } else if (readFrom - recordStartOffset <= MAX_RECORD_BYTES) {
+        // This pass took the unterminated record over the cap. Drop what is
+        // held instead of growing it; the record is skipped when its newline
+        // arrives, and the cursor stays at its start until then.
+        this.pendingRecordParts = [];
+        this.pendingRecordBytes = 0;
+        logger.warn('TRANSCRIPT', 'Transcript record passed the record cap; it will be skipped when it ends', {
+          file: this.filePath,
+          capBytes: MAX_RECORD_BYTES,
+          recordStartOffset,
+          heldBytes,
+        });
+      }
     }
     this.checkpoint(this.tailState.offset);
     if (this.tailState.readOffset < size) this.readPending = true;
