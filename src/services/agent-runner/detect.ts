@@ -40,6 +40,7 @@ import { existsSync, readFileSync } from 'fs';
 import { homedir } from 'os';
 import { join, resolve } from 'path';
 import { findClaudeExecutable } from '../../shared/find-claude-executable.js';
+import { retainTextHeadTail } from '../../shared/text-truncation.js';
 import { readClaudeOAuthToken, type OAuthTokenResult } from '../../shared/oauth-token.js';
 import { buildOpenCodeEnv, hasAnthropicApiKey, hasAnthropicAuthToken, hasConfiguredClaudeOAuthToken } from '../../shared/EnvManager.js';
 
@@ -62,6 +63,10 @@ export interface CommandResult {
   exitCode: number | null;
   stdout: string;
   stderr: string;
+  /** True when stdout passed the capture cap and only its head and tail were kept. */
+  stdoutTruncated?: boolean;
+  /** True when stderr passed the capture cap and only its head and tail were kept. */
+  stderrTruncated?: boolean;
   /**
    * Set only when the process could not be started (e.g. ENOENT). A command stopped through `CommandOptions.signal`
    * did start, so a stop never sets it: `exitCode` and the output tell how the command ended.
@@ -132,6 +137,57 @@ function stopOptionsFor(options: CommandOptions): Pick<SpawnOptions, 'detached' 
 }
 
 /**
+ * The most characters a collected stdout/stderr stream keeps. Real agent CLI
+ * answers are far below this; a runaway or looping CLI is truncated to its
+ * head and tail (see the accumulation in runCommand) instead of growing the
+ * worker's memory for as long as the child keeps printing.
+ */
+const MAX_STREAM_CHARS = 8 * 1024 * 1024;
+
+/**
+ * A bounded stdout/stderr accumulator. While the stream fits the cap it is
+ * kept whole; once it passes the cap the head is fixed and the rolling tail
+ * is collected in chunks, so a looping child pays one bounded append per
+ * chunk instead of re-slicing megabytes every time it prints. Callers that
+ * parse the text read `truncated()` first: a cut stream is not the complete
+ * output, and pretending otherwise reports a healthy CLI as broken (or the
+ * other way around).
+ */
+function createCollectedStream() {
+  let buffer = '';
+  let head: string | null = null;
+  const tail: string[] = [];
+  let tailTotal = 0;
+  return {
+    add(chunk: string): void {
+      if (head !== null) {
+        tail.push(chunk);
+        tailTotal += chunk.length;
+        while (tailTotal > MAX_STREAM_CHARS / 2 && tail.length > 1) {
+          tailTotal -= tail[0].length;
+          tail.shift();
+        }
+        return;
+      }
+      buffer += chunk;
+      if (buffer.length > MAX_STREAM_CHARS) {
+        const { head: keptHead, tail: keptTail } = retainTextHeadTail(buffer, MAX_STREAM_CHARS / 2, MAX_STREAM_CHARS / 2);
+        head = keptHead;
+        tail.length = 0;
+        tail.push(keptTail);
+        tailTotal = keptTail.length;
+      }
+    },
+    truncated(): boolean {
+      return head !== null;
+    },
+    text(): string {
+      return head === null ? buffer : head + tail.join('');
+    },
+  };
+}
+
+/**
  * Run a command with argv (no shell) and wait for it to exit, however long
  * that takes. Never rejects. The one spawn-and-collect helper for agent
  * detection, agent runs and the refresh's skill scripts.
@@ -158,8 +214,13 @@ export function runCommand(first: typeof spawn | string, second: string | string
     if (child.pid !== undefined) options.onSpawn?.({ pid: child.pid, processGroupId: stopOptions.detached ? child.pid : undefined });
     child.stdout?.setEncoding('utf8');
     child.stderr?.setEncoding('utf8');
-    let stdout = '';
-    let stderr = '';
+    // A chatty or looping CLI would otherwise grow the retained string with
+    // every chunk it prints, for as long as it runs (no time limit is an
+    // owner rule). Past the cap each stream keeps its head and its tail in
+    // bounded chunks; the truncation flags let callers tell a cut stream from
+    // a complete one before they parse it.
+    const stdoutStream = createCollectedStream();
+    const stderrStream = createCollectedStream();
     let spawnError: Error | undefined;
     let settled = false;
     // macOS and Linux: aborting signals the command's whole process group, which `detached` made it the leader of.
@@ -205,16 +266,23 @@ export function runCommand(first: typeof spawn | string, second: string | string
       if (error.name === 'AbortError' && options.signal?.aborted) return;
       spawnError = error;
       // A child that never started may not emit 'close' on every runtime.
-      settle({ exitCode: null, stdout, stderr, spawnError });
+      settle({ exitCode: null, stdout: stdoutStream.text(), stderr: stderrStream.text(), spawnError });
     });
     child.stdout?.on('data', (chunk: string) => {
-      stdout += chunk;
+      stdoutStream.add(chunk);
     });
     child.stderr?.on('data', (chunk: string) => {
-      stderr += chunk;
+      stderrStream.add(chunk);
     });
     child.on('close', code => {
-      const result: CommandResult = { exitCode: code, stdout, stderr, spawnError };
+      const result: CommandResult = {
+        exitCode: code,
+        stdout: stdoutStream.text(),
+        stderr: stderrStream.text(),
+        stdoutTruncated: stdoutStream.truncated(),
+        stderrTruncated: stderrStream.truncated(),
+        spawnError,
+      };
       // It has exited now when it has no process group of its own (no signal, or Windows).
       if (processGroupStopSignal === undefined || child.pid === undefined) {
         settle(result);

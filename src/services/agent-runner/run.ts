@@ -541,6 +541,10 @@ function opencodeAsk(agent: TaskAgent, _task: AgentTask, dependencies: AgentRunn
         },
       });
       if (result.exitCode !== 0) throw failure('opencode', result);
+      // The event stream was cut, so whole events are missing from the middle:
+      // answering with the surviving ones would present a partial turn as the
+      // whole answer. Fail loudly instead of parsing what is left.
+      if (result.stdoutTruncated) throw new Error('opencode printed past the capture cap (8 MiB); its event stream was not kept whole.');
       return opencodeAnswer(result.stdout);
     } finally { rmSync(configHome, { recursive: true, force: true }); }
   };

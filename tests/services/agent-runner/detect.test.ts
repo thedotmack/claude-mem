@@ -504,4 +504,38 @@ describe('runCommand', () => {
     const result = await runCommand(throwingSpawn, 'x', []);
     expect(result.spawnError?.message).toBe('EINVAL');
   });
+
+  it('bounds the accumulated stdout of a chatty child while keeping both ends', async () => {
+    // A chatty or looping CLI would otherwise grow the retained string with
+    // every chunk it prints, for as long as it runs (no time limit is an
+    // owner rule). Past the cap the accumulation keeps the head and the tail
+    // of the stream — a complete small output is untouched, and the failure
+    // path only excerpts these strings anyway.
+    const chunk = 'x'.repeat(1024 * 1024);
+    const child = new FakeChild();
+    const chattySpawn = (() => {
+      queueMicrotask(() => {
+        child.stdout.emit('data', 'HEAD-MARK' + chunk);
+        for (let round = 0; round < 22; round++) child.stdout.emit('data', chunk);
+        child.stdout.emit('data', chunk + 'TAIL-MARK');
+        child.emit('close', 0);
+      });
+      return child;
+    }) as unknown as typeof spawn;
+
+    const result = await runCommand(chattySpawn, 'chatty', ['run']);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain('HEAD-MARK');
+    expect(result.stdout).toContain('TAIL-MARK');
+    // 24 MiB arrived; the retained buffer holds the ends, not the middle.
+    expect(result.stdout.length).toBeLessThanOrEqual(9 * 1024 * 1024);
+    expect(result.stdoutTruncated).toBe(true);
+  });
+
+  it('leaves small output complete and unflagged', async () => {
+    const result = await runCommand(fakeSpawn({ 'small tool': { exitCode: 0, stdout: 'ok' } }), 'small', ['tool']);
+    expect(result.stdout).toBe('ok');
+    expect(result.stdoutTruncated).toBe(false);
+    expect(result.stderrTruncated).toBe(false);
+  });
 });
