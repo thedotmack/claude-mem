@@ -38,7 +38,7 @@ import { randomUUID } from 'crypto';
 import { statSync } from 'fs';
 import { dirname } from 'path';
 import { stripVTControlCharacters } from 'util';
-import { runCommand, type CommandOptions, type CommandResult, type UsableAgent, type UsableAgentId } from '../agent-runner/detect.js';
+import { cutOutputText, runCommand, type CommandOptions, type CommandResult, type UsableAgent, type UsableAgentId } from '../agent-runner/detect.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import type { ManagedProcessRecord, ProcessRegistry } from '../../supervisor/process-registry.js';
 import { terminateThenForceKill, terminateThenForceKillProcessGroups, type ProcessGroupRecord } from '../../supervisor/shutdown.js';
@@ -359,7 +359,7 @@ export function readClaudeOutcome(result: CommandResult, toolName: string): Turn
   if (result.stdoutTruncated) {
     // The stream was cut, so whatever is left of the result JSON is not the
     // whole turn: report the cap instead of blaming the format.
-    return { state: 'failed', failureText: wholeText(`${toolName} printed past the capture cap (8 MiB), so the turn's result stream could not be kept whole.`, result.stderr) };
+    return { state: 'failed', failureText: wholeText(cutOutputText(toolName), result.stderr) };
   }
   const turn = readClaudeResult(result.stdout);
   if (result.exitCode !== 0) {
@@ -379,7 +379,7 @@ export function readClaudeOutcome(result: CommandResult, toolName: string): Turn
 
 export function readCodexOutcome(result: CommandResult, toolName: string): TurnOutcome {
   if (result.stdoutTruncated) {
-    return { state: 'failed', failureText: wholeText(`${toolName}'s reply was cut by the capture cap (8 MiB), so it is not the whole answer.`, result.stderr) };
+    return { state: 'failed', failureText: wholeText(cutOutputText(toolName), result.stderr) };
   }
   if (result.exitCode !== 0) return { state: 'failed', failureText: wholeText(exitedSentence(toolName, result.exitCode), result.stderr, result.stdout) };
   // `codex exec` prints only the final message on stdout; its progress goes to stderr.
@@ -393,9 +393,9 @@ export function readCodexOutcome(result: CommandResult, toolName: string): TurnO
  * had written. Stopped while a tool ran, it printed nothing in one run, and in another a result with no `result` and an
  * `errors` list. Each exited 0, so only the result tells them apart.
  */
-export function readStoppedClaudeOutcome(result: CommandResult, _toolName: string, stoppedText: string): TurnOutcome {
+export function readStoppedClaudeOutcome(result: CommandResult, toolName: string, stoppedText: string): TurnOutcome {
   if (result.stdoutTruncated) {
-    return { state: 'failed', failureText: wholeText(stoppedText, `${_toolName} printed past the capture cap (8 MiB), so the turn's result stream could not be kept whole.`, result.stderr) };
+    return { state: 'failed', failureText: wholeText(stoppedText, cutOutputText(toolName), result.stderr) };
   }
   const turn = readClaudeResult(result.stdout);
   if (turn && !turn.isError) return { state: 'replied', replyText: turn.replyText, deniedToolCallCount: turn.deniedToolCallCount };
