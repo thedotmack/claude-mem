@@ -708,9 +708,23 @@ async function handleGetStatus(
 	}
 }
 
-function hasInternalCredential(request: Request, env: Env): boolean {
+/**
+ * The Authorization header is caller-controlled and gates every internal
+ * route, so compare it without leaking the secret through timing. Hashing
+ * both sides gives equal-length inputs, which crypto.subtle.timingSafeEqual
+ * requires (it throws on a length mismatch). Same shape as sync-api's
+ * hasInternalCredential, with Web Crypto because this Worker has no node:crypto.
+ */
+export async function hasInternalCredential(request: Request, env: Env): Promise<boolean> {
 	const secret = env.CMEM_INTERNAL_PROJECTOR_SECRET ?? "";
-	return secret.length > 0 && request.headers.get("Authorization") === `Bearer ${secret}`;
+	if (secret.length === 0) return false;
+	const header = request.headers.get("Authorization");
+	if (header === null) return false;
+	const [provided, expected] = await Promise.all([
+		crypto.subtle.digest("SHA-256", encoder.encode(header)),
+		crypto.subtle.digest("SHA-256", encoder.encode(`Bearer ${secret}`)),
+	]);
+	return crypto.subtle.timingSafeEqual(provided, expected);
 }
 
 function exactKeys(record: Record<string, unknown>, expected: string[]): boolean {
@@ -727,7 +741,7 @@ async function readInternalBody(request: Request): Promise<Record<string, unknow
 }
 
 async function handleMetadataRead(request: Request, env: Env): Promise<Response> {
-	if (!hasInternalCredential(request, env)) return errorResponse(401, "invalid internal credential");
+	if (!(await hasInternalCredential(request, env))) return errorResponse(401, "invalid internal credential");
 	const body = await readInternalBody(request);
 	if (
 		body === null
@@ -753,7 +767,7 @@ async function handleMetadataRead(request: Request, env: Env): Promise<Response>
  * deliberately NOT touched by a reset.
  */
 async function handleHubReset(request: Request, env: Env): Promise<Response> {
-	if (!hasInternalCredential(request, env)) return errorResponse(401, "invalid internal credential");
+	if (!(await hasInternalCredential(request, env))) return errorResponse(401, "invalid internal credential");
 	const body = await readInternalBody(request);
 	if (
 		body === null
@@ -773,7 +787,7 @@ async function handleHubReset(request: Request, env: Env): Promise<Response> {
 }
 
 async function handleDeviceRename(request: Request, env: Env): Promise<Response> {
-	if (!hasInternalCredential(request, env)) return errorResponse(401, "invalid internal credential");
+	if (!(await hasInternalCredential(request, env))) return errorResponse(401, "invalid internal credential");
 	const body = await readInternalBody(request);
 	if (
 		body === null
@@ -1201,8 +1215,7 @@ function decimalAtLeast(left: string, right: string): boolean {
 }
 
 async function handleRepairDrain(request: Request, env: Env): Promise<Response> {
-	const expected = `Bearer ${env.CMEM_INTERNAL_PROJECTOR_SECRET ?? ""}`;
-	if (!env.CMEM_INTERNAL_PROJECTOR_SECRET || request.headers.get("Authorization") !== expected) {
+	if (!(await hasInternalCredential(request, env))) {
 		return errorResponse(401, "invalid internal projector credential");
 	}
 	let body: unknown;
