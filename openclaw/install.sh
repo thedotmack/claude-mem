@@ -563,7 +563,13 @@ resolve_extension_dir() {
         if (p) console.log(p);
       } catch {}
     " 2>/dev/null)" || true
-    if [[ -n "$existing_path" ]]; then
+    # install.sh removes this directory before re-cloning, so the configured
+    # installPath is deleted verbatim on every run. The plugin's own writer
+    # (OpenClawInstaller) always lands under the extensions dir, so accept
+    # only the same shape the load.paths branch below accepts: a path that
+    # ends in /claude-mem. Anything else falls through to the default path
+    # instead of handing `rm -rf` an arbitrary directory from the config.
+    if [[ -n "$existing_path" && "$existing_path" == */claude-mem ]]; then
       echo "$existing_path"
       return
     fi
@@ -582,6 +588,43 @@ resolve_extension_dir() {
     fi
   fi
   echo "${HOME}/.openclaw/extensions/claude-mem"
+}
+
+# install_plugin deletes the extension directory and later copies plugin/ into
+# it and rewrites its package.json. A path ending in /claude-mem can still be
+# something else (a git clone at ~/claude-mem, say), so only a directory that
+# is missing, empty, or holds claude-mem's own openclaw.plugin.json (every
+# install this script makes copies that manifest in) may be replaced.
+is_replaceable_claude_mem_plugin_dir() {
+  local dir="$1"
+  [[ -e "$dir" ]] || return 0
+  [[ -d "$dir" ]] || return 1
+  [[ -z "$(ls -A "$dir" 2>/dev/null)" ]] && return 0
+  [[ -f "${dir}/openclaw.plugin.json" ]] || return 1
+  INSTALLER_PLUGIN_MANIFEST="${dir}/openclaw.plugin.json" node -e "
+    const manifest = JSON.parse(require('fs').readFileSync(process.env.INSTALLER_PLUGIN_MANIFEST, 'utf8'));
+    process.exit(manifest && manifest.id === 'claude-mem' ? 0 : 1);
+  " 2>/dev/null
+}
+
+# Prints the extension directory install_plugin may delete and re-populate.
+# A configured directory that is not a claude-mem plugin install is left alone
+# (with a warning) and the default extensions path is used instead. If the
+# default path is also taken by something else, fail rather than delete it.
+resolve_replaceable_extension_dir() {
+  local default_dir="${HOME}/.openclaw/extensions/claude-mem"
+  local dir
+  dir="$(resolve_extension_dir)"
+  if ! is_replaceable_claude_mem_plugin_dir "$dir"; then
+    warn "Leaving ${dir} untouched: it is not a claude-mem plugin install (no openclaw.plugin.json with id \"claude-mem\"). Installing to ${default_dir} instead." >&2
+    dir="$default_dir"
+  fi
+  if ! is_replaceable_claude_mem_plugin_dir "$dir"; then
+    error "${dir} exists but is not a claude-mem plugin install (no openclaw.plugin.json with id \"claude-mem\")."
+    error "Move it aside and run the installer again."
+    return 1
+  fi
+  echo "$dir"
 }
 
 CLAUDE_MEM_EXTENSION_DIR=""
@@ -604,7 +647,9 @@ openclaw_install_confirmation_flags() {
 install_plugin() {
   check_git
 
-  CLAUDE_MEM_EXTENSION_DIR="$(resolve_extension_dir)"
+  if ! CLAUDE_MEM_EXTENSION_DIR="$(resolve_replaceable_extension_dir)"; then
+    exit 1
+  fi
 
   local existing_plugin_dir="$CLAUDE_MEM_EXTENSION_DIR"
   if [[ -d "$existing_plugin_dir" ]]; then
