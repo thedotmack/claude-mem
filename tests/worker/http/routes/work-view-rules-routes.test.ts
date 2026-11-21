@@ -9,6 +9,7 @@ import { myRulesImportLine, WorkViewRoutes } from '../../../../src/services/work
 import { ruleIdForPreference } from '../../../../src/services/work-view/my-rules.mjs';
 import { emitContextInvalidation } from '../../../../src/shared/context-invalidation.js';
 import { claudeCodeImportLine, rulesAndToolsLoadedByClaudeCode } from '../../../../src/shared/claude-code-rules-import.js';
+import { ModeManager } from '../../../../src/services/domain/ModeManager.js';
 
 let directory: string;
 let source: Database;
@@ -23,6 +24,10 @@ const PREFERENCE = 'Never open draft pull requests.';
 const SUGGESTED_ID = ruleIdForPreference(PREFERENCE);
 
 beforeEach(async () => {
+  // Writing RULES-AND-TOOLS.md renders the active mode's legend. The worker
+  // loads a mode at startup; without this, the test passed only when an
+  // earlier file in the same bun process had loaded one.
+  ModeManager.getInstance().loadMode('code');
   directory = mkdtempSync(join(tmpdir(), 'work view rules test-'));
   const databasePath = join(directory, 'source.db');
   source = new Database(databasePath);
