@@ -23,7 +23,11 @@ import { notifyGrokBotIndex } from '../../integrations/GrokBotIndexWriter.js';
 import { updateFolderClaudeMdFiles } from '../../../utils/claude-md-utils.js';
 import { getWorkerPort } from '../../../shared/worker-utils.js';
 import { recordObserverFailure, recordObserverSuccess } from '../../../shared/observer-health.js';
-import { clearQuotaCooldown, routeAroundUnservableProviderIfLoaded } from '../../../shared/quota-cooldown.js';
+import {
+  clearQuotaCooldown,
+  routeAroundUnservableProviderIfLoaded,
+  syncObserverHealthQuotaCooldown,
+} from '../../../shared/quota-cooldown.js';
 import { recycleObserverConversation } from '../session/recycle-conversation.js';
 import { OBSERVER_TEXT_RATE_LIMIT_ABORT_REASON } from '../session/abort-reason.js';
 import { clearRejectedOutput, recordRejectedOutput } from '../session/OutputRecovery.js';
@@ -440,9 +444,16 @@ function recordSkippedMediaEvents(dbManager: DatabaseManager, keys: TurnMediaEve
  * its breaker in query using the admitted cooldown identity: an earlier
  * response here must not erase a newer failure from a concurrent pool slot.
  * A quota-fallback run proves its own credential works, not the spent primary one.
+ *
+ * Every clear restates the SessionStart notice from the settings in force now.
+ * Codex skips the clear here, so it restates the notice itself: otherwise a
+ * Claude hold mirrored before CLAUDE_MEM_PROVIDER was switched to codex keeps
+ * saying capture is paused while Codex is saving (#6372).
  */
 function releaseQuotaBreaker(session: ActiveSession): void {
-  if (session.currentProvider && session.currentProvider !== 'codex' && !session.claudeAuthOverride) {
+  if (session.currentProvider === 'codex') {
+    syncObserverHealthQuotaCooldown();
+  } else if (session.currentProvider && !session.claudeAuthOverride) {
     clearQuotaCooldown(session.currentProvider);
   }
 }
