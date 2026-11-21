@@ -117,6 +117,19 @@ function stripPrivateBlocks(input: string): string {
   }
   return out + input.slice(cursor);
 }
+function stripPrivateFromValue(value: unknown): unknown {
+  if (typeof value === "string") return stripPrivateBlocks(value);
+  if (Array.isArray(value)) return value.map(stripPrivateFromValue);
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = stripPrivateFromValue(v);
+    }
+    return out;
+  }
+  return value;
+}
+
 const CTX_CACHE_MS = 60_000; // /api/context/inject cache TTL (OpenClaw)
 // A hung worker must not hold OMP's handlers: the context handler is awaited
 // before every model call, so an unbounded fetch added up to OMP's 30 s handler
@@ -124,8 +137,12 @@ const CTX_CACHE_MS = 60_000; // /api/context/inject cache TTL (OpenClaw)
 const REQUEST_TIMEOUT_MS = 5_000;
 
 // ---------------------------------------------------------------------------
-// Worker endpoint
+// Runtime & endpoint resolution (matches src/services/hooks/runtime-selector.ts)
 // ---------------------------------------------------------------------------
+
+type RuntimeTarget =
+  | { mode: "worker"; baseUrl: string }
+  | { mode: "server"; baseUrl: string; apiKey: string; projectId: string };
 
 /**
  * claude-mem's settings.json, read the way claude-mem reads it: from
@@ -153,8 +170,18 @@ function setting(settings: Record<string, unknown>, key: string, fallback: strin
   return typeof fromFile === "string" && fromFile ? fromFile : fallback;
 }
 
-function resolveWorkerBase(): string {
-  const settings = readClaudeMemSettings();
+/** First non-empty trimmed value across keys (env wins over settings.json per key). */
+function firstSetting(settings: Record<string, unknown>, ...keys: string[]): string {
+  for (const key of keys) {
+    const fromEnv = process.env[key];
+    if (typeof fromEnv === "string" && fromEnv.trim()) return fromEnv.trim();
+    const fromFile = settings[key];
+    if (typeof fromFile === "string" && fromFile.trim()) return fromFile.trim();
+  }
+  return "";
+}
+
+function resolveWorkerBase(settings: Record<string, unknown>): string {
   const defaultPort = String(37700 + ((process.getuid?.() ?? 77) % 100));
   const port = setting(settings, "CLAUDE_MEM_WORKER_PORT", defaultPort);
   const host = setting(settings, "CLAUDE_MEM_WORKER_HOST", "127.0.0.1");
@@ -162,13 +189,35 @@ function resolveWorkerBase(): string {
   return `http://${urlHost}:${port}`;
 }
 
-// Resolved once per omp session (session_start clears it), so a port change in
-// settings.json is picked up by the next session without a restart.
-let workerBase: string | undefined;
+function resolveRuntime(): RuntimeTarget {
+  const settings = readClaudeMemSettings();
+  const selected = setting(settings, "CLAUDE_MEM_RUNTIME", "worker").trim().toLowerCase();
+  if (selected === "server" || selected === "server-beta") {
+    const baseUrl = firstSetting(settings, "CLAUDE_MEM_SERVER_URL", "CLAUDE_MEM_SERVER_BETA_URL").replace(/\/+$/, "");
+    const apiKey = firstSetting(settings, "CLAUDE_MEM_SERVER_API_KEY", "CLAUDE_MEM_SERVER_BETA_API_KEY");
+    const projectId = firstSetting(settings, "CLAUDE_MEM_SERVER_PROJECT_ID", "CLAUDE_MEM_SERVER_BETA_PROJECT_ID");
+    if (baseUrl && apiKey && projectId) {
+      return { mode: "server", baseUrl, apiKey, projectId };
+    }
+  }
+  return { mode: "worker", baseUrl: resolveWorkerBase(settings) };
+}
 
-function worker(): string {
-  workerBase ??= resolveWorkerBase();
-  return workerBase;
+// Resolved once per omp session (session_start / session_switch clears it), so
+// a runtime or port change in settings.json is picked up by the next session
+// without a restart.
+let runtimeTarget: RuntimeTarget | undefined;
+
+function runtime(): RuntimeTarget {
+  runtimeTarget ??= resolveRuntime();
+  return runtimeTarget;
+}
+
+function projectLabelFromCwd(cwd: string | undefined): string {
+  if (!cwd) return "";
+  const trimmed = cwd.replace(/[\\/]+$/, "");
+  const idx = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+  return idx >= 0 ? trimmed.slice(idx + 1) : trimmed;
 }
 
 // ---------------------------------------------------------------------------
@@ -201,13 +250,18 @@ function onOk(): void {
 
 interface OmpSession {
   id: string;
+  // Server-assigned UUID from POST /v1/sessions/start (server runtime only).
+  serverSessionId?: string;
+  // Runtime pinned when this session was first anchored, so async finalize
+  // finishes against the same target even after session_switch clears cache.
+  runtime?: RuntimeTarget;
   // The tail of the session's init chain: the latest prompt's init, which
-  // resolves true once the worker recorded that prompt. Observations and the
+  // resolves true once the runtime recorded that prompt. Observations and the
   // summary wait on it so they land after the prompts they belong to.
   lastInit?: Promise<boolean>;
   // All observations dispatched for this identity, including HTTP still in flight.
   observations?: Promise<void>;
-  // The worker recorded at least one prompt for this id (finalize needs one).
+  // The runtime recorded at least one prompt for this id (finalize needs one).
   anchored: boolean;
   // The worker skipped this checkout as excluded: nothing more is sent.
   excluded: boolean;
@@ -261,50 +315,91 @@ function lastMessageText(messages: unknown[], role: string): string {
   return "";
 }
 
-/** One bounded worker request; a timeout or an HTTP error rejects. */
-async function request(path: string, init: RequestInit = {}): Promise<Response> {
-  const r = await fetch(`${worker()}${path}`, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+/** One bounded request against the active runtime; a timeout or HTTP error rejects. */
+async function request(rt: RuntimeTarget, path: string, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(init.headers);
+  if (rt.mode === "server") {
+    headers.set("Authorization", `Bearer ${rt.apiKey}`);
+  }
+  const r = await fetch(`${rt.baseUrl}${path}`, {
+    ...init,
+    headers,
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
   if (!r.ok) throw new Error(`${path} ${r.status}`);
   return r;
 }
 
-function postJson(path: string, body: unknown): Promise<Response> {
-  return request(path, {
+function postJson(rt: RuntimeTarget, path: string, body: unknown): Promise<Response> {
+  return request(rt, path, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
 }
 
-function post(path: string, body: unknown): Promise<void> {
+function post(rt: RuntimeTarget, path: string, body: unknown): Promise<void> {
   if (breakerOpen()) return Promise.resolve();
-  return postJson(path, body).then(() => onOk(), () => onFail());
+  return postJson(rt, path, body).then(() => onOk(), () => onFail());
 }
 
 /**
  * Record one user prompt for `target`. Every prompt posts init, so prompts 2+
- * are recorded too (the worker de-duplicates a repeated prompt). Each init
- * waits for the previous one, so overlapping prompts reach the worker in order
- * and finalize, which waits for the chain's tail, covers all of them. A failed
+ * are recorded too (the worker de-duplicates a repeated prompt; the server's
+ * /v1/sessions/start is idempotent on externalSessionId). Each init waits for
+ * the previous one, so overlapping prompts reach the runtime in order and
+ * finalize, which waits for the chain's tail, covers all of them. A failed
  * init is counted by the breaker, and a later prompt simply tries again.
  */
 function sendPrompt(target: OmpSession, cwd: string | undefined, prompt: string): void {
-  const body: Record<string, unknown> = {
-    contentSessionId: target.id, prompt, platformSource: "omp", telemetryPromptEpochMs: Date.now(),
-  };
-  if (cwd) body.cwd = cwd;
-  target.lastInit = (target.lastInit ?? Promise.resolve(true)).then(() => recordPrompt(target, body));
+  const telemetryPromptEpochMs = Date.now();
+  target.lastInit = (target.lastInit ?? Promise.resolve(true)).then(
+    () => recordPrompt(target, cwd, prompt, telemetryPromptEpochMs),
+  );
 }
 
-// Resolves true once the worker recorded the prompt. Success is counted only
+// Resolves true once the runtime recorded the prompt. Success is counted only
 // after the reply is read: a body that stalls until the timeout is a failure,
 // not a recorded prompt.
-async function recordPrompt(target: OmpSession, body: Record<string, unknown>): Promise<boolean> {
+async function recordPrompt(
+  target: OmpSession,
+  cwd: string | undefined,
+  prompt: string,
+  telemetryPromptEpochMs: number,
+): Promise<boolean> {
   if (target.excluded || breakerOpen()) return false;
+  const rt = target.runtime ?? runtime();
   try {
-    const r = await postJson("/api/sessions/init", body);
+    if (rt.mode === "server") {
+      const metadata: Record<string, unknown> = { prompt: stripPrivateBlocks(prompt) };
+      if (cwd) metadata.cwd = cwd;
+      const project = projectLabelFromCwd(cwd);
+      if (project) metadata.project = project;
+      const r = await postJson(rt, "/v1/sessions/start", {
+        projectId: rt.projectId,
+        externalSessionId: target.id,
+        contentSessionId: target.id,
+        platformSource: "omp",
+        metadata,
+      });
+      const reply = (await r.json()) as { session?: { id?: unknown } } | null;
+      onOk();
+      target.runtime = rt;
+      if (typeof reply?.session?.id === "string" && reply.session.id) {
+        target.serverSessionId = reply.session.id;
+      }
+      target.anchored = true;
+      return true;
+    }
+
+    const body: Record<string, unknown> = {
+      contentSessionId: target.id, prompt, platformSource: "omp", telemetryPromptEpochMs,
+    };
+    if (cwd) body.cwd = cwd;
+    const r = await postJson(rt, "/api/sessions/init", body);
     const reply = (await r.json()) as { reason?: unknown } | null;
     onOk();
+    target.runtime = rt;
     // An excluded checkout is skipped before any session row exists.
     if (reply?.reason === "project_excluded") {
       target.excluded = true;
@@ -318,7 +413,55 @@ async function recordPrompt(target: OmpSession, body: Record<string, unknown>): 
   }
 }
 
-// Finalize a session the worker recorded a prompt for. Wait for its latest
+async function finalizeServerSession(
+  rt: Extract<RuntimeTarget, { mode: "server" }>,
+  target: OmpSession,
+  assistantMessage: string,
+): Promise<void> {
+  if (breakerOpen()) return;
+  try {
+    let serverSessionId = target.serverSessionId;
+    if (!serverSessionId) {
+      const startRes = await postJson(rt, "/v1/sessions/start", {
+        projectId: rt.projectId,
+        externalSessionId: target.id,
+        contentSessionId: target.id,
+        platformSource: "omp",
+      });
+      const startReply = (await startRes.json()) as { session?: { id?: unknown } } | null;
+      onOk();
+      if (typeof startReply?.session?.id === "string" && startReply.session.id) {
+        serverSessionId = startReply.session.id;
+        target.serverSessionId = serverSessionId;
+      }
+    }
+    if (!serverSessionId) return;
+
+    if (assistantMessage) {
+      await postJson(rt, "/v1/events", {
+        projectId: rt.projectId,
+        serverSessionId,
+        contentSessionId: target.id,
+        platformSource: "omp",
+        sourceType: "hook",
+        eventType: "assistant_message",
+        occurredAtEpoch: Date.now(),
+        payload: {
+          last_assistant_message: stripPrivateBlocks(assistantMessage),
+          platformSource: "omp",
+        },
+      });
+      onOk();
+    }
+
+    await postJson(rt, `/v1/sessions/${encodeURIComponent(serverSessionId)}/end`, {});
+    onOk();
+  } catch {
+    onFail();
+  }
+}
+
+// Finalize a session the runtime recorded a prompt for. Wait for its latest
 // init and all dispatched observations, so the summary cannot overtake them; a session
 // with no recorded prompt (every init failed, or the checkout is excluded) is
 // left alone.
@@ -326,7 +469,11 @@ function finalize(target: OmpSession | undefined, assistantMessage: string): voi
   if (!target) return;
   void Promise.all([target.lastInit ?? Promise.resolve(false), target.observations]).then(() => {
     if (!target.anchored || target.excluded) return;
-    return post("/api/sessions/summarize", {
+    const rt = target.runtime ?? runtime();
+    if (rt.mode === "server") {
+      return finalizeServerSession(rt, target, assistantMessage);
+    }
+    return post(rt, "/api/sessions/summarize", {
       contentSessionId: target.id,
       last_assistant_message: assistantMessage,
       platformSource: "omp",
@@ -343,7 +490,7 @@ export default function claudeMemBridge(pi: ExtensionAPI): void {
   // before_agent_start so we can capture the real user prompt (the worker records
   // and privacy-filters on it).
   pi.on("session_start", async () => {
-    workerBase = undefined;
+    runtimeTarget = undefined;
     newSession();
   });
 
@@ -366,7 +513,7 @@ export default function claudeMemBridge(pi: ExtensionAPI): void {
     ) return;
     finalize(session, lastAssistant);
     newSession();
-    workerBase = undefined;
+    runtimeTarget = undefined;
     ctxCache = null;
     lastAssistant = "";
   };
@@ -412,22 +559,48 @@ export default function claudeMemBridge(pi: ExtensionAPI): void {
     if (target.excluded) return;
     const response = stripPrivateBlocks(textFromContent(event?.content));
     const text = response.length > MAX_LEN ? response.slice(0, MAX_LEN) : response;
-    // Preserve failed attempts as errors so they cannot become completed file
-    // evidence. Cap after stripping complete privacy blocks.
-    const body: Record<string, unknown> = {
-      contentSessionId: target.id,
-      tool_name: toolName,
-      tool_input: nativeToolName === "read" ? fileReadInput(event?.input, event?.details) : event?.input,
-      tool_response: event?.isError === true ? { is_error: true, error: text } : text,
-      platformSource: "omp",
-      telemetryToolEpochMs,
-    };
-    if (ctx?.cwd) body.cwd = ctx.cwd;
-    if (typeof event?.toolCallId === "string" && event.toolCallId) body.tool_use_id = event.toolCallId;
+    const toolInput = nativeToolName === "read" ? fileReadInput(event?.input, event?.details) : event?.input;
+    const toolResponse = event?.isError === true ? { is_error: true, error: text } : text;
+    const toolUseId = typeof event?.toolCallId === "string" && event.toolCallId ? event.toolCallId : undefined;
 
     const observation = (target.lastInit ?? Promise.resolve(true)).then(recorded => {
       if (!recorded || target.excluded) return;
-      return post("/api/sessions/observations", body);
+      const rt = target.runtime ?? runtime();
+      if (rt.mode === "server") {
+        const payload: Record<string, unknown> = {
+          tool_name: toolName,
+          tool_input: stripPrivateFromValue(toolInput),
+          tool_response: toolResponse,
+          platformSource: "omp",
+        };
+        if (ctx?.cwd) payload.cwd = ctx.cwd;
+        if (toolUseId) payload.tool_use_id = toolUseId;
+        const eventBody: Record<string, unknown> = {
+          projectId: rt.projectId,
+          contentSessionId: target.id,
+          platformSource: "omp",
+          sourceType: "hook",
+          eventType: "tool_use",
+          occurredAtEpoch: telemetryToolEpochMs,
+          payload,
+        };
+        if (target.serverSessionId) eventBody.serverSessionId = target.serverSessionId;
+        return post(rt, "/v1/events", eventBody);
+      }
+
+      // Preserve failed attempts as errors so they cannot become completed file
+      // evidence. Cap after stripping complete privacy blocks.
+      const body: Record<string, unknown> = {
+        contentSessionId: target.id,
+        tool_name: toolName,
+        tool_input: toolInput,
+        tool_response: toolResponse,
+        platformSource: "omp",
+        telemetryToolEpochMs,
+      };
+      if (ctx?.cwd) body.cwd = ctx.cwd;
+      if (toolUseId) body.tool_use_id = toolUseId;
+      return post(rt, "/api/sessions/observations", body);
     });
     target.observations = Promise.all([target.observations, observation]).then(() => {});
   });
@@ -454,10 +627,22 @@ export default function claudeMemBridge(pi: ExtensionAPI): void {
 
     if (!ctxCache || ctxCache.cwd !== cwd || ctxCache.allSources !== allSources || now - ctxCache.at > CTX_CACHE_MS) {
       try {
-        const params = new URLSearchParams({ cwd });
-        if (!allSources) params.set("platformSource", "omp");
-        const r = await request(`/api/context/inject?${params}`);
-        const md = (await r.text()) ?? "";
+        const rt = runtime();
+        let md: string;
+        if (rt.mode === "server") {
+          const payload: Record<string, unknown> = { projectId: rt.projectId };
+          if (!allSources) payload.platformSource = "omp";
+          const project = projectLabelFromCwd(cwd);
+          if (project) payload.folderProjects = [project];
+          const r = await postJson(rt, "/v1/context", payload);
+          const data = (await r.json()) as { context?: unknown } | null;
+          md = typeof data?.context === "string" ? data.context : "";
+        } else {
+          const params = new URLSearchParams({ cwd });
+          if (!allSources) params.set("platformSource", "omp");
+          const r = await request(rt, `/api/context/inject?${params}`);
+          md = (await r.text()) ?? "";
+        }
         onOk();
         // Only cache non-empty — an empty result means "no memory yet", caching it
         // would delay newly-arriving memory by CTX_CACHE_MS.
