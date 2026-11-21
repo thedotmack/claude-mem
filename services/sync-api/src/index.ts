@@ -2,6 +2,7 @@
  * sync-api — protocol-v2 hub on a long-running HTTP + WebSocket process.
  * Routes and shapes match services/sync-hub. Storage is Postgres.
  */
+import { createHash, timingSafeEqual } from "node:crypto";
 import postgres from "postgres";
 import {
 	authenticateRequest,
@@ -121,9 +122,18 @@ function parseBoundedPositiveInteger(raw: string, maximum: number): number | nul
 	return value;
 }
 
-function hasInternalCredential(request: Request, env: SyncApiEnv): boolean {
+export function hasInternalCredential(request: Request, env: SyncApiEnv): boolean {
 	const secret = env.CMEM_INTERNAL_PROJECTOR_SECRET ?? "";
-	return secret.length > 0 && request.headers.get("Authorization") === `Bearer ${secret}`;
+	if (secret.length === 0) return false;
+	const header = request.headers.get("Authorization");
+	if (header === null) return false;
+	// The header is attacker-controlled and gates the projection-write surface,
+	// so the comparison must not leak the secret through timing. Comparing
+	// SHA-256 digests keeps the lengths uniform for timingSafeEqual, the same
+	// shape src/server/auth/api-key-hash.ts uses for API keys.
+	const provided = createHash("sha256").update(header).digest();
+	const expected = createHash("sha256").update(`Bearer ${secret}`).digest();
+	return timingSafeEqual(provided, expected);
 }
 
 function exactKeys(record: Record<string, unknown>, expected: string[]): boolean {
@@ -364,8 +374,7 @@ async function handleDeviceRename(request: Request, app: { env: SyncApiEnv; stor
 }
 
 async function handleRepairDrain(request: Request, app: { env: SyncApiEnv; store: HubStore }): Promise<Response> {
-	const expected = `Bearer ${app.env.CMEM_INTERNAL_PROJECTOR_SECRET ?? ""}`;
-	if (!app.env.CMEM_INTERNAL_PROJECTOR_SECRET || request.headers.get("Authorization") !== expected) {
+	if (!hasInternalCredential(request, app.env)) {
 		return errorResponse(401, "invalid internal projector credential");
 	}
 	let body: unknown;
