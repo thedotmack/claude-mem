@@ -59,7 +59,7 @@ def build(usage, prices, db, scope, window_block, now=None, use_gh=True, gh=wins
     now = now or period.now_pt(); pricer = costs.Pricer(prices)
     sess = evidence.load_sessions(db, scope)
     ev, dev_labels, counts, obs_unpriced = evidence.load_evidence(db, scope, sess, pricer.observer_input_rate)
-    for m, tok in obs_unpriced.items(): pricer.unpriced[m]["observer"]["tokens"] += tok
+    for m, tok in obs_unpriced.items(): pricer.unpriced[m or "<none>"]["observer"]["tokens"] += tok
     rows = usage["rows"]
     device_merge = devices.merge(rows, list(device_exports), sess, window_block) if device_exports else []   # Phase 5
     if scope.kind == "project":                     # keep only transcripts of sessions in the project (+ nothing else)
