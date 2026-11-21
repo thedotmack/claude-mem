@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import registerClaudeMemHook from '../omp/hooks/claude-mem.ts';
@@ -9,6 +10,8 @@ type HookHandler = (...args: unknown[]) => unknown;
 type CapturedRequest = {
   url: URL;
   path: string;
+  method: string;
+  headers: Headers;
   body: Record<string, unknown>;
 };
 
@@ -24,6 +27,8 @@ function installFetchCapture(
     requests.push({
       url,
       path: url.pathname,
+      method: init?.method ?? 'GET',
+      headers: new Headers(init?.headers),
       body: JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>,
     });
     const reply = replyFor(url.pathname);
@@ -59,6 +64,8 @@ function installDeferredInitCapture(
     requests.push({
       url,
       path: url.pathname,
+      method: init?.method ?? 'GET',
+      headers: new Headers(init?.headers),
       body: JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>,
     });
     return new Response(JSON.stringify(isInit ? initReply : {}), { status: 200 });
@@ -75,6 +82,8 @@ function installHeldInitCapture(requests: CapturedRequest[]): { releaseNextInit:
     requests.push({
       url,
       path: url.pathname,
+      method: init?.method ?? 'GET',
+      headers: new Headers(init?.headers),
       body: JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>,
     });
     if (url.pathname === '/api/sessions/init') await new Promise<void>(resolve => heldInits.push(resolve));
@@ -107,6 +116,10 @@ function registerHook(): Record<string, HookHandler> {
 const ENV_KEYS = [
   'CLAUDE_MEM_DATA_DIR', 'CLAUDE_MEM_WORKER_PORT', 'CLAUDE_MEM_WORKER_HOST',
   'CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES',
+  'CLAUDE_MEM_RUNTIME',
+  'CLAUDE_MEM_SERVER_URL', 'CLAUDE_MEM_SERVER_API_KEY', 'CLAUDE_MEM_SERVER_PROJECT_ID',
+  'CLAUDE_MEM_SERVER_BETA_URL', 'CLAUDE_MEM_SERVER_BETA_API_KEY', 'CLAUDE_MEM_SERVER_BETA_PROJECT_ID',
+  'CLAUDE_MEM_EXCLUDED_PROJECTS', 'CLAUDE_MEM_SKIP_TOOLS', 'CLAUDE_MEM_INTERNAL',
 ] as const;
 
 describe('OMP Claude Mem hook', () => {
@@ -119,9 +132,9 @@ describe('OMP Claude Mem hook', () => {
     // Each test reads settings.json from its own data dir.
     dataDir = mkdtempSync(join(tmpdir(), 'omp-hook-data-'));
     process.env.CLAUDE_MEM_DATA_DIR = dataDir;
-    delete process.env.CLAUDE_MEM_WORKER_PORT;
-    delete process.env.CLAUDE_MEM_WORKER_HOST;
-    delete process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
+    for (const key of ENV_KEYS) {
+      if (key !== 'CLAUDE_MEM_DATA_DIR') delete process.env[key];
+    }
   });
 
   afterEach(() => {
@@ -458,9 +471,9 @@ describe('OMP Claude Mem hook', () => {
 
   it('adds transient historical context without mutating or replacing the conversation', async () => {
     const requests: CapturedRequest[] = [];
-    globalThis.fetch = (async (input: RequestInfo | URL) => {
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = new URL(String(input));
-      requests.push({ url, path: url.pathname, body: {} });
+      requests.push({ url, path: url.pathname, method: init?.method ?? 'GET', headers: new Headers(init?.headers), body: {} });
       return new Response('# memory', { status: 200 });
     }) as typeof fetch;
     const handlers = registerHook();
@@ -805,5 +818,478 @@ describe('OMP Claude Mem hook', () => {
     for (const event of registered) {
       expect(fixture.events).toContain(event);
     }
+  });
+
+  describe('server runtime (CLAUDE_MEM_RUNTIME=server)', () => {
+    it('routes session start, tool events, context, and session end to /v1 with bearer auth', async () => {
+      writeFileSync(join(dataDir, 'settings.json'), JSON.stringify({
+        CLAUDE_MEM_RUNTIME: 'server',
+        CLAUDE_MEM_SERVER_URL: 'https://mem.example.com/',
+        CLAUDE_MEM_SERVER_API_KEY: 'cmem_secret_key',
+        CLAUDE_MEM_SERVER_PROJECT_ID: 'proj-123',
+      }));
+      const requests: CapturedRequest[] = [];
+      installFetchCapture(requests, path => {
+        if (path === '/v1/sessions/start') {
+          return { status: 201, body: { session: { id: 'srv-sess-1', projectId: 'proj-123' } } };
+        }
+        if (path === '/v1/context') {
+          return { status: 200, body: { observations: [], context: '# shared server memory' } };
+        }
+        return { status: 200, body: {} };
+      });
+      const handlers = registerHook();
+      const cwd = '/work/acme';
+
+      await handlers.session_start?.();
+      const ctxResult = await handlers.context?.(
+        { messages: [{ role: 'user', content: 'hi' }] },
+        { cwd },
+      ) as { messages: Array<{ role: string; customType?: string; content: string }> };
+      await handlers.before_agent_start?.(
+        { prompt: 'fix <private>secret</private> bug' },
+        { cwd },
+      );
+      await handlers.tool_result?.(
+        {
+          toolName: 'read',
+          toolCallId: 'call-42',
+          input: { path: 'a.ts', note: 'keep <private>hidden</private> ok' },
+          content: 'file contents',
+        },
+        { cwd },
+      );
+      await handlers.agent_end?.({
+        messages: [{ role: 'assistant', content: 'fixed <private>token</private> it' }],
+      });
+      await handlers.session_shutdown?.();
+      await drainMicrotasks();
+
+      expect(requests.map(r => `${r.method} ${r.url.origin}${r.path}`)).toEqual([
+        'POST https://mem.example.com/v1/context',
+        'POST https://mem.example.com/v1/sessions/start',
+        'POST https://mem.example.com/v1/events',
+        'POST https://mem.example.com/v1/events',
+        'POST https://mem.example.com/v1/events',
+        'POST https://mem.example.com/v1/sessions/srv-sess-1/end',
+      ]);
+      for (const req of requests) {
+        expect(req.headers.get('authorization')).toBe('Bearer cmem_secret_key');
+      }
+
+      // Context request & injection
+      expect(requests[0]?.body).toEqual({
+        projectId: 'proj-123',
+        platformSource: 'omp',
+        folderProjects: ['acme'],
+      });
+      expect(ctxResult.messages.at(-1)?.content).toContain('# shared server memory');
+
+      // Session start request
+      const contentSessionId = String(requests[1]?.body.contentSessionId);
+      expect(contentSessionId).toMatch(/^omp-/);
+      expect(requests[1]?.body).toEqual({
+        projectId: 'proj-123',
+        externalSessionId: contentSessionId,
+        contentSessionId,
+        platformSource: 'omp',
+        metadata: {
+          prompt: 'fix  bug',
+          cwd,
+          project: 'acme',
+        },
+      });
+
+      // Every prompt is also its own event, recorded without inference
+      expect(requests[2]?.url.searchParams.get('generate')).toBe('false');
+      expect(requests[2]?.body).toEqual({
+        projectId: 'proj-123',
+        serverSessionId: 'srv-sess-1',
+        contentSessionId,
+        platformSource: 'omp',
+        sourceType: 'hook',
+        eventType: 'user_prompt',
+        occurredAtEpoch: expect.any(Number),
+        payload: { prompt: 'fix  bug', cwd, platformSource: 'omp' },
+      });
+
+      // Tool event request
+      expect(requests[3]?.url.searchParams.get('generate')).toBeNull();
+      expect(requests[3]?.body).toMatchObject({
+        projectId: 'proj-123',
+        serverSessionId: 'srv-sess-1',
+        contentSessionId,
+        platformSource: 'omp',
+        sourceType: 'hook',
+        eventType: 'tool_use',
+        occurredAtEpoch: expect.any(Number),
+        payload: {
+          tool_name: 'Read',
+          tool_input: { path: 'a.ts', note: 'keep  ok' },
+          tool_response: 'file contents',
+          platformSource: 'omp',
+          cwd,
+          tool_use_id: 'call-42',
+        },
+      });
+
+      // Assistant message event before session end
+      expect(requests[4]?.body).toMatchObject({
+        projectId: 'proj-123',
+        serverSessionId: 'srv-sess-1',
+        contentSessionId,
+        platformSource: 'omp',
+        sourceType: 'hook',
+        eventType: 'assistant_message',
+        occurredAtEpoch: expect.any(Number),
+        payload: {
+          last_assistant_message: 'fixed  it',
+          platformSource: 'omp',
+        },
+      });
+
+      // End session request
+      expect(requests[5]?.body).toEqual({});
+    });
+
+    it('accepts legacy server-beta runtime and CLAUDE_MEM_SERVER_BETA_* settings when canonical keys are empty', async () => {
+      writeFileSync(join(dataDir, 'settings.json'), JSON.stringify({
+        env: {
+          CLAUDE_MEM_RUNTIME: 'server-beta',
+          CLAUDE_MEM_SERVER_URL: '',
+          CLAUDE_MEM_SERVER_API_KEY: '',
+          CLAUDE_MEM_SERVER_PROJECT_ID: '',
+          CLAUDE_MEM_SERVER_BETA_URL: 'http://127.0.0.1:37877',
+          CLAUDE_MEM_SERVER_BETA_API_KEY: 'beta-key',
+          CLAUDE_MEM_SERVER_BETA_PROJECT_ID: 'beta-proj',
+        },
+      }));
+      const requests: CapturedRequest[] = [];
+      installFetchCapture(requests, path => (
+        path === '/v1/sessions/start'
+          ? { body: { session: { id: 'srv-beta-1' } } }
+          : {}
+      ));
+      const handlers = registerHook();
+
+      await handlers.session_start?.();
+      await handlers.before_agent_start?.({ prompt: 'hello' }, { cwd: '/tmp/repo' });
+      await drainMicrotasks();
+
+      expect(requests.map(r => r.path)).toEqual(['/v1/sessions/start', '/v1/events']);
+      expect(requests[0]?.url.origin).toBe('http://127.0.0.1:37877');
+      expect(requests[0]?.path).toBe('/v1/sessions/start');
+      expect(requests[0]?.headers.get('authorization')).toBe('Bearer beta-key');
+      expect(requests[0]?.body.projectId).toBe('beta-proj');
+    });
+
+    for (const missing of ['CLAUDE_MEM_SERVER_URL', 'CLAUDE_MEM_SERVER_API_KEY', 'CLAUDE_MEM_SERVER_PROJECT_ID'] as const) {
+      it(`falls back to the local worker when ${missing} is missing`, async () => {
+        const cfg: Record<string, string> = {
+          CLAUDE_MEM_RUNTIME: 'server',
+          CLAUDE_MEM_SERVER_URL: 'https://mem.example.com',
+          CLAUDE_MEM_SERVER_API_KEY: 'cmem_secret_key',
+          CLAUDE_MEM_SERVER_PROJECT_ID: 'proj-123',
+          CLAUDE_MEM_WORKER_PORT: '45681',
+        };
+        delete cfg[missing];
+        writeFileSync(join(dataDir, 'settings.json'), JSON.stringify(cfg));
+        const requests: CapturedRequest[] = [];
+        installFetchCapture(requests);
+        const handlers = registerHook();
+
+        await handlers.session_start?.();
+        await handlers.before_agent_start?.({ prompt: 'fallback' }, { cwd: '/tmp/fallback' });
+        await drainMicrotasks();
+
+        expect(requests).toHaveLength(1);
+        expect(requests[0]?.url.host).toBe('127.0.0.1:45681');
+        expect(requests[0]?.path).toBe('/api/sessions/init');
+        expect(requests[0]?.headers.get('authorization')).toBeNull();
+      });
+    }
+
+    it('lets environment variables override settings.json for runtime selection', async () => {
+      writeFileSync(join(dataDir, 'settings.json'), JSON.stringify({
+        CLAUDE_MEM_RUNTIME: 'server',
+        CLAUDE_MEM_SERVER_URL: 'https://mem.example.com',
+        CLAUDE_MEM_SERVER_API_KEY: 'cmem_secret_key',
+        CLAUDE_MEM_SERVER_PROJECT_ID: 'proj-123',
+        CLAUDE_MEM_WORKER_PORT: '45682',
+      }));
+      process.env.CLAUDE_MEM_RUNTIME = 'worker';
+      const requests: CapturedRequest[] = [];
+      installFetchCapture(requests);
+      const handlers = registerHook();
+
+      await handlers.session_start?.();
+      await handlers.before_agent_start?.({ prompt: 'use worker' }, { cwd: '/tmp/env-override' });
+      await drainMicrotasks();
+
+      expect(requests[0]?.path).toBe('/api/sessions/init');
+      expect(requests[0]?.url.host).toBe('127.0.0.1:45682');
+    });
+
+    it('omits platformSource from /v1/context when CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES=true', async () => {
+      writeFileSync(join(dataDir, 'settings.json'), JSON.stringify({
+        CLAUDE_MEM_RUNTIME: 'server',
+        CLAUDE_MEM_SERVER_URL: 'https://mem.example.com',
+        CLAUDE_MEM_SERVER_API_KEY: 'cmem_secret_key',
+        CLAUDE_MEM_SERVER_PROJECT_ID: 'proj-123',
+        CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES: 'true',
+      }));
+      const requests: CapturedRequest[] = [];
+      installFetchCapture(requests, () => ({ body: { observations: [], context: 'all-host memory' } }));
+      const handlers = registerHook();
+
+      await handlers.session_start?.();
+      await handlers.context?.({ messages: [] }, { cwd: '/work/acme' });
+
+      expect(requests[0]?.path).toBe('/v1/context');
+      expect(requests[0]?.body).toEqual({
+        projectId: 'proj-123',
+        folderProjects: ['acme'],
+      });
+    });
+
+    it('does not finalize a server session when /v1/sessions/start fails', async () => {
+      writeFileSync(join(dataDir, 'settings.json'), JSON.stringify({
+        CLAUDE_MEM_RUNTIME: 'server',
+        CLAUDE_MEM_SERVER_URL: 'https://mem.example.com',
+        CLAUDE_MEM_SERVER_API_KEY: 'cmem_secret_key',
+        CLAUDE_MEM_SERVER_PROJECT_ID: 'proj-123',
+      }));
+      const requests: CapturedRequest[] = [];
+      installFetchCapture(requests, path => (
+        path === '/v1/sessions/start' ? { status: 503 } : {}
+      ));
+      const handlers = registerHook();
+
+      await handlers.session_start?.();
+      await handlers.before_agent_start?.({ prompt: 'server down' }, { cwd: '/tmp/srv-fail' });
+      await handlers.tool_result?.({ toolName: 'read', content: 'x' }, { cwd: '/tmp/srv-fail' });
+      await handlers.session_shutdown?.();
+      await drainMicrotasks();
+
+      expect(requests.map(r => r.path)).toEqual(['/v1/sessions/start']);
+    });
+
+    it('finalizes the previous server session and rotates on compaction', async () => {
+      writeFileSync(join(dataDir, 'settings.json'), JSON.stringify({
+        CLAUDE_MEM_RUNTIME: 'server',
+        CLAUDE_MEM_SERVER_URL: 'https://mem.example.com',
+        CLAUDE_MEM_SERVER_API_KEY: 'cmem_secret_key',
+        CLAUDE_MEM_SERVER_PROJECT_ID: 'proj-123',
+      }));
+      let nextServerId = 0;
+      const requests: CapturedRequest[] = [];
+      installFetchCapture(requests, path => {
+        if (path === '/v1/sessions/start') {
+          nextServerId += 1;
+          return { status: 201, body: { session: { id: `srv-compact-${nextServerId}` } } };
+        }
+        return { status: 200, body: {} };
+      });
+      const handlers = registerHook();
+
+      await handlers.session_start?.();
+      await handlers.before_agent_start?.({ prompt: 'before compact' }, { cwd: '/work/acme' });
+      await handlers.agent_end?.({ messages: [{ role: 'assistant', content: 'pre-compact reply' }] });
+      await handlers.session_compact?.();
+      await handlers.before_agent_start?.({ prompt: 'after compact' }, { cwd: '/work/acme' });
+      await handlers.session_shutdown?.();
+      await drainMicrotasks();
+
+      const ends = requests.filter(r => r.path.endsWith('/end')).map(r => r.path).sort();
+      expect(ends).toEqual([
+        '/v1/sessions/srv-compact-1/end',
+        '/v1/sessions/srv-compact-2/end',
+      ]);
+      const assistantEvents = requests.filter(r => r.path === '/v1/events' && r.body.eventType === 'assistant_message');
+      expect(assistantEvents).toHaveLength(1);
+      expect(assistantEvents[0]?.body).toMatchObject({
+        serverSessionId: 'srv-compact-1',
+        payload: { last_assistant_message: 'pre-compact reply', platformSource: 'omp' },
+      });
+    });
+
+    // Server events never pass through the worker's ingest gates, so the hook
+    // applies them itself (#6367 review).
+    function writeServerSettings(extra: Record<string, string> = {}): void {
+      writeFileSync(join(dataDir, 'settings.json'), JSON.stringify({
+        CLAUDE_MEM_RUNTIME: 'server',
+        CLAUDE_MEM_SERVER_URL: 'https://mem.example.com',
+        CLAUDE_MEM_SERVER_API_KEY: 'cmem_secret_key',
+        CLAUDE_MEM_SERVER_PROJECT_ID: 'proj-123',
+        ...extra,
+      }));
+    }
+
+    function installServerCapture(requests: CapturedRequest[]): void {
+      installFetchCapture(requests, path => {
+        if (path === '/v1/sessions/start') return { status: 201, body: { session: { id: 'srv-gate-1' } } };
+        if (path === '/v1/context') return { body: { context: '# memory' } };
+        return {};
+      });
+    }
+
+    for (const [label, configure] of [
+      ['a CLAUDE_MEM_EXCLUDED_PROJECTS glob in settings.json', () => writeServerSettings({ CLAUDE_MEM_EXCLUDED_PROJECTS: '/work/private/**' })],
+      ['a folder-name pattern in the environment', () => {
+        writeServerSettings({ CLAUDE_MEM_EXCLUDED_PROJECTS: 'nothing-matches' });
+        process.env.CLAUDE_MEM_EXCLUDED_PROJECTS = 'secret-*';
+      }],
+      ['CLAUDE_MEM_INTERNAL=1', () => {
+        writeServerSettings();
+        process.env.CLAUDE_MEM_INTERNAL = '1';
+      }],
+    ] as const) {
+      it(`sends nothing to the server for an excluded checkout (${label})`, async () => {
+        configure();
+        const requests: CapturedRequest[] = [];
+        installServerCapture(requests);
+        const handlers = registerHook();
+        const cwd = '/work/private/secret-app';
+
+        await handlers.session_start?.();
+        // A tool result before any prompt never waits on an init.
+        await handlers.tool_result?.({ toolName: 'bash', content: 'early' }, { cwd });
+        const ctxResult = await handlers.context?.({ messages: [] }, { cwd });
+        await handlers.before_agent_start?.({ prompt: 'leak nothing' }, { cwd });
+        await handlers.tool_result?.({ toolName: 'read', content: 'x' }, { cwd });
+        await handlers.agent_end?.({ messages: [{ role: 'assistant', content: 'done' }] });
+        await handlers.session_shutdown?.();
+        await drainMicrotasks();
+
+        expect(ctxResult).toBeUndefined();
+        expect(requests).toEqual([]);
+      });
+    }
+
+    it('still sends a checkout that no exclusion pattern matches', async () => {
+      writeServerSettings({ CLAUDE_MEM_EXCLUDED_PROJECTS: '/work/private/**,secret-*' });
+      const requests: CapturedRequest[] = [];
+      installServerCapture(requests);
+      const handlers = registerHook();
+
+      await handlers.session_start?.();
+      await handlers.before_agent_start?.({ prompt: 'public work' }, { cwd: '/work/public/app' });
+      await drainMicrotasks();
+
+      expect(requests.map(r => r.path)).toEqual(['/v1/sessions/start', '/v1/events']);
+    });
+
+    it('records every prompt as a user_prompt event with generate=false', async () => {
+      writeServerSettings();
+      const requests: CapturedRequest[] = [];
+      installServerCapture(requests);
+      const handlers = registerHook();
+      const cwd = '/work/acme';
+
+      await handlers.session_start?.();
+      await handlers.before_agent_start?.({ prompt: 'first ask' }, { cwd });
+      await handlers.before_agent_start?.({ prompt: 'second ask' }, { cwd });
+      await drainMicrotasks();
+
+      const promptEvents = requests.filter(r => r.path === '/v1/events' && r.body.eventType === 'user_prompt');
+      expect(promptEvents.map(r => r.url.searchParams.get('generate'))).toEqual(['false', 'false']);
+      expect(promptEvents.map(r => (r.body.payload as { prompt: string }).prompt)).toEqual(['first ask', 'second ask']);
+      expect(promptEvents.map(r => r.body.serverSessionId)).toEqual(['srv-gate-1', 'srv-gate-1']);
+    });
+
+    it('names the project the way the Claude Code hooks do: git root, or <repo>/<worktree>', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'omp-hook-git-'));
+      try {
+        const repo = join(root, 'acme-repo');
+        const worktree = join(root, 'acme-feature');
+        const git = (...args: string[]) => execFileSync('git', args, { stdio: 'ignore' });
+        git('init', '-q', repo);
+        git('-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-q', '--allow-empty', '-m', 'init');
+        git('-C', repo, 'worktree', 'add', '-q', '--detach', worktree);
+        const subdir = join(repo, 'src', 'deep');
+        mkdirSync(subdir, { recursive: true });
+
+        writeServerSettings();
+        const requests: CapturedRequest[] = [];
+        installServerCapture(requests);
+        const handlers = registerHook();
+
+        for (const cwd of [subdir, worktree]) {
+          await handlers.session_start?.();
+          await handlers.context?.({ messages: [] }, { cwd });
+          await handlers.before_agent_start?.({ prompt: 'name me' }, { cwd });
+          await drainMicrotasks();
+        }
+
+        const contexts = requests.filter(r => r.path === '/v1/context').map(r => r.body.folderProjects);
+        const starts = requests.filter(r => r.path === '/v1/sessions/start')
+          .map(r => (r.body.metadata as { project?: string }).project);
+        expect(contexts).toEqual([['acme-repo'], ['acme-repo/acme-feature']]);
+        expect(starts).toEqual(['acme-repo', 'acme-repo/acme-feature']);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it('drops tools listed in CLAUDE_MEM_SKIP_TOOLS, by OMP or mapped name, in any case', async () => {
+      writeServerSettings({ CLAUDE_MEM_SKIP_TOOLS: ' BASH , todo_write' });
+      const requests: CapturedRequest[] = [];
+      installServerCapture(requests);
+      const handlers = registerHook();
+      const cwd = '/work/acme';
+
+      await handlers.session_start?.();
+      await handlers.before_agent_start?.({ prompt: 'run things' }, { cwd });
+      await handlers.tool_result?.({ toolName: 'bash', content: 'skipped (mapped to Bash)' }, { cwd });
+      await handlers.tool_result?.({ toolName: 'todo_write', content: 'skipped (native name)' }, { cwd });
+      await handlers.tool_result?.({ toolName: 'read', content: 'kept' }, { cwd });
+      await drainMicrotasks();
+
+      const tools = requests.filter(r => r.body.eventType === 'tool_use')
+        .map(r => (r.body.payload as { tool_name: string }).tool_name);
+      expect(tools).toEqual(['Read']);
+    });
+
+    it('records nothing for a wholly private prompt: no start, prompt event or tool events', async () => {
+      writeServerSettings();
+      const requests: CapturedRequest[] = [];
+      installServerCapture(requests);
+      const handlers = registerHook();
+      const cwd = '/work/acme';
+
+      await handlers.session_start?.();
+      await handlers.before_agent_start?.({ prompt: '  <private>my token is abc</private>  ' }, { cwd });
+      await handlers.tool_result?.({ toolName: 'read', content: 'private turn' }, { cwd });
+      await handlers.agent_end?.({ messages: [{ role: 'assistant', content: 'private reply' }] });
+      await handlers.session_shutdown?.();
+      await drainMicrotasks();
+
+      expect(requests).toEqual([]);
+    });
+
+    it('drops a private later turn but still ends the session its public turn started', async () => {
+      writeServerSettings();
+      const requests: CapturedRequest[] = [];
+      installServerCapture(requests);
+      const handlers = registerHook();
+      const cwd = '/work/acme';
+
+      await handlers.session_start?.();
+      await handlers.before_agent_start?.({ prompt: 'public ask' }, { cwd });
+      await handlers.tool_result?.({ toolName: 'read', content: 'public turn' }, { cwd });
+      await handlers.before_agent_start?.({ prompt: '<private>secret ask</private>' }, { cwd });
+      await handlers.tool_result?.({ toolName: 'bash', content: 'private turn' }, { cwd });
+      await handlers.agent_end?.({ messages: [{ role: 'assistant', content: 'private reply' }] });
+      await handlers.session_shutdown?.();
+      await drainMicrotasks();
+
+      expect(requests.map(r => `${r.path} ${String(r.body.eventType ?? '')}`.trim())).toEqual([
+        '/v1/sessions/start',
+        '/v1/events user_prompt',
+        '/v1/events tool_use',
+        '/v1/sessions/srv-gate-1/end',
+      ]);
+      expect(JSON.stringify(requests.map(r => r.body))).not.toContain('secret ask');
+    });
   });
 });

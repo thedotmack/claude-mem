@@ -31,15 +31,21 @@
  *  - All POSTs are fire-and-forget via detached chains; the handler returns
  *    synchronously and never blocks the tool dispatch (30s handler cap). Every
  *    request is bounded by a timeout, which counts as a breaker failure.
- *  - The project is never named here: every request carries the session's cwd
- *    and the worker resolves the project key from it, the same resolver the
- *    Claude Code hooks use (worktrees, markers, environments).
+ *  - Worker mode never names the project: every request carries the session's
+ *    cwd and the worker resolves the project key from it, the same resolver
+ *    the Claude Code hooks use (worktrees, markers, environments).
+ *  - Server mode (CLAUDE_MEM_RUNTIME=server) bypasses the worker, so the hook
+ *    does the worker's ingest work itself, as hermes/claude-mem/client.py does:
+ *    it derives the project key from git, checks CLAUDE_MEM_EXCLUDED_PROJECTS
+ *    before every request, drops CLAUDE_MEM_SKIP_TOOLS tools, skips wholly
+ *    private prompts, and posts each prompt as a user_prompt event.
  */
 
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, normalize, resolve } from "node:path";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 
 // ---------------------------------------------------------------------------
@@ -117,6 +123,19 @@ function stripPrivateBlocks(input: string): string {
   }
   return out + input.slice(cursor);
 }
+function stripPrivateFromValue(value: unknown): unknown {
+  if (typeof value === "string") return stripPrivateBlocks(value);
+  if (Array.isArray(value)) return value.map(stripPrivateFromValue);
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = stripPrivateFromValue(v);
+    }
+    return out;
+  }
+  return value;
+}
+
 const CTX_CACHE_MS = 60_000; // /api/context/inject cache TTL (OpenClaw)
 // A hung worker must not hold OMP's handlers: the context handler is awaited
 // before every model call, so an unbounded fetch added up to OMP's 30 s handler
@@ -124,8 +143,22 @@ const CTX_CACHE_MS = 60_000; // /api/context/inject cache TTL (OpenClaw)
 const REQUEST_TIMEOUT_MS = 5_000;
 
 // ---------------------------------------------------------------------------
-// Worker endpoint
+// Runtime & endpoint resolution (matches src/services/hooks/runtime-selector.ts)
 // ---------------------------------------------------------------------------
+
+// Server mode sends events straight to the server, which never runs the
+// worker's ingest gates, so the hook applies them itself (as the Claude Code
+// hooks and the Hermes plugin do): project exclusion and CLAUDE_MEM_SKIP_TOOLS.
+type ServerTarget = {
+  mode: "server";
+  baseUrl: string;
+  apiKey: string;
+  projectId: string;
+  excludedProjects: string;
+  // Lower-cased CLAUDE_MEM_SKIP_TOOLS entries.
+  skipTools: Set<string>;
+};
+type RuntimeTarget = { mode: "worker"; baseUrl: string } | ServerTarget;
 
 /**
  * claude-mem's settings.json, read the way claude-mem reads it: from
@@ -155,8 +188,18 @@ function setting(settings: Record<string, unknown>, key: string, fallback: strin
   return typeof fromFile === "string" && fromFile ? fromFile : fallback;
 }
 
-function resolveWorkerBase(): string {
-  const settings = readClaudeMemSettings();
+/** First non-empty trimmed value across keys (env wins over settings.json per key). */
+function firstSetting(settings: Record<string, unknown>, ...keys: string[]): string {
+  for (const key of keys) {
+    const fromEnv = process.env[key];
+    if (typeof fromEnv === "string" && fromEnv.trim()) return fromEnv.trim();
+    const fromFile = settings[key];
+    if (typeof fromFile === "string" && fromFile.trim()) return fromFile.trim();
+  }
+  return "";
+}
+
+function resolveWorkerBase(settings: Record<string, unknown>): string {
   const defaultPort = String(37700 + ((process.getuid?.() ?? 77) % 100));
   const port = setting(settings, "CLAUDE_MEM_WORKER_PORT", defaultPort);
   const host = setting(settings, "CLAUDE_MEM_WORKER_HOST", "127.0.0.1");
@@ -164,13 +207,152 @@ function resolveWorkerBase(): string {
   return `http://${urlHost}:${port}`;
 }
 
-// Resolved once per omp session (session_start clears it), so a port change in
-// settings.json is picked up by the next session without a restart.
-let workerBase: string | undefined;
+function resolveRuntime(): RuntimeTarget {
+  const settings = readClaudeMemSettings();
+  const selected = setting(settings, "CLAUDE_MEM_RUNTIME", "worker").trim().toLowerCase();
+  if (selected === "server" || selected === "server-beta") {
+    const baseUrl = firstSetting(settings, "CLAUDE_MEM_SERVER_URL", "CLAUDE_MEM_SERVER_BETA_URL").replace(/\/+$/, "");
+    const apiKey = firstSetting(settings, "CLAUDE_MEM_SERVER_API_KEY", "CLAUDE_MEM_SERVER_BETA_API_KEY");
+    const projectId = firstSetting(settings, "CLAUDE_MEM_SERVER_PROJECT_ID", "CLAUDE_MEM_SERVER_BETA_PROJECT_ID");
+    if (baseUrl && apiKey && projectId) {
+      const skipTools = new Set(
+        setting(settings, "CLAUDE_MEM_SKIP_TOOLS", "").split(",").map(tool => tool.trim().toLowerCase()).filter(Boolean),
+      );
+      return {
+        mode: "server",
+        baseUrl,
+        apiKey,
+        projectId,
+        excludedProjects: setting(settings, "CLAUDE_MEM_EXCLUDED_PROJECTS", ""),
+        skipTools,
+      };
+    }
+  }
+  return { mode: "worker", baseUrl: resolveWorkerBase(settings) };
+}
 
-function worker(): string {
-  workerBase ??= resolveWorkerBase();
-  return workerBase;
+/** Port of the worker's glob (src/utils/project-filter.ts globToRegex). Keep the two in step. */
+function globToRegex(pattern: string): RegExp {
+  let expanded = pattern.replace(/\\/g, "/");
+  if (expanded === "~") expanded = homedir();
+  else if (expanded.startsWith("~/")) expanded = join(homedir(), expanded.slice(2));
+  expanded = expanded.replace(/\\/g, "/");
+  const regex = expanded.replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/(^|\/)\*\*(?=\/)/g, "$1<<<GLOBSTAR_DIR>>>")
+    .replace(/\*\*/g, "<<<GLOBSTAR>>>")
+    .replace(/\*/g, "[^/]*")
+    .replace(/\?/g, "[^/]")
+    .replace(/<<<GLOBSTAR>>>/g, ".*")
+    .replace(/<<<GLOBSTAR_DIR>>>\//g, "(?:.*/)?");
+  return new RegExp(`^${regex}$`, "s");
+}
+
+/**
+ * CLAUDE_MEM_EXCLUDED_PROJECTS, matched as the worker matches it
+ * (src/utils/project-filter.ts isProjectExcluded): comma-separated globs
+ * (`*`, `**`, `?`, leading `~`) against the full path and its last folder
+ * name; `dir/**` also covers `dir` itself.
+ */
+function isProjectExcluded(cwd: string, patterns: string): boolean {
+  if (!cwd || !patterns.trim()) return false;
+  const path = cwd.replace(/\\/g, "/");
+  const name = projectLabelFromCwd(path);
+  for (const raw of patterns.split(",")) {
+    const pattern = raw.trim();
+    if (!pattern) continue;
+    try {
+      if (globToRegex(pattern).test(path) || globToRegex(pattern).test(name)) return true;
+      if (pattern.replace(/\\/g, "/").endsWith("/**")
+        && globToRegex(pattern.slice(0, -3)).test(path.replace(/\/+$/, ""))) return true;
+    } catch {
+      continue; // an invalid pattern excludes nothing, as in the worker
+    }
+  }
+  return false;
+}
+
+/**
+ * Server mode only: whether nothing from `cwd` may leave this process. The
+ * worker answers this itself (`project_excluded`); the server does not, so the
+ * hook checks before every server request, as src/shared/should-track-project.ts
+ * does for the Claude Code hooks. CLAUDE_MEM_INTERNAL=1 marks claude-mem's own
+ * agent processes.
+ */
+function serverExcludes(rt: ServerTarget, cwd: string | undefined): boolean {
+  if (process.env.CLAUDE_MEM_INTERNAL === "1") return true;
+  return !!cwd && isProjectExcluded(cwd, rt.excludedProjects);
+}
+
+/** CLAUDE_MEM_SKIP_TOOLS, case-insensitive, by OMP's name or the mapped one (src/shared/is-tool-skipped.ts). */
+function serverSkipsTool(rt: ServerTarget, toolName: string, nativeToolName: string): boolean {
+  if (rt.skipTools.has(toolName.toLowerCase())) return true;
+  // A qualified MCP exclusion keeps its server scope, as in isToolSkipped.
+  const native = nativeToolName.toLowerCase();
+  return !native.startsWith("mcp__") && rt.skipTools.has(native);
+}
+
+// Resolved once per omp session (session_start / session_switch clears it), so
+// a runtime or port change in settings.json is picked up by the next session
+// without a restart.
+let runtimeTarget: RuntimeTarget | undefined;
+
+function runtime(): RuntimeTarget {
+  runtimeTarget ??= resolveRuntime();
+  return runtimeTarget;
+}
+
+function projectLabelFromCwd(cwd: string | undefined): string {
+  if (!cwd) return "";
+  const trimmed = cwd.replace(/[\\/]+$/, "");
+  const idx = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+  return idx >= 0 ? trimmed.slice(idx + 1) : trimmed;
+}
+
+// Why 2 s: `git rev-parse` answered in 26 ms median, 57 ms max over 30 runs
+// (macOS, linked worktree, 2026-11-21, spawn included). The call is synchronous,
+// so the bound is what a hung git (a stalled network mount) may cost OMP once
+// per cwd before the folder name is used instead; it stays under the 5 s
+// request timeout.
+const GIT_TIMEOUT_MS = 2_000;
+// Why 300 s: the context handler runs before every model call and needs the
+// key, so it is cached; a checkout whose git structure changes under the same
+// path (a nested `git init`, a clone turned into a linked worktree) is accepted
+// as stale for at most five minutes. Same value as hermes/claude-mem/client.py.
+const PROJECT_KEY_TTL_MS = 300_000;
+const projectKeys = new Map<string, { key: string; expiresAt: number }>();
+
+/**
+ * Server mode only (the worker derives the key itself from the cwd): the
+ * project key the Claude Code hooks give this checkout, as
+ * hermes/claude-mem/client.py checkout_project() does — the git root's folder
+ * name, `<repo>/<worktree>` for a linked worktree, the folder name outside git.
+ */
+function checkoutProject(cwd: string | undefined): string {
+  if (!cwd) return "";
+  const now = Date.now();
+  const cached = projectKeys.get(cwd);
+  if (cached && cached.expiresAt > now) return cached.key;
+  let key = projectLabelFromCwd(cwd);
+  try {
+    const out = execFileSync(
+      "git",
+      ["-C", cwd, "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir", "--git-common-dir"],
+      { encoding: "utf8", timeout: GIT_TIMEOUT_MS, stdio: ["ignore", "pipe", "ignore"], windowsHide: true },
+    );
+    const [top, gitDir, common] = out.split("\n").map(line => line.trim());
+    if (top && gitDir && common) {
+      key = basename(normalize(top));
+      const commonDir = normalize(common);
+      if (normalize(gitDir) !== commonDir && basename(commonDir) === ".git") {
+        const parent = basename(dirname(commonDir));
+        key = key === parent ? parent : `${parent}/${key}`;
+      }
+    }
+  } catch {
+    // No git, not a checkout, or no answer in time: the folder name stands.
+  }
+  projectKeys.set(cwd, { key, expiresAt: now + PROJECT_KEY_TTL_MS });
+  return key;
 }
 
 // ---------------------------------------------------------------------------
@@ -203,16 +385,24 @@ function onOk(): void {
 
 interface OmpSession {
   id: string;
+  // Server-assigned UUID from POST /v1/sessions/start (server runtime only).
+  serverSessionId?: string;
+  // Runtime pinned when this session was first anchored, so async finalize
+  // finishes against the same target even after session_switch clears cache.
+  runtime?: RuntimeTarget;
   // The tail of the session's init chain: the latest prompt's init, which
-  // resolves true once the worker recorded that prompt. Observations and the
+  // resolves true once the runtime recorded that prompt. Observations and the
   // summary wait on it so they land after the prompts they belong to.
   lastInit?: Promise<boolean>;
   // All observations dispatched for this identity, including HTTP still in flight.
   observations?: Promise<void>;
-  // The worker recorded at least one prompt for this id (finalize needs one).
+  // The runtime recorded at least one prompt for this id (finalize needs one).
   anchored: boolean;
-  // The worker skipped this checkout as excluded: nothing more is sent.
+  // The checkout is excluded (the worker said so, or, in server mode, the
+  // hook's own check matched): nothing more is sent.
   excluded: boolean;
+  // The latest prompt's cwd; server-mode finalize checks it for exclusion.
+  cwd?: string;
 }
 
 let session: OmpSession | undefined;
@@ -263,50 +453,119 @@ function lastMessageText(messages: unknown[], role: string): string {
   return "";
 }
 
-/** One bounded worker request; a timeout or an HTTP error rejects. */
-async function request(path: string, init: RequestInit = {}): Promise<Response> {
-  const r = await fetch(`${worker()}${path}`, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+/** One bounded request against the active runtime; a timeout or HTTP error rejects. */
+async function request(rt: RuntimeTarget, path: string, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(init.headers);
+  if (rt.mode === "server") {
+    headers.set("Authorization", `Bearer ${rt.apiKey}`);
+  }
+  const r = await fetch(`${rt.baseUrl}${path}`, {
+    ...init,
+    headers,
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
   if (!r.ok) throw new Error(`${path} ${r.status}`);
   return r;
 }
 
-function postJson(path: string, body: unknown): Promise<Response> {
-  return request(path, {
+function postJson(rt: RuntimeTarget, path: string, body: unknown): Promise<Response> {
+  return request(rt, path, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
 }
 
-function post(path: string, body: unknown): Promise<void> {
+function post(rt: RuntimeTarget, path: string, body: unknown): Promise<void> {
   if (breakerOpen()) return Promise.resolve();
-  return postJson(path, body).then(() => onOk(), () => onFail());
+  return postJson(rt, path, body).then(() => onOk(), () => onFail());
 }
 
 /**
  * Record one user prompt for `target`. Every prompt posts init, so prompts 2+
- * are recorded too (the worker de-duplicates a repeated prompt). Each init
- * waits for the previous one, so overlapping prompts reach the worker in order
- * and finalize, which waits for the chain's tail, covers all of them. A failed
+ * are recorded too (the worker de-duplicates a repeated prompt; the server's
+ * /v1/sessions/start is idempotent on externalSessionId). Each init waits for
+ * the previous one, so overlapping prompts reach the runtime in order and
+ * finalize, which waits for the chain's tail, covers all of them. A failed
  * init is counted by the breaker, and a later prompt simply tries again.
  */
 function sendPrompt(target: OmpSession, cwd: string | undefined, prompt: string): void {
-  const body: Record<string, unknown> = {
-    contentSessionId: target.id, prompt, platformSource: "omp", telemetryPromptEpochMs: Date.now(),
-  };
-  if (cwd) body.cwd = cwd;
-  target.lastInit = (target.lastInit ?? Promise.resolve(true)).then(() => recordPrompt(target, body));
+  const telemetryPromptEpochMs = Date.now();
+  if (cwd) target.cwd = cwd;
+  target.lastInit = (target.lastInit ?? Promise.resolve(true)).then(
+    () => recordPrompt(target, cwd, prompt, telemetryPromptEpochMs),
+  );
 }
 
-// Resolves true once the worker recorded the prompt. Success is counted only
+// Resolves true once the runtime recorded the prompt. Success is counted only
 // after the reply is read: a body that stalls until the timeout is a failure,
 // not a recorded prompt.
-async function recordPrompt(target: OmpSession, body: Record<string, unknown>): Promise<boolean> {
+async function recordPrompt(
+  target: OmpSession,
+  cwd: string | undefined,
+  prompt: string,
+  telemetryPromptEpochMs: number,
+): Promise<boolean> {
   if (target.excluded || breakerOpen()) return false;
+  const rt = target.runtime ?? runtime();
   try {
-    const r = await postJson("/api/sessions/init", body);
+    if (rt.mode === "server") {
+      if (serverExcludes(rt, cwd)) {
+        target.excluded = true;
+        return false;
+      }
+      // A wholly private (or empty) prompt is not recorded, and neither are
+      // the tool calls that wait on it (resolving false drops them).
+      const cleanPrompt = stripPrivateBlocks(prompt).trim();
+      if (!cleanPrompt) return false;
+      const metadata: Record<string, unknown> = { prompt: cleanPrompt };
+      if (cwd) metadata.cwd = cwd;
+      const project = checkoutProject(cwd);
+      if (project) metadata.project = project;
+      const r = await postJson(rt, "/v1/sessions/start", {
+        projectId: rt.projectId,
+        externalSessionId: target.id,
+        contentSessionId: target.id,
+        platformSource: "omp",
+        metadata,
+      });
+      const reply = (await r.json()) as { session?: { id?: unknown } } | null;
+      onOk();
+      target.runtime = rt;
+      if (typeof reply?.session?.id === "string" && reply.session.id) {
+        target.serverSessionId = reply.session.id;
+      }
+      // The session row exists now, so finalize must end it even if the
+      // prompt event below fails.
+      target.anchored = true;
+      // Starting a session is idempotent and keeps only the first prompt, so
+      // every prompt is also its own event. generate=false: recording a prompt
+      // must not start server-side inference.
+      const promptEvent: Record<string, unknown> = {
+        projectId: rt.projectId,
+        contentSessionId: target.id,
+        platformSource: "omp",
+        sourceType: "hook",
+        eventType: "user_prompt",
+        occurredAtEpoch: telemetryPromptEpochMs,
+        payload: cwd
+          ? { prompt: cleanPrompt, cwd, platformSource: "omp" }
+          : { prompt: cleanPrompt, platformSource: "omp" },
+      };
+      if (target.serverSessionId) promptEvent.serverSessionId = target.serverSessionId;
+      await postJson(rt, "/v1/events?generate=false", promptEvent);
+      onOk();
+      return true;
+    }
+
+    const body: Record<string, unknown> = {
+      contentSessionId: target.id, prompt, platformSource: "omp", telemetryPromptEpochMs,
+    };
+    if (cwd) body.cwd = cwd;
+    const r = await postJson(rt, "/api/sessions/init", body);
     const reply = (await r.json()) as { reason?: unknown } | null;
     onOk();
+    target.runtime = rt;
     // An excluded checkout is skipped before any session row exists.
     if (reply?.reason === "project_excluded") {
       target.excluded = true;
@@ -320,15 +579,73 @@ async function recordPrompt(target: OmpSession, body: Record<string, unknown>): 
   }
 }
 
-// Finalize a session the worker recorded a prompt for. Wait for its latest
+async function finalizeServerSession(
+  rt: ServerTarget,
+  target: OmpSession,
+  assistantMessage: string,
+): Promise<void> {
+  if (breakerOpen()) return;
+  if (serverExcludes(rt, target.cwd)) {
+    target.excluded = true;
+    return;
+  }
+  try {
+    let serverSessionId = target.serverSessionId;
+    if (!serverSessionId) {
+      const startRes = await postJson(rt, "/v1/sessions/start", {
+        projectId: rt.projectId,
+        externalSessionId: target.id,
+        contentSessionId: target.id,
+        platformSource: "omp",
+      });
+      const startReply = (await startRes.json()) as { session?: { id?: unknown } } | null;
+      onOk();
+      if (typeof startReply?.session?.id === "string" && startReply.session.id) {
+        serverSessionId = startReply.session.id;
+        target.serverSessionId = serverSessionId;
+      }
+    }
+    if (!serverSessionId) return;
+
+    if (assistantMessage) {
+      await postJson(rt, "/v1/events", {
+        projectId: rt.projectId,
+        serverSessionId,
+        contentSessionId: target.id,
+        platformSource: "omp",
+        sourceType: "hook",
+        eventType: "assistant_message",
+        occurredAtEpoch: Date.now(),
+        payload: {
+          last_assistant_message: stripPrivateBlocks(assistantMessage),
+          platformSource: "omp",
+        },
+      });
+      onOk();
+    }
+
+    await postJson(rt, `/v1/sessions/${encodeURIComponent(serverSessionId)}/end`, {});
+    onOk();
+  } catch {
+    onFail();
+  }
+}
+
+// Finalize a session the runtime recorded a prompt for. Wait for its latest
 // init and all dispatched observations, so the summary cannot overtake them; a session
 // with no recorded prompt (every init failed, or the checkout is excluded) is
 // left alone.
 function finalize(target: OmpSession | undefined, assistantMessage: string): void {
   if (!target) return;
-  void Promise.all([target.lastInit ?? Promise.resolve(false), target.observations]).then(() => {
+  void Promise.all([target.lastInit ?? Promise.resolve(false), target.observations]).then(([lastRecorded]) => {
     if (!target.anchored || target.excluded) return;
-    return post("/api/sessions/summarize", {
+    const rt = target.runtime ?? runtime();
+    if (rt.mode === "server") {
+      // When the last prompt was not recorded (wholly private, or its send
+      // failed) its closing reply is dropped too; the session still ends.
+      return finalizeServerSession(rt, target, lastRecorded ? assistantMessage : "");
+    }
+    return post(rt, "/api/sessions/summarize", {
       contentSessionId: target.id,
       last_assistant_message: assistantMessage,
       platformSource: "omp",
@@ -345,7 +662,7 @@ export default function claudeMemBridge(pi: ExtensionAPI): void {
   // before_agent_start so we can capture the real user prompt (the worker records
   // and privacy-filters on it).
   pi.on("session_start", async () => {
-    workerBase = undefined;
+    runtimeTarget = undefined;
     newSession();
   });
 
@@ -368,7 +685,7 @@ export default function claudeMemBridge(pi: ExtensionAPI): void {
     ) return;
     finalize(session, lastAssistant);
     newSession();
-    workerBase = undefined;
+    runtimeTarget = undefined;
     ctxCache = null;
     lastAssistant = "";
   };
@@ -414,22 +731,55 @@ export default function claudeMemBridge(pi: ExtensionAPI): void {
     if (target.excluded) return;
     const response = stripPrivateBlocks(textFromContent(event?.content));
     const text = response.length > MAX_LEN ? response.slice(0, MAX_LEN) : response;
-    // Preserve failed attempts as errors so they cannot become completed file
-    // evidence. Cap after stripping complete privacy blocks.
-    const body: Record<string, unknown> = {
-      contentSessionId: target.id,
-      tool_name: toolName,
-      tool_input: nativeToolName === "read" ? fileReadInput(event?.input, event?.details) : event?.input,
-      tool_response: event?.isError === true ? { is_error: true, error: text } : text,
-      platformSource: "omp",
-      telemetryToolEpochMs,
-    };
-    if (ctx?.cwd) body.cwd = ctx.cwd;
-    if (typeof event?.toolCallId === "string" && event.toolCallId) body.tool_use_id = event.toolCallId;
+    const toolInput = nativeToolName === "read" ? fileReadInput(event?.input, event?.details) : event?.input;
+    const toolResponse = event?.isError === true ? { is_error: true, error: text } : text;
+    const toolUseId = typeof event?.toolCallId === "string" && event.toolCallId ? event.toolCallId : undefined;
 
     const observation = (target.lastInit ?? Promise.resolve(true)).then(recorded => {
       if (!recorded || target.excluded) return;
-      return post("/api/sessions/observations", body);
+      const rt = target.runtime ?? runtime();
+      if (rt.mode === "server") {
+        // Also covers a tool result that arrives before any prompt, which
+        // never waited on an init that could have found the exclusion.
+        if (serverExcludes(rt, ctx?.cwd ?? target.cwd)) {
+          target.excluded = true;
+          return;
+        }
+        if (serverSkipsTool(rt, toolName, nativeToolName)) return;
+        const payload: Record<string, unknown> = {
+          tool_name: toolName,
+          tool_input: stripPrivateFromValue(toolInput),
+          tool_response: toolResponse,
+          platformSource: "omp",
+        };
+        if (ctx?.cwd) payload.cwd = ctx.cwd;
+        if (toolUseId) payload.tool_use_id = toolUseId;
+        const eventBody: Record<string, unknown> = {
+          projectId: rt.projectId,
+          contentSessionId: target.id,
+          platformSource: "omp",
+          sourceType: "hook",
+          eventType: "tool_use",
+          occurredAtEpoch: telemetryToolEpochMs,
+          payload,
+        };
+        if (target.serverSessionId) eventBody.serverSessionId = target.serverSessionId;
+        return post(rt, "/v1/events", eventBody);
+      }
+
+      // Preserve failed attempts as errors so they cannot become completed file
+      // evidence. Cap after stripping complete privacy blocks.
+      const body: Record<string, unknown> = {
+        contentSessionId: target.id,
+        tool_name: toolName,
+        tool_input: toolInput,
+        tool_response: toolResponse,
+        platformSource: "omp",
+        telemetryToolEpochMs,
+      };
+      if (ctx?.cwd) body.cwd = ctx.cwd;
+      if (toolUseId) body.tool_use_id = toolUseId;
+      return post(rt, "/api/sessions/observations", body);
     });
     target.observations = Promise.all([target.observations, observation]).then(() => {});
   });
@@ -456,10 +806,26 @@ export default function claudeMemBridge(pi: ExtensionAPI): void {
 
     if (!ctxCache || ctxCache.cwd !== cwd || ctxCache.allSources !== allSources || now - ctxCache.at > CTX_CACHE_MS) {
       try {
-        const params = new URLSearchParams({ cwd });
-        if (!allSources) params.set("platformSource", "omp");
-        const r = await request(`/api/context/inject?${params}`);
-        const md = (await r.text()) ?? "";
+        const rt = runtime();
+        let md: string;
+        if (rt.mode === "server") {
+          if (serverExcludes(rt, cwd)) {
+            if (session) session.excluded = true;
+            return; // nothing about an excluded checkout leaves OMP
+          }
+          const payload: Record<string, unknown> = { projectId: rt.projectId };
+          if (!allSources) payload.platformSource = "omp";
+          const project = checkoutProject(cwd);
+          if (project) payload.folderProjects = [project];
+          const r = await postJson(rt, "/v1/context", payload);
+          const data = (await r.json()) as { context?: unknown } | null;
+          md = typeof data?.context === "string" ? data.context : "";
+        } else {
+          const params = new URLSearchParams({ cwd });
+          if (!allSources) params.set("platformSource", "omp");
+          const r = await request(rt, `/api/context/inject?${params}`);
+          md = (await r.text()) ?? "";
+        }
         onOk();
         // Only cache non-empty — an empty result means "no memory yet", caching it
         // would delay newly-arriving memory by CTX_CACHE_MS.
