@@ -38,7 +38,7 @@ import { randomUUID } from 'crypto';
 import { statSync } from 'fs';
 import { dirname } from 'path';
 import { stripVTControlCharacters } from 'util';
-import { runCommand, type CommandOptions, type CommandResult, type UsableAgent, type UsableAgentId } from '../agent-runner/detect.js';
+import { cutOutputText, runCommand, type CommandOptions, type CommandResult, type UsableAgent, type UsableAgentId } from '../agent-runner/detect.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import type { ManagedProcessRecord, ProcessRegistry } from '../../supervisor/process-registry.js';
 import { terminateThenForceKill, terminateThenForceKillProcessGroups, type ProcessGroupRecord } from '../../supervisor/shutdown.js';
@@ -355,7 +355,12 @@ function exitedSentence(toolName: string, exitCode: number | null): string {
   return exitCode === null ? `${toolName} was ended by a signal before it finished.` : `${toolName} exited with code ${exitCode}.`;
 }
 
-function readClaudeOutcome(result: CommandResult, toolName: string): TurnOutcome {
+export function readClaudeOutcome(result: CommandResult, toolName: string): TurnOutcome {
+  if (result.stdoutTruncated) {
+    // The stream was cut, so whatever is left of the result JSON is not the
+    // whole turn: report the cap instead of blaming the format.
+    return { state: 'failed', failureText: wholeText(cutOutputText(toolName), result.stderr) };
+  }
   const turn = readClaudeResult(result.stdout);
   if (result.exitCode !== 0) {
     // A failure inside the run, such as a missing login, exits non-zero and prints the failure as the result on stdout
@@ -372,7 +377,10 @@ function readClaudeOutcome(result: CommandResult, toolName: string): TurnOutcome
   return { state: 'replied', replyText: turn.replyText, deniedToolCallCount: turn.deniedToolCallCount };
 }
 
-function readCodexOutcome(result: CommandResult, toolName: string): TurnOutcome {
+export function readCodexOutcome(result: CommandResult, toolName: string): TurnOutcome {
+  if (result.stdoutTruncated) {
+    return { state: 'failed', failureText: wholeText(cutOutputText(toolName), result.stderr) };
+  }
   if (result.exitCode !== 0) return { state: 'failed', failureText: wholeText(exitedSentence(toolName, result.exitCode), result.stderr, result.stdout) };
   // `codex exec` prints only the final message on stdout; its progress goes to stderr.
   return { state: 'replied', replyText: result.stdout.trim() };
@@ -385,7 +393,10 @@ function readCodexOutcome(result: CommandResult, toolName: string): TurnOutcome 
  * had written. Stopped while a tool ran, it printed nothing in one run, and in another a result with no `result` and an
  * `errors` list. Each exited 0, so only the result tells them apart.
  */
-function readStoppedClaudeOutcome(result: CommandResult, _toolName: string, stoppedText: string): TurnOutcome {
+export function readStoppedClaudeOutcome(result: CommandResult, toolName: string, stoppedText: string): TurnOutcome {
+  if (result.stdoutTruncated) {
+    return { state: 'failed', failureText: wholeText(stoppedText, cutOutputText(toolName), result.stderr) };
+  }
   const turn = readClaudeResult(result.stdout);
   if (turn && !turn.isError) return { state: 'replied', replyText: turn.replyText, deniedToolCallCount: turn.deniedToolCallCount };
   return { state: 'failed', failureText: wholeText(stoppedText, readClaudeUnfinishedTurnWords(result.stdout) ?? result.stdout, result.stderr) };

@@ -8,12 +8,15 @@ import { join } from 'path';
 import type { spawn, SpawnOptions } from 'child_process';
 import { scratchDir } from '../../helpers/scratch-dir.js';
 import { removeTempDir } from '../../helpers/temp-dir.js';
-import type { UsableAgent, UsableAgentId } from '../../../src/services/agent-runner/detect.js';
+import type { CommandResult, UsableAgent, UsableAgentId } from '../../../src/services/agent-runner/detect.js';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import type { ManagedProcessInfo } from '../../../src/supervisor/process-registry.js';
 import {
   ConversationContinuationRunner,
+  readClaudeOutcome,
   readClaudeResult,
+  readCodexOutcome,
+  readStoppedClaudeOutcome,
   resolveConversationContinuationTarget,
   type ConversationContinuationDependencies,
   type ConversationExchangeOrRefusal,
@@ -377,6 +380,25 @@ describe('the one turn a send starts', () => {
     expect(readClaudeResult('marmalade')).toBeNull();
     expect(readClaudeResult(JSON.stringify([{ type: 'system', subtype: 'init' }]))).toBeNull();
     expect(readClaudeResult(JSON.stringify({ type: 'result', subtype: 'error_during_execution', is_error: true, permission_denials: [] }))).toBeNull();
+  });
+
+  it('names the capture cap, not the output format, when the collected stdout was cut', () => {
+    // A cut stream parses as garbage or loses its middle, and the old path
+    // answered "what it printed is not the JSON result this reads", which
+    // sends the reader looking for a format change. The stream itself says it
+    // was truncated: report that before anything is parsed.
+    const cut = readClaudeOutcome({ exitCode: 0, stdout: '{}', stderr: '', stdoutTruncated: true } as CommandResult, 'claude');
+    expect(cut.state).toBe('failed');
+    expect(cut.failureText).toContain('capture cap');
+    const kept = readClaudeOutcome({ exitCode: 0, stdout: JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: 'marmalade', permission_denials: [] }), stderr: '', stdoutTruncated: false } as CommandResult, 'claude');
+    expect(kept.state).toBe('replied');
+    expect(kept.replyText).toBe('marmalade');
+    const cutStop = readStoppedClaudeOutcome({ exitCode: 0, stdout: '', stderr: '', stdoutTruncated: true } as CommandResult, 'claude', 'claude was stopped.');
+    expect(cutStop.state).toBe('failed');
+    expect(cutStop.failureText).toContain('capture cap');
+    const cutCodex = readCodexOutcome({ exitCode: 0, stdout: 'half a repl', stderr: '', stdoutTruncated: true } as CommandResult, 'codex');
+    expect(cutCodex.state).toBe('failed');
+    expect(cutCodex.failureText).toContain('capture cap');
   });
 
   it('records the reply and the denied tool calls of a finished turn', async () => {

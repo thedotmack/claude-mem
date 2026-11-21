@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { AutoRefreshWorker, refreshIntervalMs } from '../../src/services/work-view/auto-refresh-worker.mjs';
 import { buildRefreshTask, decidedTextLanguage, FOCUS_ANSWER_SCHEMA, GROUPING_ANSWER_SCHEMA, resolveRefreshAgents, resolveStepModels, reviewConcurrency, STEP_MODEL_SETTINGS, STEP_MODELS, TITLE_ANSWER_SCHEMA } from '../../src/services/work-view/refresh-task.js';
 import { logger } from '../../src/utils/logger.js';
+import { cutOutputText, MAX_STREAM_CHARS } from '../../src/services/agent-runner/detect.js';
 import { groupIdFor, readLedger, runCli } from '../../src/services/work-view/request-groups.mjs';
 import { scratchDir } from '../helpers/scratch-dir.js';
 import { everyRequestInOther, focusInputFrom, focusWriter, isOtherPass } from '../helpers/fake-focus-writer.js';
@@ -1587,6 +1588,42 @@ describe('incremental owner goals', () => {
       expect(prompts).toHaveLength(1);
       expect(prompts[0]).toContain("The owner's language for this run is Turkish.");
     } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('a save_goals.py report past the capture cap fails the goals step once, instead of being parsed or asked again', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-goals-cut-report-'));
+    const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+    try {
+      const database = fixtureDatabase();
+      saveGoals(database, new Date(NOW - 2 * DAY).toISOString());
+      writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations: {}, groups: {}, ignored: { [key('a')]: 'not a goal' } }));
+      const scriptCalls: string[][] = [];
+      const piece = 'x'.repeat(1024 * 1024);
+      const chattyPython = ((_command: string, args: string[]) => {
+        const child: any = new EventEmitter();
+        child.stdout = Object.assign(new EventEmitter(), { setEncoding() {} }); child.stderr = Object.assign(new EventEmitter(), { setEncoding() {} });
+        if (!args.includes('-c')) scriptCalls.push(args);
+        queueMicrotask(() => {
+          if (!args.includes('-c')) {
+            child.stdout.emit('data', '{"report":"');
+            for (let printed = 0; printed <= MAX_STREAM_CHARS; printed += piece.length) child.stdout.emit('data', piece);
+            child.stdout.emit('data', '"}');
+          }
+          child.emit('close', 0);
+        });
+        return child;
+      }) as any;
+      const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: 0, ungrouped: 0, goalsStale: true, unplaced: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, spawnImpl: chattyPython, writeOwnerPrompts: fakeOwnerPrompts(3, []) });
+      await task.prepare!();
+      let asked = 0;
+      const ask = async (prompt: string) => {
+        asked++;
+        return readFileSync(/saved goals are in (.+?\.json)/.exec(prompt)![1], 'utf8');
+      };
+      await expect(task.run(ask, 'codex')).rejects.toThrow(cutOutputText('save_goals.py'));
+      expect(asked).toBe(1);
+      expect(scriptCalls).toHaveLength(1);
+    } finally { warn.mockRestore(); rmSync(dir, { recursive: true, force: true }); }
   });
 
   it('a goals-only run names the language an earlier run recorded (#6185)', async () => {

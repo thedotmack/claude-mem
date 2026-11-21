@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, jest } from 'bun:test';
+import { afterEach, describe, expect, it, jest, spyOn } from 'bun:test';
 import { setFakeSpawn } from '../../helpers/fake-spawn.js';
 import { EventEmitter } from 'events';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
@@ -6,7 +6,8 @@ import { tmpdir } from 'os';
 import { dirname, join, resolve } from 'path';
 import type { spawn } from 'child_process';
 import { codexModelForLogin, GEMINI_NO_MCP_SERVERS, opencodeCliMajorVersion, readOpenCodeUserConfig, runAgentTask, type AgentTask } from '../../../src/services/agent-runner/run.js';
-import { detectUsableAgent, type UsableAgent } from '../../../src/services/agent-runner/detect.js';
+import { cutOutputText, detectUsableAgent, MAX_STREAM_CHARS, type UsableAgent } from '../../../src/services/agent-runner/detect.js';
+import { logger } from '../../../src/utils/logger.js';
 
 class FakeStream extends EventEmitter {
   setEncoding(): this { return this; }
@@ -614,6 +615,45 @@ describe('agent runner', () => {
       expect(result.state).toBe('failed');
       expect(result.attempts[0].error).toContain('opencode failed: session cancelled');
     } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  it('OpenCode: output past the capture cap fails the run instead of accepting surviving text', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-opencode-cap-'));
+    const calls: SpawnCall[] = [];
+    const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+    try {
+      // One event over the cap: its middle is dropped, so the old path could not
+      // parse that line and answered with whatever came after. The truncation
+      // flag must fail the run before that parse.
+      const piece = 'x'.repeat(1024 * 1024);
+      const result = await runTask(task(cwd), {
+        detect: async () => agents('opencode'), query: neverQuery, spawn: fakeOpenCodeCli('opencode v2.3.2', calls, call => {
+          call.child.stdout.emit('data', '{"type":"text","part":{"text":"');
+          for (let printed = 0; printed <= MAX_STREAM_CHARS; printed += piece.length) call.child.stdout.emit('data', piece);
+          call.child.stdout.emit('data', '"}}\n');
+          call.child.stdout.emit('data', `${JSON.stringify({ type: 'text', part: { text: 'surviving tail' } })}\n`);
+          call.child.emit('close', 0);
+        }), buildEnv: env,
+      });
+      expect(result.state).toBe('failed');
+      expect(result.attempts[0].error).toBe(cutOutputText('opencode'));
+    } finally { warn.mockRestore(); rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  it('Gemini: output past the capture cap fails with the cap named, not as unreadable JSON', async () => {
+    const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+    try {
+      const piece = 'x'.repeat(1024 * 1024);
+      const spawnImpl = fakeSpawn([], call => {
+        call.child.stdout.emit('data', '{"response":"');
+        for (let printed = 0; printed <= MAX_STREAM_CHARS; printed += piece.length) call.child.stdout.emit('data', piece);
+        call.child.stdout.emit('data', '","stats":{}}');
+        call.child.emit('close', 0);
+      });
+      const result = await runTask(task('/data'), { detect: async () => agents('gemini'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
+      expect(result.state).toBe('failed');
+      expect(result.attempts[0].error).toBe(cutOutputText('gemini'));
+    } finally { warn.mockRestore(); }
   });
 
 

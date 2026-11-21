@@ -1,4 +1,4 @@
-import { describe, expect, it, jest } from 'bun:test';
+import { describe, expect, it, jest, spyOn } from 'bun:test';
 import { EventEmitter } from 'events';
 import type { spawn } from 'child_process';
 import { join, resolve } from 'node:path';
@@ -6,12 +6,14 @@ import {
   detectUsableAgent,
   detectUsableAgents,
   GEMINI_NO_MCP_SERVERS,
+  MAX_STREAM_CHARS,
   runCommand,
   type AgentDetectionDependencies,
   type UsableAgent,
   type UsableAgentId,
 } from '../../../src/services/agent-runner/detect.js';
 import type { OAuthTokenResult } from '../../../src/shared/oauth-token.js';
+import { logger } from '../../../src/utils/logger.js';
 
 type ScriptedOutcome =
   | { exitCode: number; stdout?: string; stderr?: string }
@@ -503,5 +505,94 @@ describe('runCommand', () => {
     }) as unknown as typeof spawn;
     const result = await runCommand(throwingSpawn, 'x', []);
     expect(result.spawnError?.message).toBe('EINVAL');
+  });
+
+  /** A child that prints `chunks` on stdout, then exits 0. */
+  function printingSpawn(chunks: () => Iterable<string>): typeof spawn {
+    return (() => {
+      const child = new FakeChild();
+      queueMicrotask(() => {
+        for (const chunk of chunks()) child.stdout.emit('data', chunk);
+        child.emit('close', 0);
+      });
+      return child;
+    }) as unknown as typeof spawn;
+  }
+
+  it('bounds the accumulated stdout of a chatty child, keeps both ends, and marks and logs the cut', async () => {
+    // A chatty or looping CLI would otherwise grow the retained string with
+    // every chunk it prints, for as long as it runs (no time limit is an
+    // owner rule). Past the cap the accumulation keeps the head and the tail
+    // of the stream, says where the middle was dropped, and logs the cut once.
+    const chunk = 'x'.repeat(1024 * 1024);
+    const rounds = MAX_STREAM_CHARS / chunk.length + 8;
+    const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+    try {
+      const result = await runCommand(printingSpawn(function* () {
+        yield 'HEAD-MARK' + chunk;
+        for (let round = 0; round < rounds; round++) yield chunk;
+        yield chunk + 'TAIL-MARK';
+      }), 'chatty', ['run']);
+      expect(result.exitCode).toBe(0);
+      expect(result.stdoutTruncated).toBe(true);
+      expect(result.stderrTruncated).toBe(false);
+      expect(result.stdout.startsWith('HEAD-MARK')).toBe(true);
+      expect(result.stdout.endsWith('TAIL-MARK')).toBe(true);
+      const printed = (rounds + 2) * chunk.length + 'HEAD-MARK'.length + 'TAIL-MARK'.length;
+      const marker = /\n\[([\d,]+) characters dropped here: stdout passed the [\d,]+ character capture cap\]\n/.exec(result.stdout);
+      expect(marker).not.toBeNull();
+      // Every character printed is either kept or counted as dropped.
+      expect(result.stdout.length - marker![0].length + Number(marker![1].replace(/,/g, ''))).toBe(printed);
+      // The kept text is at most the cap plus one chunk, plus the marker.
+      expect(result.stdout.length - marker![0].length).toBeLessThanOrEqual(MAX_STREAM_CHARS + chunk.length + 'TAIL-MARK'.length);
+      const cutWarnings = warn.mock.calls.filter(call => call[1] === 'Command output passed the capture cap; the middle is dropped');
+      expect(cutWarnings.map(call => call[2])).toEqual([{ command: 'chatty', stream: 'stdout', capChars: MAX_STREAM_CHARS }]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('collects many small writes past the cap without re-copying the kept text on each one', async () => {
+    // Re-slicing the kept text on every chunk costs the cap per chunk: about
+    // 140,000 writes of 1 KiB here would copy terabytes and never finish
+    // within the test timeout. The rolling tail costs one append per chunk.
+    const chunk = 'y'.repeat(1024);
+    const writes = MAX_STREAM_CHARS / chunk.length + 8192;
+    const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+    try {
+      const result = await runCommand(printingSpawn(function* () {
+        for (let write = 0; write < writes; write++) yield chunk;
+        yield 'LAST';
+      }), 'chatty', ['run']);
+      expect(result.stdoutTruncated).toBe(true);
+      expect(result.stdout.endsWith(chunk + 'LAST')).toBe(true);
+      // The tail keeps at least half the cap, so the end of the output is there to read.
+      const tail = result.stdout.slice(result.stdout.indexOf('capture cap]\n') + 'capture cap]\n'.length);
+      expect(tail.length).toBeGreaterThanOrEqual(MAX_STREAM_CHARS / 2);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('never ends the kept head between the two halves of a surrogate pair', async () => {
+    // The pair sits on the head's boundary: one code unit on each side.
+    const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+    try {
+      const result = await runCommand(printingSpawn(function* () {
+        yield 'a'.repeat(MAX_STREAM_CHARS / 2 - 1) + '\u{1F642}';
+        yield 'b'.repeat(MAX_STREAM_CHARS);
+      }), 'chatty', ['run']);
+      const head = result.stdout.slice(0, result.stdout.indexOf('\n['));
+      expect(head).toBe('a'.repeat(MAX_STREAM_CHARS / 2 - 1));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('leaves small output complete and unflagged', async () => {
+    const result = await runCommand(fakeSpawn({ 'small tool': { exitCode: 0, stdout: 'ok' } }), 'small', ['tool']);
+    expect(result.stdout).toBe('ok');
+    expect(result.stdoutTruncated).toBe(false);
+    expect(result.stderrTruncated).toBe(false);
   });
 });
