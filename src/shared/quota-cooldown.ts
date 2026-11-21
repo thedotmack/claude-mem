@@ -638,11 +638,12 @@ export function setQuotaFallbackResolver(resolver: QuotaFallbackResolver | null)
  *
  * When another provider is serving (a quota fallback), the mirror names it, so
  * the session-start notice says capture continues instead of saying it is
- * paused. The answer is recomputed on every arm and clear; between those
- * events it can go stale (a settings edit, a login change, a window elapsing
- * into a probe).
+ * paused. The answer is recomputed on every arm and clear, and on a Codex
+ * store, which clears no breaker of its own (ResponseProcessor's
+ * releaseQuotaBreaker); between those events it can go stale (a settings edit,
+ * a login change, a window elapsing into a probe).
  *
- * Exported for tests: the elapsed-window paths need a controllable clock, which
+ * Tests pass a clock: the elapsed-window paths need one they control, which
  * the internal callers (always "now") cannot supply. `cooldownMs` pins one
  * duration for every window, for tests only.
  */
