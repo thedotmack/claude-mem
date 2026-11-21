@@ -53,14 +53,18 @@ const NEW_TRANSCRIPT_REPLAY_MAX_BYTES = 256 * 1024;
  */
 const MAX_BYTES_PER_PASS = 4 * 1024 * 1024;
 /**
- * A JSONL record with no newline would otherwise be accumulated across passes
- * without bound. Records this large are pathological (a runaway writer or a
- * corrupt transcript), so the tailer skips them once their newline arrives
- * instead of holding every pass's bytes. Above every real record the long
- * -records suite dispatches (~5 MiB) and level with the 8 MiB line cap the
- * Codex app-server client applies.
+ * The largest JSONL record the tailer holds. An unterminated record is kept
+ * across passes until its newline arrives, so without a ceiling a runaway
+ * writer or a corrupt transcript grows worker memory without bound. A record
+ * over the cap is skipped whole and logged at WARN with its offset and size.
+ *
+ * Measured 2026-11-21 on the maintainer's machine by splitting every file on
+ * newlines and recording each record's byte length: 1.2 M Codex rollout
+ * records (~/.codex/sessions, .jsonl and .zst) peaked at 44.17 MiB, 73 of them
+ * above 8 MiB; 2.1 M Claude Code records (~/.claude/projects) peaked at
+ * 25.99 MiB. 64 MiB sits above every measured record with room for growth.
  */
-const MAX_RECORD_BYTES = 8 * 1024 * 1024;
+export const MAX_RECORD_BYTES = 64 * 1024 * 1024;
 
 /** The startAtEnd frame scan of a zstd file walks this many bytes of frames between yields. */
 const RESUME_SCAN_BYTES_PER_STEP = 16 * 1024 * 1024;
@@ -254,8 +258,6 @@ class FileTailer {
   /** JSONL only: the bytes of the unterminated record between `offset` and `readOffset`. */
   private pendingRecordParts: Buffer[] = [];
   private pendingRecordBytes = 0;
-  /** JSONL only: set when the record being accumulated passed MAX_RECORD_BYTES; its bytes are dropped until the newline arrives. */
-  private recordOverflowed = false;
   /**
    * zstd only: how many lines of the frame at `offset` were dispatched before
    * reading stopped, so a restart resumes at the next unread line. Persisted
@@ -378,7 +380,6 @@ class FileTailer {
         this.tailState.readOffset = this.tailState.offset;
         this.pendingRecordParts = [];
         this.pendingRecordBytes = 0;
-        this.recordOverflowed = false;
       } else {
         replaced = true;
       }
@@ -394,7 +395,6 @@ class FileTailer {
       this.zstdPartialBytes = undefined;
       this.pendingRecordParts = [];
       this.pendingRecordBytes = 0;
-      this.recordOverflowed = false;
       this.frameLinesDone = 0;
     }
 
@@ -449,31 +449,27 @@ class FileTailer {
         this.checkpoint(this.tailState.offset);
         return;
       }
-      const tail = chunk.subarray(lineStart, newline);
-      if (!this.recordOverflowed && this.pendingRecordBytes + tail.length > MAX_RECORD_BYTES) {
-        // The record is over the cap and its newline is in this pass. Drop the
-        // held bytes and skip the dispatch exactly like the unterminated case
-        // below, so write timing cannot decide which records reach downstream.
-        this.pendingRecordParts = [];
-        this.pendingRecordBytes = 0;
-        this.recordOverflowed = true;
-        logger.warn('TRANSCRIPT', 'Skipped a transcript record beyond the tail cap', { file: this.filePath });
-      }
-      const overflowed = this.recordOverflowed;
-      const bytes = this.pendingRecordParts.length
-        ? Buffer.concat([...this.pendingRecordParts, tail], this.pendingRecordBytes + tail.length)
-        : tail;
-      this.pendingRecordParts = [];
-      this.pendingRecordBytes = 0;
-      this.recordOverflowed = false;
+      // The record runs from the checkpoint to this newline, however many
+      // passes it took to arrive, so the cap does not depend on write timing.
+      const recordStartOffset = this.tailState.offset;
+      const recordBytes = readFrom + newline - recordStartOffset;
       let line: string | null = null;
-      if (overflowed) {
-        // The oversized record's bytes were dropped as they arrived, so there
-        // is nothing to dispatch: log the skip and move the cursor past it.
-        logger.warn('TRANSCRIPT', 'Skipped a transcript record beyond the tail cap', { file: this.filePath });
+      if (recordBytes > MAX_RECORD_BYTES) {
+        logger.warn('TRANSCRIPT', 'Skipped a transcript record larger than the record cap', {
+          file: this.filePath,
+          capBytes: MAX_RECORD_BYTES,
+          recordStartOffset,
+          skippedBytes: recordBytes,
+        });
       } else {
+        const tail = chunk.subarray(lineStart, newline);
+        const bytes = this.pendingRecordParts.length
+          ? Buffer.concat([...this.pendingRecordParts, tail], this.pendingRecordBytes + tail.length)
+          : tail;
         line = bytes.toString('utf8').trim() || null;
       }
+      this.pendingRecordParts = [];
+      this.pendingRecordBytes = 0;
       if (line) {
         try {
           await this.onLine(line);
@@ -489,18 +485,25 @@ class FileTailer {
       }
     }
 
-    if (lineStart < chunk.length && !this.recordOverflowed) {
-      const tail = lineStart === 0 ? chunk : Buffer.from(chunk.subarray(lineStart));
-      this.pendingRecordParts.push(tail);
-      this.pendingRecordBytes += tail.length;
-      if (this.pendingRecordBytes > MAX_RECORD_BYTES) {
-        // A record with no newline would otherwise be held across passes
-        // without bound. Drop the bytes now; when the newline finally
-        // arrives the record is skipped and the cursor moves past it.
+    if (lineStart < chunk.length) {
+      const recordStartOffset = this.tailState.offset;
+      const heldBytes = this.tailState.readOffset - recordStartOffset;
+      if (heldBytes <= MAX_RECORD_BYTES) {
+        const tail = lineStart === 0 ? chunk : Buffer.from(chunk.subarray(lineStart));
+        this.pendingRecordParts.push(tail);
+        this.pendingRecordBytes += tail.length;
+      } else if (readFrom - recordStartOffset <= MAX_RECORD_BYTES) {
+        // This pass took the unterminated record over the cap. Drop what is
+        // held instead of growing it; the record is skipped when its newline
+        // arrives, and the cursor stays at its start until then.
         this.pendingRecordParts = [];
         this.pendingRecordBytes = 0;
-        this.recordOverflowed = true;
-        logger.warn('TRANSCRIPT', 'Transcript record beyond the tail cap; skipping it once it ends', { file: this.filePath, capBytes: MAX_RECORD_BYTES });
+        logger.warn('TRANSCRIPT', 'Transcript record passed the record cap; it will be skipped when it ends', {
+          file: this.filePath,
+          capBytes: MAX_RECORD_BYTES,
+          recordStartOffset,
+          heldBytes,
+        });
       }
     }
     this.checkpoint(this.tailState.offset);
