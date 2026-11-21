@@ -10,7 +10,7 @@ import {
   resetQuotaCooldownsForTesting,
 } from '../../src/shared/quota-cooldown.js';
 import { setClaudeFallbackReadinessForTesting } from '../../src/shared/claude-fallback-readiness.js';
-import { getSelectedProvider, resetQuotaFallbackStateForTesting, selectProviderForGenerator } from '../../src/services/worker/provider-dispatch.js';
+import { getSelectedProvider, releaseCmemGatewayProbe, resetQuotaFallbackStateForTesting, selectProviderForGenerator } from '../../src/services/worker/provider-dispatch.js';
 import { clearCmemCapProbe, noteCmemCapExhausted } from '../../src/shared/cmem-cap-probe.js';
 import { paths } from '../../src/shared/paths.js';
 import { observerHealthWarning } from '../../src/services/context/ContextBuilder.js';
@@ -206,11 +206,11 @@ describe('quota notice from the persisted dispatch mirror', () => {
     else expect(observerHealthWarning()).toBe('');
   });
 
-  it('keeps the gateway cap fallback relevant after its trial fallback window expires', () => {
+  it('keeps the gateway cap fallback relevant without a trial fallback marker', () => {
     const persisted = persistClaudeMainHold();
     Object.assign(process.env, {
       CLAUDE_MEM_PROVIDER: 'openrouter',
-      CLAUDE_MEM_PRO_FALLBACK_AT: new Date(NOW - 20 * 60_000).toISOString(),
+      CLAUDE_MEM_PRO_FALLBACK_AT: '',
     });
     noteCmemCapExhausted();
 
@@ -224,6 +224,45 @@ describe('quota notice from the persisted dispatch mirror', () => {
     process.env.CLAUDE_MEM_PROVIDER = 'openrouter';
     clearCmemCapProbe();
     expect(observerHealthWarning()).toBe('');
+  });
+
+  it.each([
+    ['off backup', 'off', false],
+    ['Gemini backup', 'gemini', false],
+    ['source-mapped gateway', 'off', true],
+  ] as const)('keeps Claude relevant during a gateway probe with %s', (_label, fallback, mapped) => {
+    const persisted = persistClaudeMainHold();
+    const cooldownFile = join(paths.dataDir(), QUOTA_COOLDOWN_FILENAME);
+    const cooldownLedger = readFileSync(cooldownFile, 'utf8');
+    Object.assign(process.env, {
+      CLAUDE_MEM_PROVIDER: mapped ? 'codex' : 'openrouter',
+      CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: fallback,
+      CLAUDE_MEM_PRO_FALLBACK_AT: new Date(NOW - 20 * 60_000).toISOString(),
+      CLAUDE_MEM_PROVIDER_BY_SOURCE: mapped ? JSON.stringify({ claude: 'openrouter' }) : '',
+    });
+    const source = mapped ? 'claude' : undefined;
+    const beforeProbeWarning = observerHealthWarning();
+    expect(getQuotaCooldown('cmem-gateway')).toBeNull();
+    const probe = selectProviderForGenerator(source);
+    try {
+      expect(probe.provider).toBe('openrouter');
+      expect(probe.gatewayProbeClaimId).not.toBeNull();
+      expect(selectProviderForGenerator(source)).toEqual({ provider: 'claude', gatewayProbeClaimId: null });
+      const claim = structuredClone(getQuotaCooldown('cmem-gateway'));
+      setSystemTime(NOW + 1_000);
+
+      expect(observerHealthWarning()).toContain(MODEL_LINE);
+      expect(observerHealthWarning(true)).toContain(MODEL_LINE);
+      expect(beforeProbeWarning).toContain(MODEL_LINE);
+      expect(getQuotaCooldown('cmem-gateway')).toEqual(claim);
+      expect(readFileSync(cooldownFile, 'utf8')).toBe(cooldownLedger);
+      expect(readFileSync(join(paths.dataDir(), OBSERVER_HEALTH_FILENAME), 'utf8')).toBe(persisted);
+
+      process.env.CLAUDE_MEM_PRO_FALLBACK_AT = '';
+      expect(observerHealthWarning()).toBe('');
+    } finally {
+      releaseCmemGatewayProbe(probe.gatewayProbeClaimId);
+    }
   });
 
   it('reports the default Claude backup during the 8:15 PM cmem.ai outage, rounded up to 8:17 PM', () => {

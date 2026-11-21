@@ -369,8 +369,13 @@ export function getRelevantQuotaProviders(): ReadonlySet<string> {
   const fallback = readQuotaFallbackProvider();
   if (fallback !== null) providers.add(fallback);
   for (const primary of primaries) providers.add(routedProviderFor(primary));
-  if (primaries.includes('openrouter') && usesClaudeForCmemCap(SettingsDefaultsManager.loadFromFile(paths.settings()))) {
-    providers.add('claude');
+  if (primaries.includes('openrouter')) {
+    const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
+    // An elapsed marker admits one gateway probe; its other callers still
+    // use Claude. Only gateway recovery clearing the marker ends that route.
+    const gatewayFallback = settings.CLAUDE_MEM_PRO_FALLBACK_AT
+      && isCmemGatewayUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL);
+    if (gatewayFallback || usesClaudeForCmemCap(settings)) providers.add('claude');
   }
   return providers;
 }
