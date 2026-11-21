@@ -11,14 +11,14 @@ OMP-side plugin or modification is required.
 
 ## How it works
 
-| OMP event | claude-mem endpoint | Purpose |
-|---|---|---|
-| `session_start` | — | Mint the session's `contentSessionId` |
-| `before_agent_start` | `POST /api/sessions/init` | Record every user prompt, in order (creates the claude-mem session on the first) |
-| `tool_result` | `POST /api/sessions/observations` | Record each tool call after its prompt (fire-and-forget; never posts an init) |
-| `context` | `GET /api/context/inject` | Inject memory from past sessions into the prompt (60s cache) |
-| `session_switch` / `session_branch` | `POST /api/sessions/summarize` | Finalize the previous session after its prompts and observations, then mint a new id |
-| `session_shutdown` | `POST /api/sessions/summarize` | Finalize the session summary |
+| OMP event | Worker endpoint | Server endpoint (`/v1`) | Purpose |
+|---|---|---|---|
+| `session_start` | — | — | Mint the session's `contentSessionId` |
+| `before_agent_start` | `POST /api/sessions/init` | `POST /v1/sessions/start` | Record every user prompt, in order (creates the claude-mem session on the first) |
+| `tool_result` | `POST /api/sessions/observations` | `POST /v1/events` | Record each tool call after its prompt (fire-and-forget; never posts an init) |
+| `context` | `GET /api/context/inject` | `POST /v1/context` | Inject memory from past sessions into the prompt (60s cache) |
+| `session_switch` / `session_branch` | `POST /api/sessions/summarize` | `POST /v1/events` + `POST /v1/sessions/:id/end` | Finalize the previous session after its prompts and observations, then mint a new id |
+| `session_shutdown` | `POST /api/sessions/summarize` | `POST /v1/events` + `POST /v1/sessions/:id/end` | Finalize the session summary |
 
 Behavioral notes (matching the OpenClaw adapter's conventions):
 
@@ -34,10 +34,16 @@ Behavioral notes (matching the OpenClaw adapter's conventions):
   `context` handler that OMP awaits before each model call.
 - A circuit breaker opens for 30s after 3 consecutive worker failures
   (timeouts count).
-- The worker address resolves the way claude-mem's own clients resolve it:
-  `CLAUDE_MEM_WORKER_PORT` / `CLAUDE_MEM_WORKER_HOST` from the environment, then
-  `settings.json` in the data dir (`CLAUDE_MEM_DATA_DIR`, default `~/.claude-mem`),
-  then the per-user default port. It is re-read at every OMP session start.
+- Runtime selection matches Claude Code's `runtime-selector.ts`: when
+  `CLAUDE_MEM_RUNTIME` is `"server"` (or legacy `"server-beta"`) and
+  `CLAUDE_MEM_SERVER_URL`, `CLAUDE_MEM_SERVER_API_KEY`, and
+  `CLAUDE_MEM_SERVER_PROJECT_ID` (or their legacy `CLAUDE_MEM_SERVER_BETA_*`
+  equivalents) are configured via environment or `settings.json`, the hook
+  speaks `/v1` with `Authorization: Bearer <key>`. Otherwise it falls back to
+  the local worker (`CLAUDE_MEM_WORKER_PORT` / `CLAUDE_MEM_WORKER_HOST`, then
+  `settings.json` in `CLAUDE_MEM_DATA_DIR`, default `~/.claude-mem`, then the
+  per-user default port). Settings are re-read at every OMP session start and
+  session switch.
 - The hook never names the project: each request carries the session's `cwd`,
   and the worker resolves the project key with the same resolver the Claude Code
   hooks use, so OMP and Claude Code sessions in one checkout share one project.
