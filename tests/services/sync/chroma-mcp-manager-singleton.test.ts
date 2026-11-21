@@ -374,6 +374,8 @@ import {
 
 afterAll(() => {
   ChromaMcpManager.setUvxAvailabilityProbeForTesting(null);
+  ChromaMcpManager.setTasksetAvailabilityProbeForTesting(null);
+  ChromaMcpManager.setAllowedCpusProbeForTesting(null);
   ChromaMcpManager.setChildExitWaitTimeoutsForTesting(null);
   process.kill = realProcessKill;
   if (originalPrewarmTimeout === undefined) {
@@ -2354,10 +2356,13 @@ describe('chroma-mcp is started at low priority via nice', () => {
       niceProbeCalls.push(platform);
       return true;
     });
+    // Isolate nice-wrapping assertions from Linux taskset wrapping.
+    ChromaMcpManager.setTasksetAvailabilityProbeForTesting(() => false);
   });
 
   afterAll(() => {
     ChromaMcpManager.setNiceAvailabilityProbeForTesting(null);
+    ChromaMcpManager.setTasksetAvailabilityProbeForTesting(null);
   });
 
   async function connect(): Promise<void> {

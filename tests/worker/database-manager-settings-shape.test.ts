@@ -152,19 +152,25 @@ describe('Chroma pacing settings in the settings file claude-mem uses', () => {
     else writeFileSync(USER_SETTINGS_PATH, savedSettings, 'utf-8');
   });
 
-  it('reads both keys from the env block of a wrapped settings document', () => {
+  it('reads all three keys from the env block of a wrapped settings document', () => {
     writeFileSync(USER_SETTINGS_PATH, JSON.stringify({
-      env: { CLAUDE_MEM_CHROMA_BACKFILL_PAUSE_RATIO: '3', CLAUDE_MEM_CHROMA_PROCESS_NICE: '5' },
+      env: {
+        CLAUDE_MEM_CHROMA_BACKFILL_PAUSE_RATIO: '3',
+        CLAUDE_MEM_CHROMA_PROCESS_NICE: '5',
+        CLAUDE_MEM_CHROMA_MAX_THREADS: '4',
+      },
     }), 'utf-8');
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     expect(settings.CLAUDE_MEM_CHROMA_BACKFILL_PAUSE_RATIO).toBe('3');
     expect(settings.CLAUDE_MEM_CHROMA_PROCESS_NICE).toBe('5');
+    expect(settings.CLAUDE_MEM_CHROMA_MAX_THREADS).toBe('4');
   });
 
-  it('falls back to the defaults when a settings file omits both keys', () => {
+  it('falls back to the defaults when a settings file omits all three keys', () => {
     writeFileSync(USER_SETTINGS_PATH, JSON.stringify({ CLAUDE_MEM_CHROMA_ENABLED: 'false' }), 'utf-8');
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     expect(settings.CLAUDE_MEM_CHROMA_BACKFILL_PAUSE_RATIO).toBe('1');
     expect(settings.CLAUDE_MEM_CHROMA_PROCESS_NICE).toBe('10');
+    expect(settings.CLAUDE_MEM_CHROMA_MAX_THREADS).toBe('0');
   });
 });
