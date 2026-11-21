@@ -616,6 +616,26 @@ describe('agent runner', () => {
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 
+  it('OpenCode: output past the capture cap fails the run instead of accepting surviving text', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-opencode-cap-'));
+    const calls: SpawnCall[] = [];
+    try {
+      // One event over the cap: its retained line no longer parses as JSON,
+      // so the old path silently dropped it and answered with whatever came
+      // after. The truncation flag must fail the run before that parse.
+      const giant = JSON.stringify({ type: 'text', part: { text: 'x'.repeat(9 * 1024 * 1024) } });
+      const result = await runTask(task(cwd), {
+        detect: async () => agents('opencode'), query: neverQuery, spawn: fakeOpenCodeCli('opencode v2.3.2', calls, call => {
+          call.child.stdout.emit('data', giant + '\n');
+          call.child.stdout.emit('data', `${JSON.stringify({ type: 'text', part: { text: 'surviving tail' } })}\n`);
+          call.child.emit('close', 0);
+        }), buildEnv: env,
+      });
+      expect(result.state).toBe('failed');
+      expect(result.attempts[0].error).toContain('capture cap');
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
 
   it('a failed run falls through to the next logged-in agent', async () => {
     const query = (() => (async function* () { yield { type: 'result', subtype: 'error_during_execution', is_error: true, result: 'quota' }; })()) as never;
