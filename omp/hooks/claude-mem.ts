@@ -150,6 +150,8 @@ function setting(settings: Record<string, unknown>, key: string, fallback: strin
   const fromEnv = process.env[key];
   if (fromEnv) return fromEnv;
   const fromFile = settings[key];
+  // The worker accepts a numeric JSON port as well as a string.
+  if (typeof fromFile === "number" && Number.isFinite(fromFile)) return String(fromFile);
   return typeof fromFile === "string" && fromFile ? fromFile : fallback;
 }
 
