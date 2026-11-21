@@ -8,6 +8,7 @@ import { kimiCodeHome } from '../../shared/kimi-paths.js';
 import { getOpenCodeConfigDirectory } from '../../services/integrations/OpenCodeInstaller.js';
 import { hermesHome } from '../../services/integrations/HermesInstaller.js';
 import { devinConfigPath } from '../../services/integrations/DevinHooksInstaller.js';
+import { hasAgentsAndTranscripts, wellKnownGrokBotAgentDataDirs } from '../../services/integrations/GrokBotInstaller.js';
 import { getGooseConfigPath, getZedSettingsPath } from '../../services/integrations/McpIntegrations.js';
 import { lookupWindowsCommandCandidates } from '../../shared/spawn.js';
 
@@ -55,6 +56,7 @@ function hasVscodeExtension(extensionNameFragment: string): boolean {
 
 export function detectInstalledIDEs(): IDEInfo[] {
   const home = homedir();
+  const grokBotAgentData = process.env.GROK_BOT_AGENT_DATA?.trim();
 
   return [
     {
@@ -114,7 +116,10 @@ export function detectInstalledIDEs(): IDEInfo[] {
     {
       id: 'grok-bot',
       label: 'Grok Bot',
-      detected: existsSync(join(home, '.cursor')),
+      // Where discoverGrokBotAgentDataRoot() finds agent data, not the current folder or Cursor's ~/.cursor.
+      detected: grokBotAgentData
+        ? existsSync(grokBotAgentData)
+        : wellKnownGrokBotAgentDataDirs().some(hasAgentsAndTranscripts),
       hint: 'transcript watch + MCP integration',
     },
     {

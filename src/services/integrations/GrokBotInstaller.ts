@@ -76,7 +76,8 @@ export function resolveGrokBotProject(name: string): string {
   return 'cmem_work_' + (GENERIC_DIRS.has(slug) ? 'root' : slug);
 }
 
-function hasAgentsAndTranscripts(dir: string): boolean {
+/** A Grok Bot agent-data root has both `agents/` and `agent-transcripts/`. */
+export function hasAgentsAndTranscripts(dir: string): boolean {
   return existsSync(path.join(dir, 'agents')) && existsSync(path.join(dir, 'agent-transcripts'));
 }
 
