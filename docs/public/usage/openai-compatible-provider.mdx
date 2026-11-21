@@ -112,6 +112,7 @@ endpoint or model you pinned yourself.
 | `trustedrouter` | `https://api.trustedrouter.com/v1` | yes |
 | `atmorouter` | `https://atmorouter.dev/v1` | yes |
 | `worldrouter` | `https://inference-api.worldrouter.ai/v1` | yes |
+| `aigrow` | `https://aigrow.gg/v1` | yes |
 | `deepseek` | `https://api.deepseek.com/v1` | yes |
 | `opencode-go` | `https://opencode.ai/zen/go/v1` | yes |
 | `opencode-zen` | `https://opencode.ai/zen/v1` | yes |
@@ -577,6 +578,24 @@ your key. Setup notes are in
 To run extraction on a newer model, set
 `CLAUDE_MEM_OPENAI_COMPAT_MODEL` to `gemini-4-neon`. It costs more per token
 than the default, which matters because extraction runs on every tool use.
+
+## AIGROW
+
+[AIGROW](https://aigrow.gg) sells prepaid API credit for Claude, GPT, Gemini,
+Grok, Qwen and Kimi models on one key, over the OpenAI format at
+`https://aigrow.gg/v1`. Model ids are unprefixed, such as `claude-haiku-5.5`
+(the preset's default) or `gemini-3.8-flash`, and are passed verbatim.
+`GET https://aigrow.gg/v1/models` lists every id with its per-token price and
+needs no key; prices are also at [aigrow.gg/ai-api](https://aigrow.gg/ai-api).
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openai-compatible",
+  "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "aigrow",
+  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<your AIGROW key>",
+  "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "claude-haiku-5.5"
+}
+```
 
 ## Troubleshooting
 
