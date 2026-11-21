@@ -154,6 +154,9 @@ def setting(settings: Dict[str, Any], key: str, default: str = "",
         value = settings.get(name)
         if isinstance(value, str) and value.strip():
             return value.strip()
+        # The worker accepts a numeric JSON port as well as a string.
+        if isinstance(value, int) and not isinstance(value, bool):
+            return str(value)
     return default
 
 

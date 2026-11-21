@@ -9,7 +9,7 @@ afterwards.
 
 | File | Purpose |
 |------|---------|
-| `Dockerfile` | Image definition (node:20 + Bun + uv + Claude Code CLI + local `plugin/`) |
+| `Dockerfile` | Image definition (node:20-trixie + Bun + uv + Claude Code CLI + local `plugin/`) |
 | `build.sh` | Runs `npm run build` then `docker build`. Tag defaults to `claude-mem:basic`. |
 | `entrypoint.sh` | Runs inside the container. Seeds OAuth creds into `$HOME/.claude/` if mounted, then `exec "$@"`. |
 | `run.sh` | Host-side launcher. Extracts creds (Keychain → file → env), mounts a persistent data dir, drops you into an interactive shell. |
@@ -39,7 +39,7 @@ sqlite3 .docker-claude-mem-data/claude-mem.db 'select count(*) from observations
 ## What's in the image
 
 Mirrors the layout of [anthropics/claude-code's devcontainer](https://github.com/anthropics/claude-code/blob/main/.devcontainer/Dockerfile):
-`FROM node:20`, non-root `node` user, global `npm install -g @anthropic-ai/claude-code`.
+`FROM node:20` (the trixie variant here, for tree-sitter's glibc 2.39), non-root `node` user, global `npm install -g @anthropic-ai/claude-code`.
 Skips the firewall/zsh/fzf/delta/git-hist tooling since this image is about
 running claude-mem, not editing code.
 

@@ -117,7 +117,7 @@ def load_evidence(db, scope, sess, observer_rate):
         if key not in seen_reply:
             seen_reply.add(key); tok = o["discovery_tokens"] or 0; e["obs_tok_dedup"] += tok
             r = observer_rate(o["generated_by_model"])                                 # :72-73, priced at the input rate only
-            if r is None: observer_unpriced[o["generated_by_model"]] += tok
+            if r is None: observer_unpriced[o["generated_by_model"] or "<none>"] += tok
             else: e["obs_cost_x1e6"] += int(round(tok * r))
         if o["type"] in SHIP_TYPES and SHIP_RE.search(o["title"] or ""):              # :74-75
             e["ship_titles"].append(o["title"]); e["ship_ids"].append(o["id"])
