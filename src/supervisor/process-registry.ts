@@ -1097,11 +1097,22 @@ function sigtermDuplicateSdkProcess(record: ManagedProcessRecord, sessionDbId: n
   });
 }
 
-export function createSdkSpawnFactory(sessionDbId: number, slotReservation?: SlotReservation, extraArgs: string[] = []) {
+export function createSdkSpawnFactory(
+  sessionDbId: number,
+  slotReservation?: SlotReservation,
+  extraArgs: string[] = [],
+  options?: { replaceExisting?: boolean },
+) {
   return (spawnOptions: SpawnSdkOptions): SpawnedSdkProcess => {
     const registry = getProcessRegistry();
 
-    const existing = registry.getBySession(sessionDbId).filter(r => r.type === 'sdk');
+    // Callers that legitimately hold several same-session SDK children at once
+    // (the observer's per-field compressions) pass replaceExisting: false, so a
+    // sibling's spawn never kills their child: each child ends on its own turn,
+    // and the abort and the shutdown cascade still reach every record.
+    const existing = options?.replaceExisting === false
+      ? []
+      : registry.getBySession(sessionDbId).filter(r => r.type === 'sdk');
     for (const record of existing) {
       if (!isPidAlive(record.pid)) continue;
       try {
