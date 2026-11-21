@@ -3,6 +3,7 @@ import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManage
 import { logger } from '../../src/utils/logger.js';
 import type { TelegramWrapupFormatterInput } from '../../src/services/integrations/TelegramWrapupNotifier.js';
 import { optimizeField } from '../../src/services/worker/field-optimizer.js';
+import { STANDALONE_SDK_PROCESS_TYPE, getProcessRegistry, type SpawnedSdkProcess } from '../../src/supervisor/process-registry.js';
 
 // No SDK process, OAuth refresh, or paid request may run in this harness.
 const actualSdk = { ...(await import('@anthropic-ai/claude-agent-sdk')) };
@@ -83,6 +84,25 @@ describe('Telegram wrap-up provider reuse', () => {
     expect(sdkQuery).toHaveBeenCalledWith(expect.objectContaining({
       options: expect.objectContaining({ model: enabled ? 'configured-summary-model' : 'configured-default-model' }),
     }));
+  });
+
+  it('registers the standalone SDK child as a standalone record under the negated session id', async () => {
+    const provider = new ClaudeProvider({} as never, {} as never);
+    await provider.formatTelegramWrapup(input, 'active-summary-model');
+    const { options } = sdkQuery.mock.calls[0][0] as { options: Record<string, any> };
+
+    const child: SpawnedSdkProcess = options.spawnClaudeCodeProcess({
+      command: process.execPath, args: ['--eval', 'setInterval(() => {}, 1000)'],
+    });
+    const exit = new Promise<void>(resolve => child.once('exit', () => resolve()));
+    try {
+      expect(getProcessRegistry().getBySession(-input.sessionDbId).map(record => record.type))
+        .toEqual([STANDALONE_SDK_PROCESS_TYPE]);
+      expect(getProcessRegistry().getBySession(input.sessionDbId)).toEqual([]);
+    } finally {
+      child.kill('SIGKILL');
+      await exit;
+    }
   });
 
   it.each(['field', 'session'])('retains %s cancellation for the existing field-compression call', async source => {

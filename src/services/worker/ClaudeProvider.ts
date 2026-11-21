@@ -18,6 +18,7 @@ import { ModeManager } from '../domain/ModeManager.js';
 import { processAgentResponse, snapshotResponseContext, takeObserverSchemaReminder, type WorkerRef } from './agents/index.js';
 import {
   createSdkSpawnFactory,
+  createStandaloneSdkSpawnFactory,
   getSdkProcessForSession,
   ensureSdkProcessExit,
   waitForSlot,
@@ -73,13 +74,11 @@ export function __resetEffortHintLatchForTesting(): void {
 
 /**
  * The registry session id a standalone observer SDK call (field compression,
- * Telegram wrap-up) is registered under. Field compression and the wrap-up run
- * while the session's generation may still be alive, so the child cannot share
- * the generation's registry key: the SDK spawn factory's duplicate handling
- * SIGTERMs same-key SDK records, which would kill the live generation. The
- * negated id keeps the child inside the worker's shutdown cascade (the
- * standalone call passes no concurrency slot — it is one bounded SDK turn
- * gated by its own abort deadline) without ever colliding with a real session.
+ * Telegram wrap-up) is registered under: the session id negated. The child is
+ * a STANDALONE_SDK_PROCESS_TYPE record, which is what keeps it from stopping,
+ * or being stopped by, the generation and the session's other standalone
+ * calls. The negated id gives it its own OBSERVER_SESSIONS_DIR/<id> working
+ * directory and keeps it out of lookups by the real session id.
  */
 export function standaloneObserverRegistrySessionId(sessionDbId: number): number {
   return -Math.abs(sessionDbId);
@@ -1170,20 +1169,10 @@ export class ClaudeProvider {
                 ? 'omit'
                 : SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_OBSERVER_THINKING,
             ),
-            // Register the child in the worker's process registry so the
-            // shutdown cascade reaches it, under the session's negated id so
-            // it can neither collide with nor duplicate-kill the generation's
-            // own SDK process (see standaloneObserverRegistrySessionId). No
-            // slot reservation: this call is one bounded SDK turn gated by
-            // the abort controller above. The two field compressions of one
-            // observation run concurrently and legitimately share this key,
-            // so the factory must not replace their live siblings.
-            spawnClaudeCodeProcess: createSdkSpawnFactory(
-              standaloneObserverRegistrySessionId(context.sessionDbId),
-              undefined,
-              [],
-              { replaceExisting: false },
-            ),
+            // Register the child so the shutdown cascade reaches it. A
+            // standalone record takes no slot and stops no other SDK child:
+            // the two field compressions of one observation run at once.
+            spawnClaudeCodeProcess: createStandaloneSdkSpawnFactory(standaloneObserverRegistrySessionId(context.sessionDbId)),
           }),
           maxTurns: 1,
         },
