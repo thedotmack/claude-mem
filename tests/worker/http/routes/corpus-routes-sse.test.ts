@@ -2,6 +2,7 @@ import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:te
 import { EventEmitter } from 'node:events';
 import type { Request, Response } from 'express';
 import { CorpusRoutes } from '../../../../src/services/worker/http/routes/CorpusRoutes.js';
+import { AppError } from '../../../../src/services/server/ErrorHandler.js';
 import { KnowledgeAgent } from '../../../../src/services/worker/knowledge/KnowledgeAgent.js';
 import { _internals as claudeResolver, resetClaudeExecutableCache } from '../../../../src/shared/find-claude-executable.js';
 import { logger } from '../../../../src/utils/logger.js';
@@ -408,5 +409,99 @@ describe('CorpusRoutes when every Claude CLI is too old', () => {
     expect((res.jsonBodies[0] as { error: string }).error).toContain('could not be spawned');
     expect(res.jsonBodies[0]).not.toHaveProperty('code');
     expect(errorSink).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('CorpusRoutes absolute request deadline', () => {
+  it('terminates a silent-but-pinging SSE query with a 504 error event and aborts underlying work', async () => {
+    const seen: { abortController?: AbortController } = {};
+    let attempt = 0;
+    const query = mock((_corpus: any, _question: string, callOptions: { abortController?: AbortController }) => {
+      attempt++;
+      if (attempt === 1) {
+        seen.abortController = callOptions.abortController;
+        // Stalled work that ignores abort and never settles on its own.
+        return new Promise(() => {});
+      }
+      return Promise.resolve({ answer: 'recovered', session_id: 'sess-old' });
+    });
+    const routes = new CorpusRoutes(
+      { read: mock(() => createCorpus('alpha')), write: mock(() => {}), list: mock(() => [{ name: 'alpha' }]), delete: mock(() => false) } as any,
+      { build: mock(() => Promise.resolve(createCorpus('alpha'))) } as any,
+      { query } as any,
+      { sseHeartbeatIntervalMs: HEARTBEAT_INTERVAL_MS, requestDeadlineMs: 85 }
+    );
+    const handler = captureHandler(routes, '/api/corpus/:name/query');
+    const { req } = createRequest('alpha', 'text/event-stream', { question: 'why?' });
+    const res = new FakeResponse();
+
+    handler(req, res as unknown as Response);
+    await waitFor(() => res.ended);
+
+    expect(res.pings()).toBeGreaterThanOrEqual(2);
+    expect(seen.abortController?.signal.aborted).toBe(true);
+    expect(res.terminalEvents()).toHaveLength(1);
+    expect(res.terminalEvents()[0].event).toBe('error');
+    expect(res.terminalEvents()[0].data).toMatchObject({
+      status: 504,
+      code: 'CORPUS_REQUEST_TIMEOUT',
+    });
+
+    // No further heartbeats after the 504 terminal event.
+    const writesAtEnd = res.writes.length;
+    await sleep(HEARTBEAT_INTERVAL_MS * 3);
+    expect(res.writes.length).toBe(writesAtEnd);
+
+    // Busy lock is released so a subsequent query for the same corpus is not rejected with 409.
+    const followUpReq = createRequest('alpha', undefined, { question: 'retry?' }).req;
+    const followUpRes = new FakeResponse();
+    handler(followUpReq, followUpRes as unknown as Response);
+    await waitFor(() => followUpRes.ended);
+    expect(followUpRes.statusCode).toBe(200);
+    expect(followUpRes.jsonBodies).toEqual([{ answer: 'recovered', session_id: 'sess-old' }]);
+  });
+
+  it('bounds a stalled JSON-mode query (curl path) with 504 and aborts underlying work', async () => {
+    const seen: { abortController?: AbortController } = {};
+    const query = mock((_corpus: any, _question: string, callOptions: { abortController?: AbortController }) => {
+      seen.abortController = callOptions.abortController;
+      return new Promise(() => {});
+    });
+    const routes = new CorpusRoutes(
+      { read: mock(() => createCorpus('alpha')), write: mock(() => {}), list: mock(() => [{ name: 'alpha' }]), delete: mock(() => false) } as any,
+      { build: mock(() => Promise.resolve(createCorpus('alpha'))) } as any,
+      { query } as any,
+      { sseHeartbeatIntervalMs: HEARTBEAT_INTERVAL_MS, requestDeadlineMs: 60 }
+    );
+    const handler = captureHandler(routes, '/api/corpus/:name/query');
+    const { req } = createRequest('alpha', undefined, { question: 'why?' });
+    const res = new FakeResponse();
+
+    handler(req, res as unknown as Response);
+    await waitFor(() => res.ended);
+
+    expect(seen.abortController?.signal.aborted).toBe(true);
+    expect(res.statusCode).toBe(504);
+    expect(res.jsonBodies).toHaveLength(1);
+    expect(res.jsonBodies[0]).toMatchObject({ code: 'CORPUS_REQUEST_TIMEOUT' });
+  });
+
+  it('forwards a 504 KnowledgeAgent timeout as a terminal SSE error event without treating it as disconnect', async () => {
+    const query = mock(() => Promise.reject(new AppError('Knowledge query timed out for corpus "alpha"', 504, 'KNOWLEDGE_QUERY_TIMEOUT')));
+    const handler = captureHandler(createRoutes({ query }), '/api/corpus/:name/query');
+    const { req } = createRequest('alpha', 'text/event-stream', { question: 'why?' });
+    const res = new FakeResponse();
+
+    handler(req, res as unknown as Response);
+    await waitFor(() => res.ended);
+
+    expect(res.terminalEvents()).toEqual([{
+      event: 'error',
+      data: {
+        error: 'Knowledge query timed out for corpus "alpha"',
+        code: 'KNOWLEDGE_QUERY_TIMEOUT',
+        status: 504,
+      },
+    }]);
   });
 });
