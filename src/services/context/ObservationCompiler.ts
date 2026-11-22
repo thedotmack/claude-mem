@@ -20,6 +20,7 @@ import type {
   PriorMessages,
 } from './types.js';
 import { SUMMARY_LOOKAHEAD } from './types.js';
+import { CONCEPT_ARRAY_JSON_SQL } from '../sqlite/concept-array-sql.js';
 
 type DatabaseOwner = { db: Database };
 
@@ -153,16 +154,12 @@ export function queryObservationsNewest(
 
   // Match the keyword reader: legacy concepts can be plain or JSON strings.
   // Normalize before json_each so malformed JSON cannot fail the whole query.
-  const conceptArrayJson = `CASE WHEN json_valid(o.concepts) THEN CASE
-    WHEN json_type(o.concepts) = 'array' THEN o.concepts
-    WHEN json_type(o.concepts) = 'text' THEN json_array(json_extract(o.concepts, '$'))
-    ELSE json_array(o.concepts) END ELSE json_array(o.concepts) END`;
   const filterSql = `(? IS NULL OR s.platform_source = ?)
       ${agentFilter}
       AND (${manualClause} (
         type IN (${typePlaceholders})
         AND EXISTS (
-          SELECT 1 FROM json_each(${conceptArrayJson})
+          SELECT 1 FROM json_each(${CONCEPT_ARRAY_JSON_SQL})
           WHERE type = 'text' AND value IN (${conceptPlaceholders})
         )
       ))`;
