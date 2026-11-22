@@ -126,13 +126,23 @@ describe('GET /api/dedup/candidates limit', () => {
     }
   });
 
-  // The fixture holds one candidate, so the route's 500 ceiling is not
-  // observable here; that the route caps rather than passes the number through
-  // is covered by the rejection cases above.
-  it('accepts a whole number above the ceiling', async () => {
-    const response = await fetch(`${endpoint}/api/dedup/candidates?limit=100000`);
-    expect(response.status).toBe(200);
-    expect(await response.json()).toHaveProperty('candidates');
+  // The fixture holds one candidate, so the cap is not observable in the
+  // response. Recording the value the route hands the store proves it caps
+  // instead of passing 100000 through to `LIMIT ?`.
+  it('caps a whole number above the ceiling before it reaches the store', async () => {
+    const seen: number[] = [];
+    const real = store.listDedupCandidates.bind(store);
+    (store as any).listDedupCandidates = (p: any, limit?: number, status?: any) => {
+      seen.push(limit as number);
+      return real(p, limit, status);
+    };
+    try {
+      const response = await fetch(`${endpoint}/api/dedup/candidates?limit=100000`);
+      expect(response.status).toBe(200);
+      expect(seen).toEqual([500]);
+    } finally {
+      (store as any).listDedupCandidates = real;
+    }
   });
 
   // Zero read as "not set" before this check and keeps doing so: only a value

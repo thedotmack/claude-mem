@@ -130,6 +130,36 @@ describe('dedup-scan: backfill + sweep (#3038)', () => {
     expect(store.listDedupCandidates('p')).toHaveLength(all.length);
   });
 
+  // `LIMIT ?` takes neither a float ("datatype mismatch") nor a negative number
+  // (SQLite reads it as "no limit"), so the count is clamped before binding.
+  // Three distinct near-dup pairs give enough rows for both shapes to show.
+  it('listDedupCandidates clamps a fractional or negative count', () => {
+    seed([
+      'build the worker service module', 'worker build the service module',
+      'ship the release notes draft', 'draft the release notes ship',
+      'audit the import graph edges', 'the import graph edges audit',
+      'distinct subject matter',
+    ]);
+    backfillProjectDedup(store.db, 'p');
+    sweepProjectCandidates(store.db, 'p', CFG);
+    const total = store.listDedupCandidates('p').length;
+    expect(total).toBe(3);
+
+    // A float used to throw; it now truncates to a bounded read.
+    expect(store.listDedupCandidates('p', 2.5)).toHaveLength(2);
+    // A negative count is "no limit" to SQLite, which would return every row.
+    expect(store.listDedupCandidates('p', -1)).toHaveLength(1);
+    expect(store.listDedupCandidates('p', 0)).toHaveLength(1);
+    // A non-finite count falls back to the default rather than binding as NaN.
+    expect(store.listDedupCandidates('p', Number.NaN)).toHaveLength(total);
+    expect(store.listDedupCandidates('p', Number.POSITIVE_INFINITY)).toHaveLength(total);
+
+    // The unfiltered read binds the same clamped count, not the raw one.
+    expect(store.listDedupCandidates(undefined, -1)).toHaveLength(1);
+    expect(store.listDedupCandidates(undefined, 2.5)).toHaveLength(2);
+    expect(store.listDedupCandidates(undefined, Number.NaN)).toHaveLength(total);
+  });
+
   it('runDedupScan covers every project', () => {
     seed(['one alpha', 'two beta'], 'projA');
     seed(['three gamma', 'four delta'], 'projB');
