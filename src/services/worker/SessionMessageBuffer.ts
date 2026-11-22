@@ -72,10 +72,7 @@ export class SessionMessageBuffer {
   /** Inputs discarded by expiry over this worker's lifetime (#6391). */
   private expiredInputCount = 0;
 
-  constructor(
-    private readonly onMutate?: () => void,
-    private readonly maxAgeMs: number = LIVE_OBSERVER_MAX_AGE_MS,
-  ) {}
+  constructor(private readonly onMutate?: () => void) {}
 
   /** Total live inputs discarded by expiry, for the worker's status output. */
   getExpiredInputCount(): number {
@@ -358,7 +355,7 @@ export class SessionMessageBuffer {
 
   /** Expire only unsent work. A paid request already in flight may finish. */
   private pruneExpired(): void {
-    const cutoff = Date.now() - this.maxAgeMs;
+    const cutoff = Date.now() - LIVE_OBSERVER_MAX_AGE_MS;
     let skipped = 0;
     for (const [sessionDbId, list] of this.buffers) {
       const live = list.filter(message => message.claimed || message.bufferedAt > cutoff);

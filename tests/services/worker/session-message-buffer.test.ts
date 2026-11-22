@@ -254,29 +254,13 @@ describe('SessionMessageBuffer (in-RAM observation buffer)', () => {
       expect(buffer.getExpiredInputCount()).toBe(1);
     });
 
-    test('honours a configured max age instead of the shipped five minutes', () => {
-      const now = startClock();
-      const buffer = new SessionMessageBuffer(undefined, 60_000);
-      buffer.enqueue(1, obs('Read', 'a'));
-
-      now.mockReturnValue(START_MS + 30_000);
-      buffer.enqueue(1, obs('Write', 'b'));
-      expect(buffer.getExpiredInputCount()).toBe(0);
-      expect(buffer.getPendingCount(1)).toBe(2);
-
-      now.mockReturnValue(START_MS + 61_000);
-      buffer.enqueue(1, obs('Edit', 'c'));
-      expect(buffer.getExpiredInputCount()).toBe(1);
-      expect(buffer.getPendingCount(1)).toBe(2);
-    });
-
     test('never expires claimed work: an in-flight paid request may finish', () => {
       const now = startClock();
-      const buffer = new SessionMessageBuffer(undefined, 1_000);
+      const buffer = new SessionMessageBuffer();
       buffer.enqueue(1, obs('Read', 'a'));
       expect(buffer.claimNextMatching(1, () => true)?.tool_name).toBe('Read');
 
-      now.mockReturnValue(START_MS + 60_000);
+      now.mockReturnValue(START_MS + 6 * 60_000);
       buffer.enqueue(1, obs('Write', 'b'));
       expect(buffer.getPendingCount(1)).toBe(2);
       expect(buffer.getExpiredInputCount()).toBe(0);

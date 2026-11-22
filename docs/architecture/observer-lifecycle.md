@@ -16,13 +16,11 @@ inputs are discarded. Later activity can start fresh work through the existing
 provider gates. Timer-driven and operator paths cannot revive discarded work.
 
 The RAM buffer holds at most 128 messages per session and 1,024 per worker.
-Unsent inputs expire after five minutes by default; the setting
-`CLAUDE_MEM_LIVE_OBSERVER_MAX_AGE_MS` raises or lowers that window within one
-minute to one hour, and the caps above still bound the buffer either way. An
-in-flight paid request may finish; the expiry does not abort it. Releasing a
-failed claim does not reset its age. Source timestamps stay separate from time
-spent in the buffer. Expired inputs are never replayed, so the worker reports
-the running total as `expiredObserverInputs` in its processing-status output.
+Unsent inputs expire after five minutes. An in-flight paid request may finish;
+the expiry does not abort it. Releasing a failed claim does not reset its age.
+Source timestamps stay separate from time spent in the buffer. Expired inputs
+are never replayed, so the worker reports their running total as
+`expiredObserverInputs` in its processing-status output.
 
 The common hook handoff sends observations, file edits, and summaries directly
 to the existing worker endpoints, with a transport deadline
