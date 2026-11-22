@@ -13,6 +13,21 @@ export const MAX_LISTING_OFFSET = 10_000;
 export const LISTING_OFFSET_CAP_MESSAGE =
   `offset must be at most ${MAX_LISTING_OFFSET}; narrow the listing with filters to reach older rows`;
 
+/**
+ * The cap decision itself: the 400 message when `offset` is past `max`, or
+ * null when the request is served. Callers keep their own parsing (an absent
+ * offset is `undefined` on one plane and `0` on another, deliberately) but
+ * they all ask here, so the constant, the comparison and the message cannot
+ * drift apart. That drift is not hypothetical: the advisor feed re-derived
+ * the parse and dropped the cap entirely.
+ */
+export function listingOffsetCapMessage(
+  offset: number | undefined,
+  max: number = MAX_LISTING_OFFSET,
+): string | null {
+  return offset !== undefined && offset > max ? LISTING_OFFSET_CAP_MESSAGE : null;
+}
+
 export type OffsetCappedPage<P extends { hasMore: boolean }> =
   P | (P & { hasMore: false; offsetCapReached: true; maxOffset: number });
 
