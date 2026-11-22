@@ -910,6 +910,17 @@ export class SessionManager {
     return this.getTotalQueueDepth();
   }
 
+  /**
+   * Live inputs discarded by expiry over this worker's lifetime (#6391).
+   *
+   * Expired inputs get no replay, so this counter is the only signal
+   * that the observer lost work; the status endpoint reports it next to the
+   * queue depth so a busy queue can be told apart from a healthy one.
+   */
+  getExpiredObserverInputCount(): number {
+    return this.buffer.getExpiredInputCount();
+  }
+
   async isAnySessionProcessing(): Promise<boolean> {
     return this.getTotalQueueDepth() > 0;
   }
