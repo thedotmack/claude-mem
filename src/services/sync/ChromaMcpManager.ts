@@ -2696,6 +2696,23 @@ export class ChromaMcpManager {
     }
   }
 
+  /**
+   * Rewrite bare bracketed IPv6 entries in NO_PROXY / no_proxy (`[::1]`) to the
+   * unbracketed address (`::1`), which means the same host to every proxy
+   * reader. httpx's `get_environment_proxies` misreads the bracketed form as a
+   * domain and builds a URL whose port is `:1]`, so chroma-mcp could not add
+   * documents. Entries with a port, and every other entry, are left as they are.
+   */
+  private static unbracketNoProxyIpv6(env: Record<string, string>): void {
+    for (const key of Object.keys(env)) {
+      if (key.toLowerCase() !== 'no_proxy') continue;
+      env[key] = env[key]
+        .split(',')
+        .map(entry => /^\s*\[([0-9A-Fa-f:.]+)\]\s*$/.exec(entry)?.[1] ?? entry)
+        .join(',');
+    }
+  }
+
   private static getUvxPreflightEnv(
     maxThreads: number = ChromaMcpManager.resolveMaxThreads(),
   ): Record<string, string> {
@@ -2728,6 +2745,11 @@ export class ChromaMcpManager {
         && !Object.keys(baseEnv).some(key => key.toLowerCase() === 'uv_link_mode')) {
       baseEnv.UV_LINK_MODE = 'copy';
     }
+
+    // A bracketed IPv6 entry such as `[::1]` in NO_PROXY makes httpx 0.28
+    // (chroma-mcp's HTTP client) fail every write with "Invalid port: ':1]'"
+    // while the embedding model downloads (#6365).
+    ChromaMcpManager.unbracketNoProxyIpv6(baseEnv);
 
     // Opt-in (CLAUDE_MEM_CHROMA_MAX_THREADS) cap on the sidecar's thread pools (#6365).
     ChromaMcpManager.applyChromaThreadLimits(baseEnv, maxThreads, process.platform);
