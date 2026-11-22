@@ -20,6 +20,7 @@ import type {
   PriorMessages,
 } from './types.js';
 import { SUMMARY_LOOKAHEAD } from './types.js';
+import { CONCEPT_ARRAY_JSON_SQL } from '../sqlite/concept-array-sql.js';
 
 type DatabaseOwner = { db: Database };
 
@@ -151,15 +152,15 @@ export function queryObservationsNewest(
 
   const reinforcementColumn = options.withReinforcementDates ? ',\n      o.reinforcement_dates' : '';
 
-  // json_each throws on a non-JSON concepts value, which would fail the whole
-  // query and drop all context. Such a row cannot match a concept, so skip it.
+  // Match the keyword reader: legacy concepts can be plain or JSON strings.
+  // Normalize before json_each so malformed JSON cannot fail the whole query.
   const filterSql = `(? IS NULL OR s.platform_source = ?)
       ${agentFilter}
       AND (${manualClause} (
         type IN (${typePlaceholders})
         AND EXISTS (
-          SELECT 1 FROM json_each(CASE WHEN json_valid(o.concepts) THEN o.concepts ELSE '[]' END)
-          WHERE value IN (${conceptPlaceholders})
+          SELECT 1 FROM json_each(${CONCEPT_ARRAY_JSON_SQL})
+          WHERE type = 'text' AND value IN (${conceptPlaceholders})
         )
       ))`;
   const filterParams = [
