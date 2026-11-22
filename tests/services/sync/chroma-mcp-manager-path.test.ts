@@ -333,3 +333,34 @@ describe('ChromaMcpManager uv build scratch sweep (#4108)', () => {
     expect(remaining()).toEqual(['.tmpBUILDING']);
   });
 });
+
+describe('ChromaMcpManager NO_PROXY IPv6 entries (#6365)', () => {
+  const saved = { upper: process.env.NO_PROXY, lower: process.env.no_proxy };
+
+  afterAll(() => {
+    if (saved.upper === undefined) delete process.env.NO_PROXY;
+    else process.env.NO_PROXY = saved.upper;
+    if (saved.lower === undefined) delete process.env.no_proxy;
+    else process.env.no_proxy = saved.lower;
+  });
+
+  it('unbrackets a bare IPv6 entry, which httpx misreads as a port of ":1]"', () => {
+    setPath('/usr/bin:/bin');
+    process.env.NO_PROXY = 'localhost,127.0.0.1,::1,[::1]';
+    process.env.no_proxy = '[fd00::1], example.com';
+
+    const env = getUvxPreflightEnv();
+    expect(env.NO_PROXY).toBe('localhost,127.0.0.1,::1,::1');
+    expect(env.no_proxy).toBe('fd00::1, example.com');
+  });
+
+  it('leaves entries with a port and plain hosts untouched', () => {
+    setPath('/usr/bin:/bin');
+    process.env.NO_PROXY = '[::1]:8000,.internal,10.0.0.0/8';
+    delete process.env.no_proxy;
+
+    const env = getUvxPreflightEnv();
+    expect(env.NO_PROXY).toBe('[::1]:8000,.internal,10.0.0.0/8');
+    expect(env.no_proxy).toBeUndefined();
+  });
+});
