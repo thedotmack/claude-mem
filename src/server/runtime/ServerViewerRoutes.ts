@@ -29,7 +29,7 @@ import type { RouteHandler } from '../../services/server/Server.js';
 import type { PostgresPool } from '../../storage/postgres/pool.js';
 import { requirePostgresServerAuth } from '../middleware/postgres-auth.js';
 import { getPackageRoot } from '../../shared/paths.js';
-import { LISTING_OFFSET_CAP_MESSAGE, MAX_LISTING_OFFSET, capListingPage } from '../../shared/listing-offset-cap.js';
+import { listingOffsetCapMessage, capListingPage } from '../../shared/listing-offset-cap.js';
 import { logger } from '../../utils/logger.js';
 
 const VIEWER_HTML_CANDIDATE_PATHS: readonly string[] = (() => {
@@ -319,10 +319,11 @@ export function parsePage(req: Request, res: Response, defaultLimit: number): Pa
     return null;
   }
   const offset = parseNonNegativeInt(req.query.offset) ?? 0;
-  // The shared listing bound (MAX_LISTING_OFFSET): one request must not drive
-  // an arbitrarily deep Postgres skip-scan.
-  if (offset > MAX_LISTING_OFFSET) {
-    res.status(400).json({ error: 'BadRequest', message: LISTING_OFFSET_CAP_MESSAGE });
+  // The shared listing bound: one request must not drive an arbitrarily deep
+  // Postgres skip-scan.
+  const listingCap = listingOffsetCapMessage(offset);
+  if (listingCap !== null) {
+    res.status(400).json({ error: 'BadRequest', message: listingCap });
     return null;
   }
   return { limit, offset };

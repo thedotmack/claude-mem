@@ -27,7 +27,7 @@ import { assertCanonicalDecimal, type ContentKind } from '../../../sync/Canonica
 import type { CloudSync } from '../../../sync/CloudSync.js';
 import { emitContextInvalidation } from '../../../../shared/context-invalidation.js';
 import { parseProjectList } from '../../../../shared/project-list.js';
-import { LISTING_OFFSET_CAP_MESSAGE, MAX_LISTING_OFFSET, capListingPage } from '../../../../shared/listing-offset-cap.js';
+import { listingOffsetCapMessage, capListingPage } from '../../../../shared/listing-offset-cap.js';
 import { parseStringListField } from '../../../sync/string-list-field.js';
 import { projectReadKeysFor } from '../../search/project-where-filter.js';
 import { scheduleChromaRowCleanup, type IndexedRowKind } from '../../../sync/chroma-row-cleanup.js';
@@ -359,8 +359,9 @@ export class DataRoutes extends BaseRouteHandler {
       this.badRequest(res, 'offset must be a non-negative integer');
       return;
     }
-    if (requestedOffset !== undefined && requestedOffset > MAX_LISTING_OFFSET) {
-      this.badRequest(res, LISTING_OFFSET_CAP_MESSAGE);
+    const listingCap = listingOffsetCapMessage(requestedOffset);
+    if (listingCap !== null) {
+      this.badRequest(res, listingCap);
       return;
     }
 
@@ -643,8 +644,9 @@ export class DataRoutes extends BaseRouteHandler {
     const project = BaseRouteHandler.firstString(req.query.project);
     const requestedLimit = Number(BaseRouteHandler.firstString(req.query.limit));
     const requestedOffset = Number(BaseRouteHandler.firstString(req.query.offset));
-    if (Number.isFinite(requestedOffset) && requestedOffset > MAX_LISTING_OFFSET) {
-      this.badRequest(res, LISTING_OFFSET_CAP_MESSAGE);
+    const listingCap = listingOffsetCapMessage(Number.isFinite(requestedOffset) ? requestedOffset : undefined);
+    if (listingCap !== null) {
+      this.badRequest(res, listingCap);
       return;
     }
     const offset = Number.isFinite(requestedOffset) && requestedOffset > 0 ? requestedOffset : undefined;
@@ -812,8 +814,9 @@ export class DataRoutes extends BaseRouteHandler {
     // Same ceiling as the server plane's feeds and the jobs listing: a deep
     // OFFSET makes SQLite scan and discard every skipped row on the shared
     // connection (#5495 showed how one caller can starve the rest).
-    if (offset > MAX_LISTING_OFFSET) {
-      this.badRequest(res, LISTING_OFFSET_CAP_MESSAGE);
+    const listingCap = listingOffsetCapMessage(offset);
+    if (listingCap !== null) {
+      this.badRequest(res, listingCap);
       return null;
     }
     // SQLite interprets a negative LIMIT as unbounded, including limit + 1
