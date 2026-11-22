@@ -802,7 +802,18 @@ export class DataRoutes extends BaseRouteHandler {
     // messages they hold, so a stuck-looking queue can be told apart from a
     // busy one. Reporting only — nothing here resumes or discards them.
     const abandonedStallSessions = this.sessionManager.getAbandonedStallSessions();
-    res.json({ isProcessing, queueDepth, parkedSessions, lastSuccessfulStoreAt, abandonedStallSessions });
+    // #6391 — additive: live inputs discarded by expiry over this worker's
+    // lifetime. Expired work is never replayed, so a rising counter is the only
+    // signal that a parallel-session burst outran the observer.
+    const expiredObserverInputs = this.sessionManager.getExpiredObserverInputCount();
+    res.json({
+      isProcessing,
+      queueDepth,
+      parkedSessions,
+      lastSuccessfulStoreAt,
+      abandonedStallSessions,
+      expiredObserverInputs,
+    });
   });
 
   private parsePaginationParams(req: Request, res: Response): { offset: number; limit: number; project?: string; platformSource?: string; contentSessionId?: string } | null {

@@ -69,8 +69,18 @@ export class SessionMessageBuffer {
   private readonly events = new Map<number, EventEmitter>();
   private readonly seenToolUseIds = new Map<number, Set<string>>();
   private nextId = 1;
+  /** Inputs discarded by expiry over this worker's lifetime (#6391). */
+  private expiredInputCount = 0;
 
-  constructor(private readonly onMutate?: () => void) {}
+  constructor(
+    private readonly onMutate?: () => void,
+    private readonly maxAgeMs: number = LIVE_OBSERVER_MAX_AGE_MS,
+  ) {}
+
+  /** Total live inputs discarded by expiry, for the worker's status output. */
+  getExpiredInputCount(): number {
+    return this.expiredInputCount;
+  }
 
   /**
    * Append a message. Returns its id, or 0 for a duplicate/full buffer.
@@ -348,7 +358,7 @@ export class SessionMessageBuffer {
 
   /** Expire only unsent work. A paid request already in flight may finish. */
   private pruneExpired(): void {
-    const cutoff = Date.now() - LIVE_OBSERVER_MAX_AGE_MS;
+    const cutoff = Date.now() - this.maxAgeMs;
     let skipped = 0;
     for (const [sessionDbId, list] of this.buffers) {
       const live = list.filter(message => message.claimed || message.bufferedAt > cutoff);
@@ -356,7 +366,13 @@ export class SessionMessageBuffer {
       if (live.length !== list.length) this.buffers.set(sessionDbId, live);
     }
     if (skipped > 0) {
-      logger.warn('QUEUE', 'Skipped expired live observer inputs; no replay scheduled', { skipped });
+      // No replay is scheduled: the input is gone, so the only thing this can
+      // still do is make the loss visible (#6391).
+      this.expiredInputCount += skipped;
+      logger.warn('QUEUE', 'Skipped expired live observer inputs; no replay scheduled', {
+        skipped,
+        total: this.expiredInputCount,
+      });
       this.onMutate?.();
     }
   }

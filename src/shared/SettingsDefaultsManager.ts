@@ -340,6 +340,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CODEX_TRANSCRIPT_INGESTION: string;
   CLAUDE_MEM_CODEX_SUBAGENT_INGESTION: string;
   CLAUDE_MEM_MAX_CONCURRENT_AGENTS: string;  
+  CLAUDE_MEM_LIVE_OBSERVER_MAX_AGE_MS: string;  // How long an unclaimed live observer input may wait before it is discarded (#6391)
   CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS: string;
   CLAUDE_MEM_OBSERVER_THINKING: string;  // Observer thinking param: 'disabled' | 'adaptive' | 'enabled[:budget]' | 'omit' (#4732)
   CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW: string;  // Observer model context window in tokens; '' = resolve automatically
@@ -669,6 +670,10 @@ export class SettingsDefaultsManager {
     // plan), so capture is opt-in (Wave 3 gate R4-5).
     CLAUDE_MEM_CODEX_SUBAGENT_INGESTION: 'false',
     CLAUDE_MEM_MAX_CONCURRENT_AGENTS: '2',  // Max concurrent Claude SDK agent subprocesses
+    // How long an unclaimed live observer input may wait before it is discarded.
+    // The message caps above still bound the buffer; raising this only lets a
+    // real backlog drain instead of expiring at the fixed five minutes (#6391).
+    CLAUDE_MEM_LIVE_OBSERVER_MAX_AGE_MS: '300000',
     // Retire an observer conversation past this size and start a fresh generation (#3800).
     // 100000, not the first default of 400000: #5023 measured about 100K tokens per
     // observer turn at 400000 and about 26K at 100000. Installs seeded with '400000'

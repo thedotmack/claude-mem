@@ -14,6 +14,7 @@ import { CAPTURE_DISABLED_ABORT_REASON, PROVIDER_SWITCH_BOUNDARY_ABORT_REASON } 
 import { isSimpleTierMessage } from './session/tier-routing.js';
 import { claudeStandInStillServes } from '../../shared/claude-fallback-readiness.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { LIVE_OBSERVER_MAX_AGE_SETTING, resolveLiveObserverMaxAgeMs } from '../../shared/observer-work-policy.js';
 import { isObserverCaptureEnabled } from '../../shared/observer-capture.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 
@@ -54,7 +55,12 @@ export class SessionManager {
   private sessions: Map<number, ActiveSession> = new Map();
   private onPendingMutate?: () => void;
   private telegramWrapupFormatter: TelegramWrapupFormatter | null = null;
-  private readonly buffer = new SessionMessageBuffer(() => this.onPendingMutate?.());
+  private readonly buffer = new SessionMessageBuffer(
+    () => this.onPendingMutate?.(),
+    resolveLiveObserverMaxAgeMs(
+      SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH, true, { readOnly: true })[LIVE_OBSERVER_MAX_AGE_SETTING],
+    ),
+  );
   private generatorStarter: ((sessionDbId: number, source: string) => void | Promise<void>) | null = null;
   private transportResumes = new Map<number, TransportResumeState>();
   private transportResumeReady: ReadyTransportResume[] = [];
@@ -908,6 +914,17 @@ export class SessionManager {
 
   async getTotalActiveWork(): Promise<number> {
     return this.getTotalQueueDepth();
+  }
+
+  /**
+   * Live inputs discarded by expiry over this worker's lifetime (#6391).
+   *
+   * Expired inputs get no replay, so this counter is the only durable signal
+   * that the observer lost work; the status endpoint reports it next to the
+   * queue depth so a busy queue can be told apart from a healthy one.
+   */
+  getExpiredObserverInputCount(): number {
+    return this.buffer.getExpiredInputCount();
   }
 
   async isAnySessionProcessing(): Promise<boolean> {
