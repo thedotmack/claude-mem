@@ -4,6 +4,29 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [16.0.4] - 2026-11-22
+
+## Fixes
+
+- **Chroma search works again while the embedding model downloads** (#6399, closes the "Invalid port" part of #6365 reported by @FengJie2004, root cause found by @kevincommits). httpx 0.28 misread a bracketed IPv6 entry such as `[::1]` in `NO_PROXY` and failed with `Invalid port: ':1]'`, so chroma-mcp could not add documents and search fell back to FTS5. The chroma-mcp child now gets the same host without brackets (`::1`). Entries with a port, and every other entry, are unchanged.
+- **Context injection keeps observations whose concepts are an old plain string** (#6393, thanks @jiangjiang248, closes #6389 reported by @soarkit). Keyword search matched a legacy concept such as `缓存`, but context injection dropped the same observation. Both now read concepts through one shared SQL expression, so they cannot drift apart again.
+- **OpenCode Go answers My Work refresh and corpus steps** (#6395, thanks @HemanRamlal). The API agent now sends the `x-opencode-session` header OpenCode Go requires (one id per run), and turns reasoning off with `reasoning_effort: none`, which Go honors. Before, every step failed with `400 MissingSessionID`, or ran out of its answer budget while thinking.
+- **Expired live observer inputs are counted and reported** (#6394, thanks @Zhong-fan, closes #6391 reported by @abhiroopb). The live buffer still drops an input nobody claims within five minutes, and still never replays it. The WARN line now carries a running total, and `/api/processing-status` returns it as `expiredObserverInputs`, so the loss is visible without reading logs.
+- **`/api/tool-uses` refuses a bad date instead of ignoring it** (#6387, thanks @kevincommits). A `dateStart` or `dateEnd` that was not a number (an ISO date, a typo, or the parameter given twice) was dropped, and the listing returned rows from every date. It now answers 400 `INVALID_DATE`. Epoch-millisecond values work as before.
+- **`/api/dedup/candidates` refuses a fractional limit instead of answering 500** (#6388, thanks @REI-330). `limit=2.5` failed with `datatype mismatch`. A limit that is not a whole number now answers 400 `limit must be a whole number`, and the store clamps what it binds so a negative limit cannot read every row.
+- **`/api/advisor-calls` caps its offset like every other listing** (#6396, thanks @DeryFerd). A huge `offset` made SQLite scan and discard rows on the worker's shared connection. It now uses the shared listing cap, and a viewer that keeps paging stops with `offsetCapReached`.
+
+## Hosted sync service
+
+- **The sync API checks the projector URL before sending its secret** (#6397, thanks @DeryFerd). `INTERNAL_PROJECTOR_URL` now follows the same rules as `FORWARD_ORIGIN` (absolute https, plain http only for loopback, no credentials, query or fragment) and fails at startup. Before, a typo or an `http://` address sent the internal bearer secret in cleartext. This changes `services/sync-api`, which is not part of the npm package: it reaches users only once that service is deployed.
+
+## Internal
+
+- One helper now decides whether a listing offset is past the cap (#6398, thanks @DeryFerd). Behavior is unchanged.
+- The 16.0.3 changelog now tells OMP users to run `npx claude-mem install --ide omp` once to get the server-runtime fix.
+
+**Full changelog**: https://github.com/thedotmack/claude-mem/compare/v16.0.3...v16.0.4
+
 ## [16.0.3] - 2026-11-21
 
 ## Critical fix
