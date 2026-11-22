@@ -19,6 +19,7 @@
  * personal keys) hold here too.
  */
 
+import { randomUUID } from 'crypto';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { parseOpenRouterExtraBody, withOpenRouterExtraBody } from '../../shared/openrouter-extra-body.js';
 import { paths } from '../../shared/paths.js';
@@ -26,7 +27,8 @@ import { logger } from '../../utils/logger.js';
 import { resolveOpenAICompatConfig } from '../worker/OpenAICompatProvider.js';
 import { resolveOpenRouterConfig } from '../worker/OpenRouterProvider.js';
 import { isMaxCompletionTokensCompatibilityError } from '../../shared/openrouter-token-compatibility.js';
-import { endpointRejectsReasoningField, isReasoningDisabledRejection, isUnknownReasoningParameter, rememberEndpointRejectsReasoningField } from '../worker/reasoning-budget.js';
+import { endpointRejectsReasoningField, isReasoningDisabledRejection, isUnknownReasoningParameter, openAICompatReasoningOffBody, rememberEndpointRejectsReasoningField } from '../worker/reasoning-budget.js';
+import type { OpenAICompatReasoningOff } from '../../shared/openai-compat-presets.js';
 
 /** The provider an API step runs on. */
 export type ApiProviderId = 'openrouter' | 'openai-compatible';
@@ -37,6 +39,10 @@ export interface ApiTarget {
   url: string;
   apiKey: string;
   model: string;
+  /** The preset's conversation-routing header, when it asks for one. */
+  sessionHeader?: string;
+  /** The preset's shape for turning reasoning off, when it needs a different one. */
+  reasoningOff?: OpenAICompatReasoningOff;
   /** CLAUDE_MEM_API_AGENT_EXTRA_BODY, parsed: endpoint-specific request fields. */
   extraBody?: Record<string, unknown>;
 }
@@ -103,7 +109,7 @@ export function resolveApiTarget(settingsPath: string = paths.settings()): ApiTa
     if (!config.apiUrl) return { target: null, reason: 'CLAUDE_MEM_PROVIDER is openai-compatible, but no endpoint is configured.' };
     if (!config.model) return { target: null, reason: 'CLAUDE_MEM_PROVIDER is openai-compatible, but no model is configured.' };
     if (config.requiresApiKey && !config.apiKey) return { target: null, reason: 'CLAUDE_MEM_PROVIDER is openai-compatible, but no API key is configured.' };
-    return { target: { provider: 'openai-compatible', url: config.apiUrl, apiKey: config.apiKey, model: config.model, ...extra }, reason: '' };
+    return { target: { provider: 'openai-compatible', url: config.apiUrl, apiKey: config.apiKey, model: config.model, ...(config.preset.sessionHeader ? { sessionHeader: config.preset.sessionHeader } : {}), ...(config.preset.reasoningOff ? { reasoningOff: config.preset.reasoningOff } : {}), ...extra }, reason: '' };
   }
   return {
     target: null,
@@ -145,6 +151,11 @@ export interface ApiAskOptions {
   systemPrompt?: string;
   /** The caller's abort signal, so a client that walked away stops the request. */
   abortSignal?: AbortSignal;
+  /**
+   * The conversation id for presets that route by a session header. A caller
+   * that asks several steps about one piece of work passes the same id.
+   */
+  sessionId?: string;
 }
 
 /**
@@ -186,6 +197,9 @@ export async function askApiTarget(target: ApiTarget, prompt: string, options: A
 
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (target.apiKey) headers.Authorization = `Bearer ${target.apiKey}`;
+  // One id per question unless the caller names a conversation: the header is
+  // what some presets route (and cache) by, and Go refuses the request without it.
+  if (target.sessionHeader) headers[target.sessionHeader] = options.sessionId ?? randomUUID();
 
   // The timeout bounds the request; the caller's signal ends it when the
   // client that asked for the answer is gone.
@@ -206,7 +220,7 @@ export async function askApiTarget(target: ApiTarget, prompt: string, options: A
       temperature: TEMPERATURE,
       ...(useMaxCompletionTokens ? { max_completion_tokens: MAX_OUTPUT_TOKENS } : { max_tokens: MAX_OUTPUT_TOKENS }),
       // Reasoning off by default: a reasoning model would spend the output budget thinking.
-      ...(includeReasoning ? { reasoning: { enabled: false } } : {}),
+      ...(includeReasoning ? openAICompatReasoningOffBody(target.reasoningOff) : {}),
       ...(format === 'none' ? {} : answerFormatBodies(format, options.answerSchema)),
       messages: [
         { role: 'system', content: options.systemPrompt?.trim() || SYSTEM_PROMPT },

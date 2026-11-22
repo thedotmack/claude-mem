@@ -14,8 +14,18 @@
 import { logger } from '../../utils/logger.js';
 import type { PaidSendBudget } from './paid-send-budget.js';
 import { resolveLlmTimeoutMs } from './retry.js';
+import type { OpenAICompatReasoningOff } from '../../shared/openai-compat-presets.js';
 
 export const REASONING_DISABLED: { enabled: false } = { enabled: false };
+
+/**
+ * The body that asks an endpoint to skip thinking, in the shape its preset
+ * names. `reasoning-disabled` is the OpenAI-compatible field; `effort-none` is
+ * an OpenAI `reasoning_effort` for gateways that ignore that field.
+ */
+export function openAICompatReasoningOffBody(mode: OpenAICompatReasoningOff | undefined): Record<string, unknown> {
+  return mode === 'effort-none' ? { reasoning_effort: 'none' } : { reasoning: REASONING_DISABLED };
+}
 
 /**
  * Reasoning's own token budget per CLAUDE_MEM_OPENROUTER_REASONING_EFFORT
