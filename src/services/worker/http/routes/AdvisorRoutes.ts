@@ -6,6 +6,7 @@ import { validateBody } from '../middleware/validateBody.js';
 import { logger } from '../../../../utils/logger.js';
 import { ingestAdvisorCalls } from '../shared.js';
 import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
+import { LISTING_OFFSET_CAP_MESSAGE, MAX_LISTING_OFFSET, capListingPage } from '../../../../shared/listing-offset-cap.js';
 
 const advisorCallsIngestSchema = z.object({
   contentSessionId: z.string().min(1),
@@ -41,14 +42,27 @@ export class AdvisorRoutes extends BaseRouteHandler {
   }
 
   private handleGetAdvisorCalls = this.wrapHandler((req: Request, res: Response): void => {
-    const offset = Math.max(parseInt(req.query.offset as string, 10) || 0, 0);
+    const requestedOffset = parseInt(req.query.offset as string, 10) || 0;
+    const offset = Math.max(Number.isSafeInteger(requestedOffset) ? requestedOffset : 0, 0);
+    // Same ceiling as the observation, summary and prompt feeds: a deep OFFSET
+    // makes SQLite scan and discard every skipped row on the shared connection,
+    // and an unrepresentable one (`Infinity` from a long digit string) has no
+    // meaningful binding at all.
+    if (offset > MAX_LISTING_OFFSET) {
+      this.badRequest(res, LISTING_OFFSET_CAP_MESSAGE);
+      return;
+    }
     // Clamp to [1, 100]: negative limits would otherwise reach SQLite, where
     // a negative LIMIT means "no limit".
     const limit = Math.min(Math.max(parseInt(req.query.limit as string, 10) || 20, 1), 100);
     const project = req.query.project as string | undefined;
     const platformSource = this.getOptionalPlatformSourceFromRequest(req);
 
-    res.json(this.dbManager.getSessionStore().getAdvisorCalls(offset, limit, project, platformSource));
+    res.json(capListingPage(
+      this.dbManager.getSessionStore().getAdvisorCalls(offset, limit, project, platformSource),
+      offset,
+      limit,
+    ));
   });
 
   private handleGetAdvisorCallById = this.wrapHandler((req: Request, res: Response): void => {
