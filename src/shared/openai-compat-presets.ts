@@ -53,7 +53,20 @@ export interface OpenAICompatPreset {
    * for endpoints that route or cache per conversation.
    */
   sessionHeader?: string;
+  /**
+   * How this endpoint is asked to skip thinking, when it ignores the
+   * OpenAI-compatible `reasoning: { enabled: false }` shape. Unset means that
+   * shape.
+   */
+  reasoningOff?: OpenAICompatReasoningOff;
 }
+
+/**
+ * How an endpoint is asked to skip thinking. `reasoning-disabled` is the
+ * OpenAI-compatible shape; `effort-none` is an OpenAI `reasoning_effort`,
+ * which some gateways honour when they ignore the former.
+ */
+export type OpenAICompatReasoningOff = 'reasoning-disabled' | 'effort-none';
 
 export const OPENAI_COMPAT_PRESETS: readonly OpenAICompatPreset[] = [
   {
@@ -243,6 +256,9 @@ export const OPENAI_COMPAT_PRESETS: readonly OpenAICompatPreset[] = [
     hint: 'OpenCode Go subscription key; model ids from opencode.ai/zen/go/v1/models.',
     // Go answers 400 without it (#4581).
     sessionHeader: 'x-opencode-session',
+    // Go ignores `reasoning: { enabled: false }` and keeps thinking; an OpenAI
+    // `reasoning_effort` is the shape that turns it off there.
+    reasoningOff: 'effort-none',
   },
   {
     id: 'opencode-zen',

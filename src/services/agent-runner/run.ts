@@ -36,7 +36,7 @@
  * through claude-mem's own validators.
  */
 
-import { randomBytes } from 'crypto';
+import { randomBytes, randomUUID } from 'crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
@@ -566,6 +566,9 @@ function apiAsk(agent: TaskAgent, task: AgentTask, dependencies: AgentRunnerDepe
   // review batches) report it without sending. The latch lives and dies with this
   // run: it is not stored, and the next run asks the provider afresh.
   let refused: ApiProviderError | null = null;
+  // Every step of one run is one conversation for a preset that routes by a
+  // session header, so its requests share a routing (and prompt-cache) id.
+  const sessionId = randomUUID();
   return async (prompt, models, answerSchema) => {
     if (refused) throw refused;
     const resolution = resolveApiTarget();
@@ -573,7 +576,7 @@ function apiAsk(agent: TaskAgent, task: AgentTask, dependencies: AgentRunnerDepe
       throw new Error(`The selected API provider cannot answer this step: ${resolution.reason}`);
     }
     try {
-      return await askApiTarget(resolution.target, prompt, { model: models.api?.model, answerSchema });
+      return await askApiTarget(resolution.target, prompt, { model: models.api?.model, answerSchema, sessionId });
     } catch (error) {
       if (error instanceof ApiProviderError && [401, 402, 403, 429].includes(error.status)) refused = error;
       throw error;
