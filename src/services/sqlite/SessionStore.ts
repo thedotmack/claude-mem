@@ -4270,9 +4270,14 @@ export class SessionStore {
     const statusFilter = '(? IS NULL OR c.status = ?) ';
     const order = 'ORDER BY c.score DESC, c.id DESC LIMIT ?';
     const statusArg = status ?? null;
+    // The count is bound as a SQL `LIMIT ?`, which takes neither a float
+    // ("datatype mismatch") nor a negative number (SQLite reads a negative LIMIT
+    // as "no limit"), so it is clamped here as well as rejected at the route:
+    // any caller reaches the same bounded read.
+    const boundLimit = Number.isFinite(limit) ? Math.max(1, Math.trunc(limit)) : 100;
     return project
-      ? this.db.prepare(`${select}WHERE c.project = ? AND ${statusFilter}${order}`).all(project, statusArg, statusArg, limit) as Row[]
-      : this.db.prepare(`${select}WHERE ${statusFilter}${order}`).all(statusArg, statusArg, limit) as Row[];
+      ? this.db.prepare(`${select}WHERE c.project = ? AND ${statusFilter}${order}`).all(project, statusArg, statusArg, boundLimit) as Row[]
+      : this.db.prepare(`${select}WHERE ${statusFilter}${order}`).all(statusArg, statusArg, boundLimit) as Row[];
   }
 
   // #3038 — record a reviewer's verdict on a candidate. `merged` is not accepted here:

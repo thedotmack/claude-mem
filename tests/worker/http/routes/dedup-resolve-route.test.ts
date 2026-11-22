@@ -113,3 +113,45 @@ describe('GET /api/dedup/candidates status filter', () => {
     expect(response.status).toBe(400);
   });
 });
+
+describe('GET /api/dedup/candidates limit', () => {
+  // A float used to be bound straight into `LIMIT ?`, where SQLite throws
+  // "datatype mismatch": the caller got a 500 that named neither the parameter
+  // nor the endpoint.
+  it('rejects a limit that is not a whole number', async () => {
+    for (const limit of ['2.5', 'abc', '-1', '1e3']) {
+      const response = await fetch(`${endpoint}/api/dedup/candidates?limit=${limit}`);
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({ error: 'limit must be a whole number' });
+    }
+  });
+
+  // The fixture holds one candidate, so the cap is not observable in the
+  // response. Recording the value the route hands the store proves it caps
+  // instead of passing 100000 through to `LIMIT ?`.
+  it('caps a whole number above the ceiling before it reaches the store', async () => {
+    const seen: number[] = [];
+    const real = store.listDedupCandidates.bind(store);
+    (store as any).listDedupCandidates = (p: any, limit?: number, status?: any) => {
+      seen.push(limit as number);
+      return real(p, limit, status);
+    };
+    try {
+      const response = await fetch(`${endpoint}/api/dedup/candidates?limit=100000`);
+      expect(response.status).toBe(200);
+      expect(seen).toEqual([500]);
+    } finally {
+      (store as any).listDedupCandidates = real;
+    }
+  });
+
+  // Zero read as "not set" before this check and keeps doing so: only a value
+  // that cannot be a whole number is an error now.
+  it('keeps treating zero and an empty value as not set', async () => {
+    for (const query of ['limit=0', 'limit=']) {
+      const response = await fetch(`${endpoint}/api/dedup/candidates?${query}`);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toHaveProperty('candidates');
+    }
+  });
+});

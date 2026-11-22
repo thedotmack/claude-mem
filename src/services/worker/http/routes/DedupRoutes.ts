@@ -43,8 +43,19 @@ export class DedupRoutes extends BaseRouteHandler {
 
   private handleListCandidates = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const project = typeof req.query.project === 'string' && req.query.project.trim() ? req.query.project.trim() : undefined;
-    const requested = Number(req.query.limit);
-    const limit = Number.isFinite(requested) && requested > 0 ? Math.min(requested, 500) : 100;
+    // An absent limit keeps the store's default. A present one must be a whole
+    // number like the other bounded reads (#4787): `?limit=2.5` used to reach
+    // `LIMIT ?` as a float and SQLite answered 500 "datatype mismatch", which
+    // names neither the parameter nor the endpoint. An empty value still counts
+    // as absent, and an explicit zero still keeps the default of 100 rather than
+    // asking for no rows.
+    const requested = BaseRouteHandler.firstString(req.query.limit);
+    if (requested !== undefined && !/^\d+$/.test(requested.trim())) {
+      this.badRequest(res, 'limit must be a whole number');
+      return;
+    }
+    const parsed = requested === undefined ? 0 : Number(requested.trim());
+    const limit = parsed > 0 ? Math.min(parsed, 500) : 100;
     const status = BaseRouteHandler.firstString(req.query.status);
     if (status !== undefined && !(DEDUP_CANDIDATE_STATUSES as readonly string[]).includes(status)) {
       this.badRequest(res, `status must be one of ${DEDUP_CANDIDATE_STATUSES.join(', ')}`);
