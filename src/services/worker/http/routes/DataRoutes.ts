@@ -27,6 +27,8 @@ import { assertCanonicalDecimal, type ContentKind } from '../../../sync/Canonica
 import type { CloudSync } from '../../../sync/CloudSync.js';
 import { emitContextInvalidation } from '../../../../shared/context-invalidation.js';
 import { parseProjectList } from '../../../../shared/project-list.js';
+import { resolveDateBound } from '../../../../shared/date-bounds.js';
+import { AppError } from '../../../server/ErrorHandler.js';
 import { LISTING_OFFSET_CAP_MESSAGE, MAX_LISTING_OFFSET, capListingPage } from '../../../../shared/listing-offset-cap.js';
 import { parseStringListField } from '../../../sync/string-list-field.js';
 import { projectReadKeysFor } from '../../search/project-where-filter.js';
@@ -216,6 +218,9 @@ function describeImportRowIssues(error: z.ZodError): string {
     .join('; ');
 }
 
+/** Epoch milliseconds as a plain decimal, the shape /api/tool-uses always accepted. */
+const EPOCH_MS_DECIMAL = /^\d+(\.\d+)?$/;
+
 export class DataRoutes extends BaseRouteHandler {
   constructor(
     private paginationHelper: PaginationHelper,
@@ -352,6 +357,22 @@ export class DataRoutes extends BaseRouteHandler {
       return Number.isFinite(parsed) ? parsed : undefined;
     };
 
+    // A bound that is not a date answers 400 (resolveDateBound). Read as a
+    // plain number it became undefined, so the filter was dropped and the
+    // listing returned rows from every date. A repeated parameter arrives as
+    // an array and is refused for the same reason. A plain decimal keeps its
+    // old meaning of epoch milliseconds, including short ones like 0, which
+    // the resolver would otherwise read as a year.
+    const asDateBound = (value: unknown, boundary: 'start' | 'end'): number | undefined => {
+      if (value === undefined) return undefined;
+      if (typeof value !== 'string') {
+        throw new AppError(`date${boundary === 'start' ? 'Start' : 'End'} must be given once, as a date or epoch milliseconds`, 400, 'INVALID_DATE');
+      }
+      const text = value.trim();
+      if (text.length === 0) return undefined;
+      return resolveDateBound(EPOCH_MS_DECIMAL.test(text) ? Number(text) : text, boundary);
+    };
+
     const toolName = asString(req.query.tool_name ?? req.query.toolName);
 
     const requestedOffset = asNumber(req.query.offset);
@@ -371,8 +392,8 @@ export class DataRoutes extends BaseRouteHandler {
       toolName: toolName ? toolName.split(',').map(part => part.trim()).filter(Boolean) : undefined,
       agentId: asString(req.query.agentId),
       platformSource,
-      dateStart: asNumber(req.query.dateStart),
-      dateEnd: asNumber(req.query.dateEnd),
+      dateStart: asDateBound(req.query.dateStart, 'start'),
+      dateEnd: asDateBound(req.query.dateEnd, 'end'),
       limit: asNumber(req.query.limit),
       offset: requestedOffset,
       orderBy: req.query.orderBy === 'date_asc' ? 'date_asc' : 'date_desc',
