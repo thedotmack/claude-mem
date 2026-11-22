@@ -151,15 +151,19 @@ export function queryObservationsNewest(
 
   const reinforcementColumn = options.withReinforcementDates ? ',\n      o.reinforcement_dates' : '';
 
-  // json_each throws on a non-JSON concepts value, which would fail the whole
-  // query and drop all context. Such a row cannot match a concept, so skip it.
+  // Match the keyword reader: legacy concepts can be plain or JSON strings.
+  // Normalize before json_each so malformed JSON cannot fail the whole query.
+  const conceptArrayJson = `CASE WHEN json_valid(o.concepts) THEN CASE
+    WHEN json_type(o.concepts) = 'array' THEN o.concepts
+    WHEN json_type(o.concepts) = 'text' THEN json_array(json_extract(o.concepts, '$'))
+    ELSE json_array(o.concepts) END ELSE json_array(o.concepts) END`;
   const filterSql = `(? IS NULL OR s.platform_source = ?)
       ${agentFilter}
       AND (${manualClause} (
         type IN (${typePlaceholders})
         AND EXISTS (
-          SELECT 1 FROM json_each(CASE WHEN json_valid(o.concepts) THEN o.concepts ELSE '[]' END)
-          WHERE value IN (${conceptPlaceholders})
+          SELECT 1 FROM json_each(${conceptArrayJson})
+          WHERE type = 'text' AND value IN (${conceptPlaceholders})
         )
       ))`;
   const filterParams = [
