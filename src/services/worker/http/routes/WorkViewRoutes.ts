@@ -54,6 +54,7 @@ import { readHistoryCounts, type HistoryImport } from '../../../setup/history-im
 import { createSetupTelemetry } from '../../../setup/telemetry.js';
 import { createSetupInstallerResumer } from '../../../setup/resume-installer.js';
 import { hasActiveSetupSession, hasProConfiguration, readSetupState, setupStatePath, writeSetupState, type SetupStateFile, type SetupStateView } from '../../../../shared/setup-state.js';
+import { toSetupUsage } from '../../../../shared/setup-usage.js';
 import { historyImportRunning, SETUP_BRANCHES, SETUP_CLOUD_SYNC_OFFERS, SETUP_INSTALLER_STAGES, SETUP_MEMORY_BILLINGS, setupCloudSyncOffer } from '../../../../shared/setup-funnel.js';
 import { hasPendingInstallSetup, SETUP_DSH_PROFILE_MAX_CHARACTERS, SETUP_INSTALL_NOTE_MAX_CHARACTERS, SETUP_INSTALL_STATUSES } from '../../../../shared/setup-install.js';
 import {
@@ -1144,7 +1145,12 @@ export class WorkViewRoutes extends BaseRouteHandler {
       checkout = { state: 'requested', requests: 1, error: null, updatedAt: now };
     }
     if (locked && checkout === state.checkout) { res.setHeader('Cache-Control', 'no-store'); res.json(this.setupStateView(state)); return; }
-    const choice = locked ? state.choice : { branch, memoryBilling, ...(offer ? { cloudSyncOffer: offer } : {}), chosenAt: now };
+    const scanUsage = offer && !state.choice?.usage ? this.setupScan?.state().usage : null;
+    const usage = state.choice?.usage ?? (scanUsage ? toSetupUsage(scanUsage) : undefined);
+    const choice = locked ? state.choice : {
+      branch, memoryBilling, chosenAt: now,
+      ...(offer ? { cloudSyncOffer: offer, ...(usage ? { usage } : {}) } : {}),
+    };
     this.saveSetupState({ ...state, choice, checkout }, res);
   };
 

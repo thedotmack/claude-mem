@@ -142,8 +142,11 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
   // its Try again, rather than an install screen with nothing to load.
   const installationComplete = installConfirmed || (data.install === undefined && data.connectionError !== null)
   const historyAvailable = !!data.history && data.history.observations > 0
-  // Finishing a new checkout also writes local credentials. Keep its original customer path.
-  const alreadyPro = data.installer?.stage === 'go-awaiting-checkout' || data.checkout ? false : data.alreadyPro
+  // A paid receipt keeps the new customer's usage screen. A resumed installer can also
+  // confirm existing credentials before it clears an interrupted checkout request.
+  const alreadyPro = data.installer?.stage === 'go-kept-existing-pro'
+    ? data.checkout?.state !== 'paid'
+    : data.installer?.stage !== 'go-awaiting-checkout' && !data.checkout && data.alreadyPro
   if (flow.scanComplete !== scanComplete || flow.alreadyPro !== alreadyPro) {
     setFlow((current) => ({ ...current, scanComplete, alreadyPro, branch: alreadyPro && !data.choice && !choiceEdited.current ? 'go' : current.branch }))
   }

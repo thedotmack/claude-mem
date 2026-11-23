@@ -103,7 +103,7 @@ export interface SetupData {
   connectionError: string | null
   /** Whether the connection error got no answer at all or a refusal; null with no error. */
   connectionErrorKind: SetupFailureKind | null
-  choice: SetupChoice | null
+  choice: (SetupChoice & { usage?: SetupUsage }) | null
   /** Undefined until the first state response; null for older/already configured installers. */
   install: SetupInstallState | null | undefined
   scan: SetupScanView
@@ -202,7 +202,7 @@ interface WorkerScanState extends Omit<SetupScanView, 'agents' | 'improveProduct
 }
 interface WorkerHistoryImport { state: HistoryImportRunState; percent: number; imported: number; error: string | null; sent?: number; total?: number; skipped?: number; unconfirmed?: number }
 interface WorkerSetupState {
-  choice?: SetupChoice | null
+  choice?: SetupData['choice']
   install?: SetupInstallState | null
   status: SetupStatus; alreadyPro: boolean; checkout?: SetupCheckoutView | null
   installer?: SetupInstallerView | null
@@ -276,6 +276,7 @@ export const localSetupSource: SetupSource = {
   kind: 'local',
   subscribe(onData) {
     let data = EMPTY_SETUP_DATA
+    let liveUsage: SetupUsage | null = null
     let closed = false
     let scanRevision = 0
     let stateRevision = 0
@@ -286,9 +287,10 @@ export const localSetupSource: SetupSource = {
     const applyScan = (scan: WorkerScanState) => {
       scanRevision++
       appliedImproveProduct = scan.improveProduct ?? true
+      liveUsage = scan.usage ? toSetupUsage(scan.usage) : null
       publish({
         scan: toScanView(scan),
-        usage: scan.usage ? toSetupUsage(scan.usage) : null,
+        usage: data.choice?.usage ?? liveUsage,
         recentPrompts: scan.recentPrompts ?? [],
         // Finish Setup pre-ticks the tools the scan found on this machine.
         detectedTools: scan.agents.filter((agent) => agent.detected).map((agent) => agent.id).filter((id) => SETUP_TOOLS.some((tool) => tool.id === id)),
@@ -300,6 +302,7 @@ export const localSetupSource: SetupSource = {
       connectionError: null,
       connectionErrorKind: null,
       choice: state.choice ?? null,
+      usage: state.choice?.usage ?? liveUsage,
       install: state.install ?? null,
       alreadyPro: state.alreadyPro,
       checkout: state.checkout ? { state: state.checkout.state, error: state.checkout.error } : null,

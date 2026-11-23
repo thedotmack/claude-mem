@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { join } from 'node:path';
 import { logger } from '../../../../src/utils/logger.js';
 import { defaultAutoRefresh, WorkViewRoutes } from '../../../../src/services/worker/http/routes/WorkViewRoutes.js';
+import { SetupScan } from '../../../../src/services/prompt-import/setup-scan.js';
 import { SETUP_DSH_PROFILE_MAX_CHARACTERS, SETUP_INSTALL_NOTE_MAX_CHARACTERS, type SetupInstallCatalog } from '../../../../src/shared/setup-install.js';
 
 const FIXTURE_HOME = join(import.meta.dir, '..', '..', '..', 'fixtures', 'prompt-import', 'home');
@@ -21,10 +22,10 @@ let server: Server;
 let routes: WorkViewRoutes;
 let origin: string;
 
-async function start(autoRefresh: unknown = null, resumeSetup: () => Promise<void> = async () => {}) {
+async function start(autoRefresh: unknown = null, resumeSetup: () => Promise<void> = async () => {}, setupScan: SetupScan | null = null) {
   routes = new WorkViewRoutes({
     databasePath: join(FIXTURE_HOME, 'no-work-state.db'), reviewPath: ':memory:', pollIntervalMs: 20,
-    humanCopy: null, ledgerDir: null, setupScan: null, setupStatePath: statePath, settingsPath, autoRefresh: autoRefresh as never, resumeSetup,
+    humanCopy: null, ledgerDir: null, setupScan, setupStatePath: statePath, settingsPath, autoRefresh: autoRefresh as never, resumeSetup,
   });
   const app = express();
   app.use(express.json());
@@ -35,9 +36,12 @@ async function start(autoRefresh: unknown = null, resumeSetup: () => Promise<voi
   origin = `http://127.0.0.1:${address.port}`;
 }
 
-afterEach(async () => {
+async function stop() {
   routes.close();
   await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+}
+afterEach(async () => {
+  await stop();
   rmSync(statePath, { force: true });
   rmSync(sessionPath, { force: true });
   rmSync(settingsPath, { force: true });
@@ -450,6 +454,28 @@ describe('setup state endpoints', () => {
     await post('/api/setup/installer', { stage: 'go-awaiting-checkout', checkout: 'paid' });
     expect((await (await post('/api/setup/choice', annual)).json()).checkout.state).toBe('paid');
     expect((await state()).checkout.requests).toBe(1);
+  });
+
+  it('preserves the original token summary with the Cloud choice across worker restarts', async () => {
+    const scan = new SetupScan({ getStore: () => { throw new Error('A saved choice must not start a scan'); } });
+    const idle = scan.state();
+    const scanState = spyOn(scan, 'state').mockReturnValue({
+      ...idle, done: true, phase: 'done',
+      recentPrompts: [{ agent: 'codex', at: '2026-11-23T18:00:00Z', text: 'Original private prompt' }],
+      usage: { agents: [], windowDays: 30, windowStart: '2026-10-24', totalTokens: 12345, observations: 0, coverage: 'partial', persona: null, efficiencyPercent: null },
+    });
+    await start(null, undefined, scan);
+    const summary = { coverage: 'partial', periodLabel: 'Usage history is incomplete.', tokens: 12345, persona: null, efficiencyPercent: null };
+    const plan = { branch: 'go', memoryBilling: 'existing', cloudSyncOffer: 'cloud_sync_monthly', openCheckout: true };
+    expect((await (await post('/api/setup/choice', plan)).json()).choice.usage).toEqual(summary);
+    expect(readFileSync(statePath, 'utf8')).not.toContain('Original private prompt');
+    scanState.mockReturnValue(idle);
+    await stop();
+    await start();
+    expect((await state()).choice.usage).toEqual(summary);
+    expect((await (await post('/api/setup/choice', plan)).json()).choice.usage).toEqual(summary);
+    await post('/api/setup/installer', { stage: 'waiting-for-choice' });
+    expect((await (await post('/api/setup/choice', plan)).json()).choice.usage).toBeUndefined();
   });
 
   it('keeps a saved hosted choice as the legacy bundle, without silently adding a Cloud offer', async () => {

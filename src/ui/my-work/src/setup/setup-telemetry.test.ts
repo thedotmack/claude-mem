@@ -30,6 +30,7 @@ describe('actual setup screen telemetry', () => {
     assert.equal(sent[0].visit_id, sent[1].visit_id)
     assert.notEqual(sent[0].visit_id, sent[2].visit_id)
     assert.equal(sent[1].to_step, 'reveal')
+    assert(sent.every(event => event.setup_funnel_version === 2))
     assert(sent.every(event => event.already_pro && event.setup_flow_id === flow && parseSetupEvent(event)))
   })
   it('does not emit for opt-out or a sample with no episode', async () => {

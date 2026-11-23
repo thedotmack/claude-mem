@@ -6,6 +6,7 @@ import { isCmemGatewayUrl } from './cmem-gateway.js';
 import { resolveDataDir } from './paths.js';
 import { randomUUID } from 'node:crypto';
 import type { SetupInstallState } from './setup-install.js';
+import type { SetupUsage } from './setup-usage.js';
 import {
   isSetupId, type SetupBranch, type SetupCheckoutState, type SetupCloudSyncOffer, type SetupInstallerStage, type SetupMemoryBilling,
   type SetupStatus, type SetupTelemetryContext,
@@ -14,7 +15,14 @@ import {
 // The states themselves are defined in setup-funnel.ts, which the setup page can also load.
 export type { SetupBranch, SetupCheckoutState, SetupInstallerStage, SetupMemoryBilling, SetupStatus };
 
-export interface SetupChoice { branch: SetupBranch; memoryBilling: SetupMemoryBilling; cloudSyncOffer?: SetupCloudSyncOffer; chosenAt: string }
+export interface SetupChoice {
+  branch: SetupBranch;
+  memoryBilling: SetupMemoryBilling;
+  cloudSyncOffer?: SetupCloudSyncOffer;
+  chosenAt: string;
+  /** Original scan summary for the post-checkout usage screen, retained across worker restarts. */
+  usage?: SetupUsage;
+}
 export interface SetupInstallerReport { stage: SetupInstallerStage; error: string | null; updatedAt: string }
 export interface SetupCheckout { state: SetupCheckoutState; requests: number; error: string | null; updatedAt: string }
 

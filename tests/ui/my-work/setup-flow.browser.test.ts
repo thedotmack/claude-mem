@@ -200,7 +200,7 @@ type FakeWorker = ReturnType<typeof fakeWorker>;
  * upload's start and stop, which play `run` the way the worker does: every change goes out as a `setup-import` frame
  * before the request's answer. Every request is recorded. Nothing here reaches a real worker or cmem.ai.
  */
-function fakeWorker(initialRun: object, setupChanges: object = {}) {
+function fakeWorker(initialRun: object, setupChanges: object = {}, scanChanges: object = {}) {
   const requests: Array<{ method: string; path: string; body: any }> = [];
   const streams = new Set<ReadableStreamDefaultController<Uint8Array>>();
   const encoder = new TextEncoder();
@@ -244,7 +244,7 @@ function fakeWorker(initialRun: object, setupChanges: object = {}) {
       }), { headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store' } });
     }
     if (route === 'GET /api/setup/state') return Response.json(state());
-    if (route === 'GET /api/setup/scan') return Response.json({ agents: [{ id: 'claude-code', label: 'Claude Code', detected: true, prompts: 3 }], percent: 100, phase: 'done', done: true, error: null, improveProduct: true, uploadedAgents: [] });
+    if (route === 'GET /api/setup/scan') return Response.json({ agents: [{ id: 'claude-code', label: 'Claude Code', detected: true, prompts: 3 }], percent: 100, phase: 'done', done: true, error: null, improveProduct: true, uploadedAgents: [], ...scanChanges });
     if (route === 'GET /api/setup/telemetry') return Response.json({ context: { setup_flow_id: '0f8fad5b-d9cb-469f-a165-70867728950e', already_pro: true } });
     if (route === 'POST /api/setup/telemetry') return Response.json({ ok: true });
     if (route === 'POST /api/setup/choice') {
@@ -370,6 +370,8 @@ for (const plan of [
   { name: 'legacy hosted Pro', choice: { branch: 'go', memoryBilling: 'hosted' }, stage: 'go-awaiting-checkout', alreadyPro: false, next: 'checkout' },
   { name: 'confirmed monthly trial', choice: { branch: 'go', memoryBilling: 'existing', cloudSyncOffer: 'cloud_sync_monthly' }, stage: 'go-awaiting-checkout', alreadyPro: true, checkout: { state: 'paid' }, next: 'savings' },
   { name: 'existing Cloud access', choice: { branch: 'go', memoryBilling: 'existing' }, stage: 'go-kept-existing-pro', alreadyPro: true, next: 'finish-setup' },
+  { name: 'existing credentials with interrupted checkout', choice: { branch: 'go', memoryBilling: 'existing' }, stage: 'go-kept-existing-pro', alreadyPro: true, checkout: { state: 'waiting' }, next: 'finish-setup' },
+  { name: 'existing credentials with confirmed trial', choice: { branch: 'go', memoryBilling: 'existing' }, stage: 'go-kept-existing-pro', alreadyPro: true, checkout: { state: 'paid' }, next: 'savings' },
   { name: 'At Home', choice: { branch: 'home', memoryBilling: 'existing' }, stage: 'home-ready', alreadyPro: false, next: 'finish-setup' },
 ]) {
   (chromeExecutablePath ? it : it.skip)(`reloading setup preserves the applied ${plan.name} choice`, async () => {
@@ -380,6 +382,32 @@ for (const plan of [
     }, worker);
   }, 30_000);
 }
+
+(chromeExecutablePath ? it : it.skip)('a restarted installer that finds connected credentials releases the waiting checkout screen', async () => {
+  const worker = fakeWorker(uploadRun({ state: 'idle' }), {
+    alreadyPro: false, choice: { branch: 'go', memoryBilling: 'existing' },
+    installer: { stage: 'go-awaiting-checkout' }, checkout: { state: 'waiting' },
+  });
+  await withSetupPage('', { width: 390, height: 844, phone: true }, async page => {
+    await page.atStep('checkout');
+    worker.reportSetup({ alreadyPro: true, installer: { stage: 'go-kept-existing-pro' } });
+    await page.atStep('finish-setup');
+    expect(worker.posts()).toEqual([]);
+  }, worker);
+}, 30_000);
+
+(chromeExecutablePath ? it : it.skip)('a confirmed trial shows its recorded usage after the worker loses its in-memory scan', async () => {
+  const usage = { coverage: 'partial', periodLabel: 'Usage history is incomplete.', tokens: 12345, persona: null, efficiencyPercent: null };
+  const worker = fakeWorker(uploadRun({ state: 'idle' }), {
+    alreadyPro: true, choice: { branch: 'go', memoryBilling: 'existing', usage },
+    installer: { stage: 'go-awaiting-checkout' }, checkout: { state: 'paid' },
+  }, { phase: 'idle', done: false, agents: [] });
+  await withSetupPage('', { width: 390, height: 844, phone: true }, async page => {
+    await page.atStep('savings');
+    expect(await page.browser.evaluate<string>(`document.querySelector('.price-table dd').textContent`)).toBe('At least 12,345 recorded tokens');
+    expect(worker.posts()).toEqual([]);
+  }, worker);
+}, 30_000);
 
 /** The fake worker's scan is complete and its existing plan needs no checkout. */
 async function toFinishSetupOnTheWorker(page: SetupWalk) {
