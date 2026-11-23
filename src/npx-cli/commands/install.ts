@@ -3894,17 +3894,17 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     // can't answer yet, and the state is always visible via the cloud-sync skill.
     if (cloudSyncConfigured && workerReady) {
       try {
-        // /api/sync/status takes the local API token when that mode is on (#5141),
-        // including the one remote worker the user names (#6390). The origin this asks
-        // is the configured worker's, on whatever port it actually reported, so a
-        // loopback install keeps sending the token exactly as before.
+        // /api/sync/status takes the local API token when that mode is on (#5141).
+        // These probes address the worker by host and port over http, so the shared rule
+        // (#6390) never carries the token to another machine from here: a remote worker is
+        // read at its https CLAUDE_MEM_WORKER_URL by the clients, not by the installer.
         const syncOrigin = `http://${workerUrlHost}:${actualPort}`;
         const syncHeaders = localApiTokenHeadersFor({
           token: readLocalApiToken(),
           workerOrigin: syncOrigin,
           localOrigin: syncOrigin,
           configuredHost: workerHost,
-          remoteTokenHost: getSetting('CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST'),
+          remoteTokenHost: '',
         });
         const syncResponse = await fetch(`${syncOrigin}/api/sync/status`, {
           ...(Object.keys(syncHeaders).length > 0 ? { headers: syncHeaders } : {}),

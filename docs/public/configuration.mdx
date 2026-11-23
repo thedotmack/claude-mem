@@ -783,11 +783,9 @@ By default the token never leaves this machine, so a second machine cannot captu
 
 With that in place the hooks, the CLI, the MCP servers and the integrations send the token to `worker.example.com` and to nothing else. Unset, behaviour is exactly what it was: the token goes to the loopback worker only.
 
-The matching is on the host alone and it is exact. A setting that names a different host, differs only in case, or is set without the same `CLAUDE_MEM_WORKER_HOST` sends no token at all; the client silently drops it rather than send the credential somewhere unconfirmed. A loopback `CLAUDE_MEM_WORKER_URL` is another local port, not the remote host, so it still receives nothing (it may be an SSH forward). Like the token, the setting is file-only: `POST /api/settings` cannot write it.
+**`CLAUDE_MEM_WORKER_URL` must be `https`.** The token rides in a header, so clients refuse to send it to another host over plain HTTP, where anyone on the network path could read it and then use it on the whole worker API. Without an `https` URL here, remote capture stays off: the client derives an `http` origin from host and port and sends no token, and the worker logs a `SECURITY` warning at startup saying exactly that.
 
-<Warning>
-Use `https`. A plain `http` worker receives the token in a header that anyone on the network path can read, and the token opens the whole worker API. The worker logs a `SECURITY` warning at startup when the token would cross a plain-HTTP hop to a non-loopback host, and names the fix.
-</Warning>
+The matching is on the host alone and it is exact. A setting that names a different host, differs only in case, or is set without the same `CLAUDE_MEM_WORKER_HOST` sends no token at all; the client silently drops it rather than send the credential somewhere unconfirmed. An IPv6 literal matches whether you write it with brackets (`[2001:db8::10]`) or without. A loopback `CLAUDE_MEM_WORKER_URL` is another local port, not the remote host, so it still receives nothing (it may be an SSH forward). Like the token, the setting is file-only: neither the environment nor `POST /api/settings` can opt a host in.
 
 ### Observation TV (removed)
 

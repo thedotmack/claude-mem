@@ -102,4 +102,50 @@ describe('HealthMonitor with a worker host on another machine', () => {
     expect(sent.length).toBeGreaterThan(1);
     for (const headers of sent) expect(headers).toBeUndefined();
   });
+
+  // #6390: a remote worker answers /api/health without a token, so readiness used to 401
+  // until the caller gave up and reported a ready worker as "warming".
+  it('sends the token to an explicit https worker URL that the opt-in names', async () => {
+    const restore = spies[0];
+    restore.mockImplementation(() => ({
+      ...SettingsDefaultsManager.getAllDefaults(),
+      CLAUDE_MEM_WORKER_HOST: 'worker.example.com',
+      CLAUDE_MEM_LOCAL_API_TOKEN: TOKEN,
+      CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST: 'worker.example.com',
+    }));
+    const sent: string[] = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+      sent.push(new Headers(init?.headers).get('x-claude-mem-token') ?? '');
+      return new Response('{}');
+    }) as typeof fetch;
+    try {
+      expect(await waitForReadiness(port, 300, 'https://worker.example.com')).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    expect(sent.length).toBeGreaterThan(0);
+    for (const header of sent) expect(header).toBe(TOKEN);
+  });
+
+  it('sends no token to that https worker without the opt-in', async () => {
+    const restore = spies[0];
+    restore.mockImplementation(() => ({
+      ...SettingsDefaultsManager.getAllDefaults(),
+      CLAUDE_MEM_WORKER_HOST: 'worker.example.com',
+      CLAUDE_MEM_LOCAL_API_TOKEN: TOKEN,
+    }));
+    const sent: Array<string> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+      sent.push(new Headers(init?.headers).get('x-claude-mem-token') ?? '');
+      return new Response('{}');
+    }) as typeof fetch;
+    try {
+      await waitForReadiness(port, 300, 'https://worker.example.com');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    for (const header of sent) expect(header).toBe('');
+  });
 });

@@ -8,7 +8,7 @@ import { LOCAL_API_TOKEN_HEADER } from '../../src/shared/local-api-token.js';
 import { clearPortCache, withWorkerAuth, workerAuthHeaders, workerHttpRequest } from '../../src/shared/worker-utils.js';
 
 const TOKEN = 'client-owner-test-secret';
-const SETTINGS_ENV = ['CLAUDE_MEM_DATA_DIR', 'CLAUDE_MEM_WORKER_URL', 'CLAUDE_MEM_WORKER_HOST', 'CLAUDE_MEM_WORKER_PORT', 'CLAUDE_MEM_LOCAL_API_TOKEN'] as const;
+const SETTINGS_ENV = ['CLAUDE_MEM_DATA_DIR', 'CLAUDE_MEM_WORKER_URL', 'CLAUDE_MEM_WORKER_HOST', 'CLAUDE_MEM_WORKER_PORT', 'CLAUDE_MEM_LOCAL_API_TOKEN', 'CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST'] as const;
 
 let dataDir: string;
 let saved: Record<string, string | undefined>;
@@ -128,6 +128,26 @@ describe('workerAuthHeaders with an opt-in remote host', () => {
       CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST: REMOTE,
     });
     expect(workerAuthHeaders()).toEqual({ [LOCAL_API_TOKEN_HEADER]: TOKEN });
+  });
+
+  it('sends nothing to the remote host over plain http, even with the opt-in', () => {
+    writeSettings({
+      CLAUDE_MEM_LOCAL_API_TOKEN: TOKEN,
+      CLAUDE_MEM_WORKER_HOST: REMOTE,
+      CLAUDE_MEM_WORKER_PORT: '37777',
+      CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST: REMOTE,
+    });
+    expect(workerAuthHeaders()).toEqual({});
+  });
+
+  // The token is file-only, and so is where it may go: an environment variable must not
+  // opt a host in that settings.json does not name.
+  it('ignores an environment opt-in, and an environment host', () => {
+    writeSettings({ CLAUDE_MEM_LOCAL_API_TOKEN: TOKEN });
+    process.env.CLAUDE_MEM_WORKER_HOST = REMOTE;
+    process.env.CLAUDE_MEM_WORKER_URL = `https://${REMOTE}`;
+    process.env.CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST = REMOTE;
+    expect(workerAuthHeaders()).toEqual({});
   });
 });
 

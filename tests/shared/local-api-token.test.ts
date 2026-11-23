@@ -169,6 +169,15 @@ describe('localApiTokenHeadersFor', () => {
     })).toEqual({});
   });
 
+  it('sends nothing to a remote host over plain HTTP, which would carry the header in the clear', () => {
+    expect(headers({
+      configuredHost: 'worker.example.com',
+      remoteTokenHost: 'worker.example.com',
+      workerOrigin: 'http://worker.example.com:37777',
+      localOrigin: 'http://worker.example.com:37777',
+    })).toEqual({});
+  });
+
   it('sends nothing when the configured host is not a loopback address and no remote host is named', () => {
     expect(headers({
       configuredHost: 'worker.example.com',
@@ -177,18 +186,22 @@ describe('localApiTokenHeadersFor', () => {
     })).toEqual({});
   });
 
-  it('covers a remote worker reached by host and port, with no explicit CLAUDE_MEM_WORKER_URL', () => {
-    // The same origin, so the old URL comparison could not tell them apart either way.
+  it('matches an IPv6 literal whether the setting brackets it or not', () => {
+    // URL.hostname reports an IPv6 literal in brackets; a settings file holds it bare.
+    for (const spelling of ['2001:db8::10', '[2001:db8::10]']) {
+      expect(headers({
+        configuredHost: spelling,
+        remoteTokenHost: spelling,
+        workerOrigin: 'https://[2001:db8::10]:37777',
+        localOrigin: `http://${spelling}:37777`,
+      })).toEqual({ [LOCAL_API_TOKEN_HEADER]: TOKEN });
+    }
+    // Brackets are the only spelling freedom: a different address still gets nothing.
     expect(headers({
-      configuredHost: 'worker.example.com',
-      remoteTokenHost: 'worker.example.com',
-      workerOrigin: 'http://worker.example.com:37777',
-      localOrigin: 'http://worker.example.com:37777',
-    })).toEqual({ [LOCAL_API_TOKEN_HEADER]: TOKEN });
-    expect(headers({
-      configuredHost: 'worker.example.com',
-      workerOrigin: 'http://worker.example.com:37777',
-      localOrigin: 'http://worker.example.com:37777',
+      configuredHost: '2001:db8::10',
+      remoteTokenHost: '2001:db8::10',
+      workerOrigin: 'https://[2001:db8::11]:37777',
+      localOrigin: 'http://2001:db8::10:37777',
     })).toEqual({});
   });
 });

@@ -35,17 +35,17 @@ function localWorkerOrigin(port: number): string {
  * does an explicit CLAUDE_MEM_WORKER_URL, unless the user names that host in
  * CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST (#6390).
  */
-function localWorkerAuthHeaders(port: number): Record<string, string> {
+function localWorkerAuthHeaders(port: number, targetOrigin?: string): Record<string, string> {
   const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH, false, { readOnly: true });
-  const configuredHost = getWorkerHost();
-  // Both origins are built from the configured host, so a probe of this machine's worker
-  // at whatever port the caller is waiting on still carries the token: only the hostname
-  // decides, exactly as before.
+  const localOrigin = localWorkerOrigin(port);
   return localApiTokenHeadersFor({
     token: settings.CLAUDE_MEM_LOCAL_API_TOKEN,
-    workerOrigin: localWorkerOrigin(port),
-    localOrigin: localWorkerOrigin(port),
-    configuredHost,
+    workerOrigin: targetOrigin ?? localOrigin,
+    // An explicit destination is somebody's configured CLAUDE_MEM_WORKER_URL, not this
+    // machine's worker: an empty local origin says so, so a loopback URL there (an SSH
+    // forward) never receives the token, while the https remote branch still can.
+    localOrigin: targetOrigin ? '' : localOrigin,
+    configuredHost: getWorkerHost(),
     remoteTokenHost: settings.CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST,
   });
 }
@@ -273,9 +273,12 @@ export function waitForHealth(port: number, timeoutMs: number = 30000, explicitW
 }
 
 export function waitForReadiness(port: number, timeoutMs: number = 30000, explicitWorkerOrigin?: string): Promise<boolean> {
-  // /api/readiness takes the local API token (#5141), which goes to this machine's worker only.
+  // /api/readiness takes the local API token (#5141). An explicit origin is the worker the
+  // person configured in CLAUDE_MEM_WORKER_URL, so it is the one destination the shared
+  // rule (#6390) can authorize for a remote worker; without this, a ready remote worker
+  // answers /api/health and then 401s on every readiness poll, so callers report warming.
   if (explicitWorkerOrigin) {
-    return pollEndpointUntilOk(explicitWorkerOrigin, '/api/readiness', timeoutMs, 'Worker not ready yet, will retry');
+    return pollEndpointUntilOk(explicitWorkerOrigin, '/api/readiness', timeoutMs, 'Worker not ready yet, will retry', localWorkerAuthHeaders(port, explicitWorkerOrigin));
   }
   return pollEndpointUntilOk(localWorkerOrigin(port), '/api/readiness', timeoutMs, 'Worker not ready yet, will retry', localWorkerAuthHeaders(port));
 }

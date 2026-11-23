@@ -100,16 +100,26 @@ export function normalizeRemoteTokenHost(value: unknown): string {
 }
 
 /**
+ * A hostname as URL parsers report it, reduced to what a person types in a setting:
+ * URL.hostname wraps an IPv6 literal in brackets, and a settings file does not.
+ */
+function comparableHostname(hostname: string): string {
+  const bare = hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname;
+  return bare.toLowerCase();
+}
+
+/**
  * The token headers for a request to `workerOrigin`, or `{}` (#5141, #6390). One
  * rule, so the hooks, the CLI, the MCP servers and the integrations cannot drift:
  *
  *  - the token goes to this machine's worker at `localOrigin` when that is loopback,
  *    exactly as before. An explicit CLAUDE_MEM_WORKER_URL naming any other address
  *    never receives it: it may be an SSH forward to another machine's worker;
- *  - a non-loopback worker receives it only when CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST
- *    names that host and equals CLAUDE_MEM_WORKER_HOST exactly. One host spelled one
- *    way: the token in settings.json belongs to the worker the user configured, and a
- *    near-match is a mistake, not an intent.
+ *  - a non-loopback worker receives it only over https, and only when
+ *    CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST names that host and equals
+ *    CLAUDE_MEM_WORKER_HOST exactly. One host spelled one way: the token in
+ *    settings.json belongs to the worker the user configured, and a near-match is a
+ *    mistake, not an intent.
  *
  * With the remote host unset the second branch cannot fire, so nothing changes.
  */
@@ -138,10 +148,17 @@ export function localApiTokenHeadersFor(input: {
     return input.workerOrigin === input.localOrigin ? localApiTokenHeaders(token) : {};
   }
 
+  // https only. A header carries the token in the clear, so a plain-HTTP hop hands the
+  // key to this worker's whole API to anyone on the path. The existing worker URL rule
+  // already refuses plain http for a non-loopback host, and this is the same refusal at
+  // the point the credential is attached. A worker reached by host and port derives an
+  // http origin, so remote capture needs CLAUDE_MEM_WORKER_URL set to an https URL.
+  if (target.protocol !== 'https:') return {};
+
   // A remote worker takes the opt-in twice over: the setting must be set, and it must
   // name the same host as CLAUDE_MEM_WORKER_HOST and the request's own host.
   const remote = normalizeRemoteTokenHost(input.remoteTokenHost);
   if (!remote || remote !== input.configuredHost.trim()) return {};
-  if (target.hostname.toLowerCase() !== remote.toLowerCase()) return {};
+  if (comparableHostname(target.hostname) !== comparableHostname(remote)) return {};
   return localApiTokenHeaders(token);
 }

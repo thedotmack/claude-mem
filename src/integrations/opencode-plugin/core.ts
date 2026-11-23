@@ -16,7 +16,7 @@ import { formatWorkerMcpResponse } from '../../servers/mcp-text-format.js';
 import { parseSearchResponse } from "./contract.js";
 import { normalizePlatformSource } from "../../shared/platform-source.js";
 import { isConnectionRefusedError } from "../../shared/connection-errors.js";
-import { formatHostForUrl } from "../../shared/worker-url.js";
+import { formatHostForUrl, normalizeWorkerBaseUrl } from "../../shared/worker-url.js";
 import { localApiTokenHeadersFor } from "../../shared/local-api-token.js";
 import { stripMemoryTags } from "../../utils/tag-stripping.js";
 import { deliverLiveObserverHandoff } from "../../shared/live-observer-handoff.js";
@@ -51,7 +51,11 @@ function resolveWorkerBaseUrl(): string {
     "settings.json",
   );
   const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-  return `http://${formatHostForUrl(settings.CLAUDE_MEM_WORKER_HOST)}:${settings.CLAUDE_MEM_WORKER_PORT}`;
+  // An explicit URL wins, as it does for every other client: a remote worker is reached at
+  // its https address, and deriving host and port would silently downgrade that to http
+  // and send the local API token in the clear (#6390).
+  return normalizeWorkerBaseUrl(settings.CLAUDE_MEM_WORKER_URL)
+    || `http://${formatHostForUrl(settings.CLAUDE_MEM_WORKER_HOST)}:${settings.CLAUDE_MEM_WORKER_PORT}`;
 }
 
 const WORKER_BASE_URL = resolveWorkerBaseUrl();

@@ -542,7 +542,10 @@ export function workerAuthHeaders(options: { readOnly?: boolean } = {}): Record<
     workerOrigin: getWorkerBaseUrl(options),
     localOrigin: `http://${formatHostForUrl(getWorkerHost(options))}:${getWorkerPort(options)}`,
     configuredHost: getWorkerHost(options),
-    remoteTokenHost: getWorkerSettings(options).CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST,
+    // From the file alone, like the token: an environment variable must not be able to
+    // opt in to a host the person never named in settings.json.
+    remoteTokenHost: SettingsDefaultsManager.loadFromFile(getWorkerSettingsPath(), false, { readOnly: true })
+      .CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST,
   });
 }
 

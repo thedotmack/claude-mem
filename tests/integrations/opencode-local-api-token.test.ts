@@ -57,4 +57,13 @@ describe('OpenCode plugin local API token', () => {
     expect(headersSentWith({ CLAUDE_MEM_LOCAL_API_TOKEN: TOKEN }, { CLAUDE_MEM_LOCAL_API_TOKEN: 'from-the-environment' })[LOCAL_API_TOKEN_HEADER]).toBe(TOKEN);
     expect(headersSentWith({}, { CLAUDE_MEM_LOCAL_API_TOKEN: 'from-the-environment' })).toEqual({ 'Content-Type': 'application/json' });
   });
+
+  // #6390: the opt-in only works against the https worker URL the person configured. The
+  // plugin used to derive host and port unconditionally, which would have downgraded that
+  // URL to http and put the token on the wire in the clear.
+  it('reaches the https worker URL the opt-in names, and carries the token there', () => {
+    const remote = { CLAUDE_MEM_WORKER_HOST: 'worker.example.com', CLAUDE_MEM_WORKER_URL: 'https://worker.example.com' };
+    expect(headersSentWith({ CLAUDE_MEM_LOCAL_API_TOKEN: TOKEN, ...remote, CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST: 'worker.example.com' })[LOCAL_API_TOKEN_HEADER]).toBe(TOKEN);
+    expect(headersSentWith({ CLAUDE_MEM_LOCAL_API_TOKEN: TOKEN, ...remote })).toEqual({ 'Content-Type': 'application/json' });
+  });
 });
