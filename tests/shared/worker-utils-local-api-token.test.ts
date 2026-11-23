@@ -8,7 +8,7 @@ import { LOCAL_API_TOKEN_HEADER } from '../../src/shared/local-api-token.js';
 import { clearPortCache, withWorkerAuth, workerAuthHeaders, workerHttpRequest } from '../../src/shared/worker-utils.js';
 
 const TOKEN = 'client-owner-test-secret';
-const SETTINGS_ENV = ['CLAUDE_MEM_DATA_DIR', 'CLAUDE_MEM_WORKER_URL', 'CLAUDE_MEM_WORKER_HOST', 'CLAUDE_MEM_WORKER_PORT', 'CLAUDE_MEM_LOCAL_API_TOKEN'] as const;
+const SETTINGS_ENV = ['CLAUDE_MEM_DATA_DIR', 'CLAUDE_MEM_WORKER_URL', 'CLAUDE_MEM_WORKER_HOST', 'CLAUDE_MEM_WORKER_PORT', 'CLAUDE_MEM_LOCAL_API_TOKEN', 'CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST'] as const;
 
 let dataDir: string;
 let saved: Record<string, string | undefined>;
@@ -73,6 +73,103 @@ describe('workerAuthHeaders', () => {
 
   it('never sends the token to a remote worker', () => {
     writeSettings({ CLAUDE_MEM_LOCAL_API_TOKEN: TOKEN, CLAUDE_MEM_WORKER_URL: 'https://worker.example.com' });
+    expect(workerAuthHeaders()).toEqual({});
+  });
+});
+
+// #6390: one remote worker, named by the user, may receive the token. The default stays
+// loopback-only, so an install that sets nothing behaves exactly as before.
+describe('workerAuthHeaders with an opt-in remote host', () => {
+  const REMOTE = 'worker.example.com';
+
+  it('sends the token to the named host when it is also CLAUDE_MEM_WORKER_HOST', () => {
+    writeSettings({
+      CLAUDE_MEM_LOCAL_API_TOKEN: TOKEN,
+      CLAUDE_MEM_WORKER_HOST: REMOTE,
+      CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST: REMOTE,
+      CLAUDE_MEM_WORKER_URL: `https://${REMOTE}`,
+    });
+    expect(workerAuthHeaders()).toEqual({ [LOCAL_API_TOKEN_HEADER]: TOKEN });
+  });
+
+  it('sends nothing to that host without the opt-in', () => {
+    writeSettings({
+      CLAUDE_MEM_LOCAL_API_TOKEN: TOKEN,
+      CLAUDE_MEM_WORKER_HOST: REMOTE,
+      CLAUDE_MEM_WORKER_URL: `https://${REMOTE}`,
+    });
+    expect(workerAuthHeaders()).toEqual({});
+  });
+
+  it('sends nothing when the opt-in names a different host than the configured worker', () => {
+    writeSettings({
+      CLAUDE_MEM_LOCAL_API_TOKEN: TOKEN,
+      CLAUDE_MEM_WORKER_HOST: REMOTE,
+      CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST: 'other.example.com',
+      CLAUDE_MEM_WORKER_URL: `https://${REMOTE}`,
+    });
+    expect(workerAuthHeaders()).toEqual({});
+  });
+
+  it('keeps the loopback rule: the opt-in does not unlock another local port', () => {
+    writeSettings({
+      CLAUDE_MEM_LOCAL_API_TOKEN: TOKEN,
+      CLAUDE_MEM_WORKER_HOST: '127.0.0.1',
+      CLAUDE_MEM_WORKER_PORT: '41999',
+      CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST: '127.0.0.1',
+      CLAUDE_MEM_WORKER_URL: 'http://127.0.0.1:9',
+    });
+    expect(workerAuthHeaders()).toEqual({});
+  });
+
+  it('keeps sending to this machine\'s loopback worker when the opt-in is set', () => {
+    writeSettings({
+      CLAUDE_MEM_LOCAL_API_TOKEN: TOKEN,
+      CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST: REMOTE,
+    });
+    expect(workerAuthHeaders()).toEqual({ [LOCAL_API_TOKEN_HEADER]: TOKEN });
+  });
+
+  // The reporter's setup: a worker on a private network reached by host and port, no https.
+  it('sends the token to the named host over plain http by host and port, with the opt-in', () => {
+    writeSettings({
+      CLAUDE_MEM_LOCAL_API_TOKEN: TOKEN,
+      CLAUDE_MEM_WORKER_HOST: REMOTE,
+      CLAUDE_MEM_WORKER_PORT: '37777',
+      CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST: REMOTE,
+    });
+    expect(workerAuthHeaders()).toEqual({ [LOCAL_API_TOKEN_HEADER]: TOKEN });
+  });
+
+  it('sends nothing to a host reached over plain http without the opt-in, or when it names another host', () => {
+    writeSettings({ CLAUDE_MEM_LOCAL_API_TOKEN: TOKEN, CLAUDE_MEM_WORKER_HOST: REMOTE, CLAUDE_MEM_WORKER_PORT: '37777' });
+    expect(workerAuthHeaders()).toEqual({});
+    writeSettings({
+      CLAUDE_MEM_LOCAL_API_TOKEN: TOKEN,
+      CLAUDE_MEM_WORKER_HOST: REMOTE,
+      CLAUDE_MEM_WORKER_PORT: '37777',
+      CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST: 'other.example.com',
+    });
+    expect(workerAuthHeaders()).toEqual({});
+  });
+
+  it('sends nothing to an https worker URL on a host other than the named one', () => {
+    writeSettings({
+      CLAUDE_MEM_LOCAL_API_TOKEN: TOKEN,
+      CLAUDE_MEM_WORKER_HOST: REMOTE,
+      CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST: REMOTE,
+      CLAUDE_MEM_WORKER_URL: 'https://attacker.example.com',
+    });
+    expect(workerAuthHeaders()).toEqual({});
+  });
+
+  // The token is file-only, and so is where it may go: an environment variable must not
+  // opt a host in that settings.json does not name.
+  it('ignores an environment opt-in, and an environment host', () => {
+    writeSettings({ CLAUDE_MEM_LOCAL_API_TOKEN: TOKEN });
+    process.env.CLAUDE_MEM_WORKER_HOST = REMOTE;
+    process.env.CLAUDE_MEM_WORKER_URL = `https://${REMOTE}`;
+    process.env.CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST = REMOTE;
     expect(workerAuthHeaders()).toEqual({});
   });
 });

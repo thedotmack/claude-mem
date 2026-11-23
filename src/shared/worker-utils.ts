@@ -10,8 +10,8 @@ import { MARKETPLACE_ROOT, DATA_DIR, resolveDataDir } from "./paths.js";
 import { loadFromFileOnce } from "./hook-settings.js";
 import { isWorkerAutostartDisabled } from "./worker-autostart.js";
 import { viewerBaseUrl } from "./viewer-url.js";
-import { formatHostForUrl, InvalidWorkerUrlError, isLoopbackHostname, normalizeWorkerBaseUrl } from "./worker-url.js";
-import { normalizeLocalApiToken, localApiTokenHeaders } from "./local-api-token.js";
+import { formatHostForUrl, InvalidWorkerUrlError, normalizeWorkerBaseUrl } from "./worker-url.js";
+import { localApiTokenHeadersFor, normalizeLocalApiToken } from "./local-api-token.js";
 import { WorkerRequestTimeoutError } from "./worker-request-timeout-error.js";
 import { readOwnedWorkerPidInfo } from "../supervisor/index.js";
 import { emitDiagnostic } from "./hook-io.js";
@@ -530,15 +530,23 @@ function clientLocalApiToken(options: { readOnly?: boolean }): string {
  * The local API token (#5141) as request headers, when settings.json has one and the request
  * goes to this machine's worker at CLAUDE_MEM_WORKER_HOST:CLAUDE_MEM_WORKER_PORT on loopback;
  * `{}` otherwise. A CLAUDE_MEM_WORKER_URL that names any other address, loopback or not, never
- * receives the token: it may be an SSH forward to another machine's worker.
+ * receives the token: it may be an SSH forward to another machine's worker. The one exception
+ * is the remote host the user names in CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST (#6390), which
+ * must equal CLAUDE_MEM_WORKER_HOST exactly.
  */
 export function workerAuthHeaders(options: { readOnly?: boolean } = {}): Record<string, string> {
   const token = clientLocalApiToken(options);
   if (!token) return {};
-  const localOrigin = `http://${formatHostForUrl(getWorkerHost(options))}:${getWorkerPort(options)}`;
-  if (getWorkerBaseUrl(options) !== localOrigin) return {};
-  if (!isLoopbackHostname(new URL(localOrigin).hostname)) return {};
-  return localApiTokenHeaders(token);
+  return localApiTokenHeadersFor({
+    token,
+    workerOrigin: getWorkerBaseUrl(options),
+    localOrigin: `http://${formatHostForUrl(getWorkerHost(options))}:${getWorkerPort(options)}`,
+    configuredHost: getWorkerHost(options),
+    // From the file alone, like the token: an environment variable must not be able to
+    // opt in to a host the person never named in settings.json.
+    remoteTokenHost: SettingsDefaultsManager.loadFromFile(getWorkerSettingsPath(), false, { readOnly: true })
+      .CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST,
+  });
 }
 
 /** `init` with the worker auth headers added. A header the caller already set wins. */

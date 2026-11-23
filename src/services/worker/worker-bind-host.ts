@@ -1,4 +1,5 @@
 import { loadDocument, settingsTarget } from '../../shared/settings-document.js';
+import { normalizeRemoteTokenHost } from '../../shared/local-api-token.js';
 import { isLoopbackHostname } from '../../shared/worker-url.js';
 import { logger } from '../../utils/logger.js';
 
@@ -86,4 +87,39 @@ export function resolveWorkerBindHost(input: {
   }
 
   return configuredHost;
+}
+
+/**
+ * Say so when a remote token host is configured and the worker is reached over plain
+ * HTTP (#6390). Clients then send the token to that host in a header, in the clear, so
+ * anyone on the network path can read it. Warn, never refuse: the opt-in is the person's
+ * explicit choice, the same as the non-loopback bind above, which only warns.
+ */
+export function warnOnPlainHttpRemoteTokenHost(input: {
+  configuredHost: string;
+  localApiTokenSet: boolean;
+  remoteTokenHost: string;
+  workerUrl: string;
+}): void {
+  const remote = normalizeRemoteTokenHost(input.remoteTokenHost);
+  // The token only leaves the machine when both sides of the pair are set: an install
+  // with no token sends nothing anywhere, so it has nothing to lose.
+  if (!input.localApiTokenSet || !remote) return;
+  if (isLoopbackHostname(input.configuredHost)) return;
+  if (remote !== input.configuredHost.trim()) return;
+
+  let url: URL;
+  try {
+    url = new URL(input.workerUrl);
+  } catch {
+    return;
+  }
+  if (url.protocol !== 'http:') return;
+  if (isLoopbackHostname(url.hostname)) return;
+
+  logger.warn(
+    'SECURITY',
+    `CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST is set for ${remote}, and this worker is reached at ${input.workerUrl}, which is plain HTTP. Clients will send the local API token to it in the clear, and anyone on the network path who reads it can use this worker's whole API. Set CLAUDE_MEM_WORKER_URL to the worker's https address unless this network is trusted.`,
+    { host: remote, workerUrl: input.workerUrl },
+  );
 }

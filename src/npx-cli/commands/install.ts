@@ -18,8 +18,7 @@ import { loadClaudeMemEnv, saveClaudeMemEnv } from '../../shared/EnvManager.js';
 import { ensureWorkerStarted, getLastWorkerBootFailure, type WorkerStartResult } from '../../services/worker-spawner.js';
 import { formatHostForUrl } from '../../shared/worker-utils.js';
 import { readLocalApiToken } from '../../shared/hook-settings.js';
-import { localApiTokenHeaders } from '../../shared/local-api-token.js';
-import { isLoopbackHostname } from '../../shared/worker-url.js';
+import { localApiTokenHeadersFor } from '../../shared/local-api-token.js';
 import {
   ensureBun,
   ensureUv,
@@ -3958,9 +3957,19 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     if (cloudSyncConfigured && workerReady) {
       try {
         // /api/sync/status takes the local API token when that mode is on (#5141).
-        const localApiToken = isLoopbackHostname(workerHost) ? readLocalApiToken() : '';
-        const syncResponse = await fetch(`http://${workerUrlHost}:${actualPort}/api/sync/status`, {
-          ...(localApiToken ? { headers: localApiTokenHeaders(localApiToken) } : {}),
+        // The installer passes no remote token host, so the shared rule (#6390) never
+        // carries the token to another machine from here: a remote worker is read by the
+        // clients that the person opted in, not by the installer.
+        const syncOrigin = `http://${workerUrlHost}:${actualPort}`;
+        const syncHeaders = localApiTokenHeadersFor({
+          token: readLocalApiToken(),
+          workerOrigin: syncOrigin,
+          localOrigin: syncOrigin,
+          configuredHost: workerHost,
+          remoteTokenHost: '',
+        });
+        const syncResponse = await fetch(`${syncOrigin}/api/sync/status`, {
+          ...(Object.keys(syncHeaders).length > 0 ? { headers: syncHeaders } : {}),
           signal: AbortSignal.timeout(3000),
         });
         if (syncResponse.ok) {
