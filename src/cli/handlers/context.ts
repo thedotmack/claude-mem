@@ -37,7 +37,13 @@ import {
 import { resolveRuntimeContext, type ServerRuntimeContext } from '../../services/hooks/runtime-selector.js';
 import type { ContextInput } from '../../services/context/types.js';
 import { serverSessionStartBudgetMs } from '../../shared/host-hook-limits.js';
-import { contextCacheKeys, fillContextPlaceholders, readContextCache } from '../../shared/context-cache.js';
+import {
+  contextCacheKeys,
+  fillContextPlaceholders,
+  readContextCache,
+  readContextProjectCatalog,
+  writeContextProjectCatalog,
+} from '../../shared/context-cache.js';
 import { clearTimelinePending } from '../../shared/codex-compaction-gate.js';
 import { readSetupState, type SetupStateFile } from '../../shared/setup-state.js';
 import { hasPendingInstallSetup } from '../../shared/setup-install.js';
@@ -304,37 +310,44 @@ async function renderSessionStartFromServer(
  * With CLAUDE_MEM_CONTEXT_PROJECTS=all, every project in the local catalog
  * (minus excluded ones), sorted so the context cache keys stay stable, with
  * this checkout's keys last because the last key titles the rendered block.
- * Any catalog failure falls back to this checkout. The server runtime has no
- * local catalog, so it keeps this checkout.
+ * When the catalog is unavailable, live reads fall back to this checkout.
+ * The last successful catalog can still resolve an existing cache variant.
  */
 export async function resolveSessionStartProjects(
   settings: { CLAUDE_MEM_CONTEXT_PROJECTS?: string; CLAUDE_MEM_EXCLUDED_PROJECTS?: string },
   checkoutProjects: string[],
   runtime: 'worker' | 'server',
-): Promise<string[]> {
-  if (settings.CLAUDE_MEM_CONTEXT_PROJECTS !== 'all') return checkoutProjects;
+): Promise<{ live: string[]; cached?: string[] }> {
+  if (settings.CLAUDE_MEM_CONTEXT_PROJECTS !== 'all') return { live: checkoutProjects };
   if (runtime === 'server') {
     logger.debug('HOOK', 'CLAUDE_MEM_CONTEXT_PROJECTS=all is not supported in server runtime');
-    return checkoutProjects;
+    return { live: checkoutProjects };
   }
+  const excludedPatterns = settings.CLAUDE_MEM_EXCLUDED_PROJECTS ?? '';
+  const scope = (projects: string[]) => [
+    ...projects.filter(project => !checkoutProjects.includes(project) && !isProjectExcluded(project, excludedPatterns)),
+    ...checkoutProjects,
+  ];
   try {
     const catalog = await executeWithWorkerFallback<{ projects?: unknown }>('/api/projects', 'GET', undefined, {
       workerStartupTimeoutMs: HOOK_TIMEOUTS.POST_SPAWN_WAIT,
       timeoutMs: 2_000,
     });
-    if (isWorkerFallback(catalog) || !Array.isArray(catalog?.projects)) return checkoutProjects;
-    const excludedPatterns = settings.CLAUDE_MEM_EXCLUDED_PROJECTS ?? '';
-    const otherProjects = catalog.projects
-      .filter((project): project is string => typeof project === 'string' && project.length > 0)
-      .filter(project => !checkoutProjects.includes(project) && !isProjectExcluded(project, excludedPatterns))
-      .sort();
-    return [...otherProjects, ...checkoutProjects];
+    if (!isWorkerFallback(catalog) && Array.isArray(catalog?.projects)) {
+      const projects = catalog.projects
+        .filter((project): project is string => typeof project === 'string' && project.length > 0)
+        .sort();
+      const previous = readContextProjectCatalog();
+      if (JSON.stringify(previous) !== JSON.stringify(projects)) writeContextProjectCatalog(projects);
+      return { live: scope(projects) };
+    }
   } catch (error) {
-    logger.debug('HOOK', 'Project catalog unavailable; SessionStart reads this checkout only', {
+    logger.debug('HOOK', 'Project catalog unavailable for SessionStart', {
       error: error instanceof Error ? error.message : String(error),
     });
-    return checkoutProjects;
   }
+  const previous = readContextProjectCatalog();
+  return { live: checkoutProjects, cached: previous ? scope(previous) : undefined };
 }
 
 export const contextHandler: EventHandler = {
@@ -483,7 +496,7 @@ export const contextHandler: EventHandler = {
     // exactly as the write hooks do, so reads and writes stay on one corpus.
     const serverRuntime = runtime.runtime === 'server' ? runtime : null;
 
-    const scopeProjects = await resolveSessionStartProjects(settings, context.allProjects, runtime.runtime);
+    const { live: scopeProjects, cached: cachedProjects } = await resolveSessionStartProjects(settings, context.allProjects, runtime.runtime);
     const projectsQuery = projectsQueryString(scopeProjects);
     const normalizedPlatformSource = input.platform
       ? normalizePlatformSource(input.platform)
@@ -519,14 +532,16 @@ export const contextHandler: EventHandler = {
 
     // Precomputed SessionStart context (liveness plan, Phase 6): the worker
     // keeps each variant it has served rendered on disk, keyed exactly like
-    // the URLs above. A hit needs no worker at all; a miss takes the live path.
+    // the URLs above. A hit skips the live render; a miss takes the live path.
     // A cached block never carries the prior reply, so with "Include last
     // message" on it is read only when the worker cannot answer.
     const cacheNowEpochMs = Date.now();
     const readCachedRender = (colors: boolean): string | null => {
       if (serverRuntime) return null;
-      const keys = contextCacheKeys(scopeProjects, platformSourceParam ? normalizedPlatformSource : undefined, colors, cwd);
-      const cached = readContextCache(keys, cacheNowEpochMs);
+      const source = platformSourceParam ? normalizedPlatformSource : undefined;
+      const keys = contextCacheKeys(cachedProjects ?? scopeProjects, source, colors, cwd);
+      const cached = readContextCache(keys, cacheNowEpochMs)
+        ?? (cachedProjects ? readContextCache(contextCacheKeys(scopeProjects, source, colors, cwd), cacheNowEpochMs) : null);
       if (!cached) return null;
       logger.debug('HOOK', 'SessionStart context served from the context cache', {
         colors,

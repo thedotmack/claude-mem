@@ -211,6 +211,33 @@ describe('contextHandler SessionStart path', () => {
       expect(catalogCall?.[3]).toMatchObject({ timeoutMs: 2_000 });
     });
 
+    it('serves cached all-project context when the catalog becomes unavailable', async () => {
+      const cachedBody = 'CACHED ALL-PROJECT CONTEXT';
+      const cacheKeys = contextCacheKeys(['cached-project', 'parent-project', 'repo-project'], 'claude', false);
+      const priorCatalog = projectCatalog;
+      writeContextCache(cacheKeys, cachedBody, Date.now());
+      try {
+        projectCatalog = ['cached-project'];
+        const online = await runAll('catalog-cache-online');
+        expect(online.hookSpecificOutput?.additionalContext).toContain(cachedBody);
+
+        projectCatalog = 'reject';
+        workerContext = '';
+        const offline = await runAll('catalog-cache-offline');
+        expect(offline.hookSpecificOutput?.additionalContext).toContain(cachedBody);
+        expect(calls.some(call => String(call[0]).startsWith('/api/context/inject'))).toBe(false);
+
+        excludedProjects = 'cached-project';
+        const afterExclusion = await runAll('catalog-cache-after-exclusion');
+        expect(afterExclusion.hookSpecificOutput?.additionalContext).not.toContain(cachedBody);
+        expect(injectedProjects()).toBe('parent-project,repo-project');
+      } finally {
+        excludedProjects = '';
+        projectCatalog = priorCatalog;
+        removeContextCache(cacheKeys);
+      }
+    });
+
     it('keeps the projects param stable whatever order the catalog returns', async () => {
       projectCatalog = ['zeta', 'alpha'];
       await runAll('catalog-order-1');
@@ -238,7 +265,7 @@ describe('contextHandler SessionStart path', () => {
         ['parent-project', 'repo-project'],
         'server',
       );
-      expect(projects).toEqual(['parent-project', 'repo-project']);
+      expect(projects.live).toEqual(['parent-project', 'repo-project']);
       expect(calls.some(call => call[0] === '/api/projects')).toBe(false);
     });
   });

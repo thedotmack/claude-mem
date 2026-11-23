@@ -17,7 +17,7 @@ import { createHash, randomBytes } from 'crypto';
 import { existsSync, readdirSync, readFileSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { resolveDataDir } from './paths.js';
-import { writeJsonFileAtomic } from './atomic-json.js';
+import { readJsonFileWithBom, writeJsonFileAtomic } from './atomic-json.js';
 import { formatHeaderDateTime } from './timeline-formatting.js';
 import { describeDuration } from './observer-health.js';
 import { logger } from '../utils/logger.js';
@@ -126,6 +126,31 @@ export function contextCacheKeys(
 
 export function contextCacheDir(): string {
   return join(resolveDataDir(), 'state', 'context-cache');
+}
+
+function contextProjectCatalogPath(): string {
+  return join(contextCacheDir(), 'project-catalog.json');
+}
+
+export function readContextProjectCatalog(): string[] | null {
+  try {
+    const projects = readJsonFileWithBom<unknown>(contextProjectCatalogPath());
+    return Array.isArray(projects) && projects.every(project => typeof project === 'string')
+      ? projects
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export function writeContextProjectCatalog(projects: string[]): void {
+  try {
+    writeJsonFileAtomic(contextProjectCatalogPath(), projects);
+  } catch (error) {
+    logger.debug('HOOK', 'Could not save the SessionStart project catalog', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 export function contextCacheVariantId(keys: ContextCacheKeys): string {
