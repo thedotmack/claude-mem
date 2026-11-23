@@ -1,5 +1,5 @@
-import { timingSafeEqual } from 'crypto';
 import express, { type Application, type Request, type Response, type NextFunction } from 'express';
+import { safeEqualSecret } from '../../../../shared/local-api-token.js';
 import { HookSpool, remoteHookSpoolReceipt, type HookSpoolConsumedMarkers } from '../../../../shared/hook-spool.js';
 import { normalizeRemoteSpoolEntry, remoteSpoolEnvelopeSchema,
   remoteHookSpoolToken, REMOTE_SPOOL_PROTOCOL_VERSION } from '../../../../shared/hook-spool-remote.js';
@@ -29,9 +29,9 @@ export class HookSpoolRoutes extends BaseRouteHandler {
       res.status(503).json({ error: 'Remote spool ingestion is disabled; configure CLAUDE_MEM_WORKER_INGEST_TOKEN' });
       return;
     }
-    const actual = Buffer.from(req.get('authorization') ?? '');
-    const expected = Buffer.from(`Bearer ${token}`);
-    if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) {
+    // Hash both sides to fixed 32-byte digests so the comparison neither throws
+    // on a length mismatch nor answers "wrong length" faster than "wrong bytes".
+    if (!safeEqualSecret(req.get('authorization') ?? '', `Bearer ${token}`)) {
       res.status(401).json({ error: 'Remote spool authentication failed' });
       return;
     }
