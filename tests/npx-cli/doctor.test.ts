@@ -6,6 +6,7 @@ import { join } from 'path';
 import {
   autoUpdateCheck,
   bunRuntimeCheck,
+  databaseFileCheck,
   hookLauncherCheck,
   legacyAliasCheck,
   observerProviderCheck,
@@ -1208,5 +1209,55 @@ describe('npx doctor single /api/admin/doctor read', () => {
     expect(checks.dependencies).toEqual([]);
 
     expect(await probeWorkerDependencies(WORKER_URL)).toEqual([]);
+  });
+});
+
+describe('databaseFileCheck', () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'cm-doctor-db-'));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('reports a database the worker has not created yet as informational', () => {
+    const row = databaseFileCheck(join(root, 'missing.db'));
+    expect(row.status).toBe('ok');
+    expect(row.detail).toContain('not created yet');
+  });
+
+  it('reports the database, its WAL and its SHM file', () => {
+    const db = join(root, 'claude-mem.db');
+    writeFileSync(db, Buffer.alloc(2048));
+    writeFileSync(`${db}-wal`, Buffer.alloc(1024));
+    writeFileSync(`${db}-shm`, Buffer.alloc(32));
+
+    const row = databaseFileCheck(db, 10 * 1024 * 1024);
+    expect(row.status).toBe('ok');
+    expect(row.detail).toContain('2.0 KiB database');
+    expect(row.detail).toContain('1.0 KiB WAL');
+    expect(row.detail).toContain('SHM present');
+  });
+
+  it('warns when the WAL is past the threshold', () => {
+    const db = join(root, 'claude-mem.db');
+    writeFileSync(db, Buffer.alloc(64));
+    writeFileSync(`${db}-wal`, Buffer.alloc(64));
+
+    const row = databaseFileCheck(db, 63);
+    expect(row.status).toBe('warn');
+    expect(row.detail).toContain('has not checkpointed');
+  });
+
+  it('names a lone SHM sidecar without a WAL', () => {
+    const db = join(root, 'claude-mem.db');
+    writeFileSync(db, Buffer.alloc(64));
+    writeFileSync(`${db}-shm`, Buffer.alloc(32));
+
+    const row = databaseFileCheck(db);
+    expect(row.detail).toContain('SHM without WAL');
   });
 });
