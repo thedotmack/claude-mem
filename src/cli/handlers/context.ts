@@ -37,7 +37,13 @@ import {
 import { resolveRuntimeContext, type ServerRuntimeContext } from '../../services/hooks/runtime-selector.js';
 import type { ContextInput } from '../../services/context/types.js';
 import { serverSessionStartBudgetMs } from '../../shared/host-hook-limits.js';
-import { contextCacheKeys, fillContextPlaceholders, readContextCache } from '../../shared/context-cache.js';
+import {
+  contextCacheKeys,
+  fillContextPlaceholders,
+  readContextCache,
+  readContextProjectCatalog,
+  saveContextProjectCatalog,
+} from '../../shared/context-cache.js';
 import { clearTimelinePending } from '../../shared/codex-compaction-gate.js';
 import { readSetupState, type SetupStateFile } from '../../shared/setup-state.js';
 import { hasPendingInstallSetup } from '../../shared/setup-install.js';
@@ -345,6 +351,32 @@ export type SessionStartTimelineSkip = 'worker-unreachable' | 'catalog-unavailab
 export interface SessionStartProjectScope {
   projects: string[];
   timelineSkip: SessionStartTimelineSkip | null;
+  /**
+   * Without exclusions, when the catalog failed: the scope under the last
+   * stored catalog, whose cached variant is tried before this checkout's (#6403).
+   */
+  cacheFallbackProjects: string[] | null;
+}
+
+/** An all-project scope from a catalog list: the other projects sorted, this checkout's keys last. */
+function allProjectScope(catalogProjects: string[], checkoutProjects: string[], allowed: (project: string) => boolean = () => true): string[] {
+  const otherProjects = catalogProjects.filter(project => !checkoutProjects.includes(project) && allowed(project)).sort();
+  return [...otherProjects, ...checkoutProjects.filter(allowed)];
+}
+
+/**
+ * The all-project scope under the last stored catalog, or null when there is
+ * none to use. Never with exclusions: the stored list carries no checkout paths
+ * or merges, so it cannot prove an excluded project out (#6402); those reads
+ * always ask the worker.
+ */
+export function storedCatalogScope(
+  settings: { CLAUDE_MEM_CONTEXT_PROJECTS?: string; CLAUDE_MEM_EXCLUDED_PROJECTS?: string },
+  checkoutProjects: string[],
+): string[] | null {
+  if (settings.CLAUDE_MEM_CONTEXT_PROJECTS !== 'all' || settings.CLAUDE_MEM_EXCLUDED_PROJECTS?.trim()) return null;
+  const stored = readContextProjectCatalog();
+  return stored ? allProjectScope(stored, checkoutProjects) : null;
 }
 
 export const SESSION_START_TIMELINE_SKIP_NOTICES: Record<SessionStartTimelineSkip, string> = {
@@ -368,7 +400,7 @@ export async function resolveSessionStartProjects(
   checkoutProjects: string[],
   runtime: 'worker' | 'server',
 ): Promise<SessionStartProjectScope> {
-  const scope = (projects: string[]): SessionStartProjectScope => ({ projects, timelineSkip: null });
+  const scope = (projects: string[]): SessionStartProjectScope => ({ projects, timelineSkip: null, cacheFallbackProjects: null });
   if (settings.CLAUDE_MEM_CONTEXT_PROJECTS !== 'all') return scope(checkoutProjects);
   if (runtime === 'server') {
     logger.debug('HOOK', 'CLAUDE_MEM_CONTEXT_PROJECTS=all is not supported in server runtime');
@@ -377,11 +409,11 @@ export async function resolveSessionStartProjects(
   const excludedPatterns = settings.CLAUDE_MEM_EXCLUDED_PROJECTS?.trim();
   const fallback = (timelineSkip: SessionStartTimelineSkip, detail: Record<string, unknown>): SessionStartProjectScope => {
     if (!excludedPatterns) {
-      logger.debug('HOOK', 'Project catalog unavailable; SessionStart reads this checkout only', detail);
-      return scope(checkoutProjects);
+      logger.debug('HOOK', 'Project catalog unavailable; SessionStart reads this checkout live', detail);
+      return { ...scope(checkoutProjects), cacheFallbackProjects: storedCatalogScope(settings, checkoutProjects) };
     }
     logger.warn('HOOK', 'SessionStart timeline skipped: excluded projects could not be checked', { timelineSkip, ...detail });
-    return { projects: [], timelineSkip };
+    return { projects: [], timelineSkip, cacheFallbackProjects: null };
   };
   try {
     const url = excludedPatterns ? '/api/projects?includeCheckoutPaths=true' : '/api/projects';
@@ -395,6 +427,9 @@ export async function resolveSessionStartProjects(
     }
     if (!Array.isArray(catalog?.projects)) return fallback('catalog-incomplete', { field: 'projects' });
     const projects = catalog.projects.filter((project): project is string => typeof project === 'string' && project.length > 0);
+    // Kept so the next SessionStart can serve its cached variant without the
+    // worker, or find it while the worker is down (readContextProjectCatalog).
+    saveContextProjectCatalog(projects);
 
     let excluded: Set<string> | undefined;
     if (excludedPatterns) {
@@ -413,8 +448,7 @@ export async function resolveSessionStartProjects(
     if (droppedCheckoutProjects.length > 0) {
       logger.debug('HOOK', 'SessionStart left out excluded checkout keys', { droppedCheckoutProjects });
     }
-    const otherProjects = projects.filter(project => !checkoutProjects.includes(project) && allowed(project)).sort();
-    return scope([...otherProjects, ...checkoutProjects.filter(allowed)]);
+    return scope(allProjectScope(projects, checkoutProjects, allowed));
   } catch (error) {
     return fallback(isWorkerUnavailableError(error) ? 'worker-unreachable' : 'catalog-unavailable', {
       error: error instanceof Error ? error.message : String(error),
@@ -568,12 +602,6 @@ export const contextHandler: EventHandler = {
     // exactly as the write hooks do, so reads and writes stay on one corpus.
     const serverRuntime = runtime.runtime === 'server' ? runtime : null;
 
-    const { projects: scopeProjects, timelineSkip } = await resolveSessionStartProjects(settings, context.allProjects, runtime.runtime);
-    // An empty projects parameter would make the renderer rediscover the checkout.
-    const hasTimelineScope = scopeProjects.length > 0;
-    // A skipped timeline is said out loud, to the model and the user, never dropped silently.
-    const timelineSkipNotice = timelineSkip ? SESSION_START_TIMELINE_SKIP_NOTICES[timelineSkip] : null;
-    const projectsQuery = projectsQueryString(scopeProjects);
     const normalizedPlatformSource = input.platform
       ? normalizePlatformSource(input.platform)
       : undefined;
@@ -585,6 +613,58 @@ export const contextHandler: EventHandler = {
     // "Include last message" picks the prior session's reply by excluding this
     // one, so the worker gets the session id and SessionStart is answered live.
     const showLastMessage = settings.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE === 'true';
+
+    // Precomputed SessionStart context (liveness plan, Phase 6): the worker
+    // keeps each variant it has served rendered on disk, keyed exactly like
+    // the inject URLs below. A hit needs no worker at all; a miss takes the
+    // live path. A cached block never carries the prior reply, so with
+    // "Include last message" on it is read only when the worker cannot answer.
+    const cacheNowEpochMs = Date.now();
+    const cacheSource = platformSourceParam ? normalizedPlatformSource : undefined;
+    const readCachedVariant = (projects: string[], colors: boolean): string | null => {
+      if (serverRuntime || projects.length === 0) return null;
+      const cached = readContextCache(contextCacheKeys(projects, cacheSource, colors, cwd), cacheNowEpochMs);
+      if (!cached) return null;
+      const filled = fillContextPlaceholders(cached.body, cacheNowEpochMs, cached.placeholderNonce);
+      // A cached body was rendered for the full budget, without this session's
+      // notice reserve (#5672). Serve it only when it fits the room the
+      // current notices leave, the same room composeSessionStartContext
+      // enforces below; otherwise fall through to the next candidate or the
+      // live fetch, which re-renders it with the current reserve. Never cut a
+      // rendered entry to fit.
+      if (!colors && filled.length > sessionStartBodyRoom(noticeText)) return null;
+      logger.debug('HOOK', 'SessionStart context served from the context cache', {
+        colors,
+        renderedAgoMs: cacheNowEpochMs - cached.renderedAtEpochMs,
+      });
+      return filled;
+    };
+
+    // Cache first (#6403): with every project and no exclusions, the variant
+    // under the last stored catalog is served without asking the worker. The
+    // catalog is asked only on a miss.
+    const storedScope = serverRuntime || showLastMessage ? null : storedCatalogScope(settings, context.allProjects);
+    const storedHit = storedScope ? readCachedVariant(storedScope, false) : null;
+    const { projects: scopeProjects, timelineSkip, cacheFallbackProjects } = storedScope && storedHit !== null
+      ? { projects: storedScope, timelineSkip: null, cacheFallbackProjects: null }
+      : await resolveSessionStartProjects(settings, context.allProjects, runtime.runtime);
+    // An empty projects parameter would make the renderer rediscover the checkout.
+    const hasTimelineScope = scopeProjects.length > 0;
+    // A skipped timeline is said out loud, to the model and the user, never dropped silently.
+    const timelineSkipNotice = timelineSkip ? SESSION_START_TIMELINE_SKIP_NOTICES[timelineSkip] : null;
+    const projectsQuery = projectsQueryString(scopeProjects);
+    // With the catalog down, the variant under the stored catalog comes first.
+    // Each candidate passes the room check on its own, so a broad block too big
+    // for this session's notices never hides a checkout block that fits.
+    const cacheCandidates = cacheFallbackProjects ? [cacheFallbackProjects, scopeProjects] : [scopeProjects];
+    const readCachedRender = (colors: boolean): string | null => {
+      if (!hasTimelineScope) return null;
+      for (const projects of cacheCandidates) {
+        const filled = readCachedVariant(projects, colors);
+        if (filled !== null) return filled;
+      }
+      return null;
+    };
     const sessionParam = showLastMessage && input.sessionId ? `&sessionId=${encodeURIComponent(input.sessionId)}` : '';
     const noticeBudgetParam = noticeReserveChars ? `&reserveChars=${noticeReserveChars}` : '';
     const apiPath = `/api/context/inject?${projectsQuery}${platformSourceParam}&cwd=${encodeURIComponent(cwd)}${sessionParam}${noticeBudgetParam}`;
@@ -606,32 +686,7 @@ export const contextHandler: EventHandler = {
         )
       : null;
 
-    // Precomputed SessionStart context (liveness plan, Phase 6): the worker
-    // keeps each variant it has served rendered on disk, keyed exactly like
-    // the URLs above. A hit needs no worker at all; a miss takes the live path.
-    // A cached block never carries the prior reply, so with "Include last
-    // message" on it is read only when the worker cannot answer.
-    const cacheNowEpochMs = Date.now();
-    const readCachedRender = (colors: boolean): string | null => {
-      if (serverRuntime || !hasTimelineScope) return null;
-      const keys = contextCacheKeys(scopeProjects, platformSourceParam ? normalizedPlatformSource : undefined, colors, cwd);
-      const cached = readContextCache(keys, cacheNowEpochMs);
-      if (!cached) return null;
-      logger.debug('HOOK', 'SessionStart context served from the context cache', {
-        colors,
-        renderedAgoMs: cacheNowEpochMs - cached.renderedAtEpochMs,
-      });
-      const filled = fillContextPlaceholders(cached.body, cacheNowEpochMs, cached.placeholderNonce);
-      // A cached body was rendered for the full budget, without this session's
-      // notice reserve (#5672). Serve it only when it fits the room the
-      // current notices leave, the same room composeSessionStartContext
-      // enforces below; otherwise fall through to the live fetch, which
-      // re-renders it with the current reserve. Never cut a rendered entry
-      // to fit.
-      if (!colors && filled.length > sessionStartBodyRoom(noticeText)) return null;
-      return filled;
-    };
-    const cachedModelContext = showLastMessage ? null : readCachedRender(false);
+    const cachedModelContext = showLastMessage ? null : storedHit ?? readCachedRender(false);
 
     // ponytail: Codex's MCP normally starts the worker; this one bounded
     // fallback covers cold sessions without the old startup process chain.

@@ -132,25 +132,53 @@ function contextProjectCatalogPath(): string {
   return join(contextCacheDir(), 'project-catalog.json');
 }
 
+/**
+ * The last project list the worker's catalog gave an all-project SessionStart
+ * (CLAUDE_MEM_CONTEXT_PROJECTS=all), sorted. The hook keeps it so a cache hit
+ * can name the all-project variant without asking the worker, and so a worker
+ * outage still finds that variant (#6403). The worker rewrites it when a write
+ * names a project it lacks (refreshContextProjectCatalog), so a stored list
+ * never hides a new project behind an older variant the worker keeps fresh.
+ * It holds project keys only, never paths. Null when there is none.
+ */
 export function readContextProjectCatalog(): string[] | null {
+  const filePath = contextProjectCatalogPath();
+  if (!existsSync(filePath)) return null;
   try {
-    const projects = readJsonFileWithBom<unknown>(contextProjectCatalogPath());
-    return Array.isArray(projects) && projects.every(project => typeof project === 'string')
-      ? projects
-      : null;
-  } catch {
-    return null;
+    const projects = readJsonFileWithBom<unknown>(filePath);
+    if (Array.isArray(projects) && projects.every(project => typeof project === 'string')) return projects;
+    logger.warn('HOOK', 'Stored SessionStart project catalog malformed; asking the worker', { filePath });
+  } catch (error) {
+    logger.warn('HOOK', 'Stored SessionStart project catalog unreadable; asking the worker', { filePath },
+      error instanceof Error ? error : new Error(String(error)));
   }
+  return null;
 }
 
-export function writeContextProjectCatalog(projects: string[]): void {
+/** Store `projects`, sorted, as the catalog. Writes only when the list changed. */
+export function saveContextProjectCatalog(projects: string[]): void {
+  const sorted = [...projects].sort();
+  if (JSON.stringify(readContextProjectCatalog()) === JSON.stringify(sorted)) return;
   try {
-    writeJsonFileAtomic(contextProjectCatalogPath(), projects);
+    writeJsonFileAtomic(contextProjectCatalogPath(), sorted);
   } catch (error) {
-    logger.debug('HOOK', 'Could not save the SessionStart project catalog', {
+    // Only the cache-first read is lost: the next SessionStart asks the worker.
+    logger.warn('HOOK', 'Could not save the SessionStart project catalog', {
       error: error instanceof Error ? error.message : String(error),
     });
   }
+}
+
+/**
+ * Worker side: a write touched these projects ('all' when it can change any).
+ * Once a SessionStart has stored a catalog, a write naming a project the list
+ * lacks, or touching all of them, stores the current list.
+ */
+export function refreshContextProjectCatalog(touchedProjects: string[] | 'all', listProjects: () => string[]): void {
+  const stored = readContextProjectCatalog();
+  if (!stored) return;
+  if (touchedProjects !== 'all' && touchedProjects.every(project => stored.includes(project))) return;
+  saveContextProjectCatalog(listProjects());
 }
 
 export function contextCacheVariantId(keys: ContextCacheKeys): string {
