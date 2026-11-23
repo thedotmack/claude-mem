@@ -1,12 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
+import type pg from 'pg';
+import { randomUUID } from 'node:crypto';
 import { logger } from '../../src/utils/logger.js';
 import {
   __clearServerJobsTestSeams,
   __setServerJobsTestSeams,
   runServerJobsCommand,
 } from '../../src/npx-cli/commands/server-jobs.js';
+import {
+  bootstrapServerPostgresSchema,
+  createPostgresStorageRepositories,
+  type PostgresStorageRepositories,
+} from '../../src/storage/postgres/index.js';
+import { createIsolatedSchema, poolForSchema, quoteIdentifier } from '../sdk/pg-isolation.js';
 
 // Phase 12 — `claude-mem server jobs` operator console. Uses the
 // __setServerJobsTestSeams test seam (preferred over mock.module which leaks
@@ -246,5 +254,131 @@ describe('Phase 12 — server jobs CLI', () => {
     await expect(runServerJobsCommand(['cancel', 'gj_done', '--team', 'team-1'])).rejects.toThrow(/__exit_1__/);
     const errMsg = consoleErrSpy.mock.calls.map(c => String(c[0])).join('\n');
     expect(errMsg).toMatch(/Cannot cancel a completed job/);
+  });
+});
+
+// The commands read the job's status, then write. These tests let another
+// writer commit between the two, against real Postgres.
+describe('server jobs CLI — state changed after the status check', () => {
+  const databaseUrl = process.env.CLAUDE_MEM_TEST_POSTGRES_URL;
+  if (!databaseUrl) {
+    it.skip('requires CLAUDE_MEM_TEST_POSTGRES_URL for Postgres integration', () => {});
+    return;
+  }
+  const originalEnv = { ...process.env };
+  let spies: ReturnType<typeof spyOn>[] = [];
+  let pool: pg.Pool;
+  let storage: PostgresStorageRepositories;
+  let schema: string;
+  let teamId: string;
+  let projectId: string;
+  let jobId: string;
+  let published: string[];
+  let removed: string[];
+  let afterStatusCheck: (() => Promise<unknown>) | null;
+
+  beforeEach(async () => {
+    schema = await createIsolatedSchema(databaseUrl, 'cm_cli_jobs');
+    pool = poolForSchema(databaseUrl, schema);
+    await bootstrapServerPostgresSchema(pool);
+    storage = createPostgresStorageRepositories(pool);
+    const team = await storage.teams.create({ name: 'cli-team' });
+    const project = await storage.projects.create({ teamId: team.id, name: 'cli-project' });
+    teamId = team.id; projectId = project.id;
+    const event = await storage.agentEvents.create({ projectId, teamId, sourceAdapter: 'api', eventType: 'tool_use', payload: {}, occurredAt: new Date() });
+    jobId = randomUUID();
+    await storage.observationGenerationJobs.create({
+      id: jobId, projectId, teamId, sourceType: 'agent_event', sourceId: event.id, agentEventId: event.id,
+      jobType: 'observation_generate_for_event', bullmqJobId: `event-${event.id}`,
+      payload: { kind: 'event', team_id: teamId, project_id: projectId, source_type: 'agent_event', source_id: event.id, generation_job_id: jobId },
+    });
+    published = []; removed = []; afterStatusCheck = null;
+    spies = [
+      spyOn(logger, 'warn').mockImplementation(() => {}),
+      spyOn(console, 'log').mockImplementation(() => {}),
+      spyOn(console, 'error').mockImplementation(() => {}),
+      spyOn(process, 'exit').mockImplementation((code?: number) => { throw new Error(`__exit_${code ?? 0}__`); }) as never,
+    ];
+    process.env.CLAUDE_MEM_SERVER_DATABASE_URL = 'postgres://seamed/pool';
+    __setServerJobsTestSeams({
+      openPool: async () => ({
+        pool: {
+          query: async (sql: string, params: unknown[]) => {
+            const result = await pool.query(sql, params);
+            if (afterStatusCheck && sql.includes('SELECT id, team_id, project_id, status')) {
+              const otherWriter = afterStatusCheck;
+              afterStatusCheck = null;
+              await otherWriter();
+            }
+            return result;
+          },
+        },
+        releasePool: async () => {},
+      }),
+      republishToBullmq: async (_sourceType, id) => { published.push(id); },
+      removeFromBullmq: async (_sourceType, id) => { removed.push(id); },
+    });
+  });
+
+  afterEach(async () => {
+    __clearServerJobsTestSeams();
+    spies.forEach(spy => spy.mockRestore());
+    process.env = { ...originalEnv };
+    try { await pool.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(schema)} CASCADE`); }
+    finally { await pool.end(); }
+  });
+
+  const reload = () => storage.observationGenerationJobs.getByIdForScope({ id: jobId, teamId, projectId });
+  const move = (next: 'processing' | 'completed' | 'failed') => storage.observationGenerationJobs.transitionStatus({
+    id: jobId, teamId, projectId, status: next, lockedBy: 'fixture-worker',
+  });
+  async function lifecycleCount(eventType: string): Promise<number> {
+    const result = await pool.query('SELECT COUNT(*)::int AS n FROM observation_generation_job_events WHERE generation_job_id = $1 AND event_type = $2', [jobId, eventType]);
+    return result.rows[0].n;
+  }
+
+  it('cancel does not overwrite a job that completed after the status check', async () => {
+    await move('processing');
+    afterStatusCheck = () => move('completed');
+    await expect(runServerJobsCommand(['cancel', jobId, '--team', teamId])).rejects.toThrow(/__exit_1__/);
+    const final = await reload();
+    expect(final?.status).toBe('completed');
+    expect(final?.cancelledAtEpoch).toBeNull();
+    expect(removed).toEqual([]);
+    expect(await lifecycleCount('cancelled')).toBe(0);
+  });
+
+  for (const winnerState of ['processing', 'completed'] as const) {
+    it(`retry does not requeue a job another retry already moved to ${winnerState}`, async () => {
+      await move('processing'); await move('failed');
+      afterStatusCheck = async () => {
+        // POST /v1/jobs/:id/retry from another operator, then a worker picks it up.
+        await pool.query(
+          `UPDATE observation_generation_jobs
+           SET status = 'queued', failed_at = NULL, last_error = NULL, attempts = LEAST(attempts, max_attempts - 1)
+           WHERE id = $1`,
+          [jobId],
+        );
+        await move('processing');
+        if (winnerState === 'completed') await move('completed');
+      };
+      await expect(runServerJobsCommand(['retry', jobId, '--team', teamId])).rejects.toThrow(/__exit_1__/);
+      const final = await reload();
+      expect(final?.status).toBe(winnerState);
+      if (winnerState === 'processing') expect(final?.lockedBy).toBe('fixture-worker');
+      else expect(final?.completedAtEpoch).not.toBeNull();
+      expect(published).toEqual([]);
+      expect(await lifecycleCount('queued')).toBe(0);
+    });
+  }
+
+  it('retry and cancel still write when the job is unchanged', async () => {
+    await move('processing'); await move('failed');
+    await runServerJobsCommand(['retry', jobId, '--team', teamId]);
+    expect((await reload())?.status).toBe('queued');
+    expect(published.length).toBe(1);
+    await runServerJobsCommand(['cancel', jobId, '--team', teamId]);
+    expect((await reload())?.status).toBe('cancelled');
+    expect(removed.length).toBe(1);
   });
 });
