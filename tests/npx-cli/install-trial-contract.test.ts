@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync }
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { INSTALL_RUN_BY_AUTO_UPDATE_ENV } from '../../src/shared/auto-update-install-run';
+import { CLOUD_SYNC_SETUP_CONTRACT, SETUP_CLOUD_SYNC_OFFERS, type SetupCloudSyncOffer } from '../../src/shared/setup-funnel';
 import {
   buildTrialReadySettings,
   lastOAuthStartErrorMessage,
@@ -24,7 +25,7 @@ const loginClaim = `/api/pro/trial/claim?pairing=${pairingId}&login_only=1`;
 const authorizationUrl = `https://cmem.ai/login?next=${encodeURIComponent(loginClaim)}`;
 const checkoutUrl = `https://cmem.ai/api/pro/trial/claim?pairing=${pairingId}&trial=7`;
 
-function runCompletedPairingChild(body: Record<string, unknown>, initialSettings?: Record<string, string>): {
+function runCompletedPairingChild(body: Record<string, unknown>, initialSettings?: Record<string, string>, cloudSyncOffer?: SetupCloudSyncOffer): {
   output: string;
   settings: Record<string, string>;
   settingsMode: number;
@@ -45,6 +46,7 @@ function runCompletedPairingChild(body: Record<string, unknown>, initialSettings
         userCode: 'ABCD-2345',
         authorizationUrl: 'https://cmem.ai/login',
         checkoutUrl: 'https://cmem.ai/api/pro/trial/claim?pairing=test&trial=7',
+        cloudSyncOffer: ${JSON.stringify(cloudSyncOffer)},
       };
       const result = await completeInstallerOAuthLogin(pairing, 'test-version');
       console.log('__PAIRING_RESULT__=' + JSON.stringify({ plan: pairing.delivered?.plan, ready: result }));
@@ -79,6 +81,94 @@ const validStartBody = {
   checkout_url: checkoutUrl,
   poll_interval: 3,
 };
+
+function cloudStartBody(offer: SetupCloudSyncOffer, flow?: string) {
+  const intent = { pairing: pairingId, product: 'cloud_sync', offer, ...(flow ? { setup_flow_id: flow } : {}) };
+  const login = `/api/pro/trial/claim?${new URLSearchParams({ ...intent, login_only: '1' })}`;
+  return {
+    ...validStartBody,
+    authorization_url: `https://cmem.ai/login?next=${encodeURIComponent(login)}`,
+    checkout_url: `https://cmem.ai/api/pro/trial/claim?${new URLSearchParams(intent)}`,
+    cloud_sync_offer: offer,
+    cloud_sync_contract: CLOUD_SYNC_SETUP_CONTRACT,
+  };
+}
+
+describe('standalone Cloud Sync installer contract', () => {
+  for (const offer of SETUP_CLOUD_SYNC_OFFERS) {
+    it(`round-trips ${offer}, including its setup episode`, () => {
+      const flow = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+      const body = cloudStartBody(offer, flow);
+      const pairing = parseInstallerOAuthStartBody(body, flow, offer);
+      expect(pairing?.cloudSyncOffer).toBe(offer);
+      expect(pairing?.checkoutUrl).toBe(body.checkout_url);
+      expect(pairing?.authorizationUrl).toBe(body.authorization_url);
+      expect(parseInstallerOAuthStartBody(body, undefined, offer)).toBeNull();
+    });
+  }
+
+  it('accepts a login-only continuation when the pairing still confirms Cloud intent', () => {
+    const body = { ...cloudStartBody('cloud_sync_monthly'), authorization_url: authorizationUrl };
+    expect(parseInstallerOAuthStartBody(body, undefined, 'cloud_sync_monthly')?.cloudSyncOffer).toBe('cloud_sync_monthly');
+  });
+
+  it('refuses legacy bundles, mismatched offers, changed versions, and extra checkout purchase parameters', () => {
+    const body = cloudStartBody('cloud_sync_monthly');
+    const refused = [
+      validStartBody,
+      { ...body, cloud_sync_offer: 'cloud_sync_annual' },
+      { ...body, cloud_sync_contract: undefined },
+      { ...body, cloud_sync_contract: 2 },
+      { ...body, checkout_url: checkoutUrl },
+      { ...body, checkout_url: body.checkout_url.replace('cloud_sync_monthly', 'cloud_sync_annual') },
+      { ...body, checkout_url: `${body.checkout_url}&trial=30` },
+      { ...body, checkout_url: `${body.checkout_url}&offer=cloud_sync_monthly` },
+      { ...body, checkout_url: `${body.checkout_url}&price=pro` },
+      { ...body, authorization_url: `https://cmem.ai/login?next=${encodeURIComponent(`${loginClaim}&product=cloud_sync&offer=cloud_sync_annual`)}` },
+    ];
+    for (const response of refused) expect(parseInstallerOAuthStartBody(response, undefined, 'cloud_sync_monthly')).toBeNull();
+    // A saved legacy request cannot silently become a new Cloud purchase either.
+    expect(parseInstallerOAuthStartBody(body)).toBeNull();
+    expect(parseInstallerOAuthStartBody(validStartBody)?.checkoutUrl).toBe(checkoutUrl);
+  });
+
+  it('persists only Cloud credentials and keeps the configured observer and its credentials', () => {
+    const initial = {
+      CLAUDE_MEM_PROVIDER: 'gemini',
+      CLAUDE_MEM_GEMINI_API_KEY: 'own-provider-key',
+      CLAUDE_MEM_PRO_MEMORY_KEY: 'previous-staged-hosted-key',
+      CLAUDE_MEM_PRO_TRIAL_STATE: 'expired',
+    };
+    const { output, settings, settingsMode } = runCompletedPairingChild({
+      status: 'ready', user_id: 'cloud_user', setup_token: 'CLOUD_TOKEN_MUST_NOT_LEAK', hub_url: 'https://sync.cmem.ai', plan: 'cloud_sync',
+    }, initial, 'cloud_sync_monthly');
+    expect(output).toContain('__PAIRING_RESULT__={"plan":"cloud_sync","ready":true}');
+    expect(output).not.toContain('CLOUD_TOKEN_MUST_NOT_LEAK');
+    expect(settings).toEqual({
+      ...initial,
+      CLAUDE_MEM_CLOUD_SYNC_TOKEN: 'CLOUD_TOKEN_MUST_NOT_LEAK',
+      CLAUDE_MEM_CLOUD_SYNC_USER_ID: 'cloud_user',
+      CLAUDE_MEM_CLOUD_SYNC_HUB_URL: 'https://sync.cmem.ai',
+      CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: '',
+      CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: expect.any(String),
+    });
+    expect(settingsMode).toBe(0o600);
+  });
+
+  it('rejects bundled or hosted credential delivery for a Cloud-only pairing before writing settings', () => {
+    const initial = { CLAUDE_MEM_PROVIDER: 'claude', CLAUDE_MEM_MODEL: 'haiku' };
+    for (const extra of [{ plan: 'pro' }, { plan: 'cloud_sync', memory_key: 'UNEXPECTED_MEMORY_KEY', memory_base_url: 'https://cmem.ai/api/inference/v1' }]) {
+      const { output, settings } = runCompletedPairingChild({
+        status: 'ready', user_id: 'cloud_user', setup_token: 'UNEXPECTED_SETUP_TOKEN', hub_url: 'https://sync.cmem.ai', ...extra,
+      }, initial, 'cloud_sync_annual');
+      expect(output).toContain('__PAIRING_RESULT__={"ready":false}');
+      expect(output).toContain('Your existing memory provider was kept.');
+      expect(output).not.toContain('UNEXPECTED_MEMORY_KEY');
+      expect(output).not.toContain('UNEXPECTED_SETUP_TOKEN');
+      expect(settings).toEqual(initial);
+    }
+  });
+});
 
 /** Project-local scratch (gitignored) for the auto-update cases below, never the system temp folder. */
 const scratchRoot = join(repoRoot, '.scratch', 'test-runs');
@@ -131,7 +221,7 @@ describe('installer OAuth start failure classification', () => {
   const realFetch = globalThis.fetch;
   const withFetch = async (
     impl: (init?: RequestInit, url?: string) => Promise<Response>,
-    opts: { timeoutMs?: number; credentials?: Record<string, unknown> } = {},
+    opts: { timeoutMs?: number; credentials?: Record<string, unknown>; cloudSyncOffer?: SetupCloudSyncOffer } = {},
   ) => {
     const dataDir = mkdtempSync(join(tmpdir(), 'claude-mem-oauth-start-'));
     const previousDataDir = process.env.CLAUDE_MEM_DATA_DIR;
@@ -139,7 +229,7 @@ describe('installer OAuth start failure classification', () => {
     if (opts.credentials) writeFileSync(join(dataDir, 'intent-install.json'), JSON.stringify(opts.credentials), { mode: 0o600 });
     globalThis.fetch = ((url: unknown, init?: RequestInit) => impl(init, String(url))) as typeof fetch;
     try {
-      return await startInstallerOAuthPairing({ source: 'npx-installer-deferred', timeoutMs: opts.timeoutMs });
+      return await startInstallerOAuthPairing({ source: 'npx-installer-deferred', timeoutMs: opts.timeoutMs, cloudSyncOffer: opts.cloudSyncOffer });
     } finally {
       globalThis.fetch = realFetch;
       if (previousDataDir === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
@@ -151,6 +241,17 @@ describe('installer OAuth start failure classification', () => {
   it('labels a non-2xx response http_error', async () => {
     expect(await withFetch(async () => new Response('', { status: 503 }))).toBeNull();
     expect(lastOAuthStartFailure()).toBe('http_error');
+  });
+
+  it('sends the explicit Cloud offer and contract version and fails closed against an older server', async () => {
+    const pairing = await withFetch(async init => {
+      expect(JSON.parse(String(init?.body))).toMatchObject({ cloud_sync_offer: 'cloud_sync_annual', cloud_sync_contract: 1 });
+      return Response.json(cloudStartBody('cloud_sync_annual'));
+    }, { cloudSyncOffer: 'cloud_sync_annual' });
+    expect(pairing?.cloudSyncOffer).toBe('cloud_sync_annual');
+    expect(await withFetch(async () => Response.json(validStartBody), { cloudSyncOffer: 'cloud_sync_monthly' })).toBeNull();
+    expect(lastOAuthStartFailure()).toBe('bad_body');
+    expect(lastOAuthStartErrorMessage()).toContain('did not confirm the selected standalone Cloud Sync offer');
   });
 
   it('falls back to the HTTP status when a non-2xx body carries no message (#5493)', async () => {
@@ -795,7 +896,7 @@ describe('installer trial-ready contract', () => {
     });
   });
 
-  it('keeps the provider when CMEM Pro is chosen for a seat-only account, promoting no staged gateway key', () => {
+  it.each(['teambrain_seat', 'cloud_sync'])('keeps the provider for a %s account, promoting no staged gateway key', (plan) => {
     const script = `
       const { writeFileSync, readFileSync } = await import('fs');
       const { USER_SETTINGS_PATH } = await import('./src/shared/paths.ts');
@@ -812,7 +913,7 @@ describe('installer trial-ready contract', () => {
       const { parseTrialReadyBody, promptProvider } = await import('./src/npx-cli/commands/install.ts');
       const delivered = parseTrialReadyBody({
         status: 'ready', user_id: 'seat_user', setup_token: 'seat_setup_token',
-        hub_url: 'https://sync.cmem.ai', plan: 'teambrain_seat',
+        hub_url: 'https://sync.cmem.ai', plan: '${plan}',
       });
       const pairing = {
         pairingId: 'p', secret: 's', userCode: 'ABCD-2345', pollIntervalMs: 1,
@@ -836,7 +937,14 @@ describe('installer trial-ready contract', () => {
       expect(result.exitCode, output).toBe(0);
       expect(output).toContain('__PROVIDER__=gemini');
       expect(output).toContain('__UNCHANGED__=true');
-      expect(output).toContain('TeamBrain seat');
+      if (plan === 'cloud_sync') {
+        expect(output).toContain('Cloud Sync is connected');
+        expect(output).toContain('https://cmem.ai/hosted-tokens');
+        expect(output).not.toContain('TeamBrain seat');
+        expect(output).not.toContain('https://cmem.ai/pro');
+      } else {
+        expect(output).toContain('TeamBrain seat');
+      }
       expect(output).not.toContain('CMEM Pro configured');
     } finally {
       rmSync(dataDir, { recursive: true, force: true });

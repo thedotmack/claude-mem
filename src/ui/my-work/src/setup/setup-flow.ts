@@ -4,11 +4,11 @@
 // Go only) → Finish Setup → Import (only when there is history to import) → Launch → What's next?.
 // The retired PROTO routes (savings selection, the second usage scan, device, tools, home, trial, cloud-sync) are gone.
 
-import { SETUP_STEPS, type SetupBranch, type SetupInstallerStage, type SetupMemoryBilling, type SetupScanPhase, type SetupStep } from '../../../../shared/setup-funnel.ts'
+import { DEFAULT_CLOUD_SYNC_OFFER, SETUP_STEPS, type SetupBranch, type SetupCloudSyncOffer, type SetupInstallerStage, type SetupMemoryBilling, type SetupScanPhase, type SetupStep } from '../../../../shared/setup-funnel.ts'
 export { SETUP_STEPS, type SetupStep }
 
 export type MemoryBranch = SetupBranch
-/** Who generates memories: CMEM Pro (hosted) or the person's own token plan. On The Go is always hosted (gap G1). */
+/** Who generates memories: a legacy hosted choice or the person's existing provider. */
 export type MemoryBilling = SetupMemoryBilling
 export type HistoryImportStatus = 'none' | 'available' | 'running' | 'complete' | 'skipped'
 
@@ -29,7 +29,8 @@ export interface SetupFlowState {
   scanReview: boolean
   branch: MemoryBranch
   memoryBilling: MemoryBilling
-  /** Already paying for Pro: On The Go is pre-selected and checkout is skipped. */
+  cloudSyncOffer: SetupCloudSyncOffer
+  /** Existing Cloud Sync or Pro configuration: keep it and skip a new checkout. */
   alreadyPro: boolean
   /** The prompt scan finished without an error. */
   scanComplete: boolean
@@ -49,7 +50,7 @@ export interface SetupFlowState {
 
 export function initialFlowState(alreadyPro: boolean): SetupFlowState {
   return {
-    installationComplete: true, installConfirmed: true, installReview: false, scanReview: false, branch: 'go', memoryBilling: 'hosted', alreadyPro, scanComplete: false, scanSkipped: false,
+    installationComplete: true, installConfirmed: true, installReview: false, scanReview: false, branch: 'go', memoryBilling: 'existing', cloudSyncOffer: DEFAULT_CLOUD_SYNC_OFFER, alreadyPro, scanComplete: false, scanSkipped: false,
     revealContinued: false, choiceContinued: false, savingsComplete: false, checkoutReviewed: false, finishTools: [], importStatus: 'none', setupComplete: false,
   }
 }
@@ -67,11 +68,11 @@ export function choiceLocked(stage: InstallerStage | null | undefined): boolean 
 }
 
 /** Restore the worker's committed storage choice without replacing a choice being edited in this visit. */
-export function hydrateSetupChoice(state: SetupFlowState, saved: Pick<SetupFlowState, 'branch' | 'memoryBilling'> | null,
+export function hydrateSetupChoice(state: SetupFlowState, saved: (Pick<SetupFlowState, 'branch' | 'memoryBilling'> & { cloudSyncOffer?: SetupCloudSyncOffer }) | null,
   locallyEdited: boolean, stage: InstallerStage | null | undefined): SetupFlowState {
   if (!saved || (locallyEdited && !choiceLocked(stage))
-    || (state.branch === saved.branch && state.memoryBilling === saved.memoryBilling)) return state
-  return { ...state, branch: saved.branch, memoryBilling: saved.memoryBilling }
+    || (state.branch === saved.branch && state.memoryBilling === saved.memoryBilling && state.cloudSyncOffer === (saved.cloudSyncOffer ?? DEFAULT_CLOUD_SYNC_OFFER))) return state
+  return { ...state, branch: saved.branch, memoryBilling: saved.memoryBilling, cloudSyncOffer: saved.cloudSyncOffer ?? DEFAULT_CLOUD_SYNC_OFFER }
 }
 
 const BEFORE_CHOICE: SetupStep[] = ['scan', 'reveal']
