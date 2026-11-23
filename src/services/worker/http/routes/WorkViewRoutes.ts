@@ -54,7 +54,7 @@ import { readHistoryCounts, type HistoryImport } from '../../../setup/history-im
 import { createSetupTelemetry } from '../../../setup/telemetry.js';
 import { createSetupInstallerResumer } from '../../../setup/resume-installer.js';
 import { hasActiveSetupSession, hasProConfiguration, readSetupState, setupStatePath, writeSetupState, type SetupStateFile, type SetupStateView } from '../../../../shared/setup-state.js';
-import { historyImportRunning, SETUP_BRANCHES, SETUP_INSTALLER_STAGES, SETUP_MEMORY_BILLINGS } from '../../../../shared/setup-funnel.js';
+import { historyImportRunning, SETUP_BRANCHES, SETUP_CLOUD_SYNC_OFFERS, SETUP_INSTALLER_STAGES, SETUP_MEMORY_BILLINGS, setupCloudSyncOffer } from '../../../../shared/setup-funnel.js';
 import { hasPendingInstallSetup, SETUP_DSH_PROFILE_MAX_CHARACTERS, SETUP_INSTALL_NOTE_MAX_CHARACTERS, SETUP_INSTALL_STATUSES } from '../../../../shared/setup-install.js';
 import {
   CONTINUABLE_PLATFORMS, CONVERSATION_SESSION_UUID_PATTERN, OPEN_IN_APP_CLICK_ID_PATTERN, type ConversationContinuation, type ConversationContinuationNotice,
@@ -389,12 +389,13 @@ function redactSetupInstall(install: SetupStateFile['install']): SetupStateFile[
   return { ...install, selection: email ? { ...selection, emailProvided: true } : selection };
 }
 
-// On The Go is always CMEM Pro: standalone Cloud Sync on your own tokens has no price yet (gap G1).
+// Cloud Sync can use the existing provider. An explicit offer never changes a local or legacy hosted choice.
 const setupChoiceBody = z.object({
   branch: z.enum(SETUP_BRANCHES),
   memoryBilling: z.enum(SETUP_MEMORY_BILLINGS),
-}).strict().refine(choice => choice.branch === 'home' || choice.memoryBilling === 'hosted', {
-  message: 'On The Go uses CMEM Pro (memoryBilling "hosted").',
+  cloudSyncOffer: z.enum(SETUP_CLOUD_SYNC_OFFERS).optional(),
+}).strict().refine(choice => !choice.cloudSyncOffer || (choice.branch === 'go' && choice.memoryBilling === 'existing'), {
+  message: 'A Cloud Sync offer requires On The Go with your existing memory provider.',
 });
 const setupInstallerBody = z.object({
   stage: z.enum(SETUP_INSTALLER_STAGES),
@@ -1118,17 +1119,19 @@ export class WorkViewRoutes extends BaseRouteHandler {
 
   /** The choice can change until the installer acts on it; after that the installer holds the result. */
   private saveSetupChoice = (req: Request, res: Response): void => {
-    const { branch, memoryBilling } = req.body as z.infer<typeof setupChoiceBody>;
+    const { branch, memoryBilling, cloudSyncOffer } = req.body as z.infer<typeof setupChoiceBody>;
+    const offer = setupCloudSyncOffer({ branch, memoryBilling, cloudSyncOffer });
     const state = readSetupState(this.setupStatePath);
     if (state.status === 'complete') { res.status(409).json({ error: 'Setup is already complete.', state: this.setupStateView(state) }); return; }
     if (state.install && state.install.status !== 'ready') { res.status(409).json({ error: 'Finish installing your agents before choosing memory storage.' }); return; }
     const applied = state.installer && state.installer.stage !== 'waiting-for-choice' && state.installer.stage !== 'failed';
-    if (applied && (state.choice?.branch !== branch || state.choice?.memoryBilling !== memoryBilling)) {
+    if (applied && (state.choice?.branch !== branch || state.choice?.memoryBilling !== memoryBilling
+      || (state.choice && setupCloudSyncOffer(state.choice)) !== offer)) {
       res.status(409).json({ error: 'The installer already applied the earlier choice.', state: this.setupStateView(state) });
       return;
     }
     if (applied) { res.setHeader('Cache-Control', 'no-store'); res.json(this.setupStateView(state)); return; }
-    this.saveSetupState({ ...state, choice: { branch, memoryBilling, chosenAt: new Date().toISOString() } }, res);
+    this.saveSetupState({ ...state, choice: { branch, memoryBilling, ...(offer ? { cloudSyncOffer: offer } : {}), chosenAt: new Date().toISOString() } }, res);
   };
 
   private saveInstallerStage = (req: Request, res: Response): void => {

@@ -69,6 +69,13 @@ describe('displayTime', () => {
     expect(displayTime(date.toISOString())).toBe('3 nov., 15:45');
     expect(displayTime(date.toISOString())).toBe(clockTime(date.toISOString())!.short);
   });
+
+  it('shows Brazilian Portuguese day labels and a 24-hour clock in My Work', () => {
+    setLocale('pt-BR');
+    expect(displayTime('Today 3:45 pm')).toBe('Hoje 15:45');
+    expect(displayTime('Yesterday 9:05am')).toBe('Ontem 09:05');
+    expect(displayTime('Nov 3, 3:45 pm')).toBe('3 de nov., às 15:45');
+  });
 });
 
 // G9 and plan rule 9: a recorded instant reads in the person's own clock, short, with the full stamp for its tooltip.

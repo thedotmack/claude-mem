@@ -12,11 +12,13 @@ import {
 } from '../../../src/shared/session-start-card-slot.js';
 import { TEAMBRAIN_DISCOVERY_LINE, TEAMBRAIN_DISCOVERY_NOTICE_MARKER } from '../../../src/shared/teambrain.js';
 import { paths } from '../../../src/shared/paths.js';
+import { serverSessionStartBudgetMs } from '../../../src/shared/host-hook-limits.js';
 import {
   contextCacheKeys,
   removeContextCache,
   writeContextCache,
 } from '../../../src/shared/context-cache.js';
+import { runOwnedFixture } from '../../helpers/owned-fixture.js';
 import * as realHookSettings from '../../../src/shared/hook-settings.js';
 import * as realOauthToken from '../../../src/shared/oauth-token.js';
 import * as realProjectName from '../../../src/utils/project-name.js';
@@ -43,7 +45,9 @@ const calls: unknown[][] = [];
 let includeAllSources = false;
 let contextProjects = 'current';
 let excludedProjects = '';
-let projectCatalog: string[] | 'reject' = ['other-project', 'repo-project', 'third-project'];
+/** 'reject' throws a non-transport error; 'worker-down' answers as a worker that never became ready. */
+let projectCatalog: string[] | 'reject' | 'worker-down' = ['other-project', 'repo-project', 'third-project'];
+let checkoutPathsByProject: Record<string, string[]> | undefined = {};
 let showTerminalOutput = false;
 let workerUnreachable = false;
 let provider = 'claude';
@@ -56,6 +60,7 @@ let workerContext = 'context from worker';
 /** What the worker gives the model, when it differs from the terminal render (the `colors=true` request); null when the same. */
 let workerModelContext: string | null = null;
 const outageNoticeRequests: Array<string | undefined> = [];
+let workerUnreachableRecords = 0;
 let setupState: SetupStateFile = { ...realSetupState.INITIAL_SETUP_STATE };
 
 mock.module('../../../src/shared/setup-state.js', () => ({
@@ -91,15 +96,19 @@ mock.module('../../../src/utils/project-name.js', () => ({
 mock.module('../../../src/shared/worker-utils.js', () => ({
   executeWithWorkerFallback: async (...args: unknown[]) => {
     calls.push(args);
-    if (args[0] === '/api/projects') {
+    if (args[0] === '/api/projects' || args[0] === '/api/projects?includeCheckoutPaths=true') {
       if (projectCatalog === 'reject') throw new Error('catalog unavailable');
-      return { projects: projectCatalog };
+      if (projectCatalog === 'worker-down') return { continue: true, reason: 'worker_unreachable' };
+      return { projects: projectCatalog, checkoutPathsByProject, projectMerges: [] };
     }
     const isTerminalRender = typeof args[0] === 'string' && args[0].includes('colors=true');
     return workerModelContext !== null && !isTerminalRender ? workerModelContext : workerContext;
   },
   getWorkerPort: () => 37777,
-  isWorkerFallback: () => workerUnreachable,
+  isWorkerFallback: (result: unknown) => workerUnreachable
+    || (typeof result === 'object' && result !== null && (result as { reason?: unknown }).reason === 'worker_unreachable'),
+  isWorkerUnavailableError: realWorkerUtilsSnapshot.isWorkerUnavailableError,
+  recordWorkerUnreachable: async () => ++workerUnreachableRecords,
   consumeWorkerOutageNotice: async (sessionId: string | undefined) => {
     outageNoticeRequests.push(sessionId);
     return 'claude-mem worker unreachable for 3 consecutive hooks';
@@ -211,33 +220,6 @@ describe('contextHandler SessionStart path', () => {
       expect(catalogCall?.[3]).toMatchObject({ timeoutMs: 2_000 });
     });
 
-    it('serves cached all-project context when the catalog becomes unavailable', async () => {
-      const cachedBody = 'CACHED ALL-PROJECT CONTEXT';
-      const cacheKeys = contextCacheKeys(['cached-project', 'parent-project', 'repo-project'], 'claude', false);
-      const priorCatalog = projectCatalog;
-      writeContextCache(cacheKeys, cachedBody, Date.now());
-      try {
-        projectCatalog = ['cached-project'];
-        const online = await runAll('catalog-cache-online');
-        expect(online.hookSpecificOutput?.additionalContext).toContain(cachedBody);
-
-        projectCatalog = 'reject';
-        workerContext = '';
-        const offline = await runAll('catalog-cache-offline');
-        expect(offline.hookSpecificOutput?.additionalContext).toContain(cachedBody);
-        expect(calls.some(call => String(call[0]).startsWith('/api/context/inject'))).toBe(false);
-
-        excludedProjects = 'cached-project';
-        const afterExclusion = await runAll('catalog-cache-after-exclusion');
-        expect(afterExclusion.hookSpecificOutput?.additionalContext).not.toContain(cachedBody);
-        expect(injectedProjects()).toBe('parent-project,repo-project');
-      } finally {
-        excludedProjects = '';
-        projectCatalog = priorCatalog;
-        removeContextCache(cacheKeys);
-      }
-    });
-
     it('keeps the projects param stable whatever order the catalog returns', async () => {
       projectCatalog = ['zeta', 'alpha'];
       await runAll('catalog-order-1');
@@ -257,6 +239,62 @@ describe('contextHandler SessionStart path', () => {
       } finally { excludedProjects = ''; }
     });
 
+    it('skips the timeline when exclusions are configured and the catalog is incomplete or unavailable', async () => {
+      const { SESSION_START_TIMELINE_SKIP_NOTICES } = await import('../../../src/cli/handlers/context.js');
+      const cacheKeys = contextCacheKeys(['parent-project', 'repo-project'], 'claude', false);
+      writeContextCache(cacheKeys, 'UNVERIFIED CHECKOUT TIMELINE', Date.now());
+      checkoutPathsByProject = undefined;
+      excludedProjects = '/srv/work/private';
+      try {
+        const cases = [
+          { catalog: ['private', 'another-project'], skip: 'catalog-incomplete', outage: false },
+          { catalog: 'reject', skip: 'catalog-unavailable', outage: true },
+          { catalog: 'worker-down', skip: 'worker-unreachable', outage: true },
+        ] as const;
+        for (const { catalog, skip, outage } of cases) {
+          projectCatalog = Array.isArray(catalog) ? [...catalog] : catalog;
+          const recordsBefore = workerUnreachableRecords;
+          const outageRequestsBefore = outageNoticeRequests.length;
+          const result = await runAll(`unverified-checkout-${skip}`);
+          const additionalContext = result.hookSpecificOutput?.additionalContext ?? '';
+          expect(additionalContext).not.toContain('UNVERIFIED CHECKOUT TIMELINE');
+          expect(calls.some(call => String(call[0]).startsWith('/api/context/inject'))).toBe(false);
+          // Said out loud to the model and the user, never dropped silently.
+          expect(additionalContext).toContain(SESSION_START_TIMELINE_SKIP_NOTICES[skip]);
+          expect(result.systemMessage).toContain(SESSION_START_TIMELINE_SKIP_NOTICES[skip]);
+          // A worker that never became ready counts toward the outage notice, as the inject call would.
+          expect(workerUnreachableRecords - recordsBefore).toBe(skip === 'worker-unreachable' ? 1 : 0);
+          expect(outageNoticeRequests.slice(outageRequestsBefore)).toEqual(outage ? [`unverified-checkout-${skip}`] : []);
+          if (outage) expect(result.systemMessage).toContain('worker unreachable for 3 consecutive hooks');
+        }
+      } finally {
+        removeContextCache(cacheKeys);
+        excludedProjects = '';
+        checkoutPathsByProject = {};
+      }
+    });
+
+    it('skips both timeline renders when every checkout key reads an excluded directory', async () => {
+      excludedProjects = '/srv/work/private';
+      projectCatalog = ['PARENT-project', 'repo-project'];
+      checkoutPathsByProject = { 'PARENT-project': [excludedProjects], 'repo-project': [excludedProjects] };
+      showTerminalOutput = true;
+      try {
+        await runAll('excluded-aliases');
+        expect(calls.some(call => String(call[0]).startsWith('/api/context/inject'))).toBe(false);
+      } finally { excludedProjects = ''; checkoutPathsByProject = {}; showTerminalOutput = false; }
+    });
+
+    it('renders only allowed observations from the worker checkout catalog', async () => {
+      await runOwnedFixture('tests/fixtures/session-start-project-exclusions.ts', {
+        prefix: 'session-start-exclusions-',
+        env: dataDir => ({
+          CLAUDE_CONFIG_DIR: path.join(dataDir, 'config'), CLAUDE_MEM_WORKER_AUTOSTART: 'false',
+          CLAUDE_MEM_RUNTIME: 'worker', DO_NOT_TRACK: '1',
+        }),
+      });
+    }, 10_000);
+
     it('does not ask the local catalog in server runtime', async () => {
       const { resolveSessionStartProjects } = await import('../../../src/cli/handlers/context.js');
       calls.length = 0;
@@ -265,7 +303,7 @@ describe('contextHandler SessionStart path', () => {
         ['parent-project', 'repo-project'],
         'server',
       );
-      expect(projects.live).toEqual(['parent-project', 'repo-project']);
+      expect(projects).toEqual({ projects: ['parent-project', 'repo-project'], timelineSkip: null });
       expect(calls.some(call => call[0] === '/api/projects')).toBe(false);
     });
   });
@@ -549,7 +587,10 @@ describe('contextHandler SessionStart path', () => {
       const result = await contextHandler.execute({ sessionId: 'codex-server-budget', cwd: process.cwd(), platform: 'codex' });
       expect(renderSpy).toHaveBeenCalledTimes(1);
       expect(renderSpy.mock.calls[0][0]).toBe(runtime);
-      expect(renderSpy.mock.calls[0][2]).toEqual({ withTerminalRender: false, timeoutMs: 15_000 });
+      expect(renderSpy.mock.calls[0][2]).toEqual({
+        withTerminalRender: false,
+        timeoutMs: serverSessionStartBudgetMs('codex'),
+      });
       expect(calls).toEqual([]);
       expect(result.hookSpecificOutput).toEqual({ hookEventName: 'SessionStart', additionalContext: '' });
     } finally {

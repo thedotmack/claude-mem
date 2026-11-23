@@ -46,7 +46,7 @@ if (originalOsDefault) {
 mock.module('os', () => scopedOs);
 mock.module('node:os', () => scopedOs);
 const keys = ['CLAUDE_MEM_DATA_DIR', 'CLAUDE_CONFIG_DIR', 'PI_CODING_AGENT_DIR', 'DSH_HOME', 'PATH', 'CLAUDE_MEM_SERVER_DATABASE_URL',
-  'CODEX_HOME', 'KIMI_CODE_HOME', 'OPENCODE_CONFIG_DIR'];
+  'CODEX_HOME', 'KIMI_CODE_HOME', 'OPENCODE_CONFIG_DIR', 'GROK_BOT_AGENT_DATA'];
 const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
 // Host directory overrides must use this fixture's isolated home too.
 delete process.env.CODEX_HOME;
@@ -64,6 +64,8 @@ process.env.CLAUDE_MEM_DATA_DIR = data;
 process.env.CLAUDE_CONFIG_DIR = join(fixture, 'claude');
 process.env.PI_CODING_AGENT_DIR = piDir;
 process.env.DSH_HOME = dshDir;
+// Grok Bot's agent-data lookup reads HOME, XDG_DATA_HOME and /home/box, not the scoped homedir(): name a missing folder.
+process.env.GROK_BOT_AGENT_DATA = join(fixture, 'grok-bot');
 process.env.PATH = bin + (process.platform === 'win32' ? ';' : ':') + (process.platform === 'win32' ? previous.PATH : '/usr/bin:/bin');
 process.env.CLAUDE_MEM_SERVER_DATABASE_URL = 'postgresql://owned-test.invalid/never-contacted';
 

@@ -2,6 +2,7 @@ import { afterAll, beforeAll, expect, it } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
+import { LOCALES } from '../../../src/ui/i18n/locale';
 import {
   REPOSITORY_ROOT, UNTHROTTLED_TIMER_FLAGS, chromeExecutablePath, compileBrowserFixture, connectToPage,
   failOnCiWithoutChrome, FITS_THE_WINDOW, htmlResponse, launchChrome, myWorkFontResponse, PAGE_WIDTHS, pageFitsTheWindow, scriptResponse, withTimeout,
@@ -507,10 +508,13 @@ async function tabTo(match: (focus: any) => boolean, what: string, limit = 12) {
     // left edge and cut the first letters of each name).
     const languages: { lang: string; left: number; right: number }[] = await page!.evaluate(`[...document.querySelectorAll('[role="menu"] [role="menuitemradio"][lang]')]
       .map((row) => { const box = row.getBoundingClientRect(); return { lang: row.getAttribute('lang'), left: Math.floor(box.left), right: Math.ceil(box.right) } })`);
-    expect(languages.map((language) => language.lang)).toEqual(['en', 'zh-CN', 'ko', 'tr', 'fr']);
+    expect(languages.map((language) => language.lang)).toEqual(LOCALES);
     expect(languages.filter((language) => language.left < 0 || language.right > 390)).toEqual([]);
-    await press('Escape');
+    await page!.evaluate(`document.querySelector('[role="menuitemradio"][lang="pt-BR"]').click()`);
     await waitFor('!window.menu()', 'the menu to close');
+    await waitFor(`document.documentElement.lang === 'pt-BR' && document.querySelector('nav[aria-label="Páginas"]')`, 'the navigation in Brazilian Portuguese');
+    await page!.evaluate("window.setLocale('en')");
+    await page!.settle();
     // The page ends above the pinned bottom bar.
     await page!.evaluate('window.scrollTo(0, document.documentElement.scrollHeight)');
     await page!.settle();
@@ -618,7 +622,7 @@ async function tabTo(match: (focus: any) => boolean, what: string, limit = 12) {
 (chromeExecutablePath ? it : it.skip)('"All N" and the menu\'s feedback row are named by their visible words in every language (label in name)', async () => {
   await openShell();
   try {
-    for (const locale of ['en', 'fr', 'ko', 'tr', 'zh-CN']) {
+    for (const locale of LOCALES) {
       await desktop();
       await page!.evaluate(`window.setLocale(${JSON.stringify(locale)})`);
       await page!.settle();

@@ -316,7 +316,7 @@ export class ProviderObservationGenerator {
             resent: retryable,
           });
         }
-        await markGenerationFailed({
+        const movedTo = await markGenerationFailed({
           pool: this.options.pool,
           job: fresh,
           expectedAttempt: fresh,
@@ -325,6 +325,10 @@ export class ProviderObservationGenerator {
           retryable,
           ...(this.options.workerId !== undefined ? { workerId: this.options.workerId } : {}),
         });
+        // BullMQ redelivers a job that throws while it has attempts left. Once
+        // the row is `failed` that delivery finds it terminal in lockOutbox and
+        // returns normally, so BullMQ records the failed job as completed.
+        if (movedTo === 'failed') job.discard();
       }
       throw error;
     }

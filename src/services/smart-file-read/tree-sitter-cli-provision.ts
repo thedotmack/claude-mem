@@ -11,7 +11,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, renameSync, rmSync, s
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { treeSitterBinaryName } from "./tree-sitter-bin-name.js";
-import { isExecutableFile } from "./tree-sitter-bin-path.js";
+import { hasIndependentTreeSitterOnPath, isExecutableFile } from "./tree-sitter-bin-path.js";
 import {
   glibcCompatibleTreeSitterBuild,
   pinnedTreeSitterExecutableSha256,
@@ -133,6 +133,14 @@ function sha256OfBytes(bytes: Buffer): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
+function treeSitterCliPackageVersion(cliDir: string): string | undefined {
+  try {
+    return String((JSON.parse(readFileSync(join(cliDir, "package.json"), "utf-8")) as { version?: unknown }).version);
+  } catch {
+    return undefined;
+  }
+}
+
 /** Where a glibc-compatible build comes from; tests replace both. */
 export interface GlibcCompatibleFallback {
   buildFor: (version: string) => GlibcCompatibleTreeSitterBuild | undefined;
@@ -252,7 +260,8 @@ export type TreeSitterCliBinarySource = "already-usable" | "release" | "glibc-co
  * install.js error is thrown with the direct download's reason appended.
  *
  * `pinnedSha256ForVersion`, `glibcFallback` and `downloadReleaseAsset` exist
- * for tests; callers pass none.
+ * for tests. The installer also accepts an independent PATH CLI before
+ * downloading a replacement.
  */
 export async function ensureTreeSitterCliBinary(
   pluginRoot: string,
@@ -260,14 +269,45 @@ export async function ensureTreeSitterCliBinary(
   pinnedSha256ForVersion: (version: string) => string | undefined = pinnedTreeSitterExecutableSha256,
   glibcFallback: GlibcCompatibleFallback = CONDA_FORGE_FALLBACK,
   downloadReleaseAsset: TreeSitterReleaseAssetDownload = downloadArchive,
+  allowPathFallback = false,
 ): Promise<TreeSitterCliBinarySource> {
   const cliDir = treeSitterCliPackageDir(pluginRoot);
   if (existsSync(cliDir) && !statSync(cliDir).isDirectory()) {
     throw new Error(`tree-sitter-cli package path is not a directory: ${cliDir}`);
   }
   const existingBinaryPath = treeSitterCliBinaryPath(pluginRoot);
-  const existingProbe = await answersTreeSitterVersion(existingBinaryPath);
-  if (existingProbe.usable) return "already-usable";
+  let intactProbe: TreeSitterCliVersionProbe | undefined;
+  let needsVerifiedReplacement = false;
+
+  // An existing executable is hashed before it is run: a replaced or stale
+  // binary must never execute, not even for the --version probe (#6404). A
+  // binary with no pinned digest is treated as unverified, not as usable.
+  if (existsSync(existingBinaryPath)) {
+    const existingVersion = treeSitterCliPackageVersion(cliDir);
+    const existingPin = existingVersion === undefined ? undefined : pinnedSha256ForVersion(existingVersion);
+    const fallbackPin = existingVersion === undefined ? undefined : glibcFallback.buildFor(existingVersion)?.executableSha256;
+    let existingSha256 = "(unreadable)";
+    try {
+      existingSha256 = sha256OfFile(existingBinaryPath);
+    } catch {
+      // Fall through to the download; it cannot make things worse.
+    }
+    const matchesRelease = existingSha256 === existingPin;
+    const isPinned = matchesRelease || existingSha256 === fallbackPin;
+    // The runtime prefers the package binary; PATH must not leave an
+    // unverified executable in place for it to run.
+    needsVerifiedReplacement = !isPinned;
+    if (isPinned && isExecutableFile(existingBinaryPath)) {
+      const probe = await answersTreeSitterVersion(existingBinaryPath);
+      if (probe.usable) return "already-usable";
+      // Only a failed release executable rules out reinstalling the release.
+      if (matchesRelease) intactProbe = probe;
+    }
+  }
+
+  if (allowPathFallback && !needsVerifiedReplacement && hasIndependentTreeSitterOnPath(cliDir, process.env.PATH ?? "")) {
+    return "already-usable";
+  }
 
   const installScript = join(cliDir, "install.js");
   if (!existsSync(installScript)) {
@@ -307,20 +347,12 @@ export async function ensureTreeSitterCliBinary(
   // instead of burning a download on every worker start. A corrupt or stale
   // binary (SHA mismatch) still falls through to the download below, as does
   // a binary that merely lost its executable bit: the download restores 755.
-  if (existsSync(existingBinaryPath)) {
-    let existingSha256 = "(unreadable)";
-    try {
-      existingSha256 = sha256OfFile(existingBinaryPath);
-    } catch {
-      // Fall through to the download; it cannot make things worse.
-    }
-    if (existingSha256 === pinnedSha256 && isExecutableFile(existingBinaryPath)) {
-      return await useGlibcCompatibleBuildOrThrow(existingProbe, new Error(
-        `The tree-sitter ${version} executable at ${existingBinaryPath} is intact (SHA-256 matches the pinned value) `
-        + `but ${TREE_SITTER_CLI_CANNOT_RUN}${existingProbe.reason ? `: ${existingProbe.reason}` : ""}. `
-        + "smart_search, smart_outline and smart_unfold cannot parse here, and the File Read Gate stays off.",
-      ));
-    }
+  if (intactProbe !== undefined) {
+    return await useGlibcCompatibleBuildOrThrow(intactProbe, new Error(
+      `The tree-sitter ${version} executable at ${existingBinaryPath} is intact (SHA-256 matches the pinned value) `
+      + `but ${TREE_SITTER_CLI_CANNOT_RUN}${intactProbe.reason ? `: ${intactProbe.reason}` : ""}. `
+      + "smart_search, smart_outline and smart_unfold cannot parse here, and the File Read Gate stays off.",
+    ));
   }
 
   // Inside the package, so the final rename stays on one filesystem.

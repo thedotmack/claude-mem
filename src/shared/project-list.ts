@@ -1,3 +1,9 @@
+/** Extra identities the worker catalog supplies for all-project SessionStart exclusions. */
+export interface ProjectExclusionCatalog {
+  checkoutPathsByProject: Record<string, string[]>;
+  projectMerges: Array<{ source: string; target: string }>;
+}
+
 /**
  * Project keys travel as a list, and as text in a query string. A checkout's
  * key can carry commas and outer whitespace (`topic ` is not `topic`), but a

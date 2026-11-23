@@ -354,6 +354,13 @@
 .card-gets { display: grid; gap: 6px; margin-top: 14px; color: var(--ink); font-size: 16px; line-height: 1.35; text-align: left; }
 .card-gets > span { display: flex; align-items: flex-start; gap: 10px; }
 .card-gets svg { flex: none; width: 18px; height: 18px; margin-top: 1px; color: var(--violet); }
+.cloud-sync-offers { max-width: 1068px; min-width: 0; margin: 22px auto 0; padding: 14px 18px; border: 1px solid var(--line); border-radius: 16px; text-align: left; }
+.cloud-sync-offers legend { padding: 0 6px; font-size: 18px; font-weight: 600; }
+.cloud-sync-offer { display: flex; gap: 12px; align-items: center; min-height: 44px; padding: 8px; border-radius: 8px; cursor: pointer; font-size: 16px; line-height: 1.4; }
+.cloud-sync-offer:has(input:checked) { background: var(--tint); }
+.cloud-sync-offer:has(input:focus-visible) { outline: 3px solid var(--focus); outline-offset: 2px; }
+.cloud-sync-offer input { flex: none; width: 18px; height: 18px; accent-color: var(--violet); }
+.cloud-sync-offers p { margin: 8px; color: var(--muted); font-size: 15px; line-height: 1.5; }
 
 /* Token Savings result (PROTO #route-savings-result): title, then its evidence (E6). */
 .setup-main.step-savings { width: min(880px, calc(100% - 64px)); }

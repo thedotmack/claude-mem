@@ -10,7 +10,8 @@ import {
 } from '../../../src/storage/postgres/index.js';
 import { ProviderObservationGenerator } from '../../../src/server/generation/ProviderObservationGenerator.js';
 import type { ServerGenerationProvider } from '../../../src/server/generation/providers/shared/types.js';
-import type { Job } from 'bullmq';
+import { ServerClassifiedProviderError } from '../../../src/server/generation/providers/shared/error-classification.js';
+import { Job } from 'bullmq';
 import type { GenerateObservationsForEventJob } from '../../../src/server/jobs/types.js';
 import { createIsolatedSchema, poolForSchema, quoteIdentifier } from '../../sdk/pg-isolation.js';
 import { ModeManager } from '../../../src/services/domain/ModeManager.js';
@@ -107,6 +108,58 @@ describe('ProviderObservationGenerator', () => {
       },
     } as unknown as Job<GenerateObservationsForEventJob>;
   }
+
+  // A real BullMQ Job with no Redis behind it, carrying the attempts and
+  // backoff ServerJobQueue.add sends, so a test can ask BullMQ's own retry
+  // decision whether the job would be delivered again.
+  function makeBullmqJob(): Job<GenerateObservationsForEventJob> {
+    const queue = { opts: {}, keys: {}, toKey: (type: string) => type };
+    return new Job(queue as never, 'server_beta_generate_event', makeJob().data, {
+      attempts: 3,
+      backoff: { type: 'exponential', delay: 5000 },
+    }, 'bull-1');
+  }
+
+  function bullmqRetryDecision(job: Job, error: unknown): Promise<[boolean, number]> {
+    return (job as unknown as { shouldRetryJob(err: unknown): Promise<[boolean, number]> }).shouldRetryJob(error);
+  }
+
+  async function failWith(providerError: ServerClassifiedProviderError) {
+    const generator = new ProviderObservationGenerator({
+      pool: pool as unknown as ConstructorParameters<typeof ProviderObservationGenerator>[0]['pool'],
+      provider: new StubProvider(providerError),
+    });
+    const job = makeBullmqJob();
+    const rejection = await generator.process(job).then(() => null, (error: unknown) => error);
+    const reloaded = await storage.observationGenerationJobs.getByIdForScope({ id: jobId, projectId, teamId });
+    return { rejection, status: reloaded?.status, retry: await bullmqRetryDecision(job, rejection) };
+  }
+
+  it('keeps BullMQ from redelivering a job whose provider error left the row failed', async () => {
+    const authError = new ServerClassifiedProviderError('openrouter auth error (status 401)', {
+      kind: 'auth_invalid',
+      cause: null,
+    });
+    const result = await failWith(authError);
+
+    expect(result.rejection).toBe(authError);
+    expect(result.status).toBe('failed');
+    // Redelivered, the job finds its row terminal and returns normally, which
+    // BullMQ records as a completed job.
+    expect(result.retry).toEqual([false, 0]);
+  });
+
+  it('leaves a job whose row went back to queued to the BullMQ backoff', async () => {
+    const rateLimit = new ServerClassifiedProviderError('openrouter rate limit (429)', {
+      kind: 'rate_limit',
+      cause: null,
+    });
+    const result = await failWith(rateLimit);
+
+    expect(result.rejection).toBe(rateLimit);
+    expect(result.status).toBe('queued');
+    expect(result.retry).toEqual([true, 5000]);
+  });
 
   it('fails fast with an UnrecoverableError when provider returns an empty response', async () => {
     const provider = new StubProvider('');

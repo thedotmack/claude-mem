@@ -5,8 +5,8 @@
 // plugin root, so the hook's answer matches what the parser will find.
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
-import { accessSync, constants, existsSync, statSync } from "node:fs";
-import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
+import { accessSync, constants, existsSync, realpathSync, statSync } from "node:fs";
+import { delimiter, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { treeSitterBinaryName } from "./tree-sitter-bin-name.js";
 
 const _require = typeof __filename !== 'undefined'
@@ -188,6 +188,19 @@ function probeTreeSitterCliLoadable(absoluteBinPath: string): TreeSitterCliLoadC
         + (detail ? `: ${detail}` : ""),
     };
   }
+}
+
+/** Probe only an independent PATH installation, not the package or its shims. */
+export function hasIndependentTreeSitterOnPath(packageDir: string, searchPath: string): boolean {
+  const candidate = resolveOnPath(treeSitterBinaryName(), searchPath);
+  if (candidate === undefined) return false;
+  const target = realpathSync(candidate);
+  const shimDir = join(dirname(packageDir), ".bin");
+  for (const dir of [packageDir, shimDir]) {
+    if (candidate.startsWith(resolve(dir) + sep)) return false;
+    if (existsSync(dir) && target.startsWith(realpathSync(dir) + sep)) return false;
+  }
+  return loadCheckFor(candidate).loadable;
 }
 
 function resolveOnPath(binName: string, searchPath: string): string | undefined {
