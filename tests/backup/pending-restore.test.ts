@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import { applyPendingRestore } from '../../src/services/backup/restore-swap.js';
 import { readLastRestoreResult, resolveSnapshotInside, stagePendingRestore } from '../../src/services/backup/snapshot-files.js';
 import { paths } from '../../src/shared/paths.js';
@@ -47,8 +47,10 @@ function setup(): { dbPath: string; backupsDir: string; snapshotName: string } {
 
 describe('resolveSnapshotInside', () => {
   it('accepts a snapshot name inside the backups dir', () => {
+    // resolveSnapshotInside returns path.resolve(...), which gains a drive
+    // letter on Windows; join() alone would stay drive-relative and fail there.
     expect(resolveSnapshotInside('/data/backups/auto', 'claude-mem-2026-10-01T00-00-00-000Z.db'))
-      .toBe(join('/data/backups/auto', 'claude-mem-2026-10-01T00-00-00-000Z.db'));
+      .toBe(resolve('/data/backups/auto', 'claude-mem-2026-10-01T00-00-00-000Z.db'));
   });
 
   it('rejects traversal, absolute paths, nested paths and non-snapshot names', () => {
