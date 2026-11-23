@@ -5,7 +5,7 @@ import { toSetupUsage, type SetupScanUsage, type SetupUsage } from './setup-usag
 import { revealFromSnapshot, type SnapshotWithSetup, type WorkerExtraction } from './setup-reveal'
 import { noteFor, searchUrl, toMemoryResults, type MemoryResult, type WorkerSearchResult } from './setup-search'
 import { applySseFrame } from '../live/parse-sse-frame'
-import { HISTORY_IMPORT_RUN_STATES, INTENT_MAX_UPLOAD_BYTES, type HistoryImportRunState, type SetupBranch, type SetupCheckoutState, type SetupEvent, type SetupMemoryBilling, type SetupScanPhase, type SetupStatus } from '../../../../shared/setup-funnel.ts'
+import { HISTORY_IMPORT_RUN_STATES, INTENT_MAX_UPLOAD_BYTES, type HistoryImportRunState, type SetupBranch, type SetupCheckoutState, type SetupCloudSyncOffer, type SetupEvent, type SetupMemoryBilling, type SetupScanPhase, type SetupStatus } from '../../../../shared/setup-funnel.ts'
 import { hasPendingInstallSetup, type SetupInstallSelection, type SetupInstallState } from '../../../../shared/setup-install.ts'
 
 /** Mirrors the worker's SetupScanState (src/services/prompt-import/setup-scan.ts), trimmed to what the screen shows. */
@@ -125,7 +125,7 @@ export interface SetupData {
 }
 
 /** What the page posts when it leaves Token Savings: where memory lives, and who generates it. */
-export interface SetupChoice { branch: SetupBranch; memoryBilling: SetupMemoryBilling }
+export interface SetupChoice { branch: SetupBranch; memoryBilling: SetupMemoryBilling; cloudSyncOffer?: SetupCloudSyncOffer }
 
 export interface SetupSource {
   readonly kind: 'local' | 'sample'

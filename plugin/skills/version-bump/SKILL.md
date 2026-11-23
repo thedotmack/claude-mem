@@ -50,12 +50,27 @@ If either check fails, stop and tell the user this skill does not apply here.
 
     Verify coverage before editing: `git grep -l "\"version\": \"<OLD>\""` should list the fifteen JSON files above, and `git grep -n "version-<OLD>-green"` the README badge. If a new manifest has been added since this doc was last updated, update this list.
 
+## GitHub release request
+
+After the reviewed release commit reaches `main`, the repository owner can
+perform the tagging, GitHub release and npm publication steps through GitHub.
+Put the release notes under `## [Unreleased]` in `docs/CHANGELOG.md` before
+merging. Create the branch `release/publish/vX.Y.Z` at that exact main commit.
+The request workflow creates the annotated tag, publishes those notes, and
+starts `npm-publish.yml` on the tag. A retry verifies the existing tag and
+reports any publisher run already in progress or awaiting recovery.
+
+Watch the tagged publisher, verify the exact version, latest and provenance,
+then regenerate the changelog and promote the verified version as described
+below. Keep the request branch until its workflow has completed.
+
 ## Workflow
 
 1.  **Update**: Increment the version string in every path above. Published entries in `docs/CHANGELOG.md` are regenerated; only move pending Unreleased notes as described above.
 2.  **Verify**: `git grep -n "\"version\": \"<NEW>\""` — confirm all fifteen JSON files match, and the README badge reads `version-<NEW>-green`. `git grep -n "\"version\": \"<OLD>\""` — should return zero hits.
 3.  **Build and sync**: `npm run build-and-sync` to regenerate artifacts, sync the local marketplace copy, restart the worker, and clear the queue. Do not use plain `npm run build` for release validation because it can leave the local marketplace/worker out of sync.
 4.  **Commit**: `git add -A && git commit -m "chore: bump version to X.Y.Z"`.
+    For a release PR prepared through the GitHub API, let GitHub transfer the generated files with native Git. Commit the source changes and version manifests to the PR, and record that source commit SHA. Create `release-bundles/<source-sha>` at its first parent in this repository, then advance that build branch to the source SHA. Wait for **Prepare release bundles** to succeed. Its branch tip is either the source itself (already built), or a commit whose sole parent is the source. Verify that parent and fast-forward the original PR only while it still points to the recorded source. Use the connected GitHub account for this update so the ordinary PR workflows run on the prepared head. If the PR moved, rebuild its new source. Merge after CI succeeds, then continue with the normal release tag.
 5.  **Tag**: `git tag -a vX.Y.Z -m "Version X.Y.Z"`.
 6.  **Push**: `git push origin main && git push origin vX.Y.Z`.
 7.  **GitHub release**: `gh release create vX.Y.Z --title "vX.Y.Z" --notes "RELEASE_NOTES"`.
