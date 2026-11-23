@@ -1,0 +1,100 @@
+name: Prepare release bundles
+
+on:
+  push:
+    branches: ['release-bundles/**']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prepare-release-bundles-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # Maintainers request a build by advancing this repository's build branch
+    # to the source SHA in its name. The workflow never checks out a fork.
+    if: github.repository == 'thedotmack/claude-mem' && !github.event.deleted && github.ref_name == format('release-bundles/{0}', github.sha)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - run: npm install --ignore-scripts --no-audit --no-fund
+      - run: npm run build
+      - run: bun test tests/infrastructure/version-consistency.test.ts tests/infrastructure/committed-plugin-bundles.test.ts
+      - name: Capture the generated files
+        run: |
+          git add -A
+          git diff --cached --binary --full-index --no-renames "$GITHUB_SHA" > "$RUNNER_TEMP/release-bundles.patch"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-bundles
+          path: ${{ runner.temp }}/release-bundles.patch
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+
+  attach:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-bundles
+          path: ${{ runner.temp }}/release-artifacts
+      # Apply to the index only. No build scripts or installed dependencies
+      # execute on this runner, which has the repository write credential.
+      - name: Attach the bundles to their source commit
+        run: |
+          git apply --cached --allow-empty --whitespace=nowarn "$RUNNER_TEMP/release-artifacts/release-bundles.patch"
+          outputs=(
+            .claude-plugin/{marketplace,plugin}.json .{codex,grok,qoder}-plugin/plugin.json
+            claude-mem-{cursor,grok-bot}/.cursor-plugin/plugin.json openclaw/openclaw.plugin.json dsh/package.json
+            plugin/.{claude,codex,devin,qoder}-plugin/plugin.json plugin/package.json plugin/bun.lock
+            plugin/scripts/{worker-service,hook-service,mcp-server,server-service,transcript-watcher}.cjs{,.map}
+            plugin/scripts/{claude-mem-launcher,ensure-launcher,context-generator,context-read-worker,work-view-read-worker}.cjs{,.map}
+            plugin/sqlite/{SessionStore,observations/files}.js{,.map} plugin/hooks/hooks-module.js
+            plugin/ui/{viewer-bundle.js,viewer.html} 'plugin/ui/work-view/**' 'plugin/ui/assets/fonts/*' 'plugin/ui/icon-thick-*.svg'
+            plugin/skills/how-it-works/onboarding-explainer.md plugin/skills/request-progress/scripts/request-groups.mjs
+          )
+          exclusions=()
+          for path in "${outputs[@]}"; do exclusions+=(":(exclude,glob)$path"); done
+          if ! git diff --cached --no-renames --quiet -- . "${exclusions[@]}"; then
+            echo 'The build changed files outside its distribution outputs.'
+            exit 1
+          fi
+          git diff --cached --no-renames --raw | awk '$2 == "120000" || $2 == "160000" { print "Build outputs must be regular files."; exit 1 }'
+
+          # A rerun may find its result already attached. An unrelated update
+          # or a deleted build branch must never be overwritten or recreated.
+          git fetch --depth=2 --no-tags origin "$GITHUB_REF"
+          remote=$(git rev-parse FETCH_HEAD)
+          if [[ $remote != "$GITHUB_SHA" ]]; then
+            test "$(git show -s --format=%P FETCH_HEAD)" = "$GITHUB_SHA"
+            test "$(git rev-parse 'FETCH_HEAD^{tree}')" = "$(git write-tree)"
+            prepared=$remote
+          elif git diff --cached --quiet; then
+            prepared=$GITHUB_SHA
+          else
+            git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              commit -m 'build: prepare release bundles'
+            prepared=$(git rev-parse HEAD)
+            # HEAD is a single new child of the checked-out SHA. The explicit
+            # lease makes the branch-existence and source-SHA check atomic.
+            git push --force-with-lease="$GITHUB_REF:$GITHUB_SHA" origin "HEAD:$GITHUB_REF"
+          fi
+          printf 'Prepared commit `%s` from `%s`.\n' "$prepared" "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
