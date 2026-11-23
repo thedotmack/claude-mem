@@ -7,6 +7,7 @@ import {
   autoUpdateCheck,
   bunRuntimeCheck,
   databaseFileCheck,
+  DATABASE_WAL_STEADY_STATE_BYTES,
   hookLauncherCheck,
   legacyAliasCheck,
   observerProviderCheck,
@@ -1213,6 +1214,11 @@ describe('npx doctor single /api/admin/doctor read', () => {
 });
 
 describe('databaseFileCheck', () => {
+  it('derives its steady-state WAL size from the worker journal_size_limit', async () => {
+    const { SQLITE_JOURNAL_SIZE_LIMIT_BYTES } = await import('../../src/services/sqlite/connection.js');
+    expect(DATABASE_WAL_STEADY_STATE_BYTES).toBe(SQLITE_JOURNAL_SIZE_LIMIT_BYTES);
+  });
+
   let root: string;
 
   beforeEach(() => {

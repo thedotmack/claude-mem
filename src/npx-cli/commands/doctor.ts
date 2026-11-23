@@ -1167,7 +1167,15 @@ export function observerProviderCheck(options: ObserverProviderCheckOptions): Ch
   };
 }
 
-const DATABASE_WAL_WARN_BYTES = 256 * 1024 * 1024;
+// Why 256 MiB: the worker sets journal_size_limit to 4 MiB
+// (SQLITE_JOURNAL_SIZE_LIMIT_BYTES in src/services/sqlite/connection.ts, not
+// imported here because it pulls in bun:sqlite and doctor runs under Node) and
+// keeps SQLite's default autocheckpoint of 1000 pages x 4 KiB. Measured
+// 2026-11-23 on a 6.1 GB database under daily use: the WAL sits at 4.0 MiB.
+// 64x that steady state leaves room for one large transaction (an import, a
+// migration) and still flags checkpoints that have stopped completing.
+export const DATABASE_WAL_STEADY_STATE_BYTES = 4 * 1024 * 1024;
+const DATABASE_WAL_WARN_BYTES = 64 * DATABASE_WAL_STEADY_STATE_BYTES;
 
 function readableBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
