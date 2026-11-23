@@ -657,7 +657,7 @@ export class DataRoutes extends BaseRouteHandler {
       return;
     }
 
-    res.json(store.getProjectCatalog());
+    res.json(store.getProjectCatalog(req.query.includeCheckoutPaths === 'true'));
   });
 
   private handleGetSessions = this.wrapHandler((req: Request, res: Response): void => {
