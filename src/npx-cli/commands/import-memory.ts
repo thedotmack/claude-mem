@@ -268,7 +268,7 @@ export function planImport(rows: Row[], options: ImportOptions, now = Date.now()
     if (ids.has(id)) throw new Error('Duplicate source record ID.'); ids.add(id);
     if (options.provider === 'mem0') {
       if (row.user_id !== undefined && row.user_id !== null && row.user_id !== options.scope) throw new Error('Mem0 returned a different user.');
-      if (row.lifecycle_state !== undefined && !['active', 'merged', 'superseded'].includes(row.lifecycle_state as string)) throw new Error('Unrecognized Mem0 lifecycle state.');
+      if (row.lifecycle_state != null && !['active', 'merged', 'superseded'].includes(row.lifecycle_state as string)) throw new Error('Unrecognized Mem0 lifecycle state.');
       if (row.replaced_by || row.replacement_memory_id || ['merged', 'superseded'].includes(row.lifecycle_state as string)) { skipped++; continue; }
       const hasExpirationDate = row.expiration_date !== undefined && row.expiration_date !== null;
       const hiddenFrom = hasExpirationDate ? mem0HiddenFrom(row.expiration_date) : null;
