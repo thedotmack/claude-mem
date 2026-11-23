@@ -85,7 +85,7 @@ class Vendor(BaseHTTPRequestHandler):
             assert body == {'filters': {'user_id': 'fixture-user'}, 'show_expired': False}
             user = 'wrong-user' if mode == 'wrong-user' else 'fixture-user'
             row = dict(id='m1', memory='Mem0 imported synthetic saffron lighthouse.', user_id=user,
-                       created_at='2026-01-01T00:00:00Z', metadata={'original': True})
+                       created_at='2026-01-01T00:00:00Z', lifecycle_state=None, metadata={'original': True})
             value = {'count': 3, 'next': None, 'previous': None, 'results': [row,
                      dict(row, id='m2', expiration_date='2020-01-01'), dict(row, id='m3', replaced_by='m1')]}
         elif parsed.path.endswith('/list/documents'):

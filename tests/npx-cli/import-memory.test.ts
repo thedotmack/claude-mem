@@ -63,6 +63,28 @@ const supermemoryArgs = ['--from', 'supermemory', '--source-account', 'fixture-a
 const mem0Page = (...rows: unknown[]) => () => ({ count: rows.length, next: null, results: rows });
 
 describe('provider import contracts', () => {
+  test('nullable Mem0 lifecycle imports and preserves original provenance', () => {
+    const source = { ...row(), lifecycle_state: null };
+    const plan = planImport([source], mem0);
+    expect(plan.notes).toHaveLength(1);
+    expect(plan.skipped).toBe(0);
+    expect((plan.notes[0].metadata.importSource as { record: unknown }).record).toEqual(source);
+    expect(source.lifecycle_state).toBeNull();
+  });
+  test('nullable lifecycle still skips replaced and expired memories', () => {
+    const plan = planImport([
+      { ...row('replaced-null'), lifecycle_state: null, replaced_by: 'replacement' },
+      { ...row('expired-null'), lifecycle_state: null, expiration_date: '2020-01-01' },
+    ], mem0);
+    expect(plan.notes).toHaveLength(0);
+    expect(plan.skipped).toBe(2);
+  });
+  test('nullable lifecycle exception does not accept other invalid values', () => {
+    for (const lifecycle_state of ['', false, 0, {}, []]) {
+      expect(() => planImport([{ ...row(), lifecycle_state }], mem0)).toThrow('lifecycle');
+    }
+  });
+
   test('Mem0 uses a scoped read POST, sequential pages and no supplied next URL', async () => {
     const requests: Array<{ url: string; init?: RequestInit }> = [];
     const responses = [{ count: 2, next: 'https://other.invalid/steal', previous: null, results: [row()] }, { count: 2, next: null, previous: 'ignored', results: [row('m2')] }];
