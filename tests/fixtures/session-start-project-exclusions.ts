@@ -60,10 +60,11 @@ try {
   const address = server.address();
   assert.ok(address && typeof address !== 'string');
   process.env.CLAUDE_MEM_WORKER_URL = `http://127.0.0.1:${address.port}`;
-  const projects = await resolveSessionStartProjects({
+  const { projects, timelineSkip } = await resolveSessionStartProjects({
     CLAUDE_MEM_CONTEXT_PROJECTS: 'all', CLAUDE_MEM_EXCLUDED_PROJECTS: `${excludedPath},ignore-*`,
   }, ['combined', 'current'], 'worker');
   assert.deepEqual(projects, ['__proto__', 'legacy', 'current']);
+  assert.equal(timelineSkip, null);
 
   ModeManager.getInstance().loadMode('code');
   const { text, stats } = await generateContextWithStats({ projects, includePriorMessage: false });

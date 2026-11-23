@@ -44,7 +44,8 @@ const calls: unknown[][] = [];
 let includeAllSources = false;
 let contextProjects = 'current';
 let excludedProjects = '';
-let projectCatalog: string[] | 'reject' = ['other-project', 'repo-project', 'third-project'];
+/** 'reject' throws a non-transport error; 'worker-down' answers as a worker that never became ready. */
+let projectCatalog: string[] | 'reject' | 'worker-down' = ['other-project', 'repo-project', 'third-project'];
 let checkoutPathsByProject: Record<string, string[]> | undefined = {};
 let showTerminalOutput = false;
 let workerUnreachable = false;
@@ -58,6 +59,7 @@ let workerContext = 'context from worker';
 /** What the worker gives the model, when it differs from the terminal render (the `colors=true` request); null when the same. */
 let workerModelContext: string | null = null;
 const outageNoticeRequests: Array<string | undefined> = [];
+let workerUnreachableRecords = 0;
 let setupState: SetupStateFile = { ...realSetupState.INITIAL_SETUP_STATE };
 
 mock.module('../../../src/shared/setup-state.js', () => ({
@@ -95,13 +97,17 @@ mock.module('../../../src/shared/worker-utils.js', () => ({
     calls.push(args);
     if (args[0] === '/api/projects' || args[0] === '/api/projects?includeCheckoutPaths=true') {
       if (projectCatalog === 'reject') throw new Error('catalog unavailable');
+      if (projectCatalog === 'worker-down') return { continue: true, reason: 'worker_unreachable' };
       return { projects: projectCatalog, checkoutPathsByProject, projectMerges: [] };
     }
     const isTerminalRender = typeof args[0] === 'string' && args[0].includes('colors=true');
     return workerModelContext !== null && !isTerminalRender ? workerModelContext : workerContext;
   },
   getWorkerPort: () => 37777,
-  isWorkerFallback: () => workerUnreachable,
+  isWorkerFallback: (result: unknown) => workerUnreachable
+    || (typeof result === 'object' && result !== null && (result as { reason?: unknown }).reason === 'worker_unreachable'),
+  isWorkerUnavailableError: realWorkerUtilsSnapshot.isWorkerUnavailableError,
+  recordWorkerUnreachable: async () => ++workerUnreachableRecords,
   consumeWorkerOutageNotice: async (sessionId: string | undefined) => {
     outageNoticeRequests.push(sessionId);
     return 'claude-mem worker unreachable for 3 consecutive hooks';
@@ -233,17 +239,32 @@ describe('contextHandler SessionStart path', () => {
     });
 
     it('skips the timeline when exclusions are configured and the catalog is incomplete or unavailable', async () => {
+      const { SESSION_START_TIMELINE_SKIP_NOTICES } = await import('../../../src/cli/handlers/context.js');
       const cacheKeys = contextCacheKeys(['parent-project', 'repo-project'], 'claude', false);
       writeContextCache(cacheKeys, 'UNVERIFIED CHECKOUT TIMELINE', Date.now());
       checkoutPathsByProject = undefined;
       excludedProjects = '/srv/work/private';
       try {
-        const catalogs: Array<typeof projectCatalog> = [['private', 'another-project'], 'reject'];
-        for (const catalog of catalogs) {
-          projectCatalog = catalog;
-          const result = await runAll('unverified-checkout');
-          expect(result.hookSpecificOutput?.additionalContext).not.toContain('UNVERIFIED CHECKOUT TIMELINE');
+        const cases = [
+          { catalog: ['private', 'another-project'], skip: 'catalog-incomplete', outage: false },
+          { catalog: 'reject', skip: 'catalog-unavailable', outage: true },
+          { catalog: 'worker-down', skip: 'worker-unreachable', outage: true },
+        ] as const;
+        for (const { catalog, skip, outage } of cases) {
+          projectCatalog = Array.isArray(catalog) ? [...catalog] : catalog;
+          const recordsBefore = workerUnreachableRecords;
+          const outageRequestsBefore = outageNoticeRequests.length;
+          const result = await runAll(`unverified-checkout-${skip}`);
+          const additionalContext = result.hookSpecificOutput?.additionalContext ?? '';
+          expect(additionalContext).not.toContain('UNVERIFIED CHECKOUT TIMELINE');
           expect(calls.some(call => String(call[0]).startsWith('/api/context/inject'))).toBe(false);
+          // Said out loud to the model and the user, never dropped silently.
+          expect(additionalContext).toContain(SESSION_START_TIMELINE_SKIP_NOTICES[skip]);
+          expect(result.systemMessage).toContain(SESSION_START_TIMELINE_SKIP_NOTICES[skip]);
+          // A worker that never became ready counts toward the outage notice, as the inject call would.
+          expect(workerUnreachableRecords - recordsBefore).toBe(skip === 'worker-unreachable' ? 1 : 0);
+          expect(outageNoticeRequests.slice(outageRequestsBefore)).toEqual(outage ? [`unverified-checkout-${skip}`] : []);
+          if (outage) expect(result.systemMessage).toContain('worker unreachable for 3 consecutive hooks');
         }
       } finally {
         removeContextCache(cacheKeys);
@@ -281,7 +302,7 @@ describe('contextHandler SessionStart path', () => {
         ['parent-project', 'repo-project'],
         'server',
       );
-      expect(projects).toEqual(['parent-project', 'repo-project']);
+      expect(projects).toEqual({ projects: ['parent-project', 'repo-project'], timelineSkip: null });
       expect(calls.some(call => call[0] === '/api/projects')).toBe(false);
     });
   });

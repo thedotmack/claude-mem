@@ -335,52 +335,90 @@ function excludedSessionStartProjects(
 }
 
 /**
+ * Why SessionStart skipped the timeline with exclusions configured: the worker
+ * could not be reached, answered without a catalog (5xx, autostart off), or
+ * answered with one that lacks checkout paths (an older worker). Written only
+ * by resolveSessionStartProjects; the handler words it for the model and user.
+ */
+export type SessionStartTimelineSkip = 'worker-unreachable' | 'catalog-unavailable' | 'catalog-incomplete';
+
+export interface SessionStartProjectScope {
+  projects: string[];
+  timelineSkip: SessionStartTimelineSkip | null;
+}
+
+export const SESSION_START_TIMELINE_SKIP_NOTICES: Record<SessionStartTimelineSkip, string> = {
+  'worker-unreachable': '[claude-mem] Recent context skipped: excluded projects could not be checked (worker not ready).',
+  'catalog-unavailable': '[claude-mem] Recent context skipped: excluded projects could not be checked (the worker did not return its project list).',
+  'catalog-incomplete': '[claude-mem] Recent context skipped: excluded projects could not be checked (the worker is out of date; run `npx claude-mem restart`).',
+};
+
+/**
  * The projects SessionStart reads. By default only this checkout's keys.
  * With CLAUDE_MEM_CONTEXT_PROJECTS=all, every project in the local catalog
  * (minus excluded ones), sorted so the context cache keys stay stable, with
  * this checkout's keys last because the last key titles the rendered block.
  * Without exclusions a catalog failure falls back to this checkout. With
  * exclusions even this checkout might read a merged source, so skip the
- * timeline if the worker cannot supply the catalog. Server mode always
- * requests only the current checkout's keys.
+ * timeline if the worker cannot supply the catalog, and say why in
+ * `timelineSkip`. Server mode always requests only the current checkout's keys.
  */
 export async function resolveSessionStartProjects(
   settings: { CLAUDE_MEM_CONTEXT_PROJECTS?: string; CLAUDE_MEM_EXCLUDED_PROJECTS?: string },
   checkoutProjects: string[],
   runtime: 'worker' | 'server',
-): Promise<string[]> {
-  if (settings.CLAUDE_MEM_CONTEXT_PROJECTS !== 'all') return checkoutProjects;
+): Promise<SessionStartProjectScope> {
+  const scope = (projects: string[]): SessionStartProjectScope => ({ projects, timelineSkip: null });
+  if (settings.CLAUDE_MEM_CONTEXT_PROJECTS !== 'all') return scope(checkoutProjects);
   if (runtime === 'server') {
     logger.debug('HOOK', 'CLAUDE_MEM_CONTEXT_PROJECTS=all is not supported in server runtime');
-    return checkoutProjects;
+    return scope(checkoutProjects);
   }
   const excludedPatterns = settings.CLAUDE_MEM_EXCLUDED_PROJECTS?.trim();
-  const fallback = excludedPatterns ? [] : checkoutProjects;
+  const fallback = (timelineSkip: SessionStartTimelineSkip, detail: Record<string, unknown>): SessionStartProjectScope => {
+    if (!excludedPatterns) {
+      logger.debug('HOOK', 'Project catalog unavailable; SessionStart reads this checkout only', detail);
+      return scope(checkoutProjects);
+    }
+    logger.warn('HOOK', 'SessionStart timeline skipped: excluded projects could not be checked', { timelineSkip, ...detail });
+    return { projects: [], timelineSkip };
+  };
   try {
     const url = excludedPatterns ? '/api/projects?includeCheckoutPaths=true' : '/api/projects';
     const catalog = await executeWithWorkerFallback<Partial<ProjectExclusionCatalog> & { projects?: unknown }>(url, 'GET', undefined, {
       workerStartupTimeoutMs: HOOK_TIMEOUTS.POST_SPAWN_WAIT,
       timeoutMs: 2_000,
     });
-    if (isWorkerFallback(catalog) || !Array.isArray(catalog?.projects)) return fallback;
+    if (isWorkerFallback(catalog)) {
+      const reason = 'reason' in catalog ? catalog.reason : undefined;
+      return fallback(reason === 'worker_unreachable' ? 'worker-unreachable' : 'catalog-unavailable', { reason });
+    }
+    if (!Array.isArray(catalog?.projects)) return fallback('catalog-incomplete', { field: 'projects' });
     const projects = catalog.projects.filter((project): project is string => typeof project === 'string' && project.length > 0);
 
     let excluded: Set<string> | undefined;
     if (excludedPatterns) {
       const { checkoutPathsByProject, projectMerges } = catalog;
-      if (!checkoutPathsByProject || !Array.isArray(projectMerges)) return fallback;
+      // An older worker ignores includeCheckoutPaths and answers without them.
+      if (!checkoutPathsByProject || !Array.isArray(projectMerges)) {
+        return fallback('catalog-incomplete', { field: 'checkoutPathsByProject' });
+      }
       excluded = excludedSessionStartProjects(
         [...projects, ...checkoutProjects], { checkoutPathsByProject, projectMerges }, excludedPatterns,
       );
     }
     const allowed = (project: string) => !excluded?.has(foldProject(project));
+    const droppedCheckoutProjects = checkoutProjects.filter(project => !allowed(project));
+    // Keys only, never paths: a checkout key drops when it or a source merged into it is excluded.
+    if (droppedCheckoutProjects.length > 0) {
+      logger.debug('HOOK', 'SessionStart left out excluded checkout keys', { droppedCheckoutProjects });
+    }
     const otherProjects = projects.filter(project => !checkoutProjects.includes(project) && allowed(project)).sort();
-    return [...otherProjects, ...checkoutProjects.filter(allowed)];
+    return scope([...otherProjects, ...checkoutProjects.filter(allowed)]);
   } catch (error) {
-    logger.debug('HOOK', 'Project catalog unavailable for all-project SessionStart', {
+    return fallback(isWorkerUnavailableError(error) ? 'worker-unreachable' : 'catalog-unavailable', {
       error: error instanceof Error ? error.message : String(error),
     });
-    return fallback;
   }
 }
 
@@ -530,9 +568,11 @@ export const contextHandler: EventHandler = {
     // exactly as the write hooks do, so reads and writes stay on one corpus.
     const serverRuntime = runtime.runtime === 'server' ? runtime : null;
 
-    const scopeProjects = await resolveSessionStartProjects(settings, context.allProjects, runtime.runtime);
+    const { projects: scopeProjects, timelineSkip } = await resolveSessionStartProjects(settings, context.allProjects, runtime.runtime);
     // An empty projects parameter would make the renderer rediscover the checkout.
     const hasTimelineScope = scopeProjects.length > 0;
+    // A skipped timeline is said out loud, to the model and the user, never dropped silently.
+    const timelineSkipNotice = timelineSkip ? SESSION_START_TIMELINE_SKIP_NOTICES[timelineSkip] : null;
     const projectsQuery = projectsQueryString(scopeProjects);
     const normalizedPlatformSource = input.platform
       ? normalizePlatformSource(input.platform)
@@ -599,11 +639,18 @@ export const contextHandler: EventHandler = {
       ? { workerStartupTimeoutMs: HOOK_TIMEOUTS.POST_SPAWN_WAIT, timeoutMs: 2_000 }
       : undefined;
     let workerOutageNotice: string | null = null;
+    if (timelineSkip && timelineSkip !== 'catalog-incomplete') {
+      // The catalog call stood in for the inject call, so count the outage as
+      // that call would have (unbounded everywhere but Codex) and deliver the
+      // once-per-session outage notice the same way.
+      if (timelineSkip === 'worker-unreachable' && input.platform !== 'codex') await recordWorkerUnreachable();
+      workerOutageNotice = await consumeWorkerOutageNotice(input.sessionId);
+    }
     let contextResult: WorkerCallResult<string>;
     try {
       contextResult = serverRender?.model ?? cachedModelContext ?? (hasTimelineScope
         ? await executeWithWorkerFallback<string>(apiPath, 'GET', undefined, workerOptions)
-        : '');
+        : timelineSkipNotice ?? '');
     } catch (error) {
       if (input.platform !== 'claude-code' || !isWorkerUnavailableError(error)) throw error;
       await recordWorkerUnreachable();
@@ -688,7 +735,7 @@ export const contextHandler: EventHandler = {
       ? TEAMBRAIN_DISCOVERY_LINE
       : null;
     if (teamBrainDiscoveryLine) markTeamBrainDiscoveryNoticeShown();
-    const notice = userNotice(workerOutageNotice);
+    const notice = userNotice([timelineSkipNotice, workerOutageNotice].filter(Boolean).join('\n\n') || null);
     // Claude Code's session-start card named a file: once the banner is in it
     // the card draws it, and the hook message is the closing line alone.
     // The card is placed when Claude Code keeps the row that holds the hooks'
