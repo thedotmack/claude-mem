@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [16.1.0] - 2026-11-23
+
+### Standalone Cloud Sync in the installer
+
+- Run `npx claude-mem install` and choose Cloud Sync to connect your devices while keeping your current memory provider. The monthly plan requires a card and includes a full 30-day trial, followed by $12 per month. The annual plan costs $99 upfront.
+- The installer carries your chosen plan into checkout and verifies that cmem.ai confirms the same offer. Hosted tokens are a separate, optional purchase. Existing bundled Pro setups keep their saved settings.
+- You can skip Cloud Sync during setup and keep memory local. Once the installer applies a choice, returning to the plan screen or reloading it preserves that choice.
+
 ## [16.0.4] - 2026-11-22
 
 ## Fixes

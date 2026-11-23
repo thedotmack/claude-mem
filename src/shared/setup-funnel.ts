@@ -14,6 +14,24 @@ export type SetupBranch = (typeof SETUP_BRANCHES)[number];
 export const SETUP_MEMORY_BILLINGS = ['hosted', 'existing'] as const;
 export type SetupMemoryBilling = (typeof SETUP_MEMORY_BILLINGS)[number];
 
+/** The standalone Cloud Sync offers. Hosted generation is a separate purchase. */
+export const SETUP_CLOUD_SYNC_OFFERS = ['cloud_sync_monthly', 'cloud_sync_annual'] as const;
+export type SetupCloudSyncOffer = (typeof SETUP_CLOUD_SYNC_OFFERS)[number];
+/** Older servers must not silently substitute their bundled Pro checkout. */
+export const CLOUD_SYNC_SETUP_CONTRACT = 1 as const;
+export const DEFAULT_CLOUD_SYNC_OFFER: SetupCloudSyncOffer = 'cloud_sync_monthly';
+export const CLOUD_SYNC_OFFER_TERMS: Record<SetupCloudSyncOffer, { interval: 'month' | 'year'; cents: number; trialDays: number }> = {
+  cloud_sync_monthly: { interval: 'month', cents: 1200, trialDays: 30 },
+  cloud_sync_annual: { interval: 'year', cents: 9900, trialDays: 0 },
+};
+
+/** Missing offers on old hosted choices remain the legacy bundle; own-provider Cloud defaults to monthly. */
+export function setupCloudSyncOffer(choice: { branch: SetupBranch; memoryBilling: SetupMemoryBilling; cloudSyncOffer?: SetupCloudSyncOffer }): SetupCloudSyncOffer | undefined {
+  return choice.branch === 'go' && choice.memoryBilling === 'existing'
+    ? choice.cloudSyncOffer ?? DEFAULT_CLOUD_SYNC_OFFER
+    : undefined;
+}
+
 /**
  * What the installer has done with the browser's choice. Phase 8 (checkout) picks up from `go-awaiting-checkout`:
  * the installer holds the started pairing in memory and waits for the checkout request.

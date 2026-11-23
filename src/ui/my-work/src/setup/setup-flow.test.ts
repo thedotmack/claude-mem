@@ -71,6 +71,21 @@ describe('choiceLocked', () => {
 
 describe('saved storage choice', () => {
   const home = { branch: 'home' as const, memoryBilling: 'existing' as const }
+  it('defaults new installs to monthly Cloud Sync with the existing memory provider', () => {
+    assert.equal(state().branch, 'go')
+    assert.equal(state().memoryBilling, 'existing')
+    assert.equal(state().cloudSyncOffer, 'cloud_sync_monthly')
+  })
+  it('restores the annual offer while retaining legacy hosted choices without an offer', () => {
+    const annual = { branch: 'go' as const, memoryBilling: 'existing' as const, cloudSyncOffer: 'cloud_sync_annual' as const }
+    const restored = hydrateSetupChoice(state(), annual, false, 'go-awaiting-checkout')
+    assert.equal(restored.cloudSyncOffer, 'cloud_sync_annual')
+    assert.equal(restored.memoryBilling, 'existing')
+    assert.equal(nextAfterSavings(restored), 'checkout')
+    const legacy = hydrateSetupChoice(state(), { branch: 'go', memoryBilling: 'hosted' }, false, 'go-awaiting-checkout')
+    assert.equal(legacy.memoryBilling, 'hosted')
+    assert.equal(nextAfterSavings(legacy), 'checkout')
+  })
   it('restores Home after a reload instead of submitting the default On The Go choice', () => {
     const restored = hydrateSetupChoice(state(), home, false, 'home-ready')
     assert.equal(restored.branch, 'home')

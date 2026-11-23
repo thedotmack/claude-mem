@@ -4,6 +4,9 @@ on:
   push:
     tags:
       - 'v*'
+  # Tags created with GITHUB_TOKEN do not emit a new workflow-triggering
+  # push. The release-request workflow dispatches this same publisher on its tag.
+  workflow_dispatch:
 
 # npm trusted publishing (OIDC): no NPM_TOKEN secret. The package's trusted
 # publisher on npmjs.com names this repo and this workflow file.
@@ -13,6 +16,10 @@ permissions:
 
 jobs:
   publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    concurrency:
+      group: npm-publish-${{ github.repository }}
+      queue: max
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -30,4 +37,14 @@ jobs:
       - run: npm run smoke:clean-room
       # Trusted publishing requires npm CLI 11.5.1 or later.
       - run: npm install -g npm@^11.5.1
-      - run: npm publish
+      - name: Publish
+        shell: bash
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            state=$(node scripts/github-tagged-release.mjs publication-state)
+            if [[ "$state" == published ]]; then
+              echo "npm already serves the requested tag commit."
+              exit 0
+            fi
+          fi
+          npm publish
