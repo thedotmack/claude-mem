@@ -12,6 +12,7 @@ import {
 } from '../../../src/shared/session-start-card-slot.js';
 import { TEAMBRAIN_DISCOVERY_LINE, TEAMBRAIN_DISCOVERY_NOTICE_MARKER } from '../../../src/shared/teambrain.js';
 import { paths } from '../../../src/shared/paths.js';
+import { serverSessionStartBudgetMs } from '../../../src/shared/host-hook-limits.js';
 import {
   contextCacheKeys,
   removeContextCache,
@@ -522,7 +523,10 @@ describe('contextHandler SessionStart path', () => {
       const result = await contextHandler.execute({ sessionId: 'codex-server-budget', cwd: process.cwd(), platform: 'codex' });
       expect(renderSpy).toHaveBeenCalledTimes(1);
       expect(renderSpy.mock.calls[0][0]).toBe(runtime);
-      expect(renderSpy.mock.calls[0][2]).toEqual({ withTerminalRender: false, timeoutMs: 15_000 });
+      expect(renderSpy.mock.calls[0][2]).toEqual({
+        withTerminalRender: false,
+        timeoutMs: serverSessionStartBudgetMs('codex'),
+      });
       expect(calls).toEqual([]);
       expect(result.hookSpecificOutput).toEqual({ hookEventName: 'SessionStart', additionalContext: '' });
     } finally {
