@@ -150,6 +150,30 @@ describe('CLAUDE.md direct-child pagination', () => {
     expect(context.indexOf(`### ${dayHeaders[0]}`)).toBeLessThan(context.indexOf('Newer day edit'));
     expect(context.indexOf('Older day edit')).toBeGreaterThan(context.indexOf(`### ${dayHeaders[1]}`));
   }, 30_000);
+  it('also lists days newest-first for `npm run claude-md:regenerate`', () => {
+    // Noon UTC, one day apart: two distinct local days in any time zone.
+    const olderEpoch = Date.UTC(2026, 9, 16, 12); const newerEpoch = Date.UTC(2026, 9, 17, 12);
+    const project = generateIn({ files: ['src/day.ts'], writer: 'regenerate',
+      seed: `
+      [['Older day edit', ${olderEpoch}], ['Newer day edit', ${newerEpoch}]].forEach(([title, epoch], i) => {
+        const memory = 'memory-' + i;
+        const id = store.createSDKSession('content-' + i, project, 'prompt');
+        store.ensureMemorySessionIdRegistered(id, memory);
+        store.storeObservation(memory, project, {
+          type: 'discovery', title,
+          subtitle: null, narrative: 'native fixture', facts: [], concepts: [],
+          files_read: [], files_modified: ['src/day.ts']
+        }, 1, 0, epoch);
+      });
+      `,
+    });
+    const context = readFileSync(join(project, 'src', 'CLAUDE.md'), 'utf8');
+    const dayHeaders = [...context.matchAll(/^### (.+)$/gm)].map(match => match[1]);
+    expect(dayHeaders).toHaveLength(2);
+    expect(context.indexOf('Newer day edit')).toBeLessThan(context.indexOf('Older day edit'));
+    expect(context.indexOf(`### ${dayHeaders[0]}`)).toBeLessThan(context.indexOf('Newer day edit'));
+    expect(context.indexOf('Older day edit')).toBeGreaterThan(context.indexOf(`### ${dayHeaders[1]}`));
+  }, 30_000);
   it('heads each row with a file that is in the folder, not a same-named folder in another package', () => {
     const project = generateIn({ files: ['src/b.ts'],
       seed: ({ project }) => `
