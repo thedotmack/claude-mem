@@ -1,4 +1,5 @@
 import { expect, it, spyOn } from 'bun:test';
+import { Database } from 'bun:sqlite';
 import { existsSync, mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -46,5 +47,26 @@ it('falls back to a lazy close, with a warning, when this Bun refuses a strict c
     expect(String(warn.mock.calls[0]?.[1])).toContain('falling back to lazy close');
   } finally {
     warn.mockRestore();
+  }
+});
+
+it('finalizeCachedStatements releases the file for a manager that owns the connection', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'cm-shared-close-'));
+  const path = join(root, 'memory.db');
+  const db = new Database(path);
+  try {
+    // DatabaseManager hands the store its already-open connection and closes
+    // that connection itself, so the store's own close() never runs.
+    const store = new SessionStore(db);
+    const session = store.createSDKSession('shared-close', 'project', 'prompt');
+    store.updateMemorySessionId(session, 'shared-close-memory');
+
+    store.finalizeCachedStatements();
+    db.close();
+
+    await removeTempDir(root);
+    expect(existsSync(root)).toBe(false);
+  } finally {
+    if (existsSync(root)) await removeTempDir(root);
   }
 });

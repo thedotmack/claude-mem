@@ -165,6 +165,10 @@ export class DatabaseManager {
     await this.backupManager?.stop();
     this.backupManager = null;
 
+    // The store prepares hot-path statements on this shared connection. Bun
+    // keeps the connection and the database file alive until they are
+    // finalized, so drain the cache before the close below.
+    this.sessionStore?.finalizeCachedStatements();
     this.sessionStore = null;
     this.sessionSearch = null;
 
