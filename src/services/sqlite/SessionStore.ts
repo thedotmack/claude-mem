@@ -4,6 +4,7 @@ import { createHash, randomUUID } from 'crypto';
 import { DATA_DIR, DB_PATH, ensurePrivateDir, OBSERVER_SESSIONS_PROJECT, USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import type { ProjectKeySource } from '../../utils/project-name.js';
+import type { ProjectExclusionCatalog } from '../../shared/project-list.js';
 import { projectReadKeys, projectScopeSql, scopedProjects } from './project-read-keys.js';
 import {
   TableColumnInfo,
@@ -3216,10 +3217,9 @@ export class SessionStore {
     return rows.map(row => row.project);
   }
 
-  getProjectCatalog(includeCheckoutPaths = false): {
+  getProjectCatalog(includeCheckoutPaths = false): Partial<ProjectExclusionCatalog> & {
     projects: string[];
     sources: string[];
-    checkoutPathsByProject?: Record<string, string[]>;
     projectsBySource: Record<string, string[]>;
   } {
     const rows = this.db.prepare(`
@@ -3266,6 +3266,14 @@ export class SessionStore {
       sources,
       ...(includeCheckoutPaths && {
         checkoutPathsByProject: Object.fromEntries([...checkoutPaths].map(([key, paths]) => [key, [...paths]])),
+        // A single adopted observation or summary is enough to read its source through the target.
+        projectMerges: this.db.query<ProjectExclusionCatalog['projectMerges'][number], []>(`
+          SELECT project AS source, merged_into_project AS target FROM observations
+          WHERE merged_into_project COLLATE NOCASE IS NOT NULL
+          UNION
+          SELECT project, merged_into_project FROM session_summaries
+          WHERE merged_into_project COLLATE NOCASE IS NOT NULL
+        `).all(),
       }),
       projectsBySource: Object.fromEntries(
         sources.map(source => [source, [...(projectsBySource.get(source) ?? [])]])

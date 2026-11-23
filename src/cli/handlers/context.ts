@@ -41,7 +41,7 @@ import { contextCacheKeys, fillContextPlaceholders, readContextCache } from '../
 import { clearTimelinePending } from '../../shared/codex-compaction-gate.js';
 import { readSetupState, type SetupStateFile } from '../../shared/setup-state.js';
 import { hasPendingInstallSetup } from '../../shared/setup-install.js';
-import { projectsQueryString } from '../../shared/project-list.js';
+import { projectsQueryString, type ProjectExclusionCatalog } from '../../shared/project-list.js';
 import { CONTEXT_OUTPUT_LIMIT } from '../../services/context/ContextBudget.js';
 import { consumeTelemetryNotice } from '../../services/telemetry/consent.js';
 import { awaitSessionStartCardSlotForRequest, writeSessionStartCardSlot } from '../session-start-card-slot-writer.js';
@@ -299,13 +299,50 @@ async function renderSessionStartFromServer(
   return { model, terminal: terminal ?? model };
 }
 
+/** SQLite NOCASE folds only ASCII letters when comparing project keys. */
+const foldProject = (key: string) => key.replace(/[A-Z]/g, letter => letter.toLowerCase());
+
+function excludedSessionStartProjects(
+  projects: string[],
+  { checkoutPathsByProject, projectMerges }: ProjectExclusionCatalog,
+  patterns: string,
+): Set<string> {
+  const names = new Set(projects);
+  const targets = new Map<string, string[]>();
+  for (const { source, target } of projectMerges) {
+    // A merge can name a project with no entry of its own in sdk_sessions.
+    names.add(source);
+    names.add(target);
+    const key = foldProject(source);
+    const destinations = targets.get(key);
+    if (destinations) destinations.push(foldProject(target));
+    else targets.set(key, [foldProject(target)]);
+  }
+
+  const excluded = new Set<string>();
+  for (const name of names) {
+    const paths = Object.hasOwn(checkoutPathsByProject, name) ? checkoutPathsByProject[name] : [];
+    if (isProjectExcluded(name, patterns) || paths.some(cwd => isProjectExcluded(cwd, patterns))) {
+      excluded.add(foldProject(name));
+    }
+  }
+  // A read also selects rows stamped into a target and follows whole merges
+  // transitively. Set iteration visits newly added targets once, even in cycles.
+  for (const source of excluded) {
+    for (const target of targets.get(source) ?? []) excluded.add(target);
+  }
+  return excluded;
+}
+
 /**
  * The projects SessionStart reads. By default only this checkout's keys.
  * With CLAUDE_MEM_CONTEXT_PROJECTS=all, every project in the local catalog
  * (minus excluded ones), sorted so the context cache keys stay stable, with
  * this checkout's keys last because the last key titles the rendered block.
- * Any catalog failure falls back to this checkout. The server runtime has no
- * local catalog, so it keeps this checkout.
+ * Without exclusions a catalog failure falls back to this checkout. With
+ * exclusions even this checkout might read a merged source, so skip the
+ * timeline if the worker cannot supply the catalog. Server mode always
+ * requests only the current checkout's keys.
  */
 export async function resolveSessionStartProjects(
   settings: { CLAUDE_MEM_CONTEXT_PROJECTS?: string; CLAUDE_MEM_EXCLUDED_PROJECTS?: string },
@@ -317,43 +354,33 @@ export async function resolveSessionStartProjects(
     logger.debug('HOOK', 'CLAUDE_MEM_CONTEXT_PROJECTS=all is not supported in server runtime');
     return checkoutProjects;
   }
+  const excludedPatterns = settings.CLAUDE_MEM_EXCLUDED_PROJECTS?.trim();
+  const fallback = excludedPatterns ? [] : checkoutProjects;
   try {
-    const excludedPatterns = settings.CLAUDE_MEM_EXCLUDED_PROJECTS?.trim();
     const url = excludedPatterns ? '/api/projects?includeCheckoutPaths=true' : '/api/projects';
-    const catalog = await executeWithWorkerFallback<{
-      projects?: unknown;
-      checkoutPathsByProject?: Record<string, string[]>;
-    }>(url, 'GET', undefined, {
+    const catalog = await executeWithWorkerFallback<Partial<ProjectExclusionCatalog> & { projects?: unknown }>(url, 'GET', undefined, {
       workerStartupTimeoutMs: HOOK_TIMEOUTS.POST_SPAWN_WAIT,
       timeoutMs: 2_000,
     });
-    if (isWorkerFallback(catalog) || !Array.isArray(catalog?.projects)) return checkoutProjects;
+    if (isWorkerFallback(catalog) || !Array.isArray(catalog?.projects)) return fallback;
     const projects = catalog.projects.filter((project): project is string => typeof project === 'string' && project.length > 0);
 
-    // Context reads use SQLite NOCASE. Any recorded checkout that matches an
-    // exclusion rules out the whole key, including its other ASCII spellings.
-    const fold = (key: string) => key.replace(/[A-Z]/g, letter => letter.toLowerCase());
-    const excluded = new Set<string>();
+    let excluded: Set<string> | undefined;
     if (excludedPatterns) {
-      const paths = catalog.checkoutPathsByProject;
-      if (!paths) return checkoutProjects; // Older worker with a name-only catalog.
-      for (const project of projects) {
-        // Keep existing key exclusions, including for sessions recorded without a cwd.
-        const checkouts = Object.hasOwn(paths, project) ? paths[project] : [];
-        if (isProjectExcluded(project, excludedPatterns) ||
-            checkouts.some(cwd => isProjectExcluded(cwd, excludedPatterns))) {
-          excluded.add(fold(project));
-        }
-      }
+      const { checkoutPathsByProject, projectMerges } = catalog;
+      if (!checkoutPathsByProject || !Array.isArray(projectMerges)) return fallback;
+      excluded = excludedSessionStartProjects(
+        [...projects, ...checkoutProjects], { checkoutPathsByProject, projectMerges }, excludedPatterns,
+      );
     }
-    const allowed = (project: string) => excluded.size === 0 || !excluded.has(fold(project));
+    const allowed = (project: string) => !excluded?.has(foldProject(project));
     const otherProjects = projects.filter(project => !checkoutProjects.includes(project) && allowed(project)).sort();
     return [...otherProjects, ...checkoutProjects.filter(allowed)];
   } catch (error) {
-    logger.debug('HOOK', 'Project catalog unavailable; SessionStart reads this checkout only', {
+    logger.debug('HOOK', 'Project catalog unavailable for all-project SessionStart', {
       error: error instanceof Error ? error.message : String(error),
     });
-    return checkoutProjects;
+    return fallback;
   }
 }
 

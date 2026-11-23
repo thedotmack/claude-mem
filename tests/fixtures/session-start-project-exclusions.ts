@@ -18,6 +18,9 @@ const checkouts = [
   ['legacy', null],
   ['ignore-legacy', null],
   ['ignore-by-name-only', '/public/named-environment'],
+  ['intermediate', '/public/intermediate'],
+  ['combined', '/public/combined'],
+  ['summary-target', '/public/summary-target'],
   ['current', '/srv/work/current'],
 ] as const;
 for (const [index, [project, cwd]] of checkouts.entries()) {
@@ -29,7 +32,23 @@ for (const [index, [project, cwd]] of checkouts.entries()) {
     type: 'discovery', title: `Observation for ${project}.`, subtitle: null, narrative: null,
     facts: [], concepts: ['how-it-works'], files_read: [], files_modified: [],
   }, 1);
+  if (project === 'org/app' && cwd === excludedPath) {
+    store.storeSummary(memory, project, {
+      request: 'Summary from the excluded checkout', investigated: '', learned: '',
+      completed: '', next_steps: '', notes: null,
+    }, 1);
+  }
 }
+
+// A whole merge reaches a checkout key through two hops, including a cycle.
+// An unrelated merge between allowed projects should still render.
+const mergeObservations = store.db.query('UPDATE observations SET merged_into_project = ? WHERE project = ?');
+mergeObservations.run('INTERMEDIATE', 'secret-client');
+mergeObservations.run('combined', 'intermediate');
+mergeObservations.run('intermediate', 'combined');
+mergeObservations.run('current', 'legacy');
+// Only the summary was adopted. The source's observations stayed in place.
+store.db.run('UPDATE session_summaries SET merged_into_project = ? WHERE project = ?', ['summary-target', 'org/app']);
 
 const app = express();
 app.get('/api/readiness', (_req, res) => res.sendStatus(200));
@@ -43,14 +62,17 @@ try {
   process.env.CLAUDE_MEM_WORKER_URL = `http://127.0.0.1:${address.port}`;
   const projects = await resolveSessionStartProjects({
     CLAUDE_MEM_CONTEXT_PROJECTS: 'all', CLAUDE_MEM_EXCLUDED_PROJECTS: `${excludedPath},ignore-*`,
-  }, ['current'], 'worker');
+  }, ['combined', 'current'], 'worker');
   assert.deepEqual(projects, ['__proto__', 'legacy', 'current']);
 
   ModeManager.getInstance().loadMode('code');
   const { text, stats } = await generateContextWithStats({ projects, includePriorMessage: false });
   assert.equal(stats?.observation_count, projects.length);
   for (const project of projects) assert.ok(text.includes(`Observation for ${project}.`));
-  for (const project of ['secret-client', 'org/app', 'ORG/App', 'ignore-legacy', 'ignore-by-name-only']) assert.ok(!text.includes(`Observation for ${project}.`));
+  for (const [project] of checkouts) {
+    if (!projects.includes(project)) assert.ok(!text.includes(`Observation for ${project}.`));
+  }
+  assert.ok(!text.includes('Summary from the excluded checkout'));
 } finally {
   await new Promise<void>(resolve => server.close(() => resolve()));
   store.close();

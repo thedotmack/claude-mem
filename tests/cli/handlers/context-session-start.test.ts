@@ -95,7 +95,7 @@ mock.module('../../../src/shared/worker-utils.js', () => ({
     calls.push(args);
     if (args[0] === '/api/projects' || args[0] === '/api/projects?includeCheckoutPaths=true') {
       if (projectCatalog === 'reject') throw new Error('catalog unavailable');
-      return { projects: projectCatalog, checkoutPathsByProject };
+      return { projects: projectCatalog, checkoutPathsByProject, projectMerges: [] };
     }
     const isTerminalRender = typeof args[0] === 'string' && args[0].includes('colors=true');
     return workerModelContext !== null && !isTerminalRender ? workerModelContext : workerContext;
@@ -232,14 +232,24 @@ describe('contextHandler SessionStart path', () => {
       } finally { excludedProjects = ''; }
     });
 
-    it('keeps the current checkout when an older worker cannot supply checkout paths', async () => {
+    it('skips the timeline when exclusions are configured and the catalog is incomplete or unavailable', async () => {
+      const cacheKeys = contextCacheKeys(['parent-project', 'repo-project'], 'claude', false);
+      writeContextCache(cacheKeys, 'UNVERIFIED CHECKOUT TIMELINE', Date.now());
       checkoutPathsByProject = undefined;
       excludedProjects = '/srv/work/private';
-      projectCatalog = ['private', 'another-project'];
       try {
-        await runAll('legacy-catalog');
-        expect(injectedProjects()).toBe('parent-project,repo-project');
-      } finally { excludedProjects = ''; checkoutPathsByProject = {}; }
+        const catalogs: Array<typeof projectCatalog> = [['private', 'another-project'], 'reject'];
+        for (const catalog of catalogs) {
+          projectCatalog = catalog;
+          const result = await runAll('unverified-checkout');
+          expect(result.hookSpecificOutput?.additionalContext).not.toContain('UNVERIFIED CHECKOUT TIMELINE');
+          expect(calls.some(call => String(call[0]).startsWith('/api/context/inject'))).toBe(false);
+        }
+      } finally {
+        removeContextCache(cacheKeys);
+        excludedProjects = '';
+        checkoutPathsByProject = {};
+      }
     });
 
     it('skips both timeline renders when every checkout key reads an excluded directory', async () => {
