@@ -2,6 +2,7 @@ import { afterAll, beforeAll, expect, it } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
+import { LOCALES } from '../../../src/ui/i18n/locale';
 import {
   REPOSITORY_ROOT, UNTHROTTLED_TIMER_FLAGS, chromeExecutablePath, compileBrowserFixture, connectToPage,
   failOnCiWithoutChrome, htmlResponse, launchChrome, myWorkFontResponse, scriptResponse, withTimeout, type DevToolsPage, type OwnedChrome,
@@ -213,9 +214,6 @@ async function chooseConversation(words: string) {
 // About 3s here (2026-11-16); 60s for a slow CI runner.
 }, 60_000);
 
-/** The languages My Work speaks (src/ui/i18n/locale.ts LOCALES), English first. */
-const LANGUAGES = ['en', 'zh-CN', 'ko', 'tr', 'fr'] as const;
-
 (chromeExecutablePath ? it : it.skip)('the sample’s check receipt has a full stop between its two sentences, at home and on the web, in every language', async () => {
   await openPage('&request=r3');
   try {
@@ -226,7 +224,7 @@ const LANGUAGES = ['en', 'zh-CN', 'ko', 'tr', 'fr'] as const;
     const receipt = `[...window.sheet().querySelectorAll('p')].find((line) => line.textContent.endsWith(window.t('Shipping is still your call.')))`;
     await waitFor(receipt, 'the check receipt');
     const read: Record<string, { receipt: string; second: string }> = {};
-    for (const language of LANGUAGES) {
+    for (const language of LOCALES) {
       // At home (the local worker) and on the web (cmem.ai): the wireframe strip's switch in sample mode.
       for (const mode of ['home', 'web'] as const) {
         await page!.evaluate(`(() => { window.setLocale(${JSON.stringify(language)}); window.store.getState().setWorkspace({ mode: ${JSON.stringify(mode)} }); })()`);

@@ -2,6 +2,7 @@ import { afterAll, beforeAll, expect, it } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
+import { LOCALES } from '../../../src/ui/i18n/locale';
 import {
   REPOSITORY_ROOT, UNTHROTTLED_TIMER_FLAGS, chromeExecutablePath, compileBrowserFixture, connectToPage,
   failOnCiWithoutChrome, htmlResponse, launchChrome, myWorkFontResponse, scriptResponse, withTimeout, type DevToolsPage, type OwnedChrome,
@@ -719,16 +720,13 @@ it.skipIf(!chromeExecutablePath)('records keep a fixed mark size, wrap a long ro
   }
 }, TEST_LIMIT_MS);
 
-/** The languages My Work speaks (src/ui/i18n/locale.ts LOCALES), English first. */
-const LANGUAGES = ['en', 'zh-CN', 'ko', 'tr', 'fr'] as const;
-
 it.skipIf(!chromeExecutablePath)('the records’ time column holds the longest short time on one line in English and cuts no time in any language (R4)', async () => {
   try {
     await open();
     await page!.evaluate('window.mount("record-times")');
     await page!.evaluate('document.fonts.ready.then(() => true)');
     const shown: Record<string, unknown> = {};
-    for (const language of LANGUAGES) {
+    for (const language of LOCALES) {
       await page!.evaluate(`window.setLocale(${JSON.stringify(language)})`);
       const fold = `[...document.querySelectorAll('[data-slot="collapsible-fold-trigger"]')].find((trigger) => trigger.textContent.startsWith(window.t('Latest records')))`;
       await waitFor(fold, `the Latest records fold in ${language}`);
@@ -938,7 +936,7 @@ it.skipIf(!chromeExecutablePath)('"Not sorted yet" wraps its words instead of cu
     await page!.evaluate('document.fonts.ready.then(() => true)');
     const measure = async () => {
       const shown: Record<string, { width: number; words: string; whole: boolean; inside: boolean; lines: number; height: number }[]> = {};
-      for (const language of LANGUAGES) {
+      for (const language of LOCALES) {
         await page!.evaluate(`window.setLocale(${JSON.stringify(language)})`);
         await waitFor(`document.querySelector('[data-focus-area="not-sorted"]').innerText === window.t('Not sorted yet')`, `the chip in ${language}`);
         await page!.settle();

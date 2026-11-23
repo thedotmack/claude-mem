@@ -2,6 +2,7 @@ import { afterAll, beforeAll, expect, it } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
+import { LOCALES } from '../../../src/ui/i18n/locale';
 import {
   REPOSITORY_ROOT, UNTHROTTLED_TIMER_FLAGS, chromeExecutablePath, compileBrowserFixture, connectToPage,
   failOnCiWithoutChrome, htmlResponse, launchChrome, myWorkFontResponse, scriptResponse, SCROLLBAR_MODES, scrollbarStyleFor, withTimeout,
@@ -1067,7 +1068,7 @@ const FOLDER_LINE_ENDS = `(() => {
     lines: new Set(drawn.map((character) => Math.round(character.middle))).size };
 })()`;
 
-for (const language of ['en', 'fr', 'ko', 'zh-CN', 'tr']) {
+for (const language of LOCALES) {
   (chromeExecutablePath ? it : it.skip)(`at 390 the "folder is gone" line keeps its full stop with the folder or word before it, with a real-shaped path (${language})`, async () => {
     await openFixture(`conversations=2&lang=${language}`, PHONE);
     try {
@@ -1259,7 +1260,7 @@ for (const [count, picker] of [[10, 'Select'], [37, 'searchable list']] as const
       await page!.evaluate(`${items}.find((item) => item.textContent.includes(${JSON.stringify(LONG_TITLE)})).click()`);
       await waitFor(`!document.querySelector('[data-slot="popover-content"], [data-slot="select-content"]') && ${trigger}.textContent.includes(${JSON.stringify(LONG_TITLE.slice(0, 20))})`, 'the long name chosen');
       const rows: Record<string, unknown> = {};
-      for (const language of ['en', 'zh-CN', 'ko', 'tr', 'fr']) {
+      for (const language of LOCALES) {
         await page!.evaluate(`window.setLocale(${JSON.stringify(language)})`);
         await page!.settle();
         rows[language] = await page!.evaluate(`(() => {
