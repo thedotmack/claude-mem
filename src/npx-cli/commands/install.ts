@@ -2206,7 +2206,9 @@ export async function waitForInstallerPairing(
   version: string,
 ): Promise<InstallerPollOutcome | null> {
   const startedAt = Date.now();
-  const rerun = phase === 'teambrain_join' ? 'Run npx claude-mem teambrain join again' : 'Run the installer again';
+  const rerun = phase === 'teambrain_join' ? 'Run npx claude-mem teambrain join again'
+    : phase === 'enrollment' && pairing.cloudSyncOffer ? 'Select “Open checkout again” in your installer setup tab for a fresh code'
+      : 'Run the installer again';
   // The login phase must never name CMEM Pro. Logging in is required of every
   // user and happens BEFORE the provider choice, so naming a paid plan here
   // reads as an upsell attached to a mandatory step and muddies the funnel.

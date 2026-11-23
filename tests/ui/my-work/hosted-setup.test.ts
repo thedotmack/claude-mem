@@ -83,12 +83,12 @@ describe('browser installation', () => {
   it('shows actual agents, optional preferences and a selectable installation before scanning', () => {
     const app = fixture();
     const html = app.renderInstall(installState());
-    expect(html).toContain('Where do you work?');
+    expect(html).toContain('Give your agents memory');
     expect(html).toContain('Cursor');
     expect(html).toContain('Codex CLI');
     expect(html).toContain('Skills and preferences');
     expect(html).toContain('Claude model');
-    expect(html).toContain('Install and continue');
+    expect(html).toContain('Set up my agents');
     expect(html).toMatch(/<input[^>]*checked=""[^>]*value="cursor"/);
     expect(html).not.toContain('Install Claude Code too');
   });
@@ -236,15 +236,15 @@ describe('hosted setup scan control', () => {
     expect(initial.indexOf('<progress')).toBeLessThan(initial.indexOf(checkbox));
     expect(app.renderScan(scan({ phase: 'reading', improveProduct: true }))).toContain('checked=""');
     expect(app.renderScan(scan({ phase: 'reading', improveProduct: false }))).not.toContain('checked=""');
-    expect(initial).not.toContain('Discover My Work, Rules &amp; Focus');
-    const consent = app.renderScan(scan({ phase: 'awaiting-consent' }));
-    expect(consent).toContain('Discover My Work, Rules &amp; Focus');
-    // Phase 8: "Skip this step" is "Skip the scan" in both scan states that offer it.
-    expect(consent).toContain('Skip the scan');
+    expect(initial).not.toContain('Find my focus areas');
+    const consent = app.renderScan(scan({ phase: 'awaiting-consent', agents: [{ id: 'codex', label: 'Codex', detected: true, prompts: 3 }] }));
+    expect(consent).toContain('Find my focus areas');
+    expect(consent).toContain('Include recent conversations');
+    expect(consent).not.toContain('Skip the scan');
     // The shared Button carries "disabled:" in its classes, so look at the Discover button's own attributes. A missing
     // button fails here, so the checks below can never pass on an empty match.
     const discover = (html: string) => {
-      const button = html.match(/<button[^>]*>Discover My Work, Rules &amp; Focus<\/button>/)?.[0];
+      const button = html.match(/<button[^>]*>Find my focus areas[^<]*</)?.[0];
       if (!button) throw new Error('The Discover button is missing');
       return button;
     };
@@ -262,7 +262,7 @@ describe('hosted setup scan control', () => {
     expect(app.renderScan(scan({ phase: 'awaiting-consent', agents: [{ id: 'codex', label: 'Codex', detected: true, prompts: 3, canRunSetup: null, cannotRunReason: null }] }))).toContain('Codex (3 messages)');
     // The upload details are folded: kept in the markup, closed until opened.
     const visibleConsent = consent.replace(/<div data-state="closed"[^>]*data-slot="collapsible-content"[^>]*>[\s\S]*?<\/div>/g, '');
-    expect(visibleConsent).toContain('Claude-Mem scans your transcripts to automatically discover your existing work, your preferences, and what you’re focused on.');
+    expect(visibleConsent).toContain('Claude-Mem uses the last 30 days of conversations to find your projects and preferences.');
     expect(visibleConsent).toContain('Selected messages are sent to cmem.ai and an AI provider.');
     expect(visibleConsent).not.toContain('session IDs');
     expect(visibleConsent).not.toContain('timestamps');
@@ -273,32 +273,32 @@ describe('hosted setup scan control', () => {
     expect(app.renderScan(scan({ phase: 'uploading' }))).toContain('disabled=""');
   });
 
-  it('puts discovering existing work on the one navy button and keeps Skip the scan beside it', () => {
+  it('shows one forward action for the selected conversations and for starting with new work', () => {
     const app = fixture();
-    const html = app.renderScan(scan({ phase: 'awaiting-consent', agents: [{ id: 'codex', label: 'Codex', detected: true, prompts: 3, canRunSetup: null, cannotRunReason: null }] }));
-    // Phase 8's bottom row: the outlined Skip, then the screen's one navy (primary) button on the right.
-    const buttons = [...html.matchAll(/<button[^>]*class="[^"]*\b(primary|secondary)"[^>]*>(Skip the scan|Discover My Work, Rules &amp; Focus)</g)];
-    expect(buttons.map(match => match[2])).toEqual(['Skip the scan', 'Discover My Work, Rules &amp; Focus']);
-    expect(buttons.map(match => match[1])).toEqual(['secondary', 'primary']);
+    const populated = app.renderScan(scan({ phase: 'awaiting-consent', agents: [{ id: 'codex', label: 'Codex', detected: true, prompts: 3 }] }));
+    expect(populated).toMatch(/<button[^>]*class="[^"]*primary"[^>]*>Find my focus areas/);
+    expect(populated).not.toContain('Skip the scan');
+    const empty = app.renderScan(scan({ phase: 'awaiting-consent', agents: [] }));
+    expect(empty).toMatch(/<button[^>]*class="[^"]*primary"[^>]*>Continue with new work/);
   });
 
-  it('dims Discover with the reason when the selected tools are over the upload cap, and keeps Skip the scan on', () => {
+  it('explains how to reduce an oversized upload and keeps the inclusion control available', () => {
     const app = fixture();
     const agent = (id: string, uploadBytes: number) => ({ id, label: id, detected: true, prompts: 3, canRunSetup: null, cannotRunReason: null, uploadBytes });
     const button = (html: string, label: string) => {
-      const found = html.match(new RegExp(`<button[^>]*>${label}</button>`))?.[0];
+      const found = html.match(new RegExp(`<button[^>]*>${label}[^<]*<`))?.[0];
       if (!found) throw new Error(`The ${label} button is missing`);
       return found;
     };
     const halfCap = 1024 * 1024;
     const fits = app.renderScan(scan({ phase: 'awaiting-consent', agents: [agent('codex', halfCap), agent('claude-code', halfCap)] }));
-    expect(fits).not.toContain('Too much for one upload');
-    expect(button(fits, 'Discover My Work, Rules &amp; Focus')).not.toContain('aria-disabled="true"');
+    expect(fits).not.toContain('Choose fewer tools');
+    expect(button(fits, 'Find my focus areas')).not.toContain('aria-disabled="true"');
     const over = app.renderScan(scan({ phase: 'awaiting-consent', agents: [agent('codex', halfCap), agent('claude-code', halfCap + 1)] }));
-    expect(over).toContain('id="setup-waiting-line" class="setup-waiting">Too much for one upload. Untick a tool or skip the scan.');
-    expect(button(over, 'Discover My Work, Rules &amp; Focus')).toContain('aria-disabled="true"');
-    expect(button(over, 'Discover My Work, Rules &amp; Focus')).toContain('aria-describedby="setup-waiting-line"');
-    expect(button(over, 'Skip the scan')).not.toContain('aria-disabled="true"');
+    expect(over).toContain('id="setup-waiting-line" class="setup-waiting">Choose fewer tools or turn off recent conversations to continue.');
+    expect(button(over, 'Find my focus areas')).toContain('aria-disabled="true"');
+    expect(button(over, 'Find my focus areas')).toContain('aria-describedby="setup-waiting-line"');
+    expect(over).toContain('Include recent conversations');
   });
 
   it('shows the skipped-step message only when the person actually skipped', () => {
@@ -306,13 +306,13 @@ describe('hosted setup scan control', () => {
     const agents = [{ id: 'codex', label: 'Codex', detected: true, prompts: 3, canRunSetup: null, cannotRunReason: null }];
     const empty = { goals: [], work: [], rules: [] };
     const local = app.renderReveal(agents, empty, { state: 'ok', step: null }, []);
-    expect(local).toContain('You skipped this step.');
-    expect(local).not.toContain('Your work is starting to connect.');
+    expect(local).toContain('Your agents can build memory as you work.');
+    expect(local).not.toContain('Your recent work');
     // An upload that came back with nothing must never be described as "nothing was uploaded".
     const uploadedEmpty = app.renderReveal(agents, empty, { state: 'ok', step: null }, ['codex']);
-    expect(uploadedEmpty).not.toContain('You skipped this step.');
+    expect(uploadedEmpty).not.toContain('Your agents can build memory as you work.');
     expect(uploadedEmpty).not.toContain('Nothing was uploaded');
-    expect(app.renderReveal(agents, { goals: null, work: null, rules: null }, { state: 'running', step: 'goals' }, ['codex'])).toContain('Your work is starting to connect.');
+    expect(app.renderReveal(agents, { goals: null, work: null, rules: null }, { state: 'running', step: 'goals' }, ['codex'])).toContain('Your recent work');
   });
 
   it('counts requests already linked to an area while other work is still connecting or unreadable', () => {
@@ -334,9 +334,9 @@ describe('hosted setup scan control', () => {
     for (const uploaded of [[], ['codex']]) {
       const html = app.renderReveal(agents, { goals: [], work: [], rules: [] }, { state: 'ok', step: null }, uploaded, notice);
       expect(html).toContain(notice);
-      expect(html).toContain('Continue setup.');
+      expect(html).toContain('Start with your next session');
       expect(html).not.toContain('already knows your work');
-      expect(html).not.toContain('You skipped this step.');
+      expect(html).not.toContain('Your agents can build memory as you work.');
       expect(html).not.toContain('daily budget');
     }
   });
@@ -359,7 +359,7 @@ describe('hosted setup scan control', () => {
       { id: 'claude-code', label: 'Claude Code', detected: true, prompts: 7, canRunSetup: null, cannotRunReason: null },
     ];
     const html = app.renderReveal(agents, { goals: null, work: null, rules: null }, { state: 'running', step: 'goals' }, ['codex']);
-    expect(html).toContain('From 3 messages across Codex');
+    expect(html).toContain('3 messages from Codex');
     expect(html).not.toContain('Claude Code');
   });
 
@@ -815,12 +815,12 @@ describe('setup failures in plain words', () => {
     const agents = [{ id: 'codex', label: 'Codex', detected: true, prompts: 3, canRunSetup: null, cannotRunReason: null }];
     const nothing = { goals: null, work: null, rules: null, focusAreas: null, requests: [] };
     const skipped = app.renderReveal(agents, nothing, null, null, null, true);
-    expect(skipped).toContain('You skipped this step.');
-    expect(skipped).toContain('Continue setup.');
+    expect(skipped).toContain('Your agents can build memory as you work.');
+    expect(skipped).toContain('Start with your next session');
     // Results from an earlier run still show after a skip, and the page does not call them skipped.
     const earlier = app.renderReveal(agents, { ...nothing, focusAreas: app.SAMPLE_FOCUS_AREAS, requests: app.SAMPLE_REQUESTS }, null, null, null, true);
-    expect(earlier).not.toContain('You skipped this step.');
+    expect(earlier).not.toContain('Your agents can build memory as you work.');
     expect(earlier).toContain('Your focus areas');
-    expect(app.renderReveal(agents, nothing, { state: 'running', step: 'goals' }, ['codex'])).not.toContain('You skipped this step.');
+    expect(app.renderReveal(agents, nothing, { state: 'running', step: 'goals' }, ['codex'])).not.toContain('Your agents can build memory as you work.');
   });
 });

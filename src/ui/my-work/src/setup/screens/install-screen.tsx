@@ -32,7 +32,7 @@ export function InstallScreen({ install, onInstall, onContinue }: {
   const chosen = install.catalog.agents.filter(agent => install.selection?.agents.includes(agent.id))
   if (install.status === 'installing') return (
     <section aria-labelledby="install-title">
-      <PageHeading id="install-title" title={t(STATUS_LABELS.installing)} lead={t('Keep this page open. Your memory setup starts next.')} />
+      <PageHeading id="install-title" title={t(STATUS_LABELS.installing)} />
       <div className="panel install-progress" role="status" aria-live="polite">
         <Spinner className="install-spinner" />
         <p>{t('Connecting the tools you selected. This can take a minute.')}</p>
@@ -59,6 +59,7 @@ function InstallOptions({ install, onInstall }: { install: SetupInstallState; on
   const { catalog } = install
   const [selection, setSelection] = useState<SetupInstallSelection>(install.selection ?? catalog.defaults)
   const [query, setQuery] = useState('')
+  const [showAllAgents, setShowAllAgents] = useState(false)
   const [reinstallConfirmed, setReinstallConfirmed] = useState(!catalog.reinstall)
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<SetupFailure | null>(null)
@@ -66,7 +67,10 @@ function InstallOptions({ install, onInstall }: { install: SetupInstallState; on
   const change = (patch: Partial<SetupInstallSelection>) => setSelection(current => ({ ...current, ...patch }))
   const toggleAgent = (id: string, checked: boolean) => change({ agents: checked ? [...selection.agents, id] : selection.agents.filter(agent => agent !== id) })
   const toggleSkill = (id: string, checked: boolean) => change({ skills: checked ? [...selection.skills, id] : selection.skills.filter(skill => skill !== id) })
-  const agents = [...catalog.agents].sort((a, b) => Number(b.detected) - Number(a.detected)).filter(agent => `${agent.label} ${agent.hint ?? ''}`.toLowerCase().includes(query.trim().toLowerCase()))
+  const knownAgents = catalog.agents.filter(agent => agent.detected || (install.selection ?? catalog.defaults).agents.includes(agent.id))
+  const showingAll = showAllAgents || knownAgents.length === 0 || knownAgents.length === catalog.agents.length
+  const agents = [...(showingAll ? catalog.agents : knownAgents)].sort((a, b) => Number(b.detected) - Number(a.detected))
+    .filter(agent => `${agent.label} ${agent.hint ?? ''}`.toLowerCase().includes(query.trim().toLowerCase()))
   const claudeSelected = selection.agents.includes('claude-code')
   const claudeMissing = claudeSelected && !catalog.agents.find(agent => agent.id === 'claude-code')?.detected
   const models = [...new Set(['haiku', 'sonnet', 'opus', ...(catalog.defaults.claudeModel ? [catalog.defaults.claudeModel] : [])])]
@@ -92,15 +96,15 @@ function InstallOptions({ install, onInstall }: { install: SetupInstallState; on
   return (
     <section aria-labelledby="install-title">
       {/* A failure takes the lead's place, so the screen still fits with its bottom row in view. */}
-      <PageHeading id="install-title" title={t('Where do you work?')} lead={error || install.error ? undefined : t('Choose your agents and integrations. We’ll connect them to your memory.')} />
+      <PageHeading id="install-title" title={t('Give your agents memory')} lead={error || install.error ? undefined : t('Pick up where your last session ended.')} />
       {error ? <SetupError title={t('Couldn’t start the installation.')} failure={error} />
         : install.error && <SetupError title={t(STATUS_LABELS.failed)} check={t('Your choices are kept. Change anything you need, then try the installation again.')} detail={install.error} />}
       <form className="install-form" onSubmit={submit}>
         <fieldset className="panel install-agents" disabled={sending}>
           <legend className="sr-only">{t('Agents and integrations')}</legend>
           <div className="install-section-heading"><h2>{t('Agents and integrations')}</h2><span className="tabular">{interpolate(t('{count} selected'), { count: selection.agents.length })}</span></div>
-          <label className="install-search-label" htmlFor="install-search">{t('Find an agent or integration')}</label>
-          <div className="install-search"><SearchIcon aria-hidden="true" /><input id="install-search" type="search" value={query} onChange={event => setQuery(event.target.value)} /></div>
+          {showingAll && <><label className="install-search-label" htmlFor="install-search">{t('Find an agent or integration')}</label>
+            <div className="install-search"><SearchIcon aria-hidden="true" /><input id="install-search" type="search" value={query} onChange={event => setQuery(event.target.value)} /></div></>}
           <div className="install-agent-options">
             {agents.map(agent => <label key={agent.id} className="install-agent">
               <input type="checkbox" name="install-agents" value={agent.id} checked={selection.agents.includes(agent.id)} onChange={event => toggleAgent(agent.id, event.target.checked)} />
@@ -108,6 +112,7 @@ function InstallOptions({ install, onInstall }: { install: SetupInstallState; on
               {agent.detected && <span className="install-detected"><CheckIcon aria-hidden="true" />{t('Detected')}</span>}
             </label>)}
           </div>
+          {!showingAll && <SetupButton look="text" onClick={() => setShowAllAgents(true)}>{t('Show all agents')}</SetupButton>}
           {agents.length === 0 && <p className="install-help">{t('No matching agents or integrations.')}</p>}
           {noAgents && <p id="install-agents-needed" className="tool-error">{t('Select at least one agent to continue.')}</p>}
           {claudeMissing && <label className="install-option install-host"><input type="checkbox" checked={selection.installClaudeCode} onChange={event => change({ installClaudeCode: event.target.checked })} /><span><strong>{t('Install Claude Code too')}</strong><small>{t('Claude Code wasn’t detected on this computer. You can also install it later.')}</small></span></label>}
@@ -141,10 +146,10 @@ function InstallOptions({ install, onInstall }: { install: SetupInstallState; on
         {/* The first screen has no Back, so the reinstall choice that turns Install on sits on the row's left. */}
         <SetupActions start={catalog.reinstall && <>
           <label className="install-option install-reinstall"><input type="checkbox" checked={reinstallConfirmed} disabled={sending} onChange={event => setReinstallConfirmed(event.target.checked)} /><span>{t('Update my existing installation with these choices.')}</span></label>
-          {!reinstallConfirmed && <p id="install-reinstall-hint" className="setup-hint"><InfoIcon aria-hidden="true" />{t('Tick this to turn on Install.')}</p>}
+          {!reinstallConfirmed && <p id="install-reinstall-hint" className="setup-hint"><InfoIcon aria-hidden="true" />{t('Confirm the update to continue.')}</p>}
         </>}>
           <SetupButton type="submit" busy={sending} busyLabel={t('Starting installation…')} aria-disabled={waitingFor ? true : undefined} aria-describedby={waitingFor}>
-            {install.status === 'failed' ? t('Try installation again') : t('Install and continue')}<ArrowRightIcon aria-hidden="true" />
+            {install.status === 'failed' ? t('Try installation again') : t('Set up my agents')}<ArrowRightIcon aria-hidden="true" />
           </SetupButton>
         </SetupActions>
       </form>

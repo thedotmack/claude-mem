@@ -1,5 +1,5 @@
 /** Closed, content-free contract for the local installer's actual screens. */
-export const SETUP_STEPS = ['install', 'scan', 'reveal', 'choice', 'savings', 'checkout', 'finish-setup', 'import', 'launch', 'workspace'] as const;
+export const SETUP_STEPS = ['install', 'scan', 'reveal', 'choice', 'checkout', 'savings', 'finish-setup', 'import', 'launch', 'workspace'] as const;
 export type SetupStep = (typeof SETUP_STEPS)[number];
 
 // The funnel's states as they cross between the installer, the worker and the setup page. Each has its one
@@ -93,7 +93,7 @@ export const HISTORY_IMPORT_BATCH = 100;
  * 1M-context call. Cloud enforces this against both compressed and uncompressed bytes, plus its offline 400k-token
  * budget. One definition for the worker's refusal (hosted-intent.ts) and the consent step's warning. */
 export const INTENT_MAX_UPLOAD_BYTES = 2 * 1024 * 1024;
-export const SETUP_ACTIONS = ['choose_memory', 'choice_committed', 'open_checkout', 'start_import', 'skip_import', 'retry_scan', 'upload_allowed', 'upload_skipped'] as const;
+export const SETUP_ACTIONS = ['choose_memory', 'choice_committed', 'open_checkout', 'view_hosted_plans', 'start_import', 'skip_import', 'retry_scan', 'upload_allowed', 'upload_skipped'] as const;
 export type SetupAction = (typeof SETUP_ACTIONS)[number];
 export const SETUP_ERRORS = ['scan_failed', 'scan_retry_failed', 'upload_consent_failed', 'upload_too_large', 'usage_preference_failed', 'choice_failed', 'checkout_failed', 'installer_failed', 'import_failed', 'complete_failed'] as const;
 export type SetupError = (typeof SETUP_ERRORS)[number];
@@ -112,6 +112,7 @@ export interface SetupEvent {
   to_step?: SetupStep | 'complete';
   direction?: 'forward' | 'back';
   action?: SetupAction;
+  cloud_sync_offer?: SetupCloudSyncOffer;
   error_code?: SetupError;
 }
 export interface SetupTelemetryContext { setup_flow_id: string; already_pro: boolean }
@@ -123,7 +124,7 @@ export function parseSetupEvent(value: unknown): SetupEvent | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const v = value as Record<string, unknown>;
   const base = ['event', 'event_id', 'setup_flow_id', 'setup_funnel_version', 'visit_id', 'step', 'branch', 'already_pro', 'branch_confirmed', 'occurred_at'];
-  const extra = v.event === 'setup_step_transitioned' ? ['to_step', 'direction'] : v.event === 'setup_step_action' ? ['action'] : v.event === 'setup_step_error' ? ['error_code'] : [];
+  const extra = v.event === 'setup_step_transitioned' ? ['to_step', 'direction'] : v.event === 'setup_step_action' ? ['action', 'cloud_sync_offer'] : v.event === 'setup_step_error' ? ['error_code'] : [];
   if (!member(['setup_step_viewed', 'setup_step_transitioned', 'setup_step_action', 'setup_step_error', 'setup_page_hidden', 'setup_completed'], v.event)
     || Object.keys(v).some(key => !base.includes(key) && !extra.includes(key))
     || !isSetupId(v.event_id) || !isSetupId(v.setup_flow_id) || !isSetupId(v.visit_id)
@@ -132,6 +133,7 @@ export function parseSetupEvent(value: unknown): SetupEvent | null {
     || typeof v.occurred_at !== 'number' || !Number.isSafeInteger(v.occurred_at) || v.occurred_at <= 0) return null;
   if (v.event === 'setup_step_transitioned' && ((!member(SETUP_STEPS, v.to_step) && v.to_step !== 'complete') || !member(['forward', 'back'], v.direction) || v.to_step === v.step)) return null;
   if (v.event === 'setup_step_action' && !member(SETUP_ACTIONS, v.action)) return null;
+  if (v.cloud_sync_offer !== undefined && (v.branch !== 'go' || !member(SETUP_CLOUD_SYNC_OFFERS, v.cloud_sync_offer))) return null;
   if (v.event === 'setup_step_error' && !member(SETUP_ERRORS, v.error_code)) return null;
   if ((v.event === 'setup_completed' || v.to_step === 'complete') && (v.step !== 'workspace' || (v.to_step === 'complete' && v.direction !== 'forward'))) return null;
   return v as unknown as SetupEvent;

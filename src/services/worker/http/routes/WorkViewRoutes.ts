@@ -394,8 +394,11 @@ const setupChoiceBody = z.object({
   branch: z.enum(SETUP_BRANCHES),
   memoryBilling: z.enum(SETUP_MEMORY_BILLINGS),
   cloudSyncOffer: z.enum(SETUP_CLOUD_SYNC_OFFERS).optional(),
+  openCheckout: z.literal(true).optional(),
 }).strict().refine(choice => !choice.cloudSyncOffer || (choice.branch === 'go' && choice.memoryBilling === 'existing'), {
   message: 'A Cloud Sync offer requires On The Go with your existing memory provider.',
+}).refine(choice => !choice.openCheckout || !!choice.cloudSyncOffer, {
+  message: 'Select a Cloud Sync offer to open its checkout.',
 });
 const setupInstallerBody = z.object({
   stage: z.enum(SETUP_INSTALLER_STAGES),
@@ -1119,19 +1122,30 @@ export class WorkViewRoutes extends BaseRouteHandler {
 
   /** The choice can change until the installer acts on it; after that the installer holds the result. */
   private saveSetupChoice = (req: Request, res: Response): void => {
-    const { branch, memoryBilling, cloudSyncOffer } = req.body as z.infer<typeof setupChoiceBody>;
+    const { branch, memoryBilling, cloudSyncOffer, openCheckout } = req.body as z.infer<typeof setupChoiceBody>;
     const offer = setupCloudSyncOffer({ branch, memoryBilling, cloudSyncOffer });
     const state = readSetupState(this.setupStatePath);
     if (state.status === 'complete') { res.status(409).json({ error: 'Setup is already complete.', state: this.setupStateView(state) }); return; }
     if (state.install && state.install.status !== 'ready') { res.status(409).json({ error: 'Finish installing your agents before choosing memory storage.' }); return; }
     const applied = state.installer && state.installer.stage !== 'waiting-for-choice' && state.installer.stage !== 'failed';
-    if (applied && (state.choice?.branch !== branch || state.choice?.memoryBilling !== memoryBilling
-      || (state.choice && setupCloudSyncOffer(state.choice)) !== offer)) {
+    // The first checkout request belongs to the plan saved in this same write. A repeat
+    // or a second browser tab cannot replace that plan while the terminal sets up pairing.
+    const sameChoice = state.choice?.branch === branch && state.choice.memoryBilling === memoryBilling
+      && setupCloudSyncOffer(state.choice) === offer;
+    const locked = applied || (!!state.checkout && state.installer?.stage !== 'failed');
+    if (locked && !sameChoice) {
       res.status(409).json({ error: 'The installer already applied the earlier choice.', state: this.setupStateView(state) });
       return;
     }
-    if (applied) { res.setHeader('Cache-Control', 'no-store'); res.json(this.setupStateView(state)); return; }
-    this.saveSetupState({ ...state, choice: { branch, memoryBilling, ...(offer ? { cloudSyncOffer: offer } : {}), chosenAt: new Date().toISOString() } }, res);
+    const now = new Date().toISOString();
+    // Older installers can have an applied choice with no checkout request yet.
+    let checkout = sameChoice ? state.checkout : null;
+    if (openCheckout && !checkout && !this.setupStateView(state).alreadyPro) {
+      checkout = { state: 'requested', requests: 1, error: null, updatedAt: now };
+    }
+    if (locked && checkout === state.checkout) { res.setHeader('Cache-Control', 'no-store'); res.json(this.setupStateView(state)); return; }
+    const choice = locked ? state.choice : { branch, memoryBilling, ...(offer ? { cloudSyncOffer: offer } : {}), chosenAt: now };
+    this.saveSetupState({ ...state, choice, checkout }, res);
   };
 
   private saveInstallerStage = (req: Request, res: Response): void => {

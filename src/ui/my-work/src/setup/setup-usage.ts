@@ -17,7 +17,7 @@ export interface SetupUsage {
   coverage: UsageCoverage
   /** "Last 30 days · Claude Code · Codex" for a complete window; otherwise what is missing (DATA-CONTRACT.md). */
   periodLabel: string
-  /** Shown only for a complete window. */
+  /** Recorded tokens. With partial coverage this is a lower bound. */
   tokens: number
   /** Only for a complete 30-day window. */
   persona: Persona | null

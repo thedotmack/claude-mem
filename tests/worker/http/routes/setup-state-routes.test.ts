@@ -435,6 +435,23 @@ describe('setup state endpoints', () => {
     expect((await post('/api/setup/complete', {})).status).toBe(200);
   });
 
+  it('saves a direct checkout once, before the terminal is ready, and keeps its selected interval', async () => {
+    await start();
+    const annual = { branch: 'go', memoryBilling: 'existing', cloudSyncOffer: 'cloud_sync_annual', openCheckout: true };
+    await post('/api/setup/installer', { stage: 'waiting-for-choice' });
+    const first = await (await post('/api/setup/choice', annual)).json();
+    expect(first.checkout).toMatchObject({ state: 'requested', requests: 1 });
+    expect(first.choice.cloudSyncOffer).toBe('cloud_sync_annual');
+    expect((await (await post('/api/setup/choice', annual)).json()).checkout).toEqual(first.checkout);
+    expect((await post('/api/setup/choice', { ...annual, cloudSyncOffer: 'cloud_sync_monthly' })).status).toBe(409);
+    expect((await post('/api/setup/choice', { branch: 'home', memoryBilling: 'existing' })).status).toBe(409);
+    await post('/api/setup/installer', { stage: 'go-awaiting-checkout' });
+    expect((await state()).checkout).toEqual(first.checkout);
+    await post('/api/setup/installer', { stage: 'go-awaiting-checkout', checkout: 'paid' });
+    expect((await (await post('/api/setup/choice', annual)).json()).checkout.state).toBe('paid');
+    expect((await state()).checkout.requests).toBe(1);
+  });
+
   it('keeps a saved hosted choice as the legacy bundle, without silently adding a Cloud offer', async () => {
     await start();
     await post('/api/setup/choice', { branch: 'go', memoryBilling: 'hosted' });

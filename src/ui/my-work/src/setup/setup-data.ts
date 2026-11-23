@@ -2,6 +2,7 @@
 // The live source fills it from the worker (prompt scan, extraction, usage, setup state); `?source=sample` loads
 // setup-sample.ts instead, and only then.
 import { toSetupUsage, type SetupScanUsage, type SetupUsage } from './setup-usage'
+import { choiceLocked } from './setup-flow'
 import { revealFromSnapshot, type SnapshotWithSetup, type WorkerExtraction } from './setup-reveal'
 import { noteFor, searchUrl, toMemoryResults, type MemoryResult, type WorkerSearchResult } from './setup-search'
 import { applySseFrame } from '../live/parse-sse-frame'
@@ -124,7 +125,7 @@ export interface SetupData {
   suggestions: string[]
 }
 
-/** What the page posts when it leaves Token Savings: where memory lives, and who generates it. */
+/** The storage plan explicitly selected in the installer. */
 export interface SetupChoice { branch: SetupBranch; memoryBilling: SetupMemoryBilling; cloudSyncOffer?: SetupCloudSyncOffer }
 
 export interface SetupSource {
@@ -140,7 +141,7 @@ export interface SetupSource {
   /** Answers the upload question: true sends the scanned prompts to cmem.ai, false keeps them on this machine. */
   confirmUpload(upload: boolean, agents?: string[], improveProduct?: boolean): Promise<void>
   /** Hands the storage choice to the installer waiting in the terminal (POST /api/setup/choice). */
-  choose(choice: SetupChoice): Promise<void>
+  choose(choice: SetupChoice, openCheckout?: boolean): Promise<void>
   /** Asks the installer holding the On The Go sign-in to open checkout (POST /api/setup/checkout). */
   checkout(): Promise<void>
   /** Finishes setup for this machine with the tools picked on Finish Setup; the terminal exits (POST /api/setup/complete). */
@@ -351,6 +352,7 @@ export const localSetupSource: SetupSource = {
     let startingScan = false
     const ensureScanStarted = async () => {
       if (!initialScanLoaded || startingScan || closed || data.scan.phase !== 'idle'
+        || (data.choice && choiceLocked(data.installer?.stage, !!data.checkout))
         || data.install === undefined || (data.install && data.install.status !== 'ready')) return
       startingScan = true
       try { await startScan() }
@@ -439,7 +441,7 @@ export const localSetupSource: SetupSource = {
     await write
   },
   async confirmUpload(upload, agents, improveProduct) { await postJson('/api/setup/scan/consent', { upload, ...(agents ? { agents } : {}), ...(improveProduct === undefined ? {} : { improveProduct }) }) },
-  async choose(choice) { await postJson('/api/setup/choice', choice) },
+  async choose(choice, openCheckout) { await postJson('/api/setup/choice', { ...choice, ...(openCheckout ? { openCheckout: true } : {}) }) },
   async checkout() { await postJson('/api/setup/checkout', {}) },
   async complete(tools, telemetry) { await postJson('/api/setup/complete', { tools, ...(telemetry?.length ? { telemetry } : {}) }) },
   async startHistoryImport() { await askImport('/api/setup/import') },

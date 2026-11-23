@@ -44,8 +44,8 @@ describe('actual setup screen telemetry', () => {
   })
   it('measures Home, existing Pro and reduced-motion skips as the actual next screen', async () => {
     for (const [branch, steps] of [
-      [home, ['scan', 'reveal', 'choice', 'savings', 'finish-setup', 'workspace']],
-      [go, ['scan', 'reveal', 'choice', 'savings', 'finish-setup', 'launch', 'workspace']],
+      [home, ['scan', 'reveal', 'choice', 'finish-setup', 'workspace']],
+      [go, ['scan', 'reveal', 'choice', 'finish-setup', 'launch', 'workspace']],
     ] as const) {
       const { tracker, sent } = fixture()
       tracker.start({ setup_flow_id: flow, already_pro: branch === go })
@@ -71,11 +71,25 @@ describe('actual setup screen telemetry', () => {
     tracker.view('finish-setup', { ...go, importComplete: true })
     await tracker.flush()
     const transitions = sent.filter(event => event.event === 'setup_step_transitioned')
-    assert.equal(transitions[0].direction, 'back')
+    assert.equal(transitions[0].direction, 'forward')
+    assert.equal(transitions[1].direction, 'back')
     assert.notEqual(transitions[0].visit_id, transitions[2].visit_id)
     assert.deepEqual(transitions.filter(event => event.step === 'import').map(event => event.direction), ['back', 'forward'])
     assert.equal(sent.filter(event => event.event === 'setup_step_error').length, 1)
     assert.equal(new Set(transitions.map(event => event.visit_id)).size, transitions.length)
+  })
+  it('records the selected interval with a choice-screen checkout and keeps its originating visit', async () => {
+    const { tracker, sent } = fixture()
+    tracker.start({ setup_flow_id: flow, already_pro: false })
+    tracker.view('choice', unknown)
+    tracker.action('open_checkout', go, 'cloud_sync_annual')
+    tracker.view('checkout', go)
+    await tracker.flush()
+    const request = sent.find(event => event.action === 'open_checkout')!
+    assert.equal(request.visit_id, sent[0].visit_id)
+    assert.equal(request.cloud_sync_offer, 'cloud_sync_annual')
+    assert.ok(parseSetupEvent(request))
+    assert.equal(parseSetupEvent({ ...request, cloud_sync_offer: 'unknown' }), null)
   })
   it('only confirms the actual choice and prepares completion for the successful worker write', async () => {
     const { tracker, sent } = fixture()

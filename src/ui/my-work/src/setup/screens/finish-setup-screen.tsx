@@ -114,11 +114,11 @@ function ImportReceipt({ result }: { result: HistoryImportProgress | null }) {
   )
 }
 
-function HistoryPanel({ history, status, result, stopping, onImport, onStop, onSkip }: {
+function HistoryPanel({ history, status, result, stopping, onImport, onStop }: {
   history: SetupHistory; status: HistoryImportStatus; result: HistoryImportProgress | null
   /** A Stop sent from here (a run found running after a reload) is on its way. */
   stopping: boolean
-  onImport: () => void; onStop: () => void; onSkip: () => void
+  onImport: () => void; onStop: () => void
 }) {
   const { t } = useI18n()
   const [permission, setPermission] = useState(false)
@@ -129,7 +129,6 @@ function HistoryPanel({ history, status, result, stopping, onImport, onStop, onS
       {status === 'complete' ? <ImportReceipt result={result} /> : (
         <>
           <p className="history-count tabular">{interpolate(t('{projects} projects · {sessions} sessions · {observations} memories'), { projects: history.projects, sessions: history.sessions, observations: number(history.observations) })}</p>
-          {status === 'skipped' && <p className="history-done">{t('History import skipped. You can bring it over later.')}</p>}
           {/* The last run, as the worker reports it. */}
           {result?.state === 'failed' && <SetupError title={t(IMPORT_RUN_WORDS.failed)} check={t('Import full history again to continue. Memories already in your CMEM account are skipped.')} detail={result.error} />}
           {result?.state === 'stopped' && <ImportStopped result={result} />}
@@ -149,7 +148,6 @@ function HistoryPanel({ history, status, result, stopping, onImport, onStop, onS
             {/* Outlined: the screen's one navy button is Continue. Dimmed, it still reads at 4.5:1 and says what it waits for. */}
             <SetupButton look="outline" className="import-button" aria-disabled={!permission || undefined} aria-describedby={permission ? undefined : 'history-import-hint'} onClick={onImport}>{t('Import full history')}</SetupButton>
             {!permission && <p id="history-import-hint" className="setup-hint"><InfoIcon aria-hidden="true" />{t('Tick the box above to turn this on.')}</p>}
-            {status !== 'skipped' && <SetupButton look="text" onClick={onSkip}>{t('Skip import')}</SetupButton>}
           </div>
         </>
       )}
@@ -161,7 +159,7 @@ function HistoryPanel({ history, status, result, stopping, onImport, onStop, onS
  * Step 6 (PROTO #route-finish-setup). Tools the install step connected are listed as connected; the others can be
  * added with a tick (E8). Detected tools come pre-ticked; the import panel shows only when there is history to import.
  */
-export function FinishSetupScreen({ branch, tools, selected, onSelect, history, importStatus, importResult, stoppingImport, onImport, onStopImport, onSkipImport, back, onContinue }: {
+export function FinishSetupScreen({ branch, tools, selected, onSelect, history, importStatus, importResult, stoppingImport, onImport, onStopImport, back, onContinue }: {
   branch: MemoryBranch
   tools: SetupTool[]
   selected: string[]
@@ -174,7 +172,6 @@ export function FinishSetupScreen({ branch, tools, selected, onSelect, history, 
   onImport: () => void
   /** Stops a run found running (after a reload), the same request as the import screen's Stop. */
   onStopImport: () => void
-  onSkipImport: () => void
   /** Absent once the installer has applied the choice and there is no earlier screen left to change. */
   back?: SetupBack | null
   onContinue: () => void
@@ -200,12 +197,12 @@ export function FinishSetupScreen({ branch, tools, selected, onSelect, history, 
   const picked = addable.filter((tool) => selected.includes(tool.id))
   return (
     <section aria-labelledby="finish-setup-title">
-      <PageHeading id="finish-setup-title" title={t('Finish Setup')} lead={t('Pick up any project without remembering where you left off.')} />
+      <PageHeading id="finish-setup-title" title={t('Connect your tools')} />
       <form onSubmit={submit} noValidate>
         <div className={history ? 'finish-grid has-history' : 'finish-grid'}>
           <div className="panel finish-tools">
             <fieldset>
-              <legend>{t('Where do you want to use your memory?')}</legend>
+              <legend>{t('Use your memory in these tools')}</legend>
               {connected.length > 0 && <>
                 <h3 className="finish-group">{t('Connected on this computer')}</h3>
                 <ul className="tool-connected">
@@ -235,10 +232,10 @@ export function FinishSetupScreen({ branch, tools, selected, onSelect, history, 
               </div>
             )}
           </div>
-          {history && <HistoryPanel history={history} status={importStatus} result={importResult} stopping={stoppingImport} onImport={onImport} onStop={onStopImport} onSkip={onSkipImport} />}
+          {history && <HistoryPanel history={history} status={importStatus} result={importResult} stopping={stoppingImport} onImport={onImport} onStop={onStopImport} />}
         </div>
         <SetupActions back={back}>
-          <SetupButton type="submit">{t('Continue')} <ArrowRightIcon aria-hidden="true" /></SetupButton>
+          <SetupButton type="submit">{t('Finish setup')} <ArrowRightIcon aria-hidden="true" /></SetupButton>
         </SetupActions>
       </form>
     </section>

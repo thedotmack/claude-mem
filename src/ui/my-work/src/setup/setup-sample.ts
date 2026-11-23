@@ -239,9 +239,10 @@ export function createSampleSetupSource(newInstall: boolean, holdScanAtPercent: 
     async setImproveProduct(improveProduct) { publish({ scan: { ...data.scan, improveProduct } }) },
     // Review fixtures hand nothing to an installer; with `&installer=on` the sample one applies the choice, as the
     // terminal does, which locks it (the page then offers no way back to change it).
-    async choose(choice) {
+    async choose(choice, openCheckout) {
       if (failsOnce('choice')) throw new SetupRequestError('refused', SAMPLE_FAILURE_WORDS.choice)
       publish({ choice, ...(installer ? { installer: { stage: appliedStage(choice.branch, data.alreadyPro), error: null } } : {}) })
+      if (openCheckout) await this.checkout()
     },
     // Plays the checkout the terminal would open: waiting, then paid.
     async checkout() {

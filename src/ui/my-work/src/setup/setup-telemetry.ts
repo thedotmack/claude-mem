@@ -1,4 +1,4 @@
-import { SETUP_STEPS, isSetupId, type SetupAction, type SetupError, type SetupEvent, type SetupStep, type SetupTelemetryContext } from '../../../../shared/setup-funnel.ts'
+import { SETUP_STEPS, isSetupId, type SetupAction, type SetupCloudSyncOffer, type SetupError, type SetupEvent, type SetupStep, type SetupTelemetryContext } from '../../../../shared/setup-funnel.ts'
 import { setTimeoutThenWaitUntilCloudPageVisible } from '../live/served-from.ts'
 
 export interface VisitState { branch: 'home' | 'go'; branch_confirmed: boolean; importComplete?: boolean }
@@ -51,8 +51,8 @@ export function createSetupTracker(send: (event: SetupEvent) => Promise<void>, o
       visit = { id: uuid(), step, state: { ...state } }; hidden = false
       deliver(event('setup_step_viewed')!)
     },
-    action(action: SetupAction, state?: VisitState) {
-      const item = event('setup_step_action', { action, ...(state ? { branch: state.branch, branch_confirmed: state.branch_confirmed } : {}) })
+    action(action: SetupAction, state?: VisitState, offer?: SetupCloudSyncOffer) {
+      const item = event('setup_step_action', { action, ...(state ? { branch: state.branch, branch_confirmed: state.branch_confirmed } : {}), ...(offer ? { cloud_sync_offer: offer } : {}) })
       if (item && !completed) deliver(item)
     },
     error: recordError,
