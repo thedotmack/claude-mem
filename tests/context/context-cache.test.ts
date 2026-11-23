@@ -25,7 +25,10 @@ import {
   contextCacheKeys,
   fillContextPlaceholders,
   readContextCache,
+  readContextProjectCatalog,
+  refreshContextProjectCatalog,
   relativeTimePlaceholder,
+  saveContextProjectCatalog,
   writeContextCache,
 } from '../../src/shared/context-cache.js';
 import { emitContextInvalidation } from '../../src/shared/context-invalidation.js';
@@ -961,5 +964,68 @@ describe('precomputed context end to end', () => {
 
     // A store write re-rendered the cached block.
     expect(result.agentAfterWrite).toContain('SECOND_OBSERVATION');
+  });
+});
+
+describe('stored SessionStart project catalog (#6403)', () => {
+  const catalogPath = () => join(contextCacheDir(), 'project-catalog.json');
+  afterEach(() => rmSync(catalogPath(), { force: true }));
+
+  it('is refreshed only once stored, and only for a write naming a project it lacks', () => {
+    let listed = 0;
+    const listProjects = () => { listed++; return ['zeta', 'alpha', 'new-project']; };
+
+    refreshContextProjectCatalog(['new-project'], listProjects);
+    expect(listed).toBe(0);
+    expect(readContextProjectCatalog()).toBeNull();
+
+    saveContextProjectCatalog(['zeta', 'alpha']);
+    expect(readContextProjectCatalog()).toEqual(['alpha', 'zeta']);
+    refreshContextProjectCatalog(['alpha'], listProjects);
+    expect(listed).toBe(0);
+
+    refreshContextProjectCatalog(['new-project'], listProjects);
+    expect(listed).toBe(1);
+    expect(readContextProjectCatalog()).toEqual(['alpha', 'new-project', 'zeta']);
+
+    refreshContextProjectCatalog('all', listProjects);
+    expect(listed).toBe(2);
+  });
+
+  it('treats a malformed stored list as none, so the hook asks the worker', () => {
+    writeFileSync(catalogPath(), '{"projects":"not a list"}');
+    expect(readContextProjectCatalog()).toBeNull();
+  });
+
+  it('reaches the stored list on the worker write that adds a new project, and never breaks that write', async () => {
+    const store = new SessionStore(':memory:');
+    let listerThrows = false;
+    const service = new ContextCacheService({
+      debounceMs: 20,
+      renderVariant: async () => ({ body: 'render', cacheable: true }),
+      expandProjectReadKeys: projects => projects,
+      listCatalogProjects: () => {
+        if (listerThrows) throw new Error('catalog query failed');
+        return store.getProjectCatalog().projects;
+      },
+    });
+    service.start();
+    try {
+      saveContextProjectCatalog(['known-project']);
+      const sessionDbId = store.createSDKSession('content-new', 'brand-new-project', 'prompt');
+      store.ensureMemorySessionIdRegistered(sessionDbId, 'memory-new');
+      store.storeObservations('memory-new', 'brand-new-project', [{
+        type: 'discovery', title: 'A title', subtitle: null, facts: [], narrative: 'n',
+        concepts: [], files_read: [], files_modified: [],
+      }], null);
+      expect(readContextProjectCatalog()).toContain('brand-new-project');
+
+      listerThrows = true;
+      expect(() => emitContextInvalidation({ projects: ['another-new-project'] }, 'test')).not.toThrow();
+    } finally {
+      await service.flushPendingRenders();
+      service.stop();
+      store.close();
+    }
   });
 });

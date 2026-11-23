@@ -1346,6 +1346,7 @@ export class WorkerService implements WorkerRef {
           return this.searchRoutes.renderContextVariant(keys);
         },
         expandProjectReadKeys: (projects) => contextReader.readKeys(projects),
+        listCatalogProjects: () => this.dbManager.getSessionStore().getProjectCatalog().projects,
         // Local-first: the local db is the source of truth, so the files are
         // servable with or without cloud sync. Sync applies other devices' ops in
         // the background, and every applied op invalidates the files (SyncApply).

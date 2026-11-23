@@ -14,8 +14,10 @@ import { TEAMBRAIN_DISCOVERY_LINE, TEAMBRAIN_DISCOVERY_NOTICE_MARKER } from '../
 import { paths } from '../../../src/shared/paths.js';
 import { serverSessionStartBudgetMs } from '../../../src/shared/host-hook-limits.js';
 import {
+  contextCacheDir,
   contextCacheKeys,
   removeContextCache,
+  saveContextProjectCatalog,
   writeContextCache,
 } from '../../../src/shared/context-cache.js';
 import { runOwnedFixture } from '../../helpers/owned-fixture.js';
@@ -205,11 +207,79 @@ describe('contextHandler SessionStart path', () => {
       calls.length = 0;
       return contextHandler.execute({ sessionId, cwd: '/tmp/repo', platform: 'claude-code' });
     };
-    beforeEach(() => { contextProjects = 'all'; });
+    const storedCatalogPath = () => path.join(contextCacheDir(), 'project-catalog.json');
+    beforeEach(() => {
+      contextProjects = 'all';
+      rmSync(storedCatalogPath(), { force: true });
+    });
     afterAll(() => {
       contextProjects = 'current';
       excludedProjects = '';
       projectCatalog = ['other-project', 'repo-project', 'third-project'];
+      rmSync(storedCatalogPath(), { force: true });
+    });
+
+    describe('cached all-project context without the worker (#6403)', () => {
+      const allKeys = contextCacheKeys(['cached-project', 'parent-project', 'repo-project'], 'claude', false);
+      const checkoutKeys = contextCacheKeys(['parent-project', 'repo-project'], 'claude', false);
+      const priorCatalog = projectCatalog;
+      afterEach(() => {
+        removeContextCache(allKeys);
+        removeContextCache(checkoutKeys);
+        excludedProjects = '';
+        projectCatalog = priorCatalog;
+        workerUnreachable = false;
+      });
+
+      it('serves the cached all-project block during a catalog outage, then with no worker call at all', async () => {
+        const cachedBody = 'CACHED ALL-PROJECT CONTEXT';
+        writeContextCache(allKeys, cachedBody, Date.now());
+
+        projectCatalog = ['cached-project'];
+        const online = await runAll('catalog-cache-online');
+        expect(online.hookSpecificOutput?.additionalContext).toContain(cachedBody);
+        expect(calls.map(call => call[0])).toEqual(['/api/projects']);
+
+        projectCatalog = 'reject';
+        workerContext = '';
+        const offline = await runAll('catalog-cache-offline');
+        expect(offline.hookSpecificOutput?.additionalContext).toContain(cachedBody);
+        expect(calls).toEqual([]);
+      });
+
+      it('asks neither the catalog nor the inject route on a hit under the stored catalog', async () => {
+        saveContextProjectCatalog(['cached-project', 'parent-project', 'repo-project']);
+        writeContextCache(allKeys, 'SEEDED ALL-PROJECT CONTEXT', Date.now());
+        projectCatalog = 'reject';
+        const result = await runAll('stored-catalog-hit');
+        expect(result.hookSpecificOutput?.additionalContext).toContain('SEEDED ALL-PROJECT CONTEXT');
+        expect(calls).toEqual([]);
+      });
+
+      it('serves the checkout block when the all-project block is too big for this session and the worker is down', async () => {
+        staleReason = 'x'.repeat(2_000);
+        saveContextProjectCatalog(['cached-project', 'parent-project', 'repo-project']);
+        // Over the room the stale-token notice leaves, under the raw limit (as #5672).
+        writeContextCache(allKeys, 'ALL-PROJECT BODY\n' + 'y'.repeat(9_342), Date.now());
+        writeContextCache(checkoutKeys, 'CHECKOUT BODY', Date.now());
+        projectCatalog = 'reject';
+        const result = await runAll('all-project-over-room');
+        const output = result.hookSpecificOutput?.additionalContext ?? '';
+        expect(output).toContain('CHECKOUT BODY');
+        expect(output).not.toContain('ALL-PROJECT BODY');
+        expect(calls.some(call => String(call[0]).startsWith('/api/context/inject'))).toBe(false);
+      });
+
+      it('never serves the stored catalog\'s block when exclusions are set', async () => {
+        excludedProjects = '/srv/work/private';
+        saveContextProjectCatalog(['cached-project', 'parent-project', 'repo-project']);
+        writeContextCache(allKeys, 'ALL-PROJECT BODY', Date.now());
+        projectCatalog = 'reject';
+        const result = await runAll('stored-catalog-excluded');
+        expect(result.hookSpecificOutput?.additionalContext).not.toContain('ALL-PROJECT BODY');
+        // The stored list has no checkout paths, so only the worker's catalog can clear exclusions.
+        expect(calls.some(call => String(call[0]).startsWith('/api/projects'))).toBe(true);
+      });
     });
 
     it('asks the catalog with a bounded timeout and falls back to this checkout when it rejects', async () => {
@@ -303,7 +373,7 @@ describe('contextHandler SessionStart path', () => {
         ['parent-project', 'repo-project'],
         'server',
       );
-      expect(projects).toEqual({ projects: ['parent-project', 'repo-project'], timelineSkip: null });
+      expect(projects).toEqual({ projects: ['parent-project', 'repo-project'], timelineSkip: null, cacheFallbackProjects: null });
       expect(calls.some(call => call[0] === '/api/projects')).toBe(false);
     });
   });

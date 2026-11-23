@@ -36,6 +36,7 @@ import {
   readContextCache,
   contextCacheVariantId,
   listContextCacheFiles,
+  refreshContextProjectCatalog,
   removeContextCache,
   writeContextCache,
   type ContextCacheKeys,
@@ -72,6 +73,8 @@ export interface ContextCacheServiceOptions {
   renderVariant: (keys: ContextCacheKeys) => Promise<ContextVariantRender>;
   /** Every stored key a read of `projects` matches (projectReadKeys). */
   expandProjectReadKeys: (projects: string[]) => string[] | Promise<string[]>;
+  /** Every project in the local catalog, to keep the hook's stored list current (refreshContextProjectCatalog). */
+  listCatalogProjects?: () => string[];
   debounceMs?: number;
   maxVariants?: number;
   /** False keeps the files unservable until setServable(true). Default true. */
@@ -289,6 +292,7 @@ export class ContextCacheService {
 
   private handleInvalidation(invalidation: ContextInvalidation): void {
     this.invalidationGeneration++;
+    this.refreshStoredProjectCatalog(invalidation);
     const removal = invalidation.kind === 'removal';
     // A work-state write is additive, but the open lists are what the next
     // session acts on: a block served before its re-render would hand a fresh
@@ -316,6 +320,22 @@ export class ContextCacheService {
     if (matched === 0) return;
     logger.debug('CONTEXT_CACHE', 'Context invalidated', { reason: invalidation.reason, kind: invalidation.kind, variants: matched });
     this.scheduleRender();
+  }
+
+  /**
+   * A cache-first SessionStart names its all-project variant from the stored
+   * catalog, so a new project must reach that list on the write that adds it.
+   * This runs inside the writer's emit: a failure is logged, never thrown.
+   */
+  private refreshStoredProjectCatalog(invalidation: ContextInvalidation): void {
+    const listCatalogProjects = this.options.listCatalogProjects;
+    if (!listCatalogProjects) return;
+    try {
+      refreshContextProjectCatalog(invalidation.scope === 'all' ? 'all' : invalidation.scope.projects, listCatalogProjects);
+    } catch (error) {
+      logger.warn('CONTEXT_CACHE', 'Could not refresh the stored SessionStart project catalog', { reason: invalidation.reason },
+        error instanceof Error ? error : new Error(String(error)));
+    }
   }
 
   private requeueAfterRemoval(variantId: string): void {
