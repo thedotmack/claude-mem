@@ -10,10 +10,8 @@ import { IS_WINDOWS } from '../utils/paths.js';
 import { readJsonFileWithBom } from '../../shared/atomic-json.js';
 import { settingsTarget } from '../../shared/settings-document.js';
 import { getUvxBinDirs } from '../../shared/uvx-bin-dirs.js';
-import { checkTreeSitterCliLoadable, resolveTreeSitterBinPathFor } from '../../services/smart-file-read/tree-sitter-bin-path.js';
 import {
   ensureTreeSitterCliBinary,
-  treeSitterCliBinaryPath,
   type TreeSitterReleaseAssetDownload,
 } from '../../services/smart-file-read/tree-sitter-cli-provision.js';
 
@@ -480,14 +478,8 @@ export async function provisionTreeSitterCli(
   installTimeoutMs: number = INSTALL_TIMEOUT_MS,
   downloadReleaseAsset?: TreeSitterReleaseAssetDownload,
 ): Promise<boolean> {
-  const searchPath = process.env.PATH ?? '';
-  const packageBinary = treeSitterCliBinaryPath(targetDir);
-  const resolvedBinary = resolveTreeSitterBinPathFor(packageBinary, searchPath);
-  if (resolvedBinary !== packageBinary && checkTreeSitterCliLoadable(resolvedBinary, searchPath).loadable) {
-    return true;
-  }
   try {
-    await ensureTreeSitterCliBinary(targetDir, installTimeoutMs, undefined, undefined, downloadReleaseAsset);
+    await ensureTreeSitterCliBinary(targetDir, installTimeoutMs, undefined, undefined, downloadReleaseAsset, true);
     return true;
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));

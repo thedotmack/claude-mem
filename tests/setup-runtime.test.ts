@@ -1,6 +1,7 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, chmodSync, readdirSync, copyFileSync } from 'fs';
+import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
+import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, chmodSync, readdirSync, copyFileSync, symlinkSync } from 'fs';
 import { spawnSync } from 'child_process';
+import * as childProcess from 'node:child_process';
 import { createHash } from 'crypto';
 import { delimiter, dirname, join } from 'path';
 import { tmpdir } from 'os';
@@ -557,6 +558,43 @@ echo 'tree-sitter 0.26.9'
     } finally {
       if (oldPath === undefined) delete process.env.PATH;
       else process.env.PATH = oldPath;
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('install and repair skip probes of unpinned package files, even through PATH', async () => {
+    const cliDir = writeCliPackage('process.exitCode = 2;');
+    const packageBinary = treeSitterCliBinaryPath(tempDir);
+    const packageEntry = join(cliDir, 'cli.js');
+    for (const path of [packageBinary, packageEntry]) {
+      writeFileSync(path, Buffer.from([0]), { mode: 0o755 });
+    }
+    const binDir = join(tempDir, 'node_modules', '.bin');
+    mkdirSync(binDir);
+    symlinkSync(packageEntry, join(binDir, TREE_SITTER_BINARY_NAME));
+    process.env.PATH = [cliDir, binDir, process.env.PATH].join(delimiter);
+    const { download, downloads } = releaseAssetUnavailable();
+    const syncProbe = spyOn(childProcess, 'execFileSync').mockImplementation(() => {
+      throw new Error('unexpected tree-sitter version probe');
+    });
+    const execFile = childProcess.execFile;
+    const asyncExec = spyOn(childProcess, 'execFile').mockImplementation((...args) => {
+      if (Array.isArray(args[1]) && args[1][0] === '--version') {
+        throw new Error('unexpected tree-sitter version probe');
+      }
+      return execFile(...args);
+    });
+    try {
+      await expect(provisionTreeSitterCli(tempDir, ErrorSeverity.WARN_CONTINUE, createInstallSummary(), undefined, download)).resolves.toBe(false);
+      // Simulate a missing binary: PATH still must not run the package's shim.
+      rmSync(packageBinary);
+      process.env.PATH = [binDir, process.env.PATH].join(delimiter);
+      await expect(provisionTreeSitterCli(tempDir, ErrorSeverity.ABORT, createInstallSummary(), undefined, download)).rejects.toBeInstanceOf(InstallAbortError);
+      expect(downloads).toEqual([treeSitterReleaseAssetUrl('0.26.9')!, treeSitterReleaseAssetUrl('0.26.9')!]);
+      expect(syncProbe).not.toHaveBeenCalled();
+      expect(asyncExec.mock.calls.some(([, args]) => Array.isArray(args) && args[0] === '--version')).toBe(false);
+    } finally {
+      syncProbe.mockRestore();
+      asyncExec.mockRestore();
     }
   });
 

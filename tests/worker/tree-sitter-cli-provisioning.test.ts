@@ -168,6 +168,24 @@ describe('worker tree-sitter CLI provisioning', () => {
     expect(await isTreeSitterCliBinaryUsable(pluginRoot)).toBe(true);
   });
 
+  it.skipIf(process.platform === 'win32')('reuses the pinned glibc fallback on an offline restart', async () => {
+    const cliDir = writeMarketplaceCliPackage("throw new Error('install.js must not run');");
+    const executable = Buffer.from('#!/bin/sh\necho "tree-sitter 0.26.9 (conda-forge)"\n');
+    writeFileSync(join(cliDir, TREE_SITTER_BINARY_NAME), executable, { mode: 0o755 });
+    const offline = async () => { throw new Error('network unavailable'); };
+    const fallback: GlibcCompatibleFallback = {
+      buildFor: version => version === '0.26.9' ? {
+        url: 'https://conda.example.invalid/tree-sitter-cli.conda',
+        archiveSha256: '0'.repeat(64),
+        executableSha256: createHash('sha256').update(executable).digest('hex'),
+      } : undefined,
+      download: offline,
+    };
+
+    await expect(provisionTreeSitterCliForPluginRoot(pluginRoot, () => '1'.repeat(64), fallback, offline))
+      .resolves.toBe('already-usable');
+  });
+
   // #4758: the release asset links against GLIBC_2.39, so Ubuntu 22.04,
   // Debian 12 and RHEL 9 refuse it. Provisioning then installs the conda-forge
   // build of the same version, pinned by digest. Linux-only: the fallback is

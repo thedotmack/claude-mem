@@ -11,7 +11,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, renameSync, rmSync, s
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { treeSitterBinaryName } from "./tree-sitter-bin-name.js";
-import { isExecutableFile } from "./tree-sitter-bin-path.js";
+import { hasIndependentTreeSitterOnPath, isExecutableFile } from "./tree-sitter-bin-path.js";
 import {
   glibcCompatibleTreeSitterBuild,
   pinnedTreeSitterExecutableSha256,
@@ -260,7 +260,8 @@ export type TreeSitterCliBinarySource = "already-usable" | "release" | "glibc-co
  * install.js error is thrown with the direct download's reason appended.
  *
  * `pinnedSha256ForVersion`, `glibcFallback` and `downloadReleaseAsset` exist
- * for tests; callers pass none.
+ * for tests. The installer also accepts an independent PATH CLI before
+ * downloading a replacement.
  */
 export async function ensureTreeSitterCliBinary(
   pluginRoot: string,
@@ -268,30 +269,44 @@ export async function ensureTreeSitterCliBinary(
   pinnedSha256ForVersion: (version: string) => string | undefined = pinnedTreeSitterExecutableSha256,
   glibcFallback: GlibcCompatibleFallback = CONDA_FORGE_FALLBACK,
   downloadReleaseAsset: TreeSitterReleaseAssetDownload = downloadArchive,
+  allowPathFallback = false,
 ): Promise<TreeSitterCliBinarySource> {
   const cliDir = treeSitterCliPackageDir(pluginRoot);
   if (existsSync(cliDir) && !statSync(cliDir).isDirectory()) {
     throw new Error(`tree-sitter-cli package path is not a directory: ${cliDir}`);
   }
   const existingBinaryPath = treeSitterCliBinaryPath(pluginRoot);
-  const existingVersion = treeSitterCliPackageVersion(cliDir);
   let intactProbe: TreeSitterCliVersionProbe | undefined;
+  let needsVerifiedReplacement = false;
 
   // An existing executable is hashed before it is run: a replaced or stale
   // binary must never execute, not even for the --version probe (#6404). A
   // binary with no pinned digest is treated as unverified, not as usable.
   if (existsSync(existingBinaryPath)) {
+    const existingVersion = treeSitterCliPackageVersion(cliDir);
     const existingPin = existingVersion === undefined ? undefined : pinnedSha256ForVersion(existingVersion);
+    const fallbackPin = existingVersion === undefined ? undefined : glibcFallback.buildFor(existingVersion)?.executableSha256;
     let existingSha256 = "(unreadable)";
     try {
       existingSha256 = sha256OfFile(existingBinaryPath);
     } catch {
       // Fall through to the download; it cannot make things worse.
     }
-    if (existingPin !== undefined && existingSha256 === existingPin && isExecutableFile(existingBinaryPath)) {
-      intactProbe = await answersTreeSitterVersion(existingBinaryPath);
-      if (intactProbe.usable) return "already-usable";
+    const matchesRelease = existingSha256 === existingPin;
+    const isPinned = matchesRelease || existingSha256 === fallbackPin;
+    // The runtime prefers the package binary; PATH must not leave an
+    // unverified executable in place for it to run.
+    needsVerifiedReplacement = !isPinned;
+    if (isPinned && isExecutableFile(existingBinaryPath)) {
+      const probe = await answersTreeSitterVersion(existingBinaryPath);
+      if (probe.usable) return "already-usable";
+      // Only a failed release executable rules out reinstalling the release.
+      if (matchesRelease) intactProbe = probe;
     }
+  }
+
+  if (allowPathFallback && !needsVerifiedReplacement && hasIndependentTreeSitterOnPath(cliDir, process.env.PATH ?? "")) {
+    return "already-usable";
   }
 
   const installScript = join(cliDir, "install.js");
