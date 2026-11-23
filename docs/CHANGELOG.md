@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+### Cloud Sync setup
+
+- Select **Try Cloud Sync free for 30 days** from your focus areas to open monthly checkout. The trial requires a card and costs $0 today, then $12/month after 30 days.
+- Setup preselects detected agents. You can discover your recent work or start with your next session. Annual Cloud Sync ($99 upfront) and free local setup are available before checkout. If you already have Cloud Sync, connect your device with your existing plan.
+- After Cloud Sync activates, setup shows token usage from the original scan and offers optional hosted memory generation. Reloading or retrying checkout keeps the plan you selected.
+
 ## [16.1.0] - 2026-11-23
 
 ### Standalone Cloud Sync in the installer
