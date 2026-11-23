@@ -9,9 +9,10 @@ import { agentStopFor, readAgentStops } from './agent-lifecycle.mjs';
 import { withDerivedProjects } from './session-project.mjs';
 import { observationMediaFromMetadata } from '../media/feed.js';
 import { appliedLabel, workStateItems } from './work-state-labels.mjs';
+import { GROK_BUILD_PLATFORM_SOURCE } from '../../shared/platform-source.js';
 const PROJECT_KEY = (value) => String(value ?? '').replace(/[A-Z]/g, (c) => c.toLowerCase());
 // Live Gemini CLI hooks record `gemini`; the Gemini CLI importer records `gemini-cli`. Both are one host.
-const PLATFORMS = { codex: 'Codex', claude: 'Claude Code', gemini: 'Gemini CLI', 'gemini-cli': 'Gemini CLI', 'antigravity-cli': 'Antigravity CLI', kimi: 'Kimi', 'hermes-cli': 'Hermes', 'pi-agent': 'Pi' };
+const PLATFORMS = { codex: 'Codex', claude: 'Claude Code', gemini: 'Gemini CLI', 'gemini-cli': 'Gemini CLI', 'antigravity-cli': 'Antigravity CLI', [GROK_BUILD_PLATFORM_SOURCE]: 'Grok Build', kimi: 'Kimi', 'hermes-cli': 'Hermes', 'pi-agent': 'Pi' };
 export const platformLabel = (platform) => PLATFORMS[platform] ?? compactText(platform, 48) ?? 'Unassigned';
 const stamp = (value) => Number.isFinite(Number(value)) && Number(value) > 0 ? new Date(Number(value)).toISOString() : null;
 const fingerprint = (value) => JSON.stringify(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)));

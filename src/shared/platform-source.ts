@@ -1,4 +1,6 @@
 export const DEFAULT_PLATFORM_SOURCE = 'claude';
+/** Grok Build runs the Claude Code plugin's hooks; its sessions are stored under this source (#6419). */
+export const GROK_BUILD_PLATFORM_SOURCE = 'grok-build';
 
 function sanitizeRawSource(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, '-');

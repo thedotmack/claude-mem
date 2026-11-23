@@ -15,6 +15,7 @@ import * as spoolHookEventModule from '../src/cli/spool-hook-event.js';
 import { installFakeStdin, installOpenFakeStdin, restoreStdin } from './fake-stdin.js';
 import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager.js';
 import { resetHookSettingsCacheForTesting } from '../src/shared/hook-settings.js';
+import { normalizePlatformSource } from '../src/shared/platform-source.js';
 
 const realStdoutWrite = process.stdout.write;
 
@@ -287,6 +288,59 @@ describe("hook claude <event> is Claude Code (#2835)", () => {
     } finally {
       executeSpy.mockRestore();
     }
+  });
+});
+
+describe('Grok Build hooks are recorded as grok-build (#6419)', () => {
+  const originalGrokHookEvent = process.env.GROK_HOOK_EVENT;
+  afterEach(() => {
+    if (originalGrokHookEvent === undefined) delete process.env.GROK_HOOK_EVENT;
+    else process.env.GROK_HOOK_EVENT = originalGrokHookEvent;
+  });
+
+  // Grok Build runs the Claude Code plugin's `hook claude-code <event>` commands with a camelCase payload.
+  const runGrokPayloadThroughClaudeCodeHook = async () => {
+    const seen: Array<{ platform: unknown; platformSource: string; sessionId: unknown; filePath: unknown }> = [];
+    const executeSpy = spyOn(getEventHandler('file-context'), 'execute').mockImplementation(async (input) => {
+      seen.push({
+        platform: input.platform,
+        platformSource: normalizePlatformSource(input.platform),
+        sessionId: input.sessionId,
+        filePath: (input.toolInput as Record<string, unknown> | undefined)?.file_path,
+      });
+      return { continue: true, suppressOutput: true };
+    });
+    captureStdout();
+    installFakeStdin(JSON.stringify({
+      sessionId: 'grok-session',
+      cwd: process.cwd(),
+      hookEventName: 'PreToolUse',
+      toolName: 'read_file',
+      toolInput: { target_file: '/repo/src/index.ts' },
+    }));
+    try {
+      const exitCode = await hookCommand('claude-code', 'file-context', { skipExit: true });
+      expect(exitCode).toBe(HOOK_EXIT_CODES.SUCCESS);
+    } finally {
+      executeSpy.mockRestore();
+    }
+    return seen;
+  };
+
+  it('stores a hook that runs with GROK_HOOK_EVENT under grok-build, still read by the claude-code adapter', async () => {
+    process.env.GROK_HOOK_EVENT = 'PreToolUse';
+
+    expect(await runGrokPayloadThroughClaudeCodeHook()).toEqual([
+      { platform: 'grok-build', platformSource: 'grok-build', sessionId: 'grok-session', filePath: '/repo/src/index.ts' },
+    ]);
+  });
+
+  it('keeps the same hook under claude without GROK_HOOK_EVENT', async () => {
+    delete process.env.GROK_HOOK_EVENT;
+
+    expect(await runGrokPayloadThroughClaudeCodeHook()).toEqual([
+      { platform: 'claude-code', platformSource: 'claude', sessionId: 'grok-session', filePath: '/repo/src/index.ts' },
+    ]);
   });
 });
 
