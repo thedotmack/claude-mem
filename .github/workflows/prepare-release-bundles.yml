@@ -30,7 +30,8 @@ jobs:
           bun-version: 1.4.4
       - run: npm install --ignore-scripts --no-audit --no-fund
       - run: npm run build
-      - run: bun test tests/infrastructure/version-consistency.test.ts tests/infrastructure/committed-plugin-bundles.test.ts
+      - name: Verify generated bundles and UI translations
+        run: bun test tests/infrastructure/version-consistency.test.ts tests/infrastructure/committed-plugin-bundles.test.ts tests/ui-i18n.test.ts
       - name: Capture the generated files
         run: |
           git add -A
