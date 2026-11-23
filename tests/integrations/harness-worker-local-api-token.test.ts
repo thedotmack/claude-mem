@@ -57,4 +57,27 @@ describe('resolveHarnessAuthHeaders', () => {
     writeSettings({ CLAUDE_MEM_LOCAL_API_TOKEN: TOKEN, CLAUDE_MEM_WORKER_PORT: '37777' });
     expect(resolveHarnessAuthHeaders('http://127.0.0.1:37777')).toEqual({ [LOCAL_API_TOKEN_HEADER]: TOKEN });
   });
+
+  // #6390: the opt-in names the one remote worker that may receive the token.
+  it('sends it to the remote worker the user names in CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST', () => {
+    writeSettings({
+      CLAUDE_MEM_LOCAL_API_TOKEN: TOKEN,
+      CLAUDE_MEM_WORKER_HOST: 'worker.example.com',
+      CLAUDE_MEM_WORKER_PORT: '37777',
+      CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST: 'worker.example.com',
+    });
+    expect(resolveHarnessAuthHeaders('https://worker.example.com')).toEqual({ [LOCAL_API_TOKEN_HEADER]: TOKEN });
+  });
+
+  it('sends nothing to that worker without the opt-in, or when it names another host', () => {
+    writeSettings({ CLAUDE_MEM_LOCAL_API_TOKEN: TOKEN, CLAUDE_MEM_WORKER_HOST: 'worker.example.com', CLAUDE_MEM_WORKER_PORT: '37777' });
+    expect(resolveHarnessAuthHeaders('https://worker.example.com')).toEqual({});
+    writeSettings({
+      CLAUDE_MEM_LOCAL_API_TOKEN: TOKEN,
+      CLAUDE_MEM_WORKER_HOST: 'worker.example.com',
+      CLAUDE_MEM_WORKER_PORT: '37777',
+      CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST: 'other.example.com',
+    });
+    expect(resolveHarnessAuthHeaders('https://worker.example.com')).toEqual({});
+  });
 });

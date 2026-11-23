@@ -6,8 +6,7 @@ import { isConnectionRefusedError } from '../shared/connection-errors.js';
 import { expandHome } from '../shared/expand-home.js';
 import { HOOK_TIMEOUTS, getTimeout } from '../shared/hook-constants.js';
 import { getDefaultWorkerPort } from '../shared/install-port.js';
-import { localApiTokenHeaders, normalizeLocalApiToken } from '../shared/local-api-token.js';
-import { isLoopbackHostname } from '../shared/worker-url.js';
+import { localApiTokenHeadersFor, normalizeLocalApiToken } from '../shared/local-api-token.js';
 
 const TIMEOUT_MS = 5_000;
 const CONTEXT_TIMEOUT_BOUNDS = { min: 500, max: 300_000 } as const;
@@ -57,12 +56,19 @@ export function resolveHarnessWorkerUrl(): string {
  * receives it.
  */
 export function resolveHarnessAuthHeaders(baseUrl: string = resolveHarnessWorkerUrl()): Record<string, string> {
-  const token = normalizeLocalApiToken(readHarnessSettingsFile(dataDirectory()).CLAUDE_MEM_LOCAL_API_TOKEN);
+  const settings = readHarnessSettingsFile(dataDirectory());
+  const token = normalizeLocalApiToken(settings.CLAUDE_MEM_LOCAL_API_TOKEN);
   if (!token) return {};
   try {
-    const target = new URL(baseUrl);
-    if (target.origin !== new URL(resolveHarnessWorkerUrl()).origin) return {};
-    return isLoopbackHostname(target.hostname) ? localApiTokenHeaders(token) : {};
+    return localApiTokenHeadersFor({
+      token,
+      workerOrigin: new URL(baseUrl).origin,
+      localOrigin: new URL(resolveHarnessWorkerUrl()).origin,
+      configuredHost: harnessSetting()('CLAUDE_MEM_WORKER_HOST', '127.0.0.1'),
+      remoteTokenHost: typeof settings.CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST === 'string'
+        ? settings.CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST
+        : '',
+    });
   } catch {
     return {};
   }

@@ -4,8 +4,7 @@ import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { isConnectionRefusedError, isUnbindablePortError } from '../../shared/connection-errors.js';
-import { localApiTokenHeaders, normalizeLocalApiToken } from '../../shared/local-api-token.js';
-import { isLoopbackHostname } from '../../shared/worker-url.js';
+import { localApiTokenHeadersFor } from '../../shared/local-api-token.js';
 
 function getWorkerHost(): string {
   return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_WORKER_HOST;
@@ -30,17 +29,25 @@ function localWorkerOrigin(port: number): string {
 }
 
 /**
- * The local API token (#5141) as headers, for a request to this machine's worker at
- * `localWorkerOrigin`. Read from settings.json alone, like the worker reads it. Only when
- * CLAUDE_MEM_WORKER_HOST is a loopback address, so a host naming another machine never gets
- * it, and never for an explicit CLAUDE_MEM_WORKER_URL: that worker is not ours to hand it to.
+ * The local API token (#5141) as headers for the probe this process makes. Read from
+ * settings.json alone, like the worker reads it, and decided by the one shared rule
+ * (localApiTokenHeadersFor): a host naming another machine never gets it, and neither
+ * does an explicit CLAUDE_MEM_WORKER_URL, unless the user names that host in
+ * CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST (#6390).
  */
-function localWorkerAuthHeaders(): Record<string, string> {
-  const token = normalizeLocalApiToken(
-    SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH, false, { readOnly: true }).CLAUDE_MEM_LOCAL_API_TOKEN,
-  );
-  if (!token || !isLoopbackHostname(getWorkerHost())) return {};
-  return localApiTokenHeaders(token);
+function localWorkerAuthHeaders(port: number): Record<string, string> {
+  const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH, false, { readOnly: true });
+  const configuredHost = getWorkerHost();
+  // Both origins are built from the configured host, so a probe of this machine's worker
+  // at whatever port the caller is waiting on still carries the token: only the hostname
+  // decides, exactly as before.
+  return localApiTokenHeadersFor({
+    token: settings.CLAUDE_MEM_LOCAL_API_TOKEN,
+    workerOrigin: localWorkerOrigin(port),
+    localOrigin: localWorkerOrigin(port),
+    configuredHost,
+    remoteTokenHost: settings.CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST,
+  });
 }
 
 async function httpRequestToWorker(
@@ -270,7 +277,7 @@ export function waitForReadiness(port: number, timeoutMs: number = 30000, explic
   if (explicitWorkerOrigin) {
     return pollEndpointUntilOk(explicitWorkerOrigin, '/api/readiness', timeoutMs, 'Worker not ready yet, will retry');
   }
-  return pollEndpointUntilOk(localWorkerOrigin(port), '/api/readiness', timeoutMs, 'Worker not ready yet, will retry', localWorkerAuthHeaders());
+  return pollEndpointUntilOk(localWorkerOrigin(port), '/api/readiness', timeoutMs, 'Worker not ready yet, will retry', localWorkerAuthHeaders(port));
 }
 
 export async function waitForPortFree(port: number, timeoutMs: number = 10000): Promise<boolean> {
@@ -292,7 +299,7 @@ export async function httpShutdown(port: number, reason: 'stop' | 'restart' = 's
     // reason tag lets the worker report shutdown_reason: 'restart' on its
     // worker_stopped telemetry instead of a generic 'stop'.
     const endpointPath = reason === 'restart' ? '/api/admin/shutdown?reason=restart' : '/api/admin/shutdown';
-    const result = await httpRequestToWorker(localWorkerOrigin(port), endpointPath, 'POST', HEALTH_PROBE_TIMEOUT_MS, localWorkerAuthHeaders());
+    const result = await httpRequestToWorker(localWorkerOrigin(port), endpointPath, 'POST', HEALTH_PROBE_TIMEOUT_MS, localWorkerAuthHeaders(port));
     if (!result.ok) {
       logger.warn('SYSTEM', 'Shutdown request returned error', { status: result.statusCode });
       return false;

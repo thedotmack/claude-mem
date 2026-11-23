@@ -36,7 +36,7 @@ import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { getUptimeSeconds } from '../shared/uptime.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { readLocalApiToken } from '../shared/hook-settings.js';
-import { readLegacyTvToken, resolveWorkerBindHost } from './worker/worker-bind-host.js';
+import { readLegacyTvToken, resolveWorkerBindHost, warnOnPlainHttpRemoteTokenHost } from './worker/worker-bind-host.js';
 import { describeObserverAuthMethod } from './worker/observer-auth-method.js';
 import { logger } from '../utils/logger.js';
 import { isHookStdoutClosed } from '../shared/hook-io.js';
@@ -1022,6 +1022,16 @@ export class WorkerService implements WorkerRef {
       configuredHost: getWorkerHost(),
       legacyTvToken: readLegacyTvToken(USER_SETTINGS_PATH),
       localApiTokenSet: this.localApiTokenEnabled,
+    });
+
+    // The token crosses a plain-HTTP hop only when the user names a remote host
+    // (#6390): say so, once, at boot.
+    warnOnPlainHttpRemoteTokenHost({
+      configuredHost: getWorkerHost(),
+      localApiTokenSet: this.localApiTokenEnabled,
+      remoteTokenHost: SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH, false, { readOnly: true })
+        .CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST,
+      workerUrl: buildWorkerUrl('/api/health'),
     });
 
     // Phase 3 telemetry: bridge logged errors into PostHog Error Tracking

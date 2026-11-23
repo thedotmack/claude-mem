@@ -18,8 +18,7 @@ import { loadClaudeMemEnv, saveClaudeMemEnv } from '../../shared/EnvManager.js';
 import { ensureWorkerStarted, getLastWorkerBootFailure, type WorkerStartResult } from '../../services/worker-spawner.js';
 import { formatHostForUrl } from '../../shared/worker-utils.js';
 import { readLocalApiToken } from '../../shared/hook-settings.js';
-import { localApiTokenHeaders } from '../../shared/local-api-token.js';
-import { isLoopbackHostname } from '../../shared/worker-url.js';
+import { localApiTokenHeadersFor } from '../../shared/local-api-token.js';
 import {
   ensureBun,
   ensureUv,
@@ -3895,10 +3894,20 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     // can't answer yet, and the state is always visible via the cloud-sync skill.
     if (cloudSyncConfigured && workerReady) {
       try {
-        // /api/sync/status takes the local API token when that mode is on (#5141).
-        const localApiToken = isLoopbackHostname(workerHost) ? readLocalApiToken() : '';
-        const syncResponse = await fetch(`http://${workerUrlHost}:${actualPort}/api/sync/status`, {
-          ...(localApiToken ? { headers: localApiTokenHeaders(localApiToken) } : {}),
+        // /api/sync/status takes the local API token when that mode is on (#5141),
+        // including the one remote worker the user names (#6390). The origin this asks
+        // is the configured worker's, on whatever port it actually reported, so a
+        // loopback install keeps sending the token exactly as before.
+        const syncOrigin = `http://${workerUrlHost}:${actualPort}`;
+        const syncHeaders = localApiTokenHeadersFor({
+          token: readLocalApiToken(),
+          workerOrigin: syncOrigin,
+          localOrigin: syncOrigin,
+          configuredHost: workerHost,
+          remoteTokenHost: getSetting('CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST'),
+        });
+        const syncResponse = await fetch(`${syncOrigin}/api/sync/status`, {
+          ...(Object.keys(syncHeaders).length > 0 ? { headers: syncHeaders } : {}),
           signal: AbortSignal.timeout(3000),
         });
         if (syncResponse.ok) {

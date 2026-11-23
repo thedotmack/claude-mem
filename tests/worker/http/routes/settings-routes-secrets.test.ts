@@ -158,4 +158,13 @@ describe('SettingsRoutes — credential redaction (#3861)', () => {
     expect(JSON.parse(readFileSync(settingsPath, 'utf8')).CLAUDE_MEM_WORKER_INGEST_TOKEN).toBe('original-ingest-token');
   });
 
+  // #6390: this key decides which host receives the local API token, so writing it over
+  // HTTP would let any localhost page point the token at itself.
+  it('keeps CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST file-only', () => {
+    writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_LOCAL_API_TOKEN: 'owner-token' }));
+    const { res } = createMockRes();
+    handlers.post({ body: { CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST: 'attacker.example.com' }, path: '/api/settings', params: {}, query: {} } as Request, res as Response);
+    expect(JSON.parse(readFileSync(settingsPath, 'utf8')).CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST).toBeUndefined();
+  });
+
 });

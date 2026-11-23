@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import type { AddressInfo } from 'net';
 import { networkInterfaces } from 'os';
 import path from 'path';
-import { readLegacyTvToken, resolveWorkerBindHost } from '../../src/services/worker/worker-bind-host.js';
+import { readLegacyTvToken, resolveWorkerBindHost, warnOnPlainHttpRemoteTokenHost } from '../../src/services/worker/worker-bind-host.js';
 import { logger } from '../../src/utils/logger.js';
 
 // Observation TV was removed. An install that still has CLAUDE_MEM_TV_TOKEN with a
@@ -208,5 +208,60 @@ describe('without a leftover CLAUDE_MEM_TV_TOKEN', () => {
 
   it('reads no token from a settings file that does not exist', () => {
     expect(readLegacyTvToken(path.join(settingsDir, 'missing.json'), {})).toBe('');
+  });
+});
+
+// #6390: a remote host the user names receives the token in a header, so a plain-HTTP
+// hop to it puts the token on the wire in the clear. Warn once at boot; never refuse,
+// for the same reason the non-loopback bind above only warns.
+describe('warnOnPlainHttpRemoteTokenHost', () => {
+  const REMOTE = 'worker.example.com';
+
+  it('warns when the token would go over plain HTTP to a non-loopback host', () => {
+    spyOnLogs();
+    warnOnPlainHttpRemoteTokenHost({
+      configuredHost: REMOTE,
+      localApiTokenSet: true,
+      remoteTokenHost: REMOTE,
+      workerUrl: `http://${REMOTE}:37777`,
+    });
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const [component, message] = warnSpy.mock.calls[0];
+    expect(component).toBe('SECURITY');
+    expect(message).toContain(REMOTE);
+    expect(message).toContain('plain HTTP');
+    // The message names the remedy, and never the token itself.
+    expect(message).toContain('https');
+    expect(message).not.toContain('local-api-token');
+  });
+
+  it('stays quiet for an https worker', () => {
+    spyOnLogs();
+    warnOnPlainHttpRemoteTokenHost({
+      configuredHost: REMOTE,
+      localApiTokenSet: true,
+      remoteTokenHost: REMOTE,
+      workerUrl: `https://${REMOTE}`,
+    });
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('stays quiet when no remote host is named, so the token never leaves the machine', () => {
+    spyOnLogs();
+    warnOnPlainHttpRemoteTokenHost({
+      configuredHost: REMOTE,
+      localApiTokenSet: true,
+      remoteTokenHost: '',
+      workerUrl: `http://${REMOTE}:37777`,
+    });
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('stays quiet when no token is set, or the two hosts differ, or either is loopback', () => {
+    spyOnLogs();
+    warnOnPlainHttpRemoteTokenHost({ configuredHost: REMOTE, localApiTokenSet: false, remoteTokenHost: REMOTE, workerUrl: `http://${REMOTE}:37777` });
+    warnOnPlainHttpRemoteTokenHost({ configuredHost: REMOTE, localApiTokenSet: true, remoteTokenHost: 'other.example.com', workerUrl: `http://${REMOTE}:37777` });
+    warnOnPlainHttpRemoteTokenHost({ configuredHost: '127.0.0.1', localApiTokenSet: true, remoteTokenHost: '127.0.0.1', workerUrl: 'http://127.0.0.1:37777' });
+    expect(warnSpy).not.toHaveBeenCalled();
   });
 });

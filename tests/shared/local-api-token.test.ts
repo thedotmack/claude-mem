@@ -6,6 +6,7 @@ import {
   extractLocalApiToken,
   normalizeLocalApiToken,
   localApiTokenHeaders,
+  localApiTokenHeadersFor,
   safeEqualSecret,
 } from '../../src/shared/local-api-token.js';
 
@@ -101,5 +102,93 @@ describe('safeEqualSecret', () => {
     expect(safeEqualSecret(TOKEN, TOKEN)).toBe(true);
     expect(safeEqualSecret(TOKEN, `${TOKEN}x`)).toBe(false);
     expect(safeEqualSecret('', TOKEN)).toBe(false);
+  });
+});
+
+// #6390: one remote worker, named by the user, may receive the token. Every other
+// host still gets nothing, and the loopback rule is unchanged.
+describe('localApiTokenHeadersFor', () => {
+  const CLIENTS = { localOrigin: 'http://127.0.0.1:37777', configuredHost: '127.0.0.1' };
+  const headers = (over: Partial<Parameters<typeof localApiTokenHeadersFor>[0]> = {}) =>
+    localApiTokenHeadersFor({ token: TOKEN, workerOrigin: CLIENTS.localOrigin, remoteTokenHost: '', ...CLIENTS, ...over });
+
+  it('sends the token to this machine\'s worker exactly as before when no remote host is named', () => {
+    expect(headers()).toEqual({ [LOCAL_API_TOKEN_HEADER]: TOKEN });
+  });
+
+  it('adds nothing without a token, whatever the hosts say', () => {
+    expect(headers({ token: '', remoteTokenHost: 'worker.example.com', configuredHost: 'worker.example.com', workerOrigin: 'https://worker.example.com' })).toEqual({});
+    expect(headers({ token: '   ' })).toEqual({});
+  });
+
+  it('still never sends the token to any other loopback address', () => {
+    // An SSH forward to another machine's worker looks exactly like this.
+    expect(headers({ workerOrigin: 'http://127.0.0.1:9' })).toEqual({});
+    expect(headers({ workerOrigin: 'http://localhost:37777' })).toEqual({});
+  });
+
+  it('sends the token to the named remote host when it equals CLAUDE_MEM_WORKER_HOST', () => {
+    expect(headers({
+      configuredHost: 'worker.example.com',
+      remoteTokenHost: 'worker.example.com',
+      workerOrigin: 'https://worker.example.com',
+      localOrigin: 'http://worker.example.com:37777',
+    })).toEqual({ [LOCAL_API_TOKEN_HEADER]: TOKEN });
+  });
+
+  it('sends nothing when the setting and the configured host differ, even by case or whitespace', () => {
+    expect(headers({
+      configuredHost: 'worker.example.com',
+      remoteTokenHost: 'other.example.com',
+      workerOrigin: 'https://other.example.com',
+      localOrigin: 'http://worker.example.com:37777',
+    })).toEqual({});
+    expect(headers({
+      configuredHost: 'worker.example.com',
+      remoteTokenHost: ' Worker.example.com',
+      workerOrigin: 'https://worker.example.com',
+      localOrigin: 'http://worker.example.com:37777',
+    })).toEqual({});
+  });
+
+  it('sends nothing to a host the setting names unless the request actually goes there', () => {
+    expect(headers({
+      configuredHost: 'worker.example.com',
+      remoteTokenHost: 'worker.example.com',
+      workerOrigin: 'https://attacker.example.com',
+      localOrigin: 'http://worker.example.com:37777',
+    })).toEqual({});
+  });
+
+  it('treats a loopback URL as another local port, never as the remote host', () => {
+    // Naming 127.0.0.1 as the remote host must not reopen the SSH-forward hole.
+    expect(headers({
+      configuredHost: '127.0.0.1',
+      remoteTokenHost: '127.0.0.1',
+      workerOrigin: 'http://127.0.0.1:9',
+    })).toEqual({});
+  });
+
+  it('sends nothing when the configured host is not a loopback address and no remote host is named', () => {
+    expect(headers({
+      configuredHost: 'worker.example.com',
+      workerOrigin: 'https://worker.example.com',
+      localOrigin: 'http://worker.example.com:37777',
+    })).toEqual({});
+  });
+
+  it('covers a remote worker reached by host and port, with no explicit CLAUDE_MEM_WORKER_URL', () => {
+    // The same origin, so the old URL comparison could not tell them apart either way.
+    expect(headers({
+      configuredHost: 'worker.example.com',
+      remoteTokenHost: 'worker.example.com',
+      workerOrigin: 'http://worker.example.com:37777',
+      localOrigin: 'http://worker.example.com:37777',
+    })).toEqual({ [LOCAL_API_TOKEN_HEADER]: TOKEN });
+    expect(headers({
+      configuredHost: 'worker.example.com',
+      workerOrigin: 'http://worker.example.com:37777',
+      localOrigin: 'http://worker.example.com:37777',
+    })).toEqual({});
   });
 });

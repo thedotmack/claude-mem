@@ -156,6 +156,10 @@ export const FILE_ONLY_SETTING_KEYS = new Set([
   'CLAUDE_MEM_OPENAI_COMPAT_BASE_URL',
   'CLAUDE_MEM_OPENAI_COMPAT_PRESET',
   'CLAUDE_MEM_LOCAL_API_TOKEN',
+  // It decides which host receives that token, so it is part of the same boundary:
+  // a caller that could point it at its own host over HTTP would only have to wait
+  // for the next hook to hand it the token (#6390).
+  'CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST',
 ]);
 
 const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);

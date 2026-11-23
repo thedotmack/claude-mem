@@ -415,6 +415,12 @@ export interface SettingsDefaults {
   // switch it. Read once at boot; restart to change. Mint with:
   //   node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
   CLAUDE_MEM_LOCAL_API_TOKEN: string;
+  // The one non-loopback worker that may receive that token (#6390). EMPTY = none,
+  // so the token stays on loopback and nothing changes. It must equal
+  // CLAUDE_MEM_WORKER_HOST exactly, or no client sends the token: a token that
+  // settings.json holds for one worker must never reach a host the user did not
+  // name. File-only, like the token it accompanies.
+  CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST: string;
   // claude-mem sign-in funnel state, written by the installer's browser-login
   // step (install.ts promptBrowserLogin/completeTrialPairing). Declared here so
   // loadFromFile round-trips them instead of dropping unknown keys.
@@ -758,6 +764,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS: '90000',  // Streamed request idle window (streamed-chat-completion.ts): silence that ends a stream. Self-hosted backends queue behind a load balancer, and the queue wait reads as idle (#4737) — raise it there. Literal because shared cannot import from the worker; a drift test pins it to the shipped constant
     CLAUDE_MEM_WORKER_HEARTBEAT_STALE_MS: '120000', // A silent worker whose liveness heartbeat is younger than this is slow, not dead (10000-3600000).
     CLAUDE_MEM_LOCAL_API_TOKEN: '', // Local API token. Empty = off. See the declaration above.
+    CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST: '', // The one remote worker that may receive it. Empty = loopback only.
     // claude-mem sign-in funnel state: all empty until the installer's
     // browser-login step writes them.
     CLAUDE_MEM_PRO_TRIAL_EMAIL: '',     // Email the sign-in link was sent to (don't-re-nag marker)
