@@ -133,8 +133,8 @@ npm run worker:status
 # View logs
 npm run worker:logs
 
-# Test hooks manually
-echo '{"session_id":"test-123","cwd":"'$(pwd)'","source":"startup"}' | node plugin/scripts/context-hook.js
+# Test the SessionStart hook with the installed claude-mem CLI on PATH
+node -e 'console.log(JSON.stringify({session_id: "test-123", cwd: process.cwd(), source: "startup"}))' | claude-mem hook claude-code context
 ```
 
 ### 5. Iterate
@@ -461,10 +461,10 @@ sqlite3 ~/.claude-mem/claude-mem.db "PRAGMA integrity_check;"
 **Hook Testing**:
 ```bash
 # Test context hook manually
-echo '{"session_id":"test-123","cwd":"'$(pwd)'","source":"startup"}' | node plugin/scripts/context-hook.js
+node -e 'console.log(JSON.stringify({session_id: "test-123", cwd: process.cwd(), source: "startup"}))' | claude-mem hook claude-code context
 
-# Test new hook
-echo '{"session_id":"test-123","cwd":"'$(pwd)'","prompt":"test"}' | node plugin/scripts/new-hook.js
+# Test the UserPromptSubmit hook
+node -e 'console.log(JSON.stringify({session_id: "test-123", cwd: process.cwd(), prompt: "test"}))' | claude-mem hook claude-code session-init
 ```
 
 **Data Verification**:
@@ -621,10 +621,10 @@ Run hooks manually with test input:
 
 ```bash
 # Test context hook
-echo '{"session_id":"test-123","cwd":"'$(pwd)'","source":"startup"}' | node plugin/scripts/context-hook.js
+node -e 'console.log(JSON.stringify({session_id: "test-123", cwd: process.cwd(), source: "startup"}))' | claude-mem hook claude-code context
 
-# Test new hook
-echo '{"session_id":"test-123","cwd":"'$(pwd)'","prompt":"test"}' | node plugin/scripts/new-hook.js
+# Test the UserPromptSubmit hook
+node -e 'console.log(JSON.stringify({session_id: "test-123", cwd: process.cwd(), prompt: "test"}))' | claude-mem hook claude-code session-init
 ```
 
 ## Publishing
