@@ -130,12 +130,35 @@ describe('workerAuthHeaders with an opt-in remote host', () => {
     expect(workerAuthHeaders()).toEqual({ [LOCAL_API_TOKEN_HEADER]: TOKEN });
   });
 
-  it('sends nothing to the remote host over plain http, even with the opt-in', () => {
+  // The reporter's setup: a worker on a private network reached by host and port, no https.
+  it('sends the token to the named host over plain http by host and port, with the opt-in', () => {
     writeSettings({
       CLAUDE_MEM_LOCAL_API_TOKEN: TOKEN,
       CLAUDE_MEM_WORKER_HOST: REMOTE,
       CLAUDE_MEM_WORKER_PORT: '37777',
       CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST: REMOTE,
+    });
+    expect(workerAuthHeaders()).toEqual({ [LOCAL_API_TOKEN_HEADER]: TOKEN });
+  });
+
+  it('sends nothing to a host reached over plain http without the opt-in, or when it names another host', () => {
+    writeSettings({ CLAUDE_MEM_LOCAL_API_TOKEN: TOKEN, CLAUDE_MEM_WORKER_HOST: REMOTE, CLAUDE_MEM_WORKER_PORT: '37777' });
+    expect(workerAuthHeaders()).toEqual({});
+    writeSettings({
+      CLAUDE_MEM_LOCAL_API_TOKEN: TOKEN,
+      CLAUDE_MEM_WORKER_HOST: REMOTE,
+      CLAUDE_MEM_WORKER_PORT: '37777',
+      CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST: 'other.example.com',
+    });
+    expect(workerAuthHeaders()).toEqual({});
+  });
+
+  it('sends nothing to an https worker URL on a host other than the named one', () => {
+    writeSettings({
+      CLAUDE_MEM_LOCAL_API_TOKEN: TOKEN,
+      CLAUDE_MEM_WORKER_HOST: REMOTE,
+      CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST: REMOTE,
+      CLAUDE_MEM_WORKER_URL: 'https://attacker.example.com',
     });
     expect(workerAuthHeaders()).toEqual({});
   });

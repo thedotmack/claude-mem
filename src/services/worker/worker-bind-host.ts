@@ -90,11 +90,10 @@ export function resolveWorkerBindHost(input: {
 }
 
 /**
- * Say so when a remote token host is configured but the worker can only be reached over
- * plain HTTP (#6390). The token rides in a header, so a plain-HTTP hop would put it in the
- * clear; clients therefore send it to a non-loopback host over https only. Warn at boot so
- * a person who set the opt-in and sees no remote capture learns why, and so the reason is
- * in the log before they consider running this worker over http.
+ * Say so when a remote token host is configured and the worker is reached over plain
+ * HTTP (#6390). Clients then send the token to that host in a header, in the clear, so
+ * anyone on the network path can read it. Warn, never refuse: the opt-in is the person's
+ * explicit choice, the same as the non-loopback bind above, which only warns.
  */
 export function warnOnPlainHttpRemoteTokenHost(input: {
   configuredHost: string;
@@ -120,7 +119,7 @@ export function warnOnPlainHttpRemoteTokenHost(input: {
 
   logger.warn(
     'SECURITY',
-    `CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST is set for ${remote}, but this worker is reached at ${input.workerUrl}, which is plain HTTP. Clients send the local API token to another host only over https, because a plain-HTTP hop carries the header in the clear and the token opens this worker's whole API. Set CLAUDE_MEM_WORKER_URL to the worker's https address to use remote capture, or unset CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST.`,
+    `CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST is set for ${remote}, and this worker is reached at ${input.workerUrl}, which is plain HTTP. Clients will send the local API token to it in the clear, and anyone on the network path who reads it can use this worker's whole API. Set CLAUDE_MEM_WORKER_URL to the worker's https address unless this network is trusted.`,
     { host: remote, workerUrl: input.workerUrl },
   );
 }

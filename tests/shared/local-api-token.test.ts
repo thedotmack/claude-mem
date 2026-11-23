@@ -1,5 +1,6 @@
 // Local API token mode (#5141): the policy both servers share.
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, spyOn } from 'bun:test';
+import { logger } from '../../src/utils/logger.js';
 import {
   LOCAL_API_TOKEN_HEADER,
   decideLocalApiAccess,
@@ -169,13 +170,76 @@ describe('localApiTokenHeadersFor', () => {
     })).toEqual({});
   });
 
-  it('sends nothing to a remote host over plain HTTP, which would carry the header in the clear', () => {
+  // The #6390 spec: plain http to the named host works and warns; it is not refused.
+  it('sends the token to the named remote host over plain HTTP, with a SECURITY warning', () => {
+    const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+    try {
+      expect(headers({
+        configuredHost: 'lan-worker.example.com',
+        remoteTokenHost: 'lan-worker.example.com',
+        workerOrigin: 'http://lan-worker.example.com:37777',
+        localOrigin: 'http://lan-worker.example.com:37777',
+      })).toEqual({ [LOCAL_API_TOKEN_HEADER]: TOKEN });
+      const security = warn.mock.calls.filter(([component]) => component === 'SECURITY');
+      expect(security).toHaveLength(1);
+      expect(String(security[0][1])).toContain('http://lan-worker.example.com:37777');
+      expect(String(security[0][1])).toContain('plain HTTP');
+      // The warning names the destination, never the credential.
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(TOKEN);
+
+      // Once per origin, so a long-lived MCP server does not log it on every request.
+      headers({
+        configuredHost: 'lan-worker.example.com',
+        remoteTokenHost: 'lan-worker.example.com',
+        workerOrigin: 'http://lan-worker.example.com:37777',
+        localOrigin: 'http://lan-worker.example.com:37777',
+      });
+      expect(warn.mock.calls.filter(([component]) => component === 'SECURITY')).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('over plain HTTP, sends nothing to another port of the named host', () => {
+    // Only the configured host and port is the http worker the user set up.
+    expect(headers({
+      configuredHost: 'worker.example.com',
+      remoteTokenHost: 'worker.example.com',
+      workerOrigin: 'http://worker.example.com:8080',
+      localOrigin: 'http://worker.example.com:37777',
+    })).toEqual({});
+    // An explicit destination (HealthMonitor's) has no local origin to match.
     expect(headers({
       configuredHost: 'worker.example.com',
       remoteTokenHost: 'worker.example.com',
       workerOrigin: 'http://worker.example.com:37777',
+      localOrigin: '',
+    })).toEqual({});
+  });
+
+  it('over plain HTTP, sends nothing to an unnamed host, a near-match, or without the opt-in', () => {
+    const base = { workerOrigin: 'http://worker.example.com:37777', localOrigin: 'http://worker.example.com:37777' };
+    expect(headers({ ...base, configuredHost: 'worker.example.com', remoteTokenHost: '' })).toEqual({});
+    expect(headers({ ...base, configuredHost: 'worker.example.com', remoteTokenHost: 'other.example.com' })).toEqual({});
+    expect(headers({ ...base, configuredHost: 'worker.example.com', remoteTokenHost: 'Worker.example.com' })).toEqual({});
+    expect(headers({ ...base, configuredHost: 'worker.example.com', remoteTokenHost: 'worker.example.co' })).toEqual({});
+    expect(headers({
+      configuredHost: 'worker.example.com',
+      remoteTokenHost: 'worker.example.com',
+      workerOrigin: 'http://attacker.example.com:37777',
       localOrigin: 'http://worker.example.com:37777',
     })).toEqual({});
+  });
+
+  it('sends nothing over any scheme other than http and https', () => {
+    for (const workerOrigin of ['ws://worker.example.com:37777', 'ftp://worker.example.com', 'file:///worker.example.com']) {
+      expect(headers({
+        configuredHost: 'worker.example.com',
+        remoteTokenHost: 'worker.example.com',
+        workerOrigin,
+        localOrigin: workerOrigin,
+      })).toEqual({});
+    }
   });
 
   it('sends nothing when the configured host is not a loopback address and no remote host is named', () => {

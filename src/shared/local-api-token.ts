@@ -115,11 +115,13 @@ function comparableHostname(hostname: string): string {
  *  - the token goes to this machine's worker at `localOrigin` when that is loopback,
  *    exactly as before. An explicit CLAUDE_MEM_WORKER_URL naming any other address
  *    never receives it: it may be an SSH forward to another machine's worker;
- *  - a non-loopback worker receives it only over https, and only when
- *    CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST names that host and equals
- *    CLAUDE_MEM_WORKER_HOST exactly. One host spelled one way: the token in
- *    settings.json belongs to the worker the user configured, and a near-match is a
- *    mistake, not an intent.
+ *  - a non-loopback worker receives it only when CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST
+ *    names that host and equals CLAUDE_MEM_WORKER_HOST exactly. One host spelled one
+ *    way: the token in settings.json belongs to the worker the user configured, and a
+ *    near-match is a mistake, not an intent. Over https it goes to that host at the
+ *    CLAUDE_MEM_WORKER_URL the user set. Over plain http it goes only to the configured
+ *    host and port, with a SECURITY warning, because the header crosses the network in
+ *    the clear.
  *
  * With the remote host unset the second branch cannot fire, so nothing changes.
  */
@@ -148,17 +150,43 @@ export function localApiTokenHeadersFor(input: {
     return input.workerOrigin === input.localOrigin ? localApiTokenHeaders(token) : {};
   }
 
-  // https only. A header carries the token in the clear, so a plain-HTTP hop hands the
-  // key to this worker's whole API to anyone on the path. The existing worker URL rule
-  // already refuses plain http for a non-loopback host, and this is the same refusal at
-  // the point the credential is attached. A worker reached by host and port derives an
-  // http origin, so remote capture needs CLAUDE_MEM_WORKER_URL set to an https URL.
-  if (target.protocol !== 'https:') return {};
+  if (target.protocol !== 'https:' && target.protocol !== 'http:') return {};
 
   // A remote worker takes the opt-in twice over: the setting must be set, and it must
   // name the same host as CLAUDE_MEM_WORKER_HOST and the request's own host.
   const remote = normalizeRemoteTokenHost(input.remoteTokenHost);
   if (!remote || remote !== input.configuredHost.trim()) return {};
   if (comparableHostname(target.hostname) !== comparableHostname(remote)) return {};
+
+  if (target.protocol === 'http:') {
+    // Plain http is allowed for the named host, as the #6390 spec says (warn, don't
+    // refuse): a worker on a private network, reached by host and port, has no https.
+    // It is limited to the configured host and port, the one http origin the user set
+    // up, so another port on that host never gets the token in the clear.
+    if (!sameOrigin(target, input.localOrigin)) return {};
+    warnPlainHttpRemoteToken(target.origin);
+  }
   return localApiTokenHeaders(token);
+}
+
+function sameOrigin(target: URL, origin: string): boolean {
+  try {
+    return target.origin === new URL(origin).origin;
+  } catch {
+    return false;
+  }
+}
+
+// One warning per origin per process: hooks are short-lived, but the MCP server and the
+// OpenCode plugin compute these headers for every request and would flood the log.
+const plainHttpRemoteTokenOriginsWarned = new Set<string>();
+
+function warnPlainHttpRemoteToken(origin: string): void {
+  if (plainHttpRemoteTokenOriginsWarned.has(origin)) return;
+  plainHttpRemoteTokenOriginsWarned.add(origin);
+  logger.warn(
+    'SECURITY',
+    `Sending the local API token to ${origin} over plain HTTP, because CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST names that host. Anyone on the network path can read the header and use it on the worker's whole API. Set CLAUDE_MEM_WORKER_URL to the worker's https address unless this network is trusted.`,
+    { origin },
+  );
 }

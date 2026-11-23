@@ -7,6 +7,7 @@ import { expandHome } from '../shared/expand-home.js';
 import { HOOK_TIMEOUTS, getTimeout } from '../shared/hook-constants.js';
 import { getDefaultWorkerPort } from '../shared/install-port.js';
 import { localApiTokenHeadersFor, normalizeLocalApiToken } from '../shared/local-api-token.js';
+import { normalizeWorkerBaseUrl } from '../shared/worker-url.js';
 
 const TIMEOUT_MS = 5_000;
 const CONTEXT_TIMEOUT_BOUNDS = { min: 500, max: 300_000 } as const;
@@ -38,8 +39,8 @@ function harnessSetting(dataDir = dataDirectory()): (key: string, fallback: stri
   };
 }
 
-/** Resolve the same per-install address as the worker, including persisted settings. */
-export function resolveHarnessWorkerUrl(): string {
+/** This machine's worker by CLAUDE_MEM_WORKER_HOST and _PORT, as the worker binds it. */
+function resolveHarnessHostPortOrigin(): string {
   const dataDir = dataDirectory();
   const setting = harnessSetting(dataDir);
   const configuredHost = setting('CLAUDE_MEM_WORKER_HOST', '127.0.0.1');
@@ -49,11 +50,22 @@ export function resolveHarnessWorkerUrl(): string {
 }
 
 /**
+ * Where Pi and DSH reach the worker: CLAUDE_MEM_WORKER_URL when it is set, as for the hooks
+ * (worker-utils getWorkerBaseUrl), otherwise host and port. Deriving host and port when a URL
+ * is set would downgrade an https remote worker to http (#6390). An invalid URL throws
+ * instead of falling back, as it does for the hooks.
+ */
+export function resolveHarnessWorkerUrl(): string {
+  return normalizeWorkerBaseUrl(harnessSetting()('CLAUDE_MEM_WORKER_URL', '')) || resolveHarnessHostPortOrigin();
+}
+
+/**
  * The local API token (#5141) as request headers, when settings.json has one and `baseUrl` is
- * this machine's configured worker (resolveHarnessWorkerUrl) on loopback; `{}` otherwise. Read
- * from settings.json alone, like the worker reads it, so the environment cannot change what is
- * sent. Any other address, another loopback port included (it may be an SSH forward), never
- * receives it.
+ * this machine's loopback worker at host and port, or the one remote host named in
+ * CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST (#6390); `{}` otherwise. Decided by the shared rule
+ * (localApiTokenHeadersFor). The token and the opt-in are read from settings.json alone, like
+ * the worker reads them, so the environment cannot change what is sent or where. Any other
+ * address, another loopback port included (it may be an SSH forward), never receives it.
  */
 export function resolveHarnessAuthHeaders(baseUrl: string = resolveHarnessWorkerUrl()): Record<string, string> {
   const settings = readHarnessSettingsFile(dataDirectory());
@@ -63,7 +75,9 @@ export function resolveHarnessAuthHeaders(baseUrl: string = resolveHarnessWorker
     return localApiTokenHeadersFor({
       token,
       workerOrigin: new URL(baseUrl).origin,
-      localOrigin: new URL(resolveHarnessWorkerUrl()).origin,
+      // Host and port, never CLAUDE_MEM_WORKER_URL: a loopback URL there may be an SSH
+      // forward to another machine's worker, so it must not count as this machine's.
+      localOrigin: new URL(resolveHarnessHostPortOrigin()).origin,
       configuredHost: harnessSetting()('CLAUDE_MEM_WORKER_HOST', '127.0.0.1'),
       remoteTokenHost: typeof settings.CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST === 'string'
         ? settings.CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST

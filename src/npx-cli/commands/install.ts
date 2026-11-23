@@ -3933,9 +3933,9 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     if (cloudSyncConfigured && workerReady) {
       try {
         // /api/sync/status takes the local API token when that mode is on (#5141).
-        // These probes address the worker by host and port over http, so the shared rule
-        // (#6390) never carries the token to another machine from here: a remote worker is
-        // read at its https CLAUDE_MEM_WORKER_URL by the clients, not by the installer.
+        // The installer passes no remote token host, so the shared rule (#6390) never
+        // carries the token to another machine from here: a remote worker is read by the
+        // clients that the person opted in, not by the installer.
         const syncOrigin = `http://${workerUrlHost}:${actualPort}`;
         const syncHeaders = localApiTokenHeadersFor({
           token: readLocalApiToken(),
