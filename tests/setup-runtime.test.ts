@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, chmodSync, readdirSync } from 'fs';
+import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, chmodSync, readdirSync, copyFileSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { createHash } from 'crypto';
-import { delimiter, join } from 'path';
+import { delimiter, dirname, join } from 'path';
 import { tmpdir } from 'os';
 import { gzipSync } from 'zlib';
 import {
@@ -16,7 +16,7 @@ import {
   provisionTreeSitterCli,
 } from '../src/npx-cli/install/setup-runtime';
 import { ensureTreeSitterCliBinary, isTreeSitterCliBinaryUsable, treeSitterCliBinaryPath } from '../src/services/smart-file-read/tree-sitter-cli-provision';
-import { treeSitterReleaseAssetUrl } from '../src/services/smart-file-read/tree-sitter-cli-checksums';
+import { pinnedTreeSitterExecutableSha256, treeSitterReleaseAssetUrl } from '../src/services/smart-file-read/tree-sitter-cli-checksums';
 import { createInstallSummary, InstallAbortError } from '../src/npx-cli/install/error-reporter';
 import { ErrorSeverity } from '../src/npx-cli/install/error-taxonomy';
 import { IS_WINDOWS } from '../src/npx-cli/utils/paths';
@@ -308,6 +308,16 @@ describe('tree-sitter CLI provisioning (#2910)', () => {
 
   const sha256 = (content: string | Buffer) => createHash('sha256').update(content).digest('hex');
   const pinFixtureBinary = () => sha256(fixtureBinary());
+  // The dev dependency can be newer than the pinned release; only a pinned
+  // binary counts as "already works" now that the digest is checked first.
+  const repoBinaryIsPinned = (): boolean => {
+    try {
+      const version = JSON.parse(readFileSync(join(dirname(REPO_TREE_SITTER_BINARY), 'package.json'), 'utf-8')).version;
+      return pinnedTreeSitterExecutableSha256(version) === sha256(readFileSync(REPO_TREE_SITTER_BINARY));
+    } catch {
+      return false;
+    }
+  };
 
   function expectNothingLeftInPlace(cliDir: string): void {
     expect(existsSync(treeSitterCliBinaryPath(tempDir))).toBe(false);
@@ -455,14 +465,15 @@ echo 'tree-sitter 0.26.9'
   it.skipIf(process.platform === 'win32')('closes stdin before accepting a package-local version response', async () => {
     const cliDir = writeCliPackage();
     const binaryPath = join(cliDir, 'tree-sitter');
-    writeFileSync(binaryPath, [
+    const script = [
       '#!/usr/bin/env node',
       "process.stdin.resume(); process.stdin.on('end', () => process.stdout.write('tree-sitter 0.26.8\\n'));",
-    ].join('\n'));
+    ].join('\n');
+    writeFileSync(binaryPath, script);
     chmodSync(binaryPath, 0o755);
 
     const startedAt = Date.now();
-    await expect(ensureTreeSitterCliBinary(tempDir, TREE_SITTER_INSTALL_TIMEOUT_MS)).resolves.toBe('already-usable');
+    await expect(ensureTreeSitterCliBinary(tempDir, TREE_SITTER_INSTALL_TIMEOUT_MS, () => sha256(script))).resolves.toBe('already-usable');
     expect(Date.now() - startedAt).toBeLessThan(2000);
   });
 
@@ -549,8 +560,10 @@ echo 'tree-sitter 0.26.9'
     }
   });
 
-  it('reports nothing when the CLI already works', async () => {
-    writeCliBinary(writeCliPackage());
+  it.skipIf(!repoBinaryIsPinned())('reports nothing when the CLI already works', async () => {
+    const cliDir = writeCliPackage();
+    copyFileSync(REPO_TREE_SITTER_BINARY, join(cliDir, TREE_SITTER_BINARY_NAME));
+    if (process.platform !== 'win32') chmodSync(join(cliDir, TREE_SITTER_BINARY_NAME), 0o755);
     const summary = createInstallSummary();
 
     await expect(provisionTreeSitterCli(tempDir, ErrorSeverity.ABORT, summary)).resolves.toBe(true);

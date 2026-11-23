@@ -57,7 +57,7 @@ describe('worker tree-sitter CLI provisioning', () => {
     copyFileSync(REPO_TREE_SITTER_BINARY, join(cliDir, TREE_SITTER_BINARY_NAME));
     if (process.platform !== 'win32') chmodSync(join(cliDir, TREE_SITTER_BINARY_NAME), 0o755);
 
-    expect(await provisionTreeSitterCliForPluginRoot(pluginRoot)).toBe('already-usable');
+    expect(await provisionTreeSitterCliForPluginRoot(pluginRoot, pinRepoBinary)).toBe('already-usable');
   });
 
   it('has nothing to provision without the tree-sitter-cli package', async () => {
@@ -99,6 +99,40 @@ describe('worker tree-sitter CLI provisioning', () => {
 
     expect(await provisionTreeSitterCliForPluginRoot(pluginRoot, pinRepoBinary)).toBe('provisioned');
     expect(await isTreeSitterCliBinaryUsable(pluginRoot)).toBe(true);
+  });
+
+  // #6404: a replaced executable that answers --version is not trusted; it is
+  // hashed first, and a mismatch must never execute it.
+  it.skipIf(process.platform === 'win32')('does not run an existing executable whose SHA-256 is not the pinned one', async () => {
+    const ranMarker = join(pluginRoot, 'existing-executable-ran');
+    const replacement = "#!/bin/sh\necho 'tree-sitter 0.26.9'\n";
+    const cliDir = writeMarketplaceCliPackage([
+      `const fs = require('fs');`,
+      `const target = require('path').join(process.cwd(), ${JSON.stringify(TREE_SITTER_BINARY_NAME)});`,
+      `fs.writeFileSync(target, ${JSON.stringify(replacement)});`,
+      `fs.chmodSync(target, 0o755);`,
+    ].join('\n'));
+    const binaryPath = join(cliDir, TREE_SITTER_BINARY_NAME);
+    writeFileSync(binaryPath, `#!/bin/sh\ntouch '${ranMarker}'\necho 'tree-sitter 0.26.9'\n`);
+    chmodSync(binaryPath, 0o755);
+
+    const outcome = await provisionTreeSitterCliForPluginRoot(pluginRoot, () => createHash('sha256').update(replacement).digest('hex'));
+    expect(existsSync(ranMarker)).toBe(false);
+    expect(outcome).toBe('provisioned');
+    expect(readFileSync(binaryPath, 'utf-8')).toBe(replacement);
+  });
+
+  it.skipIf(process.platform === 'win32')('leaves a matching, runnable executable alone', async () => {
+    const ranMarker = join(pluginRoot, 'pinned-executable-ran');
+    const pinned = `#!/bin/sh\ntouch '${ranMarker}'\necho 'tree-sitter 0.26.9'\n`;
+    const cliDir = writeMarketplaceCliPackage("throw new Error('install.js must not run');");
+    const binaryPath = join(cliDir, TREE_SITTER_BINARY_NAME);
+    writeFileSync(binaryPath, pinned);
+    chmodSync(binaryPath, 0o755);
+
+    expect(await provisionTreeSitterCliForPluginRoot(pluginRoot, () => createHash('sha256').update(pinned).digest('hex')))
+      .toBe('already-usable');
+    expect(existsSync(ranMarker)).toBe(true);
   });
 
   // #4758: the executable is intact (matches the pinned SHA-256) but the OS

@@ -133,6 +133,14 @@ function sha256OfBytes(bytes: Buffer): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
+function treeSitterCliPackageVersion(cliDir: string): string | undefined {
+  try {
+    return String((JSON.parse(readFileSync(join(cliDir, "package.json"), "utf-8")) as { version?: unknown }).version);
+  } catch {
+    return undefined;
+  }
+}
+
 /** Where a glibc-compatible build comes from; tests replace both. */
 export interface GlibcCompatibleFallback {
   buildFor: (version: string) => GlibcCompatibleTreeSitterBuild | undefined;
@@ -266,8 +274,25 @@ export async function ensureTreeSitterCliBinary(
     throw new Error(`tree-sitter-cli package path is not a directory: ${cliDir}`);
   }
   const existingBinaryPath = treeSitterCliBinaryPath(pluginRoot);
-  const existingProbe = await answersTreeSitterVersion(existingBinaryPath);
-  if (existingProbe.usable) return "already-usable";
+  const existingVersion = treeSitterCliPackageVersion(cliDir);
+  let intactProbe: TreeSitterCliVersionProbe | undefined;
+
+  // An existing executable is hashed before it is run: a replaced or stale
+  // binary must never execute, not even for the --version probe (#6404). A
+  // binary with no pinned digest is treated as unverified, not as usable.
+  if (existsSync(existingBinaryPath)) {
+    const existingPin = existingVersion === undefined ? undefined : pinnedSha256ForVersion(existingVersion);
+    let existingSha256 = "(unreadable)";
+    try {
+      existingSha256 = sha256OfFile(existingBinaryPath);
+    } catch {
+      // Fall through to the download; it cannot make things worse.
+    }
+    if (existingPin !== undefined && existingSha256 === existingPin && isExecutableFile(existingBinaryPath)) {
+      intactProbe = await answersTreeSitterVersion(existingBinaryPath);
+      if (intactProbe.usable) return "already-usable";
+    }
+  }
 
   const installScript = join(cliDir, "install.js");
   if (!existsSync(installScript)) {
@@ -307,20 +332,12 @@ export async function ensureTreeSitterCliBinary(
   // instead of burning a download on every worker start. A corrupt or stale
   // binary (SHA mismatch) still falls through to the download below, as does
   // a binary that merely lost its executable bit: the download restores 755.
-  if (existsSync(existingBinaryPath)) {
-    let existingSha256 = "(unreadable)";
-    try {
-      existingSha256 = sha256OfFile(existingBinaryPath);
-    } catch {
-      // Fall through to the download; it cannot make things worse.
-    }
-    if (existingSha256 === pinnedSha256 && isExecutableFile(existingBinaryPath)) {
-      return await useGlibcCompatibleBuildOrThrow(existingProbe, new Error(
-        `The tree-sitter ${version} executable at ${existingBinaryPath} is intact (SHA-256 matches the pinned value) `
-        + `but ${TREE_SITTER_CLI_CANNOT_RUN}${existingProbe.reason ? `: ${existingProbe.reason}` : ""}. `
-        + "smart_search, smart_outline and smart_unfold cannot parse here, and the File Read Gate stays off.",
-      ));
-    }
+  if (intactProbe !== undefined) {
+    return await useGlibcCompatibleBuildOrThrow(intactProbe, new Error(
+      `The tree-sitter ${version} executable at ${existingBinaryPath} is intact (SHA-256 matches the pinned value) `
+      + `but ${TREE_SITTER_CLI_CANNOT_RUN}${intactProbe.reason ? `: ${intactProbe.reason}` : ""}. `
+      + "smart_search, smart_outline and smart_unfold cannot parse here, and the File Read Gate stays off.",
+    ));
   }
 
   // Inside the package, so the final rename stays on one filesystem.
