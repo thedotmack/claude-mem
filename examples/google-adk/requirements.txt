@@ -1,2 +1,2 @@
-google-adk==2.14.0
+google-adk==2.15.0
 mcp==2.3.0
