@@ -113,6 +113,7 @@ endpoint or model you pinned yourself.
 | `atmorouter` | `https://atmorouter.dev/v1` | yes |
 | `worldrouter` | `https://inference-api.worldrouter.ai/v1` | yes |
 | `aigrow` | `https://aigrow.gg/v1` | yes |
+| `onomeo` | `https://onomeo.com/v1` | yes |
 | `deepseek` | `https://api.deepseek.com/v1` | yes |
 | `opencode-go` | `https://opencode.ai/zen/go/v1` | yes |
 | `opencode-zen` | `https://opencode.ai/zen/v1` | yes |
@@ -594,6 +595,25 @@ needs no key; prices are also at [aigrow.gg/ai-api](https://aigrow.gg/ai-api).
   "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "aigrow",
   "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<your AIGROW key>",
   "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "claude-haiku-5.5"
+}
+```
+
+## onomeo
+
+[onomeo](https://onomeo.com) is an OpenAI-compatible API gateway for Claude, GPT,
+Gemini, DeepSeek, GLM and other models on one key, at `https://onomeo.com/v1`.
+Model ids are unprefixed, such as `deepseek-v4.1-flash` (the preset's default)
+or `claude-sonnet-5.5`, and are passed verbatim. Current ids are listed on
+[onomeo.com/models](https://onomeo.com/models), and keys (`sk-onomeo-...`) come
+from the onomeo dashboard. onomeo is in public beta: not every feature is
+guaranteed to work, and feedback is being collected.
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openai-compatible",
+  "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "onomeo",
+  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<your onomeo key>",
+  "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "deepseek-v4.1-flash"
 }
 ```
 

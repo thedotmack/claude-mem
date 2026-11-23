@@ -240,6 +240,16 @@ export const OPENAI_COMPAT_PRESETS: readonly OpenAICompatPreset[] = [
     hint: 'Key (ag_...) from aigrow.gg; model ids such as claude-haiku-5.5 or gemini-3.8-flash, listed with prices by GET aigrow.gg/v1/models, no key needed.',
   },
   {
+    id: 'onomeo',
+    label: 'onomeo (onomeo.com)',
+    baseUrl: 'https://onomeo.com/v1',
+    // A cheap, fast model for the same reason as NVIDIA's default: extraction
+    // is high volume. Ids are unprefixed and passed verbatim.
+    defaultModel: 'deepseek-v4.1-flash',
+    requiresApiKey: true,
+    hint: 'Key (sk-onomeo-...) from onomeo.com; model ids such as deepseek-v4.1-flash or claude-sonnet-5.5, listed on onomeo.com/models.',
+  },
+  {
     id: 'deepseek',
     label: 'DeepSeek',
     baseUrl: 'https://api.deepseek.com/v1',
