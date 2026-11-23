@@ -1,0 +1,35 @@
+name: Request a tagged npm release
+
+# The repository owner opts in by creating release/publish/vX.Y.Z at the
+# reviewed main commit. Ordinary main pushes and new feature branches do not publish.
+on: create
+
+permissions: {}
+
+jobs:
+  request:
+    if: >-
+      github.repository == 'thedotmack/claude-mem' &&
+      github.actor == github.repository_owner &&
+      github.event.ref_type == 'branch' &&
+      startsWith(github.ref, 'refs/heads/release/publish/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: tagged-npm-release-request
+      queue: max
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Tag the release and start the trusted publisher
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/github-tagged-release.mjs request

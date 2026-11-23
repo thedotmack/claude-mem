@@ -410,9 +410,38 @@ describe('setup state endpoints', () => {
     await start();
     expect((await post('/api/setup/choice', { branch: 'home', memoryBilling: 'existing' }, { 'Content-Type': 'application/json', Origin: 'https://evil.example' })).status).toBe(403);
     expect((await post('/api/setup/choice', { branch: 'away', memoryBilling: 'hosted' })).status).toBe(400);
-    // On The Go is always CMEM Pro (gap G1).
-    expect((await post('/api/setup/choice', { branch: 'go', memoryBilling: 'existing' })).status).toBe(400);
+    expect((await post('/api/setup/choice', { branch: 'go', memoryBilling: 'existing', cloudSyncOffer: 'free' })).status).toBe(400);
+    expect((await post('/api/setup/choice', { branch: 'home', memoryBilling: 'existing', cloudSyncOffer: 'cloud_sync_monthly' })).status).toBe(400);
+    expect((await post('/api/setup/choice', { branch: 'go', memoryBilling: 'hosted', cloudSyncOffer: 'cloud_sync_monthly' })).status).toBe(400);
     expect((await state()).choice).toBeNull();
+  });
+
+  it('defaults own-provider Cloud Sync to monthly, persists annual, and locks the chosen offer', async () => {
+    await start();
+    await post('/api/setup/installer', { stage: 'waiting-for-choice' });
+    expect((await post('/api/setup/choice', { branch: 'go', memoryBilling: 'existing' })).status).toBe(200);
+    expect((await state()).choice).toMatchObject({ branch: 'go', memoryBilling: 'existing', cloudSyncOffer: 'cloud_sync_monthly' });
+    const annual = { branch: 'go', memoryBilling: 'existing', cloudSyncOffer: 'cloud_sync_annual' };
+    expect((await post('/api/setup/choice', annual)).status).toBe(200);
+    expect(JSON.parse(readFileSync(statePath, 'utf8')).choice).toMatchObject(annual);
+    await post('/api/setup/installer', { stage: 'go-awaiting-checkout' });
+    expect((await post('/api/setup/choice', annual)).status).toBe(200);
+    expect((await post('/api/setup/choice', { ...annual, cloudSyncOffer: 'cloud_sync_monthly' })).status).toBe(409);
+    expect((await post('/api/setup/choice', { branch: 'go', memoryBilling: 'existing' })).status).toBe(409);
+    expect((await post('/api/setup/choice', { branch: 'go', memoryBilling: 'hosted' })).status).toBe(409);
+    expect((await post('/api/setup/checkout', {})).status).toBe(200);
+    expect((await post('/api/setup/complete', {})).status).toBe(409);
+    await post('/api/setup/installer', { stage: 'go-awaiting-checkout', checkout: 'paid' });
+    expect((await post('/api/setup/complete', {})).status).toBe(200);
+  });
+
+  it('keeps a saved hosted choice as the legacy bundle, without silently adding a Cloud offer', async () => {
+    await start();
+    await post('/api/setup/choice', { branch: 'go', memoryBilling: 'hosted' });
+    expect((await state()).choice.cloudSyncOffer).toBeUndefined();
+    await post('/api/setup/installer', { stage: 'go-awaiting-checkout' });
+    expect((await post('/api/setup/choice', { branch: 'go', memoryBilling: 'hosted' })).status).toBe(200);
+    expect((await post('/api/setup/choice', { branch: 'go', memoryBilling: 'existing' })).status).toBe(409);
   });
 
   it('record the choice, lock it once the installer applied it, and finish setup once', async () => {

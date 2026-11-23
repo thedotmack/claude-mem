@@ -35,7 +35,8 @@ const compiled = buildSync({
       const noop = () => {};
       const scan = (phase) => ({ agents: [], percent: 40, phase, done: phase === 'done', error: phase === 'failed' ? 'Failed to fetch' : null, improveProduct: true, uploadedAgents: null });
       export const renderScan = (phase, { retrying = false, back = null } = {}) => renderToStaticMarkup(<ScanScreen scan={scan(phase)} back={back} onImproveProductChange={noop} onConfirmUpload={noop} preferenceError={null} onRetry={noop} retrying={retrying} retryError={null} onSkip={noop} onContinue={noop} />);
-      export const renderCheckout = (checkout, asked) => renderToStaticMarkup(<CheckoutScreen checkout={checkout} asked={asked} installerStopped={false} back={{ onBack: noop, waitsFor: null }} onOpen={noop} onContinue={noop} />);
+      export const renderCheckout = (checkout, asked, offer = {}) => renderToStaticMarkup(<CheckoutScreen checkout={checkout} asked={asked} installerStopped={false} back={{ onBack: noop, waitsFor: null }} onOpen={noop} onContinue={noop} {...offer} />);
+      export const renderExistingCloudPlan = () => renderToStaticMarkup(<><ChoiceScreen branch="go" alreadyPro onChoose={noop} /><SavingsScreen usage={null} branch="go" alreadyPro onContinue={noop} onSkip={noop} /></>);
       export const renderReveal = (reveal) => renderToStaticMarkup(<RevealScreen agents={[]} reveal={reveal} extraction={{ state: 'ok', step: null }} uploadedAgents={['codex']} recentPrompts={[]} onContinue={noop} />);
       const install = { status: 'ready', error: null, selection: { agents: ['cursor'], skills: [], installClaudeCode: false, disableAutoMemory: false, telemetryEnabled: true },
         catalog: { agents: [{ id: 'cursor', label: 'Cursor', hint: '', detected: true }], skills: [], reinstall: false,
@@ -46,7 +47,7 @@ const compiled = buildSync({
         scan: renderToStaticMarkup(<ScanScreen scan={scan(scanPhase)} back={back} onImproveProductChange={noop} onConfirmUpload={noop} preferenceError={null} onRetry={noop} retrying={false} retryError={null} onSkip={noop} onContinue={noop} />),
         reveal: renderToStaticMarkup(<RevealScreen agents={[]} reveal={{ goals: [], work: [], rules: [], focusAreas: SAMPLE_FOCUS_AREAS, requests: SAMPLE_REQUESTS }} extraction={{ state: 'ok', step: null }} uploadedAgents={['codex']} recentPrompts={[]} back={back} onContinue={noop} />),
         choice: renderToStaticMarkup(<ChoiceScreen branch="go" back={back} onChoose={noop} />),
-        savings: renderToStaticMarkup(<SavingsScreen usage={null} branch="home" back={back} onPro={noop} onExistingPlan={noop} onSkip={noop} />),
+        savings: renderToStaticMarkup(<SavingsScreen usage={null} branch="home" back={back} onContinue={noop} onSkip={noop} />),
         checkout: renderToStaticMarkup(<CheckoutScreen checkout={null} asked={false} installerStopped={false} back={back} onOpen={noop} onContinue={noop} />),
         'finish-setup': renderToStaticMarkup(<FinishSetupScreen branch="go" tools={[tool]} selected={['chatgpt']} onSelect={noop} history={null} importStatus="none" importResult={null} stoppingImport={false} onImport={noop} onStopImport={noop} onSkipImport={noop} back={back} onContinue={noop} />),
         import: renderToStaticMarkup(<ImportScreen progress={{ state: 'running', percent: 48, imported: 61, error: null, sent: 61, total: 128 }} back={back} stopping={false} onStop={noop} />),
@@ -185,6 +186,37 @@ describe('setup scan bottom row', () => {
 
 describe('setup checkout', () => {
   const buttons = (html: string) => [...html.matchAll(/<button[^>]*>([\s\S]*?)<\/button>/g)].map(([, body]) => body.replace(/<[^>]+>/g, '').trim()).filter(Boolean);
+  it('keeps an existing Cloud or Pro configuration without offering a new subscription', () => {
+    const html = app.renderExistingCloudPlan();
+    expect(html).toContain('Keep your existing plan');
+    expect(html).toContain('No new checkout is needed.');
+    expect(html).not.toContain('name="cloud-sync-offer"');
+    expect(html).not.toContain('$99');
+    expect(html).not.toContain('$12');
+  });
+  it('discloses a full monthly Cloud trial while keeping hosted token billing separate', () => {
+    const html = app.renderCheckout(null, false);
+    expect(html).toContain('Cloud Sync · Keep your existing memory provider');
+    expect(html).toContain('Due today</dt><dd>$0');
+    expect(html).toContain('$12 / month');
+    expect(html).toContain('Your Cloud Sync trial lasts a full 30 days.');
+    expect(html).toContain('Hosted tokens are optional, paid separately after Cloud Sync, and have no trial.');
+    expect(html).not.toContain('included usage runs out');
+    expect(html).not.toContain('$30');
+  });
+
+  it('discloses the annual charge now and keeps saved bundled choices compatible', () => {
+    const annual = app.renderCheckout(null, false, { cloudSyncOffer: 'cloud_sync_annual' });
+    expect(annual).toContain('Due today</dt><dd>$99');
+    expect(annual).toContain('$99 / year');
+    expect(annual).toContain('There is no trial.');
+    expect(annual).not.toContain('30 days');
+    expect(annual).not.toContain('$12');
+    const legacy = app.renderCheckout(null, false, { legacyHosted: true });
+    expect(legacy).toContain('CMEM Pro · Cloud Sync included');
+    expect(legacy).toContain('$30 / month');
+    expect(legacy).not.toContain('Your Cloud Sync trial lasts a full 30 days.');
+  });
   it('says it is waiting from the accepted ask, with a spinner, and offers to open checkout again', () => {
     const asked = app.renderCheckout(null, true);
     expect(asked).toContain('Waiting for checkout to finish…');

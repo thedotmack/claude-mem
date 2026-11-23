@@ -64,7 +64,7 @@ import {
 import { parseTeamBrainTeamRef, type TeamBrainTeamRef } from '../../shared/teambrain.js';
 import { relayedLine } from '../../shared/relayed-text.js';
 import { endSetupSession, hasProConfiguration, INITIAL_SETUP_STATE, readSetupState, readSetupTelemetryContext, startSetupSession, writeSetupState } from '../../shared/setup-state.js';
-import { isSetupId } from '../../shared/setup-funnel.js';
+import { CLOUD_SYNC_SETUP_CONTRACT, isSetupId, setupCloudSyncOffer, type SetupCloudSyncOffer } from '../../shared/setup-funnel.js';
 import { intentCredentialHeaders, readIntentCredentials } from '../../shared/intent-credentials.js';
 import { AGENT_BROWSER_SETUP_HINT, runBrowserSetup, settingsChangesNeedingRestart, shouldPrintAgentBrowserSetupHint, shouldUseBrowserSetup, waitForBackgroundWorkToFinish, type BrowserSetupOutcome } from '../install/browser-setup.js';
 
@@ -1463,12 +1463,16 @@ export async function promptProvider(
       p.cancel('CMEM Pro setup was not completed. Run npx claude-mem install to try again.');
       process.exit(1);
     }
-    // A sync-only account (a TeamBrain seat) gets cloud sync and no CMEM Pro
+    // A sync-only account (Cloud Sync or a TeamBrain seat) gets no CMEM Pro
     // observer. Its sync connection is already saved; the observer and the
     // provider settings stay exactly as they are, and no staged or earlier
     // gateway key is promoted in their place.
     if (!enrollment.memory) {
-      log.warn(`This account syncs through a TeamBrain seat, which does not include CMEM Pro's observer. Memory keeps its current provider (${initialProvider}). CMEM Pro: ${proTrialUrl('installer')}`);
+      if (enrollment.plan === 'cloud_sync') {
+        log.info(`Cloud Sync is connected. Memory keeps its current provider (${initialProvider}). Hosted tokens are available separately at https://cmem.ai/hosted-tokens.`);
+      } else {
+        log.warn(`This account syncs through a TeamBrain seat, which does not include CMEM Pro's observer. Memory keeps its current provider (${initialProvider}). CMEM Pro: ${proTrialUrl('installer')}`);
+      }
       return initialProvider;
     }
     const cmemCredentials = resolveCmemMemoryCredentials(enrollment.memory, persistedSettings);
@@ -1697,7 +1701,7 @@ const OAUTH_DEFAULT_POLL_INTERVAL_S = 3;
 
 type InstallerPollStage = 'awaiting_login' | 'awaiting_checkout' | 'awaiting_approval';
 /** `teambrain_seat`: a TeamBrain seat, which grants cloud sync and no CMEM Pro observer. */
-type TrialPlan = 'trial' | 'pro' | 'none' | 'teambrain_seat';
+type TrialPlan = 'trial' | 'pro' | 'none' | 'teambrain_seat' | 'cloud_sync';
 /**
  * What a poll loop waits for. `login` returns once the browser signs in;
  * `enrollment` (CMEM Pro) and `teambrain_join` only once credentials are ready.
@@ -1710,6 +1714,8 @@ export interface InstallerOAuthPairing {
   userCode: string;
   authorizationUrl: string;
   checkoutUrl: string;
+  /** Present only after the server confirms the separate Cloud Sync contract and chosen offer. */
+  cloudSyncOffer?: SetupCloudSyncOffer;
   pollIntervalMs: number;
   /**
    * Absolute epoch ms after which polling stops, derived from the server's
@@ -1789,7 +1795,7 @@ function withoutEchoedSetupFlowId(url: URL, sentSetupFlowId: string | undefined)
  * Pure parser used by the mock-server contract tests. `sentSetupFlowId` is
  * the `setup_flow_id` this installer put in the start request, if any.
  */
-export function parseInstallerOAuthStartBody(body: unknown, sentSetupFlowId?: string): InstallerOAuthPairing | null {
+export function parseInstallerOAuthStartBody(body: unknown, sentSetupFlowId?: string, cloudSyncOffer?: SetupCloudSyncOffer): InstallerOAuthPairing | null {
   if (!body || typeof body !== 'object') return null;
   const b = body as {
     pairing_id?: unknown;
@@ -1799,6 +1805,8 @@ export function parseInstallerOAuthStartBody(body: unknown, sentSetupFlowId?: st
     checkout_url?: unknown;
     poll_interval?: unknown;
     expires_in?: unknown;
+    cloud_sync_offer?: unknown;
+    cloud_sync_contract?: unknown;
   };
   const pairingId = nonEmptyTrimmedString(b.pairing_id);
   const secret = nonEmptyTrimmedString(b.secret);
@@ -1828,11 +1836,22 @@ export function parseInstallerOAuthStartBody(body: unknown, sentSetupFlowId?: st
   const parsedLoginClaim = parseBrowserUrl(`${expectedOrigin}${loginNext}`, '/api/pro/trial/claim');
   const loginClaim = parsedLoginClaim ? withoutEchoedSetupFlowId(parsedLoginClaim, sentSetupFlowId) : null;
   const checkoutClaim = withoutEchoedSetupFlowId(checkoutUrl, sentSetupFlowId);
+  // The browser may echo the product on the login continuation too. If present, both values must match.
+  if (cloudSyncOffer && loginClaim?.searchParams.has('product')) {
+    if (loginClaim.searchParams.getAll('product').length !== 1 || loginClaim.searchParams.get('product') !== 'cloud_sync'
+      || loginClaim.searchParams.getAll('offer').length !== 1 || loginClaim.searchParams.get('offer') !== cloudSyncOffer) return null;
+    loginClaim.searchParams.delete('product');
+    loginClaim.searchParams.delete('offer');
+  }
+  const correctCheckout = checkoutClaim && (cloudSyncOffer
+    ? b.cloud_sync_contract === CLOUD_SYNC_SETUP_CONTRACT && b.cloud_sync_offer === cloudSyncOffer
+      && hasExactSearchParams(checkoutClaim, { pairing: pairingId, product: 'cloud_sync', offer: cloudSyncOffer })
+    : b.cloud_sync_contract === undefined && b.cloud_sync_offer === undefined && hasPairingAndTrialParams(checkoutClaim, pairingId));
   if (
     !loginClaim
     || !checkoutClaim
     || !hasExactSearchParams(loginClaim, { pairing: pairingId, login_only: '1' })
-    || !hasPairingAndTrialParams(checkoutClaim, pairingId)
+    || !correctCheckout
   ) return null;
 
   const pollIntervalS =
@@ -1851,6 +1870,7 @@ export function parseInstallerOAuthStartBody(body: unknown, sentSetupFlowId?: st
     userCode,
     authorizationUrl: authorizationUrl.toString(),
     checkoutUrl: checkoutUrl.toString(),
+    ...(cloudSyncOffer ? { cloudSyncOffer } : {}),
     pollIntervalMs: pollIntervalS * 1000,
     ...(expiresAt !== undefined ? { expiresAt } : {}),
   };
@@ -1911,7 +1931,7 @@ export function buildInstallerOAuthStartBody(
  * (promptEmailOptIn), which goes to the waitlist and is never used to sign in.
  */
 export async function startInstallerOAuthPairing(
-  opts: { source?: string; timeoutMs?: number; teamInvite?: string; setupFlowId?: string } = {},
+  opts: { source?: string; timeoutMs?: number; teamInvite?: string; setupFlowId?: string; cloudSyncOffer?: SetupCloudSyncOffer } = {},
 ): Promise<InstallerOAuthPairing | null> {
   const source = opts.source ?? 'npx-installer';
   lastStartFailure = null;
@@ -1932,6 +1952,10 @@ export async function startInstallerOAuthPairing(
     ...signupContext,
     ...(isSetupId(opts.setupFlowId) && resolveTelemetryConsent(process.env, loadTelemetryConfig()) ? { setupFlowId: opts.setupFlowId } : {}),
   }, opts.teamInvite);
+  if (opts.cloudSyncOffer) {
+    startBody.cloud_sync_contract = CLOUD_SYNC_SETUP_CONTRACT;
+    startBody.cloud_sync_offer = opts.cloudSyncOffer;
+  }
   const sentSetupFlowId = typeof startBody.setup_flow_id === 'string' ? startBody.setup_flow_id : undefined;
   try {
     const response = await fetch(CMEM_INSTALLER_OAUTH_START_URL, {
@@ -1969,8 +1993,11 @@ export async function startInstallerOAuthPairing(
       lastStartFailure = error instanceof Error && error.name === 'AbortError' ? 'timeout' : 'bad_body';
       return null;
     }
-    const pairing = parseInstallerOAuthStartBody(body, sentSetupFlowId);
-    if (!pairing) lastStartFailure = 'bad_body';
+    const pairing = parseInstallerOAuthStartBody(body, sentSetupFlowId, opts.cloudSyncOffer);
+    if (!pairing) {
+      lastStartFailure = 'bad_body';
+      if (opts.cloudSyncOffer) lastStartErrorMessage = 'cmem.ai did not confirm the selected standalone Cloud Sync offer. No bundled checkout was opened. Update Claude-Mem and retry.';
+    }
     return pairing;
   } catch (error: unknown) {
     lastStartFailure = error instanceof Error && error.name === 'AbortError' ? 'timeout' : 'network';
@@ -1990,7 +2017,7 @@ export interface TrialReadyResult {
   hubUrl: string;
   /**
    * The CMEM Pro observer credentials, or null when the server sent none: a
-   * sync-only account (a TeamBrain seat), which keeps its own observer.
+   * sync-only account (Cloud Sync or a TeamBrain seat), which keeps its own observer.
    */
   memory: DeliveredCmemMemoryCredentials | null;
   plan: TrialPlan;
@@ -2077,7 +2104,7 @@ export function parseTrialReadyBody(body: unknown): TrialReadyResult | null {
           memoryModel: nonEmptyTrimmedString(b.memory_model) ?? CMEM_PRO_MODEL,
         }
       : null,
-    plan: b.plan === 'trial' || b.plan === 'pro' || b.plan === 'none' || b.plan === 'teambrain_seat' ? b.plan : 'trial',
+    plan: b.plan === 'trial' || b.plan === 'pro' || b.plan === 'none' || b.plan === 'teambrain_seat' || b.plan === 'cloud_sync' ? b.plan : 'trial',
     trialEndsAt: nonEmptyTrimmedString(b.trial?.ends_at),
     team: parseTeamBrainTeamRef(b.team),
     teambrainUrl: nonEmptyTrimmedString(b.teambrain_url),
@@ -2193,7 +2220,7 @@ export async function waitForInstallerPairing(
       ? 'Waiting for the browser to finish signing you in…'
       : phase === 'teambrain_join'
         ? 'Waiting for the browser to finish joining the team…'
-        : 'Waiting for CMEM Pro setup in the browser…',
+        : pairing.cloudSyncOffer ? 'Waiting for Cloud Sync setup in the browser…' : 'Waiting for CMEM Pro setup in the browser…',
     // A join's invite is redeemed at device approval, on a page that names the team.
     awaiting_approval: phase === 'teambrain_join'
       ? `Approve this device on the page (code ${pairing.userCode}) to join the team…`
@@ -2279,10 +2306,14 @@ export async function waitForInstallerPairing(
   }
 }
 
-/**
- * Required account step. OAuth completes before provider choice and never
- * chooses or enrolls a paid provider on its own.
- */
+/** A Cloud-only intent must never stage or activate a customer's separate hosted memory credentials. */
+function pairingAcceptsReady(pairing: InstallerOAuthPairing, ready: TrialReadyResult): boolean {
+  if (!pairing.cloudSyncOffer || (ready.plan === 'cloud_sync' && !ready.memory)) return true;
+  log.error('The account did not return the selected Cloud Sync connection. Your existing memory provider was kept.');
+  return false;
+}
+
+/** Required account step. OAuth completes before provider choice and never chooses a paid provider. */
 export async function completeInstallerOAuthLogin(
   pairing: InstallerOAuthPairing,
   version: string,
@@ -2290,6 +2321,7 @@ export async function completeInstallerOAuthLogin(
   const result = await waitForInstallerPairing(pairing, 'login', version);
   if (!result) return false;
   if (result.kind === 'ready') {
+    if (!pairingAcceptsReady(pairing, result)) return false;
     if (!mergeSettings(buildTrialReadySettings(result))) return false;
     pairing.delivered = result;
   }
@@ -2438,7 +2470,7 @@ export async function completeCmemTrialPairing(
   pairing: InstallerOAuthPairing,
   version: string,
 ): Promise<TrialReadyResult | null> {
-  if (pairing.delivered) return pairing.delivered;
+  if (pairing.delivered) return pairingAcceptsReady(pairing, pairing.delivered) ? pairing.delivered : null;
 
   noteDeviceCode(pairing);
   // Deliberately NO return-wait here, unlike the login hand-off.
@@ -2449,24 +2481,27 @@ export async function completeCmemTrialPairing(
   // print "Waiting for CMEM Pro setup in the browser…". Opening directly is
   // also the better behaviour here — the user has already chosen CMEM Pro, so
   // there is nothing left to confirm before the browser takes over.
-  log.info(`Continue CMEM Pro setup: ${pairing.checkoutUrl}`);
+  log.info(`Continue ${pairing.cloudSyncOffer ? 'Cloud Sync' : 'CMEM Pro'} setup: ${pairing.checkoutUrl}`);
   openBrowser(pairing.checkoutUrl);
 
   const result = await waitForInstallerPairing(pairing, 'enrollment', version);
   if (!result || result.kind !== 'ready') return null;
+  if (!pairingAcceptsReady(pairing, result)) return null;
 
   const wrote = mergeSettings(buildTrialReadySettings(result));
   if (!wrote) {
-    log.error('Could not save the one-time CMEM Pro credentials.');
+    log.error(`Could not save the one-time ${pairing.cloudSyncOffer ? 'Cloud Sync' : 'CMEM Pro'} credentials.`);
     return null;
   }
   pairing.delivered = result;
-  // A sync-only account (a TeamBrain seat) has no CMEM Pro to announce, and
+  // A sync-only account (Cloud Sync or a TeamBrain seat) has no CMEM Pro to announce, and
   // no gateway key whose fallback a fresh delivery would clear.
   if (result.memory) {
     clearProFallback();
     log.success(`CMEM Pro ${PRO_TRIAL_LABEL} active.`);
     await captureCliEvent('trial_activated', { version });
+  } else if (result.plan === 'cloud_sync') {
+    log.success('Cloud Sync connected. Memory keeps your existing provider.');
   }
   return result;
 }
@@ -3133,10 +3168,11 @@ function readSettingsSnapshot(): string {
  * earlier hosted-intent installation identity. The checkout that completes it is the
  * funnel's next step (completeCmemTrialPairing, funnel Phase 8).
  */
-async function startOnTheGoPairing(version: string): Promise<InstallerOAuthPairing> {
+async function startOnTheGoPairing(version: string, cloudSyncOffer?: SetupCloudSyncOffer): Promise<InstallerOAuthPairing> {
   const spinner = isInteractive ? p.spinner() : null;
-  spinner?.start('Starting CMEM Pro sign-in…');
-  const pairing = await startInstallerOAuthPairing({ setupFlowId: readSetupTelemetryContext()?.setup_flow_id });
+  const product = cloudSyncOffer ? 'Cloud Sync' : 'CMEM Pro';
+  spinner?.start(`Starting ${product} sign-in…`);
+  const pairing = await startInstallerOAuthPairing({ setupFlowId: readSetupTelemetryContext()?.setup_flow_id, cloudSyncOffer });
   if (!pairing) {
     await captureCliEvent('installer_oauth_start_failed', {
       version,
@@ -3144,12 +3180,12 @@ async function startOnTheGoPairing(version: string): Promise<InstallerOAuthPairi
       interactive: isInteractive,
       phase: 'enrollment',
     });
-    spinner?.stop(styleText('red', 'Could not start the CMEM Pro sign-in.'));
+    spinner?.stop(styleText('red', `Could not start the ${product} sign-in.`));
     throw new Error(lastOAuthStartErrorMessage()
-      ? `Could not start the CMEM Pro sign-in: ${lastOAuthStartErrorMessage()}`
-      : 'Could not start the CMEM Pro sign-in. Run npx claude-mem install again when cmem.ai is reachable.');
+      ? `Could not start the ${product} sign-in: ${lastOAuthStartErrorMessage()}`
+      : `Could not start the ${product} sign-in. Run npx claude-mem install again when cmem.ai is reachable.`);
   }
-  spinner?.stop('CMEM Pro sign-in ready; checkout continues in the browser.');
+  spinner?.stop(`${product} sign-in ready; checkout continues in the browser.`);
   return pairing;
 }
 
@@ -3550,6 +3586,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   // On The Go's pairing, held for the checkout hand-off (funnel Phase 8):
   // completeCmemTrialPairing(onTheGoPairing) runs when the page asks for checkout.
   let onTheGoPairing: InstallerOAuthPairing | null = null;
+  let browserCloudSyncOffer: SetupCloudSyncOffer | undefined;
   let browserProvider: ProviderId = (getSetting('CLAUDE_MEM_PROVIDER') as ProviderId) || 'claude';
   let browserOutcome: BrowserSetupOutcome | null = null;
   let settingsBeforeBrowserSetup: string | null = null;
@@ -3621,6 +3658,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
             },
           },
           applyChoice: async (choice, state) => {
+            browserCloudSyncOffer = setupCloudSyncOffer(choice);
             if (choice.branch === 'home') {
               // At Home: the existing local branch (logged-in Claude SDK account, no claude-mem login).
               options.provider = 'claude';
@@ -3630,21 +3668,21 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
               return 'home-ready';
             }
             if (state.alreadyPro) {
-              log.info('On The Go: keeping your existing CMEM Pro configuration.');
+              log.info('On The Go: keeping your existing Cloud Sync and memory configuration.');
               return 'go-kept-existing-pro';
             }
-            onTheGoPairing = await startOnTheGoPairing(version);
+            onTheGoPairing = await startOnTheGoPairing(version, browserCloudSyncOffer);
             return 'go-awaiting-checkout';
           },
-          // On The Go checkout: the existing pairing → /api/pro/trial/claim (inline login, then Stripe) path, unchanged.
+          // The claim route carries the pairing's confirmed product/offer through sign-in and checkout.
           checkout: {
             run: async () => {
               // A pairing whose checkout failed or was cancelled is not reused; the next ask starts a fresh one.
-              if (!onTheGoPairing) onTheGoPairing = await startOnTheGoPairing(version);
+              if (!onTheGoPairing) onTheGoPairing = await startOnTheGoPairing(version, browserCloudSyncOffer);
               const pairing: InstallerOAuthPairing = onTheGoPairing;
               const delivered = await completeCmemTrialPairing(pairing, version);
               if (!delivered) { onTheGoPairing = null; return false; }
-              browserProvider = activateBrowserEnrollment(delivered) ?? browserProvider;
+              if (!browserCloudSyncOffer) browserProvider = activateBrowserEnrollment(delivered) ?? browserProvider;
               return true;
             },
             reopen: () => {
@@ -3802,11 +3840,11 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   // persisted claude/host provider holds no claude-mem account at all, so it
   // reports "not required" rather than a kept account.
   const browserAccountStatus = browserOutcome?.checkoutPaid
-    ? `CMEM Pro ${PRO_TRIAL_LABEL} active`
+    ? browserCloudSyncOffer ? 'Cloud Sync connected' : `CMEM Pro ${PRO_TRIAL_LABEL} active`
     : browserOutcome?.stage === 'go-awaiting-checkout'
-    ? 'CMEM Pro sign-in started (checkout not completed)'
+    ? `${browserCloudSyncOffer ? 'Cloud Sync' : 'CMEM Pro'} sign-in started (checkout not completed)`
     : browserOutcome?.stage === 'go-kept-existing-pro'
-      ? 'Kept existing CMEM Pro account'
+      ? 'Kept existing Cloud Sync and memory configuration'
       : null;
   // The provider this run ended up with: an interactive run with no
   // --provider picks it at the prompt, so options.provider is unset there.
@@ -3827,7 +3865,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     `Agents:      ${styleText('cyan', selectedIDEs.join(', '))}`,
   ];
   summaryLines.push(`Account:     ${styleText('cyan', browserAccountStatus ?? accountStatus)}`);
-  summaryLines.push(`Cloud sync:  ${styleText('cyan', cloudSyncConfigured ? 'ON (CMEM Pro)' : 'OFF (local)')}`);
+  summaryLines.push(`Cloud sync:  ${styleText('cyan', cloudSyncConfigured ? 'ON' : 'OFF (local)')}`);
   if (autoMemoryStatus === 'disabled') {
     summaryLines.push(`Auto-memory: ${styleText('cyan', 'disabled')} (CLAUDE_CODE_DISABLE_AUTO_MEMORY=1)`);
   } else if (autoMemoryStatus === 'already-disabled') {
