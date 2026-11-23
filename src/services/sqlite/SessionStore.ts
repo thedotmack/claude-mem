@@ -5229,14 +5229,26 @@ export class SessionStore {
     }).immediate();
   }
 
+  /**
+   * Finalize the cached hot-path statements while leaving a shared connection
+   * open. A manager that owns the database closes it itself and never calls
+   * `close()`, so it has to finalize these first: bun keeps the connection,
+   * its WAL index mapping and the database file alive until every statement is
+   * finalized or collected. On Windows the file or its directory cannot be
+   * renamed or removed before then.
+   */
+  finalizeCachedStatements(): void {
+    for (const statement of this.statementCache.values()) statement.finalize();
+    this.statementCache.clear();
+  }
+
   close(): void {
     // bun keeps a prepared statement — and with it the connection, its WAL index mapping and the
     // database file — alive until the statement is finalized or collected, so a plain `db.close()`
     // releases nothing while this store still holds its cache. Finalize the cached statements first,
     // the way initializeOwnedDatabase does; then close strict, which Windows needs before the file
     // or its directory can be renamed or removed.
-    for (const statement of this.statementCache.values()) statement.finalize();
-    this.statementCache.clear();
+    this.finalizeCachedStatements();
     try {
       this.db.close(true);
     } catch (error) {
