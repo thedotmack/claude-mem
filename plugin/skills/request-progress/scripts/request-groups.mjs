@@ -1322,6 +1322,8 @@ var init_SettingsDefaultsManager = __esm({
         // A silent worker whose liveness heartbeat is younger than this is slow, not dead (10000-3600000).
         CLAUDE_MEM_LOCAL_API_TOKEN: "",
         // Local API token. Empty = off. See the declaration above.
+        CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST: "",
+        // The one remote worker that may receive it. Empty = loopback only.
         // claude-mem sign-in funnel state: all empty until the installer's
         // browser-login step writes them.
         CLAUDE_MEM_PRO_TRIAL_EMAIL: "",
@@ -5941,6 +5943,35 @@ init_expand_home();
 init_hook_constants();
 init_install_port();
 
+// src/shared/worker-url.ts
+var InvalidWorkerUrlError = class extends Error {
+  name = "InvalidWorkerUrlError";
+};
+function normalizeWorkerBaseUrl(raw) {
+  const value = raw.trim();
+  if (!value) return "";
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new InvalidWorkerUrlError("CLAUDE_MEM_WORKER_URL must be an absolute http(s) URL");
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new InvalidWorkerUrlError("CLAUDE_MEM_WORKER_URL must use http or https");
+  }
+  if (url.username || url.password || /[?#]/.test(url.href)) {
+    throw new InvalidWorkerUrlError("CLAUDE_MEM_WORKER_URL cannot include credentials, a query, or a fragment");
+  }
+  if (url.protocol === "http:" && !isLoopbackHostname(url.hostname)) {
+    throw new InvalidWorkerUrlError("CLAUDE_MEM_WORKER_URL must use https for non-loopback workers");
+  }
+  return url.toString().replace(/\/+$/, "");
+}
+function isLoopbackHostname(hostname2) {
+  const host = hostname2.toLowerCase().replace(/^\[|\]$/g, "");
+  return host === "localhost" || host.endsWith(".localhost") || host === "::1" || /^127(?:\.\d{1,3}){1,3}$/.test(host);
+}
+
 // src/shared/local-api-token.ts
 init_logger();
 var LOCAL_API_TOKEN_HEADER = "x-claude-mem-token";
@@ -5950,11 +5981,51 @@ function normalizeLocalApiToken(value) {
 function localApiTokenHeaders(token) {
   return token ? { [LOCAL_API_TOKEN_HEADER]: token } : {};
 }
-
-// src/shared/worker-url.ts
-function isLoopbackHostname(hostname2) {
-  const host = hostname2.toLowerCase().replace(/^\[|\]$/g, "");
-  return host === "localhost" || host.endsWith(".localhost") || host === "::1" || /^127(?:\.\d{1,3}){1,3}$/.test(host);
+function normalizeRemoteTokenHost(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+function comparableHostname(hostname2) {
+  const bare = hostname2.startsWith("[") && hostname2.endsWith("]") ? hostname2.slice(1, -1) : hostname2;
+  return bare.toLowerCase();
+}
+function localApiTokenHeadersFor(input) {
+  const token = normalizeLocalApiToken(input.token);
+  if (!token) return {};
+  let target;
+  try {
+    target = new URL(input.workerOrigin);
+  } catch {
+    return {};
+  }
+  if (isLoopbackHostname(target.hostname)) {
+    return input.workerOrigin === input.localOrigin ? localApiTokenHeaders(token) : {};
+  }
+  if (target.protocol !== "https:" && target.protocol !== "http:") return {};
+  const remote = normalizeRemoteTokenHost(input.remoteTokenHost);
+  if (!remote || remote !== input.configuredHost.trim()) return {};
+  if (comparableHostname(target.hostname) !== comparableHostname(remote)) return {};
+  if (target.protocol === "http:") {
+    if (!sameOrigin(target, input.localOrigin)) return {};
+    warnPlainHttpRemoteToken(target.origin);
+  }
+  return localApiTokenHeaders(token);
+}
+function sameOrigin(target, origin) {
+  try {
+    return target.origin === new URL(origin).origin;
+  } catch {
+    return false;
+  }
+}
+var plainHttpRemoteTokenOriginsWarned = /* @__PURE__ */ new Set();
+function warnPlainHttpRemoteToken(origin) {
+  if (plainHttpRemoteTokenOriginsWarned.has(origin)) return;
+  plainHttpRemoteTokenOriginsWarned.add(origin);
+  logger.warn(
+    "SECURITY",
+    `Sending the local API token to ${origin} over plain HTTP, because CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST names that host. Anyone on the network path can read the header and use it on the worker's whole API. Set CLAUDE_MEM_WORKER_URL to the worker's https address unless this network is trusted.`,
+    { origin }
+  );
 }
 
 // src/integrations/harness-worker.ts
@@ -5978,7 +6049,7 @@ function harnessSetting(dataDir = dataDirectory()) {
     return process.env[key] || saved || fallback;
   };
 }
-function resolveHarnessWorkerUrl() {
+function resolveHarnessHostPortOrigin() {
   const dataDir = dataDirectory();
   const setting = harnessSetting(dataDir);
   const configuredHost = setting("CLAUDE_MEM_WORKER_HOST", "127.0.0.1");
@@ -5986,13 +6057,23 @@ function resolveHarnessWorkerUrl() {
   const port = setting("CLAUDE_MEM_WORKER_PORT", String(getDefaultWorkerPort(dataDir)));
   return "http://" + (host.includes(":") && !host.startsWith("[") ? "[" + host + "]" : host) + ":" + port;
 }
+function resolveHarnessWorkerUrl() {
+  return normalizeWorkerBaseUrl(harnessSetting()("CLAUDE_MEM_WORKER_URL", "")) || resolveHarnessHostPortOrigin();
+}
 function resolveHarnessAuthHeaders(baseUrl = resolveHarnessWorkerUrl()) {
-  const token = normalizeLocalApiToken(readHarnessSettingsFile(dataDirectory()).CLAUDE_MEM_LOCAL_API_TOKEN);
+  const settings2 = readHarnessSettingsFile(dataDirectory());
+  const token = normalizeLocalApiToken(settings2.CLAUDE_MEM_LOCAL_API_TOKEN);
   if (!token) return {};
   try {
-    const target = new URL(baseUrl);
-    if (target.origin !== new URL(resolveHarnessWorkerUrl()).origin) return {};
-    return isLoopbackHostname(target.hostname) ? localApiTokenHeaders(token) : {};
+    return localApiTokenHeadersFor({
+      token,
+      workerOrigin: new URL(baseUrl).origin,
+      // Host and port, never CLAUDE_MEM_WORKER_URL: a loopback URL there may be an SSH
+      // forward to another machine's worker, so it must not count as this machine's.
+      localOrigin: new URL(resolveHarnessHostPortOrigin()).origin,
+      configuredHost: harnessSetting()("CLAUDE_MEM_WORKER_HOST", "127.0.0.1"),
+      remoteTokenHost: typeof settings2.CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST === "string" ? settings2.CLAUDE_MEM_LOCAL_API_TOKEN_REMOTE_HOST : ""
+    });
   } catch {
     return {};
   }
@@ -6254,9 +6335,12 @@ function judgedStatusFor(recordedStatus, judgedState) {
   return status === recorded ? null : status;
 }
 
+// src/shared/platform-source.ts
+var GROK_BUILD_PLATFORM_SOURCE = "grok-build";
+
 // src/services/work-view/agent-view.mjs
 var PROJECT_KEY = (value) => String(value ?? "").replace(/[A-Z]/g, (c) => c.toLowerCase());
-var PLATFORMS = { codex: "Codex", claude: "Claude Code", gemini: "Gemini CLI", "gemini-cli": "Gemini CLI", "antigravity-cli": "Antigravity CLI", kimi: "Kimi", "hermes-cli": "Hermes", "pi-agent": "Pi" };
+var PLATFORMS = { codex: "Codex", claude: "Claude Code", gemini: "Gemini CLI", "gemini-cli": "Gemini CLI", "antigravity-cli": "Antigravity CLI", [GROK_BUILD_PLATFORM_SOURCE]: "Grok Build", kimi: "Kimi", "hermes-cli": "Hermes", "pi-agent": "Pi" };
 var platformLabel = (platform) => PLATFORMS[platform] ?? compactText(platform, 48) ?? "Unassigned";
 var stamp = (value) => Number.isFinite(Number(value)) && Number(value) > 0 ? new Date(Number(value)).toISOString() : null;
 var fingerprint = (value) => JSON.stringify(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)));
