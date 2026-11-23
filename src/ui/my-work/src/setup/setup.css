@@ -126,6 +126,10 @@
 .cmem-setup .setup-back:not([aria-disabled="true"]):hover { color: var(--ink); text-decoration: underline; }
 .setup-waiting { max-width: 360px; color: var(--muted); font-size: 15px; line-height: 1.4; text-align: right; }
 .setup-actions.is-bar { padding-top: 20px; border-top: 1px solid var(--line); }
+.reveal-trial { margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--line); }
+.reveal-trial p { margin: 0 0 4px; font-weight: 600; }
+.reveal-trial small { color: var(--muted); font-size: 0.9375rem; }
+.reveal-trial .setup-actions { margin-top: 12px; }
 /* A hint under a choice that turns a button on (D6). */
 .setup-hint { display: flex; align-items: flex-start; gap: 8px; margin-top: 8px; color: var(--muted); font-size: 15px; line-height: 1.4; }
 .setup-hint svg { flex: none; width: 18px; height: 18px; margin-top: 1px; }

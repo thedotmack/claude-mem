@@ -20,7 +20,7 @@ failOnCiWithoutChrome('CI requires Chrome for the setup flow touch-size, type-si
  * - every control on the page is at least 44px tall on a phone (plan rule 6, touch-target-size);
  * - no visible text is under 14px;
  * - a finished scan moves on to the Reveal by itself, and Back goes where the flow says, pressed for real;
- * - the Reveal's pictures stay 64px on a phone, and "Skip the scan" does nothing while "Try again" runs;
+ * - the Reveal's pictures stay 64px on a phone, and "Continue with new work" does nothing while "Try again" runs;
  * - "Stop import" ends the upload and returns to Finish Setup, and only the person's press starts it again (E9);
  * - the launch hands over to the workspace when it did before Phase 8, and plays once;
  * - the DeepSeek Harness profile keeps the worker's limit and says when a paste is cut;
@@ -200,22 +200,27 @@ type FakeWorker = ReturnType<typeof fakeWorker>;
  * upload's start and stop, which play `run` the way the worker does: every change goes out as a `setup-import` frame
  * before the request's answer. Every request is recorded. Nothing here reaches a real worker or cmem.ai.
  */
-function fakeWorker(initialRun: object, setupChanges: object = {}) {
+function fakeWorker(initialRun: object, setupChanges: object = {}, scanChanges: object = {}) {
   const requests: Array<{ method: string; path: string; body: any }> = [];
   const streams = new Set<ReadableStreamDefaultController<Uint8Array>>();
   const encoder = new TextEncoder();
   let connections = 0;
   let run: any = initialRun;
+  let persisted = setupChanges;
   const state = () => ({
     status: 'pending', alreadyPro: true, choice: null, install: null, checkout: null, installer: null,
     history: { projects: 3, sessions: 24, observations: 128 }, historyImport: run, backgroundWorkRunning: [],
-    ...setupChanges,
+    ...persisted,
   });
   const frame = (event: string, data: unknown) => encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   const send = (event: string, data: unknown) => {
     for (const stream of [...streams]) {
       try { stream.enqueue(frame(event, data)); } catch { streams.delete(stream); /* The page closed that stream. */ }
     }
+  };
+  const reportSetup = (changes: object) => {
+    persisted = { ...persisted, ...changes };
+    send('setup-state', state());
   };
   const update = (changes: object) => { run = { ...run, ...changes }; send('setup-import', run); };
   const handle = async (request: Request): Promise<Response | null> => {
@@ -239,10 +244,15 @@ function fakeWorker(initialRun: object, setupChanges: object = {}) {
       }), { headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store' } });
     }
     if (route === 'GET /api/setup/state') return Response.json(state());
-    if (route === 'GET /api/setup/scan') return Response.json({ agents: [{ id: 'claude-code', label: 'Claude Code', detected: true, prompts: 3 }], percent: 100, phase: 'done', done: true, error: null, improveProduct: true, uploadedAgents: [] });
+    if (route === 'GET /api/setup/scan') return Response.json({ agents: [{ id: 'claude-code', label: 'Claude Code', detected: true, prompts: 3 }], percent: 100, phase: 'done', done: true, error: null, improveProduct: true, uploadedAgents: [], ...scanChanges });
     if (route === 'GET /api/setup/telemetry') return Response.json({ context: { setup_flow_id: '0f8fad5b-d9cb-469f-a165-70867728950e', already_pro: true } });
     if (route === 'POST /api/setup/telemetry') return Response.json({ ok: true });
-    if (route === 'POST /api/setup/choice') return Response.json(state());
+    if (route === 'POST /api/setup/choice') {
+      const { openCheckout, ...choice } = body;
+      const stage = choice.branch === 'home' ? 'home-ready' : state().alreadyPro ? 'go-kept-existing-pro' : 'go-awaiting-checkout';
+      reportSetup({ choice, installer: { stage }, checkout: openCheckout ? { state: 'waiting', error: null } : null });
+      return Response.json(state());
+    }
     if (route === 'POST /api/setup/import') {
       // One run at a time: a start while one runs answers with that run and starts nothing.
       if (run.state === 'running') return Response.json(run, { status: 202 });
@@ -261,7 +271,7 @@ function fakeWorker(initialRun: object, setupChanges: object = {}) {
     return Response.json({ error: `The fake worker has no ${route}.` }, { status: 404 });
   };
   return {
-    handle, send, state,
+    handle, send, state, reportSetup,
     setRun(next: object) { run = next; },
     connections: () => connections,
     drop() { for (const stream of [...streams]) { streams.delete(stream); stream.close(); } },
@@ -272,79 +282,139 @@ function fakeWorker(initialRun: object, setupChanges: object = {}) {
   };
 }
 
+(chromeExecutablePath ? it : it.skip)('one monthly trial click on the reveal opens checkout and uses the original scan after activation', async () => {
+  const worker = fakeWorker(uploadRun({ state: 'idle' }), { alreadyPro: false });
+  await withSetupPage('', { width: 390, height: 844, phone: true }, async page => {
+    await page.atStep('reveal');
+    const copy = await page.browser.evaluate<string>(`document.querySelector('.reveal-trial').textContent`);
+    expect(copy).toContain('$0 today. Then $12/month after 30 days. Card required.');
+    await page.browser.evaluate(`(() => { const button = document.querySelector('.reveal-trial .primary'); button.click(); button.click(); })()`);
+    await page.atStep('checkout');
+    expect(worker.choices()).toEqual([{ branch: 'go', memoryBilling: 'existing', cloudSyncOffer: 'cloud_sync_monthly', openCheckout: true }]);
+    expect(await page.browser.evaluate(`!!document.querySelector('a[href="https://cmem.ai/hosted-tokens"]')`)).toBe(false);
+    worker.reportSetup({ checkout: { state: 'paid', error: null }, alreadyPro: true });
+    await page.atStep('savings');
+    expect(await page.browser.evaluate(`document.querySelector('#savings-title').textContent`)).toContain('You’ve got Cloud Sync');
+    expect(worker.posts()).toEqual(['/api/setup/choice']);
+    expect(worker.telemetry().filter(e => e.event === 'setup_step_viewed').map(e => e.step)).not.toContain('choice');
+  }, worker);
+}, 30_000);
+
+(chromeExecutablePath ? it : it.skip)('starting with new work still offers the monthly trial without an upload', async () => {
+  await withSetupPage('&scan=consent', { width: 390, height: 844, phone: true }, async page => {
+    await install(page);
+    await page.atStep('scan');
+    await page.until(`!!document.querySelector('.scan-consent .install-option input')`, 'the scan consent');
+    const primary = '.setup-actions .primary';
+    expect(await page.browser.evaluate(`document.querySelector('${primary}').textContent.trim()`)).toBe('Find my focus areas');
+    await page.press('.scan-consent .install-option input');
+    await page.press(primary, 'Continue with new work');
+    await page.atStep('reveal');
+    expect(await page.browser.evaluate(`document.querySelector('#reveal-title').textContent`)).toBe('Start with your next session');
+    expect(await page.browser.evaluate(`document.querySelector('.reveal-trial p').textContent`)).toContain('your next session');
+    await page.press(primary, 'Try Cloud Sync free for 30 days');
+    await page.atStep('checkout');
+  });
+}, 45_000);
+
 (chromeExecutablePath ? it : it.skip)('the annual Cloud choice reaches checkout with its price and existing-provider intent intact', async () => {
   const worker = fakeWorker(uploadRun({ state: 'idle' }), { alreadyPro: false });
   await withSetupPage('', { width: 390, height: 844, phone: true }, async page => {
     await page.atStep('reveal');
-    await page.press('.setup-actions .primary', 'Continue');
+    await page.press('.setup-actions .text-action', 'Annual or local setup');
     await page.atStep('choice');
     expect(await page.browser.evaluate(`document.querySelector('input[name="cloud-sync-offer"]:checked').value`)).toBe('cloud_sync_monthly');
     await page.press('input[value="cloud_sync_annual"]');
     expect(await page.browser.evaluate(`document.querySelector('.is-go .card-price').textContent`)).toBe('$99 today · $99/year · No trial');
     expect(await page.browser.evaluate(`[...document.querySelectorAll('.cloud-sync-offer')].every(label => label.getBoundingClientRect().height >= 44)`)).toBe(true);
-    await page.press('.setup-actions .primary', 'Continue with');
-    await page.atStep('savings');
-    expect(await page.browser.evaluate(`document.querySelector('.price-card').textContent`)).toContain('$99 today. Renews yearly. No trial.');
-    await page.press('.setup-actions .primary', 'Continue with Cloud Sync');
+    await page.press('.setup-actions .primary', 'Get annual Cloud Sync for $99');
     await page.atStep('checkout');
     const receipt = await page.browser.evaluate<string>(`document.querySelector('.checkout-receipt').textContent`);
     expect(receipt).toContain('Due today$99');
     expect(receipt).toContain('$99 / year');
-    expect(receipt).toContain('There is no trial.');
-    expect(receipt).toContain('Your existing provider');
+    expect(receipt).toContain('No trial.');
     expect(receipt).not.toContain('30 days');
     expect(receipt).not.toContain('$30');
-    expect(worker.choices()).toEqual([{ branch: 'go', memoryBilling: 'existing', cloudSyncOffer: 'cloud_sync_annual' }]);
-    expect(worker.posts()).not.toContain('/api/setup/checkout');
+    expect(worker.choices()).toEqual([{ branch: 'go', memoryBilling: 'existing', cloudSyncOffer: 'cloud_sync_annual', openCheckout: true }]);
+    expect(await page.browser.evaluate(`!!document.querySelector('a[href="https://cmem.ai/hosted-tokens"]')`)).toBe(false);
+    worker.reportSetup({ checkout: { state: 'failed', error: 'Checkout cancelled' } });
+    await page.until(`document.querySelector('.setup-error')?.textContent.includes('Checkout didn’t finish')`, 'the failed checkout');
+    expect(await page.step()).toBe('checkout');
+    worker.reportSetup({ alreadyPro: true, checkout: { state: 'paid', error: null } });
+    await page.atStep('savings');
+    expect(await page.browser.evaluate(`document.querySelector('#savings-title')?.textContent`)).toContain('You’ve got Cloud Sync');
+    expect(await page.browser.evaluate(`document.querySelector('a[href="https://cmem.ai/hosted-tokens"]')?.textContent`)).toBe('See plans and pricing');
+    await page.press('.setup-actions .primary', 'Continue setup');
+    await page.atStep('finish-setup');
+    expect(worker.posts()).toEqual(['/api/setup/choice']);
   }, worker);
 }, 30_000);
 
-(chromeExecutablePath ? it : it.skip)('Skip for now commits a genuinely local choice and never opens checkout', async () => {
+(chromeExecutablePath ? it : it.skip)('an explicit At Home choice finishes locally without checkout or a hosted offer', async () => {
   const worker = fakeWorker(uploadRun({ state: 'idle' }), { alreadyPro: false });
   await withSetupPage('', { width: 1440, height: 900, phone: false }, async page => {
     await page.atStep('reveal');
-    await page.press('.setup-actions .primary', 'Continue');
+    await page.press('.setup-actions .text-action', 'Annual or local setup');
     await page.atStep('choice');
-    await page.press('.setup-actions .primary', 'Continue with');
-    await page.atStep('savings');
-    await page.press('.setup-actions .secondary', 'Skip for now');
+    await page.press('input[name="memory-option"][value="home"]');
+    await page.press('.setup-actions .primary', 'Use this computer');
     await page.atStep('finish-setup');
     expect(worker.choices()).toEqual([{ branch: 'home', memoryBilling: 'existing' }]);
     expect(worker.posts()).toEqual(['/api/setup/choice']);
   }, worker);
 }, 30_000);
 
-// A fresh page reads the choice the terminal has already applied from /api/setup/state.
+// A reload resumes the original plan without dispatching a choice or opening another browser tab.
 for (const plan of [
-  { name: 'annual Cloud Sync', choice: { branch: 'go', memoryBilling: 'existing', cloudSyncOffer: 'cloud_sync_annual' }, stage: 'go-awaiting-checkout', alreadyPro: false, button: 'Continue with Cloud Sync', receipt: '$99 today', next: 'checkout' },
-  { name: 'legacy hosted Pro', choice: { branch: 'go', memoryBilling: 'hosted' }, stage: 'go-awaiting-checkout', alreadyPro: false, button: 'Continue with CMEM Pro', receipt: '$30/mo', next: 'checkout' },
-  { name: 'existing Cloud access', choice: { branch: 'go', memoryBilling: 'existing', cloudSyncOffer: 'cloud_sync_monthly' }, stage: 'go-kept-existing-pro', alreadyPro: true, button: 'Continue with Cloud Sync', receipt: 'Keep your existing plan', next: 'finish-setup' },
-  { name: 'At Home', choice: { branch: 'home', memoryBilling: 'existing' }, stage: 'home-ready', alreadyPro: false, button: 'Continue at Home', receipt: 'At Home · Free', next: 'finish-setup' },
+  { name: 'annual Cloud Sync', choice: { branch: 'go', memoryBilling: 'existing', cloudSyncOffer: 'cloud_sync_annual' }, stage: 'go-awaiting-checkout', alreadyPro: false, next: 'checkout' },
+  { name: 'legacy hosted Pro', choice: { branch: 'go', memoryBilling: 'hosted' }, stage: 'go-awaiting-checkout', alreadyPro: false, next: 'checkout' },
+  { name: 'confirmed monthly trial', choice: { branch: 'go', memoryBilling: 'existing', cloudSyncOffer: 'cloud_sync_monthly' }, stage: 'go-awaiting-checkout', alreadyPro: true, checkout: { state: 'paid' }, next: 'savings' },
+  { name: 'existing Cloud access', choice: { branch: 'go', memoryBilling: 'existing' }, stage: 'go-kept-existing-pro', alreadyPro: true, next: 'finish-setup' },
+  { name: 'existing credentials with interrupted checkout', choice: { branch: 'go', memoryBilling: 'existing' }, stage: 'go-kept-existing-pro', alreadyPro: true, checkout: { state: 'waiting' }, next: 'finish-setup' },
+  { name: 'existing credentials with confirmed trial', choice: { branch: 'go', memoryBilling: 'existing' }, stage: 'go-kept-existing-pro', alreadyPro: true, checkout: { state: 'paid' }, next: 'savings' },
+  { name: 'At Home', choice: { branch: 'home', memoryBilling: 'existing' }, stage: 'home-ready', alreadyPro: false, next: 'finish-setup' },
 ]) {
   (chromeExecutablePath ? it : it.skip)(`reloading setup preserves the applied ${plan.name} choice`, async () => {
-    const worker = fakeWorker(uploadRun({ state: 'idle' }), { alreadyPro: plan.alreadyPro, choice: plan.choice, installer: { stage: plan.stage } });
+    const worker = fakeWorker(uploadRun({ state: 'idle' }), { alreadyPro: plan.alreadyPro, choice: plan.choice, installer: { stage: plan.stage }, checkout: plan.checkout ?? null });
     await withSetupPage('', { width: 390, height: 844, phone: true }, async page => {
-      await page.atStep('reveal');
-      await page.press('.setup-actions .primary', 'Continue');
-      await page.atStep('savings');
-      expect(await page.browser.evaluate('window.row()')).toEqual({ back: 'none', waiting: null, forward: [plan.button] });
-      expect(await page.browser.evaluate(`document.querySelector('.price-card').textContent`)).toContain(plan.receipt);
-      await page.press('.setup-actions .primary', plan.button);
       await page.atStep(plan.next);
-      expect(worker.choices()).toEqual([plan.choice]);
-      expect(worker.posts()).toEqual(['/api/setup/choice']);
+      expect(worker.posts()).toEqual([]);
     }, worker);
   }, 30_000);
 }
 
-/** From the first screen to Finish Setup on the page's own source: the fake worker's scan is done and the person has Pro. */
+(chromeExecutablePath ? it : it.skip)('a restarted installer that finds connected credentials releases the waiting checkout screen', async () => {
+  const worker = fakeWorker(uploadRun({ state: 'idle' }), {
+    alreadyPro: false, choice: { branch: 'go', memoryBilling: 'existing' },
+    installer: { stage: 'go-awaiting-checkout' }, checkout: { state: 'waiting' },
+  });
+  await withSetupPage('', { width: 390, height: 844, phone: true }, async page => {
+    await page.atStep('checkout');
+    worker.reportSetup({ alreadyPro: true, installer: { stage: 'go-kept-existing-pro' } });
+    await page.atStep('finish-setup');
+    expect(worker.posts()).toEqual([]);
+  }, worker);
+}, 30_000);
+
+(chromeExecutablePath ? it : it.skip)('a confirmed trial shows its recorded usage after the worker loses its in-memory scan', async () => {
+  const usage = { coverage: 'partial', periodLabel: 'Usage history is incomplete.', tokens: 12345, persona: null, efficiencyPercent: null };
+  const worker = fakeWorker(uploadRun({ state: 'idle' }), {
+    alreadyPro: true, choice: { branch: 'go', memoryBilling: 'existing', usage },
+    installer: { stage: 'go-awaiting-checkout' }, checkout: { state: 'paid' },
+  }, { phase: 'idle', done: false, agents: [] });
+  await withSetupPage('', { width: 390, height: 844, phone: true }, async page => {
+    await page.atStep('savings');
+    expect(await page.browser.evaluate<string>(`document.querySelector('.price-table dd').textContent`)).toBe('At least 12,345 recorded tokens');
+    expect(worker.posts()).toEqual([]);
+  }, worker);
+}, 30_000);
+
+/** The fake worker's scan is complete and its existing plan needs no checkout. */
 async function toFinishSetupOnTheWorker(page: SetupWalk) {
   await page.atStep('reveal');
   await page.press('.setup-actions .primary', 'Continue');
   await page.atStep('choice');
-  await page.press('.setup-actions .primary', 'Continue with');
-  await page.atStep('savings');
-  await page.press('.setup-actions .primary', 'Continue with Cloud Sync');
+  await page.press('.setup-actions .primary', 'Continue with my plan');
   await page.atStep('finish-setup');
 }
 
@@ -352,7 +422,7 @@ async function toFinishSetupOnTheWorker(page: SetupWalk) {
 async function install(page: SetupWalk) {
   await page.until(`!!document.querySelector('.install-reinstall input')`, 'install options');
   await page.press('.install-reinstall input');
-  await page.press('.setup-actions .primary', 'Install and continue');
+  await page.press('.setup-actions .primary', 'Set up my agents');
 }
 
 (chromeExecutablePath ? it : it.skip)('setup screens keep the step bar, Back, one navy button, 44px controls and 14px text on a phone', async () => {
@@ -382,19 +452,18 @@ async function install(page: SetupWalk) {
     await measure('scan done');
     await page.press('.setup-actions .primary', 'Continue');
     await page.atStep('reveal');
-    await page.press('.setup-actions .primary', 'Continue');
+    await page.press('.setup-actions .text-action', 'Annual or local setup');
     await page.atStep('choice');
     await measure('choice');
-    await page.press('.setup-actions .primary', 'Continue with');
-    await page.atStep('savings');
-    await measure('savings');
-    await page.press('.setup-actions .primary', 'Continue with Cloud Sync');
+    await page.press('.setup-actions .primary', 'Try Cloud Sync free for 30 days');
     await page.atStep('checkout');
     await measure('checkout');
-    await page.press('.setup-actions .primary', 'Open checkout');
+    await page.atStep('savings');
+    await measure('savings');
+    await page.press('.setup-actions .primary', 'Continue setup');
     await page.atStep('finish-setup');
     await measure('finish setup');
-    await page.press('.setup-actions .primary', 'Continue');
+    await page.press('.setup-actions .primary', 'Finish setup');
     await page.until(`['launch', 'workspace'].includes(document.querySelector('.cmem-setup')?.dataset.step)`, 'launch');
     if (await page.step() === 'launch') await measure('launch', false);
     await page.atStep('workspace');
@@ -422,7 +491,7 @@ async function install(page: SetupWalk) {
     expect(result.step, label).toBe(label === 'finish setup' ? 'finish-setup' : label.split(' ')[0]);
     expect(result.coarse, label).toBe(true);
     expect(result.barSteps, label).toBe(5);
-    expect(result.back, label).toBe(label === 'install' ? 0 : 1);
+    expect(result.back, label).toBe(label === 'install' || label === 'checkout' ? 0 : 1);
     expect(result.navy.length, label).toBeLessThanOrEqual(1);
     expect(result.short, label).toEqual([]);
     expect(result.small, label).toEqual([]);
@@ -470,24 +539,16 @@ async function install(page: SetupWalk) {
     expect(await page.step()).toBe('scan');
     await page.press('.setup-actions .primary', 'Continue');
     await page.atStep('reveal');
-    await page.press('.setup-actions .primary', 'Continue');
+    await page.press('.setup-actions .text-action', 'Annual or local setup');
     await page.atStep('choice');
     await page.press('.setup-back');
     await page.atStep('reveal');
-    await page.press('.setup-actions .primary', 'Continue');
+    await page.press('.setup-actions .text-action', 'Annual or local setup');
     await page.atStep('choice');
-    await page.press('.setup-actions .primary', 'Continue with');
-    await page.atStep('savings');
-
-    // The refused choice: its alert, with Try again, on Token Savings only.
-    await page.press('.setup-actions .primary', 'Continue with Cloud Sync');
+    await page.press('.setup-actions .primary', 'Try Cloud Sync free for 30 days');
     await page.until(`window.alerts().includes('Couldn’t save your storage choice.')`, 'the refused choice');
-    expect(await page.step()).toBe('savings');
-    expect(await page.browser.evaluate(`[...document.querySelectorAll('.setup-error button')].some((el) => el.textContent.trim() === 'Try again')`)).toBe(true);
-    // Not sent yet, so the choice can still change: Back is there, and the alert follows it to no other screen.
-    await page.press('.setup-back');
-    await page.atStep('choice');
-    expect(await alerts()).toEqual([]);
+    expect(await page.step()).toBe('choice');
+    expect(await page.browser.evaluate(`[...document.querySelectorAll('.setup-error button')].some(el => el.textContent.trim() === 'Try again')`)).toBe(true);
     await page.press('.setup-back');
     await page.atStep('reveal');
     expect(await alerts()).toEqual([]);
@@ -496,28 +557,18 @@ async function install(page: SetupWalk) {
     expect(await alerts()).toEqual([]);
     await page.press('.setup-actions .primary', 'Continue');
     await page.atStep('reveal');
-    await page.press('.setup-actions .primary', 'Continue');
+    await page.press('.setup-actions .text-action', 'Annual or local setup');
     await page.atStep('choice');
-    await page.press('.setup-actions .primary', 'Continue with');
-    await page.atStep('savings');
+    await page.press('.setup-actions .primary', 'Try Cloud Sync free for 30 days');
+    await page.atStep('checkout');
     expect(await alerts()).toEqual([]);
-
-    // Sent and applied by the installer: Checkout → Back → Token Savings, and no Back to the choice from there.
-    await page.press('.setup-actions .primary', 'Continue with Cloud Sync');
-    await page.atStep('checkout');
-    await page.press('.setup-back');
     await page.atStep('savings');
-    expect(await row()).toEqual({ back: 'none', waiting: null, forward: ['Continue with Cloud Sync'] });
-    await page.press('.setup-actions .primary', 'Continue with Cloud Sync');
-    await page.atStep('checkout');
-    await page.press('.setup-actions .primary', 'Open checkout');
-    await page.atStep('finish-setup');
-
-    // A paid checkout reached by Back goes on with Continue; it never offers to open checkout again.
     await page.press('.setup-back');
     await page.atStep('checkout');
-    expect(await row()).toEqual({ back: 'on', waiting: null, forward: ['Continue'] });
+    expect(await row()).toEqual({ back: 'none', waiting: null, forward: ['Continue'] });
     await page.press('.setup-actions .primary', 'Continue');
+    await page.atStep('savings');
+    await page.press('.setup-actions .primary', 'Continue setup');
     await page.atStep('finish-setup');
   });
 // About 15s: the 8s sample scan, then each press; 90s allows a slow shared runner.
@@ -529,18 +580,16 @@ async function install(page: SetupWalk) {
     await install(page);
     await page.atStep('scan');
     await page.until(`!!document.querySelector('.setup-actions .secondary')`, 'the stopped scan');
-    await page.press('.setup-actions .secondary', 'Skip the scan');
+    await page.press('.setup-actions .secondary', 'Continue with new work');
     await page.atStep('reveal');
-    await page.press('.setup-actions .primary', 'Continue');
+    await page.press('.setup-actions .text-action', 'Annual or local setup');
     await page.atStep('choice');
-    await page.press('.setup-actions .primary', 'Continue with');
-    await page.atStep('savings');
-    await page.press('.setup-actions .primary', 'Continue with Cloud Sync');
+    await page.press('.setup-actions .primary', 'Try Cloud Sync free for 30 days');
     await page.until(`window.alerts().includes('Couldn’t save your storage choice.')`, 'the refused choice');
     // Nothing retries by itself: 2s is longer than any sample delay (checkout answers in 1.5s, setup-sample.ts), so a
     // timed retry would have moved the page by now.
     await Bun.sleep(2_000);
-    expect(await page.step()).toBe('savings');
+    expect(await page.step()).toBe('choice');
     await page.press('.setup-error button', 'Try again');
     await page.atStep('checkout');
     expect(await page.browser.evaluate('window.alerts()')).toEqual([]);
@@ -548,22 +597,22 @@ async function install(page: SetupWalk) {
 // About 6s: the scan stops at 3.2s; 90s allows a slow shared runner.
 }, 90_000);
 
-(chromeExecutablePath ? it : it.skip)('"Skip the scan" does nothing while "Try again" is starting the scan', async () => {
+(chromeExecutablePath ? it : it.skip)('"Continue with new work" does nothing while "Try again" is starting the scan', async () => {
   // `&scan=failed` stops the sample scan at 40% (3.2s). Its Try again answers after 1.2s (setup-sample.ts ANSWER_MS),
   // as a worker does after its round trip, so the walk presses Skip inside that time.
   await withSetupPage('&scan=failed', { width: 1440, height: 900, phone: false }, async (page) => {
-    const skip = `[...document.querySelectorAll('.setup-actions button')].find((el) => el.textContent.trim() === 'Skip the scan')`;
+    const skip = `[...document.querySelectorAll('.setup-actions button')].find((el) => el.textContent.trim() === 'Continue with new work')`;
     await install(page);
     await page.atStep('scan');
     await page.until(`!!(${skip})`, 'the stopped scan');
     expect(await page.browser.evaluate(`${skip}.getAttribute('aria-disabled')`)).toBeNull();
     await page.press('.setup-actions .primary', 'Try again');
     expect(await page.browser.evaluate(`${skip}.getAttribute('aria-disabled')`)).toBe('true');
-    await page.press('.setup-actions .secondary', 'Skip the scan');
+    await page.press('.setup-actions .secondary', 'Continue with new work');
     expect(await page.step()).toBe('scan');
     // The new scan runs to the end and opens the Reveal by itself, with no word of a skip: it was never skipped.
     await page.atStep('reveal');
-    expect(await page.browser.evaluate(`document.querySelector('main').textContent.includes('You skipped this step')`)).toBe(false);
+    expect(await page.browser.evaluate(`document.querySelector('main').textContent.includes('Start with your next session')`)).toBe(false);
   });
 // About 14s: the scan stops at 3.2s, Try again answers in 1.2s, then the new scan plays for 8s; 90s allows a slow shared runner.
 }, 90_000);
@@ -573,13 +622,10 @@ async function toFinishSetup(page: SetupWalk) {
   await install(page);
   // The sample scan plays for 8s, then opens the Reveal by itself.
   await page.atStep('reveal');
-  await page.press('.setup-actions .primary', 'Continue');
-  await page.atStep('choice');
-  await page.press('.setup-actions .primary', 'Continue with');
-  await page.atStep('savings');
-  await page.press('.setup-actions .primary', 'Continue with Cloud Sync');
+  await page.press('.setup-actions .primary', 'Try Cloud Sync free for 30 days');
   await page.atStep('checkout');
-  await page.press('.setup-actions .primary', 'Open checkout');
+  await page.atStep('savings');
+  await page.press('.setup-actions .primary', 'Continue setup');
   await page.atStep('finish-setup');
 }
 
@@ -715,7 +761,7 @@ async function toFinishSetup(page: SetupWalk) {
     const form = '#install-fixture form';
     expect(await page.browser.evaluate(`document.querySelector('${form}').textContent`)).not.toMatch(/email|product updates|anything you’d like us to know/i);
     expect(await page.browser.evaluate(`document.querySelectorAll('${form} input[type=email], ${form} textarea').length`)).toBe(0);
-    await page.press('#install-fixture button[type=submit]', 'Install and continue');
+    await page.press('#install-fixture button[type=submit]', 'Set up my agents');
     const submitted = await page.browser.evaluate('window.installs');
     expect(submitted).toHaveLength(1);
     expect(submitted[0]).toMatchObject({ agents: ['dsh'], skills: ['how-it-works'], telemetryEnabled: true });

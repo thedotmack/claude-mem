@@ -33,17 +33,16 @@ function SecureCardArt() {
  * to finish in the browser tab; a paid checkout moves the page on, and a failed one shows its own alert instead.
  */
 const CHECKOUT_STATUS: Record<SetupCheckoutState, string | null> = {
-  requested: 'Waiting for checkout to finish…',
+  requested: 'Opening secure checkout…',
   waiting: 'Waiting for checkout to finish…',
   paid: 'Checkout finished.',
   failed: null,
 }
 
 /**
- * Step 5, On The Go only. "Open checkout" asks the terminal to open the selected product and offer's checkout
- * (sign-in, then Stripe) in a new browser tab; the page moves on to Finish Setup when the terminal reports it paid.
- * While it is open, the same button opens it again. Once paid (reached again by Back), Continue goes on to Finish
- * Setup and nothing is asked of the terminal.
+ * The plan selection requests checkout. Keep the local tab available while the terminal
+ * opens sign-in and Stripe. A completed pairing advances to usage or final setup.
+ * A manual reopen also supports in-progress checkouts created by an older installer.
  */
 export function CheckoutScreen({ checkout, asked, installerStopped, cloudSyncOffer = DEFAULT_CLOUD_SYNC_OFFER, legacyHosted = false, back, onOpen, onContinue }: {
   checkout: SetupCheckoutView | null
@@ -67,7 +66,7 @@ export function CheckoutScreen({ checkout, asked, installerStopped, cloudSyncOff
     : perMonth(offer.cents, t)
   return (
     <section aria-labelledby="checkout-title">
-      <PageHeading id="checkout-title" title={t('Checkout')} lead={t(legacyHosted ? 'CMEM Pro · Cloud Sync included' : 'Cloud Sync · Keep your existing memory provider')} />
+      <PageHeading id="checkout-title" title={t('Checkout')} lead={t(legacyHosted ? 'CMEM Pro · Cloud Sync included' : 'Cloud Sync')} />
       <div className="checkout-grid">
         <div className="panel is-memory checkout-receipt">
           {legacyHosted ? <>
@@ -95,21 +94,15 @@ export function CheckoutScreen({ checkout, asked, installerStopped, cloudSyncOff
             <dl className="receipt">
               <div className="due"><dt>{t('Due today')}</dt><dd>{money(offer.trialDays ? 0 : offer.cents)}</dd></div>
               <div><dt>{t(offer.trialDays ? 'Cloud Sync after 30 days' : 'Cloud Sync annual plan')}</dt><dd>{cloudPrice}</dd></div>
-              <div><dt>{t('Memory generation')}</dt><dd>{t('Your existing provider')}</dd></div>
             </dl>
             <div className="checkout-notes">
-              <p>{offer.trialDays
-                ? t('Your Cloud Sync trial lasts a full 30 days. Your first $12 monthly charge is due when that trial ends.')
-                : t('$99 is charged today. Your Cloud Sync subscription renews at $99 each year. There is no trial.')}</p>
-              <p>{t('Hosted tokens are optional, paid separately after Cloud Sync, and have no trial.')}</p>
+              <p>{t(offer.trialDays ? 'Card required. Cancel in your account before the trial ends to avoid the first charge.' : '$99 today. Renews yearly. No trial.')}</p>
             </div>
             <Collapsible className="checkout-terms">
               <CollapsibleFoldTrigger>{t('Billing details')}</CollapsibleFoldTrigger>
               <CollapsibleContent forceMount>
                 <ul>
                   <li>{t('A card is required. Review the amount and renewal date in Stripe before confirming.')}</li>
-                  {offer.trialDays > 0 && <li>{t('Token usage, hosted token purchases, and token plan changes cannot shorten the Cloud Sync trial.')}</li>}
-                  <li>{t('Cloud Sync keeps your configured memory provider. Its existing charges still apply.')}</li>
                   <li>{t('Manage or cancel Cloud Sync in your account.')}</li>
                 </ul>
               </CollapsibleContent>
@@ -119,7 +112,7 @@ export function CheckoutScreen({ checkout, asked, installerStopped, cloudSyncOff
         <div className="panel checkout-handoff">
           <SecureCardArt />
           <h2>{t('Secure checkout with Stripe')}</h2>
-          <p>{t('Checkout opens in a new browser tab. Add your card, then come back here.')}</p>
+          <p>{t('Finish checkout in the new tab, then connect this device. Setup continues here.')}</p>
           {status && (state === 'paid' ? <p className="checkout-status" role="status">{t(status)}</p>
             : <p className="checkout-status" role="status"><Spinner className="checkout-spinner" />{t(status)}</p>)}
           {checkout?.state === 'failed' && <SetupError title={t('Checkout didn’t finish.')} check={t('Open checkout again to try once more.')} detail={checkout.error} />}
@@ -128,7 +121,7 @@ export function CheckoutScreen({ checkout, asked, installerStopped, cloudSyncOff
       <SetupActions back={back}>
         {/* Paid: the way on. Otherwise "Open checkout", unless no installer is left to open it (the page's alert says how to restart). */}
         {state === 'paid' ? <SetupButton onClick={onContinue}>{t('Continue')} <ArrowRightIcon aria-hidden="true" /></SetupButton>
-          : !installerStopped && <SetupButton onClick={onOpen}>{state ? t('Open checkout again') : t('Open checkout')} <ArrowRightIcon aria-hidden="true" /></SetupButton>}
+          : !installerStopped && <SetupButton onClick={onOpen} disabled={state === 'requested'}>{state === 'requested' ? t('Opening checkout…') : state ? t('Open checkout again') : t('Open checkout')} <ArrowRightIcon aria-hidden="true" /></SetupButton>}
       </SetupActions>
     </section>
   )

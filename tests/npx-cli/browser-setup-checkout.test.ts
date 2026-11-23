@@ -46,6 +46,29 @@ async function until(check: (current: any) => boolean): Promise<any> {
 }
 
 describe('installer checkout loop', () => {
+  it('opens the selected standalone checkout after one choice request, even if submitted twice', async () => {
+    await start();
+    let opens = 0;
+    const setup = runBrowserSetup({
+      workerBaseUrl: origin, openBrowser: () => {}, log: { info: () => {}, warn: () => {} }, pollIntervalMs: 5,
+      applyChoice: async choice => {
+        expect(choice.cloudSyncOffer).toBe('cloud_sync_annual');
+        return 'go-awaiting-checkout';
+      },
+      checkout: { run: async () => { opens++; return true; }, reopen: () => { throw new Error('Unexpected reopen'); } },
+    });
+    await until(current => current.installer?.stage === 'waiting-for-choice');
+    const confirm = () => fetch(`${origin}/api/setup/choice`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Origin: origin },
+      body: JSON.stringify({ branch: 'go', memoryBilling: 'existing', cloudSyncOffer: 'cloud_sync_annual', openCheckout: true }),
+    });
+    expect((await Promise.all([confirm(), confirm()])).map(response => response.status)).toEqual([200, 200]);
+    expect((await until(current => current.checkout?.state === 'paid')).checkout.requests).toBe(1);
+    expect((await page('/api/setup/complete')).status).toBe(200);
+    expect((await setup).checkoutPaid).toBe(true);
+    expect(opens).toBe(1);
+  });
+
   it('opens checkout per request, reopens on a repeat while open, reports failed, then paid', async () => {
     await start();
     const events: string[] = [];

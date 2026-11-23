@@ -1,10 +1,9 @@
 # Local setup funnel
 
-These events measure the nine screens shown by `npx claude-mem install`, at the
-local worker's `/?setup=1`. They are not page views on cmem.ai. There is no
-historical backfill; older installers emit none of these events.
+Start the funnel at the local `install` screen shown by `npx claude-mem install`
+at `/?setup=1`. Count unique setup attempts that render each screen.
 
-`setup_funnel_version = 1` identifies this contract. The installer creates a
+The installer creates a
 fresh UUIDv4 `setup_flow_id` for each browser setup attempt and saves it with
 the live setup session. All events use `setup:<UUID>` as their PostHog distinct
 ID. This identity is separate from the worker's persistent anonymous ID.
@@ -14,14 +13,26 @@ Sample previews never request a telemetry context or emit events.
 
 ## Screens and branches
 
-`scan → reveal → choice → savings → checkout → finish-setup → launch → workspace`
+`setup_funnel_version = 2` starts with installer 16.1.1. The monthly trial follows
+`install → scan → reveal → checkout → savings → finish-setup → launch → workspace`.
+The trial button on Reveal opens checkout. Choosing an alternative on Reveal
+opens `choice`, where annual Cloud Sync opens checkout and local storage proceeds
+to Finish Setup. Existing configurations can continue with their current plan.
 
-- At Home and existing Pro configurations skip checkout. `already_pro` is the
-  configuration present before setup, not a payment or subscription check.
-- Initial `branch: go` is the UI default, not a decision. `branch_confirmed`
-  becomes true only after the worker accepts the choice leaving Savings.
-  Attribute earlier visits using the flow's latest confirmed choice. Flows
-  without one remain undecided.
+- `already_pro` records whether the machine had a Cloud configuration at the
+  start of the attempt. The default `branch: go` becomes a confirmed selection
+  when the worker accepts a choice from Reveal or Choice. Use
+  `action = choice_committed` and `cloud_sync_offer` to count monthly or annual
+  selections. Flows without a confirmed choice remain undecided.
+- Version 2 shows `savings` after standalone Cloud Sync activation. It displays
+  the original scan's usage and records `action = view_hosted_plans` when
+  someone opens the optional hosted generation plans.
+- Version 1 placed `choice → savings → checkout` after Reveal and committed
+  the choice on Savings. Compare releases using the version on local setup
+  events. Attribute server checkout and Stripe trial outcomes by
+  `setup_flow_id`, even when server events use their own version. Count a
+  monthly trial when Stripe confirms the selected monthly subscription entered
+  its trial. Keep annual purchases and unattributed outcomes separate.
 - Finish Setup can enter `import` and return. Successful import is a forward
   transition; failed import returns back. Import is optional and may be skipped.
 - Reduced motion skips `launch` and moves directly to `workspace`.

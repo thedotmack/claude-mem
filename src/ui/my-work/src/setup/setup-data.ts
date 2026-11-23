@@ -2,6 +2,7 @@
 // The live source fills it from the worker (prompt scan, extraction, usage, setup state); `?source=sample` loads
 // setup-sample.ts instead, and only then.
 import { toSetupUsage, type SetupScanUsage, type SetupUsage } from './setup-usage'
+import { choiceLocked } from './setup-flow'
 import { revealFromSnapshot, type SnapshotWithSetup, type WorkerExtraction } from './setup-reveal'
 import { noteFor, searchUrl, toMemoryResults, type MemoryResult, type WorkerSearchResult } from './setup-search'
 import { applySseFrame } from '../live/parse-sse-frame'
@@ -102,7 +103,7 @@ export interface SetupData {
   connectionError: string | null
   /** Whether the connection error got no answer at all or a refusal; null with no error. */
   connectionErrorKind: SetupFailureKind | null
-  choice: SetupChoice | null
+  choice: (SetupChoice & { usage?: SetupUsage }) | null
   /** Undefined until the first state response; null for older/already configured installers. */
   install: SetupInstallState | null | undefined
   scan: SetupScanView
@@ -124,7 +125,7 @@ export interface SetupData {
   suggestions: string[]
 }
 
-/** What the page posts when it leaves Token Savings: where memory lives, and who generates it. */
+/** The storage plan explicitly selected in the installer. */
 export interface SetupChoice { branch: SetupBranch; memoryBilling: SetupMemoryBilling; cloudSyncOffer?: SetupCloudSyncOffer }
 
 export interface SetupSource {
@@ -140,7 +141,7 @@ export interface SetupSource {
   /** Answers the upload question: true sends the scanned prompts to cmem.ai, false keeps them on this machine. */
   confirmUpload(upload: boolean, agents?: string[], improveProduct?: boolean): Promise<void>
   /** Hands the storage choice to the installer waiting in the terminal (POST /api/setup/choice). */
-  choose(choice: SetupChoice): Promise<void>
+  choose(choice: SetupChoice, openCheckout?: boolean): Promise<void>
   /** Asks the installer holding the On The Go sign-in to open checkout (POST /api/setup/checkout). */
   checkout(): Promise<void>
   /** Finishes setup for this machine with the tools picked on Finish Setup; the terminal exits (POST /api/setup/complete). */
@@ -201,7 +202,7 @@ interface WorkerScanState extends Omit<SetupScanView, 'agents' | 'improveProduct
 }
 interface WorkerHistoryImport { state: HistoryImportRunState; percent: number; imported: number; error: string | null; sent?: number; total?: number; skipped?: number; unconfirmed?: number }
 interface WorkerSetupState {
-  choice?: SetupChoice | null
+  choice?: SetupData['choice']
   install?: SetupInstallState | null
   status: SetupStatus; alreadyPro: boolean; checkout?: SetupCheckoutView | null
   installer?: SetupInstallerView | null
@@ -275,6 +276,7 @@ export const localSetupSource: SetupSource = {
   kind: 'local',
   subscribe(onData) {
     let data = EMPTY_SETUP_DATA
+    let liveUsage: SetupUsage | null = null
     let closed = false
     let scanRevision = 0
     let stateRevision = 0
@@ -285,9 +287,10 @@ export const localSetupSource: SetupSource = {
     const applyScan = (scan: WorkerScanState) => {
       scanRevision++
       appliedImproveProduct = scan.improveProduct ?? true
+      liveUsage = scan.usage ? toSetupUsage(scan.usage) : null
       publish({
         scan: toScanView(scan),
-        usage: scan.usage ? toSetupUsage(scan.usage) : null,
+        usage: data.choice?.usage ?? liveUsage,
         recentPrompts: scan.recentPrompts ?? [],
         // Finish Setup pre-ticks the tools the scan found on this machine.
         detectedTools: scan.agents.filter((agent) => agent.detected).map((agent) => agent.id).filter((id) => SETUP_TOOLS.some((tool) => tool.id === id)),
@@ -299,6 +302,7 @@ export const localSetupSource: SetupSource = {
       connectionError: null,
       connectionErrorKind: null,
       choice: state.choice ?? null,
+      usage: state.choice?.usage ?? liveUsage,
       install: state.install ?? null,
       alreadyPro: state.alreadyPro,
       checkout: state.checkout ? { state: state.checkout.state, error: state.checkout.error } : null,
@@ -351,6 +355,7 @@ export const localSetupSource: SetupSource = {
     let startingScan = false
     const ensureScanStarted = async () => {
       if (!initialScanLoaded || startingScan || closed || data.scan.phase !== 'idle'
+        || (data.choice && choiceLocked(data.installer?.stage, !!data.checkout))
         || data.install === undefined || (data.install && data.install.status !== 'ready')) return
       startingScan = true
       try { await startScan() }
@@ -439,7 +444,7 @@ export const localSetupSource: SetupSource = {
     await write
   },
   async confirmUpload(upload, agents, improveProduct) { await postJson('/api/setup/scan/consent', { upload, ...(agents ? { agents } : {}), ...(improveProduct === undefined ? {} : { improveProduct }) }) },
-  async choose(choice) { await postJson('/api/setup/choice', choice) },
+  async choose(choice, openCheckout) { await postJson('/api/setup/choice', { ...choice, ...(openCheckout ? { openCheckout: true } : {}) }) },
   async checkout() { await postJson('/api/setup/checkout', {}) },
   async complete(tools, telemetry) { await postJson('/api/setup/complete', { tools, ...(telemetry?.length ? { telemetry } : {}) }) },
   async startHistoryImport() { await askImport('/api/setup/import') },

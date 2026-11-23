@@ -25,6 +25,11 @@ function fixture() {
 }
 
 describe('setup episode collection', () => {
+  it('accepts earlier and direct-checkout funnel events and rejects unknown versions', () => {
+    const { event } = fixture();
+    for (const version of [1, 2]) expect(parseSetupEvent({ ...event, setup_funnel_version: version })?.setup_funnel_version).toBe(version);
+    for (const version of [0, 3, '2']) expect(parseSetupEvent({ ...event, setup_funnel_version: version })).toBeNull();
+  });
   it('generates a fresh per-attempt identity and freezes the initial Pro configuration', () => {
     const { statePath, context } = fixture();
     expect(context.already_pro).toBe(true);

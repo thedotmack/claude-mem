@@ -183,12 +183,14 @@ function FocusAreaRows({ reveal, loading, workLoading, incomplete, emptyMessage,
 }
 
 /** The first payoff is the same saved focus areas as My Work. Areas and their work land independently. */
-export function RevealScreen({ agents, reveal, extraction, uploadedAgents, recentPrompts, hostedNotice, skipped = false, back, onContinue }: {
+export function RevealScreen({ agents, reveal, extraction, uploadedAgents, recentPrompts, hostedNotice, skipped = false, back, onContinue, onStartTrial, busy }: {
   agents: SetupScanAgent[]; reveal: RevealSets; extraction: SetupExtraction | null; uploadedAgents: string[] | null; recentPrompts: SetupRecentPrompt[]; hostedNotice?: string | null
   /** The person skipped the scan after it stopped. */
   skipped?: boolean
   back?: SetupBack | null
   onContinue: () => void
+  onStartTrial?: () => void
+  busy?: boolean
 }) {
   const { t, locale } = useI18n()
   // The results came only from the tools the person chose to upload.
@@ -200,7 +202,19 @@ export function RevealScreen({ agents, reveal, extraction, uploadedAgents, recen
   const promptsOnly = extraction?.state === 'waiting-for-agent' && !hasResults
   const finished = extraction?.state === 'ok' || extraction?.state === 'failed'
   const keptLocal = uploadedAgents?.length === 0 && agents.some((agent) => agent.prompts > 0) && !hasResults
-  const continueRow = (
+  const firstArea = reveal.focusAreas?.find(area => area.name.trim())?.name
+  const continueRow = onStartTrial ? (
+    <div className="reveal-trial">
+      <p>{firstArea ? interpolate(t('Pick up {area} in another agent or on another device.'), { area: firstArea })
+        : hasResults || promptCount > 0 ? t('Pick up this work in another agent or on another device.')
+        : t('Pick up your next session in another agent or on another device.')}</p>
+      <small>{t('$0 today. Then $12/month after 30 days. Card required.')}</small>
+      <SetupActions back={back}>
+        <SetupButton busy={busy} onClick={onStartTrial}>{t('Try Cloud Sync free for 30 days')} <ArrowRightIcon aria-hidden="true" /></SetupButton>
+        <SetupButton look="text" disabled={busy} onClick={onContinue}>{t('Annual or local setup')}</SetupButton>
+      </SetupActions>
+    </div>
+  ) : (
     <SetupActions back={back} className="is-bar">
       <SetupButton onClick={onContinue}>{t('Continue')} <ArrowRightIcon aria-hidden="true" /></SetupButton>
     </SetupActions>
@@ -208,8 +222,8 @@ export function RevealScreen({ agents, reveal, extraction, uploadedAgents, recen
   if (keptLocal || ((hostedNotice || skipped) && !hasResults)) {
     return (
       <section aria-labelledby="reveal-title">
-        <PageHeading id="reveal-title" title={t('Continue setup.')}
-          lead={hostedNotice ? t(hostedNotice) : t('You skipped this step. Continue setting up Claude-Mem.')} />
+        <PageHeading id="reveal-title" title={t('Start with your next session')}
+          lead={hostedNotice ? t(hostedNotice) : t('Your agents can build memory as you work.')} />
         {continueRow}
       </section>
     )
@@ -221,7 +235,7 @@ export function RevealScreen({ agents, reveal, extraction, uploadedAgents, recen
     : joinNames(agentNames)
 
   const leadText = promptCount > 0
-    ? interpolate(t('From {count} messages across {agents}: the bigger picture of what you’re working toward.'), {
+    ? interpolate(t('{count} messages from {agents}'), {
         count: promptCount.toLocaleString(locale === 'fr' ? locale : 'en-US'),
         agents: agentsJoined,
       })
@@ -229,9 +243,10 @@ export function RevealScreen({ agents, reveal, extraction, uploadedAgents, recen
 
   return (
     <section aria-labelledby="reveal-title">
-      <PageHeading id="reveal-title" title={hostedNotice ? t('Continue setup.') : t('Your work is starting to connect.')}
+      <PageHeading id="reveal-title" title={t('Your recent work')}
         lead={hostedNotice ? undefined : leadText} />
       {hostedNotice && <p className="scan-status" role="status">{t(hostedNotice)}</p>}
+      {onStartTrial && continueRow}
       {extraction?.state === 'failed' && <p className="reveal-notice" role="status">{t('Couldn’t finish connecting your work. You can continue with what’s here.')}</p>}
       {promptsOnly && <p className="reveal-notice" role="status">{t('Your conversations are saved. Focus areas need an available agent; you can continue setup now.')}</p>}
       {promptsOnly ? <PromptsOnly agents={withPrompts} recentPrompts={recentPrompts} /> : (
@@ -253,7 +268,7 @@ export function RevealScreen({ agents, reveal, extraction, uploadedAgents, recen
           </CollapsibleContent>
         </Collapsible>
       )}
-      {continueRow}
+      {!onStartTrial && continueRow}
     </section>
   )
 }

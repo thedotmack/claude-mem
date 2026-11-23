@@ -1,8 +1,5 @@
-// The install funnel's step machine. `guardStep` and `nextAfterSavings` copy PROTO
-// finish-setup-revision-09/finish-setup.js:3-23 (`guardRoute`, `nextAfterSavings`), adapted to the decided path in
-// .scratch/funnel-gui/SCREEN-PATH.md, with the initial installation added: Install → Scan → Reveal → Storage choice → Token Savings (result only) → Checkout (On The
-// Go only) → Finish Setup → Import (only when there is history to import) → Launch → What's next?.
-// The retired PROTO routes (savings selection, the second usage scan, device, tools, home, trial, cloud-sync) are gone.
+// Storage choice starts checkout for new Cloud customers. Once the installer confirms
+// Cloud Sync, they can review their existing scan and optionally add hosted generation.
 
 import { DEFAULT_CLOUD_SYNC_OFFER, SETUP_STEPS, type SetupBranch, type SetupCloudSyncOffer, type SetupInstallerStage, type SetupMemoryBilling, type SetupScanPhase, type SetupStep } from '../../../../shared/setup-funnel.ts'
 export { SETUP_STEPS, type SetupStep }
@@ -10,7 +7,7 @@ export { SETUP_STEPS, type SetupStep }
 export type MemoryBranch = SetupBranch
 /** Who generates memories: a legacy hosted choice or the person's existing provider. */
 export type MemoryBilling = SetupMemoryBilling
-export type HistoryImportStatus = 'none' | 'available' | 'running' | 'complete' | 'skipped'
+export type HistoryImportStatus = 'none' | 'available' | 'running' | 'complete'
 
 export interface SetupFlowState {
   /** Agent integrations must finish installing before the memory scan begins. */
@@ -55,16 +52,27 @@ export function initialFlowState(alreadyPro: boolean): SetupFlowState {
   }
 }
 
-export function nextAfterSavings(state: Pick<SetupFlowState, 'branch' | 'alreadyPro'>): 'checkout' | 'finish-setup' {
-  return state.branch === 'go' && !state.alreadyPro ? 'checkout' : 'finish-setup'
+type PlanState = Pick<SetupFlowState, 'branch' | 'alreadyPro' | 'memoryBilling' | 'checkoutReviewed' | 'savingsComplete'>
+
+function needsCheckout(state: PlanState): boolean {
+  return state.branch === 'go' && !state.alreadyPro
+}
+
+function canOfferHosted(state: PlanState): boolean {
+  return needsCheckout(state) && state.memoryBilling === 'existing' && state.checkoutReviewed
+}
+
+export function nextAfterChoice(state: PlanState): 'checkout' | 'savings' | 'finish-setup' {
+  if (needsCheckout(state) && !state.checkoutReviewed) return 'checkout'
+  return canOfferHosted(state) && !state.savingsComplete ? 'savings' : 'finish-setup'
 }
 
 /** The installer's report on the choice. */
 export type InstallerStage = SetupInstallerStage
 
 /** The installer has applied the choice: the worker refuses a different one for the rest of this installer run. */
-export function choiceLocked(stage: InstallerStage | null | undefined): boolean {
-  return !!stage && stage !== 'waiting-for-choice' && stage !== 'failed'
+export function choiceLocked(stage: InstallerStage | null | undefined, checkoutRequested = false): boolean {
+  return checkoutRequested || (!!stage && stage !== 'waiting-for-choice' && stage !== 'failed')
 }
 
 /** Restore the worker's committed storage choice without replacing a choice being edited in this visit. */
@@ -76,7 +84,7 @@ export function hydrateSetupChoice(state: SetupFlowState, saved: (Pick<SetupFlow
 }
 
 const BEFORE_CHOICE: SetupStep[] = ['scan', 'reveal']
-const AFTER_SAVINGS: SetupStep[] = ['checkout', 'finish-setup', 'import', 'launch', 'workspace']
+const AFTER_PLAN: SetupStep[] = ['finish-setup', 'import', 'launch', 'workspace']
 
 /** The scan is behind the person: it finished, or they chose to skip it after it stopped. */
 export const scanPassed = (state: Pick<SetupFlowState, 'scanComplete' | 'scanSkipped'>) => state.scanComplete || state.scanSkipped
@@ -96,13 +104,13 @@ export function guardStep(step: SetupStep, state: SetupFlowState): SetupStep {
   if (!state.installationComplete) return 'install'
   if (step === 'install') return state.installReview ? 'install' : scanPassed(state) ? 'reveal' : 'scan'
   if (!SETUP_STEPS.includes(step)) return 'scan'
-  if (step !== 'scan' && !scanPassed(state)) return 'scan'
+  if (step !== 'scan' && !scanPassed(state) && !state.choiceContinued) return 'scan'
   if (!BEFORE_CHOICE.includes(step) && !state.revealContinued) return 'reveal'
   if (![...BEFORE_CHOICE, 'choice'].includes(step) && !state.choiceContinued) return 'choice'
-  if (AFTER_SAVINGS.includes(step) && !state.savingsComplete) return 'savings'
-  const afterSavings = nextAfterSavings(state)
-  if (step === 'checkout' && afterSavings !== 'checkout') return afterSavings
-  if (step !== 'checkout' && AFTER_SAVINGS.includes(step) && afterSavings === 'checkout' && !state.checkoutReviewed) return 'checkout'
+  const next = nextAfterChoice(state)
+  if (step === 'savings' && !canOfferHosted(state)) return next
+  if (step === 'checkout' && !needsCheckout(state)) return next
+  if (AFTER_PLAN.includes(step) && next !== 'finish-setup') return next
   if (step === 'import' && (state.branch !== 'go' || state.importStatus !== 'running')) return 'finish-setup'
   if ((step === 'launch' || step === 'workspace') && (!state.setupComplete || state.finishTools.length === 0)) return 'finish-setup'
   return step
@@ -142,7 +150,7 @@ const PROGRESS_STEP_DONE: Record<SetupProgressStep, (state: SetupFlowState) => b
   // Only the worker's word: a page that could not reach it does not know the tools were installed.
   tools: (state) => state.installConfirmed,
   memory: (state) => state.revealContinued,
-  plan: (state) => state.savingsComplete && (nextAfterSavings(state) !== 'checkout' || state.checkoutReviewed),
+  plan: (state) => state.choiceContinued && nextAfterChoice(state) === 'finish-setup',
   connect: (state) => state.setupComplete,
   // The page leaves setup when the last step is done, so the bar never shows it ticked.
   done: () => false,
@@ -157,7 +165,7 @@ export function progressStepState(item: SetupProgressStep, screen: SetupStep, st
 export interface SetupBackFacts {
   /** This run started at the install screen (the installer asked the browser to choose the tools). */
   hasInstallStep: boolean
-  /** The installer applied the storage choice, so Token Savings can no longer change it. */
+  /** The choice was applied or its checkout was requested. */
   choiceLocked: boolean
 }
 
@@ -169,13 +177,9 @@ const PREVIOUS_STEP: Record<SetupStep, (state: SetupFlowState, facts: SetupBackF
   scan: (_, facts) => facts.hasInstallStep ? 'install' : null,
   reveal: () => 'scan',
   choice: () => 'reveal',
-  // The storage choice only while it can still change. Once the installer applied it, the worker refuses a different
-  // one, so a new pick on that screen would silently turn back into the applied one (the same rule as Finish Setup's).
-  savings: (_, facts) => facts.choiceLocked ? null : 'choice',
-  checkout: () => 'savings',
-  // Checkout comes back first on On The Go. Otherwise Token Savings, unless the installer already applied the choice
-  // there: the worker refuses a different one, so going back could only fail.
-  'finish-setup': (state, facts) => nextAfterSavings(state) === 'checkout' ? 'checkout' : facts.choiceLocked ? null : 'savings',
+  savings: () => 'checkout',
+  checkout: (_, facts) => facts.choiceLocked ? null : 'choice',
+  'finish-setup': (state, facts) => canOfferHosted(state) ? 'savings' : needsCheckout(state) ? 'checkout' : facts.choiceLocked ? null : 'choice',
   import: () => 'finish-setup',
   // Launch only plays on the way forward; Back from either end of it returns to Finish Setup.
   launch: () => 'finish-setup',
