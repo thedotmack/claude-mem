@@ -3216,26 +3216,29 @@ export class SessionStore {
     return rows.map(row => row.project);
   }
 
-  getProjectCatalog(): {
+  getProjectCatalog(includeCheckoutPaths = false): {
     projects: string[];
     sources: string[];
+    checkoutPathsByProject?: Record<string, string[]>;
     projectsBySource: Record<string, string[]>;
   } {
     const rows = this.db.prepare(`
       SELECT
         COALESCE(platform_source, '${DEFAULT_PLATFORM_SOURCE}') as platform_source,
         project,
+        ${includeCheckoutPaths ? 'cwd,' : ''}
         MAX(started_at_epoch) as latest_epoch
       FROM sdk_sessions
       WHERE project IS NOT NULL AND project != ''
         AND project != ?
-      GROUP BY COALESCE(platform_source, '${DEFAULT_PLATFORM_SOURCE}'), project
+      GROUP BY COALESCE(platform_source, '${DEFAULT_PLATFORM_SOURCE}'), project${includeCheckoutPaths ? ', cwd' : ''}
       ORDER BY latest_epoch DESC
-    `).all(OBSERVER_SESSIONS_PROJECT) as Array<{ platform_source: string; project: string; latest_epoch: number }>;
+    `).all(OBSERVER_SESSIONS_PROJECT) as Array<{ platform_source: string; project: string; cwd?: string | null }>;
 
     const projects: string[] = [];
     const seenProjects = new Set<string>();
     const projectsBySource = new Map<string, Set<string>>();
+    const checkoutPaths = new Map<string, Set<string>>();
 
     for (const row of rows) {
       const source = normalizePlatformSource(row.platform_source);
@@ -3243,6 +3246,12 @@ export class SessionStore {
       let sourceProjects = projectsBySource.get(source);
       if (!sourceProjects) projectsBySource.set(source, sourceProjects = new Set());
       sourceProjects.add(row.project);
+
+      if (row.cwd) {
+        let paths = checkoutPaths.get(row.project);
+        if (!paths) checkoutPaths.set(row.project, paths = new Set());
+        paths.add(row.cwd);
+      }
 
       if (!seenProjects.has(row.project)) {
         seenProjects.add(row.project);
@@ -3255,6 +3264,9 @@ export class SessionStore {
     return {
       projects,
       sources,
+      ...(includeCheckoutPaths && {
+        checkoutPathsByProject: Object.fromEntries([...checkoutPaths].map(([key, paths]) => [key, [...paths]])),
+      }),
       projectsBySource: Object.fromEntries(
         sources.map(source => [source, [...(projectsBySource.get(source) ?? [])]])
       )

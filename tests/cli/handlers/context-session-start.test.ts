@@ -17,6 +17,7 @@ import {
   removeContextCache,
   writeContextCache,
 } from '../../../src/shared/context-cache.js';
+import { runOwnedFixture } from '../../helpers/owned-fixture.js';
 import * as realHookSettings from '../../../src/shared/hook-settings.js';
 import * as realOauthToken from '../../../src/shared/oauth-token.js';
 import * as realProjectName from '../../../src/utils/project-name.js';
@@ -44,6 +45,7 @@ let includeAllSources = false;
 let contextProjects = 'current';
 let excludedProjects = '';
 let projectCatalog: string[] | 'reject' = ['other-project', 'repo-project', 'third-project'];
+let checkoutPathsByProject: Record<string, string[]> | undefined = {};
 let showTerminalOutput = false;
 let workerUnreachable = false;
 let provider = 'claude';
@@ -91,9 +93,9 @@ mock.module('../../../src/utils/project-name.js', () => ({
 mock.module('../../../src/shared/worker-utils.js', () => ({
   executeWithWorkerFallback: async (...args: unknown[]) => {
     calls.push(args);
-    if (args[0] === '/api/projects') {
+    if (args[0] === '/api/projects' || args[0] === '/api/projects?includeCheckoutPaths=true') {
       if (projectCatalog === 'reject') throw new Error('catalog unavailable');
-      return { projects: projectCatalog };
+      return { projects: projectCatalog, checkoutPathsByProject };
     }
     const isTerminalRender = typeof args[0] === 'string' && args[0].includes('colors=true');
     return workerModelContext !== null && !isTerminalRender ? workerModelContext : workerContext;
@@ -229,6 +231,37 @@ describe('contextHandler SessionStart path', () => {
         expect(injectedProjects()).toBe('alpha,zeta,parent-project,repo-project');
       } finally { excludedProjects = ''; }
     });
+
+    it('keeps the current checkout when an older worker cannot supply checkout paths', async () => {
+      checkoutPathsByProject = undefined;
+      excludedProjects = '/srv/work/private';
+      projectCatalog = ['private', 'another-project'];
+      try {
+        await runAll('legacy-catalog');
+        expect(injectedProjects()).toBe('parent-project,repo-project');
+      } finally { excludedProjects = ''; checkoutPathsByProject = {}; }
+    });
+
+    it('skips both timeline renders when every checkout key reads an excluded directory', async () => {
+      excludedProjects = '/srv/work/private';
+      projectCatalog = ['PARENT-project', 'repo-project'];
+      checkoutPathsByProject = { 'PARENT-project': [excludedProjects], 'repo-project': [excludedProjects] };
+      showTerminalOutput = true;
+      try {
+        await runAll('excluded-aliases');
+        expect(calls.some(call => String(call[0]).startsWith('/api/context/inject'))).toBe(false);
+      } finally { excludedProjects = ''; checkoutPathsByProject = {}; showTerminalOutput = false; }
+    });
+
+    it('renders only allowed observations from the worker checkout catalog', async () => {
+      await runOwnedFixture('tests/fixtures/session-start-project-exclusions.ts', {
+        prefix: 'session-start-exclusions-',
+        env: dataDir => ({
+          CLAUDE_CONFIG_DIR: path.join(dataDir, 'config'), CLAUDE_MEM_WORKER_AUTOSTART: 'false',
+          CLAUDE_MEM_RUNTIME: 'worker', DO_NOT_TRACK: '1',
+        }),
+      });
+    }, 10_000);
 
     it('does not ask the local catalog in server runtime', async () => {
       const { resolveSessionStartProjects } = await import('../../../src/cli/handlers/context.js');

@@ -318,17 +318,37 @@ export async function resolveSessionStartProjects(
     return checkoutProjects;
   }
   try {
-    const catalog = await executeWithWorkerFallback<{ projects?: unknown }>('/api/projects', 'GET', undefined, {
+    const excludedPatterns = settings.CLAUDE_MEM_EXCLUDED_PROJECTS?.trim();
+    const url = excludedPatterns ? '/api/projects?includeCheckoutPaths=true' : '/api/projects';
+    const catalog = await executeWithWorkerFallback<{
+      projects?: unknown;
+      checkoutPathsByProject?: Record<string, string[]>;
+    }>(url, 'GET', undefined, {
       workerStartupTimeoutMs: HOOK_TIMEOUTS.POST_SPAWN_WAIT,
       timeoutMs: 2_000,
     });
     if (isWorkerFallback(catalog) || !Array.isArray(catalog?.projects)) return checkoutProjects;
-    const excludedPatterns = settings.CLAUDE_MEM_EXCLUDED_PROJECTS ?? '';
-    const otherProjects = catalog.projects
-      .filter((project): project is string => typeof project === 'string' && project.length > 0)
-      .filter(project => !checkoutProjects.includes(project) && !isProjectExcluded(project, excludedPatterns))
-      .sort();
-    return [...otherProjects, ...checkoutProjects];
+    const projects = catalog.projects.filter((project): project is string => typeof project === 'string' && project.length > 0);
+
+    // Context reads use SQLite NOCASE. Any recorded checkout that matches an
+    // exclusion rules out the whole key, including its other ASCII spellings.
+    const fold = (key: string) => key.replace(/[A-Z]/g, letter => letter.toLowerCase());
+    const excluded = new Set<string>();
+    if (excludedPatterns) {
+      const paths = catalog.checkoutPathsByProject;
+      if (!paths) return checkoutProjects; // Older worker with a name-only catalog.
+      for (const project of projects) {
+        // Keep existing key exclusions, including for sessions recorded without a cwd.
+        const checkouts = Object.hasOwn(paths, project) ? paths[project] : [];
+        if (isProjectExcluded(project, excludedPatterns) ||
+            checkouts.some(cwd => isProjectExcluded(cwd, excludedPatterns))) {
+          excluded.add(fold(project));
+        }
+      }
+    }
+    const allowed = (project: string) => excluded.size === 0 || !excluded.has(fold(project));
+    const otherProjects = projects.filter(project => !checkoutProjects.includes(project) && allowed(project)).sort();
+    return [...otherProjects, ...checkoutProjects.filter(allowed)];
   } catch (error) {
     logger.debug('HOOK', 'Project catalog unavailable; SessionStart reads this checkout only', {
       error: error instanceof Error ? error.message : String(error),
@@ -484,6 +504,8 @@ export const contextHandler: EventHandler = {
     const serverRuntime = runtime.runtime === 'server' ? runtime : null;
 
     const scopeProjects = await resolveSessionStartProjects(settings, context.allProjects, runtime.runtime);
+    // An empty projects parameter would make the renderer rediscover the checkout.
+    const hasTimelineScope = scopeProjects.length > 0;
     const projectsQuery = projectsQueryString(scopeProjects);
     const normalizedPlatformSource = input.platform
       ? normalizePlatformSource(input.platform)
@@ -524,7 +546,7 @@ export const contextHandler: EventHandler = {
     // message" on it is read only when the worker cannot answer.
     const cacheNowEpochMs = Date.now();
     const readCachedRender = (colors: boolean): string | null => {
-      if (serverRuntime) return null;
+      if (serverRuntime || !hasTimelineScope) return null;
       const keys = contextCacheKeys(scopeProjects, platformSourceParam ? normalizedPlatformSource : undefined, colors, cwd);
       const cached = readContextCache(keys, cacheNowEpochMs);
       if (!cached) return null;
@@ -552,9 +574,9 @@ export const contextHandler: EventHandler = {
     let workerOutageNotice: string | null = null;
     let contextResult: WorkerCallResult<string>;
     try {
-      contextResult = serverRender
-        ? serverRender.model
-        : cachedModelContext ?? await executeWithWorkerFallback<string>(apiPath, 'GET', undefined, workerOptions);
+      contextResult = serverRender?.model ?? cachedModelContext ?? (hasTimelineScope
+        ? await executeWithWorkerFallback<string>(apiPath, 'GET', undefined, workerOptions)
+        : '');
     } catch (error) {
       if (input.platform !== 'claude-code' || !isWorkerUnavailableError(error)) throw error;
       await recordWorkerUnreachable();
@@ -586,7 +608,7 @@ export const contextHandler: EventHandler = {
     }
 
     let coloredTimeline = '';
-    if (showTerminalOutput) {
+    if (showTerminalOutput && hasTimelineScope) {
       const colors = input.platform === 'claude-code';
       try {
         const colorResult = serverRender
