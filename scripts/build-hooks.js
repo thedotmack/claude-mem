@@ -1339,6 +1339,9 @@ async function buildHooks() {
       'plugin/hooks/hooks.json',
       HOOKS_MODULE.outfile,
       'plugin/hooks/codex-hooks.json',
+      // Referenced by plugin/.codex-plugin/plugin.json; a missing file would
+      // otherwise only surface when Codex loads the plugin.
+      'plugin/hooks/codex-no-bundled-hooks.json',
       'plugin/hooks/qoder-hooks.json',
       'plugin/hooks/qoder-repo-hooks.json',
       'plugin/scripts/bun-runner.js',
