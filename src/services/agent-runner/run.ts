@@ -36,7 +36,7 @@
  * through claude-mem's own validators.
  */
 
-import { randomBytes } from 'crypto';
+import { randomBytes, randomUUID } from 'crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
@@ -46,7 +46,7 @@ import { stripJsonComments, stripUtf8Bom } from '../../shared/atomic-json.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { logger } from '../../utils/logger.js';
 import { runtimeReadRoots } from './runtime-read-roots.js';
-import { detectUsableAgents, GEMINI_NO_MCP_SERVERS, runCommand, type CommandResult, type UsableAgent, type UsableAgentId } from './detect.js';
+import { cutOutputText, detectUsableAgents, GEMINI_NO_MCP_SERVERS, runCommand, type CommandResult, type UsableAgent, type UsableAgentId } from './detect.js';
 import { ApiProviderError, askApiTarget, resolveApiTarget } from './api-agent.js';
 import { WAITING_FOR_AGENT_REASON } from '../../shared/work-view-refresh-reasons.js';
 
@@ -358,6 +358,8 @@ function geminiAsk(agent: TaskAgent, task: AgentTask, dependencies: AgentRunnerD
       });
     } finally { rmSync(policyDir, { recursive: true, force: true }); }
     if (result.exitCode !== 0) throw failure('gemini', result);
+    // Part of the JSON is missing, so it cannot parse, and its parse error would blame the format instead of the cap.
+    if (result.stdoutTruncated) throw new Error(cutOutputText('gemini'));
     let output: { response?: unknown; error?: { message?: string } };
     try { output = JSON.parse(result.stdout); }
     catch { throw new Error(`gemini printed unreadable JSON: ${result.stdout.slice(0, 200)}`); }
@@ -541,6 +543,10 @@ function opencodeAsk(agent: TaskAgent, _task: AgentTask, dependencies: AgentRunn
         },
       });
       if (result.exitCode !== 0) throw failure('opencode', result);
+      // The event stream was cut, so whole events are missing from the middle:
+      // answering with the surviving ones would present a partial turn as the
+      // whole answer. Fail loudly instead of parsing what is left.
+      if (result.stdoutTruncated) throw new Error(cutOutputText('opencode'));
       return opencodeAnswer(result.stdout);
     } finally { rmSync(configHome, { recursive: true, force: true }); }
   };
@@ -560,6 +566,9 @@ function apiAsk(agent: TaskAgent, task: AgentTask, dependencies: AgentRunnerDepe
   // review batches) report it without sending. The latch lives and dies with this
   // run: it is not stored, and the next run asks the provider afresh.
   let refused: ApiProviderError | null = null;
+  // Every step of one run is one conversation for a preset that routes by a
+  // session header, so its requests share a routing (and prompt-cache) id.
+  const sessionId = randomUUID();
   return async (prompt, models, answerSchema) => {
     if (refused) throw refused;
     const resolution = resolveApiTarget();
@@ -567,7 +576,7 @@ function apiAsk(agent: TaskAgent, task: AgentTask, dependencies: AgentRunnerDepe
       throw new Error(`The selected API provider cannot answer this step: ${resolution.reason}`);
     }
     try {
-      return await askApiTarget(resolution.target, prompt, { model: models.api?.model, answerSchema });
+      return await askApiTarget(resolution.target, prompt, { model: models.api?.model, answerSchema, sessionId });
     } catch (error) {
       if (error instanceof ApiProviderError && [401, 402, 403, 429].includes(error.status)) refused = error;
       throw error;

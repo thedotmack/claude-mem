@@ -36,7 +36,7 @@ const compiled = buildSync({
       const scan = (phase) => ({ agents: [], percent: 40, phase, done: phase === 'done', error: phase === 'failed' ? 'Failed to fetch' : null, improveProduct: true, uploadedAgents: null });
       export const renderScan = (phase, { retrying = false, back = null } = {}) => renderToStaticMarkup(<ScanScreen scan={scan(phase)} back={back} onImproveProductChange={noop} onConfirmUpload={noop} preferenceError={null} onRetry={noop} retrying={retrying} retryError={null} onSkip={noop} onContinue={noop} />);
       export const renderCheckout = (checkout, asked, offer = {}) => renderToStaticMarkup(<CheckoutScreen checkout={checkout} asked={asked} installerStopped={false} back={{ onBack: noop, waitsFor: null }} onOpen={noop} onContinue={noop} {...offer} />);
-      export const renderExistingCloudPlan = () => renderToStaticMarkup(<><ChoiceScreen branch="go" alreadyPro onChoose={noop} /><SavingsScreen usage={null} branch="go" alreadyPro onPro={noop} onExistingPlan={noop} onSkip={noop} /></>);
+      export const renderExistingCloudPlan = () => renderToStaticMarkup(<><ChoiceScreen branch="go" alreadyPro onChoose={noop} /><SavingsScreen usage={null} branch="go" alreadyPro onContinue={noop} onSkip={noop} /></>);
       export const renderReveal = (reveal) => renderToStaticMarkup(<RevealScreen agents={[]} reveal={reveal} extraction={{ state: 'ok', step: null }} uploadedAgents={['codex']} recentPrompts={[]} onContinue={noop} />);
       const install = { status: 'ready', error: null, selection: { agents: ['cursor'], skills: [], installClaudeCode: false, disableAutoMemory: false, telemetryEnabled: true },
         catalog: { agents: [{ id: 'cursor', label: 'Cursor', hint: '', detected: true }], skills: [], reinstall: false,
@@ -47,7 +47,7 @@ const compiled = buildSync({
         scan: renderToStaticMarkup(<ScanScreen scan={scan(scanPhase)} back={back} onImproveProductChange={noop} onConfirmUpload={noop} preferenceError={null} onRetry={noop} retrying={false} retryError={null} onSkip={noop} onContinue={noop} />),
         reveal: renderToStaticMarkup(<RevealScreen agents={[]} reveal={{ goals: [], work: [], rules: [], focusAreas: SAMPLE_FOCUS_AREAS, requests: SAMPLE_REQUESTS }} extraction={{ state: 'ok', step: null }} uploadedAgents={['codex']} recentPrompts={[]} back={back} onContinue={noop} />),
         choice: renderToStaticMarkup(<ChoiceScreen branch="go" back={back} onChoose={noop} />),
-        savings: renderToStaticMarkup(<SavingsScreen usage={null} branch="home" back={back} onPro={noop} onExistingPlan={noop} onSkip={noop} />),
+        savings: renderToStaticMarkup(<SavingsScreen usage={null} branch="home" back={back} onContinue={noop} onSkip={noop} />),
         checkout: renderToStaticMarkup(<CheckoutScreen checkout={null} asked={false} installerStopped={false} back={back} onOpen={noop} onContinue={noop} />),
         'finish-setup': renderToStaticMarkup(<FinishSetupScreen branch="go" tools={[tool]} selected={['chatgpt']} onSelect={noop} history={null} importStatus="none" importResult={null} stoppingImport={false} onImport={noop} onStopImport={noop} onSkipImport={noop} back={back} onContinue={noop} />),
         import: renderToStaticMarkup(<ImportScreen progress={{ state: 'running', percent: 48, imported: 61, error: null, sent: 61, total: 128 }} back={back} stopping={false} onStop={noop} />),

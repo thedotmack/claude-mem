@@ -346,3 +346,31 @@ describe('an over-budget condense reply is clamped once, and marked as clamped (
     expect(await optimizeField(field, async () => ok('y'.repeat(tiny * 2)), CTX, tiny)).toBe(field);
   });
 });
+
+// The session abort must cancel both live compression requests at once, so
+// the pair stays concurrent; neither compression may cancel the other's SDK
+// child (the standalone spawn factory does not replace its siblings), which
+// field-session-abort.test.ts pins end to end against a live endpoint.
+describe('the two field compressions run concurrently and both complete', () => {
+  it('keeps both compressions in flight and both fields condensed', async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const compress: FieldCompressor = async () => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise(resolve => setTimeout(resolve, 10));
+      inFlight--;
+      return ok('condensed');
+    };
+
+    const out = await optimizeObservationFields(
+      { toolInput: oversized, toolOutput: oversized },
+      compress,
+      { sessionDbId: 1, toolName: 'Read' },
+      MAX,
+    );
+    expect(maxInFlight).toBe(2);
+    expect(out.toolInput).toContain('<condensed');
+    expect(out.toolOutput).toContain('<condensed');
+  });
+});

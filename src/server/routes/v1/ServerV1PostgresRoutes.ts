@@ -47,7 +47,7 @@ import { PostgresServerSessionsRepository, type PostgresServerSession } from '..
 import { IngestEventsService, type EnqueueOutcome } from '../../services/IngestEventsService.js';
 import { EndSessionService } from '../../services/EndSessionService.js';
 import { normalizePlatformSource, normalizePlatformSourceOrNull } from '../../../shared/platform-source.js';
-import { LISTING_OFFSET_CAP_MESSAGE, MAX_LISTING_OFFSET } from '../../../shared/listing-offset-cap.js';
+import { listingOffsetCapMessage, MAX_LISTING_OFFSET } from '../../../shared/listing-offset-cap.js';
 import {
   SERVER_CONTEXT_MAX_LIMIT,
   SERVER_CONTEXT_QUERY_DEFAULT_LIMIT,
@@ -2164,9 +2164,10 @@ export function parseJobListingQuery(req: Request): {
 
 function parseJobListOffset(value: unknown): number {
   const offset = clampInt(value, 0, 0, Number.MAX_SAFE_INTEGER);
-  if (offset > JOB_LIST_MAX_OFFSET) {
+  const listingCap = listingOffsetCapMessage(offset, JOB_LIST_MAX_OFFSET);
+  if (listingCap !== null) {
     throw new AppError(
-      LISTING_OFFSET_CAP_MESSAGE,
+      listingCap,
       400,
       'INVALID_PAGINATION',
     );

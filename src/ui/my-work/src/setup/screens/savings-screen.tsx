@@ -15,16 +15,15 @@ const tokensLabel = (tokens: number, t: (s: string) => string) => interpolate(t(
  * Cloud Sync preserves the configured memory provider. Saved hosted choices retain their original Pro receipt.
  * Cloud storage does not itself promise token savings; that claim belongs only to the legacy hosted plan.
  */
-export function SavingsScreen({ usage, branch, cloudSyncOffer = DEFAULT_CLOUD_SYNC_OFFER, legacyHosted = false, alreadyPro = false, back, onPro, onExistingPlan, onSkip }: {
+export function SavingsScreen({ usage, branch, cloudSyncOffer = DEFAULT_CLOUD_SYNC_OFFER, legacyHosted = false, alreadyPro = false, back, onContinue, onSkip }: {
   usage: SetupUsage | null
   branch: MemoryBranch
   cloudSyncOffer?: SetupCloudSyncOffer
   legacyHosted?: boolean
   alreadyPro?: boolean
   back?: SetupBack | null
-  onPro: () => void
-  onExistingPlan: () => void
-  onSkip: () => void
+  onContinue: () => void
+  onSkip?: () => void
 }) {
   const { t } = useI18n()
   const percent = usage?.efficiencyPercent ?? null
@@ -76,8 +75,8 @@ export function SavingsScreen({ usage, branch, cloudSyncOffer = DEFAULT_CLOUD_SY
         </>}
       </div>
       <SetupActions back={back}>
-        <SetupButton look="outline" onClick={onSkip}>{t('Skip for now')}</SetupButton>
-        <SetupButton onClick={!legacyHosted && branch === 'home' ? onExistingPlan : onPro}>
+        {onSkip && <SetupButton look="outline" onClick={onSkip}>{t('Skip for now')}</SetupButton>}
+        <SetupButton onClick={onContinue}>
           {t(legacyHosted ? 'Continue with CMEM Pro' : branch === 'home' ? 'Continue at Home' : 'Continue with Cloud Sync')} <ArrowRightIcon aria-hidden="true" />
         </SetupButton>
       </SetupActions>

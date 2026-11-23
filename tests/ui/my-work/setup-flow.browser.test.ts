@@ -314,6 +314,29 @@ function fakeWorker(initialRun: object, setupChanges: object = {}) {
   }, worker);
 }, 30_000);
 
+// A fresh page reads the choice the terminal has already applied from /api/setup/state.
+for (const plan of [
+  { name: 'annual Cloud Sync', choice: { branch: 'go', memoryBilling: 'existing', cloudSyncOffer: 'cloud_sync_annual' }, stage: 'go-awaiting-checkout', alreadyPro: false, button: 'Continue with Cloud Sync', receipt: '$99 today', next: 'checkout' },
+  { name: 'legacy hosted Pro', choice: { branch: 'go', memoryBilling: 'hosted' }, stage: 'go-awaiting-checkout', alreadyPro: false, button: 'Continue with CMEM Pro', receipt: '$30/mo', next: 'checkout' },
+  { name: 'existing Cloud access', choice: { branch: 'go', memoryBilling: 'existing', cloudSyncOffer: 'cloud_sync_monthly' }, stage: 'go-kept-existing-pro', alreadyPro: true, button: 'Continue with Cloud Sync', receipt: 'Keep your existing plan', next: 'finish-setup' },
+  { name: 'At Home', choice: { branch: 'home', memoryBilling: 'existing' }, stage: 'home-ready', alreadyPro: false, button: 'Continue at Home', receipt: 'At Home · Free', next: 'finish-setup' },
+]) {
+  (chromeExecutablePath ? it : it.skip)(`reloading setup preserves the applied ${plan.name} choice`, async () => {
+    const worker = fakeWorker(uploadRun({ state: 'idle' }), { alreadyPro: plan.alreadyPro, choice: plan.choice, installer: { stage: plan.stage } });
+    await withSetupPage('', { width: 390, height: 844, phone: true }, async page => {
+      await page.atStep('reveal');
+      await page.press('.setup-actions .primary', 'Continue');
+      await page.atStep('savings');
+      expect(await page.browser.evaluate('window.row()')).toEqual({ back: 'none', waiting: null, forward: [plan.button] });
+      expect(await page.browser.evaluate(`document.querySelector('.price-card').textContent`)).toContain(plan.receipt);
+      await page.press('.setup-actions .primary', plan.button);
+      await page.atStep(plan.next);
+      expect(worker.choices()).toEqual([plan.choice]);
+      expect(worker.posts()).toEqual(['/api/setup/choice']);
+    }, worker);
+  }, 30_000);
+}
+
 /** From the first screen to Finish Setup on the page's own source: the fake worker's scan is done and the person has Pro. */
 async function toFinishSetupOnTheWorker(page: SetupWalk) {
   await page.atStep('reveal');
@@ -484,7 +507,7 @@ async function install(page: SetupWalk) {
     await page.atStep('checkout');
     await page.press('.setup-back');
     await page.atStep('savings');
-    expect((await row()).back).toBe('none');
+    expect(await row()).toEqual({ back: 'none', waiting: null, forward: ['Continue with Cloud Sync'] });
     await page.press('.setup-actions .primary', 'Continue with Cloud Sync');
     await page.atStep('checkout');
     await page.press('.setup-actions .primary', 'Open checkout');

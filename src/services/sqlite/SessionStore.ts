@@ -70,6 +70,7 @@ import {
   validateCanonicalMutation,
   type CanonicalMutation,
 } from '../sync/CanonicalContent.js';
+import { CONCEPT_ARRAY_JSON_SQL } from './concept-array-sql.js';
 
 // A Telegram send normally completes in seconds. A five-minute lease absorbs
 // a slow request while allowing a later SessionEnd delivery to recover work
@@ -3548,13 +3549,9 @@ export class SessionStore {
 
     if (concepts) {
       const conceptsList = Array.isArray(concepts) ? concepts : [concepts];
-      // Match the keyword read: legacy concepts may be plain strings or JSON strings.
-      const conceptArray = `CASE WHEN json_valid(o.concepts) THEN CASE
-        WHEN json_type(o.concepts) = 'array' THEN o.concepts
-        WHEN json_type(o.concepts) = 'text' THEN json_array(json_extract(o.concepts, '$'))
-        ELSE json_array(o.concepts) END ELSE json_array(o.concepts) END`;
+      // Legacy concepts may be plain strings or JSON strings.
       const conceptConditions = conceptsList.map(() =>
-        `EXISTS (SELECT 1 FROM json_each(${conceptArray}) WHERE type = 'text' AND value = ?)`
+        `EXISTS (SELECT 1 FROM json_each(${CONCEPT_ARRAY_JSON_SQL}) WHERE type = 'text' AND value = ?)`
       );
       if (conceptConditions.length > 0) {
         params.push(...conceptsList);
@@ -4270,9 +4267,14 @@ export class SessionStore {
     const statusFilter = '(? IS NULL OR c.status = ?) ';
     const order = 'ORDER BY c.score DESC, c.id DESC LIMIT ?';
     const statusArg = status ?? null;
+    // The count is bound as a SQL `LIMIT ?`, which takes neither a float
+    // ("datatype mismatch") nor a negative number (SQLite reads a negative LIMIT
+    // as "no limit"), so it is clamped here as well as rejected at the route:
+    // any caller reaches the same bounded read.
+    const boundLimit = Number.isFinite(limit) ? Math.max(1, Math.trunc(limit)) : 100;
     return project
-      ? this.db.prepare(`${select}WHERE c.project = ? AND ${statusFilter}${order}`).all(project, statusArg, statusArg, limit) as Row[]
-      : this.db.prepare(`${select}WHERE ${statusFilter}${order}`).all(statusArg, statusArg, limit) as Row[];
+      ? this.db.prepare(`${select}WHERE c.project = ? AND ${statusFilter}${order}`).all(project, statusArg, statusArg, boundLimit) as Row[]
+      : this.db.prepare(`${select}WHERE ${statusFilter}${order}`).all(statusArg, statusArg, boundLimit) as Row[];
   }
 
   // #3038 — record a reviewer's verdict on a candidate. `merged` is not accepted here:

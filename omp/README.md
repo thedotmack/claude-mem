@@ -11,14 +11,14 @@ OMP-side plugin or modification is required.
 
 ## How it works
 
-| OMP event | claude-mem endpoint | Purpose |
-|---|---|---|
-| `session_start` | — | Mint the session's `contentSessionId` |
-| `before_agent_start` | `POST /api/sessions/init` | Record every user prompt, in order (creates the claude-mem session on the first) |
-| `tool_result` | `POST /api/sessions/observations` | Record each tool call after its prompt (fire-and-forget; never posts an init) |
-| `context` | `GET /api/context/inject` | Inject memory from past sessions into the prompt (60s cache) |
-| `session_switch` / `session_branch` | `POST /api/sessions/summarize` | Finalize the previous session after its prompts and observations, then mint a new id |
-| `session_shutdown` | `POST /api/sessions/summarize` | Finalize the session summary |
+| OMP event | Worker endpoint | Server endpoint (`/v1`) | Purpose |
+|---|---|---|---|
+| `session_start` | — | — | Mint the session's `contentSessionId` |
+| `before_agent_start` | `POST /api/sessions/init` | `POST /v1/sessions/start` + `POST /v1/events?generate=false` (`user_prompt`) | Record every user prompt, in order (creates the claude-mem session on the first) |
+| `tool_result` | `POST /api/sessions/observations` | `POST /v1/events` | Record each tool call after its prompt (fire-and-forget; never posts an init) |
+| `context` | `GET /api/context/inject` | `POST /v1/context` | Inject memory from past sessions into the prompt (60s cache) |
+| `session_switch` / `session_branch` | `POST /api/sessions/summarize` | `POST /v1/events` + `POST /v1/sessions/:id/end` | Finalize the previous session after its prompts and observations, then mint a new id |
+| `session_shutdown` | `POST /api/sessions/summarize` | `POST /v1/events` + `POST /v1/sessions/:id/end` | Finalize the session summary |
 
 Behavioral notes (matching the OpenClaw adapter's conventions):
 
@@ -34,14 +34,36 @@ Behavioral notes (matching the OpenClaw adapter's conventions):
   `context` handler that OMP awaits before each model call.
 - A circuit breaker opens for 30s after 3 consecutive worker failures
   (timeouts count).
-- The worker address resolves the way claude-mem's own clients resolve it:
-  `CLAUDE_MEM_WORKER_PORT` / `CLAUDE_MEM_WORKER_HOST` from the environment, then
-  `settings.json` in the data dir (`CLAUDE_MEM_DATA_DIR`, default `~/.claude-mem`),
-  then the per-user default port. It is re-read at every OMP session start.
-- The hook never names the project: each request carries the session's `cwd`,
-  and the worker resolves the project key with the same resolver the Claude Code
-  hooks use, so OMP and Claude Code sessions in one checkout share one project.
-  Excluded projects (`CLAUDE_MEM_EXCLUDED_PROJECTS`) are skipped.
+- Runtime selection matches Claude Code's `runtime-selector.ts`: when
+  `CLAUDE_MEM_RUNTIME` is `"server"` (or legacy `"server-beta"`) and
+  `CLAUDE_MEM_SERVER_URL`, `CLAUDE_MEM_SERVER_API_KEY`, and
+  `CLAUDE_MEM_SERVER_PROJECT_ID` (or their legacy `CLAUDE_MEM_SERVER_BETA_*`
+  equivalents) are configured via environment or `settings.json`, the hook
+  speaks `/v1` with `Authorization: Bearer <key>`. Otherwise it falls back to
+  the local worker (`CLAUDE_MEM_WORKER_PORT` / `CLAUDE_MEM_WORKER_HOST`, then
+  `settings.json` in `CLAUDE_MEM_DATA_DIR`, default `~/.claude-mem`, then the
+  per-user default port). Settings are re-read at every OMP session start and
+  session switch.
+- With the worker, the hook never names the project: each request carries the
+  session's `cwd`, and the worker resolves the project key with the same resolver
+  the Claude Code hooks use, so OMP and Claude Code sessions in one checkout share
+  one project. Excluded projects (`CLAUDE_MEM_EXCLUDED_PROJECTS`) are skipped.
+- With the server, nothing passes through the worker, so the hook applies the
+  worker's rules itself (as the Hermes plugin does):
+  - The project key comes from git: the repository's folder name,
+    `<repo>/<worktree>` for a linked worktree, or the folder name outside git.
+    It is sent as `metadata.project` and as the context `folderProjects`, and
+    cached per folder for 5 minutes.
+  - A folder matching `CLAUDE_MEM_EXCLUDED_PROJECTS` (same globs as the worker),
+    or any process with `CLAUDE_MEM_INTERNAL=1`, sends nothing: no session start,
+    events, context request or session end.
+  - Tools listed in `CLAUDE_MEM_SKIP_TOOLS` (comma-separated, any case) are not
+    sent.
+  - A prompt that is wholly `<private>` (or empty) is not recorded, and neither
+    are its tool calls or its closing reply.
+  - `/v1/sessions/start` keeps only the first prompt, so every prompt is also
+    posted as a `user_prompt` event with `generate=false`, which starts no
+    server-side inference.
 - Each prompt's init waits for the previous one, so the worker records prompts
   in order. A tool result waits for its prompt's init and is dropped when the
   worker did not record that prompt; one that arrives before any prompt is sent

@@ -699,7 +699,7 @@ export async function ensureSdkProcessExit(
   await Promise.race([sigkillExit, sigkillTimeout]);
 }
 
-const TOTAL_PROCESS_HARD_CAP = 10;
+export const TOTAL_PROCESS_HARD_CAP = 10;
 const SLOT_RECHECK_INTERVAL_MS = 5_000;
 
 // #2756: a session parked here for longer than this gets one WARN log line
@@ -942,9 +942,20 @@ export function normalizeSpawnSdkCwd(sessionDbId: number): string {
   return path.join(OBSERVER_SESSIONS_DIR, String(sessionDbId));
 }
 
+/**
+ * Registry record type of an SDK child that no generation owns: a standalone
+ * observer call (field compression, the Telegram wrap-up). The shutdown
+ * cascade still reaches it, because it walks every record. The slot count
+ * (getActiveSdkCount) and the duplicate-SDK kill in createSdkSpawnFactory only
+ * look at 'sdk' records, so a standalone child never takes a generation slot
+ * and never stops, or is stopped by, another SDK child of the same session.
+ */
+export const STANDALONE_SDK_PROCESS_TYPE = 'sdk-standalone';
+
 export function spawnSdkProcess(
   sessionDbId: number,
-  options: SpawnSdkOptions
+  options: SpawnSdkOptions,
+  recordType: 'sdk' | typeof STANDALONE_SDK_PROCESS_TYPE = 'sdk',
 ): { process: SpawnedSdkProcess; pid: number; pgid: number } | null {
   const registry = getProcessRegistry();
 
@@ -1013,10 +1024,10 @@ export function spawnSdkProcess(
     });
   }
 
-  const recordId = `sdk:${sessionDbId}:${pid}`;
+  const recordId = `${recordType}:${sessionDbId}:${pid}`;
   registry.register(recordId, {
     pid,
-    type: 'sdk',
+    type: recordType,
     sessionId: sessionDbId,
     startedAt: new Date().toISOString(),
     pgid,
@@ -1138,6 +1149,25 @@ export function createSdkSpawnFactory(sessionDbId: number, slotReservation?: Slo
       throw new Error(`Failed to spawn SDK subprocess for session ${sessionDbId}`);
     }
 
+    return result.process;
+  };
+}
+
+/**
+ * Spawn factory for a standalone observer SDK call. The child is registered as
+ * a STANDALONE_SDK_PROCESS_TYPE record, so the shutdown cascade reaches it.
+ * It stops no other process before it starts: the two field compressions of
+ * one observation run at once, and both must finish. It takes no waitForSlot
+ * reservation and does not count toward CLAUDE_MEM_MAX_CONCURRENT_AGENTS, as
+ * before it was registered: compression runs inside a generation that already
+ * holds a slot, and the wrap-up is one bounded turn after a stored summary.
+ */
+export function createStandaloneSdkSpawnFactory(registrySessionId: number) {
+  return (spawnOptions: SpawnSdkOptions): SpawnedSdkProcess => {
+    const result = spawnSdkProcess(registrySessionId, spawnOptions, STANDALONE_SDK_PROCESS_TYPE);
+    if (!result) {
+      throw new Error(`Failed to spawn standalone SDK subprocess for registry session ${registrySessionId}`);
+    }
     return result.process;
   };
 }

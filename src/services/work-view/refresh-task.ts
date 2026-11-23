@@ -16,7 +16,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import type { AgentTask, AnswerSchema, AskAgent, StepModels, TaskAgentId } from '../agent-runner/run.js';
 import type { UsableAgentId } from '../agent-runner/detect.js';
-import { runCommand } from '../agent-runner/detect.js';
+import { cutOutputText, runCommand } from '../agent-runner/detect.js';
 import { writeOwnerPromptsFile, type OwnerPromptsFile } from '../prompt-import/owner-prompts-file.js';
 import { resolvePythonCommand } from './python.js';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
@@ -435,6 +435,9 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
         throw Object.assign(new Error(`${args[0].split('/').pop()} exited ${result.exitCode}: ${`${result.stdout}\n${result.stderr}`.trim().slice(-800)}`),
           { retryable: result.exitCode !== SAVE_GOALS_FAILED_AFTER_WRITING_EXIT });
       }
+      // The script finished, so it has written what it writes; its cut report cannot be parsed, and asking again would
+      // write a second answer.
+      if (result.stdoutTruncated) throw Object.assign(new Error(cutOutputText(args[0].split('/').pop()!)), { retryable: false });
       return result.stdout;
     };
     const timed = async <T>(name: string, work: () => Promise<T>, extra: { groups?: number } = {}): Promise<T> => {

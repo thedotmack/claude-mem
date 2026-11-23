@@ -1405,6 +1405,10 @@ describe('Chroma resource-pacing defaults', () => {
   it('starts chroma-mcp at niceness 10 by default', () => {
     expect(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_CHROMA_PROCESS_NICE).toBe('10');
   });
+
+  it('leaves the chroma-mcp thread cap off by default (#6365, 39f110260)', () => {
+    expect(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_CHROMA_MAX_THREADS).toBe('0');
+  });
 });
 
 describe('Chroma embedding function default', () => {

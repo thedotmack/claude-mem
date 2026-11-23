@@ -1895,8 +1895,10 @@ function runServerServiceCli(command: string, extraArgs: string[] = []): void {
   });
 }
 
-function parseServerApiKeyOptions(args: string[]): Record<string, string> {
-  const options: Record<string, string> = {};
+// A flag given without a value (`--scope`, `--scope=`, `--scope --name x`)
+// maps to null so callers can reject it instead of reading a placeholder.
+function parseServerApiKeyOptions(args: string[]): Record<string, string | null> {
+  const options: Record<string, string | null> = {};
   for (let i = 0; i < args.length; i++) {
     const item = args[i];
     if (!item.startsWith('--')) {
@@ -1904,19 +1906,39 @@ function parseServerApiKeyOptions(args: string[]): Record<string, string> {
     }
     const equals = item.indexOf('=');
     if (equals !== -1) {
-      options[item.slice(2, equals)] = item.slice(equals + 1) || 'true';
+      options[item.slice(2, equals)] = item.slice(equals + 1) || null;
       continue;
     }
     const key = item.slice(2);
     const next = args[i + 1];
     if (!next || next.startsWith('--')) {
-      options[key] = 'true';
+      options[key] = null;
       continue;
     }
     options[key] = next;
     i++;
   }
   return options;
+}
+
+// Every api-key option takes a value; reject a valueless one before any write
+// so it is never read as a default (an unrestricted --project, default scopes).
+function requireServerApiKeyOptionValues(options: Record<string, string | null>, usage: string): Record<string, string> {
+  for (const [key, value] of Object.entries(options)) {
+    if (value === null) {
+      console.error(`--${key} requires a value`);
+      console.error(usage);
+      process.exit(1);
+    }
+  }
+  return options as Record<string, string>;
+}
+
+function parseServerApiKeyScopes(options: Record<string, string>): string[] {
+  const scopeFlag = options.scope ?? options.scopes;
+  return scopeFlag
+    ? scopeFlag.split(',').map(scope => scope.trim()).filter(Boolean)
+    : [...DEFAULT_LOCAL_API_KEY_SCOPES];
 }
 
 function openServerCommandDatabase(): Database {
@@ -1934,14 +1956,12 @@ function runServerApiKeyCli(args: string[]): never {
       // #2428 — when no --scope is passed, default to the scopes the local v1
       // routes actually require (read + write) so a default key works instead
       // of being authorized for nothing.
-      const scopeFlag = options.scope ?? options.scopes;
-      const scopes = scopeFlag
-        ? scopeFlag.split(',').map(scope => scope.trim()).filter(Boolean)
-        : [...DEFAULT_LOCAL_API_KEY_SCOPES];
+      const values = requireServerApiKeyOptionValues(options, 'Usage: worker-service server api-key create [--name <name>] [--team <id>] [--project <id>] [--scope <a,b>]');
+      const scopes = parseServerApiKeyScopes(values);
       const created = createServerApiKey(db, {
-        name: options.name ?? 'server-api-key',
-        teamId: options.team ?? null,
-        projectId: options.project ?? null,
+        name: values.name ?? 'server-api-key',
+        teamId: values.team ?? null,
+        projectId: values.project ?? null,
         scopes,
       });
       console.log(JSON.stringify({
@@ -1994,10 +2014,7 @@ function runServerApiKeyCli(args: string[]): never {
         console.error('Usage: worker-service server api-key migrate-scopes <id> [--scope a,b]');
         process.exit(1);
       }
-      const scopeFlag = options.scope ?? options.scopes;
-      const scopes = scopeFlag
-        ? scopeFlag.split(',').map(scope => scope.trim()).filter(Boolean)
-        : [...DEFAULT_LOCAL_API_KEY_SCOPES];
+      const scopes = parseServerApiKeyScopes(requireServerApiKeyOptionValues(options, 'Usage: worker-service server api-key migrate-scopes <id> [--scope a,b]'));
       const updated = migrateServerApiKeyScopes(db, id, scopes);
       if (!updated) {
         console.error(`API key not found: ${id}`);

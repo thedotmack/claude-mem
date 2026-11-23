@@ -57,11 +57,14 @@ describe('DataRoutes GET /api/processing-status — parkedSessions (#2756)', () 
   });
 
   it.each([
-    { label: 'idle', lastSuccessAt: null, isProcessing: false, queueDepth: 0, abandoned: [], parked: 0 },
-    { label: 'successful store', lastSuccessAt: 1_793_895_791_087, isProcessing: false, queueDepth: 0, abandoned: [], parked: 0 },
-    { label: 'abandoned sessions', lastSuccessAt: null, isProcessing: true, queueDepth: 666, abandoned: [{ sessionDbId: 7, pendingCount: 666 }], parked: 0 },
-    { label: 'parked session', lastSuccessAt: null, isProcessing: true, queueDepth: 5, abandoned: [], parked: 1 },
-  ])('reports $label alongside the processing fields', async ({ lastSuccessAt, isProcessing, queueDepth, abandoned, parked }) => {
+    { label: 'idle', lastSuccessAt: null, isProcessing: false, queueDepth: 0, abandoned: [], parked: 0, expired: 0 },
+    { label: 'successful store', lastSuccessAt: 1_793_895_791_087, isProcessing: false, queueDepth: 0, abandoned: [], parked: 0, expired: 0 },
+    { label: 'abandoned sessions', lastSuccessAt: null, isProcessing: true, queueDepth: 666, abandoned: [{ sessionDbId: 7, pendingCount: 666 }], parked: 0, expired: 0 },
+    { label: 'parked session', lastSuccessAt: null, isProcessing: true, queueDepth: 5, abandoned: [], parked: 1, expired: 0 },
+    // Expired live inputs get no replay, so the running total is the only
+    // signal that a parallel-session burst outran the observer (#6391).
+    { label: 'expired live inputs', lastSuccessAt: null, isProcessing: true, queueDepth: 3, abandoned: [], parked: 0, expired: 12 },
+  ])('reports $label alongside the processing fields', async ({ lastSuccessAt, isProcessing, queueDepth, abandoned, parked, expired }) => {
     if (lastSuccessAt !== null) {
       readHealthSpy.mockReturnValue({
         consecutiveFailures: 0,
@@ -78,6 +81,7 @@ describe('DataRoutes GET /api/processing-status — parkedSessions (#2756)', () 
       isAnySessionProcessing: mock(() => Promise.resolve(isProcessing)),
       getTotalActiveWork: mock(() => Promise.resolve(queueDepth)),
       getAbandonedStallSessions: mock(() => abandoned),
+      getExpiredObserverInputCount: mock(() => expired),
     };
     const routes = new DataRoutes(
       {} as any,
@@ -91,7 +95,12 @@ describe('DataRoutes GET /api/processing-status — parkedSessions (#2756)', () 
     (routes as any).handleGetProcessingStatus(req as Request, res as Response);
 
     expect(await waitForJson()).toEqual({
-      isProcessing, queueDepth, parkedSessions: parked, lastSuccessfulStoreAt: lastSuccessAt, abandonedStallSessions: abandoned,
+      isProcessing,
+      queueDepth,
+      parkedSessions: parked,
+      lastSuccessfulStoreAt: lastSuccessAt,
+      abandonedStallSessions: abandoned,
+      expiredObserverInputs: expired,
     });
   });
 });

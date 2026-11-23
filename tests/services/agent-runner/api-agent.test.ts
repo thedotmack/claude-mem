@@ -46,6 +46,41 @@ describe('the API agent talks to the selected provider', () => {
     expect(calls[0].body.response_format).toBeUndefined();
   });
 
+  it('sends the preset\'s session header and its reasoning-off body when the endpoint needs them', async () => {
+    // OpenCode Go answers 400 without x-opencode-session, and ignores
+    // `reasoning: { enabled: false }` so the budget runs out while it thinks.
+    const { calls } = fakeFetch([{ body: { choices: [{ message: { content: 'ok' } }] } }]);
+    const opencode: ApiTarget = {
+      provider: 'openai-compatible',
+      url: 'https://opencode.ai/zen/go/v1/chat/completions',
+      apiKey: 'sk-go-test',
+      model: 'deepseek-v4.1-flash',
+      sessionHeader: 'x-opencode-session',
+      reasoningOff: 'effort-none',
+    };
+    await askApiTarget(opencode, 'the question', { sessionId: 'ses-run-1' });
+    expect(calls[0].headers['x-opencode-session']).toBe('ses-run-1');
+    expect(calls[0].body.reasoning).toBeUndefined();
+    expect(calls[0].body.reasoning_effort).toBe('none');
+  });
+
+  it('gives each step its own session id when the caller does not name one', async () => {
+    const { calls } = fakeFetch([{ body: { choices: [{ message: { content: 'ok' } }] } }]);
+    const opencode: ApiTarget = {
+      provider: 'openai-compatible',
+      url: 'https://opencode.ai/zen/go/v1/chat/completions',
+      apiKey: 'sk-go-test',
+      model: 'deepseek-v4.1-flash',
+      sessionHeader: 'x-opencode-session',
+    };
+    await askApiTarget(opencode, 'first');
+    await askApiTarget(opencode, 'second');
+    const [first, second] = calls.map(call => call.headers['x-opencode-session']);
+    expect(typeof first).toBe('string');
+    expect(first.length).toBeGreaterThan(0);
+    expect(second).not.toBe(first);
+  });
+
   it('asks for the step\'s answer shape when the step names one', async () => {
     const { calls } = fakeFetch([{ body: { choices: [{ message: { content: '{}' } }] } }]);
     const schema = { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'], additionalProperties: false };
@@ -203,6 +238,15 @@ describe('the API target follows the selected provider', () => {
     await withSettings({ CLAUDE_MEM_PROVIDER: 'openai-compatible', CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: 'https://llm.test/v1', CLAUDE_MEM_OPENAI_COMPAT_API_KEY: 'sk-test', CLAUDE_MEM_OPENAI_COMPAT_MODEL: 'local/model' }, path => {
       const resolution = resolveApiTarget(path);
       expect(resolution.target).toEqual({ provider: 'openai-compatible', url: 'https://llm.test/v1/chat/completions', apiKey: 'sk-test', model: 'local/model' });
+    });
+  });
+
+  it('carries the preset\'s OpenCode Go session header and reasoning body into the target', async () => {
+    await withSettings({ CLAUDE_MEM_PROVIDER: 'openai-compatible', CLAUDE_MEM_OPENAI_COMPAT_PRESET: 'opencode-go', CLAUDE_MEM_OPENAI_COMPAT_API_KEY: 'sk-test', CLAUDE_MEM_OPENAI_COMPAT_MODEL: 'deepseek-v4.1-flash' }, path => {
+      const target = resolveApiTarget(path).target;
+      expect(target?.url).toBe('https://opencode.ai/zen/go/v1/chat/completions');
+      expect(target?.sessionHeader).toBe('x-opencode-session');
+      expect(target?.reasoningOff).toBe('effort-none');
     });
   });
 

@@ -40,6 +40,7 @@ import { existsSync, readFileSync } from 'fs';
 import { homedir } from 'os';
 import { join, resolve } from 'path';
 import { findClaudeExecutable } from '../../shared/find-claude-executable.js';
+import { logger } from '../../utils/logger.js';
 import { readClaudeOAuthToken, type OAuthTokenResult } from '../../shared/oauth-token.js';
 import { buildOpenCodeEnv, hasAnthropicApiKey, hasAnthropicAuthToken, hasConfiguredClaudeOAuthToken } from '../../shared/EnvManager.js';
 
@@ -62,6 +63,10 @@ export interface CommandResult {
   exitCode: number | null;
   stdout: string;
   stderr: string;
+  /** True when stdout passed the capture cap and only its head and tail were kept. */
+  stdoutTruncated?: boolean;
+  /** True when stderr passed the capture cap and only its head and tail were kept. */
+  stderrTruncated?: boolean;
   /**
    * Set only when the process could not be started (e.g. ENOENT). A command stopped through `CommandOptions.signal`
    * did start, so a stop never sets it: `exitCode` and the output tell how the command ended.
@@ -132,6 +137,94 @@ function stopOptionsFor(options: CommandOptions): Pick<SpawnOptions, 'detached' 
 }
 
 /**
+ * The most characters a collected stdout/stderr stream keeps whole. A child prints for as long as it runs (there is no
+ * time limit, by owner rule), so without a ceiling a looping CLI grows worker memory without bound. Past it the middle
+ * is dropped, logged once at WARN and marked in the text, and callers that parse the output refuse it (cutOutputText).
+ *
+ * Measured 2026-11-21 on the maintainer's machine. The largest output a caller parses is Claude Code's verbose
+ * `--output-format json` turn, an array of that turn's messages. Summing the transcript records of each turn, from one
+ * typed prompt to the next, over 6,618 turns in ~/.claude/projects gave 51.49 MiB at most (38 turns above 8 MiB), and
+ * a UTF-8 byte count is never below its character count. `codex exec`'s final message peaked at 23,926 characters and
+ * a Gemini reply at 19,320. 128 Mi characters sits about 2.5 times above the largest turn.
+ */
+export const MAX_STREAM_CHARS = 128 * 1024 * 1024;
+
+/**
+ * What a caller says when it will not read a stream the cap cut: the part it would parse is missing, so parsing what is
+ * left would report a healthy CLI as broken, or accept a partial answer as the whole one.
+ */
+export function cutOutputText(toolName: string): string {
+  return `${toolName} printed more than ${MAX_STREAM_CHARS.toLocaleString('en-US')} characters, the capture cap, so its output was not kept whole and is not read.`;
+}
+
+/**
+ * A bounded stdout/stderr accumulator. The stream is kept as its chunks. While it fits the cap it is kept whole. Once
+ * it passes the cap its first half-cap characters become a fixed head, and the rest is a rolling tail of chunks: the
+ * oldest is dropped only while the others still hold half the cap. So the kept text is at most the cap plus one chunk,
+ * a looping child pays one append per chunk instead of re-copying megabytes each time it prints, and no character (or
+ * surrogate pair, which the UTF-8 decoder never splits across chunks) is cut. The cut is logged once, and the text marks
+ * where the middle was dropped and how many characters it held. Callers that parse the text check `truncated()` first.
+ */
+function createCollectedStream(command: string, stream: 'stdout' | 'stderr') {
+  const halfCap = MAX_STREAM_CHARS / 2;
+  let head: string | null = null;
+  /** The kept chunks are chunks[firstKept..]: dropping one moves the index, so no drop shifts the whole list. */
+  const chunks: string[] = [];
+  let firstKept = 0;
+  let keptChars = 0;
+  let droppedChars = 0;
+  /** The first halfCap characters, taken out of the chunks; a chunk that straddles the boundary is split there. */
+  const takeHead = (): string => {
+    const parts: string[] = [];
+    let taken = 0;
+    let index = 0;
+    while (taken + chunks[index].length <= halfCap) {
+      parts.push(chunks[index]);
+      taken += chunks[index].length;
+      index++;
+    }
+    const straddling = chunks[index];
+    let cut = halfCap - taken;
+    // Never end the head between the two halves of a surrogate pair.
+    const before = straddling.charCodeAt(cut - 1);
+    if (before >= 0xd800 && before <= 0xdbff) cut--;
+    parts.push(straddling.slice(0, cut));
+    chunks.splice(0, index + 1, straddling.slice(cut));
+    const text = parts.join('');
+    keptChars -= text.length;
+    return text;
+  };
+  return {
+    add(chunk: string): void {
+      chunks.push(chunk);
+      keptChars += chunk.length;
+      if (head === null) {
+        if (keptChars <= MAX_STREAM_CHARS) return;
+        head = takeHead();
+        logger.warn('WORKER', 'Command output passed the capture cap; the middle is dropped', { command, stream, capChars: MAX_STREAM_CHARS });
+      }
+      while (keptChars - chunks[firstKept].length >= halfCap) {
+        keptChars -= chunks[firstKept].length;
+        droppedChars += chunks[firstKept].length;
+        firstKept++;
+      }
+      // Compact once the dropped entries are the majority: the copy is paid for by the drops before it.
+      if (firstKept * 2 > chunks.length) {
+        chunks.splice(0, firstKept);
+        firstKept = 0;
+      }
+    },
+    truncated(): boolean {
+      return head !== null;
+    },
+    text(): string {
+      if (head === null) return chunks.join('');
+      return `${head}\n[${droppedChars.toLocaleString('en-US')} characters dropped here: ${stream} passed the ${MAX_STREAM_CHARS.toLocaleString('en-US')} character capture cap]\n${chunks.slice(firstKept).join('')}`;
+    },
+  };
+}
+
+/**
  * Run a command with argv (no shell) and wait for it to exit, however long
  * that takes. Never rejects. The one spawn-and-collect helper for agent
  * detection, agent runs and the refresh's skill scripts.
@@ -158,8 +251,13 @@ export function runCommand(first: typeof spawn | string, second: string | string
     if (child.pid !== undefined) options.onSpawn?.({ pid: child.pid, processGroupId: stopOptions.detached ? child.pid : undefined });
     child.stdout?.setEncoding('utf8');
     child.stderr?.setEncoding('utf8');
-    let stdout = '';
-    let stderr = '';
+    // A chatty or looping CLI would otherwise grow the retained string with
+    // every chunk it prints, for as long as it runs (no time limit is an
+    // owner rule). Past the cap each stream keeps its head and its tail in
+    // bounded chunks; the truncation flags let callers tell a cut stream from
+    // a complete one before they parse it.
+    const stdoutStream = createCollectedStream(command, 'stdout');
+    const stderrStream = createCollectedStream(command, 'stderr');
     let spawnError: Error | undefined;
     let settled = false;
     // macOS and Linux: aborting signals the command's whole process group, which `detached` made it the leader of.
@@ -205,16 +303,23 @@ export function runCommand(first: typeof spawn | string, second: string | string
       if (error.name === 'AbortError' && options.signal?.aborted) return;
       spawnError = error;
       // A child that never started may not emit 'close' on every runtime.
-      settle({ exitCode: null, stdout, stderr, spawnError });
+      settle({ exitCode: null, stdout: stdoutStream.text(), stderr: stderrStream.text(), spawnError });
     });
     child.stdout?.on('data', (chunk: string) => {
-      stdout += chunk;
+      stdoutStream.add(chunk);
     });
     child.stderr?.on('data', (chunk: string) => {
-      stderr += chunk;
+      stderrStream.add(chunk);
     });
     child.on('close', code => {
-      const result: CommandResult = { exitCode: code, stdout, stderr, spawnError };
+      const result: CommandResult = {
+        exitCode: code,
+        stdout: stdoutStream.text(),
+        stderr: stderrStream.text(),
+        stdoutTruncated: stdoutStream.truncated(),
+        stderrTruncated: stderrStream.truncated(),
+        spawnError,
+      };
       // It has exited now when it has no process group of its own (no signal, or Windows).
       if (processGroupStopSignal === undefined || child.pid === undefined) {
         settle(result);

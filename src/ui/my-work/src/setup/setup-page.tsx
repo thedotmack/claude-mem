@@ -145,7 +145,10 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
   }
   const hydratedFlow = hydrateSetupChoice(flow, data.choice, choiceEdited.current, data.installer?.stage)
   if (hydratedFlow !== flow) setFlow(hydratedFlow)
-  if (data.choice && !branchConfirmed && (!choiceEdited.current || choiceLocked(data.installer?.stage))) setBranchConfirmed(true)
+  const choiceApplied = choiceLocked(data.installer?.stage)
+  if (data.choice && !branchConfirmed && (!choiceEdited.current || choiceApplied)) setBranchConfirmed(true)
+  // On reload or a concurrent installer update, review the applied plan directly.
+  if (requested === 'choice' && data.choice && choiceApplied) update({ choiceContinued: true }, 'savings')
   if (flow.importStatus === 'none' && historyAvailable) setFlow((current) => ({ ...current, importStatus: 'available' }))
   // A finished scan moves on to the Reveal by itself, as before Phase 8, unless the person came Back to look at it.
   if (scanMovesOn(requested, { ...flow, installationComplete, scanComplete })) setRequested('reveal')
@@ -181,7 +184,7 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
 
   // Back on every screen but the first: the screen before this one on the person's path, through guardStep like any
   // request; dimmed with the reason while a scan or an import runs (plan Phase 8).
-  const backTarget = previousStep(step, flowNow, { hasInstallStep: !!data.install, choiceLocked: choiceLocked(data.installer?.stage) })
+  const backTarget = previousStep(step, flowNow, { hasInstallStep: !!data.install, choiceLocked: choiceApplied })
   const back: SetupBack | null = backTarget && {
     waitsFor: backWaitsFor(step, data.scan.phase),
     // Back to the installation or the scan is a look at a finished step: it stays up until the person's Continue.
@@ -221,7 +224,7 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
   }, [step])
 
   // Leaving Token Savings is when both halves of the choice are final, so that is when the installer gets it.
-  const toFinishSetup = async (changes: Partial<SetupFlowState>): Promise<void> => {
+  const toFinishSetup = async (changes: Partial<SetupFlowState> = {}): Promise<void> => {
     const merged = { ...flow, ...changes }
     const offer = setupCloudSyncOffer(merged)
     if (!await handOff(() => source!.choose({ branch: merged.branch, memoryBilling: merged.memoryBilling, ...(offer ? { cloudSyncOffer: offer } : {}) }), 'choice_failed', 'Couldn’t save your storage choice.', () => toFinishSetup(changes))) return
@@ -307,9 +310,8 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
     choice: () => <ChoiceScreen branch={flow.branch} cloudSyncOffer={flow.cloudSyncOffer} alreadyPro={flow.alreadyPro} back={back} onChoose={(branch, cloudSyncOffer) => { choiceEdited.current = true; telemetry.action('choose_memory', { branch, branch_confirmed: false }); setBranchConfirmed(false); update({ branch, memoryBilling: 'existing', cloudSyncOffer, choiceContinued: true, savingsComplete: false, checkoutReviewed: false, setupComplete: false, finishTools: [] }, 'savings') }} />,
     savings: () => (
       <SavingsScreen usage={data.usage} branch={flow.branch} cloudSyncOffer={flow.cloudSyncOffer} legacyHosted={flow.memoryBilling === 'hosted'} alreadyPro={flow.alreadyPro} back={back}
-        onPro={() => void toFinishSetup({ branch: 'go', memoryBilling: flow.memoryBilling })}
-        onExistingPlan={() => void toFinishSetup({ memoryBilling: 'existing' })}
-        onSkip={() => void toFinishSetup({ branch: 'home', memoryBilling: 'existing' })} />
+        onContinue={() => void toFinishSetup()}
+        onSkip={choiceApplied ? undefined : () => void toFinishSetup({ branch: 'home', memoryBilling: 'existing' })} />
     ),
     // A paid checkout reached by Back goes on to Finish Setup without asking for checkout again.
     checkout: () => <CheckoutScreen checkout={data.checkout} cloudSyncOffer={flow.cloudSyncOffer} legacyHosted={flow.memoryBilling === 'hosted'} asked={checkoutAsked} installerStopped={installerFailed} back={back}
