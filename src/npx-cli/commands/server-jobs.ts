@@ -262,6 +262,9 @@ async function runJobsRetry(args: ParsedArgs): Promise<void> {
             payload = $2::jsonb,
             updated_at = now()
         WHERE id = $1
+          -- The status was read by an earlier statement. Another retry and a
+          -- worker may have moved the job to processing or completed since.
+          AND status IN ('failed', 'cancelled')
         RETURNING id, status, attempts, bullmq_job_id, source_type
       `,
       [id, JSON.stringify(newPayload)],
@@ -269,7 +272,7 @@ async function runJobsRetry(args: ParsedArgs): Promise<void> {
     type UpdatedRetryRow = { id: string; status: string; attempts: number; bullmq_job_id: string | null; source_type: string };
     const row = (updated.rows as UpdatedRetryRow[])[0];
     if (!row) {
-      console.error(styleText('red', 'Update returned no rows; the job may have been deleted.'));
+      console.error(styleText('red', `Job was not requeued: it is no longer ${lookup.status} (or was deleted). Check its status and re-run.`));
       process.exit(1);
     }
 
@@ -342,6 +345,9 @@ async function runJobsCancel(args: ParsedArgs): Promise<void> {
             cancelled_at = now(),
             updated_at = now()
         WHERE id = $1
+          -- The status was read by an earlier statement. The worker may have
+          -- completed the job since, or another cancel may have landed.
+          AND status NOT IN ('completed', 'cancelled')
         RETURNING id, status, bullmq_job_id, source_type
       `,
       [id],
@@ -349,7 +355,7 @@ async function runJobsCancel(args: ParsedArgs): Promise<void> {
     type UpdatedCancelRow = { id: string; status: string; bullmq_job_id: string | null; source_type: string };
     const row = (updated.rows as UpdatedCancelRow[])[0];
     if (!row) {
-      console.error(styleText('red', 'Update returned no rows.'));
+      console.error(styleText('red', `Job was not cancelled: it is no longer ${lookup.status} (or was deleted). Check its status and re-run.`));
       process.exit(1);
     }
 
