@@ -82,6 +82,19 @@ export function parseInternalProjectorUrl(raw: string | undefined): string {
 	return parseHttpsEndpoint(raw, "INTERNAL_PROJECTOR_URL") ?? "";
 }
 
+const DEFAULT_TOKEN_VERIFY_URL = "https://cmem.ai/api/pro/sync/verify";
+
+/**
+ * The Pro token-verification endpoint. Every authenticated sync request sends
+ * the caller's `Authorization: Bearer <token>` here, so it follows the same
+ * rules as the forward origin and the projector URL: https, or http only for a
+ * loopback host, with no query, fragment or credentials. Unset or blank means
+ * the production endpoint.
+ */
+export function parseTokenVerifyUrl(raw: string | undefined): string {
+	return parseHttpsEndpoint(raw, "TOKEN_VERIFY_URL") ?? DEFAULT_TOKEN_VERIFY_URL;
+}
+
 export function loadEnv(source: NodeJS.ProcessEnv = process.env): SyncApiEnv {
 	const forwardOrigin = parseForwardOrigin(source.FORWARD_ORIGIN);
 	const internalProjectorUrl = parseInternalProjectorUrl(source.INTERNAL_PROJECTOR_URL);
@@ -96,7 +109,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): SyncApiEnv {
 	}
 	return {
 		DATABASE_URL: forwardOrigin === null ? databaseUrl : "",
-		TOKEN_VERIFY_URL: (source.TOKEN_VERIFY_URL ?? "https://cmem.ai/api/pro/sync/verify").trim(),
+		TOKEN_VERIFY_URL: parseTokenVerifyUrl(source.TOKEN_VERIFY_URL),
 		AUTH_CACHE_TTL_SECONDS: (source.AUTH_CACHE_TTL_SECONDS ?? String(AUTH_CACHE_TTL_DEFAULT_SECONDS)).trim(),
 		INTERNAL_PROJECTOR_URL: internalProjectorUrl,
 		CMEM_INTERNAL_PROJECTOR_SECRET: (source.CMEM_INTERNAL_PROJECTOR_SECRET ?? "").trim(),

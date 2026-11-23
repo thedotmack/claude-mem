@@ -332,6 +332,27 @@ export function __verdictMemorySizeForTests(): number {
 /** Tests only: exercise the memo's write/read paths without a KV binding. */
 export { writeVerdictMemory, readVerdictMemory };
 
+// The verify endpoint receives the caller's `Authorization: Bearer <token>`,
+// so it gets the same rule as the other deployment URLs: https, or http only
+// for a loopback host, with no query, fragment or credentials. A malformed
+// value is a configuration fault, never a URL to send a token to.
+const LOOPBACK_VERIFY_HOSTNAMES = new Set(["127.0.0.1", "localhost", "[::1]"]);
+
+function tokenVerifyUrl(raw: string): string | null {
+	const trimmed = raw.trim();
+	if (trimmed.length === 0) return null;
+	let parsed: URL;
+	try {
+		parsed = new URL(trimmed);
+	} catch {
+		return null;
+	}
+	const loopbackHttp = parsed.protocol === "http:" && LOOPBACK_VERIFY_HOSTNAMES.has(parsed.hostname);
+	if (parsed.protocol !== "https:" && !loopbackHttp) return null;
+	if (parsed.search !== "" || parsed.hash !== "" || parsed.username !== "" || parsed.password !== "") return null;
+	return `${parsed.origin}${parsed.pathname.replace(/\/+$/, "")}`;
+}
+
 export function defaultAuthDependencies(env: Env): AuthDependencies {
 	return {
 		async readCachedVerdict(cacheKey) {
@@ -509,10 +530,15 @@ export async function authenticateRequest(
 		}
 	}
 
+	const verifyUrl = tokenVerifyUrl(env.TOKEN_VERIFY_URL ?? "");
+	if (verifyUrl === null) {
+		return { ok: false, response: errorResponse(503, "TOKEN_VERIFY_URL is not a valid https endpoint") };
+	}
+
 	let verifyRes: Response;
 	try {
 		verifyRes = await dependencies.verifyToken(
-			new Request(env.TOKEN_VERIFY_URL, {
+			new Request(verifyUrl, {
 				method: "GET",
 				headers: {
 					Authorization: `Bearer ${token}`,
