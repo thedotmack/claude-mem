@@ -652,7 +652,9 @@ export function makeIDETask(ideId: string, summary: InstallSummary, dshProfile?:
             recordFailure('Codex CLI: integration setup failed', output);
             return `Codex CLI: integration setup failed ${styleText('red', 'FAIL')}`;
           }
-          return `Codex CLI: hooks marketplace registered ${styleText('green', 'OK')}`;
+          // The installer's own text with this step is buffered away on success, and Codex
+          // skips an untrusted hook without saying so (#6419).
+          return `Codex CLI: hooks registered ${styleText('green', 'OK')} — trust them once in interactive ${styleText('bold', 'codex')} when it asks, or with ${styleText('bold', '/hooks')} (${styleText('bold', 'codex exec')} skips untrusted hooks)`;
         },
       };
     }
@@ -3137,16 +3139,41 @@ export function installedWorkerScriptPath(
 async function startInstallWorker(version: string, summary: InstallSummary, message: (msg: string) => void): Promise<WorkerStartResult> {
   const port = Number(getSetting('CLAUDE_MEM_WORKER_PORT'));
   const scriptPath = installedWorkerScriptPath(version);
-  message(`Spawning worker on port ${port}...`);
+  message(workerStartProgressMessage(isInstallWorkerManagedExternally()));
   await requireWorkerStopped(port, 'provider-cutover', summary);
   return ensureWorkerStarted(port, scriptPath);
 }
 
-function describeWorkerStart(result: WorkerStartResult): string {
+/**
+ * CLAUDE_MEM_WORKER_AUTOSTART=false or CLAUDE_MEM_WORKER_URL: its own manager runs
+ * the worker, so the installer only checks it and never launches one.
+ */
+function isInstallWorkerManagedExternally(): boolean {
+  return isWorkerAutostartDisabled({
+    CLAUDE_MEM_WORKER_AUTOSTART: getSetting('CLAUDE_MEM_WORKER_AUTOSTART'),
+    CLAUDE_MEM_WORKER_URL: getSetting('CLAUDE_MEM_WORKER_URL'),
+  });
+}
+
+/** The worker ensureWorkerStarted probes: CLAUDE_MEM_WORKER_URL when set, else CLAUDE_MEM_WORKER_HOST on the port. */
+function installWorkerBaseUrl(port: number | string): string {
+  const explicitWorkerUrl = getSetting('CLAUDE_MEM_WORKER_URL').trim().replace(/\/+$/, '');
+  return explicitWorkerUrl || `http://${formatHostForUrl(getSetting('CLAUDE_MEM_WORKER_HOST'))}:${port}`;
+}
+
+/** The worker task's progress line. An externally managed worker is checked, not spawned (#6419). */
+export function workerStartProgressMessage(managedExternally: boolean): string {
+  const port = getSetting('CLAUDE_MEM_WORKER_PORT');
+  return managedExternally
+    ? `Checking the externally managed worker at ${installWorkerBaseUrl(port)}...`
+    : `Spawning worker on port ${port}...`;
+}
+
+export function describeWorkerStart(result: WorkerStartResult): string {
   const port = getSetting('CLAUDE_MEM_WORKER_PORT');
   switch (result) {
     case 'ready':
-      return `Worker ready at http://localhost:${port} ${styleText('green', 'OK')}`;
+      return `Worker ready at ${installWorkerBaseUrl(port)} ${styleText('green', 'OK')}`;
     case 'warming':
       return `Worker starting on port ${port} — finishing in background ${styleText('yellow', '⏳')}`;
     case 'dead': {
@@ -3786,10 +3813,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   });
   // CLAUDE_MEM_WORKER_AUTOSTART=false: its own manager runs the worker, so a
   // worker that is not up yet is that manager's to start, not an install failure.
-  const workerManagedExternally = isWorkerAutostartDisabled({
-    CLAUDE_MEM_WORKER_AUTOSTART: getSetting('CLAUDE_MEM_WORKER_AUTOSTART'),
-    CLAUDE_MEM_WORKER_URL: getSetting('CLAUDE_MEM_WORKER_URL'),
-  });
+  const workerManagedExternally = isInstallWorkerManagedExternally();
 
   await runTasks([
     {
@@ -3816,7 +3840,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
         const scriptPath = installedWorkerScriptPath(version);
         // selectedRuntime is narrowed to 'worker' here: the server case
         // returned above and never reaches the worker-service spawner.
-        message(`Spawning worker on port ${port}...`);
+        message(workerStartProgressMessage(workerManagedExternally));
         // Stop any worker that came up during install with the previous
         // provider so the RAM queue cannot mix old/new settings. Runtime
         // POST /api/settings still must not recycle a healthy worker.
@@ -3920,7 +3944,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
       }
       healthSpinner?.stop(
         workerReady
-          ? `Worker ready at http://localhost:${actualPort}`
+          ? `Worker ready at http://${workerUrlHost}:${actualPort}`
           : `Worker reachable but not ready on port ${workerPort}`,
       );
     } catch {

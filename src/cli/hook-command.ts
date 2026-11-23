@@ -35,6 +35,7 @@ import { logger } from '../utils/logger.js';
 import { loadFromFileOnce } from '../shared/hook-settings.js';
 import { isObserverCaptureEnabled } from '../shared/observer-capture.js';
 import { isPluginDisabledInCodexConfig } from '../shared/plugin-state.js';
+import { GROK_BUILD_PLATFORM_SOURCE } from '../shared/platform-source.js';
 
 export interface HookCommandOptions {
   skipExit?: boolean;
@@ -70,6 +71,17 @@ export function isNonBlockingHookInputError(error: unknown): boolean {
     (lower.includes('missing') || lower.includes('does not exist'));
 }
 
+/**
+ * The host the handlers record. Grok Build loads the Claude Code plugin, so its
+ * hooks arrive as `hook claude-code <event>` and keep the claude-code adapter,
+ * which reads Grok's camelCase payload. Grok sets GROK_HOOK_EVENT in every hook's
+ * environment, which tells its sessions apart from Claude Code's (#6419).
+ */
+export function hookHostPlatform(platform: string, environment: NodeJS.ProcessEnv = process.env): string {
+  if (platform === 'claude-code' && environment.GROK_HOOK_EVENT) return GROK_BUILD_PLATFORM_SOURCE;
+  return platform;
+}
+
 async function executeHookPipeline(
   adapter: ReturnType<typeof getPlatformAdapter>,
   handler: ReturnType<typeof getEventHandler>,
@@ -78,7 +90,7 @@ async function executeHookPipeline(
 ): Promise<number> {
   const rawInput = await readJsonFromStdin({ safetyTimeoutMs: options.stdinSafetyTimeoutMs });
   const input = adapter.normalizeInput(rawInput);
-  input.platform = platform;
+  input.platform = hookHostPlatform(platform);
   const result = await handler.execute(input);
 
   // MODEL_CONTEXT: the only stdout JSON emit, via the platform adapter.

@@ -1,4 +1,4 @@
-import { normalizePlatformSource } from './platform-source.js';
+import { GROK_BUILD_PLATFORM_SOURCE, normalizePlatformSource } from './platform-source.js';
 
 export type WorkStateTool = 'read' | 'write' | 'native_todo';
 export type WorkStateOutcome = 'ok' | 'error' | 'excluded' | 'disabled' | 'unknown';
@@ -14,7 +14,7 @@ export interface WorkStateAttribution {
   enqueuedAtEpochMs?: number;
 }
 
-const PLATFORMS = new Set(['claude', 'codex', 'cursor', 'devin', 'kimi', 'antigravity-cli', 'gemini', 'opencode', 'openclaw', 'omp', 'pi', 'qwen', 'windsurf']);
+const PLATFORMS = new Set(['claude', 'codex', 'cursor', 'devin', 'kimi', 'antigravity-cli', 'gemini', GROK_BUILD_PLATFORM_SOURCE, 'opencode', 'openclaw', 'omp', 'pi', 'qwen', 'windsurf']);
 
 /** No default to Claude: missing host attribution really is unknown. */
 export function workStatePlatform(value?: string): string {
