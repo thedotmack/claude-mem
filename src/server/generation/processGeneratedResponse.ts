@@ -133,9 +133,12 @@ export interface MarkGenerationFailedInput {
  * provider returned an error or invalid XML. Retryable failures move the
  * job back to `queued` so reconciliation can re-enqueue; non-retryable
  * failures move to `failed`.
+ *
+ * Resolves to the status the job was moved to, or null when the row was left
+ * alone (already completed or cancelled, or the attempt no longer owns it).
  */
-export async function markGenerationFailed(input: MarkGenerationFailedInput): Promise<void> {
-  await withPostgresTransaction(input.pool, async (client) => {
+export async function markGenerationFailed(input: MarkGenerationFailedInput): Promise<'queued' | 'failed' | null> {
+  return await withPostgresTransaction(input.pool, async (client) => {
     const jobsRepo = new PostgresObservationGenerationJobRepository(client);
     const eventsLogRepo = new PostgresObservationGenerationJobEventsRepository(client);
 
@@ -146,10 +149,10 @@ export async function markGenerationFailed(input: MarkGenerationFailedInput): Pr
       forUpdate: true,
     });
     if (!fresh || fresh.status === 'completed' || fresh.status === 'cancelled') {
-      return;
+      return null;
     }
     if (input.expectedAttempt && !ownsProcessingAttempt(fresh, input.expectedAttempt)) {
-      return;
+      return null;
     }
 
     const canRetry = input.retryable && fresh.attempts < fresh.maxAttempts;
@@ -177,6 +180,7 @@ export async function markGenerationFailed(input: MarkGenerationFailedInput): Pr
         workerId: input.workerId ?? null,
       },
     });
+    return target;
   });
 }
 
