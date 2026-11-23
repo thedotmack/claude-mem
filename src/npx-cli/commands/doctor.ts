@@ -50,7 +50,7 @@ import { resolveOpenAICompatPreset } from '../../shared/openai-compat-presets.js
 import { findLegacyClaudeMemAlias, type LegacyClaudeMemAliasFile } from './uninstall.js';
 import { treeSitterCliBinaryPath } from '../../services/smart-file-read/tree-sitter-cli-provision.js';
 import { checkTreeSitterCliLoadable, resolveTreeSitterBinPathFor, TREE_SITTER_CLI_PATH_WORKAROUND } from '../../services/smart-file-read/tree-sitter-bin-path.js';
-import { resolveDataDir } from '../../shared/paths.js';
+import { DB_FILENAME, resolveDataDir } from '../../shared/paths.js';
 import { paths } from '../../shared/paths.js';
 import { findOrphanedChromaRoots, readProcessTablePosix } from '../../supervisor/orphan-chroma-sweep.js';
 import { isPidAlive } from '../../supervisor/process-registry.js';
@@ -1167,6 +1167,82 @@ export function observerProviderCheck(options: ObserverProviderCheckOptions): Ch
   };
 }
 
+// Why 256 MiB: the worker sets journal_size_limit to 4 MiB
+// (SQLITE_JOURNAL_SIZE_LIMIT_BYTES in src/services/sqlite/connection.ts, not
+// imported here because it pulls in bun:sqlite and doctor runs under Node) and
+// keeps SQLite's default autocheckpoint of 1000 pages x 4 KiB. Measured
+// 2026-11-23 on a 6.1 GB database under daily use: the WAL sits at 4.0 MiB.
+// 64x that steady state leaves room for one large transaction (an import, a
+// migration) and still flags checkpoints that have stopped completing.
+export const DATABASE_WAL_STEADY_STATE_BYTES = 4 * 1024 * 1024;
+const DATABASE_WAL_WARN_BYTES = 64 * DATABASE_WAL_STEADY_STATE_BYTES;
+
+function readableBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GiB`;
+}
+
+/**
+ * The database file and its WAL sidecars. Reads metadata only: the worker may
+ * hold the database open and doctor must never mutate or lock it. A WAL past
+ * the warn threshold means a checkpoint has not completed; that is also the
+ * state in which Windows refuses to rename the file or its directory, so the
+ * row names it before an upgrade rather than leaving it to a failed swap.
+ */
+export function databaseFileCheck(
+  databasePath: string = paths.database(),
+  walWarnBytes: number = DATABASE_WAL_WARN_BYTES,
+): CheckResult {
+  if (!existsSync(databasePath)) {
+    return {
+      name: 'Database',
+      status: 'ok',
+      detail: 'not created yet (the worker creates it on first start)',
+      required: false,
+    };
+  }
+
+  let databaseBytes: number;
+  try {
+    const stats = statSync(databasePath);
+    if (!stats.isFile()) {
+      return { name: 'Database', status: 'warn', detail: `${databasePath} is not a regular file`, required: false };
+    }
+    databaseBytes = stats.size;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { name: 'Database', status: 'warn', detail: `cannot read ${databasePath}: ${message}`, required: false };
+  }
+
+  const walPath = `${databasePath}-wal`;
+  const shmPath = `${databasePath}-shm`;
+  let walBytes: number | null = null;
+  try {
+    // The worker may checkpoint and remove the WAL between the exists check
+    // and the stat; that is a normal moment, not a report failure.
+    if (existsSync(walPath)) walBytes = statSync(walPath).size;
+  } catch {
+    walBytes = null;
+  }
+  const shmPresent = existsSync(shmPath);
+
+  const parts = [`${readableBytes(databaseBytes)} database`];
+  if (walBytes !== null) parts.push(`${readableBytes(walBytes)} WAL`);
+  if (shmPresent) parts.push(walBytes === null ? 'SHM without WAL' : 'SHM present');
+
+  const walWarning = walBytes !== null && walBytes >= walWarnBytes;
+  return {
+    name: 'Database',
+    status: walWarning ? 'warn' : 'ok',
+    detail: walWarning
+      ? `${parts.join(', ')}; the WAL has not checkpointed (warn at ${readableBytes(walWarnBytes)})`
+      : parts.join(', '),
+    required: false,
+  };
+}
+
 export async function runDoctorCommand(): Promise<void> {
   const checks: CheckResult[] = [];
   const dataDir = resolveDataDir();
@@ -1183,6 +1259,10 @@ export async function runDoctorCommand(): Promise<void> {
     detail: uvVersion ? uvVersion : 'not found — vector/semantic search disabled until installed',
     required: false,
   });
+
+  // 3. The local database and its WAL sidecars. Informational: the worker owns
+  // the file, and a large WAL is a checkpoint that has not run, not corruption.
+  checks.push(databaseFileCheck(join(dataDir, DB_FILENAME)));
 
   // 3. Plugin installed: the root the worker spawns from (the shared
   // resolveWorkerScript() oracle — cache, marketplace, or dev checkout), with
