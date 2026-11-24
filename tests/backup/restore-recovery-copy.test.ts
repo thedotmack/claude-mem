@@ -3,7 +3,7 @@ import { Database } from 'bun:sqlite';
 import * as fs from 'node:fs';
 import * as fsPromises from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { swapDatabaseFromSnapshot } from '../../src/services/backup/restore-swap.js';
 
 const damagedMain = Buffer.from('damaged database bytes worth recovering');
@@ -55,7 +55,7 @@ describe('damaged live database recovery copy', () => {
       // Fail the WAL's transfer to the backup volume for either strategy.
       // SQLite has already tried opening the damaged live database by then.
       const isRecoveryWal = (from: unknown, to: unknown) => String(from).startsWith(`${dbPath}.restore-raw-`)
-        && String(from).endsWith('-wal') && String(to).startsWith(`${backups}/`);
+        && String(from).endsWith('-wal') && String(to).startsWith(`${backups}${sep}`);
       const failure = () => Object.assign(new Error('backup volume is full'), { code: 'ENOSPC' });
       const copySpy = spyOn(fsPromises, 'copyFile').mockImplementation(async (from, to, mode) => {
         if (isRecoveryWal(from, to)) throw failure();
