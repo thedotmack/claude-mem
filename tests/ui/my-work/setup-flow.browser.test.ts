@@ -438,6 +438,14 @@ async function install(page: SetupWalk) {
     };
     await page.until(`!!document.querySelector('.install-reinstall input')`, 'install options');
     await measure('install');
+    await page.press('.install-agents button', 'Show all agents');
+    const visibleSetupAction = await page.browser.evaluate<boolean>(`(() => {
+      const action = document.querySelector('.install-form button[type=submit]');
+      const rect = action.getBoundingClientRect();
+      return window.scrollY === 0 && rect.top >= 0 && rect.bottom <= window.innerHeight
+        && action.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2));
+    })()`);
+    expect(visibleSetupAction).toBe(true);
     await install(page);
     await page.atStep('scan');
     await measure('scan running');

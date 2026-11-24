@@ -1,4 +1,7 @@
 export const myworkTr: Record<string, string> = {
+  '{count} agent is set up': '{count} ajan kuruldu',
+  '{count} agents are set up': '{count} ajan kuruldu',
+  'With Cloud Sync, your next agent can pick up where you left off, even on another device.': 'Cloud Sync ile bir sonraki ajanınız, başka bir cihazda bile kaldığınız yerden devam edebilir.',
   'Asked by {name} · started {time} · {duration} · {stage}': 'İsteyen: {name} · başlangıç: {time} · {duration} · {stage}',
   'Why it’s suggested: {reason}': 'Önerilme nedeni: {reason}',
   '{count} area': '{count} alan',

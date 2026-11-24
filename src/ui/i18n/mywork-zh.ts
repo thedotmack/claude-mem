@@ -1,4 +1,7 @@
 export const myworkZh: Record<string, string> = {
+  "{count} agent is set up": "已设置 {count} 个智能体",
+  "{count} agents are set up": "已设置 {count} 个智能体",
+  "With Cloud Sync, your next agent can pick up where you left off, even on another device.": "启用 Cloud Sync 后，即使换一台设备，下一个智能体也能接着你上次的进度继续工作。",
   'Asked by {name} · started {time} · {duration} · {stage}': '由 {name} 发起 · 开始于 {time} · {duration} · {stage}',
   'Why it’s suggested: {reason}': '建议原因：{reason}',
   '{count} area': '{count} 个区域',
