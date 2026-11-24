@@ -6631,7 +6631,8 @@ function buildAgentView(state, records2, { now = Date.now(), workLimit = 240, ac
     const original = prompt ? { source: "user-prompt", sourceId: prompt.id, url: `/api/work-view/evidence/prompt/${prompt.id}` } : null;
     if (summary && readableRequest(summary.request)) return { key, text: readableRequest(summary.request), source: "session-summary-request", sourceId: summary.id, url: `/api/work-view/evidence/summary/${summary.id}`, original };
     if (prompt && readableRequest(prompt.prompt_text)) return { key, text: readableRequest(prompt.prompt_text), ...original };
-    if ((number == null || number <= 1) && readableRequest(session.user_prompt)) return { key, text: readableRequest(session.user_prompt), source: "session-initial-request", sourceId: session.sharedOnly ? null : session.id, url: session.sharedOnly ? null : `/api/work-view/evidence/session/${session.id}` };
+    const opening = readableRequest(Object.hasOwn(session, "sharedOpeningPrompt") ? session.sharedOpeningPrompt : session.user_prompt);
+    if ((number == null || number <= 1) && opening) return { key, text: opening, source: "session-initial-request", sourceId: session.sharedOnly ? null : session.id, url: session.sharedOnly ? null : `/api/work-view/evidence/session/${session.id}` };
     return null;
   }
   function addActivity(group, entry) {
@@ -7482,6 +7483,7 @@ function applySharedProjection(database, shared, { ledger = null, records: recor
       let session = merged.sessions.find((row) => conversationKey(row) === key);
       if (session) session = record.writer === deviceId ? { ...facts, ...session } : { ...session, ...facts };
       else session = { ...facts, id: `shared:${key}`, sharedOnly: true };
+      session.sharedOpeningPrompt = facts.user_prompt ?? null;
       merged.sessions = merged.sessions.filter((row) => conversationKey(row) !== key);
       merged.sessions.push(session);
       for (const attribution of value.attributions ?? []) {
@@ -7496,7 +7498,7 @@ function applySharedProjection(database, shared, { ledger = null, records: recor
   const referencedGroups = new Set(Object.values(next.groups.conversations));
   for (const groupId of Object.keys(next.groups.groups)) if (!referencedGroups.has(groupId)) delete next.groups.groups[groupId];
   for (const session of merged.sessions) if ((merged.prompts ?? []).some((prompt) => prompt.session_db_id === session.id && next.agentWrittenPromptIds.has(prompt.id) && (prompt.prompt_number === 1 || prompt.prompt_text === session.user_prompt))) excludedOpenings.add(conversationKey(session));
-  merged.sessions = merged.sessions.map((session) => excludedOpenings.has(conversationKey(session)) ? { ...session, user_prompt: null } : session);
+  merged.sessions = merged.sessions.map((session) => excludedOpenings.has(conversationKey(session)) ? { ...session, user_prompt: null, sharedOpeningPrompt: null } : session);
   merged.prompts = (merged.prompts ?? []).filter((prompt) => !next.agentWrittenPromptIds.has(prompt.id));
   return { ledger: next, records: merged, copyEntries, diagnostics };
 }
