@@ -101,6 +101,29 @@ export interface RefreshAgentChoice {
 
 const LOCAL_AGENT_IDS: readonly UsableAgentId[] = ['claude-code', 'codex', 'gemini', 'opencode'];
 
+const warnedApiAgentLimits = new Set<string>();
+
+/** One limit setting, or its default. A set but invalid value warns once per value, naming the default used. */
+function apiAgentLimit(key: 'CLAUDE_MEM_WORK_VIEW_API_TIMEOUT_MS' | 'CLAUDE_MEM_WORK_VIEW_MAX_OUTPUT_TOKENS', raw: unknown, max: number, defaultValue: number): number {
+  const parsed = parseBoundedNumber(raw as string | number | undefined, { min: 1, max, integer: true });
+  if (parsed !== null) return parsed;
+  const text = typeof raw === 'number' ? String(raw) : typeof raw === 'string' ? raw.trim() : '';
+  if (text && !warnedApiAgentLimits.has(`${key}=${text}`)) {
+    warnedApiAgentLimits.add(`${key}=${text}`);
+    logger.warn('WORKER', `Invalid ${key}; the My Work API refresh uses the default`, { value: text, min: 1, max, default: defaultValue });
+  }
+  return defaultValue;
+}
+
+/** CLAUDE_MEM_WORK_VIEW_API_TIMEOUT_MS and CLAUDE_MEM_WORK_VIEW_MAX_OUTPUT_TOKENS, read at the start of every refresh. */
+function resolveApiAgentLimits(settings: SettingsDefaults): ApiAgentLimits {
+  return {
+    // Longer delays overflow a signed 32-bit runtime timer and can expire immediately.
+    timeoutMs: apiAgentLimit('CLAUDE_MEM_WORK_VIEW_API_TIMEOUT_MS', settings.CLAUDE_MEM_WORK_VIEW_API_TIMEOUT_MS, 2_147_483_647, DEFAULT_API_AGENT_LIMITS.timeoutMs),
+    maxOutputTokens: apiAgentLimit('CLAUDE_MEM_WORK_VIEW_MAX_OUTPUT_TOKENS', settings.CLAUDE_MEM_WORK_VIEW_MAX_OUTPUT_TOKENS, Number.MAX_SAFE_INTEGER, DEFAULT_API_AGENT_LIMITS.maxOutputTokens),
+  };
+}
+
 /** Which agents the My Work refresh may run on (#5189). A background refresh that falls through to another
  * agent spends that agent's quota without the owner asking: a Claude Code session limit sent ~230 hidden
  * `codex exec` runs to one owner's ChatGPT plan. So the refresh stays on one agent unless the owner opts in:
@@ -119,20 +142,12 @@ export function resolveRefreshAgents(dataDir: string): RefreshAgentChoice {
     : provider === 'codex' || provider === 'gemini' ? provider : undefined;
   const configuredAgent = String(settings.CLAUDE_MEM_WORK_VIEW_AGENT ?? '').trim();
   if (configuredAgent === 'off') return { allowedAgents: [], stayOnFirstUsableAgent: true };
-  if (configuredAgent === 'all') return { preferredAgent: providerAgent, stayOnFirstUsableAgent: false };
+  // `all` can fall through to the api agent too, so it gets the same limits as `api`.
+  if (configuredAgent === 'all') return { preferredAgent: providerAgent, stayOnFirstUsableAgent: false, apiLimits: resolveApiAgentLimits(settings) };
   const namedAgent = LOCAL_AGENT_IDS.find(agent => agent === configuredAgent);
   if (namedAgent) return { allowedAgents: [namedAgent], preferredAgent: namedAgent, stayOnFirstUsableAgent: true };
   if (configuredAgent === 'api') {
-    // Longer delays overflow a signed 32-bit runtime timer and can expire immediately.
-    const timeoutMs = parseBoundedNumber(settings.CLAUDE_MEM_WORK_VIEW_API_TIMEOUT_MS, { min: 1, max: 2_147_483_647, integer: true });
-    const maxOutputTokens = parseBoundedNumber(settings.CLAUDE_MEM_WORK_VIEW_MAX_OUTPUT_TOKENS, { min: 1, max: Number.MAX_SAFE_INTEGER, integer: true });
-    return {
-      allowedAgents: ['api'], preferredAgent: 'api', stayOnFirstUsableAgent: true,
-      apiLimits: {
-        timeoutMs: timeoutMs ?? DEFAULT_API_AGENT_LIMITS.timeoutMs,
-        maxOutputTokens: maxOutputTokens ?? DEFAULT_API_AGENT_LIMITS.maxOutputTokens,
-      },
-    };
+    return { allowedAgents: ['api'], preferredAgent: 'api', stayOnFirstUsableAgent: true, apiLimits: resolveApiAgentLimits(settings) };
   }
   if (configuredAgent) {
     logger.warn('WORKER', 'Unrecognized CLAUDE_MEM_WORK_VIEW_AGENT; the My Work refresh follows CLAUDE_MEM_PROVIDER instead', {

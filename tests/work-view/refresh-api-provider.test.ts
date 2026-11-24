@@ -7,6 +7,7 @@ import * as realPaths from '../../src/shared/paths.js';
 import { buildRefreshTask, resolveRefreshAgents } from '../../src/services/work-view/refresh-task.js';
 import { runAgentTask, type AgentTask } from '../../src/services/agent-runner/run.js';
 import type { UsableAgent } from '../../src/services/agent-runner/detect.js';
+import { logger } from '../../src/utils/logger.js';
 import { everyRequestInOther, focusWriter } from '../helpers/fake-focus-writer.js';
 
 /**
@@ -112,6 +113,34 @@ describe('the My Work refresh on an API provider', () => {
         writeFileSync(join(dir, 'settings.json'), JSON.stringify({ CLAUDE_MEM_PROVIDER: provider, CLAUDE_MEM_WORK_VIEW_AGENT: 'api' }));
         expect(resolveRefreshAgents(dir)).toEqual({ allowedAgents: ['api'], preferredAgent: 'api', stayOnFirstUsableAgent: true, apiLimits: { timeoutMs: 600_000, maxOutputTokens: 16_000 } });
       });
+    }
+  });
+
+  it('CLAUDE_MEM_WORK_VIEW_AGENT=all carries the same API limits, since it can fall through to the api agent', async () => {
+    await withApiProvider('openai-compatible', dir => {
+      writeFileSync(join(dir, 'settings.json'), JSON.stringify({
+        CLAUDE_MEM_PROVIDER: 'openai-compatible', CLAUDE_MEM_WORK_VIEW_AGENT: 'all',
+        CLAUDE_MEM_WORK_VIEW_API_TIMEOUT_MS: '1800000', CLAUDE_MEM_WORK_VIEW_MAX_OUTPUT_TOKENS: '32000',
+      }));
+      expect(resolveRefreshAgents(dir).apiLimits).toEqual({ timeoutMs: 1_800_000, maxOutputTokens: 32_000 });
+    });
+  });
+
+  it('an invalid limit warns once, naming the default it uses', async () => {
+    const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+    try {
+      await withApiProvider('openai-compatible', dir => {
+        writeFileSync(join(dir, 'settings.json'), JSON.stringify({
+          CLAUDE_MEM_PROVIDER: 'openai-compatible', CLAUDE_MEM_WORK_VIEW_AGENT: 'api', CLAUDE_MEM_WORK_VIEW_MAX_OUTPUT_TOKENS: '16k-warn-once',
+        }));
+        expect(resolveRefreshAgents(dir).apiLimits?.maxOutputTokens).toBe(16_000);
+        expect(resolveRefreshAgents(dir).apiLimits?.maxOutputTokens).toBe(16_000);
+      });
+      const warnings = warn.mock.calls.filter(call => String(call[1]).includes('CLAUDE_MEM_WORK_VIEW_MAX_OUTPUT_TOKENS'));
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0][2]).toMatchObject({ value: '16k-warn-once', default: 16_000 });
+    } finally {
+      warn.mockRestore();
     }
   });
 
