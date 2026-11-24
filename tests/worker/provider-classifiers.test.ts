@@ -319,6 +319,35 @@ describe('classifyOpenRouterError', () => {
     expect(err.requestId).toBe('or-req-litellm');
   });
 
+  // OpenRouter sends a failure after the request was accepted as a 200 whose
+  // envelope's numeric `error.code` is the real status (#6447).
+  it.each([
+    [429, 'openai/gpt-6-luna is temporarily rate-limited upstream.', 'rate_limit'],
+    [503, 'The system is currently experiencing high demand and cannot process your request.', 'transient'],
+    [502, 'Provider returned error', 'transient'],
+  ])('classifies a 200 error envelope with code %i by that code', (code, message, kind) => {
+    const err = classifyOpenRouterError({
+      status: 200,
+      bodyText: JSON.stringify({ error: { code, message } }),
+      headers: new Headers({ 'retry-after': '7' }),
+      cause: new Error(`OpenRouter API error: ${code} - ${message}`),
+    });
+    expect(err.kind).toBe(kind);
+    expect(err.message).toContain(`(status ${code}): ${message}`);
+    if (kind === 'rate_limit') expect(err.retryAfterMs).toBe(7_000);
+  });
+
+  // The model ran and was billed: a 5xx code must not turn it into a resend.
+  it('keeps a litellm output failure in a 200 envelope with a 5xx code an output failure', () => {
+    const err = classifyOpenRouterError({
+      status: 200,
+      bodyText: JSON.stringify({ error: { code: 502, message: 'Unable to get json response - Expecting value: line 1 column 1' } }),
+      cause: new Error('x'),
+    });
+    expect(err.kind).toBe('unrecoverable');
+    expect(err.paidSendOutcome).toBe('output_failure');
+  });
+
   it('classifies litellm "expecting value" markers as an output failure regardless of a non-standard status', () => {
     const err = classifyOpenRouterError({
       status: 418,
