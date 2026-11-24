@@ -302,6 +302,7 @@ describe('server jobs CLI — state changed after the status check', () => {
   let removed: string[];
   let afterStatusCheck: (() => Promise<unknown>) | null;
   let beforePublish: (() => Promise<unknown>) | null;
+  let seamedPool: NonNullable<Parameters<typeof __setServerJobsTestSeams>[0]['openPool']>;
 
   beforeEach(async () => {
     schema = await createIsolatedSchema(databaseUrl, 'cm_cli_jobs');
@@ -326,21 +327,22 @@ describe('server jobs CLI — state changed after the status check', () => {
       spyOn(process, 'exit').mockImplementation((code?: number) => { throw new Error(`__exit_${code ?? 0}__`); }) as never,
     ];
     process.env.CLAUDE_MEM_SERVER_DATABASE_URL = 'postgres://seamed/pool';
-    __setServerJobsTestSeams({
-      openPool: async () => ({
-        pool: {
-          query: async (sql: string, params: unknown[]) => {
-            const result = await pool.query(sql, params);
-            if (afterStatusCheck && sql.includes('SELECT id, team_id, project_id, status')) {
-              const otherWriter = afterStatusCheck;
-              afterStatusCheck = null;
-              await otherWriter();
-            }
-            return result;
-          },
+    seamedPool = async () => ({
+      pool: {
+        query: async (sql: string, params: unknown[]) => {
+          const result = await pool.query(sql, params);
+          if (afterStatusCheck && sql.includes('SELECT id, team_id, project_id, status')) {
+            const otherWriter = afterStatusCheck;
+            afterStatusCheck = null;
+            await otherWriter();
+          }
+          return result;
         },
-        releasePool: async () => {},
-      }),
+      },
+      releasePool: async () => {},
+    });
+    __setServerJobsTestSeams({
+      openPool: seamedPool,
       republishToBullmq: async (_sourceType, id) => { await beforePublish?.(); published.push(id); },
       removeFromBullmq: async (_sourceType, id) => { removed.push(id); },
     });
@@ -428,12 +430,62 @@ describe('server jobs CLI — state changed after the status check', () => {
 
   it('retry leaves a job a worker took before the publish error alone', async () => {
     await move('processing'); await move('failed');
-    // BullMQ accepted the job and a worker locked it; closing the queue then threw.
+    // The add reached BullMQ and a worker locked the row, but the reply to the add was lost.
     beforePublish = async () => { await move('processing'); throw new Error('Connection is closed.'); };
     await runServerJobsCommand(['retry', jobId, '--team', teamId]);
     const taken = await reload();
     expect(taken?.status).toBe('processing');
     expect(taken?.lockedBy).toBe('fixture-worker');
+    expect(await lifecycleCount('failed')).toBe(0);
+  });
+
+  it('retry keeps a job it published when closing the queue connection then fails', async () => {
+    await move('processing'); await move('failed');
+    process.env.CLAUDE_MEM_QUEUE_ENGINE = 'bullmq';
+    process.env.CLAUDE_MEM_REDIS_URL = '';
+    const added: string[] = [];
+    // No republishToBullmq seam: the command's own publish path runs, on a
+    // queue that takes the job and then cannot close its connection.
+    __setServerJobsTestSeams({
+      openPool: seamedPool,
+      bullmqQueueFactory: () => ({
+        add: async (_name: string, _payload: unknown, opts?: { jobId?: string }) => {
+          added.push(String(opts?.jobId));
+          return { id: opts?.jobId } as never;
+        },
+        getJob: async () => undefined,
+        getJobCounts: async () => ({}),
+        remove: async () => 1,
+        close: async () => { throw new Error('Connection is closed.'); },
+      }),
+    });
+    await runServerJobsCommand(['retry', jobId, '--team', teamId]);
+    const kept = await reload();
+    expect(added).toEqual([String(kept?.bullmqJobId)]);
+    // A worker that now takes the job must find the row still queued.
+    expect(kept?.status).toBe('queued');
+    expect(kept?.lastError).toBeNull();
+    expect(await lifecycleCount('failed')).toBe(0);
+    // The close failure is still logged, by ServerJobQueue.close().
+    expect(spies[0]!.mock.calls.some(call => /failed to close queue/.test(String(call[1])))).toBe(true);
+  });
+
+  it('a failed publish does not undo a later cancel and retry of the same job', async () => {
+    await move('processing'); await move('failed');
+    // Retry A is still publishing when another operator cancels the job and
+    // retry B requeues and publishes it. Then A's publish fails.
+    beforePublish = async () => {
+      beforePublish = null;
+      await runServerJobsCommand(['cancel', jobId, '--team', teamId]);
+      await runServerJobsCommand(['retry', jobId, '--team', teamId]);
+      throw new Error('Connection is closed.');
+    };
+    await runServerJobsCommand(['retry', jobId, '--team', teamId]);
+    const requeued = await reload();
+    expect(requeued?.status).toBe('queued');
+    expect(requeued?.lastError).toBeNull();
+    expect(requeued?.payload.retried_count).toBe(2);
+    expect(published.length).toBe(1);
     expect(await lifecycleCount('failed')).toBe(0);
   });
 });

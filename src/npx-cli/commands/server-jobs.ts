@@ -265,11 +265,13 @@ async function runJobsRetry(args: ParsedArgs): Promise<void> {
           -- The status was read by an earlier statement. Another retry and a
           -- worker may have moved the job to processing or completed since.
           AND status IN ('failed', 'cancelled')
-        RETURNING id, status, attempts, bullmq_job_id, source_type
+        RETURNING id, status, attempts, bullmq_job_id, source_type,
+          -- Identifies this write, losslessly (a JS Date drops the microseconds).
+          extract(epoch from updated_at)::text AS updated_at_token
       `,
       [id, JSON.stringify(newPayload)],
     );
-    type UpdatedRetryRow = { id: string; status: string; attempts: number; bullmq_job_id: string | null; source_type: string };
+    type UpdatedRetryRow = { id: string; status: string; attempts: number; bullmq_job_id: string | null; source_type: string; updated_at_token: string };
     const row = (updated.rows as UpdatedRetryRow[])[0];
     if (!row) {
       console.error(styleText('red', `Job was not requeued: it is no longer ${lookup.status} (or was deleted). Check its status and re-run.`));
@@ -298,7 +300,9 @@ async function runJobsRetry(args: ParsedArgs): Promise<void> {
         // Nothing publishes a `queued` row later, and retry treats `queued` as
         // already done, so a row left there could not be retried again. Move
         // it back to `failed`, as the stale-lock reclaim does when it cannot
-        // republish. A row a worker has already taken is left alone.
+        // republish. Only the row as this command's own UPDATE left it is
+        // moved: every writer sets updated_at, so a row a worker has taken, or
+        // that a later cancel and retry requeued, no longer matches.
         const unpublished = await pool.query(
           `
             UPDATE observation_generation_jobs
@@ -307,9 +311,10 @@ async function runJobsRetry(args: ParsedArgs): Promise<void> {
                 last_error = $2::jsonb,
                 updated_at = now()
             WHERE id = $1 AND status = 'queued'
+              AND extract(epoch from updated_at)::text = $3
             RETURNING id
           `,
-          [id, JSON.stringify({ reason: 'retry_republish_failed', error: reason })],
+          [id, JSON.stringify({ reason: 'retry_republish_failed', error: reason }), row.updated_at_token],
         );
         if (unpublished.rows.length > 0) {
           await pool.query(
@@ -592,7 +597,10 @@ async function republishToBullmq(sourceType: string, jobId: string, payload: Rec
     try { await queue.remove(jobId); } catch { /* terminal slot may be missing */ }
     await queue.add(jobId, payload);
   } finally {
-    await queue.close();
+    // ServerJobQueue.close() logs a close that fails. It must not decide
+    // whether the job was published: after add() the job is in BullMQ, and a
+    // caller that took the close error for a publish error would fail its row.
+    await queue.close().catch(() => undefined);
   }
 }
 
