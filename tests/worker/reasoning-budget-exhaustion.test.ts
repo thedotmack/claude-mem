@@ -256,6 +256,36 @@ describe('reasoning budget exhaustion', () => {
     }
   });
 
+  it('reads the effort trimmed and in any case, like the reasoning toggle', async () => {
+    settingsOverrides.CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT = ' High ';
+    const server = await startReasoningServer('honor-disable');
+    spies.push(spyOn(logger, 'error').mockImplementation(() => {}));
+    try {
+      await queryCompat(server.url);
+      expect(server.bodies[0]?.reasoning_effort).toBe('high');
+      expect('reasoning' in (server.bodies[0] ?? {})).toBe(false);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('warns once on an unrecognized effort and keeps the preset behavior instead of sending it', async () => {
+    settingsOverrides.CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT = 'hgih-observer';
+    const server = await startReasoningServer('honor-disable');
+    const warnSpy = spyOn(logger, 'warn').mockImplementation(() => {});
+    spies.push(warnSpy);
+    try {
+      await queryCompat(server.url);
+      await queryCompat(server.url);
+      expect(server.bodies.map(body => body.reasoning_effort)).toEqual([undefined, undefined]);
+      expect(server.bodies.map(body => body.reasoning)).toEqual([{ enabled: false }, { enabled: false }]);
+      const warnings = warnSpy.mock.calls.filter(call => String(call[1]).includes('CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT "hgih-observer"'));
+      expect(warnings).toHaveLength(1);
+    } finally {
+      await server.close();
+    }
+  });
+
   it('openai-compatible: an OpenAI-style unsupported parameter is retried without the field', async () => {
     const server = await startReasoningServer('reject-unsupported-parameter');
     const warnSpy = spyOn(logger, 'warn').mockImplementation(() => {});
@@ -739,7 +769,7 @@ it('validates OpenAI-compatible effort separately from the legacy reasoning togg
   const routes = new SettingsRoutes({} as never) as unknown as {
     validateSettings(settings: unknown): { valid: boolean };
   };
-  for (const value of ['', 'none', 'low', 'medium', 'high', 'xhigh', 'max']) {
+  for (const value of ['', '  ', 'none', 'low', 'medium', 'high', 'xhigh', 'max', ' High ']) {
     expect(routes.validateSettings({ CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT: value }).valid).toBe(true);
   }
   for (const value of ['on', 'minimal', 2, null]) {

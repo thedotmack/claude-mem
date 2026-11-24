@@ -9,6 +9,8 @@ export type QuotaFallbackOption = typeof QUOTA_FALLBACK_OPTIONS[number];
 export const OPENAI_COMPAT_REASONING_EFFORTS = ['none', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 export type OpenAICompatReasoningEffort = typeof OPENAI_COMPAT_REASONING_EFFORTS[number];
 
+/** Trimmed and case-insensitive, like CLAUDE_MEM_OPENAI_COMPAT_REASONING. Empty or unrecognized → undefined. */
 export function parseOpenAICompatReasoningEffort(value: unknown): OpenAICompatReasoningEffort | undefined {
-  return OPENAI_COMPAT_REASONING_EFFORTS.find(effort => effort === value);
+  const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  return OPENAI_COMPAT_REASONING_EFFORTS.find(effort => effort === normalized);
 }

@@ -23,7 +23,6 @@
  * numbers on both sides or none.
  */
 
-import { parseOpenAICompatReasoningEffort } from '../../ui/provider-options.js';
 import { getCredential } from '../../shared/EnvManager.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, paths } from '../../shared/paths.js';
@@ -51,6 +50,7 @@ import {
   openAICompatReasoningBody,
   type CompatReasoningBody,
   requestDisablesReasoning,
+  resolveOpenAICompatReasoningEffort,
   reasoningBudgetGiveUpMessage,
   reasoningBudgetRetryMessage,
   reasoningBudgetSkippedMessage,
@@ -713,7 +713,7 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
     const clientAttemptId = paidSendBudget?.clientAttemptId ?? randomUUID();
     const maxOutputTokens = resolveObserverMaxOutputTokens();
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-    const effort = parseOpenAICompatReasoningEffort(settings.CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT);
+    const effort = resolveOpenAICompatReasoningEffort(settings.CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT);
     const usePreset = resolveOpenAICompatReasoning(settings.CLAUDE_MEM_OPENAI_COMPAT_REASONING) === 'off';
     const reasoning = (effort || usePreset) ? openAICompatReasoningBody(config.preset.reasoningOff, effort) : undefined;
     // The budget retry asks for no thinking in the same wire format as the initial request.

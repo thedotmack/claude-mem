@@ -263,6 +263,24 @@ describe('the API target follows the selected provider', () => {
     });
   });
 
+  it('reads the effort trimmed and in any case, and warns once on a value it cannot send', async () => {
+    const base = { CLAUDE_MEM_PROVIDER: 'openai-compatible', CLAUDE_MEM_OPENAI_COMPAT_PRESET: 'opencode-go', CLAUDE_MEM_OPENAI_COMPAT_API_KEY: 'sk-test', CLAUDE_MEM_OPENAI_COMPAT_MODEL: 'beam-free' };
+    await withSettings({ ...base, CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT: ' High ' }, path => {
+      expect(resolveApiTarget(path).target?.reasoningEffort).toBe('high');
+    });
+    const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+    try {
+      await withSettings({ ...base, CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT: 'hgih-api-agent' }, path => {
+        expect(resolveApiTarget(path).target?.reasoningEffort).toBeUndefined();
+        expect(resolveApiTarget(path).target?.reasoningOff).toBe('effort-none');
+      });
+      const warnings = warn.mock.calls.filter(call => String(call[1]).includes('CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT "hgih-api-agent"'));
+      expect(warnings).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('has no target on a provider that is not an API endpoint', async () => {
     await withSettings({ CLAUDE_MEM_PROVIDER: 'claude' }, path => {
       const resolution = resolveApiTarget(path);

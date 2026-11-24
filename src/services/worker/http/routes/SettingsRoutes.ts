@@ -652,7 +652,7 @@ export class SettingsRoutes extends BaseRouteHandler {
     }
 
     if (settings.CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT !== undefined
-      && settings.CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT !== ''
+      && !(typeof settings.CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT === 'string' && settings.CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT.trim() === '')
       && !parseOpenAICompatReasoningEffort(settings.CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT)) {
       return { valid: false, error: `CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT must be empty or one of: ${OPENAI_COMPAT_REASONING_EFFORTS.join(', ')}` };
     }

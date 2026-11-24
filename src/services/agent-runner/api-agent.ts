@@ -20,7 +20,7 @@
  */
 
 import { randomUUID } from 'crypto';
-import { parseOpenAICompatReasoningEffort, type OpenAICompatReasoningEffort } from '../../ui/provider-options.js';
+import type { OpenAICompatReasoningEffort } from '../../ui/provider-options.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { parseOpenRouterExtraBody, withOpenRouterExtraBody } from '../../shared/openrouter-extra-body.js';
 import { paths } from '../../shared/paths.js';
@@ -28,7 +28,7 @@ import { logger } from '../../utils/logger.js';
 import { resolveOpenAICompatConfig } from '../worker/OpenAICompatProvider.js';
 import { resolveOpenRouterConfig } from '../worker/OpenRouterProvider.js';
 import { isMaxCompletionTokensCompatibilityError } from '../../shared/openrouter-token-compatibility.js';
-import { endpointRejectsReasoningField, isReasoningDisabledRejection, isUnknownReasoningParameter, openAICompatReasoningBody, rememberEndpointRejectsReasoningField } from '../worker/reasoning-budget.js';
+import { endpointRejectsReasoningField, isReasoningDisabledRejection, isUnknownReasoningParameter, openAICompatReasoningBody, rememberEndpointRejectsReasoningField, resolveOpenAICompatReasoningEffort } from '../worker/reasoning-budget.js';
 import type { OpenAICompatReasoningOff } from '../../shared/openai-compat-presets.js';
 
 /** The provider an API step runs on. */
@@ -111,7 +111,7 @@ export function resolveApiTarget(settingsPath: string = paths.settings()): ApiTa
     if (!config.apiUrl) return { target: null, reason: 'CLAUDE_MEM_PROVIDER is openai-compatible, but no endpoint is configured.' };
     if (!config.model) return { target: null, reason: 'CLAUDE_MEM_PROVIDER is openai-compatible, but no model is configured.' };
     if (config.requiresApiKey && !config.apiKey) return { target: null, reason: 'CLAUDE_MEM_PROVIDER is openai-compatible, but no API key is configured.' };
-    const reasoningEffort = parseOpenAICompatReasoningEffort(settings.CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT);
+    const reasoningEffort = resolveOpenAICompatReasoningEffort(settings.CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT);
     return { target: {
       provider: 'openai-compatible', url: config.apiUrl, apiKey: config.apiKey, model: config.model,
       ...(config.preset.sessionHeader ? { sessionHeader: config.preset.sessionHeader } : {}),

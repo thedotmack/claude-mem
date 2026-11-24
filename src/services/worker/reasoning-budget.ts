@@ -15,7 +15,7 @@ import { logger } from '../../utils/logger.js';
 import type { PaidSendBudget } from './paid-send-budget.js';
 import { resolveLlmTimeoutMs } from './retry.js';
 import type { OpenAICompatReasoningOff } from '../../shared/openai-compat-presets.js';
-import type { OpenAICompatReasoningEffort } from '../../ui/provider-options.js';
+import { OPENAI_COMPAT_REASONING_EFFORTS, parseOpenAICompatReasoningEffort, type OpenAICompatReasoningEffort } from '../../ui/provider-options.js';
 
 export const REASONING_DISABLED: { enabled: false } = { enabled: false };
 
@@ -80,6 +80,24 @@ export function resolveOpenAICompatReasoning(raw: unknown): 'off' | 'on' {
     logger.warn('SDK', `Ignoring CLAUDE_MEM_OPENAI_COMPAT_REASONING "${text}": use "off" (default) or "on"`);
   }
   return 'off';
+}
+
+let lastWarnedCompatReasoningEffort: string | null = null;
+
+/**
+ * CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT for a request. Empty means no
+ * override. An unrecognized value warns once and is not sent, so a typo shows
+ * in the log instead of silently keeping the preset's behavior.
+ */
+export function resolveOpenAICompatReasoningEffort(raw: unknown): OpenAICompatReasoningEffort | undefined {
+  const parsed = parseOpenAICompatReasoningEffort(raw);
+  if (parsed) return parsed;
+  const text = typeof raw === 'string' ? raw.trim() : raw == null ? '' : String(raw);
+  if (text && lastWarnedCompatReasoningEffort !== text) {
+    lastWarnedCompatReasoningEffort = text;
+    logger.warn('SDK', `Ignoring CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT "${text}": use one of ${OPENAI_COMPAT_REASONING_EFFORTS.join(', ')}, or leave it empty`);
+  }
+  return undefined;
 }
 
 /** Empty (or whitespace) assistant text cut off by the output cap. "stop" is not this. */
