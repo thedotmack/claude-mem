@@ -1,0 +1,18 @@
+// A made-up Saturday for two group chats and one direct chat.
+{"type":"chat","guid":"any;+;chat-weekend-crew","displayName":"Weekend Crew","participants":["+15551230001","+15551230002","sam@example.com"]}
+{"type":"chat","guid":"any;+;chat-launch","displayName":"Launch Squad","participants":["+15551230003","+15551230004"]}
+{"type":"chat","guid":"any;-;+15551230009","displayName":"","isGroup":false,"participants":["+15551230009"]}
+{"type":"message","chat":"any;+;chat-weekend-crew","id":"w1","from":"+15551230001","at":"2026-11-21T10:02:00-08:00","text":"Dinner Saturday? I can book Flour + Water"}
+{"type":"message","chat":"any;+;chat-weekend-crew","id":"w2","from":"sam@example.com","at":"2026-11-21T10:04:00-08:00","text":"Yes! 7pm works for me"}
+{"type":"message","chat":"any;+;chat-weekend-crew","id":"w3","from":"me","at":"2026-11-21T10:05:00-08:00","text":"I'm in. Can we do 8 instead?"}
+{"type":"edited","chat":"any;+;chat-weekend-crew","id":"w3","at":"2026-11-21T10:05:30-08:00","text":"I'm in. Can we do 7:30 instead?"}
+{"type":"message","chat":"any;+;chat-weekend-crew","id":"w4","from":"+15551230002","at":"2026-11-21T10:06:00-08:00","text":"oops wrong chat"}
+{"type":"unsent","chat":"any;+;chat-weekend-crew","id":"w4","at":"2026-11-21T10:06:20-08:00"}
+{"type":"message","chat":"any;+;chat-weekend-crew","id":"w5","from":"+15551230001","at":"2026-11-21T10:08:00-08:00","text":"Booked 7:30 for 4 under Jordan","attachments":["photo"]}
+{"type":"reaction","chat":"any;+;chat-weekend-crew","id":"w5","from":"sam@example.com","at":"2026-11-21T10:09:00-08:00","reaction":"love"}
+{"type":"message","chat":"any;-;+15551230009","id":"d1","from":"+15551230009","at":"2026-11-21T10:10:00-08:00","text":"This direct message must not be observed"}
+{"type":"message","chat":"any;+;chat-launch","id":"l1","from":"+15551230003","at":"2026-11-21T11:00:00-08:00","text":"Launch moves to Tuesday 9am, the release notes are ready"}
+{"type":"message","chat":"any;+;chat-launch","id":"l2","from":"+15551230004","at":"2026-11-21T11:03:00-08:00","text":"I'll post on X once it's live"}
+{"type":"renamed","chat":"any;+;chat-weekend-crew","from":"sam@example.com","at":"2026-11-21T16:30:00-08:00","name":"Saturday Dinner"}
+{"type":"membership","chat":"any;+;chat-weekend-crew","from":"+15551230001","at":"2026-11-21T16:31:00-08:00","change":"added","person":"+15551230005"}
+{"type":"message","chat":"any;+;chat-weekend-crew","id":"w6","from":"+15551230005","at":"2026-11-21T16:32:00-08:00","text":"Thanks for adding me, I'll bring wine"}
