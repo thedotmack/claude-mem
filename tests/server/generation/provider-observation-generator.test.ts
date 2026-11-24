@@ -201,6 +201,50 @@ describe('ProviderObservationGenerator', () => {
     expect(result.delayedBy[0]!.ms).toBeLessThanOrEqual(60_000);
   });
 
+  // A delayed delivery does not use one of BullMQ's attempts, so the row's
+  // max_attempts is what ends a rate limit that never clears.
+  it('stops delaying a rate-limited job once the row has used its attempts', async () => {
+    const rateLimit = new ServerClassifiedProviderError('Gemini rate limit (429)', {
+      kind: 'rate_limit',
+      cause: null,
+      retryAfterMs: 34_000,
+    });
+    const provider = new StubProvider(rateLimit);
+    const generator = new ProviderObservationGenerator({
+      pool: pool as unknown as ConstructorParameters<typeof ProviderObservationGenerator>[0]['pool'],
+      provider,
+    });
+    // One BullMQ job, delivered again after each delay.
+    const job = makeBullmqJob();
+    let delays = 0;
+    job.moveToDelayed = async () => { delays += 1; };
+    const reload = () => storage.observationGenerationJobs.getByIdForScope({ id: jobId, projectId, teamId });
+    const maxAttempts = (await reload())!.maxAttempts;
+    expect(maxAttempts).toBe(3);
+
+    const deliveries: Array<{ error: string; status: string | undefined; attempts: number | undefined; delays: number }> = [];
+    let lastRejection: unknown = null;
+    for (let delivery = 1; delivery <= maxAttempts; delivery++) {
+      lastRejection = await generator.process(job, 'worker-token').then(() => null, (error: unknown) => error);
+      const row = await reload();
+      deliveries.push({ error: (lastRejection as Error).name, status: row?.status, attempts: row?.attempts, delays });
+    }
+
+    expect(deliveries).toEqual([
+      { error: 'DelayedError', status: 'queued', attempts: 1, delays: 1 },
+      { error: 'DelayedError', status: 'queued', attempts: 2, delays: 2 },
+      // The last attempt: the row is failed, nothing is delayed, and the
+      // provider error itself reaches BullMQ.
+      { error: 'ServerClassifiedProviderError', status: 'failed', attempts: 3, delays: 2 },
+    ]);
+    expect(lastRejection).toBe(rateLimit);
+    expect(provider.calls).toBe(3);
+    // BullMQ counted none of the delayed deliveries, so only the discard
+    // keeps it from delivering the job a fourth time.
+    expect(job.attemptsMade).toBe(0);
+    expect(await bullmqRetryDecision(job, lastRejection)).toEqual([false, 0]);
+  });
+
   it('does not delay a job whose error is not retried', async () => {
     const quota = new ServerClassifiedProviderError('Gemini quota exhausted (status 429)', {
       kind: 'quota_exhausted',
