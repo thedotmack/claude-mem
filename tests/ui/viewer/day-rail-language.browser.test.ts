@@ -81,5 +81,14 @@ type Mark = { label: string; more: string | null; name: string | null };
       { label: deuxieme, more: '+1', name: `${deuxieme} et 1 autre jour` },
       { label: quatrieme, more: '+2', name: `${quatrieme} et 2 autres jours` },
     ]);
+
+    await page.evaluate(`window.__setLocale('pt-BR')`);
+    await page.settle();
+    const [primeiro, segundo, quarto] = await expectedLabels('pt-BR');
+    expect(await readRail()).toEqual([
+      { label: primeiro, more: null, name: null },
+      { label: segundo, more: '+1', name: `${segundo} e mais 1 dia` },
+      { label: quarto, more: '+2', name: `${quarto} e mais 2 dias` },
+    ]);
   } finally { page?.close(); await chrome?.close(); server.stop(true); }
 }, 60_000);
