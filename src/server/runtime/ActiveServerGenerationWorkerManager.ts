@@ -67,9 +67,9 @@ export class ActiveServerGenerationWorkerManager implements ServerGenerationWork
    */
   start(): void {
     if (this.started) return;
-    const dispatcher = async (job: Job<ServerGenerationJobPayload>) => {
+    const dispatcher = async (job: Job<ServerGenerationJobPayload>, token?: string) => {
       try {
-        return await this.generator.process(job);
+        return await this.generator.process(job, token);
       } catch (error) {
         logger.warn('SYSTEM', 'observation generator failed', {
           jobId: job.id,

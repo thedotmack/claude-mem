@@ -130,9 +130,14 @@ describe('ProviderObservationGenerator', () => {
       provider: new StubProvider(providerError),
     });
     const job = makeBullmqJob();
-    const rejection = await generator.process(job).then(() => null, (error: unknown) => error);
+    // The job has no Redis behind it: record the delay it is asked for.
+    const delayedBy: Array<{ ms: number; token: string | undefined }> = [];
+    job.moveToDelayed = async (timestamp: number, token?: string) => {
+      delayedBy.push({ ms: timestamp - Date.now(), token });
+    };
+    const rejection = await generator.process(job, 'worker-token').then(() => null, (error: unknown) => error);
     const reloaded = await storage.observationGenerationJobs.getByIdForScope({ id: jobId, projectId, teamId });
-    return { rejection, status: reloaded?.status, retry: await bullmqRetryDecision(job, rejection) };
+    return { rejection, status: reloaded?.status, retry: await bullmqRetryDecision(job, rejection), delayedBy };
   }
 
   it('keeps BullMQ from redelivering a job whose provider error left the row failed', async () => {
@@ -159,6 +164,55 @@ describe('ProviderObservationGenerator', () => {
     expect(result.rejection).toBe(rateLimit);
     expect(result.status).toBe('queued');
     expect(result.retry).toEqual([true, 5000]);
+    expect(result.delayedBy).toEqual([]);
+  });
+
+  // Gemini's free tier answers a per-minute 429 with RetryInfo.retryDelay. The
+  // BullMQ backoff (5s, then 10s) spends all three attempts inside that window.
+  it('delays a rate-limited job by the wait the provider asked for', async () => {
+    const rateLimit = new ServerClassifiedProviderError('Gemini rate limit (429)', {
+      kind: 'rate_limit',
+      cause: null,
+      retryAfterMs: 34_000,
+    });
+    const result = await failWith(rateLimit);
+
+    expect(result.status).toBe('queued');
+    expect(result.delayedBy.length).toBe(1);
+    expect(result.delayedBy[0]!.token).toBe('worker-token');
+    expect(result.delayedBy[0]!.ms).toBeGreaterThan(33_000);
+    expect(result.delayedBy[0]!.ms).toBeLessThanOrEqual(34_000);
+    // BullMQ leaves a job alone when its processor throws a DelayedError.
+    expect((result.rejection as Error).name).toBe('DelayedError');
+    expect((result.rejection as Error).message).toContain('Gemini rate limit (429)');
+  });
+
+  it('caps the wait it takes from a rate limit', async () => {
+    const rateLimit = new ServerClassifiedProviderError('openrouter rate limit (429)', {
+      kind: 'rate_limit',
+      cause: null,
+      retryAfterMs: 3_600_000,
+    });
+    const result = await failWith(rateLimit);
+
+    expect(result.status).toBe('queued');
+    expect(result.delayedBy.length).toBe(1);
+    expect(result.delayedBy[0]!.ms).toBeGreaterThan(59_000);
+    expect(result.delayedBy[0]!.ms).toBeLessThanOrEqual(60_000);
+  });
+
+  it('does not delay a job whose error is not retried', async () => {
+    const quota = new ServerClassifiedProviderError('Gemini quota exhausted (status 429)', {
+      kind: 'quota_exhausted',
+      cause: null,
+      retryAfterMs: 11_000,
+    });
+    const result = await failWith(quota);
+
+    expect(result.rejection).toBe(quota);
+    expect(result.status).toBe('failed');
+    expect(result.delayedBy).toEqual([]);
+    expect(result.retry).toEqual([false, 0]);
   });
 
   it('fails fast with an UnrecoverableError when provider returns an empty response', async () => {
