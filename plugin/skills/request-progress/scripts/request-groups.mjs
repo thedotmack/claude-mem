@@ -855,6 +855,15 @@ ${err.stack ?? ""}
   }
 });
 
+// src/shared/api-agent-limits.ts
+var DEFAULT_API_AGENT_LIMITS;
+var init_api_agent_limits = __esm({
+  "src/shared/api-agent-limits.ts"() {
+    "use strict";
+    DEFAULT_API_AGENT_LIMITS = { timeoutMs: 6e5, maxOutputTokens: 16e3 };
+  }
+});
+
 // src/shared/openrouter-base-url.ts
 function isHttpUrl(value) {
   try {
@@ -968,6 +977,7 @@ var init_SettingsDefaultsManager = __esm({
   "src/shared/SettingsDefaultsManager.ts"() {
     "use strict";
     init_hook_constants();
+    init_api_agent_limits();
     init_atomic_json();
     init_openrouter_base_url();
     init_settings_document();
@@ -1123,6 +1133,7 @@ var init_SettingsDefaultsManager = __esm({
         // OpenAI-compatible base URL, e.g. https://integrate.api.nvidia.com/v1. Overrides the preset's base URL when set.
         CLAUDE_MEM_OPENAI_COMPAT_MODEL: "",
         // Model id passed verbatim. Empty = the preset's default model.
+        CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT: "",
         CLAUDE_MEM_OPENAI_COMPAT_REASONING: "",
         // off | on. Empty = off: every openai-compatible request sends reasoning:{enabled:false}. "on" leaves reasoning to the endpoint.
         CLAUDE_MEM_OPENAI_COMPAT_OBSERVATION_BATCH_SIZE: "1",
@@ -1378,6 +1389,8 @@ var init_SettingsDefaultsManager = __esm({
         // #5535 — model for every My Work refresh step on OpenCode ('provider/model'); empty uses OpenCode's configured default
         CLAUDE_MEM_WORK_VIEW_API_MODEL: "",
         // Model for every My Work refresh step on the selected API provider; empty keeps the provider's configured model
+        CLAUDE_MEM_WORK_VIEW_API_TIMEOUT_MS: String(DEFAULT_API_AGENT_LIMITS.timeoutMs),
+        CLAUDE_MEM_WORK_VIEW_MAX_OUTPUT_TOKENS: String(DEFAULT_API_AGENT_LIMITS.maxOutputTokens),
         CLAUDE_MEM_CORPUS_AGENT: "",
         // Which agent answers knowledge-corpus prime/query/reprime: '' uses the Claude Agent SDK (the Claude subscription); 'api' answers over chat completions on the selected openrouter/openai-compatible provider and spends that provider's credit
         CLAUDE_MEM_API_AGENT_EXTRA_BODY: "",
