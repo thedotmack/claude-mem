@@ -79,6 +79,15 @@ export async function assertSessionOwnership(
   }
 }
 
+// Postgres rejects U+0000 in jsonb ("unsupported Unicode escape sequence") and
+// text. Tool output with binary bytes (a fetched PDF, `head` of an ELF) carries
+// NULs, and one such event fails with a 500 the hook spool then replays forever.
+// Strip them from string values; the surrounding content is kept.
+export function toJsonbParam(value: unknown): string {
+  return JSON.stringify(value, (_key, v) =>
+    typeof v === 'string' && v.includes('\u0000') ? v.replaceAll('\u0000', '') : v);
+}
+
 export function canonicalJson(value: unknown): string {
   return JSON.stringify(sortJson(value));
 }
