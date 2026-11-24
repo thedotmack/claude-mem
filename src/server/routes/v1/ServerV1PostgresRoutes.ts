@@ -173,6 +173,15 @@ function responseWaitSignal(res: Response): { signal: AbortSignal; dispose: () =
   };
 }
 
+// SQLSTATE class 22 (data exception: bad encoding, value out of range, invalid
+// text representation...) means the row can never be stored as sent. Answer 4xx
+// so the hook spool quarantines it, instead of a 500 it replays on every hook
+// for the whole retry window.
+export function isPostgresDataException(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === 'string' && code.startsWith('22');
+}
+
 export class ServerV1PostgresRoutes implements RouteHandler {
   private readonly ingestEvents: IngestEventsService;
   private readonly endSession: EndSessionService;
@@ -1670,6 +1679,11 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       || message.includes('agent_event source_id must belong')
     ) {
       res.status(403).json({ error: 'Forbidden', message });
+      return;
+    }
+    if (isPostgresDataException(error)) {
+      logger.warn('SYSTEM', `${action} rejected: invalid data`, { error: message, code: (error as { code: string }).code });
+      res.status(400).json({ error: 'InvalidData', message });
       return;
     }
     logger.error('SYSTEM', `${action} failed`, { error: message });

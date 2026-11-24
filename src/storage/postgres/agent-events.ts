@@ -9,6 +9,7 @@ import {
   newId,
   queryOne,
   toEpoch,
+  stripNul,
   toJsonObject
 } from './utils.js';
 import { normalizePlatformSourceOrNull } from '../../shared/platform-source.js';
@@ -103,8 +104,8 @@ export class PostgresAgentEventsRepository {
         // <private> sections are removed and opt-in secret redaction (#2616)
         // applied to the raw event body, at the one write every ingest path
         // goes through, so a client that did not strip still stores none.
-        JSON.stringify(redactJsonStrings(stripMemoryTagsFromJsonStrings(input.payload ?? {}))),
-        JSON.stringify(redactJsonStrings(stripMemoryTagsFromJsonStrings(input.metadata ?? {}))),
+        JSON.stringify(redactJsonStrings(stripMemoryTagsFromJsonStrings(stripNul(input.payload ?? {})))),
+        JSON.stringify(redactJsonStrings(stripMemoryTagsFromJsonStrings(stripNul(input.metadata ?? {})))),
         new Date(input.occurredAt)
       ]
     );
