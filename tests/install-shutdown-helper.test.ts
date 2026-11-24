@@ -295,6 +295,33 @@ function fakeStop(result: ShutdownResult | Error) {
   return { stop, calls };
 }
 
+function sequentialFakeStop(results: Array<ShutdownResult | Error>) {
+  const calls: Array<number | string> = [];
+  const queue = [...results];
+  const stop = async (port: number | string): Promise<ShutdownResult> => {
+    calls.push(port);
+    const next = queue.length > 1 ? queue.shift()! : queue[0];
+    if (next instanceof Error) throw next;
+    return next;
+  };
+  return { stop, calls };
+}
+
+function spyOnSetTimeout() {
+  const originalSetTimeout = globalThis.setTimeout;
+  const delays: Array<number | undefined> = [];
+  globalThis.setTimeout = ((fn: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => {
+    delays.push(ms);
+    return originalSetTimeout(fn, ms, ...args);
+  }) as unknown as typeof setTimeout;
+  return {
+    delays,
+    restore: () => {
+      globalThis.setTimeout = originalSetTimeout;
+    },
+  };
+}
+
 describe('installer worker autostart — an update never ends with no worker', () => {
   it('starts the new worker after a non-interactive update, which already stopped the old one', () => {
     expect(shouldSkipWorkerAutostart({ interactive: false, runtime: 'worker', alreadyInstalled: true })).toBe(false);
@@ -454,5 +481,159 @@ describe('uninstall reaction to the worker stop (shares the helper)', () => {
       level: 'warn',
       message: 'Worker service stopped, but another claude-mem worker (PID 5151) took its port again; continuing uninstall cleanup.',
     });
+  });
+});
+
+describe('installer pre-overwrite stop — bounded retry on verified live worker', () => {
+  it('retries once when a verified worker refuses to stop on the first attempt and succeeds on the second', async () => {
+    const { stop, calls } = sequentialFakeStop([
+      { workerWasRunning: true, stopped: false, blocker: { kind: 'worker-still-running', pid: 4242 } },
+      { workerWasRunning: true, stopped: true },
+    ]);
+    const summary = createInstallSummary();
+
+    await expect(
+      requireWorkerStopped(PORT, 'pre-overwrite', summary, {
+        stopWorker: stop,
+        shutdownRetryDelayMs: 1,
+        readOwnedWorker: () => null,
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(calls).toHaveLength(2);
+    expect(summary.warnings).toEqual([]);
+    expect(summary.failedIDEs).toEqual([]);
+  });
+
+  it('aborts if the retry reports stopped (listener closed) while the original verified worker PID is still alive', async () => {
+    const { stop, calls } = sequentialFakeStop([
+      { workerWasRunning: true, stopped: false, blocker: { kind: 'worker-still-running', pid: 4242 } },
+      { workerWasRunning: false, stopped: true },
+    ]);
+
+    await expect(
+      requireWorkerStopped(PORT, 'pre-overwrite', createInstallSummary(), {
+        stopWorker: stop,
+        shutdownRetryDelayMs: 1,
+        readOwnedWorker: () => ownedWorker({ pid: 4242 }),
+      }),
+    ).rejects.toBeInstanceOf(InstallAbortError);
+
+    expect(calls).toHaveLength(2);
+  });
+
+  it('aborts after two failed stop attempts for a verified live worker', async () => {
+    const { stop, calls } = sequentialFakeStop([
+      { workerWasRunning: true, stopped: false, blocker: { kind: 'worker-still-running', pid: 4242 } },
+      { workerWasRunning: true, stopped: false, blocker: { kind: 'worker-still-running', pid: 4242 } },
+    ]);
+
+    await expect(
+      requireWorkerStopped(PORT, 'pre-overwrite', createInstallSummary(), {
+        stopWorker: stop,
+        shutdownRetryDelayMs: 1,
+        readOwnedWorker: () => ownedWorker(),
+      }),
+    ).rejects.toBeInstanceOf(InstallAbortError);
+
+    expect(calls).toHaveLength(2);
+  });
+
+  it('aborts immediately with no retry and no added delay for a health-only worker (pid: null)', async () => {
+    const { stop, calls } = sequentialFakeStop([
+      { workerWasRunning: true, stopped: false, blocker: { kind: 'worker-still-running', pid: null } },
+      { workerWasRunning: true, stopped: true },
+    ]);
+    const timeoutSpy = spyOnSetTimeout();
+    try {
+      await expect(
+        requireWorkerStopped(PORT, 'pre-overwrite', createInstallSummary(), {
+          stopWorker: stop,
+          shutdownRetryDelayMs: 1,
+          readOwnedWorker: () => ownedWorker(),
+        }),
+      ).rejects.toBeInstanceOf(InstallAbortError);
+
+      expect(calls).toHaveLength(1);
+      expect(timeoutSpy.delays).toEqual([]);
+    } finally {
+      timeoutSpy.restore();
+    }
+  });
+
+  it('does not retry or delay on port-rebound, port-held-by-other-process, or no running worker', async () => {
+    const cases: ShutdownResult[] = [
+      { workerWasRunning: true, stopped: false, blocker: { kind: 'port-rebound', ownerPid: null } },
+      { workerWasRunning: false, stopped: false, blocker: { kind: 'port-held-by-other-process' } },
+      { workerWasRunning: false, stopped: true },
+    ];
+
+    for (const result of cases) {
+      const { stop, calls } = sequentialFakeStop([result, { workerWasRunning: true, stopped: true }]);
+      const timeoutSpy = spyOnSetTimeout();
+      try {
+        await expect(
+          requireWorkerStopped(PORT, 'pre-overwrite', createInstallSummary(), {
+            stopWorker: stop,
+            shutdownRetryDelayMs: 1,
+            readOwnedWorker: () => ownedWorker(),
+          }),
+        ).resolves.toBeUndefined();
+
+        expect(calls).toHaveLength(1);
+        expect(timeoutSpy.delays).toEqual([]);
+      } finally {
+        timeoutSpy.restore();
+      }
+    }
+  });
+
+  it('aborts after one call with no added delay when stopWorker throws and a verified worker owns the port', async () => {
+    const { stop, calls } = sequentialFakeStop([new Error('probe exploded')]);
+    const timeoutSpy = spyOnSetTimeout();
+    try {
+      await expect(
+        requireWorkerStopped(PORT, 'pre-overwrite', createInstallSummary(), {
+          stopWorker: stop,
+          shutdownRetryDelayMs: 1,
+          readOwnedWorker: () => ownedWorker(),
+        }),
+      ).rejects.toBeInstanceOf(InstallAbortError);
+
+      expect(calls).toHaveLength(1);
+      expect(timeoutSpy.delays).toEqual([]);
+    } finally {
+      timeoutSpy.restore();
+    }
+  });
+
+  it('orders stop, update example, and start in error.remediation after two stuck attempts', async () => {
+    const { stop } = sequentialFakeStop([
+      { workerWasRunning: true, stopped: false, blocker: { kind: 'worker-still-running', pid: 4242 } },
+      { workerWasRunning: true, stopped: false, blocker: { kind: 'worker-still-running', pid: 4242 } },
+    ]);
+
+    const error = await requireWorkerStopped(PORT, 'pre-overwrite', createInstallSummary(), {
+      stopWorker: stop,
+      shutdownRetryDelayMs: 1,
+      readOwnedWorker: () => ownedWorker(),
+    }).catch((e) => e);
+
+    expect(error).toBeInstanceOf(InstallAbortError);
+    const remediation = (error as Error & { remediation: string }).remediation;
+    const ordered = ['npx claude-mem stop', 'npx claude-mem update', 'npx claude-mem start']
+      .map((command) => remediation.indexOf(command));
+    expect(ordered.every((index) => index >= 0)).toBe(true);
+    expect(ordered).toEqual([...ordered].sort((a, b) => a - b));
+  });
+
+  it('orders stop, update example, and start in workerShutdownFailure for both worker-still-running sub-branches', () => {
+    for (const pid of [4242, null] as const) {
+      const failure = workerShutdownFailure({ kind: 'worker-still-running', pid }, PORT);
+      const ordered = ['npx claude-mem stop', 'npx claude-mem update', 'npx claude-mem start']
+        .map((command) => failure.remediation.indexOf(command));
+      expect(ordered.every((index) => index >= 0)).toBe(true);
+      expect(ordered).toEqual([...ordered].sort((a, b) => a - b));
+    }
   });
 });

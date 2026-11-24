@@ -2774,7 +2774,7 @@ export function workerShutdownFailure(
         return {
           severity: ErrorSeverity.ABORT,
           cause: 'The running claude-mem worker accepted the shutdown request but was still serving after 10 seconds.',
-          remediation: 'Run `npx claude-mem stop`, verify it exits, then run `npx claude-mem install` again.',
+          remediation: 'Run `npx claude-mem stop`, verify it exits, rerun the command you were running (`npx claude-mem update` for an update), then run `npx claude-mem start` if no worker answers.',
         };
       }
       // The PID was verified as ours (PID file plus start token) at the
@@ -2783,7 +2783,7 @@ export function workerShutdownFailure(
       return {
         severity: ErrorSeverity.ABORT,
         cause: `The claude-mem worker (PID ${blocker.pid}) did not stop within 10 seconds.`,
-        remediation: `Run \`npx claude-mem stop\`, or end PID ${blocker.pid} (\`${killCommand}\`), then run \`npx claude-mem install\` again.`,
+        remediation: `Run \`npx claude-mem stop\`, or end PID ${blocker.pid} (\`${killCommand}\`), rerun the command you were running (\`npx claude-mem update\` for an update), then run \`npx claude-mem start\` if no worker answers.`,
       };
     }
   }
@@ -2796,6 +2796,8 @@ export interface WorkerStopDeps {
   readOwnedWorker?: () => PidInfo | null;
   /** How long to wait for the spawn lock; defaults to the lock's staleness window. */
   spawnLockWaitMs?: number;
+  /** Delay before retrying a stuck verified worker stop once; defaults to 250 ms. */
+  shutdownRetryDelayMs?: number;
 }
 
 /**
@@ -2885,8 +2887,26 @@ export async function requireWorkerStopped(
     : 'Confirming the old worker is stopped before provider cutover…';
   spinner?.start(action);
 
+  const stopWithOneRetry = async () => {
+    const first = await stopWorker(port, 10000);
+    if (!first.stopped && first.blocker.kind === 'worker-still-running' && first.blocker.pid !== null) {
+      await new Promise((resolve) => setTimeout(resolve, deps.shutdownRetryDelayMs ?? 250));
+      const second = await stopWorker(port, 10000);
+      if (second.stopped) {
+        // A slow worker can close its HTTP listener before finishing database/session teardown.
+        // Confirm the original verified owner has actually exited before allowing overwrite.
+        const owner = readOwnedWorkerOnPort(port, deps.readOwnedWorker ?? readOwnedWorkerPidInfo);
+        if (owner && owner.pid === first.blocker.pid) {
+          return first;
+        }
+      }
+      return second;
+    }
+    return first;
+  };
+
   try {
-    const result = await stopWorker(port, 10000);
+    const result = await stopWithOneRetry();
     if (!result.stopped) {
       const failure = workerShutdownFailure(result.blocker, port);
       if (failure.severity === ErrorSeverity.ABORT) {
