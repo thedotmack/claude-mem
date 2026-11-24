@@ -1,3 +1,4 @@
+import { syncablePromptSql } from '../prompt-import/transcript-origin.mjs';
 import type { Database } from 'bun:sqlite';
 import type { Worker } from 'node:worker_threads';
 import type { ContentKind } from './CanonicalContent.js';
@@ -61,6 +62,7 @@ export function readSyncQueueInventory(db: Database, flags: SyncQueueFlags): Syn
   // A read transaction makes native/frozen deduplication consistent while the uploader advances.
   const read = db.transaction(() => {
     const deviceSql = (db.prepare('SELECT quote(?) AS value').get(flags.deviceId) as { value: string }).value;
+    const hasPromptOrigin = Boolean(db.prepare("SELECT 1 FROM pragma_table_info('user_prompts') WHERE name = 'native_prompt_id'").get());
     for (const [kind, table] of Object.entries(TABLES) as Array<[ContentKind, string]>) {
       const scope = nativeScope(kind);
       const nativeAlias = kind === 'prompt' ? 'up' : table;
@@ -75,6 +77,7 @@ export function readSyncQueueInventory(db: Database, flags: SyncQueueFlags): Syn
           COALESCE(SUM(${shared}), 0) AS shared, COALESCE(SUM(${nativeHeld}), 0) AS mutationHeld,
           MIN(${nativeAlias}.created_at_epoch) AS oldest
         FROM ${nativeFrom} WHERE ${nativeAlias}.synced_at IS NULL AND ${nativeAlias}.origin_device_id IS NULL
+          ${kind === 'prompt' && hasPromptOrigin ? `AND ${syncablePromptSql('up.native_prompt_id')}` : ''}
           AND (${scope.localId}, ${scope.rev}) NOT IN
             (SELECT origin_local_id, entity_rev FROM sync_content_outbox WHERE kind = ?)
       `).get(kind) as Aggregate;
@@ -94,6 +97,8 @@ export function readSyncQueueInventory(db: Database, flags: SyncQueueFlags): Syn
           MIN(CASE WHEN ${frozenAllowed} THEN o.created_at_epoch END) AS oldestEligible,
           MIN(CASE WHEN ${frozenHeld} THEN o.created_at_epoch END) AS oldestMutationHeld
         FROM sync_content_outbox o WHERE o.kind = ?
+          ${kind === 'prompt' && hasPromptOrigin ? `AND (o.deleted = 1 OR EXISTS (SELECT 1 FROM user_prompts p
+            WHERE p.id = o.origin_local_id AND p.origin_device_id IS NULL AND ${syncablePromptSql('p.native_prompt_id')}))` : ''}
       `).get(kind) as Aggregate;
       const deleted = db.prepare(`
         SELECT COUNT(*) AS pending, COALESCE(SUM(${frozenAllowed}), 0) AS eligible,

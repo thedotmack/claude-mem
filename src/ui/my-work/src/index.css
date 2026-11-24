@@ -661,3 +661,8 @@
   .obs-media-gallerynav.is-next { right: 8px; }
   .obs-media-galleryhint { display: none; }
 }
+
+/* Hide the page and every portaled drawer while a restored tab verifies its signed-in account. */
+:root[data-work-session-checking] body > :not([data-work-session-status]) {
+  display: none !important;
+}

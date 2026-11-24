@@ -1224,7 +1224,7 @@ export class WorkerService implements WorkerRef {
         // Hook rows an agent wrote are kept out of goals, work and rules extraction.
         setupScan: new SetupScan({
           getStore: () => this.dbManager.getSessionStore(),
-          // Hosted setup does not probe or wait for an agent login.
+          // The refresh runner checks the configured agent when the scan has work to organize.
           saveAgentWrittenPromptIds: promptIds => writeJsonAtomic(path.join(DATA_DIR, 'work-view', AGENT_WRITTEN_PROMPTS_FILE), { promptIds, updatedAt: new Date().toISOString() }),
         }),
         // Finish Setup's history upload to CMEM Pro, with the setup token checkout saved.

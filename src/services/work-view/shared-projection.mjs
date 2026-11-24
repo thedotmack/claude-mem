@@ -1,8 +1,9 @@
 // Portable facts for My Work. Shared records carry stable origin/conversation
 // identities; SQLite row numbers and local file locations stay on their device.
-import { conversationKey, requestText } from './request-projection.mjs';
+import { conversationKey, copiesOpeningAsk, requestText } from './request-projection.mjs';
 import { productsFromToolUse, productsFromObservation, productsFromDeliverable, mergeProducts, safeWebUrl, localProductId, servableFile, bucketFileAvailable, copyCoversSource } from './work-product.mjs';
 import { createHumanCopyInput, humanCopyFingerprint, validateHumanCopy } from './human-copy.mjs';
+import { syncablePromptSql } from '../prompt-import/transcript-origin.mjs';
 import { isIP } from 'node:net';
 import { basename } from 'node:path';
 import { isSharedReviewValue } from './shared-review-value.mjs';
@@ -63,7 +64,7 @@ const forbiddenKeys = new Set(['__proto__', 'constructor', 'prototype', 'path', 
 const string = (value, max = 12000) => typeof value === 'string' && value.length <= max;
 const optional = (value, check) => value == null || check(value);
 const date = value => string(value, 40) && Number.isFinite(Date.parse(value));
-const epoch = value => typeof value === 'number' && Number.isFinite(value) && value >= 0;
+const epoch = value => typeof value === 'number' && value >= 0 && Number.isFinite(new Date(value).getTime());
 const list = (value, check, max = 512) => Array.isArray(value) && value.length <= max && value.every(check);
 const preferenceKinds = ['directive', 'correction', 'praise', 'frustration'];
 const quote = value => object(value) && string(value.quote, 4000) && optional(value.at, date);
@@ -173,6 +174,7 @@ function get(database, sql, args) {
 /** The identity's row component belongs to its origin, never the receiver. */
 export function stableEvidenceRef(database, kind, id, deviceId) {
   if (id == null) return null;
+  if (database.stableEvidenceRef) return database.stableEvidenceRef(kind, id);
   if (kind === 'session') {
     const row = get(database, 'SELECT platform_source, content_session_id FROM sdk_sessions WHERE id = ?', [id]);
     const key = conversationKey(row);
@@ -193,6 +195,7 @@ export function stableEvidenceRef(database, kind, id, deviceId) {
 
 export function resolveEvidenceRef(database, ref, deviceId) {
   if (!ref || typeof ref !== 'object') return null;
+  if (database.resolveEvidenceRef) return database.resolveEvidenceRef(ref);
   if (ref.kind === 'session') {
     let tuple;
     try { tuple = JSON.parse(ref.conversation); } catch { return null; }
@@ -302,6 +305,18 @@ function groupRecords(rows, keyOf) {
 export function buildSharedProjectionUpdates(database, { ledger, records = {}, view = {}, deviceId, copyEntries = {} } = {}) {
   if (!deviceId) return [];
   decorateSharedView(view, { database, deviceId, records });
+  const liveOpenings = new Map();
+  const liveOpening = key => {
+    if (!conversation(key)) return null;
+    if (!liveOpenings.has(key)) {
+      const [, platform, contentId] = JSON.parse(key);
+      const prompt = get(database, `SELECT p.prompt_text FROM sdk_sessions s JOIN user_prompts p ON p.session_db_id = s.id
+        WHERE s.platform_source = ? AND s.content_session_id = ? AND p.prompt_text = s.user_prompt
+          AND p.origin_device_id IS NULL AND ${syncablePromptSql('p.native_prompt_id')} LIMIT 1`, [platform, contentId]);
+      liveOpenings.set(key, requestText(prompt?.prompt_text));
+    }
+    return liveOpenings.get(key);
+  };
   const updates = [];
   const add = (kind, key, value) => updates.push({ kind, key, value });
   for (const [id, group] of Object.entries(ledger?.groups?.groups ?? {})) {
@@ -309,7 +324,17 @@ export function buildSharedProjectionUpdates(database, { ledger, records = {}, v
     const suggestions = Object.fromEntries(Object.entries(ledger.groups.suggestions ?? {}).filter(([, suggestion]) => suggestion.requestId === id)
       .map(([key, value]) => [key, pick(value, ['requestId', 'confidence', 'evidence', 'judge', 'at', 'status', 'resolvedAt'])]));
     const portableGroup = pick(group, ['title', 'anchor', 'projectRoot', 'rootNamed', 'product', 'links', 'decidedAt']);
-    if (group.anchorAsk) portableGroup.anchorAsk = pick(group.anchorAsk, ['text', 'source', 'sourceId', 'url', 'promptNumber', 'atEpoch']);
+    const ask = group.anchorAsk;
+    if (ask) {
+      let text = ask.source === 'session-summary-request' ? ask.text : null;
+      if (ask.source === 'user-prompt') {
+        const prompt = get(database, `SELECT prompt_text FROM user_prompts WHERE id = ? AND origin_device_id IS NULL
+          AND ${syncablePromptSql('native_prompt_id')}`, [ask.sourceId]);
+        text = requestText(prompt?.prompt_text);
+      } else if (ask.source === 'session-initial-request') text = liveOpening(group.anchor);
+      if (text && text === ask.text) portableGroup.anchorAsk = pick(ask, ['text', 'source', 'sourceId', 'url', 'promptNumber', 'atEpoch']);
+      else if (copiesOpeningAsk(portableGroup.title, ask.text)) portableGroup.title = 'Untitled request';
+    }
     add('group', id, portableWorkValue(database, { group: portableGroup, members, suggestions }, deviceId));
   }
   for (const [key, ignored] of Object.entries(ledger?.groups?.ignored ?? {})) add('ignored', key, portableWorkValue(database, ignored, deviceId));
@@ -390,7 +415,10 @@ export function buildSharedProjectionUpdates(database, { ledger, records = {}, v
     const sessionValue = Object.fromEntries(sessionFields.map(field => [field, clean(session[field])]));
     sessionValue.project = sharedProjectKey(sessionValue.project);
     const rejectedOpening = prompts.some(prompt => ledger?.agentWrittenPromptIds?.has(prompt.id) && (prompt.prompt_number === 1 || prompt.prompt_text === session.user_prompt));
-    sessionValue.user_prompt = rejectedOpening ? null : requestText(session.user_prompt, 1200);
+    // Older sessions also stored the imported opening as an untagged string.
+    // The raw prompt may have since been deleted. Only a live source proves
+    // this session copy eligible, independently of the bounded records read.
+    sessionValue.user_prompt = !rejectedOpening && session.user_prompt ? liveOpening(key) : null;
     if (typeof sessionValue.custom_title === 'string') sessionValue.custom_title = sessionValue.custom_title.slice(0, 120);
     add('provenance', key, { session: sessionValue, attributions, products, launches, activity });
   }
@@ -474,9 +502,11 @@ export function applySharedProjection(database, shared, { ledger = null, records
     else if (record.kind === 'provenance' && !record.deleted && value?.session) {
       const key = conversationKey(value.session);
       if (key !== record.key) continue;
+      // The transport supplies portable facts, never the receiver's session number.
+      const facts = pick(value.session, sessionFields);
       let session = merged.sessions.find(row => conversationKey(row) === key);
-      if (session) session = record.writer === deviceId ? { ...value.session, ...session } : { ...session, ...value.session };
-      else session = { ...value.session, id: `shared:${key}`, sharedOnly: true };
+      if (session) session = record.writer === deviceId ? { ...facts, ...session } : { ...session, ...facts };
+      else session = { ...facts, id: `shared:${key}`, sharedOnly: true };
       merged.sessions = merged.sessions.filter(row => conversationKey(row) !== key);
       merged.sessions.push(session);
       for (const attribution of value.attributions ?? []) {

@@ -49,7 +49,8 @@ export function readReviewResponse(status: number, body: unknown): ReviewRespons
     return { kind: 'saved', snapshot: body, ...(save ? { save } : {}) }
   }
   if (status === 409) {
-    const snapshot = (body as { snapshot?: unknown } | null)?.snapshot
+    const conflict = body as { overview?: unknown; snapshot?: unknown } | null
+    const snapshot = conflict?.overview ?? conflict?.snapshot
     return { kind: 'conflict', serverMessage: serverErrorText(body), ...(snapshot ? { snapshot } : {}) }
   }
   if (status === 503) return { kind: 'unavailable', serverMessage: serverErrorText(body) }

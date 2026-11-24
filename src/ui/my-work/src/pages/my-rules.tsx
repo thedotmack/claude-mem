@@ -29,7 +29,7 @@ import { SAMPLE_DEVICES, SAMPLE_RUNS, type SkillRun } from '@/data'
 import { type RuleChangeRecord, type RuleSaveOutcome, useStore, useWorkModel, useWorkspace } from '@/store'
 import { RULE_CHANGED_SINCE_EDIT } from '@/store/slices/rules-slice'
 import { RULE_TIERS, type OwnerRule, type RuleChange, type RuleQuote, type RuleRecord, type RuleRecordFact, type RuleScope, type RuleStatus, type RuleTier, type RulesLearning } from '@/data-rules'
-import { addedRuleFromSave, currentRuleDecisions, ruleUndoIsCurrent, type RuleDecision } from '@/live/rule-actions'
+import { addedRuleFromSave, currentRuleDecisions, ruleUndoIsCurrent, ruleVersion, type RuleDecision } from '@/live/rule-actions'
 import { currentIn, inShownOrder, keepShownOrder, stepFrom, upNextAfter } from '@/live/rule-queue'
 import { refreshLineState } from '@/live/refresh-line'
 import { recordedTime } from '@/live/to-work-model'
@@ -1228,7 +1228,7 @@ function LearningRun({ refresh }: { refresh: AutoRefresh | null }) {
 // ---------- Editor ----------
 
 /** `scopeId` is a loaded scope's id, or NEW_PROJECT / NEW_SITUATION with `newScopeName`. */
-interface Draft { id: string | null; scopeId: string; newScopeName: string; when: string; then: string; approving: boolean }
+interface Draft { id: string | null; scopeId: string; newScopeName: string; when: string; then: string; approving: boolean; expectedRuleVersion?: string | null }
 const NEW_SCOPE: Record<string, RuleTier> = { 'new:project': 'project', 'new:situation': 'situation' }
 
 function draftToRule(draft: Draft, scopes: RuleScope[]): NonNullable<RuleChange['rule']> {
@@ -1492,7 +1492,7 @@ export function MyRules() {
     saving,
     onToggle: (rule, on) => save({ action: on ? 'turn-on' : 'turn-off', ruleId: rule.id },
       (saved) => ({ change: { ...ruleReceipt(on ? 'Turned on {name}' : 'Turned off {name}', { name: ruleName(savedRule(saved, rule)) }), ruleId: rule.id, undo: { action: on ? 'turn-off' : 'turn-on', ruleId: rule.id } } })),
-    onEdit: (rule) => openDraft({ id: rule.id, scopeId: rule.scopeId, newScopeName: '', when: rule.when, then: rule.then, approving: false }),
+    onEdit: (rule) => openDraft({ id: rule.id, scopeId: rule.scopeId, newScopeName: '', when: rule.when, then: rule.then, approving: false, expectedRuleVersion: ruleVersion(rule) }),
     onJump: jump,
     onRestore: (rule) => void undoDecision(rule),
   }
@@ -1504,7 +1504,7 @@ export function MyRules() {
     try { rule = draftToRule(draft, ruleScopes) } catch (error) { setDraftError(error instanceof Error ? error.message : String(error)); return }
     const before = draft.id ? rules.find((entry) => entry.id === draft.id) : undefined
     const previousRule = before && { ...draftToRule({ ...draft, scopeId: before.scopeId, when: before.when, then: before.then }, ruleScopes) }
-    const change: RuleChange = draft.id ? { action: draft.approving ? 'approve' : 'edit', ruleId: draft.id, rule } : { action: 'add', rule }
+    const change: RuleChange = draft.id ? { action: draft.approving ? 'approve' : 'edit', ruleId: draft.id, rule, expectedRuleVersion: draft.expectedRuleVersion } : { action: 'add', rule }
     const describe = (saved: RuleSaveResult): RuleSaveOutcome => {
       if (draft.id) {
         const named = saved.model.rules.find((entry) => entry.id === draft.id) ?? rule
@@ -1585,7 +1585,7 @@ export function MyRules() {
           <div className="min-w-0 space-y-8">
             <DecisionQueue suggestions={suggestions} decisions={decisions} lastDecidedId={lastDecidedId} saving={saving} pointer={pointer} review={reviewAsk} onPoint={setPointer}
               onDecide={decide} onUndo={undoDecision} onShow={(rule) => jump(rule.id)}
-              onEdit={(rule) => openDraft({ id: rule.id, scopeId: rule.scopeId, newScopeName: '', when: rule.when, then: rule.then, approving: true })} />
+              onEdit={(rule) => openDraft({ id: rule.id, scopeId: rule.scopeId, newScopeName: '', when: rule.when, then: rule.then, approving: true, expectedRuleVersion: ruleVersion(rule) })} />
             <RulesPageDescription className="sm:hidden" />
             {ruleScopes.map((scope) => (
               <ScopeSection key={scope.id} scope={scope} rules={rules.filter((rule) => rule.scopeId === scope.id)} counts={countsByScope.get(scope.id)!}

@@ -122,6 +122,45 @@ test('canonical shared records preserve grouping, progress, attribution and safe
   expect(worker.status().queued).toBe(0);
 });
 
+test('setup transcript openings stay local when groups and session provenance are published', () => {
+  const a = store();
+  const secret = 'Plan the historic work in my private transcript';
+  a.importTranscriptUserPrompt({ platformSource: 'codex', contentSessionId: 'private-history',
+    project: 'repo', nativePromptId: 'turn-1', promptText: secret, createdAtEpoch: NOW,
+    hookMatchWindowMs: 30_000, claimedHookRowIds: new Set() });
+  expect(a.db.query('SELECT user_prompt FROM sdk_sessions').get()).toEqual({ user_prompt: null });
+  // An upgraded installation already has this duplicate on the session.
+  a.db.query('UPDATE sdk_sessions SET user_prompt = ?').run(secret);
+  const session = a.db.query('SELECT * FROM sdk_sessions').get() as any;
+  const prompt = a.db.query('SELECT * FROM user_prompts').get() as any;
+  const liveId = a.saveUserPrompt(session.content_session_id, 2, 'Ship the live follow-up', session.id);
+  const key = conversationKey(session);
+  const records = { sessions: [session], prompts: [prompt, a.db.query('SELECT * FROM user_prompts WHERE id=?').get(liveId)] };
+  const id = groupIdFor(key);
+  const project = (anchorAsk: any, title = 'Derived plan') => buildSharedProjectionUpdates(a.db, {
+    deviceId: 'self', records, view: {}, ledger: { groups: { groups: { [id]: {
+      title, anchor: key, anchorAsk } }, conversations: { [key]: id } } },
+  });
+  for (const [source, sourceId] of [['session-initial-request', session.id], ['user-prompt', prompt.id]]) {
+    const updates = project({ source, sourceId, text: secret });
+    expect(JSON.stringify(updates)).not.toContain(secret);
+    expect(updates.find(update => update.kind === 'group')!.value.group.title).toBe('Derived plan');
+    expect(updates.find(update => update.kind === 'provenance')!.value.session.user_prompt).toBeNull();
+  }
+  expect(JSON.stringify(project({ text: secret }))).not.toContain(secret);
+  const copiedTitle = project({ source: 'user-prompt', sourceId: prompt.id, text: secret }, secret);
+  expect(copiedTitle.find(update => update.kind === 'group')!.value.group.title).toBe('Untitled request');
+  a.db.query('DELETE FROM user_prompts WHERE id = ?').run(prompt.id);
+  expect(JSON.stringify(project({ source: 'user-prompt', sourceId: prompt.id, text: secret }))).not.toContain(secret);
+  expect(JSON.stringify(project({ source: 'session-initial-request', sourceId: session.id, text: secret }))).not.toContain(secret);
+  const updates = project({ source: 'user-prompt', sourceId: liveId, text: 'Ship the live follow-up' });
+  expect(updates.find(update => update.kind === 'group')!.value.group.anchorAsk.text).toBe('Ship the live follow-up');
+  a.db.query('UPDATE sdk_sessions SET user_prompt = ?').run('Ship the live follow-up');
+  session.user_prompt = 'Ship the live follow-up';
+  const live = project({ source: 'session-initial-request', sourceId: session.id, text: session.user_prompt });
+  expect(live.find(update => update.kind === 'provenance')!.value.session.user_prompt).toBe(session.user_prompt);
+});
+
 test('portable typed evidence drops local locations and resolves only the receiving origin', () => {
   const a = store();
   const id = a.appendWorkStateEntry({ project: 'repo', listName: 'work', fields: { task: 'Review' } });

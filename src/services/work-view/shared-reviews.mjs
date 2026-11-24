@@ -29,6 +29,7 @@ const validator = (kind, key, value, deleted, writer) => kind === SHARED_REVIEW_
   ? isSharedReviewValue(kind, key, value, deleted) : isSharedProjectionValue(kind, key, value, deleted, writer);
 
 function sessionIdentity(database, id) {
+  if (database.stableEvidenceRef) return database.stableEvidenceRef('session', id)?.conversation ?? null;
   try {
     const row = database.prepare('SELECT platform_source, content_session_id FROM sdk_sessions WHERE id = ?').get(id);
     return row?.platform_source && row?.content_session_id ? JSON.stringify(['conversation', row.platform_source, row.content_session_id]) : null;

@@ -19,6 +19,7 @@ export const SETUP_CLOUD_SYNC_OFFERS = ['cloud_sync_monthly', 'cloud_sync_annual
 export type SetupCloudSyncOffer = (typeof SETUP_CLOUD_SYNC_OFFERS)[number];
 /** Older servers must not silently substitute their bundled Pro checkout. */
 export const CLOUD_SYNC_SETUP_CONTRACT = 1 as const;
+export const PRIVATE_WORK_VIEW_URL = 'https://cmem.ai/work';
 export const DEFAULT_CLOUD_SYNC_OFFER: SetupCloudSyncOffer = 'cloud_sync_monthly';
 export const CLOUD_SYNC_OFFER_TERMS: Record<SetupCloudSyncOffer, { interval: 'month' | 'year'; cents: number; trialDays: number }> = {
   cloud_sync_monthly: { interval: 'month', cents: 1200, trialDays: 30 },
@@ -55,12 +56,13 @@ export type SetupStatus = 'pending' | 'complete';
  *                                       │                    └→ done        (the person keeps the prompts local)
  *                                       ├→ uploading → done                 (no prompts, so nothing to ask about)
  *                                       └→ done                             (no extractor is set)
- *   reading, checking, saving, awaiting-consent, uploading → failed
+ *   saving → organizing → done, or awaiting-consent if the owner's inference cannot finish
+ *   reading, checking, saving, organizing, awaiting-consent, uploading → failed
  *   done, failed → reading                                                  (the next start)
  *
  * `checking` is entered only when the transcript scan reports it.
  */
-export type SetupScanPhase = 'idle' | 'reading' | 'checking' | 'saving' | 'awaiting-consent' | 'uploading' | 'done' | 'failed';
+export type SetupScanPhase = 'idle' | 'reading' | 'checking' | 'saving' | 'organizing' | 'awaiting-consent' | 'uploading' | 'done' | 'failed';
 
 /**
  * The history upload (services/setup/history-import.ts, the only writer):

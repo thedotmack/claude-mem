@@ -180,7 +180,9 @@ function launchRequest(launch) {
   return text ? { text, source: 'agent-launch', sourceId: launch.shared ? null : launch.toolUseId, url: launch.shared ? null : `/api/work-view/evidence/tool-use/${launch.toolUseId}` } : null;
 }
 
-export function buildAgentView(state, records, { now = Date.now(), workLimit = 240, activityLimit = 160, recentMs = 15 * 60 * 1000, titleCache = {}, ledger = null, onProductFile = null, workStateLabels = null } = {}) {
+export const DEFAULT_RECENT_ACTIVITY_MS = 15 * 60 * 1000;
+
+export function buildAgentView(state, records, { now = Date.now(), workLimit = 240, activityLimit = 160, recentMs = DEFAULT_RECENT_ACTIVITY_MS, titleCache = {}, ledger = null, onProductFile = null, workStateLabels = null, localFiles = true, getProjectRoot } = {}) {
   const { calls = [], observations = [], summaries = [], sessions = [], prompts = [], agentLaunches = [], agentToolActivity = [] } = records;
   const launches = readAgentLaunches(agentLaunches);
   const lastToolEpochs = new Map(agentToolActivity.map((row) => [lifecycleKey(row.platform_source, row.content_session_id, row.agent_id), Number(row.last_epoch) || 0]));
@@ -452,7 +454,7 @@ export function buildAgentView(state, records, { now = Date.now(), workLimit = 2
     };
   }).sort((a, b) => String(b.presence.lastActivityAt ?? '').localeCompare(String(a.presence.lastActivityAt ?? '')));
   const recentActivity = activity.sort((a, b) => b.atEpoch - a.atEpoch).slice(0, activityLimit);
-  const requestProjection = buildHumanRequests({ agents, recentActivity }, records, { titleCache, ledger, onProductFile });
+  const requestProjection = buildHumanRequests({ agents, recentActivity }, records, { titleCache, ledger, onProductFile, localFiles, getProjectRoot });
   const { focusAreas, focusAreaIdByAnchor } = buildFocusAreas(state);
   return {
     version: 1, generatedAt: stamp(now), currentProject: state.currentProject, currentProjectScope: state.currentProjectScope,
@@ -535,6 +537,7 @@ export function buildOwnerGoalHistory(state) {
 
 export function readEvidence(database, kind, id) {
   if (!Number.isSafeInteger(id) || id < 1) return null;
+  if (database.readEvidence) return database.readEvidence(kind, id);
   const queries = {
     'work-state': 'SELECT id, project, list_name, fields, created_at_epoch FROM work_state_entries WHERE id = ?',
     observation: 'SELECT id, project, title, subtitle, narrative, created_at_epoch FROM observations WHERE id = ?',

@@ -135,7 +135,7 @@ function resolveApiAgentLimits(settings: SettingsDefaults): ApiAgentLimits {
  *   ('openrouter', 'openai-compatible', 'cmem') runs the first logged-in agent in detect order, and only that one.
  *   The API provider itself runs the refresh only when the owner sets `api`: it spends that provider's credit.
  * The worker builds a fresh task for every run, so a settings change applies to the next refresh. */
-export function resolveRefreshAgents(dataDir: string): RefreshAgentChoice {
+export function resolveRefreshAgents(dataDir: string, setup = false): RefreshAgentChoice {
   const settings = SettingsDefaultsManager.loadFromFile(join(dataDir, 'settings.json'), true, { readOnly: true });
   const provider = String(settings.CLAUDE_MEM_PROVIDER ?? '').trim();
   const providerAgent: TaskAgentId | undefined = provider === 'claude' ? 'claude-code'
@@ -154,6 +154,9 @@ export function resolveRefreshAgents(dataDir: string): RefreshAgentChoice {
       value: configuredAgent, accepted: WORK_VIEW_AGENT_CHOICES.filter(Boolean).join(', '),
     });
   }
+  // Initial setup prefers the configured CLI. If it is absent, an already signed-in CLI can do the
+  // work. Once a usable CLI starts, stay on its account. A specifically chosen Work View agent above wins.
+  if (setup) return { preferredAgent: providerAgent, stayOnFirstUsableAgent: true };
   if (providerAgent) return { allowedAgents: [providerAgent], preferredAgent: providerAgent, stayOnFirstUsableAgent: true };
   return { stayOnFirstUsableAgent: true };
 }
@@ -1005,7 +1008,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
     reason,
     steps,
     // The refresh runs on the agent the owner's settings name, and stays there (#5189, #5435).
-    ...resolveRefreshAgents(dataDir),
+    ...resolveRefreshAgents(dataDir, reason === 'setup-scan'),
     // The work-view folder holds every input file; the data dir above it holds .env and settings.json.
     cwd: ledgerDir,
     claudeCode: {

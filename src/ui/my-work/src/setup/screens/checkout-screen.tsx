@@ -39,6 +39,13 @@ const CHECKOUT_STATUS: Record<SetupCheckoutState, string | null> = {
   failed: null,
 }
 
+const TRIAL_STATUS: Record<SetupCheckoutState, string | null> = {
+  requested: 'Opening Cloud Sync…',
+  waiting: 'Waiting for this device to connect…',
+  paid: 'Cloud Sync connected.',
+  failed: null,
+}
+
 /**
  * The plan selection requests checkout. Keep the local tab available while the terminal
  * opens sign-in and Stripe. A completed pairing advances to usage or final setup.
@@ -59,14 +66,15 @@ export function CheckoutScreen({ checkout, asked, installerStopped, cloudSyncOff
 }) {
   const { t } = useI18n()
   const state: SetupCheckoutState | null = checkout?.state ?? (asked ? 'requested' : null)
-  const status = state && CHECKOUT_STATUS[state]
   const offer = CLOUD_SYNC_OFFER_TERMS[cloudSyncOffer]
+  const monthlyTrial = !legacyHosted && offer.trialDays > 0
+  const status = state && (monthlyTrial ? TRIAL_STATUS : CHECKOUT_STATUS)[state]
   const cloudPrice = offer.interval === 'year'
     ? interpolate(t('{amount} / year'), { amount: money(offer.cents) })
     : perMonth(offer.cents, t)
   return (
     <section aria-labelledby="checkout-title">
-      <PageHeading id="checkout-title" title={t('Checkout')} lead={t(legacyHosted ? 'CMEM Pro · Cloud Sync included' : 'Cloud Sync')} />
+      <PageHeading id="checkout-title" title={t(monthlyTrial ? 'Activate Cloud Sync' : 'Checkout')} lead={t(legacyHosted ? 'CMEM Pro · Cloud Sync included' : 'Cloud Sync')} />
       <div className="checkout-grid">
         <div className="panel is-memory checkout-receipt">
           {legacyHosted ? <>
@@ -92,17 +100,17 @@ export function CheckoutScreen({ checkout, asked, installerStopped, cloudSyncOff
           </Collapsible>
           </> : <>
             <dl className="receipt">
-              <div className="due"><dt>{t('Due today')}</dt><dd>{money(offer.trialDays ? 0 : offer.cents)}</dd></div>
-              <div><dt>{t(offer.trialDays ? 'Cloud Sync after 30 days' : 'Cloud Sync annual plan')}</dt><dd>{cloudPrice}</dd></div>
+              <div className="due"><dt>{t(monthlyTrial ? 'Due today for your first trial' : 'Due today')}</dt><dd>{money(offer.trialDays ? 0 : offer.cents)}</dd></div>
+              <div><dt>{t(offer.trialDays ? 'If you continue after 30 days' : 'Cloud Sync annual plan')}</dt><dd>{cloudPrice}</dd></div>
             </dl>
             <div className="checkout-notes">
-              <p>{t(offer.trialDays ? 'Card required. Cancel in your account before the trial ends to avoid the first charge.' : '$99 today. Renews yearly. No trial.')}</p>
+              <p>{t(offer.trialDays ? 'No card needed for your first trial. Add a card later if you want to continue.' : '$99 today. Renews yearly. No trial.')}</p>
             </div>
             <Collapsible className="checkout-terms">
               <CollapsibleFoldTrigger>{t('Billing details')}</CollapsibleFoldTrigger>
               <CollapsibleContent forceMount>
                 <ul>
-                  <li>{t('A card is required. Review the amount and renewal date in Stripe before confirming.')}</li>
+                  <li>{t(monthlyTrial ? 'Your first charge is due when the trial ends only if you choose to renew.' : 'A card is required. Review the amount and renewal date in Stripe before confirming.')}</li>
                   <li>{t('Manage or cancel Cloud Sync in your account.')}</li>
                 </ul>
               </CollapsibleContent>
@@ -110,18 +118,18 @@ export function CheckoutScreen({ checkout, asked, installerStopped, cloudSyncOff
           </>}
         </div>
         <div className="panel checkout-handoff">
-          <SecureCardArt />
-          <h2>{t('Secure checkout with Stripe')}</h2>
-          <p>{t('Finish checkout in the new tab, then connect this device. Setup continues here.')}</p>
+          {!monthlyTrial && <SecureCardArt />}
+          <h2>{t(monthlyTrial ? 'Connect your device' : 'Secure checkout with Stripe')}</h2>
+          <p>{t(monthlyTrial ? 'Confirm your plan in the new tab and connect this device. Setup continues here.' : 'Finish checkout in the new tab, then connect this device. Setup continues here.')}</p>
           {status && (state === 'paid' ? <p className="checkout-status" role="status">{t(status)}</p>
             : <p className="checkout-status" role="status"><Spinner className="checkout-spinner" />{t(status)}</p>)}
-          {checkout?.state === 'failed' && <SetupError title={t('Checkout didn’t finish.')} check={t('Open checkout again to try once more.')} detail={checkout.error} />}
+          {checkout?.state === 'failed' && <SetupError title={t(monthlyTrial ? 'Cloud Sync setup didn’t finish.' : 'Checkout didn’t finish.')} check={t(monthlyTrial ? 'Reopen Cloud Sync setup to try again.' : 'Open checkout again to try once more.')} detail={checkout.error} />}
         </div>
       </div>
       <SetupActions back={back}>
         {/* Paid: the way on. Otherwise "Open checkout", unless no installer is left to open it (the page's alert says how to restart). */}
         {state === 'paid' ? <SetupButton onClick={onContinue}>{t('Continue')} <ArrowRightIcon aria-hidden="true" /></SetupButton>
-          : !installerStopped && <SetupButton onClick={onOpen} disabled={state === 'requested'}>{state === 'requested' ? t('Opening checkout…') : state ? t('Open checkout again') : t('Open checkout')} <ArrowRightIcon aria-hidden="true" /></SetupButton>}
+          : !installerStopped && <SetupButton onClick={onOpen} disabled={state === 'requested'}>{state === 'requested' ? t(monthlyTrial ? 'Opening Cloud Sync…' : 'Opening checkout…') : state ? t(monthlyTrial ? 'Reopen Cloud Sync setup' : 'Open checkout again') : t(monthlyTrial ? 'Open Cloud Sync setup' : 'Open checkout')} <ArrowRightIcon aria-hidden="true" /></SetupButton>}
       </SetupActions>
     </section>
   )
