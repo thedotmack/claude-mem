@@ -79,13 +79,20 @@ export async function assertSessionOwnership(
   }
 }
 
-// Postgres rejects U+0000 in jsonb ("unsupported Unicode escape sequence") and
-// text. Tool output with binary bytes (a fetched PDF, `head` of an ELF) carries
-// NULs, and one such event fails with a 500 the hook spool then replays forever.
-// Strip them from string values; the surrounding content is kept.
-export function toJsonbParam(value: unknown): string {
-  return JSON.stringify(value, (_key, v) =>
-    typeof v === 'string' && v.includes('\u0000') ? v.replaceAll('\u0000', '') : v);
+// Postgres rejects U+0000 in jsonb ("unsupported Unicode escape sequence").
+// Tool output with binary bytes (a fetched PDF, `head` of an ELF) carries NULs,
+// and one such event fails the whole insert. Remove them from keys and string
+// values. Run this BEFORE tag stripping and redaction: removing NUL afterwards
+// could join `<priv\0ate>` or a split secret back together past the filters.
+export function stripNul(value: unknown): unknown {
+  if (typeof value === 'string') return value.replaceAll('\u0000', '');
+  if (Array.isArray(value)) return value.map(stripNul);
+  if (value !== null && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype) {
+    return Object.fromEntries(
+      Object.entries(value).map(([k, v]) => [k.replaceAll('\u0000', ''), stripNul(v)]),
+    );
+  }
+  return value;
 }
 
 export function canonicalJson(value: unknown): string {
