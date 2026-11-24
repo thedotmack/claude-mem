@@ -209,11 +209,14 @@ export function RevealScreen({ agents, reveal, extraction, uploadedAgents, recen
     && extraction?.state !== 'running' && extraction?.state !== 'failed'
   const hasDetails = !!(reveal.work?.length || reveal.rules?.length || (!reveal.focusAreas?.length && reveal.goals?.length) || reveal.requestReadErrorCount)
   const firstArea = reveal.focusAreas?.find(area => area.name.trim())?.name
+  const nextSessionCopy = freshInstall
+    ? t('With Cloud Sync, your next agent can pick up where you left off, even on another device.')
+    : t('Pick up your next session in another agent or on another device.')
   const continueRow = onStartTrial ? (
     <div className="reveal-trial">
       <p>{firstArea ? interpolate(t('Pick up {area} in another agent or on another device.'), { area: firstArea })
         : hasResults || promptCount > 0 ? t('Pick up this work in another agent or on another device.')
-        : t('With Cloud Sync, your next agent can pick up where you left off, even on another device.')}</p>
+        : nextSessionCopy}</p>
       <small>{t('$0 today. Then $12/month after 30 days. Card required.')}</small>
       <SetupActions back={back}>
         <SetupButton busy={busy} onClick={onStartTrial}>{t('Try Cloud Sync free for 30 days')} <ArrowRightIcon aria-hidden="true" /></SetupButton>
