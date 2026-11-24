@@ -119,6 +119,7 @@ describe('the API agent talks to the selected provider', () => {
     expect((error as Error).message).toMatch(/finish reason: length/);
     expect((error as Error).message).toMatch(/degenerated/);
     expect((error as Error).message).toMatch(/a larger limit will not help/);
+    expect((error as Error).message).toMatch(/raise CLAUDE_MEM_WORK_VIEW_MAX_OUTPUT_TOKENS/);
     expect((error as { rawAnswer?: unknown }).rawAnswer).toBe(partial);
     expect(calls.length).toBe(1);
   });
