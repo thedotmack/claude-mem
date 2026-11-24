@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [16.1.2] - 2026-11-24
+
 ### Installer improvements
 
 - On phones, **Set up my agents** stays within reach while you review the detected tools or expand the agent list.
