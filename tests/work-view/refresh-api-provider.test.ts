@@ -264,4 +264,29 @@ describe('the My Work refresh on an API provider', () => {
       expect(readFileSync(join(dir, 'failed-answers', saved[0]), 'utf8')).toBe(partial);
     });
   });
+
+  it('a review answer cut off at the token limit is kept in failed-answers/ and the failure names the file', async () => {
+    await withApiProvider('openrouter', async dir => {
+      writeFileSync(join(dir, 'settings.json'), JSON.stringify({ CLAUDE_MEM_PROVIDER: 'openrouter', CLAUDE_MEM_WORK_VIEW_AGENT: 'api' }));
+      const database = fixtureDatabase();
+      const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: 0, ungrouped: 1, goalsStale: false, unplaced: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, saveFocus: focusWriter(database).save });
+      // reviewBatch asks directly, outside askAndSave, so its cut-off answers need the same keeping:
+      // before the fix the partial review text was lost and the failure named no file.
+      const partial = '{"reviews": [{"groupId": "g1", "state": "in-progress", "summary": "Started revi';
+      const ask = async (prompt: string) => {
+        if (prompt.includes('Do only section 1')) return JSON.stringify({ groups: [{ title: 'Release cards', conversations: [key('a')] }] });
+        if (prompt.includes('Do only section 2')) {
+          throw Object.assign(new Error('the OpenAI-compatible endpoint stopped at the 16000-token answer limit (finish reason: length); the answer is incomplete.'), { rawAnswer: partial });
+        }
+        return JSON.stringify({ narrative: 'Started.', preferences: [] });
+      };
+      const error = await task.run(ask, 'api').then(() => null, (caught: unknown) => caught);
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toMatch(/^review \(raw answer: .+failed-answers.+review-api\.txt\): /);
+      expect((error as { answerRefused?: boolean }).answerRefused).toBe(true);
+      const saved = readdirSync(join(dir, 'failed-answers'));
+      expect(saved.length).toBe(1);
+      expect(readFileSync(join(dir, 'failed-answers', saved[0]), 'utf8')).toBe(partial);
+    });
+  });
 });

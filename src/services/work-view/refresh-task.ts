@@ -474,19 +474,23 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       const rule = languageRule();
       return timed(name, () => askAndSave(name, rule ? `${question}\n\n${rule}` : question, save, answerSchema));
     };
+    /** A failed answer kept for diagnosis, named by step and agent. Returns its path. Review batches run
+     * concurrently, so a name already taken in the same millisecond gets a numeric suffix instead of
+     * overwriting the earlier batch's answer. */
+    const keepFailedAnswer = (name: Step, text: string): string => {
+      const failedDir = join(ledgerDir, 'failed-answers');
+      mkdirSync(failedDir, { recursive: true });
+      const base = join(failedDir, `${new Date(now()).toISOString().replaceAll(':', '-')}-${name}-${agent}`);
+      let answerPath = `${base}.txt`;
+      for (let suffix = 2; existsSync(answerPath); suffix++) answerPath = `${base}-${suffix}.txt`;
+      writeFileSync(answerPath, text, { mode: 0o600 });
+      return answerPath;
+    };
     /** Ask, save, and on a refusal (unreadable JSON or a validator's) ask once more with the answer and reason.
      * A step refused twice fails with its last raw answer kept in failed-answers/ for diagnosis. `retry` tells the save
      * it holds that second answer. An answer cut off at the provider's token limit fails at once, its raw text
      * kept the same way: re-asking cannot fix output that degenerated (#6432). */
     const askAndSave = async <T>(name: Step, question: string, save: (answer: any, retry: boolean) => T | Promise<T>, answerSchema?: AnswerSchema): Promise<T> => {
-      /** A failed answer kept for diagnosis, named by step and agent. Returns its path. */
-      const keepFailedAnswer = (text: string): string => {
-        const failedDir = join(ledgerDir, 'failed-answers');
-        mkdirSync(failedDir, { recursive: true });
-        const answerPath = join(failedDir, `${new Date(now()).toISOString().replaceAll(':', '-')}-${name}-${agent}.txt`);
-        writeFileSync(answerPath, text, { mode: 0o600 });
-        return answerPath;
-      };
       let refusal: string | null = null;
       let answer = '';
       for (let attempt = 0; attempt < 2; attempt++) {
@@ -499,7 +503,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
           // refusal, a timeout) keep their own shape.
           const rawAnswer = (error as { rawAnswer?: unknown })?.rawAnswer;
           if (typeof rawAnswer !== 'string' || !rawAnswer) throw error;
-          const answerPath = keepFailedAnswer(rawAnswer);
+          const answerPath = keepFailedAnswer(name, rawAnswer);
           // The path goes first: the runner keeps only the first 500 characters of an error.
           throw refused(new Error(`${name} (raw answer: ${answerPath}): ${error instanceof Error ? error.message : String(error)}`));
         }
@@ -510,7 +514,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
           refusal = error instanceof Error ? error.message : String(error);
         }
       }
-      const answerPath = keepFailedAnswer(answer);
+      const answerPath = keepFailedAnswer(name, answer);
       // The path goes first: the runner keeps only the first 500 characters of an error.
       throw refused(new Error(`${name} (raw answer: ${answerPath}): ${refusal}`));
     };
@@ -760,12 +764,23 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
         let rejectedReviews: Array<{ groupId?: string }> = [];
         for (let attempt = 0; attempt < 2 && shows.length; attempt++) {
           const retryGroupIds = new Set(shows.map(show => show.groupId));
-          const text = await ask([
-            requestProgress, '---', readOnly,
-            `Do only section 2's review for the groups whose \`show\` output is in ${writeInput('show', shows)}: decide each one from the evidence as the reviewer task describes (amend the previous review for a group in "amend" mode). Reply with only {"reviews": [<one record-progress input per group, with reviewBasis copied verbatim from its show output>]}.`,
-            rule,
-            refusals.length ? `Your previous answer was refused for these groups:\n${refusals.join('\n')}\nFix them and answer again for those groups only. Here are the rejected reviews to correct, preserving their evidence and reviewBasis:\n${JSON.stringify(rejectedReviews)}` : '',
-          ].filter(Boolean).join('\n\n'), stepModels.review);
+          let text: string;
+          try {
+            text = await ask([
+              requestProgress, '---', readOnly,
+              `Do only section 2's review for the groups whose \`show\` output is in ${writeInput('show', shows)}: decide each one from the evidence as the reviewer task describes (amend the previous review for a group in "amend" mode). Reply with only {"reviews": [<one record-progress input per group, with reviewBasis copied verbatim from its show output>]}.`,
+              rule,
+              refusals.length ? `Your previous answer was refused for these groups:\n${refusals.join('\n')}\nFix them and answer again for those groups only. Here are the rejected reviews to correct, preserving their evidence and reviewBasis:\n${JSON.stringify(rejectedReviews)}` : '',
+            ].filter(Boolean).join('\n\n'), stepModels.review);
+          } catch (error) {
+            // A review answer the provider cut off arrives as an error carrying the raw text, the same
+            // shape askAndSave handles: keep it and fail with its path first, instead of losing the one
+            // piece of evidence that shows what the model did.
+            const rawAnswer = (error as { rawAnswer?: unknown })?.rawAnswer;
+            if (typeof rawAnswer !== 'string' || !rawAnswer) throw error;
+            const answerPath = keepFailedAnswer('review', rawAnswer);
+            throw refused(new Error(`review (raw answer: ${answerPath}): ${error instanceof Error ? error.message : String(error)}`));
+          }
           let reviews: Array<{ groupId?: string }> = [];
           try { const answer = parseAgentJson(text); reviews = Array.isArray(answer.reviews) ? answer.reviews : []; }
           catch { /* Every group in this batch is refused below as "no review was given". */ }
