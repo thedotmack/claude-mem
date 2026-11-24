@@ -179,6 +179,29 @@ function parseUpstreamErrorEnvelope(bodyText: string): UpstreamErrorEnvelope | n
 }
 
 /**
+ * litellm's words when it could not parse the downstream model's response.
+ * The model ran and was billed; only its output was lost.
+ */
+const UPSTREAM_OUTPUT_FAILURE_MARKERS = ['unable to get json', 'expecting value'];
+
+/**
+ * The status to classify by. Once OpenRouter has accepted a request the HTTP
+ * status is already 200, so a later failure (a rate limit, an overloaded
+ * upstream) arrives as an error envelope in the body whose numeric `error.code`
+ * is the real status. A litellm output failure keeps its 200 whatever its code
+ * (OpenRouter reports an invalid upstream response as a 502): promoting it to
+ * a 5xx would resend it and pay twice.
+ */
+function effectiveStatus(status: number | undefined, envelope: UpstreamErrorEnvelope | null, lowerBody: string): number | undefined {
+  const code = envelope?.code;
+  if (UPSTREAM_OUTPUT_FAILURE_MARKERS.some(marker => lowerBody.includes(marker))) return status;
+  if (status !== undefined && status >= 200 && status < 300 && typeof code === 'number' && code >= 400 && code < 600) {
+    return code;
+  }
+  return status;
+}
+
+/**
  * OpenRouter's answers when the configured model id itself is gone: a retired
  * model (404 "This model has been deprecated. It is recommended to migrate to
  * …", #3659), an id that is not in the catalog (400 "… is not a valid model
@@ -230,13 +253,13 @@ export function classifyOpenRouterError(input: {
   /** The URL a request with no response was sent to, named in the network-error message. */
   requestUrl?: string;
 }): ClassifiedProviderError {
-  const status = input.status;
   const body = input.bodyText ?? '';
   const lower = body.toLowerCase();
   const headers = input.headers;
   const retryAfterHeader = headers?.get('retry-after') ?? null;
   const retryAfterMs = parseRetryAfterMs(retryAfterHeader);
   const envelope = parseUpstreamErrorEnvelope(body);
+  const status = effectiveStatus(input.status, envelope, lower);
 
   // Structured taxonomy envelope from the cmem.ai gateway: carry it verbatim.
   if (envelope && typeof envelope.code === 'string' && Object.prototype.hasOwnProperty.call(GATEWAY_CODE_TO_KIND, envelope.code)) {
@@ -385,7 +408,7 @@ export function classifyOpenRouterError(input: {
   // only its output was lost. Resending pays for the same work again, so it is
   // an output failure and never retried ("never pay twice"). Kept
   // marker-scoped so it carries its own words in the log.
-  if (lower.includes('unable to get json') || lower.includes('expecting value')) {
+  if (UPSTREAM_OUTPUT_FAILURE_MARKERS.some(marker => lower.includes(marker))) {
     return new ClassifiedProviderError(
       describe('upstream output failure'),
       { kind: 'unrecoverable', paidSendOutcome: 'output_failure', cause: input.cause, ...detail },

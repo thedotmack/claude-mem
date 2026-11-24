@@ -14,7 +14,10 @@ import { myworkKo } from '../src/ui/i18n/mywork-ko.ts';
 import { setupKo } from '../src/ui/i18n/setup-ko.ts';
 import { settingsKo } from '../src/ui/i18n/settings-ko.ts';
 import { myworkTr } from '../src/ui/i18n/mywork-tr.ts';
+import { viewerPtBr } from '../src/ui/i18n/viewer-pt-BR.ts';
 import { myworkPtBr } from '../src/ui/i18n/mywork-pt-BR.ts';
+import { setupPtBr } from '../src/ui/i18n/setup-pt-BR.ts';
+import { settingsPtBr } from '../src/ui/i18n/settings-pt-BR.ts';
 import { viewerFr } from '../src/ui/i18n/viewer-fr.ts';
 import { myworkFr } from '../src/ui/i18n/mywork-fr.ts';
 import { setupFr } from '../src/ui/i18n/setup-fr.ts';
@@ -105,7 +108,7 @@ describe('UI language catalogs', () => {
     viewerZh, myworkZh, setupZh, settingsZh,
     viewerKo, myworkKo, setupKo, settingsKo, myworkTr,
     viewerFr, myworkFr, setupFr, settingsFr,
-    myworkPtBr,
+    viewerPtBr, myworkPtBr, setupPtBr, settingsPtBr,
   })) {
     it(`${name} has nonempty translations and preserves interpolation placeholders`, () => {
       assert.ok(Object.keys(catalog).length > 0);
@@ -121,7 +124,7 @@ describe('UI language catalogs', () => {
   for (const [name, localized, chinese] of [
     ['viewerKo', viewerKo, viewerZh], ['myworkKo', myworkKo, myworkZh], ['setupKo', setupKo, setupZh], ['settingsKo', settingsKo, settingsZh],
     ['viewerFr', viewerFr, viewerZh], ['myworkFr', myworkFr, myworkZh], ['setupFr', setupFr, setupZh], ['settingsFr', settingsFr, settingsZh],
-    ['myworkPtBr', myworkPtBr, myworkZh],
+    ['viewerPtBr', viewerPtBr, viewerZh], ['myworkPtBr', myworkPtBr, myworkZh], ['setupPtBr', setupPtBr, setupZh], ['settingsPtBr', settingsPtBr, settingsZh],
   ] as const) {
     it(`${name} translates exactly the strings its Chinese catalog does`, () => {
       assert.deepEqual(Object.keys(localized).sort(), Object.keys(chinese).sort());
@@ -154,6 +157,7 @@ describe('UI language catalogs', () => {
     [viewerZh, myworkZh, setupZh, settingsZh],
     [viewerKo, myworkKo, setupKo, settingsKo],
     [viewerFr, myworkFr, setupFr, settingsFr],
+    [viewerPtBr, myworkPtBr, setupPtBr, settingsPtBr],
   ]) {
     it('shared English phrases have the same translation across catalogs', () => {
       const seen = new Map<string, string>();
