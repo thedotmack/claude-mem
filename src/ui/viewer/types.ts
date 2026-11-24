@@ -1,3 +1,5 @@
+import type { OpenAICompatReasoningEffort } from '../provider-options.js';
+
 export interface Observation {
   id: number;
   memory_session_id: string;
@@ -166,6 +168,7 @@ export interface Settings {
   CLAUDE_MEM_OPENAI_COMPAT_BASE_URL?: string;
   CLAUDE_MEM_OPENAI_COMPAT_MODEL?: string;
   CLAUDE_MEM_OPENAI_COMPAT_REASONING?: string;
+  CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT?: '' | OpenAICompatReasoningEffort;
   CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER?: string;
   CLAUDE_MEM_QUOTA_FALLBACK_MODEL?: string;
   CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD?: string;

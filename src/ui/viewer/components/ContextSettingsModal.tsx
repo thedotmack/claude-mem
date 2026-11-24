@@ -1,4 +1,4 @@
-import { QUOTA_FALLBACK_OPTIONS, type QuotaFallbackOption } from '../../provider-options.js';
+import { OPENAI_COMPAT_REASONING_EFFORTS, QUOTA_FALLBACK_OPTIONS, type QuotaFallbackOption } from '../../provider-options.js';
 import React, { useState, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 import { useI18n, interpolate, getLocale } from '../../i18n';
 import { translateSettingsStatus } from '../../i18n/errors';
@@ -865,6 +865,16 @@ export function ContextSettingsModal({
                         onChange={(e) => updateSetting('CLAUDE_MEM_OPENAI_COMPAT_REASONING', e.target.value)}>
                         <option value="">{t('Off (default)')}</option>
                         <option value="on">{t('On (endpoint decides)')}</option>
+                      </select>
+                    )}
+                  </FormField>
+                  <FormField label={t('Reasoning effort')}
+                    help={t('Select an effort supported by your model to override the reasoning setting for the observer and API agent.')}>
+                    {control => (
+                      <select {...control} value={formState.CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT || ''}
+                        onChange={(e) => updateSetting('CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT', e.target.value)}>
+                        <option value="">{t('No override')}</option>
+                        {OPENAI_COMPAT_REASONING_EFFORTS.map(effort => <option key={effort} value={effort}>{effort}</option>)}
                       </select>
                     )}
                   </FormField>

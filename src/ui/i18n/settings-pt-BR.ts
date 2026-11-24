@@ -119,6 +119,8 @@ export const settingsPtBr: Record<string, string> = {
   'OpenRouter Model': 'Modelo do OpenRouter',
   'Model identifier from openrouter.ai/models (e.g., anthropic/claude-haiku-4.5, google/gemini-2.5-flash)': 'Identificador do modelo em openrouter.ai/models (ex.: anthropic/claude-haiku-4.5, google/gemini-2.5-flash)',
   'OpenRouter Base URL': 'URL base do OpenRouter',
+  'Select an effort supported by your model to override the reasoning setting for the observer and API agent.': 'Selecione um esforço compatível com o seu modelo para substituir a configuração de raciocínio do observador e do agente de API.',
+  'No override': 'Sem substituição',
   'Reasoning effort': 'Esforço de raciocínio',
   'openrouter.ai only. Empty (the default) sends reasoning off. Set an effort to opt back in. A custom gateway does not get this field until an empty length-truncated reply retries once.': 'Somente para openrouter.ai. Em branco (padrão), envia o raciocínio desativado. Selecione um nível de esforço para ativá-lo. Um gateway personalizado só recebe esse campo em uma nova tentativa após uma resposta vazia que atingiu o limite de tokens.',
   'Site URL (Optional)': 'URL do site (opcional)',

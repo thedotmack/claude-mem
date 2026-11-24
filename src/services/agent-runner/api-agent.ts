@@ -20,6 +20,7 @@
  */
 
 import { randomUUID } from 'crypto';
+import type { OpenAICompatReasoningEffort } from '../../ui/provider-options.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { parseOpenRouterExtraBody, withOpenRouterExtraBody } from '../../shared/openrouter-extra-body.js';
 import { DEFAULT_API_AGENT_LIMITS, type ApiAgentLimits } from '../../shared/api-agent-limits.js';
@@ -28,7 +29,7 @@ import { logger } from '../../utils/logger.js';
 import { resolveOpenAICompatConfig } from '../worker/OpenAICompatProvider.js';
 import { resolveOpenRouterConfig } from '../worker/OpenRouterProvider.js';
 import { isMaxCompletionTokensCompatibilityError } from '../../shared/openrouter-token-compatibility.js';
-import { endpointRejectsReasoningField, isReasoningDisabledRejection, isUnknownReasoningParameter, openAICompatReasoningOffBody, rememberEndpointRejectsReasoningField } from '../worker/reasoning-budget.js';
+import { endpointRejectsReasoningField, isReasoningDisabledRejection, isUnknownReasoningParameter, openAICompatReasoningBody, rememberEndpointRejectsReasoningField, resolveOpenAICompatReasoningEffort } from '../worker/reasoning-budget.js';
 import type { OpenAICompatReasoningOff } from '../../shared/openai-compat-presets.js';
 
 /** The provider an API step runs on. */
@@ -44,6 +45,7 @@ export interface ApiTarget {
   sessionHeader?: string;
   /** The preset's shape for turning reasoning off, when it needs a different one. */
   reasoningOff?: OpenAICompatReasoningOff;
+  reasoningEffort?: OpenAICompatReasoningEffort;
   /** CLAUDE_MEM_API_AGENT_EXTRA_BODY, parsed: endpoint-specific request fields. */
   extraBody?: Record<string, unknown>;
 }
@@ -110,7 +112,13 @@ export function resolveApiTarget(settingsPath: string = paths.settings()): ApiTa
     if (!config.apiUrl) return { target: null, reason: 'CLAUDE_MEM_PROVIDER is openai-compatible, but no endpoint is configured.' };
     if (!config.model) return { target: null, reason: 'CLAUDE_MEM_PROVIDER is openai-compatible, but no model is configured.' };
     if (config.requiresApiKey && !config.apiKey) return { target: null, reason: 'CLAUDE_MEM_PROVIDER is openai-compatible, but no API key is configured.' };
-    return { target: { provider: 'openai-compatible', url: config.apiUrl, apiKey: config.apiKey, model: config.model, ...(config.preset.sessionHeader ? { sessionHeader: config.preset.sessionHeader } : {}), ...(config.preset.reasoningOff ? { reasoningOff: config.preset.reasoningOff } : {}), ...extra }, reason: '' };
+    const reasoningEffort = resolveOpenAICompatReasoningEffort(settings.CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT);
+    return { target: {
+      provider: 'openai-compatible', url: config.apiUrl, apiKey: config.apiKey, model: config.model,
+      ...(config.preset.sessionHeader ? { sessionHeader: config.preset.sessionHeader } : {}),
+      ...(config.preset.reasoningOff ? { reasoningOff: config.preset.reasoningOff } : {}),
+      ...(reasoningEffort ? { reasoningEffort } : {}), ...extra,
+    }, reason: '' };
   }
   return {
     target: null,
@@ -186,7 +194,11 @@ export async function askApiTarget(target: ApiTarget, prompt: string, options: A
   const model = options.model?.trim() || target.model;
   const formats: Array<AnswerFormat | 'none'> = options.answerSchema ? ['json_schema', 'json_object'] : ['none'];
   let format = formats[0];
-  let includeReasoning = !endpointRejectsReasoningField(target.url);
+  const reasoning = openAICompatReasoningBody(target.reasoningOff, target.reasoningEffort);
+  let includeReasoning = !endpointRejectsReasoningField(target.url, reasoning);
+  // A legacy extra-body value must not overwrite the typed setting or restore it on a compatibility resend.
+  const extraBody = { ...target.extraBody };
+  if (target.reasoningEffort) delete extraBody.reasoning_effort;
   let useMaxCompletionTokens = false;
 
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -215,13 +227,13 @@ export async function askApiTarget(target: ApiTarget, prompt: string, options: A
       temperature: TEMPERATURE,
       ...(useMaxCompletionTokens ? { max_completion_tokens: maxOutputTokens } : { max_tokens: maxOutputTokens }),
       // Reasoning off by default: a reasoning model would spend the output budget thinking.
-      ...(includeReasoning ? openAICompatReasoningOffBody(target.reasoningOff) : {}),
+      ...(includeReasoning ? reasoning : {}),
       ...(format === 'none' ? {} : answerFormatBodies(format, options.answerSchema)),
       messages: [
         { role: 'system', content: options.systemPrompt?.trim() || SYSTEM_PROMPT },
         { role: 'user', content: prompt },
       ],
-    }, target.extraBody, target.url, true)),
+    }, extraBody, target.url, true)),
   });
 
   // At most one retry per refusal kind: the reasoning field, the token field, then the answer format.
@@ -231,7 +243,7 @@ export async function askApiTarget(target: ApiTarget, prompt: string, options: A
     if (response.status !== 400 && response.status !== 422) throw await refusal(response, target);
     const text = await response.clone().text().catch(() => '');
     if (includeReasoning && isUnknownReasoningParameter(text)) {
-      if (rememberEndpointRejectsReasoningField(target.url)) {
+      if (rememberEndpointRejectsReasoningField(target.url, reasoning)) {
         logger.warn('WORKER', `${providerLabel(target.provider)} rejected the reasoning field; resending without it`, { url: target.url });
       }
       includeReasoning = false;
