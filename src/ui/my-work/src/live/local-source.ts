@@ -421,13 +421,21 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
         && (!latestModel || (summary?.detailRevision ?? summary?.contentFingerprint) === cached.fingerprint)) {
         return summary ? mergeRequestDetail(summary, cached.request) : cached.request
       }
+      // Sync identifiers may contain thousands of UTF-8 bytes and URL escaping can triple their size.
+      // Cloud stores this exact SHA-256 key alongside the full identifier. Local workers keep their route.
+      let detailPath = '/api/work-view/requests/' + encodeURIComponent(requestId)
+      if (sharedOwner && detailPath.length > 1024) {
+        const bytes = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(requestId)))
+        const digest = btoa(String.fromCharCode(...bytes)).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '')
+        detailPath = '/api/work-view/requests/by-hash/' + digest
+      }
       let fingerprint = expectedFingerprint
       for (let attempt = 0; attempt < 2; attempt++) {
         const versionBeforeRead = modelVersion
         const syncBeforeRead = syncVersion
         const query = new URLSearchParams()
         if (fingerprint) query.set('fingerprint', fingerprint)
-        const { response, body } = await readJson(`/api/work-view/requests/${encodeURIComponent(requestId)}${query.size ? `?${query}` : ''}`, signal)
+        const { response, body } = await readJson(`${detailPath}${query.size ? `?${query}` : ''}`, signal)
         assertCurrent()
         if (response.status === 409 && isOverview((body as { overview?: unknown } | null)?.overview)) {
           const overview = (body as { overview: WorkViewOverview }).overview

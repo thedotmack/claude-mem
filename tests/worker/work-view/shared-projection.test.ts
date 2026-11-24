@@ -161,6 +161,53 @@ test('setup transcript openings stay local when groups and session provenance ar
   expect(live.find(update => update.kind === 'provenance')!.value.session.user_prompt).toBe(session.user_prompt);
 });
 
+test('shared reviews verify the published session disclosure without hashing its private opening', () => {
+  const a = store();
+  const privateOpening = 'Prepare the privately imported release plan';
+  const liveOpening = '<instructions>Local setup</instructions>\nReview ' + 'the public release '.repeat(80).trimEnd();
+  const sessionId = a.createSDKSession('review-disclosure', '/home/alex/project', privateOpening, undefined, 'claude');
+  const promptId = a.saveUserPrompt('review-disclosure', 1, liveOpening, sessionId);
+  a.db.prepare('UPDATE sdk_sessions SET custom_title = ? WHERE id = ?').run('Release '.repeat(20), sessionId);
+  const publish = () => {
+    const updates = buildSharedProjectionUpdates(a.db, { deviceId: 'a', records: {
+      sessions: a.db.query('SELECT * FROM sdk_sessions').all(),
+      prompts: a.db.query('SELECT * FROM user_prompts').all(),
+    } });
+    publishSharedRecords(a.db, { deviceId: 'a', project: 'repo', updates, validateValue: isSharedProjectionValue });
+    return updates.find(update => update.kind === 'provenance')!.value.session;
+  };
+  const original = { source: 'user-prompt', sourceId: promptId, text: 'Review the public release' };
+  const descriptor = (ask = original) => sharedReviewDescriptor(a.db, {
+    explicitRequestId: 'release', original: ask, sourceContentHashes: [{ kind: 'session', id: sessionId }],
+  }, { deviceId: 'a', sharedState: readSharedRecords(a.db, { deviceId: 'a', validateValue: isSharedProjectionValue }) });
+
+  expect(descriptor().complete).toBe(false);
+  expect(publish()).toMatchObject({ user_prompt: null, project: null, custom_title: 'Release '.repeat(15) });
+  const projection = applySharedProjection(a.db, readSharedRecords(a.db, { deviceId: 'a', validateValue: isSharedProjectionValue }), {
+    deviceId: 'a', records: { sessions: a.db.query('SELECT * FROM sdk_sessions').all() },
+  });
+  expect(projection.records.sessions[0]).toMatchObject({ user_prompt: privateOpening, sharedOpeningPrompt: null });
+  const republished = buildSharedProjectionUpdates(a.db, { deviceId: 'a', records: { ...projection.records,
+    prompts: a.db.query('SELECT * FROM user_prompts').all() } });
+  expect(JSON.stringify(republished)).not.toContain('sharedOpeningPrompt');
+  expect(JSON.stringify(republished)).not.toContain(privateOpening);
+  const redacted = descriptor();
+  expect(redacted.complete).toBe(true);
+  expect(descriptor({ source: 'session-initial-request', sourceId: sessionId, text: privateOpening }).complete).toBe(false);
+  a.db.prepare('UPDATE sdk_sessions SET user_prompt = ? WHERE id = ?').run(liveOpening, sessionId);
+  expect(descriptor()).toEqual(redacted);
+  const disclosed = publish();
+  expect(disclosed.user_prompt).toHaveLength(1200);
+  expect(disclosed.user_prompt.startsWith('Review the public release')).toBe(true);
+  const checked = descriptor();
+  expect(checked.complete).toBe(true);
+  expect(checked.fingerprint).not.toBe(redacted.fingerprint);
+  a.db.prepare('UPDATE sdk_sessions SET user_prompt = ? WHERE id = ?').run('A different opening', sessionId);
+  expect(descriptor().complete).toBe(false);
+  a.db.prepare("UPDATE sdk_sessions SET user_prompt = ?, status = 'failed' WHERE id = ?").run(liveOpening, sessionId);
+  expect(descriptor().complete).toBe(false);
+});
+
 test('portable typed evidence drops local locations and resolves only the receiving origin', () => {
   const a = store();
   const id = a.appendWorkStateEntry({ project: 'repo', listName: 'work', fields: { task: 'Review' } });

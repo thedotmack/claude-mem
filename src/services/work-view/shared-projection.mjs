@@ -507,6 +507,9 @@ export function applySharedProjection(database, shared, { ledger = null, records
       let session = merged.sessions.find(row => conversationKey(row) === key);
       if (session) session = record.writer === deviceId ? { ...facts, ...session } : { ...session, ...facts };
       else session = { ...facts, id: `shared:${key}`, sharedOnly: true };
+      // The origin keeps its native history, but a shared work item's request
+      // attribution can rely only on the published opening, including its redaction.
+      session.sharedOpeningPrompt = facts.user_prompt ?? null;
       merged.sessions = merged.sessions.filter(row => conversationKey(row) !== key);
       merged.sessions.push(session);
       for (const attribution of value.attributions ?? []) {
@@ -522,7 +525,7 @@ export function applySharedProjection(database, shared, { ledger = null, records
   const referencedGroups = new Set(Object.values(next.groups.conversations));
   for (const groupId of Object.keys(next.groups.groups)) if (!referencedGroups.has(groupId)) delete next.groups.groups[groupId];
   for (const session of merged.sessions) if ((merged.prompts ?? []).some(prompt => prompt.session_db_id === session.id && next.agentWrittenPromptIds.has(prompt.id) && (prompt.prompt_number === 1 || prompt.prompt_text === session.user_prompt))) excludedOpenings.add(conversationKey(session));
-  merged.sessions = merged.sessions.map(session => excludedOpenings.has(conversationKey(session)) ? { ...session, user_prompt: null } : session);
+  merged.sessions = merged.sessions.map(session => excludedOpenings.has(conversationKey(session)) ? { ...session, user_prompt: null, sharedOpeningPrompt: null } : session);
   merged.prompts = (merged.prompts ?? []).filter(prompt => !next.agentWrittenPromptIds.has(prompt.id));
   return { ledger: next, records: merged, copyEntries, diagnostics };
 }

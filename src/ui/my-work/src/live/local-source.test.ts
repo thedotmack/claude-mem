@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { describe, it, type TestContext } from 'node:test'
 import { createLocalSource, type LocalSourceOptions } from './local-source.ts'
@@ -375,6 +376,19 @@ describe('compact local source', () => {
     assert.equal(second.contentFingerprint, FIRST)
     assert.equal(calls.filter((url) => url.includes('/requests/')).length, 1)
     assert.match(calls[1], /fingerprint=aaaaaaaa/)
+  })
+
+  it('loads a hosted detail whose escaped conversation key exceeds a normal request URL', async () => {
+    const session = '🧠'.repeat(1023) + '/?%#'
+    assert.equal(Buffer.byteLength(session), 4096)
+    const requestId = JSON.stringify(['conversation', 'claude-code', session])
+    const hash = createHash('sha256').update(requestId, 'utf8').digest('base64url')
+    const full = { ...SAMPLE.requests[0], id: requestId, contentFingerprint: FIRST, detailRevision: FIRST, detailLoaded: true }
+    const { local } = harness(async (url) => {
+      assert.equal(String(url), '/api/work-view/requests/by-hash/' + hash + '?fingerprint=' + FIRST)
+      return json({ version: 1, revision: FIRST, request: full })
+    }, 100, { sharedOwner: 'test-account' })
+    assert.equal((await local.loadRequestDetail!(requestId, FIRST)).id, requestId)
   })
 
   it('accepts a changed overview from a detail conflict and retries only its current fingerprint', async () => {
