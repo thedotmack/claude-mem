@@ -1925,7 +1925,7 @@ describe('My Work refresh stays on one agent (#5189)', () => {
   it('an API-endpoint provider runs the first logged-in agent, whichever it is, and only that one, until the owner sets CLAUDE_MEM_WORK_VIEW_AGENT=api', async () => {
     for (const provider of ['openrouter', 'openai-compatible', 'cmem']) {
       await withSettings({ CLAUDE_MEM_PROVIDER: provider }, dir => expect(resolveRefreshAgents(dir)).toEqual({ stayOnFirstUsableAgent: true }));
-      await withSettings({ CLAUDE_MEM_PROVIDER: provider, CLAUDE_MEM_WORK_VIEW_AGENT: 'api' }, dir => expect(resolveRefreshAgents(dir)).toEqual({ allowedAgents: ['api'], preferredAgent: 'api', stayOnFirstUsableAgent: true }));
+      await withSettings({ CLAUDE_MEM_PROVIDER: provider, CLAUDE_MEM_WORK_VIEW_AGENT: 'api' }, dir => expect(resolveRefreshAgents(dir)).toEqual({ allowedAgents: ['api'], preferredAgent: 'api', stayOnFirstUsableAgent: true, apiLimits: { timeoutMs: 600_000, maxOutputTokens: 16_000 } }));
     }
   });
 

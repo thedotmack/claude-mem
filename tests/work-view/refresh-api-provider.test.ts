@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -31,14 +31,14 @@ mock.module('../../src/shared/paths.js', () => ({
   USER_SETTINGS_PATH: settingsPath,
 }));
 
-interface FetchCall { url: string; body: Record<string, unknown> }
+interface FetchCall { url: string; body: Record<string, unknown>; signal: AbortSignal }
 
 /** The provider's answer, or a refusal when `status` is set. */
 function fakeFetch(replies: Array<{ status?: number; text?: string }>): { calls: FetchCall[] } {
   const calls: FetchCall[] = [];
   const original = globalThis.fetch;
   globalThis.fetch = (async (input: any, init: any = {}) => {
-    calls.push({ url: String(input), body: JSON.parse(String(init.body ?? '{}')) });
+    calls.push({ url: String(input), body: JSON.parse(String(init.body ?? '{}')), signal: init.signal });
     const reply = replies[Math.min(calls.length - 1, replies.length - 1)];
     const text = reply.text ?? JSON.stringify({ choices: [{ message: { content: 'the provider answer' } }] });
     return new Response(text, { status: reply.status ?? 200, headers: { 'content-type': 'application/json' } });
@@ -110,7 +110,7 @@ describe('the My Work refresh on an API provider', () => {
     for (const provider of ['openrouter', 'openai-compatible', 'cmem']) {
       await withApiProvider(provider, dir => {
         writeFileSync(join(dir, 'settings.json'), JSON.stringify({ CLAUDE_MEM_PROVIDER: provider, CLAUDE_MEM_WORK_VIEW_AGENT: 'api' }));
-        expect(resolveRefreshAgents(dir)).toEqual({ allowedAgents: ['api'], preferredAgent: 'api', stayOnFirstUsableAgent: true });
+        expect(resolveRefreshAgents(dir)).toEqual({ allowedAgents: ['api'], preferredAgent: 'api', stayOnFirstUsableAgent: true, apiLimits: { timeoutMs: 600_000, maxOutputTokens: 16_000 } });
       });
     }
   });
@@ -128,6 +128,61 @@ describe('the My Work refresh on an API provider', () => {
       const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: 0, ungrouped: 1, goalsStale: false, unplaced: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(fixtureDatabase()), now: () => NOW, saveFocus: focusWriter(fixtureDatabase()).save });
       expect(task.allowedAgents).toEqual(['api']);
       expect(task.preferredAgent).toBe('api');
+    });
+  });
+
+  it.each([
+    { name: 'defaults', file: {}, env: {}, timeoutMs: 600_000, tokens: 16_000 },
+    {
+      name: 'settings file',
+      file: { CLAUDE_MEM_WORK_VIEW_API_TIMEOUT_MS: 1_800_000, CLAUDE_MEM_WORK_VIEW_MAX_OUTPUT_TOKENS: '100000' },
+      env: {}, timeoutMs: 1_800_000, tokens: 100_000,
+    },
+    {
+      name: 'environment overrides',
+      file: { CLAUDE_MEM_WORK_VIEW_API_TIMEOUT_MS: '3000', CLAUDE_MEM_WORK_VIEW_MAX_OUTPUT_TOKENS: 2048 },
+      env: { CLAUDE_MEM_WORK_VIEW_API_TIMEOUT_MS: '900000', CLAUDE_MEM_WORK_VIEW_MAX_OUTPUT_TOKENS: '32000' },
+      timeoutMs: 900_000, tokens: 32_000,
+    },
+    {
+      name: 'overflowing timeout',
+      file: { CLAUDE_MEM_WORK_VIEW_API_TIMEOUT_MS: 2 ** 31, CLAUDE_MEM_WORK_VIEW_MAX_OUTPUT_TOKENS: 512 },
+      env: {}, timeoutMs: 600_000, tokens: 512,
+    },
+    {
+      name: 'invalid token count',
+      file: { CLAUDE_MEM_WORK_VIEW_API_TIMEOUT_MS: 750, CLAUDE_MEM_WORK_VIEW_MAX_OUTPUT_TOKENS: '16k' },
+      env: {}, timeoutMs: 750, tokens: 16_000,
+    },
+  ])('applies the expected token cap and deadline across a compatibility resend ($name)', async ({ file, env, timeoutMs, tokens }) => {
+    await withApiProvider('openai-compatible', async dir => {
+      writeFileSync(settingsPath, JSON.stringify({
+        CLAUDE_MEM_PROVIDER: 'openai-compatible', CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: 'http://localhost:1234/v1',
+        CLAUDE_MEM_OPENAI_COMPAT_MODEL: 'local/model', CLAUDE_MEM_WORK_VIEW_AGENT: 'api', ...file,
+      }));
+      Object.assign(process.env, env);
+      const task = buildRefreshTask({
+        reason: 'manual', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT,
+        needs: { due: 0, ungrouped: 1, goalsStale: false, unplaced: 0, needed: true },
+        localDeviceId: () => '', openDatabase: fixtureDatabase,
+      });
+      const { calls } = fakeFetch([
+        { status: 400, text: "Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead." },
+        { text: JSON.stringify({ choices: [{ finish_reason: 'length', message: { content: 'incomplete' } }] }) },
+      ]);
+      const deadline = new AbortController().signal;
+      const timer = spyOn(AbortSignal, 'timeout').mockReturnValue(deadline);
+      try {
+        const result = await runAgentTask({ ...task, run: ask => ask('question', {}) });
+        expect(result.error).toContain(`${tokens}-token answer limit`);
+        expect(timer.mock.calls).toEqual([[timeoutMs]]);
+        expect(calls).toHaveLength(2);
+        expect(calls.every(call => call.signal === deadline)).toBe(true);
+        expect(calls[0].body.max_tokens).toBe(tokens);
+        expect(calls[0].body.max_completion_tokens).toBeUndefined();
+        expect(calls[1].body.max_tokens).toBeUndefined();
+        expect(calls[1].body.max_completion_tokens).toBe(tokens);
+      } finally { timer.mockRestore(); }
     });
   });
 

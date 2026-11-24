@@ -19,6 +19,8 @@ import type { UsableAgentId } from '../agent-runner/detect.js';
 import { cutOutputText, runCommand } from '../agent-runner/detect.js';
 import { writeOwnerPromptsFile, type OwnerPromptsFile } from '../prompt-import/owner-prompts-file.js';
 import { resolvePythonCommand } from './python.js';
+import { parseBoundedNumber } from '../../shared/bounded-setting.js';
+import { DEFAULT_API_AGENT_LIMITS, type ApiAgentLimits } from '../../shared/api-agent-limits.js';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { logger } from '../../utils/logger.js';
 import { FOCUS_BATCH, readGoals, readLedger, runCli, storyInput as buildStoryInput, TITLE_BATCH, validateFocusAnswer, validateGroupingAnswer, validateStory, validateTitleAnswer, type FocusInput, type FocusRequestRecord, type LedgerDatabase, type RefreshNeeds } from './request-groups.mjs';
@@ -88,6 +90,7 @@ export function resolveStepModels(dataDir: string): Record<Step, StepModels> {
 export const WORK_VIEW_AGENT_CHOICES = ['', 'claude-code', 'codex', 'gemini', 'opencode', 'api', 'off', 'all'] as const;
 
 export interface RefreshAgentChoice {
+  apiLimits?: ApiAgentLimits;
   /** The only agents the refresh may run on; absent means every logged-in agent. */
   allowedAgents?: TaskAgentId[];
   /** Tried first when it is logged in (#5435). */
@@ -119,7 +122,18 @@ export function resolveRefreshAgents(dataDir: string): RefreshAgentChoice {
   if (configuredAgent === 'all') return { preferredAgent: providerAgent, stayOnFirstUsableAgent: false };
   const namedAgent = LOCAL_AGENT_IDS.find(agent => agent === configuredAgent);
   if (namedAgent) return { allowedAgents: [namedAgent], preferredAgent: namedAgent, stayOnFirstUsableAgent: true };
-  if (configuredAgent === 'api') return { allowedAgents: ['api'], preferredAgent: 'api', stayOnFirstUsableAgent: true };
+  if (configuredAgent === 'api') {
+    // Longer delays overflow a signed 32-bit runtime timer and can expire immediately.
+    const timeoutMs = parseBoundedNumber(settings.CLAUDE_MEM_WORK_VIEW_API_TIMEOUT_MS, { min: 1, max: 2_147_483_647, integer: true });
+    const maxOutputTokens = parseBoundedNumber(settings.CLAUDE_MEM_WORK_VIEW_MAX_OUTPUT_TOKENS, { min: 1, max: Number.MAX_SAFE_INTEGER, integer: true });
+    return {
+      allowedAgents: ['api'], preferredAgent: 'api', stayOnFirstUsableAgent: true,
+      apiLimits: {
+        timeoutMs: timeoutMs ?? DEFAULT_API_AGENT_LIMITS.timeoutMs,
+        maxOutputTokens: maxOutputTokens ?? DEFAULT_API_AGENT_LIMITS.maxOutputTokens,
+      },
+    };
+  }
   if (configuredAgent) {
     logger.warn('WORKER', 'Unrecognized CLAUDE_MEM_WORK_VIEW_AGENT; the My Work refresh follows CLAUDE_MEM_PROVIDER instead', {
       value: configuredAgent, accepted: WORK_VIEW_AGENT_CHOICES.filter(Boolean).join(', '),

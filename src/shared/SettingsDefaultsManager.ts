@@ -4,6 +4,7 @@ import { basename, dirname, join } from 'path';
 import { homedir, hostname } from 'os';
 import { HOOK_TIMEOUTS, defaultSessionInitRequestTimeoutMs, getTimeout } from './hook-constants.js';
 import { parseEnv } from 'util';
+import { DEFAULT_API_AGENT_LIMITS } from './api-agent-limits.js';
 import { parseJsonWithBom, stripUtf8Bom, writeJsonFileAtomic } from './atomic-json.js';
 import { isOpenRouterApiUrl } from './openrouter-base-url.js';
 import { settingsTarget, withoutStaleRootCopies } from './settings-document.js';
@@ -460,6 +461,8 @@ export interface SettingsDefaults {
   CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL: string;
   CLAUDE_MEM_WORK_VIEW_OPENCODE_MODEL: string;
   CLAUDE_MEM_WORK_VIEW_API_MODEL: string;
+  CLAUDE_MEM_WORK_VIEW_API_TIMEOUT_MS: string;
+  CLAUDE_MEM_WORK_VIEW_MAX_OUTPUT_TOKENS: string;
   CLAUDE_MEM_CORPUS_AGENT: string;
   CLAUDE_MEM_API_AGENT_EXTRA_BODY: string;
   CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE: string;
@@ -795,6 +798,8 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL: '', // #5164 — same for Gemini; empty keeps flash-lite/flash per step
     CLAUDE_MEM_WORK_VIEW_OPENCODE_MODEL: '', // #5535 — model for every My Work refresh step on OpenCode ('provider/model'); empty uses OpenCode's configured default
     CLAUDE_MEM_WORK_VIEW_API_MODEL: '', // Model for every My Work refresh step on the selected API provider; empty keeps the provider's configured model
+    CLAUDE_MEM_WORK_VIEW_API_TIMEOUT_MS: String(DEFAULT_API_AGENT_LIMITS.timeoutMs),
+    CLAUDE_MEM_WORK_VIEW_MAX_OUTPUT_TOKENS: String(DEFAULT_API_AGENT_LIMITS.maxOutputTokens),
     CLAUDE_MEM_CORPUS_AGENT: '', // Which agent answers knowledge-corpus prime/query/reprime: '' uses the Claude Agent SDK (the Claude subscription); 'api' answers over chat completions on the selected openrouter/openai-compatible provider and spends that provider's credit
     CLAUDE_MEM_API_AGENT_EXTRA_BODY: '', // JSON object merged into every api agent request (My Work refresh, corpus), e.g. {"chat_template_kwargs":{"enable_thinking":false}} for vLLM (#6223). Parsed like CLAUDE_MEM_OPENROUTER_EXTRA_BODY; never sets reasoning or response_format. File/env only
     CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE: '', // Language for My Work's generated text (titles, reviews, story), such as 'Turkish'. No extra model call; empty uses the language the grouping step finds in the owner's asks, decided once per run (#5660)

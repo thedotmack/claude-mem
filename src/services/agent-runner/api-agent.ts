@@ -22,6 +22,7 @@
 import { randomUUID } from 'crypto';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { parseOpenRouterExtraBody, withOpenRouterExtraBody } from '../../shared/openrouter-extra-body.js';
+import { DEFAULT_API_AGENT_LIMITS, type ApiAgentLimits } from '../../shared/api-agent-limits.js';
 import { paths } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import { resolveOpenAICompatConfig } from '../worker/OpenAICompatProvider.js';
@@ -122,15 +123,6 @@ function providerLabel(provider: ApiProviderId): string {
   return provider === 'openrouter' ? 'OpenRouter' : 'the OpenAI-compatible endpoint';
 }
 
-/** Enough room for a step that reads a whole window of conversations. */
-const REQUEST_TIMEOUT_MS = 600_000;
-/**
- * The largest answer a step must fit is the story step's: a real install's story answer
- * (work-view/agent-runs/<run>/9-record-story.json, Nov 2026) is 31 KB of JSON, about 8,000
- * tokens. 16,000 gives that step twice its measured size. An answer that still runs out is
- * refused loudly (readAnswer, finish_reason "length"), never saved truncated.
- */
-const MAX_OUTPUT_TOKENS = 16_000;
 const TEMPERATURE = 0.2;
 
 const SYSTEM_PROMPT = [
@@ -140,6 +132,8 @@ const SYSTEM_PROMPT = [
 ].join(' ');
 
 export interface ApiAskOptions {
+  /** Limits for this question, shared by its compatibility resends. */
+  limits?: ApiAgentLimits;
   /** The step's model. Empty keeps the provider's configured model. */
   model?: string;
   /** A JSON Schema for the answer. Without one the answer is free text. */
@@ -203,7 +197,8 @@ export async function askApiTarget(target: ApiTarget, prompt: string, options: A
 
   // The timeout bounds the request; the caller's signal ends it when the
   // client that asked for the answer is gone.
-  const timeoutSignal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+  const { timeoutMs, maxOutputTokens } = options.limits ?? DEFAULT_API_AGENT_LIMITS;
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
   const signal = options.abortSignal ? AbortSignal.any([timeoutSignal, options.abortSignal]) : timeoutSignal;
 
   const send = async () => fetch(target.url, {
@@ -218,7 +213,7 @@ export async function askApiTarget(target: ApiTarget, prompt: string, options: A
       model,
       stream: false,
       temperature: TEMPERATURE,
-      ...(useMaxCompletionTokens ? { max_completion_tokens: MAX_OUTPUT_TOKENS } : { max_tokens: MAX_OUTPUT_TOKENS }),
+      ...(useMaxCompletionTokens ? { max_completion_tokens: maxOutputTokens } : { max_tokens: maxOutputTokens }),
       // Reasoning off by default: a reasoning model would spend the output budget thinking.
       ...(includeReasoning ? openAICompatReasoningOffBody(target.reasoningOff) : {}),
       ...(format === 'none' ? {} : answerFormatBodies(format, options.answerSchema)),
@@ -232,7 +227,7 @@ export async function askApiTarget(target: ApiTarget, prompt: string, options: A
   // At most one retry per refusal kind: the reasoning field, the token field, then the answer format.
   for (let attempt = 0; attempt < 4; attempt++) {
     const response = await send();
-    if (response.ok) return readAnswer(response, target);
+    if (response.ok) return readAnswer(response, target, maxOutputTokens);
     if (response.status !== 400 && response.status !== 422) throw await refusal(response, target);
     const text = await response.clone().text().catch(() => '');
     if (includeReasoning && isUnknownReasoningParameter(text)) {
@@ -263,14 +258,14 @@ export async function askApiTarget(target: ApiTarget, prompt: string, options: A
 }
 
 /** The answer text of a chat completion, whatever shape the endpoint used for it. */
-async function readAnswer(response: Response, target: ApiTarget): Promise<string> {
+async function readAnswer(response: Response, target: ApiTarget, maxOutputTokens: number): Promise<string> {
   let data: any;
   try { data = await response.json(); }
   catch { throw new Error(`${providerLabel(target.provider)} answered with unreadable JSON.`); }
   const choice = data?.choices?.[0];
   // A cut-off answer is broken JSON or a partial story: fail the step, never hand it to the validators.
   if (choice?.finish_reason === 'length') {
-    throw new Error(`${providerLabel(target.provider)} stopped at the ${MAX_OUTPUT_TOKENS}-token answer limit (finish reason: length); the answer is incomplete.`);
+    throw new Error(`${providerLabel(target.provider)} stopped at the ${maxOutputTokens}-token answer limit (finish reason: length); the answer is incomplete.`);
   }
   if (choice?.finish_reason === 'content_filter') {
     throw new Error(`${providerLabel(target.provider)} omitted content from the answer (finish reason: content_filter); the answer is incomplete.`);
