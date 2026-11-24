@@ -19,6 +19,8 @@ import type { UsableAgentId } from '../agent-runner/detect.js';
 import { cutOutputText, runCommand } from '../agent-runner/detect.js';
 import { writeOwnerPromptsFile, type OwnerPromptsFile } from '../prompt-import/owner-prompts-file.js';
 import { resolvePythonCommand } from './python.js';
+import { parseBoundedNumber } from '../../shared/bounded-setting.js';
+import { DEFAULT_API_AGENT_LIMITS, type ApiAgentLimits } from '../../shared/api-agent-limits.js';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { logger } from '../../utils/logger.js';
 import { FOCUS_BATCH, readGoals, readLedger, runCli, storyInput as buildStoryInput, TITLE_BATCH, validateFocusAnswer, validateGroupingAnswer, validateStory, validateTitleAnswer, type FocusInput, type FocusRequestRecord, type LedgerDatabase, type RefreshNeeds } from './request-groups.mjs';
@@ -88,6 +90,7 @@ export function resolveStepModels(dataDir: string): Record<Step, StepModels> {
 export const WORK_VIEW_AGENT_CHOICES = ['', 'claude-code', 'codex', 'gemini', 'opencode', 'api', 'off', 'all'] as const;
 
 export interface RefreshAgentChoice {
+  apiLimits?: ApiAgentLimits;
   /** The only agents the refresh may run on; absent means every logged-in agent. */
   allowedAgents?: TaskAgentId[];
   /** Tried first when it is logged in (#5435). */
@@ -97,6 +100,29 @@ export interface RefreshAgentChoice {
 }
 
 const LOCAL_AGENT_IDS: readonly UsableAgentId[] = ['claude-code', 'codex', 'gemini', 'opencode'];
+
+const warnedApiAgentLimits = new Set<string>();
+
+/** One limit setting, or its default. A set but invalid value warns once per value, naming the default used. */
+function apiAgentLimit(key: 'CLAUDE_MEM_WORK_VIEW_API_TIMEOUT_MS' | 'CLAUDE_MEM_WORK_VIEW_MAX_OUTPUT_TOKENS', raw: unknown, max: number, defaultValue: number): number {
+  const parsed = parseBoundedNumber(raw as string | number | undefined, { min: 1, max, integer: true });
+  if (parsed !== null) return parsed;
+  const text = typeof raw === 'number' ? String(raw) : typeof raw === 'string' ? raw.trim() : '';
+  if (text && !warnedApiAgentLimits.has(`${key}=${text}`)) {
+    warnedApiAgentLimits.add(`${key}=${text}`);
+    logger.warn('WORKER', `Invalid ${key}; the My Work API refresh uses the default`, { value: text, min: 1, max, default: defaultValue });
+  }
+  return defaultValue;
+}
+
+/** CLAUDE_MEM_WORK_VIEW_API_TIMEOUT_MS and CLAUDE_MEM_WORK_VIEW_MAX_OUTPUT_TOKENS, read at the start of every refresh. */
+function resolveApiAgentLimits(settings: SettingsDefaults): ApiAgentLimits {
+  return {
+    // Longer delays overflow a signed 32-bit runtime timer and can expire immediately.
+    timeoutMs: apiAgentLimit('CLAUDE_MEM_WORK_VIEW_API_TIMEOUT_MS', settings.CLAUDE_MEM_WORK_VIEW_API_TIMEOUT_MS, 2_147_483_647, DEFAULT_API_AGENT_LIMITS.timeoutMs),
+    maxOutputTokens: apiAgentLimit('CLAUDE_MEM_WORK_VIEW_MAX_OUTPUT_TOKENS', settings.CLAUDE_MEM_WORK_VIEW_MAX_OUTPUT_TOKENS, Number.MAX_SAFE_INTEGER, DEFAULT_API_AGENT_LIMITS.maxOutputTokens),
+  };
+}
 
 /** Which agents the My Work refresh may run on (#5189). A background refresh that falls through to another
  * agent spends that agent's quota without the owner asking: a Claude Code session limit sent ~230 hidden
@@ -116,10 +142,13 @@ export function resolveRefreshAgents(dataDir: string): RefreshAgentChoice {
     : provider === 'codex' || provider === 'gemini' ? provider : undefined;
   const configuredAgent = String(settings.CLAUDE_MEM_WORK_VIEW_AGENT ?? '').trim();
   if (configuredAgent === 'off') return { allowedAgents: [], stayOnFirstUsableAgent: true };
-  if (configuredAgent === 'all') return { preferredAgent: providerAgent, stayOnFirstUsableAgent: false };
+  // `all` can fall through to the api agent too, so it gets the same limits as `api`.
+  if (configuredAgent === 'all') return { preferredAgent: providerAgent, stayOnFirstUsableAgent: false, apiLimits: resolveApiAgentLimits(settings) };
   const namedAgent = LOCAL_AGENT_IDS.find(agent => agent === configuredAgent);
   if (namedAgent) return { allowedAgents: [namedAgent], preferredAgent: namedAgent, stayOnFirstUsableAgent: true };
-  if (configuredAgent === 'api') return { allowedAgents: ['api'], preferredAgent: 'api', stayOnFirstUsableAgent: true };
+  if (configuredAgent === 'api') {
+    return { allowedAgents: ['api'], preferredAgent: 'api', stayOnFirstUsableAgent: true, apiLimits: resolveApiAgentLimits(settings) };
+  }
   if (configuredAgent) {
     logger.warn('WORKER', 'Unrecognized CLAUDE_MEM_WORK_VIEW_AGENT; the My Work refresh follows CLAUDE_MEM_PROVIDER instead', {
       value: configuredAgent, accepted: WORK_VIEW_AGENT_CHOICES.filter(Boolean).join(', '),

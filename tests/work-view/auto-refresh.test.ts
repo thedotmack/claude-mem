@@ -1925,16 +1925,16 @@ describe('My Work refresh stays on one agent (#5189)', () => {
   it('an API-endpoint provider runs the first logged-in agent, whichever it is, and only that one, until the owner sets CLAUDE_MEM_WORK_VIEW_AGENT=api', async () => {
     for (const provider of ['openrouter', 'openai-compatible', 'cmem']) {
       await withSettings({ CLAUDE_MEM_PROVIDER: provider }, dir => expect(resolveRefreshAgents(dir)).toEqual({ stayOnFirstUsableAgent: true }));
-      await withSettings({ CLAUDE_MEM_PROVIDER: provider, CLAUDE_MEM_WORK_VIEW_AGENT: 'api' }, dir => expect(resolveRefreshAgents(dir)).toEqual({ allowedAgents: ['api'], preferredAgent: 'api', stayOnFirstUsableAgent: true }));
+      await withSettings({ CLAUDE_MEM_PROVIDER: provider, CLAUDE_MEM_WORK_VIEW_AGENT: 'api' }, dir => expect(resolveRefreshAgents(dir)).toEqual({ allowedAgents: ['api'], preferredAgent: 'api', stayOnFirstUsableAgent: true, apiLimits: { timeoutMs: 600_000, maxOutputTokens: 16_000 } }));
     }
   });
 
   it('CLAUDE_MEM_WORK_VIEW_AGENT picks the agent, turns the runs off, or opts into falling through', async () => {
     await withSettings({ CLAUDE_MEM_PROVIDER: 'claude', CLAUDE_MEM_WORK_VIEW_AGENT: 'codex' }, dir => expect(resolveRefreshAgents(dir)).toEqual({ allowedAgents: ['codex'], preferredAgent: 'codex', stayOnFirstUsableAgent: true }));
     await withSettings({ CLAUDE_MEM_PROVIDER: 'claude', CLAUDE_MEM_WORK_VIEW_AGENT: 'off' }, dir => expect(resolveRefreshAgents(dir)).toEqual({ allowedAgents: [], stayOnFirstUsableAgent: true }));
-    await withSettings({ CLAUDE_MEM_PROVIDER: 'codex', CLAUDE_MEM_WORK_VIEW_AGENT: 'all' }, dir => expect(resolveRefreshAgents(dir)).toEqual({ preferredAgent: 'codex', stayOnFirstUsableAgent: false }));
+    await withSettings({ CLAUDE_MEM_PROVIDER: 'codex', CLAUDE_MEM_WORK_VIEW_AGENT: 'all' }, dir => expect(resolveRefreshAgents(dir)).toEqual({ preferredAgent: 'codex', stayOnFirstUsableAgent: false, apiLimits: { timeoutMs: 600_000, maxOutputTokens: 16_000 } }));
     // 'all' is the owner's explicit choice of every logged-in local agent, API install or not.
-    await withSettings({ CLAUDE_MEM_PROVIDER: 'openrouter', CLAUDE_MEM_WORK_VIEW_AGENT: 'all' }, dir => expect(resolveRefreshAgents(dir)).toEqual({ preferredAgent: undefined, stayOnFirstUsableAgent: false }));
+    await withSettings({ CLAUDE_MEM_PROVIDER: 'openrouter', CLAUDE_MEM_WORK_VIEW_AGENT: 'all' }, dir => expect(resolveRefreshAgents(dir)).toEqual({ preferredAgent: undefined, stayOnFirstUsableAgent: false, apiLimits: { timeoutMs: 600_000, maxOutputTokens: 16_000 } }));
   });
 
   it('an unrecognized CLAUDE_MEM_WORK_VIEW_AGENT is logged and the provider decides', async () => {

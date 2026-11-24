@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import { EventEmitter } from 'node:events';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -168,6 +168,24 @@ describe('the API corpus agent answers on the selected provider', () => {
 
       expect(written).toHaveLength(0);
       expect(corpus.session_id).toBeNull();
+    });
+  });
+
+  it('keeps the corpus deadline and output cap when My Work has overrides', async () => {
+    await withSettings({
+      ...OPENROUTER_SETTINGS, CLAUDE_MEM_WORK_VIEW_API_TIMEOUT_MS: '1800000', CLAUDE_MEM_WORK_VIEW_MAX_OUTPUT_TOKENS: '100000',
+    }, async settingsPath => {
+      const fetchMock = fakeFetch([chatAnswer('the answer')]);
+      restoreFetch = fetchMock.restore;
+      const agent = new ApiCorpusAgent(createStore().store, 'openrouter', settingsPath);
+      const corpus = createCorpus();
+      await agent.prime(corpus);
+      const timer = spyOn(AbortSignal, 'timeout');
+      try {
+        await agent.query(corpus, 'which provider answers corpus questions?');
+        expect(timer.mock.calls).toEqual([[600_000]]);
+        expect(fetchMock.calls[0].body.max_tokens).toBe(16_000);
+      } finally { timer.mockRestore(); }
     });
   });
 
