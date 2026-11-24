@@ -44,7 +44,10 @@
         "description": "Project name for scoping observations in the memory database"
       },
       "previousMemorySlot": {
-        "type": ["string", "null"],
+        "type": [
+          "string",
+          "null"
+        ],
         "description": "Memory slot owner before claude-mem was installed; restored on uninstall. Written by the installer."
       },
       "observationFeed": {
