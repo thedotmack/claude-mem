@@ -11,6 +11,7 @@ import {
   type PostgresStorageRepositories,
 } from '../../../src/storage/postgres/index.js';
 import { DisabledServerQueueManager } from '../../../src/server/runtime/types.js';
+import { PostgresAgentEventsRepository } from '../../../src/storage/postgres/agent-events.js';
 import { logger } from '../../../src/utils/logger.js';
 import { quoteIdentifier, newApiKey } from '../../sdk/pg-isolation.js';
 import { ServerClient } from '../../../src/services/hooks/server-client.js';
@@ -385,6 +386,44 @@ describe('ServerV1PostgresRoutes Phase 6 session endpoints', () => {
     });
     expect(eventResp.status).toBe(201);
     expect(enqueuedEventJobs.length).toBe(1);
+  });
+
+  it('POST /v1/events rejects an occurredAtEpoch past the JS Date range with 400', async () => {
+    const eventResp = await authedFetch('/v1/events', {
+      method: 'POST',
+      body: JSON.stringify({
+        projectId,
+        sourceType: 'api',
+        eventType: 'tool_use',
+        payload: { tool: 'read' },
+        occurredAtEpoch: 9e15,
+      }),
+    });
+    expect(eventResp.status).toBe(400);
+    expect((await eventResp.json()).error).toBe('ValidationError');
+  });
+
+  it('POST /v1/events answers 400 InvalidData when Postgres rejects the data (SQLSTATE class 22)', async () => {
+    // A real data exception from this Postgres (NUL in jsonb -> 22P05).
+    const pgError = await client.query('SELECT $1::jsonb', ['{"a":"\\u0000"}']).then(() => null, (e: unknown) => e);
+    expect((pgError as { code?: string }).code).toBe('22P05');
+    const createSpy = spyOn(PostgresAgentEventsRepository.prototype, 'create').mockRejectedValueOnce(pgError);
+    try {
+      const eventResp = await authedFetch('/v1/events', {
+        method: 'POST',
+        body: JSON.stringify({
+          projectId,
+          sourceType: 'api',
+          eventType: 'tool_use',
+          payload: { tool: 'read' },
+          occurredAtEpoch: Date.now(),
+        }),
+      });
+      expect(eventResp.status).toBe(400);
+      expect((await eventResp.json()).error).toBe('InvalidData');
+    } finally {
+      createSpy.mockRestore();
+    }
   });
 
   it('POST /v1/events links by normalized platformSource when resolving contentSessionId', async () => {

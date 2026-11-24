@@ -4,6 +4,10 @@ import { z } from 'zod';
 
 export const AgentEventSourceTypeSchema = z.enum(['hook', 'worker', 'provider', 'server', 'api']);
 
+// Largest epoch a JS Date can hold; past it the insert fails with a 500 the
+// hook spool would replay for its whole retry window.
+const MAX_DATE_EPOCH_MS = 8_640_000_000_000_000;
+
 export const AgentEventSchema = z.object({
   id: z.string().min(1),
   projectId: z.string().min(1),
@@ -18,8 +22,8 @@ export const AgentEventSchema = z.object({
   payload: z.unknown().default({}),
   contentSessionId: z.string().min(1).nullable().default(null),
   memorySessionId: z.string().min(1).nullable().default(null),
-  occurredAtEpoch: z.number().int().nonnegative(),
-  createdAtEpoch: z.number().int().nonnegative()
+  occurredAtEpoch: z.number().int().nonnegative().max(MAX_DATE_EPOCH_MS),
+  createdAtEpoch: z.number().int().nonnegative().max(MAX_DATE_EPOCH_MS)
 });
 
 export const CreateAgentEventSchema = AgentEventSchema.omit({
