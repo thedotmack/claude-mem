@@ -117,6 +117,7 @@ endpoint or model you pinned yourself.
 | `atmorouter` | `https://atmorouter.dev/v1` | yes |
 | `worldrouter` | `https://inference-api.worldrouter.ai/v1` | yes |
 | `aigrow` | `https://aigrow.gg/v1` | yes |
+| `teamorouter` | `https://api.teamorouter.com/v1` | yes |
 | `deepseek` | `https://api.deepseek.com/v1` | yes |
 | `opencode-go` | `https://opencode.ai/zen/go/v1` | yes |
 | `opencode-zen` | `https://opencode.ai/zen/v1` | yes |
@@ -599,6 +600,26 @@ needs no key; prices are also at [aigrow.gg/ai-api](https://aigrow.gg/ai-api).
   "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "aigrow",
   "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<your AIGROW key>",
   "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "claude-haiku-5.5"
+}
+```
+
+## TeamoRouter
+
+[TeamoRouter](https://teamorouter.com) is an OpenAI-compatible API gateway for
+GLM, Kimi, DeepSeek, Qwen, Claude, GPT, Gemini and other models behind one key,
+billed per token from a prepaid balance. Model ids are unprefixed, such as
+`glm-5.3-flash` (the preset's default) or `deepseek-v4-flash`, and are passed
+verbatim. `GET https://api.teamorouter.com/v1/models/pricing` lists every id
+with its price and needs no key; keys come from the API Keys page in the
+[TeamoRouter dashboard](https://teamorouter.com/dashboard). Setup notes are in
+[the TeamoRouter docs](https://teamorouter.com/docs).
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openai-compatible",
+  "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "teamorouter",
+  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<your TeamoRouter key>",
+  "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "glm-5.3-flash"
 }
 ```
 

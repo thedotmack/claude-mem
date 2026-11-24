@@ -240,6 +240,16 @@ export const OPENAI_COMPAT_PRESETS: readonly OpenAICompatPreset[] = [
     hint: 'Key (ag_...) from aigrow.gg; model ids such as claude-haiku-5.5 or gemini-3.8-flash, listed with prices by GET aigrow.gg/v1/models, no key needed.',
   },
   {
+    id: 'teamorouter',
+    label: 'TeamoRouter (teamorouter.com)',
+    baseUrl: 'https://api.teamorouter.com/v1',
+    // A cheap, fast model for the same reason as NVIDIA's default: extraction
+    // is high volume. Ids are unprefixed and passed verbatim.
+    defaultModel: 'glm-5.3-flash',
+    requiresApiKey: true,
+    hint: 'Key from the API Keys page at teamorouter.com/dashboard; model ids such as glm-5.3-flash or deepseek-v4-flash, listed with prices by GET api.teamorouter.com/v1/models/pricing, no key needed.',
+  },
+  {
     id: 'deepseek',
     label: 'DeepSeek',
     baseUrl: 'https://api.deepseek.com/v1',
