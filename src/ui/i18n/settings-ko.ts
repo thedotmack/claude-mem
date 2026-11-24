@@ -119,6 +119,8 @@ export const settingsKo: Record<string, string> = {
   'OpenRouter Model': 'OpenRouter 모델',
   'Model identifier from openrouter.ai/models (e.g., anthropic/claude-haiku-4.5, google/gemini-2.5-flash)': 'openrouter.ai/models의 모델 식별자 (예: anthropic/claude-haiku-4.5, google/gemini-2.5-flash)',
   'OpenRouter Base URL': 'OpenRouter 베이스 URL',
+  'Select an effort supported by your model to override the reasoning setting for the observer and API agent.': '관찰자와 API 에이전트의 추론 설정을 재정의하려면 모델이 지원하는 추론 강도를 선택하세요.',
+  'No override': '재정의 안 함',
   'Reasoning effort': '추론 강도',
   'openrouter.ai only. Empty (the default) sends reasoning off. Set an effort to opt back in. A custom gateway does not get this field until an empty length-truncated reply retries once.': 'openrouter.ai 전용입니다. 비워 두면(기본값) 추론을 끈 상태로 요청합니다. 다시 사용하려면 강도를 설정하세요. 사용자 지정 게이트웨이에는 길이 제한으로 잘린 빈 응답을 한 번 재시도할 때까지 이 필드를 보내지 않습니다.',
   'Site URL (Optional)': '사이트 URL (선택 사항)',

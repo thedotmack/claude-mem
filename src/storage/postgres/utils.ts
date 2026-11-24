@@ -79,6 +79,32 @@ export async function assertSessionOwnership(
   }
 }
 
+// Postgres rejects U+0000 in jsonb ("unsupported Unicode escape sequence").
+// Tool output with binary bytes (a fetched PDF, `head` of an ELF) carries NULs,
+// and one such event fails the whole insert. Remove them from keys and string
+// values. Run this BEFORE tag stripping and redaction: removing NUL afterwards
+// could join `<priv\0ate>` or a split secret back together past the filters.
+export function stripNul(value: unknown): unknown {
+  if (typeof value === 'string') return value.replaceAll('\u0000', '');
+  if (Array.isArray(value)) return value.map(stripNul);
+  if (value !== null && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype) {
+    const entries: [string, unknown][] = [];
+    const seen = new Set<string>();
+    for (const [k, v] of Object.entries(value)) {
+      const key = k.replaceAll('\u0000', '');
+      // `key` and `k\0ey` would collapse into one field. Reject the event the way
+      // Postgres did before this cleanup (22P05 -> 400) instead of losing a value.
+      if (seen.has(key)) {
+        throw Object.assign(new Error(`Two keys collide once NUL is removed: ${JSON.stringify(key)}`), { code: '22P05' });
+      }
+      seen.add(key);
+      entries.push([key, stripNul(v)]);
+    }
+    return Object.fromEntries(entries);
+  }
+  return value;
+}
+
 export function canonicalJson(value: unknown): string {
   return JSON.stringify(sortJson(value));
 }

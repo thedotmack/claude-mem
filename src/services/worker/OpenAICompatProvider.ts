@@ -47,7 +47,10 @@ import {
   endpointRejectsReasoningField,
   isLengthTruncatedEmptyReply,
   isUnknownReasoningParameter,
-  openAICompatReasoningOffBody,
+  openAICompatReasoningBody,
+  type CompatReasoningBody,
+  requestDisablesReasoning,
+  resolveOpenAICompatReasoningEffort,
   reasoningBudgetGiveUpMessage,
   reasoningBudgetRetryMessage,
   reasoningBudgetSkippedMessage,
@@ -645,18 +648,11 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
     attemptSignal: AbortSignal,
     liveness: StreamLiveness | null,
     sessionId: string | undefined,
-    forceReasoningOff: boolean = false,
+    reasoning: CompatReasoningBody | undefined,
   ): Promise<ChatCompletionExchange> {
     const label = config.preset.label;
     const sessionHeader = config.preset.sessionHeader;
-    const reasoningMode = resolveOpenAICompatReasoning(
-      SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_OPENAI_COMPAT_REASONING,
-    );
-    // Default off. A URL that already 400'd on the field never sees it again.
-    // The forced retry (after an empty length reply) sends it even when the
-    // setting is "on", unless that URL has rejected the field.
-    const includeReasoning = !endpointRejectsReasoningField(config.apiUrl)
-      && (forceReasoningOff || reasoningMode !== 'on');
+    const includeReasoning = reasoning !== undefined && !endpointRejectsReasoningField(config.apiUrl, reasoning);
     const send = (withReasoning: boolean) => sendChatCompletion({
       url: config.apiUrl,
       headers: {
@@ -675,7 +671,7 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
         messages,
         temperature: 0.3,
         ...(liveness ? STREAMED_REQUEST_FIELDS : {}),
-        ...(withReasoning ? openAICompatReasoningOffBody(config.preset.reasoningOff) : {}),
+        ...(withReasoning ? reasoning : {}),
       },
       maxOutputTokens,
       signal: attemptSignal,
@@ -693,7 +689,7 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
       if (!includeReasoning || !isClassified(error) || error.kind !== 'unrecoverable' || !isUnknownReasoningParameter(text)) {
         throw error;
       }
-      if (rememberEndpointRejectsReasoningField(config.apiUrl)) {
+      if (rememberEndpointRejectsReasoningField(config.apiUrl, reasoning)) {
         logger.warn('SDK', `${label} rejected the reasoning field; resending without it`, { url: config.apiUrl });
       }
       return send(false);
@@ -716,12 +712,12 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
     const label = config.preset.label;
     const clientAttemptId = paidSendBudget?.clientAttemptId ?? randomUUID();
     const maxOutputTokens = resolveObserverMaxOutputTokens();
-    // Before the send. A 400 that strips the field must not look like "we
-    // never asked", and an already-disabled request must not be sent twice.
-    const disabledOnSend = !endpointRejectsReasoningField(config.apiUrl)
-      && resolveOpenAICompatReasoning(
-        SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_OPENAI_COMPAT_REASONING,
-      ) !== 'on';
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const effort = resolveOpenAICompatReasoningEffort(settings.CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT);
+    const usePreset = resolveOpenAICompatReasoning(settings.CLAUDE_MEM_OPENAI_COMPAT_REASONING) === 'off';
+    const reasoning = (effort || usePreset) ? openAICompatReasoningBody(config.preset.reasoningOff, effort) : undefined;
+    // The budget retry asks for no thinking in the same wire format as the initial request.
+    const reasoningOff = openAICompatReasoningBody(effort ? 'effort-none' : config.preset.reasoningOff);
 
     logger.debug('SDK', `Querying ${label} multi-turn (${config.model})`, {
       turns: history.length,
@@ -735,7 +731,7 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
       ? resolveStreamLiveness(perAttemptTimeoutMs, this.streamIdleTimeoutMs ?? resolveStreamIdleTimeoutMs())
       : null;
     let data = await withRetry<ChatCompletionResponse>(async (attemptSignal) => {
-      const exchange = await this.requestChatCompletion(config, apiKey, messages, maxOutputTokens, clientAttemptId, attemptSignal, liveness, sessionId);
+      const exchange = await this.requestChatCompletion(config, apiKey, messages, maxOutputTokens, clientAttemptId, attemptSignal, liveness, sessionId, reasoning);
       const responseData = exchange.body as ChatCompletionResponse;
 
       // Some gateways report failure in a 200 body (the case #3263 hit through
@@ -781,7 +777,9 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
     };
     warnIfCutOff();
 
-    if (isLengthTruncatedEmptyReply(content, finishReason) && !disabledOnSend && !endpointRejectsReasoningField(config.apiUrl)) {
+    const canDisableReasoning = !requestDisablesReasoning(reasoning ?? {})
+      && !endpointRejectsReasoningField(config.apiUrl, reasoningOff);
+    if (isLengthTruncatedEmptyReply(content, finishReason) && canDisableReasoning) {
       if (!claimReasoningBudgetRetry(paidSendBudget)) {
         logger.error('SDK', reasoningBudgetSkippedMessage(label, paidSendBudget?.spentPaidSends ?? 0), {
           model: config.model,
@@ -795,7 +793,7 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
         try {
           const retrySignal = deadline?.signal ?? signal ?? new AbortController().signal;
           const exchange = await this.requestChatCompletion(
-            config, apiKey, messages, maxOutputTokens, clientAttemptId, retrySignal, liveness, sessionId, true,
+            config, apiKey, messages, maxOutputTokens, clientAttemptId, retrySignal, liveness, sessionId, reasoningOff,
           );
           const retryData = exchange.body as ChatCompletionResponse;
           if (retryData.error) {

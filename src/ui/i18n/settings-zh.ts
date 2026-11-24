@@ -119,6 +119,8 @@ export const settingsZh: Record<string, string> = {
   'OpenRouter Model': 'OpenRouter 模型',
   'Model identifier from openrouter.ai/models (e.g., anthropic/claude-haiku-4.5, google/gemini-2.5-flash)': '来自 openrouter.ai/models 的模型标识符（例如 anthropic/claude-haiku-4.5、google/gemini-2.5-flash）',
   'OpenRouter Base URL': 'OpenRouter 基础 URL',
+  'Select an effort supported by your model to override the reasoning setting for the observer and API agent.': '选择模型支持的推理强度，覆盖观察器和 API 代理的推理设置。',
+  'No override': '不覆盖',
   'Reasoning effort': '推理强度',
   'openrouter.ai only. Empty (the default) sends reasoning off. Set an effort to opt back in. A custom gateway does not get this field until an empty length-truncated reply retries once.': '仅适用于 openrouter.ai。留空（默认）会关闭推理。设置强度可重新启用。自定义网关最初不会收到此字段；只有因长度限制截断而返回空回复并重试一次时才会发送。',
   'Site URL (Optional)': '网站 URL（可选）',

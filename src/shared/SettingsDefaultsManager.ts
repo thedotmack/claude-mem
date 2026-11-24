@@ -4,6 +4,7 @@ import { basename, dirname, join } from 'path';
 import { homedir, hostname } from 'os';
 import { HOOK_TIMEOUTS, defaultSessionInitRequestTimeoutMs, getTimeout } from './hook-constants.js';
 import { parseEnv } from 'util';
+import { DEFAULT_API_AGENT_LIMITS } from './api-agent-limits.js';
 import { parseJsonWithBom, stripUtf8Bom, writeJsonFileAtomic } from './atomic-json.js';
 import { isOpenRouterApiUrl } from './openrouter-base-url.js';
 import { settingsTarget, withoutStaleRootCopies } from './settings-document.js';
@@ -295,6 +296,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: string;
   CLAUDE_MEM_OPENAI_COMPAT_MODEL: string;
   CLAUDE_MEM_OPENAI_COMPAT_REASONING: string;
+  CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT: string;
   CLAUDE_MEM_OPENAI_COMPAT_OBSERVATION_BATCH_SIZE: string;
   // Quota fallback. Both empty (the default) = off: dispatch is unchanged.
   CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: string;
@@ -460,6 +462,8 @@ export interface SettingsDefaults {
   CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL: string;
   CLAUDE_MEM_WORK_VIEW_OPENCODE_MODEL: string;
   CLAUDE_MEM_WORK_VIEW_API_MODEL: string;
+  CLAUDE_MEM_WORK_VIEW_API_TIMEOUT_MS: string;
+  CLAUDE_MEM_WORK_VIEW_MAX_OUTPUT_TOKENS: string;
   CLAUDE_MEM_CORPUS_AGENT: string;
   CLAUDE_MEM_API_AGENT_EXTRA_BODY: string;
   CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE: string;
@@ -630,6 +634,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_OPENAI_COMPAT_API_KEYS: '',  // Optional extra keys (newline/comma separated) for the openai-compatible provider.
     CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: '',  // OpenAI-compatible base URL, e.g. https://integrate.api.nvidia.com/v1. Overrides the preset's base URL when set.
     CLAUDE_MEM_OPENAI_COMPAT_MODEL: '',  // Model id passed verbatim. Empty = the preset's default model.
+    CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT: '',
     CLAUDE_MEM_OPENAI_COMPAT_REASONING: '',  // off | on. Empty = off: every openai-compatible request sends reasoning:{enabled:false}. "on" leaves reasoning to the endpoint.
     CLAUDE_MEM_OPENAI_COMPAT_OBSERVATION_BATCH_SIZE: '1', // Queued same-context events per observer prompt (1-32); opt-in.
     CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: 'claude',  // 'claude' (the Anthropic plan; '' means this too) | 'codex' (the local Codex CLI's ChatGPT login) | 'gemini' | 'openrouter' | 'openai-compatible' | 'off': where observer work goes while the selected provider cannot serve (spent allowance, rate limit or over capacity past its retries, outage, repeated unusable replies). Claude is used only when a Claude login or key exists; Codex only when a ChatGPT login exists. Values: QUOTA_FALLBACK_OPTIONS in src/ui/provider-options.ts
@@ -795,6 +800,8 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL: '', // #5164 — same for Gemini; empty keeps flash-lite/flash per step
     CLAUDE_MEM_WORK_VIEW_OPENCODE_MODEL: '', // #5535 — model for every My Work refresh step on OpenCode ('provider/model'); empty uses OpenCode's configured default
     CLAUDE_MEM_WORK_VIEW_API_MODEL: '', // Model for every My Work refresh step on the selected API provider; empty keeps the provider's configured model
+    CLAUDE_MEM_WORK_VIEW_API_TIMEOUT_MS: String(DEFAULT_API_AGENT_LIMITS.timeoutMs),
+    CLAUDE_MEM_WORK_VIEW_MAX_OUTPUT_TOKENS: String(DEFAULT_API_AGENT_LIMITS.maxOutputTokens),
     CLAUDE_MEM_CORPUS_AGENT: '', // Which agent answers knowledge-corpus prime/query/reprime: '' uses the Claude Agent SDK (the Claude subscription); 'api' answers over chat completions on the selected openrouter/openai-compatible provider and spends that provider's credit
     CLAUDE_MEM_API_AGENT_EXTRA_BODY: '', // JSON object merged into every api agent request (My Work refresh, corpus), e.g. {"chat_template_kwargs":{"enable_thinking":false}} for vLLM (#6223). Parsed like CLAUDE_MEM_OPENROUTER_EXTRA_BODY; never sets reasoning or response_format. File/env only
     CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE: '', // Language for My Work's generated text (titles, reviews, story), such as 'Turkish'. No extra model call; empty uses the language the grouping step finds in the owner's asks, decided once per run (#5660)

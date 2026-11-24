@@ -12,14 +12,20 @@ function makeDb(path: string, note: string) {
   const db = new Database(path);
   try {
     db.exec('CREATE TABLE observations (id INTEGER PRIMARY KEY AUTOINCREMENT, note TEXT)');
-    db.prepare('INSERT INTO observations (note) VALUES (?)').run(note);
+    const insert = db.prepare('INSERT INTO observations (note) VALUES (?)');
+    insert.run(note);
+    insert.finalize();
   } finally { db.close(); }
 }
 
 function noteAt(path: string): string {
   const db = new Database(path, { readonly: true });
-  try { return (db.prepare('SELECT note FROM observations').get() as any).note; }
-  finally { db.close(); }
+  try {
+    // An unfinalized statement keeps the file open on Windows after close().
+    const select = db.prepare('SELECT note FROM observations');
+    try { return (select.get() as any).note; }
+    finally { select.finalize(); }
+  } finally { db.close(); }
 }
 
 function setup() {

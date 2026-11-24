@@ -47,6 +47,7 @@ import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { logger } from '../../utils/logger.js';
 import { runtimeReadRoots } from './runtime-read-roots.js';
 import { cutOutputText, detectUsableAgents, GEMINI_NO_MCP_SERVERS, runCommand, type CommandResult, type UsableAgent, type UsableAgentId } from './detect.js';
+import type { ApiAgentLimits } from '../../shared/api-agent-limits.js';
 import { ApiProviderError, askApiTarget, resolveApiTarget } from './api-agent.js';
 import { WAITING_FOR_AGENT_REASON } from '../../shared/work-view-refresh-reasons.js';
 
@@ -99,6 +100,8 @@ export interface AgentTask {
   /** Working directory for every backend (My Work's refresh: the work-view folder). */
   cwd: string;
   claudeCode: ClaudeCodeTaskOptions;
+  /** Request deadline and answer cap for this task's API agent. */
+  apiLimits?: ApiAgentLimits;
   /** Drives the agent step by step; returns a short result line. */
   run: (ask: AskAgent, agent: TaskAgentId) => Promise<string>;
   /** Input every backend reads, prepared once a logged-in agent is found (e.g. the owner's prompts file). */
@@ -576,7 +579,7 @@ function apiAsk(agent: TaskAgent, task: AgentTask, dependencies: AgentRunnerDepe
       throw new Error(`The selected API provider cannot answer this step: ${resolution.reason}`);
     }
     try {
-      return await askApiTarget(resolution.target, prompt, { model: models.api?.model, answerSchema, sessionId });
+      return await askApiTarget(resolution.target, prompt, { model: models.api?.model, answerSchema, sessionId, limits: task.apiLimits });
     } catch (error) {
       if (error instanceof ApiProviderError && [401, 402, 403, 429].includes(error.status)) refused = error;
       throw error;

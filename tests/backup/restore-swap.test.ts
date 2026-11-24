@@ -178,10 +178,12 @@ describe('swapDatabaseFromSnapshot', () => {
     expect(readFileSync(join(backupsDir, `${copy}-wal`), 'utf8')).toBe('frames that may still matter');
   });
 
-  it('puts the live sidecars back when the rename fails', async () => {
+  // Windows refuses to rename a -wal or -shm that a connection still holds open
+  // (EBUSY), so the sidecar move this case exercises cannot be set up there.
+  it.skipIf(process.platform === 'win32')('puts the live sidecars back when the rename fails', async () => {
     const { dbPath, snapshotPath, backupsDir } = setup();
-    // An idle second connection keeps the -wal and -shm on disk on every
-    // platform without blocking the checkpoint.
+    // An idle second connection keeps the -wal and -shm on disk without
+    // blocking the checkpoint.
     const idle = new Database(dbPath);
     idle.query('SELECT COUNT(*) FROM observations').get();
     let parkedAtRename: string[] = [];
