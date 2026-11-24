@@ -276,7 +276,7 @@ async function readAnswer(response: Response, target: ApiTarget): Promise<string
   // The raw text rides on the error (rawAnswer) so the caller can keep it in failed-answers/ for
   // diagnosis, the way it already keeps answers its validators refused (#6432).
   if (choice?.finish_reason === 'length') {
-    throw Object.assign(new Error(`${providerLabel(target.provider)} stopped at the ${MAX_OUTPUT_TOKENS}-token answer limit (finish reason: length); the answer is incomplete. A well-behaved answer to one of these steps is far smaller than the limit, so a run-out almost always means the model's output degenerated — repetition or malformed text that never finishes — not that the limit is too small; raising it does not fix it.`), { rawAnswer: content });
+    throw Object.assign(new Error(`${providerLabel(target.provider)} stopped at the ${MAX_OUTPUT_TOKENS}-token answer limit (finish reason: length); the answer is incomplete. If the answer repeats itself or never closes, the model's output degenerated and a larger limit will not help; try turning reasoning on or another model.`), { rawAnswer: content });
   }
   if (choice?.finish_reason === 'content_filter') {
     throw new Error(`${providerLabel(target.provider)} omitted content from the answer (finish reason: content_filter); the answer is incomplete.`);

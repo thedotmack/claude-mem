@@ -106,7 +106,7 @@ describe('the API agent talks to the selected provider', () => {
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toMatch(/finish reason: length/);
     expect((error as Error).message).toMatch(/degenerated/);
-    expect((error as Error).message).toMatch(/raising it does not fix it/);
+    expect((error as Error).message).toMatch(/a larger limit will not help/);
     expect((error as { rawAnswer?: unknown }).rawAnswer).toBe(partial);
     expect(calls.length).toBe(1);
   });

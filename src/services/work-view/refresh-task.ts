@@ -23,7 +23,7 @@ import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/Set
 import { logger } from '../../utils/logger.js';
 import { FOCUS_BATCH, readGoals, readLedger, runCli, storyInput as buildStoryInput, TITLE_BATCH, validateFocusAnswer, validateGroupingAnswer, validateStory, validateTitleAnswer, type FocusInput, type FocusRequestRecord, type LedgerDatabase, type RefreshNeeds } from './request-groups.mjs';
 import { FOCUS_AUTO_PLACE_THRESHOLD, judgeFocusBatch, placesAlone, type FocusJudge, type FocusJudgement } from './focus-judge.mjs';
-import { isWithdrawnArea, ownerGoalsAreaRows, ownerGoalsSaveKey, PROPOSAL_KINDS, readFocusAreas, routerFocusRows, type FocusArea, type RouterFocusBody } from './my-focus.mjs';
+import { isWithdrawnArea, OTHER_FOCUS_AREA_ID, ownerGoalsAreaRows, ownerGoalsSaveKey, PROPOSAL_KINDS, readFocusAreas, routerFocusRows, type FocusArea, type RouterFocusBody } from './my-focus.mjs';
 import { NAV_LABELS } from './nav-words.mjs';
 import { routeUndecided, type RequestJudge } from './request-judge.mjs';
 import { RUNTIME_SKILLS } from '../../shared/runtime-skills.js';
@@ -405,21 +405,40 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       } finally { database.close(); }
       return output as { placed: number; proposed: number };
     };
-    let droppedProposals = 0;
-    /** For the focus step's retry: the answer without each proposal that record-focus's check or the worker's write
-     * refuses. A proposal is a suggestion the owner still decides, so a bad one no longer fails the placements beside it.
-     * Refused placements are left for record-focus to refuse. */
-    const withoutRefusedProposals = (answer: any, input: Parameters<typeof validateFocusAnswer>[1], flags: { other?: boolean } = {}) => {
+    let droppedProposals = 0, placedInOtherAfterRetry = 0;
+    /** A check of a focus answer that writes nothing: record-focus's check, then the worker's pure preflight
+     * (WorkViewRoutes.recordRouterFocus), as the goals step reuses ownerGoalsAreaRows: a name reusing a nav label, or a
+     * row too long to save, fails only there. */
+    const focusAnswerCheck = (input: Parameters<typeof validateFocusAnswer>[1], flags: { other?: boolean } = {}) => {
       const ledger = readLedger(ledgerDir);
       const database = openDatabase();
       let focusAreas: FocusArea[];
       try { focusAreas = readFocusAreas(database, { localDeviceId }); } finally { database.close(); }
-      // The worker's pure preflight (WorkViewRoutes.recordRouterFocus) after record-focus's check, as the goals step reuses
-      // ownerGoalsAreaRows: a name reusing a nav label, or a row too long to save, fails only there. Nothing is written.
-      const accepted = (candidate: any) => {
+      return (candidate: any) => {
         try { routerFocusRows(validateFocusAnswer(candidate, input, ledger, flags), focusAreas); return true; }
         catch (error) { if (error instanceof TypeError || error instanceof RangeError) return false; throw error; }
       };
+    };
+    /** For the placing retry: a model that leaves the same requests out every time would fail every refresh forever
+     * (#6432). When leaving them out is the answer's only fault, those requests go in Other, where the owner sees them
+     * and can move them, and the rest of the answer is saved. Any other refusal still fails the step. */
+    const withMissingPlacedInOther = (answer: any, input: FocusInput) => {
+      if (!Array.isArray(answer?.placements)) return answer;
+      const named = new Set([...answer.placements, ...(Array.isArray(answer.ignored) ? answer.ignored : [])].map((entry: any) => entry?.anchor));
+      const missing = input.requests.map(request => request.anchor).filter(anchor => !named.has(anchor));
+      if (!missing.length) return answer;
+      const candidate = { ...answer, placements: [...answer.placements, ...missing.map(anchor => ({
+        anchor, focusAreaId: OTHER_FOCUS_AREA_ID, evidence: 'Not placed by the model; move it if it belongs elsewhere.',
+      }))] };
+      if (!focusAnswerCheck(input)({ ...candidate, proposals: [] })) return answer;
+      placedInOtherAfterRetry += missing.length;
+      return candidate;
+    };
+    /** For the focus step's retry: the answer without each proposal that record-focus's check or the worker's write
+     * refuses. A proposal is a suggestion the owner still decides, so a bad one no longer fails the placements beside it.
+     * Refused placements are left for record-focus to refuse. */
+    const withoutRefusedProposals = (answer: any, input: Parameters<typeof validateFocusAnswer>[1], flags: { other?: boolean } = {}) => {
+      const accepted = focusAnswerCheck(input, flags);
       if (!Array.isArray(answer?.proposals) || !accepted({ ...answer, proposals: [] })) return answer;
       const proposals = answer.proposals.reduce((kept: unknown[], proposal: unknown) => accepted({ ...answer, proposals: [...kept, proposal] }) ? [...kept, proposal] : kept, []);
       droppedProposals += answer.proposals.length - proposals.length;
@@ -898,7 +917,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
           const saved = await step('focus', sorting([
             `Do only section 4, steps 1–2 (place each request in a focus area, promoting one that holds several separate asks) for this batch, the \`focus-input\` output (also saved in ${writeInput('focus-input', input)}):\n\n\`\`\`json\n${JSON.stringify(input, null, 2)}\n\`\`\``,
             `Place each of these ${anchors.length} requests exactly once, by its "anchor": ${anchors.join(', ')}. Reply with only the JSON that \`record-focus\` takes ({"placements": [...], "proposals": [...], "ignored": [...]}). A request you cannot decide goes in "ignored" with a one-line "reason" instead of a placement; it is recorded in Other with that reason, for the owner to move.`,
-          ].join('\n\n')), (answer, retry) => recordFocus(['--limit', String(FOCUS_BATCH)], retry ? withoutRefusedProposals(answer, input) : answer), FOCUS_ANSWER_SCHEMA);
+          ].join('\n\n')), (answer, retry) => recordFocus(['--limit', String(FOCUS_BATCH)], retry ? withoutRefusedProposals(withMissingPlacedInOther(answer, input), input) : answer), FOCUS_ANSWER_SCHEMA);
           placed += saved.placed; proposed += saved.proposed;
         }
         if (judged.size) {
@@ -914,6 +933,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
           proposed += saved.proposed;
         }
         if (placed || proposed || droppedProposals) done.push([...(placed ? [`${placed} requests placed`] : []), ...(proposed ? [`${proposed} focus areas suggested`] : []),
+          ...(placedInOtherAfterRetry ? [`${placedInOtherAfterRetry} requests placed in Other after retry`] : []),
           ...(droppedProposals ? [`${droppedProposals} refused focus area proposals dropped after retry`] : [])].join(', '));
       } catch (error) { focusError = error; }
 
