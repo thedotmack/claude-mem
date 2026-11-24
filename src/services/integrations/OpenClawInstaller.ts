@@ -163,12 +163,15 @@ function registerPluginInOpenClawConfig(
     if (existingPluginConfig.syncMemoryFile === undefined) existingPluginConfig.syncMemoryFile = syncMemoryFile;
   }
 
+  // Remember a displaced memory-slot owner so uninstall can hand the slot back.
+  // Written only when another plugin really owned it, so a fresh install keeps
+  // the plain config shape, and never overwritten, so a reinstall (which finds
+  // claude-mem already in the slot) cannot erase the original owner.
   const entryConfig = config.plugins.entries['claude-mem'].config;
-  if (entryConfig.previousMemorySlot === undefined) {
-    entryConfig.previousMemorySlot =
-      typeof previousMemorySlot === 'string' && previousMemorySlot !== 'claude-mem'
-        ? previousMemorySlot
-        : null;
+  const displacedAnotherOwner =
+    typeof previousMemorySlot === 'string' && previousMemorySlot.length > 0 && previousMemorySlot !== 'claude-mem';
+  if (displacedAnotherOwner && entryConfig.previousMemorySlot === undefined) {
+    entryConfig.previousMemorySlot = previousMemorySlot;
   }
   config.plugins.slots.memory = 'claude-mem';
 
