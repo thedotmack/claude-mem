@@ -1,3 +1,5 @@
+export const TRIAL_CONNECT_TASK = 'Use Claude-Mem to find my most recent saved decision or next action. Quote it and show me its source. If I have no synced notes yet, tell me.'
+
 /** Each handoff is an explicit action the person takes in their own connected agent. */
 export const TRIAL_GUIDE_STEPS = [
   {
