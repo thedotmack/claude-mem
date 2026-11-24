@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { appendReading, applyGroupDecisions, groupIdFor, hasPlaceholderTitle, ledgerSignature, linkBackwards, MAX_READINGS, placeholderTitleFromAsk, readCandidates, readGoals, readLedger, refreshNeeds, runCli, storyChaptersToMerge, storyParts, textTarget, validateProgress, validateStory, validateTitleAnswer } from '../../src/services/work-view/request-groups.mjs';
+import { appendReading, applyGroupDecisions, groupIdFor, hasPlaceholderTitle, ledgerSignature, linkBackwards, MAX_READINGS, placeholderTitleFromAsk, readCandidates, readGoals, readLedger, refreshNeeds, runCli, storyChaptersToMerge, storyParts, textTarget, trimStoryPreferences, validateProgress, validateStory, validateTitleAnswer } from '../../src/services/work-view/request-groups.mjs';
 import { readFocus, readFocusAreas } from '../../src/services/work-view/data-source.mjs';
 import { focusAreaRowFields, placementRowFields, routerFocusRows, type RouterFocusBody } from '../../src/services/work-view/my-focus.mjs';
 import { buildHumanRequests } from '../../src/services/work-view/request-projection.mjs';
@@ -677,6 +677,17 @@ describe('overall requests and progress reviews', () => {
   // Merging them leaves 24 chapters, whose budgets fit the target again.
   expect(storyChaptersToMerge(`Recap.\n${Array.from({ length: 24 }, (_, index) => chapter(index)).join('')}`)).toBe(0);
   expect(storyChaptersToMerge(`Recap.\n${Array.from({ length: 25 }, (_, index) => chapter(index)).join('')}`)).toBe(2);
+});
+
+  it('a preference one character over its cap is refused, then trimmed on the retry without losing the others', () => {
+  const words = 'Show honest empty states and never fabricate fallback data. '.repeat(4).slice(0, 201);
+  const story = { narrative: 'Recap.', preferences: [{ preference: 'Keep me.', kind: 'directive', supportCount: 2, quotes: [] }, { preference: words, kind: 'directive', supportCount: 1, quotes: [] }] };
+  expect(() => validateStory(story)).toThrow('preferences[1].preference is 201 characters; it must be 1–200.');
+  const trimmed = validateStory(trimStoryPreferences(story));
+  expect(trimmed.preferences).toHaveLength(2);
+  expect(trimmed.preferences[0].preference).toBe('Keep me.');
+  expect(trimmed.preferences[1].preference.length).toBeLessThanOrEqual(200);
+  expect(trimmed.preferences[1].preference.endsWith('…')).toBe(true);
 });
 
   it('an over-cap story is refused with only the parts furthest over budget named', () => {

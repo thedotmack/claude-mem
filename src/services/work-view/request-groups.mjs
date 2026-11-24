@@ -539,6 +539,16 @@ export function storyParts(narrative) {
   });
 }
 
+/** On the story's one retry, a preference over its 200-character cap is cut to the cap (at a word boundary, with an
+ * ellipsis) instead of refused again: one preference a character over otherwise fails the whole story and its other
+ * preferences. The narrative keeps its own refusal, which asks for a condensed rewrite. */
+export function trimStoryPreferences(story) {
+  if (!Array.isArray(story?.preferences)) return story;
+  const options = { coerce: true, coercedFields: new Set() };
+  return { ...story, preferences: story.preferences.map((preference, index) => typeof preference?.preference === 'string' && preference.preference.trim()
+    ? { ...preference, preference: reviewText(preference.preference, 200, `preferences[${index}].preference`, options) } : preference) };
+}
+
 export function validateStory(story) {
   const preferences = boundedList(story?.preferences, 30, 'preferences');
   // The refusal names the target and the parts furthest over budget, so the retry condenses toward the target
