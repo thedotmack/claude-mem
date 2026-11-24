@@ -37,6 +37,12 @@ export type ServerPaidSendOutcome = 'refused_before_work' | 'ambiguous' | 'outpu
  */
 export const SERVER_MAX_PAID_SENDS_PER_JOB = 2;
 
+/**
+ * Longest wait taken from a rate limit's Retry-After before the job is
+ * delivered again (the worker's MAX_RETRY_AFTER_MS).
+ */
+export const SERVER_MAX_RETRY_AFTER_MS = 60_000;
+
 export class ServerClassifiedProviderError extends Error {
   readonly kind: ServerProviderErrorClass;
   readonly retryAfterMs?: number;
