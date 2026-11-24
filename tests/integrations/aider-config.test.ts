@@ -397,7 +397,8 @@ describe('installAiderConfigFile', () => {
     expect(config).toContain('model: openai/gpt-4o');
     const backup = readdirSync(project).find((name) => name.startsWith('.aider.conf.yml.bak-'));
     expect(backup).toBeDefined();
-    expect(statSync(path.join(project, backup!)).mode & 0o777).toBe(0o600);
+    // Windows has no POSIX permission bits: stat reports 0o666 for a writable file.
+    if (process.platform !== 'win32') expect(statSync(path.join(project, backup!)).mode & 0o777).toBe(0o600);
   });
 
   test('second install is a no-op and writes no second backup', () => {

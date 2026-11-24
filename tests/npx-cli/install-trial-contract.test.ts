@@ -152,7 +152,8 @@ describe('standalone Cloud Sync installer contract', () => {
       CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: '',
       CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: expect.any(String),
     });
-    expect(settingsMode).toBe(0o600);
+    // Windows has no POSIX permission bits: stat reports 0o666 for a writable file.
+    if (process.platform !== 'win32') expect(settingsMode).toBe(0o600);
   });
 
   it('rejects bundled or hosted credential delivery for a Cloud-only pairing before writing settings', () => {
@@ -862,7 +863,8 @@ describe('installer trial-ready contract', () => {
     expect(settings.CLAUDE_MEM_PRO_MEMORY_KEY).toBe('MEMORY_KEY_MUST_NOT_LEAK');
     expect(settings).not.toHaveProperty('CLAUDE_MEM_PROVIDER');
     expect(settings).not.toHaveProperty('CLAUDE_MEM_OPENROUTER_API_KEY');
-    expect(settingsMode).toBe(0o600);
+    // Windows has no POSIX permission bits: stat reports 0o666 for a writable file.
+    if (process.platform !== 'win32') expect(settingsMode).toBe(0o600);
   });
 
   it('persists a seat-only ready response as the sync connection alone, leaving the observer as it was', () => {

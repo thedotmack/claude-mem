@@ -131,7 +131,8 @@ describe('cmem-gateway', () => {
       expect(parsed.theme).toBe('dark');
       expect(SettingsDefaultsManager.loadFromFile(settingsPath, false).CLAUDE_MEM_PRO_FALLBACK_AT).toBe('2026-08-26T12:00:00.000Z');
       // Owner-only, like every settings.json write (it carries keys).
-      expect(statSync(settingsPath).mode & 0o777).toBe(0o600);
+      // Windows has no POSIX permission bits: stat reports 0o666 for a writable file.
+      if (process.platform !== 'win32') expect(statSync(settingsPath).mode & 0o777).toBe(0o600);
 
       clearProFallback(settingsPath, tempDir);
       parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
