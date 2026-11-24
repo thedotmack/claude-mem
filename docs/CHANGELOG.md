@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Installer improvements
+
+- On phones, **Set up my agents** stays within reach while you review the detected tools or expand the agent list.
+- A fresh installation shows how many agents you set up and what Cloud Sync can remember across devices. Setup only offers scan details when it has results or a reading error to show.
+
+## [16.1.1] - 2026-11-23
+
 ### Cloud Sync setup
 
 - Select **Try Cloud Sync free for 30 days** from your focus areas to open monthly checkout. The trial requires a card and costs $0 today, then $12/month after 30 days.

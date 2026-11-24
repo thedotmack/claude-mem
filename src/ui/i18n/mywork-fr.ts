@@ -1,4 +1,7 @@
 export const myworkFr: Record<string, string> = {
+  "{count} agent is set up": "{count} agent est configuré",
+  "{count} agents are set up": "{count} agents sont configurés",
+  "With Cloud Sync, your next agent can pick up where you left off, even on another device.": "Avec Cloud Sync, votre prochain agent peut reprendre là où vous en étiez, même sur un autre appareil.",
   'Asked by {name} · started {time} · {duration} · {stage}': 'Demandée par {name} · lancée {time} · {duration} · {stage}',
   'Why it’s suggested: {reason}': 'Pourquoi cette suggestion : {reason}',
   '{count} area': '{count} domaine',

@@ -183,8 +183,10 @@ function FocusAreaRows({ reveal, loading, workLoading, incomplete, emptyMessage,
 }
 
 /** The first payoff is the same saved focus areas as My Work. Areas and their work land independently. */
-export function RevealScreen({ agents, reveal, extraction, uploadedAgents, recentPrompts, hostedNotice, skipped = false, back, onContinue, onStartTrial, busy }: {
+export function RevealScreen({ agents, reveal, extraction, uploadedAgents, recentPrompts, hostedNotice, scanComplete = false, installedAgentCount = 0, skipped = false, back, onContinue, onStartTrial, busy }: {
   agents: SetupScanAgent[]; reveal: RevealSets; extraction: SetupExtraction | null; uploadedAgents: string[] | null; recentPrompts: SetupRecentPrompt[]; hostedNotice?: string | null
+  scanComplete?: boolean
+  installedAgentCount?: number
   /** The person skipped the scan after it stopped. */
   skipped?: boolean
   back?: SetupBack | null
@@ -198,16 +200,20 @@ export function RevealScreen({ agents, reveal, extraction, uploadedAgents, recen
   const promptCount = withPrompts.reduce((sum, agent) => sum + agent.prompts, 0)
   // The person kept everything local and no earlier run left results: say that instead of promising knowledge that
   // was never built. This reads the recorded answer, because an upload can also come back with nothing to show.
-  const hasResults = !!(reveal.focusAreas?.length || reveal.goals?.length || reveal.work?.length || reveal.rules?.length)
+  const hasResults = !!(reveal.focusAreas?.length || reveal.goals?.length || reveal.work?.length || reveal.rules?.length || reveal.requests?.length)
   const promptsOnly = extraction?.state === 'waiting-for-agent' && !hasResults
   const finished = extraction?.state === 'ok' || extraction?.state === 'failed'
-  const keptLocal = uploadedAgents?.length === 0 && agents.some((agent) => agent.prompts > 0) && !hasResults
+  const hasHistory = agents.some(agent => agent.prompts > 0) || recentPrompts.length > 0
+  const keptLocal = uploadedAgents?.length === 0 && hasHistory && !hasResults
+  const freshInstall = scanComplete && !hasHistory && !hasResults && !reveal.requestReadErrorCount
+    && extraction?.state !== 'running' && extraction?.state !== 'failed'
+  const hasDetails = !!(reveal.work?.length || reveal.rules?.length || (!reveal.focusAreas?.length && reveal.goals?.length) || reveal.requestReadErrorCount)
   const firstArea = reveal.focusAreas?.find(area => area.name.trim())?.name
   const continueRow = onStartTrial ? (
     <div className="reveal-trial">
       <p>{firstArea ? interpolate(t('Pick up {area} in another agent or on another device.'), { area: firstArea })
         : hasResults || promptCount > 0 ? t('Pick up this work in another agent or on another device.')
-        : t('Pick up your next session in another agent or on another device.')}</p>
+        : t('With Cloud Sync, your next agent can pick up where you left off, even on another device.')}</p>
       <small>{t('$0 today. Then $12/month after 30 days. Card required.')}</small>
       <SetupActions back={back}>
         <SetupButton busy={busy} onClick={onStartTrial}>{t('Try Cloud Sync free for 30 days')} <ArrowRightIcon aria-hidden="true" /></SetupButton>
@@ -219,10 +225,13 @@ export function RevealScreen({ agents, reveal, extraction, uploadedAgents, recen
       <SetupButton onClick={onContinue}>{t('Continue')} <ArrowRightIcon aria-hidden="true" /></SetupButton>
     </SetupActions>
   )
-  if (keptLocal || ((hostedNotice || skipped) && !hasResults)) {
+  if (freshInstall || keptLocal || ((hostedNotice || skipped) && !hasResults)) {
+    const title = freshInstall && installedAgentCount > 0
+      ? interpolate(installedAgentCount === 1 ? t('{count} agent is set up') : t('{count} agents are set up'), { count: installedAgentCount })
+      : t('Start with your next session')
     return (
       <section aria-labelledby="reveal-title">
-        <PageHeading id="reveal-title" title={t('Start with your next session')}
+        <PageHeading id="reveal-title" title={title}
           lead={hostedNotice ? t(hostedNotice) : t('Your agents can build memory as you work.')} />
         {continueRow}
       </section>
@@ -255,17 +264,17 @@ export function RevealScreen({ agents, reveal, extraction, uploadedAgents, recen
           <FocusAreaRows reveal={reveal} loading={reveal.focusAreas == null && !finished}
             workLoading={reveal.work === null && !finished} incomplete={(reveal.requestReadErrorCount ?? 0) > 0}
             emptyMessage={!finished ? undefined : extraction?.state === 'failed' ? t('No focus areas were saved before this stopped. Continue setup to use your saved conversations.') : t('No focus areas found in this scan. You can continue setup and review your work later.')}
-            more={<CollapsibleTrigger asChild>
+            more={hasDetails && <CollapsibleTrigger asChild>
               <SetupButton look="text" className="reveal-more-trigger"><ChevronRightIcon aria-hidden="true" />{t('What else came through')}</SetupButton>
             </CollapsibleTrigger>} />
           {/* Kept in the page while folded (hidden), as the closed <details> kept it. */}
-          <CollapsibleContent forceMount className="reveal-more-body">
+          {hasDetails && <CollapsibleContent forceMount className="reveal-more-body">
             <p>{t('A selection of requests and preferences from your conversations.')}</p>
             {(reveal.requestReadErrorCount ?? 0) > 0 && <p role="status">{t('Some requests could not be read. The work shown may be incomplete.')}</p>}
             {reveal.work?.map((work) => <p key={work.id}>{work.title}</p>)}
             {reveal.rules?.map((rule) => <blockquote key={rule.id}>{rule.text}<p>“{rule.quote}” · {displayTime(formatPromptDay(rule.quotedAt))}</p></blockquote>)}
             {!reveal.focusAreas?.length && reveal.goals?.map((goal) => <p key={goal.id}>{goal.title}</p>)}
-          </CollapsibleContent>
+          </CollapsibleContent>}
         </Collapsible>
       )}
       {!onStartTrial && continueRow}

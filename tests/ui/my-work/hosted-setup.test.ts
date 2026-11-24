@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import { buildSync } from 'esbuild';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
+import type { RevealSets } from '../../../src/ui/my-work/src/setup/setup-reveal';
 
 // Compile the real component and source together: no DOM package or paid service is needed.
 const compiled = buildSync({
@@ -12,7 +13,7 @@ const compiled = buildSync({
       import { ScanScreen } from './src/setup/screens/scan-screen';
       import { RevealScreen } from './src/setup/screens/reveal-screen';
       import { InstallScreen } from './src/setup/screens/install-screen';
-      export const renderReveal = (agents, reveal, extraction, uploadedAgents = null, hostedNotice = null, skipped = false) => renderToStaticMarkup(<RevealScreen agents={agents} reveal={reveal} extraction={extraction} uploadedAgents={uploadedAgents} recentPrompts={[]} hostedNotice={hostedNotice} skipped={skipped} onContinue={() => {}} />);
+      export const renderReveal = (agents, reveal, extraction, uploadedAgents = null, hostedNotice = null, skipped = false, options = {}) => renderToStaticMarkup(<RevealScreen agents={agents} reveal={reveal} extraction={extraction} uploadedAgents={uploadedAgents} recentPrompts={[]} hostedNotice={hostedNotice} skipped={skipped} onContinue={() => {}} {...options} />);
       export { localSetupSource, EMPTY_SETUP_DATA, setupPending, setupToolsForInstall, toSetupFailure, SetupRequestError, connectionFailureAbove } from './src/setup/setup-data';
       export const renderInstall = (install) => renderToStaticMarkup(<InstallScreen install={install} onInstall={async () => {}} />);
       export { SAMPLE_REQUESTS } from './src/data';
@@ -313,6 +314,24 @@ describe('hosted setup scan control', () => {
     expect(uploadedEmpty).not.toContain('Your agents can build memory as you work.');
     expect(uploadedEmpty).not.toContain('Nothing was uploaded');
     expect(app.renderReveal(agents, { goals: null, work: null, rules: null }, { state: 'running', step: 'goals' }, ['codex'])).toContain('Your recent work');
+  });
+
+  it('shows installed agents and the trial on a completed empty scan, and preserves saved or unreadable work', () => {
+    const app = fixture();
+    const ready = { scanComplete: true, installedAgentCount: 6, onStartTrial: () => {} };
+    const empty = { goals: [], work: [], rules: [], focusAreas: [], requests: [] };
+    const render = (reveal: RevealSets = empty, state = 'ok', options = ready) =>
+      app.renderReveal([], reveal, { state, step: null }, [], null, false, options);
+    expect(render()).toContain('6 agents are set up');
+    expect(render(empty, 'ok', { ...ready, installedAgentCount: 1 })).toContain('1 agent is set up');
+    expect(render()).toContain('Try Cloud Sync free for 30 days');
+    expect(render()).toContain('$12/month after 30 days');
+    expect(render()).not.toContain('No focus areas found');
+    expect(render()).not.toContain('What else came through');
+    expect(render({ ...empty, focusAreas: app.SAMPLE_FOCUS_AREAS })).toContain('Your recent work');
+    expect(render({ ...empty, requestReadErrorCount: 1 })).toContain('Some requests could not be read');
+    expect(render(empty, 'failed')).toContain('Couldn’t finish connecting your work');
+    expect(render(empty, 'running')).toContain('Your recent work');
   });
 
   it('counts requests already linked to an area while other work is still connecting or unreadable', () => {
