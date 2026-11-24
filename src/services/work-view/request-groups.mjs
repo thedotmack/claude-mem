@@ -541,10 +541,11 @@ export function storyParts(narrative) {
 
 /** On the story's one retry, a preference over its 200-character cap is cut to the cap (at a word boundary, with an
  * ellipsis) instead of refused again: one preference a character over otherwise fails the whole story and its other
- * preferences. The narrative keeps its own refusal, which asks for a condensed rewrite. */
-export function trimStoryPreferences(story) {
+ * preferences. The narrative keeps its own refusal, which asks for a condensed rewrite. Each trimmed preference's label
+ * is added to `coercedFields`, so the refresh can report the trim instead of cutting silently. */
+export function trimStoryPreferences(story, coercedFields = new Set()) {
   if (!Array.isArray(story?.preferences)) return story;
-  const options = { coerce: true, coercedFields: new Set() };
+  const options = { coerce: true, coercedFields };
   return { ...story, preferences: story.preferences.map((preference, index) => typeof preference?.preference === 'string' && preference.preference.trim()
     ? { ...preference, preference: reviewText(preference.preference, 200, `preferences[${index}].preference`, options) } : preference) };
 }

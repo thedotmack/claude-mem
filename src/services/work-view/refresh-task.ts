@@ -938,7 +938,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
         };
         let previous: { narrative: string; preferences: any[] } | null = null;
         let remaining = storyInput.reviews as any[];
-        let parts = 0;
+        let parts = 0, storyPreferencesTrimmed = 0;
         while (remaining.length) {
           const batch = packStoryBatch(remaining, previous);
           remaining = remaining.slice(batch.length);
@@ -948,15 +948,16 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
           questionBudget = { bytes: OWNER_GOALS_QUESTION_BYTES, refusal: 'This story question exceeds the input budget, including its refused answer. Nothing was recorded; no review was skipped.' };
           try {
             await step('story', storyQuestion(input), async (answer, retry) => {
-              if (retry) answer = trimStoryPreferences(answer);
-              if (last) return cli(['record-story'], answer, { now: storyReadAt });
-              previous = validateStory(answer);
-              return previous;
+              const trimmed = new Set<string>();
+              if (retry) answer = trimStoryPreferences(answer, trimmed);
+              const saved = last ? cli(['record-story'], answer, { now: storyReadAt }) : (previous = validateStory(answer));
+              storyPreferencesTrimmed += trimmed.size;
+              return saved;
             });
           } finally { questionBudget = null; }
           parts++;
         }
-        done.push(`${storyInput.update ? 'story updated' : 'story written'}${parts > 1 ? ` in ${parts} parts` : ''}`);
+        done.push(`${storyInput.update ? 'story updated' : 'story written'}${parts > 1 ? ` in ${parts} parts` : ''}${storyPreferencesTrimmed ? ` (${storyPreferencesTrimmed} story preferences trimmed after retry)` : ''}`);
       }
       // Held so focus and the story still ran. When both failed, the run's error names both.
       const heldFailures = [namingError, focusError].filter(error => error != null);
