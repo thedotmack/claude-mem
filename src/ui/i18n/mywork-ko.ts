@@ -1,4 +1,7 @@
 export const myworkKo: Record<string, string> = {
+  "{count} agent is set up": "에이전트 {count}개가 설정되었습니다",
+  "{count} agents are set up": "에이전트 {count}개가 설정되었습니다",
+  "With Cloud Sync, your next agent can pick up where you left off, even on another device.": "Cloud Sync를 사용하면 다른 기기에서도 다음 에이전트가 하던 작업을 이어갈 수 있습니다.",
   'Asked by {name} · started {time} · {duration} · {stage}': '요청자 {name} · {time} 시작 · {duration} · {stage}',
   'Why it’s suggested: {reason}': '제안 이유: {reason}',
   '{count} area': '영역 {count}개',

@@ -573,6 +573,16 @@
   /* Back keeps its own line at the top of the row; the forward buttons stack full width under it. */
   .setup-actions { flex-direction: column; align-items: stretch; gap: 10px; margin-top: 22px; }
   .setup-actions-forward { flex-direction: column; align-items: stretch; margin-left: 0; gap: 10px; }
+  .install-form > .setup-actions {
+    position: sticky;
+    bottom: 0;
+    z-index: 2;
+    margin-inline: -16px;
+    padding: 10px 16px max(10px, env(safe-area-inset-bottom));
+    border-top: 1px solid var(--line);
+    background: var(--background);
+  }
+  .install-form :is(input, select, button) { scroll-margin-bottom: 84px; }
   .cmem-setup .setup-back { align-self: flex-start; }
   .setup-waiting { max-width: none; text-align: left; }
   .panel { padding: 18px; border-radius: 18px; }
