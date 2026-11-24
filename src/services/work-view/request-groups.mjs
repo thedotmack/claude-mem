@@ -815,7 +815,9 @@ const AREA_NAME_MAX = 80, AREA_SENTENCE_MAX = 300;
 /**
  * A focus answer checked against the input it was made from. Two kinds of question share the answer shape:
  * - placing (focus-input): every listed request is placed exactly once, in a listed area by its exact id or in "other";
- *   a request whose conversations hold several separate asks may be promoted into a proposed area.
+ *   a request whose conversations hold several separate asks may be promoted into a proposed area. A request the
+ *   model cannot decide goes in "ignored" with a reason instead of a placement and is recorded in "other" with
+ *   that reason as its evidence — grouping's `ignored` carried to focus (#6432).
  * - Other (focus-input --other): nothing is placed; requests in Other that are steps of something larger cluster into
  *   a "new" proposal (two or more: one request is a request, not a cluster), and one may be promoted.
  * An area id that is not listed is refused, never mapped to Other: guessing would file the request wrongly. A proposal's
@@ -832,6 +834,9 @@ export function validateFocusAnswer(answer, input, ledger, { other = false } = {
   const dismissed = new Map(input.dismissed.map((area) => [area.focusAreaId, area]));
   const placed = new Map();
   if (other && answer.placements.length) throw new TypeError('This question places nothing: answer "placements": [] and propose areas only.');
+  const ignoredEntries = Array.isArray(answer?.ignored) ? answer.ignored : [];
+  if (other && ignoredEntries.length) throw new TypeError('This question places nothing: answer "placements": [] and propose areas only; "ignored" belongs to the placing question.');
+  const ignored = new Map();
   for (const [index, placement] of answer.placements.entries()) {
     const label = `placements[${index}]`;
     if (!listed.has(placement?.anchor)) throw new TypeError(`${label} names ${placement?.anchor}, which was not asked about.`);
@@ -842,8 +847,15 @@ export function validateFocusAnswer(answer, input, ledger, { other = false } = {
     }
     placed.set(placement.anchor, { focusAreaId: placement.focusAreaId, evidence: boundedText(placement.evidence, AREA_SENTENCE_MAX, `${label}.evidence`) });
   }
+  for (const [index, entry] of ignoredEntries.entries()) {
+    const label = `ignored[${index}]`;
+    if (!listed.has(entry?.anchor)) throw new TypeError(`${label} names ${entry?.anchor}, which was not asked about.`);
+    if (placed.has(entry.anchor)) throw new TypeError(`${label} names ${entry.anchor}, which a placement already places; a request is placed or skipped, not both.`);
+    if (ignored.has(entry.anchor)) throw new TypeError(`${label} names ${entry.anchor} a second time.`);
+    ignored.set(entry.anchor, boundedText(entry.reason, 200, `${label}.reason`));
+  }
   if (!other) {
-    const missing = [...listed.keys()].filter((anchor) => !placed.has(anchor));
+    const missing = [...listed.keys()].filter((anchor) => !placed.has(anchor) && !ignored.has(anchor));
     if (missing.length) throw new TypeError(`Place every request asked about; missing ${missing.join(', ')}.`);
   }
   const held = new Set();
@@ -871,9 +883,16 @@ export function validateFocusAnswer(answer, input, ledger, { other = false } = {
     };
   });
   return {
-    placements: [...placed].filter(([anchor]) => !held.has(anchor)).map(([anchor, { focusAreaId, evidence }]) => ({
-      anchorConversationKey: anchor, focusAreaId, basis: requestIndex.basis(listed.get(anchor).groupId), evidence,
-    })),
+    placements: [
+      ...[...placed].filter(([anchor]) => !held.has(anchor)).map(([anchor, { focusAreaId, evidence }]) => ({
+        anchorConversationKey: anchor, focusAreaId, basis: requestIndex.basis(listed.get(anchor).groupId), evidence,
+      })),
+      // A skipped request is recorded in Other with the model's reason as its evidence: the batch is
+      // decided, and the owner can move the request whenever they judge it.
+      ...[...ignored].filter(([anchor]) => !held.has(anchor)).map(([anchor, reason]) => ({
+        anchorConversationKey: anchor, focusAreaId: OTHER_FOCUS_AREA_ID, basis: requestIndex.basis(listed.get(anchor).groupId), evidence: reason,
+      })),
+    ],
     proposals,
     ...(other ? { otherPassHash: otherPassHash(ledger, [...listed.keys()].filter((anchor) => !held.has(anchor)).map((anchor) => listed.get(anchor).groupId), requestIndex) } : {}),
   };

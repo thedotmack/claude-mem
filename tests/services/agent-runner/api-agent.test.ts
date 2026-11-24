@@ -96,6 +96,21 @@ describe('the API agent talks to the selected provider', () => {
     expect(calls[0].body.max_tokens).toBe(16_000);
   });
 
+  it('a cut-off answer keeps its raw text on the error and says why raising the limit is not the fix', async () => {
+    // #6432: the output that runs to the cap is degenerate (repetition, malformed JSON), at any limit —
+    // the same failure at 16k, 32k and 100k. The error must not read as "the answer was too big", and
+    // the raw text must ride on the error so the caller can keep it in failed-answers/ for diagnosis.
+    const partial = '{"groups": [{"title": "Cards", "conversations": [   ';
+    const { calls } = fakeFetch([{ body: { choices: [{ finish_reason: 'length', message: { content: partial } }] } }]);
+    const error = await askApiTarget(target(), 'the question').then(() => null, (caught: unknown) => caught);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toMatch(/finish reason: length/);
+    expect((error as Error).message).toMatch(/degenerated/);
+    expect((error as Error).message).toMatch(/raising it does not fix it/);
+    expect((error as { rawAnswer?: unknown }).rawAnswer).toBe(partial);
+    expect(calls.length).toBe(1);
+  });
+
   it('turns off Bun\'s fetch idle timeout, so a long silent answer runs to the request deadline', async () => {
     // A non-streamed answer sends no byte until it is done; Bun's 5-minute idle timeout fired first (#6222).
     const { calls } = fakeFetch([{ body: { choices: [{ message: { content: 'a' } }] } }]);

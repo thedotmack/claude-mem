@@ -132,12 +132,13 @@ A **focus area** is a part of the owner's work you could ask for things inside o
    - `remaining`: requests left for later batches.
 
    If `requests` is empty, go to step 3. A request the owner moved stays where they put it and is never listed.
-2. Place every listed request exactly once, by the exact `focusAreaId` of the area you could ask for it inside of (read the area's goal and about), or `"other"` when no area fits. Sharing a repo is not evidence. Never invent an id. Each placement needs `evidence` (about 220 chars and never over 300) quoting the request's or the area's words. If a request's conversations hold several separate asks (read `conversationAsks`), it is really an area: you may also **promote** it with a `promote` proposal holding that one request. Record the batch, then run `focus-input` again until `requests` is empty:
+2. Place every listed request exactly once, by the exact `focusAreaId` of the area you could ask for it inside of (read the area's goal and about), or `"other"` when no area fits. Sharing a repo is not evidence. Never invent an id. Each placement needs `evidence` (about 220 chars and never over 300) quoting the request's or the area's words. A request you cannot decide — its asks do not say what work it is — goes in `"ignored"` with a one-line `"reason"` instead of a placement; it is recorded in Other with that reason, and the owner can move it later. If a request's conversations hold several separate asks (read `conversationAsks`), it is really an area: you may also **promote** it with a `promote` proposal holding that one request. Record the batch, then run `focus-input` again until `requests` is empty:
 
 ```bash
 $CLI record-focus - <<'JSON'
 {"placements": [{"anchor": "<anchor>", "focusAreaId": "fa_…", "evidence": "…"}, {"anchor": "<anchor>", "focusAreaId": "other", "evidence": "…"}],
- "proposals": [{"kind": "promote", "name": "…", "goal": "…", "about": "…", "anchors": ["<anchor>"], "sameAs": null, "evidence": "…"}]}
+ "proposals": [{"kind": "promote", "name": "…", "goal": "…", "about": "…", "anchors": ["<anchor>"], "sameAs": null, "evidence": "…"}],
+ "ignored": [{"anchor": "<anchor>", "reason": "…"}]}
 JSON
 ```
 

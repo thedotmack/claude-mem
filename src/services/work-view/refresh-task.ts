@@ -175,7 +175,9 @@ export const TITLE_ANSWER_SCHEMA: AnswerSchema = strictObject({
 });
 
 /** The answer `record-focus` takes: every request placed by area id (or "other"), and areas proposed from Other.
- * sameAs is the model's judgment of which saved area (dismissed ones included) a proposal already is, or null. */
+ * sameAs is the model's judgment of which saved area (dismissed ones included) a proposal already is, or null.
+ * A request the model cannot decide goes in `ignored` with its reason and is recorded in Other
+ * (validateFocusAnswer) — the focus counterpart of grouping's `ignored`. */
 export const FOCUS_ANSWER_SCHEMA: AnswerSchema = strictObject({
   placements: { type: 'array', items: strictObject({ anchor: { type: 'string' }, focusAreaId: { type: 'string' }, evidence: { type: 'string' } }) },
   proposals: { type: 'array', items: strictObject({
@@ -185,6 +187,7 @@ export const FOCUS_ANSWER_SCHEMA: AnswerSchema = strictObject({
     sameAs: { type: ['string', 'null'] },
     evidence: { type: 'string' },
   }) },
+  ignored: { type: 'array', items: strictObject({ anchor: { type: 'string' }, reason: { type: 'string' } }) },
 });
 
 /** When each step ran, for refresh.json's run record (not shown in My Work). */
@@ -473,12 +476,33 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
     };
     /** Ask, save, and on a refusal (unreadable JSON or a validator's) ask once more with the answer and reason.
      * A step refused twice fails with its last raw answer kept in failed-answers/ for diagnosis. `retry` tells the save
-     * it holds that second answer. */
+     * it holds that second answer. An answer cut off at the provider's token limit fails at once, its raw text
+     * kept the same way: re-asking cannot fix output that degenerated (#6432). */
     const askAndSave = async <T>(name: Step, question: string, save: (answer: any, retry: boolean) => T | Promise<T>, answerSchema?: AnswerSchema): Promise<T> => {
+      /** A failed answer kept for diagnosis, named by step and agent. Returns its path. */
+      const keepFailedAnswer = (text: string): string => {
+        const failedDir = join(ledgerDir, 'failed-answers');
+        mkdirSync(failedDir, { recursive: true });
+        const answerPath = join(failedDir, `${new Date(now()).toISOString().replaceAll(':', '-')}-${name}-${agent}.txt`);
+        writeFileSync(answerPath, text, { mode: 0o600 });
+        return answerPath;
+      };
       let refusal: string | null = null;
       let answer = '';
       for (let attempt = 0; attempt < 2; attempt++) {
-        answer = await ask(refusal ? `${question}\n\nYour previous answer was refused: ${refusal}\nRejected answer:\n${answer}\n\nFix it and answer again.` : question, stepModels[name], answerSchema);
+        try {
+          answer = await ask(refusal ? `${question}\n\nYour previous answer was refused: ${refusal}\nRejected answer:\n${answer}\n\nFix it and answer again.` : question, stepModels[name], answerSchema);
+        } catch (error) {
+          // An answer the provider cut off arrives as an error carrying the raw text (the API agent's
+          // readAnswer): keep it like a refused answer and fail with its path, instead of losing the one
+          // piece of evidence that shows what the model did. Errors carrying no answer (a provider
+          // refusal, a timeout) keep their own shape.
+          const rawAnswer = (error as { rawAnswer?: unknown })?.rawAnswer;
+          if (typeof rawAnswer !== 'string' || !rawAnswer) throw error;
+          const answerPath = keepFailedAnswer(rawAnswer);
+          // The path goes first: the runner keeps only the first 500 characters of an error.
+          throw refused(new Error(`${name} (raw answer: ${answerPath}): ${error instanceof Error ? error.message : String(error)}`));
+        }
         try { return await save(parseAgentJson(answer), attempt > 0); }
         catch (error) {
           // A save that failed after it started writing is not the answer's fault, and asking again would write twice.
@@ -486,10 +510,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
           refusal = error instanceof Error ? error.message : String(error);
         }
       }
-      const failedDir = join(ledgerDir, 'failed-answers');
-      mkdirSync(failedDir, { recursive: true });
-      const answerPath = join(failedDir, `${new Date(now()).toISOString().replaceAll(':', '-')}-${name}-${agent}.txt`);
-      writeFileSync(answerPath, answer, { mode: 0o600 });
+      const answerPath = keepFailedAnswer(answer);
       // The path goes first: the runner keeps only the first 500 characters of an error.
       throw refused(new Error(`${name} (raw answer: ${answerPath}): ${refusal}`));
     };
@@ -861,7 +882,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
           previousBatch = anchors.join('\n');
           const saved = await step('focus', sorting([
             `Do only section 4, steps 1–2 (place each request in a focus area, promoting one that holds several separate asks) for this batch, the \`focus-input\` output (also saved in ${writeInput('focus-input', input)}):\n\n\`\`\`json\n${JSON.stringify(input, null, 2)}\n\`\`\``,
-            `Place each of these ${anchors.length} requests exactly once, by its "anchor": ${anchors.join(', ')}. Reply with only the JSON that \`record-focus\` takes ({"placements": [...], "proposals": [...]}).`,
+            `Place each of these ${anchors.length} requests exactly once, by its "anchor": ${anchors.join(', ')}. Reply with only the JSON that \`record-focus\` takes ({"placements": [...], "proposals": [...], "ignored": [...]}). A request you cannot decide goes in "ignored" with a one-line "reason" instead of a placement; it is recorded in Other with that reason, for the owner to move.`,
           ].join('\n\n')), (answer, retry) => recordFocus(['--limit', String(FOCUS_BATCH)], retry ? withoutRefusedProposals(answer, input) : answer), FOCUS_ANSWER_SCHEMA);
           placed += saved.placed; proposed += saved.proposed;
         }

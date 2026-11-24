@@ -691,7 +691,7 @@ describe('focus step', () => {
       const objects: any[] = [];
       const walk = (node: any) => { if (node?.type === 'object') objects.push(node); for (const value of Object.values(node ?? {})) if (value && typeof value === 'object') walk(value); };
       walk(FOCUS_ANSWER_SCHEMA);
-      expect(objects.length).toBe(3);
+      expect(objects.length).toBe(4);
       for (const object of objects) { expect(object.additionalProperties).toBe(false); expect(object.required).toEqual(Object.keys(object.properties)); }
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
