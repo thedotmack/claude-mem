@@ -88,9 +88,19 @@ export function stripNul(value: unknown): unknown {
   if (typeof value === 'string') return value.replaceAll('\u0000', '');
   if (Array.isArray(value)) return value.map(stripNul);
   if (value !== null && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype) {
-    return Object.fromEntries(
-      Object.entries(value).map(([k, v]) => [k.replaceAll('\u0000', ''), stripNul(v)]),
-    );
+    const entries: [string, unknown][] = [];
+    const seen = new Set<string>();
+    for (const [k, v] of Object.entries(value)) {
+      const key = k.replaceAll('\u0000', '');
+      // `key` and `k\0ey` would collapse into one field. Reject the event the way
+      // Postgres did before this cleanup (22P05 -> 400) instead of losing a value.
+      if (seen.has(key)) {
+        throw Object.assign(new Error(`Two keys collide once NUL is removed: ${JSON.stringify(key)}`), { code: '22P05' });
+      }
+      seen.add(key);
+      entries.push([key, stripNul(v)]);
+    }
+    return Object.fromEntries(entries);
   }
   return value;
 }

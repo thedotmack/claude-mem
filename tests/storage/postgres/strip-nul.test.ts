@@ -19,4 +19,10 @@ describe('stripNul', () => {
     const stored = JSON.stringify(stripMemoryTagsFromJsonStrings(stripNul(payload)));
     expect(stored).not.toContain('secret');
   });
+
+  it('rejects keys that collide once NUL is removed instead of overwriting one', () => {
+    let error: unknown;
+    try { stripNul({ key: 'first', ['k\u0000ey']: 'second' }); } catch (e) { error = e; }
+    expect((error as { code?: string }).code).toBe('22P05');
+  });
 });
