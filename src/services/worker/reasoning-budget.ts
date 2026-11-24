@@ -15,15 +15,15 @@ import { logger } from '../../utils/logger.js';
 import type { PaidSendBudget } from './paid-send-budget.js';
 import { resolveLlmTimeoutMs } from './retry.js';
 import type { OpenAICompatReasoningOff } from '../../shared/openai-compat-presets.js';
+import type { OpenAICompatReasoningEffort } from '../../ui/provider-options.js';
 
 export const REASONING_DISABLED: { enabled: false } = { enabled: false };
 
-/**
- * The body that asks an endpoint to skip thinking, in the shape its preset
- * names. `reasoning-disabled` is the OpenAI-compatible field; `effort-none` is
- * an OpenAI `reasoning_effort` for gateways that ignore that field.
- */
-export function openAICompatReasoningOffBody(mode: OpenAICompatReasoningOff | undefined): Record<string, unknown> {
+export type CompatReasoningBody = { reasoning: typeof REASONING_DISABLED } | { reasoning_effort: OpenAICompatReasoningEffort };
+
+/** An explicit effort selects the top-level wire field, including on custom endpoints. */
+export function openAICompatReasoningBody(mode: OpenAICompatReasoningOff | undefined, effort?: OpenAICompatReasoningEffort): CompatReasoningBody {
+  if (effort) return { reasoning_effort: effort };
   return mode === 'effort-none' ? { reasoning_effort: 'none' } : { reasoning: REASONING_DISABLED };
 }
 
@@ -95,6 +95,7 @@ export function isLengthTruncatedEmptyReply(content: string | null | undefined, 
 
 /** The request already asked the model not to reason (OpenRouter's enabled:false, or effort "none"). */
 export function requestDisablesReasoning(body: Record<string, unknown>): boolean {
+  if (body.reasoning_effort === 'none') return true;
   const reasoning = body.reasoning;
   if (!reasoning || typeof reasoning !== 'object' || Array.isArray(reasoning)) return false;
   const record = reasoning as { enabled?: unknown; effort?: unknown };
@@ -109,14 +110,20 @@ export function reasoningTokenCount(usage: { completion_tokens_details?: { reaso
 
 const endpointsThatRejectReasoningField = new Set<string>();
 
-export function endpointRejectsReasoningField(url: string): boolean {
-  return endpointsThatRejectReasoningField.has(url);
+// A server may support reasoning_effort even after rejecting the nested reasoning field.
+function reasoningFieldKey(url: string, body?: CompatReasoningBody): string {
+  return (body && 'reasoning_effort' in body ? 'reasoning_effort:' : 'reasoning:') + url;
 }
 
-/** Remember a URL whose schema rejects `reasoning`. True the first time. */
-export function rememberEndpointRejectsReasoningField(url: string): boolean {
-  if (endpointsThatRejectReasoningField.has(url)) return false;
-  endpointsThatRejectReasoningField.add(url);
+export function endpointRejectsReasoningField(url: string, body?: CompatReasoningBody): boolean {
+  return endpointsThatRejectReasoningField.has(reasoningFieldKey(url, body));
+}
+
+/** Remember a URL and wire field its schema rejects. True the first time. */
+export function rememberEndpointRejectsReasoningField(url: string, body?: CompatReasoningBody): boolean {
+  const key = reasoningFieldKey(url, body);
+  if (endpointsThatRejectReasoningField.has(key)) return false;
+  endpointsThatRejectReasoningField.add(key);
   return true;
 }
 

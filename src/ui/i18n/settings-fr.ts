@@ -119,6 +119,8 @@ export const settingsFr: Record<string, string> = {
   'OpenRouter Model': 'Modèle OpenRouter',
   'Model identifier from openrouter.ai/models (e.g., anthropic/claude-haiku-4.5, google/gemini-2.5-flash)': 'Identifiant de modèle répertorié sur openrouter.ai/models, par exemple anthropic/claude-haiku-4.5 ou google/gemini-2.5-flash',
   'OpenRouter Base URL': 'URL de base OpenRouter',
+  'Select an effort supported by your model to override the reasoning setting for the observer and API agent.': 'Sélectionnez un effort pris en charge par votre modèle pour remplacer le réglage de raisonnement de l’observateur et de l’agent API.',
+  'No override': 'Aucune modification',
   'Reasoning effort': 'Effort de raisonnement',
   'openrouter.ai only. Empty (the default) sends reasoning off. Set an effort to opt back in. A custom gateway does not get this field until an empty length-truncated reply retries once.': 'Uniquement sur openrouter.ai. Si ce champ est vide (par défaut), le raisonnement est désactivé. Choisissez un niveau d’effort pour le réactiver. Avec une passerelle personnalisée, ce champ est envoyé uniquement lors d’une nouvelle tentative après une réponse vide tronquée par la limite de longueur.',
   'Site URL (Optional)': 'URL du site (facultatif)',

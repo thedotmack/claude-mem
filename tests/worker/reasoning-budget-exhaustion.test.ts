@@ -37,6 +37,7 @@ const OBSERVATION = '<observation><title>Kept the answer</title><narrative>Reaso
 type Body = Record<string, unknown>;
 
 function reasoningDisabled(body: Body): boolean {
+  if (body.reasoning_effort === 'none') return true;
   const reasoning = body.reasoning;
   if (!reasoning || typeof reasoning !== 'object') return false;
   return (reasoning as { enabled?: unknown }).enabled === false;
@@ -78,9 +79,9 @@ async function startReasoningServer(mode: 'honor-disable' | 'always-burn' | 'rej
       bodies.push(body);
       let payload: Body;
       let status = 200;
-      if (mode === 'reject-unsupported-parameter' && 'reasoning' in body) {
+      if (mode === 'reject-unsupported-parameter' && ('reasoning' in body || 'reasoning_effort' in body)) {
         status = 400;
-        payload = { error: { message: "Unsupported parameter: 'reasoning'", type: 'invalid_request_error', code: 'unsupported_parameter' } };
+        payload = { error: { message: `Unsupported parameter: '${'reasoning_effort' in body ? 'reasoning_effort' : 'reasoning'}'`, type: 'invalid_request_error', code: 'unsupported_parameter' } };
       } else if (mode === 'reject-mandatory-reasoning' && 'reasoning' in body) {
         status = 400;
         payload = { error: { message: "Invalid parameter: reasoning.effort 'none' is unsupported for this model", type: 'invalid_request_error' } };
@@ -109,13 +110,13 @@ async function startReasoningServer(mode: 'honor-disable' | 'always-burn' | 'rej
   };
 }
 
-function compatConfig(url: string) {
+function compatConfig(url: string, presetId = 'custom') {
   return {
     apiKey: 'fixture-not-a-secret',
     apiKeys: ['fixture-not-a-secret'],
     model: 'deepseek-v4-flash',
     apiUrl: url,
-    preset: resolveOpenAICompatPreset('custom'),
+    preset: resolveOpenAICompatPreset(presetId),
     requiresApiKey: true,
   };
 }
@@ -129,12 +130,12 @@ type QueryResult = {
   tokensUsed?: number;
 };
 
-function queryCompat(url: string, budget?: PaidSendBudget) {
+function queryCompat(url: string, budget?: PaidSendBudget, presetId = 'custom') {
   return (new OpenAICompatProvider({} as never, {} as never) as unknown as {
     query(h: unknown[], c: unknown, signal?: AbortSignal, perAttemptTimeoutMs?: number, paidSendBudget?: PaidSendBudget): Promise<QueryResult>;
   }).query(
     [{ role: 'user', content: 'Observe this tool call and write one observation.' }],
-    compatConfig(url),
+    compatConfig(url, presetId),
     undefined,
     undefined,
     budget,
@@ -210,6 +211,46 @@ describe('reasoning budget exhaustion', () => {
       expect(server.bodies[1]?.reasoning).toEqual({ enabled: false });
       expect(result.content).toContain('Kept the answer');
       expect(errorSpy.mock.calls.some(call => String(call[1]).includes('output budget'))).toBe(true);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('sends explicit effort despite reasoning=on and forces none only on the budget retry', async () => {
+    settingsOverrides.CLAUDE_MEM_OPENAI_COMPAT_REASONING = 'on';
+    settingsOverrides.CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT = 'max';
+    const server = await startReasoningServer('honor-disable');
+    try {
+      const result = await queryCompat(server.url, undefined, 'opencode-go');
+      expect(result.content).toContain('Kept the answer');
+      expect(server.bodies.map(body => body.reasoning_effort)).toEqual(['max', 'none']);
+      expect(server.bodies.every(body => !('reasoning' in body))).toBe(true);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('does not spend another send when explicit none already exhausted the budget', async () => {
+    settingsOverrides.CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT = 'none';
+    const server = await startReasoningServer('always-burn');
+    try {
+      await queryCompat(server.url);
+      expect(server.bodies.map(body => body.reasoning_effort)).toEqual(['none']);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('remembers a rejected effort without suppressing the other reasoning field on the same URL', async () => {
+    settingsOverrides.CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT = 'high';
+    const server = await startReasoningServer('reject-unsupported-parameter');
+    try {
+      await queryCompat(server.url);
+      await queryCompat(server.url);
+      settingsOverrides.CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT = '';
+      await queryCompat(server.url);
+      expect(server.bodies.map(body => body.reasoning_effort)).toEqual(['high', undefined, undefined, undefined, undefined]);
+      expect(server.bodies.map(body => body.reasoning)).toEqual([undefined, undefined, undefined, { enabled: false }, undefined]);
     } finally {
       await server.close();
     }
@@ -692,4 +733,16 @@ describe('CLAUDE_MEM_OPENAI_COMPAT_REASONING validation', () => {
     expect(rejected.valid).toBe(false);
     expect(rejected.error).toContain('must be "off" (default) or "on"');
   });
+});
+
+it('validates OpenAI-compatible effort separately from the legacy reasoning toggle', () => {
+  const routes = new SettingsRoutes({} as never) as unknown as {
+    validateSettings(settings: unknown): { valid: boolean };
+  };
+  for (const value of ['', 'none', 'low', 'medium', 'high', 'xhigh', 'max']) {
+    expect(routes.validateSettings({ CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT: value }).valid).toBe(true);
+  }
+  for (const value of ['on', 'minimal', 2, null]) {
+    expect(routes.validateSettings({ CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT: value }).valid).toBe(false);
+  }
 });

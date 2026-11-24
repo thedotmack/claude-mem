@@ -64,6 +64,18 @@ describe('the API agent talks to the selected provider', () => {
     expect(calls[0].body.reasoning_effort).toBe('none');
   });
 
+  it('sends explicit effort once and strips it on a schema refusal, including from the extra body', async () => {
+    const { calls } = fakeFetch([{ status: 422, text: "Unknown field 'reasoning_effort'" }, {}]);
+    const go: ApiTarget = {
+      provider: 'openai-compatible', url: 'https://llm.test/v1', apiKey: 'sk-test', model: 'beam-free',
+      reasoningOff: 'effort-none', reasoningEffort: 'max', extraBody: { reasoning_effort: 'low' },
+    };
+    await askApiTarget(go, 'first');
+    await askApiTarget(go, 'next');
+    expect(calls.map(call => call.body.reasoning_effort)).toEqual(['max', undefined, undefined]);
+    expect(calls.every(call => !('reasoning' in call.body))).toBe(true);
+  });
+
   it('gives each step its own session id when the caller does not name one', async () => {
     const { calls } = fakeFetch([{ body: { choices: [{ message: { content: 'ok' } }] } }]);
     const opencode: ApiTarget = {
@@ -228,7 +240,7 @@ describe('the API target follows the selected provider', () => {
   };
 
   it('resolves OpenRouter\'s endpoint, key and model', async () => {
-    await withSettings({ CLAUDE_MEM_PROVIDER: 'openrouter', CLAUDE_MEM_OPENROUTER_API_KEY: 'sk-or-test', CLAUDE_MEM_OPENROUTER_MODEL: 'vendor/model' }, path => {
+    await withSettings({ CLAUDE_MEM_PROVIDER: 'openrouter', CLAUDE_MEM_OPENROUTER_API_KEY: 'sk-or-test', CLAUDE_MEM_OPENROUTER_MODEL: 'vendor/model', CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT: 'max' }, path => {
       const resolution = resolveApiTarget(path);
       expect(resolution.target).toEqual({ provider: 'openrouter', url: 'https://openrouter.ai/api/v1/chat/completions', apiKey: 'sk-or-test', model: 'vendor/model' });
     });
@@ -242,11 +254,12 @@ describe('the API target follows the selected provider', () => {
   });
 
   it('carries the preset\'s OpenCode Go session header and reasoning body into the target', async () => {
-    await withSettings({ CLAUDE_MEM_PROVIDER: 'openai-compatible', CLAUDE_MEM_OPENAI_COMPAT_PRESET: 'opencode-go', CLAUDE_MEM_OPENAI_COMPAT_API_KEY: 'sk-test', CLAUDE_MEM_OPENAI_COMPAT_MODEL: 'deepseek-v4.1-flash' }, path => {
+    await withSettings({ CLAUDE_MEM_PROVIDER: 'openai-compatible', CLAUDE_MEM_OPENAI_COMPAT_PRESET: 'opencode-go', CLAUDE_MEM_OPENAI_COMPAT_API_KEY: 'sk-test', CLAUDE_MEM_OPENAI_COMPAT_MODEL: 'deepseek-v4.1-flash', CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT: 'xhigh' }, path => {
       const target = resolveApiTarget(path).target;
       expect(target?.url).toBe('https://opencode.ai/zen/go/v1/chat/completions');
       expect(target?.sessionHeader).toBe('x-opencode-session');
       expect(target?.reasoningOff).toBe('effort-none');
+      expect(target?.reasoningEffort).toBe('xhigh');
     });
   });
 

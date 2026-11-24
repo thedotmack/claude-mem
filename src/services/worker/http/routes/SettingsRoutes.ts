@@ -18,7 +18,7 @@ import { parseContextCountValue } from '../../../../shared/context-count.js';
 import { OPENROUTER_REASONING_EFFORTS, parseOpenRouterReasoningEffort } from '../../OpenRouterProvider.js';
 import { parseOpenAICompatReasoning } from '../../reasoning-budget.js';
 import { parseProviderBySource } from '../../../../shared/provider-by-source.js';
-import { QUOTA_FALLBACK_OPTIONS } from '../../../../ui/provider-options.js';
+import { OPENAI_COMPAT_REASONING_EFFORTS, parseOpenAICompatReasoningEffort, QUOTA_FALLBACK_OPTIONS } from '../../../../ui/provider-options.js';
 import { CODEX_REASONING_EFFORTS, isCodexReasoningEffort } from '../../CodexProvider.js';
 import { emitContextInvalidation, noteUserSettingsSaved } from '../../../../shared/context-invalidation.js';
 import { WORK_VIEW_AGENT_CHOICES } from '../../../work-view/refresh-task.js';
@@ -335,6 +335,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       // choose the model and reasoning policy for the configured endpoint.
       'CLAUDE_MEM_OPENAI_COMPAT_MODEL',
       'CLAUDE_MEM_OPENAI_COMPAT_REASONING',
+      'CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT',
       'CLAUDE_MEM_OPENROUTER_REASONING_EFFORT',
       'CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW',
       'CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS',
@@ -648,6 +649,12 @@ export class SettingsRoutes extends BaseRouteHandler {
     if (settings.CLAUDE_MEM_OPENROUTER_REASONING_EFFORT
       && !parseOpenRouterReasoningEffort(settings.CLAUDE_MEM_OPENROUTER_REASONING_EFFORT)) {
       return { valid: false, error: `CLAUDE_MEM_OPENROUTER_REASONING_EFFORT must be empty or one of: ${OPENROUTER_REASONING_EFFORTS.join(', ')}` };
+    }
+
+    if (settings.CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT !== undefined
+      && settings.CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT !== ''
+      && !parseOpenAICompatReasoningEffort(settings.CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT)) {
+      return { valid: false, error: `CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT must be empty or one of: ${OPENAI_COMPAT_REASONING_EFFORTS.join(', ')}` };
     }
 
     if (settings.CLAUDE_MEM_OPENAI_COMPAT_REASONING !== undefined
