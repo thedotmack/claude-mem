@@ -1,4 +1,7 @@
 export const myworkPtBr: Record<string, string> = {
+  '{count} agent is set up': '{count} agente configurado',
+  '{count} agents are set up': '{count} agentes configurados',
+  'With Cloud Sync, your next agent can pick up where you left off, even on another device.': 'Com o Cloud Sync, seu próximo agente pode continuar de onde você parou, mesmo em outro dispositivo.',
   'Asked by {name} · started {time} · {duration} · {stage}': 'Solicitado por {name} · início: {time} · {duration} · {stage}',
   'Why it’s suggested: {reason}': 'Motivo da sugestão: {reason}',
   '{count} area': '{count} área',
