@@ -289,15 +289,37 @@ async function runJobsRetry(args: ParsedArgs): Promise<void> {
       retriedCount: newRetriedCount,
     });
 
-    // Best-effort BullMQ re-publish using the deterministic id.
+    // Re-publish to BullMQ using the deterministic id.
     if (row.bullmq_job_id) {
       try {
         await (testSeams.republishToBullmq ?? republishToBullmq)(row.source_type, row.bullmq_job_id, newPayload);
       } catch (error) {
-        logger.warn('SYSTEM', 'BullMQ re-enqueue failed (will reconcile on startup)', {
-          jobId: id,
-          error: error instanceof Error ? error.message : String(error),
-        });
+        const reason = error instanceof Error ? error.message : String(error);
+        // Nothing publishes a `queued` row later, and retry treats `queued` as
+        // already done, so a row left there could not be retried again. Move
+        // it back to `failed`, as the stale-lock reclaim does when it cannot
+        // republish. A row a worker has already taken is left alone.
+        const unpublished = await pool.query(
+          `
+            UPDATE observation_generation_jobs
+            SET status = 'failed',
+                failed_at = now(),
+                last_error = $2::jsonb,
+                updated_at = now()
+            WHERE id = $1 AND status = 'queued'
+            RETURNING id
+          `,
+          [id, JSON.stringify({ reason: 'retry_republish_failed', error: reason })],
+        );
+        if (unpublished.rows.length > 0) {
+          await pool.query(
+            `INSERT INTO observation_generation_job_events (id, generation_job_id, event_type, status_after, attempt, details)
+             VALUES (gen_random_uuid(), $1, 'failed', 'failed', $2, $3::jsonb)`,
+            [id, row.attempts, JSON.stringify({ source: 'cli_operator_retry', reason: 'retry_republish_failed', error: reason })],
+          );
+          console.error(styleText('red', `Job was not requeued: publishing it to BullMQ failed (${reason}). The job is now failed; re-run once the queue is reachable.`));
+          process.exit(1);
+        }
       }
     }
 
@@ -553,7 +575,9 @@ async function republishToBullmq(sourceType: string, jobId: string, payload: Rec
   const { getRedisQueueConfig } = await import('../../server/queue/redis-config.js');
   const { ServerJobQueue } = await import('../../server/jobs/ServerJobQueue.js');
   const config = getRedisQueueConfig();
-  if (config.engine !== 'bullmq') return;
+  if (config.engine !== 'bullmq') {
+    throw new Error('CLAUDE_MEM_QUEUE_ENGINE is not "bullmq"');
+  }
   const { SERVER_JOB_QUEUE_NAMES } = await import('../../server/jobs/types.js');
   const lane = sourceType === 'session_summary' ? SERVER_JOB_QUEUE_NAMES.summary : SERVER_JOB_QUEUE_NAMES.event;
   // Publish through ServerJobQueue, as POST /v1/jobs/:id/retry does. A bare

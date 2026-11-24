@@ -232,6 +232,31 @@ describe('Phase 12 — server jobs CLI', () => {
     expect(inserts.length).toBeGreaterThanOrEqual(2);
   });
 
+  it('retry: a shell without the BullMQ engine does not report the job as requeued', async () => {
+    process.env.CLAUDE_MEM_QUEUE_ENGINE = 'sqlite';
+    const { pool, calls } = buildMockPool((sql) => {
+      if (sql.includes('SELECT id, team_id, project_id, status')) {
+        return [{
+          id: 'gj_failed', team_id: 'team-1', project_id: 'p-1', status: 'failed',
+          attempts: 1, bullmq_job_id: 'evt_abc', source_type: 'agent_event', payload: {},
+        }];
+      }
+      return sql.includes('UPDATE observation_generation_jobs')
+        ? [{ id: 'gj_failed', status: 'queued', attempts: 1, bullmq_job_id: 'evt_abc', source_type: 'agent_event' }]
+        : [];
+    });
+    // No republishToBullmq seam: the command's own publish path runs.
+    __setServerJobsTestSeams({ openPool: async () => ({ pool: pool as never, releasePool: async () => {} }) });
+
+    await expect(runServerJobsCommand(['retry', 'gj_failed', '--team', 'team-1'])).rejects.toThrow(/__exit_1__/);
+
+    expect(consoleLogSpy.mock.calls.map(c => String(c[0])).join('\n')).not.toMatch(/requeued/);
+    expect(consoleErrSpy.mock.calls.map(c => String(c[0])).join('\n')).toMatch(/CLAUDE_MEM_QUEUE_ENGINE is not "bullmq"/);
+    const backToFailed = calls.filter(c => /SET status = 'failed'/.test(c.sql));
+    expect(backToFailed.length).toBe(1);
+    expect(JSON.parse(String(backToFailed[0]!.params[1])).reason).toBe('retry_republish_failed');
+  });
+
   it('cancel: refuses to cancel a completed job', async () => {
     const mockData = buildMockPool((sql: string) => {
       if (sql.includes('SELECT id, team_id, project_id, status')) {
@@ -276,6 +301,7 @@ describe('server jobs CLI — state changed after the status check', () => {
   let published: string[];
   let removed: string[];
   let afterStatusCheck: (() => Promise<unknown>) | null;
+  let beforePublish: (() => Promise<unknown>) | null;
 
   beforeEach(async () => {
     schema = await createIsolatedSchema(databaseUrl, 'cm_cli_jobs');
@@ -292,7 +318,7 @@ describe('server jobs CLI — state changed after the status check', () => {
       jobType: 'observation_generate_for_event', bullmqJobId: `event-${event.id}`,
       payload: { kind: 'event', team_id: teamId, project_id: projectId, source_type: 'agent_event', source_id: event.id, generation_job_id: jobId },
     });
-    published = []; removed = []; afterStatusCheck = null;
+    published = []; removed = []; afterStatusCheck = null; beforePublish = null;
     spies = [
       spyOn(logger, 'warn').mockImplementation(() => {}),
       spyOn(console, 'log').mockImplementation(() => {}),
@@ -315,7 +341,7 @@ describe('server jobs CLI — state changed after the status check', () => {
         },
         releasePool: async () => {},
       }),
-      republishToBullmq: async (_sourceType, id) => { published.push(id); },
+      republishToBullmq: async (_sourceType, id) => { await beforePublish?.(); published.push(id); },
       removeFromBullmq: async (_sourceType, id) => { removed.push(id); },
     });
   });
@@ -380,5 +406,34 @@ describe('server jobs CLI — state changed after the status check', () => {
     await runServerJobsCommand(['cancel', jobId, '--team', teamId]);
     expect((await reload())?.status).toBe('cancelled');
     expect(removed.length).toBe(1);
+  });
+
+  // Nothing publishes a queued row later, and retry is a no-op on one.
+  it('retry does not leave a job it could not publish in queued', async () => {
+    await move('processing'); await move('failed');
+    beforePublish = async () => { throw new Error('Connection is closed.'); };
+    await expect(runServerJobsCommand(['retry', jobId, '--team', teamId])).rejects.toThrow(/__exit_1__/);
+    const unpublished = await reload();
+    expect(unpublished?.status).toBe('failed');
+    expect(unpublished?.failedAtEpoch).not.toBeNull();
+    expect(unpublished?.lastError).toEqual({ reason: 'retry_republish_failed', error: 'Connection is closed.' });
+    expect(await lifecycleCount('failed')).toBe(1);
+
+    // The queue is back: the same command requeues the job.
+    beforePublish = null;
+    await runServerJobsCommand(['retry', jobId, '--team', teamId]);
+    expect((await reload())?.status).toBe('queued');
+    expect(published).toEqual([`event-${(await reload())?.sourceId}`]);
+  });
+
+  it('retry leaves a job a worker took before the publish error alone', async () => {
+    await move('processing'); await move('failed');
+    // BullMQ accepted the job and a worker locked it; closing the queue then threw.
+    beforePublish = async () => { await move('processing'); throw new Error('Connection is closed.'); };
+    await runServerJobsCommand(['retry', jobId, '--team', teamId]);
+    const taken = await reload();
+    expect(taken?.status).toBe('processing');
+    expect(taken?.lockedBy).toBe('fixture-worker');
+    expect(await lifecycleCount('failed')).toBe(0);
   });
 });
