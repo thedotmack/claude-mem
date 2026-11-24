@@ -325,7 +325,8 @@ describe('hosted setup scan control', () => {
     expect(render()).toContain('6 agents are set up');
     expect(render(empty, 'ok', { ...ready, installedAgentCount: 1 })).toContain('1 agent is set up');
     expect(render()).toContain('Try Cloud Sync free for 30 days');
-    expect(render()).toContain('$12/month after 30 days');
+    expect(render()).toContain('No card needed for your first 30 days.');
+    expect(render()).toContain('Continue for $12/month if you choose.');
     expect(render()).not.toContain('No focus areas found');
     expect(render()).not.toContain('What else came through');
     expect(render({ ...empty, focusAreas: app.SAMPLE_FOCUS_AREAS })).toContain('Your recent work');

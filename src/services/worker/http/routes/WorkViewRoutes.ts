@@ -395,9 +395,12 @@ const setupChoiceBody = z.object({
   branch: z.enum(SETUP_BRANCHES),
   memoryBilling: z.enum(SETUP_MEMORY_BILLINGS),
   cloudSyncOffer: z.enum(SETUP_CLOUD_SYNC_OFFERS).optional(),
+  shareWorkView: z.literal(true).optional(),
   openCheckout: z.literal(true).optional(),
 }).strict().refine(choice => !choice.cloudSyncOffer || (choice.branch === 'go' && choice.memoryBilling === 'existing'), {
   message: 'A Cloud Sync offer requires On The Go with your existing memory provider.',
+}).refine(choice => !choice.shareWorkView || !!choice.cloudSyncOffer, {
+  message: 'Work View sharing requires an explicit standalone Cloud Sync offer.',
 }).refine(choice => !choice.openCheckout || !!choice.cloudSyncOffer, {
   message: 'Select a Cloud Sync offer to open its checkout.',
 });
@@ -1123,7 +1126,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
 
   /** The choice can change until the installer acts on it; after that the installer holds the result. */
   private saveSetupChoice = (req: Request, res: Response): void => {
-    const { branch, memoryBilling, cloudSyncOffer, openCheckout } = req.body as z.infer<typeof setupChoiceBody>;
+    const { branch, memoryBilling, cloudSyncOffer, shareWorkView, openCheckout } = req.body as z.infer<typeof setupChoiceBody>;
     const offer = setupCloudSyncOffer({ branch, memoryBilling, cloudSyncOffer });
     const state = readSetupState(this.setupStatePath);
     if (state.status === 'complete') { res.status(409).json({ error: 'Setup is already complete.', state: this.setupStateView(state) }); return; }
@@ -1132,7 +1135,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
     // The first checkout request belongs to the plan saved in this same write. A repeat
     // or a second browser tab cannot replace that plan while the terminal sets up pairing.
     const sameChoice = state.choice?.branch === branch && state.choice.memoryBilling === memoryBilling
-      && setupCloudSyncOffer(state.choice) === offer;
+      && setupCloudSyncOffer(state.choice) === offer && state.choice.shareWorkView === shareWorkView;
     const locked = applied || (!!state.checkout && state.installer?.stage !== 'failed');
     if (locked && !sameChoice) {
       res.status(409).json({ error: 'The installer already applied the earlier choice.', state: this.setupStateView(state) });
@@ -1149,6 +1152,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
     const usage = state.choice?.usage ?? (scanUsage ? toSetupUsage(scanUsage) : undefined);
     const choice = locked ? state.choice : {
       branch, memoryBilling, chosenAt: now,
+      ...(shareWorkView ? { shareWorkView } : {}),
       ...(offer ? { cloudSyncOffer: offer, ...(usage ? { usage } : {}) } : {}),
     };
     this.saveSetupState({ ...state, choice, checkout }, res);

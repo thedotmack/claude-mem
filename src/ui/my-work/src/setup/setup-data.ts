@@ -126,7 +126,7 @@ export interface SetupData {
 }
 
 /** The storage plan explicitly selected in the installer. */
-export interface SetupChoice { branch: SetupBranch; memoryBilling: SetupMemoryBilling; cloudSyncOffer?: SetupCloudSyncOffer }
+export interface SetupChoice { branch: SetupBranch; memoryBilling: SetupMemoryBilling; cloudSyncOffer?: SetupCloudSyncOffer; shareWorkView?: true }
 
 export interface SetupSource {
   readonly kind: 'local' | 'sample'

@@ -252,8 +252,7 @@ unknown lag rather than zero. Sequence values stay decimal strings.
 Cloud sync does not mean a byte-for-byte copy of every local file. Compatible
 readers can share My Work grouping, progress, story, reviews, decisions and
 published output links when `CLAUDE_MEM_WORK_VIEW_SHARED_STATE=true` and the hub
-supports `work_state`. The setting defaults to `false` for a consumer-first
-rollout: update participating local and hosted readers before enabling writers.
+supports `work_state`. A fresh install enables sharing after you select Cloud Sync with private Work View and approve the device. Local installs, existing explicit settings and older setup choices keep their configuration.
 Local paths, review sidecars and arbitrary deliverable files stay on their
 origin device; the shared state carries bounded semantic records and published
 links. A scope or incomplete-generation warning is distinct from a stopped

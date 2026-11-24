@@ -25,7 +25,7 @@ const loginClaim = `/api/pro/trial/claim?pairing=${pairingId}&login_only=1`;
 const authorizationUrl = `https://cmem.ai/login?next=${encodeURIComponent(loginClaim)}`;
 const checkoutUrl = `https://cmem.ai/api/pro/trial/claim?pairing=${pairingId}&trial=7`;
 
-function runCompletedPairingChild(body: Record<string, unknown>, initialSettings?: Record<string, string>, cloudSyncOffer?: SetupCloudSyncOffer): {
+function runCompletedPairingChild(body: Record<string, unknown>, initialSettings?: Record<string, string>, cloudSyncOffer?: SetupCloudSyncOffer, shareWorkView?: true, env?: Record<string, string>): {
   output: string;
   settings: Record<string, string>;
   settingsMode: number;
@@ -47,6 +47,7 @@ function runCompletedPairingChild(body: Record<string, unknown>, initialSettings
         authorizationUrl: 'https://cmem.ai/login',
         checkoutUrl: 'https://cmem.ai/api/pro/trial/claim?pairing=test&trial=7',
         cloudSyncOffer: ${JSON.stringify(cloudSyncOffer)},
+        shareWorkView: ${JSON.stringify(shareWorkView)},
       };
       const result = await completeInstallerOAuthLogin(pairing, 'test-version');
       console.log('__PAIRING_RESULT__=' + JSON.stringify({ plan: pairing.delivered?.plan, ready: result }));
@@ -57,6 +58,7 @@ function runCompletedPairingChild(body: Record<string, unknown>, initialSettings
         ...process.env,
         CLAUDE_MEM_DATA_DIR: dataDir,
         CLAUDE_MEM_TELEMETRY: '0',
+        ...env,
       },
       stdout: 'pipe',
       stderr: 'pipe',
@@ -130,6 +132,20 @@ describe('standalone Cloud Sync installer contract', () => {
     // A saved legacy request cannot silently become a new Cloud purchase either.
     expect(parseInstallerOAuthStartBody(body)).toBeNull();
     expect(parseInstallerOAuthStartBody(validStartBody)?.checkoutUrl).toBe(checkoutUrl);
+  });
+
+  it('enables the board only for an explicitly selected and approved compatible Cloud Sync device', () => {
+    const ready = { status: 'ready', user_id: 'fixture-owner', setup_token: 'fixture-setup-token', plan: 'cloud_sync', hub_url: 'https://sync.cmem.ai' };
+    const flag = 'CLAUDE_MEM_WORK_VIEW_SHARED_STATE';
+    const offer = 'cloud_sync_monthly';
+    expect(runCompletedPairingChild(ready, {}, offer, true).settings[flag]).toBe('true');
+    expect(runCompletedPairingChild(ready, { [flag]: '' }, offer, true).settings[flag]).toBe('true');
+    expect(runCompletedPairingChild(ready, { [flag]: 'false' }, offer, true).settings[flag]).toBe('false');
+    expect(runCompletedPairingChild(ready, {}, offer, true, { [flag]: 'false' }).settings[flag]).toBeUndefined();
+    expect(runCompletedPairingChild(ready, {}, offer).settings[flag]).toBeUndefined();
+    expect(runCompletedPairingChild(ready, {}, undefined, true).settings[flag]).toBeUndefined();
+    expect(runCompletedPairingChild({ ...ready, hub_url: 'https://custom-hub.test' }, {}, offer, true).settings[flag]).toBeUndefined();
+    expect(runCompletedPairingChild(ready, {}, offer, true, { CLAUDE_MEM_CLOUD_SYNC_HUB_URL: 'https://custom-hub.test' }).settings[flag]).toBeUndefined();
   });
 
   it('persists only Cloud credentials and keeps the configured observer and its credentials', () => {

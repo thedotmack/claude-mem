@@ -5,7 +5,7 @@ import { Collapsible, CollapsibleContent, CollapsibleFoldTrigger } from '@/compo
 import { interpolate, useI18n } from '@/lib/i18n'
 import { CMEM_MCP_URL, type HistoryImportProgress, type SetupHistory, type SetupTool } from '../setup-data'
 import type { HistoryImportStatus, MemoryBranch } from '../setup-flow'
-import { PageHeading, SetupActions, SetupButton, SetupError, ToolMark, type SetupBack } from './shared'
+import { PageHeading, PrivateWorkViewLink, SetupActions, SetupButton, SetupError, ToolMark, type SetupBack } from './shared'
 
 function CopyUrl({ toolName }: { toolName: string }) {
   const { t } = useI18n()
@@ -198,6 +198,7 @@ export function FinishSetupScreen({ branch, tools, selected, onSelect, history, 
   return (
     <section aria-labelledby="finish-setup-title">
       <PageHeading id="finish-setup-title" title={t('Connect your tools')} />
+      {branch === 'go' && <PrivateWorkViewLink />}
       <form onSubmit={submit} noValidate>
         <div className={history ? 'finish-grid has-history' : 'finish-grid'}>
           <div className="panel finish-tools">

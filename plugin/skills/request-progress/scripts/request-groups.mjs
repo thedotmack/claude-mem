@@ -1360,8 +1360,8 @@ var init_SettingsDefaultsManager = __esm({
         // 'false' = My Work never runs owner-goals / request-progress on its own (refresh.json in ~/.claude-mem/work-view)
         CLAUDE_MEM_WORK_VIEW_REFRESH_INTERVAL_MIN: "10",
         // Minutes between My Work's scheduled checks (each is a read-only database look; an agent runs only when something is due). 1440 = once a day. Read when the worker starts.
-        CLAUDE_MEM_WORK_VIEW_SHARED_STATE: "false",
-        // Enable only after all local/cloud readers understand reserved My Work records.
+        CLAUDE_MEM_WORK_VIEW_SHARED_STATE: "",
+        // Off until explicitly configured. A pinned 'false' remains an opt-out.
         CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER: "",
         // '' uses OpenRouter only when it is the primary provider; openrouter/openai-compatible explicitly select that provider; off disables generated My Work copy
         CLAUDE_MEM_WORK_VIEW_COPY_MODEL: "",

@@ -191,6 +191,7 @@ describe('setup checkout', () => {
     const whole = app.renderHostedOffer({ ...base, coverage: 'complete' });
     expect(whole).toContain('12,345 tokens');
     expect(whole).toContain('Last 30 days · Codex');
+    expect(whole).toContain('href="https://cmem.ai/work"');
     expect(whole).toContain('https://cmem.ai/hosted-tokens');
     expect(whole).toContain('Continue setup');
     expect(app.renderHostedOffer({ ...base, coverage: 'partial' })).toContain('At least 12,345 recorded tokens');
@@ -208,10 +209,11 @@ describe('setup checkout', () => {
   it('discloses a full monthly Cloud trial while keeping hosted token billing separate', () => {
     const html = app.renderCheckout(null, false);
     expect(html).toContain('Cloud Sync');
-    expect(html).toContain('Due today</dt><dd>$0');
+    expect(html).toContain('Due today for your first trial</dt><dd>$0');
     expect(html).toContain('$12 / month');
-    expect(html).toContain('Cloud Sync after 30 days');
-    expect(html).toContain('Card required. Cancel in your account');
+    expect(html).toContain('If you continue after 30 days');
+    expect(html).not.toContain('Secure checkout with Stripe');
+    expect(html).toContain('No card needed for your first trial.');
     expect(html).not.toContain('href="https://cmem.ai/hosted-tokens"');
     expect(html).not.toContain('included usage runs out');
     expect(html).not.toContain('$30');
@@ -222,30 +224,33 @@ describe('setup checkout', () => {
     expect(annual).toContain('Due today</dt><dd>$99');
     expect(annual).toContain('$99 / year');
     expect(annual).toContain('No trial.');
+    expect(annual).toContain('A card is required.');
+    expect(annual).toContain('Secure checkout with Stripe');
     expect(annual).not.toContain('30 days');
     expect(annual).not.toContain('$12');
     const legacy = app.renderCheckout(null, false, { legacyHosted: true });
     expect(legacy).toContain('CMEM Pro · Cloud Sync included');
     expect(legacy).toContain('$30 / month');
+    expect(legacy).toContain('A card is required.');
     expect(legacy).not.toContain('Your Cloud Sync trial lasts a full 30 days.');
   });
   it('shows a pending handoff and allows an explicit reopen once checkout is running', () => {
     const asked = app.renderCheckout(null, true);
-    expect(asked).toContain('Opening secure checkout…');
+    expect(asked).toContain('Opening Cloud Sync…');
     expect(asked).toContain('data-slot="spinner"');
-    expect(buttons(asked)).toContain('Opening checkout…');
-    expect(buttons(app.renderCheckout({ state: 'waiting', error: null }, false))).toContain('Open checkout again');
+    expect(buttons(asked)).toContain('Opening Cloud Sync…');
+    expect(buttons(app.renderCheckout({ state: 'waiting', error: null }, false))).toContain('Reopen Cloud Sync setup');
     const fresh = app.renderCheckout(null, false);
-    expect(fresh).not.toContain('Waiting for checkout to finish…');
-    expect(buttons(fresh)).toContain('Open checkout');
+    expect(fresh).not.toContain('Waiting for this device to connect…');
+    expect(buttons(fresh)).toContain('Open Cloud Sync setup');
   });
 
   it('goes on from a paid checkout without asking for checkout again', () => {
     const paid = app.renderCheckout({ state: 'paid', error: null }, true);
-    expect(paid).toContain('Checkout finished.');
+    expect(paid).toContain('Cloud Sync connected.');
     // The one way on is Continue (the page wires it to Finish Setup); nothing on the screen opens checkout again.
-    expect(buttons(paid)).not.toContain('Open checkout again');
-    expect(buttons(paid)).not.toContain('Open checkout');
+    expect(buttons(paid)).not.toContain('Reopen Cloud Sync setup');
+    expect(buttons(paid)).not.toContain('Open Cloud Sync setup');
     expect(buttons(paid)).toContain('Back');
     expect(navyButtons(paid)).toHaveLength(1);
     expect(paid.match(/<button[^>]*class="[^"]*\bprimary\b[^"]*"[^>]*>([\s\S]*?)<\/button>/)?.[1].replace(/<[^>]+>/g, '').trim()).toBe('Continue');

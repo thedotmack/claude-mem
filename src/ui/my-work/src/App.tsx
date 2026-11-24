@@ -10,6 +10,9 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { ActivePill, ClassicViewerLink, DeviceFreshness, LiveIndicator, ReadAfterSaveNotice } from '@/components/bits'
 import { AppBrand, ShellGrid, ShellLoading, ShellReadError } from '@/components/app-shell'
 import { HeaderMenu } from '@/components/header-menu'
+import { CloudTrialBanner } from '@/components/cloud-trial-banner'
+import { CloudTrialGuide } from '@/components/cloud-trial-guide'
+import { useCloudTrial } from '@/live/use-cloud-trial'
 import { Navbar, NavBody } from '@/components/aceternity/resizable-navbar'
 import { Notch } from '@/components/aceternity/notch'
 import { StickyBanner } from '@/components/aceternity/sticky-banner'
@@ -175,6 +178,7 @@ function LoadedApp({ focusMainOnMount = false }: { focusMainOnMount?: boolean })
   // them only in its sharing demonstration (`sample-state=area-shared`), answered in the page.
   useFocusSharesLoader(sourceKind === 'local' || focusSharesAreADemonstration())
   const sample = sourceKind === 'sample'
+  const trial = useCloudTrial(sourceKind === 'cloud')
   const view = useStore((state) => state.view.section)
   const focusChoice = useStore((state) => state.view.focusChoice)
   const openRequest = useStore((state) => state.view.openRequest)
@@ -225,8 +229,8 @@ function LoadedApp({ focusMainOnMount = false }: { focusMainOnMount?: boolean })
               <a href="#main-content" className="sr-only rounded-lg border border-control-edge bg-card px-4 py-2.5 text-sm font-medium text-foreground shadow-popover outline-none focus:not-sr-only focus:fixed focus:top-3 focus:left-4 focus:z-[200] focus-visible:ring-3 focus-visible:ring-ring/50">
                 {t('Skip to content')}
               </a>
-              {/* G7: the strip shows only with sample data, says so, and keeps its At home / On the go switch. Theme and
-                  Show spec IDs moved to the header menu, so real data has no strip at all. */}
+              {trial.trialEndsAt && <CloudTrialBanner trialEndsAt={trial.trialEndsAt} />}
+              {/* The demonstration strip and its At home / On the go switch belong to the sample workspace. */}
               {sample && (
                 <StickyBanner hideOnScroll className="min-h-0 flex-wrap justify-start gap-x-3 gap-y-1.5 border-b border-border/70 bg-card/85 px-4 py-1.5 pr-12 text-xs whitespace-nowrap backdrop-blur-md md:px-6 md:pr-10">
                   <span className="inline-flex items-center gap-1.5 font-medium"><FlaskConicalIcon aria-hidden="true" className="size-4 text-muted-foreground" />{t('Sample data · not your work')}</span>
@@ -307,6 +311,7 @@ function LoadedApp({ focusMainOnMount = false }: { focusMainOnMount?: boolean })
                 </Req>
 
                 <main ref={mainRef} id="main-content" tabIndex={-1} className="min-w-0 space-y-4 outline-none md:space-y-5">
+                  {onHome && trial.onboarding && <CloudTrialGuide key={trial.onboarding.startedAt} startedAt={trial.onboarding.startedAt} />}
                   <FocusChipRow selected={selected} onSelect={selectFocus} onShowAllAreas={showAllAreas} />
                   {/* A save whose follow-up read failed, on whichever page made it (store work.readAfterSaveFailure). */}
                   <ReadAfterSaveNotice />

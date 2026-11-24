@@ -19,6 +19,7 @@ export const SETUP_CLOUD_SYNC_OFFERS = ['cloud_sync_monthly', 'cloud_sync_annual
 export type SetupCloudSyncOffer = (typeof SETUP_CLOUD_SYNC_OFFERS)[number];
 /** Older servers must not silently substitute their bundled Pro checkout. */
 export const CLOUD_SYNC_SETUP_CONTRACT = 1 as const;
+export const PRIVATE_WORK_VIEW_URL = 'https://cmem.ai/work';
 export const DEFAULT_CLOUD_SYNC_OFFER: SetupCloudSyncOffer = 'cloud_sync_monthly';
 export const CLOUD_SYNC_OFFER_TERMS: Record<SetupCloudSyncOffer, { interval: 'month' | 'year'; cents: number; trialDays: number }> = {
   cloud_sync_monthly: { interval: 'month', cents: 1200, trialDays: 30 },

@@ -18,6 +18,7 @@
  *     and cookies removed.
  */
 import { signToken, verifyToken } from './token.js';
+import { NO_VIEWER_TRIAL, viewerTrialStatus } from './cloud-trial.js';
 import { anonymousDistinctId, anonCookie, hostedUsageEvent, requestHostname, sendPostHogEvent, VIEWER_USAGE_PATH } from './usage.js';
 
 export const SESSION_COOKIE = 'cmem_viewer_session';
@@ -92,6 +93,8 @@ export interface GateOptions {
   /** Where an owner without a session goes to sign in: cmem.ai's /work mints the link. */
   signInUrl: string;
   fetchImpl?: typeof fetch;
+  /** Fetches the owner's renewal status from cmem.ai, independently of the loopback worker. */
+  billingFetch?: typeof fetch;
   now?: () => number;
   /** Ingestion POST. Defaults to fetch. Tests pass a stub so nothing leaves the process. */
   posthogFetch?: typeof fetch;
@@ -206,6 +209,33 @@ export function createGate(options: GateOptions): (request: Request) => Promise<
     if (!sessionOwner(request)) {
       if (wantsHtml(request)) return Response.redirect(options.signInUrl, 302);
       return json(401, { error: 'Sign in at cmem.ai to open your viewer.' });
+    }
+
+    if (url.pathname === '/api/viewer/cloud-sync-renew') {
+      if (request.method !== 'GET') return json(405, { error: 'Use GET to open card setup.' });
+      const renew = new URL('https://cmem.ai/cloud-sync/renew');
+      renew.searchParams.set('owner', options.ownerUserId);
+      return new Response(null, { status: 303, headers: {
+        Location: renew.href, 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer',
+      } });
+    }
+
+    if (url.pathname === '/api/viewer/cloud-sync-trial') {
+      if (request.method !== 'GET') return json(405, { error: 'Use GET to read trial status.' });
+      const syncToken = (options.env ?? process.env).CLAUDE_MEM_CLOUD_SYNC_TOKEN;
+      if (!syncToken) return json(200, NO_VIEWER_TRIAL);
+      try {
+        // Authenticate as this replica's owner. Browser headers and query parameters never leave the gate.
+        const status = await (options.billingFetch ?? fetch)('https://cmem.ai/api/cloud-sync/renewal-status', {
+          headers: { Authorization: `Bearer ${syncToken}`, 'X-Viewer-Owner': options.ownerUserId },
+          redirect: 'error',
+          signal: AbortSignal.timeout(4000),
+        });
+        if (status.ok) return json(200, viewerTrialStatus(await status.json(), nowSeconds() * 1000));
+      } catch {
+        // Billing can be unavailable while the person's work is still readable.
+      }
+      return json(200, NO_VIEWER_TRIAL);
     }
 
     if (request.method === 'POST' && url.pathname === VIEWER_USAGE_PATH) {

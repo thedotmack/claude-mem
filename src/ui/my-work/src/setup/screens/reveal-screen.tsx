@@ -217,7 +217,8 @@ export function RevealScreen({ agents, reveal, extraction, uploadedAgents, recen
       <p>{firstArea ? interpolate(t('Pick up {area} in another agent or on another device.'), { area: firstArea })
         : hasResults || promptCount > 0 ? t('Pick up this work in another agent or on another device.')
         : nextSessionCopy}</p>
-      <small>{t('$0 today. Then $12/month after 30 days. Card required.')}</small>
+      <small>{t('No card needed for your first 30 days. Continue for $12/month if you choose.')}{' '}
+        {t('Sync saved prompts, memories and summaries to your private account, along with Work View groups, progress, reviews and published links.')}</small>
       <SetupActions back={back}>
         <SetupButton busy={busy} onClick={onStartTrial}>{t('Try Cloud Sync free for 30 days')} <ArrowRightIcon aria-hidden="true" /></SetupButton>
         <SetupButton look="text" disabled={busy} onClick={onContinue}>{t('Annual or local setup')}</SetupButton>
