@@ -331,6 +331,7 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
       onSkip={() => { if (!retryPending.current) update({ scanSkipped: true }, 'reveal') }}
       onContinue={() => update({ scanReview: false }, 'reveal')} />,
     reveal: () => <RevealScreen agents={data.scan.agents} reveal={data.reveal} extraction={data.extraction} uploadedAgents={data.scan.uploadedAgents} recentPrompts={data.recentPrompts} hostedNotice={data.scan.hostedNotice}
+      scanComplete={scanComplete} installedAgentCount={data.install?.status === 'ready' ? data.install.selection?.agents.length : undefined}
       skipped={flow.scanSkipped && !scanComplete} back={savingChoice ? null : back} busy={savingChoice}
       onStartTrial={!flow.alreadyPro && !data.choice ? () => void submitChoice('go', DEFAULT_CLOUD_SYNC_OFFER) : undefined}
       onContinue={() => update({ revealContinued: true }, 'choice')} />,
