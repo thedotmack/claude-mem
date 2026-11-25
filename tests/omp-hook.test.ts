@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { execFileSync } from 'child_process';
-import { tmpdir } from 'os';
-import { join } from 'path';
+import { homedir, tmpdir } from 'os';
+import { basename, join } from 'path';
 import registerClaudeMemHook from '../omp/hooks/claude-mem.ts';
 import { getDefaultWorkerPort } from '../src/shared/install-port.js';
 
@@ -188,6 +188,25 @@ describe('OMP Claude Mem hook', () => {
     await drainMicrotasks();
 
     expect(requests[0]?.url.host).toBe('127.0.0.1:45678');
+  });
+
+  it('reads settings.json from a ~ data folder, as the worker does', async () => {
+    const homeDataDir = mkdtempSync(join(homedir(), '.omp-hook-tilde-'));
+    try {
+      writeFileSync(join(homeDataDir, 'settings.json'), JSON.stringify({ CLAUDE_MEM_WORKER_PORT: 45679 }));
+      process.env.CLAUDE_MEM_DATA_DIR = `~/${basename(homeDataDir)}`;
+      const requests: CapturedRequest[] = [];
+      installFetchCapture(requests);
+      const handlers = registerHook();
+
+      await handlers.session_start?.();
+      await handlers.before_agent_start?.({ prompt: 'p' }, { cwd: '/tmp/omp-port' });
+      await drainMicrotasks();
+
+      expect(requests[0]?.url.host).toBe('127.0.0.1:45679');
+    } finally {
+      rmSync(homeDataDir, { recursive: true, force: true });
+    }
   });
 
   it('reads settings nested under env, and lets the environment win', async () => {

@@ -21,12 +21,20 @@ provider as part of the conversation. Save writes the reviewed note to
 claude-mem's local worker (found from CLAUDE_MEM_WORKER_PORT or settings.json
 when --worker-url is omitted). No automatic import or background sync.`;
 
+// The data folder with a leading ~ expanded, as src/shared/expand-home.ts does it.
+function dataFolder(env, platform = process.platform) {
+  const dataDir = env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem');
+  if (dataDir === '~') return homedir();
+  return dataDir.startsWith('~/') || (platform === 'win32' && dataDir.startsWith('~\\'))
+    ? join(homedir(), dataDir.slice(2))
+    : dataDir;
+}
+
 // The local worker's URL, resolved the way claude-mem does: environment first,
 // then ~/.claude-mem/settings.json, then the per-user default port.
 function readSettings(env) {
   try {
-    const dataDir = env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem');
-    return JSON.parse(readFileSync(join(dataDir, 'settings.json'), 'utf8')) || {};
+    return JSON.parse(readFileSync(join(dataFolder(env), 'settings.json'), 'utf8')) || {};
   } catch { return {}; /* no settings file: use defaults */ }
 }
 
@@ -41,12 +49,8 @@ export function localApiTokenHeaders(env = process.env) {
 // user id where there is one, else a hash of the data folder (Windows has no user id, #6477).
 function defaultWorkerPort(env, { platform, uid }) {
   if (uid !== null) return 37700 + (((uid % 100) + 100) % 100);
-  const windows = platform === 'win32';
-  const dataDir = env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem');
-  const expanded = dataDir === '~' ? homedir()
-    : dataDir.startsWith('~/') || (windows && dataDir.startsWith('~\\')) ? join(homedir(), dataDir.slice(2))
-    : dataDir;
-  const folder = windows ? win32.resolve(expanded).toLowerCase() : resolve(expanded);
+  const expanded = dataFolder(env, platform);
+  const folder = platform === 'win32' ? win32.resolve(expanded).toLowerCase() : resolve(expanded);
   return 37700 + (createHash('sha256').update(folder, 'utf8').digest().readUInt32BE(0) % 100);
 }
 

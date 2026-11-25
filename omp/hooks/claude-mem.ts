@@ -160,15 +160,23 @@ type ServerTarget = {
 };
 type RuntimeTarget = { mode: "worker"; baseUrl: string } | ServerTarget;
 
+/** CLAUDE_MEM_DATA_DIR (default ~/.claude-mem) with a leading ~ expanded, as src/shared/expand-home.ts does it. */
+function claudeMemDataDir(): string {
+  const dataDir = process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), ".claude-mem");
+  if (dataDir === "~") return homedir();
+  return dataDir.startsWith("~/") || (process.platform === "win32" && dataDir.startsWith("~\\"))
+    ? join(homedir(), dataDir.slice(2))
+    : dataDir;
+}
+
 /**
  * claude-mem's settings.json, read the way claude-mem reads it: from
  * CLAUDE_MEM_DATA_DIR (default ~/.claude-mem); its keys sit under `env` when
  * that block holds CLAUDE_MEM_* keys, else at the root. Empty on any error.
  */
 function readClaudeMemSettings(): Record<string, unknown> {
-  const dataDir = process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), ".claude-mem");
   try {
-    const doc = JSON.parse(readFileSync(join(dataDir, "settings.json"), "utf8").replace(/^﻿/, ""));
+    const doc = JSON.parse(readFileSync(join(claudeMemDataDir(), "settings.json"), "utf8").replace(/^﻿/, ""));
     const env = doc?.env;
     const nested = env !== null && typeof env === "object" && !Array.isArray(env)
       && Object.keys(env).some(key => key.startsWith("CLAUDE_MEM_"));
@@ -207,12 +215,8 @@ function firstSetting(settings: Record<string, unknown>, ...keys: string[]): str
 function defaultWorkerPort(): number {
   const uid = process.getuid?.() ?? null;
   if (uid !== null) return 37700 + (((uid % 100) + 100) % 100);
-  const windows = process.platform === "win32";
-  const dataDir = process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), ".claude-mem");
-  const expanded = dataDir === "~" ? homedir()
-    : dataDir.startsWith("~/") || (windows && dataDir.startsWith("~\\")) ? join(homedir(), dataDir.slice(2))
-    : dataDir;
-  const folder = windows ? win32.resolve(expanded).toLowerCase() : resolve(expanded);
+  const expanded = claudeMemDataDir();
+  const folder = process.platform === "win32" ? win32.resolve(expanded).toLowerCase() : resolve(expanded);
   return 37700 + (createHash("sha256").update(folder, "utf8").digest().readUInt32BE(0) % 100);
 }
 
