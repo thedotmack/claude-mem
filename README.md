@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://cmem.ai/">
+  <a href="https://cmem.ai/?utm_source=github_readme&amp;utm_campaign=holiday_cloud_sync">
     <img src="docs/public/cloud-sync-bees.gif" alt="Everybody gets Cloud Sync! Visit the Claude-Mem homepage." width="480">
   </a>
 </p>

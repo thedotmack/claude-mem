@@ -20,7 +20,7 @@ interface ClaudeMemMessage {
 const messages: readonly ClaudeMemMessage[] = [{
   id: 'holiday-cloud-sync-2026',
   publishedAt: '2026-11-25T09:00:00Z',
-  text: '🎁 Holiday gift for Claude-Mem users: Get 30 days of Cloud Sync and the remote Work Viewer free. No credit card required. https://cmem.ai/sync',
+  text: '🎁 Holiday gift for Claude-Mem users: Get 30 days of Cloud Sync and the remote Work Viewer free. No credit card required. https://cmem.ai/sync?utm_source=holiday_startup&utm_campaign=holiday_cloud_sync',
   eligible: settings => {
     const plan = settings.CLAUDE_MEM_PRO_PLAN?.trim();
     return (!plan || plan === 'none') && !settings.CLAUDE_MEM_CLOUD_SYNC_HUB_URL?.trim()
