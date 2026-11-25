@@ -78,9 +78,7 @@ function compactRequest(request: WorkRequest, raw: RawRequest | undefined): Work
   };
 }
 
-export function workViewOverview(snapshot: WorkViewSnapshot, now = Date.now()): WorkViewOverview {
-  const model = toWorkModel(snapshot as unknown as ApiSnapshot, now);
-  const rawRequests = new Map((snapshot as unknown as ApiSnapshot).humanRequests.map(raw => [raw.id, raw]));
+function overviewFromModel(snapshot: WorkViewSnapshot, now: number, model: ReturnType<typeof toWorkModel>, rawRequests: Map<string, RawRequest>): WorkViewOverview {
   return {
     version: 1,
     ...(snapshot.sync ? { sync: snapshot.sync as ViewerSyncStatus } : {}),
@@ -93,6 +91,28 @@ export function workViewOverview(snapshot: WorkViewSnapshot, now = Date.now()): 
       lastCheckedAt: typeof snapshot.source.lastCheckedAt === 'string' ? snapshot.source.lastCheckedAt : null,
     },
     model: { ...model, requests: model.requests.map(request => compactRequest(request, rawRequests.get(request.id))) },
+  };
+}
+
+export function workViewOverview(snapshot: WorkViewSnapshot, now = Date.now()): WorkViewOverview {
+  const raw = snapshot as unknown as ApiSnapshot;
+  return overviewFromModel(snapshot, now, toWorkModel(raw, now), new Map(raw.humanRequests.map(r => [r.id, r])));
+}
+
+/** Persist the overview and each drawer from a single mapping pass at the same revision. */
+export function projectWorkView(snapshot: WorkViewSnapshot, now: number) {
+  const raw = snapshot as unknown as ApiSnapshot;
+  const model = toWorkModel(raw, now);
+  const requests = new Map(raw.humanRequests.map(r => [r.id, r]));
+  return {
+    overview: overviewFromModel(snapshot, now, model, requests),
+    details: model.requests.map(request => ({
+      id: request.id, detail: {
+        version: 1 as const, revision: String(snapshot.revision), request: {
+          ...request, detailLoaded: true, detailRevision: detailRevision(request, requests.get(request.id)),
+        },
+      },
+    })),
   };
 }
 

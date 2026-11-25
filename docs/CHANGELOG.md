@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+- Setup offers a 30-day Cloud Sync trial without a credit card. People installing directly or with an agent can choose a private, signed-in My Work view. Explicit local and custom sync settings are preserved.
+- The cloud viewer uses the current account to load synced work, evidence and review changes. Returning to a tab verifies the signed-in account before showing its contents. Retrying a save after a lost response reuses the same action ID.
+- During the trial, My Work offers optional guidance for trying cross-agent sync and shows when to add a payment method to continue.
+
 ## [16.1.3] - 2026-11-24
 
 ## Critical fix
@@ -32,8 +38,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - The backup restore test suites pass on Windows (#6444, thanks @Lupin133).
 
 **Full changelog**: https://github.com/thedotmack/claude-mem/compare/v16.1.2...v16.1.3
-
-## [Unreleased]
 
 ## [16.1.2] - 2026-11-24
 

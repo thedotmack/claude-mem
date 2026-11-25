@@ -7,7 +7,9 @@ before changing capture, queueing, retries, provider dispatch, or recovery.
 - Live observation, file-edit, and summary inputs must not be persisted for
   automatic replay. Use the common live handoff and `SessionMessageBuffer`.
 - Quota exhaustion and authentication failures discard pending inference
-  inputs. A quota reset, login, restart, timer, or a later successful store
+  inputs, except for a trusted pre-inference CMEM credit refusal with an
+  immediate live handoff as specified in the observer lifecycle contract.
+  A quota reset, login, restart, timer, or a later successful store
   never authorizes backfill, and paused work is never resumed on such proof.
 - Keep active buffering bounded. Do not add another batching queue, retry
   store, startup sweep, or platform-specific recovery loop.

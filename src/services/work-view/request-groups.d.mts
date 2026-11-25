@@ -89,3 +89,7 @@ export interface StoryInput {
   previousStory: (Record<string, any> & { narrative: string; preferences: any[] }) | null;
 }
 export function storyInput(groups: number, reviews: any[], story: (Record<string, any> & { narrative: string; preferences?: any[]; writtenAt?: string }) | null): StoryInput;
+export function applyGroupDecisions(
+  stored: Record<string, unknown>, decisions: { groups: Array<Record<string, unknown>>; ignored?: string[] },
+  now?: number, options?: { projectOf?: Map<string, string>; getProjectRoot?: (project: unknown) => string | null },
+): Record<string, unknown>;

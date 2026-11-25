@@ -439,6 +439,17 @@ describe('setup state endpoints', () => {
     expect((await post('/api/setup/complete', {})).status).toBe(200);
   });
 
+  it('retains explicit Work View sharing on a new standalone choice and locks it with the selected plan', async () => {
+    await start();
+    expect((await post('/api/setup/choice', { branch: 'home', memoryBilling: 'existing', shareWorkView: true })).status).toBe(400);
+    expect((await post('/api/setup/choice', { branch: 'go', memoryBilling: 'hosted', shareWorkView: true })).status).toBe(400);
+    const plan = { branch: 'go', memoryBilling: 'existing', cloudSyncOffer: 'cloud_sync_monthly', openCheckout: true };
+    const selected = await post('/api/setup/choice', { ...plan, shareWorkView: true });
+    expect(selected.status).toBe(200);
+    expect((await selected.json()).choice.shareWorkView).toBe(true);
+    expect((await post('/api/setup/choice', plan)).status).toBe(409);
+  });
+
   it('saves a direct checkout once, before the terminal is ready, and keeps its selected interval', async () => {
     await start();
     const annual = { branch: 'go', memoryBilling: 'existing', cloudSyncOffer: 'cloud_sync_annual', openCheckout: true };

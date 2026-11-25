@@ -10,6 +10,7 @@ import type { CodexProvider } from '../CodexProvider.js';
 import type { SessionCompletionHandler } from './SessionCompletionHandler.js';
 import {
   recordCmemFallbackIfEligible,
+  regularProviderAfterCmemCap,
   releaseCmemGatewayProbe,
   routeAroundUnservableProvider,
   type SelectableProvider,
@@ -41,6 +42,7 @@ import {
   QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
 } from '../../../shared/quota-cooldown.js';
 import {
+  CmemAllowanceExhaustedError,
   CODEX_COOLDOWN_REFUSAL_CODE,
   DEADLINE_EXCEEDED_CODE,
   isClassified,
@@ -293,15 +295,25 @@ export async function startGeneratorWithProvider(
       // ledger nor given a breaker (a 30-min breaker over the marker's 15-min
       // window would leave memory on neither), and the finally resumes it.
       if (provider === 'openrouter' && recordCmemFallbackIfEligible(error, gatewayProbeClaimId)) {
-        // Moving the buffered work to the Anthropic plan is itself an
-        // unattended retry, so it draws on the gateway's unattended budget —
-        // a fallback only ever happens with memory on the gateway.
-        if (planUnattendedGatewayResume(session, 'cmem-fallback', true).resume) {
+        // A real HTTP 402 allowance refusal performed no inference. Hand the
+        // still-live batch to the configured provider once, with its original
+        // age and paid-send budget. Never hand off an ambiguous prior send,
+        // an authentication failure, or a failed probe.
+        const budget = session.paidSendBudget;
+        const unspent = budget ? budget.spentPaidSends === 0 : !session.consecutiveUnattendedGatewayResumes;
+        if (classified instanceof CmemAllowanceExhaustedError && unspent
+          && normalizeAbortReason(session.abortReason) === 'quota'
+          && regularProviderAfterCmemCap(session.platformSource) !== null
+          && planUnattendedGatewayResume(session, 'cmem-cap-fallback', true).resume) {
+          session.abortReason = 'provider_switch:cmem_cap';
+          scheduledResume = { afterMs: 0, source: 'cmem-cap-fallback' };
+        } else if (gatewayProbeClaimId !== null && !['auth', 'quota'].includes(normalizeAbortReason(session.abortReason))
+          && planUnattendedGatewayResume(session, 'cmem-fallback', true).resume) {
           scheduledResume = { afterMs: 0, source: 'cmem-fallback' };
         }
         // The gateway's words and request id, which its copy asks users to
         // quote to support.
-        logger.warn('SESSION', 'cmem gateway is not serving this account; memory runs on the Anthropic plan provider', {
+        logger.warn('SESSION', 'cmem gateway is not serving this account; local provider routing will check availability', {
           sessionId: session.sessionDbId,
           ...(classified ? { kind: classified.kind } : {}),
           ...(classified?.code ? { code: classified.code } : {}),

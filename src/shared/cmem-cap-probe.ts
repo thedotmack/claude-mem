@@ -32,7 +32,7 @@ function probePath(): string {
   return pathOverride ?? join(resolveDataDir(), CMEM_CAP_PROBE_FILENAME);
 }
 
-function readExhaustedAt(): number | null {
+export function cmemCapExhaustedAt(): number | null {
   const path = probePath();
   try {
     if (!existsSync(path)) return null;
@@ -46,7 +46,7 @@ function readExhaustedAt(): number | null {
 
 /** True when a gateway request may be sent. No file means the cap is not known spent. */
 export function cmemCapProbeAllowed(now = Date.now()): boolean {
-  const exhaustedAt = readExhaustedAt();
+  const exhaustedAt = cmemCapExhaustedAt();
   if (exhaustedAt === null) return true;
   return now - exhaustedAt >= CMEM_CAP_PROBE_INTERVAL_MS;
 }

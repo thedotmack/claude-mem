@@ -34,7 +34,7 @@ const LEGACY_CLOUD_SYNC_HUB_HOST = 'sync-hub.black-pond-afbb.workers.dev';
  */
 const DIRECT_SUPABASE_CLOUD_SYNC_HUB_HOST = 'ziczmqtpmaxbornfghye.supabase.co';
 /** Canonical Pro hub after the Fly cutover. */
-const CANONICAL_CLOUD_SYNC_HUB_URL = 'https://sync.cmem.ai';
+export const CANONICAL_CLOUD_SYNC_HUB_URL = 'https://sync.cmem.ai';
 
 // OpenRouter retires `:free` model ids on its own schedule, and the same seeding
 // (every default written on first load, persisted values winning over
@@ -791,7 +791,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_PRO_MEMORY_MODEL: '',     // Backend-supplied model paired with CLAUDE_MEM_PRO_MEMORY_KEY
     CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH: 'true', // 'false' = My Work never runs owner-goals / request-progress on its own (refresh.json in ~/.claude-mem/work-view)
     CLAUDE_MEM_WORK_VIEW_REFRESH_INTERVAL_MIN: '10', // Minutes between My Work's scheduled checks (each is a read-only database look; an agent runs only when something is due). 1440 = once a day. Read when the worker starts.
-    CLAUDE_MEM_WORK_VIEW_SHARED_STATE: 'false', // Enable only after all local/cloud readers understand reserved My Work records.
+    CLAUDE_MEM_WORK_VIEW_SHARED_STATE: '', // Off until explicitly configured. A pinned 'false' remains an opt-out.
     CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER: '', // '' uses OpenRouter only when it is the primary provider; openrouter/openai-compatible explicitly select that provider; off disables generated My Work copy
     CLAUDE_MEM_WORK_VIEW_COPY_MODEL: '', // Optional model override for generated My Work copy; empty uses the selected provider's configured model
     CLAUDE_MEM_WORK_VIEW_AGENT: '', // Which agent runs the My Work refresh: '' follows CLAUDE_MEM_PROVIDER and stays on one agent; claude-code/codex/gemini/opencode pick one; off runs none; all falls through every logged-in agent (#5189)

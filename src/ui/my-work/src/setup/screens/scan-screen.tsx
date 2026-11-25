@@ -13,6 +13,7 @@ const STATUS: Record<SetupScanPhase, string | null> = {
   reading: 'Finding your recent work.',
   checking: 'Finding the context behind your work.',
   saving: 'Preparing your overview.',
+  organizing: 'Finding your focus areas with your own AI.',
   'awaiting-consent': null,
   uploading: 'Discovering your work, rules and focus…',
   done: 'Your scan is done. Continue to see what it found.',
@@ -91,6 +92,7 @@ export function ScanScreen({ scan, back, onImproveProductChange, onConfirmUpload
             failure={scan.error ? { kind: scan.errorKind ?? 'refused', detail: scan.error } : null} />)}
         {asking && (
           <div className="scan-consent" role="group" aria-label={t('Discover your work')}>
+            <p>{t('Your own AI couldn’t finish this scan. You can use cmem.ai to find your focus areas.')}</p>
             <label className="install-option"><input type="checkbox" checked={includeRecentWork} disabled={consentSending} onChange={event => setIncludeRecentWork(event.target.checked)} />
               <strong>{t('Include recent conversations')}</strong></label>
             {includeRecentWork && <>
@@ -124,7 +126,8 @@ export function ScanScreen({ scan, back, onImproveProductChange, onConfirmUpload
           <input type="checkbox" checked={scan.improveProduct} disabled={scan.phase === 'uploading' || scan.phase === 'done'} onChange={(event) => onImproveProductChange(event.target.checked)} />
           <span>
             <strong>{t('Share anonymous usage statistics to help improve your Claude-mem experience')}</strong>
-            <small>{scan.phase === 'done' ? t('The scan is done, and this choice was saved with it.') : t('Shared with cmem.ai only when you include conversations.')}</small>
+            {scan.phase === 'done' && <small>{t('The scan is done, and this choice was saved with it.')}</small>}
+            {asking && <small>{t('Shared with cmem.ai only when you include conversations.')}</small>}
           </span>
         </label>
       </div>
