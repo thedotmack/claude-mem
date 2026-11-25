@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { defaultWorkerUrl, run } from '../plugin/skills/screenpipe/screenpipe.mjs';
 import { stripMemoryTags } from '../src/utils/tag-stripping.js';
+import { getDefaultWorkerPort } from '../src/shared/install-port.js';
 
 const searchArgs = ['search', '--start', '2026-10-07T09:00:00-07:00', '--end', '2026-10-07T10:00:00-07:00'];
 const servers: ReturnType<typeof Bun.serve>[] = [];
@@ -107,6 +108,23 @@ describe('packaged Screenpipe integration', () => {
     expect(stdout.startsWith('<private>')).toBe(true);
     expect(stdout).toContain('Quarterly numbers draft');
     expect(stripMemoryTags(stdout)).not.toContain('Quarterly numbers draft');
+  });
+
+  it('defaults to the port the worker picks when there is no user id, as on Windows (#6477)', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'screenpipe-port-'));
+    dirs.push(dir);
+    const windows = { platform: 'win32' as const, uid: null };
+    const port = getDefaultWorkerPort(dir, windows);
+    expect(defaultWorkerUrl({ CLAUDE_MEM_DATA_DIR: dir }, windows)).toBe(`http://127.0.0.1:${port}`);
+    const homeDir = '~/.claude-mem-screenpipe-port-test';
+    expect(defaultWorkerUrl({ CLAUDE_MEM_DATA_DIR: homeDir }, windows))
+      .toBe(`http://127.0.0.1:${getDefaultWorkerPort(homeDir, windows)}`);
+
+    await writeFile(join(dir, 'settings.json'), JSON.stringify({ CLAUDE_MEM_WORKER_PORT: '37777' }));
+    expect(defaultWorkerUrl({ CLAUDE_MEM_DATA_DIR: dir }, windows)).toBe('http://127.0.0.1:37777');
+    expect(defaultWorkerUrl({ CLAUDE_MEM_DATA_DIR: dir }, { platform: 'linux', uid: 1042 })).toBe('http://127.0.0.1:37777');
+    await rm(join(dir, 'settings.json'));
+    expect(defaultWorkerUrl({ CLAUDE_MEM_DATA_DIR: dir }, { platform: 'linux', uid: 1042 })).toBe('http://127.0.0.1:37742');
   });
 
   it('finds the local worker from settings.json and reads the note from stdin', async () => {

@@ -1,8 +1,9 @@
 import { parseArgs } from 'node:util';
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join, resolve, win32 } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const HELP = `Screenpipe context for claude-mem (Node.js 20+)
@@ -36,11 +37,24 @@ export function localApiTokenHeaders(env = process.env) {
   return typeof token === 'string' && token.trim() ? { 'X-Claude-Mem-Token': token.trim() } : {};
 }
 
-export function defaultWorkerUrl(env = process.env) {
+// The worker's default port, as src/shared/install-port.ts picks it (keep the two in step): the
+// user id where there is one, else a hash of the data folder (Windows has no user id, #6477).
+function defaultWorkerPort(env, { platform, uid }) {
+  if (uid !== null) return 37700 + (((uid % 100) + 100) % 100);
+  const windows = platform === 'win32';
+  const dataDir = env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem');
+  const expanded = dataDir === '~' ? homedir()
+    : dataDir.startsWith('~/') || (windows && dataDir.startsWith('~\\')) ? join(homedir(), dataDir.slice(2))
+    : dataDir;
+  const folder = windows ? win32.resolve(expanded).toLowerCase() : resolve(expanded);
+  return 37700 + (createHash('sha256').update(folder, 'utf8').digest().readUInt32BE(0) % 100);
+}
+
+export function defaultWorkerUrl(env = process.env, { platform = process.platform, uid = process.getuid?.() ?? null } = {}) {
   const settings = readSettings(env);
   const host = env.CLAUDE_MEM_WORKER_HOST || settings.CLAUDE_MEM_WORKER_HOST || '127.0.0.1';
   const port = env.CLAUDE_MEM_WORKER_PORT || settings.CLAUDE_MEM_WORKER_PORT
-    || String(37700 + ((process.getuid?.() ?? 77) % 100));
+    || String(defaultWorkerPort(env, { platform, uid }));
   const bracketed = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
   return `http://${bracketed}:${port}`;
 }

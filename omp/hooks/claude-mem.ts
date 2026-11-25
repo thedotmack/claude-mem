@@ -43,9 +43,9 @@
 
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
-import { basename, dirname, join, normalize, resolve } from "node:path";
+import { basename, dirname, join, normalize, resolve, win32 } from "node:path";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 
 // ---------------------------------------------------------------------------
@@ -199,8 +199,25 @@ function firstSetting(settings: Record<string, unknown>, ...keys: string[]): str
   return "";
 }
 
+/**
+ * Port of the worker's default port (src/shared/install-port.ts getDefaultWorkerPort). Keep the
+ * two in step: the user id where there is one, else a hash of the data folder (Windows has no
+ * user id). A port saved in settings.json, the old Windows 37777 included, is read before this.
+ */
+function defaultWorkerPort(): number {
+  const uid = process.getuid?.() ?? null;
+  if (uid !== null) return 37700 + (((uid % 100) + 100) % 100);
+  const windows = process.platform === "win32";
+  const dataDir = process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), ".claude-mem");
+  const expanded = dataDir === "~" ? homedir()
+    : dataDir.startsWith("~/") || (windows && dataDir.startsWith("~\\")) ? join(homedir(), dataDir.slice(2))
+    : dataDir;
+  const folder = windows ? win32.resolve(expanded).toLowerCase() : resolve(expanded);
+  return 37700 + (createHash("sha256").update(folder, "utf8").digest().readUInt32BE(0) % 100);
+}
+
 function resolveWorkerBase(settings: Record<string, unknown>): string {
-  const defaultPort = String(37700 + ((process.getuid?.() ?? 77) % 100));
+  const defaultPort = String(defaultWorkerPort());
   const port = setting(settings, "CLAUDE_MEM_WORKER_PORT", defaultPort);
   const host = setting(settings, "CLAUDE_MEM_WORKER_HOST", "127.0.0.1");
   const urlHost = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;

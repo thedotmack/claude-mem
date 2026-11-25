@@ -4,6 +4,7 @@ import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import registerClaudeMemHook from '../omp/hooks/claude-mem.ts';
+import { getDefaultWorkerPort } from '../src/shared/install-port.js';
 
 type HookHandler = (...args: unknown[]) => unknown;
 
@@ -208,6 +209,28 @@ describe('OMP Claude Mem hook', () => {
     await handlers.before_agent_start?.({ prompt: 'p' }, { cwd: '/tmp/omp-port' });
     await drainMicrotasks();
     expect(requests.at(-1)?.url.host).toBe('127.0.0.1:45680');
+  });
+
+  it('defaults to the port the worker picks when there is no user id, as on Windows (#6477)', async () => {
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    const getuid = Object.getOwnPropertyDescriptor(process, 'getuid');
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    Object.defineProperty(process, 'getuid', { value: undefined, configurable: true, writable: true });
+    try {
+      const requests: CapturedRequest[] = [];
+      installFetchCapture(requests);
+      const handlers = registerHook();
+
+      await handlers.session_start?.();
+      await handlers.before_agent_start?.({ prompt: 'p' }, { cwd: '/tmp/omp-port' });
+      await drainMicrotasks();
+
+      const port = getDefaultWorkerPort(dataDir, { platform: 'win32', uid: null });
+      expect(requests[0]?.url.host).toBe(`127.0.0.1:${port}`);
+    } finally {
+      Object.defineProperty(process, 'platform', platform);
+      if (getuid) Object.defineProperty(process, 'getuid', getuid);
+    }
   });
 
   it('does not finalize a session whose init failed', async () => {
