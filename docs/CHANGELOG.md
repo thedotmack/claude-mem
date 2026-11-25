@@ -35,6 +35,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### iMessage on your Mac
+
+- **Claude-Mem Messages, a Mac app that keeps notes on the iMessage chats you pick** (#6482). It lists your chats and group chats from the Messages app on your own Mac. Tick the ones to observe and write what to watch for in each ("plans and who's bringing what", "money: who paid, who owes"). New messages in those chats become notes in one Claude-Mem project per chat. It only reads: it never sends, reacts or changes a chat, and nothing is added to the group. Only new messages are read, from when it starts listening. The app needs Full Disk Access, and its setup screen walks you through turning it on. Download the unsigned build from the "iMessage Mac app" check, or build it with `integrations/imessage-mac/scripts/build-app.sh`. See [docs/imessage-mac-app.md](imessage-mac-app.md).
+- **`claude-mem imessage mac` commands** do the same from Terminal: `check`, `chats`, `pick` (with `--focus` for what to watch for), `observe` and `contacts`.
+
 ## [16.1.2] - 2026-11-24
 
 ### Installer improvements
