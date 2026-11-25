@@ -957,7 +957,8 @@ export class WorkerService implements WorkerRef {
       SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_WORKER_INGEST_MAX_BYTES,
     ));
 
-    this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager));
+    this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager,
+      () => this.viewerSync.getSnapshot()));
     const sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this, this.completionHandler, this.codexAgent, this.openAICompatAgent);
     this.server.registerRoutes(sessionRoutes);
     this.startPendingSessionResume(sessionRoutes);
@@ -2048,6 +2049,11 @@ export async function main() {
   // Load the bundle without binding a port or depending on a running worker.
   if (command === '--version') {
     console.log(packageVersion);
+    return;
+  }
+  if (command === 'messages') {
+    const { runMessagesCommand } = await import('../cli/messages-command.js');
+    process.exitCode = runMessagesCommand(commandArgs);
     return;
   }
   if (command === 'media-smoke') {

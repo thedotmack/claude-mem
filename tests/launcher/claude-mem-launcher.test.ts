@@ -390,6 +390,19 @@ describe('claude-mem launcher', () => {
     expect(parseStubWorkerOutput(result.stdout).stdin).toBe(stdinPayload);
   });
 
+  it('propagates a failed message acknowledgment, including when the plugin is missing', () => {
+    const temporaryHome = makeTemporaryHome();
+    const args = ['messages', 'acknowledge', 'unknown-message'];
+    expect(runLauncher(args, { temporaryHome }).status).toBe(1);
+    const pluginRoot = makeStubPluginRoot(path.join(temporaryHome, 'plugin'));
+    const result = runLauncher(args, {
+      temporaryHome,
+      extraEnvironment: { CLAUDE_PLUGIN_ROOT: pluginRoot, STUB_WORKER_EXIT_CODE: '7' },
+    });
+    expect(result.status).toBe(7);
+    expect(parseStubWorkerOutput(result.stdout).argv).toEqual(args);
+  });
+
   it('fails open when the worker exits non-zero, including 2 (never blocks)', () => {
     const temporaryHome = makeTemporaryHome();
     const environmentRoot = makeStubPluginRoot(path.join(temporaryHome, 'env-root'));
