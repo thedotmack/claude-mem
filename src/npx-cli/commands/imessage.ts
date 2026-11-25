@@ -102,6 +102,24 @@ async function checkProjectLines(projectId: string, projectSecret: string): Prom
   }
 }
 
+export type SetupMode = 'login' | 'project' | 'line';
+
+/**
+ * Which way setup connects, from flags and environment variables. Flags come
+ * first, so a flag on the command line beats a variable left in the environment.
+ * Null means neither says, and setup asks (or keeps what is saved).
+ */
+export function pickSetupMode(input: {
+  login?: boolean; projectFlags: boolean; lineFlags: boolean; envProject: boolean; envLine: boolean;
+}): SetupMode | null {
+  if (input.login) return 'login';
+  if (input.projectFlags) return 'project';
+  if (input.lineFlags) return 'line';
+  if (input.envProject) return 'project';
+  if (input.envLine) return 'line';
+  return null;
+}
+
 async function setup(args: string[]): Promise<number> {
   const { values } = parseArgs({
     args,
@@ -127,18 +145,21 @@ async function setup(args: string[]): Promise<number> {
   const ask = async (question: string) => rl ? await rl.question(question) : '';
 
   try {
-    let mode: 'login' | 'project' | 'line' | null = null;
-    if (values.login) mode = 'login';
-    else if (values['project-id'] || values['project-secret'] || envProject) mode = 'project';
-    else if (values.address || values.token || envLine) mode = 'line';
-    else if (tty) {
+    let mode = pickSetupMode({
+      login: values.login,
+      projectFlags: Boolean(values['project-id'] || values['project-secret']),
+      lineFlags: Boolean(values.address || values.token),
+      envProject,
+      envLine,
+    });
+    if (!mode && tty) {
       console.log('Connect your Photon iMessage line:');
       console.log('  1. Sign in to Photon in your browser (recommended)');
       console.log('  2. Paste a line\'s server address and token');
       mode = (await ask('Choose [1]: ')).trim() === '2' ? 'line' : 'login';
-    } else if ((current.projectId && current.projectSecret) || (current.address && current.token)) {
-      mode = null; // Already set up: only reinstall the SDK.
-    } else {
+    } else if (!mode && ((current.projectId && current.projectSecret) || (current.address && current.token))) {
+      // Already set up: only reinstall the SDK.
+    } else if (!mode) {
       console.error('Setup needs a terminal for the Photon sign-in, or --project-id and --project-secret, or --address and --token.');
       return 1;
     }

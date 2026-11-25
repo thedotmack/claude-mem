@@ -11,6 +11,7 @@ import { fromPhotonGroupEvent, fromPhotonMessageEvent, PhotonSource } from '../.
 import { PhotonCloudError, PhotonCloudLines, SHARED_LINE_MESSAGE } from '../../src/integrations/imessage-observer/photon-cloud';
 import { PhotonSignupError, signInWithPhoton, type CliResult } from '../../src/integrations/imessage-observer/photon-signup';
 import type { ObserverEvent } from '../../src/integrations/imessage-observer/types';
+import { pickSetupMode } from '../../src/npx-cli/commands/imessage';
 
 const FEED = join(import.meta.dir, '..', 'fixtures', 'imessage', 'group-chats.jsonl');
 const MIN = 60_000;
@@ -507,5 +508,21 @@ describe('Photon sign-in', () => {
     const { io: signup, ran } = io({ login: { status: 1, stdout: '' } });
     await expect(signInWithPhoton(signup)).rejects.toBeInstanceOf(PhotonSignupError);
     expect(ran).toEqual([['login']]);
+  });
+});
+
+describe('imessage setup', () => {
+  const none = { projectFlags: false, lineFlags: false, envProject: false, envLine: false };
+
+  it('lets flags on the command line beat variables left in the environment', () => {
+    expect(pickSetupMode({ ...none, lineFlags: true, envProject: true })).toBe('line');
+    expect(pickSetupMode({ ...none, projectFlags: true, envLine: true })).toBe('project');
+    expect(pickSetupMode({ ...none, login: true, envProject: true })).toBe('login');
+  });
+
+  it('falls back to the environment, then asks', () => {
+    expect(pickSetupMode({ ...none, envProject: true })).toBe('project');
+    expect(pickSetupMode({ ...none, envLine: true })).toBe('line');
+    expect(pickSetupMode(none)).toBeNull();
   });
 });
