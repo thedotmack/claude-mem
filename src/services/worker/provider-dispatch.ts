@@ -557,10 +557,8 @@ export function regularProviderAfterCmemCap(platformSource?: string): Selectable
 
   if (usesDefaultClaudeBackup()) {
     const global = globalPrimary();
-    if (global !== 'openrouter') return available(global) ? global : null;
-    if (platformSource && normalizePlatformSource(platformSource) === 'codex') {
-      return available('codex') ? 'codex' : null;
-    }
+    if (available(global)) return global;
+    if (platformSource && normalizePlatformSource(platformSource) === 'codex' && available('codex')) return 'codex';
   }
   return quotaFallbackTarget('openrouter');
 }

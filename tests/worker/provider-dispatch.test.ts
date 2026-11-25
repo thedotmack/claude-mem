@@ -104,13 +104,18 @@ describe('provider-dispatch', () => {
       expect(getSelectedProvider()).toBe('openrouter');
     });
 
-    it('routes capped Codex sessions to their ChatGPT login, or pauses if they have none', () => {
+    it('uses the signed-in Codex plan, then the configured backup, and pauses when neither can serve', () => {
       const codexHome = mkdtempSync(join(tmpdir(), 'codex-cmem-cap-'));
+      const previousReadiness = setClaudeFallbackReadinessForTesting(() => false);
       try {
         pinOpenRouterEnv({ CODEX_HOME: codexHome, CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: '' });
         noteCmemCapExhausted();
         expect(selectProviderForGenerator('codex')).toEqual({
           provider: 'openrouter', gatewayProbeClaimId: null, capBlocked: true,
+        });
+        setClaudeFallbackReadinessForTesting(() => true);
+        expect(selectProviderForGenerator('codex')).toEqual({
+          provider: 'claude', gatewayProbeClaimId: null, fallbackFrom: 'openrouter',
         });
         writeFileSync(join(codexHome, 'auth.json'), JSON.stringify({
           auth_mode: 'chatgpt', tokens: { access_token: 'fixture' },
@@ -122,6 +127,7 @@ describe('provider-dispatch', () => {
         process.env.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER = 'off';
         expect(selectProviderForGenerator('codex').capBlocked).toBe(true);
       } finally {
+        setClaudeFallbackReadinessForTesting(previousReadiness);
         rmSync(codexHome, { recursive: true, force: true });
       }
     });
