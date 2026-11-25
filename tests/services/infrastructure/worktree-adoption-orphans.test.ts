@@ -9,7 +9,7 @@
 // A composite key whose worktree is gone is orphaned by definition, so adoption
 // folds it into the parent regardless of merge status. Leaving it unreachable
 // forever is strictly worse than adopting work from an abandoned branch.
-import { afterAll, afterEach, beforeAll, describe, expect, it, mock } from 'bun:test';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { execFileSync } from 'node:child_process';
 import { cpSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -17,17 +17,22 @@ import { tmpdir } from 'node:os';
 import * as realChromaMcpManager from '../../../src/services/sync/ChromaMcpManager.js';
 
 const realChromaMcpManagerSnapshot = { ...realChromaMcpManager };
+let failChroma = false;
 
 mock.module('../../../src/services/sync/ChromaMcpManager.js', () => ({
   ChromaMcpManager: {
     getInstance: () => ({
-      callTool: async () => ({})
+      callTool: async () => {
+        if (failChroma) throw new Error('chroma-mcp is not available');
+        return {};
+      }
     })
   }
 }));
 
 import { adoptMergedWorktrees, adoptMergedWorktreesForAllKnownRepos } from '../../../src/services/infrastructure/WorktreeAdoption.js';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
+import { ChromaSyncState } from '../../../src/services/sync/ChromaSyncState.js';
 import { getProjectContext } from '../../../src/utils/project-name.js';
 
 let tempRoot: string | undefined;
@@ -43,7 +48,14 @@ beforeAll(() => {
   git(repoTemplate, 'commit', '-m', 'base');
 }, 30_000);
 
+beforeEach(() => {
+  // A store that has synced before: the flag is never the file's first entry.
+  ChromaSyncState.bump('synced-before', 'observations', 1);
+});
+
 afterEach(() => {
+  failChroma = false;
+  ChromaSyncState.setMergedPatchVerified('parent-repo', false);
   if (tempRoot) {
     try { rmSync(tempRoot, { recursive: true, force: true }); } catch {}
   }
@@ -218,10 +230,10 @@ describe('orphaned worktree adoption (#2864)', () => {
 
   // The Chroma patch runs after the SQL commits and can fail on its own (the
   // data dir allows a single writer, so a CLI run loses to the live worker).
-  // selectObsForPatch matches `merged_into_project IS NULL OR = parent`
-  // precisely so a later run can re-patch. Orphan detection has to admit
-  // already-adopted keys too, or the retry it promises never happens and the
-  // vector metadata stays stale forever.
+  // Until a patch has covered every adopted row, selectObsForPatch matches
+  // `merged_into_project IS NULL OR = parent` precisely so a later run can
+  // re-patch. Orphan detection has to admit already-adopted keys too, or the
+  // retry it promises never happens and the vector metadata stays stale forever.
   it('still collects Chroma targets for an already-adopted orphan', async () => {
     tempRoot = mkdtempSync(path.join(tmpdir(), 'claude-mem-2864-orphan-'));
     const mainRepo = path.join(tempRoot, 'parent-repo');
@@ -240,19 +252,25 @@ describe('orphaned worktree adoption (#2864)', () => {
     git(mainRepo, 'worktree', 'remove', '--force', worktree);
     git(mainRepo, 'worktree', 'prune');
 
+    failChroma = true;
     const first = await adoptMergedWorktrees({ repoPath: mainRepo, dataDirectory });
     expect(first.adoptedObservations).toBe(1);
-    expect(first.chromaUpdates).toBe(1);
+    expect(first.chromaFailed).toBe(1);
     expect(first.orphanedWorktrees).toEqual(['parent-repo/retry-wt']);
 
+    failChroma = false;
     const second = await adoptMergedWorktrees({ repoPath: mainRepo, dataDirectory });
     // SQL is a no-op the second time — no double counting, no spurious revs.
     expect(second.adoptedObservations).toBe(0);
-    // ...but the row is still offered to Chroma so a failed patch can recover.
+    // ...but the row is still offered to Chroma so the failed patch recovers.
     expect(second.chromaUpdates).toBe(1);
     // Reporting stays a changelog of what this run folded in, not a running
     // tally of everything ever adopted.
     expect(second.orphanedWorktrees).toEqual([]);
+
+    // The patch has now covered every adopted row, so nothing is offered again.
+    const third = await adoptMergedWorktrees({ repoPath: mainRepo, dataDirectory });
+    expect(third.chromaUpdates).toBe(0);
   }, 30_000);
 
   it('adopts an orphan even when its branch was never merged', async () => {

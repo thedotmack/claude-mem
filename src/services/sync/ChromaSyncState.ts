@@ -46,6 +46,13 @@ export interface ProjectWatermarks {
    * it completes, so a restart mid-rebuild simply rebuilds again.
    */
   rebuildPending?: boolean;
+  /**
+   * Set once every row adopted into this project is known to carry
+   * `merged_into_project` in Chroma. Worktree adoption then patches only the
+   * rows it adopts, instead of re-reading every adopted document at each
+   * start. Cleared when a patch fails, so the next run checks them all again.
+   */
+  mergedPatchVerified?: boolean;
 }
 
 const ZERO: ProjectWatermarks = { observations: 0, summaries: 0, prompts: 0 };
@@ -205,6 +212,10 @@ function normalizeProjectWatermarks(marks: Partial<ProjectWatermarks> | undefine
 
   if (marks?.rebuildPending === true) {
     normalized.rebuildPending = true;
+  }
+
+  if (marks?.mergedPatchVerified === true) {
+    normalized.mergedPatchVerified = true;
   }
 
   return normalized;
@@ -412,6 +423,23 @@ export const ChromaSyncState = {
     const current = normalizeProjectWatermarks(all[project] ?? ZERO);
     if (current.titleOnlyRequeued) return;
     current.titleOnlyRequeued = true;
+    all[project] = current;
+    persist();
+  },
+
+  isMergedPatchVerified(project: string): boolean {
+    return this.get(project).mergedPatchVerified === true;
+  },
+
+  setMergedPatchVerified(project: string, verified: boolean): void {
+    const all = load();
+    // Never write the file's first project entry: a file with no project
+    // state is what starts the one-time watermark bootstrap.
+    if (verified && Object.keys(all).length === 0) return;
+    const current = normalizeProjectWatermarks(all[project] ?? ZERO);
+    if ((current.mergedPatchVerified === true) === verified) return;
+    if (verified) current.mergedPatchVerified = true;
+    else delete current.mergedPatchVerified;
     all[project] = current;
     persist();
   },

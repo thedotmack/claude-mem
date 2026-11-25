@@ -6,6 +6,7 @@ import { logger } from '../../utils/logger.js';
 import { getPathModeProjectContext, getProjectContext } from '../../utils/project-name.js';
 import { bareRepositoryProjectName } from '../../utils/worktree.js';
 import { ChromaSync, MergedIntoProjectTarget } from '../sync/ChromaSync.js';
+import { ChromaSyncState } from '../sync/ChromaSyncState.js';
 import { emitRemapProject, hasSyncLane } from '../sync/remap-outbox.js';
 import { paths } from '../../shared/paths.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
@@ -586,6 +587,7 @@ export async function adoptMergedWorktrees(opts: {
     .filter((b): b is string => b !== null);
 
   const adoptedChromaTargets: MergedIntoProjectTarget[] = [];
+  const chromaPatchVerified = ChromaSyncState.isMergedPatchVerified(parentProject);
 
   let db: import('bun:sqlite').Database | null = null;
   try {
@@ -610,15 +612,19 @@ export async function adoptMergedWorktrees(opts: {
     }
     const writerEvidence = readWriterEvidence(db, obsColumns, sumColumns);
 
+    // Already-adopted rows stay eligible until one Chroma patch has covered
+    // them all, so a patch that failed after the SQL commit can retry. Once
+    // verified, only rows this run adopts need the patch: re-reading every
+    // adopted document at each start costs minutes on a large store.
+    const patchAlreadyAdopted = !chromaPatchVerified;
+    const adoptedRowsClause = patchAlreadyAdopted
+      ? 'AND (merged_into_project IS NULL OR merged_into_project = ?)'
+      : 'AND merged_into_project IS NULL';
     const selectObsForPatch = db.prepare(
-      `SELECT id FROM observations
-       WHERE project = ?
-         AND (merged_into_project IS NULL OR merged_into_project = ?)`
+      `SELECT id FROM observations WHERE project = ? ${adoptedRowsClause}`
     );
     const selectSumForPatch = db.prepare(
-      `SELECT id FROM session_summaries
-       WHERE project = ?
-         AND (merged_into_project IS NULL OR merged_into_project = ?)`
+      `SELECT id FROM session_summaries WHERE project = ? ${adoptedRowsClause}`
     );
     const updateObs = db.prepare(
       'UPDATE observations SET merged_into_project = ? WHERE project = ? AND merged_into_project IS NULL'
@@ -636,14 +642,9 @@ export async function adoptMergedWorktrees(opts: {
     const syncLane = hasSyncLane(db);
 
     const adoptWorktreeInTransaction = (worktreeProject: string) => {
-      const rows = selectObsForPatch.all(
-        worktreeProject,
-        parentProject
-      ) as Array<{ id: number }>;
-      const summaryRows = selectSumForPatch.all(
-        worktreeProject,
-        parentProject
-      ) as Array<{ id: number }>;
+      const patchParams = patchAlreadyAdopted ? [worktreeProject, parentProject] : [worktreeProject];
+      const rows = selectObsForPatch.all(...patchParams) as Array<{ id: number }>;
+      const summaryRows = selectSumForPatch.all(...patchParams) as Array<{ id: number }>;
 
       let obsChanges: number;
       let sumChanges: number;
@@ -695,7 +696,7 @@ export async function adoptMergedWorktrees(opts: {
           ]),
           ...submoduleCheckouts.flatMap(checkout => getPathModeProjectContext(checkout).allProjects),
         ]);
-        orphanProjects = listOrphanProjectKeys(db, parentProject, liveWorktreeProjects, true, writerEvidence);
+        orphanProjects = listOrphanProjectKeys(db, parentProject, liveWorktreeProjects, patchAlreadyAdopted, writerEvidence);
         result.orphanedWorktrees = listOrphanProjectKeys(db, parentProject, liveWorktreeProjects, false, writerEvidence);
       }
     }
@@ -756,16 +757,25 @@ export async function adoptMergedWorktrees(opts: {
     db?.close();
   }
 
-  if (
-    !dryRun &&
-    adoptedChromaTargets.length > 0 &&
-    SettingsDefaultsManager.loadFromFile(path.join(dataDirectory, 'settings.json')).CLAUDE_MEM_CHROMA_ENABLED !== 'false'
-  ) {
+  const chromaEnabled =
+    SettingsDefaultsManager.loadFromFile(path.join(dataDirectory, 'settings.json')).CLAUDE_MEM_CHROMA_ENABLED !== 'false';
+  // A `--branch` run reads one branch, so it proves nothing about the others.
+  // A skipped branch may hold adopted rows that this run did not read either.
+  const coversEveryAdoptedRow = chromaPatchVerified || (!opts.onlyBranch && result.errors.length === 0);
+  if (!dryRun && !chromaEnabled && result.adoptedObservations + result.adoptedSummaries > 0) {
+    // These rows were adopted with no Chroma patch; check them once it is back.
+    ChromaSyncState.setMergedPatchVerified(parentProject, false);
+  } else if (!dryRun && chromaEnabled && adoptedChromaTargets.length === 0 && coversEveryAdoptedRow) {
+    ChromaSyncState.setMergedPatchVerified(parentProject, true);
+  }
+  if (!dryRun && adoptedChromaTargets.length > 0 && chromaEnabled) {
     const chromaSync = new ChromaSync('claude-mem');
     try {
       await chromaSync.updateMergedIntoProject(adoptedChromaTargets, parentProject);
       result.chromaUpdates = adoptedChromaTargets.length;
+      if (coversEveryAdoptedRow) ChromaSyncState.setMergedPatchVerified(parentProject, true);
     } catch (err) {
+      ChromaSyncState.setMergedPatchVerified(parentProject, false);
       if (err instanceof Error) {
         logger.error(
           'SYSTEM',

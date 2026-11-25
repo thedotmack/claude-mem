@@ -23,6 +23,26 @@ describe('ChromaSyncState project keys', () => {
     rmSync(dataDir, { recursive: true, force: true });
   });
 
+  it('keeps the merged-patch flag across reloads and clears it on request', () => {
+    ChromaSyncState.bump('parent', 'observations', 3);
+    ChromaSyncState.setMergedPatchVerified('parent', true);
+    ChromaSyncState.resetCacheForTests();
+    assert.equal(ChromaSyncState.isMergedPatchVerified('parent'), true);
+    assert.equal(ChromaSyncState.get('parent').observations, 3);
+
+    ChromaSyncState.setMergedPatchVerified('parent', false);
+    ChromaSyncState.resetCacheForTests();
+    assert.equal(ChromaSyncState.isMergedPatchVerified('parent'), false);
+  });
+
+  it('does not create the first project entry for the merged-patch flag', () => {
+    ChromaSyncState.setMergedPatchVerified('parent', true);
+    ChromaSyncState.resetCacheForTests();
+    // No project state must still mean "bootstrap the watermarks from Chroma".
+    assert.equal(ChromaSyncState.hasProjectState(), false);
+    assert.equal(ChromaSyncState.isMergedPatchVerified('parent'), false);
+  });
+
   for (const initialFile of [undefined, '{ truncated']) {
     it(`persists prototype-named projects from ${initialFile ? 'corrupt' : 'missing'} state`, () => {
       const path = join(dataDir, 'chroma-sync-state.json');
