@@ -250,10 +250,10 @@ export const OPENAI_COMPAT_PRESETS: readonly OpenAICompatPreset[] = [
   {
     id: 'opencode-go',
     label: 'OpenCode Go (opencode.ai)',
-    baseUrl: 'https://opencode.ai/zen/go/v1',
+    baseUrl: 'https://opencode.ai/inference/go/openai/v1',
     defaultModel: 'kimi-k3',
     requiresApiKey: true,
-    hint: 'OpenCode Go subscription key; model ids from opencode.ai/zen/go/v1/models.',
+    hint: 'OpenCode Go subscription key; model ids from opencode.ai/inference/go/openai/v1/models.',
     // Go answers 400 without it (#4581).
     sessionHeader: 'x-opencode-session',
     // Go ignores `reasoning: { enabled: false }` and keeps thinking; an OpenAI
@@ -263,7 +263,7 @@ export const OPENAI_COMPAT_PRESETS: readonly OpenAICompatPreset[] = [
   {
     id: 'opencode-zen',
     label: 'OpenCode Zen (opencode.ai)',
-    baseUrl: 'https://opencode.ai/zen/v1',
+    baseUrl: 'https://opencode.ai/inference/openai/v1',
     defaultModel: '',
     requiresApiKey: true,
     hint: 'Zen key. Only models Zen serves on /chat/completions work here.',

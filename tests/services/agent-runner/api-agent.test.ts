@@ -52,7 +52,7 @@ describe('the API agent talks to the selected provider', () => {
     const { calls } = fakeFetch([{ body: { choices: [{ message: { content: 'ok' } }] } }]);
     const opencode: ApiTarget = {
       provider: 'openai-compatible',
-      url: 'https://opencode.ai/zen/go/v1/chat/completions',
+      url: 'https://opencode.ai/inference/go/openai/v1/chat/completions',
       apiKey: 'sk-go-test',
       model: 'deepseek-v4.1-flash',
       sessionHeader: 'x-opencode-session',
@@ -80,7 +80,7 @@ describe('the API agent talks to the selected provider', () => {
     const { calls } = fakeFetch([{ body: { choices: [{ message: { content: 'ok' } }] } }]);
     const opencode: ApiTarget = {
       provider: 'openai-compatible',
-      url: 'https://opencode.ai/zen/go/v1/chat/completions',
+      url: 'https://opencode.ai/inference/go/openai/v1/chat/completions',
       apiKey: 'sk-go-test',
       model: 'deepseek-v4.1-flash',
       sessionHeader: 'x-opencode-session',
@@ -256,7 +256,7 @@ describe('the API target follows the selected provider', () => {
   it('carries the preset\'s OpenCode Go session header and reasoning body into the target', async () => {
     await withSettings({ CLAUDE_MEM_PROVIDER: 'openai-compatible', CLAUDE_MEM_OPENAI_COMPAT_PRESET: 'opencode-go', CLAUDE_MEM_OPENAI_COMPAT_API_KEY: 'sk-test', CLAUDE_MEM_OPENAI_COMPAT_MODEL: 'deepseek-v4.1-flash', CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT: 'xhigh' }, path => {
       const target = resolveApiTarget(path).target;
-      expect(target?.url).toBe('https://opencode.ai/zen/go/v1/chat/completions');
+      expect(target?.url).toBe('https://opencode.ai/inference/go/openai/v1/chat/completions');
       expect(target?.sessionHeader).toBe('x-opencode-session');
       expect(target?.reasoningOff).toBe('effort-none');
       expect(target?.reasoningEffort).toBe('xhigh');
