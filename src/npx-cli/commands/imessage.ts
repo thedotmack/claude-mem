@@ -4,6 +4,7 @@
  *   imessage setup     Sign in to Photon (or paste a line's address and token), install the Photon SDK
  *   imessage observe   Listen to every group chat the line is in and make observations
  *   imessage chats     List the chats being observed and their projects
+ *   imessage mac …     Read the chats you pick straight from Messages on this Mac (no Photon line)
  *
  * See docs/imessage-group-observer.md.
  */
@@ -19,7 +20,8 @@ const USAGE = `Usage:
   claude-mem imessage setup [--login] [--project-id <id> --project-secret <secret>]
                             [--address <host:port> --token <token>] [--no-tls]
   claude-mem imessage observe [--chat <guid>]... [--include-direct] [--replay <file.jsonl>] [--dry-run]
-  claude-mem imessage chats`;
+  claude-mem imessage chats
+  claude-mem imessage mac <check|chats|pick|observe>   (read Messages on this Mac; see docs/imessage-mac-app.md)`;
 
 export interface ImessageConfig {
   /** Photon project (from the browser sign-in). Its lines and tokens are looked up live. */
@@ -337,6 +339,10 @@ export async function runImessageCommand(action: string | undefined, args: strin
     if (action === 'setup') return await setup(args);
     if (action === 'observe') return await observe(args);
     if (action === 'chats') return listChats();
+    if (action === 'mac') {
+      const { runImessageMacCommand } = await import('./imessage-mac.js');
+      return await runImessageMacCommand(args[0]?.toLowerCase(), args.slice(1));
+    }
     console.log(USAGE);
     return action === undefined || action === 'help' ? 0 : 1;
   } catch (error) {

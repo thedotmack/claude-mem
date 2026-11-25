@@ -60,6 +60,8 @@ export class WorkerSink {
     private readonly post: WorkerPost,
     private readonly book: PeopleBook,
     private readonly log: SinkLog,
+    /** The request the observer reads for a chat; read when a conversation starts. */
+    private readonly promptFor: (chat: ChatInfo) => string = chat => conversationPrompt(chat, book),
   ) {}
 
   /** `enqueuedAt` is when the window was queued for hand-over (epoch ms). */
@@ -78,7 +80,7 @@ export class WorkerSink {
     const reply = await this.post('/api/sessions/init', {
       contentSessionId,
       project,
-      prompt: conversationPrompt(chat, this.book),
+      prompt: this.promptFor(chat),
       platformSource: PLATFORM_SOURCE,
       customTitle: `iMessage: ${cleanMessageText(chat.displayName)}`,
       eventOccurredAtEpochMs: at.getTime(),
@@ -121,7 +123,7 @@ export class WorkerSink {
         this.log.warn(`The worker skipped ${entries.length} messages from "${chat.displayName}" (${reply.reason ?? 'skipped'}).`);
         return;
       }
-      session.recap = `Latest messages in the iMessage group chat "${cleanMessageText(chat.displayName)}":\n`
+      session.recap = `Latest messages in the iMessage ${chat.isGroup ? 'group chat' : 'conversation'} "${cleanMessageText(chat.displayName)}":\n`
         + (transcript.length > RECAP_CHARS ? '...\n' + transcript.slice(-RECAP_CHARS) : transcript);
       this.delivered.push({ chatGuid: chat.guid, project, contentSessionId, entries: entries.length });
       this.log.info(`Sent ${entries.length} messages from "${chat.displayName}" to ${project}.`);

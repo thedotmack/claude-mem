@@ -12,7 +12,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { dirname } from 'node:path';
 import { isProjectExcluded } from '../../utils/project-filter.js';
 import { ChatWindowBatcher, DEFAULT_BATCHER_OPTIONS, type BatcherAction, type BatcherOptions } from './batcher.js';
-import { normalizeNames, type PeopleBook } from './transcript.js';
+import { conversationPrompt, normalizeNames, type ChatVia, type PeopleBook } from './transcript.js';
 import type { ChatInfo, MessageSource, ObserverEvent } from './types.js';
 import { shortHash, WorkerSink, type SinkLog, type WorkerPost } from './worker-sink.js';
 
@@ -27,6 +27,16 @@ export interface ObserverOptions {
   meLabel?: string;
   /** Observe only these chat GUIDs (all group chats when empty). */
   onlyChats?: string[];
+  /**
+   * Asked per event and again at hand-over, so a chat switched off in the
+   * Mac app sends nothing more, even from a window that was already open.
+   * When set, it decides on its own: `onlyChats` and `includeDirect` are not used.
+   */
+  isObserved?: (chatGuid: string) => boolean;
+  /** What the owner asked to watch for in a chat; read when a conversation starts. */
+  focusFor?: (chatGuid: string) => string | undefined;
+  /** How chats reach Claude-Mem; changes what the note-taker is told (default 'line'). */
+  via?: ChatVia;
   /** Also observe one-to-one chats. */
   includeDirect?: boolean;
   batcher?: Partial<BatcherOptions>;
@@ -112,7 +122,10 @@ export class GroupChatObserver {
       names: normalizeNames(options.contacts ?? {}),
       meLabel: options.meLabel ?? 'This line',
     };
-    this.sink = new WorkerSink(options.post, book, options.log);
+    this.sink = new WorkerSink(options.post, book, options.log, chat => conversationPrompt(chat, book, {
+      via: options.via,
+      focus: options.focusFor?.(chat.guid),
+    }));
     this.state = existsSync(options.statePath) ? readState(options.statePath) : { chats: {} };
   }
 
@@ -164,8 +177,9 @@ export class GroupChatObserver {
   }
 
   private async chatFor(event: ObserverEvent): Promise<ChatInfo | null> {
+    const picked = this.options.isObserved;
     const only = this.options.onlyChats ?? [];
-    if (only.length > 0 && !only.includes(event.chatGuid)) return null;
+    if (picked ? !picked(event.chatGuid) : only.length > 0 && !only.includes(event.chatGuid)) return null;
     const retryAt = this.lookupFailedUntil.get(event.chatGuid);
     if (retryAt !== undefined && Date.now() >= retryAt) this.chats.delete(event.chatGuid);
     let pending = this.chats.get(event.chatGuid);
@@ -189,7 +203,8 @@ export class GroupChatObserver {
     }
     const chat = await pending;
     if (!chat) return null;
-    if (!chat.isGroup && !this.options.includeDirect) return null;
+    // A chat picked by hand is observed whether it is a group or not.
+    if (!chat.isGroup && !this.options.includeDirect && !picked) return null;
     return chat;
   }
 
@@ -234,6 +249,11 @@ export class GroupChatObserver {
       const current = this.known.get(action.chatGuid);
       if (!current) continue;
       const chat: ChatInfo = { ...current, participants: [...current.participants] };
+      if (action.kind === 'window' && this.options.isObserved && !this.options.isObserved(action.chatGuid)) {
+        this.droppedWindows += 1;
+        this.options.log.info(`Dropped ${action.entries.length} messages from "${chat.displayName}": it is no longer observed.`);
+        continue;
+      }
       if (action.kind === 'window' && this.queued >= limit) {
         this.droppedWindows += 1;
         this.options.log.warn(`Skipped ${action.entries.length} messages from "${chat.displayName}": the worker is behind.`);
