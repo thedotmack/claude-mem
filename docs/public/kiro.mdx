@@ -22,7 +22,7 @@ Tested on macOS with Kiro IDE 1.3.0 and Node 22. Official references: [MCP confi
 }
 ```
 
-Kiro starts as a desktop app and may not have your shell `PATH` (for example with nvm), so use absolute paths. Keep other servers in the file. Choose a different name if you already have an unrelated server named `claude-mem`.
+Kiro starts as a desktop app and may not have your shell `PATH` (for example with nvm), so use absolute paths. The worker also needs [Bun](https://bun.sh). Claude-Mem finds it in `~/.bun/bin`, `/usr/local/bin` and `/opt/homebrew/bin`. If your Bun is somewhere else, add `"env": {"BUN": "/absolute/path/to/bun"}` to the entry (get it with `which bun`). Keep other servers in the file. Choose a different name if you already have an unrelated server named `claude-mem`.
 
 2. If Kiro was open when you saved the file, run **Developer: Reload Window**. Kiro does not always pick up a new `mcp.json` while it runs.
 3. Check the "Kiro - MCP Logs" output. It should show `[claude-mem] Connected`.
