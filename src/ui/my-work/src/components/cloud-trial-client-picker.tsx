@@ -2,13 +2,13 @@ import { useId, useLayoutEffect, useRef, useState } from 'react'
 import { CopyIcon, ExternalLinkIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { interpolate, useI18n } from '@/lib/i18n'
-import { clientHandoffPrompt, clientSetupInstructions, OTHER_TRIAL_CLIENTS, PRIMARY_TRIAL_CLIENTS, type TrialClient } from '@/live/cloud-trial-clients'
+import { clientHandoffPrompt, clientSetupInstructions, OTHER_TRIAL_CLIENTS, PRIMARY_TRIAL_CLIENTS, SCHEDULING_TRIAL_CLIENTS, type TrialClient } from '@/live/cloud-trial-clients'
 import { CMEM_MCP_URL } from '@/setup/agent-connections'
 import { ToolMark } from '@/setup/screens/shared'
 
 /** The brand tile copies chat text. Separate controls copy the exact value a settings field or terminal accepts. */
-export function CloudTrialClientPicker({ task, connecting, writing, client, onSelect }: {
-  task: string; connecting: boolean; writing: boolean; client: TrialClient; onSelect: (client: TrialClient) => void
+export function CloudTrialClientPicker({ task, connecting, writing, scheduleRequest, client, onSelect }: {
+  task: string; connecting: boolean; writing: boolean; scheduleRequest?: string; client: TrialClient; onSelect: (client: TrialClient) => void
 }) {
   const { t } = useI18n()
   const id = useId()
@@ -20,6 +20,7 @@ export function CloudTrialClientPicker({ task, connecting, writing, client, onSe
   const promptId = id + '-prompt'
   const promptFor = (target: TrialClient) => {
     const handoff = clientHandoffPrompt(target, task, t)
+    if (scheduleRequest) return scheduleRequest + '\n\n' + handoff
     return writing ? handoff + '\n' + t('If your connection is read-only, tell me so I can save the note in my first agent.') : handoff
   }
 
@@ -85,11 +86,12 @@ export function CloudTrialClientPicker({ task, connecting, writing, client, onSe
   return (
     <div>
       <p className="mb-2 text-sm font-medium">{connecting ? t('Choose an agent to copy its setup.') : t('Choose an agent to copy your prompt.')}</p>
-      <div className="grid grid-cols-1 gap-2 min-[400px]:grid-cols-2 lg:grid-cols-3">{PRIMARY_TRIAL_CLIENTS.map(tile)}</div>
-      <details className="mt-1" open={moreOpen} onToggle={event => setMoreOpen(event.currentTarget.open)}>
+      <div className="grid grid-cols-1 gap-2 min-[400px]:grid-cols-2 lg:grid-cols-3">{(scheduleRequest ? SCHEDULING_TRIAL_CLIENTS : PRIMARY_TRIAL_CLIENTS).map(tile)}</div>
+      {!scheduleRequest && <details className="mt-1" open={moreOpen} onToggle={event => setMoreOpen(event.currentTarget.open)}>
         <summary className="min-h-11 cursor-pointer content-center text-sm font-medium text-primary">{t('More agents')}</summary>
         <div className="grid grid-cols-1 gap-2 min-[400px]:grid-cols-2 lg:grid-cols-3">{OTHER_TRIAL_CLIENTS.map(tile)}</div>
-      </details>
+      </details>}
+      {scheduleRequest && client.scheduleHelp && <p className="mt-2 text-sm text-muted-foreground">{t(client.scheduleHelp)}</p>}
       <div className="mt-2 flex flex-wrap items-center gap-x-4">
         <Button type="button" variant="outline" className="min-h-11" aria-controls={id + '-setup'} aria-expanded={showSetup} onClick={() => setShowSetup(!showSetup)}>
           {interpolate(t('Set up {toolName}'), { toolName: name })}
