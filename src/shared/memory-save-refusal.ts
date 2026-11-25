@@ -8,7 +8,7 @@
  * (src/servers/mcp-text-format.ts) word it for people, each in a
  * `Record<MemorySaveRefusalReason, string>`.
  *
- * - project_excluded: the request's `cwd` matches CLAUDE_MEM_EXCLUDED_PROJECTS.
+ * - project_excluded: the request's cwd, or an explicit absolute project / metadata.project, matches CLAUDE_MEM_EXCLUDED_PROJECTS.
  */
 export const MEMORY_SAVE_REFUSAL_REASONS = ['project_excluded'] as const;
 export type MemorySaveRefusalReason = typeof MEMORY_SAVE_REFUSAL_REASONS[number];

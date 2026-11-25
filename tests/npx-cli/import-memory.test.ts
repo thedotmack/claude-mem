@@ -365,6 +365,15 @@ describe('provider import contracts', () => {
     const result = await applyImport(plan, async () => ({ success: true, duplicate: true, id: 1, project: mem0.project }));
     expect(result).toEqual({ imported: 0, existing: 3 });
   });
+  test('keeps an absolute --project path for worker exclusion checks while matching the normalized confirmation', async () => {
+    const plan = planImport([row('m1'), row('m2')], { ...mem0, project: '/tmp/my-app' });
+    expect(plan.notes.map(note => note.project)).toEqual(['/tmp/my-app', '/tmp/my-app']);
+    let nextId = 1;
+    const first = await applyImport(plan, async () => ({ success: true, id: nextId++, project: 'my-app' }));
+    expect(first).toEqual({ imported: 2, existing: 0 });
+    const replay = await applyImport(plan, async () => ({ success: true, duplicate: true, id: 1, project: 'my-app' }));
+    expect(replay).toEqual({ imported: 0, existing: 2 });
+  });
   test('a worker refusal is reported plainly, without promising that a rerun resumes', async () => {
     const plan = planImport([row(), row('m2')], mem0);
     const words: string[] = [];

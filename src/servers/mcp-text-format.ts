@@ -124,7 +124,7 @@ function corpusSummary(value: unknown): string {
 
 /** Words for each reason the worker refuses a save_memory write (src/shared/memory-save-refusal.ts). */
 const SAVE_REFUSAL_TEXT: Record<MemorySaveRefusalReason, string> = {
-  project_excluded: 'Not saved: this checkout is excluded by CLAUDE_MEM_EXCLUDED_PROJECTS.',
+  project_excluded: 'Not saved: this project is excluded by CLAUDE_MEM_EXCLUDED_PROJECTS.',
 };
 
 /** Select model-visible information explicitly. Unknown backend fields are never dumped into the prompt. */

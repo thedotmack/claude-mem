@@ -405,6 +405,57 @@ export function getProjectContextWithRoot(
   };
 }
 
+const ABSOLUTE_FILESYSTEM_PATH_PATTERN = /^(\/|[A-Za-z]:[\\/]|\\\\)/;
+const WINDOWS_DRIVE_ROOT_PATTERN = /^([A-Za-z]):/;
+
+/**
+ * True when `value` names an absolute filesystem path on any platform: POSIX
+ * (`/...`), Windows drive (`C:\...`, `C:/...`), or UNC (`\\...`). Tested on the
+ * trimmed value so caller padding cannot hide the leading separator.
+ */
+export function isAbsoluteFilesystemPath(value: string): boolean {
+  return ABSOLUTE_FILESYSTEM_PATH_PATTERN.test(value.trim());
+}
+
+/**
+ * Normalize an explicitly supplied project (save_memory `project` or
+ * `metadata.project`) into a project identity. An absolute filesystem path
+ * names a checkout, not a project, so it reduces to a project identity.
+ *
+ * On a Windows host the whole path goes through `getProjectContext`, just like
+ * a POSIX path, so named environments, `git-remote` slugs, worktree compound
+ * keys and `.claude-mem-project` markers still apply. Native git/path
+ * resolution cannot see a Windows path supplied from a non-Windows host; there
+ * the path is split lexically with `path.win32`, and a root has no basename, so
+ * it falls back to `drive-<LETTER>` or `unknown-project`. Non-absolute values
+ * are already identities — `org/repo` slugs and plain names — and are returned
+ * trimmed.
+ *
+ * The Windows-host branch cannot be regression-tested on a POSIX host: it is
+ * selected by `process.platform`, and simulating it there would fake the
+ * native git/filesystem resolution that distinguishes it from the fallback.
+ */
+export function normalizeExplicitProject(raw: string): string {
+  const trimmed = raw.trim();
+  if (!isAbsoluteFilesystemPath(trimmed)) {
+    return trimmed;
+  }
+
+  // Windows-host paths name real checkouts: use the same context pipeline as
+  // POSIX paths. The lexical fallback is only for Windows-shaped paths that a
+  // non-Windows host cannot resolve natively.
+  if (process.platform !== 'win32' && (/^[A-Za-z]:[\\/]/.test(trimmed) || /^\\\\/.test(trimmed))) {
+    const basename = path.win32.basename(trimmed);
+    if (basename) {
+      return basename;
+    }
+    const driveMatch = trimmed.match(WINDOWS_DRIVE_ROOT_PATTERN);
+    return driveMatch ? `drive-${driveMatch[1].toUpperCase()}` : UNKNOWN_PROJECT_NAME;
+  }
+
+  return getProjectContext(trimmed).primary;
+}
+
 /** Re-key a context, retaining its read keys unless an explicit scope replaces them. */
 function withPrimaryKey(
   context: ProjectContext,
