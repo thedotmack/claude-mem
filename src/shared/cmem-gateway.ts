@@ -188,15 +188,17 @@ const PRO_FALLBACK_KEYS = [
  * never assumes a trial ended. Without the gateway's words it says only what
  * is true for every account.
  */
-export function proFallbackNotice(notice: ProFallbackNotice, role: CmemGatewayRole = 'primary'): string {
+export function proFallbackNotice(notice: ProFallbackNotice, role: CmemGatewayRole = 'primary', capExhausted = false): string {
   const message = relayedLine(notice.message) || 'cmem.ai memory is paused for this account.';
   const action = relayedLine(notice.action);
   // As the opt-in quota fallback the gateway never had memory: nothing moved
   // to the Anthropic plan. Dispatch skips it inside the marker's window and
   // re-probes it once per window after that.
-  const consequence = role === 'primary'
-    ? 'Memory is using your Anthropic plan for now.'
-    : 'claude-mem skips it as your quota fallback until it answers again; capture waits for your selected provider.';
+  const consequence = role === 'quota-fallback'
+    ? 'claude-mem skips it as your quota fallback until it answers again; capture waits for your selected provider.'
+    : capExhausted
+      ? 'Memory uses your configured local provider when available. If it cannot run, memory generation pauses. Your saved memories and source transcripts stay on this machine.'
+      : 'Memory is using your Anthropic plan for now.';
   return [
     message,
     ...(action ? [action] : []),
