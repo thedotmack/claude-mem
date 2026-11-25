@@ -1,11 +1,12 @@
 import { randomUUID } from 'crypto';
 import { constants, existsSync, renameSync as fsRenameSync, unlinkSync } from 'fs';
 import { copyFile } from 'fs/promises';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { Database } from 'bun:sqlite';
 import { logger } from '../../utils/logger.js';
 import { renameWithWindowsRetry } from '../../shared/atomic-json.js';
 import { runSqliteFileJob } from './sqlite-file-job.js';
+import { openRestoreStagingLock } from './snapshot-staging.js';
 import { LATEST_SCHEMA_VERSION } from '../sqlite/connection.js';
 import { ChromaSyncState } from '../sync/ChromaSyncState.js';
 import { contextCacheDir, listContextCacheFiles } from '../../shared/context-cache.js';
@@ -91,6 +92,10 @@ function removeRestoreStagingFiles(files: string[]): void {
 }
 
 async function publishPreRestoreCopy(source: string, destination: string, wal?: string): Promise<void> {
+  using lock = openRestoreStagingLock(dirname(destination));
+  // A read transaction excludes cleanup until the staging claim is released.
+  // Reading the schema actually takes the shared lock; BEGIN alone is deferred.
+  lock.exec('PRAGMA busy_timeout = 1000; BEGIN; SELECT count(*) FROM sqlite_schema');
   const partial = `${destination}.partial`;
   const destinationWal = `${destination}-wal`;
   // Claim the timestamp before touching its sidecar. A repeated clock value

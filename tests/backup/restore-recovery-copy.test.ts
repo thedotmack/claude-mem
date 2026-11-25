@@ -74,7 +74,7 @@ describe('damaged live database recovery copy', () => {
         await expect(swapDatabaseFromSnapshot(dbPath, snapshot, { preRestoreDir: backups }))
           .rejects.toThrow('backup volume is full');
         expect(listedDuringWalCopy).toEqual([basename(snapshot)]);
-        expect(fs.readdirSync(backups)).toEqual([basename(snapshot)]);
+        expect(fs.readdirSync(backups).sort()).toEqual(['.restore-staging.lock', basename(snapshot)]);
         const manager = new BackupManager({ CLAUDE_MEM_BACKUP_RETAIN_COUNT: '1' }, { backupsDir: backups });
         await manager.applyRetention();
         expect(listSnapshotNames(backups)).toEqual([basename(snapshot)]);
@@ -102,6 +102,60 @@ describe('damaged live database recovery copy', () => {
         expect(fs.readFileSync(`${existing}-wal`, 'utf8')).toBe('earlier WAL');
         expect(fs.readFileSync(dbPath)).toEqual(damagedMain);
       } finally { clock.mockRestore(); }
+    });
+  });
+
+  it('reclaims interrupted copies before checking free space and preserves a published WAL', async () => {
+    await fixture(async (_dbPath, snapshot, backups) => {
+      const abandoned = join(backups, 'claude-mem-2026-10-02T00-00-00-000Z-pre-restore.db');
+      const mainOnly = join(backups, 'claude-mem-2026-10-03T00-00-00-000Z-pre-restore.db');
+      const published = join(backups, 'claude-mem-2026-10-04T00-00-00-000Z-pre-restore.db');
+      for (const name of [abandoned, mainOnly, published]) fs.writeFileSync(`${name}.partial`, damagedMain);
+      fs.writeFileSync(`${abandoned}-wal`, damagedWal);
+      fs.writeFileSync(published, damagedMain);
+      fs.writeFileSync(`${published}-wal`, damagedWal);
+      const unrelated = join(backups, 'import-pre-restore.db.partial');
+      fs.writeFileSync(unrelated, 'unrelated');
+      const statfs = fs.statfsSync;
+      const space = spyOn(fs, 'statfsSync').mockImplementation((...args) => {
+        const stats = statfs(...args);
+        // The next backup only fits once the abandoned pair is gone.
+        if (fs.existsSync(`${abandoned}.partial`) || fs.existsSync(`${abandoned}-wal`)) stats.bavail = 0;
+        return stats;
+      });
+      try {
+        const manager = new BackupManager({}, { backupsDir: backups, dbPath: snapshot });
+        await manager.createSnapshot();
+        for (const name of [abandoned, mainOnly, published]) expect(fs.existsSync(`${name}.partial`)).toBe(false);
+        expect(fs.existsSync(`${abandoned}-wal`)).toBe(false);
+        expect(fs.readFileSync(published)).toEqual(damagedMain);
+        expect(fs.readFileSync(`${published}-wal`)).toEqual(damagedWal);
+        expect(fs.readFileSync(unrelated, 'utf8')).toBe('unrelated');
+      } finally { space.mockRestore(); }
+    });
+  });
+
+  it('keeps the staging claim and WAL while a different worker runs a backup', async () => {
+    await fixture(async (dbPath, snapshot, backups) => {
+      const copy = fsPromises.copyFile;
+      let backupRan = false;
+      const copySpy = spyOn(fsPromises, 'copyFile').mockImplementation(async (from, to, mode) => {
+        await copy(from, to, mode);
+        if (!String(to).endsWith('-pre-restore.db-wal')) return;
+        const managerModule = new URL('../../src/services/backup/BackupManager.ts', import.meta.url).href;
+        const otherWorker = Bun.spawnSync([process.execPath, '-e', `
+          import { BackupManager } from ${JSON.stringify(managerModule)};
+          await new BackupManager({}, { dbPath: process.argv[1], backupsDir: process.argv[2] }).createSnapshot();
+        `, snapshot, backups]);
+        expect(otherWorker.exitCode).toBe(0);
+        backupRan = true;
+      });
+      try {
+        const { preRestoreCopy } = await swapDatabaseFromSnapshot(dbPath, snapshot, { preRestoreDir: backups });
+        expect(backupRan).toBe(true);
+        expect(fs.readFileSync(preRestoreCopy!)).toEqual(damagedMain);
+        expect(fs.readFileSync(`${preRestoreCopy}-wal`)).toEqual(damagedWal);
+      } finally { copySpy.mockRestore(); }
     });
   });
 });
