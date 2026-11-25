@@ -1,4 +1,7 @@
 export const viewerKo: Record<string, string> = {
+  'A gift for Claude-Mem users': 'Claude-Mem 사용자를 위한 선물',
+  'Check Claude’s latest fix from your phone. Get 30 free days of Cloud Sync and the remote Work Viewer. No credit card required.': '휴대폰에서 Claude가 최근에 수정한 내용을 확인하세요. Cloud Sync와 원격 작업 뷰어를 30일 동안 무료로 사용해 보세요. 신용카드는 필요하지 않습니다.',
+  'Dismiss the Cloud Sync offer': 'Cloud Sync 혜택 닫기',
   'Language': '언어',
   'Could not load sessions: {error}': '세션을 불러오지 못했습니다: {error}',
   'Unknown error': '알 수 없는 오류',
