@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, mock } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdtempSync, rmSync } from 'fs';
+import { appendFileSync, mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { releaseOnnxRuntimeForExit } from './helpers/onnxruntime-exit-guard.js';
@@ -62,10 +62,14 @@ try {
 // A run that loaded the embedding model ended, on macOS, in "panic: A C++
 // exception occurred" (Abort trap: 6, exit 134) after every test had passed,
 // so the run failed. See tests/helpers/onnxruntime-exit-guard.ts. A preload's
-// afterAll runs once, after the last test file.
+// afterAll runs once, after the last test file. When
+// CLAUDE_MEM_ORT_EXIT_GUARD_REPORT names a file, the result is added to it,
+// so tests/infrastructure/onnxruntime-exit-guard.test.ts can check this hook.
 try {
   afterAll(() => {
-    releaseOnnxRuntimeForExit();
+    const result = releaseOnnxRuntimeForExit();
+    const report = process.env.CLAUDE_MEM_ORT_EXIT_GUARD_REPORT;
+    if (report) appendFileSync(report, `guard ${result}\n`);
   });
 } catch {
   // not under `bun test`

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -75,5 +75,46 @@ describe.skipIf(process.platform === 'win32')('onnxruntime exit guard', () => {
     expect(stderr).not.toContain('panic');
     expect(stderr).not.toContain('mutex lock failed');
     expect(exitCode).toBe(3);
+  });
+
+  // The fix is the hook in tests/preload.ts. Run a real `bun test` with the
+  // repo's preload over two files that each run a session, and check the hook
+  // released the runtime once, after both files, with the run passing.
+  it('releases the runtime from the preload after the last test file of a bun test run', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ort-exit-guard-run-'));
+    try {
+      const modelPath = join(dir, 'tiny.onnx');
+      writeFileSync(modelPath, Buffer.from(TINY_MODEL_BASE64, 'base64'));
+      const report = join(dir, 'report.txt');
+      const files = ['a', 'b'].map(name => {
+        const file = join(dir, `${name}.test.ts`);
+        writeFileSync(file, `
+          import { appendFileSync } from 'fs';
+          import { expect, it } from 'bun:test';
+          it('runs a session', async () => {
+            const ort = await import(process.env.ORT!);
+            const session = await ort.InferenceSession.create(process.env.TINY_MODEL!);
+            const out = await session.run({ x: new ort.Tensor('float32', new Float32Array(4).fill(1), [1, 4]) });
+            expect(Array.from(out.y.data)).toEqual([4, 4, 4, 4]);
+            appendFileSync(process.env.CLAUDE_MEM_ORT_EXIT_GUARD_REPORT!, '${name} done\\n');
+          });
+        `);
+        return file;
+      });
+      const result = Bun.spawnSync([process.execPath, 'test', ...files], {
+        cwd: join(import.meta.dir, '..', '..'),
+        env: { ...process.env, TINY_MODEL: modelPath, ORT, CLAUDE_MEM_ORT_EXIT_GUARD_REPORT: report },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      const output = result.stdout.toString() + result.stderr.toString();
+      expect(output).not.toContain('panic');
+      expect(output).toContain('2 pass');
+      expect(result.exitCode).toBe(0);
+      expect(readFileSync(report, 'utf8').trim().split('\n').sort()).toEqual(['a done', 'b done', 'guard released']);
+      expect(readFileSync(report, 'utf8').trim().split('\n').at(-1)).toBe('guard released');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
