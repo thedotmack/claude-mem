@@ -1,3 +1,9 @@
+<p align="center">
+  <a href="https://cmem.ai/">
+    <img src="docs/public/cloud-sync-bees.gif" alt="Everybody gets Cloud Sync! Visit the Claude-Mem homepage." width="480">
+  </a>
+</p>
+
 <h1 align="center">
   <br>
   <a href="https://github.com/thedotmack/claude-mem">
