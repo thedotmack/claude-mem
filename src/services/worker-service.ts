@@ -2050,6 +2050,11 @@ export async function main() {
     console.log(packageVersion);
     return;
   }
+  if (command === 'messages') {
+    const { runMessagesCommand } = await import('../cli/messages-command.js');
+    process.exitCode = runMessagesCommand(commandArgs);
+    return;
+  }
   if (command === 'media-smoke') {
     try {
       const { runMediaRuntimeSmoke } = await import('./media/smoke.js');

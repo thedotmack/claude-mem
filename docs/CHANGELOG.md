@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+- Eligible existing installs receive a dated holiday Cloud Sync offer from the new Messages from Claude-Mem queue on their next interactive startup. Each installation records the dispatch time locally. Agents can optionally acknowledge sharing the message with `claude-mem messages acknowledge <message-id>`.
 - The local memory timeline now offers eligible Claude-Mem users a 30-day Cloud Sync and remote Work Viewer trial with no credit card required. Dismissing the invitation hides it on that browser.
 - The Cloud Sync giveaway GIF at the top of the project README links to cmem.ai.
 
