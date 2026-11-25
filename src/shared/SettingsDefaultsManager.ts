@@ -379,6 +379,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CHROMA_BACKFILL_PAUSE_RATIO: string; // bulk backfill sleeps write-time x ratio per row; 0 = off, 0-10
   CLAUDE_MEM_CHROMA_PROCESS_NICE: string;         // niceness for chroma-mcp (non-Windows, needs `nice`); 0 = off, 0-19
   CLAUDE_MEM_CHROMA_MAX_THREADS: string;          // opt-in thread & Linux CPU-affinity cap for chroma-mcp; 0 = off (default), max 8192
+  CLAUDE_MEM_CHROMA_EXCLUDE_NEWER: string;        // uvx --exclude-newer cutoff for chroma-mcp; 'default' = this release's, '' = off
   CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION: string;  // chroma-mcp embedding function for new collections
   CLAUDE_MEM_SERVER_VECTOR_SEARCH: string;       // server search by meaning: 'auto', 'true' or 'false'
   CLAUDE_MEM_EMBEDDING_BACKFILL_THREADS: string; // hosted server only (local Chroma uses CLAUDE_MEM_CHROMA_MAX_THREADS): CPU threads for embedding stored rows; '' = half, 0 = all
@@ -721,6 +722,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CHROMA_BACKFILL_PAUSE_RATIO: '1',     // Bulk backfill sleeps (row write time x ratio) after each row: 1 = at most ~50% duty, 0 = off, max 10. Live sync is never paced
     CLAUDE_MEM_CHROMA_PROCESS_NICE: '10',            // chroma-mcp starts as `nice -n N uvx ...` where `nice` exists (not Windows). 0 = off, max 19
     CLAUDE_MEM_CHROMA_MAX_THREADS: '0',              // Opt-in cap on chroma-mcp's embedding threads and Linux CPU affinity (`taskset`). 0 = off: 39f110260 removed an always-on cap that slowed backfill. 2 suits machines where chroma-mcp pins cores (#6365)
+    CLAUDE_MEM_CHROMA_EXCLUDE_NEWER: 'default',      // uvx --exclude-newer cutoff that freezes chroma-mcp's resolve (#3610). Not a date: this file seeds every default, and a seeded date would never follow a release's bump. '' = off (mirrors without PEP 700 upload times); or a YYYY-MM-DD date / RFC 3339 timestamp
     // Embedding function used when creating the Chroma collection. 'default' is
     // the local all-MiniLM-L6-v2 (English-tuned). The pinned chroma-mcp also
     // accepts 'openai', 'cohere', 'jina', 'voyageai' and 'roboflow'; those are

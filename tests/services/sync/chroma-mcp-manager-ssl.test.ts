@@ -104,6 +104,8 @@ mock.module('child_process', () => {
 import { ChromaMcpManager } from '../../../src/services/sync/ChromaMcpManager.js';
 
 afterAll(() => {
+  if (savedUvExcludeNewer === undefined) delete process.env.UV_EXCLUDE_NEWER;
+  else process.env.UV_EXCLUDE_NEWER = savedUvExcludeNewer;
   ChromaMcpManager.setUvxAvailabilityProbeForTesting(null);
   ChromaMcpManager.setNiceAvailabilityProbeForTesting(null);
   ChromaMcpManager.setTasksetAvailabilityProbeForTesting(null);
@@ -133,6 +135,7 @@ function expectLauncherPrefixBeforeMode(args: string[], mode: 'http' | 'persiste
     '--with', 'protobuf<7',
     '--with', 'chromadb==1.5.9',
     '--with', 'pydantic<2.14',
+    '--exclude-newer', '2026-11-25T00:00:00Z',
   ]);
 }
 
@@ -150,12 +153,15 @@ async function assertSslFlag(sslSetting: string | undefined, expectedValue: stri
 }
 
 let mgr: ChromaMcpManager;
+const savedUvExcludeNewer = process.env.UV_EXCLUDE_NEWER;
 
 describe('ChromaMcpManager SSL flag regression (#1286)', () => {
   beforeEach(async () => {
     await ChromaMcpManager.reset();
     capturedTransportOpts = null;
     currentSettings = {};
+    // An exported UV_EXCLUDE_NEWER makes the launcher omit --exclude-newer.
+    delete process.env.UV_EXCLUDE_NEWER;
     ChromaMcpManager.setUvxAvailabilityProbeForTesting(() => true);
     // These tests assert the bare uvx launch args; nice/taskset wrapping have their own tests.
     ChromaMcpManager.setNiceAvailabilityProbeForTesting(() => false);

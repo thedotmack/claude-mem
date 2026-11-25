@@ -175,6 +175,23 @@ const CHROMA_MCP_DEP_OVERRIDES: ReadonlyArray<string> = [
 const CHROMADB_PINNED_VERSION: string | null =
   CHROMA_MCP_DEP_OVERRIDES.find(spec => spec.startsWith('chromadb=='))?.slice('chromadb=='.length) ?? null;
 
+// Freeze the rest of the resolve (#3610, #4788). Only chroma-mcp and chromadb
+// are exact pins, so uvx re-resolved on every start, and each transitive
+// release (grpcio, openai, langsmith, ...) built a new ~400 MB env in uv's
+// cache instead of reusing the last one. With --exclude-newer uv ignores
+// every file uploaded after this instant, so one cutoff resolves to one env.
+// Bump it deliberately, together with the pins above: it must not be earlier
+// than any pinned release. CLAUDE_MEM_CHROMA_EXCLUDE_NEWER overrides it, or
+// turns it off for indexes that publish no upload times (PEP 700), which uv
+// treats as unavailable under a cutoff.
+const CHROMA_MCP_EXCLUDE_NEWER = '2026-11-25T00:00:00Z';
+const CHROMA_EXCLUDE_NEWER_SETTING = 'CLAUDE_MEM_CHROMA_EXCLUDE_NEWER';
+// A YYYY-MM-DD date or an RFC 3339 timestamp, the forms uv accepts. RFC 3339
+// allows a lowercase t/z; the resolver uppercases them before they reach uv.
+// Leap seconds (:60) are not accepted.
+const EXCLUDE_NEWER_PATTERN =
+  /^(\d{4})-(\d{2})-(\d{2})(?:T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,9})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d))?$/i;
+
 /** Chroma child health for /api/admin/doctor and `npx claude-mem doctor`. */
 export interface ChromaCrashState {
   /** Unexpected exits of the chroma-mcp child (uvx) in this worker's lifetime. */
@@ -776,7 +793,12 @@ export class ChromaMcpManager {
   private buildCommandArgs(localChromaDataDir: string | null = this.getLocalPersistentChromaDataDir()): string[] {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     const pythonVersion = process.env.CLAUDE_MEM_PYTHON_VERSION || settings.CLAUDE_MEM_PYTHON_VERSION || '3.13';
-    const launcherPrefix = ChromaMcpManager.buildLauncherPrefix(pythonVersion);
+    // A UV_EXCLUDE_NEWER in the worker's environment reaches uvx and already
+    // freezes the resolve; an explicit flag would override the user's cutoff.
+    const excludeNewer = process.env.UV_EXCLUDE_NEWER?.trim()
+      ? null
+      : ChromaMcpManager.resolveExcludeNewer(settings[CHROMA_EXCLUDE_NEWER_SETTING]);
+    const launcherPrefix = ChromaMcpManager.buildLauncherPrefix(pythonVersion, excludeNewer);
 
     if (!localChromaDataDir) {
       const chromaHost = settings.CLAUDE_MEM_CHROMA_HOST || '127.0.0.1';
@@ -1129,14 +1151,48 @@ export class ChromaMcpManager {
     }
   }
 
-  private static buildLauncherPrefix(pythonVersion: string): string[] {
+  private static buildLauncherPrefix(pythonVersion: string, excludeNewer: string | null): string[] {
     const depOverrideFlags = CHROMA_MCP_DEP_OVERRIDES.flatMap(spec => ['--with', spec]);
     return [
       '--python', pythonVersion,
       ...depOverrideFlags,
+      ...(excludeNewer ? ['--exclude-newer', excludeNewer] : []),
       '--from', `chroma-mcp==${CHROMA_MCP_PINNED_VERSION}`,
       'chroma-mcp',
     ];
+  }
+
+  /**
+   * The --exclude-newer cutoff for the uvx launch, or null when the user set
+   * CLAUDE_MEM_CHROMA_EXCLUDE_NEWER to ''. 'default' (the shipped value) and
+   * an unset key give CHROMA_MCP_EXCLUDE_NEWER; so does an invalid value, with
+   * a warning. Only a real date reaches argv, so the setting cannot inject
+   * another uvx flag.
+   */
+  private static resolveExcludeNewer(raw: unknown): string | null {
+    if (raw === undefined) return CHROMA_MCP_EXCLUDE_NEWER;
+    // Only the exact '' turns the cutoff off; settings.json is hand-edited JSON,
+    // so whitespace, a stray [] or a number takes the warning path below.
+    if (raw === '') return null;
+    const text = typeof raw === 'string' ? raw.trim() : '';
+    if (text === 'default') return CHROMA_MCP_EXCLUDE_NEWER;
+    const match = EXCLUDE_NEWER_PATTERN.exec(text);
+    if (match) {
+      const [year, month, day] = match.slice(1, 4).map(Number);
+      const date = new Date(0);
+      date.setUTCFullYear(year, month - 1, day); // Date.UTC would read years 0-99 as 19xx
+      // Years outside 2000-2999 are typos here, and uv rejects the far end
+      // (9999-12-31) at argument parsing, which would stop chroma-mcp starting.
+      if (year >= 2000 && year <= 2999
+          && date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day) {
+        return text.toUpperCase();
+      }
+    }
+    logger.warn('CHROMA_MCP', `Invalid ${CHROMA_EXCLUDE_NEWER_SETTING}, using default`, {
+      value: raw,
+      default: CHROMA_MCP_EXCLUDE_NEWER,
+    });
+    return CHROMA_MCP_EXCLUDE_NEWER;
   }
 
   private static buildPrewarmCommandArgs(commandArgs: string[]): string[] {

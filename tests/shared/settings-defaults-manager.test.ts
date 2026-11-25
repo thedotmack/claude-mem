@@ -1409,6 +1409,10 @@ describe('Chroma resource-pacing defaults', () => {
   it('leaves the chroma-mcp thread cap off by default (#6365, 39f110260)', () => {
     expect(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_CHROMA_MAX_THREADS).toBe('0');
   });
+
+  it('seeds the --exclude-newer sentinel, not a date, so the release cutoff keeps moving (#3610)', () => {
+    expect(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_CHROMA_EXCLUDE_NEWER).toBe('default');
+  });
 });
 
 describe('Chroma embedding function default', () => {

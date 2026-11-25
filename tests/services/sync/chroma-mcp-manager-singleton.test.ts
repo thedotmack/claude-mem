@@ -2525,6 +2525,101 @@ describe('chroma-mcp is started at low priority via nice', () => {
   });
 });
 
+describe('chroma-mcp resolve is frozen with --exclude-newer (#3610)', () => {
+  const KEY = 'CLAUDE_MEM_CHROMA_EXCLUDE_NEWER';
+  const RELEASE_CUTOFF = '2026-11-25T00:00:00Z';
+
+  const savedUvExcludeNewer = process.env.UV_EXCLUDE_NEWER;
+
+  beforeEach(async () => {
+    await ChromaMcpManager.reset();
+    resetState();
+    // An exported UV_EXCLUDE_NEWER makes the launcher omit the flag.
+    delete process.env.UV_EXCLUDE_NEWER;
+  });
+
+  afterAll(() => {
+    if (savedUvExcludeNewer === undefined) delete process.env.UV_EXCLUDE_NEWER;
+    else process.env.UV_EXCLUDE_NEWER = savedUvExcludeNewer;
+  });
+
+  async function launches(): Promise<string[][]> {
+    await ChromaMcpManager.getInstance().callTool('chroma_list_collections', { limit: 1 });
+    return [prewarmSpawnCalls[0].args, transportInstances[0].opts.args];
+  }
+
+  function cutoffOf(args: string[]): string | null {
+    const at = args.indexOf('--exclude-newer');
+    if (at === -1) return null;
+    // A uvx option, so it must come before the tool spec.
+    expect(at).toBeLessThan(args.indexOf('--from'));
+    return args[at + 1];
+  }
+
+  function excludeNewerWarnings() {
+    return logEntries.filter(entry => entry.level === 'warn' && JSON.stringify([entry.message, entry.meta]).includes(KEY));
+  }
+
+  for (const [label, settings] of [
+    ['unset', {}],
+    ['the default sentinel', { [KEY]: 'default' }],
+  ] as const) {
+    it(`passes the release cutoff to prewarm and transport when ${label}`, async () => {
+      mockedSettings = { ...settings };
+      for (const args of await launches()) {
+        expect(args.filter(arg => arg === '--exclude-newer')).toHaveLength(1);
+        expect(cutoffOf(args)).toBe(RELEASE_CUTOFF);
+      }
+      expect(excludeNewerWarnings()).toHaveLength(0);
+    });
+  }
+
+  it('leaves the cutoff to a UV_EXCLUDE_NEWER the user already exported', async () => {
+    process.env.UV_EXCLUDE_NEWER = '2026-10-01T00:00:00Z';
+    mockedSettings = { [KEY]: 'default' };
+    for (const args of await launches()) {
+      expect(args).not.toContain('--exclude-newer');
+    }
+  });
+
+  it('drops the flag for mirrors without upload times when set to ""', async () => {
+    mockedSettings = { [KEY]: '' };
+    for (const args of await launches()) {
+      expect(args).not.toContain('--exclude-newer');
+      expect(args).toContain('--from');
+    }
+    expect(excludeNewerWarnings()).toHaveLength(0);
+  });
+
+  for (const [custom, passed] of [
+    ['2026-12-01', '2026-12-01'],
+    ['2026-12-01T08:30:00+08:00', '2026-12-01T08:30:00+08:00'],
+    ['2026-12-01T08:30:00.5Z', '2026-12-01T08:30:00.5Z'],
+    ['2026-12-01t08:30:00z', '2026-12-01T08:30:00Z'],
+    ['2026-12-01T08:30:00.123456789Z', '2026-12-01T08:30:00.123456789Z'],
+  ]) {
+    it(`uses a configured cutoff ${custom}`, async () => {
+      mockedSettings = { [KEY]: `  ${custom} ` };
+      for (const args of await launches()) {
+        expect(cutoffOf(args)).toBe(passed);
+      }
+      expect(excludeNewerWarnings()).toHaveLength(0);
+    });
+  }
+
+  for (const bad of ['--index-url=https://example.invalid', 'yesterday', '2026-02-30', '2026-11-25T24:00:00Z', '2026-11-25 00:00:00', '2026-11-25T00:00:00.1234567890Z', '9999-12-31', '0099-01-01', '2026-12-01T08:30:60Z', '   ', 20261125, [], {}, false, null]) {
+    it(`falls back to the release cutoff with a warning for ${JSON.stringify(bad)}`, async () => {
+      mockedSettings = { [KEY]: bad as unknown as string };
+      for (const args of await launches()) {
+        expect(cutoffOf(args)).toBe(RELEASE_CUTOFF);
+        expect(args).not.toContain(String(bad));
+      }
+      // One warning per launch-args build; prewarm reuses the transport's args.
+      expect(excludeNewerWarnings()).toHaveLength(1);
+    });
+  }
+});
+
 // Restore the real process.kill once the test module finishes evaluating any
 // late-arriving microtasks.
 process.on('exit', () => {
