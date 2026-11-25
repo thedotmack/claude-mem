@@ -16,7 +16,25 @@ async function waitFor(page: DevToolsPage, expression: string) {
   }
 }
 
-const GUIDE = 'section:has(select):has(textarea[readonly])';
+// Identify the guide through its use-case selector across preview and schedule setup.
+const GUIDE = 'section:has(select option[value="connect"])';
+
+async function chooseUseCase(page: DevToolsPage, day: number) {
+  await page.evaluate(`(() => {
+    const select = document.querySelector('${GUIDE} select');
+    select.value = '${day}';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  })()`);
+  await waitFor(page, `document.querySelector('${GUIDE} select').value === '${day}'`);
+}
+
+async function setScheduleTime(page: DevToolsPage, value: string) {
+  await page.evaluate(`(() => {
+    const input = document.querySelector('${GUIDE} input[type=time]');
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(value)});
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
+}
 
 /** Select a visible action by its accessible label, including disclosure summaries. */
 async function clickGuideAction(page: DevToolsPage, name: string) {
@@ -69,6 +87,7 @@ browserTest('private Work View supports a full trial handoff and card setup on a
   const guide = GUIDE;
   try {
     page = await connectToPage(chrome, url);
+    await page.send('Emulation.setTimezoneOverride', { timezoneId: 'America/Los_Angeles' });
     await page.send('Emulation.setDeviceMetricsOverride', { width: 320, height: 640, deviceScaleFactor: 1, mobile: true });
     await waitFor(page, `!!document.querySelector('${guide}') && !!document.querySelector('${banner}')`);
     expect(statusReads).toBe(1);
@@ -158,7 +177,60 @@ browserTest('private Work View supports a full trial handoff and card setup on a
     expect(await page.evaluate(`document.querySelector('${guide}').scrollWidth <= document.documentElement.clientWidth`)).toBe(true);
     await clickGuideAction(page, 'Continue to handoff');
     await waitFor(page, `document.querySelector('${guide} select').value === '1' && document.querySelector('${guide} textarea').labels[0]?.textContent === 'Prompt for Gemini CLI'`);
-    expect(await page.evaluate(`document.querySelector('${guide} textarea').value`)).toContain('choose a project name');
+    expect(await page.evaluate(`document.querySelector('${guide} textarea').value`)).toContain('which project and action');
+
+    // A new customer can start a routine on day one, then pick a different example.
+    await clickGuideAction(page, 'Try a morning brief');
+    await waitFor(page, `document.querySelector('${guide} select').value === '7'`);
+    expect(await page.evaluate(`document.querySelector('${guide} select').labels[0].textContent`)).toContain('What would you like to try?');
+    await chooseUseCase(page, 6);
+    await clickGuideAction(page, 'Copy prompt for ChatGPT');
+    await waitFor(page, `window.copiedValue === document.querySelector('${guide} textarea').value`);
+    expect(await page.evaluate('window.copiedValue')).toMatch(/reason.+dated source/i);
+
+    await clickGuideAction(page, 'Next: Get a weekday morning brief');
+    await waitFor(page, `document.querySelector('${guide} select').value === '7'`);
+    await clickGuideAction(page, 'Copy prompt for Gemini');
+    await waitFor(page, `window.copiedValue === document.querySelector('${guide} textarea').value`);
+    const preview = await page.evaluate('window.copiedValue');
+    expect(preview).toContain('previous weekday morning');
+    expect(preview).not.toContain('Schedule “Morning work brief”');
+    await clickGuideAction(page, 'Set up this schedule');
+    const timeInput = `${guide} input[type=time]`;
+    expect(await page.evaluate(`document.querySelector('${timeInput}').labels[0].textContent`)).toContain('America/Los_Angeles');
+    expect(await page.evaluate(`document.querySelector('${timeInput}').value`)).toBe('09:00');
+    expect(await page.evaluate(`!!document.querySelector('${guide} [aria-label="Copy prompt for Gemini"]')`)).toBe(false);
+    await setScheduleTime(page, '');
+    await waitFor(page, `!document.querySelector('${guide} textarea')`);
+    await setScheduleTime(page, '08:30');
+    await waitFor(page, `document.querySelector('${guide} textarea')?.value.includes('08:30')`);
+    for (const name of ['ChatGPT', 'Claude']) {
+      await clickGuideAction(page, 'Copy prompt for ' + name);
+      await waitFor(page, `document.querySelector('${guide} textarea').labels[0]?.textContent === ${JSON.stringify('Prompt for ' + name)} && window.copiedValue === document.querySelector('${guide} textarea').value`);
+      const schedule = await page.evaluate('window.copiedValue');
+      expect(schedule).toContain('every weekday at 08:30 in America/Los_Angeles');
+      expect(schedule).toContain('next run');
+      expect(schedule).toContain('Create only one.');
+      expect(schedule).toContain('previous weekday morning');
+      expect(await page.evaluate(`document.querySelector('${guide}').textContent`)).toMatch(/edit it, or pause it/i);
+    }
+    expect(await page.evaluate(`document.querySelector('${guide}').scrollWidth <= document.documentElement.clientWidth`)).toBe(true);
+    await setScheduleTime(page, '08:45');
+    await waitFor(page, `document.querySelector('${guide} textarea')?.value.includes('08:45') && document.querySelector('${guide} [role="status"]').textContent === ''`);
+    expect(await page.evaluate('window.copiedValue')).toContain('08:30');
+    await clickGuideAction(page, 'Back to preview');
+    await waitFor(page, `!!document.querySelector('${guide} [aria-label="Copy prompt for Gemini"]') && !document.querySelector('${timeInput}')`);
+
+    await chooseUseCase(page, 10);
+    expect(await page.evaluate(`document.querySelector('${guide} textarea').value`)).toContain('unresolved blocker');
+    for (const [action, anchor] of [['Open Focus Areas', 'focus-areas'], ['All requests', 'all-requests']]) {
+      await clickGuideAction(page, action);
+      await waitFor(page, `location.hash === '#${anchor}' && !!document.getElementById('${anchor}')`);
+    }
+
+    await chooseUseCase(page, 14);
+    await clickGuideAction(page, 'Set up this schedule');
+    expect(await page.evaluate(`document.querySelector('${guide} textarea').value`)).toContain('every Friday at 16:00 in America/Los_Angeles');
 
     expect(usage).toEqual([]);
     const beforeLocal = statusReads;
