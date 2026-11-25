@@ -284,14 +284,16 @@ export function ensureLocalBinOnShellPath(options: {
   const localBinDirectory = posixPath.join(host.homeDirectory, '.local', 'bin');
 
   const currentPath = host.environmentVariables.PATH ?? '';
-  if (currentPath.split(':').includes(localBinDirectory)) return 'already-on-path';
+  if (currentPath.split(':').some((entry) => entry.replace(/\/+$/, '') === localBinDirectory)) return 'already-on-path';
 
   const { path: configFile, shell } = detectShellConfigFile(
     host.homeDirectory,
     host.environmentVariables.SHELL ?? '',
     host.platform,
   );
-  const binPathLiteral = '$HOME/.local/bin';
+  // The spellings an rc uses for this directory: the absolute path, $HOME,
+  // ${HOME} and the unquoted tilde form.
+  const binPathLiterals = [localBinDirectory, '$HOME/.local/bin', '${HOME}/.local/bin', '~/.local/bin'];
   const exportLine = shellPathExportLine(shell, localBinDirectory);
 
   let existingContent = '';
@@ -312,7 +314,7 @@ export function ensureLocalBinOnShellPath(options: {
   }
 
   let outcome: ShellPathSetupOutcome;
-  if (existingContent.includes(localBinDirectory) || existingContent.includes(binPathLiteral)) {
+  if (binPathLiterals.some((literal) => existingContent.includes(literal))) {
     logger.info(`${purposeLabel} PATH already configured in ${configFile}`);
     outcome = 'rc-file-already-configured';
   } else {
