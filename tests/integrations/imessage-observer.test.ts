@@ -11,7 +11,7 @@ import { fromPhotonGroupEvent, fromPhotonMessageEvent, PhotonSource } from '../.
 import { PhotonCloudError, PhotonCloudLines, SHARED_LINE_MESSAGE } from '../../src/integrations/imessage-observer/photon-cloud';
 import { PhotonSignupError, signInWithPhoton, type CliResult } from '../../src/integrations/imessage-observer/photon-signup';
 import type { ObserverEvent } from '../../src/integrations/imessage-observer/types';
-import { pickSetupMode } from '../../src/npx-cli/commands/imessage';
+import { envCredentials, pickSetupMode } from '../../src/npx-cli/commands/imessage';
 
 const FEED = join(import.meta.dir, '..', 'fixtures', 'imessage', 'group-chats.jsonl');
 const MIN = 60_000;
@@ -433,6 +433,13 @@ describe('Photon cloud lines', () => {
     body: { succeed: true, data: { type: 'dedicated', expiresIn: 600, auth: { 'line-a': token }, numbers: { 'line-a': '+15550001111' } } },
   });
 
+  it('gives up, instead of retrying forever, on an answer it cannot read', async () => {
+    const { lines } = cloud([{ status: 200, body: { succeed: false } }]);
+    const error = await lines.lines().catch(e => e);
+    expect(error).toBeInstanceOf(PhotonCloudError);
+    expect((error as PhotonCloudError).fatal).toBe(true);
+  });
+
   it('turns a dedicated line into an address and a renewed token', async () => {
     const { lines, calls, advance } = cloud([dedicated('t1'), dedicated('t2')]);
     const [line] = await lines.lines();
@@ -518,6 +525,13 @@ describe('imessage setup', () => {
     expect(pickSetupMode({ ...none, lineFlags: true, envProject: true })).toBe('line');
     expect(pickSetupMode({ ...none, projectFlags: true, envLine: true })).toBe('project');
     expect(pickSetupMode({ ...none, login: true, envProject: true })).toBe('login');
+  });
+
+  it('takes credentials from the environment only as a whole pair', () => {
+    expect(envCredentials({ PHOTON_PROJECT_ID: 'proj_1' })).toEqual({ project: undefined, line: undefined });
+    expect(envCredentials({ PHOTON_PROJECT_ID: 'proj_1', PHOTON_PROJECT_SECRET: 's' }).project).toEqual({ projectId: 'proj_1', projectSecret: 's' });
+    expect(envCredentials({ PHOTON_IMESSAGE_TOKEN: 't' }).line).toBeUndefined();
+    expect(envCredentials({ PHOTON_IMESSAGE_ADDRESS: 'h:443', PHOTON_IMESSAGE_TOKEN: 't' }).line).toEqual({ address: 'h:443', token: 't' });
   });
 
   it('falls back to the environment, then asks', () => {

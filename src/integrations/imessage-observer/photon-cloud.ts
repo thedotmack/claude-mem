@@ -77,7 +77,8 @@ export async function issueImessageTokens(
   const body = await response.json() as { succeed?: boolean; data?: PhotonTokenData };
   const data = body?.data;
   if (!body?.succeed || !data || (data.type !== 'shared' && data.type !== 'dedicated')) {
-    throw new PhotonCloudError('Photon returned an answer the observer does not understand.');
+    // Retrying cannot fix an answer this version cannot read, so this is fatal.
+    throw new PhotonCloudError('Photon returned an answer the observer does not understand. Update claude-mem, then run: npx claude-mem imessage setup', response.status, true);
   }
   return data;
 }

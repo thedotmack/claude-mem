@@ -48,6 +48,9 @@ Other ways to connect, for scripts or servers:
 - `--address` and `--token` (or `PHOTON_IMESSAGE_ADDRESS` and
   `PHOTON_IMESSAGE_TOKEN`) connect straight to one line's server, if Photon
   gave you a server address and token instead of a project.
+- Each pair counts only when both halves are set, and flags beat the
+  environment. With `--project-id`, setup checks the project with Photon
+  before saving, so a wrong pair never replaces a setup that works.
 
 If setup says your project uses a shared line, the project is on a plan
 without a dedicated line, and the observer would hear nothing from group chats.

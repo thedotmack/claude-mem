@@ -50,15 +50,30 @@ function readJson<T>(path: string, fallback: T): T {
   }
 }
 
+/**
+ * Credentials set in the environment, taken only as a whole pair. Half a pair
+ * is ignored, so an id from one place is never matched with a secret from another.
+ */
+export function envCredentials(env: NodeJS.ProcessEnv = process.env): {
+  project?: { projectId: string; projectSecret: string };
+  line?: { address: string; token: string };
+} {
+  const projectId = env.PHOTON_PROJECT_ID || env.SPECTRUM_PROJECT_ID;
+  const projectSecret = env.PHOTON_PROJECT_SECRET || env.SPECTRUM_PROJECT_SECRET;
+  const address = env.PHOTON_IMESSAGE_ADDRESS;
+  const token = env.PHOTON_IMESSAGE_TOKEN;
+  return {
+    project: projectId && projectSecret ? { projectId, projectSecret } : undefined,
+    line: address && token ? { address, token } : undefined,
+  };
+}
+
 export function readConfig(): ImessageConfig {
   const saved = readJson<ImessageConfig>(configPath(), {});
-  return {
-    ...saved,
-    projectId: process.env.PHOTON_PROJECT_ID || process.env.SPECTRUM_PROJECT_ID || saved.projectId,
-    projectSecret: process.env.PHOTON_PROJECT_SECRET || process.env.SPECTRUM_PROJECT_SECRET || saved.projectSecret,
-    address: process.env.PHOTON_IMESSAGE_ADDRESS || saved.address,
-    token: process.env.PHOTON_IMESSAGE_TOKEN || saved.token,
-  };
+  const env = envCredentials();
+  if (env.project) return { ...saved, ...env.project, address: undefined, token: undefined };
+  if (env.line) return { ...saved, ...env.line, projectId: undefined, projectSecret: undefined };
+  return saved;
 }
 
 function writePrivate(path: string, value: unknown): void {
@@ -137,13 +152,14 @@ async function setup(args: string[]): Promise<number> {
   const saved = readJson<ImessageConfig>(configPath(), {});
   const current = readConfig();
   const next: ImessageConfig = { ...saved };
-  const envProject = Boolean(process.env.PHOTON_PROJECT_ID || process.env.SPECTRUM_PROJECT_ID
-    || process.env.PHOTON_PROJECT_SECRET || process.env.SPECTRUM_PROJECT_SECRET);
-  const envLine = Boolean(process.env.PHOTON_IMESSAGE_ADDRESS || process.env.PHOTON_IMESSAGE_TOKEN);
+  const env = envCredentials();
+  const envProject = Boolean(env.project);
+  const envLine = Boolean(env.line);
   const tty = Boolean(process.stdin.isTTY);
   const rl = tty ? createInterface({ input: process.stdin, output: process.stdout }) : null;
   const ask = async (question: string) => rl ? await rl.question(question) : '';
 
+  let checked = false;
   try {
     let mode = pickSetupMode({
       login: values.login,
@@ -173,16 +189,26 @@ async function setup(args: string[]): Promise<number> {
       console.log(`Using the Photon project "${signedIn.projectName}".`);
       Object.assign(next, { projectId: signedIn.projectId, projectSecret: signedIn.projectSecret, address: undefined, token: undefined });
     } else if (mode === 'project') {
-      const projectId = values['project-id'] ?? current.projectId;
-      const projectSecret = values['project-secret'] ?? current.projectSecret;
-      if (!projectId || !projectSecret) {
+      // The id and secret come together, from the flags or from the environment.
+      const pair = values['project-id'] || values['project-secret']
+        ? { projectId: values['project-id'], projectSecret: values['project-secret'] }
+        : env.project;
+      if (!pair?.projectId || !pair.projectSecret) {
         console.error('Pass both --project-id and --project-secret, or set PHOTON_PROJECT_ID and PHOTON_PROJECT_SECRET (Photon dashboard, project Settings).');
         return 1;
       }
-      Object.assign(next, { projectId, projectSecret, address: undefined, token: undefined });
+      // Checked before saving, so a wrong pair never replaces a setup that works.
+      if (!(await checkProjectLines(pair.projectId, pair.projectSecret))) {
+        console.error('Nothing was saved. Fix the project id and secret, or add a line, then run setup again.');
+        return 1;
+      }
+      checked = true;
+      Object.assign(next, { projectId: pair.projectId, projectSecret: pair.projectSecret, address: undefined, token: undefined });
     } else if (mode === 'line') {
-      let address = values.address ?? current.address;
-      let token = values.token ?? current.token;
+      // The address and token come together: flags (asking for a missing half), or the environment.
+      const fromFlags = Boolean(values.address || values.token);
+      let address = fromFlags ? values.address : env.line?.address;
+      let token = fromFlags ? values.token : env.line?.token;
       if (!address) address = (await ask('Photon server address (host:port): ')).trim();
       if (!token) token = (await ask('Photon token: ')).trim();
       if (!address || !token) {
@@ -197,7 +223,7 @@ async function setup(args: string[]): Promise<number> {
 
   writePrivate(configPath(), next);
   if (!existsSync(contactsPath())) writePrivate(contactsPath(), {});
-  if (next.projectId && next.projectSecret && !(await checkProjectLines(next.projectId, next.projectSecret))) {
+  if (!checked && next.projectId && next.projectSecret && !(await checkProjectLines(next.projectId, next.projectSecret))) {
     console.error('Your Photon sign-in is saved. Run setup again once the line is ready.');
     return 1;
   }
