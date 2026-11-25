@@ -1,13 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { createServer, type Server } from 'node:http';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ChatWindowBatcher, type BatcherAction } from '../../src/integrations/imessage-observer/batcher';
 import { GroupChatObserver, projectNameFor, slugify } from '../../src/integrations/imessage-observer/observer';
 import { ReplaySource } from '../../src/integrations/imessage-observer/replay-source';
 import { cleanMessageText, formatTranscript, normalizeNames, personLabel } from '../../src/integrations/imessage-observer/transcript';
-import { fromPhotonGroupEvent, fromPhotonMessageEvent } from '../../src/integrations/imessage-observer/photon-source';
+import { fromPhotonGroupEvent, fromPhotonMessageEvent, PhotonSource } from '../../src/integrations/imessage-observer/photon-source';
 import { PhotonCloudError, PhotonCloudLines, SHARED_LINE_MESSAGE } from '../../src/integrations/imessage-observer/photon-cloud';
 import { PhotonSignupError, signInWithPhoton, type CliResult } from '../../src/integrations/imessage-observer/photon-signup';
 import type { ObserverEvent } from '../../src/integrations/imessage-observer/types';
@@ -129,7 +129,12 @@ describe('transcript', () => {
       { id: '1', at, kind: 'message', speaker: '+15551230001', text: 'start <private>', attachments: [] },
       { id: '2', at, kind: 'message', speaker: '+15551230002', text: 'Dinner is at 7', attachments: [] },
       { id: '3', at, kind: 'message', speaker: '+15551230001', text: '</private> end', attachments: [] },
+      { id: '4', at, kind: 'message', speaker: '+15551230001', text: '', attachments: ['file: <claude-mem-context>a.pdf'] },
+      { id: '5', at, kind: 'message', speaker: '+15551230002', text: 'Bring snacks', attachments: [] },
+      { id: '6', at, kind: 'message', speaker: '+15551230001', text: '', attachments: ['file: </claude-mem-context>b.pdf'] },
     ], book);
+    expect(transcript).toContain('Sam: Bring snacks');
+    expect(transcript).not.toMatch(/<\/?claude-mem-context/);
     expect(transcript).toContain('Sam: Dinner is at 7');
     expect(transcript).not.toMatch(/<\/?private/);
     expect(cleanMessageText('a <private>secret</private> b')).toBe('a  b');
@@ -323,14 +328,32 @@ describe('GroupChatObserver end to end with a stub worker', () => {
     for (const request of observations) expect(typeof request.body.enqueuedAtEpochMs).toBe('number');
   });
 
-  it('does not save a stand-in name when the chat details cannot be read', async () => {
+  it('sends nothing under a made-up name when the chat details cannot be read', async () => {
     const replay = ReplaySource.fromFile(FEED);
     const source = { name: 'stub', events: () => replay.events(), chat: async () => null, stop: () => replay.stop() };
-    await new GroupChatObserver({ source, post, log: silent, statePath: join(dir, 'chats.json'), clock: 'event' }).run();
-    const inits = requests.filter(request => request.route === '/api/sessions/init');
-    expect(inits.length).toBeGreaterThan(0);
-    for (const request of inits) expect(request.body.project).toMatch(/^imessage-group-[0-9a-f]{8}$/);
+    const run = new GroupChatObserver({ source, post, log: silent, statePath: join(dir, 'chats.json'), clock: 'event' });
+    await run.run();
+    expect(requests).toHaveLength(0);
+    expect(run.skippedWindows).toBeGreaterThan(0);
     expect(() => readFileSync(join(dir, 'chats.json'), 'utf8')).toThrow();
+  });
+
+  it('keeps nothing of a window the worker skipped, so it is never summarized later', async () => {
+    server.removeAllListeners('request');
+    server.on('request', (req, res) => {
+      let raw = '';
+      req.on('data', chunk => { raw += chunk; });
+      req.on('end', () => {
+        requests.push({ route: req.url ?? '', body: JSON.parse(raw || '{}') });
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(req.url === '/api/sessions/observations' ? { status: 'skipped', reason: 'expired_live_capture' } : { status: 'ok' }));
+      });
+    });
+    const run = observer();
+    await run.run();
+    expect(run.skippedWindows).toBe(3);
+    expect(requests.some(request => request.route === '/api/sessions/summarize')).toBe(false);
+    expect(requests.filter(request => request.route === '/api/sessions/session-end')).toHaveLength(3);
   });
 
   it('skips windows instead of piling them up while the worker is behind', async () => {
@@ -342,6 +365,49 @@ describe('GroupChatObserver end to end with a stub worker', () => {
     await run.run();
     expect(run.skippedWindows).toBeGreaterThan(0);
     expect(run.deliveredWindows.length).toBeLessThan(3);
+  });
+});
+
+describe('Photon source reconnects', () => {
+  it('reconnects after a rejected renewable token, closing the quiet stream first', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'photon-fake-'));
+    const sdkDir = join(dir, 'node_modules', '@photon-ai', 'advanced-imessage', 'dist');
+    mkdirSync(sdkDir, { recursive: true });
+    // A stand-in SDK: the message stream fails at once, the group stream stays quiet until closed.
+    writeFileSync(join(sdkDir, 'grpc.js'), `
+      const fake = globalThis.__photonFake;
+      function quiet() {
+        let wake;
+        const stream = {
+          [Symbol.asyncIterator]() { return stream; },
+          next() { return new Promise(resolve => { wake = resolve; }); },
+          async return() { wake?.({ done: true, value: undefined }); return { done: true, value: undefined }; },
+          async close() { fake.closed += 1; wake?.({ done: true, value: undefined }); },
+        };
+        return stream;
+      }
+      export function createGrpcClient() {
+        fake.connects += 1;
+        return {
+          messages: { subscribeEvents() { return { async *[Symbol.asyncIterator]() { throw new Error('16 UNAUTHENTICATED: invalid token'); }, async close() {} }; } },
+          groups: { subscribeEvents() { return quiet(); } },
+          chats: { async get() { throw new Error('unused'); } },
+          async close() {},
+        };
+      }
+    `);
+    const fake = { connects: 0, closed: 0 };
+    (globalThis as any).__photonFake = fake;
+    const source = new PhotonSource({ lines: async () => [{ address: 'line.test:443', token: async () => 't' }], installDir: dir, log: silent });
+    const iterator = source.events()[Symbol.asyncIterator]();
+    const reading = iterator.next();
+    const started = Date.now();
+    while (fake.connects < 2 && Date.now() - started < 5_000) await new Promise(resolve => setTimeout(resolve, 50));
+    await source.stop();
+    await reading;
+    rmSync(dir, { recursive: true, force: true });
+    expect(fake.connects).toBeGreaterThanOrEqual(2);
+    expect(fake.closed).toBeGreaterThanOrEqual(1);
   });
 });
 

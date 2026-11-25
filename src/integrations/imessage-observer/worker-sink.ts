@@ -99,7 +99,7 @@ export class WorkerSink {
       const session = await this.start(contentSessionId, chat, project, first);
       if (session.excluded) return;
       const transcript = formatTranscript(entries, this.book);
-      await this.post('/api/sessions/observations', {
+      const reply = await this.post('/api/sessions/observations', {
         contentSessionId,
         platformSource: PLATFORM_SOURCE,
         tool_name: TOOL_NAME,
@@ -114,7 +114,13 @@ export class WorkerSink {
         tool_use_id: `imsg-${shortHash(chat.guid, 12)}-${shortHash(entries.map(entry => entry.id).join('|'), 16)}`,
         eventOccurredAtEpochMs: last.getTime(),
         enqueuedAtEpochMs: enqueuedAt,
-      });
+      }) as { status?: string; reason?: string } | null;
+      if (reply?.status === 'skipped') {
+        // The worker turned it down (too old, buffer full, excluded). Keep nothing of it.
+        this.skippedWindows += 1;
+        this.log.warn(`The worker skipped ${entries.length} messages from "${chat.displayName}" (${reply.reason ?? 'skipped'}).`);
+        return;
+      }
       session.recap = `Latest messages in the iMessage group chat "${cleanMessageText(chat.displayName)}":\n`
         + (transcript.length > RECAP_CHARS ? '...\n' + transcript.slice(-RECAP_CHARS) : transcript);
       this.delivered.push({ chatGuid: chat.guid, project, contentSessionId, entries: entries.length });
@@ -132,11 +138,16 @@ export class WorkerSink {
     this.sessions.delete(contentSessionId);
     if (!session?.started) return;
     try {
-      await this.post('/api/sessions/summarize', {
-        contentSessionId,
-        platformSource: PLATFORM_SOURCE,
-        last_assistant_message: session.recap ?? '',
-      });
+      // Summarize only from a window the worker accepted. The summary is a new
+      // request made now, when the conversation ends, so it carries now as its time.
+      if (session.recap) {
+        await this.post('/api/sessions/summarize', {
+          contentSessionId,
+          platformSource: PLATFORM_SOURCE,
+          last_assistant_message: session.recap,
+          enqueuedAtEpochMs: Date.now(),
+        });
+      }
       await this.post('/api/sessions/session-end', {
         contentSessionId,
         platformSource: PLATFORM_SOURCE,

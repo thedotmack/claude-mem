@@ -166,13 +166,23 @@ async function* merge<T>(sources: AsyncIterable<T>[]): AsyncIterable<T> {
       yield result.value;
     }
   } finally {
-    await Promise.allSettled([...pending.keys()].map(index => iterators[index]!.return?.()));
+    // Not awaited: a source with a read in flight finishes its return() only
+    // when that read ends, which for a quiet stream is when the caller closes
+    // the stream underneath (PhotonSource.closeLines). Waiting here would block that.
+    for (const index of pending.keys()) {
+      Promise.resolve(iterators[index]!.return?.()).catch(() => {});
+    }
   }
 }
 
-/** Errors that reconnecting cannot fix: bad credentials, or a line that cannot see group chats. */
-function isFatal(error: unknown): boolean {
-  if (error instanceof PhotonCloudError) return error.status === undefined || error.status === 401 || error.status === 403 || error.status === 404;
+/**
+ * Errors that reconnecting cannot fix: Photon refused the project, or the
+ * project has no line that can see group chats. A rejected token is fatal
+ * only for a fixed token; a renewed one gets a fresh token on reconnect.
+ */
+function isFatal(error: unknown, renewableTokens: boolean): boolean {
+  if (error instanceof PhotonCloudError) return error.fatal;
+  if (renewableTokens) return false;
   const message = error instanceof Error ? error.message : String(error);
   return /unauthenticated|permission denied|invalid token/i.test(message);
 }
@@ -189,13 +199,18 @@ export class PhotonSource implements MessageSource {
 
   constructor(private readonly options: PhotonOptions) {}
 
+  private renewableTokens(): boolean {
+    const lines = this.options.lines;
+    return typeof lines === 'function' || lines.some(line => typeof line.token === 'function');
+  }
+
   private async connect(): Promise<OpenLine[]> {
     if (this.lines.length > 0) return this.lines;
     const sdk = await loadPhoton(this.options.installDir);
     const create = sdk.createGrpcClient ?? sdk.createClient;
     if (!create) throw new Error('This Photon SDK version has no gRPC client. Run: npx claude-mem imessage setup');
     const configs = typeof this.options.lines === 'function' ? await this.options.lines() : this.options.lines;
-    if (configs.length === 0) throw new PhotonCloudError('No Photon iMessage line is set up. Run: npx claude-mem imessage setup');
+    if (configs.length === 0) throw new PhotonCloudError('No Photon iMessage line is set up. Run: npx claude-mem imessage setup', undefined, true);
     this.lines = configs.map(line => ({
       label: line.label ?? line.address,
       client: create({ address: line.address, token: line.token, tls: this.options.tls ?? true }),
@@ -233,7 +248,7 @@ export class PhotonSource implements MessageSource {
         }
       } catch (error) {
         if (this.stopped) return;
-        if (isFatal(error)) throw error;
+        if (isFatal(error, this.renewableTokens())) throw error;
         const message = error instanceof Error ? error.message : String(error);
         this.options.log.warn(`Photon stream dropped (${message}). Reconnecting in ${Math.round(delayMs / 1000)}s; messages sent meanwhile are not recorded.`);
       }

@@ -34,6 +34,10 @@ export function normalizeNames(names: Record<string, string>): Record<string, st
 }
 
 export function personLabel(address: string | undefined, book: PeopleBook): string {
+  return cleanMessageText(rawPersonLabel(address, book));
+}
+
+function rawPersonLabel(address: string | undefined, book: PeopleBook): string {
   if (address === 'me') return book.meLabel;
   if (!address) return 'Someone';
   const key = phoneKey(address) ?? address.trim().toLowerCase();
@@ -84,7 +88,8 @@ export function formatTranscript(entries: WindowEntry[], book: PeopleBook): stri
     const who = personLabel(entry.speaker, book);
     if (entry.kind === 'message') {
       const parts = [cleanMessageText(entry.text).trim().replace(/\n/g, '\n    ')];
-      if (entry.attachments.length > 0) parts.push(`[${entry.attachments.join('; ')}]`);
+      // File names are written by group members too, so they get the same cleaning.
+      if (entry.attachments.length > 0) parts.push(`[${entry.attachments.map(cleanMessageText).join('; ')}]`);
       lines.push(`[${timeOnly(entry.at)}] ${who}: ${parts.filter(Boolean).join(' ')}`);
     } else {
       const target = entry.target ? ` ${personLabel(entry.target, book)}` : '';

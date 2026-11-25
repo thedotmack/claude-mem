@@ -116,6 +116,8 @@ The observer follows Claude-Mem's
   is not saved for later and never sent again.
 - If the worker falls behind, at most 20 windows wait for it. More than that,
   or a window that has waited over 10 minutes, is skipped and logged too.
+- If Photon can't say what a new chat is called, nothing from that chat is
+  sent until it can, so the chat never lands under a made-up project name.
 - If the Photon connection drops, the observer reconnects to the live stream.
   Messages sent while it was disconnected are not fetched afterwards.
 - On shutdown (Ctrl+C) the windows that are still open are sent once.

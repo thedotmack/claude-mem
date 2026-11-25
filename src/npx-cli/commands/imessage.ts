@@ -115,8 +115,13 @@ async function setup(args: string[]): Promise<number> {
     },
     strict: true,
   });
-  const current = readJson<ImessageConfig>(configPath(), {});
-  const next: ImessageConfig = { ...current };
+  // Saved settings with the documented environment variables on top.
+  const saved = readJson<ImessageConfig>(configPath(), {});
+  const current = readConfig();
+  const next: ImessageConfig = { ...saved };
+  const envProject = Boolean(process.env.PHOTON_PROJECT_ID || process.env.SPECTRUM_PROJECT_ID
+    || process.env.PHOTON_PROJECT_SECRET || process.env.SPECTRUM_PROJECT_SECRET);
+  const envLine = Boolean(process.env.PHOTON_IMESSAGE_ADDRESS || process.env.PHOTON_IMESSAGE_TOKEN);
   const tty = Boolean(process.stdin.isTTY);
   const rl = tty ? createInterface({ input: process.stdin, output: process.stdout }) : null;
   const ask = async (question: string) => rl ? await rl.question(question) : '';
@@ -124,8 +129,8 @@ async function setup(args: string[]): Promise<number> {
   try {
     let mode: 'login' | 'project' | 'line' | null = null;
     if (values.login) mode = 'login';
-    else if (values['project-id'] || values['project-secret']) mode = 'project';
-    else if (values.address || values.token) mode = 'line';
+    else if (values['project-id'] || values['project-secret'] || envProject) mode = 'project';
+    else if (values.address || values.token || envLine) mode = 'line';
     else if (tty) {
       console.log('Connect your Photon iMessage line:');
       console.log('  1. Sign in to Photon in your browser (recommended)');
@@ -150,7 +155,7 @@ async function setup(args: string[]): Promise<number> {
       const projectId = values['project-id'] ?? current.projectId;
       const projectSecret = values['project-secret'] ?? current.projectSecret;
       if (!projectId || !projectSecret) {
-        console.error('Pass both --project-id and --project-secret (Photon dashboard, project Settings).');
+        console.error('Pass both --project-id and --project-secret, or set PHOTON_PROJECT_ID and PHOTON_PROJECT_SECRET (Photon dashboard, project Settings).');
         return 1;
       }
       Object.assign(next, { projectId, projectSecret, address: undefined, token: undefined });

@@ -41,9 +41,12 @@ type FetchLike = (url: string, init: { method: string; headers: Record<string, s
 }>;
 
 export class PhotonCloudError extends Error {
-  constructor(message: string, readonly status?: number) {
+  /** True when retrying cannot help: bad credentials, no line, or a shared line. */
+  readonly fatal: boolean;
+  constructor(message: string, readonly status?: number, fatal?: boolean) {
     super(message);
     this.name = 'PhotonCloudError';
+    this.fatal = fatal ?? (status === 401 || status === 403 || status === 404);
   }
 }
 
@@ -114,7 +117,7 @@ export class PhotonCloudLines {
   /** The project's dedicated lines. Throws for a shared line, which cannot see group chats. */
   async lines(): Promise<PhotonLine[]> {
     const data = await this.current();
-    if (data.type === 'shared') throw new PhotonCloudError(SHARED_LINE_MESSAGE);
+    if (data.type === 'shared') throw new PhotonCloudError(SHARED_LINE_MESSAGE, undefined, true);
     return Object.keys(data.auth).sort().map(id => ({
       id,
       phone: data.numbers[id] ?? 'unknown number',

@@ -175,8 +175,8 @@ export class GroupChatObserver {
           this.lookupFailedUntil.delete(event.chatGuid);
           return found;
         }
-        // Not cached for good: the lookup is tried again later, and this
-        // stand-in name is never saved as the chat's project name.
+        // Not cached for good: the lookup is tried again later. Until it works,
+        // a chat with no saved project sends nothing (see enqueue).
         this.lookupFailedUntil.set(event.chatGuid, Date.now() + LOOKUP_RETRY_MS);
         return {
           guid: event.chatGuid,
@@ -193,13 +193,15 @@ export class GroupChatObserver {
     return chat;
   }
 
-  private projectFor(chat: ChatInfo): string {
+  /**
+   * The chat's project, named once from its real name. Null when the chat has
+   * no saved project and its details could not be read: a stand-in name would
+   * split the chat across two projects and slip past name-based exclusions.
+   */
+  private projectFor(chat: ChatInfo, nameKnown: boolean): string | null {
     const known = this.state.chats[chat.guid];
     if (known) return known.project;
-    if (this.lookupFailedUntil.has(chat.guid)) {
-      // The group's real name is not known yet: use an id-only name for now and save nothing.
-      return `imessage-${chat.isGroup ? 'group' : 'direct'}-${shortHash(chat.guid)}`;
-    }
+    if (!nameKnown) return null;
     const project = projectNameFor(chat);
     this.state.chats[chat.guid] = { project, name: chat.displayName };
     try {
@@ -238,9 +240,18 @@ export class GroupChatObserver {
         continue;
       }
       const enqueuedAt = Date.now();
+      // Decided now, so a lookup that succeeds while this waits cannot change it.
+      const nameKnown = !this.lookupFailedUntil.has(action.chatGuid);
       this.queued += 1;
       this.queue = this.queue.then(async () => {
-        const project = this.projectFor(chat);
+        const project = this.projectFor(chat, nameKnown);
+        if (!project) {
+          if (action.kind === 'window') {
+            this.droppedWindows += 1;
+            this.options.log.warn(`Skipped ${action.entries.length} messages: the chat's details could not be read yet, so its project is not known.`);
+          }
+          return;
+        }
         if (this.excluded(project, chat)) return;
         if (action.kind === 'window' && !this.eventClock && Date.now() - enqueuedAt > STALE_QUEUE_MS) {
           this.droppedWindows += 1;
