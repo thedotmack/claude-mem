@@ -85,15 +85,14 @@ export function CheckoutScreen({ checkout, asked, installerStopped, cloudSyncOff
             <div><dt>{t('Total after trial')}</dt><dd><s>{perMonth(PLAN.monthlyCents + PLAN.cloudSyncCents, t)}</s> <strong>{perMonth(PLAN.monthlyCents, t)}</strong></dd></div>
           </dl>
           <div className="checkout-notes">
-            <p>{t('Your trial ends after 30 days or when included usage runs out, whichever comes first. Billing starts then.')}</p>
-            <p>{t('Usage automatically upgrades Pro $30 → Heavy $70 → Max $100/month, plus overages.')}</p>
+            <p>{t('Your Pro trial lasts 30 days. Billing starts on your renewal date unless you cancel.')}</p>
+            <p>{t('When your hosted credits run out, hosted generation pauses. Claude-Mem can continue with your configured backup provider.')}</p>
           </div>
           <Collapsible className="checkout-terms">
             <CollapsibleFoldTrigger>{t('Trial and billing details')}</CollapsibleFoldTrigger>
             <CollapsibleContent forceMount>
               <ul>
                 <li>{t('A card is required. Prepaid cards are not eligible for the trial.')}</li>
-                <li>{t('Upgrade price differences are prorated and charged immediately. Overages are billed at renewal.')}</li>
                 <li>{t('Other AI charges still apply. Cancel in your account.')}</li>
               </ul>
             </CollapsibleContent>

@@ -4,6 +4,7 @@
 // This handler is PURE: it returns a HookResult and MUST NOT call
 // process.stderr.write / process.stdout.write / console.* / process.exit.
 // logger.* calls are DIAGNOSTIC and route through hook-io's stderr path.
+import { cmemCapExhaustedAt } from '../../shared/cmem-cap-probe.js';
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
 import {
   executeWithWorkerFallback,
@@ -576,7 +577,7 @@ export const contextHandler: EventHandler = {
         message: settings.CLAUDE_MEM_PRO_FALLBACK_MESSAGE,
         action: settings.CLAUDE_MEM_PRO_FALLBACK_ACTION,
         url: settings.CLAUDE_MEM_PRO_FALLBACK_URL,
-      }, gatewayRole);
+      }, gatewayRole, cmemCapExhaustedAt() !== null);
       notices.unshift(fallbackNotice);
 
     }

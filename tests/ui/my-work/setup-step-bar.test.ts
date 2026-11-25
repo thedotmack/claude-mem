@@ -234,6 +234,11 @@ describe('setup checkout', () => {
     expect(legacy).toContain('CMEM Pro · Cloud Sync included');
     expect(legacy).toContain('$30 / month');
     expect(legacy).toContain('A card is required.');
+    expect(legacy).toContain('Billing starts on your renewal date unless you cancel.');
+    expect(legacy).toContain('hosted generation pauses');
+    expect(legacy).toContain('your configured backup provider');
+    expect(legacy).not.toContain('automatically upgrades');
+    expect(legacy).not.toContain('Overages are billed');
     expect(legacy).not.toContain('Your Cloud Sync trial lasts a full 30 days.');
   });
   it('shows a pending handoff and allows an explicit reopen once checkout is running', () => {
