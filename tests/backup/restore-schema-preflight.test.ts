@@ -33,6 +33,24 @@ function fixture(schemaVersion: number) {
 }
 
 describe('restore schema compatibility before live changes', () => {
+  it('rejects a structurally healthy unstamped database with no worker tables before touching the live database', async () => {
+    const { dir, dbPath, backupsDir, snapshotName, snapshotPath } = fixture(0);
+    try {
+      const snapshot = new Database(snapshotPath);
+      try {
+        snapshot.exec('DROP TABLE sdk_sessions; DROP TABLE observations; DROP TABLE session_summaries');
+        expect(snapshot.query('PRAGMA quick_check').get()).toEqual({ quick_check: 'ok' });
+      } finally { snapshot.close(); }
+
+      const originalLive = readFileSync(dbPath);
+      await expect(swapDatabaseFromSnapshot(dbPath, snapshotPath, { preRestoreDir: backupsDir }))
+        .rejects.toThrow('required worker table sdk_sessions');
+      expect(readFileSync(dbPath)).toEqual(originalLive);
+      expect(readdirSync(backupsDir)).toEqual([snapshotName]);
+      expect(readdirSync(dir).filter(name => name.includes('.restore-'))).toEqual([]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it('rejects a newer-schema snapshot before replacing or backing up the healthy live database', async () => {
     const { dir, dbPath, backupsDir, snapshotName, snapshotPath } = fixture(LATEST_SCHEMA_VERSION + 1);
     const originalLive = readFileSync(dbPath);

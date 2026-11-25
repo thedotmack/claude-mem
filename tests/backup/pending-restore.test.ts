@@ -7,6 +7,7 @@ import { applyPendingRestore } from '../../src/services/backup/restore-swap.js';
 import { readLastRestoreResult, resolveSnapshotInside, stagePendingRestore } from '../../src/services/backup/snapshot-files.js';
 import { paths } from '../../src/shared/paths.js';
 import { ChromaSyncState } from '../../src/services/sync/ChromaSyncState.js';
+import { RESTORE_FIXTURE_SCHEMA } from './fixtures/restore-schema.js';
 
 let tempRoot: string | undefined;
 
@@ -20,7 +21,7 @@ afterEach(() => {
 
 function makeDb(path: string, note: string): void {
   const db = new Database(path);
-  db.run('CREATE TABLE observations (id INTEGER PRIMARY KEY, note TEXT NOT NULL)');
+  db.exec(RESTORE_FIXTURE_SCHEMA);
   db.run('INSERT INTO observations (note) VALUES (?)', [note]);
   db.close();
 }

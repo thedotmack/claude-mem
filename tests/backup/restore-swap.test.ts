@@ -5,6 +5,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { swapDatabaseFromSnapshot } from '../../src/services/backup/restore-swap.js';
 import { SNAPSHOT_FILE_PATTERN } from '../../src/services/backup/snapshot-files.js';
+import { RESTORE_FIXTURE_SCHEMA } from './fixtures/restore-schema.js';
 
 let tempRoot: string | undefined;
 
@@ -13,12 +14,10 @@ afterEach(() => {
   tempRoot = undefined;
 });
 
-const CREATE_TABLE = 'CREATE TABLE IF NOT EXISTS observations (id INTEGER PRIMARY KEY AUTOINCREMENT, note TEXT NOT NULL)';
-
 function makeDb(path: string, notes: string[]): void {
   const db = new Database(path);
   db.run('PRAGMA journal_mode = WAL');
-  db.run(CREATE_TABLE);
+  db.exec(RESTORE_FIXTURE_SCHEMA);
   const insert = db.prepare('INSERT INTO observations (note) VALUES (?)');
   for (const note of notes) insert.run(note);
   insert.finalize();
@@ -45,7 +44,7 @@ function makeCrashedLiveDb(dir: string): string {
   const writer = new Database(scratch);
   writer.run('PRAGMA journal_mode = WAL');
   writer.run('PRAGMA wal_autocheckpoint = 0');
-  writer.run(CREATE_TABLE);
+  writer.exec(RESTORE_FIXTURE_SCHEMA);
   writer.run("INSERT INTO observations (note) VALUES ('live-1'), ('live-2-wal-only')");
   const dbPath = join(dir, 'claude-mem.db');
   copyFileSync(scratch, dbPath);
