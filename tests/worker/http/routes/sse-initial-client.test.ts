@@ -5,9 +5,10 @@ import { SSEBroadcaster } from '../../../../src/services/worker/SSEBroadcaster.j
 import { ViewerRoutes } from '../../../../src/services/worker/http/routes/ViewerRoutes.js';
 import type { DatabaseManager } from '../../../../src/services/worker/DatabaseManager.js';
 import type { SessionManager } from '../../../../src/services/worker/SessionManager.js';
+import { composeViewerSyncStatus, type ViewerSyncStatus } from '../../../../src/shared/viewer-sync-status.js';
 
 class Viewer extends EventEmitter {
-  readonly frames: Array<{ type: string; queueDepth?: number; projects?: string[] }> = [];
+  readonly frames: Array<{ type: string; queueDepth?: number; projects?: string[]; sync?: ViewerSyncStatus }> = [];
   destroyed = false;
   writableEnded = false;
   setHeader() { return this; }
@@ -19,7 +20,7 @@ class Viewer extends EventEmitter {
   asResponse(): Response { return this as unknown as Response; }
 }
 
-function harness() {
+function harness(getSyncStatus?: () => ViewerSyncStatus) {
   const broadcaster = new SSEBroadcaster();
   let stream!: (req: Request, res: Response) => void;
   const catalog = { projects: ['project'], sources: ['claude-code'], projectsBySource: {} };
@@ -29,7 +30,7 @@ function harness() {
   } as unknown as DatabaseManager, {
     isAnySessionProcessing: () => state.processing(),
     getTotalActiveWork: async () => 0,
-  } as unknown as SessionManager);
+  } as unknown as SessionManager, getSyncStatus);
   routes.setupRoutes({
     use() {},
     get(path: string, handler: typeof stream) { if (path === '/stream') stream = handler; },
@@ -50,6 +51,31 @@ function harness() {
 const settled = () => new Promise<void>(resolve => setImmediate(resolve));
 
 describe('viewer connection snapshots', () => {
+  it('sends unchanged sync eligibility on every cold load and reconnect', async () => {
+    const unconfigured = composeViewerSyncStatus(null, null, null);
+    const connected: ViewerSyncStatus = { ...unconfigured, configured: true, state: 'offline' };
+    for (const snapshot of [unconfigured, connected]) {
+      const h = harness(() => snapshot);
+      try {
+        const first = h.connect(); await settled();
+        expect(first.frames[1].sync).toEqual(snapshot);
+        first.destroy();
+        const second = h.connect(); await settled();
+        expect(second.frames[1].sync).toEqual(snapshot);
+        expect(second.frames.map(frame => frame.type)).toEqual(['connected', 'initial_load', 'processing_status']);
+      } finally { h.close(); }
+    }
+  });
+
+  it('preserves the initial catalog if sync status is unavailable', async () => {
+    const h = harness(() => { throw new Error('sync unavailable'); });
+    try {
+      const viewer = h.connect(); await settled();
+      expect(viewer.frames[1].projects).toEqual(['project']);
+      expect(viewer.frames[1].sync).toBeUndefined();
+    } finally { h.close(); }
+  });
+
   it('sends the catalog and initial status only to the joining viewer', async () => {
     const h = harness();
     try {
