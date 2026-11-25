@@ -1,4 +1,5 @@
 import { expect, it } from 'bun:test';
+import { composeViewerSyncStatus, type ViewerSyncStatus } from '../../../src/shared/viewer-sync-status';
 import {
   chromeExecutablePath, compileBrowserFixture, connectToPage, failOnCiWithoutChrome, htmlResponse, launchChrome,
   readViewerTemplateHtml, scriptResponse, UNTHROTTLED_TIMER_FLAGS, withTimeout, type DevToolsPage, type OwnedChrome,
@@ -17,7 +18,7 @@ const bundle = () => compileBrowserFixture(`
   fetch('/ready');
 `);
 
-function serve(script: string) {
+function serve(script: string, sync?: ViewerSyncStatus) {
   let markReady!: () => void;
   const ready = new Promise<void>(resolve => { markReady = resolve; });
   const projects = Array.from({ length: 120 }, (_, index) => `project-${String(index).padStart(3, '0')}`);
@@ -28,8 +29,9 @@ function serve(script: string) {
     if (url.pathname === '/viewer-bundle.js') return scriptResponse(script);
     if (url.pathname === '/ready') { markReady(); return new Response('ready'); }
     if (url.pathname === '/stream') return new Response(new ReadableStream({ start(controller) {
-      controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ type: 'initial_load', projects })}\n\n`));
+      controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ type: 'initial_load', projects, sync })}\n\n`));
     } }), { headers: { 'Content-Type': 'text/event-stream' } });
+    if (url.pathname === '/api/settings') return Response.json({ CLAUDE_MEM_PRO_PLAN: 'none' });
     const common = (id: number) => ({ id, project: 'project-001', platform_source: 'claude', content_session_id: 'session', memory_session_id: 'memory',
       created_at_epoch: base - id * 60_000, created_at: new Date(base - id * 60_000).toISOString() });
     // Six kinds of observation, so a phone's chip row runs past the edge.
@@ -45,8 +47,8 @@ function serve(script: string) {
   return { server, ready };
 }
 
-async function openViewer(width: number, height: number, profile: string) {
-  const { server, ready } = serve(bundle());
+async function openViewer(width: number, height: number, profile: string, sync?: ViewerSyncStatus) {
+  const { server, ready } = serve(bundle(), sync);
   const chrome = launchChrome(server.url.href, { remoteDebugging: true, profilePrefix: profile, extraFlags: [...UNTHROTTLED_TIMER_FLAGS, `--window-size=${width},${height}`] });
   await withTimeout(ready, 30_000, 'Viewer did not become ready');
   const page = await connectToPage(chrome, server.url.href);
@@ -252,12 +254,27 @@ async function pressAt(page: DevToolsPage, x: number, y: number) {
 (chromeExecutablePath ? it : it.skip)('on a 390px phone the header is one 56px row and every control is at least 44px tall', async () => {
   let opened: Awaited<ReturnType<typeof openViewer>> | undefined;
   try {
-    opened = await openViewer(390, 844, 'claude-mem-viewer-phone-');
+    opened = await openViewer(390, 844, 'claude-mem-viewer-phone-', composeViewerSyncStatus(null, null, null));
     const { page } = opened;
+    await withTimeout(page.evaluate(`new Promise(resolve => {
+      const check = () => document.querySelector('.timeline-gift') ? resolve(true) : setTimeout(check, 30);
+      check();
+    })`), 5_000, 'Eligible timeline gift did not appear');
+    expect(await page.evaluate(`(() => {
+      const gift = document.querySelector('.timeline-gift');
+      const firstCard = document.querySelector('.card');
+      return {
+        links: [...document.querySelectorAll('a[href="https://cmem.ai/sync"]')].map(link => ({
+          inGift: gift.contains(link), opensIn: link.target,
+        })),
+        firstObservation: firstCard.querySelector('.card-title').textContent,
+        giftBeforeCard: Boolean(gift.compareDocumentPosition(firstCard) & Node.DOCUMENT_POSITION_FOLLOWING),
+      };
+    })()`)).toEqual({ links: [{ inGift: true, opensIn: '_blank' }], firstObservation: 'Observation 1', giftBeforeCard: true });
     const sizes = await page.evaluate(`(() => {
       const header = document.querySelector('.header').getBoundingClientRect();
       const visible = selector => [...document.querySelectorAll(selector)].filter(element => element.getClientRects().length);
-      const short = visible('.header a, .header button, .view-tab, .kind-chip, .view-mode-toggle, .card-menu-trigger, .summary-chip, .fold-row, .card-subtitle-more, .short-time, .timeline-search')
+      const short = visible('.header a, .header button, .timeline-gift a, .timeline-gift button, .view-tab, .kind-chip, .view-mode-toggle, .card-menu-trigger, .summary-chip, .fold-row, .card-subtitle-more, .short-time, .timeline-search')
         .map(element => ({ name: element.className || element.tagName, height: Math.round(element.getBoundingClientRect().height) }))
         .filter(control => control.height < 44);
       return { headerHeight: Math.round(header.height), short, scrollsSideways: document.documentElement.scrollWidth > window.innerWidth };
@@ -272,13 +289,13 @@ async function pressAt(page: DevToolsPage, x: number, y: number) {
     const chipRow = await page.evaluate(`document.querySelector('.kind-chips').className`);
     expect(chipRow).toContain('scroll-more-before');
     expect(chipRow).not.toContain('scroll-more-after');
-    // Links that left the row are in the menu, with the sync state and its full words as the first item.
+    // Sync remains the first mobile menu item. The timeline carries the offer beside the memories.
     await page.evaluate(`document.querySelector('.header-more').focus()`);
     await key(page, 'ArrowDown', 'ArrowDown', 40);
     expect(await page.evaluate(`({ first: document.activeElement.classList.contains('menu-sync'),
-      words: document.activeElement.textContent.includes('This worker has not reported synchronization freshness.'),
-      trial: [...document.querySelectorAll('.header-menu [role="menuitem"]')].some(item => item.getClientRects().length && item.textContent.includes('Trial')) })`))
-      .toEqual({ first: true, words: true, trial: true });
+      words: document.activeElement.textContent.includes('Cloud sync is not configured.'),
+      trial: !!document.querySelector('.header-menu [role="menuitem"][href="https://cmem.ai/pro?from=viewer"]') })`))
+      .toEqual({ first: true, words: true, trial: false });
     // The chip row is still scrolled to its end. French words make the chips wider while the row keeps its own
     // size, so there are chips past the end again, and the end fades again.
     const chipRowSizes = `(() => { const row = document.querySelector('.kind-chips'); return { width: row.clientWidth, content: row.scrollWidth, className: row.className }; })()`;
