@@ -15,6 +15,7 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { PhotonCloudError } from './photon-cloud.js';
 import type { ChatInfo, MessageSource, ObserverEvent } from './types.js';
 
 /** The parts of @photon-ai/advanced-imessage/grpc this file uses. */
@@ -44,9 +45,18 @@ interface PhotonClient {
   chats: { get(guid: string): Promise<{ guid: string; displayName: string; isGroup: boolean; participants: readonly PhotonAddress[] }> };
   close(): Promise<void>;
 }
+type PhotonToken = string | (() => Promise<string>);
 interface PhotonModule {
-  createGrpcClient?(options: { address: string; token: string; tls?: boolean }): PhotonClient;
-  createClient?(options: { address: string; token: string; tls?: boolean }): PhotonClient;
+  createGrpcClient?(options: { address: string; token: PhotonToken; tls?: boolean }): PhotonClient;
+  createClient?(options: { address: string; token: PhotonToken; tls?: boolean }): PhotonClient;
+}
+
+/** A line to listen on: a server address and its token (a string, or a function for renewed tokens). */
+export interface PhotonLineConfig {
+  address: string;
+  token: PhotonToken;
+  /** How to name the line in logs, e.g. its phone number. */
+  label?: string;
 }
 
 export const PHOTON_PACKAGES = [
@@ -57,8 +67,8 @@ export const PHOTON_PACKAGES = [
 ];
 
 export interface PhotonOptions {
-  address: string;
-  token: string;
+  /** The lines to listen on, or a function that finds them (re-run after a dropped stream). */
+  lines: PhotonLineConfig[] | (() => Promise<PhotonLineConfig[]>);
   tls?: boolean;
   /** Where `claude-mem imessage setup` installed the SDK. */
   installDir: string;
@@ -130,64 +140,105 @@ export function fromPhotonGroupEvent(event: PhotonGroupEvent): ObserverEvent | n
   return null;
 }
 
-/** Merge async iterables into one, in arrival order. */
+/**
+ * Merge async iterables into one, in arrival order. When one source fails or
+ * the reader stops, every other source is closed too, so a reconnect never
+ * leaves old streams open.
+ */
 async function* merge<T>(sources: AsyncIterable<T>[]): AsyncIterable<T> {
   const iterators = sources.map(source => source[Symbol.asyncIterator]());
   const pending = new Map<number, Promise<{ index: number; result: IteratorResult<T> }>>();
-  const pull = (index: number) => pending.set(index, iterators[index]!.next().then(result => ({ index, result })));
+  const pull = (index: number) => {
+    const next = iterators[index]!.next().then(result => ({ index, result }));
+    // The race below sees a failure; this keeps the others from being unhandled.
+    next.catch(() => {});
+    pending.set(index, next);
+  };
   iterators.forEach((_, index) => pull(index));
-  while (pending.size > 0) {
-    const { index, result } = await Promise.race(pending.values());
-    if (result.done) {
-      pending.delete(index);
-      continue;
+  try {
+    while (pending.size > 0) {
+      const { index, result } = await Promise.race(pending.values());
+      if (result.done) {
+        pending.delete(index);
+        continue;
+      }
+      pull(index);
+      yield result.value;
     }
-    pull(index);
-    yield result.value;
+  } finally {
+    await Promise.allSettled([...pending.keys()].map(index => iterators[index]!.return?.()));
   }
 }
 
+/** Errors that reconnecting cannot fix: bad credentials, or a line that cannot see group chats. */
+function isFatal(error: unknown): boolean {
+  if (error instanceof PhotonCloudError) return error.status === undefined || error.status === 401 || error.status === 403 || error.status === 404;
+  const message = error instanceof Error ? error.message : String(error);
+  return /unauthenticated|permission denied|invalid token/i.test(message);
+}
+
+interface OpenLine { label: string; client: PhotonClient }
+
 export class PhotonSource implements MessageSource {
   readonly name = 'photon';
-  private client: PhotonClient | null = null;
+  private lines: OpenLine[] = [];
+  /** Which line each chat was heard on, so its details are read from that line. */
+  private readonly chatLine = new Map<string, PhotonClient>();
   private streams: PhotonStream<unknown>[] = [];
   private stopped = false;
 
   constructor(private readonly options: PhotonOptions) {}
 
-  private async connect(): Promise<PhotonClient> {
-    if (this.client) return this.client;
+  private async connect(): Promise<OpenLine[]> {
+    if (this.lines.length > 0) return this.lines;
     const sdk = await loadPhoton(this.options.installDir);
     const create = sdk.createGrpcClient ?? sdk.createClient;
     if (!create) throw new Error('This Photon SDK version has no gRPC client. Run: npx claude-mem imessage setup');
-    this.client = create({ address: this.options.address, token: this.options.token, tls: this.options.tls ?? true });
-    return this.client;
+    const configs = typeof this.options.lines === 'function' ? await this.options.lines() : this.options.lines;
+    if (configs.length === 0) throw new PhotonCloudError('No Photon iMessage line is set up. Run: npx claude-mem imessage setup');
+    this.lines = configs.map(line => ({
+      label: line.label ?? line.address,
+      client: create({ address: line.address, token: line.token, tls: this.options.tls ?? true }),
+    }));
+    return this.lines;
+  }
+
+  private async closeLines(): Promise<void> {
+    await Promise.allSettled(this.streams.map(stream => stream.close?.()));
+    await Promise.allSettled(this.lines.map(line => line.client.close()));
+    this.streams = [];
+    this.lines = [];
+    this.chatLine.clear();
   }
 
   async *events(): AsyncIterable<ObserverEvent> {
     let delayMs = 1_000;
     while (!this.stopped) {
       try {
-        const client = await this.connect();
-        const messages = client.messages.subscribeEvents();
-        const groups = client.groups.subscribeEvents();
-        this.streams = [messages, groups];
-        this.options.log.info('Listening for iMessage group chat messages.');
-        const merged = merge<{ kind: 'message'; event: PhotonMessageEvent } | { kind: 'group'; event: PhotonGroupEvent }>([
-          mapIterable(messages, event => ({ kind: 'message' as const, event })),
-          mapIterable(groups, event => ({ kind: 'group' as const, event })),
-        ]);
-        for await (const item of merged) {
+        const lines = await this.connect();
+        const feeds: AsyncIterable<{ client: PhotonClient; event: ObserverEvent | null }>[] = [];
+        for (const line of lines) {
+          const messages = line.client.messages.subscribeEvents();
+          const groups = line.client.groups.subscribeEvents();
+          this.streams.push(messages, groups);
+          feeds.push(mapIterable(messages, event => ({ client: line.client, event: fromPhotonMessageEvent(event) })));
+          feeds.push(mapIterable(groups, event => ({ client: line.client, event: fromPhotonGroupEvent(event) })));
+        }
+        this.options.log.info(`Listening for iMessage group chat messages on ${lines.map(line => line.label).join(', ')}.`);
+        for await (const item of merge(feeds)) {
           delayMs = 1_000;
-          const event = item.kind === 'message' ? fromPhotonMessageEvent(item.event) : fromPhotonGroupEvent(item.event);
-          if (event) yield event;
+          if (!item.event) continue;
+          this.chatLine.set(item.event.chatGuid, item.client);
+          yield item.event;
         }
       } catch (error) {
         if (this.stopped) return;
+        if (isFatal(error)) throw error;
         const message = error instanceof Error ? error.message : String(error);
-        if (/unauthenticated|token|permission/i.test(message)) throw error;
         this.options.log.warn(`Photon stream dropped (${message}). Reconnecting in ${Math.round(delayMs / 1000)}s; messages sent meanwhile are not recorded.`);
       }
+      // Reopen from scratch next time, so a line Photon added or removed is picked up.
+      await this.closeLines();
       if (this.stopped) return;
       await new Promise(resolve => setTimeout(resolve, delayMs));
       delayMs = Math.min(delayMs * 2, 60_000);
@@ -196,7 +247,7 @@ export class PhotonSource implements MessageSource {
 
   async chat(guid: string): Promise<ChatInfo | null> {
     try {
-      const client = await this.connect();
+      const client = this.chatLine.get(guid) ?? (await this.connect())[0]!.client;
       const chat = await client.chats.get(guid);
       return {
         guid: chat.guid,
@@ -212,8 +263,7 @@ export class PhotonSource implements MessageSource {
 
   async stop(): Promise<void> {
     this.stopped = true;
-    await Promise.allSettled(this.streams.map(stream => stream.close?.()));
-    await this.client?.close().catch(() => undefined);
+    await this.closeLines();
   }
 }
 

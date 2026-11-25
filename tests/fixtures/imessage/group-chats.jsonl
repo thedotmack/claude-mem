@@ -4,7 +4,7 @@
 {"type":"chat","guid":"any;-;+15551230009","displayName":"","isGroup":false,"participants":["+15551230009"]}
 {"type":"message","chat":"any;+;chat-weekend-crew","id":"w1","from":"+15551230001","at":"2026-11-21T10:02:00-08:00","text":"Dinner Saturday? I can book Flour + Water"}
 {"type":"message","chat":"any;+;chat-weekend-crew","id":"w2","from":"sam@example.com","at":"2026-11-21T10:04:00-08:00","text":"Yes! 7pm works for me"}
-{"type":"message","chat":"any;+;chat-weekend-crew","id":"w3","from":"me","at":"2026-11-21T10:05:00-08:00","text":"I'm in. Can we do 8 instead?"}
+{"type":"message","chat":"any;+;chat-weekend-crew","id":"w3","from":"+15551230002","at":"2026-11-21T10:05:00-08:00","text":"I'm in. Can we do 8 instead?"}
 {"type":"edited","chat":"any;+;chat-weekend-crew","id":"w3","at":"2026-11-21T10:05:30-08:00","text":"I'm in. Can we do 7:30 instead?"}
 {"type":"message","chat":"any;+;chat-weekend-crew","id":"w4","from":"+15551230002","at":"2026-11-21T10:06:00-08:00","text":"oops wrong chat"}
 {"type":"unsent","chat":"any;+;chat-weekend-crew","id":"w4","at":"2026-11-21T10:06:20-08:00"}

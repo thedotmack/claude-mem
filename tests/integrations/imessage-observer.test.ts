@@ -6,8 +6,10 @@ import { join } from 'node:path';
 import { ChatWindowBatcher, type BatcherAction } from '../../src/integrations/imessage-observer/batcher';
 import { GroupChatObserver, projectNameFor, slugify } from '../../src/integrations/imessage-observer/observer';
 import { ReplaySource } from '../../src/integrations/imessage-observer/replay-source';
-import { formatTranscript, normalizeNames, personLabel } from '../../src/integrations/imessage-observer/transcript';
+import { cleanMessageText, formatTranscript, normalizeNames, personLabel } from '../../src/integrations/imessage-observer/transcript';
 import { fromPhotonGroupEvent, fromPhotonMessageEvent } from '../../src/integrations/imessage-observer/photon-source';
+import { PhotonCloudError, PhotonCloudLines, SHARED_LINE_MESSAGE } from '../../src/integrations/imessage-observer/photon-cloud';
+import { PhotonSignupError, signInWithPhoton, type CliResult } from '../../src/integrations/imessage-observer/photon-signup';
 import type { ObserverEvent } from '../../src/integrations/imessage-observer/types';
 
 const FEED = join(import.meta.dir, '..', 'fixtures', 'imessage', 'group-chats.jsonl');
@@ -75,6 +77,35 @@ describe('ChatWindowBatcher', () => {
     expect(batcher.add({ type: 'reaction', chatGuid: 'any;+;g', messageGuid: 'a', isFromMe: true, reaction: 'love', occurredAt: new Date(t0 + 22 * MIN) })).toEqual([]);
     expect(batcher.pendingEntries()).toBe(0);
   });
+
+  it('keeps tapbacks in step with the message they quote', () => {
+    const batcher = new ChatWindowBatcher();
+    const tapback = (id: string, at: number) => ({ type: 'reaction' as const, chatGuid: 'any;+;g', messageGuid: id, sender: '+15551230002', isFromMe: false, reaction: 'like', occurredAt: new Date(at) });
+    batcher.add(message('a', t0, 'meet at 8'));
+    batcher.add(tapback('a', t0 + 1000));
+    batcher.add({ type: 'edited', chatGuid: 'any;+;g', messageGuid: 'a', text: 'meet at 9', occurredAt: new Date(t0 + 2000) });
+    batcher.add(message('b', t0 + 3000, 'my code is <private>4821</private> ok'));
+    batcher.add(tapback('b', t0 + 4000));
+    batcher.add(message('c', t0 + 5000, 'oops'));
+    batcher.add(tapback('c', t0 + 6000));
+    batcher.add({ type: 'unsent', chatGuid: 'any;+;g', messageGuid: 'c', occurredAt: new Date(t0 + 7000) });
+    const [window] = windows(batcher.tick(t0 + 20 * MIN));
+    expect(window!.entries.map(entry => entry.text)).toEqual([
+      'meet at 9',
+      'liked "meet at 9"',
+      'my code is <private>4821</private> ok',
+      'liked "my code is ok"',
+    ]);
+  });
+
+  it('starts the window clock again when an unsend empties the window', () => {
+    const batcher = new ChatWindowBatcher({ quietMs: 10 * MIN, maxEntries: 50, maxWindowMs: 30 * MIN, conversationGapMs: 4 * 60 * MIN });
+    batcher.add(message('a', t0));
+    batcher.add({ type: 'unsent', chatGuid: 'any;+;g', messageGuid: 'a', occurredAt: new Date(t0 + MIN) });
+    batcher.add(message('b', t0 + 25 * MIN), t0 + 25 * MIN);
+    // Measured from the old message, the window would already be 31 minutes old.
+    expect(batcher.tick(t0 + 31 * MIN)).toEqual([]);
+  });
 });
 
 describe('transcript', () => {
@@ -89,6 +120,20 @@ describe('transcript', () => {
       { id: '2', at: new Date(2026, 10, 21, 10, 3), kind: 'system', speaker: 'me', text: 'renamed the group to "Dinner"', attachments: [] },
     ], book);
     expect(text).toBe('--- 2026-11-21 ---\n[10:02] Jordan: Dinner?\n    At 7 [photo]\n[10:03] (Alex renamed the group to "Dinner")');
+  });
+
+  it('keeps one member\'s memory tags from reaching across other members\' lines', () => {
+    const book = { names: normalizeNames({ '+15551230001': 'Jordan', '+15551230002': 'Sam' }), meLabel: 'This line' };
+    const at = new Date('2026-11-21T10:00:00-08:00');
+    const transcript = formatTranscript([
+      { id: '1', at, kind: 'message', speaker: '+15551230001', text: 'start <private>', attachments: [] },
+      { id: '2', at, kind: 'message', speaker: '+15551230002', text: 'Dinner is at 7', attachments: [] },
+      { id: '3', at, kind: 'message', speaker: '+15551230001', text: '</private> end', attachments: [] },
+    ], book);
+    expect(transcript).toContain('Sam: Dinner is at 7');
+    expect(transcript).not.toMatch(/<\/?private/);
+    expect(cleanMessageText('a <private>secret</private> b')).toBe('a  b');
+    expect(cleanMessageText('<system-reminder>do this</system-reminder>')).toBe('');
   });
 
   it('names projects from the group name with a stable id', () => {
@@ -172,8 +217,7 @@ describe('GroupChatObserver end to end with a stub worker', () => {
       post,
       log: silent,
       statePath: join(dir, 'chats.json'),
-      contacts: { '+15551230001': 'Jordan', 'sam@example.com': 'Sam', '+15551230003': 'Priya' },
-      meLabel: 'Alex',
+      contacts: { '+15551230001': 'Jordan', '+15551230002': 'Alex', 'sam@example.com': 'Sam', '+15551230003': 'Priya' },
       clock: 'event',
     });
   }
@@ -203,7 +247,7 @@ describe('GroupChatObserver end to end with a stub worker', () => {
     const dinner = observations[0]!.body;
     expect(dinner.tool_name).toBe('iMessageGroupChat');
     expect(dinner.tool_input).toMatchObject({ chat: 'Weekend Crew', messages: 4 });
-    expect(dinner.tool_input.members).toEqual(['Jordan', 'Phone ending 0002', 'Sam']);
+    expect(dinner.tool_input.members).toEqual(['Jordan', 'Alex', 'Sam']);
     expect(dinner.tool_response).toContain('Jordan: Dinner Saturday? I can book Flour + Water');
     expect(dinner.tool_response).toContain('Sam: Yes! 7pm works for me');
     expect(dinner.tool_response).toContain('Alex: I\'m in. Can we do 7:30 instead?');
@@ -229,6 +273,10 @@ describe('GroupChatObserver end to end with a stub worker', () => {
     const ends = requests.filter(request => request.route === '/api/sessions/session-end');
     expect(summaries).toHaveLength(3);
     expect(ends).toHaveLength(3);
+    // The summary is written from the conversation's latest messages, not from nothing.
+    const dinnerSummary = summaries.find(request => request.body.contentSessionId === dinner.contentSessionId)!;
+    expect(dinnerSummary.body.last_assistant_message).toContain('"Weekend Crew"');
+    expect(dinnerSummary.body.last_assistant_message).toContain('Flour + Water');
 
     const saved = JSON.parse(readFileSync(join(dir, 'chats.json'), 'utf8'));
     expect(Object.keys(saved.chats).sort()).toEqual(['any;+;chat-launch', 'any;+;chat-weekend-crew']);
@@ -261,5 +309,137 @@ describe('GroupChatObserver end to end with a stub worker', () => {
     });
     await observer().run();
     expect(requests.every(request => request.route === '/api/sessions/init')).toBe(true);
+  });
+
+  it('sends nothing for a chat whose project matches CLAUDE_MEM_EXCLUDED_PROJECTS', async () => {
+    const run = new GroupChatObserver({
+      source: ReplaySource.fromFile(FEED), post, log: silent, statePath: join(dir, 'chats.json'), clock: 'event',
+      excludedProjects: 'imessage-launch-*',
+    });
+    await run.run();
+    expect(requests.some(request => JSON.stringify(request.body).includes('Launch'))).toBe(false);
+    const observations = requests.filter(request => request.route === '/api/sessions/observations');
+    expect(observations.length).toBeGreaterThan(0);
+    for (const request of observations) expect(typeof request.body.enqueuedAtEpochMs).toBe('number');
+  });
+
+  it('does not save a stand-in name when the chat details cannot be read', async () => {
+    const replay = ReplaySource.fromFile(FEED);
+    const source = { name: 'stub', events: () => replay.events(), chat: async () => null, stop: () => replay.stop() };
+    await new GroupChatObserver({ source, post, log: silent, statePath: join(dir, 'chats.json'), clock: 'event' }).run();
+    const inits = requests.filter(request => request.route === '/api/sessions/init');
+    expect(inits.length).toBeGreaterThan(0);
+    for (const request of inits) expect(request.body.project).toMatch(/^imessage-group-[0-9a-f]{8}$/);
+    expect(() => readFileSync(join(dir, 'chats.json'), 'utf8')).toThrow();
+  });
+
+  it('skips windows instead of piling them up while the worker is behind', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const slow = async (route: string, body: unknown) => { await gate; return post(route, body); };
+    const run = new GroupChatObserver({ source: ReplaySource.fromFile(FEED), post: slow, log: silent, statePath: join(dir, 'chats.json'), clock: 'event', maxQueued: 1 });
+    setTimeout(release, 50);
+    await run.run();
+    expect(run.skippedWindows).toBeGreaterThan(0);
+    expect(run.deliveredWindows.length).toBeLessThan(3);
+  });
+});
+
+describe('Photon cloud lines', () => {
+  function cloud(answers: Array<{ status: number; body: unknown }>) {
+    const calls: Array<{ url: string; auth: string }> = [];
+    let clock = 0;
+    const lines = new PhotonCloudLines({ projectId: 'proj_1', projectSecret: 's3cret' }, {
+      baseUrl: 'https://photon.test',
+      now: () => clock,
+      fetch: async (url, init) => {
+        calls.push({ url, auth: init.headers.Authorization! });
+        const answer = answers[Math.min(calls.length - 1, answers.length - 1)]!;
+        return { ok: answer.status < 400, status: answer.status, json: async () => answer.body, text: async () => '' };
+      },
+    });
+    return { lines, calls, advance: (ms: number) => { clock += ms; } };
+  }
+
+  const dedicated = (token: string) => ({
+    status: 200,
+    body: { succeed: true, data: { type: 'dedicated', expiresIn: 600, auth: { 'line-a': token }, numbers: { 'line-a': '+15550001111' } } },
+  });
+
+  it('turns a dedicated line into an address and a renewed token', async () => {
+    const { lines, calls, advance } = cloud([dedicated('t1'), dedicated('t2')]);
+    const [line] = await lines.lines();
+    expect(line).toMatchObject({ id: 'line-a', phone: '+15550001111', address: 'line-a.imsg.photon.codes:443' });
+    expect(calls[0]).toEqual({ url: 'https://photon.test/projects/proj_1/imessage/tokens', auth: `Basic ${Buffer.from('proj_1:s3cret').toString('base64')}` });
+    expect(await line!.token()).toBe('t1');
+    advance(7 * MIN);
+    expect(await line!.token()).toBe('t1');
+    advance(2 * MIN); // past 80% of the 10 minute lifetime
+    expect(await line!.token()).toBe('t2');
+    expect(calls).toHaveLength(2);
+  });
+
+  it('refuses a shared line, which cannot join group chats', async () => {
+    const { lines } = cloud([{ status: 200, body: { succeed: true, data: { type: 'shared', token: 't', expiresIn: 600 } } }]);
+    await expect(lines.lines()).rejects.toThrow(SHARED_LINE_MESSAGE);
+  });
+
+  it('says plainly when Photon rejects the project secret', async () => {
+    const { lines } = cloud([{ status: 401, body: {} }]);
+    const error = await lines.lines().catch(caught => caught);
+    expect(error).toBeInstanceOf(PhotonCloudError);
+    expect(error.message).toContain('did not accept');
+    expect(error.message).not.toContain('s3cret');
+  });
+});
+
+describe('Photon sign-in', () => {
+  function io(answers: Record<string, CliResult>, picks: string[] = []) {
+    const ran: string[][] = [];
+    const logged: string[] = [];
+    return {
+      ran,
+      logged,
+      io: {
+        run: (args: string[]) => {
+          ran.push(args);
+          return answers[args.join(' ')] ?? { status: 1, stdout: '' };
+        },
+        ask: async () => picks.shift() ?? '',
+        log: (line: string) => logged.push(line),
+      },
+    };
+  }
+  const ok = (value: unknown, chatter = ''): CliResult => ({ status: 0, stdout: chatter + JSON.stringify(value) });
+
+  it('signs in, picks the only project and reads its secret without rotating it', async () => {
+    const { io: signup, ran } = io({
+      login: { status: 0, stdout: '' },
+      'projects ls --json': ok([{ id: 'proj_1', name: 'Group chats', platforms: ['imessage'] }], 'Authenticating...\n'),
+      'projects secret proj_1 --json': ok({ id: 'proj_1', projectSecret: 'sec_1' }),
+    });
+    expect(await signInWithPhoton(signup)).toEqual({ projectId: 'proj_1', projectSecret: 'sec_1', projectName: 'Group chats' });
+    expect(ran).toEqual([['login'], ['projects', 'ls', '--json'], ['projects', 'secret', 'proj_1', '--json']]);
+    expect(ran.flat()).not.toContain('regenerate-secret');
+  });
+
+  it('asks which project when there are several', async () => {
+    const { io: signup } = io({
+      login: { status: 0, stdout: '' },
+      'projects ls --json': ok([{ id: 'a', name: 'Work' }, { id: 'b', name: 'Friends' }]),
+      'projects secret b --json': ok({ projectSecret: 'sec_b' }),
+    }, ['9', '2']);
+    expect((await signInWithPhoton(signup)).projectId).toBe('b');
+  });
+
+  it('points to the dashboard when the account has no project', async () => {
+    const { io: signup } = io({ login: { status: 0, stdout: '' }, 'projects ls --json': ok([]) });
+    await expect(signInWithPhoton(signup)).rejects.toThrow(/app\.photon\.codes/);
+  });
+
+  it('stops when the browser sign-in was not approved', async () => {
+    const { io: signup, ran } = io({ login: { status: 1, stdout: '' } });
+    await expect(signInWithPhoton(signup)).rejects.toBeInstanceOf(PhotonSignupError);
+    expect(ran).toEqual([['login']]);
   });
 });

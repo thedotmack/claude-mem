@@ -12,6 +12,7 @@
  * docs/architecture/observer-lifecycle.md). The batcher is pure and takes the
  * clock as an argument, so tests drive it without timers.
  */
+import { cleanMessageText } from './transcript.js';
 import type { ObserverEvent } from './types.js';
 
 export interface BatcherOptions {
@@ -41,6 +42,10 @@ export interface WindowEntry {
   text: string;
   /** A person a system line is about (added or removed), named when written out. */
   target?: string;
+  /** For a tapback: the message it is on, so an edit or unsend of that message reaches it. */
+  reactsTo?: string;
+  /** For a tapback: "loved", "liked" and so on. */
+  verb?: string;
   attachments: string[];
 }
 
@@ -71,9 +76,18 @@ const REACTION_WORDS: Record<string, string> = {
   question: 'questioned',
 };
 
+/**
+ * A short quote of the message a tapback is on. Private sections are taken out
+ * before shortening, so cutting the text can never leave a <private> block
+ * open with its contents showing.
+ */
 function quote(text: string): string {
-  const flat = text.replace(/\s+/g, ' ').trim();
+  const flat = cleanMessageText(text).replace(/\s+/g, ' ').trim();
   return flat.length > 80 ? flat.slice(0, 77) + '...' : flat;
+}
+
+function reactionText(verb: string, target: WindowEntry): string {
+  return `${verb} "${quote(target.text || target.attachments.join(', '))}"`;
 }
 
 function speakerOf(event: { sender?: string; isFromMe: boolean }): string | undefined {
@@ -171,12 +185,19 @@ export class ChatWindowBatcher {
         };
       case 'edited': {
         const target = open.find(entry => entry.id === event.messageGuid && entry.kind === 'message');
-        if (target) target.text = event.text;
+        if (!target) return null;
+        target.text = event.text;
+        // Tapbacks on the message quote it as it reads now.
+        for (const entry of open) {
+          if (entry.reactsTo === target.id) entry.text = reactionText(entry.verb ?? 'reacted to', target);
+        }
         return null;
       }
       case 'unsent': {
-        const index = open.findIndex(entry => entry.id === event.messageGuid && entry.kind === 'message');
-        if (index >= 0) open.splice(index, 1);
+        if (!state || !open.some(entry => entry.id === event.messageGuid && entry.kind === 'message')) return null;
+        // The message goes, and so do the tapbacks quoting it.
+        state.entries = open.filter(entry => entry.id !== event.messageGuid && entry.reactsTo !== event.messageGuid);
+        if (state.entries.length === 0) state.windowStartedAt = null;
         return null;
       }
       case 'reaction': {
@@ -188,7 +209,9 @@ export class ChatWindowBatcher {
           at: event.occurredAt,
           kind: 'reaction',
           speaker: speakerOf(event),
-          text: `${verb} "${quote(target.text || target.attachments.join(', '))}"`,
+          text: reactionText(verb, target),
+          reactsTo: target.id,
+          verb,
           attachments: [],
         };
       }

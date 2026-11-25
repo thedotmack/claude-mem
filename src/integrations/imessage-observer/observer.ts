@@ -10,6 +10,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { isProjectExcluded } from '../../utils/project-filter.js';
 import { ChatWindowBatcher, DEFAULT_BATCHER_OPTIONS, type BatcherAction, type BatcherOptions } from './batcher.js';
 import { normalizeNames, type PeopleBook } from './transcript.js';
 import type { ChatInfo, MessageSource, ObserverEvent } from './types.js';
@@ -29,6 +30,14 @@ export interface ObserverOptions {
   /** Also observe one-to-one chats. */
   includeDirect?: boolean;
   batcher?: Partial<BatcherOptions>;
+  /**
+   * Claude-Mem's CLAUDE_MEM_EXCLUDED_PROJECTS (comma-separated globs). The
+   * worker only checks it against a folder, so the observer checks each
+   * chat's project name itself and sends nothing for a match.
+   */
+  excludedProjects?: string;
+  /** Hand-overs allowed to wait for the worker at once; more are skipped. */
+  maxQueued?: number;
   /**
    * "wall" ticks on a timer (live use). "event" moves the clock with event
    * times (replays and tests), so a recorded day runs in a moment.
@@ -72,6 +81,11 @@ function writeState(path: string, state: StateFile): void {
   renameSync(temp, path);
 }
 
+/** A chat whose details could not be read is looked up again after this long. */
+const LOOKUP_RETRY_MS = 5 * 60_000;
+/** A window that waited this long for the worker is skipped, not sent late. */
+const STALE_QUEUE_MS = 10 * 60_000;
+
 function looksLikeGroup(guid: string): boolean {
   return guid.includes(';+;');
 }
@@ -80,6 +94,10 @@ export class GroupChatObserver {
   private readonly batcher: ChatWindowBatcher;
   private readonly sink: WorkerSink;
   private readonly chats = new Map<string, Promise<ChatInfo | null>>();
+  /** Chats whose details could not be read, and when to try again. Their name is a stand-in. */
+  private readonly lookupFailedUntil = new Map<string, number>();
+  private readonly excludedLogged = new Set<string>();
+  private queued = 0;
   /** Chats already looked up, so a hand-over can copy the chat as it is right now. */
   private readonly known = new Map<string, ChatInfo>();
   private readonly state: StateFile;
@@ -92,14 +110,16 @@ export class GroupChatObserver {
     this.batcher = new ChatWindowBatcher({ ...DEFAULT_BATCHER_OPTIONS, ...options.batcher });
     const book: PeopleBook = {
       names: normalizeNames(options.contacts ?? {}),
-      meLabel: options.meLabel ?? 'Me',
+      meLabel: options.meLabel ?? 'This line',
     };
     this.sink = new WorkerSink(options.post, book, options.log);
     this.state = existsSync(options.statePath) ? readState(options.statePath) : { chats: {} };
   }
 
   get deliveredWindows() { return this.sink.delivered; }
-  get skippedWindows() { return this.sink.skippedWindows; }
+  get skippedWindows() { return this.sink.skippedWindows + this.droppedWindows; }
+  /** Windows skipped before reaching the worker: queue full, or waited too long. */
+  droppedWindows = 0;
 
   /** Run until the source ends or `stop()` is called. */
   async run(): Promise<void> {
@@ -146,13 +166,24 @@ export class GroupChatObserver {
   private async chatFor(event: ObserverEvent): Promise<ChatInfo | null> {
     const only = this.options.onlyChats ?? [];
     if (only.length > 0 && !only.includes(event.chatGuid)) return null;
+    const retryAt = this.lookupFailedUntil.get(event.chatGuid);
+    if (retryAt !== undefined && Date.now() >= retryAt) this.chats.delete(event.chatGuid);
     let pending = this.chats.get(event.chatGuid);
     if (!pending) {
-      pending = this.options.source.chat(event.chatGuid).then(found => found ?? {
-        guid: event.chatGuid,
-        displayName: this.state.chats[event.chatGuid]?.name ?? 'Group chat',
-        isGroup: looksLikeGroup(event.chatGuid),
-        participants: [],
+      pending = this.options.source.chat(event.chatGuid).catch(() => null).then(found => {
+        if (found) {
+          this.lookupFailedUntil.delete(event.chatGuid);
+          return found;
+        }
+        // Not cached for good: the lookup is tried again later, and this
+        // stand-in name is never saved as the chat's project name.
+        this.lookupFailedUntil.set(event.chatGuid, Date.now() + LOOKUP_RETRY_MS);
+        return {
+          guid: event.chatGuid,
+          displayName: this.state.chats[event.chatGuid]?.name ?? 'Group chat',
+          isGroup: looksLikeGroup(event.chatGuid),
+          participants: [],
+        };
       });
       this.chats.set(event.chatGuid, pending);
     }
@@ -165,6 +196,10 @@ export class GroupChatObserver {
   private projectFor(chat: ChatInfo): string {
     const known = this.state.chats[chat.guid];
     if (known) return known.project;
+    if (this.lookupFailedUntil.has(chat.guid)) {
+      // The group's real name is not known yet: use an id-only name for now and save nothing.
+      return `imessage-${chat.isGroup ? 'group' : 'direct'}-${shortHash(chat.guid)}`;
+    }
     const project = projectNameFor(chat);
     this.state.chats[chat.guid] = { project, name: chat.displayName };
     try {
@@ -176,17 +211,50 @@ export class GroupChatObserver {
     return project;
   }
 
-  /** Hand-overs run one at a time, in order. */
+  private excluded(project: string, chat: ChatInfo): boolean {
+    const patterns = this.options.excludedProjects;
+    if (!patterns || !isProjectExcluded(project, patterns)) return false;
+    if (!this.excludedLogged.has(project)) {
+      this.excludedLogged.add(project);
+      this.options.log.info(`Chat "${chat.displayName}" is excluded by Claude-Mem (project ${project}); nothing from it is sent.`);
+    }
+    return true;
+  }
+
+  /**
+   * Hand-overs run one at a time, in order. The wait is bounded: past
+   * `maxQueued` waiting windows, or after a window has waited too long, the
+   * window is skipped and logged, the same as a worker that cannot take it.
+   */
   private enqueue(actions: BatcherAction[]): void {
+    const limit = this.options.maxQueued ?? 20;
     for (const action of actions) {
       const current = this.known.get(action.chatGuid);
       if (!current) continue;
       const chat: ChatInfo = { ...current, participants: [...current.participants] };
+      if (action.kind === 'window' && this.queued >= limit) {
+        this.droppedWindows += 1;
+        this.options.log.warn(`Skipped ${action.entries.length} messages from "${chat.displayName}": the worker is behind.`);
+        continue;
+      }
+      const enqueuedAt = Date.now();
+      this.queued += 1;
       this.queue = this.queue.then(async () => {
-        await this.sink.handle(action, chat, this.projectFor(chat));
+        const project = this.projectFor(chat);
+        if (this.excluded(project, chat)) return;
+        if (action.kind === 'window' && !this.eventClock && Date.now() - enqueuedAt > STALE_QUEUE_MS) {
+          this.droppedWindows += 1;
+          this.options.log.warn(`Skipped ${action.entries.length} messages from "${chat.displayName}": they waited too long for the worker.`);
+          return;
+        }
+        await this.sink.handle(action, chat, project, enqueuedAt);
       }).catch(error => {
         this.options.log.warn(`Hand-over failed: ${error instanceof Error ? error.message : String(error)}`);
-      });
+      }).finally(() => { this.queued -= 1; });
     }
+  }
+
+  private get eventClock(): boolean {
+    return this.options.clock === 'event';
   }
 }

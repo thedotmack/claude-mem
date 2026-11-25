@@ -11,7 +11,7 @@
  *   {"type":"renamed","chat":"...","at":"...","from":"...","name":"New name"}
  *   {"type":"membership","chat":"...","at":"...","from":"...","change":"added","person":"+1555..."}
  *
- * `"from":"me"` marks a message sent from the observer's own account.
+ * `"from":"me"` marks a message sent from the observer's own line (a read-only line never sends one).
  */
 import { readFileSync } from 'node:fs';
 import type { ChatInfo, MessageSource, ObserverEvent } from './types.js';

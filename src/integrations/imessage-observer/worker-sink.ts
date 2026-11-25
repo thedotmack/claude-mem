@@ -13,7 +13,7 @@
 import { createHash } from 'node:crypto';
 import type { ChatInfo } from './types.js';
 import type { BatcherAction, Conversation, WindowEntry } from './batcher.js';
-import { conversationPrompt, formatStamp, formatTranscript, participantLabels, type PeopleBook } from './transcript.js';
+import { cleanMessageText, conversationPrompt, formatStamp, formatTranscript, participantLabels, type PeopleBook } from './transcript.js';
 
 export const PLATFORM_SOURCE = 'imessage';
 export const TOOL_NAME = 'iMessageGroupChat';
@@ -41,7 +41,15 @@ export function contentSessionIdFor(chatGuid: string, conversation: Conversation
   return `imessage-${shortHash(chatGuid, 12)}-${conversation.id}`;
 }
 
-interface SessionState { started: boolean; excluded: boolean }
+interface SessionState {
+  started: boolean;
+  excluded: boolean;
+  /** The latest window handed over, for the end-of-conversation summary. Bounded. */
+  recap?: string;
+}
+
+/** The summary is written from the tail of the last window, never more than this. */
+const RECAP_CHARS = 6_000;
 
 export class WorkerSink {
   private readonly sessions = new Map<string, SessionState>();
@@ -54,10 +62,11 @@ export class WorkerSink {
     private readonly log: SinkLog,
   ) {}
 
-  async handle(action: BatcherAction, chat: ChatInfo, project: string): Promise<void> {
+  /** `enqueuedAt` is when the window was queued for hand-over (epoch ms). */
+  async handle(action: BatcherAction, chat: ChatInfo, project: string, enqueuedAt: number = Date.now()): Promise<void> {
     const contentSessionId = contentSessionIdFor(action.chatGuid, action.conversation);
     if (action.kind === 'window') {
-      await this.sendWindow(contentSessionId, action.entries, chat, project);
+      await this.sendWindow(contentSessionId, action.entries, chat, project, enqueuedAt);
     } else {
       await this.endConversation(contentSessionId);
     }
@@ -71,7 +80,7 @@ export class WorkerSink {
       project,
       prompt: conversationPrompt(chat, this.book),
       platformSource: PLATFORM_SOURCE,
-      customTitle: `iMessage: ${chat.displayName}`,
+      customTitle: `iMessage: ${cleanMessageText(chat.displayName)}`,
       eventOccurredAtEpochMs: at.getTime(),
     }) as { skipped?: boolean; reason?: string } | null;
     const state: SessionState = reply?.skipped === true && reply.reason !== 'duplicate'
@@ -82,28 +91,32 @@ export class WorkerSink {
     return state;
   }
 
-  private async sendWindow(contentSessionId: string, entries: WindowEntry[], chat: ChatInfo, project: string): Promise<void> {
+  private async sendWindow(contentSessionId: string, entries: WindowEntry[], chat: ChatInfo, project: string, enqueuedAt: number): Promise<void> {
     if (entries.length === 0) return;
     const first = entries[0]!.at;
     const last = entries[entries.length - 1]!.at;
     try {
       const session = await this.start(contentSessionId, chat, project, first);
       if (session.excluded) return;
+      const transcript = formatTranscript(entries, this.book);
       await this.post('/api/sessions/observations', {
         contentSessionId,
         platformSource: PLATFORM_SOURCE,
         tool_name: TOOL_NAME,
         tool_input: {
-          chat: chat.displayName,
+          chat: cleanMessageText(chat.displayName),
           members: participantLabels(chat, this.book),
           from: formatStamp(first),
           to: formatStamp(last),
           messages: entries.filter(entry => entry.kind === 'message').length,
         },
-        tool_response: formatTranscript(entries, this.book),
+        tool_response: transcript,
         tool_use_id: `imsg-${shortHash(chat.guid, 12)}-${shortHash(entries.map(entry => entry.id).join('|'), 16)}`,
         eventOccurredAtEpochMs: last.getTime(),
+        enqueuedAtEpochMs: enqueuedAt,
       });
+      session.recap = `Latest messages in the iMessage group chat "${cleanMessageText(chat.displayName)}":\n`
+        + (transcript.length > RECAP_CHARS ? '...\n' + transcript.slice(-RECAP_CHARS) : transcript);
       this.delivered.push({ chatGuid: chat.guid, project, contentSessionId, entries: entries.length });
       this.log.info(`Sent ${entries.length} messages from "${chat.displayName}" to ${project}.`);
     } catch (error) {
@@ -122,7 +135,7 @@ export class WorkerSink {
       await this.post('/api/sessions/summarize', {
         contentSessionId,
         platformSource: PLATFORM_SOURCE,
-        last_assistant_message: '',
+        last_assistant_message: session.recap ?? '',
       });
       await this.post('/api/sessions/session-end', {
         contentSessionId,
