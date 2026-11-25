@@ -11,19 +11,19 @@ const failureMessages = {
 export function runMessagesCommand(args: string[]): number {
   const [action, id] = args;
   if (args.length === 1 && (action === '--help' || action === '-h')) {
-    console.log(usage);
+    process.stdout.write(usage + '\n');
     return 0;
   }
   if (action !== 'acknowledge' || !id || args.length !== 2) {
-    console.error(usage);
+    process.stderr.write(usage + '\n');
     return 1;
   }
 
   const status = acknowledgeClaudeMemMessage(id);
   if (status === 'acknowledged' || status === 'already-acknowledged') {
-    console.log(`Acknowledged Claude-Mem message ${id}.`);
+    process.stdout.write(`Acknowledged Claude-Mem message ${id}.\n`);
     return 0;
   }
-  console.error(failureMessages[status]);
+  process.stderr.write(failureMessages[status] + '\n');
   return 1;
 }
