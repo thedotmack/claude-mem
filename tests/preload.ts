@@ -1,8 +1,9 @@
-import { beforeEach, mock } from 'bun:test';
+import { afterAll, beforeEach, mock } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { releaseOnnxRuntimeForExit } from './helpers/onnxruntime-exit-guard.js';
 
 /**
  * Data-dir tripwire (Phase 6, worker-restart plan): no test may ever touch the
@@ -53,6 +54,18 @@ try {
   beforeEach(() => {
     const dataDir = process.env.CLAUDE_MEM_DATA_DIR;
     if (dataDir) rmSync(join(dataDir, 'cmem-cap-probe.json'), { force: true });
+  });
+} catch {
+  // not under `bun test`
+}
+
+// A run that loaded the embedding model ended, on macOS, in "panic: A C++
+// exception occurred" (Abort trap: 6, exit 134) after every test had passed,
+// so the run failed. See tests/helpers/onnxruntime-exit-guard.ts. A preload's
+// afterAll runs once, after the last test file.
+try {
+  afterAll(() => {
+    releaseOnnxRuntimeForExit();
   });
 } catch {
   // not under `bun test`
