@@ -47,6 +47,7 @@ import { PostgresServerSessionsRepository, type PostgresServerSession } from '..
 import { IngestEventsService, type EnqueueOutcome } from '../../services/IngestEventsService.js';
 import { EndSessionService } from '../../services/EndSessionService.js';
 import { normalizePlatformSource, normalizePlatformSourceOrNull } from '../../../shared/platform-source.js';
+import { resolveDateBound } from '../../../shared/date-bounds.js';
 import { listingOffsetCapMessage, MAX_LISTING_OFFSET } from '../../../shared/listing-offset-cap.js';
 import {
   SERVER_CONTEXT_MAX_LIMIT,
@@ -2147,11 +2148,7 @@ export function parseGenericJobListingQuery(req: Request): {
   const limit = clampInt(req.query.limit, JOB_LIST_DEFAULT_LIMIT, 1, JOB_LIST_MAX_LIMIT);
   const offset = parseJobListOffset(req.query.offset);
   const sinceRaw = typeof req.query.since === 'string' ? req.query.since.trim() : '';
-  let since: Date | null = null;
-  if (sinceRaw) {
-    const parsed = new Date(sinceRaw);
-    if (!Number.isNaN(parsed.getTime())) since = parsed;
-  }
+  const since = sinceRaw ? new Date(resolveDateBound(sinceRaw, 'start')) : null;
   return { status, sourceType, limit, offset, since };
 }
 

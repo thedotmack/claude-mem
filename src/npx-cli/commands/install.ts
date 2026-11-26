@@ -4,7 +4,7 @@ import { spawnSync } from 'child_process';
 import { explainTelemetryConsent, loadTelemetryConfig, recordTelemetryDecision, resolveTelemetryConsent } from '../../services/telemetry/consent.js';
 import { captureCliEvent } from '../../services/telemetry/cli-telemetry.js';
 import { spawnHidden } from '../../shared/spawn.js';
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'fs';
 import { applyConfiguredSkillSelection, readDisabledSkills, skillSelectionFailureMessage } from '../../shared/skill-selection.js';
 import { RUNTIME_REQUIRED_SKILLS } from '../../shared/runtime-skills.js';
 import type { SetupInstallCatalog, SetupInstallSelection, SetupMode } from '../../shared/setup-install.js';
@@ -63,9 +63,9 @@ import {
 import { parseTeamBrainTeamRef, type TeamBrainTeamRef } from '../../shared/teambrain.js';
 import { relayedLine } from '../../shared/relayed-text.js';
 import { endSetupSession, hasProConfiguration, INITIAL_SETUP_STATE, readSetupState, readSetupTelemetryContext, startSetupSession, writeSetupState } from '../../shared/setup-state.js';
-import { CLOUD_SYNC_SETUP_CONTRACT, PRIVATE_WORK_VIEW_URL, isSetupId, setupCloudSyncOffer, type SetupCloudSyncOffer } from '../../shared/setup-funnel.js';
+import { CLOUD_SYNC_SETUP_CONTRACT, PRIVATE_WORK_VIEW_URL, SETUP_DEVICE_CODE_PATTERN, isSetupId, setupCloudSyncOffer, type SetupCloudSyncOffer } from '../../shared/setup-funnel.js';
 import { intentCredentialHeaders, readIntentCredentials } from '../../shared/intent-credentials.js';
-import { AGENT_BROWSER_SETUP_HINT, runBrowserSetup, settingsChangesNeedingRestart, shouldPrintAgentBrowserSetupHint, shouldUseBrowserSetup, waitForBackgroundWorkToFinish, type BrowserSetupOutcome } from '../install/browser-setup.js';
+import { AGENT_BROWSER_SETUP_HINT, createPairingCheckout, runBrowserSetup, settingsChangesNeedingRestart, shouldPrintAgentBrowserSetupHint, shouldUseBrowserSetup, waitForBackgroundWorkToFinish, type BrowserSetupOutcome } from '../install/browser-setup.js';
 
 function getSetting<K extends keyof SettingsDefaults>(key: K): SettingsDefaults[K] {
   return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH)[key];
@@ -964,7 +964,7 @@ export function writeTrimmedMarketplaceManifest(marketplaceDir: string): void {
   });
   if (shipped.length === manifest.plugins.length) return;
 
-  writeFileSync(manifestPath, `${JSON.stringify({ ...manifest, plugins: shipped }, null, 2)}\n`);
+  writeJsonFileAtomic(manifestPath, { ...manifest, plugins: shipped });
 }
 
 /**
@@ -986,7 +986,7 @@ export function writeTrimmedMarketplacePackageJson(packageRoot: string, marketpl
   delete pkg.devDependencies;
   delete pkg.trustedDependencies;
 
-  writeFileSync(join(marketplaceDir, 'package.json'), `${JSON.stringify(pkg, null, 2)}\n`);
+  writeJsonFileAtomic(join(marketplaceDir, 'package.json'), pkg);
 }
 
 /**
@@ -1823,7 +1823,7 @@ export function parseInstallerOAuthStartBody(body: unknown, sentSetupFlowId?: st
     || !secret
     || !/^[0-9a-f]{48}$/.test(secret)
     || !userCode
-    || !/^[A-HJ-KM-NP-TV-Z2-9]{4}-[A-HJ-KM-NP-TV-Z2-9]{4}$/.test(userCode)
+    || !SETUP_DEVICE_CODE_PATTERN.test(userCode)
     || !authorizationUrl
     || !checkoutUrl
   ) return null;
@@ -2207,6 +2207,11 @@ export async function waitForInstallerPairing(
   pairing: InstallerOAuthPairing,
   phase: InstallerPairingPhase,
   version: string,
+  /**
+   * True once the browser funnel replaced this pairing with a fresh one (createPairingCheckout): its expiry then ends
+   * this wait quietly, with no timeout event and no "timed out" line, since the fresh pairing's wait goes on.
+   */
+  { superseded }: { superseded?: () => Promise<boolean> } = {},
 ): Promise<InstallerPollOutcome | null> {
   const startedAt = Date.now();
   const rerun = phase === 'teambrain_join' ? 'Run npx claude-mem teambrain join again'
@@ -2291,6 +2296,7 @@ export async function waitForInstallerPairing(
       await sleepUnlessCancelled(pairing.pollIntervalMs, () => cancelled);
     }
 
+    if (superseded && await superseded()) return null;
     // The telemetry `phase` enum is the installer's (login / enrollment /
     // deferred); a TeamBrain join is not reported.
     if (phase !== 'teambrain_join') {
@@ -2492,22 +2498,29 @@ export function activateBrowserEnrollment(result: TrialReadyResult): ProviderId 
 export async function completeCmemTrialPairing(
   pairing: InstallerOAuthPairing,
   version: string,
+  /**
+   * `opened`: the browser funnel's reopen already noted this pairing's code and opened its page. `superseded`: a fresh
+   * pairing replaced this one (both from createPairingCheckout; see waitForInstallerPairing).
+   */
+  { opened = false, superseded }: { opened?: boolean; superseded?: () => Promise<boolean> } = {},
 ): Promise<TrialReadyResult | null> {
   if (pairing.delivered) return pairingAcceptsReady(pairing, pairing.delivered) ? pairing.delivered : null;
 
-  noteDeviceCode(pairing);
-  // Deliberately NO return-wait here, unlike the login hand-off.
-  //
-  // A second wait at this point stalled the install: stdin has already been
-  // through the login wait and a clack prompt by now, and the listener did not
-  // reliably receive the keypress, so the flow stopped before it could even
-  // print "Waiting for CMEM Pro setup in the browser…". Opening directly is
-  // also the better behaviour here — the user has already chosen CMEM Pro, so
-  // there is nothing left to confirm before the browser takes over.
-  log.info(`Continue ${pairing.cloudSyncOffer ? 'Cloud Sync' : 'CMEM Pro'} setup: ${pairing.checkoutUrl}`);
-  openBrowser(pairing.checkoutUrl);
+  if (!opened) {
+    noteDeviceCode(pairing);
+    // Deliberately NO return-wait here, unlike the login hand-off.
+    //
+    // A second wait at this point stalled the install: stdin has already been
+    // through the login wait and a clack prompt by now, and the listener did not
+    // reliably receive the keypress, so the flow stopped before it could even
+    // print "Waiting for CMEM Pro setup in the browser…". Opening directly is
+    // also the better behaviour here — the user has already chosen CMEM Pro, so
+    // there is nothing left to confirm before the browser takes over.
+    log.info(`Continue ${pairing.cloudSyncOffer ? 'Cloud Sync' : 'CMEM Pro'} setup: ${pairing.checkoutUrl}`);
+    openBrowser(pairing.checkoutUrl);
+  }
 
-  const result = await waitForInstallerPairing(pairing, 'enrollment', version);
+  const result = await waitForInstallerPairing(pairing, 'enrollment', version, { superseded });
   if (!result || result.kind !== 'ready') return null;
   if (!pairingAcceptsReady(pairing, result)) return null;
 
@@ -3633,12 +3646,25 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   // setup state with no time limit. Login happens only if the page picks On
   // The Go. Everything else keeps the terminal flow below unchanged.
   let oauthPairing: InstallerOAuthPairing | null = null;
-  // On The Go's pairing, held for the checkout hand-off (funnel Phase 8):
-  // completeCmemTrialPairing(onTheGoPairing) runs when the page asks for checkout.
-  let onTheGoPairing: InstallerOAuthPairing | null = null;
   let browserCloudSyncOffer: SetupCloudSyncOffer | undefined;
   let shareWorkView: true | undefined;
   let browserProvider: ProviderId = (getSetting('CLAUDE_MEM_PROVIDER') as ProviderId) || 'claude';
+  // On The Go's checkout hand-off (funnel Phase 8): it holds the pairing the choice started, and
+  // completeCmemTrialPairing runs on it when the page asks for checkout. The claim route carries the
+  // pairing's confirmed product/offer through sign-in and checkout.
+  const startPairing = () => startOnTheGoPairing(version, browserCloudSyncOffer, shareWorkView);
+  const onTheGoCheckout = createPairingCheckout<InstallerOAuthPairing>({
+    start: startPairing,
+    complete: async (pairing, opened, superseded) => {
+      const delivered = await completeCmemTrialPairing(pairing, version, { opened, superseded });
+      if (!delivered) return false;
+      if (!browserCloudSyncOffer) browserProvider = activateBrowserEnrollment(delivered) ?? browserProvider;
+      return true;
+    },
+    noteCode: pairing => noteDeviceCode(pairing),
+    openBrowser,
+    log,
+  });
   let browserOutcome: BrowserSetupOutcome | null = null;
   let settingsBeforeBrowserSetup: string | null = null;
   if (browserSetup) {
@@ -3723,25 +3749,11 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
               log.info('On The Go: keeping your existing Cloud Sync and memory configuration.');
               return 'go-kept-existing-pro';
             }
-            onTheGoPairing = await startOnTheGoPairing(version, browserCloudSyncOffer, shareWorkView);
+            onTheGoCheckout.hold(await startPairing());
             return 'go-awaiting-checkout';
           },
-          // The claim route carries the pairing's confirmed product/offer through sign-in and checkout.
-          checkout: {
-            run: async () => {
-              // A pairing whose checkout failed or was cancelled is not reused; the next ask starts a fresh one.
-              if (!onTheGoPairing) onTheGoPairing = await startOnTheGoPairing(version, browserCloudSyncOffer, shareWorkView);
-              const pairing: InstallerOAuthPairing = onTheGoPairing;
-              const delivered = await completeCmemTrialPairing(pairing, version);
-              if (!delivered) { onTheGoPairing = null; return false; }
-              if (!browserCloudSyncOffer) browserProvider = activateBrowserEnrollment(delivered) ?? browserProvider;
-              return true;
-            },
-            reopen: () => {
-              const pairing = onTheGoPairing as InstallerOAuthPairing | null;
-              if (pairing) openBrowser(pairing.checkoutUrl);
-            },
-          },
+          // A pairing whose checkout failed, or one past its expiry, is not reused; a fresh one gets a new code.
+          checkout: onTheGoCheckout,
         });
       }
     } catch (error) {

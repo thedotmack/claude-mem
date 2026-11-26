@@ -618,56 +618,57 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
         })
         stream.addEventListener('work-view', (event) => {
           if (sharedOwner || !current()) return
-          let snapshot: unknown
-          try { snapshot = JSON.parse((event as MessageEvent).data) } catch { return /* Malformed messages cannot renew the live indicator. */ }
-          if (!isWorkViewSnapshot(snapshot)) return
-          markEventReceived()
-          legacyMode = true
-          const model = acceptSnapshot(snapshot, true)
-          waiting.resolve(model)
-          sendIfChanged(model)
-          reportConnection()
+          applySseFrame<unknown>('work-view', (event as MessageEvent).data, (snapshot) => {
+            if (!isWorkViewSnapshot(snapshot)) return
+            markEventReceived()
+            legacyMode = true
+            const model = acceptSnapshot(snapshot, true)
+            waiting.resolve(model)
+            sendIfChanged(model)
+            reportConnection()
+          })
         })
         stream.addEventListener('work-view-overview', (event) => {
           if (sharedOwner || !current()) return
-          let overview: unknown
-          try { overview = JSON.parse((event as MessageEvent).data) } catch { return }
-          if (!isOverview(overview)) return
-          markEventReceived()
-          const model = acceptOverview(overview, true)
-          waiting.resolve(model)
-          sendIfChanged(model)
-          reportConnection()
+          applySseFrame<unknown>('work-view-overview', (event as MessageEvent).data, (overview) => {
+            if (!isOverview(overview)) return
+            markEventReceived()
+            const model = acceptOverview(overview, true)
+            waiting.resolve(model)
+            sendIfChanged(model)
+            reportConnection()
+          })
         })
         stream.addEventListener('heartbeat', (event) => {
           if (!current()) return
-          let beat: { source?: WorkViewSource; at?: string; sync?: SyncStatusForDisplay } | null
-          try { beat = JSON.parse((event as MessageEvent).data) } catch { return /* Keep the last valid heartbeat; the freshness deadline still applies. */ }
-          if (sharedOwner) {
-            if (!beat?.at || !Number.isFinite(Date.parse(beat.at))) return
-            markEventReceived()
-            // A successful durable-head check confirms that the last authorized model is current.
-            if (connectionEvidence.sourceConnected && connectionEvidence.lastSuccessfulCheckAt) {
-              connectionEvidence.lastSuccessfulCheckAt = beat.at
-              connectionEvidence.lastSuccessfulCheckReceivedAt = performance.now()
+          applySseFrame<Record<string, unknown>>('heartbeat', (event as MessageEvent).data, (frame) => {
+            const beat = frame as { source?: WorkViewSource; at?: string; sync?: SyncStatusForDisplay }
+            if (sharedOwner) {
+              if (!beat.at || !Number.isFinite(Date.parse(beat.at))) return
+              markEventReceived()
+              // A successful durable-head check confirms that the last authorized model is current.
+              if (connectionEvidence.sourceConnected && connectionEvidence.lastSuccessfulCheckAt) {
+                connectionEvidence.lastSuccessfulCheckAt = beat.at
+                connectionEvidence.lastSuccessfulCheckReceivedAt = performance.now()
+              }
+              reportConnection()
+              return
             }
+            if (typeof beat.source?.connected !== 'boolean') return
+            markEventReceived()
+            recordSourceHealth(beat.source, beat.at)
+            recordSync(beat.sync)
             reportConnection()
-            return
-          }
-          if (!beat || typeof beat.source?.connected !== 'boolean') return
-          markEventReceived()
-          recordSourceHealth(beat.source, beat.at)
-          recordSync(beat.sync)
-          reportConnection()
+          })
         })
         stream.addEventListener('sync_status', (event) => {
           if (sharedOwner || !current()) return
-          let status: { sync?: unknown } | null
-          try { status = JSON.parse((event as MessageEvent).data) } catch { return }
-          if (!status || !isSyncStatus(status.sync)) return
-          // A sync diagnostic is not evidence that the work projection was read successfully.
-          recordSync(status.sync)
-          reportConnection()
+          applySseFrame<Record<string, unknown>>('sync_status', (event as MessageEvent).data, (frame) => {
+            if (!isSyncStatus(frame.sync)) return
+            // A sync diagnostic is not evidence that the work projection was read successfully.
+            recordSync(frame.sync)
+            reportConnection()
+          })
         })
         // An exchange sent from My Work started or ended. The notice names it and its state only: the row it concerns
         // reads the rest through the guarded read. Like a sync diagnostic, it is no evidence about the work projection.

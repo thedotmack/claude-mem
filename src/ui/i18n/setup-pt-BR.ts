@@ -399,4 +399,11 @@ export const setupPtBr: Record<string, string> = {
   'This import added {imported} of {sent} memories to your CMEM account · Ready to search.': 'Esta importação adicionou {imported} de {sent} memórias à sua conta CMEM · Já disponíveis para busca.',
   'The other 1 was already there, or cmem.ai couldn’t read it.': 'A outra memória já estava na conta ou cmem.ai não conseguiu lê-la.',
   'The other {count} were already there, or cmem.ai couldn’t read them.': 'As outras {count} já estavam na conta ou cmem.ai não conseguiu lê-las.',
+  // Checkout's device code, shown while the checkout waits
+  'Your device code': 'Seu código do dispositivo',
+  'Copy code': 'Copiar código',
+  'cmem.ai asks for this code after you start your free trial.': 'O cmem.ai pede este código depois que você inicia seu teste grátis.',
+  'cmem.ai asks for this code after checkout.': 'O cmem.ai pede este código depois do pagamento.',
+  'Code copied.': 'Código copiado.',
+  'Select and copy the code above.': 'Selecione e copie o código acima.',
 };
