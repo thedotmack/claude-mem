@@ -1,10 +1,12 @@
-import { existsSync, renameSync as fsRenameSync, unlinkSync } from 'fs';
+import { randomUUID } from 'crypto';
+import { constants, existsSync, renameSync as fsRenameSync, unlinkSync } from 'fs';
 import { copyFile } from 'fs/promises';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { Database } from 'bun:sqlite';
 import { logger } from '../../utils/logger.js';
 import { renameWithWindowsRetry } from '../../shared/atomic-json.js';
 import { runSqliteFileJob } from './sqlite-file-job.js';
+import { openRestoreStagingLock } from './snapshot-staging.js';
 import { LATEST_SCHEMA_VERSION } from '../sqlite/connection.js';
 import { ChromaSyncState } from '../sync/ChromaSyncState.js';
 import { contextCacheDir, listContextCacheFiles } from '../../shared/context-cache.js';
@@ -77,6 +79,49 @@ async function checkpointWithRetry(dbPath: string, retryWindowMs: number): Promi
 
 function removeIfPresent(path: string): void {
   if (existsSync(path)) unlinkSync(path);
+}
+
+function removeRestoreStagingFiles(files: string[]): void {
+  for (const leftover of files) {
+    try {
+      removeIfPresent(leftover);
+    } catch (error) {
+      logger.warn('BACKUP', 'Could not remove restore staging file', { leftover }, error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+}
+
+async function publishPreRestoreCopy(source: string, destination: string, wal?: string): Promise<void> {
+  using lock = openRestoreStagingLock(dirname(destination));
+  // A read transaction excludes cleanup until the staging claim is released.
+  // Reading the schema actually takes the shared lock; BEGIN alone is deferred.
+  // One second of busy_timeout: only removePartialSnapshots holds this lock
+  // exclusively, across a few lstat and unlink calls. That whole call measured
+  // 2.4 ms with 3 abandoned copies and 291 ms with 1,000 (2026-11-26, macOS,
+  // machine under test load). A restore that still cannot take the lock fails
+  // here, loudly, with the live database not yet replaced.
+  lock.exec('PRAGMA busy_timeout = 1000; BEGIN; SELECT count(*) FROM sqlite_schema');
+  const partial = `${destination}.partial`;
+  const destinationWal = `${destination}-wal`;
+  // Claim the timestamp before touching its sidecar. A repeated clock value
+  // must not let a second restore overwrite an earlier pair or its staging file.
+  await copyFile(source, partial, constants.COPYFILE_EXCL);
+  const unpublished = [partial];
+  try {
+    if (existsSync(destination) || existsSync(destinationWal)) {
+      throw new Error(`Pre-restore copy already exists at ${destination}`);
+    }
+    if (wal) {
+      unpublished.unshift(destinationWal); // Release the staging claim last on failure.
+      await copyFile(wal, destinationWal);
+    }
+    // Listing, restore selection and retention all discover the main .db name.
+    // Publish it on the backup filesystem only after every copy has completed.
+    renameWithWindowsRetry(partial, destination);
+  } catch (error) {
+    removeRestoreStagingFiles(unpublished);
+    throw error;
+  }
 }
 
 /**
@@ -162,7 +207,9 @@ export async function swapDatabaseFromSnapshot(
   }
   const rename = options.renameSync ?? ((from: string, to: string) => renameWithWindowsRetry(from, to));
   const ts = new Date().toISOString().replace(/[:.]/g, '-');
-  const stagedDb = `${dbPath}.restore-staging-${ts}`;
+  const attempt = randomUUID();
+  const stagedDb = `${dbPath}.restore-staging-${attempt}`;
+  const rawCopy = `${dbPath}.restore-raw-${attempt}`;
   let preRestoreCopy: string | null = null;
   let retainedRawCopy: string | null = null;
   const movedSidecars: string[] = [];
@@ -180,9 +227,9 @@ export async function swapDatabaseFromSnapshot(
       // opens them: opening a damaged database can make SQLite discard its
       // WAL, and for such a database this copy is the only way back.
       const copyPath = join(options.preRestoreDir, `claude-mem-${ts}-pre-restore.db`);
-      const rawCopy = `${dbPath}.restore-raw-${ts}`;
       await copyFile(dbPath, rawCopy);
-      if (existsSync(`${dbPath}-wal`)) await copyFile(`${dbPath}-wal`, `${rawCopy}-wal`);
+      const rawWal = existsSync(`${dbPath}-wal`) ? `${rawCopy}-wal` : undefined;
+      if (rawWal) await copyFile(`${dbPath}-wal`, rawWal);
       const dropRawCopy = (): void => {
         removeIfPresent(rawCopy);
         removeIfPresent(`${rawCopy}-wal`);
@@ -201,7 +248,7 @@ export async function swapDatabaseFromSnapshot(
         // committed row, so copy that one file. The raw pair could have been
         // taken mid-checkpoint by another process, so it is not kept.
         dropRawCopy();
-        await copyFile(dbPath, copyPath);
+        await publishPreRestoreCopy(dbPath, copyPath);
         // Read from the live file: it is about to be replaced, so the
         // sidecars this open may leave behind are moved aside next.
         carryAutoincrementCounters(stagedDb, readAutoincrementCounters(dbPath));
@@ -212,8 +259,7 @@ export async function swapDatabaseFromSnapshot(
         // If that transfer fails, keep the pair: SQLite may already have
         // discarded the live WAL while trying to open the damaged database.
         retainedRawCopy = rawCopy;
-        await copyFile(rawCopy, copyPath);
-        if (existsSync(`${rawCopy}-wal`)) await copyFile(`${rawCopy}-wal`, `${copyPath}-wal`);
+        await publishPreRestoreCopy(rawCopy, copyPath, rawWal);
         retainedRawCopy = null;
         dropRawCopy();
         logger.warn('BACKUP', 'Restoring over a database that could not be read; new ids may repeat ids it used', { dbPath });
@@ -239,15 +285,8 @@ export async function swapDatabaseFromSnapshot(
         logger.error('BACKUP', 'Could not put a live sidecar back after a failed restore', { sidecar: `${dbPath}${ext}`, parkedAt: `${stagedDb}.live${ext}` }, restoreError instanceof Error ? restoreError : new Error(String(restoreError)));
       }
     }
-    const rawCopy = `${dbPath}.restore-raw-${ts}`;
     const disposableRaw = retainedRawCopy ? [] : [rawCopy, `${rawCopy}-wal`];
-    for (const leftover of [stagedDb, ...SIDECAR_EXTS.map(ext => `${stagedDb}${ext}`), ...disposableRaw]) {
-      try {
-        removeIfPresent(leftover);
-      } catch (cleanupError) {
-        logger.warn('BACKUP', 'Could not remove restore staging file', { leftover }, cleanupError instanceof Error ? cleanupError : new Error(String(cleanupError)));
-      }
-    }
+    removeRestoreStagingFiles([stagedDb, ...SIDECAR_EXTS.map(ext => `${stagedDb}${ext}`), ...disposableRaw]);
     if (retainedRawCopy) {
       logger.error('BACKUP', 'Recovery copy transfer failed; raw database and WAL retained', { rawCopy: retainedRawCopy });
     }

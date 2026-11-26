@@ -1,9 +1,10 @@
 import { basename, join } from 'path';
-import { existsSync, mkdirSync, readdirSync, renameSync, statSync, statfsSync, unlinkSync } from 'fs';
+import { existsSync, mkdirSync, renameSync, statSync, statfsSync, unlinkSync } from 'fs';
 import { DB_PATH, paths } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import { runSqliteFileJob } from './sqlite-file-job.js';
 import { listSnapshotNames, readPendingRestore } from './snapshot-files.js';
+import { removePartialSnapshots } from './snapshot-staging.js';
 
 /** Settings keys BackupManager reads (subset of SettingsDefaults). */
 export interface BackupSettingKeys {
@@ -53,9 +54,6 @@ const DEFAULT_INITIAL_DELAY_MS = 5 * 60_000;
 
 // Node and Bun turn delays above the signed 32-bit limit into 1 ms.
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
-
-/** A snapshot still being written, or left behind by a crash mid-write. */
-const PARTIAL_SNAPSHOT_PATTERN = /^claude-mem-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z\.db\.partial(-wal|-shm|-journal)?$/;
 
 /**
  * Automatic local SQLite snapshots with retention.
@@ -175,6 +173,7 @@ export class BackupManager {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }
     mkdirSync(this.backupsDir, { recursive: true });
+    removePartialSnapshots(this.backupsDir);
     this.assertDiskSpace(sourceBytes);
     const createdAt = this.now();
     const ts = new Date(createdAt).toISOString().replace(/[:.]/g, '-');
@@ -184,7 +183,6 @@ export class BackupManager {
     // renamed only once verified, so status, list, retention and restore
     // never see an unfinished snapshot.
     const partialPath = `${backupPath}.partial`;
-    this.removePartialSnapshots();
     try {
       await runSqliteFileJob({ kind: 'snapshot', source: this.dbPath, target: partialPath }, signal);
       signal.throwIfAborted();
@@ -340,13 +338,6 @@ export class BackupManager {
     const free = bavail * bsize;
     if (free < required) {
       throw new Error(`Insufficient disk for backup snapshot (free=${free}, required=${required})`);
-    }
-  }
-
-  /** Leftovers of a snapshot interrupted by a crash or kill. */
-  private removePartialSnapshots(): void {
-    for (const entry of readdirSync(this.backupsDir, { withFileTypes: true })) {
-      if (entry.isFile() && PARTIAL_SNAPSHOT_PATTERN.test(entry.name)) unlinkSync(join(this.backupsDir, entry.name));
     }
   }
 
