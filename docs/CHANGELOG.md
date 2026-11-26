@@ -4,6 +4,46 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+## Setup fixes
+
+- **Setup no longer ends in dead ends** (#6501, @thedotmack). A few setup paths could never finish, or finished without syncing:
+  - When cmem.ai refused a new install for a clear reason (rate limit or daily limit), the next run kept failing without asking again. That refusal is now cleared, so the next run asks again. Anything less certain keeps today's behaviour, so no second identity is made.
+  - After you approved Cloud Sync, a worker that was already running without sync settings only printed a warning, so nothing synced until some later restart. Setup now waits for background work to finish (up to 5 minutes) and restarts the worker once. A worker run by your own process manager (`CLAUDE_MEM_WORKER_AUTOSTART=false` or `CLAUDE_MEM_WORKER_URL`) is left alone, and you are told to restart it there.
+  - Right after checkout, setup showed the $30/month hosted plan before you had a single synced memory. That step is gone. My Work shows it as a banner you can dismiss, only after this computer's first memory syncs, and never to people who kept Pro or already have a hosted observer.
+  - The "sign in later" link at the end of install started a pairing nothing ever checked, so it never worked. It is removed.
+  - If you chose "This computer", My Work shows a Cloud Sync offer you can dismiss after three days.
+
+## Fixes
+
+- **Search finds prompts that hold every word you typed** (#6513, thanks @shaojunying). Prompt search matched the whole query as one exact string, so "auth bug" missed "fix the bug in the auth module". It now matches prompts that hold every term, like observation and summary search already did.
+- **A reply that mentions a session limit no longer pauses capture** (#6511, thanks @shaojunying). An observer reply such as "The application session limit is configurable." was read as a quota notice, so the worker paused capture and dropped that session's buffered work. Only a real limit notice at the start of the reply counts now.
+- **`save_memory` accepts a folder path as the project** (#6462, thanks @maxmad64bis). An absolute path passed as `project` is turned into the project name. The import refusal for an excluded project now names both causes, the folder and `--project`, and how to get past each.
+- **Restore refuses a file that isn't a claude-mem database** (#6460, thanks @ZedingZhang). A snapshot with no version stamp skipped the table check, so an unrelated SQLite file could replace your database. It now has to hold the worker tables, and your current database is left as it was.
+- **The launcher recognizes more ways of writing `~/.local/bin`** (#6472, thanks @JayPokale). `${HOME}/.local/bin`, `~/.local/bin` and a trailing slash on `PATH` now count, so install no longer adds a duplicate line to your shell profile.
+- **Server: `CLAUDE_MEM_MONTHLY_TOKEN_CAP` works without `CLAUDE_MEM_USAGE_METERING=1`** (#6514, thanks @kevincommits). With only the cap set, token usage was never recorded, so the cap was never reached. Setting the cap now records token usage.
+- **OpenCode Go and OpenCode Zen presets use the new `/inference` addresses** (#6463, thanks @maxmad64bis).
+- **Updating no longer aborts while the old worker is still shutting down** (#6453, thanks @maxmad64bis). The installer waited a flat 10 seconds for the old worker to exit, less than the worker's own shutdown can take, so a manual update aborted on any worker that hit its drain deadline. It now waits out the worker's full shutdown (25.5 seconds, 35.5 seconds on Windows) after one stop request.
+- **Test runs on macOS no longer end in exit 134** (#6479, @thedotmack). After every test passed, a run that had loaded the embedding model crashed on exit with "A C++ exception occurred". The test setup now releases that runtime before the process exits.
+- **My Work refresh no longer fails when the model skips a group** (#6515, @thedotmack). A group still unreviewed after the retry failed the whole refresh, so titles, focus and the story never ran. Now the refresh carries on, says how many groups were left without a review, and asks for them again next time.
+
+## New
+
+- **Skip Bash commands segment by segment** (#6504, thanks @zhangkom). Set `CLAUDE_MEM_SKIP_BASH_PATTERNS_MATCH_EVERY_SEGMENT=true` to skip a compound command only when every part of it matches `CLAUDE_MEM_SKIP_BASH_PATTERNS`. It is off by default. See the configuration docs for the trade-off.
+- **ZCode support** (#6487, thanks @rochafialvin). `npx claude-mem install --ide zcode` adds ZCode hooks and MCP recall, and status reports a disabled or incomplete setup.
+- **Per-prompt memory in OpenCode** (#6454, thanks @maxmad64bis). With `CLAUDE_MEM_SEMANTIC_INJECT=true`, OpenCode gets the observations that best match each prompt.
+- **OpenCode can use the session's own model for the observer** (#6493, thanks @maxmad64bis). Set `CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_SESSION=true` and the OpenAI-compatible observer uses the model picked in that OpenCode session. It is off by default.
+- **Turn off the oversized-field condense call** (#6516, thanks @harpreetkbadhan). Set `CLAUDE_MEM_FIELD_CONDENSE_ENABLED=false` to skip the model call that shortens an oversized tool field; the field then goes straight to head and tail trimming. It is on by default, so nothing changes unless you set it.
+- **Rapid-MLX, Straitly and TeamoRouter presets** for the OpenAI-compatible provider (#6502, thanks @raullenchai; #6498, thanks @HashimSyedUBC; #6451, thanks @2867297362mjb-sketch). The TeamoRouter docs state what its privacy policy says it records.
+- **Docs:** a verified Kiro MCP recall guide (#6473, thanks @rochafialvin), a note on how `CLAUDE_MEM_DEDUP_ENABLED` affects `CLAUDE_MEM_REINFORCE_ALPHA` (#6461, thanks @maxmad64bis), and a note that `CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS` also sizes the condense request (#6518, thanks @harpreetkbadhan).
+
+## Contributors
+
+Thank you to @shaojunying, @maxmad64bis, @ZedingZhang, @JayPokale, @kevincommits, @zhangkom, @rochafialvin, @raullenchai, @HashimSyedUBC, @harpreetkbadhan and @2867297362mjb-sketch for the work in this release.
+
+**Full changelog**: https://github.com/thedotmack/claude-mem/compare/v17.0.1...v17.0.2
+
 ## [17.0.1] - 2026-11-26
 
 ## Critical fixes
