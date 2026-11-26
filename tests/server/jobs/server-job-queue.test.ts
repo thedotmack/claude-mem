@@ -109,6 +109,20 @@ describe('ServerJobQueue', () => {
     await sjq.close();
   });
 
+  it('remove() reports a job BullMQ kept because a worker holds it', async () => {
+    const sjq = new ServerJobQueue<{ x: number }>({
+      name: 'q', config: fakeConfig,
+      queueFactory: (name, options) => ({
+        ...buildFakeQueue({ added: [], removed: [], closed: false })(name, options),
+        // BullMQ's removeJob answers 0 for a job a worker has locked, else 1.
+        remove: async (id: string) => (id === 'evt_held' ? 0 : 1),
+      }),
+    });
+    expect(await sjq.remove('evt_held')).toBe(false);
+    expect(await sjq.remove('evt_finished')).toBe(true);
+    await sjq.close();
+  });
+
   it('starts the worker with autorun: false and attaches an error listener', () => {
     const { workerState, sjq } = setup();
     sjq.start(async () => {});
