@@ -72,11 +72,12 @@ Each hook is a `process` hook (the Bun runtime plus the worker script, with no s
 - **No `PermissionRequest`**: Claude-Mem has no handler for it.
 - **No `SessionEnd`**: ZCode has no such event. The `Stop` hook writes the summary.
 - **No transcript**: ZCode deletes the hook's `transcript_path` file after the hook runs, so Claude-Mem does not read it.
+- **One switch for all hooks**: ZCode runs hooks only when `hooks.enabled` is `true`, and a missing key means off. The installer sets it to `true`, which also turns on any hooks of your own in that file. If you have other hooks, uninstall leaves `hooks.enabled: true` in place.
 - **User scope only**: workspace configs (`<project>/.zcode/config.json`, `zcode.json`) and ZCode plugins are not changed.
 
 ## Troubleshooting
 
-- **Hooks do not run**: check that `hooks.enabled` is not `false` in `~/.zcode/cli/config.json`. The installer keeps your `false` and prints a warning. Set it to `true`, then start a new session or run `/reload`.
+- **Hooks do not run**: check that `hooks.enabled` is `true` in `~/.zcode/cli/config.json`. A missing key means off. The installer keeps your `false` and prints a warning. Set it to `true`, then start a new session or run `/reload`.
 - **Bun not found**: the hooks run Bun by its absolute path. If you moved or reinstalled Bun, run `npx claude-mem zcode install` again.
 - **Changes do not load**: start a new ZCode session or run `/reload`.
 - **More detail**: ZCode writes its logs to `~/.zcode/v2/logs/`. Claude-Mem writes its logs to `~/.claude-mem/logs/`.
