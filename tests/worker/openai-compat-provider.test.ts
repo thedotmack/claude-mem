@@ -57,8 +57,9 @@ describe('openai-compatible presets', () => {
   });
 
   it('marks local presets as not needing a key', () => {
-    for (const id of ['ollama', 'lmstudio', 'vllm']) {
+    for (const id of ['ollama', 'lmstudio', 'rapidmlx', 'vllm']) {
       expect(resolveOpenAICompatPreset(id).requiresApiKey).toBe(false);
+      expect(resolveOpenAICompatPreset(id).defaultModel).toBe('');
     }
   });
 
@@ -266,14 +267,14 @@ describe('isOpenAICompatAvailable', () => {
     expect(isOpenAICompatAvailable()).toBe(false);
   });
 
-  it('is available for a local preset with no key, once a model is set', () => {
-    process.env.CLAUDE_MEM_OPENAI_COMPAT_PRESET = 'ollama';
+  it.each(['ollama', 'lmstudio', 'rapidmlx', 'vllm'])('is available for local preset %s with no key, once a model is set', (id) => {
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_PRESET = id;
     process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL = 'qwen3:8b';
     expect(isOpenAICompatAvailable()).toBe(true);
   });
 
-  it('is unavailable for a local preset with no model — a model is not guessable', () => {
-    process.env.CLAUDE_MEM_OPENAI_COMPAT_PRESET = 'ollama';
+  it.each(['ollama', 'lmstudio', 'rapidmlx', 'vllm'])('is unavailable for local preset %s with no model — a model is not guessable', (id) => {
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_PRESET = id;
     expect(isOpenAICompatAvailable()).toBe(false);
   });
 
