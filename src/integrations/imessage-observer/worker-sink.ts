@@ -62,6 +62,7 @@ export class WorkerSink {
     private readonly log: SinkLog,
     /** The request the observer reads for a chat; read when a conversation starts. */
     private readonly promptFor: (chat: ChatInfo) => string = chat => conversationPrompt(chat, book),
+    private readonly isObserved: (guid: string) => boolean = () => true,
   ) {}
 
   /** `enqueuedAt` is when the window was queued for hand-over (epoch ms). */
@@ -70,7 +71,7 @@ export class WorkerSink {
     if (action.kind === 'window') {
       await this.sendWindow(contentSessionId, action.entries, chat, project, enqueuedAt);
     } else {
-      await this.endConversation(contentSessionId);
+      await this.endConversation(contentSessionId, this.isObserved(chat.guid));
     }
   }
 
@@ -100,6 +101,12 @@ export class WorkerSink {
     try {
       const session = await this.start(contentSessionId, chat, project, first);
       if (session.excluded) return;
+      // A user can untick a chat during the worker's asynchronous session init.
+      if (!this.isObserved(chat.guid)) {
+        this.skippedWindows += 1;
+        await this.endConversation(contentSessionId, false);
+        return;
+      }
       const transcript = formatTranscript(entries, this.book);
       const reply = await this.post('/api/sessions/observations', {
         contentSessionId,
@@ -135,14 +142,14 @@ export class WorkerSink {
     }
   }
 
-  private async endConversation(contentSessionId: string): Promise<void> {
+  private async endConversation(contentSessionId: string, summarize: boolean): Promise<void> {
     const session = this.sessions.get(contentSessionId);
     this.sessions.delete(contentSessionId);
     if (!session?.started) return;
     try {
       // Summarize only from a window the worker accepted. The summary is a new
       // request made now, when the conversation ends, so it carries now as its time.
-      if (session.recap) {
+      if (summarize && session.recap) {
         await this.post('/api/sessions/summarize', {
           contentSessionId,
           platformSource: PLATFORM_SOURCE,

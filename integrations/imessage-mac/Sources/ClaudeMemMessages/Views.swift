@@ -14,6 +14,12 @@ struct ContentView: View {
             .frame(maxWidth: 420)
             .padding(10)
             Divider()
+            if model.source == .mac, !model.pendingOptOuts.isEmpty && model.savingPicks.isEmpty {
+                HStack {
+                    Text("Listening is paused until your chat choices are saved.")
+                    Button("Retry") { model.retryOptOuts() }
+                }.padding(8)
+            }
             if model.source == .photon {
                 PhotonView()
             } else if model.needsSetup {
@@ -242,6 +248,7 @@ struct ChatRow: View {
     var body: some View {
         HStack(spacing: 10) {
             Toggle("", isOn: Binding(get: { chat.observed }, set: { model.setObserved(chat.guid, $0) }))
+                .disabled(model.savingPicks.contains(chat.guid))
                 .toggleStyle(.checkbox)
                 .labelsHidden()
                 .help(chat.observed ? "Stop observing this chat" : "Observe this chat")
@@ -289,6 +296,7 @@ struct ChatDetail: View {
                 }
                 LabeledContent("Messages", value: "\(chat.messageCount)")
                 Toggle("Observe this chat", isOn: Binding(get: { chat.observed }, set: { model.setObserved(chat.guid, $0) }))
+                    .disabled(model.savingPicks.contains(chat.guid))
             }
             Section {
                 TextField("Anything worth remembering", text: $focus, axis: .vertical)

@@ -15,5 +15,6 @@ let package = Package(
         .target(name: "MessagesObserverKit"),
         .executableTarget(name: "ClaudeMemMessages", dependencies: ["MessagesObserverKit"]),
         .testTarget(name: "MessagesObserverKitTests", dependencies: ["MessagesObserverKit"]),
+        .testTarget(name: "ClaudeMemMessagesTests", dependencies: ["ClaudeMemMessages", "MessagesObserverKit"]),
     ]
 )

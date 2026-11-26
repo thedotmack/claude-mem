@@ -50,30 +50,44 @@ final class AppModel: ObservableObject {
     @Published var log: [LogLine] = []
 
     // Kept in UserDefaults. Plain @Published so the window updates when they change.
-    @Published private(set) var source = MessageSource(rawValue: UserDefaults.standard.string(forKey: "messageSource") ?? "") ?? .mac
+    private let defaults: UserDefaults
+    @Published private(set) var source: MessageSource
     @Published var photonConfigured = false
     @Published var photonNumbers: [String] = []
     @Published var connectingPhoton = false
     private var pendingSource: MessageSource?
     private var photonWasListening: Bool {
-        get { UserDefaults.standard.bool(forKey: "photonWasListening") }
-        set { UserDefaults.standard.set(newValue, forKey: "photonWasListening") }
+        get { defaults.bool(forKey: "photonWasListening") }
+        set { defaults.set(newValue, forKey: "photonWasListening") }
     }
-    @Published var listenOnLaunch = UserDefaults.standard.object(forKey: "listenOnLaunch") as? Bool ?? true {
-        didSet { UserDefaults.standard.set(listenOnLaunch, forKey: "listenOnLaunch") }
+    @Published var listenOnLaunch: Bool {
+        didSet { defaults.set(listenOnLaunch, forKey: "listenOnLaunch") }
     }
 
     private var listenerID: UUID?
     private var running: RunningCommand?
     private var userStopped = false
     private var focusSaves: [String: Task<Void, Never>] = [:]
-    private var lastSave: Task<Void, Never>?
+    private var lastSave: Task<Bool, Never>?
+    private var sourceGeneration = 0
+    private var chatsGeneration = 0
+    @Published private(set) var savingPicks = Set<String>()
+    @Published private(set) var pendingOptOuts: Set<String> {
+        didSet { defaults.set(Array(pendingOptOuts), forKey: "pendingOptOuts") }
+    }
     private var restartAfterStop = false
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        source = MessageSource(rawValue: defaults.string(forKey: "messageSource") ?? "") ?? .mac
+        listenOnLaunch = defaults.object(forKey: "listenOnLaunch") as? Bool ?? true
+        pendingOptOuts = Set(defaults.stringArray(forKey: "pendingOptOuts") ?? [])
+    }
 
     var needsSetup: Bool { launch == nil || commandProblem != nil || !workerReachable || (source == .mac && access != .granted) }
     var canListen: Bool {
         guard !needsSetup, workerReachable, pendingSource == nil else { return false }
-        return source == .photon ? photonConfigured : observedCount > 0
+        return source == .photon ? photonConfigured : observedCount > 0 && pendingOptOuts.isEmpty
     }
 
     var visibleChats: [ChatItem] {
@@ -104,7 +118,9 @@ final class AppModel: ObservableObject {
         }
         refreshGeneration += 1
         source = next
-        UserDefaults.standard.set(next.rawValue, forKey: "messageSource")
+        sourceGeneration += 1
+        chatsGeneration += 1
+        defaults.set(next.rawValue, forKey: "messageSource")
         listener = .stopped
         selection = nil
         chats = []
@@ -189,16 +205,19 @@ final class AppModel: ObservableObject {
     // MARK: Chats
 
     func loadChats() async {
-        guard let runner else { return }
+        guard source == .mac, let runner else { return }
+        chatsGeneration += 1
+        let generation = chatsGeneration
         loadingChats = true
         defer { loadingChats = false }
         do {
             let result = try await runner.run(["imessage", "mac", "chats", "--json"])
-            guard source == .mac else { return }
+            guard source == .mac, generation == chatsGeneration else { return }
             for event in result.events {
                 if case let .chats(focus, list) = event {
                     chats = list
                     defaultFocus = focus
+                    pendingOptOuts.subtract(list.filter { !$0.observed && !savingPicks.contains($0.guid) }.map(\.guid))
                 }
             }
             if result.status != 0, !result.errorText.isEmpty { append("warn", result.errorText) }
@@ -208,15 +227,35 @@ final class AppModel: ObservableObject {
     }
 
     func setObserved(_ guid: String, _ on: Bool) {
-        guard let index = chats.firstIndex(where: { $0.guid == guid }) else { return }
-        chats[index].observed = on
-        let name = chats[index].name
+        let name = chats.first(where: { $0.guid == guid })?.name
+        guard source == .mac, name != nil || (!on && pendingOptOuts.contains(guid)),
+              savingPicks.insert(guid).inserted else { return }
+        chatsGeneration += 1
+        let chatName = name ?? "this chat"
+        if !on { pendingOptOuts.insert(guid) }
+        let generation = sourceGeneration
         Task {
-            await pick(guid, ["--\(on ? "on" : "off")"])
-            append("info", on ? "Now observing \"\(name)\"." : "Stopped observing \"\(name)\".")
-            // The listener reads the new choice on its own; start it for the first picked chat.
-            if on, running == nil, access == .granted { startListening() }
+            defer { savingPicks.remove(guid) }
+            let saved = await pick(guid, ["--\(on ? "on" : "off")"])
+            guard saved else {
+                if !on, source == .mac {
+                    userStopped = true
+                    restartAfterStop = false
+                    running?.discardAndStop()
+                    append("warn", "Listening paused. Retry turning off \"\(chatName)\" to continue.")
+                }
+                return
+            }
+            pendingOptOuts.remove(guid)
+            guard generation == sourceGeneration else { return }
+            if let index = chats.firstIndex(where: { $0.guid == guid }) { chats[index].observed = on }
+            append("info", on ? "Now observing \"\(chatName)\"." : "Stopped observing \"\(chatName)\".")
+            if on, running == nil { startListening() }
         }
+    }
+
+    func retryOptOuts() {
+        for guid in pendingOptOuts { setObserved(guid, false) }
     }
 
     /// Saves a chat's "observe for" text a moment after typing stops.
@@ -242,25 +281,29 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func pick(_ guid: String, _ flags: [String]) async {
+    @discardableResult
+    private func pick(_ guid: String, _ flags: [String]) async -> Bool {
         await save(["imessage", "mac", "pick", guid] + flags + ["--json"])
     }
 
     /// Saves run one after another, so a tick and a focus edit never race.
-    private func save(_ arguments: [String]) async {
+    @discardableResult
+    private func save(_ arguments: [String]) async -> Bool {
         let previous = lastSave
         let next = Task { [weak self] in
-            await previous?.value
-            guard let self, let runner = self.runner else { return }
+            _ = await previous?.value
+            guard let self, let runner = self.runner else { return false }
             do {
                 let result = try await runner.run(arguments)
-                if result.status != 0 { self.append("warn", result.errorText.isEmpty ? "Could not save the choice." : result.errorText) }
+                if result.status == 0, result.events.contains(.other(type: "picked")) { return true }
+                if self.source == .mac { self.append("warn", result.errorText.isEmpty ? "Could not save the choice." : result.errorText) }
             } catch {
-                self.append("warn", "Could not save the choice: \(error.localizedDescription)")
+                if self.source == .mac { self.append("warn", "Could not save the choice: \(error.localizedDescription)") }
             }
+            return false
         }
         lastSave = next
-        await next.value
+        return await next.value
     }
 
     func importContacts() async {

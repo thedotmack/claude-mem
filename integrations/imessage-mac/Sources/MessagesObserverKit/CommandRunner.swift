@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 public struct CommandResult: Sendable {
@@ -20,7 +21,11 @@ public final class CommandRunner: @unchecked Sendable {
         self.launch = launch
     }
 
-    private func makeProcess(_ arguments: [String]) -> Process {
+    private func makeProcess(_ arguments: [String]) throws -> Process {
+        if launch.requiresBundleVerification && CommandLaunch.packaged() != launch {
+            throw NSError(domain: "ClaudeMemMessages", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "The packaged observer has changed. Install Claude-Mem Messages again."])
+        }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: launch.executable)
         process.arguments = launch.prefix + arguments
@@ -38,7 +43,7 @@ public final class CommandRunner: @unchecked Sendable {
 
     /// Runs a command to the end and returns what it printed.
     public func run(_ arguments: [String], input: Data? = nil) async throws -> CommandResult {
-        let process = makeProcess(arguments)
+        let process = try makeProcess(arguments)
         let out = Pipe()
         let err = Pipe()
         let stdin = Pipe()
@@ -72,7 +77,7 @@ public final class CommandRunner: @unchecked Sendable {
         onStderr: @escaping @Sendable (String) -> Void,
         onExit: @escaping @Sendable (Int32) -> Void
     ) throws -> RunningCommand {
-        let process = makeProcess(arguments)
+        let process = try makeProcess(arguments)
         let out = Pipe()
         let err = Pipe()
         let stdin = Pipe()
@@ -113,6 +118,12 @@ public final class RunningCommand: @unchecked Sendable {
     }
 
     public var isRunning: Bool { process.isRunning }
+
+    /// A failed opt-out must not flush still-buffered messages from the old selection.
+    public func discardAndStop() {
+        if process.isRunning { _ = Darwin.kill(process.processIdentifier, SIGKILL) }
+        try? stdin.fileHandleForWriting.close()
+    }
 
     /// Closing stdin tells the command to finish its open conversations and exit; SIGTERM backs it up.
     public func stop() {

@@ -125,7 +125,7 @@ export class GroupChatObserver {
     this.sink = new WorkerSink(options.post, book, options.log, chat => conversationPrompt(chat, book, {
       via: options.via,
       focus: options.focusFor?.(chat.guid),
-    }));
+    }), options.isObserved);
     this.state = existsSync(options.statePath) ? readState(options.statePath) : { chats: {} };
   }
 

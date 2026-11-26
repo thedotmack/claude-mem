@@ -5,10 +5,12 @@ import Security
 public struct CommandLaunch: Equatable, Sendable {
     public let executable: String
     public let prefix: [String]
+    let requiresBundleVerification: Bool
 
-    public init(executable: String, prefix: [String] = []) {
+    init(executable: String, prefix: [String] = [], requiresBundleVerification: Bool = false) {
         self.executable = executable
         self.prefix = prefix
+        self.requiresBundleVerification = requiresBundleVerification
     }
 
     public static func packaged() -> CommandLaunch? {
@@ -22,7 +24,7 @@ public struct CommandLaunch: Equatable, Sendable {
         guard file.resolvingSymlinksInPath().path == file.path,
               FileManager.default.isExecutableFile(atPath: file.path),
               verifiedBundle(bundle) else { return nil }
-        return CommandLaunch(executable: file.path)
+        return CommandLaunch(executable: file.path, requiresBundleVerification: true)
     }
 
     /// Verify the sealed resources and nested signatures against the running

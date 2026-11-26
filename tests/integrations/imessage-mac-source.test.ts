@@ -378,6 +378,32 @@ describe('Mac observer end to end', () => {
     expect(observer.droppedWindows).toBe(1);
   });
 
+  for (const revokeAt of ['/api/sessions/init', '/api/sessions/observations']) {
+    it(`checks the pick again after ${revokeAt}, including before a recap`, async () => {
+      let selected = true;
+      const src = new ChatDbSource({ dbPath: fake.path, label, isObserved: () => selected, watch: false });
+      src.start();
+      fake.message({ chat: GROUP, guid: 'picked', at: T0, text: 'Fixture group decision', from: ANA });
+      const feed = src.poll();
+      const routes: string[] = [];
+      const observer = new GroupChatObserver({
+        source: { name: 'test', async *events() { yield* feed; }, chat: guid => src.chat(guid), stop: async () => {} },
+        post: async route => {
+          routes.push(route);
+          if (route === revokeAt) selected = false;
+          return { status: 'ok' };
+        },
+        log: silent, statePath: join(dir, 'chats.json'), via: 'mac', clock: 'event',
+        isObserved: () => selected,
+      });
+      await observer.run();
+      const expected = ['/api/sessions/init'];
+      if (revokeAt === '/api/sessions/observations') expected.push(revokeAt);
+      expected.push('/api/sessions/session-end');
+      expect(routes).toEqual(expected);
+    });
+  }
+
   it('keeps the Photon line prompt unchanged and names a direct chat as a conversation', () => {
     const chat = { guid: GROUP, displayName: 'Tahoe trip', isGroup: true, participants: [{ address: ANA }] };
     const photon = conversationPrompt(chat, { names: { '5551230001': 'Ana' }, meLabel: 'This line' });
