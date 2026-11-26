@@ -51,6 +51,17 @@ final class CommandLocatorTests: XCTestCase {
         XCTAssertTrue(parts.contains("/Users/a/.bun/bin"))
     }
 
+    func testKnowsWhichNodeVersionsClaudeMemRunsOn() {
+        XCTAssertTrue(CommandLocator.isSupportedNode("v20.19.0"))
+        XCTAssertTrue(CommandLocator.isSupportedNode("22.12.0"))
+        XCTAssertTrue(CommandLocator.isSupportedNode("v23.0.0"))
+        XCTAssertFalse(CommandLocator.isSupportedNode("v20.18.9"))
+        XCTAssertFalse(CommandLocator.isSupportedNode("v21.7.0"))
+        XCTAssertFalse(CommandLocator.isSupportedNode("v22.11.0"))
+        XCTAssertFalse(CommandLocator.isSupportedNode("v18.20.0"))
+        XCTAssertFalse(CommandLocator.isSupportedNode("default"))
+    }
+
     func testPrefersNpxAndNeverTheHookLauncher() {
         let path = "/Users/a/.local/bin:/a:/b"
         let npx = CommandLocator.resolve(override: nil, searchPath: path, home: "/Users/a") { $0 == "/b/npx" || $0 == "/a/claude-mem" }
@@ -69,16 +80,18 @@ final class CommandLocatorTests: XCTestCase {
     func testFindsNodeVersionManagerFoldersNewestFirstWithoutAShell() throws {
         let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
         defer { try? FileManager.default.removeItem(atPath: home) }
-        for version in ["v18.20.0", "v22.11.0", "v9.0.0"] {
+        for version in ["v18.20.0", "v20.10.0", "v20.19.2", "v22.11.0", "v22.12.0", "v24.1.0", "v9.0.0"] {
             try FileManager.default.createDirectory(atPath: "\(home)/.nvm/versions/node/\(version)/bin", withIntermediateDirectories: true)
         }
         try FileManager.default.createDirectory(atPath: "\(home)/.asdf/shims", withIntermediateDirectories: true)
         let folders = CommandLocator.versionManagerFolders(home: home)
+        // Versions claude-mem can't run on (18, 20.10, 22.11, 9) are left out.
         XCTAssertEqual(Array(folders.prefix(3)), [
-            "\(home)/.nvm/versions/node/v22.11.0/bin",
-            "\(home)/.nvm/versions/node/v18.20.0/bin",
-            "\(home)/.nvm/versions/node/v9.0.0/bin",
+            "\(home)/.nvm/versions/node/v24.1.0/bin",
+            "\(home)/.nvm/versions/node/v22.12.0/bin",
+            "\(home)/.nvm/versions/node/v20.19.2/bin",
         ])
+        XCTAssertEqual(folders.count, 4)
         XCTAssertTrue(folders.contains("\(home)/.asdf/shims"))
         XCTAssertFalse(folders.contains("\(home)/.local/share/mise/shims"))
     }

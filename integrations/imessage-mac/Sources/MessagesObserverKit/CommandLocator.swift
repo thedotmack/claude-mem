@@ -41,13 +41,27 @@ public enum CommandLocator {
         ]
     }
 
+    /// Whether a version folder name like "v22.12.0" is a Node that claude-mem
+    /// runs on (`^20.19.0 || >=22.12.0`, as in package.json's engines).
+    /// Names that aren't a version are skipped.
+    public static func isSupportedNode(_ name: String) -> Bool {
+        let digits = name.hasPrefix("v") ? String(name.dropFirst()) : name
+        let parts = digits.split(separator: ".").prefix(2).map { Int($0) }
+        guard parts.count == 2, let major = parts[0], let minor = parts[1] else { return false }
+        if major == 20 { return minor >= 19 }
+        if major == 22 { return minor >= 12 }
+        return major > 22
+    }
+
     /// Node's bin folders from nvm, fnm, asdf and mise, newest version first.
-    /// Found by listing folders, never by running a shell.
+    /// Found by listing folders, never by running a shell. Node versions
+    /// claude-mem can't run on are left out, so an old leftover nvm Node never
+    /// wins over a newer one from Homebrew.
     public static func versionManagerFolders(home: String, fileManager: FileManager = .default) -> [String] {
         func versions(_ root: String, bin: String) -> [String] {
             let names = (try? fileManager.contentsOfDirectory(atPath: root)) ?? []
             return names
-                .filter { !$0.hasPrefix(".") }
+                .filter { !$0.hasPrefix(".") && isSupportedNode($0) }
                 .sorted { $0.compare($1, options: .numeric) == .orderedDescending }
                 .map { "\(root)/\($0)\(bin)" }
                 .filter { fileManager.fileExists(atPath: $0) }
