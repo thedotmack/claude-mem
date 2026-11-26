@@ -141,7 +141,7 @@ function registerPluginInOpenClawConfig(
   if (!config.plugins.slots) config.plugins.slots = {};
   if (!config.plugins.entries) config.plugins.entries = {};
 
-  config.plugins.slots.memory = 'claude-mem';
+  const previousMemorySlot = config.plugins.slots.memory;
 
   if (!config.plugins.entries['claude-mem']) {
     config.plugins.entries['claude-mem'] = {
@@ -163,6 +163,18 @@ function registerPluginInOpenClawConfig(
     if (existingPluginConfig.syncMemoryFile === undefined) existingPluginConfig.syncMemoryFile = syncMemoryFile;
   }
 
+  // Remember a displaced memory-slot owner so uninstall can hand the slot back.
+  // Written only when another plugin really owned it, so a fresh install keeps
+  // the plain config shape, and never overwritten, so a reinstall (which finds
+  // claude-mem already in the slot) cannot erase the original owner.
+  const entryConfig = config.plugins.entries['claude-mem'].config;
+  const displacedAnotherOwner =
+    typeof previousMemorySlot === 'string' && previousMemorySlot.length > 0 && previousMemorySlot !== 'claude-mem';
+  if (displacedAnotherOwner && entryConfig.previousMemorySlot === undefined) {
+    entryConfig.previousMemorySlot = previousMemorySlot;
+  }
+  config.plugins.slots.memory = 'claude-mem';
+
   writeOpenClawConfig(config);
 }
 
@@ -171,13 +183,18 @@ function unregisterPluginFromOpenClawConfig(): void {
   if (!existsSync(configFilePath)) return;
 
   const config = readOpenClawConfig();
+  const previousMemorySlot = config.plugins?.entries?.['claude-mem']?.config?.previousMemorySlot;
 
   if (config.plugins?.entries?.['claude-mem']) {
     delete config.plugins.entries['claude-mem'];
   }
 
   if (config.plugins?.slots?.memory === 'claude-mem') {
-    delete config.plugins.slots.memory;
+    if (typeof previousMemorySlot === 'string' && previousMemorySlot.length > 0 && previousMemorySlot !== 'claude-mem') {
+      config.plugins.slots.memory = previousMemorySlot;
+    } else {
+      delete config.plugins.slots.memory;
+    }
   }
 
   writeOpenClawConfig(config);

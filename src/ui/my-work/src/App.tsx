@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from 'react'
 import { MotionConfig } from 'motion/react'
-import { CreditCardIcon, CrosshairIcon, FlaskConicalIcon, InboxIcon, ListChecksIcon } from 'lucide-react'
+import { CreditCardIcon, CrosshairIcon, FlaskConicalIcon, GalleryVerticalEndIcon, InboxIcon, ListChecksIcon } from 'lucide-react'
 import { interpolate, useI18n } from '@/lib/i18n'
 import { useAppliedTheme } from '@/lib/use-applied-theme'
 import { Button } from '@/components/ui/button'
@@ -10,6 +10,10 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { ActivePill, ClassicViewerLink, DeviceFreshness, LiveIndicator, ReadAfterSaveNotice } from '@/components/bits'
 import { AppBrand, ShellGrid, ShellLoading, ShellReadError } from '@/components/app-shell'
 import { HeaderMenu } from '@/components/header-menu'
+import { CloudTrialBanner } from '@/components/cloud-trial-banner'
+import { CloudTrialGuide } from '@/components/cloud-trial-guide'
+import { sharedViewerOwner } from '@/live/shared-viewer-session'
+import { useCloudTrial } from '@/live/use-cloud-trial'
 import { Navbar, NavBody } from '@/components/aceternity/resizable-navbar'
 import { Notch } from '@/components/aceternity/notch'
 import { StickyBanner } from '@/components/aceternity/sticky-banner'
@@ -29,6 +33,7 @@ import { workerMediaSource } from '@/components/observation-media/worker-media-s
 /** MY FOCUS sits above these: its areas, Other and Suggested (focus-nav.tsx). Past focus is at the bottom of the rail. */
 const PAGES: { id: NavPage; label: string; icon: typeof InboxIcon; section: string }[] = [
   { id: 'work', label: 'My Work', icon: InboxIcon, section: 'Monitor' },
+  { id: 'review-stack', label: 'Review Stack', icon: GalleryVerticalEndIcon, section: 'Monitor' },
   { id: 'rules', label: 'My Rules', icon: ListChecksIcon, section: 'Steer' },
 ]
 const NAV_SECTIONS = [...new Set(PAGES.map((entry) => entry.section))]
@@ -95,6 +100,7 @@ function HeaderBody({ visible, children }: { visible?: boolean; children: (pill:
 
 const SetupPage = lazy(() => import('@/setup/setup-page'))
 const MyRules = lazy(() => import('@/pages/my-rules').then(module => ({ default: module.MyRules })))
+const ReviewStack = lazy(() => import('@/pages/review-stack'))
 const SuggestedAreas = lazy(() => import('@/pages/suggested-areas').then(module => ({ default: module.SuggestedAreas })))
 const PastFocus = lazy(() => import('@/pages/past-focus').then(module => ({ default: module.PastFocus })))
 const RequestDetail = lazy(() => import('@/components/request-detail').then(module => ({ default: module.RequestDetail })))
@@ -175,6 +181,8 @@ function LoadedApp({ focusMainOnMount = false }: { focusMainOnMount?: boolean })
   // them only in its sharing demonstration (`sample-state=area-shared`), answered in the page.
   useFocusSharesLoader(sourceKind === 'local' || focusSharesAreADemonstration())
   const sample = sourceKind === 'sample'
+  const owner = sharedViewerOwner()
+  const trial = useCloudTrial(sourceKind === 'cloud' && !!owner)
   const view = useStore((state) => state.view.section)
   const focusChoice = useStore((state) => state.view.focusChoice)
   const openRequest = useStore((state) => state.view.openRequest)
@@ -205,10 +213,11 @@ function LoadedApp({ focusMainOnMount = false }: { focusMainOnMount?: boolean })
   // address apart from "Focus overview" (`/`, page-02 deep-linking).
   const openPage = (id: NavPage) => id === 'work' ? goToHome('all-requests') : goToPage(id)
   const showAllAreas = () => goToHome('focus-areas')
-  // The bottom bar's three places. Focus covers the focus views and the home page's focus board.
+  // Focus covers the focus views and the home page's focus board.
   const bottomItems = [
     { id: 'work', label: 'My Work', icon: InboxIcon, current: onHome && homeAnchor !== 'focus-areas', open: () => openPage('work'), count: yourMoveCount },
     { id: 'focus', label: 'Focus', icon: CrosshairIcon, current: selected !== null || (onHome && homeAnchor === 'focus-areas'), open: showAllAreas, count: 0 },
+    { id: 'review-stack', label: 'Review', icon: GalleryVerticalEndIcon, current: view === 'review-stack', open: () => openPage('review-stack'), count: 0 },
     { id: 'rules', label: 'My Rules', icon: ListChecksIcon, current: view === 'rules', open: () => openPage('rules'), count: 0 },
   ]
 
@@ -225,8 +234,8 @@ function LoadedApp({ focusMainOnMount = false }: { focusMainOnMount?: boolean })
               <a href="#main-content" className="sr-only rounded-lg border border-control-edge bg-card px-4 py-2.5 text-sm font-medium text-foreground shadow-popover outline-none focus:not-sr-only focus:fixed focus:top-3 focus:left-4 focus:z-[200] focus-visible:ring-3 focus-visible:ring-ring/50">
                 {t('Skip to content')}
               </a>
-              {/* G7: the strip shows only with sample data, says so, and keeps its At home / On the go switch. Theme and
-                  Show spec IDs moved to the header menu, so real data has no strip at all. */}
+              {owner && trial.trialEndsAt && <CloudTrialBanner owner={owner} trialEndsAt={trial.trialEndsAt} />}
+              {/* The demonstration strip and its At home / On the go switch belong to the sample workspace. */}
               {sample && (
                 <StickyBanner hideOnScroll className="min-h-0 flex-wrap justify-start gap-x-3 gap-y-1.5 border-b border-border/70 bg-card/85 px-4 py-1.5 pr-12 text-xs whitespace-nowrap backdrop-blur-md md:px-6 md:pr-10">
                   <span className="inline-flex items-center gap-1.5 font-medium"><FlaskConicalIcon aria-hidden="true" className="size-4 text-muted-foreground" />{t('Sample data · not your work')}</span>
@@ -307,7 +316,8 @@ function LoadedApp({ focusMainOnMount = false }: { focusMainOnMount?: boolean })
                 </Req>
 
                 <main ref={mainRef} id="main-content" tabIndex={-1} className="min-w-0 space-y-4 outline-none md:space-y-5">
-                  <FocusChipRow selected={selected} onSelect={selectFocus} onShowAllAreas={showAllAreas} />
+                  {onHome && trial.onboarding && <CloudTrialGuide key={trial.onboarding.startedAt} startedAt={trial.onboarding.startedAt} />}
+                  {view !== 'review-stack' && <FocusChipRow selected={selected} onSelect={selectFocus} onShowAllAreas={showAllAreas} />}
                   {/* A save whose follow-up read failed, on whichever page made it (store work.readAfterSaveFailure). */}
                   <ReadAfterSaveNotice />
                   <Suspense fallback={<PageLoading label={heading} />}>
@@ -315,6 +325,9 @@ function LoadedApp({ focusMainOnMount = false }: { focusMainOnMount?: boolean })
                     {view === 'suggested' && <SuggestedAreas onOpenFocus={goToFocus} />}
                     {view === 'past-focus' && <PastFocus onOpenFocus={goToFocus} />}
                     {view === 'rules' && <MyRules />}
+                    {view === 'review-stack' && (sample
+                      ? <Button asChild variant="outline"><a href={ownDataHref()}>{t('Open my Review Stack')}</a></Button>
+                      : <ReviewStack />)}
                   </Suspense>
                 </main>
               </ShellGrid>
@@ -329,7 +342,7 @@ function LoadedApp({ focusMainOnMount = false }: { focusMainOnMount?: boolean })
                     showSelectedValue={false}
                     showDividers={false}
                     className="border-x-0 border-t border-b-0 border-border/70 bg-card/95 shadow-none ring-0"
-                    itemClassName="relative h-[60px] min-w-24 flex-1 flex-col justify-center gap-1 rounded-xl px-3 text-xs text-muted-foreground outline-none hover:bg-accent/40 hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50"
+                    itemClassName="relative h-[60px] min-w-0 flex-1 flex-col justify-center gap-1 rounded-xl px-2 text-xs text-muted-foreground outline-none hover:bg-accent/40 hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50"
                     items={bottomItems.map(({ id, label, icon: Icon, current, open, count }) => ({
                       id,
                       currentPage: current,

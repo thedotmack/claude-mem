@@ -2126,6 +2126,22 @@
     .timeline-search { display: flex; align-items: center; gap: 8px; width: 100%; max-width: 380px; height: 36px; padding: 0 10px; border: 1px solid var(--color-border-control); border-radius: 6px; background: var(--color-bg-card); color: var(--color-text-secondary); }
     .timeline-search-note { font-size: 12px; color: var(--color-text-secondary); }
 
+    .timeline-gift {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      margin: 14px 0;
+      padding: 12px 12px 12px 16px;
+      border: 1px solid var(--color-border-control);
+      border-radius: 8px;
+      background: var(--color-bg-card);
+    }
+    .timeline-gift h3 { margin: 0; color: var(--color-text-primary); font-size: 16px; }
+    .timeline-gift p { margin: 4px 0 0; max-width: 65ch; color: var(--color-text-secondary); font-size: 14px; line-height: 1.5; }
+    .timeline-gift a { display: inline-flex; align-items: center; min-height: 44px; color: var(--color-accent-primary); text-decoration: underline; }
+    .timeline-gift-dismiss { display: grid; place-items: center; flex: 0 0 44px; min-height: 44px; padding: 0; }
+
     /* Timeline rows (F1, F15, F17, F23). Body lines stay within 75 characters (C9). */
     /* The column takes its content's height (not the scroll box's), so the pinned bar inside it stays pinned all the way down. */
     .feed { align-items: flex-start; scroll-padding-top: 64px; }

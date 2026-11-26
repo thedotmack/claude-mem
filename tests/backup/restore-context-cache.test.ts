@@ -10,11 +10,12 @@ import { ContextCacheService } from '../../src/services/worker/ContextCacheServi
 import { ChromaSyncState } from '../../src/services/sync/ChromaSyncState.js';
 import { contextCacheDir, contextCacheFilePath, contextCacheKeys, readContextCache } from '../../src/shared/context-cache.js';
 import { paths } from '../../src/shared/paths.js';
+import { RESTORE_FIXTURE_SCHEMA } from './fixtures/restore-schema.js';
 
 function makeDb(path: string, note: string): void {
   const db = new Database(path);
   try {
-    db.exec('CREATE TABLE observations (id INTEGER PRIMARY KEY AUTOINCREMENT, note TEXT)');
+    db.exec(RESTORE_FIXTURE_SCHEMA);
     const insert = db.prepare('INSERT INTO observations (note) VALUES (?)');
     insert.run(note);
     insert.finalize();

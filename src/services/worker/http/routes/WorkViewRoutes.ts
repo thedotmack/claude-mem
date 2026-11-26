@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { Database } from 'bun:sqlite';
 import { CLAUDE_CONFIG_DIR, DATA_DIR, DB_PATH, getPackageRoot, USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import { currentContextGeneration, onContextInvalidation } from '../../../../shared/context-invalidation.js';
+import { isSharedWorkList } from '../../../work-view/shared-records.mjs';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { logger } from '../../../../utils/logger.js';
 import { hasForwardedClientHeaders, hasLoopbackHostHeader, isLocalhost } from '../../../../server/middleware/request-auth-helpers.js';
@@ -43,7 +44,8 @@ import { runAgentTask } from '../../../agent-runner/run.js';
 import { ledgerSignature, readLedger } from '../../../work-view/request-groups.mjs';
 import { configuredJudge, decideSuggestion, jevClientFromSettings } from '../../../work-view/request-judge.mjs';
 import { labelOpenWorkState } from '../../../work-view/work-state-labels.mjs';
-import { normalizeRequestStatus } from '../../../../ui/my-work/src/live/status-normalization.js';
+import { isReportedReadyForCheck } from '../../../work-view/review-readiness.js';
+export { isReportedReadyForCheck } from '../../../work-view/review-readiness.js';
 import { configuredFocusJudge } from '../../../work-view/focus-judge.mjs';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { captureEvent } from '../../../telemetry/telemetry.js';
@@ -53,53 +55,21 @@ import type { SetupScan, SetupScanState } from '../../../prompt-import/setup-sca
 import { readHistoryCounts, type HistoryImport } from '../../../setup/history-import.js';
 import { createSetupTelemetry } from '../../../setup/telemetry.js';
 import { createSetupInstallerResumer } from '../../../setup/resume-installer.js';
-import { hasActiveSetupSession, hasProConfiguration, readSetupState, setupStatePath, writeSetupState, type SetupStateFile, type SetupStateView } from '../../../../shared/setup-state.js';
+import { hasActiveSetupSession, hasProConfiguration, readSetupState, setupStatePath, writeSetupState, type SetupCheckout, type SetupCheckoutServed, type SetupStateFile, type SetupStateView } from '../../../../shared/setup-state.js';
 import { toSetupUsage } from '../../../../shared/setup-usage.js';
-import { historyImportRunning, SETUP_BRANCHES, SETUP_CLOUD_SYNC_OFFERS, SETUP_INSTALLER_STAGES, SETUP_MEMORY_BILLINGS, setupCloudSyncOffer } from '../../../../shared/setup-funnel.js';
+import { historyImportRunning, SETUP_BRANCHES, SETUP_CLOUD_SYNC_OFFERS, SETUP_DEVICE_CODE_PATTERN, SETUP_INSTALLER_STAGES, SETUP_MEMORY_BILLINGS, setupCloudSyncOffer } from '../../../../shared/setup-funnel.js';
 import { hasPendingInstallSetup, SETUP_DSH_PROFILE_MAX_CHARACTERS, SETUP_INSTALL_NOTE_MAX_CHARACTERS, SETUP_INSTALL_STATUSES } from '../../../../shared/setup-install.js';
 import {
   CONTINUABLE_PLATFORMS, CONVERSATION_SESSION_UUID_PATTERN, OPEN_IN_APP_CLICK_ID_PATTERN, type ConversationContinuation, type ConversationContinuationNotice,
   type ConversationOpenedInApp,
 } from '../../../../shared/conversation-continuation.js';
 import type { ConversationContinuationRunner } from '../../../work-view/conversation-continuation-runner.js';
-
-// A request is ready for a human check once its explicit lifecycle reports it complete, shipped, or waiting for review.
-// Statuses are compared lowercased with `_` and spaces read as `-`, matching the viewer's status normalization.
-const READY_FOR_CHECK_LIFECYCLE_STATUSES = [
-  'done', 'completed', 'complete', 'shipped', 'delivered',
-  'needs-review', 'review', 'in-review', 'awaiting-review', 'ready-for-review',
-];
-type RecordedLifecycle = { explicit?: boolean; complete?: boolean | null; status?: string | null; atEpoch?: number | null } | null | undefined;
-type ReadyCheckItem = { kind: string; status: string; judgedStatus?: string | null; lastUpdateEpoch?: number };
-
-/** Mirrors the viewer's reviewIsNewerThanLifecycle (src/ui/my-work/src/live/to-work-model.ts). */
-function reviewIsNewerThanLifecycle(review: { checkedAt?: string | null }, lifecycle: RecordedLifecycle): boolean {
-  if (!lifecycle?.explicit || !lifecycle.atEpoch) return true;
-  const reviewedAt = Date.parse(review.checkedAt ?? '');
-  return Number.isFinite(reviewedAt) && reviewedAt >= lifecycle.atEpoch;
-}
+import { WORK_VIEW_USAGE_VIEWS } from '../../../../shared/work-view-pages.js';
 
 /** True while a process with this pid exists (signal 0 checks without signalling). */
 function processIsAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try { process.kill(pid, 0); return true; } catch { return false; }
-}
-
-/** Ready for a person's check: the explicit lifecycle says so, or a memory review newer than it reached 100%.
- * The viewer offers "Mark checked" on exactly these requests. */
-export function isReportedReadyForCheck(request: { lifecycle?: RecordedLifecycle; progress?: { percent?: number; checkedAt?: string | null } | null; items?: ReadyCheckItem[] }, now = Date.now()): boolean {
-  const { lifecycle, progress } = request;
-  if (progress?.percent === 100 && reviewIsNewerThanLifecycle(progress, lifecycle)) return true;
-  // Item statuses, Jev's judged ones included, read with the viewer's own rule: an item an agent marked needs-review,
-  // or one a confident label judged finished, makes the viewer offer "Mark checked", so the check is accepted.
-  if (request.items?.length) {
-    const itemStatus = normalizeRequestStatus({ items: request.items, checked: false,
-      lifecycle: lifecycle?.explicit ? { status: lifecycle.status ?? null, explicit: true, complete: lifecycle.complete } : null }, now);
-    if (itemStatus === 'needs-review' || itemStatus === 'done') return true;
-  }
-  if (!lifecycle?.explicit) return false;
-  const status = String(lifecycle.status ?? '').trim().toLowerCase().replace(/[_ ]/g, '-');
-  return lifecycle.complete === true || READY_FOR_CHECK_LIFECYCLE_STATUSES.includes(status);
 }
 
 /** Recorded files plus the text kinds an agent attaches as a deliverable, served so a browser shows them rather than downloads them. */
@@ -139,14 +109,18 @@ export function requireWorkViewOrigin(req: Request, res: Response, next: NextFun
 }
 
 // Reads that return share links or comments: the viewer's own page only. Worker CORS lets other local pages read
-// responses, and a cross-origin fetch carries its Origin.
-function requireWorkViewReadOrigin(req: Request, res: Response, next: NextFunction): void {
-  if (req.get('sec-fetch-site') === 'cross-site' || isForeignLoopbackBrowserWrite(req)) {
-    res.status(403).json({ error: 'Sharing is available only from the local work viewer.' });
-    return;
-  }
-  next();
+// responses, and a cross-origin fetch carries its Origin. `refusal` words the 403 for what the route serves.
+function workViewReadOrigin(refusal: string) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    if (req.get('sec-fetch-site') === 'cross-site' || isForeignLoopbackBrowserWrite(req)) {
+      res.status(403).json({ error: refusal });
+      return;
+    }
+    next();
+  };
 }
+export const requireWorkViewReadOrigin = workViewReadOrigin('Sharing is available only from the local work viewer.');
+const requireSetupPageReadOrigin = workViewReadOrigin('The device code is available only from the local setup page.');
 
 const ruleBody = z.object({
   action: z.enum(['approve', 'edit', 'turn-off', 'turn-on', 'dismiss', 'add', 'replace', 'restore-suggestion']),
@@ -276,10 +250,9 @@ const suggestionBody = z.object({
 
 // The viewer's page ids (src/ui/my-work/src/live/usage.ts `UsageView`: setup plus App.tsx `View`): a closed list, so a
 // usage report can carry nothing else. A focus area is My Work filtered to that area, so it counts as `work`, never by name.
-const WORK_VIEW_PAGES = ['setup', 'work', 'rules', 'suggested', 'past-focus'] as const;
 const usageBody = z.discriminatedUnion('event', [
-  z.object({ event: z.literal('opened'), view: z.enum(WORK_VIEW_PAGES) }).strict(),
-  z.object({ event: z.literal('switched'), view: z.enum(WORK_VIEW_PAGES), previousView: z.enum(WORK_VIEW_PAGES) }).strict(),
+  z.object({ event: z.literal('opened'), view: z.enum(WORK_VIEW_USAGE_VIEWS) }).strict(),
+  z.object({ event: z.literal('switched'), view: z.enum(WORK_VIEW_USAGE_VIEWS), previousView: z.enum(WORK_VIEW_USAGE_VIEWS) }).strict(),
 ]);
 
 /** The line that makes Claude Code load the approved rules with the owner's user-level instructions.
@@ -390,14 +363,28 @@ function redactSetupInstall(install: SetupStateFile['install']): SetupStateFile[
   return { ...install, selection: email ? { ...selection, emailProvided: true } : selection };
 }
 
+/**
+ * The device code is no page's to read either: typed into someone else's signed-in browser, it would connect this
+ * device to their account. The served state says only that one waits; the setup page reads it from the origin-guarded
+ * GET /api/setup/checkout/device-code.
+ */
+function redactSetupCheckout(checkout: SetupCheckout | null): SetupCheckoutServed | null {
+  if (!checkout) return null;
+  const { deviceCode, ...served } = checkout;
+  return deviceCode && checkout.state === 'waiting' ? { ...served, deviceCodeWaiting: true } : served;
+}
+
 // Cloud Sync can use the existing provider. An explicit offer never changes a local or legacy hosted choice.
 const setupChoiceBody = z.object({
   branch: z.enum(SETUP_BRANCHES),
   memoryBilling: z.enum(SETUP_MEMORY_BILLINGS),
   cloudSyncOffer: z.enum(SETUP_CLOUD_SYNC_OFFERS).optional(),
+  shareWorkView: z.literal(true).optional(),
   openCheckout: z.literal(true).optional(),
 }).strict().refine(choice => !choice.cloudSyncOffer || (choice.branch === 'go' && choice.memoryBilling === 'existing'), {
   message: 'A Cloud Sync offer requires On The Go with your existing memory provider.',
+}).refine(choice => !choice.shareWorkView || !!choice.cloudSyncOffer, {
+  message: 'Work View sharing requires an explicit standalone Cloud Sync offer.',
 }).refine(choice => !choice.openCheckout || !!choice.cloudSyncOffer, {
   message: 'Select a Cloud Sync offer to open its checkout.',
 });
@@ -406,7 +393,15 @@ const setupInstallerBody = z.object({
   error: z.string().max(2000).nullable().optional(),
   /** The installer mirrors the pairing checkout it is running (funnel Phase 8). */
   checkout: z.enum(['waiting', 'paid', 'failed']).optional(),
-}).strict();
+  /** The pairing's code, sent with `waiting` so the setup page can show it; paid and failed clear it. */
+  deviceCode: z.object({
+    userCode: z.string().regex(SETUP_DEVICE_CODE_PATTERN),
+    // The installer sends Date#toISOString(); nothing else is a time this field takes.
+    expiresAt: z.string().max(40).refine(value => !Number.isNaN(Date.parse(value)) && new Date(value).toISOString() === value).nullable(),
+  }).strict().optional(),
+}).strict().refine(body => !body.deviceCode || body.checkout === 'waiting', {
+  message: 'A device code is reported only while checkout waits.',
+});
 const setupCheckoutBody = z.object({}).strict();
 const setupResumeBody = z.object({ retry: z.boolean().optional() }).strict();
 const setupCompleteBody = z.object({
@@ -495,7 +490,7 @@ export function defaultAutoRefresh(ledgerDir: string, settingsPath = USER_SETTIN
     database.exec('PRAGMA busy_timeout = 1500');
     return database;
   };
-  // Setup's only extraction is hosted. Once setup is complete, ongoing refresh keeps its existing local path.
+  // Scheduled and manual refresh wait while the setup scan uses the worker.
   const setupRunning = () => {
     const state = readSetupState(setupPath);
     return setupActive() || hasPendingInstallSetup(state) || (state.status !== 'complete' && hasActiveSetupSession(setupPath));
@@ -509,8 +504,9 @@ export function defaultAutoRefresh(ledgerDir: string, settingsPath = USER_SETTIN
       && SettingsDefaultsManager.loadFromFile(settingsPath, true, { readOnly: true }).CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH !== 'false',
     runJob: async ({ needs, reason }) => {
       // The judges are read from settings per run, so a provider change applies to the next refresh.
+      const setup = reason === 'setup-scan';
       const task = buildRefreshTask({ needs, reason, dataDir: DATA_DIR, ledgerDir, pluginRoot: getPackageRoot(), openDatabase, localDeviceId, saveFocus,
-        judge: configuredJudge(settingsPath), focusJudge: configuredFocusJudge(settingsPath) });
+        judge: setup ? null : configuredJudge(settingsPath), focusJudge: setup ? null : configuredFocusJudge(settingsPath) });
       return { ...(await runAgentTask(task)), steps: task.steps };
     },
     // Jev labels open work-state items on every check; read from settings each time, like the judges.
@@ -664,6 +660,12 @@ export class WorkViewRoutes extends BaseRouteHandler {
       ? new FocusSharePublisher({ shares: this.focusShares, snapshot: () => this.snapshot(0, 'shared-focus'), everyMs: options.focusSharePublishEveryMs })
       : null;
     this.focusSharePublisher?.start();
+    if (this.autoRefresh) this.setupScan?.setLocalExtractor(async () => {
+      const result = await this.autoRefresh!.runNow({ reason: 'setup-scan' });
+      if (result === 'ok' || result === 'idle') return true;
+      if (result === 'waiting-for-agent' || result === 'failed') return false;
+      throw new Error('Another refresh is running. Try again when it finishes.');
+    });
     if (this.hostedIntent) this.setupScan?.setExtractor((prompts, improveProduct) => this.hostedIntent!.run(prompts, improveProduct));
     this.unsubscribeHistoryImport = this.historyImport?.subscribe(state => this.broadcast('setup-import', state)) ?? null;
     // Hosted extraction is awaited inside the scan, so failures stay in the scan screen's error slot.
@@ -680,6 +682,11 @@ export class WorkViewRoutes extends BaseRouteHandler {
         if (!this.ownerEditActive) this.publish();
       }
       if (!reason.startsWith('SyncApply.')) return;
+      // A remote commit can complete an earlier page of reserved rows. Announce it after SQLite commits.
+      if (!changes || changes.kinds.includes('mutation') ||
+        (changes.kinds.includes('work_state') && (!changes.workStateLists || changes.workStateLists.some(isSharedWorkList)))) {
+        this.publishReviewStackChanged();
+      }
       // Older senders have no details, so keep their conservative rebuild. Known
       // observation/prompt pages cannot change MY-RULES.md.
       if (!changes || changes.kinds.includes('mutation')
@@ -971,6 +978,13 @@ export class WorkViewRoutes extends BaseRouteHandler {
     }));
     app.post('/api/setup/installer', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupInstallerBody), this.wrapHandler(this.saveInstallerStage));
     app.post('/api/setup/checkout', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupCheckoutBody), this.wrapHandler(this.requestCheckout));
+    // The code shown beside "Waiting for this device to connect…": the setup page's own origin only (redactSetupCheckout).
+    app.get('/api/setup/checkout/device-code', workViewLoopbackOnly, requireSetupPageReadOrigin, this.wrapHandler((_req, res) => {
+      const checkout = readSetupState(this.setupStatePath).checkout;
+      res.setHeader('Cache-Control', 'no-store');
+      if (checkout?.state !== 'waiting' || !checkout.deviceCode) { res.status(404).json({ error: 'No device code is waiting.' }); return; }
+      res.json(checkout.deviceCode);
+    }));
     app.post('/api/setup/import', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupImportBody), this.wrapHandler(this.startHistoryImport));
     // Finish Setup's "Stop import": the same guards. It only ends a run; the person's own POST above starts one again.
     app.post('/api/setup/import/stop', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupImportBody), this.wrapHandler(this.stopHistoryImport));
@@ -980,7 +994,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
   private setupStateView(state: SetupStateFile = readSetupState(this.setupStatePath)): SetupStateView {
     const settings = SettingsDefaultsManager.loadFromFile(this.settingsPath, true, { readOnly: true }) as unknown as Record<string, unknown>;
     const historyImport = this.historyImport?.state() ?? null;
-    return { ...state, install: redactSetupInstall(state.install), alreadyPro: hasProConfiguration(settings), history: this.historyCounts(), historyImport, backgroundWorkRunning: this.backgroundWorkRunning({ countScanWaitingForUploadAnswer: true, failOnUnreadableRefresh: false }) };
+    return { ...state, install: redactSetupInstall(state.install), checkout: redactSetupCheckout(state.checkout), alreadyPro: hasProConfiguration(settings), history: this.historyCounts(), historyImport, backgroundWorkRunning: this.backgroundWorkRunning({ countScanWaitingForUploadAnswer: true, failOnUnreadableRefresh: false }) };
   }
 
   /**
@@ -1123,7 +1137,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
 
   /** The choice can change until the installer acts on it; after that the installer holds the result. */
   private saveSetupChoice = (req: Request, res: Response): void => {
-    const { branch, memoryBilling, cloudSyncOffer, openCheckout } = req.body as z.infer<typeof setupChoiceBody>;
+    const { branch, memoryBilling, cloudSyncOffer, shareWorkView, openCheckout } = req.body as z.infer<typeof setupChoiceBody>;
     const offer = setupCloudSyncOffer({ branch, memoryBilling, cloudSyncOffer });
     const state = readSetupState(this.setupStatePath);
     if (state.status === 'complete') { res.status(409).json({ error: 'Setup is already complete.', state: this.setupStateView(state) }); return; }
@@ -1132,7 +1146,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
     // The first checkout request belongs to the plan saved in this same write. A repeat
     // or a second browser tab cannot replace that plan while the terminal sets up pairing.
     const sameChoice = state.choice?.branch === branch && state.choice.memoryBilling === memoryBilling
-      && setupCloudSyncOffer(state.choice) === offer;
+      && setupCloudSyncOffer(state.choice) === offer && state.choice.shareWorkView === shareWorkView;
     const locked = applied || (!!state.checkout && state.installer?.stage !== 'failed');
     if (locked && !sameChoice) {
       res.status(409).json({ error: 'The installer already applied the earlier choice.', state: this.setupStateView(state) });
@@ -1149,20 +1163,22 @@ export class WorkViewRoutes extends BaseRouteHandler {
     const usage = state.choice?.usage ?? (scanUsage ? toSetupUsage(scanUsage) : undefined);
     const choice = locked ? state.choice : {
       branch, memoryBilling, chosenAt: now,
+      ...(shareWorkView ? { shareWorkView } : {}),
       ...(offer ? { cloudSyncOffer: offer, ...(usage ? { usage } : {}) } : {}),
     };
     this.saveSetupState({ ...state, choice, checkout }, res);
   };
 
   private saveInstallerStage = (req: Request, res: Response): void => {
-    const { stage, error, checkout } = req.body as z.infer<typeof setupInstallerBody>;
+    const { stage, error, checkout, deviceCode } = req.body as z.infer<typeof setupInstallerBody>;
     const state = readSetupState(this.setupStatePath);
     const now = new Date().toISOString();
     // A new installer run starts a fresh hand-off: a choice or checkout left by an earlier, interrupted run is not applied.
     const fresh = stage === 'waiting-for-choice';
     const choice = fresh ? null : state.choice;
     const checkoutState = fresh ? null : checkout
-      ? { state: checkout, requests: state.checkout?.requests ?? 0, error: checkout === 'failed' ? error ?? null : null, updatedAt: now }
+      // Each report replaces the code: only a waiting checkout carries one (the body check), so paid and failed clear it.
+      ? { state: checkout, requests: state.checkout?.requests ?? 0, error: checkout === 'failed' ? error ?? null : null, updatedAt: now, ...(deviceCode ? { deviceCode } : {}) }
       : state.checkout;
     this.saveSetupState({ ...state, choice, checkout: checkoutState, installer: { stage, error: checkout ? state.installer?.error ?? null : error ?? null, updatedAt: now } }, res);
   };
@@ -1305,13 +1321,15 @@ export class WorkViewRoutes extends BaseRouteHandler {
    * being extracted now, read from what has landed: goals first, then work (request groups), then rules (the story).
    */
   private setupView(snapshot: WorkViewSnapshot) {
+    const scan = this.setupScan?.state() ?? null;
     const hosted = this.hostedIntent?.state();
-    if (hosted && hosted.state !== 'idle') return { scan: this.setupScan?.state() ?? null, work: this.setupWork(), extraction: hosted };
+    const ranHosted = scan && (scan.uploadedAgents !== null || (scan.done && scan.agents.every(agent => !agent.prompts)));
+    if (ranHosted && hosted && hosted.state !== 'idle') return { scan, work: this.setupWork(), extraction: hosted };
     const refresh = this.readableRefreshStatus();
     const view = snapshot as unknown as { goals?: unknown; story?: { groups?: number; story?: unknown } | null };
     const step = refresh?.state !== 'running' ? null : !view.goals ? 'goals' : !view.story?.groups ? 'work' : 'rules';
     return {
-      scan: this.setupScan?.state() ?? null,
+      scan,
       work: this.setupWork(),
       extraction: refresh ? {
         state: refresh.state, reason: refresh.reason ?? null, step, agent: refresh.agent ?? null,
@@ -2046,6 +2064,11 @@ export class WorkViewRoutes extends BaseRouteHandler {
 
   publishSyncStatus(sync: ViewerSyncStatus): void {
     this.broadcast('sync_status', { sync });
+  }
+
+  publishReviewStackChanged(): void {
+    // The shared event stream carries no cards, IDs or decisions. Readers use the guarded private route.
+    this.broadcast('review-stack-changed', {});
   }
 
   /**

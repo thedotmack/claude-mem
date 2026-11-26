@@ -30,8 +30,13 @@ Publication can lag behind a successful command. An exact-version 404 or stale d
 
 ## Observe and repair
 
-- Honor the requested observation window. Without one, watch through 30 minutes after the release first becomes publicly available or production becomes ready, whichever affected surface is later. For an older release, do a fresh sweep and inspect the completed late CI and reports covering that interval.
-- Poll pending or changing checks every 30–60 seconds; check steady signals every 2–5 minutes. Keep individual waits at most 60 seconds so user steering and progress updates remain responsive. An unavailable API is a coverage gap, not evidence that the release is healthy.
+- Honor the requested observation window. Without one, watch through 24 hours after the release first becomes publicly available or production becomes ready, whichever affected surface is later. A full day covers slow registry propagation, late CI, and reports from users in other time zones. For an older release, do a fresh sweep and inspect the completed late CI and reports covering that interval.
+- Space checks out as the release settles:
+  - **First hour:** poll pending or changing checks every 30–60 seconds and steady signals every 2–5 minutes. Most publish, install, and CI failures show up here.
+  - **Hours 1–6:** do a fresh sweep of every affected surface every 30 minutes.
+  - **Hours 6–24:** do a fresh sweep every 2 hours, then a final sweep at the 24-hour mark.
+  - Any new finding, pending signal, or shipped repair returns that surface to first-hour polling until it settles.
+- Keep individual in-session waits at most 60 seconds so user steering and progress updates remain responsive. For the longer gaps, do not hold a session open waiting: use the host's scheduled check, wake-up, or CI/PR notification where available, and record the next check time with `work_state_write`. If there is no way to come back, report the window as still open with the next check due, not as clean. An unavailable API is a coverage gap, not evidence that the release is healthy.
 - Verify each finding before changing code. Distinguish a release regression, a pre-existing issue, an operational failure, and a resolved/transient signal; give each its own evidence and next action.
 - For a verified claude-mem release regression, pull back the promotion with the **Pull back a bad release** bullet in [version-bump](../version-bump/SKILL.md) step 13. A pull-back downgrades no install and is part of the release already authorized, so it needs no new authorization. Then ship the fix as a new patch release, as the next bullet describes.
 - Make focused fixes, run checks appropriate to the change, and use the repository's normal PR/release/deployment process. Use [babysit](../babysit/SKILL.md) for a repair PR and [version-bump](../version-bump/SKILL.md) when a new claude-mem release is authorized. Published versions and existing tags stay immutable.

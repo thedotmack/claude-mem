@@ -58,6 +58,6 @@ test('keeps product order, platform scope and the first deliverable-only session
   expect(updates[1].value.products.map((product: any) => product.url)).toEqual(['https://example.com/claude']);
   expect(updates[0].value.launches.map((launch: any) => launch.agent_id)).toEqual(['agent-0', 'agent-2']);
   expect(updates[1].value.activity.map((activity: any) => activity.agent_id)).toEqual(['agent-1']);
-  expect(updates[2].value.session.user_prompt).toBe('First copied conversation');
+  expect(updates[2].value.session.user_prompt).toBeNull();
   expect(records.sessions).toEqual([codex, absent, claude]);
 });

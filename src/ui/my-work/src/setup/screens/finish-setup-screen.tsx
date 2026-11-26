@@ -1,37 +1,15 @@
-import { ArrowRightIcon, CheckIcon, CopyIcon, ExternalLinkIcon, InfoIcon } from 'lucide-react'
+import { ArrowRightIcon, CheckIcon, ExternalLinkIcon, InfoIcon } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
-import { SaveButton } from '@/components/save-button'
 import { Collapsible, CollapsibleContent, CollapsibleFoldTrigger } from '@/components/ui/collapsible'
 import { interpolate, useI18n } from '@/lib/i18n'
 import { CMEM_MCP_URL, type HistoryImportProgress, type SetupHistory, type SetupTool } from '../setup-data'
 import type { HistoryImportStatus, MemoryBranch } from '../setup-flow'
-import { PageHeading, SetupActions, SetupButton, SetupError, ToolMark, type SetupBack } from './shared'
+import { CopyText, PageHeading, PrivateWorkViewLink, SetupActions, SetupButton, SetupError, ToolMark, type SetupBack } from './shared'
 
 function CopyUrl({ toolName }: { toolName: string }) {
   const { t } = useI18n()
-  const [status, setStatus] = useState<'' | 'URL copied.' | 'Select and copy the URL above.'>('')
-  // Resolves false when the copy failed, so the button shows no check; the status line says what to do. The button says
-  // what happens, a copy: Copying…, Copied, Not copied; nothing on this screen says Saving or Saved (nothing is saved).
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(CMEM_MCP_URL)
-      setStatus('URL copied.')
-      return true
-    } catch {
-      setStatus('Select and copy the URL above.')
-      return false
-    }
-  }
-  return (
-    <>
-      <div className="connection-copy">
-        <code>{CMEM_MCP_URL}</code>
-        <SaveButton type="button" className="secondary" onClick={copy} aria-label={interpolate(t('Copy CMEM URL for {toolName}'), { toolName })}
-          icon={<CopyIcon aria-hidden="true" />} savingLabel={t('Copying…')} savedLabel={t('Copied')} notSavedLabel={t('Not copied')}>{t('Copy URL')}</SaveButton>
-      </div>
-      <p className="connection-status" role="status" aria-live="polite">{t(status)}</p>
-    </>
-  )
+  return <CopyText text={CMEM_MCP_URL} label={t('Copy URL')} buttonLabel={interpolate(t('Copy CMEM URL for {toolName}'), { toolName })}
+    copiedStatus={t('URL copied.')} notCopiedStatus={t('Select and copy the URL above.')} className="connection-copy" statusClassName="connection-status" />
 }
 
 /** On The Go: how each picked tool reads the cloud memory (PROTO renderConnectionDetails, CONNECTOR-EVIDENCE.md). */
@@ -125,12 +103,12 @@ function HistoryPanel({ history, status, result, stopping, onImport, onStop }: {
   return (
     <section className="panel is-memory history-panel" aria-labelledby="history-title">
       <h2 id="history-title">{t('Bring your existing memory')}</h2>
-      <p>{t('Upload your existing claude-mem history from all projects to your CMEM account.')}</p>
+      <p>{t('Add memories Claude-Mem already saved for your projects to your account.')}</p>
       {status === 'complete' ? <ImportReceipt result={result} /> : (
         <>
           <p className="history-count tabular">{interpolate(t('{projects} projects · {sessions} sessions · {observations} memories'), { projects: history.projects, sessions: history.sessions, observations: number(history.observations) })}</p>
           {/* The last run, as the worker reports it. */}
-          {result?.state === 'failed' && <SetupError title={t(IMPORT_RUN_WORDS.failed)} check={t('Import full history again to continue. Memories already in your CMEM account are skipped.')} detail={result.error} />}
+          {result?.state === 'failed' && <SetupError title={t(IMPORT_RUN_WORDS.failed)} check={t('Try adding your saved memories again. Your account keeps each memory once.')} detail={result.error} />}
           {result?.state === 'stopped' && <ImportStopped result={result} />}
           {/* A run found running (after a reload): Stop is right here, with no tick box; the box below is for a start. */}
           {result?.state === 'running' && (
@@ -142,11 +120,11 @@ function HistoryPanel({ history, status, result, stopping, onImport, onStop }: {
           {result?.state === 'done' && <ImportReceipt result={result} />}
           <label className="history-permission">
             <input type="checkbox" checked={permission} onChange={(event) => setPermission(event.target.checked)} />
-            <span>{t('Import my full history from all projects to my CMEM account.')}</span>
+            <span>{t('Add saved memories from all my projects to my CMEM account.')}</span>
           </label>
           <div className="history-actions">
             {/* Outlined: the screen's one navy button is Continue. Dimmed, it still reads at 4.5:1 and says what it waits for. */}
-            <SetupButton look="outline" className="import-button" aria-disabled={!permission || undefined} aria-describedby={permission ? undefined : 'history-import-hint'} onClick={onImport}>{t('Import full history')}</SetupButton>
+            <SetupButton look="outline" className="import-button" aria-disabled={!permission || undefined} aria-describedby={permission ? undefined : 'history-import-hint'} onClick={onImport}>{t('Add saved memories')}</SetupButton>
             {!permission && <p id="history-import-hint" className="setup-hint"><InfoIcon aria-hidden="true" />{t('Tick the box above to turn this on.')}</p>}
           </div>
         </>
@@ -198,6 +176,7 @@ export function FinishSetupScreen({ branch, tools, selected, onSelect, history, 
   return (
     <section aria-labelledby="finish-setup-title">
       <PageHeading id="finish-setup-title" title={t('Connect your tools')} />
+      {branch === 'go' && <PrivateWorkViewLink />}
       <form onSubmit={submit} noValidate>
         <div className={history ? 'finish-grid has-history' : 'finish-grid'}>
           <div className="panel finish-tools">

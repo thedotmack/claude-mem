@@ -322,7 +322,7 @@ async function runJobsRetry(args: ParsedArgs): Promise<void> {
              VALUES (gen_random_uuid(), $1, 'failed', 'failed', $2, $3::jsonb)`,
             [id, row.attempts, JSON.stringify({ source: 'cli_operator_retry', reason: 'retry_republish_failed', error: reason })],
           );
-          console.error(styleText('red', `Job was not requeued: publishing it to BullMQ failed (${reason}). The job is now failed; re-run once the queue is reachable.`));
+          console.error(styleText('red', `Job was not requeued: publishing it to BullMQ failed (${reason}). The job is now failed; re-run once the queue can take it.`));
           process.exit(1);
         }
       }
@@ -594,7 +594,12 @@ async function republishToBullmq(sourceType: string, jobId: string, payload: Rec
     ...(testSeams.bullmqQueueFactory !== undefined ? { queueFactory: testSeams.bullmqQueueFactory } : {}),
   });
   try {
-    try { await queue.remove(jobId); } catch { /* terminal slot may be missing */ }
+    // A job cancelled while processing stays with its worker until the
+    // provider call returns. BullMQ keeps it, an add() with the same id is
+    // ignored, and nothing delivers the job again when that run ends.
+    if (!(await queue.remove(jobId))) {
+      throw new Error(`a worker still holds BullMQ job ${jobId} from the run before`);
+    }
     await queue.add(jobId, payload);
   } finally {
     // ServerJobQueue.close() logs a close that fails. It must not decide

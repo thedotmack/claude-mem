@@ -40,6 +40,7 @@
 // (stamp/DELETE). Any malformed or incomplete 200 response is rejected
 // before acknowledgment state changes and enters the normal backoff path.
 
+import { syncablePromptSql } from '../prompt-import/transcript-origin.mjs';
 import type { Database } from 'bun:sqlite';
 import { hostname } from 'os';
 import { randomUUID } from 'crypto';
@@ -453,7 +454,7 @@ const KINDS: KindSpec[] = [
         s.memory_session_id AS memory_session_id, s.project AS project,
         s.platform_source AS platform_source
       FROM user_prompts up LEFT JOIN sdk_sessions s ON up.session_db_id = s.id
-      WHERE up.synced_at IS NULL AND up.origin_device_id IS NULL
+      WHERE up.synced_at IS NULL AND up.origin_device_id IS NULL AND ${syncablePromptSql('up.native_prompt_id')}
       ORDER BY up.id LIMIT ?`,
     selectOneSql: `
       SELECT CAST(up.id AS TEXT) AS id, CAST(up.sync_rev AS TEXT) AS sync_rev,
@@ -463,7 +464,7 @@ const KINDS: KindSpec[] = [
         s.memory_session_id AS memory_session_id, s.project AS project,
         s.platform_source AS platform_source
       FROM user_prompts up LEFT JOIN sdk_sessions s ON up.session_db_id = s.id
-      WHERE up.id = ? AND up.origin_device_id IS NULL`,
+      WHERE up.id = ? AND up.origin_device_id IS NULL AND ${syncablePromptSql('up.native_prompt_id')}`,
     toBody: (r) => ({
       content_session_id: r.content_session_id ?? null,
       prompt_number: decimalPayload(r.prompt_number, 'prompt_number'),
@@ -850,6 +851,7 @@ export class CloudSync {
       }
       this.poisonQuarantinesThisFlush = 0;
       this.dropStaleOriginDeviceIdSnapshots();
+      this.discardPrivatePromptRetries();
       let backfillPageSelected = false;
       let backfillMadeProgress = false;
       do {
@@ -1504,6 +1506,28 @@ export class CloudSync {
       WHERE ${scopeSql} AND o.deleted = 0 AND ${mutationPrerequisiteSql(FROZEN_SCOPE, this.deviceSql())}
     `).get(...params) as { count: number; oldest: number | null };
     return result.count > 0 ? result : null;
+  }
+
+  /** Older clients could freeze setup imports before an interrupted push.
+   * Keep their local prompt and any deletion operation, and settle queued
+   * recovery selections before mutation prerequisites inspect this outbox. */
+  private discardPrivatePromptRetries(): void {
+    this.db.transaction(() => {
+      const discarded = this.db.prepare(`
+        DELETE FROM sync_content_outbox AS o WHERE kind = 'prompt' AND deleted = 0
+          AND NOT EXISTS (SELECT 1 FROM user_prompts p WHERE p.id = o.origin_local_id
+            AND p.origin_device_id IS NULL AND ${syncablePromptSql('p.native_prompt_id')})
+        RETURNING entity_id, origin_local_id, entity_rev
+      `).all() as Array<{ entity_id: string; origin_local_id: string; entity_rev: string }>;
+      for (const row of discarded) {
+        if (!this.db.prepare('SELECT 1 FROM user_prompts WHERE id = ? AND origin_device_id IS NULL').get(row.origin_local_id)) {
+          // No live row can prove this replay eligible. Supersede its highest
+          // attempted revision even if an earlier client already sent it.
+          this.ensureMissingRowTombstone('prompt', { id: row.entity_id, entity_rev: row.entity_rev, origin_local_id: row.origin_local_id }, Date.now());
+        }
+        this.recovery.recordLocalOnly(row.entity_id);
+      }
+    })();
   }
 
   private async drainContentPage(kind: KindSpec): Promise<boolean> {
@@ -2189,7 +2213,7 @@ export class CloudSync {
     const current = this.db.prepare(spec.selectOneSql).get(body.origin_local_id) as LocalRow | undefined;
 
     if (!current) {
-      if (!body.deleted) this.ensureMissingRowTombstone(spec, body, now);
+      if (!body.deleted) this.ensureMissingRowTombstone(spec.kind, body, now);
       return;
     }
 
@@ -2248,8 +2272,8 @@ export class CloudSync {
 
   /** Defensive tombstone for an out-of-band DELETE that bypassed DataRoutes. */
   private ensureMissingRowTombstone(
-    spec: KindSpec,
-    body: ReturnType<typeof parseCanonicalOperation>,
+    kind: ContentKind,
+    body: Pick<ReturnType<typeof parseCanonicalOperation>, 'id' | 'entity_rev' | 'origin_local_id'>,
     now: number,
   ): void {
     const pending = this.db.prepare(
@@ -2266,7 +2290,7 @@ export class CloudSync {
       ...(repair ? [repair.entity_rev] : []),
     ]));
     const tombstone = buildContentOperation({
-      kind: spec.kind,
+      kind,
       originDeviceId: this.deviceId,
       originLocalId: body.origin_local_id!,
       entityRev,
@@ -2281,7 +2305,7 @@ export class CloudSync {
       VALUES (?, ?, ?, ?, ?, ?, 1, ?)
       ON CONFLICT(entity_id, entity_rev) DO NOTHING
     `).run(
-      body.id, spec.kind, body.origin_local_id, entityRev,
+      body.id, kind, body.origin_local_id, entityRev,
       tombstone.body, tombstone.operation_sha256, now,
     );
   }
@@ -2311,6 +2335,7 @@ export class CloudSync {
   private countPending(table: string): number {
     const row = this.db.prepare(
       `SELECT COUNT(*) AS n FROM ${table} WHERE synced_at IS NULL AND origin_device_id IS NULL
+      ${table === 'user_prompts' ? `AND ${syncablePromptSql('native_prompt_id')}` : ''}
       ${table === 'work_state_entries' ? `AND ${this.sharedWorkAllowedSql('list_name')}` : ''}`
     ).get() as { n: number };
     return row.n;
