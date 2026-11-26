@@ -93,6 +93,41 @@ describe('zcodeAdapter cwd and session id', () => {
     expect(zcodeAdapter.normalizeInput(withoutCwd).cwd).toBe(process.cwd());
   });
 
+  describe('with CLAUDE_PROJECT_DIR inherited from the shell that started ZCode', () => {
+    const otherProject = '/Users/example/projects/some-claude-project';
+    beforeEach(() => {
+      process.env.CLAUDE_PROJECT_DIR = otherProject;
+    });
+
+    test('keeps the payload cwd', () => {
+      process.env.ZCODE_PROJECT_DIR = import.meta.dir;
+      expect(zcodeAdapter.normalizeInput(payloads.PostToolUseRead).cwd).toBe(PROJECT);
+    });
+
+    test('takes ZCODE_PROJECT_DIR when the payload has no cwd', () => {
+      process.env.ZCODE_PROJECT_DIR = import.meta.dir;
+      expect(zcodeAdapter.normalizeInput(withoutCwd).cwd).toBe(import.meta.dir);
+    });
+
+    test('falls back to process.cwd() without cwd or ZCODE_PROJECT_DIR', () => {
+      expect(zcodeAdapter.normalizeInput(withoutCwd).cwd).toBe(process.cwd());
+    });
+
+    test.each([
+      ['empty', ''],
+      ['not a string', 42],
+    ])('rejects an %s cwd instead of using CLAUDE_PROJECT_DIR', (_label, cwd) => {
+      let caught: unknown;
+      try {
+        zcodeAdapter.normalizeInput({ ...payloads.PostToolUseRead, cwd });
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(AdapterRejectedInput);
+      expect((caught as AdapterRejectedInput).reason).toBe('invalid_cwd');
+    });
+  });
+
   test.each([
     ['missing', (({ session_id: _s, sessionId: _c, ...rest }) => rest)(payloads.PostToolUseRead)],
     ['empty', { ...payloads.PostToolUseRead, session_id: '', sessionId: '' }],
