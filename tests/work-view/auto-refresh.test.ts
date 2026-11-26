@@ -371,7 +371,7 @@ describe('automatic refresh scheduler', () => {
   });
 
   it('a run that left groups without a review waits like a failed one, so the same groups are not asked for again every ten minutes (#6432)', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-'));
+    const dir = scratchDir('auto-refresh-left-reviews-wait');
     try {
       const MINUTE = 60000;
       let now = NOW, groupsLeftWithoutReview = 1, runs = 0;
