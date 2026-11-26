@@ -377,6 +377,29 @@ describe('overall requests and progress reviews', () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+  it('focus: a request the model cannot decide goes in "ignored" and is recorded in Other with its reason', async () => {
+  const dir = ledgerDir();
+  try {
+    const database = fixtureDatabase();
+    const focus = focusFixture(database);
+    focus.area('fa_cards', 'Cards', 'kept');
+    const { run, write } = cliRunner(dir, database, focus.save);
+    run(['apply', write('d.json', { groups: [{ title: 'Release cards', conversations: [key('a'), key('b')], links: [{ kind: 'shared-work-list', conversations: [key('a'), key('b')], evidence: 'work list "release-cards" in repo/tree' }] }, { title: 'Pricing page', conversations: [key('c')] }] })]);
+    expect(run(['focus-input']).requests.map((request: any) => request.anchor)).toEqual([key('a'), key('c')]);
+    // Ignoring a request that was not asked about is refused; so is ignoring in the Other pass, which places nothing.
+    await expect(run(['record-focus', write('f0.json', { placements: [{ anchor: key('a'), focusAreaId: 'fa_cards', evidence: 'x' }], proposals: [], ignored: [{ anchor: key('z'), reason: 'Not a request.' }] })])).rejects.toThrow(/ignored\[0\] names .+, which was not asked about/);
+    await expect(run(['record-focus', '--other', write('f0b.json', { placements: [], proposals: [], ignored: [{ anchor: key('c'), reason: 'Not a request.' }] })])).rejects.toThrow(/places nothing/);
+    // One placed, one explicitly skipped: the batch completes instead of failing on the missing one (#6432).
+    expect(await run(['record-focus', write('f1.json', { placements: [{ anchor: key('a'), focusAreaId: 'fa_cards', evidence: 'Release cards are cards.' }], proposals: [], ignored: [{ anchor: key('c'), reason: 'A pricing page draft, not a piece of work yet.' }] })]))
+      .toEqual({ placed: 2, proposed: 0, focusAreaIds: [] });
+    const placed = readFocus(database, { localDeviceId: '' });
+    expect(placed.focusAreaIdByAnchor.get(key('a'))).toBe('fa_cards');
+    expect(placed.focusAreaIdByAnchor.get(key('c'))).toBe('other');
+    expect(placed.placementsByAnchor.get(key('c'))?.router?.evidence).toBe('A pricing page draft, not a piece of work yet.');
+    expect(run(['focus-input']).requests).toEqual([]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
   it('a request is placed again when its asks or conversations change, never for a new review; another device\'s placement is not compared', async () => {
   const dir = ledgerDir();
   try {
