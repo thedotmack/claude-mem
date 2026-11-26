@@ -95,6 +95,11 @@ async function publishPreRestoreCopy(source: string, destination: string, wal?: 
   using lock = openRestoreStagingLock(dirname(destination));
   // A read transaction excludes cleanup until the staging claim is released.
   // Reading the schema actually takes the shared lock; BEGIN alone is deferred.
+  // One second of busy_timeout: only removePartialSnapshots holds this lock
+  // exclusively, across a few lstat and unlink calls. That whole call measured
+  // 2.4 ms with 3 abandoned copies and 291 ms with 1,000 (2026-11-26, macOS,
+  // machine under test load). A restore that still cannot take the lock fails
+  // here, loudly, with the live database not yet replaced.
   lock.exec('PRAGMA busy_timeout = 1000; BEGIN; SELECT count(*) FROM sqlite_schema');
   const partial = `${destination}.partial`;
   const destinationWal = `${destination}-wal`;
