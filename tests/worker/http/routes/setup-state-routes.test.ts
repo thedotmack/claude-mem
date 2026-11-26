@@ -329,7 +329,7 @@ describe('setup state endpoints', () => {
 
   it('start pending on a machine that never finished setup, with nothing pre-selected', async () => {
     await start();
-    expect(await state()).toEqual({ status: 'pending', choice: null, installer: null, checkout: null, tools: null, completedAt: null, alreadyPro: false, history: { projects: 0, sessions: 0, observations: 0 }, historyImport: null, backgroundWorkRunning: [] });
+    expect(await state()).toEqual({ status: 'pending', choice: null, installer: null, checkout: null, tools: null, completedAt: null, alreadyPro: false, hostedObserver: false, history: { projects: 0, sessions: 0, observations: 0 }, historyImport: null, backgroundWorkRunning: [] });
     expect(existsSync(statePath)).toBe(false);
   });
 
@@ -467,6 +467,16 @@ describe('setup state endpoints', () => {
     } }));
     await start();
     expect((await state()).alreadyPro).toBe(true);
+    // Cloud Sync alone is not hosted memory writing: Work View may still offer that.
+    expect((await state()).hostedObserver).toBe(false);
+  });
+
+  it('report an observer that already writes memories on cmem.ai, so Work View does not offer hosted writing again', async () => {
+    writeFileSync(settingsPath, JSON.stringify({ env: {
+      CLAUDE_MEM_PROVIDER: 'openrouter', CLAUDE_MEM_OPENROUTER_API_KEY: 'cm_pro_fixture', CLAUDE_MEM_OPENROUTER_BASE_URL: 'https://cmem.ai/api/inference/v1',
+    } }));
+    await start();
+    expect(await state()).toMatchObject({ alreadyPro: true, hostedObserver: true });
   });
 
   it('accept only well-formed choices from the viewer page', async () => {
@@ -526,26 +536,20 @@ describe('setup state endpoints', () => {
     expect((await state()).checkout.requests).toBe(1);
   });
 
-  it('preserves the original token summary with the Cloud choice across worker restarts', async () => {
+  it('saves the Cloud choice without the scan\'s usage or prompts', async () => {
     const scan = new SetupScan({ getStore: () => { throw new Error('A saved choice must not start a scan'); } });
     const idle = scan.state();
-    const scanState = spyOn(scan, 'state').mockReturnValue({
+    spyOn(scan, 'state').mockReturnValue({
       ...idle, done: true, phase: 'done',
       recentPrompts: [{ agent: 'codex', at: '2026-11-23T18:00:00Z', text: 'Original private prompt' }],
       usage: { agents: [], windowDays: 30, windowStart: '2026-10-24', totalTokens: 12345, observations: 0, coverage: 'partial', persona: null, efficiencyPercent: null },
     });
     await start(null, undefined, scan);
-    const summary = { coverage: 'partial', periodLabel: 'Usage history is incomplete.', tokens: 12345, persona: null, efficiencyPercent: null };
     const plan = { branch: 'go', memoryBilling: 'existing', cloudSyncOffer: 'cloud_sync_monthly', openCheckout: true };
-    expect((await (await post('/api/setup/choice', plan)).json()).choice.usage).toEqual(summary);
+    const saved = (await (await post('/api/setup/choice', plan)).json()).choice;
+    expect(Object.keys(saved).sort()).toEqual(['branch', 'chosenAt', 'cloudSyncOffer', 'memoryBilling']);
     expect(readFileSync(statePath, 'utf8')).not.toContain('Original private prompt');
-    scanState.mockReturnValue(idle);
-    await stop();
-    await start();
-    expect((await state()).choice.usage).toEqual(summary);
-    expect((await (await post('/api/setup/choice', plan)).json()).choice.usage).toEqual(summary);
-    await post('/api/setup/installer', { stage: 'waiting-for-choice' });
-    expect((await (await post('/api/setup/choice', plan)).json()).choice.usage).toBeUndefined();
+    expect(readFileSync(statePath, 'utf8')).not.toContain('12345');
   });
 
   it('keeps a saved hosted choice as the legacy bundle, without silently adding a Cloud offer', async () => {

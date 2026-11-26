@@ -55,8 +55,7 @@ import type { SetupScan, SetupScanState } from '../../../prompt-import/setup-sca
 import { readHistoryCounts, type HistoryImport } from '../../../setup/history-import.js';
 import { createSetupTelemetry } from '../../../setup/telemetry.js';
 import { createSetupInstallerResumer } from '../../../setup/resume-installer.js';
-import { hasActiveSetupSession, hasProConfiguration, readSetupState, setupStatePath, writeSetupState, type SetupCheckout, type SetupCheckoutServed, type SetupStateFile, type SetupStateView } from '../../../../shared/setup-state.js';
-import { toSetupUsage } from '../../../../shared/setup-usage.js';
+import { hasActiveSetupSession, hasHostedObserver, hasProConfiguration, readSetupState, setupStatePath, writeSetupState, type SetupCheckout, type SetupCheckoutServed, type SetupStateFile, type SetupStateView } from '../../../../shared/setup-state.js';
 import { historyImportRunning, SETUP_BRANCHES, SETUP_CLOUD_SYNC_OFFERS, SETUP_DEVICE_CODE_PATTERN, SETUP_INSTALLER_STAGES, SETUP_MEMORY_BILLINGS, setupCloudSyncOffer } from '../../../../shared/setup-funnel.js';
 import { hasPendingInstallSetup, SETUP_DSH_PROFILE_MAX_CHARACTERS, SETUP_INSTALL_NOTE_MAX_CHARACTERS, SETUP_INSTALL_STATUSES } from '../../../../shared/setup-install.js';
 import {
@@ -994,7 +993,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
   private setupStateView(state: SetupStateFile = readSetupState(this.setupStatePath)): SetupStateView {
     const settings = SettingsDefaultsManager.loadFromFile(this.settingsPath, true, { readOnly: true }) as unknown as Record<string, unknown>;
     const historyImport = this.historyImport?.state() ?? null;
-    return { ...state, install: redactSetupInstall(state.install), checkout: redactSetupCheckout(state.checkout), alreadyPro: hasProConfiguration(settings), history: this.historyCounts(), historyImport, backgroundWorkRunning: this.backgroundWorkRunning({ countScanWaitingForUploadAnswer: true, failOnUnreadableRefresh: false }) };
+    return { ...state, install: redactSetupInstall(state.install), checkout: redactSetupCheckout(state.checkout), alreadyPro: hasProConfiguration(settings), hostedObserver: hasHostedObserver(settings), history: this.historyCounts(), historyImport, backgroundWorkRunning: this.backgroundWorkRunning({ countScanWaitingForUploadAnswer: true, failOnUnreadableRefresh: false }) };
   }
 
   /**
@@ -1159,12 +1158,10 @@ export class WorkViewRoutes extends BaseRouteHandler {
       checkout = { state: 'requested', requests: 1, error: null, updatedAt: now };
     }
     if (locked && checkout === state.checkout) { res.setHeader('Cache-Control', 'no-store'); res.json(this.setupStateView(state)); return; }
-    const scanUsage = offer && !state.choice?.usage ? this.setupScan?.state().usage : null;
-    const usage = state.choice?.usage ?? (scanUsage ? toSetupUsage(scanUsage) : undefined);
     const choice = locked ? state.choice : {
       branch, memoryBilling, chosenAt: now,
       ...(shareWorkView ? { shareWorkView } : {}),
-      ...(offer ? { cloudSyncOffer: offer, ...(usage ? { usage } : {}) } : {}),
+      ...(offer ? { cloudSyncOffer: offer } : {}),
     };
     this.saveSetupState({ ...state, choice, checkout }, res);
   };

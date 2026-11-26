@@ -1,8 +1,7 @@
 import { SETUP_TOOLS, type SetupTool } from './agent-connections'
 // What the funnel screens show. Every screen reads it through props; nothing here is made up.
-// The live source fills it from the worker (prompt scan, extraction, usage, setup state); `?source=sample` loads
+// The live source fills it from the worker (prompt scan, extraction, setup state); `?source=sample` loads
 // setup-sample.ts instead, and only then.
-import { toSetupUsage, type SetupScanUsage, type SetupUsage } from './setup-usage'
 import { choiceLocked } from './setup-flow'
 import { revealFromSnapshot, type SnapshotWithSetup, type WorkerExtraction } from './setup-reveal'
 import { noteFor, searchUrl, toMemoryResults, type MemoryResult, type WorkerSearchResult } from './setup-search'
@@ -57,7 +56,6 @@ export type { RevealGoal, RevealRule, RevealSets, RevealWork } from './setup-rev
 import type { RevealSets } from './setup-reveal'
 import type { InstallerStage, SetupStep } from './setup-flow'
 
-export type { Persona, SetupScanUsage, SetupUsage, UsageCoverage } from './setup-usage'
 
 export interface SetupHistory { projects: number; sessions: number; observations: number }
 /**
@@ -111,7 +109,7 @@ export interface SetupData {
   connectionError: string | null
   /** Whether the connection error got no answer at all or a refusal; null with no error. */
   connectionErrorKind: SetupFailureKind | null
-  choice: (SetupChoice & { usage?: SetupUsage }) | null
+  choice: SetupChoice | null
   /** Undefined until the first state response; null for older/already configured installers. */
   install: SetupInstallState | null | undefined
   scan: SetupScanView
@@ -122,7 +120,6 @@ export interface SetupData {
   checkout: SetupCheckoutView | null
   /** `null` until an installer reports. */
   installer: SetupInstallerView | null
-  usage: SetupUsage | null
   alreadyPro: boolean
   /** Finish Setup tool ids found on this machine; they come pre-ticked. */
   detectedTools: string[]
@@ -176,7 +173,6 @@ export const EMPTY_SETUP_DATA: SetupData = {
   recentPrompts: [],
   checkout: null,
   installer: null,
-  usage: null,
   alreadyPro: false,
   detectedTools: [],
   history: null,
@@ -204,8 +200,6 @@ interface WorkerScanState extends Omit<SetupScanView, 'agents' | 'improveProduct
   improveProduct?: boolean
   /** An older worker sends no canRunSetup / cannotRunReason / uploadBytes. */
   agents: Array<Omit<SetupScanAgent, 'canRunSetup' | 'cannotRunReason' | 'uploadBytes'> & Partial<Pick<SetupScanAgent, 'canRunSetup' | 'cannotRunReason' | 'uploadBytes'>> & { fromMemory?: number; fromTranscripts?: number }>
-  /** The 30-day token usage the same pass sums, once the scan is done. */
-  usage?: SetupScanUsage | null
   recentPrompts?: SetupRecentPrompt[]
 }
 interface WorkerHistoryImport { state: HistoryImportRunState; percent: number; imported: number; error: string | null; sent?: number; total?: number; skipped?: number; unconfirmed?: number }
@@ -279,14 +273,13 @@ const askImport = async (url: string) => { if (sendImportRequest) await sendImpo
 
 /**
  * The local worker: the prompt scan (started here when it has not run, then followed on the work view's event
- * stream), the 30-day token usage that scan sums, the setup state, and the Reveal's sets from the work view snapshot. Search and import land in funnel
+ * stream), the setup state, and the Reveal's sets from the work view snapshot. Search and import land in funnel
  * Phases 9-10; until then those parts stay empty.
  */
 export const localSetupSource: SetupSource = {
   kind: 'local',
   subscribe(onData) {
     let data = EMPTY_SETUP_DATA
-    let liveUsage: SetupUsage | null = null
     let closed = false
     let scanRevision = 0
     let stateRevision = 0
@@ -297,10 +290,8 @@ export const localSetupSource: SetupSource = {
     const applyScan = (scan: WorkerScanState) => {
       scanRevision++
       appliedImproveProduct = scan.improveProduct ?? true
-      liveUsage = scan.usage ? toSetupUsage(scan.usage) : null
       publish({
         scan: toScanView(scan),
-        usage: data.choice?.usage ?? liveUsage,
         recentPrompts: scan.recentPrompts ?? [],
         // Finish Setup pre-ticks the tools the scan found on this machine.
         detectedTools: scan.agents.filter((agent) => agent.detected).map((agent) => agent.id).filter((id) => SETUP_TOOLS.some((tool) => tool.id === id)),
@@ -342,7 +333,6 @@ export const localSetupSource: SetupSource = {
       connectionError: null,
       connectionErrorKind: null,
       choice: state.choice ?? null,
-      usage: state.choice?.usage ?? liveUsage,
       install: state.install ?? null,
       alreadyPro: state.alreadyPro,
       checkout: state.checkout ? { state: state.checkout.state, error: state.checkout.error, userCode, expiresAt } : null,

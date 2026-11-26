@@ -1269,4 +1269,11 @@ export const myworkZh: Record<string, string> = {
   "Browse": "浏览",
   "Work": "工作",
   "Skipped": "已跳过",
+  "Want us to write your memories, too?": "也想让我们帮你写入记忆吗？",
+  "With a hosted plan, cmem.ai writes them instead of your own provider.": "选择托管方案后，由 cmem.ai 代替你自己的模型提供商写入记忆。",
+  "Plans start at $30/month in addition to Cloud Sync.": "方案每月 $30 起，费用与 Cloud Sync 分开计算。",
+  "See plans and pricing": "查看方案与价格",
+  "Try Cloud Sync free for {days} days": "免费试用 Cloud Sync {days} 天",
+  "No card needed for your first trial.": "首次试用无需银行卡。",
+  "Run this in a terminal on this computer. Setup opens in your browser, where you can choose Cloud Sync.": "在这台电脑的终端中运行此命令。设置页面会在浏览器中打开，你可以在那里选择 Cloud Sync。",
 };

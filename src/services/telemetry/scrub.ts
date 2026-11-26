@@ -44,7 +44,7 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   // user code (those never enter any event property).
   'stage',
   // phase is the installer OAuth pairing phase, a closed enum
-  // (login | enrollment | deferred) on installer_oauth_timeout and
+  // (login | enrollment) on installer_oauth_timeout and
   // installer_oauth_start_failed.
   'phase',
   'install_method',

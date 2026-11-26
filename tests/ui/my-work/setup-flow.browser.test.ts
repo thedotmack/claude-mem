@@ -293,8 +293,9 @@ function fakeWorker(initialRun: object, setupChanges: object = {}, scanChanges: 
     expect(worker.choices()).toEqual([{ branch: 'go', memoryBilling: 'existing', cloudSyncOffer: 'cloud_sync_monthly', shareWorkView: true, openCheckout: true }]);
     expect(await page.browser.evaluate(`!!document.querySelector('a[href="https://cmem.ai/hosted-tokens"]')`)).toBe(false);
     worker.reportSetup({ checkout: { state: 'paid', error: null }, alreadyPro: true });
-    await page.atStep('savings');
-    expect(await page.browser.evaluate(`document.querySelector('#savings-title').textContent`)).toContain('You’ve got Cloud Sync');
+    // The confirmed trial goes straight on to Finish Setup: the hosted offer waits for Work View.
+    await page.atStep('finish-setup');
+    expect(await page.browser.evaluate(`!!document.querySelector('a[href="https://cmem.ai/hosted-tokens"]')`)).toBe(false);
     expect(worker.posts()).toEqual(['/api/setup/choice']);
     expect(worker.telemetry().filter(e => e.event === 'setup_step_viewed').map(e => e.step)).not.toContain('choice');
   }, worker);
@@ -341,11 +342,8 @@ function fakeWorker(initialRun: object, setupChanges: object = {}, scanChanges: 
     await page.until(`document.querySelector('.setup-error')?.textContent.includes('Checkout didn’t finish')`, 'the failed checkout');
     expect(await page.step()).toBe('checkout');
     worker.reportSetup({ alreadyPro: true, checkout: { state: 'paid', error: null } });
-    await page.atStep('savings');
-    expect(await page.browser.evaluate(`document.querySelector('#savings-title')?.textContent`)).toContain('You’ve got Cloud Sync');
-    expect(await page.browser.evaluate(`document.querySelector('a[href="https://cmem.ai/hosted-tokens"]')?.textContent`)).toBe('See plans and pricing');
-    await page.press('.setup-actions .primary', 'Continue setup');
     await page.atStep('finish-setup');
+    expect(await page.browser.evaluate(`!!document.querySelector('a[href="https://cmem.ai/hosted-tokens"]')`)).toBe(false);
     expect(worker.posts()).toEqual(['/api/setup/choice']);
   }, worker);
 }, 30_000);
@@ -368,14 +366,16 @@ function fakeWorker(initialRun: object, setupChanges: object = {}, scanChanges: 
 for (const plan of [
   { name: 'annual Cloud Sync', choice: { branch: 'go', memoryBilling: 'existing', cloudSyncOffer: 'cloud_sync_annual' }, stage: 'go-awaiting-checkout', alreadyPro: false, next: 'checkout' },
   { name: 'legacy hosted Pro', choice: { branch: 'go', memoryBilling: 'hosted' }, stage: 'go-awaiting-checkout', alreadyPro: false, next: 'checkout' },
-  { name: 'confirmed monthly trial', choice: { branch: 'go', memoryBilling: 'existing', cloudSyncOffer: 'cloud_sync_monthly' }, stage: 'go-awaiting-checkout', alreadyPro: true, checkout: { state: 'paid' }, next: 'savings' },
+  { name: 'confirmed monthly trial', choice: { branch: 'go', memoryBilling: 'existing', cloudSyncOffer: 'cloud_sync_monthly' }, stage: 'go-awaiting-checkout', alreadyPro: true, checkout: { state: 'paid' }, next: 'finish-setup' },
+  // The worker restarted and lost its in-memory scan: the confirmed trial still reopens on Finish Setup, not the scan.
+  { name: 'confirmed trial after the worker lost its scan', choice: { branch: 'go', memoryBilling: 'existing' }, stage: 'go-awaiting-checkout', alreadyPro: true, checkout: { state: 'paid' }, scan: { phase: 'idle', done: false, agents: [] }, next: 'finish-setup' },
   { name: 'existing Cloud access', choice: { branch: 'go', memoryBilling: 'existing' }, stage: 'go-kept-existing-pro', alreadyPro: true, next: 'finish-setup' },
   { name: 'existing credentials with interrupted checkout', choice: { branch: 'go', memoryBilling: 'existing' }, stage: 'go-kept-existing-pro', alreadyPro: true, checkout: { state: 'waiting' }, next: 'finish-setup' },
-  { name: 'existing credentials with confirmed trial', choice: { branch: 'go', memoryBilling: 'existing' }, stage: 'go-kept-existing-pro', alreadyPro: true, checkout: { state: 'paid' }, next: 'savings' },
+  { name: 'existing credentials with confirmed trial', choice: { branch: 'go', memoryBilling: 'existing' }, stage: 'go-kept-existing-pro', alreadyPro: true, checkout: { state: 'paid' }, next: 'finish-setup' },
   { name: 'At Home', choice: { branch: 'home', memoryBilling: 'existing' }, stage: 'home-ready', alreadyPro: false, next: 'finish-setup' },
 ]) {
   (chromeExecutablePath ? it : it.skip)(`reloading setup preserves the applied ${plan.name} choice`, async () => {
-    const worker = fakeWorker(uploadRun({ state: 'idle' }), { alreadyPro: plan.alreadyPro, choice: plan.choice, installer: { stage: plan.stage }, checkout: plan.checkout ?? null });
+    const worker = fakeWorker(uploadRun({ state: 'idle' }), { alreadyPro: plan.alreadyPro, choice: plan.choice, installer: { stage: plan.stage }, checkout: plan.checkout ?? null }, plan.scan);
     await withSetupPage('', { width: 390, height: 844, phone: true }, async page => {
       await page.atStep(plan.next);
       expect(worker.posts()).toEqual([]);
@@ -392,19 +392,6 @@ for (const plan of [
     await page.atStep('checkout');
     worker.reportSetup({ alreadyPro: true, installer: { stage: 'go-kept-existing-pro' } });
     await page.atStep('finish-setup');
-    expect(worker.posts()).toEqual([]);
-  }, worker);
-}, 30_000);
-
-(chromeExecutablePath ? it : it.skip)('a confirmed trial shows its recorded usage after the worker loses its in-memory scan', async () => {
-  const usage = { coverage: 'partial', periodLabel: 'Usage history is incomplete.', tokens: 12345, persona: null, efficiencyPercent: null };
-  const worker = fakeWorker(uploadRun({ state: 'idle' }), {
-    alreadyPro: true, choice: { branch: 'go', memoryBilling: 'existing', usage },
-    installer: { stage: 'go-awaiting-checkout' }, checkout: { state: 'paid' },
-  }, { phase: 'idle', done: false, agents: [] });
-  await withSetupPage('', { width: 390, height: 844, phone: true }, async page => {
-    await page.atStep('savings');
-    expect(await page.browser.evaluate<string>(`document.querySelector('.price-table dd').textContent`)).toBe('At least 12,345 recorded tokens');
     expect(worker.posts()).toEqual([]);
   }, worker);
 }, 30_000);
@@ -466,9 +453,6 @@ async function install(page: SetupWalk) {
     await page.press('.setup-actions .primary', 'Try Cloud Sync free for 30 days');
     await page.atStep('checkout');
     await measure('checkout');
-    await page.atStep('savings');
-    await measure('savings');
-    await page.press('.setup-actions .primary', 'Continue setup');
     await page.atStep('finish-setup');
     await measure('finish setup');
     await page.press('.setup-actions .primary', 'Finish setup');
@@ -504,7 +488,7 @@ async function install(page: SetupWalk) {
     expect(result.short, label).toEqual([]);
     expect(result.small, label).toEqual([]);
   }
-  expect(Object.keys(seen)).toEqual(expect.arrayContaining(['install', 'scan running', 'scan done', 'reveal', 'choice', 'savings', 'checkout', 'finish setup', 'workspace']));
+  expect(Object.keys(seen)).toEqual(expect.arrayContaining(['install', 'scan running', 'scan done', 'reveal', 'choice', 'checkout', 'finish setup', 'workspace']));
   expect(thumbs.length).toBeGreaterThan(0);
   expect([...new Set(thumbs)]).toEqual(['64x64']);
   // Cut below the 120,000 characters pasted, to within one synced record (CONTENT_BODY_MAX_BYTES), and the line under
@@ -570,13 +554,11 @@ async function install(page: SetupWalk) {
     await page.press('.setup-actions .primary', 'Try Cloud Sync free for 30 days');
     await page.atStep('checkout');
     expect(await alerts()).toEqual([]);
-    await page.atStep('savings');
+    await page.atStep('finish-setup');
     await page.press('.setup-back');
     await page.atStep('checkout');
     expect(await row()).toEqual({ back: 'none', waiting: null, forward: ['Continue'] });
     await page.press('.setup-actions .primary', 'Continue');
-    await page.atStep('savings');
-    await page.press('.setup-actions .primary', 'Continue setup');
     await page.atStep('finish-setup');
   });
 // About 15s: the 8s sample scan, then each press; 90s allows a slow shared runner.
@@ -632,8 +614,6 @@ async function toFinishSetup(page: SetupWalk) {
   await page.atStep('reveal');
   await page.press('.setup-actions .primary', 'Try Cloud Sync free for 30 days');
   await page.atStep('checkout');
-  await page.atStep('savings');
-  await page.press('.setup-actions .primary', 'Continue setup');
   await page.atStep('finish-setup');
 }
 

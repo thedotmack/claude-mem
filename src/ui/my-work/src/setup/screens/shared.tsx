@@ -181,7 +181,7 @@ export function CutNotice({ id, max }: { id: string; max: number }) {
  * says what to do. The caller words each part, so the catalog test sees every literal; `children` sit between the row
  * and the status line.
  */
-export function CopyText({ text, label, buttonLabel, copiedStatus, notCopiedStatus, className, valueClassName, statusClassName, children }: {
+export function CopyText({ text, label, buttonLabel, copiedStatus, notCopiedStatus, className, valueClassName, statusClassName, buttonClassName = 'secondary', children }: {
   text: string
   /** The button's words ("Copy URL"). */
   label: string
@@ -194,6 +194,8 @@ export function CopyText({ text, label, buttonLabel, copiedStatus, notCopiedStat
   className: string
   valueClassName?: string
   statusClassName: string
+  /** The copy button's look: setup's `secondary` (setup.css) by default; My Work passes its Button classes. */
+  buttonClassName?: string
   children?: ReactNode
 }) {
   const { t } = useI18n()
@@ -212,7 +214,7 @@ export function CopyText({ text, label, buttonLabel, copiedStatus, notCopiedStat
     <>
       <div className={className}>
         <code className={valueClassName}>{text}</code>
-        <SaveButton type="button" className="secondary" onClick={copy} aria-label={buttonLabel}
+        <SaveButton type="button" className={buttonClassName} onClick={copy} aria-label={buttonLabel}
           icon={<CopyIcon aria-hidden="true" />} savingLabel={t('Copying…')} savedLabel={t('Copied')} notSavedLabel={t('Not copied')}>{label}</SaveButton>
       </div>
       {children}

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { connectSetupTelemetry, createSetupTracker, readSetupTelemetryContext, sendSetupEvent } from './setup-telemetry.ts'
+import { connectSetupTelemetry, createSetupTracker, hostedPlansEvent, readSetupTelemetryContext, reportHostedPlansViewed, sendSetupEvent } from './setup-telemetry.ts'
 import { parseSetupEvent, type SetupEvent } from '../../../../shared/setup-funnel.ts'
 
 const flow = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
@@ -212,5 +212,33 @@ describe('actual setup screen telemetry', () => {
       globalThis.fetch = async () => Response.json({})
       await assert.rejects(readSetupTelemetryContext)
     } finally { globalThis.fetch = saved }
+  })
+})
+
+describe('Work View hosted offer telemetry', () => {
+  const ids = () => { let id = 0; return () => `00000000-0000-4000-8000-${String(++id).padStart(12, '0')}` }
+  it('reports the plans click as the savings action, in a check-passing event of its own', () => {
+    const event = hostedPlansEvent({ setup_flow_id: flow, already_pro: true }, 'cloud_sync_monthly', { uuid: ids(), now: () => 1_800_000_000_000 })
+    assert.deepEqual(parseSetupEvent(event), event)
+    assert.equal(event.event, 'setup_step_action')
+    assert.equal(event.action, 'view_hosted_plans')
+    assert.equal(event.step, 'savings')
+    assert.equal(event.branch, 'go')
+    assert.equal(event.cloud_sync_offer, 'cloud_sync_monthly')
+    assert.notEqual(event.visit_id, event.event_id)
+    const plain = hostedPlansEvent({ setup_flow_id: flow, already_pro: false }, undefined, { uuid: ids(), now: () => 1_800_000_000_000 })
+    assert.equal('cloud_sync_offer' in plain, false)
+    assert.deepEqual(parseSetupEvent(plain), plain)
+  })
+  it('sends nothing without a live installer session, and never throws', async () => {
+    const sent: SetupEvent[] = []
+    await reportHostedPlansViewed(undefined, async () => null, async event => { sent.push(event) })
+    assert.deepEqual(sent, [])
+    await reportHostedPlansViewed(undefined, async () => { throw new Error('offline') }, async event => { sent.push(event) })
+    await reportHostedPlansViewed('cloud_sync_annual', async () => ({ setup_flow_id: flow, already_pro: true }), async () => { throw new Error('refused') })
+    await reportHostedPlansViewed('cloud_sync_annual', async () => ({ setup_flow_id: flow, already_pro: true }), async event => { sent.push(event) })
+    assert.equal(sent.length, 1)
+    assert.equal(sent[0].action, 'view_hosted_plans')
+    assert.equal(sent[0].cloud_sync_offer, 'cloud_sync_annual')
   })
 })
