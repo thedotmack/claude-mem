@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, statSync, chmodSync, symlinkSync } from 'fs';
 import { dirname, join } from 'path';
 import { homedir, tmpdir } from 'os';
-import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
+import { SettingsDefaultsManager, type SettingsDefaults } from '../../src/shared/SettingsDefaultsManager.js';
 import { getDefaultServerPort, getDefaultWorkerPort } from '../../src/shared/install-port.js';
 import { readFlatSettings } from '../../src/npx-cli/utils/settings.js';
 import { DEFAULT_SETTINGS as VIEWER_DEFAULT_SETTINGS } from '../../src/ui/viewer/constants/settings.js';
@@ -85,6 +85,15 @@ describe('SettingsDefaultsManager', () => {
 
     writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_LINE_ANCHORS_ENABLED: 'true' }));
     expect(SettingsDefaultsManager.loadFromFile(settingsPath).CLAUDE_MEM_LINE_ANCHORS_ENABLED).toBe('true');
+  });
+
+  it('host-mode-default-off', () => {
+    // Typed index: the root typecheck fails if the interface drops the key.
+    const defaultValue: SettingsDefaults['CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST'] = 'false';
+
+    expect(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST).toBe(defaultValue);
+    // A fresh settings file is seeded from DEFAULTS, so host mode stays off there too.
+    expect(SettingsDefaultsManager.loadFromFile(settingsPath).CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST).toBe(defaultValue);
   });
 
   describe('loadFromFile', () => {

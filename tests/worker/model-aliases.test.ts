@@ -50,4 +50,25 @@ describe('resolveSummaryTierModel', () => {
     });
     expect(resolveSummaryTierModel('session-model', settings)).toBe('session-model');
   });
+
+  it('host-summary-precedence: explicit summary model > host small model > current model', () => {
+    const explicit = settingsWith({
+      CLAUDE_MEM_TIER_ROUTING_ENABLED: 'true',
+      CLAUDE_MEM_TIER_SUMMARY_MODEL: 'explicit-summary',
+    });
+    expect(resolveSummaryTierModel('current-model', explicit, 'host-small')).toBe('explicit-summary');
+
+    const hostOnly = settingsWith({
+      CLAUDE_MEM_TIER_ROUTING_ENABLED: 'true',
+      CLAUDE_MEM_TIER_SUMMARY_MODEL: '',
+    });
+    expect(resolveSummaryTierModel('current-model', hostOnly, 'host-small')).toBe('host-small');
+    expect(resolveSummaryTierModel('current-model', hostOnly)).toBe('current-model');
+
+    const disabled = settingsWith({
+      CLAUDE_MEM_TIER_ROUTING_ENABLED: 'false',
+      CLAUDE_MEM_TIER_SUMMARY_MODEL: 'explicit-summary',
+    });
+    expect(resolveSummaryTierModel('current-model', disabled, 'host-small')).toBe('current-model');
+  });
 });

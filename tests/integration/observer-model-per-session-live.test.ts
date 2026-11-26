@@ -6,7 +6,7 @@ import path from 'node:path';
 import {
   isOpenAICompatAvailable,
   OpenAICompatProvider,
-  resetRefusedSessionModelsForTesting,
+  resetRefusedHostModelsForTesting,
   HOST_MODEL_NOT_SERVED_CODE,
 } from '../../src/services/worker/OpenAICompatProvider.js';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
@@ -53,7 +53,7 @@ const originalLoad = SettingsDefaultsManager.loadFromFile;
 
 afterEach(() => {
   SettingsDefaultsManager.loadFromFile = originalLoad;
-  resetRefusedSessionModelsForTesting();
+  resetRefusedHostModelsForTesting();
   for (const server of servers.splice(0)) server.stop(true);
   for (const store of stores.splice(0)) store.close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });

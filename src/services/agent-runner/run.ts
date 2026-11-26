@@ -37,12 +37,12 @@
  */
 
 import { randomBytes, randomUUID } from 'crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import { query, type CanUseTool, type Options, type SdkPluginConfig } from '@anthropic-ai/claude-agent-sdk';
 import { buildIsolatedEnvWithFreshOAuth, buildOpenCodeEnv } from '../../shared/EnvManager.js';
-import { stripJsonComments, stripUtf8Bom } from '../../shared/atomic-json.js';
+import { readOpenCodeHostConfig } from '../../shared/opencode-host-config.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { logger } from '../../utils/logger.js';
 import { runtimeReadRoots } from './runtime-read-roots.js';
@@ -401,27 +401,19 @@ export function opencodeAnswer(stdout: string): string {
  * may be the only place a provider the owner configured is described. Tools,
  * plugins, MCP servers and agents are deliberately not carried over; the run's
  * own config replaces those. An unreadable or absent config yields nothing, and
- * the CLI then falls back to its own defaults as before.
+ * the CLI then falls back to its own defaults as before. No project config is
+ * read: the run is isolated from the task folder's own `opencode.json`, and an
+ * explicit `OPENCODE_CONFIG` replaces the global config outright rather than
+ * merging with it, as this reader always did.
  */
 export function readOpenCodeUserConfig(): { model?: string; provider?: Record<string, unknown> } {
-  const configDirectory = join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'opencode');
-  const candidates = [
-    process.env.OPENCODE_CONFIG,
-    join(configDirectory, 'opencode.json'),
-    join(configDirectory, 'opencode.jsonc'),
-  ].filter((path): path is string => typeof path === 'string' && path.length > 0);
-  for (const path of candidates) {
-    try {
-      if (!existsSync(path)) continue;
-      const parsed = JSON.parse(stripJsonComments(stripUtf8Bom(readFileSync(path, 'utf8')))) as Record<string, unknown>;
-      const model = typeof parsed.model === 'string' && parsed.model.trim() ? parsed.model : undefined;
-      const provider = parsed.provider && typeof parsed.provider === 'object' && !Array.isArray(parsed.provider)
-        ? parsed.provider as Record<string, unknown>
-        : undefined;
-      return { ...(model ? { model } : {}), ...(provider ? { provider } : {}) };
-    } catch { /* an unreadable user config must not fail the step */ }
-  }
-  return {};
+  const configDir = join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'opencode');
+  const { model, provider } = readOpenCodeHostConfig({
+    configDir,
+    includeProject: false,
+    explicitConfigMode: 'replace',
+  });
+  return { ...(model ? { model } : {}), ...(provider ? { provider } : {}) };
 }
 
 /**

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:te
 import codeMode from '../../plugin/modes/code.json';
 import { ModeManager } from '../../src/services/domain/ModeManager.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from '../../src/services/worker/OpenAICompatibleProvider.js';
+import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
 import type { DatabaseManager } from '../../src/services/worker/DatabaseManager.js';
 import type { SessionManager } from '../../src/services/worker/SessionManager.js';
 import type { ActiveSession, ConversationMessage } from '../../src/services/worker-types.js';
@@ -288,5 +289,45 @@ describe('per-turn config stays cancellable (Greptile P1, task 10)', () => {
     // Wrap-ups and telemetry read lastModelId, not the per-turn config: a
     // switched session must not bill the wrap-up on the previous model.
     expect(session.lastModelId).toBe('small-model');
+  });
+
+  it('the summary budget uses the routed summary model window (Greptile P1)', async () => {
+    const settingsSpy = spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(() => ({
+      ...SettingsDefaultsManager.getAllDefaults(),
+      CLAUDE_MEM_TIER_ROUTING_ENABLED: 'true',
+      CLAUDE_MEM_TIER_SUMMARY_MODEL: 'summary-model',
+    }));
+    try {
+      class TieredWindowProvider extends CapturingProvider {
+        protected override getConfig(): TurnConfig {
+          return { apiKey: 'test-api-key', model: 'large-model' };
+        }
+        protected override async resolveContextWindow(config: TurnConfig): Promise<number> {
+          return config.model === 'summary-model' ? 32_000 : 200_000;
+        }
+      }
+      let session!: ActiveSession;
+      sessionManager = {
+        getMessageIterator: async function* () {
+          // 70k chars fit the 200k-token observation window but not the
+          // routed summary model's 32k one (half-window = 64k chars).
+          session.conversationHistory = [{ role: 'user', content: 'x'.repeat(70_000) }];
+          yield { type: 'summarize', last_assistant_message: 'done' };
+        },
+        claimNextObservation: mock(() => null),
+        getClaimedMessages: mock(() => []),
+        confirmClaimedMessages: mock(() => Promise.resolve(0)),
+        resetProcessingToPending: mock(() => Promise.resolve(0)),
+      } as unknown as SessionManager;
+      const provider = new TieredWindowProvider(dbManager, sessionManager);
+      session = makeSession();
+
+      await provider.startSession(session);
+
+      expect(provider.configsAtQuery).toHaveLength(0);
+      expect(sessionManager.resetProcessingToPending).toHaveBeenCalledWith(session.sessionDbId);
+    } finally {
+      settingsSpy.mockRestore();
+    }
   });
 });

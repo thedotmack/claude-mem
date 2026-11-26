@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { createServer } from 'node:http';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import {
   classifyOpenAICompatError,
   isLocalEndpointUrl,
@@ -33,6 +36,7 @@ const ENV_KEYS = [
   'CLAUDE_MEM_OPENAI_COMPAT_BASE_URL',
   'CLAUDE_MEM_OPENAI_COMPAT_MODEL',
   'CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_SESSION',
+  'CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST',
   'CLAUDE_MEM_OPENROUTER_API_KEY',
   'CLAUDE_MEM_GEMINI_API_KEY',
   'CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER',
@@ -313,6 +317,159 @@ describe('observer model resolution from the current session', () => {
 
     expect(resolvedModel({ observerModel: '   ' } as ActiveSession).model).toBe('configured-model');
     expect(resolvedModel({ observerModel: '\t\n' } as ActiveSession).model).toBe('configured-model');
+  });
+});
+
+/**
+ * Task 4 (#6485): the observer and summary models may come from the host's
+ * OpenCode config. Explicit settings still win, and host display keys are
+ * translated before they reach an endpoint. The host and session gates remain
+ * independent.
+ */
+describe('observer model resolution from the host config', () => {
+  const HOST_ENV_KEYS = [...ENV_KEYS, 'OPENCODE_CONFIG', 'OPENCODE_CONFIG_DIR', 'XDG_CONFIG_HOME', 'CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER'] as const;
+  let savedEnv: Record<string, string | undefined>;
+  let hostDir: string;
+
+  beforeEach(() => {
+    savedEnv = {};
+    for (const key of HOST_ENV_KEYS) {
+      savedEnv[key] = process.env[key];
+      delete process.env[key];
+    }
+    hostDir = mkdtempSync(join(tmpdir(), 'openai-compat-host-'));
+    // Keep this machine's real OpenCode config out of the fixture.
+    process.env.OPENCODE_CONFIG_DIR = join(hostDir, 'opencode');
+    process.env.OPENCODE_CONFIG = join(hostDir, 'host.json');
+  });
+
+  afterEach(() => {
+    for (const key of HOST_ENV_KEYS) {
+      if (savedEnv[key] === undefined) delete process.env[key];
+      else process.env[key] = savedEnv[key];
+    }
+    rmSync(hostDir, { recursive: true, force: true });
+  });
+
+  const writeHost = (config: unknown): void => {
+    writeFileSync(process.env.OPENCODE_CONFIG!, JSON.stringify(config));
+  };
+
+  const hostConfig = (host?: { cwd?: string }) =>
+    resolveOpenAICompatConfig(undefined, host ?? {});
+
+  const baseEnv = (): void => {
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_PRESET = 'nvidia-nim';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_API_KEY = 'fixture-key';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_API_KEYS = '';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_BASE_URL = '';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL = '';
+  };
+
+  const hostModelConfig = {
+    model: 'host/main-hote',
+    agents: { title: { model: 'host/small-hote' } },
+    provider: {
+      host: {
+        models: {
+          'main-hote': { modelID: 'endpoint-main' },
+          'small-hote': { modelID: 'endpoint-small' },
+        },
+      },
+    },
+  };
+
+  it('host-off-uses-preset: with the gate off the preset model stands and no host model is used', () => {
+    baseEnv();
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST = 'false';
+    writeHost(hostModelConfig);
+
+    const config = hostConfig();
+    expect(config.model).toBe(resolveOpenAICompatPreset('nvidia-nim').defaultModel);
+    expect(config.summaryModel).toBeUndefined();
+  });
+
+  it('host-on-explicit-wins: an explicit CLAUDE_MEM_OPENAI_COMPAT_MODEL beats the host model', () => {
+    baseEnv();
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST = 'true';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL = 'configured-model';
+    writeHost(hostModelConfig);
+
+    expect(hostConfig().model).toBe('configured-model');
+  });
+
+  it('host-on-mapped-model: the host display keys resolve to the endpoint ids they declare', () => {
+    baseEnv();
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST = 'true';
+    writeHost(hostModelConfig);
+
+    const config = hostConfig();
+    expect(config.model).toBe('endpoint-main');
+    expect(config.summaryModel).toBe('endpoint-small');
+  });
+
+  it('host-unmapped-warn-once: an untranslatable host model falls back to the preset and warns once', () => {
+    baseEnv();
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST = 'true';
+    writeHost({ model: 'cmem-t4-unmapped-provider/ghost-model' });
+    const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+    try {
+      const first = hostConfig();
+      const second = hostConfig();
+
+      const fallback = resolveOpenAICompatPreset('nvidia-nim').defaultModel;
+      expect(first.model).toBe(fallback);
+      expect(second.model).toBe(fallback);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][1])).toContain('cmem-t4-unmapped-provider/ghost-model');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('host-unmapped-warn-once-per-id: alternating unmapped ids each warn once (Greptile P2)', () => {
+    baseEnv();
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST = 'true';
+    const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+    const fallback = resolveOpenAICompatPreset('nvidia-nim').defaultModel;
+    try {
+      // Alternate both ids: the old single-slot dedup replaced one with the
+      // other and logged both again on every turn.
+      for (const id of ['ghost-a', 'ghost-b', 'ghost-a', 'ghost-b']) {
+        writeHost({ model: `cmem-greptile-p2/${id}` });
+        expect(hostConfig().model).toBe(fallback);
+      }
+      const warnings = warn.mock.calls
+        .map(call => String(call[1]))
+        .filter(line => line.includes('not declared in the OpenCode provider config'));
+      expect(warnings).toHaveLength(2);
+      expect(warnings[0]).toContain('ghost-a');
+      expect(warnings[1]).toContain('ghost-b');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('host-and-session-precedence: the session id wins last and the host gate stays independent', () => {
+    baseEnv();
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST = 'true';
+    writeHost(hostModelConfig);
+    const resolvedModel = (session: ActiveSession, host?: { cwd?: string }) =>
+      (new OpenAICompatProvider({} as never, {} as never) as unknown as {
+        configForSession(s: ActiveSession, h?: { cwd?: string }): { model: string };
+      }).configForSession(session, host);
+
+    // Both gates on: the session id is applied after host and explicit values.
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_SESSION = 'true';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL = 'configured-model';
+    expect(resolvedModel({ observerModel: 'session-model' } as ActiveSession, {}).model).toBe('session-model');
+
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL = '';
+    expect(resolvedModel({ observerModel: 'session-model' } as ActiveSession, {}).model).toBe('session-model');
+
+    // Turning the session opt-in off must not disable host mode.
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_SESSION = 'false';
+    expect(resolvedModel({ observerModel: 'session-model' } as ActiveSession, {}).model).toBe('endpoint-main');
   });
 });
 

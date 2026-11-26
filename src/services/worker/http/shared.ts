@@ -620,7 +620,7 @@ export async function ingestSummarize(
   if (payload.enqueuedAtEpochMs !== undefined && isExpiredObserverEvent(payload.enqueuedAtEpochMs)) {
     return { status: 'skipped', reason: 'expired_live_capture' };
   }
-  const queuedMessageId = sessionManager.queueSummarize(sessionDbId, cleanedLastAssistantMessage, promptNumber, payload.enqueuedAtEpochMs);
+  const queuedMessageId = sessionManager.queueSummarize(sessionDbId, cleanedLastAssistantMessage, promptNumber, payload.enqueuedAtEpochMs, payload.cwd);
   if (queuedMessageId === 0) return { status: 'skipped', reason: 'live_buffer_limit' };
   // Enqueued: the hand-off point. Synchronously, before the generator kick.
   handoff.markHandedOff?.();
