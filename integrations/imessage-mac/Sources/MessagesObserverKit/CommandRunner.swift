@@ -24,10 +24,15 @@ public final class CommandRunner: @unchecked Sendable {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: launch.executable)
         process.arguments = launch.prefix + arguments
-        var environment = ProcessInfo.processInfo.environment
-        environment["PATH"] = launch.path
-        environment["NO_COLOR"] = "1"
-        process.environment = environment
+        process.currentDirectoryURL = URL(fileURLWithPath: launch.executable).deletingLastPathComponent()
+        // The compiled observer needs the user's data directory. It never loads
+        // shell config, npm modules, Node/Bun options or dynamic library overrides.
+        process.environment = [
+            "HOME": FileManager.default.homeDirectoryForCurrentUser.path,
+            "TMPDIR": FileManager.default.temporaryDirectory.path,
+            "PATH": "/usr/bin:/bin",
+            "NO_COLOR": "1"
+        ]
         return process
     }
 

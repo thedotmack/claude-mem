@@ -58,7 +58,7 @@ export async function issueImessageTokens(
   credentials: PhotonProjectCredentials,
   options: { fetch?: FetchLike; baseUrl?: string } = {},
 ): Promise<PhotonTokenData> {
-  const doFetch = options.fetch ?? (globalThis.fetch as unknown as FetchLike);
+  const doFetch: FetchLike = options.fetch ?? ((url, init) => fetch(url, { ...init, signal: AbortSignal.timeout(10_000) }));
   const base = options.baseUrl ?? process.env.SPECTRUM_CLOUD_URL ?? PHOTON_CLOUD_URL;
   const basic = Buffer.from(`${credentials.projectId}:${credentials.projectSecret}`).toString('base64');
   const response = await doFetch(`${base}/projects/${encodeURIComponent(credentials.projectId)}/imessage/tokens`, {

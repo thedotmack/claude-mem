@@ -9,11 +9,14 @@
  * See docs/imessage-group-observer.md.
  */
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { parseArgs } from 'node:util';
 import { DATA_DIR } from '../../shared/paths.js';
+import type { PhotonModule } from '../../integrations/imessage-observer/photon-source.js';
+import { emitter, workerStatus } from './imessage-output.js';
 import { PHOTON_CLI, signInWithPhoton } from '../../integrations/imessage-observer/photon-signup.js';
 
 const USAGE = `Usage:
@@ -21,6 +24,7 @@ const USAGE = `Usage:
                             [--address <host:port> --token <token>] [--no-tls]
   claude-mem imessage observe [--chat <guid>]... [--include-direct] [--replay <file.jsonl>] [--dry-run]
   claude-mem imessage chats
+  claude-mem imessage photon <check|connect|observe> --json   (group-only app commands)
   claude-mem imessage mac <check|chats|pick|observe>   (read Messages on this Mac; see docs/imessage-mac-app.md)`;
 
 export interface ImessageConfig {
@@ -34,6 +38,7 @@ export interface ImessageConfig {
   meLabel?: string;
   includeDirect?: boolean;
   onlyChats?: string[];
+  lineNumbers?: string[];
 }
 
 export function observerDir(): string {
@@ -80,14 +85,14 @@ export function readConfig(): ImessageConfig {
 
 function writePrivate(path: string, value: unknown): void {
   mkdirSync(observerDir(), { recursive: true, mode: 0o700 });
-  writeFileSync(path, JSON.stringify(value, null, 2) + '\n', { mode: 0o600 });
-  try { chmodSync(path, 0o600); } catch { /* Windows keeps its own ACLs. */ }
+  const temp = path + '.' + randomUUID() + '.tmp';
+  try {
+    writeFileSync(temp, JSON.stringify(value, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+    renameSync(temp, path);
+  } finally {
+    rmSync(temp, { force: true });
+  }
 }
-
-const log = {
-  info: (message: string) => console.log(message),
-  warn: (message: string) => console.warn(message),
-};
 
 /** Runs Photon's own command-line tool through npx. */
 function runPhotonCli(args: string[], options: { interactive: boolean }): { status: number | null; stdout: string } {
@@ -153,7 +158,7 @@ async function setup(args: string[]): Promise<number> {
   // Saved settings with the documented environment variables on top.
   const saved = readJson<ImessageConfig>(configPath(), {});
   const current = readConfig();
-  const next: ImessageConfig = { ...saved };
+  const next: ImessageConfig = { ...saved, lineNumbers: undefined };
   const env = envCredentials();
   const envProject = Boolean(env.project);
   const envLine = Boolean(env.line);
@@ -246,7 +251,7 @@ async function setup(args: string[]): Promise<number> {
   return 0;
 }
 
-async function observe(args: string[]): Promise<number> {
+async function observe(args: string[], app?: { sdk?: PhotonModule }): Promise<number> {
   const { values } = parseArgs({
     args,
     options: {
@@ -254,10 +259,13 @@ async function observe(args: string[]): Promise<number> {
       'include-direct': { type: 'boolean' },
       replay: { type: 'string' },
       'dry-run': { type: 'boolean' },
+      json: { type: 'boolean' },
     },
     strict: true,
   });
+  const out = emitter(Boolean(values.json));
   const config = readConfig();
+  const connected = () => out.event({ type: 'started' });
   const { GroupChatObserver } = await import('../../integrations/imessage-observer/observer.js');
 
   let source;
@@ -270,9 +278,9 @@ async function observe(args: string[]): Promise<number> {
       const { PhotonCloudLines } = await import('../../integrations/imessage-observer/photon-cloud.js');
       const cloud = new PhotonCloudLines({ projectId: config.projectId, projectSecret: config.projectSecret });
       const lines = async () => (await cloud.lines()).map(line => ({ address: line.address, token: line.token, label: line.phone }));
-      source = new PhotonSource({ lines, installDir: observerDir(), log });
+      source = new PhotonSource({ lines, installDir: observerDir(), sdk: app?.sdk, onListening: connected, log: out });
     } else if (config.address && config.token) {
-      source = new PhotonSource({ lines: [{ address: config.address, token: config.token }], tls: config.tls, installDir: observerDir(), log });
+      source = new PhotonSource({ lines: [{ address: config.address, token: config.token }], tls: config.tls, installDir: observerDir(), sdk: app?.sdk, onListening: connected, log: out });
     } else {
       console.error('No Photon line is set up yet. Run: npx claude-mem imessage setup');
       return 1;
@@ -282,12 +290,13 @@ async function observe(args: string[]): Promise<number> {
   let post;
   if (values['dry-run']) {
     post = async (route: string, body: unknown) => {
-      console.log(`\n→ ${route}\n${JSON.stringify(body, null, 2)}`);
+      if (out.json) out.event({ type: 'dry-run', route, body });
+      else console.log(`\n→ ${route}\n${JSON.stringify(body, null, 2)}`);
       return { status: 'ok' };
     };
   } else {
     const { createHarnessWorkerClient } = await import('../../integrations/harness-worker.js');
-    const worker = createHarnessWorkerClient();
+    const worker = createHarnessWorkerClient({ startIfNeeded: !app });
     await worker.ready();
     post = async (route: string, body: unknown) => (await worker.post(route, body)).json();
   }
@@ -295,20 +304,79 @@ async function observe(args: string[]): Promise<number> {
   const observer = new GroupChatObserver({
     source,
     post,
-    log,
+    log: out,
     statePath: values['dry-run'] ? join(observerDir(), 'chats.dry-run.json') : statePath(),
     contacts: readJson<Record<string, string>>(contactsPath(), {}),
     meLabel: config.meLabel,
     onlyChats: values.chat ?? config.onlyChats,
-    includeDirect: values['include-direct'] ?? config.includeDirect,
+    includeDirect: app ? false : values['include-direct'] ?? config.includeDirect,
     clock: values.replay ? 'event' : 'wall',
     excludedProjects: await excludedProjects(),
   });
   const shutdown = () => { void observer.stop(); };
   process.once('SIGINT', shutdown);
   process.once('SIGTERM', shutdown);
-  await observer.run();
-  console.log(`Stopped. Sent ${observer.deliveredWindows.length} conversation windows; skipped ${observer.skippedWindows}.`);
+  if (out.json && !values.replay) process.stdin.once('end', shutdown).resume();
+  const status = () => out.event({ type: 'status', sent: observer.deliveredWindows.length, skipped: observer.skippedWindows });
+  const timer = out.json ? setInterval(status, 15_000) : undefined;
+  try {
+    await observer.run();
+  } finally {
+    clearInterval(timer);
+    process.off('SIGINT', shutdown);
+    process.off('SIGTERM', shutdown);
+    if (out.json && !values.replay) process.stdin.destroy();
+  }
+  status();
+  out.event({ type: 'stopped' });
+  if (!out.json) console.log(`Stopped. Sent ${observer.deliveredWindows.length} conversation windows; skipped ${observer.skippedWindows}.`);
+  return 0;
+}
+
+/**
+ * The Messages app runs these commands with a built-in Photon client. It observes
+ * group memberships only, including when a CLI setup explicitly includes DMs.
+ * A project secret arrives on stdin and is saved only after Photon returns a dedicated line.
+ */
+export async function runPhotonAppCommand(action: string | undefined, args: string[], sdk?: PhotonModule): Promise<number> {
+  if (action === 'observe') return observe(args, { sdk });
+  parseArgs({ args, options: { json: { type: 'boolean' } }, strict: true });
+  const out = emitter(true);
+  if (action === 'connect') {
+    let size = 0;
+    const chunks: Buffer[] = [];
+    for await (const chunk of process.stdin) {
+      const bytes = Buffer.from(chunk);
+      size += bytes.length;
+      if (size > 16_384) throw new Error('Photon project credentials are too long.');
+      chunks.push(bytes);
+    }
+    let pair;
+    try { pair = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
+    catch { throw new Error('Enter a Photon project ID and project secret.'); }
+    if (typeof pair?.projectId !== 'string' || !pair.projectId.trim() ||
+        typeof pair?.projectSecret !== 'string' || !pair.projectSecret.trim()) {
+      throw new Error('Enter the Photon project ID and project secret.');
+    }
+    const credentials = { projectId: pair.projectId.trim(), projectSecret: pair.projectSecret.trim() };
+    const { PhotonCloudLines } = await import('../../integrations/imessage-observer/photon-cloud.js');
+    const lines = await new PhotonCloudLines(credentials).lines();
+    if (!lines.length) throw new Error('Add a dedicated iMessage line to this Photon project first.');
+    const previous = readJson<ImessageConfig>(configPath(), {});
+    writePrivate(configPath(), {
+      ...previous, ...credentials, address: undefined, token: undefined, tls: undefined,
+      lineNumbers: lines.map(line => line.phone),
+    });
+  } else if (action !== 'check') {
+    throw new Error('Expected photon check, connect or observe.');
+  }
+  const config = readConfig();
+  out.event({
+    type: 'photon',
+    configured: Boolean(config.projectId && config.projectSecret || config.address && config.token),
+    lineNumbers: config.lineNumbers ?? [],
+    worker: await workerStatus(),
+  });
   return 0;
 }
 
@@ -339,6 +407,7 @@ export async function runImessageCommand(action: string | undefined, args: strin
     if (action === 'setup') return await setup(args);
     if (action === 'observe') return await observe(args);
     if (action === 'chats') return listChats();
+    if (action === 'photon') return await runPhotonAppCommand(args[0], args.slice(1));
     if (action === 'mac') {
       const { runImessageMacCommand } = await import('./imessage-mac.js');
       return await runImessageMacCommand(args[0]?.toLowerCase(), args.slice(1));

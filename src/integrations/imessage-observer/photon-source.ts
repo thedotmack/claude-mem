@@ -14,6 +14,7 @@
  */
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import { PhotonCloudError } from './photon-cloud.js';
 import type { ChatInfo, MessageSource, ObserverEvent } from './types.js';
@@ -46,7 +47,7 @@ interface PhotonClient {
   close(): Promise<void>;
 }
 type PhotonToken = string | (() => Promise<string>);
-interface PhotonModule {
+export interface PhotonModule {
   createGrpcClient?(options: { address: string; token: PhotonToken; tls?: boolean }): PhotonClient;
   createClient?(options: { address: string; token: PhotonToken; tls?: boolean }): PhotonClient;
 }
@@ -72,6 +73,9 @@ export interface PhotonOptions {
   tls?: boolean;
   /** Where `claude-mem imessage setup` installed the SDK. */
   installDir: string;
+  /** A signed app supplies its bundled SDK instead of loading user-installed code. */
+  sdk?: PhotonModule;
+  onListening?(): void;
   log: { info(message: string): void; warn(message: string): void };
 }
 
@@ -196,6 +200,7 @@ export class PhotonSource implements MessageSource {
   private readonly chatLine = new Map<string, PhotonClient>();
   private streams: PhotonStream<unknown>[] = [];
   private stopped = false;
+  private readonly stopping = new AbortController();
 
   constructor(private readonly options: PhotonOptions) {}
 
@@ -206,10 +211,11 @@ export class PhotonSource implements MessageSource {
 
   private async connect(): Promise<OpenLine[]> {
     if (this.lines.length > 0) return this.lines;
-    const sdk = await loadPhoton(this.options.installDir);
+    const sdk = this.options.sdk ?? await loadPhoton(this.options.installDir);
     const create = sdk.createGrpcClient ?? sdk.createClient;
     if (!create) throw new Error('This Photon SDK version has no gRPC client. Run: npx claude-mem imessage setup');
     const configs = typeof this.options.lines === 'function' ? await this.options.lines() : this.options.lines;
+    if (this.stopped) return [];
     if (configs.length === 0) throw new PhotonCloudError('No Photon iMessage line is set up. Run: npx claude-mem imessage setup', undefined, true);
     this.lines = configs.map(line => ({
       label: line.label ?? line.address,
@@ -231,6 +237,7 @@ export class PhotonSource implements MessageSource {
     while (!this.stopped) {
       try {
         const lines = await this.connect();
+        if (this.stopped) return;
         const feeds: AsyncIterable<{ client: PhotonClient; event: ObserverEvent | null }>[] = [];
         for (const line of lines) {
           const messages = line.client.messages.subscribeEvents();
@@ -239,6 +246,7 @@ export class PhotonSource implements MessageSource {
           feeds.push(mapIterable(messages, event => ({ client: line.client, event: fromPhotonMessageEvent(event) })));
           feeds.push(mapIterable(groups, event => ({ client: line.client, event: fromPhotonGroupEvent(event) })));
         }
+        this.options.onListening?.();
         this.options.log.info(`Listening for iMessage group chat messages on ${lines.map(line => line.label).join(', ')}.`);
         for await (const item of merge(feeds)) {
           delayMs = 1_000;
@@ -255,7 +263,12 @@ export class PhotonSource implements MessageSource {
       // Reopen from scratch next time, so a line Photon added or removed is picked up.
       await this.closeLines();
       if (this.stopped) return;
-      await new Promise(resolve => setTimeout(resolve, delayMs));
+      try {
+        await delay(delayMs, undefined, { signal: this.stopping.signal });
+      } catch (error) {
+        if (this.stopped) return;
+        throw error;
+      }
       delayMs = Math.min(delayMs * 2, 60_000);
     }
   }
@@ -278,6 +291,7 @@ export class PhotonSource implements MessageSource {
 
   async stop(): Promise<void> {
     this.stopped = true;
+    this.stopping.abort();
     await this.closeLines();
   }
 }

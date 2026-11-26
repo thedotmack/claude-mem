@@ -50,26 +50,31 @@ final class AppModel: ObservableObject {
     @Published var log: [LogLine] = []
 
     // Kept in UserDefaults. Plain @Published so the window updates when they change.
-    @Published var commandPath = UserDefaults.standard.string(forKey: "commandPath") ?? "" {
-        didSet { UserDefaults.standard.set(commandPath, forKey: "commandPath") }
+    @Published private(set) var source = MessageSource(rawValue: UserDefaults.standard.string(forKey: "messageSource") ?? "") ?? .mac
+    @Published var photonConfigured = false
+    @Published var photonNumbers: [String] = []
+    @Published var connectingPhoton = false
+    private var pendingSource: MessageSource?
+    private var photonWasListening: Bool {
+        get { UserDefaults.standard.bool(forKey: "photonWasListening") }
+        set { UserDefaults.standard.set(newValue, forKey: "photonWasListening") }
     }
-    /// A saved command path is only run after the person clicks Use on it in
-    /// this session. The saved setting is a plain file other programs can
-    /// change, and whatever the app runs gets its Full Disk Access.
-    @Published var commandPathConfirmed = false
     @Published var listenOnLaunch = UserDefaults.standard.object(forKey: "listenOnLaunch") as? Bool ?? true {
         didSet { UserDefaults.standard.set(listenOnLaunch, forKey: "listenOnLaunch") }
     }
 
+    private var listenerID: UUID?
     private var running: RunningCommand?
     private var userStopped = false
     private var focusSaves: [String: Task<Void, Never>] = [:]
     private var lastSave: Task<Void, Never>?
     private var restartAfterStop = false
 
-    /// Setup stays open while the command can't be found or didn't answer, so a
-    /// wrong command can always be replaced.
-    var needsSetup: Bool { access != .granted || launch == nil || commandProblem != nil }
+    var needsSetup: Bool { launch == nil || commandProblem != nil || !workerReachable || (source == .mac && access != .granted) }
+    var canListen: Bool {
+        guard !needsSetup, workerReachable, pendingSource == nil else { return false }
+        return source == .photon ? photonConfigured : observedCount > 0
+    }
 
     var visibleChats: [ChatItem] {
         let query = search.trimmingCharacters(in: .whitespaces).lowercased()
@@ -88,80 +93,87 @@ final class AppModel: ObservableObject {
 
     // MARK: Setup
 
-    /// Counts refreshes, so only the newest one's answer is used when two
-    /// overlap (for example, coming back from Full Disk Access while the first
-    /// npx check is still downloading).
     private var refreshGeneration = 0
 
-    /// Checks access, finds claude-mem, asks it about Messages and the worker, then loads chats.
+    func selectSource(_ next: MessageSource) {
+        guard next != source else { return }
+        if running != nil {
+            pendingSource = next
+            stopListening()
+            return
+        }
+        refreshGeneration += 1
+        source = next
+        UserDefaults.standard.set(next.rawValue, forKey: "messageSource")
+        listener = .stopped
+        selection = nil
+        chats = []
+        sent = 0
+        skipped = 0
+        log = []
+        commandProblem = nil
+        workerReachable = false
+        // Selecting a source explicitly gives the person a chance to inspect it before listening.
+        userStopped = true
+        Task { await refreshAll() }
+    }
+
     func refreshAll() async {
         refreshGeneration += 1
         let generation = refreshGeneration
-        access = FullDiskAccess.check()
-        if launch == nil || !commandPath.isEmpty { await locateCommand() }
-        guard generation == refreshGeneration, let runner else { return }
-        let result: CommandResult
+        if source == .mac { access = FullDiskAccess.check() }
+        if launch == nil {
+            let packaged = await Task.detached { CommandLaunch.packaged() }.value
+            guard generation == refreshGeneration else { return }
+            launch = packaged
+        }
+        guard let runner else {
+            commandProblem = "The packaged observer could not be verified. Install Claude-Mem Messages again."
+            return
+        }
         do {
-            result = try await runner.run(["imessage", "mac", "check", "--json"])
+            let result = try await runner.run(source.command("check"))
+            guard generation == refreshGeneration else { return }
+            commandProblem = nil
+            if let event = result.events.first {
+                switch event {
+                case let .check(messages, worker, _):
+                    if messages.ok { access = .granted }
+                    else if messages.reason == "no-permission" { access = .denied }
+                    workerReachable = worker.reachable
+                    workerURL = worker.url
+                case let .photon(configured, numbers, worker):
+                    photonConfigured = configured
+                    photonNumbers = numbers
+                    workerReachable = worker.reachable
+                    workerURL = worker.url
+                case let .error(_, message): commandProblem = message
+                default: commandProblem = "The observer returned an unexpected response."
+                }
+            } else { commandProblem = "The observer did not answer. Check again." }
+            if source == .mac, access == .granted { await loadChats() }
+            guard generation == refreshGeneration else { return }
+            if listenOnLaunch, canListen, running == nil, !userStopped, source == .mac || photonWasListening {
+                startListening()
+            }
         } catch {
             guard generation == refreshGeneration else { return }
-            commandProblem = "claude-mem didn't start: \(error.localizedDescription)"
-            return
+            commandProblem = error.localizedDescription
         }
-        guard generation == refreshGeneration else { return }
-        for event in result.events {
-            if case let .check(messages, worker, _) = event {
-                if messages.ok { access = .granted } else if messages.reason == "no-permission" { access = .denied }
-                workerReachable = worker.reachable
-                workerURL = worker.url
-            }
-        }
-        if result.events.isEmpty {
-            commandProblem = result.errorText.isEmpty
-                ? "claude-mem did not answer. Update it with: npx claude-mem@latest install"
-                : result.errorText
-        } else {
-            commandProblem = nil
-        }
-        if access == .granted { await loadChats() }
-        guard generation == refreshGeneration else { return }
-        if access == .granted, listenOnLaunch, observedCount > 0, running == nil, !userStopped { startListening() }
     }
 
-    func locateCommand() async {
-        let override = commandPath
-        if !override.isEmpty, !commandPathConfirmed {
-            launch = nil
-            commandProblem = "Click Use to run the saved command: \(override)"
-            return
-        }
-        let found: CommandLaunch? = await Task.detached {
-            let home = FileManager.default.homeDirectoryForCurrentUser.path
-            let path = CommandLocator.searchPath(home: home, extraFolders: CommandLocator.versionManagerFolders(home: home),
-                                                 lateFolders: CommandLocator.shimFolders(home: home),
-                                                 inherited: ProcessInfo.processInfo.environment["PATH"])
-            return CommandLocator.resolve(
-                override: override.isEmpty ? nil : override,
-                searchPath: path,
-                isExecutable: { FileManager.default.isExecutableFile(atPath: $0) },
-                nodeVersion: { CommandLocator.nodeVersion(in: $0, path: path) },
-                isTrusted: { CommandLocator.notWritableByOthers($0) }
-            )
-        }.value
-        launch = found
-        commandProblem = found == nil
-            ? (override.isEmpty
-                ? "Claude-Mem isn't installed, or Node isn't on your PATH. In Terminal run: npx claude-mem install"
-                : "Nothing runnable at \(override).")
-            : nil
-    }
-
-    /// Uses a command the person pasted, or goes back to finding one when the path is empty.
-    func useCommand(_ path: String) async {
-        commandPath = path.trimmingCharacters(in: .whitespaces)
-        commandPathConfirmed = true
-        launch = nil
-        await refreshAll()
+    func connectPhoton(projectID: String, secret: String) async {
+        guard source == .photon, !connectingPhoton, running == nil, let runner else { return }
+        connectingPhoton = true
+        defer { connectingPhoton = false }
+        do {
+            let data = try JSONEncoder().encode(["projectId": projectID, "projectSecret": secret])
+            let result = try await runner.run(source.command("connect"), input: data)
+            guard source == .photon else { return }
+            if case let .error(_, message)? = result.events.first { commandProblem = message; return }
+            guard result.status == 0 else { commandProblem = "Photon could not connect to this project."; return }
+            await refreshAll()
+        } catch { commandProblem = error.localizedDescription }
     }
 
     private var runner: CommandRunner? { launch.map(CommandRunner.init(launch:)) }
@@ -174,14 +186,6 @@ final class AppModel: ObservableObject {
         NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
     }
 
-    func startWorker() async {
-        guard let runner else { return }
-        append("info", "Starting Claude-Mem…")
-        let result = try? await runner.run(["start"])
-        if let result, result.status != 0, !result.errorText.isEmpty { append("warn", result.errorText) }
-        await refreshAll()
-    }
-
     // MARK: Chats
 
     func loadChats() async {
@@ -190,6 +194,7 @@ final class AppModel: ObservableObject {
         defer { loadingChats = false }
         do {
             let result = try await runner.run(["imessage", "mac", "chats", "--json"])
+            guard source == .mac else { return }
             for event in result.events {
                 if case let .chats(focus, list) = event {
                     chats = list
@@ -284,15 +289,17 @@ final class AppModel: ObservableObject {
     // MARK: Listener
 
     func startListening() {
-        guard running == nil, let runner else { return }
+        guard running == nil, canListen, let runner else { return }
+        let id = UUID()
+        listenerID = id
         userStopped = false
         listener = .starting
         do {
             running = try runner.stream(
-                ["imessage", "mac", "observe", "--json"],
-                onEvent: { [weak self] event in Task { @MainActor in self?.handle(event) } },
-                onStderr: { [weak self] text in Task { @MainActor in self?.append("warn", text) } },
-                onExit: { [weak self] status in Task { @MainActor in self?.listenerExited(status) } }
+                source.command("observe"),
+                onEvent: { [weak self] event in Task { @MainActor in guard self?.listenerID == id else { return }; self?.handle(event) } },
+                onStderr: { [weak self] text in Task { @MainActor in guard self?.listenerID == id else { return }; self?.append("warn", text) } },
+                onExit: { [weak self] status in Task { @MainActor in guard self?.listenerID == id else { return }; self?.listenerExited(status) } }
             )
         } catch {
             listener = .failed(error.localizedDescription)
@@ -302,6 +309,7 @@ final class AppModel: ObservableObject {
     func stopListening() {
         userStopped = true
         restartAfterStop = false
+        if source == .photon { photonWasListening = false }
         running?.stop()
     }
 
@@ -309,7 +317,10 @@ final class AppModel: ObservableObject {
         switch event {
         case let .started(observing):
             listener = .listening(observing: observing)
-            append("info", "Listening for new messages in \(observing) chat\(observing == 1 ? "" : "s").")
+            if source == .photon {
+                photonWasListening = true
+                append("info", "Listening to groups that include the Photon line.")
+            } else { append("info", "Listening for new messages in \(observing) chat\(observing == 1 ? "" : "s").") }
         case let .status(observing, sent, skipped):
             listener = .listening(observing: observing)
             self.sent = sent
@@ -330,6 +341,12 @@ final class AppModel: ObservableObject {
 
     private func listenerExited(_ status: Int32) {
         running = nil
+        listenerID = nil
+        if let next = pendingSource {
+            pendingSource = nil
+            selectSource(next)
+            return
+        }
         if restartAfterStop, !userStopped {
             restartAfterStop = false
             listener = .stopped

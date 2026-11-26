@@ -1,5 +1,19 @@
 import Foundation
 
+/// The source selected in the app. The command word stays separate from its label.
+public enum MessageSource: String, CaseIterable, Sendable {
+    case mac, photon
+
+    public var title: String {
+        switch self {
+        case .mac: return "Messages on this Mac"
+        case .photon: return "Photon line"
+        }
+    }
+
+    public func command(_ action: String) -> [String] { ["imessage", rawValue, action, "--json"] }
+}
+
 /// One chat on this Mac, as `claude-mem imessage mac chats --json` lists it.
 public struct ChatItem: Codable, Identifiable, Hashable, Sendable {
     public var guid: String
@@ -59,6 +73,7 @@ public struct WorkerState: Codable, Hashable, Sendable {
 public enum CommandEvent: Equatable, Sendable {
     case chats(defaultFocus: String, chats: [ChatItem])
     case check(messages: MessagesAccess, worker: WorkerState, dataDir: String?)
+    case photon(configured: Bool, lineNumbers: [String], worker: WorkerState)
     case started(observing: Int)
     case status(observing: Int, sent: Int, skipped: Int)
     case log(level: String, message: String)
@@ -69,6 +84,7 @@ public enum CommandEvent: Equatable, Sendable {
     private struct Envelope: Decodable { var type: String }
     private struct ChatsLine: Decodable { var defaultFocus: String?; var chats: [ChatItem] }
     private struct CheckLine: Decodable { var messages: MessagesAccess; var worker: WorkerState; var dataDir: String? }
+    private struct PhotonLine: Decodable { var configured: Bool; var lineNumbers: [String]; var worker: WorkerState }
     private struct CountLine: Decodable { var observing: Int?; var sent: Int?; var skipped: Int? }
     private struct LogLine: Decodable { var level: String?; var message: String? }
     private struct ErrorLine: Decodable { var reason: String?; var message: String? }
@@ -84,6 +100,9 @@ public enum CommandEvent: Equatable, Sendable {
         case "check":
             guard let value = try? decoder.decode(CheckLine.self, from: line) else { return nil }
             return .check(messages: value.messages, worker: value.worker, dataDir: value.dataDir)
+        case "photon":
+            guard let value = try? decoder.decode(PhotonLine.self, from: line) else { return nil }
+            return .photon(configured: value.configured, lineNumbers: value.lineNumbers, worker: value.worker)
         case "started":
             let value = try? decoder.decode(CountLine.self, from: line)
             return .started(observing: value?.observing ?? 0)

@@ -18,6 +18,7 @@ import { join } from 'node:path';
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { DATA_DIR } from '../../shared/paths.js';
+import { emitter, workerStatus } from './imessage-output.js';
 
 const USAGE = `Usage:
   claude-mem imessage mac check   [--json] [--db <path>]
@@ -37,24 +38,6 @@ function readJson<T>(path: string, fallback: T): T {
   } catch {
     return fallback;
   }
-}
-
-/** Prints one JSON line (for the app) or a plain line (for a person). */
-function emitter(json: boolean) {
-  return {
-    json,
-    event(value: Record<string, unknown>): void {
-      if (json) process.stdout.write(JSON.stringify({ at: new Date().toISOString(), ...value }) + '\n');
-    },
-    info(message: string): void {
-      if (json) this.event({ type: 'log', level: 'info', message });
-      else console.log(message);
-    },
-    warn(message: string): void {
-      if (json) this.event({ type: 'log', level: 'warn', message });
-      else console.warn(message);
-    },
-  };
 }
 
 /**
@@ -108,15 +91,7 @@ async function check(args: string[]): Promise<number> {
   const out = emitter(Boolean(values.json));
   const { checkChatDbAccess } = await import('../../integrations/imessage-observer/chatdb.js');
   const access = checkChatDbAccess(values.db);
-  let worker: { reachable: boolean; url: string; detail?: string };
-  const { resolveHarnessWorkerUrl } = await import('../../integrations/harness-worker.js');
-  const url = resolveHarnessWorkerUrl();
-  try {
-    const response = await fetch(url + '/api/health', { signal: AbortSignal.timeout(3_000) });
-    worker = { reachable: response.ok, url, ...(response.ok ? {} : { detail: `health check returned ${response.status}` }) };
-  } catch (error) {
-    worker = { reachable: false, url, detail: error instanceof Error ? error.message : String(error) };
-  }
+  const worker = await workerStatus();
   if (out.json) {
     out.event({ type: 'check', messages: access, worker, dataDir: DATA_DIR });
   } else {
@@ -190,7 +165,7 @@ async function pick(args: string[]): Promise<number> {
   return 0;
 }
 
-async function observe(args: string[]): Promise<number> {
+async function observe(args: string[], startIfNeeded: boolean): Promise<number> {
   const { values } = parseArgs({
     args,
     options: { json: { type: 'boolean' }, db: { type: 'string' }, 'dry-run': { type: 'boolean' } },
@@ -225,7 +200,7 @@ async function observe(args: string[]): Promise<number> {
     };
   } else {
     const { createHarnessWorkerClient } = await import('../../integrations/harness-worker.js');
-    const worker = createHarnessWorkerClient();
+    const worker = createHarnessWorkerClient({ startIfNeeded });
     await worker.ready();
     post = async (route: string, body: unknown) => (await worker.post(route, body)).json();
   }
@@ -326,7 +301,7 @@ async function excludedProjects(): Promise<string> {
   }
 }
 
-export async function runImessageMacCommand(action: string | undefined, args: string[]): Promise<number> {
+export async function runImessageMacCommand(action: string | undefined, args: string[], startIfNeeded = true): Promise<number> {
   if (action === undefined || action === 'help') {
     console.log(USAGE);
     return 0;
@@ -340,5 +315,5 @@ export async function runImessageMacCommand(action: string | undefined, args: st
   if (action === 'check') return check(args);
   if (action === 'chats') return chats(args);
   if (action === 'pick') return pick(args);
-  return observe(args);
+  return observe(args, startIfNeeded);
 }

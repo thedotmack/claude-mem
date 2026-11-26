@@ -1,82 +1,26 @@
-# Claude-Mem Messages (Mac app)
+# Claude-Mem Messages for Mac
 
-Claude-Mem Messages is a small Mac app that lists your iMessage chats and group
-chats, lets you tick the ones to observe, and lets you say what to watch for in
-each one. New messages in the chats you tick become Claude-Mem notes, one
-Claude-Mem project per chat, on your own Mac.
+Choose **Messages on this Mac** to take notes on chats you pick, or **Photon line** to listen to groups that include your dedicated Photon number. Each chat has its own Claude-Mem project. Both sources start with new messages.
 
-- It reads the Messages app's own database on your Mac (`~/Library/Messages/chat.db`).
-  No Photon line, no phone number to add to a chat, nothing for the group to see.
-- It only reads. It never sends a message, reacts, or changes a chat.
-- Only new messages are read, from when it starts listening. Older history is
-  not imported.
+## Install and open the app
 
-It is the same observer as the [group chat observer](imessage-group-observer.md),
-with a different source: your Mac's Messages database instead of a Photon line.
+1. Install Claude-Mem and start its worker in Terminal.
 
-## Set it up
+   ```sh
+   npx claude-mem install
+   npx claude-mem start
+   ```
 
-### 1. Install Claude-Mem
+2. Download and unzip the release, move **Claude-Mem Messages.app** to Applications, and open it. The universal app supports macOS 14 and later on Apple silicon and Intel Macs. [Download Claude-Mem Messages for macOS](https://github.com/thedotmack/claude-mem/releases/latest/download/Claude-Mem-Messages.zip)
+3. The current release is ad-hoc signed. If macOS blocks first open, use **System Settings → Privacy & Security → Open Anyway** for the official download. [Apple's first-open instructions](https://support.apple.com/en-us/102445)
+4. Choose the source at the top of the window. Switching sources stops the current listener before the other starts.
 
-If you don't have it yet, in Terminal:
+## Messages on this Mac
 
-```bash
-npx claude-mem install
-```
+1. Click **Open Full Disk Access**. Turn on **Claude-Mem Messages** under **System Settings → Privacy & Security → Full Disk Access**. If needed, use the **+** button to select it in Applications.
+2. Reopen the app if macOS asks. Once the worker and Messages are available, your chat list opens.
 
-The app runs Claude-Mem's command line through `npx claude-mem@latest`, so it
-needs Node 20.19 or newer, or 22.12 or newer. It looks in the usual places:
-Homebrew, nvm, fnm, Volta and Bun, then asdf and mise. Older Node versions are
-skipped. It doesn't run your shell profile to find it, because the app holds
-Full Disk Access. The `claude-mem` launcher that install puts in
-`~/.local/bin` only runs hooks, so the app doesn't use it. If the app can't
-find Node, or picked the wrong command, paste the full path to a `claude-mem`
-command into the setup screen, or clear it to search again.
-
-### 2. Get the app
-
-Either download it or build it.
-
-- **Download:** every pull request and `main` build of this folder runs the
-  "iMessage Mac app" check, which attaches `Claude-Mem-Messages.zip`. Open the
-  check's run on GitHub, download the zip under Artifacts, and unzip it.
-- **Build it yourself** (needs Xcode 15 or later, or the Swift 5.9 toolchain):
-
-  ```bash
-  cd integrations/imessage-mac
-  scripts/build-app.sh
-  open build
-  ```
-
-Move **Claude-Mem Messages.app** to Applications. The app is not notarized by
-Apple yet, so the first time, right-click it and pick **Open**, then **Open**
-again.
-
-### 3. Allow Full Disk Access
-
-macOS keeps Messages private. The app needs Full Disk Access to read it, and
-macOS has no pop-up for this: you turn it on yourself. The app's setup screen
-walks you through it:
-
-1. Click **Open Full Disk Access**. System Settings opens at Privacy & Security >
-   Full Disk Access.
-2. Turn on **Claude-Mem Messages**. If it isn't listed, click **+** and pick it
-   in Applications.
-3. If macOS asks, quit and reopen the app. The step turns green.
-
-The app runs `claude-mem` as its own child process, so the app's permission
-covers the command too. You don't need to give Terminal or Node Full Disk Access.
-
-If you rebuild the app yourself, macOS treats the new build as a different app.
-Turn Full Disk Access off and on again for it.
-
-### 4. Connect to Claude-Mem
-
-The setup screen checks that your Claude-Mem worker is running and offers a
-**Start Claude-Mem** button if it isn't. It also starts the worker when it
-starts listening.
-
-### 5. Pick chats
+### Pick chats
 
 Your chats appear on the left, newest first. Use the filter for **Group chats**
 or **Observing**, or search by name or person.
@@ -96,22 +40,25 @@ Click **Listen** in the toolbar (it starts by itself once you tick a chat).
 Closing the window keeps it listening from the menu bar; **Quit** there stops
 it. **Open at login** is on the overview.
 
-## What Full Disk Access means here
+## Photon line
 
-The app passes its Full Disk Access to the `claude-mem` command it runs, and
-that command comes from Node and npm in your own user folders. Other programs
-running as you can change those folders, so install the app only on a Mac
-where you trust what runs under your account. The app does what it can to
-narrow this:
+1. Choose **Photon line**. An existing `claude-mem imessage setup` configuration appears automatically. To connect a project in the app, enter the project ID and secret from Photon project settings and click **Connect Project**. The app verifies the project has a dedicated line before saving credentials to the same private configuration the CLI uses.
+2. Add the line to each group you want observed. The other members can see it. Photon observation uses the line's group memberships and honors the CLI's configured chat allowlist. Direct messages are excluded.
+3. Click **Listen**. The status and Activity log show the listener and worker handoffs. Use **Stop** in the window or menu bar. Closing the window keeps the active listener running. Full Disk Access and a local Apple Messages history are required only for the Mac Messages source.
 
-- It never runs your shell profile, and never runs anything from
-  `~/.local/bin`.
-- It skips a command, or a folder holding one, that other users can change.
-- A path you pasted is saved, but only run after you click **Use** on it again
-  each time the app opens.
+## Packaged observer
 
-A version of the app with its own signed copy of Node and Claude-Mem inside
-it would close this fully. That isn't built yet.
+The app verifies its signed bundle and invokes the observer shipped for the Mac's processor. Its runtime and Photon client are inside the app. The separately installed Claude-Mem worker receives observations over its configured API. Start the worker from Terminal or your usual agent.
+
+To build from the repository, use Xcode 15 or later and Bun 1.4.4.
+
+```sh
+npm install --ignore-scripts
+npm ci --ignore-scripts --prefix integrations/imessage-mac/observer
+cd integrations/imessage-mac
+scripts/build-app.sh
+open build
+```
 
 ## How messages become memory
 

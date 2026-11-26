@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds "Claude-Mem Messages.app" from this Swift package and zips it.
-# Usage: scripts/build-app.sh [version]   (run on a Mac with Xcode 15+ or the Swift 5.9+ toolchain)
+# Usage: scripts/build-app.sh [version]   (run on a Mac with Xcode 15+, Bun and the locked observer dependencies)
 # Output: build/Claude-Mem Messages.app and build/Claude-Mem-Messages.zip
 set -euo pipefail
 
@@ -19,16 +19,28 @@ fi
 BIN="$(swift build "${BUILD_ARGS[@]}" --show-bin-path)"
 test -x "$BIN/ClaudeMemMessages" || { echo "No ClaudeMemMessages binary in $BIN" >&2; exit 1; }
 
-rm -rf build && mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+rm -rf build && mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Helpers"
 cp "$BIN/ClaudeMemMessages" "$APP/Contents/MacOS/ClaudeMemMessages"
 sed "s/__VERSION__/$VERSION/g" Resources/Info.plist > "$APP/Contents/Info.plist"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
+# These self-contained readers have no runtime npm dependency or shell lookup.
+# Keep architecture-specific executables intact; Bun embeds JS data in each image.
+for arch in arm64 x64; do
+  helper="$APP/Contents/Helpers/imessage-observer-$arch"
+  bun build observer/index.ts --compile --target="bun-darwin-$arch" \
+    --no-compile-autoload-dotenv --no-compile-autoload-bunfig --outfile "$helper"
+  codesign --force --sign - "$helper"
+done
+
 # Ad-hoc signature: enough to run on your own Mac. It is not notarized, so the
 # first open is right-click > Open. A rebuild changes the signature, and macOS
 # then asks for Full Disk Access again.
-codesign --force --deep --sign - "$APP"
-codesign --verify --verbose "$APP"
+codesign --force --sign - "$APP"
+codesign --verify --deep --strict --verbose "$APP"
+"$APP/Contents/MacOS/ClaudeMemMessages" --verify-bundle
+if [[ "$(uname -m)" == arm64 ]]; then native=arm64; else native=x64; fi
+bun scripts/smoke-observer.ts "$APP/Contents/Helpers/imessage-observer-$native"
 
 (cd build && ditto -c -k --keepParent "Claude-Mem Messages.app" Claude-Mem-Messages.zip)
 echo "Built $APP ($VERSION)"
