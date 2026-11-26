@@ -306,6 +306,7 @@ async function initializeSessionForUserPrompt(
   openCodeSessionId: string,
   cwd: string,
   prompt: string,
+  observerModel?: string,
 ): Promise<void> {
   // This helper is entered only from live v1/v2 user-prompt hooks.
   const telemetryPromptEpochMs = Date.now();
@@ -316,6 +317,9 @@ async function initializeSessionForUserPrompt(
     cwd,
     platform_source: PLATFORM_SOURCE,
     telemetryPromptEpochMs,
+    // The host's chosen observer model rides with this live prompt only. It is
+    // not persisted, cached, or replayed: the worker reads it for this session.
+    ...(observerModel ? { observerModel } : {}),
   });
 }
 
@@ -379,7 +383,7 @@ export interface ClaudeMemCore {
     failed?: boolean;
   }): Promise<void>;
   /** Capture a real user prompt with session init. */
-  captureUserPrompt(sessionID: string, promptText: string): Promise<void>;
+  captureUserPrompt(sessionID: string, promptText: string, observerModel?: string): Promise<void>;
   /** Capture an assistant message as an observation. */
   captureAssistantMessage(sessionID: string, messageText: string): Promise<void>;
   /**
@@ -488,8 +492,8 @@ export function createCore(ctx: CoreContext): ClaudeMemCore {
       });
     },
 
-    async captureUserPrompt(sessionID, promptText) {
-      await initializeSessionForUserPrompt(sessionID, ctx.directory, promptText);
+    async captureUserPrompt(sessionID, promptText, observerModel) {
+      await initializeSessionForUserPrompt(sessionID, ctx.directory, promptText, observerModel);
     },
 
     async captureAssistantMessage(sessionID, messageText) {

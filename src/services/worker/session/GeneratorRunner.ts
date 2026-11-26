@@ -303,7 +303,7 @@ export async function startGeneratorWithProvider(
         const unspent = budget ? budget.spentPaidSends === 0 : !session.consecutiveUnattendedGatewayResumes;
         if (classified instanceof CmemAllowanceExhaustedError && unspent
           && normalizeAbortReason(session.abortReason) === 'quota'
-          && regularProviderAfterCmemCap(session.platformSource) !== null
+          && regularProviderAfterCmemCap(session.platformSource, session.observerModel) !== null
           && planUnattendedGatewayResume(session, 'cmem-cap-fallback', true).resume) {
           session.abortReason = 'provider_switch:cmem_cap';
           scheduledResume = { afterMs: 0, source: 'cmem-cap-fallback' };

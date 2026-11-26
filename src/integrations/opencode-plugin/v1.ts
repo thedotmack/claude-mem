@@ -41,6 +41,14 @@ export interface ToolExecuteAfterOutput {
   args?: Record<string, unknown>;
 }
 
+export interface ChatMessageInput {
+  // OpenCode passes the host's selected model on the chat.message input. Only
+  // `modelID` is endpoint-ready; `providerID/modelID` is a display key, not an
+  // inference endpoint model name, so it must never be forwarded as one.
+  sessionID?: string;
+  model?: { providerID?: string; modelID?: string };
+}
+
 export interface ChatMessageOutput {
   message: {
     id?: string;
@@ -92,7 +100,7 @@ export function createV1Hooks(ctx: OpenCodePluginContextV1) {
     // Capture each real user prompt with session init, and assistant messages
     // as observations.
     "chat.message": async (
-      _input: Record<string, unknown>,
+      input: ChatMessageInput,
       output: ChatMessageOutput,
     ): Promise<void> => {
       const sessionID = output.message?.sessionID;
@@ -101,7 +109,14 @@ export function createV1Hooks(ctx: OpenCodePluginContextV1) {
       if (output.message?.role === "user") {
         const promptText = textOfParts(output.parts).trim();
         if (promptText) {
-          await core.captureUserPrompt(sessionID, promptText);
+          // Read the model from this prompt's own hook input; no cache, no
+          // system.transform handler. An absent or unreadable model must not
+          // fail the prompt, so forward it only as a non-empty string and let
+          // core omit the key (the worker's global fallback applies).
+          const modelID = input.model?.modelID;
+          const observerModel =
+            typeof modelID === "string" && modelID.trim() ? modelID : undefined;
+          await core.captureUserPrompt(sessionID, promptText, observerModel);
           core.primeSemanticContext(sessionID, promptText);
         } else {
           core.forgetSemanticContext(sessionID);
