@@ -255,6 +255,22 @@ test('request project paths normalize across replicas while semantic payload pro
   expect(sharedReviewDescriptor(b.db, remote, { deviceId: 'b' })).toEqual(payloadAfter);
 });
 
+test('naming the agent of a request with no recorded work keeps its shared check; an agent recorded work names still counts', () => {
+  const { a, ar } = pair();
+  const session = a.store.createSDKSession('asks-only', 'repo', 'Release the viewer', undefined, 'claude');
+  const agentId = JSON.stringify(['session', 'claude', String(session), 'unidentified']);
+  // A card built from its conversation's asks alone. Until its session had an agent group it had no agents (#6505).
+  const asksOnly = { ...ar, items: [], agentIds: [] };
+  const before = sharedReviewDescriptor(a.db, asksOnly, { deviceId: 'a' });
+  expect(before.complete).toBe(true);
+  publishSharedReview(a.db, { deviceId: 'a', project: 'repo', descriptor: before, checked: true, expectedHash: null, now: NOW });
+  const named = sharedReviewDescriptor(a.db, { ...asksOnly, agentIds: [agentId] }, { deviceId: 'a' });
+  expect(named).toEqual(before);
+  expect(readSharedReview(getSharedReviews(a.db, 'a'), named)).toMatchObject({ checked: true, matches: true });
+  expect(sharedReviewDescriptor(a.db, { ...ar, agentIds: [agentId] }, { deviceId: 'a' }).fingerprint)
+    .not.toBe(sharedReviewDescriptor(a.db, ar, { deviceId: 'a' }).fingerprint);
+});
+
 test.each([
   { narrative: 'SOURCE_SECRET', sameDisclosure: false },
   { narrative: 'Publicly shareable full evidence', sameDisclosure: true },
