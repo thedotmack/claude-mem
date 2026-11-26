@@ -119,7 +119,11 @@ try {
   fixture.chat(guid, { name: 'Test group', group: true, members: ['fixture@example.invalid'] });
   fixture.close();
   assert.equal((await run(['mac', 'check', '--db', dbPath, '--json']))[0].messages.ok, true);
-  await run(['mac', 'pick', guid, '--on', '--json']);
+  const pick = (await run(['mac', 'pick', guid, '--on', '--json']))[0].choice;
+  assert.ok(pick.selectionId);
+  assert.equal((await run(['mac', 'pick', guid, '--focus', 'Test focus', '--json']))[0].choice.selectionId, pick.selectionId);
+  await run(['mac', 'pick', guid, '--off', '--json']);
+  assert.notEqual((await run(['mac', 'pick', guid, '--on', '--json']))[0].choice.selectionId, pick.selectionId);
   assert.equal((await run(['mac', 'chats', '--db', dbPath, '--json']))[0].chats[0].observed, true);
   const child = spawn(binary, ['imessage', 'mac', 'observe', '--db', dbPath, '--json', '--dry-run'], { env, cwd: home });
   const closed = once(child, 'close');

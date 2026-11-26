@@ -62,16 +62,15 @@ export class WorkerSink {
     private readonly log: SinkLog,
     /** The request the observer reads for a chat; read when a conversation starts. */
     private readonly promptFor: (chat: ChatInfo) => string = chat => conversationPrompt(chat, book),
-    private readonly isObserved: (guid: string) => boolean = () => true,
   ) {}
 
   /** `enqueuedAt` is when the window was queued for hand-over (epoch ms). */
-  async handle(action: BatcherAction, chat: ChatInfo, project: string, enqueuedAt: number = Date.now()): Promise<void> {
+  async handle(action: BatcherAction, chat: ChatInfo, project: string, enqueuedAt = Date.now(), stillSelected = () => true): Promise<void> {
     const contentSessionId = contentSessionIdFor(action.chatGuid, action.conversation);
     if (action.kind === 'window') {
-      await this.sendWindow(contentSessionId, action.entries, chat, project, enqueuedAt);
+      await this.sendWindow(contentSessionId, action.entries, chat, project, enqueuedAt, stillSelected);
     } else {
-      await this.endConversation(contentSessionId, this.isObserved(chat.guid));
+      await this.endConversation(contentSessionId, stillSelected());
     }
   }
 
@@ -94,7 +93,7 @@ export class WorkerSink {
     return state;
   }
 
-  private async sendWindow(contentSessionId: string, entries: WindowEntry[], chat: ChatInfo, project: string, enqueuedAt: number): Promise<void> {
+  private async sendWindow(contentSessionId: string, entries: WindowEntry[], chat: ChatInfo, project: string, enqueuedAt: number, stillSelected: () => boolean): Promise<void> {
     if (entries.length === 0) return;
     const first = entries[0]!.at;
     const last = entries[entries.length - 1]!.at;
@@ -102,7 +101,7 @@ export class WorkerSink {
       const session = await this.start(contentSessionId, chat, project, first);
       if (session.excluded) return;
       // A user can untick a chat during the worker's asynchronous session init.
-      if (!this.isObserved(chat.guid)) {
+      if (!stillSelected()) {
         this.skippedWindows += 1;
         await this.endConversation(contentSessionId, false);
         return;
@@ -130,10 +129,14 @@ export class WorkerSink {
         this.log.warn(`The worker skipped ${entries.length} messages from "${chat.displayName}" (${reply.reason ?? 'skipped'}).`);
         return;
       }
-      session.recap = `Latest messages in the iMessage ${chat.isGroup ? 'group chat' : 'conversation'} "${cleanMessageText(chat.displayName)}":\n`
-        + (transcript.length > RECAP_CHARS ? '...\n' + transcript.slice(-RECAP_CHARS) : transcript);
       this.delivered.push({ chatGuid: chat.guid, project, contentSessionId, entries: entries.length });
       this.log.info(`Sent ${entries.length} messages from "${chat.displayName}" to ${project}.`);
+      if (!stillSelected()) {
+        await this.endConversation(contentSessionId, false);
+        return;
+      }
+      session.recap = `Latest messages in the iMessage ${chat.isGroup ? 'group chat' : 'conversation'} "${cleanMessageText(chat.displayName)}":\n`
+        + (transcript.length > RECAP_CHARS ? '...\n' + transcript.slice(-RECAP_CHARS) : transcript);
     } catch (error) {
       // No retry: the window is dropped and the gap is logged.
       this.skippedWindows += 1;

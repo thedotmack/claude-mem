@@ -21,7 +21,7 @@ export interface ChatInfo {
   participants: ChatPerson[];
 }
 
-export type ObserverEvent =
+export type ObserverEvent = (
   | {
     type: 'message';
     chatGuid: string;
@@ -54,7 +54,11 @@ export type ObserverEvent =
     sender?: string;
     isFromMe: boolean;
     occurredAt: Date;
-  };
+  }
+) & {
+  /** The Mac selection under which this row was read. */
+  selectionId?: string;
+};
 
 /** Where events come from. `chat()` fills in names and members on first sight. */
 export interface MessageSource {

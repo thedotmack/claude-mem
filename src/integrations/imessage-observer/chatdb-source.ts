@@ -65,6 +65,8 @@ export interface ChatDbSourceOptions {
   label: (address: string) => string;
   /** Chats to read. Asked per row, so a change in the Mac app applies at once. */
   isObserved: (chatGuid: string) => boolean;
+  /** The pick active for this message's time, or undefined when the row must be skipped. */
+  selectionId?: (chatGuid: string, eventTime: number) => string | undefined;
   /** Backstop timer for missed file events. */
   pollMs?: number;
   /** Wait after a file event, so one write burst is read once. */
@@ -166,9 +168,10 @@ export class ChatDbSource implements MessageSource {
     let lastRowId = this.lastRowId;
     for (const row of rows) {
       lastRowId = Math.max(lastRowId, row.rowid);
-      if (!this.options.isObserved(row.chat_guid)) continue;
+      const selectionId = this.pickFor(row.chat_guid, row.at_ms);
+      if (selectionId === undefined) continue;
       const event = this.toEvent(row);
-      if (event) events.push(event);
+      if (event) events.push(this.options.selectionId ? { ...event, selectionId } : event);
     }
     let commitChanges = () => {};
     if (this.has('date_edited') || this.has('date_retracted')) {
@@ -206,13 +209,15 @@ export class ChatDbSource implements MessageSource {
       }
       seen.add(key);
       if (seen.size > 1000) seen.clear();
-      if (!this.options.isObserved(row.chat_guid)) continue;
+      const selectionId = this.pickFor(row.chat_guid, row.changed_ms);
+      if (selectionId === undefined) continue;
+      const pick = this.options.selectionId ? { selectionId } : {};
       const occurredAt = new Date(row.changed_ms);
       if (row.retracted_ms > 0) {
-        events.push({ type: 'unsent', chatGuid: row.chat_guid, messageGuid: row.guid, occurredAt });
+        events.push({ type: 'unsent', chatGuid: row.chat_guid, messageGuid: row.guid, occurredAt, ...pick });
       } else {
         const text = this.textOf(row);
-        if (text) events.push({ type: 'edited', chatGuid: row.chat_guid, messageGuid: row.guid, text, occurredAt });
+        if (text) events.push({ type: 'edited', chatGuid: row.chat_guid, messageGuid: row.guid, text, occurredAt, ...pick });
       }
     }
     return {
@@ -222,6 +227,11 @@ export class ChatDbSource implements MessageSource {
         this.seenChanges = seen;
       },
     };
+  }
+
+  private pickFor(guid: string, at: number): string | undefined {
+    if (this.options.selectionId) return this.options.selectionId(guid, at);
+    return this.options.isObserved(guid) ? '' : undefined;
   }
 
   async chat(guid: string): Promise<ChatInfo | null> {
