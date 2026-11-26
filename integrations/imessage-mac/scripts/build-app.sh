@@ -35,9 +35,8 @@ for arch in arm64 x64; do
   codesign --force --sign - "$helper"
 done
 
-# Ad-hoc signature: enough to run on your own Mac. It is not notarized, so the
-# first open is right-click > Open. A rebuild changes the signature, and macOS
-# then asks for Full Disk Access again.
+# Ad-hoc releases use macOS System Settings > Privacy & Security > Open Anyway
+# on first open when prompted. Rebuilds may need a fresh Full Disk Access grant.
 codesign --force --sign - "$APP"
 codesign --verify --deep --strict --verbose "$APP"
 "$APP/Contents/MacOS/ClaudeMemMessages" --verify-bundle

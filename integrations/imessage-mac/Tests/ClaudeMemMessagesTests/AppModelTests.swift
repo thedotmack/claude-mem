@@ -32,6 +32,32 @@ final class AppModelTests: XCTestCase {
     }
 
     @MainActor
+    func testAChangingProjectAndStatusCountersCannotStartAnOldPhotonListener() throws {
+        let suite = "ClaudeMemMessagesTests-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("photon", forKey: "messageSource")
+        let model = AppModel(defaults: defaults)
+        model.launch = CommandLaunch(executable: "/usr/bin/false")
+        model.workerReachable = true
+        model.photonConfigured = true
+        model.connectingPhoton = true
+        XCTAssertFalse(model.canListen)
+        model.startListening()
+        XCTAssertEqual(model.listener, .stopped)
+        model.connectingPhoton = false
+        XCTAssertTrue(model.canListen)
+        model.listener = .starting
+        model.handle(.status(observing: 0, sent: 0, skipped: 0))
+        XCTAssertEqual(model.listener, .starting)
+        model.handle(.started(observing: 0))
+        XCTAssertEqual(model.listener, .listening(observing: 0))
+        model.handle(.reconnecting)
+        model.handle(.status(observing: 0, sent: 1, skipped: 0))
+        XCTAssertEqual(model.listener, .starting)
+    }
+
+    @MainActor
     private func waitForSave(_ model: AppModel) async {
         for _ in 0..<100 where !model.savingPicks.isEmpty {
             try? await Task.sleep(for: .milliseconds(20))

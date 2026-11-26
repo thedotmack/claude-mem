@@ -79,6 +79,7 @@ public enum CommandEvent: Equatable, Sendable {
     case log(level: String, message: String)
     case error(reason: String, message: String)
     case stopped
+    case reconnecting
     case other(type: String)
 
     private struct Envelope: Decodable { var type: String }
@@ -115,6 +116,8 @@ public enum CommandEvent: Equatable, Sendable {
         case "error":
             let value = try? decoder.decode(ErrorLine.self, from: line)
             return .error(reason: value?.reason ?? "unknown", message: value?.message ?? "")
+        case "reconnecting":
+            return .reconnecting
         case "stopped":
             return .stopped
         default:

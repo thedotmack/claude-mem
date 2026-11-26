@@ -370,7 +370,7 @@ describe('GroupChatObserver end to end with a stub worker', () => {
 });
 
 describe('Photon source reconnects', () => {
-  it('reconnects after a rejected renewable token, closing the quiet stream first', async () => {
+  it.each(['rejected token', 'clean EOF'])('reconnects after %s, closing the quiet sibling first', async reason => {
     const dir = mkdtempSync(join(tmpdir(), 'photon-fake-'));
     const sdkDir = join(dir, 'node_modules', '@photon-ai', 'advanced-imessage', 'dist');
     mkdirSync(sdkDir, { recursive: true });
@@ -390,16 +390,16 @@ describe('Photon source reconnects', () => {
       export function createGrpcClient() {
         fake.connects += 1;
         return {
-          messages: { subscribeEvents() { return { async *[Symbol.asyncIterator]() { throw new Error('16 UNAUTHENTICATED: invalid token'); }, async close() {} }; } },
+          messages: { subscribeEvents() { return { async *[Symbol.asyncIterator]() { if (fake.reason === 'rejected token') throw new Error('16 UNAUTHENTICATED: invalid token'); }, async close() {} }; } },
           groups: { subscribeEvents() { return quiet(); } },
           chats: { async get() { throw new Error('unused'); } },
           async close() {},
         };
       }
     `);
-    const fake = { connects: 0, closed: 0 };
+    const fake = { connects: 0, closed: 0, rejections: 0, reason };
     (globalThis as any).__photonFake = fake;
-    const source = new PhotonSource({ lines: async () => [{ address: 'line.test:443', token: async () => 't' }], installDir: dir, log: silent });
+    const source = new PhotonSource({ lines: async () => [{ address: 'line.test:443', token: async () => 't' }], installDir: dir, log: silent, onAuthRejected: () => { fake.rejections++; } });
     const iterator = source.events()[Symbol.asyncIterator]();
     const reading = iterator.next();
     const started = Date.now();
@@ -409,6 +409,8 @@ describe('Photon source reconnects', () => {
     rmSync(dir, { recursive: true, force: true });
     expect(fake.connects).toBeGreaterThanOrEqual(2);
     expect(fake.closed).toBeGreaterThanOrEqual(1);
+    if (reason === 'rejected token') expect(fake.rejections).toBeGreaterThanOrEqual(1);
+    else expect(fake.rejections).toBe(0);
   });
 });
 
@@ -450,6 +452,15 @@ describe('Photon cloud lines', () => {
     expect(await line!.token()).toBe('t1');
     advance(2 * MIN); // past 80% of the 10 minute lifetime
     expect(await line!.token()).toBe('t2');
+    expect(calls).toHaveLength(2);
+  });
+
+  it('renews a revoked stream token before its expiry, sharing a single exchange', async () => {
+    const { lines, calls } = cloud([dedicated('old'), dedicated('fresh')]);
+    const [line] = await lines.lines();
+    expect(await line!.token()).toBe('old');
+    lines.invalidateTokens();
+    expect(await Promise.all([line!.token(), line!.token()])).toEqual(['fresh', 'fresh']);
     expect(calls).toHaveLength(2);
   });
 
