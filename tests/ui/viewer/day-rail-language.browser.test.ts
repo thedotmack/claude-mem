@@ -96,8 +96,8 @@ type Mark = { label: string; more: string | null; name: string | null };
     const [первый, второй, четвёртый] = await expectedLabels('ru');
     expect(await readRail()).toEqual([
       { label: первый, more: null, name: null },
-      { label: второй, more: '+1', name: `${второй} и ещё 1 день` },
-      { label: четвёртый, more: '+2', name: `${четвёртый} и ещё 2 дня` },
+      { label: второй, more: '+1', name: `${второй}; дополнительных дней: 1` },
+      { label: четвёртый, more: '+2', name: `${четвёртый}; дополнительных дней: 2` },
     ]);
   } finally { page?.close(); await chrome?.close(); server.stop(true); }
 }, 60_000);

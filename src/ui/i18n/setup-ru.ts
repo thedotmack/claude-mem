@@ -311,7 +311,7 @@ export const setupRu: Record<string, string> = {
   'Sonnet — balanced': 'Sonnet — сбалансированно',
   'Opus — highest quality': 'Opus — самое высокое качество',
   'Used if you choose your existing Claude plan for local memory.': 'Используется, если для локальной памяти выбран ваш текущий план Claude.',
-  'Turn off Claude Code’s built-in auto-memory': 'Отключить встроенную автомать памяти Claude Code',
+  'Turn off Claude Code’s built-in auto-memory': 'Отключить встроенную автопамять Claude Code',
   'Use claude-mem for cross-session memory. Leave unchecked to keep both.': 'Использовать claude-mem для памяти между сессиями. Оставьте снятым, чтобы сохранить обе.',
   'Share anonymized usage data': 'Делиться обезличенной статистикой',
   'Helps improve claude-mem. No prompts, code, or memory content are included.': 'Помогает улучшать claude-mem. Без промптов, кода и содержимого памяти.',
