@@ -55,7 +55,8 @@ final class AppModel: ObservableObject {
     @Published var photonConfigured = false
     @Published var photonNumbers: [String] = []
     @Published var connectingPhoton = false
-    private var pendingSource: MessageSource?
+    @Published private var pendingSource: MessageSource?
+    var selectedSource: MessageSource { pendingSource ?? source }
     private var photonWasListening: Bool {
         get { defaults.bool(forKey: "photonWasListening") }
         set { defaults.set(newValue, forKey: "photonWasListening") }
@@ -110,7 +111,10 @@ final class AppModel: ObservableObject {
     private var refreshGeneration = 0
 
     func selectSource(_ next: MessageSource) {
-        guard next != source else { return }
+        guard next != source else {
+            pendingSource = nil
+            return
+        }
         if running != nil {
             pendingSource = next
             stopListening()
@@ -337,6 +341,7 @@ final class AppModel: ObservableObject {
         listenerID = id
         userStopped = false
         listener = .starting
+        if source == .photon { photonWasListening = false }
         do {
             running = try runner.stream(
                 source.command("observe"),
@@ -345,7 +350,8 @@ final class AppModel: ObservableObject {
                 onExit: { [weak self] status in Task { @MainActor in guard self?.listenerID == id else { return }; self?.listenerExited(status) } }
             )
         } catch {
-            listener = .failed(error.localizedDescription)
+            listenerID = nil
+            listenerFailed(error.localizedDescription)
         }
     }
 
@@ -360,6 +366,7 @@ final class AppModel: ObservableObject {
         // Exit still owns cleanup for a stopping process. Its late output must
         // not change the active source, status, or the person's launch choice.
         guard !userStopped, id == nil || id == listenerID else { return }
+        if case .failed = listener { return }
         switch event {
         case let .started(observing):
             listener = .listening(observing: observing)
@@ -378,7 +385,7 @@ final class AppModel: ObservableObject {
             if message.hasPrefix("Sent ") { sent += 1 }
         case let .error(reason, message):
             if reason == "no-permission" { access = .denied }
-            listener = .failed(message)
+            listenerFailed(message)
             append("warn", message)
         case .stopped:
             listener = .stopped
@@ -390,6 +397,7 @@ final class AppModel: ObservableObject {
     private func listenerExited(_ status: Int32) {
         running = nil
         listenerID = nil
+        if source == .photon { photonWasListening = false }
         if let next = pendingSource {
             pendingSource = nil
             selectSource(next)
@@ -408,13 +416,22 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private func listenerFailed(_ message: String) {
+        if source == .photon { photonWasListening = false }
+        listener = .failed(message)
+    }
+
     func append(_ level: String, _ text: String) {
         log.append(LogLine(at: Date(), level: level, text: text))
         if log.count > 200 { log.removeFirst(log.count - 200) }
     }
 
     func shutdown() {
+        // The app is quitting. Preserve whether a healthy Photon listener was
+        // active and ignore process events caused by our own teardown.
+        listenerID = nil
         running?.stop()
+        running = nil
     }
 
     // MARK: Open at login
