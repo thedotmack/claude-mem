@@ -408,6 +408,51 @@ describe('local work view', () => {
     } finally { sidecar.close(); }
   });
 
+  /** A conversation with a real ask and nothing else recorded (no observation, no work), so its card has no items. */
+  function seedAskOnlySession() {
+    const at = Date.now();
+    source.prepare('INSERT INTO sdk_sessions VALUES (2,?,?,?,?,?,?,?,?,?)').run(
+      'example-project', 'claude', 'ask-only', 'memory-2', 'Build the release cards', null, 'completed', at, at,
+    );
+    source.prepare('INSERT INTO user_prompts VALUES (2,2,1,?,?)').run('Build the release cards', at);
+  }
+
+  it.each([false, true])('keeps a check made before a card with no recorded work named its agent, including its override: %s', async withOverride => {
+    seedLinkedEvidence();
+    seedAskOnlySession();
+    const card = (await snapshot()).humanRequests.find((request: any) => request.items.length === 0);
+    expect(card.agentIds).toHaveLength(1);
+    expect(card.review.checked).toBe(false);
+    // The fingerprint this card had while it read "Agent not recorded" (#6505): the same content, no agents.
+    const unattributed = contentFingerprint({ ...card, agentIds: [] });
+    const sidecar = new Database(reviewPath);
+    try {
+      sidecar.prepare('INSERT INTO work_view_reviews VALUES (?, ?, ?, ?)').run(card.id, unattributed, 1234, 'local-user');
+      if (withOverride) sidecar.prepare('INSERT INTO work_view_review_overrides VALUES (?, ?, ?, ?, ?)')
+        .run(card.id, unattributed, 1, 1234, null);
+      const named = (await snapshot()).humanRequests.find((request: any) => request.id === card.id);
+      expect(named.agentIds).toHaveLength(1);
+      expect(named.review).toMatchObject({ checked: true, checkedAtEpoch: 1234, actor: 'local-user', mode: 'local' });
+      // The owner can still undo that check from the card as it reads now.
+      expect((await review(named, false)).status).toBe(200);
+      expect((await snapshot()).humanRequests.find((request: any) => request.id === card.id).review.checked).toBe(false);
+    } finally { sidecar.close(); }
+  });
+
+  it('still counts the agents that recorded work names: a check for the same card without them does not apply', async () => {
+    seedLinkedEvidence();
+    const card = (await snapshot()).humanRequests[0];
+    expect(card.items.length).toBeGreaterThan(0);
+    expect(card.agentIds.length).toBeGreaterThan(0);
+    const unattributed = contentFingerprint({ ...card, agentIds: [] });
+    expect(unattributed).not.toBe(card.contentFingerprint);
+    const sidecar = new Database(reviewPath);
+    try {
+      sidecar.prepare('INSERT INTO work_view_reviews VALUES (?, ?, ?, ?)').run(card.id, unattributed, 1234, 'local-user');
+      expect((await snapshot()).humanRequests[0].review.checked).toBe(false);
+    } finally { sidecar.close(); }
+  });
+
   it('adopts an explicit pre-product unchecked override without inventing a check', async () => {
     append({ task: 'Build the local viewer', work_product: ['https://github.com/example/project/pull/42'] });
     const before = (await snapshot()).humanRequests[0];

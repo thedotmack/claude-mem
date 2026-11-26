@@ -7,6 +7,7 @@ import { sharedRecordKey } from './shared-records.mjs';
 import { SHARED_REVIEW_KIND, SHARED_REVIEW_VERSION, isSharedReviewValue } from './shared-review-value.mjs';
 import { groupIdFor } from './request-groups.mjs';
 import { requestText } from './request-projection.mjs';
+import { reviewedAgentIds } from './review-fingerprint.js';
 
 export { SHARED_REVIEW_KIND, SHARED_REVIEW_VERSION, isSharedReviewValue } from './shared-review-value.mjs';
 
@@ -164,7 +165,9 @@ export function sharedReviewDescriptor(database, request, { deviceId, sharedStat
   const selected = {};
   for (const key of ['original', 'explicitRequestText', 'scopeUpdates', 'projects', 'agentIds', 'items', 'lifecycle', 'afterShip', 'shipEstimate', 'stageSourceText']) {
     selected[key] = key === 'projects' && Array.isArray(request[key])
-      ? [...new Set(request[key].map(sharedProjectKey).filter(Boolean))].sort(compare) : normalize(request[key], key);
+      ? [...new Set(request[key].map(sharedProjectKey).filter(Boolean))].sort(compare)
+      // The same agents the local fingerprint counts, so naming a session's agent leaves a shared check in place.
+      : normalize(key === 'agentIds' ? reviewedAgentIds(request) : request[key], key);
   }
   selected.workProduct = (request.workProduct ?? []).map(productMeaning).sort(compare);
   selected.items?.sort(compare);
