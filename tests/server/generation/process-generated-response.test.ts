@@ -370,6 +370,33 @@ describe('processGeneratedResponse', () => {
     }
   });
 
+  it('records token usage for the monthly token cap when metering is disabled', async () => {
+    const prevMetering = process.env.CLAUDE_MEM_USAGE_METERING;
+    const prevCap = process.env.CLAUDE_MEM_MONTHLY_TOKEN_CAP;
+    delete process.env.CLAUDE_MEM_USAGE_METERING;
+    process.env.CLAUDE_MEM_MONTHLY_TOKEN_CAP = '1000';
+    try {
+      const xml = `<observation><type>discovery</type><title>x</title><facts><fact>f</fact></facts></observation>`;
+      const fresh = await claim();
+      await processGeneratedResponse({
+        pool,
+        job: fresh, rawText: xml, providerLabel: 'fake', modelId: 'fake-1', tokensUsed: 999,
+      });
+      const usage = await pool.query(
+        `SELECT kind, SUM(quantity)::bigint AS total FROM usage_events WHERE team_id = $1 GROUP BY kind`,
+        [teamId],
+      );
+      const byKind: Record<string, number> = {};
+      for (const r of usage.rows) byKind[r.kind] = Number(r.total);
+      // Only the rows the cap reads: observation counts stay behind the metering switch.
+      expect(byKind).toEqual({ tokens: 999 });
+    } finally {
+      if (prevMetering !== undefined) process.env.CLAUDE_MEM_USAGE_METERING = prevMetering;
+      if (prevCap === undefined) delete process.env.CLAUDE_MEM_MONTHLY_TOKEN_CAP;
+      else process.env.CLAUDE_MEM_MONTHLY_TOKEN_CAP = prevCap;
+    }
+  });
+
   it('marks job completed with no observation when the response is a skip_summary', async () => {
     const fresh = await claim();
     const outcome = await processGeneratedResponse({

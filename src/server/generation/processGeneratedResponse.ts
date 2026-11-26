@@ -531,9 +531,13 @@ async function persistGeneratedObservations(
   // transaction that completed this attempt: a terminal replay also returns
   // `completed`, but must not charge the same response again. Keep writes
   // outside the transaction so a metering failure cannot undo saved memory.
-  if (completedNow && outcome.kind === 'completed' && process.env.CLAUDE_MEM_USAGE_METERING === '1') {
+  // The monthly token cap reads the `tokens` rows written here, so a cap counts
+  // them even when general metering is off.
+  const meteringOn = process.env.CLAUDE_MEM_USAGE_METERING === '1';
+  const tokenCapSet = Number(process.env.CLAUDE_MEM_MONTHLY_TOKEN_CAP ?? '0') > 0;
+  if (completedNow && outcome.kind === 'completed' && (meteringOn || tokenCapSet)) {
     try {
-      await recordUsageMetering(input, outcome.observations.length);
+      await recordUsageMetering(input, meteringOn ? outcome.observations.length : 0);
     } catch (usageError) {
       logger.warn('SYSTEM', 'usage metering record failed (post-commit)', {
         jobId: input.job.id,
