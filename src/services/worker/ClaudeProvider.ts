@@ -44,7 +44,7 @@ import {
   resolveConversationMaxChars,
   windowAwareConversationMaxChars,
 } from '../../shared/observer-recycle.js';
-import { resolveContextWindowTokens, observationFieldMaxChars } from './context-window.js';
+import { resolveContextWindowTokens, observationFieldMaxChars, resolveObserverMaxOutputTokens } from './context-window.js';
 import { recycleObserverConversation, loadSessionStartContext, openObserverGeneration, observesBarePrompts } from './session/recycle-conversation.js';
 import { MAX_CONSECUTIVE_SDK_STREAM_EXITS, RESPONSE_STALL_MS, ObserverResponsePacer } from './session/response-pacer.js';
 import { recordObserverFailure } from '../../shared/observer-health.js';
@@ -1204,6 +1204,19 @@ export class ClaudeProvider {
     }
   }
 
+  /**
+   * The output-token cap a field-compression request is sized by, so the
+   * condense prompt never asks for more than the cap can carry (#6503). The
+   * HTTP providers also send this value as the request's max_tokens; the
+   * Agent SDK exposes no per-request output cap (its Options carry maxTurns,
+   * maxThinkingTokens and maxBudgetUsd only), so on this path the sized ask
+   * is the control the setting gets — the call site previously passed no cap
+   * at all, and condense replies averaged ~3x their target.
+   */
+  private fieldCompressionMaxOutputTokens(): number {
+    return resolveObserverMaxOutputTokens();
+  }
+
   private async compressField(
     text: string,
     budgetChars: number,
@@ -1381,6 +1394,7 @@ export class ClaudeProvider {
               fieldMaxChars,
               resolveFieldOptimizeTimeoutMs,
               session.observerContextWindowTokens,
+              () => this.fieldCompressionMaxOutputTokens(),
             )
           : { toolInput: message.tool_input, toolOutput: message.tool_response };
 
