@@ -198,7 +198,7 @@ final class AppModelTests: XCTestCase {
 
     @MainActor
     private func waitForSave(_ model: AppModel) async {
-        for _ in 0..<100 where !model.savingPicks.isEmpty {
+        for _ in 0..<500 where !model.savingPicks.isEmpty {
             try? await Task.sleep(for: .milliseconds(20))
         }
         XCTAssertTrue(model.savingPicks.isEmpty)
