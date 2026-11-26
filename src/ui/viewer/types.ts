@@ -191,6 +191,9 @@ export interface Settings {
   CLAUDE_CODE_PATH?: string;
   /** Written by `npx claude-mem teambrain join`; read-only here. Set once this install is in a team. */
   CLAUDE_MEM_TEAMBRAIN_URL?: string;
+  /** Read-only here. Older Cloud Sync installs may have a hub URL and no plan label. */
+  CLAUDE_MEM_PRO_PLAN?: string;
+  CLAUDE_MEM_CLOUD_SYNC_HUB_URL?: string;
 
   CLAUDE_MEM_BACKUP_ENABLED?: string;
   CLAUDE_MEM_BACKUP_INTERVAL_HOURS?: string;

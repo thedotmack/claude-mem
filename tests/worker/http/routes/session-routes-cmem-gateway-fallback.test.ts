@@ -89,6 +89,8 @@ import {
 import { CLAUDE_LOGIN_UNREADABLE_CODE, OBSERVER_HEALTH_FILENAME, readObserverHealth } from '../../../../src/shared/observer-health.js';
 import { RELAYED_TEXT_MAX_CHARS } from '../../../../src/shared/relayed-text.js';
 import { observerHealthWarning } from '../../../../src/services/context/ContextBuilder.js';
+import { setClaudeFallbackReadinessForTesting } from '../../../../src/shared/claude-fallback-readiness-override.js';
+import { PaidSendBudget } from '../../../../src/services/worker/paid-send-budget.js';
 import { PRO_FALLBACK_NOTICE_MARKER } from '../../../../src/shared/cmem-gateway.js';
 import { proTrialUrl } from '../../../../src/shared/pro-promo.js';
 import { clearDependencyStatus } from '../../../../src/shared/dependency-health.js';
@@ -104,6 +106,7 @@ const GATEWAY_BASE_URL = 'https://cmem.ai/api/inference/v1';
 const MODEL_CATALOGUE_URL = 'https://openrouter.ai/api/v1/models';
 const MEMORY_KEY = 'cm_pro_0123456789abcdef01234567';
 const ON_ANTHROPIC_PLAN = 'Memory is using your Anthropic plan for now.';
+const ON_REGULAR_PROVIDER = 'Memory uses your configured local provider when available';
 const QUOTA_FALLBACK_SKIPPED = 'claude-mem skips it as your quota fallback until it answers again';
 
 /** The gateway's own copy. */
@@ -163,6 +166,7 @@ const ENV_KEYS = [
   'CLAUDE_MEM_PRO_FALLBACK_URL',
   'CLAUDE_MEM_GEMINI_API_KEY',
   'CMEM_PRO_ORIGIN',
+  'CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER',
   'OPENROUTER_BASE_URL',
   'CLAUDE_MEM_LLM_TIMEOUT_MS',
   'CLAUDE_MEM_OBSERVE_BARE_PROMPTS',
@@ -234,6 +238,7 @@ interface Harness {
   routes: SessionRoutes;
   sessions: Map<number, ActiveSession>;
   claudeAgent: { startSession: ReturnType<typeof mock> };
+  geminiAgent: { startSession: ReturnType<typeof mock> };
   completionHandler: { finalizeSession: ReturnType<typeof mock> };
   /** Each quota/auth discard, with the batch's paid-send budget as it stood at that moment. */
   discards: Array<{ sessionDbId: number; paidSendBudget?: { batchHeadMessageId: number; spentPaidSends: number } }>;
@@ -265,6 +270,11 @@ function makeHarness(
     getSession: mock((id: number) => sessions.get(id)),
     getMessageBuffer: mock(() => messageBuffer),
     removeSessionImmediate: mock(() => {}),
+    resetProcessingToPending: mock((id: number) => {
+      const current = sessions.get(id);
+      if (current) current.claimedMessageIds = [];
+      return 1;
+    }),
     discardBufferedWork: mock((id: number) => {
       const budget = sessions.get(id)?.paidSendBudget;
       discards.push({
@@ -310,6 +320,7 @@ function makeHarness(
     routes,
     sessions,
     claudeAgent,
+    geminiAgent,
     completionHandler,
     discards,
     captureFreshWork: id => { discardedSessionIds.delete(id); },
@@ -386,7 +397,9 @@ guardSharedQuotaCooldownSingleton('session-routes-cmem-gateway-fallback.test.ts'
 guardSharedProcessRegistrySingleton('session-routes-cmem-gateway-fallback.test.ts');
 
 describe('SessionRoutes — cmem gateway integrity', () => {
+  let previousReadiness: ReturnType<typeof setClaudeFallbackReadinessForTesting>;
   beforeEach(() => {
+    previousReadiness = setClaudeFallbackReadinessForTesting(() => false);
     savedEnv = {};
     for (const key of ENV_KEYS) {
       savedEnv[key] = process.env[key];
@@ -436,6 +449,7 @@ describe('SessionRoutes — cmem gateway integrity', () => {
   });
 
   afterEach(async () => {
+    setClaudeFallbackReadinessForTesting(previousReadiness);
     // End everything this test started — held gateway answers, running Claude
     // generators, and any resume the routes scheduled on their own — before
     // restoring state, so nothing books into the next test.
@@ -509,7 +523,7 @@ describe('SessionRoutes — cmem gateway integrity', () => {
       },
     );
 
-    it.each(['allowance_exhausted', 'key_invalid', 'subscription_inactive'] as const)(
+    it.each(['key_invalid', 'subscription_inactive'] as const)(
       '%s discards the buffered work instead of replaying it on claude; the next capture starts there',
       async (code) => {
         const id = 920007;
@@ -556,7 +570,7 @@ describe('SessionRoutes — cmem gateway integrity', () => {
         const first = (await contextHandler.execute(hookInput)).hookSpecificOutput?.additionalContext ?? '';
         expect(first).toContain(GATEWAY[code].message);
         expect(first).toContain(GATEWAY[code].action);
-        expect(first).toContain(ON_ANTHROPIC_PLAN);
+        expect(first).toContain(code === 'allowance_exhausted' ? ON_REGULAR_PROVIDER : ON_ANTHROPIC_PLAN);
         expect(first).toContain(GATEWAY[code].url);
         expect(first).not.toContain('free trial');
         expect(first).toContain('context from worker');
@@ -1180,6 +1194,7 @@ describe('SessionRoutes — cmem gateway integrity', () => {
 
   describe('the single gateway re-probe after the fallback window', () => {
     it('admits exactly one of N concurrent sessions to the gateway; its failure re-arms the marker once', async () => {
+      setClaudeFallbackReadinessForTesting(() => true);
       const ids = [921001, 921002, 921003, 921004, 921005];
       const elapsed = elapsedFallbackAt();
       seedSettings({ CLAUDE_MEM_PRO_FALLBACK_AT: elapsed });
@@ -1353,7 +1368,7 @@ describe('SessionRoutes — cmem gateway integrity', () => {
       expect(sent[0].body).toContain('<what_happened>Read</what_happened>');
     }
 
-    it.each(['allowance_exhausted', 'key_invalid', 'subscription_inactive'] as const)(
+    it.each(['key_invalid', 'subscription_inactive'] as const)(
       '%s on that first request records the same fallback, books no outage, and spends none of the batch\'s paid sends',
       async (code) => {
         const id = 926001;
@@ -1385,6 +1400,48 @@ describe('SessionRoutes — cmem gateway integrity', () => {
         expect(discards[0].paidSendBudget?.spentPaidSends).toBe(0);
         expect(session(id).paidSendBudget).toBeUndefined();
         expect(session(id).claimedMessageIds).toEqual([]);
+      },
+    );
+
+    it('hands a live zero-spend batch to the configured provider on a typed credit refusal', async () => {
+      const id = 926002;
+      seedSettings({ CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: 'gemini', CLAUDE_MEM_GEMINI_API_KEY: 'test-key' });
+      respond = async () => gatewayRejection('allowance_exhausted');
+      const { routes, geminiAgent, claudeAgent, discards } = makeHarness([id]);
+      // Hold the fallback run so the live session can be inspected on admission.
+      geminiAgent.startSession.mockImplementation(() => new Promise<void>(resolve => claudeRuns.push(resolve)));
+      await routes.ensureGeneratorRunning(id, 'observation');
+      await waitFor(() => geminiAgent.startSession.mock.calls.length === 1, 'the local handoff');
+      expectPromptAndObservationInOneRequest(gatewayRequests());
+      expect(session(id).paidSendBudget?.batchHeadMessageId).toBe(FIRST_OBSERVATION.id);
+      expect(session(id).paidSendBudget?.spentPaidSends).toBe(0);
+      expect(session(id).currentProvider).toBe('gemini');
+      expect(discards).toEqual([]);
+      expect(claudeAgent.startSession).not.toHaveBeenCalled();
+    });
+
+    it.each(['off', 'unavailable', 'already-sent'] as const)(
+      'pauses without replay or a new paid send when the fallback is %s', async mode => {
+        const id = 926003;
+        seedSettings({ CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: mode === 'off' ? 'off' : 'claude' });
+        setClaudeFallbackReadinessForTesting(() => mode !== 'unavailable');
+        respond = async () => gatewayRejection('allowance_exhausted');
+        const { routes, claudeAgent, discards, captureFreshWork } = makeHarness([id]);
+        if (mode === 'already-sent') {
+          session(id).paidSendBudget = new PaidSendBudget(FIRST_OBSERVATION.id);
+          session(id).paidSendBudget!.recordPaidSend();
+        }
+        await routes.ensureGeneratorRunning(id, 'observation');
+        await settle(id);
+        expect(discards).toHaveLength(1);
+        expect(gatewayRequests()).toHaveLength(1);
+        expect(claudeAgent.startSession).not.toHaveBeenCalled();
+        await routes.ensureGeneratorRunning(id, 'periodic');
+        expect(claudeAgent.startSession).not.toHaveBeenCalled();
+        captureFreshWork(id);
+        await routes.ensureGeneratorRunning(id, 'observation');
+        expect(claudeAgent.startSession.mock.calls.length).toBe(mode === 'already-sent' ? 1 : 0);
+        expect(gatewayRequests()).toHaveLength(1);
       },
     );
 

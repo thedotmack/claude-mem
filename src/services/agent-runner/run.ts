@@ -47,6 +47,7 @@ import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { logger } from '../../utils/logger.js';
 import { runtimeReadRoots } from './runtime-read-roots.js';
 import { cutOutputText, detectUsableAgents, GEMINI_NO_MCP_SERVERS, runCommand, type CommandResult, type UsableAgent, type UsableAgentId } from './detect.js';
+import { isCmemGatewayUrl } from '../../shared/cmem-gateway.js';
 import type { ApiAgentLimits } from '../../shared/api-agent-limits.js';
 import { ApiProviderError, askApiTarget, resolveApiTarget } from './api-agent.js';
 import { WAITING_FOR_AGENT_REASON } from '../../shared/work-view-refresh-reasons.js';
@@ -574,7 +575,7 @@ function apiAsk(agent: TaskAgent, task: AgentTask, dependencies: AgentRunnerDepe
   const sessionId = randomUUID();
   return async (prompt, models, answerSchema) => {
     if (refused) throw refused;
-    const resolution = resolveApiTarget();
+    const resolution = targetForTask(task);
     if (!resolution.target) {
       throw new Error(`The selected API provider cannot answer this step: ${resolution.reason}`);
     }
@@ -587,14 +588,23 @@ function apiAsk(agent: TaskAgent, task: AgentTask, dependencies: AgentRunnerDepe
   };
 }
 
+const agentNames: Record<TaskAgentId, string> = { 'claude-code': 'Claude Code', codex: 'Codex', gemini: 'Gemini', opencode: 'OpenCode', api: 'the selected API provider' };
+
+
+function targetForTask(task: AgentTask): ReturnType<typeof resolveApiTarget> {
+  const target = resolveApiTarget();
+  if (task.reason === 'setup-scan' && isCmemGatewayUrl(target.target?.url)) {
+    return { target: null, reason: 'Hosted setup requires an upload choice.' };
+  }
+  return target;
+}
+
 /**
  * Run the task on the first usable agent — the task's preferred agent when it names one and that agent
  * is usable, among the task's allowed agents — falling through to the next only
  * when a run fails, not when the agent's answer was refused, and never when the task stays on its first agent. Never throws. With no logged-in agent it returns
  * `waiting-for-agent` and runs nothing.
  */
-const agentNames: Record<TaskAgentId, string> = { 'claude-code': 'Claude Code', codex: 'Codex', gemini: 'Gemini', opencode: 'OpenCode', api: 'the selected API provider' };
-
 export async function runAgentTask(task: AgentTask, overrides: Partial<AgentRunnerDependencies> = {}): Promise<AgentRunResult> {
   const autoApprovedFileTools = task.claudeCode.allowedTools.filter(tool => FILE_TOOLS.includes(tool));
   if (autoApprovedFileTools.length) throw new Error(`Agent task ${task.reason} auto-approves ${autoApprovedFileTools.join(', ')}, which would read anywhere on disk; name readableFolders instead.`);
@@ -611,7 +621,7 @@ export async function runAgentTask(task: AgentTask, overrides: Partial<AgentRunn
     .filter(agent => !localAllowed || localAllowed.includes(agent.id));
   // The API provider is usable only when it is configured. When it is not, the agent is left out
   // entirely: the task waits for it, and it never falls back to a local CLI.
-  const api = wantsApi ? resolveApiTarget() : null;
+  const api = wantsApi ? targetForTask(task) : null;
   const apiAgent: TaskAgent | null = api?.target
     ? { id: 'api', path: null, authenticated: true, reason: `${api.target.provider}: ${api.target.url}` }
     : null;

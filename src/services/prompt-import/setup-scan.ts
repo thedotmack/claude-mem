@@ -131,6 +131,7 @@ function idleState(): SetupScanState {
 export class SetupScan {
   private current: SetupScanState = idleState();
   private running: Promise<void> | null = null;
+  private localExtraction: (() => Promise<boolean>) | null = null;
   private pendingUpload: { ownerPrompts: OwnerPrompt[]; summary: Partial<SetupScanState>; startedAt: number } | null = null;
   private listeners = new Set<(state: SetupScanState) => void>();
   private lastNotified = 0;
@@ -150,7 +151,12 @@ export class SetupScan {
     return () => this.listeners.delete(listener);
   }
 
-  /** Setup has one extraction path, supplied by the worker's hosted service. */
+  /** Returns false when the configured inference is unavailable. Only the consent route may then send prompts. */
+  setLocalExtractor(extract: () => Promise<boolean>): void {
+    this.localExtraction = extract;
+  }
+
+  /** Hosted setup runs for the prompts the owner explicitly selects. */
   setExtractor(extract: (prompts: OwnerPrompt[], improveProduct: boolean) => Promise<void>): void {
     this.extract = extract;
   }
@@ -367,6 +373,13 @@ export class SetupScan {
       const recentPrompts = [...ownerPrompts].sort((left, right) => right.at - left.at).slice(0, RECENT_PROMPTS)
         .map(prompt => ({ agent: prompt.agent, at: new Date(prompt.at).toISOString(), text: prompt.text.trim().slice(0, RECENT_PROMPT_CHARACTERS) }));
       const summary = { agents: agents.map(agent => ({ ...agent, uploadBytes: uploadBytes.get(agent.id) ?? 0 })), added, skippedSources: result.skippedSources.length, usage, usageError, recentPrompts };
+      if (ownerPrompts.length && this.localExtraction) {
+        this.update({ phase: 'organizing', percent: 98, ...summary }, true);
+        if (await this.localExtraction()) {
+          this.finish(summary, startedAt);
+          return;
+        }
+      }
       if (this.extract && !ownerPrompts.length) {
         // Nothing to upload, so there is nothing to ask about; the extractor records an empty result without contacting Cloud.
         this.update({ phase: 'uploading', percent: 99, ...summary }, true);

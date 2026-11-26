@@ -246,7 +246,7 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
     const open = next === 'checkout'
     telemetry.action('choose_memory', { branch, branch_confirmed: false }, offer)
     try {
-      const success = await handOff(() => source.choose({ branch, memoryBilling: 'existing', ...(offer ? { cloudSyncOffer: offer } : {}) }, open), 'choice_failed', 'Couldn’t save your storage choice.', () => submitChoice(branch, cloudSyncOffer))
+      const success = await handOff(() => source.choose({ branch, memoryBilling: 'existing', ...(offer ? { cloudSyncOffer: offer } : {}), ...(open ? { shareWorkView: true } : {}) }, open), 'choice_failed', 'Couldn’t save your storage choice.', () => submitChoice(branch, cloudSyncOffer))
       if (!success) return
       const committed = { branch, branch_confirmed: true }
       setBranchConfirmed(true)
@@ -304,7 +304,7 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
     await handOff(async () => {
       await source.resume()
       const offer = setupCloudSyncOffer(flow)
-      await source.choose({ branch: flow.branch, memoryBilling: flow.memoryBilling, ...(offer ? { cloudSyncOffer: offer } : {}) }, !!offer && !flow.alreadyPro)
+      await source.choose({ branch: flow.branch, memoryBilling: flow.memoryBilling, ...(offer ? { cloudSyncOffer: offer } : {}), ...(data.choice?.shareWorkView ? { shareWorkView: true } : {}) }, !!offer && !flow.alreadyPro)
     }, 'choice_failed', 'Couldn’t restart setup.')
     setRetryingSetup(false)
   }

@@ -168,11 +168,11 @@ export class AutoRefreshWorker {
     return this.run(needs, 'scheduled');
   }
 
-  /** Run now instead of at the next ten-minute check, when something is due. Never while setup runs. */
+  /** The explicit setup scan may run its own extraction. Other on-demand work waits until setup finishes. */
   async runNow({ reason }) {
     if (this.closed) return 'closed';
     if (this.busy) return 'running';
-    if (this.setupRunning()) return 'setup-running';
+    if (reason !== 'setup-scan' && this.setupRunning()) return 'setup-running';
     const previous = this.replaceableStatus();
     if (this.otherWorkerIsRunning(previous)) return 'running';
     this.busy = true;

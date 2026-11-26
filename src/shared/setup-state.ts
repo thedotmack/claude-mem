@@ -19,6 +19,8 @@ export interface SetupChoice {
   branch: SetupBranch;
   memoryBilling: SetupMemoryBilling;
   cloudSyncOffer?: SetupCloudSyncOffer;
+  /** The owner chose the standalone offer that includes sharing the Work View board. */
+  shareWorkView?: true;
   chosenAt: string;
   /** Original scan summary for the post-checkout usage screen, retained across worker restarts. */
   usage?: SetupUsage;

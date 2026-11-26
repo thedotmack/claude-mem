@@ -7,7 +7,7 @@
  * `<root>/scripts/worker-service.cjs <args…>` under Bun with the same argv
  * (plus the hook's stdin for `hook`, which runs the hook-only
  * `<root>/scripts/hook-service.cjs` instead when the plugin ships it), and fail open (exit 0 + one stderr line)
- * on every failure. Subcommands are never interpreted here, so new worker
+ * on hook failures. The local messages command returns its actual status. Subcommands are never interpreted here, so new worker
  * subcommands work without recompiling the on-PATH binary.
  *
  * VERSION-STABLE: the compiled binary sits on PATH and is not refreshed by
@@ -35,14 +35,19 @@ import { expandHome } from '../shared/expand-home.js';
 const IS_WINDOWS = process.platform === 'win32';
 const STDIN_COLLECTION_TIMEOUT_MS = 5000;
 const USAGE_TEXT = 'usage: claude-mem hook <platform> <event> | claude-mem <worker-service subcommand> | claude-mem --version';
+const isMessagesCommand = process.argv[2] === 'messages';
 const FORWARDED_SIGNALS: NodeJS.Signals[] = ['SIGTERM', 'SIGINT', 'SIGHUP'];
 
 /**
  * Fail-open exit, matching hookCommand() in the CLI hook pipeline: an unexpected claude-mem
  * failure never blocks the user. Exit 2 means "block" to Claude Code (dropped
- * prompt, denied tool, Stop re-wake loop), so this launcher never exits 2.
+ * prompt, denied tool, Stop re-wake loop), so a hook never exits 2.
  */
-function exitContinuingWithoutMemory(reason: string): never {
+function exitOnLauncherFailure(reason: string, exitCode = 1): never {
+  if (isMessagesCommand) {
+    process.stderr.write(`claude-mem: ${reason}\n`);
+    process.exit(exitCode);
+  }
   process.stderr.write(`claude-mem: ${reason}, continuing without memory\n`);
   process.exit(0);
 }
@@ -298,12 +303,13 @@ function neutralBunSpawnCwd(): string {
 
 async function runThroughWorker(workerServiceArguments: string[]): Promise<never> {
   if (isToolHookDisabledByEnvironment(workerServiceArguments) || isPluginDisabledInClaudeSettings()) {
+    if (isMessagesCommand) exitOnLauncherFailure('plugin is disabled');
     process.exit(0);
   }
 
   const pluginRoot = resolvePluginRootForLauncher();
   if (!pluginRoot) {
-    exitContinuingWithoutMemory('plugin scripts not found');
+    exitOnLauncherFailure('plugin scripts not found');
   }
   const workerScriptPath = join(pluginRoot, 'scripts', 'worker-service.cjs');
   // A hook is a short-lived process: parsing the whole worker bundle for it costs
@@ -316,7 +322,7 @@ async function runThroughWorker(workerServiceArguments: string[]): Promise<never
 
   const bunRuntime = await selectBunRuntime();
   if (!bunRuntime) {
-    exitContinuingWithoutMemory('Bun not found (install Bun, then restart your terminal)');
+    exitOnLauncherFailure('Bun not found (install Bun, then restart your terminal)');
   }
 
   // Only `hook` carries a payload. Every other subcommand (start, stop, …) gets
@@ -367,14 +373,14 @@ async function runThroughWorker(workerServiceArguments: string[]): Promise<never
     }
 
     child.on('error', (spawnError) => {
-      exitContinuingWithoutMemory(`failed to start Bun (${spawnError.message})`);
+      exitOnLauncherFailure(`failed to start Bun (${spawnError.message})`);
     });
 
     child.on('close', (exitCode, exitSignal) => {
       if (exitCode === 0) {
         process.exit(0);
       }
-      exitContinuingWithoutMemory(`worker exited ${exitSignal ?? exitCode}`);
+      exitOnLauncherFailure(`worker exited ${exitSignal ?? exitCode}`, exitCode ?? 1);
     });
 
     if (child.stdin) {
@@ -412,7 +418,7 @@ async function main(): Promise<void> {
 }
 
 main().catch((unexpectedError: unknown) => {
-  exitContinuingWithoutMemory(
+  exitOnLauncherFailure(
     `launcher error (${unexpectedError instanceof Error ? unexpectedError.message : String(unexpectedError)})`,
   );
 });

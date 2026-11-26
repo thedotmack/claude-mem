@@ -287,10 +287,10 @@ function fakeWorker(initialRun: object, setupChanges: object = {}, scanChanges: 
   await withSetupPage('', { width: 390, height: 844, phone: true }, async page => {
     await page.atStep('reveal');
     const copy = await page.browser.evaluate<string>(`document.querySelector('.reveal-trial').textContent`);
-    expect(copy).toContain('$0 today. Then $12/month after 30 days. Card required.');
+    expect(copy).toContain('No card needed for your first 30 days. Continue for $12/month if you choose.');
     await page.browser.evaluate(`(() => { const button = document.querySelector('.reveal-trial .primary'); button.click(); button.click(); })()`);
     await page.atStep('checkout');
-    expect(worker.choices()).toEqual([{ branch: 'go', memoryBilling: 'existing', cloudSyncOffer: 'cloud_sync_monthly', openCheckout: true }]);
+    expect(worker.choices()).toEqual([{ branch: 'go', memoryBilling: 'existing', cloudSyncOffer: 'cloud_sync_monthly', shareWorkView: true, openCheckout: true }]);
     expect(await page.browser.evaluate(`!!document.querySelector('a[href="https://cmem.ai/hosted-tokens"]')`)).toBe(false);
     worker.reportSetup({ checkout: { state: 'paid', error: null }, alreadyPro: true });
     await page.atStep('savings');
@@ -335,7 +335,7 @@ function fakeWorker(initialRun: object, setupChanges: object = {}, scanChanges: 
     expect(receipt).toContain('No trial.');
     expect(receipt).not.toContain('30 days');
     expect(receipt).not.toContain('$30');
-    expect(worker.choices()).toEqual([{ branch: 'go', memoryBilling: 'existing', cloudSyncOffer: 'cloud_sync_annual', openCheckout: true }]);
+    expect(worker.choices()).toEqual([{ branch: 'go', memoryBilling: 'existing', cloudSyncOffer: 'cloud_sync_annual', shareWorkView: true, openCheckout: true }]);
     expect(await page.browser.evaluate(`!!document.querySelector('a[href="https://cmem.ai/hosted-tokens"]')`)).toBe(false);
     worker.reportSetup({ checkout: { state: 'failed', error: 'Checkout cancelled' } });
     await page.until(`document.querySelector('.setup-error')?.textContent.includes('Checkout didn’t finish')`, 'the failed checkout');
@@ -644,7 +644,7 @@ async function toFinishSetup(page: SetupWalk) {
     const stoppedText = () => page.browser.evaluate(`document.querySelector('.history-stopped')?.innerText ?? null`);
     const startImport = async () => {
       await page.press('.history-permission input');
-      await page.press('.history-actions .import-button', 'Import full history');
+      await page.press('.history-actions .import-button', 'Add saved memories');
       await page.atStep('import');
     };
     await toFinishSetup(page);
@@ -815,12 +815,12 @@ async function toFinishSetup(page: SetupWalk) {
 // About 8s: no scan to wait for, a reconnect and a 2s wait; 60s allows a slow shared runner.
 }, 60_000);
 
-(chromeExecutablePath ? it : it.skip)('Import full history on a run already running shows it and counts no start; after Stop, Continue says what it added and what was already there', async () => {
+(chromeExecutablePath ? it : it.skip)('Add saved memories on a run already running shows it and counts no start; after Stop, Continue says what it added and what was already there', async () => {
   const worker = fakeWorker(uploadRun({ sent: 100, imported: 100, percent: 78 }));
   await withSetupPage('', { width: 390, height: 844, phone: true }, async (page) => {
     const importFullHistory = async () => {
       await page.press('.history-permission input');
-      await page.press('.history-actions .import-button', 'Import full history');
+      await page.press('.history-actions .import-button', 'Add saved memories');
       await page.atStep('import');
     };
     await toFinishSetupOnTheWorker(page);

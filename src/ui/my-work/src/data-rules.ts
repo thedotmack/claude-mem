@@ -160,4 +160,6 @@ export interface RuleChange {
   action: 'approve' | 'edit' | 'turn-off' | 'turn-on' | 'dismiss' | 'add' | 'replace' | 'restore-suggestion'
   ruleId?: string
   rule?: RuleDraft
+  /** Version shown when an editor opened. Checked by the UI transport before posting the draft. */
+  expectedRuleVersion?: string | null
 }

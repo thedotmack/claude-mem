@@ -439,8 +439,8 @@ unreviewed ones), and record a verdict with `POST /api/dedup/candidates/<id>/res
 
 claude-mem keeps the screenshots and images that tools return (browser
 screenshots, a `Read` of an image file inside the project) and shows them on
-the request they belong to in My Work, both on this computer and at
-work.cmem.ai. Keeping images is **on by default**. Letting the observer model
+the request they belong to in My Work, both on this computer and in your
+[private Work View](https://cmem.ai/work). Keeping images is **on by default**. Letting the observer model
 look at them is a separate switch that is **off by default**: keeping images
 never sends one to a model.
 
@@ -483,7 +483,7 @@ analytics.
 
 **Cloud upload.** When capture is on *and* [Cloud Sync](cloud-sync) is
 configured, each converted image is uploaded privately to your cmem.ai account
-so your other devices and My Work at work.cmem.ai can show it; they download
+so your other devices and your private Work View can show it. They download
 it on first view. Deleting
 it locally also deletes the cloud copy. Observation text syncs without the
 image bytes.
