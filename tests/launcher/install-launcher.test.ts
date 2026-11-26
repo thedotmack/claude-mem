@@ -1359,6 +1359,24 @@ describe.skipIf(!isPosixHost)('plugin/scripts/ensure-launcher.cjs under plain no
     expect(readFileSync(path.join(scratchHome, '.zshrc'), 'utf-8')).toContain(shellPathSetupMarkerComment('claude-mem'));
   });
 
+  it('tells the person to add the directory to PATH themselves when CLAUDE_MEM_SKIP_SHELL_RC is set', () => {
+    const scratchHome = makeScratchHome();
+    const fakeBunDirectory = writeFakeBun(scratchHome, 'writes-current-launcher');
+    const binDirectory = path.join(scratchHome, '.local', 'bin');
+    const scriptRun = runEnsureLauncherScript(scratchHome, {
+      CLAUDE_PLUGIN_ROOT: ensureLauncherPluginRoot(),
+      PATH: `${fakeBunDirectory}:/usr/bin:/bin`,
+      CLAUDE_MEM_SKIP_SHELL_RC: '1',
+    });
+    expect(scriptRun.status).toBe(0);
+    expectOneSystemMessage(
+      scriptRun.stdout,
+      `the launcher was installed at ${path.join(binDirectory, 'claude-mem')}, and CLAUDE_MEM_SKIP_SHELL_RC stopped the installer from adding ${binDirectory} to your PATH`,
+      `Fix: add ${binDirectory} to your PATH, then restart Claude Code from a new terminal.`,
+    );
+    expect(existsSync(path.join(scratchHome, '.zshrc'))).toBe(false);
+  });
+
   it('places the launcher silently when the hook PATH already includes its directory', () => {
     const scratchHome = makeScratchHome();
     const fakeBunDirectory = writeFakeBun(scratchHome, 'writes-current-launcher');

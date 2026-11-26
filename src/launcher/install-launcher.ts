@@ -273,7 +273,9 @@ export type ShellPathSetupOutcome =
 /** Set to 1 or true to keep the installer from editing shell rc files. */
 export const SKIP_SHELL_RC_ENV_VAR = 'CLAUDE_MEM_SKIP_SHELL_RC';
 
-function isTruthyFlag(value: string | undefined): boolean {
+/** Whether the person asked the installer to leave shell rc files alone. */
+export function isShellRcSkipRequested(environmentVariables: NodeJS.ProcessEnv): boolean {
+  const value = environmentVariables[SKIP_SHELL_RC_ENV_VAR];
   return value !== undefined && ['1', 'true'].includes(value.trim().toLowerCase());
 }
 
@@ -295,7 +297,7 @@ export function ensureLocalBinOnShellPath(options: {
   const currentPath = host.environmentVariables.PATH ?? '';
   if (currentPath.split(':').some((entry) => entry.replace(/\/+$/, '') === localBinDirectory)) return 'already-on-path';
 
-  if (isTruthyFlag(host.environmentVariables[SKIP_SHELL_RC_ENV_VAR])) {
+  if (isShellRcSkipRequested(host.environmentVariables)) {
     logger.info(
       `${SKIP_SHELL_RC_ENV_VAR} is set, so ${purposeLabel} left your shell rc files alone. `
       + `Keep ${localBinDirectory} on your PATH yourself.`,
