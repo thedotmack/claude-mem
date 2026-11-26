@@ -37,7 +37,7 @@ describe('purpose-specific model responses', () => {
     }
     // The words, unchanged since they were a literal comparison; a new reason fails here until it is worded.
     expect(MEMORY_SAVE_REFUSAL_REASONS.map(reason => formatMcpPayload('save', { success: false, skipped: true, reason }).content[0].text))
-      .toEqual(['Not saved: this checkout is excluded by CLAUDE_MEM_EXCLUDED_PROJECTS.']);
+      .toEqual(['Not saved: this project is excluded by CLAUDE_MEM_EXCLUDED_PROJECTS.']);
     expect(formatMcpPayload('save', { success: false, skipped: true, reason: 'a_reason_this_version_does_not_know' }).content[0].text)
       .toBe('Not saved: a_reason_this_version_does_not_know.');
     expect(formatMcpPayload('save', { success: false }).content[0].text).toBe('Not saved.');

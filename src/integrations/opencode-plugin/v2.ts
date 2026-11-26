@@ -366,8 +366,12 @@ export async function setupV2(
     const hook = sessionDomain.hook.bind(sessionDomain);
     await register(() =>
       hook<V2PromptEvent>("prompt", async (event) => {
+        if (!event?.sessionID) return;
         const promptText = event?.prompt?.text?.trim();
-        if (!event?.sessionID || !promptText) return;
+        if (!promptText) {
+          core.forgetSemanticContext(event.sessionID);
+          return;
+        }
         trackSession(event.sessionID);
         // Read the selected model from this prompt's own session, before the
         // session-init POST runs. The V2 API is beta: a missing `get`, a failed
@@ -377,6 +381,7 @@ export async function setupV2(
         // `providerID/model.id`.
         const observerModel = await readObserverModel(sessionDomain, event.sessionID);
         await core.captureUserPrompt(event.sessionID, promptText, observerModel);
+        core.primeSemanticContext(event.sessionID, promptText);
       }),
     );
 
@@ -387,10 +392,12 @@ export async function setupV2(
     await register(() =>
       hook<V2ContextEvent>("context", async (event) => {
         if (!event?.sessionID || !Array.isArray(event.system)) return;
-        const memory = (await core.memoryContext(event.sessionID))?.trim();
-        if (!memory) return;
+        const memory = (await core.memoryContext(event.sessionID))?.trim() ?? "";
+        const semantic = (await core.semanticContext(event.sessionID))?.trim() ?? "";
+        const combined = [memory, semantic].filter(Boolean).join("\n\n");
         removeMemoryParts(event.system);
-        event.system.push({ type: "text", text: `${CONTEXT_TAG_OPEN}\n${memory}\n${CONTEXT_TAG_CLOSE}` });
+        if (!combined) return;
+        event.system.push({ type: "text", text: `${CONTEXT_TAG_OPEN}\n${combined}\n${CONTEXT_TAG_CLOSE}` });
       }),
     );
 

@@ -117,6 +117,9 @@ export function createV1Hooks(ctx: OpenCodePluginContextV1) {
           const observerModel =
             typeof modelID === "string" && modelID.trim() ? modelID : undefined;
           await core.captureUserPrompt(sessionID, promptText, observerModel);
+          core.primeSemanticContext(sessionID, promptText);
+        } else {
+          core.forgetSemanticContext(sessionID);
         }
         return;
       }
@@ -145,6 +148,10 @@ export function createV1Hooks(ctx: OpenCodePluginContextV1) {
     ): Promise<void> => {
       const context = await core.memoryContext(input.sessionID ?? "");
       if (context?.trim()) output.system.push(context);
+      if (input.sessionID) {
+        const semantic = (await core.semanticContext(input.sessionID))?.trim();
+        if (semantic) output.system.push(semantic);
+      }
     },
 
     // Generic bus events. Only `session.idle` and `session.deleted` are real

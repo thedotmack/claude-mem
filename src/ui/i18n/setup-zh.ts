@@ -429,4 +429,11 @@ export const setupZh: Record<string, string> = {
   'This import added {imported} of {sent} memories to your CMEM account · Ready to search.': '本次导入将 {sent} 条记忆中的 {imported} 条添加到了您的 CMEM 账户 · 可以开始搜索。',
   'The other 1 was already there, or cmem.ai couldn’t read it.': '另外 1 条已在您的账户中，或者 cmem.ai 无法读取它。',
   'The other {count} were already there, or cmem.ai couldn’t read them.': '另外 {count} 条已在您的账户中，或者 cmem.ai 无法读取它们。',
+  // Checkout's device code, shown while the checkout waits
+  'Your device code': '您的设备代码',
+  'Copy code': '复制代码',
+  'cmem.ai asks for this code after you start your free trial.': '开始免费试用后，cmem.ai 会要求您输入此代码。',
+  'cmem.ai asks for this code after checkout.': '结账后，cmem.ai 会要求您输入此代码。',
+  'Code copied.': '代码已复制。',
+  'Select and copy the code above.': '请选择并复制上方的代码。',
 };
